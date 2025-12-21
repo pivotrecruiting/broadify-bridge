@@ -1,0 +1,595 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* OpenSans Font Face Declarations */
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-Light.ttf") format("truetype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-LightItalic.ttf") format("truetype");
+  font-weight: 300;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-MediumItalic.ttf") format("truetype");
+  font-weight: 500;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-SemiBoldItalic.ttf") format("truetype");
+  font-weight: 600;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans-ExtraBoldItalic.ttf") format("truetype");
+  font-weight: 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #e2792e;
+  --primary-foreground: #000000;
+  --secondary: #e3e3e3;
+  --secondary-foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #b4c3d3;
+  --accent-foreground: #171717;
+  --destructive: #e7000b;
+  --destructive-foreground: #ffffff;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #a1a1a1;
+  --chart-1: #91c5ff;
+  --chart-2: #3a81f6;
+  --chart-3: #2563ef;
+  --chart-4: #1a4eda;
+  --chart-5: #1f3fad;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #0a0a0a;
+  --sidebar-primary: #171717;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #f5f5f5;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: #a1a1a1;
+  --font-open-sans: "Open Sans", ui-sans-serif, sans-serif, system-ui;
+  --font-sans: var(--font-open-sans);
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --radius: 0.5rem;
+  --shadow-x: 0;
+  --shadow-y: 1px;
+  --shadow-blur: 3px;
+  --shadow-spread: 0px;
+  --shadow-opacity: 0.02;
+  --shadow-color: oklch(0 0 0);
+  --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
+  --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
+  --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 1px 2px -1px hsl(0 0% 0% / 0.02);
+  --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 1px 2px -1px hsl(0 0% 0% / 0.02);
+  --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 2px 4px -1px hsl(0 0% 0% / 0.02);
+  --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 4px 6px -1px hsl(0 0% 0% / 0.02);
+  --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 8px 10px -1px hsl(0 0% 0% / 0.02);
+  --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+  --tracking-normal: 0em;
+  --spacing: 0.25rem;
+
+  /* Apple-standard glassmorphism - Very subtle and refined */
+  /* Low opacity for Apple's standard glass effect */
+  --glass-bg: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(255, 255, 255, 0.12) 25%,
+    rgba(240, 248, 255, 0.13) 50%,
+    rgba(255, 255, 255, 0.11) 75%,
+    rgba(230, 240, 255, 0.12) 100%
+  );
+  /* Very subtle white border - Apple standard */
+  --glass-border: rgba(255, 255, 255, 0.12);
+  /* Minimal shadows with subtle inner glow - Apple standard */
+  --glass-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04),
+    0 0 0 0.5px rgba(255, 255, 255, 0.08) inset,
+    0 0 12px rgba(255, 255, 255, 0.1) inset;
+  --glass-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.1),
+    0 2px 8px rgba(0, 0, 0, 0.06), 0 0 0 0.5px rgba(255, 255, 255, 0.1) inset,
+    0 0 20px rgba(255, 255, 255, 0.12) inset;
+  --glass-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.03), 0 0 0 0.5px rgba(255, 255, 255, 0.06) inset,
+    0 0 8px rgba(255, 255, 255, 0.08) inset;
+  --gradient: linear-gradient(135deg, #a855f7 0%, #3b82f6 100%);
+  /* Apple-standard blur values - moderate blur */
+  --blur: 10px;
+  --blur-sm: 10px;
+  --blur-lg: 10px;
+
+  /* Frosted glass variant - Enhanced opacity and stronger blur */
+  --glass-frosted-bg: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.25) 0%,
+    rgba(255, 255, 255, 0.22) 25%,
+    rgba(240, 248, 255, 0.23) 50%,
+    rgba(255, 255, 255, 0.21) 75%,
+    rgba(230, 240, 255, 0.22) 100%
+  );
+  --glass-frosted-border: rgba(255, 255, 255, 0.3);
+  --glass-frosted-shadow: 0 8px 32px rgba(0, 0, 0, 0.12),
+    0 2px 8px rgba(0, 0, 0, 0.08), 0 0 0 0.5px rgba(255, 255, 255, 0.15) inset,
+    0 0 20px rgba(255, 255, 255, 0.18) inset;
+  --blur-frosted: 25px;
+
+  /* Fluted glass variant - Vertical ridges pattern */
+  --glass-fluted-pattern: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.08) 0px,
+    rgba(255, 255, 255, 0.15) 4px,
+    rgba(255, 255, 255, 0.08) 8px,
+    rgba(255, 255, 255, 0.02) 10px,
+    rgba(255, 255, 255, 0.08) 12px
+  );
+
+  /* Crystal glass variant - Clear glass with highlights and glow */
+  --glass-crystal-bg: rgba(255, 255, 255, 0.3);
+  --glass-crystal-border: rgba(255, 255, 255, 0.3);
+  --glass-crystal-shadow: 0 0 20px rgba(0, 0, 0, 0.2),
+    0 0 30px rgba(255, 255, 255, 0.1);
+  --glass-crystal-shadow-hover: 0 0 25px rgba(0, 0, 0, 0.3),
+    0 0 35px rgba(255, 255, 255, 0.15);
+  --blur-crystal: 2px;
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --card: #171717;
+  --card-foreground: #fafafa;
+  --popover: #262626;
+  --popover-foreground: #fafafa;
+  --primary: #e5e5e5;
+  --primary-foreground: #171717;
+  --secondary: #262626;
+  --secondary-foreground: #fafafa;
+  --muted: #262626;
+  --muted-foreground: #a1a1a1;
+  --accent: #404040;
+  --accent-foreground: #fafafa;
+  --destructive: #ff6467;
+  --destructive-foreground: #fafafa;
+  --border: #282828;
+  --input: #343434;
+  --ring: #737373;
+  --chart-1: #91c5ff;
+  --chart-2: #3a81f6;
+  --chart-3: #2563ef;
+  --chart-4: #1a4eda;
+  --chart-5: #1f3fad;
+  --sidebar: #171717;
+  --sidebar-foreground: #fafafa;
+  --sidebar-primary: #1447e6;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #262626;
+  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border: #282828;
+  --sidebar-ring: #525252;
+  --font-open-sans: "Open Sans", ui-sans-serif, sans-serif, system-ui;
+  --font-sans: var(--font-open-sans);
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --radius: 0.5rem;
+  --shadow-x: 0;
+  --shadow-y: 1px;
+  --shadow-blur: 3px;
+  --shadow-spread: 0px;
+  --shadow-opacity: 0.02;
+  --shadow-color: oklch(0 0 0);
+  --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
+  --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
+  --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 1px 2px -1px hsl(0 0% 0% / 0.02);
+  --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 1px 2px -1px hsl(0 0% 0% / 0.02);
+  --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 2px 4px -1px hsl(0 0% 0% / 0.02);
+  --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 4px 6px -1px hsl(0 0% 0% / 0.02);
+  --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
+    0 8px 10px -1px hsl(0 0% 0% / 0.02);
+  --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-open-sans: "Open Sans", ui-sans-serif, sans-serif, system-ui;
+  --font-sans: var(--font-open-sans);
+  --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-2xs: var(--shadow-2xs);
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow: var(--shadow);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+  --shadow-2xl: var(--shadow-2xl);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-open-sans);
+  }
+  html {
+    @apply md:overflow-hidden;
+  }
+  body {
+    @apply md:overflow-hidden md:h-screen;
+  }
+  #root {
+    @apply md:h-screen md:overflow-hidden;
+  }
+}
+
+/* Next.js Dev Indicator (static/dynamic badge) customization */
+@layer utilities {
+  /* Hide the dev indicator completely */
+  /* 
+  [data-nextjs-toast] {
+    display: none !important;
+  }
+  */
+
+  /* Customize the dev indicator styling */
+  [data-nextjs-toast] {
+    /* Position */
+    bottom: 1rem !important;
+    left: 1rem !important;
+
+    /* Styling */
+    background: rgba(0, 0, 0, 0.8) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-radius: 0.5rem !important;
+    padding: 0.5rem 1rem !important;
+    font-size: 0.75rem !important;
+    font-weight: 500 !important;
+    color: white !important;
+    backdrop-filter: blur(8px) !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+      0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+
+    /* Animation */
+    transition: all 0.2s ease-in-out !important;
+  }
+
+  [data-nextjs-toast]:hover {
+    background: rgba(0, 0, 0, 0.9) !important;
+    transform: scale(1.05) !important;
+  }
+
+  /* Style for "static" badge */
+  [data-nextjs-toast][data-type="static"] {
+    background: rgba(34, 197, 94, 0.9) !important; /* green */
+  }
+
+  /* Style for "dynamic" badge */
+  [data-nextjs-toast][data-type="dynamic"] {
+    background: rgba(59, 130, 246, 0.9) !important; /* blue */
+  }
+}
+
+@layer utilities {
+  /* Apple-standard glass utility - Very subtle and refined */
+  /* This creates Apple's standard glassmorphism with moderate blur */
+  .glass-bg {
+    /* Low opacity gradient background - Apple standard */
+    background-image: var(--glass-bg);
+    background-color: transparent;
+    /* Moderate backdrop blur - Apple standard (20px) */
+    backdrop-filter: blur(var(--blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+    /* Very subtle white border - Apple standard */
+    border: 0.5px solid var(--glass-border);
+    /* Minimal shadow with subtle inner glow - Apple standard */
+    box-shadow: var(--glass-shadow);
+  }
+
+  /* Frosted glass utility - Enhanced blur and higher opacity */
+  .glass-frosted {
+    background-image: var(--glass-frosted-bg) !important;
+    background-color: transparent !important;
+    /* Stronger backdrop blur for frosted effect */
+    backdrop-filter: blur(var(--blur-frosted)) saturate(200%) !important;
+    -webkit-backdrop-filter: blur(var(--blur-frosted)) saturate(200%) !important;
+    /* More pronounced border */
+    border: 0.5px solid var(--glass-frosted-border) !important;
+    /* Enhanced shadow for depth */
+    box-shadow: var(--glass-frosted-shadow) !important;
+  }
+
+  /* Fluted glass utility - Vertical ridges with glass effect */
+  .glass-fluted {
+    /* Base glass background combined with fluted pattern */
+    background-image: var(--glass-fluted-pattern), var(--glass-bg) !important;
+    background-color: transparent !important;
+    /* Moderate backdrop blur like standard glass */
+    backdrop-filter: blur(var(--blur)) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(180%) !important;
+    /* Standard glass border */
+    border: 0.5px solid var(--glass-border) !important;
+    /* Standard glass shadow */
+    box-shadow: var(--glass-shadow) !important;
+  }
+
+  /* Crystal glass utility - Clear glass with highlights and glow */
+  .glass-crystal {
+    position: relative;
+    background-color: var(--glass-crystal-bg) !important;
+    /* Minimal backdrop blur for clarity */
+    backdrop-filter: blur(var(--blur-crystal)) !important;
+    -webkit-backdrop-filter: blur(var(--blur-crystal)) !important;
+    border: 1px solid var(--glass-crystal-border) !important;
+    box-shadow: var(--glass-crystal-shadow) !important;
+    transition: all 0.3s ease !important;
+    /* Top highlight gradient */
+    background-image: linear-gradient(
+      to bottom right,
+      rgba(255, 255, 255, 0.15),
+      transparent 50%
+    ) !important;
+    background-size: 200% 200% !important;
+  }
+
+  .glass-crystal::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.4),
+      transparent
+    );
+    opacity: 0.7;
+    pointer-events: none;
+    height: 30%;
+  }
+
+  .glass-crystal::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: radial-gradient(
+      circle at 50% 120%,
+      rgba(255, 255, 255, 0.2),
+      transparent 70%
+    );
+    opacity: 0.8;
+    pointer-events: none;
+  }
+
+  .glass-crystal:hover {
+    box-shadow: var(--glass-crystal-shadow-hover) !important;
+    background-position: 100% 100% !important;
+  }
+
+  /* Ensure react-day-picker doesn't override glass effect */
+  .glass-bg[class*="rdp"] {
+    background-color: transparent !important;
+  }
+
+  .glass-bg .rdp {
+    background-color: transparent !important;
+  }
+
+  .glass-bg .rdp-month {
+    background-color: transparent !important;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Sonner Toast Notifications - Glass Effect Overrides */
+[data-sonner-toast] {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur)) !important;
+  -webkit-backdrop-filter: blur(var(--blur)) !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--glass-shadow-lg) !important;
+  color: var(--foreground) !important;
+}
+
+[data-sonner-toast][data-type="success"] {
+  border-color: rgba(34, 197, 94, 0.3) !important;
+}
+
+[data-sonner-toast][data-type="error"] {
+  border-color: rgba(239, 68, 68, 0.3) !important;
+}
+
+[data-sonner-toast][data-type="warning"] {
+  border-color: rgba(234, 179, 8, 0.3) !important;
+}
+
+[data-sonner-toast][data-type="info"] {
+  border-color: rgba(59, 130, 246, 0.3) !important;
+}
+
+/* Toast description text */
+[data-sonner-toast] [data-description] {
+  color: var(--muted-foreground) !important;
+}
+
+/* Toast action buttons - Glass styled */
+[data-sonner-toast] [data-button] {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-sm)) !important;
+  -webkit-backdrop-filter: blur(var(--blur-sm)) !important;
+  border: 1px solid var(--glass-border) !important;
+  color: var(--foreground) !important;
+  transition: opacity 0.2s ease !important;
+}
+
+[data-sonner-toast] [data-button]:hover {
+  opacity: 0.9 !important;
+}
+
+/* Toast cancel button */
+[data-sonner-toast] [data-cancel] {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-sm)) !important;
+  -webkit-backdrop-filter: blur(var(--blur-sm)) !important;
+  border: 1px solid var(--glass-border) !important;
+  color: var(--muted-foreground) !important;
+}
+
+[data-sonner-toast] [data-cancel]:hover {
+  opacity: 0.9 !important;
+}
+
+/* Toast close button */
+[data-sonner-toast] [data-close-button] {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-sm)) !important;
+  -webkit-backdrop-filter: blur(var(--blur-sm)) !important;
+  border: 1px solid var(--glass-border) !important;
+  color: var(--foreground) !important;
+}
+
+[data-sonner-toast] [data-close-button]:hover {
+  opacity: 0.9 !important;
+}
