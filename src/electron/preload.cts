@@ -21,6 +21,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
     ipcInvoke("checkPortAvailability", port, host),
   checkPortsAvailability: (ports: number[], host?: string) =>
     ipcInvoke("checkPortsAvailability", ports, host),
+  getNetworkConfig: () => ipcInvoke("getNetworkConfig"),
+  detectNetworkInterfaces: () => ipcInvoke("detectNetworkInterfaces"),
+  getNetworkBindingOptions: () => ipcInvoke("getNetworkBindingOptions"),
 } satisfies Window["electron"]);
 
 function ipcInvoke<Key extends keyof EventPayloadMapping>(

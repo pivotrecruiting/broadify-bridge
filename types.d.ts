@@ -33,6 +33,82 @@ export type PortAvailability = {
   available: boolean;
 };
 
+/**
+ * Port configuration for a specific network binding
+ */
+export type InterfacePortConfigT = {
+  customOnly: boolean;
+  defaultPort?: number;
+};
+
+/**
+ * Network binding option with resolved IP address
+ */
+export type NetworkBindingOptionT = {
+  id: string;
+  label: string;
+  bindAddress: string;
+  interface: string;
+  recommended: boolean;
+  advanced: boolean;
+  warning?: string;
+  portConfig?: InterfacePortConfigT;
+};
+
+/**
+ * Port configuration
+ */
+export type PortConfigT = {
+  default: number;
+  autoFallback: number[];
+  allowCustom: boolean;
+  customAdvancedOnly: boolean;
+};
+
+/**
+ * Network binding configuration
+ */
+export type NetworkBindingConfigT = {
+  default: {
+    id: string;
+    label: string;
+    bindAddress: string;
+    recommended: boolean;
+    advanced: boolean;
+    description: string;
+  };
+  options: Array<{
+    id: string;
+    label: string;
+    bindAddress: string;
+    interface: string;
+    recommended: boolean;
+    advanced: boolean;
+    warning?: string;
+    portConfig?: InterfacePortConfigT;
+  }>;
+  filters: {
+    excludeInterfaces: string[];
+    excludeIpRanges: string[];
+    ipv6: boolean;
+  };
+};
+
+/**
+ * Complete network configuration
+ */
+export type NetworkConfigT = {
+  networkBinding: NetworkBindingConfigT;
+  port: PortConfigT;
+  security: {
+    lanMode: {
+      enabled: boolean;
+      requireAuth: boolean;
+      readOnlyWithoutAuth: boolean;
+    };
+  };
+};
+
 export type EventPayloadMapping = {
   statistics: Statistics;
   getStaticData: StaticData;
@@ -42,6 +118,9 @@ export type EventPayloadMapping = {
   bridgeStatus: BridgeStatus;
   checkPortAvailability: PortAvailability;
   checkPortsAvailability: PortAvailability[];
+  getNetworkConfig: NetworkConfigT;
+  detectNetworkInterfaces: NetworkBindingOptionT[];
+  getNetworkBindingOptions: NetworkBindingOptionT[];
 };
 
 declare global {
@@ -67,6 +146,9 @@ declare global {
         ports: number[],
         host?: string
       ) => Promise<PortAvailability[]>;
+      getNetworkConfig: () => Promise<NetworkConfigT>;
+      detectNetworkInterfaces: () => Promise<NetworkBindingOptionT[]>;
+      getNetworkBindingOptions: () => Promise<NetworkBindingOptionT[]>;
     };
   }
 }

@@ -1,0 +1,89 @@
+{
+  "networkBinding": {
+    "default": {
+      "id": "localhost",
+      "label": "Localhost (Secure)",
+      "bindAddress": "127.0.0.1",
+      "recommended": true,
+      "advanced": false,
+      "description": "Only accessible from this computer. Recommended default."
+    },
+    "options": [
+      {
+        "id": "localhost",
+        "label": "Localhost (Secure)",
+        "bindAddress": "127.0.0.1",
+        "interface": "loopback",
+        "recommended": true,
+        "advanced": false,
+        "portConfig": {
+          "customOnly": true,
+          "defaultPort": 8787
+        }
+      },
+      {
+        "id": "ethernet",
+        "label": "Ethernet",
+        "bindAddress": "AUTO_IPV4",
+        "interface": "ethernet",
+        "recommended": true,
+        "advanced": false,
+        "portConfig": {
+          "customOnly": true,
+          "defaultPort": 8787
+        }
+      },
+      {
+        "id": "wifi",
+        "label": "Wi-Fi",
+        "bindAddress": "AUTO_IPV4",
+        "interface": "wifi",
+        "recommended": false,
+        "advanced": false,
+        "warning": "Wired Ethernet recommended for live production.",
+        "portConfig": {
+          "customOnly": true,
+          "defaultPort": 8787
+        }
+      },
+      {
+        "id": "all",
+        "label": "All Interfaces (Advanced)",
+        "bindAddress": "0.0.0.0",
+        "interface": "all",
+        "recommended": false,
+        "advanced": true,
+        "warning": "Exposes the bridge to the entire network.",
+        "portConfig": {
+          "customOnly": true,
+          "defaultPort": 8787
+        }
+      }
+    ],
+    "filters": {
+      "excludeInterfaces": [
+        "docker",
+        "vbox",
+        "vmnet",
+        "utun",
+        "wg",
+        "tailscale"
+      ],
+      "excludeIpRanges": ["169.254.0.0/16"],
+      "ipv6": false
+    }
+  },
+  "port": {
+    "default": 8787,
+    "autoFallback": [8788, 8789, 8790],
+    "allowCustom": true,
+    "customAdvancedOnly": true
+  },
+  "security": {
+    "lanMode": {
+      "enabled": false,
+      "requireAuth": false,
+      "readOnlyWithoutAuth": true
+    }
+  }
+}

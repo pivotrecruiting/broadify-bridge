@@ -11,14 +11,110 @@ import {
   isPortAvailable,
   checkPortsAvailability,
 } from "./services/port-checker.js";
-import type { BridgeConfig } from "../../types.js";
+import { detectNetworkInterfaces } from "./services/network-interface-detector.js";
+import type { BridgeConfig, NetworkConfigT } from "../../types.js";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 let healthCheckCleanup: (() => void) | null = null;
+
+/**
+ * Default network configuration
+ */
+const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
+  networkBinding: {
+    default: {
+      id: "localhost",
+      label: "Localhost (Secure)",
+      bindAddress: "127.0.0.1",
+      recommended: true,
+      advanced: false,
+      description: "Only accessible from this computer. Recommended default.",
+    },
+    options: [
+      {
+        id: "localhost",
+        label: "Localhost (Secure)",
+        bindAddress: "127.0.0.1",
+        interface: "loopback",
+        recommended: true,
+        advanced: false,
+      },
+      {
+        id: "ethernet",
+        label: "Ethernet",
+        bindAddress: "AUTO_IPV4",
+        interface: "ethernet",
+        recommended: true,
+        advanced: false,
+      },
+      {
+        id: "wifi",
+        label: "Wi-Fi",
+        bindAddress: "AUTO_IPV4",
+        interface: "wifi",
+        recommended: false,
+        advanced: false,
+        warning: "Wired Ethernet recommended for live production.",
+      },
+      {
+        id: "all",
+        label: "All Interfaces (Advanced)",
+        bindAddress: "0.0.0.0",
+        interface: "all",
+        recommended: false,
+        advanced: true,
+        warning: "Exposes the bridge to the entire network.",
+      },
+    ],
+    filters: {
+      excludeInterfaces: ["docker", "vbox", "vmnet", "utun", "wg", "tailscale"],
+      excludeIpRanges: ["169.254.0.0/16"],
+      ipv6: false,
+    },
+  },
+  port: {
+    default: 8787,
+    autoFallback: [8788, 8789, 8790],
+    allowCustom: true,
+    customAdvancedOnly: true,
+  },
+  security: {
+    lanMode: {
+      enabled: false,
+      requireAuth: false,
+      readOnlyWithoutAuth: true,
+    },
+  },
+};
+
+/**
+ * Load network configuration from file or return default
+ */
+function loadNetworkConfig(): NetworkConfigT {
+  try {
+    const configPath = path.join(
+      app.getPath("userData"),
+      "network-config.json"
+    );
+
+    if (fs.existsSync(configPath)) {
+      const configData = fs.readFileSync(configPath, "utf-8");
+      const config = JSON.parse(configData) as NetworkConfigT;
+      return config;
+    }
+  } catch (error) {
+    console.error("[NetworkConfig] Error loading config:", error);
+  }
+
+  // Fallback to default config
+  return DEFAULT_NETWORK_CONFIG;
+}
 
 app.on("ready", () => {
   const mainWindow = new BrowserWindow({
@@ -161,6 +257,35 @@ app.on("ready", () => {
       return resultArray;
     }
   );
+
+  // Network configuration IPC handlers
+  ipcMainHandle("getNetworkConfig", async () => {
+    console.log("[NetworkConfig] Loading network configuration");
+    const config = loadNetworkConfig();
+    return config;
+  });
+
+  ipcMainHandle("detectNetworkInterfaces", async () => {
+    console.log("[NetworkConfig] Detecting network interfaces");
+    const config = loadNetworkConfig();
+    const options = detectNetworkInterfaces(
+      config.networkBinding.options,
+      config.networkBinding.filters
+    );
+    console.log("[NetworkConfig] Detected interfaces:", options);
+    return options;
+  });
+
+  ipcMainHandle("getNetworkBindingOptions", async () => {
+    console.log("[NetworkConfig] Getting network binding options");
+    const config = loadNetworkConfig();
+    const options = detectNetworkInterfaces(
+      config.networkBinding.options,
+      config.networkBinding.filters
+    );
+    console.log("[NetworkConfig] Network binding options:", options);
+    return options;
+  });
 
   // Cleanup on window close
   mainWindow.on("close", async (event) => {
