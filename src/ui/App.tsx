@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Settings } from "lucide-react";
 import { Card } from "@/components/card";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import logo from "./assets/logo.svg";
+import type { BridgeStatus } from "types";
+
 import "./styles/App.css";
 
 function App() {
@@ -19,6 +21,78 @@ function App() {
   const [enginePort, setEnginePort] = useState("9091");
   const [outputUsk, setOutputUsk] = useState("HDMI Decklink Card");
   const [outputDsk, setOutputDsk] = useState("SDI");
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
+    running: false,
+    reachable: false,
+  });
+  const [isStarting, setIsStarting] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+
+  // Subscribe to bridge status updates
+  useEffect(() => {
+    if (!window.electron) return;
+
+    // Get initial status
+    window.electron.bridgeGetStatus().then(setBridgeStatus);
+
+    // Subscribe to status updates
+    const unsubscribe = window.electron.subscribeBridgeStatus((status) => {
+      setBridgeStatus(status);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const handleStartBridge = async () => {
+    if (!window.electron) return;
+
+    setIsStarting(true);
+    try {
+      const result = await window.electron.bridgeStart({
+        host: networkLan,
+        port: parseInt(networkPort, 10),
+      });
+
+      if (!result.success) {
+        console.error("Failed to start bridge:", result.error);
+        alert(`Failed to start bridge: ${result.error || "Unknown error"}`);
+      }
+    } catch (error) {
+      console.error("Error starting bridge:", error);
+      alert(
+        `Error starting bridge: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  const handleStopBridge = async () => {
+    if (!window.electron) return;
+
+    setIsStopping(true);
+    try {
+      const result = await window.electron.bridgeStop();
+
+      if (!result.success) {
+        console.error("Failed to stop bridge:", result.error);
+        alert(`Failed to stop bridge: ${result.error || "Unknown error"}`);
+      }
+    } catch (error) {
+      console.error("Error stopping bridge:", error);
+      alert(
+        `Error stopping bridge: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+    } finally {
+      setIsStopping(false);
+    }
+  };
 
   return (
     <div className="min-h-screen md:h-screen md:overflow-hidden w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
@@ -33,7 +107,24 @@ function App() {
             <div className="flex-1 flex justify-center">
               <img src={logo} alt="broadify" className="h-14 sm:h-16 md:h-20" />
             </div>
-            <div className="w-5 sm:w-6" /> {/* Spacer for centering */}
+            <div className="flex items-center gap-2">
+              <div
+                className={`w-3 h-3 rounded-full ${
+                  bridgeStatus.running && bridgeStatus.reachable
+                    ? "bg-green-500"
+                    : bridgeStatus.running
+                    ? "bg-yellow-500"
+                    : "bg-red-500"
+                }`}
+              />
+              <span className="text-card-foreground text-xs sm:text-sm font-semibold">
+                {bridgeStatus.running && bridgeStatus.reachable
+                  ? "Running"
+                  : bridgeStatus.running
+                  ? "Starting..."
+                  : "Stopped"}
+              </span>
+            </div>
           </div>
 
           {/* Network Section */}
@@ -47,7 +138,11 @@ function App() {
                   <label className="text-card-foreground text-xs sm:text-sm font-semibold whitespace-nowrap min-w-[40px] sm:min-w-[50px]">
                     LAN
                   </label>
-                  <Select value={networkLan} onValueChange={setNetworkLan}>
+                  <Select
+                    value={networkLan}
+                    onValueChange={setNetworkLan}
+                    disabled={bridgeStatus.running}
+                  >
                     <SelectTrigger className="w-full sm:w-40">
                       <SelectValue />
                     </SelectTrigger>
@@ -66,7 +161,11 @@ function App() {
                   <label className="text-card-foreground text-xs sm:text-sm font-semibold whitespace-nowrap min-w-[40px] sm:min-w-[50px]">
                     Port
                   </label>
-                  <Select value={networkPort} onValueChange={setNetworkPort}>
+                  <Select
+                    value={networkPort}
+                    onValueChange={setNetworkPort}
+                    disabled={bridgeStatus.running}
+                  >
                     <SelectTrigger className="w-full sm:w-24">
                       <SelectValue />
                     </SelectTrigger>
@@ -190,21 +289,26 @@ function App() {
             </div>
           </Card>
 
-          {/* Lets Go Button */}
+          {/* Bridge Control Buttons */}
           <Card variant="frosted" className="p-4 sm:p-5 md:p-6" gradient>
-            <div className="flex justify-center">
-              <Button
-                className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
-                onClick={() => {
-                  console.log("Lets Go!", {
-                    network: { lan: networkLan, port: networkPort },
-                    engine: { atem: engineAtem, port: enginePort },
-                    outputs: { usk: outputUsk, dsk: outputDsk },
-                  });
-                }}
-              >
-                Lets Go!
-              </Button>
+            <div className="flex justify-center gap-4">
+              {!bridgeStatus.running ? (
+                <Button
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
+                  onClick={handleStartBridge}
+                  disabled={isStarting}
+                >
+                  {isStarting ? "Starting..." : "Start Bridge"}
+                </Button>
+              ) : (
+                <Button
+                  className="bg-red-600 hover:bg-red-700 text-white font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-red-500/20 shadow-lg w-full sm:w-auto"
+                  onClick={handleStopBridge}
+                  disabled={isStopping}
+                >
+                  {isStopping ? "Stopping..." : "Stop Bridge"}
+                </Button>
+              )}
             </div>
           </Card>
         </div>

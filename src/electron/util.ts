@@ -1,6 +1,7 @@
 import { ipcMain, WebContents, WebFrameMain } from "electron";
 import { getUIPath } from "./pathResolver.js";
 import { pathToFileURL } from "url";
+import type { EventPayloadMapping } from "../../types.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -12,16 +13,19 @@ export function isDev(): boolean {
 }
 
 // Making IPC Typesafe
-export function ipcMainHandle<Key extends keyof EventPayloadMapping>(key: Key, handler: () => EventPayloadMapping[Key]) {
-    ipcMain.handle(key, (event) => {
+export function ipcMainHandle<Key extends keyof EventPayloadMapping>(
+    key: Key, 
+    handler: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => EventPayloadMapping[Key] | Promise<EventPayloadMapping[Key]>
+) {
+    ipcMain.handle(key as string, (event, ...args) => {
         if (event.senderFrame) validateEventFrame(event.senderFrame);
 
-        return handler()
+        return handler(event, ...args);
     });
 }
 
 export function ipcWebContentsSend<Key extends keyof EventPayloadMapping>(key: Key, webContents: WebContents, payload: EventPayloadMapping[Key]) {
-    webContents.send(key, payload);
+    webContents.send(key as string, payload);
 }
 
 export function validateEventFrame(frame: WebFrameMain) {
