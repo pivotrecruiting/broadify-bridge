@@ -43,7 +43,9 @@ function App() {
                 Network
               </h2>
               <div className="flex items-center gap-3">
-                <label className="text-card-foreground text-sm">LAN</label>
+                <label className="text-card-foreground text-sm font-semibold">
+                  LAN
+                </label>
                 <Select value={networkLan} onValueChange={setNetworkLan}>
                   <SelectTrigger className="w-40">
                     <SelectValue />
@@ -58,7 +60,9 @@ function App() {
                 </Select>
               </div>
               <div className="flex items-center gap-3">
-                <label className="text-card-foreground text-sm">Port</label>
+                <label className="text-card-foreground text-sm font-semibold">
+                  Port
+                </label>
                 <Select value={networkPort} onValueChange={setNetworkPort}>
                   <SelectTrigger className="w-24">
                     <SelectValue />
@@ -104,7 +108,9 @@ function App() {
                 </Select>
               </div>
               <div className="flex items-center gap-3">
-                <label className="text-card-foreground text-sm">Port</label>
+                <label className="text-card-foreground text-sm font-semibold">
+                  Port
+                </label>
                 <Select value={enginePort} onValueChange={setEnginePort}>
                   <SelectTrigger className="w-24">
                     <SelectValue />
@@ -128,7 +134,9 @@ function App() {
                   Outputs
                 </h2>
                 <div className="flex items-center gap-3">
-                  <label className="text-card-foreground text-sm">USK</label>
+                  <label className="text-card-foreground text-sm font-semibold">
+                    USK
+                  </label>
                   <Select value={outputUsk} onValueChange={setOutputUsk}>
                     <SelectTrigger className="w-48">
                       <SelectValue />
@@ -154,7 +162,9 @@ function App() {
               <div className="flex items-center gap-6 flex-wrap">
                 <div className="min-w-[100px]" /> {/* Spacer */}
                 <div className="flex items-center gap-3">
-                  <label className="text-card-foreground text-sm">DSK</label>
+                  <label className="text-card-foreground text-sm font-semibold">
+                    DSK
+                  </label>
                   <Select value={outputDsk} onValueChange={setOutputDsk}>
                     <SelectTrigger className="w-48">
                       <SelectValue />
