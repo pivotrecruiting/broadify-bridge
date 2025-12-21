@@ -13,8 +13,13 @@ app.on("ready", () => {
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
         webPreferences: {
             preload: getPreloadPath(),
-        }
-        , icon: getIconPath()
+        },
+        icon: getIconPath(),
+        width: 800, // sm breakpoint width (640px) + padding
+        height: 700, // Fixed height to prevent scrolling
+        minWidth: 640, // Minimum width (sm breakpoint)
+        minHeight: 600,
+        resizable: true,
     });
 
     if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`)

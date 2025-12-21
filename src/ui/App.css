@@ -244,8 +244,18 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html,
   body {
-    @apply bg-background text-foreground font-sans;
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply md:overflow-hidden;
+  }
+  body {
+    @apply md:overflow-hidden md:h-screen;
+  }
+  #root {
+    @apply md:h-screen md:overflow-hidden;
   }
 }
 

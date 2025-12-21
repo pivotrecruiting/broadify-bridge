@@ -21,10 +21,10 @@ function App() {
   const [outputDsk, setOutputDsk] = useState("SDI");
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center py-0 p-4 sm:p-6 md:p-8">
-      <div className="w-full max-w-4xl">
+    <div className="min-h-screen md:h-screen md:overflow-hidden w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
+      <div className="w-full max-w-4xl md:h-auto flex items-center justify-center md:overflow-visible">
         {/* Main Container with Frosted Effect */}
-        <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6">
+        <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6 w-full">
           {/* Header */}
           <div className="flex items-center justify-between mb-2 sm:mb-4 md:mb-8">
             <button className="text-card-foreground hover:text-card-foreground/80 transition-colors">
