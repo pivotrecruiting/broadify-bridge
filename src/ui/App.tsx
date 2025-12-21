@@ -21,7 +21,7 @@ function App() {
   const [outputDsk, setOutputDsk] = useState("SDI");
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
+    <div className="min-h-screen w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center py-0 p-4 sm:p-6 md:p-8">
       <div className="w-full max-w-4xl">
         {/* Main Container with Frosted Effect */}
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6">
