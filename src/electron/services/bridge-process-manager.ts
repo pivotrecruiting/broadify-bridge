@@ -3,6 +3,7 @@ import { app } from "electron";
 import path from "path";
 import { isDev } from "../util.js";
 import type { BridgeConfig } from "../../../types.js";
+import { isPortAvailable, findAvailablePort } from "./port-checker.js";
 
 /**
  * Bridge process manager
@@ -14,15 +15,52 @@ export class BridgeProcessManager {
 
   /**
    * Start the bridge process with given configuration
+   * Automatically finds available port if requested port is in use
    */
-  async start(config: BridgeConfig): Promise<{ success: boolean; error?: string }> {
+  async start(
+    config: BridgeConfig,
+    autoFindPort: boolean = true
+  ): Promise<{ success: boolean; error?: string; actualPort?: number }> {
     // If already running, stop first
     if (this.bridgeProcess) {
       await this.stop();
     }
 
     try {
-      this.config = config;
+      let actualConfig = { ...config };
+      
+      // Check if port is available, if not and autoFindPort is enabled, find next available
+      const portAvailable = await isPortAvailable(config.port, config.host);
+      
+      if (!portAvailable && autoFindPort) {
+        console.log(
+          `[BridgeManager] Port ${config.port} is not available, searching for alternative...`
+        );
+        const availablePort = await findAvailablePort(
+          config.port,
+          config.port + 10, // Check next 10 ports
+          config.host
+        );
+        
+        if (availablePort) {
+          console.log(
+            `[BridgeManager] Found available port: ${availablePort} (requested: ${config.port})`
+          );
+          actualConfig = { ...config, port: availablePort };
+        } else {
+          return {
+            success: false,
+            error: `Port ${config.port} is not available and no alternative port found in range ${config.port}-${config.port + 10}`,
+          };
+        }
+      } else if (!portAvailable) {
+        return {
+          success: false,
+          error: `Port ${config.port} is already in use. Please choose a different port.`,
+        };
+      }
+
+      this.config = actualConfig;
 
       // Determine bridge entry point and arguments
       const bridgePath = this.getBridgePath();
@@ -37,6 +75,8 @@ export class BridgeProcessManager {
           NODE_ENV: isDev() ? "development" : "production",
         },
       });
+
+      let stderrBuffer = "";
 
       // Handle process events
       this.bridgeProcess.on("error", (error) => {
@@ -57,11 +97,50 @@ export class BridgeProcessManager {
 
       if (this.bridgeProcess.stderr) {
         this.bridgeProcess.stderr.on("data", (data) => {
-          console.error(`[Bridge Error] ${data.toString().trim()}`);
+          const errorText = data.toString();
+          stderrBuffer += errorText;
+          console.error(`[Bridge Error] ${errorText.trim()}`);
         });
       }
 
-      return { success: true };
+      // Wait a bit to check if the process started successfully
+      // If it exits quickly, it likely failed to bind
+      console.log("[BridgeManager] Waiting 2 seconds to verify process is running...");
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Check if process is still running
+      const isStillRunning = this.bridgeProcess && !this.bridgeProcess.killed;
+      console.log(`[BridgeManager] Process still running after 2s: ${isStillRunning}`);
+      
+      if (!isStillRunning) {
+        // Extract error message from stderr
+        let errorMessage = "Bridge process exited unexpectedly";
+        
+        // Try to extract meaningful error from stderr
+        if (stderrBuffer) {
+          const errorMatch = stderrBuffer.match(/EADDRNOTAVAIL[^\n]*/);
+          if (errorMatch) {
+            errorMessage = `Address not available: ${config.host}:${config.port}. This IP address is not available on your system.`;
+          } else {
+            const errorMatch2 = stderrBuffer.match(/ERROR[^\n]*/);
+            if (errorMatch2) {
+              errorMessage = errorMatch2[0].replace(/ERROR:\s*/, "");
+            }
+          }
+        }
+
+        this.bridgeProcess = null;
+        console.log(`[BridgeManager] Process failed: ${errorMessage}`);
+        return { success: false, error: errorMessage };
+      }
+
+      console.log(
+        `[BridgeManager] Process started successfully on port ${actualConfig.port}`
+      );
+      return {
+        success: true,
+        actualPort: actualConfig.port !== config.port ? actualConfig.port : undefined,
+      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return { success: false, error: errorMessage };

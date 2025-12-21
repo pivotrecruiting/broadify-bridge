@@ -42,9 +42,43 @@ export async function startServer(
     server.log.info(
       `Bridge server listening on http://${config.host}:${config.port}`
     );
-  } catch (err) {
-    server.log.error(err);
-    process.exit(1);
+  } catch (err: any) {
+    // Check for port already in use
+    if (err?.code === "EADDRINUSE") {
+      server.log.error(
+        `Port ${config.port} is already in use. Please choose a different port.`
+      );
+      process.exit(1);
+    }
+    
+    // If address not available and not already using 0.0.0.0, try fallback
+    if (
+      err?.code === "EADDRNOTAVAIL" &&
+      config.host !== "0.0.0.0" &&
+      config.host !== "127.0.0.1"
+    ) {
+      server.log.warn(
+        `Address ${config.host} not available, falling back to 0.0.0.0`
+      );
+      try {
+        await server.listen({ host: "0.0.0.0", port: config.port });
+        server.log.info(
+          `Bridge server listening on http://0.0.0.0:${config.port} (fallback)`
+        );
+      } catch (fallbackErr: any) {
+        if (fallbackErr?.code === "EADDRINUSE") {
+          server.log.error(
+            `Port ${config.port} is already in use. Please choose a different port.`
+          );
+        } else {
+          server.log.error("Fallback to 0.0.0.0 also failed:", fallbackErr);
+        }
+        process.exit(1);
+      }
+    } else {
+      server.log.error(err);
+      process.exit(1);
+    }
   }
 
   // Graceful shutdown

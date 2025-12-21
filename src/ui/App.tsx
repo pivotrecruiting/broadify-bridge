@@ -15,8 +15,8 @@ import type { BridgeStatus } from "types";
 import "./styles/App.css";
 
 function App() {
-  const [networkLan, setNetworkLan] = useState("192.168.178.1");
-  const [networkPort, setNetworkPort] = useState("8000");
+  const [networkLan, setNetworkLan] = useState("0.0.0.0");
+  const [networkPort, setNetworkPort] = useState<string>("8000");
   const [engineAtem, setEngineAtem] = useState("ATEM 192.168.1.1");
   const [enginePort, setEnginePort] = useState("9091");
   const [outputUsk, setOutputUsk] = useState("HDMI Decklink Card");
@@ -27,6 +27,10 @@ function App() {
   });
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [portAvailability, setPortAvailability] = useState<
+    Map<number, boolean>
+  >(new Map());
+  const [checkingPorts, setCheckingPorts] = useState(false);
 
   // Subscribe to bridge status updates
   useEffect(() => {
@@ -45,22 +49,99 @@ function App() {
     };
   }, []);
 
+  // Check port availability on mount and when port changes
+  useEffect(() => {
+    if (!window.electron) return;
+
+    const checkPorts = async () => {
+      // Don't check ports while bridge is running (would show our own bridge as "in use")
+      if (bridgeStatus.running) {
+        console.log("[PortCheck] Skipping port check - bridge is running");
+        return;
+      }
+
+      setCheckingPorts(true);
+      try {
+        const ports = [8000, 8080, 3000, 5000, 9000];
+        console.log("[PortCheck] Checking ports:", ports, "on", networkLan);
+        const results = await window.electron.checkPortsAvailability(
+          ports,
+          networkLan
+        );
+        console.log("[PortCheck] Results:", results);
+        const availabilityMap = new Map<number, boolean>();
+        results.forEach((result) => {
+          availabilityMap.set(result.port, result.available);
+        });
+        setPortAvailability(availabilityMap);
+
+        // Check if currently selected port is available on new IP
+        // This ensures that when IP changes, if the selected port is not available, it gets reset
+        if (networkPort && networkPort.trim() !== "") {
+          const currentPort = parseInt(networkPort, 10);
+          if (!isNaN(currentPort)) {
+            const portAvailable = availabilityMap.get(currentPort);
+            if (portAvailable === false) {
+              console.log(
+                `[PortCheck] Port ${currentPort} not available on ${networkLan}, resetting selection`
+              );
+              setNetworkPort("");
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error checking port availability:", error);
+      } finally {
+        setCheckingPorts(false);
+      }
+    };
+
+    // Initial check
+    checkPorts();
+
+    // Re-check when network config changes (with debounce)
+    const timeoutId = setTimeout(checkPorts, 500);
+    return () => clearTimeout(timeoutId);
+  }, [networkLan, bridgeStatus.running]);
+
   const handleLetsGo = async () => {
     if (!window.electron) return;
+
+    // Validate port is selected
+    if (!networkPort || networkPort.trim() === "") {
+      alert("Bitte wählen Sie einen Port aus.");
+      return;
+    }
+
+    const port = parseInt(networkPort, 10);
+    if (isNaN(port)) {
+      alert("Ungültiger Port. Bitte wählen Sie einen gültigen Port aus.");
+      return;
+    }
 
     setIsStarting(true);
     try {
       const result = await window.electron.bridgeStart({
         host: networkLan,
-        port: parseInt(networkPort, 10),
+        port: port,
       });
 
       if (!result.success) {
         console.error("Failed to start bridge:", result.error);
         alert(`Failed to start bridge: ${result.error || "Unknown error"}`);
       } else {
+        // If port was changed automatically, update UI
+        if (
+          result.actualPort &&
+          result.actualPort !== parseInt(networkPort, 10)
+        ) {
+          setNetworkPort(result.actualPort.toString());
+          alert(
+            `Port ${networkPort} was not available. Bridge started on port ${result.actualPort} instead.`
+          );
+        }
         console.log("Lets Go!", {
-          network: { lan: networkLan, port: networkPort },
+          network: { lan: networkLan, port: result.actualPort || networkPort },
           engine: { atem: engineAtem, port: enginePort },
           outputs: { usk: outputUsk, dsk: outputDsk },
         });
@@ -87,6 +168,26 @@ function App() {
       if (!result.success) {
         console.error("Failed to stop bridge:", result.error);
         alert(`Failed to stop bridge: ${result.error || "Unknown error"}`);
+      } else {
+        // Re-check port availability after stopping bridge
+        setTimeout(async () => {
+          if (window.electron) {
+            try {
+              const ports = [8000, 8080, 3000, 5000, 9000];
+              const results = await window.electron.checkPortsAvailability(
+                ports,
+                networkLan
+              );
+              const availabilityMap = new Map<number, boolean>();
+              results.forEach((result) => {
+                availabilityMap.set(result.port, result.available);
+              });
+              setPortAvailability(availabilityMap);
+            } catch (error) {
+              console.error("Error re-checking ports after stop:", error);
+            }
+          }
+        }, 1000); // Wait 1 second for port to be released
       }
     } catch (error) {
       console.error("Error stopping bridge:", error);
@@ -106,7 +207,7 @@ function App() {
         {/* Main Container with Frosted Effect */}
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6 w-full">
           {/* Header */}
-          <div className="flex items-center justify-between mb-2 sm:mb-4 md:mb-8">
+          <div className="flex items-center justify-between mb-2 sm:mb-2 md:mb-3">
             <button className="text-card-foreground hover:text-card-foreground/80 transition-colors">
               <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
             </button>
@@ -153,6 +254,12 @@ function App() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="0.0.0.0">
+                        0.0.0.0 (All Interfaces)
+                      </SelectItem>
+                      <SelectItem value="127.0.0.1">
+                        127.0.0.1 (Localhost)
+                      </SelectItem>
                       <SelectItem value="192.168.178.1">
                         192.168.178.1
                       </SelectItem>
@@ -167,22 +274,72 @@ function App() {
                   <label className="text-card-foreground text-xs sm:text-sm font-semibold whitespace-nowrap min-w-[40px] sm:min-w-[50px]">
                     Port
                   </label>
-                  <Select
-                    value={networkPort}
-                    onValueChange={setNetworkPort}
-                    disabled={bridgeStatus.running}
-                  >
-                    <SelectTrigger className="w-full sm:w-24">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="8000">8000</SelectItem>
-                      <SelectItem value="8080">8080</SelectItem>
-                      <SelectItem value="3000">3000</SelectItem>
-                      <SelectItem value="5000">5000</SelectItem>
-                      <SelectItem value="9000">9000</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center gap-2 flex-1">
+                    <Select
+                      value={networkPort || undefined}
+                      onValueChange={setNetworkPort}
+                      disabled={bridgeStatus.running || checkingPorts}
+                    >
+                      <SelectTrigger className="w-full sm:w-24">
+                        <SelectValue placeholder="Select">
+                          {networkPort || ""}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[8000, 8080, 3000, 5000, 9000].map((port) => {
+                          const available = portAvailability.get(port);
+                          const isSelected = networkPort === port.toString();
+                          // Disable belegte Ports, aber nicht den aktuell ausgewählten (damit Select sich öffnen kann)
+                          const isDisabled = available === false && !isSelected;
+                          return (
+                            <SelectItem
+                              key={port}
+                              value={port.toString()}
+                              disabled={isDisabled}
+                            >
+                              <div className="flex items-center gap-2">
+                                <div
+                                  className={`w-2 h-2 rounded-full ${
+                                    available === true
+                                      ? "bg-green-500"
+                                      : available === false
+                                      ? "bg-red-500"
+                                      : "bg-gray-400"
+                                  }`}
+                                />
+                                <span>{port}</span>
+                                {available === false && (
+                                  <span className="text-xs text-red-400">
+                                    (belegt)
+                                  </span>
+                                )}
+                              </div>
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                    {checkingPorts && (
+                      <span className="text-xs text-card-foreground/60">
+                        Prüfe...
+                      </span>
+                    )}
+                    {!checkingPorts &&
+                      portAvailability.has(parseInt(networkPort, 10)) && (
+                        <div
+                          className={`w-2 h-2 rounded-full ${
+                            portAvailability.get(parseInt(networkPort, 10))
+                              ? "bg-green-500"
+                              : "bg-red-500"
+                          }`}
+                          title={
+                            portAvailability.get(parseInt(networkPort, 10))
+                              ? "Port ist frei"
+                              : "Port ist belegt"
+                          }
+                        />
+                      )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -302,9 +459,11 @@ function App() {
                 <Button
                   className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
                   onClick={handleLetsGo}
-                  disabled={isStarting}
+                  disabled={
+                    isStarting || !networkPort || networkPort.trim() === ""
+                  }
                 >
-                  {isStarting ? "Starting..." : "Lets Go!"}
+                  {isStarting ? "Starting..." : "Launch GUI"}
                 </Button>
               ) : (
                 <Button

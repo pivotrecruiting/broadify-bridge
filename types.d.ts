@@ -28,13 +28,20 @@ export type BridgeStatus = {
 
 export type UnsubscribeFunction = () => void;
 
+export type PortAvailability = {
+  port: number;
+  available: boolean;
+};
+
 export type EventPayloadMapping = {
   statistics: Statistics;
   getStaticData: StaticData;
-  bridgeStart: { success: boolean; error?: string };
+  bridgeStart: { success: boolean; error?: string; actualPort?: number };
   bridgeStop: { success: boolean; error?: string };
   bridgeGetStatus: BridgeStatus;
   bridgeStatus: BridgeStatus;
+  checkPortAvailability: PortAvailability;
+  checkPortsAvailability: PortAvailability[];
 };
 
 declare global {
@@ -46,12 +53,20 @@ declare global {
       getStaticData: () => Promise<StaticData>;
       bridgeStart: (
         config: BridgeConfig
-      ) => Promise<{ success: boolean; error?: string }>;
+      ) => Promise<{ success: boolean; error?: string; actualPort?: number }>;
       bridgeStop: () => Promise<{ success: boolean; error?: string }>;
       bridgeGetStatus: () => Promise<BridgeStatus>;
       subscribeBridgeStatus: (
         callback: (status: BridgeStatus) => void
       ) => UnsubscribeFunction;
+      checkPortAvailability: (
+        port: number,
+        host?: string
+      ) => Promise<PortAvailability>;
+      checkPortsAvailability: (
+        ports: number[],
+        host?: string
+      ) => Promise<PortAvailability[]>;
     };
   }
 }
