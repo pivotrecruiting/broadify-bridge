@@ -4,8 +4,7 @@ import { pathToFileURL } from "url";
 import dotenv from "dotenv";
 
 dotenv.config();
-const PORT = process.env.PORT;
-if (!PORT) throw new Error("PORT env variable is not set");
+const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 // Checks if you are in development mode
 export function isDev(): boolean {
