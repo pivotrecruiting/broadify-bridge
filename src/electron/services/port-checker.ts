@@ -35,9 +35,11 @@ export async function isPortAvailable(
     server.once("error", (err: NodeJS.ErrnoException) => {
       if (resolved) return;
       clearTimeout(timeout);
-      
+
       if (err.code === "EADDRINUSE") {
-        console.log(`[PortChecker] Port ${port} on ${host} is in use (EADDRINUSE)`);
+        console.log(
+          `[PortChecker] Port ${port} on ${host} is in use (EADDRINUSE)`
+        );
         cleanup();
         resolve(false);
       } else {
@@ -124,4 +126,3 @@ export async function checkPortsAvailability(
 
   return results;
 }
-
