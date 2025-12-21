@@ -194,7 +194,7 @@ function App() {
           <Card variant="frosted" className="p-4 sm:p-5 md:p-6" gradient>
             <div className="flex justify-center">
               <Button
-                className="bg-primary/90 hover:bg-primary text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
                 onClick={() => {
                   console.log("Lets Go!", {
                     network: { lan: networkLan, port: networkPort },
