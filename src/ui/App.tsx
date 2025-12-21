@@ -26,12 +26,12 @@ function App() {
         {/* Main Container with Frosted Effect */}
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6">
           {/* Header */}
-          <div className="flex items-center justify-between mb-6 sm:mb-7 md:mb-8">
+          <div className="flex items-center justify-between mb-2 sm:mb-4 md:mb-8">
             <button className="text-card-foreground hover:text-card-foreground/80 transition-colors">
               <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
             </button>
             <div className="flex-1 flex justify-center">
-              <img src={logo} alt="broadify" className="h-8 sm:h-10 md:h-12" />
+              <img src={logo} alt="broadify" className="h-14 sm:h-16 md:h-20" />
             </div>
             <div className="w-5 sm:w-6" /> {/* Spacer for centering */}
           </div>
