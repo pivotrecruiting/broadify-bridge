@@ -26,7 +26,6 @@ function App() {
     reachable: false,
   });
   const [isStarting, setIsStarting] = useState(false);
-  const [isStopping, setIsStopping] = useState(false);
 
   // Subscribe to bridge status updates
   useEffect(() => {
@@ -45,8 +44,13 @@ function App() {
     };
   }, []);
 
-  const handleStartBridge = async () => {
+  const handleLetsGo = async () => {
     if (!window.electron) return;
+
+    // If bridge is already running, stop it first
+    if (bridgeStatus.running) {
+      await window.electron.bridgeStop();
+    }
 
     setIsStarting(true);
     try {
@@ -58,6 +62,12 @@ function App() {
       if (!result.success) {
         console.error("Failed to start bridge:", result.error);
         alert(`Failed to start bridge: ${result.error || "Unknown error"}`);
+      } else {
+        console.log("Lets Go!", {
+          network: { lan: networkLan, port: networkPort },
+          engine: { atem: engineAtem, port: enginePort },
+          outputs: { usk: outputUsk, dsk: outputDsk },
+        });
       }
     } catch (error) {
       console.error("Error starting bridge:", error);
@@ -68,29 +78,6 @@ function App() {
       );
     } finally {
       setIsStarting(false);
-    }
-  };
-
-  const handleStopBridge = async () => {
-    if (!window.electron) return;
-
-    setIsStopping(true);
-    try {
-      const result = await window.electron.bridgeStop();
-
-      if (!result.success) {
-        console.error("Failed to stop bridge:", result.error);
-        alert(`Failed to stop bridge: ${result.error || "Unknown error"}`);
-      }
-    } catch (error) {
-      console.error("Error stopping bridge:", error);
-      alert(
-        `Error stopping bridge: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
-      );
-    } finally {
-      setIsStopping(false);
     }
   };
 
@@ -289,26 +276,16 @@ function App() {
             </div>
           </Card>
 
-          {/* Bridge Control Buttons */}
+          {/* Lets Go Button */}
           <Card variant="frosted" className="p-4 sm:p-5 md:p-6" gradient>
-            <div className="flex justify-center gap-4">
-              {!bridgeStatus.running ? (
-                <Button
-                  className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
-                  onClick={handleStartBridge}
-                  disabled={isStarting}
-                >
-                  {isStarting ? "Starting..." : "Start Bridge"}
-                </Button>
-              ) : (
-                <Button
-                  className="bg-red-600 hover:bg-red-700 text-white font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-red-500/20 shadow-lg w-full sm:w-auto"
-                  onClick={handleStopBridge}
-                  disabled={isStopping}
-                >
-                  {isStopping ? "Stopping..." : "Stop Bridge"}
-                </Button>
-              )}
+            <div className="flex justify-center">
+              <Button
+                className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
+                onClick={handleLetsGo}
+                disabled={isStarting || bridgeStatus.running}
+              >
+                {isStarting ? "Starting..." : "Lets Go!"}
+              </Button>
             </div>
           </Card>
         </div>
