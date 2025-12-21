@@ -7,18 +7,21 @@
     "extraResources": [
         "dist-electron/preload.cjs"
     ],
-    "icon": "./templateIcon.png",
+    "icon": "./icon.png",
     "mac": {
-        "target": "dmg"
+        "target": "dmg",
+        "icon": "./icon.png"
     },
     "linux": {
         "target": "AppImage",
-        "category": "Utility"
+        "category": "Utility",
+        "icon": "./icon.png"
     },
     "win": {
         "target": [
             "portable",
             "msi"
-        ]
+        ],
+        "icon": "./icon.png"
     }
 }
