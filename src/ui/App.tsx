@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import logo from "./assets/logo.svg";
-import "./App.css";
+import "./styles/App.css";
 
 function App() {
   const [networkLan, setNetworkLan] = useState("192.168.178.1");
