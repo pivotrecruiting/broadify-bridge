@@ -26,6 +26,7 @@ function App() {
     reachable: false,
   });
   const [isStarting, setIsStarting] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
 
   // Subscribe to bridge status updates
   useEffect(() => {
@@ -46,11 +47,6 @@ function App() {
 
   const handleLetsGo = async () => {
     if (!window.electron) return;
-
-    // If bridge is already running, stop it first
-    if (bridgeStatus.running) {
-      await window.electron.bridgeStop();
-    }
 
     setIsStarting(true);
     try {
@@ -81,6 +77,29 @@ function App() {
     }
   };
 
+  const handleStopServer = async () => {
+    if (!window.electron) return;
+
+    setIsStopping(true);
+    try {
+      const result = await window.electron.bridgeStop();
+
+      if (!result.success) {
+        console.error("Failed to stop bridge:", result.error);
+        alert(`Failed to stop bridge: ${result.error || "Unknown error"}`);
+      }
+    } catch (error) {
+      console.error("Error stopping bridge:", error);
+      alert(
+        `Error stopping bridge: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
   return (
     <div className="min-h-screen md:h-screen md:overflow-hidden w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
       <div className="w-full max-w-4xl md:h-auto flex items-center justify-center md:overflow-visible">
@@ -101,7 +120,7 @@ function App() {
                     ? "bg-green-500"
                     : bridgeStatus.running
                     ? "bg-yellow-500"
-                    : "bg-red-500"
+                    : "bg-destructive"
                 }`}
               />
               <span className="text-card-foreground text-xs sm:text-sm font-semibold">
@@ -276,16 +295,26 @@ function App() {
             </div>
           </Card>
 
-          {/* Lets Go Button */}
+          {/* Lets Go / Stop Server Button */}
           <Card variant="frosted" className="p-4 sm:p-5 md:p-6" gradient>
             <div className="flex justify-center">
-              <Button
-                className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
-                onClick={handleLetsGo}
-                disabled={isStarting || bridgeStatus.running}
-              >
-                {isStarting ? "Starting..." : "Lets Go!"}
-              </Button>
+              {!bridgeStatus.running ? (
+                <Button
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-primary/20 shadow-lg w-full sm:w-auto"
+                  onClick={handleLetsGo}
+                  disabled={isStarting}
+                >
+                  {isStarting ? "Starting..." : "Lets Go!"}
+                </Button>
+              ) : (
+                <Button
+                  className="bg-destructive hover:bg-destructive/90 text-white font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 text-base sm:text-lg rounded-lg border border-red-500/20 shadow-lg w-full sm:w-auto"
+                  onClick={handleStopServer}
+                  disabled={isStopping}
+                >
+                  {isStopping ? "Stopping..." : "Stop Server"}
+                </Button>
+              )}
             </div>
           </Card>
         </div>

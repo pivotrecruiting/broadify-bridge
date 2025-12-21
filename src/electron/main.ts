@@ -95,10 +95,20 @@ app.on("ready", () => {
     return await checkBridgeHealth(config);
   });
 
+  // Cleanup on window close
+  mainWindow.on("close", async (event) => {
+    if (healthCheckCleanup) {
+      healthCheckCleanup();
+      healthCheckCleanup = null;
+    }
+    await bridgeProcessManager.stop();
+  });
+
   // Cleanup on app quit
   app.on("before-quit", async () => {
     if (healthCheckCleanup) {
       healthCheckCleanup();
+      healthCheckCleanup = null;
     }
     await bridgeProcessManager.stop();
   });
