@@ -8,7 +8,6 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import type { NetworkConfigT, InterfacePortConfigT } from "types";
-import { shouldUseCustomPort } from "../utils/port-utils";
 
 interface PortSelectorProps {
   portConfig: InterfacePortConfigT | undefined;
@@ -126,4 +125,3 @@ export function PortSelector({
     </div>
   );
 }
-
