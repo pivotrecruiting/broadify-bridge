@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import { ipcMainHandle, isDev, ipcWebContentsSend } from "./util.js";
 import { getPreloadPath, getUIPath, getIconPath } from "./pathResolver.js";
 import { getStaticData, pollResources } from "./test.js";
@@ -11,8 +11,15 @@ import {
   isPortAvailable,
   checkPortsAvailability,
 } from "./services/port-checker.js";
-import { detectNetworkInterfaces } from "./services/network-interface-detector.js";
-import type { BridgeConfig, NetworkConfigT } from "../../types.js";
+import {
+  detectNetworkInterfaces,
+  resolveBindAddress,
+} from "./services/network-interface-detector.js";
+import type {
+  BridgeConfig,
+  NetworkConfigT,
+  NetworkBindingOptionT,
+} from "../../types.js";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
@@ -22,6 +29,9 @@ dotenv.config();
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 let healthCheckCleanup: (() => void) | null = null;
+let bridgeOutputs: { output1: string; output2: string } | null = null;
+let currentNetworkBindingId: string | null = null;
+let hasOpenedWebApp = false;
 
 /**
  * Default network configuration
@@ -116,6 +126,49 @@ function loadNetworkConfig(): NetworkConfigT {
   return DEFAULT_NETWORK_CONFIG;
 }
 
+/**
+ * Get interface type from binding ID
+ */
+function getInterfaceType(
+  bindingId: string,
+  options: NetworkBindingOptionT[]
+): string {
+  const option = options.find((opt) => opt.id === bindingId);
+  return option?.interface || "localhost";
+}
+
+/**
+ * Build Web-App URL with query parameters
+ */
+function buildWebAppUrl(
+  ip: string,
+  iptype: string,
+  port: number,
+  outputs: { output1: string; output2: string }
+): string | null {
+  const baseUrl = process.env.STUDIO_CONTROL_WEBAPP_URL;
+  if (!baseUrl) {
+    console.warn(
+      "[WebApp] STUDIO_CONTROL_WEBAPP_URL not set, skipping web app open"
+    );
+    return null;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set("ip", ip);
+    url.searchParams.set("iptype", iptype);
+    url.searchParams.set("port", port.toString());
+    url.searchParams.set("output1", outputs.output1);
+    url.searchParams.set("output2", outputs.output2);
+
+    return url.toString();
+  } catch (error) {
+    console.error("[WebApp] Error building web app URL:", error);
+    return null;
+  }
+}
+
 app.on("ready", () => {
   const mainWindow = new BrowserWindow({
     // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
@@ -143,6 +196,16 @@ app.on("ready", () => {
   // Bridge IPC handlers
   ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
     console.log("[Bridge] Starting bridge with config:", config);
+
+    // Store outputs and reset web app flag
+    if (config.outputs) {
+      bridgeOutputs = config.outputs;
+    }
+    hasOpenedWebApp = false;
+
+    // Store network binding ID
+    currentNetworkBindingId = config.networkBindingId || "localhost";
+
     const result = await bridgeProcessManager.start(config, true); // autoFindPort = true
     console.log("[Bridge] Start result:", result);
 
@@ -177,6 +240,54 @@ app.on("ready", () => {
         (status) => {
           console.log("[Bridge] Health check status update:", status);
           ipcWebContentsSend("bridgeStatus", mainWindow.webContents, status);
+
+          // Auto-open web app when bridge becomes reachable
+          // Get fresh bridge config in case it changed
+          const currentBridgeConfig = bridgeProcessManager.getConfig();
+
+          if (
+            status.reachable &&
+            !hasOpenedWebApp &&
+            bridgeOutputs &&
+            currentBridgeConfig &&
+            currentNetworkBindingId
+          ) {
+            const networkConfig = loadNetworkConfig();
+            const networkBindingOptions = detectNetworkInterfaces(
+              networkConfig.networkBinding.options,
+              networkConfig.networkBinding.filters
+            );
+
+            const interfaceType = getInterfaceType(
+              currentNetworkBindingId,
+              networkBindingOptions
+            );
+            const matchingOption = networkBindingOptions.find(
+              (opt) => opt.id === currentNetworkBindingId
+            );
+
+            if (matchingOption) {
+              // Resolve IP address
+              const resolvedIp = resolveBindAddress(
+                matchingOption.bindAddress,
+                interfaceType,
+                networkConfig.networkBinding.filters
+              );
+
+              // Build and open web app URL
+              const webAppUrl = buildWebAppUrl(
+                resolvedIp,
+                interfaceType,
+                currentBridgeConfig.port,
+                bridgeOutputs
+              );
+
+              if (webAppUrl) {
+                shell.openExternal(webAppUrl);
+                hasOpenedWebApp = true;
+              }
+            }
+          }
         },
         () => bridgeProcessManager.isRunning() // Pass function to check if process is running
       );
@@ -195,6 +306,11 @@ app.on("ready", () => {
     }
 
     const result = await bridgeProcessManager.stop();
+
+    // Reset web app flag and outputs
+    hasOpenedWebApp = false;
+    bridgeOutputs = null;
+    currentNetworkBindingId = null;
 
     // Send final status update
     ipcWebContentsSend("bridgeStatus", mainWindow.webContents, {

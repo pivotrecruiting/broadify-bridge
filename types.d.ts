@@ -13,6 +13,11 @@ export type StaticData = {
 export type BridgeConfig = {
   host: string;
   port: number;
+  outputs?: {
+    output1: string;
+    output2: string;
+  };
+  networkBindingId?: string;
 };
 
 export type BridgeStatus = {

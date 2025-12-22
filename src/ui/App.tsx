@@ -105,6 +105,11 @@ function App() {
       const result = await window.electron.bridgeStart({
         host: bindAddress,
         port: portToUse,
+        outputs: {
+          output1,
+          output2,
+        },
+        networkBindingId,
       });
 
       if (!result.success) {
