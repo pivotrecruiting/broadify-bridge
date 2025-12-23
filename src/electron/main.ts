@@ -42,7 +42,7 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
       id: "localhost",
       label: "Localhost (127.0.0.1)",
       bindAddress: "127.0.0.1",
-      recommended: true,
+      recommended: false,
       advanced: false,
       description: "Only accessible from this computer. Recommended default.",
     },
@@ -52,7 +52,7 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
         label: "Localhost (127.0.0.1)",
         bindAddress: "127.0.0.1",
         interface: "loopback",
-        recommended: true,
+        recommended: false,
         advanced: false,
       },
       {
@@ -60,7 +60,7 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
         label: "Ethernet",
         bindAddress: "AUTO_IPV4",
         interface: "ethernet",
-        recommended: true,
+        recommended: false,
         advanced: false,
       },
       {

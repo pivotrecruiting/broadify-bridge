@@ -4,7 +4,7 @@
       "id": "localhost",
       "label": "Localhost (127.0.0.1)",
       "bindAddress": "127.0.0.1",
-      "recommended": true,
+      "recommended": false,
       "advanced": false,
       "description": "Only accessible from this computer. Recommended default."
     },
@@ -14,7 +14,7 @@
         "label": "Localhost (127.0.0.1)",
         "bindAddress": "127.0.0.1",
         "interface": "loopback",
-        "recommended": true,
+        "recommended": false,
         "advanced": false,
         "portConfig": {
           "customOnly": true,
@@ -26,7 +26,7 @@
         "label": "Ethernet",
         "bindAddress": "AUTO_IPV4",
         "interface": "ethernet",
-        "recommended": true,
+        "recommended": false,
         "advanced": false,
         "portConfig": {
           "customOnly": true,
