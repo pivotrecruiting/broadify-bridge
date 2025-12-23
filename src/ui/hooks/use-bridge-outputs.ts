@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { OutputDeviceT, BridgeOutputsT } from "types";
 
 /**
@@ -8,13 +8,20 @@ export function useBridgeOutputs() {
   const [outputs, setOutputs] = useState<BridgeOutputsT | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isFetchingRef = useRef(false);
 
-  const fetchOutputs = async () => {
+  const fetchOutputs = useCallback(async () => {
     if (!window.electron) {
       setError("Electron API not available");
       return;
     }
 
+    // Prevent concurrent fetches
+    if (isFetchingRef.current) {
+      return;
+    }
+
+    isFetchingRef.current = true;
     setLoading(true);
     setError(null);
 
@@ -39,13 +46,14 @@ export function useBridgeOutputs() {
       console.error("[OutputChecker] Error fetching outputs:", err);
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
-  };
+  }, []);
 
   useEffect(() => {
     // Fetch outputs on mount
     fetchOutputs();
-  }, []);
+  }, [fetchOutputs]);
 
   return {
     outputs,

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNetworkConfig } from "./hooks/use-network-config";
 import { useBridgeStatus } from "./hooks/use-bridge-status";
 import { usePortAvailability } from "./hooks/use-port-availability";
@@ -99,12 +99,16 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridgeOutputs]);
 
-  // Refetch outputs when bridge becomes reachable
+  // Refetch outputs when bridge becomes reachable (only once when transitioning from unreachable to reachable)
+  const prevReachableRef = useRef<boolean>(false);
   useEffect(() => {
-    if (bridgeStatus.reachable) {
+    // Only refetch when bridge transitions from unreachable to reachable
+    if (bridgeStatus.reachable && !prevReachableRef.current) {
       refetchOutputs();
     }
-  }, [bridgeStatus.reachable, refetchOutputs]);
+    prevReachableRef.current = bridgeStatus.reachable;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridgeStatus.reachable]);
 
   // Bridge control state
   const [isStarting, setIsStarting] = useState(false);
@@ -223,6 +227,8 @@ function App() {
   };
 
   // Check if start button should be disabled
+  // Note: Outputs are no longer required to start the bridge
+  // Bridge starts in "idle" mode and outputs can be configured later via POST /config
   const isStartDisabled = () => {
     if (isStarting) return true;
 
@@ -237,20 +243,8 @@ function App() {
       ? customPort && customPort.trim() !== ""
       : networkPort && networkPort.trim() !== "";
 
-    if (!portValid) return true;
-
-    // Check outputs are selected
-    if (!output1 || !output2) return true;
-
-    // Check outputs are available
-    const output1Valid = bridgeOutputs?.output1.some(
-      (opt) => opt.id === output1 && opt.available
-    );
-    const output2Valid = bridgeOutputs?.output2.some(
-      (opt) => opt.id === output2 && opt.available
-    );
-
-    return !output1Valid || !output2Valid;
+    // Only port validation is required - outputs are optional
+    return !portValid;
   };
 
   return (

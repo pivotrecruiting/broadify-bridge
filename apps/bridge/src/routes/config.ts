@@ -1,0 +1,251 @@
+import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import { z } from "zod";
+import { runtimeConfig } from "../services/runtime-config.js";
+import { moduleRegistry } from "../modules/module-registry.js";
+import { deviceCache } from "../services/device-cache.js";
+import type { DeviceDescriptorT } from "../../../../types.js";
+
+/**
+ * Config request schema
+ */
+const ConfigRequestSchema = z.object({
+  outputs: z
+    .object({
+      output1: z.string(),
+      output2: z.string(),
+    })
+    .optional(),
+  engine: z
+    .object({
+      type: z.enum(["atem", "tricaster"]),
+      ip: z.string().ip({ version: "v4" }),
+      port: z.number().int().min(1).max(65535),
+    })
+    .optional(),
+});
+
+type ConfigRequest = z.infer<typeof ConfigRequestSchema>;
+
+/**
+ * Register config route
+ * 
+ * POST /config - Configure outputs and/or engine
+ * POST /config/clear - Clear configuration
+ */
+export async function registerConfigRoute(
+  fastify: FastifyInstance,
+  options: FastifyPluginOptions
+): Promise<void> {
+  /**
+   * Validate and find device by ID or name
+   */
+  async function findDevice(
+    deviceIdOrName: string,
+    devices: DeviceDescriptorT[]
+  ): Promise<DeviceDescriptorT | null> {
+    // Try to find by ID first
+    let device = devices.find((d) => d.id === deviceIdOrName);
+    
+    // If not found, try to find by display name
+    if (!device) {
+      device = devices.find((d) => d.displayName === deviceIdOrName);
+    }
+    
+    return device || null;
+  }
+
+  /**
+   * Validate outputs exist and are available
+   */
+  async function validateOutputs(
+    output1: string,
+    output2: string
+  ): Promise<{ valid: boolean; error?: string }> {
+    const devices = await deviceCache.getDevices();
+
+    // Find output1 device
+    const device1 = await findDevice(output1, devices);
+    if (!device1) {
+      return {
+        valid: false,
+        error: `Output 1 device "${output1}" not found`,
+      };
+    }
+
+    // Check if device1 has output-capable ports
+    const hasOutput1Port = device1.ports.some(
+      (port) =>
+        (port.direction === "output" || port.direction === "bidirectional") &&
+        port.status.available
+    );
+
+    if (!hasOutput1Port) {
+      return {
+        valid: false,
+        error: `Output 1 device "${output1}" has no available output ports`,
+      };
+    }
+
+    // Find output2 device (or connection type)
+    // For now, we'll check if it's a valid connection type or device
+    const device2 = await findDevice(output2, devices);
+    
+    // If output2 is a connection type (sdi, hdmi, usb, etc.), it's valid
+    const connectionTypes = ["sdi", "hdmi", "usb", "displayport", "thunderbolt"];
+    if (connectionTypes.includes(output2.toLowerCase())) {
+      // Check if any device has this connection type available
+      const hasConnectionType = devices.some((device) =>
+        device.ports.some(
+          (port) =>
+            port.type === output2.toLowerCase() &&
+            (port.direction === "output" ||
+              port.direction === "bidirectional") &&
+            port.status.available
+        )
+      );
+
+      if (!hasConnectionType) {
+        return {
+          valid: false,
+          error: `Connection type "${output2}" is not available`,
+        };
+      }
+    } else if (!device2) {
+      return {
+        valid: false,
+        error: `Output 2 device or connection type "${output2}" not found`,
+      };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Open device controllers
+   */
+  async function openControllers(
+    output1: string,
+    output2: string
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const devices = await deviceCache.getDevices();
+
+      // Find and open output1 controller
+      const device1 = await findDevice(output1, devices);
+      if (device1) {
+        const controller1 = await moduleRegistry.getController(device1.id);
+        await controller1.open();
+        fastify.log.info(`[Config] Opened controller for output1: ${device1.id}`);
+      }
+
+      // For output2, if it's a device (not connection type), open controller
+      const connectionTypes = ["sdi", "hdmi", "usb", "displayport", "thunderbolt"];
+      if (!connectionTypes.includes(output2.toLowerCase())) {
+        const device2 = await findDevice(output2, devices);
+        if (device2) {
+          const controller2 = await moduleRegistry.getController(device2.id);
+          await controller2.open();
+          fastify.log.info(`[Config] Opened controller for output2: ${device2.id}`);
+        }
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      fastify.log.error("[Config] Error opening controllers:", error);
+      return {
+        success: false,
+        error: error.message || "Failed to open device controllers",
+      };
+    }
+  }
+
+  fastify.post("/config", async (request, reply) => {
+    try {
+      // Validate request body
+      const body = ConfigRequestSchema.parse(request.body);
+
+      // If outputs are provided, validate them
+      if (body.outputs) {
+        const validation = await validateOutputs(
+          body.outputs.output1,
+          body.outputs.output2
+        );
+
+        if (!validation.valid) {
+          return reply.code(400).send({
+            error: "Invalid outputs",
+            message: validation.error,
+          });
+        }
+
+        // Open device controllers
+        const openResult = await openControllers(
+          body.outputs.output1,
+          body.outputs.output2
+        );
+
+        if (!openResult.success) {
+          return reply.code(500).send({
+            error: "Failed to open device controllers",
+            message: openResult.error,
+          });
+        }
+      }
+
+      // Set runtime config
+      runtimeConfig.setConfig({
+        outputs: body.outputs,
+        engine: body.engine,
+      });
+
+      // Set state to active if controllers were opened
+      if (body.outputs) {
+        runtimeConfig.setActive();
+      }
+
+      fastify.log.info(
+        `[Config] Configuration updated - State: ${runtimeConfig.getState()}`
+      );
+
+      return {
+        success: true,
+        state: runtimeConfig.getState(),
+        outputsConfigured: runtimeConfig.hasOutputs(),
+      };
+    } catch (error: any) {
+      fastify.log.error("[Config] Error setting configuration:", error);
+
+      // Handle Zod validation errors
+      if (error.name === "ZodError") {
+        return reply.code(400).send({
+          error: "Invalid request",
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
+      }
+
+      reply.code(500).send({
+        error: "Failed to set configuration",
+        message: error.message,
+      });
+    }
+  });
+
+  fastify.post("/config/clear", async (request, reply) => {
+    try {
+      runtimeConfig.clear();
+      fastify.log.info("[Config] Configuration cleared");
+
+      return {
+        success: true,
+        state: runtimeConfig.getState(),
+      };
+    } catch (error: any) {
+      fastify.log.error("[Config] Error clearing configuration:", error);
+      reply.code(500).send({
+        error: "Failed to clear configuration",
+        message: error.message,
+      });
+    }
+  });
+}
+

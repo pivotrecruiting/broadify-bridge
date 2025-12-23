@@ -3,6 +3,7 @@ import type { BridgeConfigT } from "../config.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runtimeConfig } from "../services/runtime-config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -39,7 +40,7 @@ export async function registerStatusRoute(
 ): Promise<void> {
   const { config } = options;
 
-  fastify.get("/status", async (request, reply) => {
+  fastify.get("/status", async () => {
     return {
       running: true,
       version: getVersion(),
@@ -47,7 +48,8 @@ export async function registerStatusRoute(
       mode: config.mode,
       port: config.port,
       host: config.host,
+      state: runtimeConfig.getState(),
+      outputsConfigured: runtimeConfig.hasOutputs(),
     };
   });
 }
-

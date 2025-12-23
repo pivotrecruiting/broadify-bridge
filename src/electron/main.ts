@@ -242,7 +242,8 @@ app.on("ready", () => {
   ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
     console.log("[Bridge] Starting bridge with config:", config);
 
-    // Store outputs and reset web app flag
+    // Outputs are now optional - bridge starts in "idle" mode
+    // Outputs can be configured later via POST /config endpoint
     if (config.outputs) {
       bridgeOutputs = config.outputs;
     }
@@ -251,6 +252,7 @@ app.on("ready", () => {
     // Store network binding ID
     currentNetworkBindingId = config.networkBindingId || "localhost";
 
+    // Start bridge without requiring outputs
     const result = await bridgeProcessManager.start(config, true); // autoFindPort = true
     console.log("[Bridge] Start result:", result);
 
@@ -290,10 +292,11 @@ app.on("ready", () => {
           // Get fresh bridge config in case it changed
           const currentBridgeConfig = bridgeProcessManager.getConfig();
 
+          // Auto-open web app when bridge becomes reachable
+          // Outputs are no longer required - web app can handle output configuration
           if (
             status.reachable &&
             !hasOpenedWebApp &&
-            bridgeOutputs &&
             currentBridgeConfig &&
             currentNetworkBindingId
           ) {
@@ -320,11 +323,13 @@ app.on("ready", () => {
               );
 
               // Build and open web app URL
+              // Outputs are optional - web app will handle configuration via POST /config
+              const outputs = bridgeOutputs || { output1: "", output2: "" };
               const webAppUrl = buildWebAppUrl(
                 resolvedIp,
                 interfaceType,
                 currentBridgeConfig.port,
-                bridgeOutputs
+                outputs
               );
 
               if (webAppUrl) {

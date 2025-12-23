@@ -3,6 +3,7 @@ import type { BridgeConfigT } from "./config.js";
 import { registerStatusRoute } from "./routes/status.js";
 import { registerOutputsRoute } from "./routes/outputs.js";
 import { registerDevicesRoute } from "./routes/devices.js";
+import { registerConfigRoute } from "./routes/config.js";
 import { initializeModules } from "./modules/index.js";
 
 /**
@@ -35,6 +36,7 @@ export async function createServer(config: BridgeConfigT) {
   await server.register(registerStatusRoute, { config });
   await server.register(registerDevicesRoute);
   await server.register(registerOutputsRoute);
+  await server.register(registerConfigRoute);
 
   return server;
 }
@@ -59,7 +61,7 @@ export async function startServer(
       );
       process.exit(1);
     }
-    
+
     // If address not available and not already using 0.0.0.0, try fallback
     if (
       err?.code === "EADDRNOTAVAIL" &&
@@ -106,4 +108,3 @@ export async function startServer(
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
-

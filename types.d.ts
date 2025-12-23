@@ -28,6 +28,8 @@ export type BridgeStatus = {
   mode?: string;
   port?: number;
   host?: string;
+  state?: "idle" | "configured" | "active";
+  outputsConfigured?: boolean;
   error?: string;
 };
 
