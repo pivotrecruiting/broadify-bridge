@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import type { BridgeConfigT } from "./config.js";
 import { registerStatusRoute } from "./routes/status.js";
 import { registerOutputsRoute } from "./routes/outputs.js";
+import { registerDevicesRoute } from "./routes/devices.js";
+import { initializeModules } from "./modules/index.js";
 
 /**
  * Create and configure Fastify server instance
@@ -25,8 +27,13 @@ export async function createServer(config: BridgeConfigT) {
     logger,
   });
 
+  // Initialize device modules
+  initializeModules();
+  server.log.info("[Server] Device modules initialized");
+
   // Register routes
   await server.register(registerStatusRoute, { config });
+  await server.register(registerDevicesRoute);
   await server.register(registerOutputsRoute);
 
   return server;

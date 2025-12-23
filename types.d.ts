@@ -32,7 +32,64 @@ export type BridgeStatus = {
 };
 
 /**
- * Output device information from bridge
+ * Port status information
+ */
+export type PortStatusT = {
+  available: boolean; // UI-Filter: present && ready && !inUse
+  signal?: "none" | "detected" | "locked";
+  format?: string; // Current signal format (e.g. "1080p50")
+  error?: string;
+};
+
+/**
+ * Port capabilities
+ */
+export type PortCapabilitiesT = {
+  formats: string[]; // e.g. ["1080p50", "1080p60", "4K30"]
+  maxResolution?: string;
+};
+
+/**
+ * Device status information
+ */
+export type DeviceStatusT = {
+  present: boolean; // Device is detected
+  inUse: boolean; // Another process holds the device
+  ready: boolean; // Can be opened/controlled
+  signal?: "none" | "detected" | "locked";
+  error?: string;
+  lastSeen: number; // Timestamp
+};
+
+/**
+ * Port descriptor with capabilities and status
+ */
+export type PortDescriptorT = {
+  id: string; // Stable port ID (deviceId + portIndex)
+  displayName: string; // e.g. "SDI-A", "HDMI-OUT"
+  type: "sdi" | "hdmi" | "usb" | "displayport" | "thunderbolt";
+  direction: "input" | "output" | "bidirectional";
+  capabilities: PortCapabilitiesT;
+  status: PortStatusT;
+};
+
+/**
+ * Device descriptor with ports and status
+ */
+export type DeviceDescriptorT = {
+  id: string; // Stable ID (not name!)
+  displayName: string;
+  type: "decklink" | "usb-capture" | "other";
+  vendor?: string;
+  model?: string;
+  driver?: string;
+  ports: PortDescriptorT[];
+  status: DeviceStatusT;
+};
+
+/**
+ * Output device information from bridge (UI-compatible format)
+ * @deprecated Use DeviceDescriptorT for internal representation
  */
 export type OutputDeviceT = {
   id: string;
@@ -42,7 +99,8 @@ export type OutputDeviceT = {
 };
 
 /**
- * Outputs response from bridge
+ * Outputs response from bridge (UI-compatible format)
+ * This is a view on the Device/Port model
  */
 export type BridgeOutputsT = {
   output1: OutputDeviceT[];

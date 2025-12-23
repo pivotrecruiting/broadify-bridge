@@ -1,50 +1,60 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import type {
+  OutputDeviceT,
+  BridgeOutputsT,
+  DeviceDescriptorT,
+} from "../../../../types.js";
+import { deviceCache } from "../services/device-cache.js";
 
 /**
- * Output device information
- */
-export type OutputDeviceT = {
-  id: string;
-  name: string;
-  type: "decklink" | "capture" | "connection";
-  available: boolean;
-};
-
-/**
- * Discover available output devices
+ * Transform Device/Port model to UI-compatible output format
  * 
- * This function detects real hardware devices available on the system.
- * Currently returns empty arrays as device modules are not yet implemented.
- * 
- * TODO: Implement actual device detection when device modules are available:
- * - Decklink Cards (Blackmagic SDK)
- * - USB Capture Devices (v4l2 on Linux, AVFoundation on macOS, DirectShow on Windows)
- * - Connection types can be detected based on available hardware
+ * This is a view on the internal Device/Port model that provides
+ * the simple output1/output2 structure expected by the UI.
  */
-async function discoverOutputs(): Promise<{
-  output1: OutputDeviceT[];
-  output2: OutputDeviceT[];
-}> {
-  // TODO: Implement actual device detection
-  // For now, return empty arrays until device modules are implemented
-  // This ensures no mock data is used and the API returns empty state correctly
-  
+function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT {
   const output1Devices: OutputDeviceT[] = [];
   const output2Devices: OutputDeviceT[] = [];
+  const connectionTypesSeen = new Set<string>();
 
-  // Example structure for future implementation:
-  // 
-  // For Output1 (Decklink Cards, USB Capture):
-  // - Use Blackmagic Desktop Video SDK to detect Decklink cards
-  // - Use platform-specific APIs (v4l2/AVFoundation/DirectShow) for USB capture
-  // - Check device availability and capabilities
-  //
-  // For Output2 (Connection Types):
-  // - Detect available connection types based on detected hardware
-  // - SDI: Available if Decklink card detected
-  // - HDMI: Available if HDMI-capable device detected
-  // - USB: Available if USB capture device detected
-  // - DisplayPort/Thunderbolt: Detect via system APIs
+  // Process each device
+  for (const device of devices) {
+    // Add device to output1 (Hardware Devices)
+    // Only include devices with output-capable ports
+    const hasOutputPort = device.ports.some(
+      (port) =>
+        port.direction === "output" || port.direction === "bidirectional"
+    );
+
+    if (hasOutputPort) {
+      output1Devices.push({
+        id: device.id,
+        name: device.displayName,
+        type: device.type === "decklink" ? "decklink" : "capture",
+        available: device.status.present && device.status.ready && !device.status.inUse,
+      });
+    }
+
+    // Collect connection types from ports (for output2)
+    for (const port of device.ports) {
+      // Only include output-capable ports
+      if (
+        port.direction === "output" ||
+        port.direction === "bidirectional"
+      ) {
+        const connectionType = port.type;
+        if (!connectionTypesSeen.has(connectionType)) {
+          connectionTypesSeen.add(connectionType);
+          output2Devices.push({
+            id: connectionType,
+            name: port.displayName,
+            type: "connection",
+            available: port.status.available,
+          });
+        }
+      }
+    }
+  }
 
   return {
     output1: output1Devices,
@@ -54,6 +64,9 @@ async function discoverOutputs(): Promise<{
 
 /**
  * Register outputs route
+ * 
+ * GET /outputs - Returns UI-compatible output format (view on /devices)
+ * GET /outputs?refresh=1 - Forces refresh of device detection
  */
 export async function registerOutputsRoute(
   fastify: FastifyInstance,
@@ -61,12 +74,33 @@ export async function registerOutputsRoute(
 ): Promise<void> {
   fastify.get("/outputs", async (request, reply) => {
     try {
-      const outputs = await discoverOutputs();
+      const refresh = request.query as { refresh?: string };
+      const forceRefresh = refresh?.refresh === "1";
+
+      // Get devices from cache (with optional refresh)
+      const devices = await deviceCache.getDevices(forceRefresh);
+
+      // Transform to UI-compatible format
+      const outputs = transformDevicesToOutputs(devices);
+
+      fastify.log.debug(
+        `[Outputs] Returning ${outputs.output1.length} output1 devices and ${outputs.output2.length} output2 connection types`
+      );
+
       return outputs;
     } catch (error: any) {
-      fastify.log.error("Error discovering outputs:", error);
+      fastify.log.error("[Outputs] Error getting outputs:", error);
+
+      // Handle rate limit errors
+      if (error.message?.includes("Rate limit")) {
+        return reply.code(429).send({
+          error: "Rate limit exceeded",
+          message: error.message,
+        });
+      }
+
       reply.code(500).send({
-        error: "Failed to discover outputs",
+        error: "Failed to get outputs",
         message: error.message,
       });
     }

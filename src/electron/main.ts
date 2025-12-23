@@ -8,7 +8,6 @@ import {
   checkBridgeHealth,
 } from "./services/bridge-health-check.js";
 import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
-import { discoverOutputs } from "./services/device-detector.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -471,22 +470,14 @@ app.on("ready", () => {
       );
     }
 
-    // If bridge is not running or outputs not available, detect devices directly in Main Process
-    console.log("[OutputChecker] Detecting devices in Main Process");
-    const outputs = await discoverOutputs();
-
-    const output1Count = outputs.output1?.length || 0;
-    const output2Count = outputs.output2?.length || 0;
-    const availableOutput1Count =
-      outputs.output1?.filter((opt) => opt.available).length || 0;
-    const availableOutput2Count =
-      outputs.output2?.filter((opt) => opt.available).length || 0;
-
+    // Bridge is Single Source of Truth - no fallback detection in Main Process
     console.log(
-      `[OutputChecker] Detected devices - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
+      "[OutputChecker] Bridge not running, returning empty outputs (Bridge is Single Source of Truth)"
     );
-
-    return outputs;
+    return {
+      output1: [],
+      output2: [],
+    };
   });
 
   // Cleanup on window close
