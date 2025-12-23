@@ -31,6 +31,24 @@ export type BridgeStatus = {
   error?: string;
 };
 
+/**
+ * Output device information from bridge
+ */
+export type OutputDeviceT = {
+  id: string;
+  name: string;
+  type: "decklink" | "capture" | "connection";
+  available: boolean;
+};
+
+/**
+ * Outputs response from bridge
+ */
+export type BridgeOutputsT = {
+  output1: OutputDeviceT[];
+  output2: OutputDeviceT[];
+};
+
 export type UnsubscribeFunction = () => void;
 
 export type PortAvailability = {
@@ -126,6 +144,7 @@ export type EventPayloadMapping = {
   getNetworkConfig: NetworkConfigT;
   detectNetworkInterfaces: NetworkBindingOptionT[];
   getNetworkBindingOptions: NetworkBindingOptionT[];
+  bridgeGetOutputs: BridgeOutputsT;
 };
 
 declare global {
@@ -154,6 +173,7 @@ declare global {
       getNetworkConfig: () => Promise<NetworkConfigT>;
       detectNetworkInterfaces: () => Promise<NetworkBindingOptionT[]>;
       getNetworkBindingOptions: () => Promise<NetworkBindingOptionT[]>;
+      bridgeGetOutputs: () => Promise<BridgeOutputsT>;
     };
   }
 }

@@ -7,6 +7,8 @@ import {
   startHealthCheckPolling,
   checkBridgeHealth,
 } from "./services/bridge-health-check.js";
+import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
+import { discoverOutputs } from "./services/device-detector.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -152,10 +154,6 @@ function loadNetworkConfig(): NetworkConfigT {
           userDataConfigPath,
           JSON.stringify(templateConfig, null, 2),
           "utf-8"
-        );
-        console.log(
-          "[NetworkConfig] Initialized Desktop App config from template:",
-          templateConfigPath
         );
       } catch (writeError) {
         console.warn(
@@ -409,7 +407,6 @@ app.on("ready", () => {
     "checkPortsAvailability",
     async (event, ports: number[], host?: string) => {
       const checkHost = host || "0.0.0.0";
-      console.log(`[PortChecker] Checking ports:`, ports, `on ${checkHost}`);
       const results = await checkPortsAvailability(ports, checkHost);
       const resultArray = Array.from(results.entries()).map(
         ([port, available]) => ({
@@ -417,38 +414,79 @@ app.on("ready", () => {
           available,
         })
       );
-      console.log(`[PortChecker] Port availability results:`, resultArray);
       return resultArray;
     }
   );
 
   // Network configuration IPC handlers
   ipcMainHandle("getNetworkConfig", async () => {
-    console.log("[NetworkConfig] Loading network configuration");
     const config = loadNetworkConfig();
     return config;
   });
 
   ipcMainHandle("detectNetworkInterfaces", async () => {
-    console.log("[NetworkConfig] Detecting network interfaces");
     const config = loadNetworkConfig();
     const options = detectNetworkInterfaces(
       config.networkBinding.options,
       config.networkBinding.filters
     );
-    console.log("[NetworkConfig] Detected interfaces:", options);
+
     return options;
   });
 
   ipcMainHandle("getNetworkBindingOptions", async () => {
-    console.log("[NetworkConfig] Getting network binding options");
     const config = loadNetworkConfig();
     const options = detectNetworkInterfaces(
       config.networkBinding.options,
       config.networkBinding.filters
     );
-    console.log("[NetworkConfig] Network binding options:", options);
+
     return options;
+  });
+
+  // Bridge outputs IPC handler
+  ipcMainHandle("bridgeGetOutputs", async () => {
+    console.log("[OutputChecker] Getting outputs");
+    const config = bridgeProcessManager.getConfig();
+
+    // If bridge is running, try to get outputs from bridge (for updates)
+    if (config) {
+      const bridgeOutputs = await fetchBridgeOutputs(config);
+      if (bridgeOutputs) {
+        const output1Count = bridgeOutputs.output1?.length || 0;
+        const output2Count = bridgeOutputs.output2?.length || 0;
+        const availableOutput1Count =
+          bridgeOutputs.output1?.filter((opt) => opt.available).length || 0;
+        const availableOutput2Count =
+          bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
+
+        console.log(
+          `[OutputChecker] Fetched outputs from bridge - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
+        );
+
+        return bridgeOutputs;
+      }
+      console.log(
+        "[OutputChecker] Bridge running but outputs not available, falling back to device detection"
+      );
+    }
+
+    // If bridge is not running or outputs not available, detect devices directly in Main Process
+    console.log("[OutputChecker] Detecting devices in Main Process");
+    const outputs = await discoverOutputs();
+
+    const output1Count = outputs.output1?.length || 0;
+    const output2Count = outputs.output2?.length || 0;
+    const availableOutput1Count =
+      outputs.output1?.filter((opt) => opt.available).length || 0;
+    const availableOutput2Count =
+      outputs.output2?.filter((opt) => opt.available).length || 0;
+
+    console.log(
+      `[OutputChecker] Detected devices - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
+    );
+
+    return outputs;
   });
 
   // Cleanup on window close

@@ -36,7 +36,6 @@ export function usePortAvailability({
     const checkPorts = async () => {
       // Don't check ports while bridge is running (would show our own bridge as "in use")
       if (bridgeStatus.running) {
-        console.log("[PortCheck] Skipping port check - bridge is running");
         return;
       }
 
@@ -50,12 +49,10 @@ export function usePortAvailability({
           networkConfig.port.default,
           ...networkConfig.port.autoFallback,
         ];
-        console.log("[PortCheck] Checking ports:", ports, "on", bindAddress);
         const results = await window.electron.checkPortsAvailability(
           ports,
           bindAddress
         );
-        console.log("[PortCheck] Results:", results);
         const availabilityMap = new Map<number, boolean>();
         results.forEach((result) => {
           availabilityMap.set(result.port, result.available);
@@ -75,24 +72,13 @@ export function usePortAvailability({
               currentPort,
               bindAddress
             );
-            if (!customPortResult.available) {
-              console.log(
-                `[PortCheck] Custom port ${currentPort} not available on ${bindAddress}`
-              );
-              // Don't reset, just log - user can change it
-            }
+            // Don't reset, user can change it
           }
         } else {
           const currentPort = parseInt(networkPort, 10);
           if (!isNaN(currentPort)) {
             const portAvailable = availabilityMap.get(currentPort);
-            if (portAvailable === false && ports.includes(currentPort)) {
-              console.log(
-                `[PortCheck] Port ${currentPort} not available on ${bindAddress}, resetting selection`
-              );
-              // Note: This would need to be handled by the parent component
-              // We return a callback or signal that port should be reset
-            }
+            // Note: Port availability is tracked, parent component can handle reset if needed
           }
         }
       } catch (error) {

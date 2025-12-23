@@ -27,7 +27,6 @@ export async function isPortAvailable(
     };
 
     const timeout = setTimeout(() => {
-      console.log(`[PortChecker] Timeout checking port ${port} on ${host}`);
       cleanup();
       resolve(false);
     }, 2000); // 2 second timeout
@@ -37,13 +36,9 @@ export async function isPortAvailable(
       clearTimeout(timeout);
 
       if (err.code === "EADDRINUSE") {
-        console.log(
-          `[PortChecker] Port ${port} on ${host} is in use (EADDRINUSE)`
-        );
         cleanup();
         resolve(false);
       } else {
-        console.log(`[PortChecker] Port ${port} on ${host} error: ${err.code}`);
         cleanup();
         resolve(false);
       }
@@ -52,7 +47,6 @@ export async function isPortAvailable(
     server.once("listening", () => {
       if (resolved) return;
       clearTimeout(timeout);
-      console.log(`[PortChecker] Port ${port} on ${host} is available`);
       server.once("close", () => {
         cleanup();
         resolve(true);
@@ -65,7 +59,6 @@ export async function isPortAvailable(
     } catch (err) {
       if (resolved) return;
       clearTimeout(timeout);
-      console.log(`[PortChecker] Failed to listen on port ${port}: ${err}`);
       cleanup();
       resolve(false);
     }

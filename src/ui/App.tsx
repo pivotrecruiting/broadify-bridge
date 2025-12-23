@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNetworkConfig } from "./hooks/use-network-config";
 import { useBridgeStatus } from "./hooks/use-bridge-status";
 import { usePortAvailability } from "./hooks/use-port-availability";
 import { useNetworkBinding } from "./hooks/use-network-binding";
+import { useBridgeOutputs } from "./hooks/use-bridge-outputs";
 import { Header } from "./components/Header";
 import { NetworkSection } from "./components/NetworkSection";
 import { EngineSection } from "./components/EngineSection";
@@ -13,7 +14,6 @@ import {
   ENGINE_ATEM_OPTIONS,
   ENGINE_PORT_OPTIONS,
 } from "./constants/engine-constants";
-import { OUTPUT1_OPTIONS, OUTPUT2_OPTIONS } from "./constants/output-constants";
 import "./styles/App.css";
 
 function App() {
@@ -33,6 +33,13 @@ function App() {
 
   // Bridge status hook
   const bridgeStatus = useBridgeStatus();
+
+  // Bridge outputs hook
+  const {
+    outputs: bridgeOutputs,
+    loading: outputsLoading,
+    refetch: refetchOutputs,
+  } = useBridgeOutputs();
 
   // Port availability hook
   const { portAvailability, checkingPorts } = usePortAvailability({
@@ -64,9 +71,40 @@ function App() {
   const [engineAtem, setEngineAtem] = useState<string>(ENGINE_ATEM_OPTIONS[0]);
   const [enginePort, setEnginePort] = useState<string>(ENGINE_PORT_OPTIONS[0]);
 
-  // Outputs state
-  const [output1, setOutput1] = useState<string>(OUTPUT1_OPTIONS[0]);
-  const [output2, setOutput2] = useState<string>(OUTPUT2_OPTIONS[0]);
+  // Outputs state - initialize with first available output or empty string
+  const [output1, setOutput1] = useState<string>("");
+  const [output2, setOutput2] = useState<string>("");
+
+  // Update outputs when bridge outputs are loaded
+  useEffect(() => {
+    if (bridgeOutputs) {
+      // Set default to first available output if not set
+      if (!output1 && bridgeOutputs.output1.length > 0) {
+        const firstAvailable = bridgeOutputs.output1.find(
+          (opt) => opt.available
+        );
+        if (firstAvailable) {
+          setOutput1(firstAvailable.id);
+        }
+      }
+      if (!output2 && bridgeOutputs.output2.length > 0) {
+        const firstAvailable = bridgeOutputs.output2.find(
+          (opt) => opt.available
+        );
+        if (firstAvailable) {
+          setOutput2(firstAvailable.id);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridgeOutputs]);
+
+  // Refetch outputs when bridge becomes reachable
+  useEffect(() => {
+    if (bridgeStatus.reachable) {
+      refetchOutputs();
+    }
+  }, [bridgeStatus.reachable, refetchOutputs]);
 
   // Bridge control state
   const [isStarting, setIsStarting] = useState(false);
@@ -100,14 +138,20 @@ function App() {
 
     const bindAddress = getCurrentBindAddress();
 
+    // Resolve output IDs to names for bridge config
+    const output1Name =
+      bridgeOutputs?.output1.find((opt) => opt.id === output1)?.name || output1;
+    const output2Name =
+      bridgeOutputs?.output2.find((opt) => opt.id === output2)?.name || output2;
+
     setIsStarting(true);
     try {
       const result = await window.electron.bridgeStart({
         host: bindAddress,
         port: portToUse,
         outputs: {
-          output1,
-          output2,
+          output1: output1Name,
+          output2: output2Name,
         },
         networkBindingId,
       });
@@ -181,17 +225,32 @@ function App() {
   // Check if start button should be disabled
   const isStartDisabled = () => {
     if (isStarting) return true;
+
+    // Check port configuration
     const portConfig = getCurrentPortConfig();
     const useCustomPort = shouldUseCustomPort(
       portConfig,
       showAdvanced,
       customPort
     );
-    if (useCustomPort) {
-      return !customPort || customPort.trim() === "";
-    } else {
-      return !networkPort || networkPort.trim() === "";
-    }
+    const portValid = useCustomPort
+      ? customPort && customPort.trim() !== ""
+      : networkPort && networkPort.trim() !== "";
+
+    if (!portValid) return true;
+
+    // Check outputs are selected
+    if (!output1 || !output2) return true;
+
+    // Check outputs are available
+    const output1Valid = bridgeOutputs?.output1.some(
+      (opt) => opt.id === output1 && opt.available
+    );
+    const output2Valid = bridgeOutputs?.output2.some(
+      (opt) => opt.id === output2 && opt.available
+    );
+
+    return !output1Valid || !output2Valid;
   };
 
   return (
@@ -227,6 +286,9 @@ function App() {
           <OutputsSection
             output1={output1}
             output2={output2}
+            output1Options={bridgeOutputs?.output1 || []}
+            output2Options={bridgeOutputs?.output2 || []}
+            loading={outputsLoading}
             onOutput1Change={setOutput1}
             onOutput2Change={setOutput2}
           />
