@@ -104,25 +104,73 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
 };
 
 /**
- * Load network configuration from file or return default
+ * Load network configuration for the Desktop App (not the Bridge)
+ *
+ * This config is used by the Desktop App UI to show network interface options
+ * and port settings. The Bridge itself receives these values as CLI arguments.
+ *
+ * Priority:
+ * 1. User's saved config in Electron's userData directory
+ * 2. Template config from config/network-config.json (copied to userData on first run)
+ * 3. Hardcoded DEFAULT_NETWORK_CONFIG as final fallback
  */
 function loadNetworkConfig(): NetworkConfigT {
-  try {
-    const configPath = path.join(
-      app.getPath("userData"),
-      "network-config.json"
-    );
+  // Electron's userData directory (e.g. ~/Library/Application Support/electron-vite-template on macOS)
+  const userDataConfigPath = path.join(
+    app.getPath("userData"),
+    "network-config.json"
+  );
 
-    if (fs.existsSync(configPath)) {
-      const configData = fs.readFileSync(configPath, "utf-8");
+  // Try to load from user data directory (user's saved config)
+  try {
+    if (fs.existsSync(userDataConfigPath)) {
+      const configData = fs.readFileSync(userDataConfigPath, "utf-8");
       const config = JSON.parse(configData) as NetworkConfigT;
       return config;
     }
   } catch (error) {
-    console.error("[NetworkConfig] Error loading config:", error);
+    console.error("[NetworkConfig] Error loading user config:", error);
   }
 
-  // Fallback to default config
+  // On first run, try to use config/network-config.json as template
+  // This is the project's default config file
+  try {
+    const templateConfigPath = path.join(
+      process.cwd(),
+      "config",
+      "network-config.json"
+    );
+
+    if (fs.existsSync(templateConfigPath)) {
+      const templateData = fs.readFileSync(templateConfigPath, "utf-8");
+      const templateConfig = JSON.parse(templateData) as NetworkConfigT;
+
+      // Copy template to Electron's userData directory for future use
+      // This allows users to customize their config without modifying the project file
+      try {
+        fs.writeFileSync(
+          userDataConfigPath,
+          JSON.stringify(templateConfig, null, 2),
+          "utf-8"
+        );
+        console.log(
+          "[NetworkConfig] Initialized Desktop App config from template:",
+          templateConfigPath
+        );
+      } catch (writeError) {
+        console.warn(
+          "[NetworkConfig] Could not write user config, using template in memory:",
+          writeError
+        );
+      }
+
+      return templateConfig;
+    }
+  } catch (error) {
+    console.error("[NetworkConfig] Error loading template config:", error);
+  }
+
+  // Final fallback to hardcoded default config
   return DEFAULT_NETWORK_CONFIG;
 }
 
