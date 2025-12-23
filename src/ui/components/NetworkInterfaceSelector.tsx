@@ -32,9 +32,6 @@ export function NetworkInterfaceSelector({
         {options.map((option) => (
           <SelectItem key={option.id} value={option.id}>
             <div className="flex items-center gap-2">
-              {option.recommended && (
-                <span className="text-xs text-green-400">★</span>
-              )}
               <span>{option.label}</span>
               {option.bindAddress !== "0.0.0.0" &&
                 option.bindAddress !== "127.0.0.1" && (
@@ -49,4 +46,3 @@ export function NetworkInterfaceSelector({
     </Select>
   );
 }
-
