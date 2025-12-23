@@ -40,7 +40,7 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
   networkBinding: {
     default: {
       id: "localhost",
-      label: "Localhost (Secure)",
+      label: "Localhost (127.0.0.1)",
       bindAddress: "127.0.0.1",
       recommended: true,
       advanced: false,
@@ -49,7 +49,7 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
     options: [
       {
         id: "localhost",
-        label: "Localhost (Secure)",
+        label: "Localhost (127.0.0.1)",
         bindAddress: "127.0.0.1",
         interface: "loopback",
         recommended: true,

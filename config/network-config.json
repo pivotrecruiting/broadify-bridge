@@ -2,7 +2,7 @@
   "networkBinding": {
     "default": {
       "id": "localhost",
-      "label": "Localhost (Secure)",
+      "label": "Localhost (127.0.0.1)",
       "bindAddress": "127.0.0.1",
       "recommended": true,
       "advanced": false,
@@ -11,7 +11,7 @@
     "options": [
       {
         "id": "localhost",
-        "label": "Localhost (Secure)",
+        "label": "Localhost (127.0.0.1)",
         "bindAddress": "127.0.0.1",
         "interface": "loopback",
         "recommended": true,
