@@ -240,7 +240,7 @@ app.on("ready", () => {
 
   // Bridge IPC handlers
   ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
-    console.log("[Bridge] Starting bridge with config:", config);
+    // console.log("[Bridge] Starting bridge with config:", config);
 
     // Outputs are now optional - bridge starts in "idle" mode
     // Outputs can be configured later via POST /config endpoint
@@ -258,34 +258,34 @@ app.on("ready", () => {
 
     // Start health check polling if bridge started successfully
     if (result.success) {
-      console.log(
-        "[Bridge] Bridge started successfully, sending initial status update"
-      );
+      // console.log(
+      //   "[Bridge] Bridge started successfully, sending initial status update"
+      // );
       // Immediately send status update that bridge is starting
       const initialStatus = {
         running: true,
         reachable: false,
       };
-      console.log("[Bridge] Sending initial status:", initialStatus);
+      // console.log("[Bridge] Sending initial status:", initialStatus);
       ipcWebContentsSend("bridgeStatus", mainWindow.webContents, initialStatus);
 
       // Stop existing health check if any
       if (healthCheckCleanup) {
-        console.log("[Bridge] Stopping existing health check");
+        // console.log("[Bridge] Stopping existing health check");
         healthCheckCleanup();
       }
 
       const bridgeConfig = bridgeProcessManager.getConfig();
-      console.log(
-        "[Bridge] Starting health check polling with config:",
-        bridgeConfig
-      );
+      // console.log(
+      //   "[Bridge] Starting health check polling with config:",
+      //   bridgeConfig
+      // );
 
       // Start new health check
       healthCheckCleanup = startHealthCheckPolling(
         bridgeConfig,
         (status) => {
-          console.log("[Bridge] Health check status update:", status);
+          // console.log("[Bridge] Health check status update:", status);
           ipcWebContentsSend("bridgeStatus", mainWindow.webContents, status);
 
           // Auto-open web app when bridge becomes reachable
@@ -342,7 +342,7 @@ app.on("ready", () => {
         () => bridgeProcessManager.isRunning() // Pass function to check if process is running
       );
     } else {
-      console.log("[Bridge] Bridge start failed:", result.error);
+      // console.log("[Bridge] Bridge start failed:", result.error);
     }
 
     return result;
@@ -381,7 +381,7 @@ app.on("ready", () => {
     );
 
     if (!isRunning || !config) {
-      console.log(`[Bridge] GetStatus - Process not running or no config`);
+      // console.log(`[Bridge] GetStatus - Process not running or no config`);
       return {
         running: false,
         reachable: false,
@@ -394,7 +394,7 @@ app.on("ready", () => {
       ...healthStatus,
       running: isRunning, // Always use actual process state
     };
-    console.log(`[Bridge] GetStatus result:`, status);
+    // console.log(`[Bridge] GetStatus result:`, status);
     return status;
   });
 

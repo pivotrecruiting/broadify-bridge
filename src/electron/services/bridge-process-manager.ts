@@ -28,10 +28,10 @@ export class BridgeProcessManager {
 
     try {
       let actualConfig = { ...config };
-      
+
       // Check if port is available, if not and autoFindPort is enabled, find next available
       const portAvailable = await isPortAvailable(config.port, config.host);
-      
+
       if (!portAvailable && autoFindPort) {
         console.log(
           `[BridgeManager] Port ${config.port} is not available, searching for alternative...`
@@ -41,7 +41,7 @@ export class BridgeProcessManager {
           config.port + 10, // Check next 10 ports
           config.host
         );
-        
+
         if (availablePort) {
           console.log(
             `[BridgeManager] Found available port: ${availablePort} (requested: ${config.port})`
@@ -50,7 +50,11 @@ export class BridgeProcessManager {
         } else {
           return {
             success: false,
-            error: `Port ${config.port} is not available and no alternative port found in range ${config.port}-${config.port + 10}`,
+            error: `Port ${
+              config.port
+            } is not available and no alternative port found in range ${
+              config.port
+            }-${config.port + 10}`,
           };
         }
       } else if (!portAvailable) {
@@ -84,14 +88,16 @@ export class BridgeProcessManager {
       });
 
       this.bridgeProcess.on("exit", (code, signal) => {
-        console.log(`Bridge process exited with code ${code} and signal ${signal}`);
+        console.log(
+          `Bridge process exited with code ${code} and signal ${signal}`
+        );
         this.bridgeProcess = null;
       });
 
       // Forward stdout/stderr for debugging
       if (this.bridgeProcess.stdout) {
         this.bridgeProcess.stdout.on("data", (data) => {
-          console.log(`[Bridge] ${data.toString().trim()}`);
+          //   console.log(`[Bridge] ${data.toString().trim()}`);
         });
       }
 
@@ -105,17 +111,21 @@ export class BridgeProcessManager {
 
       // Wait a bit to check if the process started successfully
       // If it exits quickly, it likely failed to bind
-      console.log("[BridgeManager] Waiting 2 seconds to verify process is running...");
+      console.log(
+        "[BridgeManager] Waiting 2 seconds to verify process is running..."
+      );
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Check if process is still running
       const isStillRunning = this.bridgeProcess && !this.bridgeProcess.killed;
-      console.log(`[BridgeManager] Process still running after 2s: ${isStillRunning}`);
-      
+      console.log(
+        `[BridgeManager] Process still running after 2s: ${isStillRunning}`
+      );
+
       if (!isStillRunning) {
         // Extract error message from stderr
         let errorMessage = "Bridge process exited unexpectedly";
-        
+
         // Try to extract meaningful error from stderr
         if (stderrBuffer) {
           const errorMatch = stderrBuffer.match(/EADDRNOTAVAIL[^\n]*/);
@@ -139,10 +149,12 @@ export class BridgeProcessManager {
       );
       return {
         success: true,
-        actualPort: actualConfig.port !== config.port ? actualConfig.port : undefined,
+        actualPort:
+          actualConfig.port !== config.port ? actualConfig.port : undefined,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       return { success: false, error: errorMessage };
     }
   }
@@ -185,7 +197,8 @@ export class BridgeProcessManager {
 
       return { success: true };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       return { success: false, error: errorMessage };
     }
   }
@@ -247,4 +260,3 @@ export class BridgeProcessManager {
 
 // Singleton instance
 export const bridgeProcessManager = new BridgeProcessManager();
-
