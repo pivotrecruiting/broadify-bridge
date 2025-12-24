@@ -39,7 +39,10 @@ export async function fetchBridgeOutputs(
 
     // Use fetch with timeout
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), OUTPUTS_FETCH_TIMEOUT);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      OUTPUTS_FETCH_TIMEOUT
+    );
 
     const response = await fetch(url, {
       signal: controller.signal,
@@ -49,11 +52,13 @@ export async function fetchBridgeOutputs(
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.log(`[OutputChecker] HTTP error ${response.status} when fetching outputs`);
+      console.log(
+        `[OutputChecker] HTTP error ${response.status} when fetching outputs`
+      );
       return null;
     }
 
-    const data = await response.json() as BridgeOutputsT;
+    const data = (await response.json()) as BridgeOutputsT;
     const output1Count = data.output1?.length || 0;
     const output2Count = data.output2?.length || 0;
     console.log(
@@ -68,4 +73,3 @@ export async function fetchBridgeOutputs(
     return null;
   }
 }
-

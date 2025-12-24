@@ -32,6 +32,7 @@ Zeigt den aktuellen Bridge-Status:
 ```
 
 **State-Werte**:
+
 - `idle`: Bridge läuft, keine Outputs konfiguriert
 - `configured`: Outputs konfiguriert, aber noch nicht aktiv
 - `active`: Outputs konfiguriert und aktiv (Controller geöffnet)
@@ -104,6 +105,7 @@ Gibt rohes Device/Port Modell zurück (erweiterte Informationen):
 Konfiguriert Outputs und/oder Engine:
 
 **Request Body**:
+
 ```json
 {
   "outputs": {
@@ -119,6 +121,7 @@ Konfiguriert Outputs und/oder Engine:
 ```
 
 **Response**:
+
 ```json
 {
   "success": true,
@@ -128,11 +131,13 @@ Konfiguriert Outputs und/oder Engine:
 ```
 
 **Validierung**:
+
 - Output-Geräte müssen existieren und verfügbar sein
 - Device Controller werden exklusiv geöffnet
 - Bridge State wird auf `active` gesetzt
 
 **Fehler-Behandlung**:
+
 - `400`: Ungültige Outputs (Gerät nicht gefunden oder nicht verfügbar)
 - `500`: Fehler beim Öffnen der Device Controller
 
@@ -143,6 +148,7 @@ Konfiguriert Outputs und/oder Engine:
 Setzt die Runtime-Konfiguration zurück:
 
 **Response**:
+
 ```json
 {
   "success": true,
@@ -163,16 +169,19 @@ Erzwingt eine neue Device-Detection (mit Rate Limiting):
 ## Beispiel-Workflow
 
 1. **Bridge starten** (ohne Outputs)
+
    ```bash
    # Bridge startet automatisch im Idle-Mode
    ```
 
 2. **Verfügbare Outputs abfragen**
+
    ```bash
    curl http://127.0.0.1:8787/outputs
    ```
 
 3. **Outputs konfigurieren**
+
    ```bash
    curl -X POST http://127.0.0.1:8787/config \
      -H "Content-Type: application/json" \
@@ -196,4 +205,3 @@ Erzwingt eine neue Device-Detection (mit Rate Limiting):
 ✅ **Single Source of Truth**: Bridge ist einzige Quelle für Device Detection  
 ✅ **Flexible Konfiguration**: Outputs können jederzeit geändert werden  
 ✅ **Robust**: Keine Race Conditions, keine doppelte Implementierung
-
