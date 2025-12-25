@@ -1,8 +1,8 @@
-import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { z } from "zod";
 import { runtimeConfig } from "../services/runtime-config.js";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { deviceCache } from "../services/device-cache.js";
+import type { FastifyInstance } from "fastify";
 import type { DeviceDescriptorT } from "../../../../types.js";
 
 /**
@@ -24,17 +24,14 @@ const ConfigRequestSchema = z.object({
     .optional(),
 });
 
-type ConfigRequest = z.infer<typeof ConfigRequestSchema>;
-
 /**
  * Register config route
- * 
+ *
  * POST /config - Configure outputs and/or engine
  * POST /config/clear - Clear configuration
  */
 export async function registerConfigRoute(
-  fastify: FastifyInstance,
-  options: FastifyPluginOptions
+  fastify: FastifyInstance
 ): Promise<void> {
   /**
    * Validate and find device by ID or name
@@ -45,12 +42,12 @@ export async function registerConfigRoute(
   ): Promise<DeviceDescriptorT | null> {
     // Try to find by ID first
     let device = devices.find((d) => d.id === deviceIdOrName);
-    
+
     // If not found, try to find by display name
     if (!device) {
       device = devices.find((d) => d.displayName === deviceIdOrName);
     }
-    
+
     return device || null;
   }
 
@@ -89,9 +86,15 @@ export async function registerConfigRoute(
     // Find output2 device (or connection type)
     // For now, we'll check if it's a valid connection type or device
     const device2 = await findDevice(output2, devices);
-    
+
     // If output2 is a connection type (sdi, hdmi, usb, etc.), it's valid
-    const connectionTypes = ["sdi", "hdmi", "usb", "displayport", "thunderbolt"];
+    const connectionTypes = [
+      "sdi",
+      "hdmi",
+      "usb",
+      "displayport",
+      "thunderbolt",
+    ];
     if (connectionTypes.includes(output2.toLowerCase())) {
       // Check if any device has this connection type available
       const hasConnectionType = devices.some((device) =>
@@ -135,17 +138,27 @@ export async function registerConfigRoute(
       if (device1) {
         const controller1 = await moduleRegistry.getController(device1.id);
         await controller1.open();
-        fastify.log.info(`[Config] Opened controller for output1: ${device1.id}`);
+        fastify.log.info(
+          `[Config] Opened controller for output1: ${device1.id}`
+        );
       }
 
       // For output2, if it's a device (not connection type), open controller
-      const connectionTypes = ["sdi", "hdmi", "usb", "displayport", "thunderbolt"];
+      const connectionTypes = [
+        "sdi",
+        "hdmi",
+        "usb",
+        "displayport",
+        "thunderbolt",
+      ];
       if (!connectionTypes.includes(output2.toLowerCase())) {
         const device2 = await findDevice(output2, devices);
         if (device2) {
           const controller2 = await moduleRegistry.getController(device2.id);
           await controller2.open();
-          fastify.log.info(`[Config] Opened controller for output2: ${device2.id}`);
+          fastify.log.info(
+            `[Config] Opened controller for output2: ${device2.id}`
+          );
         }
       }
 
@@ -230,7 +243,7 @@ export async function registerConfigRoute(
     }
   });
 
-  fastify.post("/config/clear", async (request, reply) => {
+  fastify.post("/config/clear", async (_, reply) => {
     try {
       runtimeConfig.clear();
       fastify.log.info("[Config] Configuration cleared");
@@ -248,4 +261,3 @@ export async function registerConfigRoute(
     }
   });
 }
-

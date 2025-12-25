@@ -1,27 +1,30 @@
-import type { DeviceDescriptorT, PortDescriptorT } from "../../../../../types.js";
+import type {
+  DeviceDescriptorT,
+  PortDescriptorT,
+} from "../../../../../types.js";
 import type { USBDeviceInfo, USBPortInfo } from "./usb-capture-types.js";
 
 /**
  * USB Capture Detector
- * 
+ *
  * Discovery implementation for USB Capture devices.
  * Platform-specific detection will be implemented in separate files.
  */
 export class USBCaptureDetector {
   /**
    * Detect USB capture devices
-   * 
+   *
    * Platform-specific implementations:
    * - macOS: AVFoundation (AVCaptureDevice)
    * - Windows: Media Foundation (not DirectShow - deprecated)
    * - Linux: v4l2 (Video4Linux2)
-   * 
+   *
    * TODO: Implement platform-specific detection
    */
   async detect(): Promise<DeviceDescriptorT[]> {
     // Platform-specific detection will be implemented here
     // For now, return empty array (no mock data)
-    
+
     const devices: DeviceDescriptorT[] = [];
 
     // Example structure for future implementation:
@@ -51,7 +54,7 @@ export class USBCaptureDetector {
 
   /**
    * Platform-specific device detection
-   * 
+   *
    * TODO: Implement for each platform
    */
   private async detectPlatformDevices(): Promise<USBDeviceInfo[]> {
@@ -61,10 +64,11 @@ export class USBCaptureDetector {
 
   /**
    * Detect ports for a device
-   * 
+   *
    * TODO: Implement port detection
    */
-  private async detectPorts(device: USBDeviceInfo): Promise<USBPortInfo[]> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private async detectPorts(_device: USBDeviceInfo): Promise<USBPortInfo[]> {
     // Port detection will be implemented here
     return [];
   }
@@ -87,4 +91,3 @@ export class USBCaptureDetector {
     };
   }
 }
-
