@@ -5,7 +5,7 @@ const DEFAULT_DETECTION_TIMEOUT = 5000; // 5 seconds per module
 
 /**
  * Module registry for device detection
- * 
+ *
  * Manages multiple device modules and coordinates parallel detection
  * with error isolation and timeout protection.
  */
@@ -21,16 +21,16 @@ export class ModuleRegistry {
 
   /**
    * Detect devices from all registered modules in parallel
-   * 
+   *
    * Features:
    * - Parallel detection (all modules simultaneously)
    * - Timeout protection per module
    * - Error isolation (one broken module doesn't kill everything)
    * - Results merged into single array
-   * 
+   *
    * Phase 1: Async Detection + Timeout + Cache (current implementation)
    * Phase 2: Worker Thread isolation for native SDK calls (can be added later)
-   * 
+   *
    * @param timeoutMs Timeout per module in milliseconds
    * @param useWorkerThreads Whether to use worker threads for isolation (Phase 2)
    * @returns Array of all detected devices
@@ -41,7 +41,7 @@ export class ModuleRegistry {
   ): Promise<DeviceDescriptorT[]> {
     // Phase 1: Direct async detection with timeout
     // Phase 2: Worker thread isolation can be added here for SDK-heavy modules
-    
+
     if (useWorkerThreads) {
       // TODO: Implement worker thread isolation for Phase 2
       // This would be useful for BMD SDK calls that might block
@@ -66,10 +66,7 @@ export class ModuleRegistry {
 
         const detectionPromise = module.detect();
 
-        const devices = await Promise.race([
-          detectionPromise,
-          timeoutPromise,
-        ]);
+        const devices = await Promise.race([detectionPromise, timeoutPromise]);
         return devices;
       } catch (error) {
         // Error isolation: log but don't fail entire detection
@@ -95,7 +92,7 @@ export class ModuleRegistry {
 
   /**
    * Detect devices using worker threads (Phase 2)
-   * 
+   *
    * TODO: Implement worker thread isolation for native SDK calls
    * This prevents SDK blocking from affecting Fastify request threads
    */
@@ -110,9 +107,9 @@ export class ModuleRegistry {
 
   /**
    * Get device controller for a specific device
-   * 
+   *
    * Finds the module that owns the device and creates a controller.
-   * 
+   *
    * @param deviceId Stable device ID
    * @returns Device controller
    * @throws Error if device not found or controller cannot be created
@@ -134,6 +131,7 @@ export class ModuleRegistry {
         if (devices.some((d) => d.id === deviceId)) {
           return module.createController(deviceId);
         }
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (error) {
         // Continue to next module
         continue;
@@ -162,4 +160,3 @@ export class ModuleRegistry {
  * Singleton instance
  */
 export const moduleRegistry = new ModuleRegistry();
-
