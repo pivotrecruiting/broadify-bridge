@@ -2,7 +2,7 @@ import electron from "electron";
 import type {
   BridgeConfig,
   EventPayloadMapping,
-} from "../../types.js" with { "resolution-mode": "import" };
+} from "./types.js" with { "resolution-mode": "import" };
 
 electron.contextBridge.exposeInMainWorld("electron", {
   subscribeStatistics: (callback) =>

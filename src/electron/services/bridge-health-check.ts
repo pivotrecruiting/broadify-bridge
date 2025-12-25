@@ -1,4 +1,4 @@
-import type { BridgeConfig, BridgeStatus } from "../../../types.js";
+import type { BridgeConfig, BridgeStatus } from "../types.js";
 
 const HEALTH_CHECK_INTERVAL = 2000; // 2 seconds
 const HEALTH_CHECK_TIMEOUT = 3000; // 3 seconds timeout
