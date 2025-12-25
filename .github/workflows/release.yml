@@ -87,6 +87,20 @@ jobs:
           echo "Artifacts structure:"
           find artifacts -type f -name "*" | sort || true
 
+      - name: Rename duplicate files to avoid conflicts
+        run: |
+          # Remove builder-debug.yml files (not needed for releases)
+          find artifacts -name "builder-debug.yml" -delete 2>/dev/null || true
+          # Rename latest-mac.yml files to be unique per macOS architecture
+          if [ -f "artifacts/mac-arm64/latest-mac.yml" ]; then
+            mv "artifacts/mac-arm64/latest-mac.yml" "artifacts/mac-arm64/latest-mac-arm64.yml" 2>/dev/null || true
+          fi
+          if [ -f "artifacts/mac-x64/latest-mac.yml" ]; then
+            mv "artifacts/mac-x64/latest-mac.yml" "artifacts/mac-x64/latest-mac-x64.yml" 2>/dev/null || true
+          fi
+          echo "Final artifacts structure:"
+          find artifacts -type f | sort || true
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
