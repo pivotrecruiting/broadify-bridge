@@ -96,8 +96,9 @@ export class BridgeProcessManager {
 
       // Forward stdout/stderr for debugging
       if (this.bridgeProcess.stdout) {
-        this.bridgeProcess.stdout.on("data", (data) => {
-          //   console.log(`[Bridge] ${data.toString().trim()}`);
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        this.bridgeProcess.stdout.on("data", (_data) => {
+          //   console.log(`[Bridge] ${_data.toString().trim()}`);
         });
       }
 

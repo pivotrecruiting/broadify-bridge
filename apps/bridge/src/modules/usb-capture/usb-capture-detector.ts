@@ -57,6 +57,7 @@ export class USBCaptureDetector {
    *
    * TODO: Implement for each platform
    */
+  // @ts-expect-error - Method will be used when platform detection is implemented
   private async detectPlatformDevices(): Promise<USBDeviceInfo[]> {
     // Platform detection will be implemented here
     return [];
@@ -67,6 +68,7 @@ export class USBCaptureDetector {
    *
    * TODO: Implement port detection
    */
+  // @ts-expect-error - Method will be used when port detection is implemented
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private async detectPorts(_device: USBDeviceInfo): Promise<USBPortInfo[]> {
     // Port detection will be implemented here
@@ -76,6 +78,7 @@ export class USBCaptureDetector {
   /**
    * Create port descriptor from port info
    */
+  // @ts-expect-error - Method will be used when port detection is implemented
   private createPortDescriptor(portInfo: USBPortInfo): PortDescriptorT {
     return {
       id: portInfo.id,

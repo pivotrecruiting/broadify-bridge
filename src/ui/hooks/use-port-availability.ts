@@ -68,17 +68,19 @@ export function usePortAvailability({
           const currentPort = parseInt(customPort, 10);
           if (!isNaN(currentPort)) {
             // Check custom port availability
-            const customPortResult = await window.electron.checkPortAvailability(
+            // Don't reset, user can change it
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            void (await window.electron.checkPortAvailability(
               currentPort,
               bindAddress
-            );
-            // Don't reset, user can change it
+            ));
           }
         } else {
           const currentPort = parseInt(networkPort, 10);
           if (!isNaN(currentPort)) {
-            const portAvailable = availabilityMap.get(currentPort);
             // Note: Port availability is tracked, parent component can handle reset if needed
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            void availabilityMap.get(currentPort);
           }
         }
       } catch (error) {

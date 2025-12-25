@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { OutputDeviceT, BridgeOutputsT } from "types";
+import type { BridgeOutputsT } from "types";
 
 /**
  * Hook to fetch and manage bridge outputs

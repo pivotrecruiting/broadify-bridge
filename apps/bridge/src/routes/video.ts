@@ -13,6 +13,7 @@ type VideoStatusT = "not-configured" | "configured" | "unavailable" | "error";
  */
 export async function registerVideoRoute(
   fastify: FastifyInstance,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
   /**
@@ -32,12 +33,14 @@ export async function registerVideoRoute(
         status,
         message: "Video I/O not yet configured",
       };
-    } catch (error: any) {
-      fastify.log.error("[Video] Status error:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Video] Status error");
 
       return reply.code(500).send({
         error: "Failed to get video status",
-        message: error.message || "Unknown error",
+        message: errorMessage || "Unknown error",
       });
     }
   });

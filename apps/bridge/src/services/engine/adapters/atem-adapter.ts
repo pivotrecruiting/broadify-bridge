@@ -224,7 +224,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     if (this.atemConnection) {
       try {
         await this.atemConnection.disconnect();
-      } catch (error) {
+      } catch {
         // Ignore disconnect errors
       }
       this.atemConnection = null;
@@ -299,8 +299,10 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     try {
       // Note: atem-connection might not have macroStop method
       // Check if method exists
-      if (typeof (this.atemConnection as any).macroStop === "function") {
-        await (this.atemConnection as any).macroStop(id);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const atemConn = this.atemConnection as any;
+      if (typeof atemConn.macroStop === "function") {
+        await atemConn.macroStop(id);
       } else {
         // Fallback: Try to stop by running macro 0 or using stop command
         // This is a workaround if macroStop doesn't exist
@@ -371,21 +373,23 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
           if (macroPool.macroPlayer) {
             const player = macroPool.macroPlayer;
             // Check if macro is playing - API might use different property names
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const playerAny = player as any;
             if (
-              (player as any).isPlaying !== undefined &&
-              (player as any).isPlaying &&
-              (player as any).macroIndex === i
+              playerAny.isPlaying !== undefined &&
+              playerAny.isPlaying &&
+              playerAny.macroIndex === i
             ) {
               status = "running";
             } else if (
-              (player as any).isRunning !== undefined &&
-              (player as any).isRunning &&
-              (player as any).macroIndex === i
+              playerAny.isRunning !== undefined &&
+              playerAny.isRunning &&
+              playerAny.macroIndex === i
             ) {
               status = "running";
             } else if (
-              typeof (player as any).macroIndex === "number" &&
-              (player as any).macroIndex === i
+              typeof playerAny.macroIndex === "number" &&
+              playerAny.macroIndex === i
             ) {
               // If macroIndex matches, assume it's running
               status = "running";

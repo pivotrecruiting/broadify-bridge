@@ -29,6 +29,7 @@ const ConnectRequestSchema = z.object({
  */
 export async function registerEngineRoute(
   fastify: FastifyInstance,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
   /**
@@ -138,12 +139,14 @@ export async function registerEngineRoute(
         success: true,
         state: engineAdapter.getState(),
       };
-    } catch (error: any) {
-      fastify.log.error("[Engine] Disconnect error:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Engine] Disconnect error");
 
       return reply.code(500).send({
         error: "Failed to disconnect",
-        message: error.message || "Unknown error",
+        message: errorMessage || "Unknown error",
       });
     }
   });
@@ -166,12 +169,14 @@ export async function registerEngineRoute(
           lastError: lastError || undefined,
         },
       };
-    } catch (error: any) {
-      fastify.log.error("[Engine] Status error:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Engine] Status error");
 
       return reply.code(500).send({
         error: "Failed to get status",
-        message: error.message || "Unknown error",
+        message: errorMessage || "Unknown error",
       });
     }
   });
@@ -196,12 +201,14 @@ export async function registerEngineRoute(
         success: true,
         macros,
       };
-    } catch (error: any) {
-      fastify.log.error("[Engine] Get macros error:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Engine] Get macros error");
 
       return reply.code(500).send({
         error: "Failed to get macros",
-        message: error.message || "Unknown error",
+        message: errorMessage || "Unknown error",
       });
     }
   });
@@ -230,19 +237,21 @@ export async function registerEngineRoute(
         macroId,
         state: engineAdapter.getState(),
       };
-    } catch (error: any) {
-      fastify.log.error("[Engine] Run macro error:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Engine] Run macro error");
 
-      if (error.message.includes("not connected")) {
+      if (errorMessage.includes("not connected")) {
         return reply.code(503).send({
           error: "Engine not connected",
-          message: error.message,
+          message: errorMessage,
         });
       }
 
       return reply.code(500).send({
         error: "Failed to run macro",
-        message: error.message || "Unknown error",
+        message: errorMessage || "Unknown error",
       });
     }
   });
@@ -271,19 +280,21 @@ export async function registerEngineRoute(
         macroId,
         state: engineAdapter.getState(),
       };
-    } catch (error: any) {
-      fastify.log.error("[Engine] Stop macro error:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Engine] Stop macro error");
 
-      if (error.message.includes("not connected")) {
+      if (errorMessage.includes("not connected")) {
         return reply.code(503).send({
           error: "Engine not connected",
-          message: error.message,
+          message: errorMessage,
         });
       }
 
       return reply.code(500).send({
         error: "Failed to stop macro",
-        message: error.message || "Unknown error",
+        message: errorMessage || "Unknown error",
       });
     }
   });

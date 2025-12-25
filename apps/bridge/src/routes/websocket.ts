@@ -24,9 +24,12 @@ type Topic = "engine" | "video";
  */
 export async function registerWebSocketRoute(
   fastify: FastifyInstance,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars
   fastify.get("/ws", { websocket: true } as any, (connection, _request) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = connection.socket as any;
     fastify.log.info("[WebSocket] Client connected");
 

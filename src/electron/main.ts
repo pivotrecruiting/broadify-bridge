@@ -446,7 +446,7 @@ app.on("ready", () => {
   async function bridgeApiRequest(
     endpoint: string,
     options: RequestInit = {}
-  ): Promise<any> {
+  ): Promise<unknown> {
     const config = bridgeProcessManager.getConfig();
     if (!config) {
       throw new Error("Bridge is not running");
@@ -534,14 +534,15 @@ app.on("ready", () => {
           port,
         };
 
-        const result = await bridgeApiRequest("/engine/connect", {
+        const result = (await bridgeApiRequest("/engine/connect", {
           method: "POST",
           body: JSON.stringify(body),
-        });
+        })) as { state?: unknown };
 
         return {
           success: true,
-          state: result.state,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          state: result.state as any,
         };
       } catch (error) {
         return {
@@ -554,13 +555,14 @@ app.on("ready", () => {
 
   ipcMainHandle("engineDisconnect", async () => {
     try {
-      const result = await bridgeApiRequest("/engine/disconnect", {
+      const result = (await bridgeApiRequest("/engine/disconnect", {
         method: "POST",
-      });
+      })) as { state?: unknown };
 
       return {
         success: true,
-        state: result.state,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        state: result.state as any,
       };
     } catch (error) {
       return {
@@ -572,10 +574,13 @@ app.on("ready", () => {
 
   ipcMainHandle("engineGetStatus", async () => {
     try {
-      const result = await bridgeApiRequest("/engine/status");
+      const result = (await bridgeApiRequest("/engine/status")) as {
+        state?: unknown;
+      };
       return {
         success: true,
-        state: result.state,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        state: result.state as any,
       };
     } catch (error) {
       return {
@@ -592,10 +597,13 @@ app.on("ready", () => {
 
   ipcMainHandle("engineGetMacros", async () => {
     try {
-      const result = await bridgeApiRequest("/engine/macros");
+      const result = (await bridgeApiRequest("/engine/macros")) as {
+        macros?: unknown[];
+      };
       return {
         success: true,
-        macros: result.macros || [],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        macros: (result.macros || []) as any,
       };
     } catch (error) {
       return {
@@ -608,14 +616,15 @@ app.on("ready", () => {
 
   ipcMainHandle("engineRunMacro", async (event, macroId: number) => {
     try {
-      const result = await bridgeApiRequest(`/engine/macros/${macroId}/run`, {
+      const result = (await bridgeApiRequest(`/engine/macros/${macroId}/run`, {
         method: "POST",
-      });
+      })) as { state?: unknown };
 
       return {
         success: true,
         macroId,
-        state: result.state,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        state: result.state as any,
       };
     } catch (error) {
       return {
@@ -627,14 +636,15 @@ app.on("ready", () => {
 
   ipcMainHandle("engineStopMacro", async (event, macroId: number) => {
     try {
-      const result = await bridgeApiRequest(`/engine/macros/${macroId}/stop`, {
+      const result = (await bridgeApiRequest(`/engine/macros/${macroId}/stop`, {
         method: "POST",
-      });
+      })) as { state?: unknown };
 
       return {
         success: true,
         macroId,
-        state: result.state,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        state: result.state as any,
       };
     } catch (error) {
       return {
@@ -682,7 +692,8 @@ app.on("ready", () => {
   });
 
   // Cleanup on window close
-  mainWindow.on("close", async (event) => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  mainWindow.on("close", async (_event) => {
     if (healthCheckCleanup) {
       healthCheckCleanup();
       healthCheckCleanup = null;

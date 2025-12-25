@@ -70,7 +70,8 @@ function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT
  */
 export async function registerOutputsRoute(
   fastify: FastifyInstance,
-  options: FastifyPluginOptions
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _options: FastifyPluginOptions
 ): Promise<void> {
   fastify.get("/outputs", async (request, reply) => {
     try {
@@ -88,20 +89,24 @@ export async function registerOutputsRoute(
       );
 
       return outputs;
-    } catch (error: any) {
-      fastify.log.error("[Outputs] Error getting outputs:", error);
+    } catch (error: unknown) {
+      fastify.log.error({ err: error }, "[Outputs] Error getting outputs");
 
       // Handle rate limit errors
-      if (error.message?.includes("Rate limit")) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const errorAny = error as any;
+      if (errorAny?.message?.includes("Rate limit")) {
         return reply.code(429).send({
           error: "Rate limit exceeded",
-          message: error.message,
+          message: errorAny.message,
         });
       }
 
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       reply.code(500).send({
         error: "Failed to get outputs",
-        message: error.message,
+        message: errorMessage,
       });
     }
   });

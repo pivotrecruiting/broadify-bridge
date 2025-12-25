@@ -17,6 +17,7 @@ export function ipcMainHandle<Key extends keyof EventPayloadMapping>(
   key: Key,
   handler: (
     event: Electron.IpcMainInvokeEvent,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ...args: any[]
   ) => EventPayloadMapping[Key] | Promise<EventPayloadMapping[Key]>
 ) {

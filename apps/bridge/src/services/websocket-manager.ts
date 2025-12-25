@@ -17,13 +17,13 @@ type Topic = "engine" | "video";
 type WebSocketMessage =
   | { type: "subscribe"; topics: Topic[] }
   | { type: "unsubscribe"; topics: Topic[] }
-  | { type: "engine.status"; [key: string]: any }
-  | { type: "engine.macros"; [key: string]: any }
-  | { type: "engine.macroStatus"; [key: string]: any }
-  | { type: "engine.connected"; [key: string]: any }
+  | { type: "engine.status"; [key: string]: unknown }
+  | { type: "engine.macros"; [key: string]: unknown }
+  | { type: "engine.macroStatus"; [key: string]: unknown }
+  | { type: "engine.connected"; [key: string]: unknown }
   | { type: "engine.disconnected" }
-  | { type: "engine.error"; [key: string]: any }
-  | { type: "video.status"; [key: string]: any };
+  | { type: "engine.error"; [key: string]: unknown }
+  | { type: "video.status"; [key: string]: unknown };
 
 /**
  * WebSocket manager
@@ -86,7 +86,7 @@ export class WebSocketManager {
       if (topics.has(topic)) {
         try {
           client.send(messageJson);
-        } catch (error) {
+        } catch {
           // Client disconnected, remove it
           this.clients.delete(client);
         }
@@ -101,7 +101,7 @@ export class WebSocketManager {
     try {
       const messageJson = JSON.stringify(message);
       client.send(messageJson);
-    } catch (error) {
+    } catch {
       // Client disconnected, remove it
       this.clients.delete(client);
     }
@@ -149,4 +149,3 @@ export class WebSocketManager {
  * Singleton instance
  */
 export const websocketManager = new WebSocketManager();
-

@@ -56,7 +56,7 @@ export async function isPortAvailable(
 
     try {
       server.listen(port, host);
-    } catch (err) {
+    } catch {
       if (resolved) return;
       clearTimeout(timeout);
       cleanup();

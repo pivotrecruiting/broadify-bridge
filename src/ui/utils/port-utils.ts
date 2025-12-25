@@ -1,4 +1,4 @@
-import type { NetworkConfigT, NetworkBindingOptionT, InterfacePortConfigT } from "types";
+import type { NetworkConfigT, InterfacePortConfigT } from "types";
 
 /**
  * Validates if a port string is a valid port number (1-65535)
@@ -34,8 +34,8 @@ export function shouldUseCustomPort(
   customPort: string
 ): boolean {
   return (
-    portConfig?.customOnly ||
-    (showAdvanced && customPort && customPort.trim() !== "")
+    Boolean(portConfig?.customOnly) ||
+    (showAdvanced && Boolean(customPort && customPort.trim() !== ""))
   );
 }
 

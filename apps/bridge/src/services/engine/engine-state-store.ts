@@ -1,4 +1,4 @@
-import type { EngineStateT, EngineStatusT } from "../engine-types.js";
+import type { EngineStateT } from "../engine-types.js";
 
 /**
  * Engine state store

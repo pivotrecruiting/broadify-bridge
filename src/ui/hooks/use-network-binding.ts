@@ -1,6 +1,6 @@
-import { useState, useCallback } from "react";
+import { useCallback } from "react";
 import type { NetworkConfigT, NetworkBindingOptionT } from "types";
-import { getBindAddress, getPortConfig, getDefaultPortForBinding } from "../utils/network-utils";
+import { getBindAddress, getPortConfig } from "../utils/network-utils";
 
 interface UseNetworkBindingParams {
   networkConfig: NetworkConfigT | null;
@@ -23,11 +23,14 @@ export function useNetworkBinding({
   networkBindingOptions,
   networkBindingId,
   setNetworkBindingId,
-  networkPort,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  networkPort: _networkPort,
   setNetworkPort,
-  customPort,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  customPort: _customPort,
   setCustomPort,
-  showAdvanced,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  showAdvanced: _showAdvanced,
   setShowAdvanced,
 }: UseNetworkBindingParams) {
   const handleBindingChange = useCallback(

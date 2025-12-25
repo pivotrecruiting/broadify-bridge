@@ -77,9 +77,11 @@ export async function startServer(
     server.log.info(
       `Bridge server listening on http://${config.host}:${config.port}`
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Check for port already in use
-    if (err?.code === "EADDRINUSE") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const error = err as any;
+    if (error?.code === "EADDRINUSE") {
       server.log.error(
         `Port ${config.port} is already in use. Please choose a different port.`
       );
@@ -88,7 +90,7 @@ export async function startServer(
 
     // If address not available and not already using 0.0.0.0, try fallback
     if (
-      err?.code === "EADDRNOTAVAIL" &&
+      error?.code === "EADDRNOTAVAIL" &&
       config.host !== "0.0.0.0" &&
       config.host !== "127.0.0.1"
     ) {
@@ -100,13 +102,15 @@ export async function startServer(
         server.log.info(
           `Bridge server listening on http://0.0.0.0:${config.port} (fallback)`
         );
-      } catch (fallbackErr: any) {
-        if (fallbackErr?.code === "EADDRINUSE") {
+      } catch (fallbackErr: unknown) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const fallbackError = fallbackErr as any;
+        if (fallbackError?.code === "EADDRINUSE") {
           server.log.error(
             `Port ${config.port} is already in use. Please choose a different port.`
           );
         } else {
-          server.log.error("Fallback to 0.0.0.0 also failed:", fallbackErr);
+          server.log.error("Fallback to 0.0.0.0 also failed:", fallbackError);
         }
         process.exit(1);
       }

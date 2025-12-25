@@ -163,11 +163,13 @@ export async function registerConfigRoute(
       }
 
       return { success: true };
-    } catch (error: any) {
-      fastify.log.error("[Config] Error opening controllers:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Config] Error opening controllers");
       return {
         success: false,
-        error: error.message || "Failed to open device controllers",
+        error: errorMessage || "Failed to open device controllers",
       };
     }
   }
@@ -225,20 +227,31 @@ export async function registerConfigRoute(
         state: runtimeConfig.getState(),
         outputsConfigured: runtimeConfig.hasOutputs(),
       };
-    } catch (error: any) {
-      fastify.log.error("[Config] Error setting configuration:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Config] Error setting configuration");
 
       // Handle Zod validation errors
-      if (error.name === "ZodError") {
+      if (
+        error &&
+        typeof error === "object" &&
+        "name" in error &&
+        error.name === "ZodError" &&
+        "errors" in error &&
+        Array.isArray(error.errors)
+      ) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const zodErrors = error.errors as any[];
         return reply.code(400).send({
           error: "Invalid request",
-          message: error.errors.map((e: any) => e.message).join(", "),
+          message: zodErrors.map((e) => e.message || String(e)).join(", "),
         });
       }
 
       reply.code(500).send({
         error: "Failed to set configuration",
-        message: error.message,
+        message: errorMessage,
       });
     }
   });
@@ -252,11 +265,16 @@ export async function registerConfigRoute(
         success: true,
         state: runtimeConfig.getState(),
       };
-    } catch (error: any) {
-      fastify.log.error("[Config] Error clearing configuration:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error(
+        { err: error },
+        "[Config] Error clearing configuration"
+      );
       reply.code(500).send({
         error: "Failed to clear configuration",
-        message: error.message,
+        message: errorMessage,
       });
     }
   });

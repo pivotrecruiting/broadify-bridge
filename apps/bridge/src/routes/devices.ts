@@ -75,11 +75,13 @@ export async function registerDevicesRoute(
       cachedDevices = await performDetection();
       lastDetectionTime = now;
       return cachedDevices;
-    } catch (error: any) {
-      fastify.log.error("[Devices] Error detecting devices:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Devices] Error detecting devices");
       reply.code(500).send({
         error: "Failed to detect devices",
-        message: error.message,
+        message: errorMessage,
       });
     }
   });
