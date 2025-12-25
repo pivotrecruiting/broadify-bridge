@@ -2,6 +2,7 @@
   "appId": "com.georgimy.electron-template",
   "productName": "Broadify Bridge",
   "files": ["dist-electron/**", "dist-react/**"],
+  "asar": true,
   "extraResources": [
     {
       "from": "apps/bridge/dist",
