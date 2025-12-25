@@ -598,8 +598,22 @@ app.on("ready", () => {
   ipcMainHandle("engineGetMacros", async () => {
     try {
       const result = (await bridgeApiRequest("/engine/macros")) as {
+        success?: boolean;
         macros?: unknown[];
+        error?: string;
+        message?: string;
       };
+
+      // Check if response indicates failure
+      if (result.success === false) {
+        return {
+          success: false,
+          error: result.error || result.message || "Failed to get macros",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          macros: (result.macros || []) as any,
+        };
+      }
+
       return {
         success: true,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -618,7 +632,20 @@ app.on("ready", () => {
     try {
       const result = (await bridgeApiRequest(`/engine/macros/${macroId}/run`, {
         method: "POST",
-      })) as { state?: unknown };
+      })) as {
+        success?: boolean;
+        state?: unknown;
+        error?: string;
+        message?: string;
+      };
+
+      // Check if response indicates failure
+      if (result.success === false) {
+        return {
+          success: false,
+          error: result.error || result.message || "Failed to run macro",
+        };
+      }
 
       return {
         success: true,
@@ -638,7 +665,20 @@ app.on("ready", () => {
     try {
       const result = (await bridgeApiRequest(`/engine/macros/${macroId}/stop`, {
         method: "POST",
-      })) as { state?: unknown };
+      })) as {
+        success?: boolean;
+        state?: unknown;
+        error?: string;
+        message?: string;
+      };
+
+      // Check if response indicates failure
+      if (result.success === false) {
+        return {
+          success: false,
+          error: result.error || result.message || "Failed to stop macro",
+        };
+      }
 
       return {
         success: true,

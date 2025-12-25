@@ -192,8 +192,10 @@ export async function registerEngineRoute(
 
       if (status !== "connected") {
         return reply.code(503).send({
+          success: false,
           error: "Engine not connected",
           message: `Engine status: ${status}`,
+          macros: [],
         });
       }
 
@@ -207,8 +209,10 @@ export async function registerEngineRoute(
       fastify.log.error({ err: error }, "[Engine] Get macros error");
 
       return reply.code(500).send({
+        success: false,
         error: "Failed to get macros",
         message: errorMessage || "Unknown error",
+        macros: [],
       });
     }
   });
@@ -224,6 +228,7 @@ export async function registerEngineRoute(
 
       if (isNaN(macroId)) {
         return reply.code(400).send({
+          success: false,
           error: "Invalid macro ID",
           message: "Macro ID must be a number",
         });
@@ -244,12 +249,14 @@ export async function registerEngineRoute(
 
       if (errorMessage.includes("not connected")) {
         return reply.code(503).send({
+          success: false,
           error: "Engine not connected",
           message: errorMessage,
         });
       }
 
       return reply.code(500).send({
+        success: false,
         error: "Failed to run macro",
         message: errorMessage || "Unknown error",
       });
@@ -267,6 +274,7 @@ export async function registerEngineRoute(
 
       if (isNaN(macroId)) {
         return reply.code(400).send({
+          success: false,
           error: "Invalid macro ID",
           message: "Macro ID must be a number",
         });
@@ -287,12 +295,14 @@ export async function registerEngineRoute(
 
       if (errorMessage.includes("not connected")) {
         return reply.code(503).send({
+          success: false,
           error: "Engine not connected",
           message: errorMessage,
         });
       }
 
       return reply.code(500).send({
+        success: false,
         error: "Failed to stop macro",
         message: errorMessage || "Unknown error",
       });
