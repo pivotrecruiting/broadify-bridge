@@ -464,7 +464,9 @@ app.on("ready", () => {
     const url = `http://${host}:${config.port}${endpoint}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+    // Use longer timeout for engine/connect (15s) to allow for device connection timeout (10s)
+    const timeoutMs = endpoint === "/engine/connect" ? 15000 : 10000; // 15s for connect, 10s for others
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       // Build headers: only set Content-Type if body exists

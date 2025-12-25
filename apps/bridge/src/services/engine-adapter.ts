@@ -216,12 +216,18 @@ class EngineAdapterService {
    * Broadcast state changes via WebSocket Manager
    */
   private broadcastStateChanges(state: EngineStateT): void {
-    // Broadcast status change
-    websocketManager.broadcast("engine", {
-      type: "engine.status",
-      status: state.status,
-      error: state.error,
-    });
+    // Broadcast status change only if status or error changed
+    if (
+      !this.previousState ||
+      this.previousState.status !== state.status ||
+      this.previousState.error !== state.error
+    ) {
+      websocketManager.broadcast("engine", {
+        type: "engine.status",
+        status: state.status,
+        error: state.error,
+      });
+    }
 
     // Broadcast connection/disconnection events
     if (this.previousState) {
@@ -243,11 +249,19 @@ class EngineAdapterService {
       }
     }
 
-    // Broadcast error events
-    if (state.status === "error" && state.error) {
+    // Broadcast error events only when status changes to error
+    if (
+      state.status === "error" &&
+      state.error &&
+      (!this.previousState ||
+        this.previousState.status !== "error" ||
+        this.previousState.error !== state.error)
+    ) {
       websocketManager.broadcast("engine", {
         type: "engine.error",
-        error: state.error,
+        error: {
+          message: state.error,
+        },
       });
     }
 
