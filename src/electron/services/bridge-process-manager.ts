@@ -2,7 +2,7 @@ import { ChildProcess, spawn } from "child_process";
 import { app } from "electron";
 import path from "path";
 import { isDev } from "../util.js";
-import type { BridgeConfig } from "../../../types.js";
+import type { BridgeConfig } from "../types.js";
 import { isPortAvailable, findAvailablePort } from "./port-checker.js";
 
 /**
