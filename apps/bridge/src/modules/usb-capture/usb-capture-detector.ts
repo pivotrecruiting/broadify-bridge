@@ -1,7 +1,7 @@
 import type {
   DeviceDescriptorT,
   PortDescriptorT,
-} from "../../../../../types.js";
+} from "../../types.js";
 import type { USBDeviceInfo, USBPortInfo } from "./usb-capture-types.js";
 
 /**

@@ -1,7 +1,4 @@
-import type {
-  DeviceDescriptorT,
-  PortDescriptorT,
-} from "../../../../../types.js";
+import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
 import type { DecklinkDeviceInfo, DecklinkPortInfo } from "./decklink-types.js";
 
 /**

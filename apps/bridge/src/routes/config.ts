@@ -3,7 +3,7 @@ import { runtimeConfig } from "../services/runtime-config.js";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { deviceCache } from "../services/device-cache.js";
 import type { FastifyInstance } from "fastify";
-import type { DeviceDescriptorT } from "../../../../types.js";
+import type { DeviceDescriptorT } from "../types.js";
 
 /**
  * Config request schema
