@@ -82,6 +82,11 @@ jobs:
         with:
           path: artifacts
 
+      - name: List artifacts for debugging
+        run: |
+          echo "Artifacts structure:"
+          find artifacts -type f -name "*" | sort || true
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -90,5 +95,7 @@ jobs:
           files: artifacts/**/*
           draft: false
           prerelease: false
+          generate_release_notes: false
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
