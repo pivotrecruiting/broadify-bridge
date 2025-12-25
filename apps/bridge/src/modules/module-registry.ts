@@ -1,5 +1,5 @@
 import type { DeviceModule, DeviceController } from "./device-module.js";
-import type { DeviceDescriptorT } from "../../../../types.js";
+import type { DeviceDescriptorT } from "../types.js";
 
 const DEFAULT_DETECTION_TIMEOUT = 5000; // 5 seconds per module
 
