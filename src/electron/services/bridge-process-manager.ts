@@ -68,12 +68,17 @@ export class BridgeProcessManager {
 
       // Determine bridge entry point and arguments
       const bridgePath = this.getBridgePath();
-      const args = this.getBridgeArgs(config);
+      const args = this.getBridgeArgs(actualConfig);
 
       // Spawn bridge process
+      // In production, set cwd to bridge resources directory so relative paths work correctly
+      const cwd = isDev()
+        ? path.join(app.getAppPath(), "apps/bridge")
+        : path.join(process.resourcesPath, "bridge");
+
       this.bridgeProcess = spawn(bridgePath, args, {
         stdio: ["ignore", "pipe", "pipe"],
-        cwd: isDev() ? path.join(app.getAppPath(), "apps/bridge") : undefined,
+        cwd,
         env: {
           ...process.env,
           NODE_ENV: isDev() ? "development" : "production",
@@ -220,19 +225,22 @@ export class BridgeProcessManager {
 
   /**
    * Get bridge executable path
+   * In production, uses Electron binary with --runAsNode flag to avoid requiring Node.js installation
    */
   private getBridgePath(): string {
     if (isDev()) {
       // Development: use npx to run tsx
       return "npx";
     } else {
-      // Production: use node to run compiled JavaScript
-      return "node";
+      // Production: use Electron binary itself with --runAsNode flag
+      // This avoids requiring users to have Node.js installed
+      return process.execPath;
     }
   }
 
   /**
    * Get bridge arguments
+   * In production, uses --runAsNode flag and process.resourcesPath to access extraResources
    */
   private getBridgeArgs(config: BridgeConfig): string[] {
     if (isDev()) {
@@ -246,10 +254,17 @@ export class BridgeProcessManager {
         config.port.toString(),
       ];
     } else {
-      // Production: node dist/index.js --host ... --port ...
-      const appPath = app.getAppPath();
+      // Production: use Electron with --runAsNode flag to run bridge
+      // Bridge is packaged in extraResources at resources/bridge/dist/index.js
+      const bridgeEntry = path.join(
+        process.resourcesPath,
+        "bridge",
+        "dist",
+        "index.js"
+      );
       return [
-        path.join(appPath, "../apps/bridge/dist/index.js"),
+        "--runAsNode",
+        bridgeEntry,
         "--host",
         config.host,
         "--port",
