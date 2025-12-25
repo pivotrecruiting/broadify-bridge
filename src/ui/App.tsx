@@ -1,12 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { useNetworkConfig } from "./hooks/use-network-config";
 import { useBridgeStatus } from "./hooks/use-bridge-status";
 import { usePortAvailability } from "./hooks/use-port-availability";
 import { useNetworkBinding } from "./hooks/use-network-binding";
-import { useBridgeOutputs } from "./hooks/use-bridge-outputs";
 import { Header } from "./components/Header";
 import { NetworkSection } from "./components/NetworkSection";
-import { OutputsSection } from "./components/OutputsSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
@@ -28,13 +26,6 @@ function App() {
 
   // Bridge status hook
   const bridgeStatus = useBridgeStatus();
-
-  // Bridge outputs hook
-  const {
-    outputs: bridgeOutputs,
-    loading: outputsLoading,
-    refetch: refetchOutputs,
-  } = useBridgeOutputs();
 
   // Port availability hook
   const { portAvailability, checkingPorts } = usePortAvailability({
@@ -61,45 +52,6 @@ function App() {
       showAdvanced,
       setShowAdvanced,
     });
-
-  // Outputs state - initialize with first available output or empty string
-  const [output1, setOutput1] = useState<string>("");
-  const [output2, setOutput2] = useState<string>("");
-
-  // Update outputs when bridge outputs are loaded
-  useEffect(() => {
-    if (bridgeOutputs) {
-      // Set default to first available output if not set
-      if (!output1 && bridgeOutputs.output1.length > 0) {
-        const firstAvailable = bridgeOutputs.output1.find(
-          (opt) => opt.available
-        );
-        if (firstAvailable) {
-          setOutput1(firstAvailable.id);
-        }
-      }
-      if (!output2 && bridgeOutputs.output2.length > 0) {
-        const firstAvailable = bridgeOutputs.output2.find(
-          (opt) => opt.available
-        );
-        if (firstAvailable) {
-          setOutput2(firstAvailable.id);
-        }
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridgeOutputs]);
-
-  // Refetch outputs when bridge becomes reachable (only once when transitioning from unreachable to reachable)
-  const prevReachableRef = useRef<boolean>(false);
-  useEffect(() => {
-    // Only refetch when bridge transitions from unreachable to reachable
-    if (bridgeStatus.reachable && !prevReachableRef.current) {
-      refetchOutputs();
-    }
-    prevReachableRef.current = bridgeStatus.reachable;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridgeStatus.reachable]);
 
   // Bridge control state
   const [isStarting, setIsStarting] = useState(false);
@@ -133,21 +85,11 @@ function App() {
 
     const bindAddress = getCurrentBindAddress();
 
-    // Resolve output IDs to names for bridge config
-    const output1Name =
-      bridgeOutputs?.output1.find((opt) => opt.id === output1)?.name || output1;
-    const output2Name =
-      bridgeOutputs?.output2.find((opt) => opt.id === output2)?.name || output2;
-
     setIsStarting(true);
     try {
       const result = await window.electron.bridgeStart({
         host: bindAddress,
         port: portToUse,
-        outputs: {
-          output1: output1Name,
-          output2: output2Name,
-        },
         networkBindingId,
       });
 
@@ -178,7 +120,6 @@ function App() {
             bindAddress,
             port: result.actualPort || portToUse,
           },
-          outputs: { output1: output1, output2: output2 },
         });
       }
     } catch (error) {
@@ -258,16 +199,6 @@ function App() {
             onCustomPortChange={setCustomPort}
             onToggleAdvanced={() => setShowAdvanced(!showAdvanced)}
             getCurrentPortConfig={getCurrentPortConfig}
-          />
-
-          <OutputsSection
-            output1={output1}
-            output2={output2}
-            output1Options={bridgeOutputs?.output1 || []}
-            output2Options={bridgeOutputs?.output2 || []}
-            loading={outputsLoading}
-            onOutput1Change={setOutput1}
-            onOutput2Change={setOutput2}
           />
 
           <BridgeControlButton

@@ -30,7 +30,7 @@ dotenv.config();
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 let healthCheckCleanup: (() => void) | null = null;
-let bridgeOutputs: { output1: string; output2: string } | null = null;
+// Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let hasOpenedWebApp = false;
 
@@ -188,8 +188,7 @@ function getInterfaceType(
 function buildWebAppUrl(
   ip: string,
   iptype: string,
-  port: number,
-  outputs: { output1: string; output2: string }
+  port: number
 ): string | null {
   const baseUrl = process.env.STUDIO_CONTROL_WEBAPP_URL;
   if (!baseUrl) {
@@ -204,8 +203,7 @@ function buildWebAppUrl(
     url.searchParams.set("ip", ip);
     url.searchParams.set("iptype", iptype);
     url.searchParams.set("port", port.toString());
-    url.searchParams.set("output1", outputs.output1);
-    url.searchParams.set("output2", outputs.output2);
+    // Outputs are now configured in the web app, not via URL params
 
     return url.toString();
   } catch (error) {
@@ -242,11 +240,7 @@ app.on("ready", () => {
   ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
     // console.log("[Bridge] Starting bridge with config:", config);
 
-    // Outputs are now optional - bridge starts in "idle" mode
-    // Outputs can be configured later via POST /config endpoint
-    if (config.outputs) {
-      bridgeOutputs = config.outputs;
-    }
+    // Outputs are now configured in the web app via POST /config endpoint
     hasOpenedWebApp = false;
 
     // Store network binding ID
@@ -323,13 +317,11 @@ app.on("ready", () => {
               );
 
               // Build and open web app URL
-              // Outputs are optional - web app will handle configuration via POST /config
-              const outputs = bridgeOutputs || { output1: "", output2: "" };
+              // Outputs are now configured in the web app, not via URL params
               const webAppUrl = buildWebAppUrl(
                 resolvedIp,
                 interfaceType,
-                currentBridgeConfig.port,
-                outputs
+                currentBridgeConfig.port
               );
 
               if (webAppUrl) {
@@ -359,7 +351,7 @@ app.on("ready", () => {
 
     // Reset web app flag and outputs
     hasOpenedWebApp = false;
-    bridgeOutputs = null;
+    // Outputs are managed in the web app
     currentNetworkBindingId = null;
 
     // Send final status update
