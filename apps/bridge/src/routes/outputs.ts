@@ -3,7 +3,7 @@ import type {
   OutputDeviceT,
   BridgeOutputsT,
   DeviceDescriptorT,
-} from "../../../../types.js";
+} from "../types.js";
 import { deviceCache } from "../services/device-cache.js";
 
 /**

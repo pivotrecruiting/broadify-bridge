@@ -1,5 +1,5 @@
 import type { DeviceModule, DeviceController } from "../device-module.js";
-import type { DeviceDescriptorT } from "../../../../../types.js";
+import type { DeviceDescriptorT } from "../../types.js";
 import { DecklinkDetector } from "./decklink-detector.js";
 import { DecklinkDevice } from "./decklink-device.js";
 

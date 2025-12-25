@@ -1,4 +1,4 @@
-import type { DeviceDescriptorT } from "../../../../types.js";
+import type { DeviceDescriptorT } from "../types.js";
 import { moduleRegistry } from "../modules/module-registry.js";
 
 /**

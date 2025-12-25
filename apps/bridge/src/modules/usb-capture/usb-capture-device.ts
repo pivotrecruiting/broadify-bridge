@@ -1,5 +1,5 @@
 import type { DeviceController } from "../device-module.js";
-import type { DeviceStatusT } from "../../../../../types.js";
+import type { DeviceStatusT } from "../../types.js";
 
 /**
  * USB Capture Device Controller

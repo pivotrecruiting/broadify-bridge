@@ -1,5 +1,5 @@
 import type { DeviceModule, DeviceController } from "../device-module.js";
-import type { DeviceDescriptorT } from "../../../../../types.js";
+import type { DeviceDescriptorT } from "../../types.js";
 import { USBCaptureDetector } from "./usb-capture-detector.js";
 import { USBCaptureDevice } from "./usb-capture-device.js";
 
