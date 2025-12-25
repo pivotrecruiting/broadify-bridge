@@ -1,4 +1,4 @@
-import type { BridgeConfig } from "../../../types.js";
+import type { BridgeConfig } from "../types.js";
 
 const OUTPUTS_FETCH_TIMEOUT = 5000; // 5 seconds timeout
 

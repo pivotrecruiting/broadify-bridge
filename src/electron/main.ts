@@ -20,7 +20,7 @@ import type {
   BridgeConfig,
   NetworkConfigT,
   NetworkBindingOptionT,
-} from "../../types.js";
+} from "./types.js";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";

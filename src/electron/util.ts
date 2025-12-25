@@ -1,7 +1,7 @@
 import { ipcMain, WebContents, WebFrameMain } from "electron";
 import { getUIPath } from "./pathResolver.js";
 import { pathToFileURL } from "url";
-import type { EventPayloadMapping } from "../../types.js";
+import type { EventPayloadMapping } from "./types.js";
 import dotenv from "dotenv";
 
 dotenv.config();
