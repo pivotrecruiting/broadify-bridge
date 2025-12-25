@@ -1,18 +1,21 @@
-import type { DeviceDescriptorT, PortDescriptorT } from "../../../../../types.js";
+import type {
+  DeviceDescriptorT,
+  PortDescriptorT,
+} from "../../../../../types.js";
 import type { DecklinkDeviceInfo, DecklinkPortInfo } from "./decklink-types.js";
 
 /**
  * Decklink Detector
- * 
+ *
  * Discovery implementation for Blackmagic Decklink cards.
  * Uses Blackmagic Desktop Video SDK (BMD SDK) for device enumeration.
- * 
+ *
  * IMPORTANT: Must use BMD SDK, NOT OS APIs (AVFoundation/DirectShow)
  */
 export class DecklinkDetector {
   /**
    * Detect Decklink devices using BMD SDK
-   * 
+   *
    * TODO: Implement BMD SDK integration
    * - Use Blackmagic Desktop Video SDK
    * - Enumerate devices
@@ -52,7 +55,7 @@ export class DecklinkDetector {
 
   /**
    * Detect devices using BMD SDK
-   * 
+   *
    * TODO: Implement BMD SDK device enumeration
    */
   private async detectBMDDevices(): Promise<DecklinkDeviceInfo[]> {
@@ -66,10 +69,13 @@ export class DecklinkDetector {
 
   /**
    * Detect ports for a Decklink device
-   * 
+   *
    * TODO: Implement port detection via BMD SDK
    */
-  private async detectPorts(device: DecklinkDeviceInfo): Promise<DecklinkPortInfo[]> {
+  private async detectPorts(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _device: DecklinkDeviceInfo
+  ): Promise<DecklinkPortInfo[]> {
     // BMD SDK port detection will be implemented here
     // Decklink cards can have multiple ports:
     // - SDI-A (input/output)
@@ -97,4 +103,3 @@ export class DecklinkDetector {
     };
   }
 }
-
