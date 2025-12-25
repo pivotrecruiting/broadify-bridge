@@ -1,0 +1,96 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            artifact: mac-arm64
+            dist_script: dist:mac:arm64
+          - os: macos-15-intel
+            artifact: mac-x64
+            dist_script: dist:mac:x64
+          - os: windows-latest
+            artifact: win-x64
+            dist_script: dist:win
+          - os: ubuntu-latest
+            artifact: linux-x64
+            dist_script: dist:linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            apps/bridge/package-lock.json
+
+      - name: Install root deps
+        run: npm ci
+
+      - name: Build Bridge (apps/bridge)
+        run: |
+          cd apps/bridge
+          npm ci
+          npm run build
+
+      - name: Transpile Electron
+        run: npm run transpile:electron
+
+      - name: Build React
+        run: npm run build
+
+      - name: Build Electron App
+        run: npm run ${{ matrix.dist_script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.msi
+            dist/*.AppImage
+            dist/*.yml
+            dist/*.blockmap
+          if-no-files-found: warn
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

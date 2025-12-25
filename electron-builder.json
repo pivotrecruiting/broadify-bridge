@@ -1,24 +1,34 @@
 {
-    "appId": "com.georgimy.electron-template",
-    "files": [
-        "dist-electron",
-        "dist-react"
-    ],
-    "extraResources": [
-        "dist-electron/preload.cjs"
-    ],
-    "icon": "./templateIcon.png",
-    "mac": {
-        "target": "dmg"
+  "appId": "com.georgimy.electron-template",
+  "productName": "Broadify Bridge",
+  "files": ["dist-electron/**", "dist-react/**"],
+  "extraResources": [
+    {
+      "from": "apps/bridge/dist",
+      "to": "bridge/dist"
     },
-    "linux": {
-        "target": "AppImage",
-        "category": "Utility"
-    },
-    "win": {
-        "target": [
-            "portable",
-            "msi"
-        ]
+    {
+      "from": "apps/bridge/node_modules",
+      "to": "bridge/node_modules"
     }
+  ],
+  "icon": "./icon.png",
+  "mac": {
+    "target": "dmg",
+    "icon": "./icon.png",
+    "category": "public.app-category.utilities"
+  },
+  "linux": {
+    "target": "AppImage",
+    "category": "Utility",
+    "icon": "./icon.png"
+  },
+  "win": {
+    "target": ["portable", "msi"],
+    "icon": "./icon.png"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true
+  }
 }

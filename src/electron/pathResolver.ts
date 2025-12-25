@@ -15,9 +15,10 @@ export function getUIPath() {
 }
 
 export function getIconPath() {
+    const iconName = process.platform === 'win32' ? 'icon.png' : 'icon.png';
     return path.join(
         app.getAppPath(),
         isDev() ? './' : '../',
-        '/templateIcon.png'
+        `/${iconName}`
     )
 }
