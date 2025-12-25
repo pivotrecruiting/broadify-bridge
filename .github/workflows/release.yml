@@ -55,9 +55,7 @@ jobs:
         run: npm run build
 
       - name: Build Electron App
-        run: npm run ${{ matrix.dist_script }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run ${{ matrix.dist_script }} -- --publish=never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -84,6 +82,25 @@ jobs:
         with:
           path: artifacts
 
+      - name: List artifacts for debugging
+        run: |
+          echo "Artifacts structure:"
+          find artifacts -type f -name "*" | sort || true
+
+      - name: Rename duplicate files to avoid conflicts
+        run: |
+          # Remove builder-debug.yml files (not needed for releases)
+          find artifacts -name "builder-debug.yml" -delete 2>/dev/null || true
+          # Rename latest-mac.yml files to be unique per macOS architecture
+          if [ -f "artifacts/mac-arm64/latest-mac.yml" ]; then
+            mv "artifacts/mac-arm64/latest-mac.yml" "artifacts/mac-arm64/latest-mac-arm64.yml" 2>/dev/null || true
+          fi
+          if [ -f "artifacts/mac-x64/latest-mac.yml" ]; then
+            mv "artifacts/mac-x64/latest-mac.yml" "artifacts/mac-x64/latest-mac-x64.yml" 2>/dev/null || true
+          fi
+          echo "Final artifacts structure:"
+          find artifacts -type f | sort || true
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -92,5 +109,7 @@ jobs:
           files: artifacts/**/*
           draft: false
           prerelease: false
+          generate_release_notes: false
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
