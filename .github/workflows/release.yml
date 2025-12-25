@@ -55,9 +55,7 @@ jobs:
         run: npm run build
 
       - name: Build Electron App
-        run: npm run ${{ matrix.dist_script }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run ${{ matrix.dist_script }} -- --publish=never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
