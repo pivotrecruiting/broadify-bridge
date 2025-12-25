@@ -47,6 +47,20 @@ class RuntimeConfigService {
   }
 
   /**
+   * Check if engine is configured
+   */
+  hasEngine(): boolean {
+    return !!this.config?.engine;
+  }
+
+  /**
+   * Get engine configuration
+   */
+  getEngineConfig(): RuntimeConfig["engine"] {
+    return this.config?.engine || undefined;
+  }
+
+  /**
    * Set runtime config
    */
   setConfig(config: RuntimeConfig): void {

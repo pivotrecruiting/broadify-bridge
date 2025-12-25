@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeConfig } from "../services/runtime-config.js";
+import { engineAdapter } from "../services/engine-adapter.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -41,6 +42,9 @@ export async function registerStatusRoute(
   const { config } = options;
 
   fastify.get("/status", async () => {
+    const engineState = engineAdapter.getState();
+    const runtimeConfigData = runtimeConfig.getConfig();
+
     return {
       running: true,
       version: getVersion(),
@@ -50,6 +54,13 @@ export async function registerStatusRoute(
       host: config.host,
       state: runtimeConfig.getState(),
       outputsConfigured: runtimeConfig.hasOutputs(),
+      engine: {
+        configured: !!runtimeConfigData?.engine,
+        status: engineState.status,
+        type: engineState.type,
+        connected: engineState.status === "connected",
+        macrosCount: engineState.macros.length,
+      },
     };
   });
 }

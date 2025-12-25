@@ -25,6 +25,13 @@ electron.contextBridge.exposeInMainWorld("electron", {
   detectNetworkInterfaces: () => ipcInvoke("detectNetworkInterfaces"),
   getNetworkBindingOptions: () => ipcInvoke("getNetworkBindingOptions"),
   bridgeGetOutputs: () => ipcInvoke("bridgeGetOutputs"),
+  engineConnect: (ip?: string, port?: number) =>
+    ipcInvoke("engineConnect", ip, port),
+  engineDisconnect: () => ipcInvoke("engineDisconnect"),
+  engineGetStatus: () => ipcInvoke("engineGetStatus"),
+  engineGetMacros: () => ipcInvoke("engineGetMacros"),
+  engineRunMacro: (macroId: number) => ipcInvoke("engineRunMacro", macroId),
+  engineStopMacro: (macroId: number) => ipcInvoke("engineStopMacro", macroId),
 } satisfies Window["electron"]);
 
 function ipcInvoke<Key extends keyof EventPayloadMapping>(

@@ -448,6 +448,208 @@ app.on("ready", () => {
     return options;
   });
 
+  /**
+   * Helper function to make requests to Bridge API
+   */
+  async function bridgeApiRequest(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<any> {
+    const config = bridgeProcessManager.getConfig();
+    if (!config) {
+      throw new Error("Bridge is not running");
+    }
+
+    const host = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
+    const url = `http://${host}:${config.port}${endpoint}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+    try {
+      // Build headers: only set Content-Type if body exists
+      const headers: Record<string, string> = {};
+      if (options.headers) {
+        Object.entries(options.headers).forEach(([key, value]) => {
+          if (typeof value === "string") {
+            headers[key] = value;
+          }
+        });
+      }
+      if (options.body && !headers["Content-Type"]) {
+        headers["Content-Type"] = "application/json";
+      }
+
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.message || errorData.error || `HTTP ${response.status}`
+        );
+      }
+
+      return await response.json();
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error("Unknown error");
+    }
+  }
+
+  // Engine IPC handlers
+  ipcMainHandle(
+    "engineConnect",
+    async (event, type: string, ip?: string, port?: number) => {
+      try {
+        // Validate type
+        if (!type || !["atem", "tricaster", "vmix"].includes(type)) {
+          return {
+            success: false,
+            error:
+              "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
+          };
+        }
+
+        // Validate required fields
+        if (!ip) {
+          return {
+            success: false,
+            error: "IP address is required",
+          };
+        }
+
+        if (!port) {
+          return {
+            success: false,
+            error: "Port is required",
+          };
+        }
+
+        const body = {
+          type: type as "atem" | "tricaster" | "vmix",
+          ip,
+          port,
+        };
+
+        const result = await bridgeApiRequest("/engine/connect", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+
+        return {
+          success: true,
+          state: result.state,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        };
+      }
+    }
+  );
+
+  ipcMainHandle("engineDisconnect", async () => {
+    try {
+      const result = await bridgeApiRequest("/engine/disconnect", {
+        method: "POST",
+      });
+
+      return {
+        success: true,
+        state: result.state,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
+
+  ipcMainHandle("engineGetStatus", async () => {
+    try {
+      const result = await bridgeApiRequest("/engine/status");
+      return {
+        success: true,
+        state: result.state,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+        state: {
+          status: "error",
+          macros: [],
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      };
+    }
+  });
+
+  ipcMainHandle("engineGetMacros", async () => {
+    try {
+      const result = await bridgeApiRequest("/engine/macros");
+      return {
+        success: true,
+        macros: result.macros || [],
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+        macros: [],
+      };
+    }
+  });
+
+  ipcMainHandle("engineRunMacro", async (event, macroId: number) => {
+    try {
+      const result = await bridgeApiRequest(`/engine/macros/${macroId}/run`, {
+        method: "POST",
+      });
+
+      return {
+        success: true,
+        macroId,
+        state: result.state,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
+
+  ipcMainHandle("engineStopMacro", async (event, macroId: number) => {
+    try {
+      const result = await bridgeApiRequest(`/engine/macros/${macroId}/stop`, {
+        method: "POST",
+      });
+
+      return {
+        success: true,
+        macroId,
+        state: result.state,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
+
   // Bridge outputs IPC handler
   ipcMainHandle("bridgeGetOutputs", async () => {
     console.log("[OutputChecker] Getting outputs");

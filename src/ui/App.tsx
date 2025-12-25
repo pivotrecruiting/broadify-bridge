@@ -6,14 +6,9 @@ import { useNetworkBinding } from "./hooks/use-network-binding";
 import { useBridgeOutputs } from "./hooks/use-bridge-outputs";
 import { Header } from "./components/Header";
 import { NetworkSection } from "./components/NetworkSection";
-import { EngineSection } from "./components/EngineSection";
 import { OutputsSection } from "./components/OutputsSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
-import {
-  ENGINE_ATEM_OPTIONS,
-  ENGINE_PORT_OPTIONS,
-} from "./constants/engine-constants";
 import "./styles/App.css";
 
 function App() {
@@ -66,10 +61,6 @@ function App() {
       showAdvanced,
       setShowAdvanced,
     });
-
-  // Engine state
-  const [engineAtem, setEngineAtem] = useState<string>(ENGINE_ATEM_OPTIONS[0]);
-  const [enginePort, setEnginePort] = useState<string>(ENGINE_PORT_OPTIONS[0]);
 
   // Outputs state - initialize with first available output or empty string
   const [output1, setOutput1] = useState<string>("");
@@ -187,7 +178,6 @@ function App() {
             bindAddress,
             port: result.actualPort || portToUse,
           },
-          engine: { atem: engineAtem, port: enginePort },
           outputs: { output1: output1, output2: output2 },
         });
       }
@@ -268,13 +258,6 @@ function App() {
             onCustomPortChange={setCustomPort}
             onToggleAdvanced={() => setShowAdvanced(!showAdvanced)}
             getCurrentPortConfig={getCurrentPortConfig}
-          />
-
-          <EngineSection
-            engineAtem={engineAtem}
-            enginePort={enginePort}
-            onAtemChange={setEngineAtem}
-            onPortChange={setEnginePort}
           />
 
           <OutputsSection

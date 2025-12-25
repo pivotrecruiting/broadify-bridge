@@ -1,10 +1,15 @@
 import Fastify from "fastify";
-import type { BridgeConfigT } from "./config.js";
+import cors from "@fastify/cors";
+import websocket from "@fastify/websocket";
 import { registerStatusRoute } from "./routes/status.js";
 import { registerOutputsRoute } from "./routes/outputs.js";
 import { registerDevicesRoute } from "./routes/devices.js";
 import { registerConfigRoute } from "./routes/config.js";
+import { registerEngineRoute } from "./routes/engine.js";
+import { registerVideoRoute } from "./routes/video.js";
+import { registerWebSocketRoute } from "./routes/websocket.js";
 import { initializeModules } from "./modules/index.js";
+import type { BridgeConfigT } from "./config.js";
 
 /**
  * Create and configure Fastify server instance
@@ -28,6 +33,17 @@ export async function createServer(config: BridgeConfigT) {
     logger,
   });
 
+  // Register CORS plugin
+  await server.register(cors, {
+    origin: true, // Allow all origins (for development)
+    // For production: origin: ["http://localhost:3000", "https://yourdomain.com"]
+  });
+  server.log.info("[Server] CORS plugin registered");
+
+  // Register WebSocket plugin
+  await server.register(websocket);
+  server.log.info("[Server] WebSocket plugin registered");
+
   // Initialize device modules
   initializeModules();
   server.log.info("[Server] Device modules initialized");
@@ -37,6 +53,14 @@ export async function createServer(config: BridgeConfigT) {
   await server.register(registerDevicesRoute);
   await server.register(registerOutputsRoute);
   await server.register(registerConfigRoute);
+  await server.register(registerEngineRoute);
+  await server.register(registerVideoRoute);
+  await server.register(registerWebSocketRoute);
+  server.log.info("[Server] All routes registered");
+
+  // Note: Engine connection is now controlled by the Web-App
+  // The Web-App handles auto-connect and stores config in localStorage
+  // Bridge no longer auto-connects on startup
 
   return server;
 }
