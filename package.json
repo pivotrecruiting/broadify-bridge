@@ -13,12 +13,17 @@
 		"preview": "vite preview",
 		"transpile:electron": "tsc --project src/electron/tsconfig.json",
 		"dist:mac": "npm run transpile:electron && npm run build && electron-builder --mac --arm64",
+		"dist:mac:arm64": "npm run transpile:electron && npm run build && electron-builder --mac --arm64",
+		"dist:mac:x64": "npm run transpile:electron && npm run build && electron-builder --mac --x64",
 		"dist:win": "npm run transpile:electron && npm run build && electron-builder --win --x64",
-		"dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64"
+		"dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64",
+		"dist:all": "npm run dist:mac:arm64 && npm run dist:mac:x64 && npm run dist:win && npm run dist:linux",
+		"release": "npm run dist:all"
 	},
 	"dependencies": {
 		"@radix-ui/react-select": "^2.2.6",
 		"@radix-ui/react-slot": "^1.1.2",
+		"@sentry/electron": "^7.5.0",
 		"@tailwindcss/vite": "^4.0.6",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
