@@ -1,6 +1,10 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { z } from "zod";
 import { engineAdapter } from "../services/engine-adapter.js";
+import {
+  EngineError,
+  EngineErrorCode,
+} from "../services/engine/engine-errors.js";
 
 /**
  * Connect request schema
@@ -50,19 +54,73 @@ export async function registerEngineRoute(
         success: true,
         state: engineAdapter.getState(),
       };
-    } catch (error: any) {
-      fastify.log.error("[Engine] Connection error:", error);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error(`[Engine] Connection error: ${errorMessage}`);
 
-      if (error.name === "ZodError") {
+      // Handle validation errors
+      if (
+        error &&
+        typeof error === "object" &&
+        "name" in error &&
+        error.name === "ZodError"
+      ) {
+        const zodError = error as z.ZodError;
         return reply.code(400).send({
-          error: "Invalid request",
-          message: error.errors.map((e: any) => e.message).join(", "),
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Invalid request parameters",
+            details: zodError.errors.map((e) => ({
+              path: e.path.join("."),
+              message: e.message,
+            })),
+          },
         });
       }
 
+      // Handle EngineError
+      if (error instanceof EngineError) {
+        // Map error codes to HTTP status codes
+        let statusCode = 500;
+        if (
+          error.code === EngineErrorCode.ALREADY_CONNECTED ||
+          error.code === EngineErrorCode.ALREADY_CONNECTING
+        ) {
+          statusCode = 409; // Conflict
+        } else if (
+          error.code === EngineErrorCode.CONNECTION_TIMEOUT ||
+          error.code === EngineErrorCode.DEVICE_UNREACHABLE
+        ) {
+          statusCode = 504; // Gateway Timeout
+        } else if (
+          error.code === EngineErrorCode.CONNECTION_REFUSED ||
+          error.code === EngineErrorCode.NETWORK_ERROR
+        ) {
+          statusCode = 503; // Service Unavailable
+        } else if (
+          error.code === EngineErrorCode.INVALID_IP ||
+          error.code === EngineErrorCode.INVALID_PORT
+        ) {
+          statusCode = 400; // Bad Request
+        }
+
+        return reply.code(statusCode).send({
+          success: false,
+          error: error.toJSON(),
+        });
+      }
+
+      // Handle unknown errors
+      const unknownErrorMessage =
+        error instanceof Error ? error.message : String(error);
       return reply.code(500).send({
-        error: "Failed to connect",
-        message: error.message || "Unknown error",
+        success: false,
+        error: {
+          code: EngineErrorCode.UNKNOWN_ERROR,
+          message: unknownErrorMessage || "Unknown error occurred",
+        },
       });
     }
   });

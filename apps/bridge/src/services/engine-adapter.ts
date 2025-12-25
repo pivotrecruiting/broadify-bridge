@@ -6,6 +6,13 @@ import { createEngineAdapter } from "./engine/adapter-factory.js";
 import { EngineStateStore } from "./engine/engine-state-store.js";
 import { websocketManager } from "./websocket-manager.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
+import {
+  EngineError,
+  EngineErrorCode,
+  createAlreadyConnectedError,
+  createAlreadyConnectingError,
+  createNotConnectedError,
+} from "./engine/engine-errors.js";
 
 /**
  * Engine adapter service
@@ -51,11 +58,11 @@ class EngineAdapterService {
   async connect(config: EngineConnectConfig): Promise<void> {
     const currentState = this.stateStore.getState();
 
-    if (
-      currentState.status === "connected" ||
-      currentState.status === "connecting"
-    ) {
-      throw new Error("Engine is already connected or connecting");
+    if (currentState.status === "connected") {
+      throw createAlreadyConnectedError();
+    }
+    if (currentState.status === "connecting") {
+      throw createAlreadyConnectingError();
     }
 
     // Update state
@@ -89,19 +96,42 @@ class EngineAdapterService {
 
       // Note: State will be updated via adapter's onStateChange callback
     } catch (error: unknown) {
+      // Clean up adapter on connection failure
+      if (this.unsubscribeAdapterState) {
+        this.unsubscribeAdapterState();
+        this.unsubscribeAdapterState = null;
+      }
+      this.adapter = null;
+
+      // Re-throw EngineError as-is, wrap others
+      if (error instanceof EngineError) {
+        const errorState: EngineStateT = {
+          status: "error",
+          error: error.message,
+          macros: [],
+        };
+        this.stateStore.setState(errorState);
+        this.broadcastStateChanges(errorState);
+        throw error;
+      }
+
+      // Wrap unknown errors
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      const detailedError =
+      const engineError = new EngineError(
+        EngineErrorCode.UNKNOWN_ERROR,
         errorMessage ||
-        `Failed to connect to ${config.type} at ${config.ip}:${config.port}`;
+          `Failed to connect to ${config.type} at ${config.ip}:${config.port}`,
+        { type: config.type, ip: config.ip, port: config.port }
+      );
       const errorState: EngineStateT = {
         status: "error",
-        error: detailedError,
+        error: engineError.message,
         macros: [],
       };
       this.stateStore.setState(errorState);
       this.broadcastStateChanges(errorState);
-      throw new Error(detailedError);
+      throw engineError;
     }
   }
 
@@ -141,12 +171,12 @@ class EngineAdapterService {
    */
   async runMacro(macroId: number): Promise<void> {
     if (!this.adapter) {
-      throw new Error("Engine is not connected");
+      throw createNotConnectedError("run macro");
     }
 
     const currentState = this.stateStore.getState();
     if (currentState.status !== "connected") {
-      throw new Error("Engine is not connected");
+      throw createNotConnectedError("run macro");
     }
 
     try {
@@ -164,12 +194,12 @@ class EngineAdapterService {
    */
   async stopMacro(macroId: number): Promise<void> {
     if (!this.adapter) {
-      throw new Error("Engine is not connected");
+      throw createNotConnectedError("stop macro");
     }
 
     const currentState = this.stateStore.getState();
     if (currentState.status !== "connected") {
-      throw new Error("Engine is not connected");
+      throw createNotConnectedError("stop macro");
     }
 
     try {

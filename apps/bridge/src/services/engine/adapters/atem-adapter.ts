@@ -9,6 +9,14 @@ import type {
   EngineStateT,
 } from "../../engine-types.js";
 import { EventEmitter } from "events";
+import {
+  EngineError,
+  EngineErrorCode,
+  createConnectionTimeoutError,
+  createConnectionRefusedError,
+  createNetworkError,
+  createDeviceUnreachableError,
+} from "../engine-errors.js";
 
 /**
  * ATEM adapter implementation
@@ -25,6 +33,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     status: "disconnected",
     macros: [],
   };
+  private readonly connectTimeoutMs = 10000; // 10 seconds timeout
 
   /**
    * Connect to ATEM switcher
@@ -50,49 +59,161 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       type: config.type,
     });
 
-    try {
-      // Create new ATEM connection
-      const atem = new Atem({ debugBuffers: false });
-      this.atemConnection = atem;
+    // Create new ATEM connection
+    const atem = new Atem({ debugBuffers: false });
+    this.atemConnection = atem;
 
-      // Set up event handlers
-      atem.on("connected", () => {
-        this.setState({ status: "connected" });
-        this.updateMacrosFromState();
-      });
+    // Set up event handlers
+    let connectionResolve: (() => void) | null = null;
+    let connectionReject: ((error: Error) => void) | null = null;
+    let timeoutId: NodeJS.Timeout | null = null;
 
-      atem.on("disconnected", () => {
-        if (this.state.status === "connected") {
-          this.setState({ status: "disconnected" });
-        }
-      });
+    // Promise that resolves when "connected" event fires
+    const connectionPromise = new Promise<void>((resolve, reject) => {
+      connectionResolve = resolve;
+      connectionReject = reject;
+    });
 
-      atem.on("stateChanged", () => {
-        this.updateMacrosFromState();
-      });
+    // Set up connected handler
+    const onConnected = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      this.setState({ status: "connected" });
+      this.updateMacrosFromState();
+      if (connectionResolve) {
+        connectionResolve();
+      }
+    };
 
-      atem.on("error", (error: Error | string) => {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        this.setState({
-          status: "error",
-          error: errorMessage || "ATEM connection error occurred",
-        });
-      });
-
-      // Connect to ATEM
-      await atem.connect(config.ip, config.port);
-    } catch (error: unknown) {
+    // Set up error handler
+    const onError = (error: Error | string) => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      const detailedError =
-        errorMessage ||
-        `Failed to connect to ATEM at ${config.ip}:${config.port}. Check if the device is reachable and the port is correct.`;
+
+      // Determine error type from message
+      let engineError: EngineError;
+      if (
+        errorMessage.includes("ECONNREFUSED") ||
+        errorMessage.includes("refused")
+      ) {
+        engineError = createConnectionRefusedError(config.ip, config.port);
+      } else if (
+        errorMessage.includes("ENOTFOUND") ||
+        errorMessage.includes("EHOSTUNREACH")
+      ) {
+        engineError = createDeviceUnreachableError(config.ip, config.port);
+      } else if (
+        errorMessage.includes("ETIMEDOUT") ||
+        errorMessage.includes("timeout")
+      ) {
+        engineError = createConnectionTimeoutError(
+          config.ip,
+          config.port,
+          this.connectTimeoutMs
+        );
+      } else {
+        engineError = createNetworkError(
+          config.ip,
+          config.port,
+          error instanceof Error ? error : undefined
+        );
+      }
+
       this.setState({
         status: "error",
-        error: detailedError,
+        error: engineError.message,
       });
-      throw new Error(detailedError);
+      if (connectionReject) {
+        connectionReject(engineError);
+      }
+    };
+
+    // Set up disconnected handler
+    const onDisconnected = () => {
+      if (this.state.status === "connected") {
+        this.setState({ status: "disconnected" });
+      }
+    };
+
+    atem.once("connected", onConnected);
+    atem.once("error", onError);
+    atem.on("disconnected", onDisconnected);
+    atem.on("stateChanged", () => {
+      this.updateMacrosFromState();
+    });
+
+    try {
+      // Start connection
+      atem.connect(config.ip, config.port);
+
+      // Set up timeout
+      timeoutId = setTimeout(() => {
+        // Clean up connection attempt on timeout
+        try {
+          atem.disconnect();
+        } catch {
+          // Ignore disconnect errors during timeout cleanup
+        }
+        this.atemConnection = null;
+
+        // Remove event listeners
+        atem.removeListener("connected", onConnected);
+        atem.removeListener("error", onError);
+        atem.removeListener("disconnected", onDisconnected);
+
+        const timeoutError = createConnectionTimeoutError(
+          config.ip,
+          config.port,
+          this.connectTimeoutMs
+        );
+        this.setState({
+          status: "error",
+          error: timeoutError.message,
+        });
+        if (connectionReject) {
+          connectionReject(timeoutError);
+        }
+      }, this.connectTimeoutMs);
+
+      // Wait for connection or timeout
+      await connectionPromise;
+    } catch (error: unknown) {
+      // Clean up on error
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (atem) {
+        try {
+          atem.removeListener("connected", onConnected);
+          atem.removeListener("error", onError);
+          atem.removeListener("disconnected", onDisconnected);
+          atem.disconnect();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      this.atemConnection = null;
+
+      // Re-throw as EngineError if not already
+      if (error instanceof EngineError) {
+        throw error;
+      }
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      const engineError = new EngineError(
+        EngineErrorCode.UNKNOWN_ERROR,
+        errorMessage ||
+          `Failed to connect to ATEM at ${config.ip}:${config.port}. Check if the device is reachable and the port is correct.`,
+        { ip: config.ip, port: config.port }
+      );
+      throw engineError;
     }
   }
 
