@@ -192,6 +192,42 @@ export type NetworkConfigT = {
   };
 };
 
+/**
+ * Engine connection status
+ */
+export type EngineStatusT =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "error";
+
+/**
+ * Macro execution status
+ */
+export type MacroStatusT = "idle" | "running" | "recording";
+
+/**
+ * Macro definition
+ */
+export type MacroT = {
+  id: number;
+  name: string;
+  status: MacroStatusT;
+};
+
+/**
+ * Engine state information
+ */
+export type EngineStateT = {
+  status: EngineStatusT;
+  type?: "atem" | "tricaster";
+  ip?: string;
+  port?: number;
+  macros: MacroT[];
+  lastUpdate?: number;
+  error?: string;
+};
+
 export type EventPayloadMapping = {
   statistics: Statistics;
   getStaticData: StaticData;
@@ -205,6 +241,22 @@ export type EventPayloadMapping = {
   detectNetworkInterfaces: NetworkBindingOptionT[];
   getNetworkBindingOptions: NetworkBindingOptionT[];
   bridgeGetOutputs: BridgeOutputsT;
+  engineConnect: { success: boolean; error?: string; state?: EngineStateT };
+  engineDisconnect: { success: boolean; error?: string; state?: EngineStateT };
+  engineGetStatus: { success: boolean; error?: string; state?: EngineStateT };
+  engineGetMacros: { success: boolean; error?: string; macros?: MacroT[] };
+  engineRunMacro: {
+    success: boolean;
+    error?: string;
+    macroId?: number;
+    state?: EngineStateT;
+  };
+  engineStopMacro: {
+    success: boolean;
+    error?: string;
+    macroId?: number;
+    state?: EngineStateT;
+  };
 };
 
 declare global {
@@ -234,6 +286,41 @@ declare global {
       detectNetworkInterfaces: () => Promise<NetworkBindingOptionT[]>;
       getNetworkBindingOptions: () => Promise<NetworkBindingOptionT[]>;
       bridgeGetOutputs: () => Promise<BridgeOutputsT>;
+      engineConnect: (
+        ip?: string,
+        port?: number
+      ) => Promise<{ success: boolean; error?: string; state?: EngineStateT }>;
+      engineDisconnect: () => Promise<{
+        success: boolean;
+        error?: string;
+        state?: EngineStateT;
+      }>;
+      engineGetStatus: () => Promise<{
+        success: boolean;
+        error?: string;
+        state?: EngineStateT;
+      }>;
+      engineGetMacros: () => Promise<{
+        success: boolean;
+        error?: string;
+        macros?: MacroT[];
+      }>;
+      engineRunMacro: (
+        macroId: number
+      ) => Promise<{
+        success: boolean;
+        error?: string;
+        macroId?: number;
+        state?: EngineStateT;
+      }>;
+      engineStopMacro: (
+        macroId: number
+      ) => Promise<{
+        success: boolean;
+        error?: string;
+        macroId?: number;
+        state?: EngineStateT;
+      }>;
     };
   }
 }
