@@ -10,7 +10,8 @@ import { moduleRegistry } from "../modules/module-registry.js";
  */
 export async function registerDevicesRoute(
   fastify: FastifyInstance,
-  options: FastifyPluginOptions
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _options: FastifyPluginOptions
 ): Promise<void> {
   // Cache for device detection results
   let cachedDevices: DeviceDescriptorT[] = [];

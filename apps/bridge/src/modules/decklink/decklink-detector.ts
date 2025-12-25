@@ -58,6 +58,8 @@ export class DecklinkDetector {
    *
    * TODO: Implement BMD SDK device enumeration
    */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // @ts-expect-error - Method will be used when BMD SDK is implemented
   private async detectBMDDevices(): Promise<DecklinkDeviceInfo[]> {
     // BMD SDK device enumeration will be implemented here
     // This requires:
@@ -72,6 +74,8 @@ export class DecklinkDetector {
    *
    * TODO: Implement port detection via BMD SDK
    */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // @ts-expect-error - Method will be used when BMD SDK is implemented
   private async detectPorts(
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _device: DecklinkDeviceInfo
@@ -88,6 +92,8 @@ export class DecklinkDetector {
   /**
    * Create port descriptor from port info
    */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // @ts-expect-error - Method will be used when BMD SDK is implemented
   private createPortDescriptor(portInfo: DecklinkPortInfo): PortDescriptorT {
     return {
       id: portInfo.id,
