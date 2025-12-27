@@ -11,6 +11,10 @@
     {
       "from": "apps/bridge/node_modules",
       "to": "bridge/node_modules"
+    },
+    {
+      "from": "resources/cloudflared",
+      "to": "cloudflared"
     }
   ],
   "icon": "./icon.png",
