@@ -31,6 +31,8 @@ export type BridgeStatus = {
   state?: "idle" | "configured" | "active";
   outputsConfigured?: boolean;
   error?: string;
+  tunnelUrl?: string | null; // Cloudflare Tunnel URL (null wenn nicht verfügbar)
+  tunnelRunning?: boolean; // Tunnel-Prozess Status
 };
 
 /**
@@ -257,6 +259,7 @@ export type EventPayloadMapping = {
     macroId?: number;
     state?: EngineStateT;
   };
+  openExternal: void;
 };
 
 declare global {
@@ -321,6 +324,7 @@ declare global {
         macroId?: number;
         state?: EngineStateT;
       }>;
+      openExternal: (url: string) => Promise<void>;
     };
   }
 }
