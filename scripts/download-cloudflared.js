@@ -103,14 +103,16 @@ async function getLatestRelease() {
         });
         res.on("end", () => {
           // Log raw response for debugging (first 500 chars)
-          const preview = data.length > 500 ? data.substring(0, 500) + "..." : data;
+          const preview =
+            data.length > 500 ? data.substring(0, 500) + "..." : data;
           console.log("GitHub API response preview:", preview);
 
           // Check HTTP status code
           if (res.statusCode !== 200) {
             let errorMessage = `GitHub API returned status ${res.statusCode}`;
             if (res.statusCode === 403 || res.statusCode === 429) {
-              errorMessage += " (Rate limit exceeded). Consider setting GITHUB_TOKEN environment variable.";
+              errorMessage +=
+                " (Rate limit exceeded). Consider setting GITHUB_TOKEN environment variable.";
             }
             errorMessage += ` Response: ${preview}`;
             reject(new Error(errorMessage));
@@ -121,7 +123,11 @@ async function getLatestRelease() {
             const release = JSON.parse(data);
             resolve(release);
           } catch (err) {
-            reject(new Error(`Failed to parse release data: ${err.message}. Response: ${preview}`));
+            reject(
+              new Error(
+                `Failed to parse release data: ${err.message}. Response: ${preview}`
+              )
+            );
           }
         });
       })
@@ -136,7 +142,9 @@ function findAsset(release, searchPatterns, excludePatterns = []) {
   // Validate that release.assets exists and is an array
   if (!release.assets || !Array.isArray(release.assets)) {
     throw new Error(
-      `Release data missing required 'assets' field. Full response: ${JSON.stringify(release)}`
+      `Release data missing required 'assets' field. Full response: ${JSON.stringify(
+        release
+      )}`
     );
   }
 
