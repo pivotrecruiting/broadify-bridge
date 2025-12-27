@@ -14,11 +14,66 @@ export class CloudflareTunnelManager {
   private logStream: fs.WriteStream | null = null;
 
   /**
+   * Get cloudflared executable path
+   * In development, uses system PATH. In production, uses bundled binary.
+   */
+  private getCloudflaredPath(): string {
+    if (isDev()) {
+      // Development: use system PATH
+      return "cloudflared";
+    }
+
+    // Production: use bundled binary
+    const platform = process.platform;
+    const arch = process.arch;
+
+    // Determine platform-specific path
+    let platformDir: string;
+    let binaryName: string;
+
+    if (platform === "darwin") {
+      // macOS: use arch-specific directory
+      platformDir = arch === "arm64" ? "mac-arm64" : "mac-x64";
+      binaryName = "cloudflared";
+    } else if (platform === "win32") {
+      platformDir = "win";
+      binaryName = "cloudflared.exe";
+    } else if (platform === "linux") {
+      platformDir = "linux";
+      binaryName = "cloudflared";
+    } else {
+      // Fallback to system PATH for unknown platforms
+      console.warn(
+        `[TunnelManager] Unknown platform ${platform}, falling back to system PATH`
+      );
+      return "cloudflared";
+    }
+
+    const cloudflaredPath = path.join(
+      process.resourcesPath,
+      "cloudflared",
+      platformDir,
+      binaryName
+    );
+
+    // Check if bundled binary exists, fallback to system PATH if not
+    if (fs.existsSync(cloudflaredPath)) {
+      return cloudflaredPath;
+    } else {
+      console.warn(
+        `[TunnelManager] Bundled cloudflared not found at ${cloudflaredPath}, falling back to system PATH`
+      );
+      return "cloudflared";
+    }
+  }
+
+  /**
    * Check if cloudflared is available
    */
   async checkCloudflaredAvailable(): Promise<boolean> {
+    const cloudflaredPath = this.getCloudflaredPath();
     return new Promise((resolve) => {
-      const checkProcess = spawn("cloudflared", ["--version"], {
+      const checkProcess = spawn(cloudflaredPath, ["--version"], {
         stdio: "ignore",
       });
 
@@ -80,11 +135,13 @@ export class CloudflareTunnelManager {
       const localUrl = `http://localhost:${localPort}`;
       const args = ["tunnel", "--url", localUrl];
 
+      const cloudflaredPath = this.getCloudflaredPath();
       console.log(
         `[TunnelManager] Starting cloudflared tunnel for port ${localPort}`
       );
       console.log(`[TunnelManager] Tunnel will connect to: ${localUrl}`);
-      this.tunnelProcess = spawn("cloudflared", args, {
+      console.log(`[TunnelManager] Using cloudflared: ${cloudflaredPath}`);
+      this.tunnelProcess = spawn(cloudflaredPath, args, {
         stdio: ["ignore", "pipe", "pipe"],
       });
 

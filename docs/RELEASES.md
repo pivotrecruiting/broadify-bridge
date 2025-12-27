@@ -118,6 +118,8 @@ GET https://api.github.com/repos/{owner}/{repo}/releases/latest
 
 ### Response Beispiel
 
+**WICHTIG:** Die GitHub Releases API gibt ALLE Assets zurück, inklusive `.blockmap` und `.yml` Dateien. Diese müssen gefiltert werden!
+
 ```json
 {
   "tag_name": "v0.1.0",
@@ -130,10 +132,28 @@ GET https://api.github.com/repos/{owner}/{repo}/releases/latest
       "content_type": "application/x-apple-diskimage"
     },
     {
+      "name": "broadify-bridge-0.1.0-arm64.dmg.blockmap",
+      "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/broadify-bridge-0.1.0-arm64.dmg.blockmap",
+      "size": 12345,
+      "content_type": "application/octet-stream"
+    },
+    {
       "name": "broadify-bridge-0.1.0-x64.dmg",
       "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/broadify-bridge-0.1.0-x64.dmg",
       "size": 133901796,
       "content_type": "application/x-apple-diskimage"
+    },
+    {
+      "name": "broadify-bridge-0.1.0-x64.dmg.blockmap",
+      "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/broadify-bridge-0.1.0-x64.dmg.blockmap",
+      "size": 12345,
+      "content_type": "application/octet-stream"
+    },
+    {
+      "name": "latest-mac.yml",
+      "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/latest-mac.yml",
+      "size": 1234,
+      "content_type": "text/yaml"
     },
     {
       "name": "broadify-bridge-0.1.0-win-x64.exe",
@@ -157,7 +177,14 @@ GET https://api.github.com/repos/{owner}/{repo}/releases/latest
 }
 ```
 
+**Filter-Regeln für Web-App:**
+
+- ✅ Verwende: `.dmg`, `.exe`, `.msi`, `.AppImage` Dateien
+- ❌ Ignoriere: `.blockmap` Dateien (für Delta-Updates, nicht für Downloads)
+- ❌ Ignoriere: `.yml` / `.yaml` Dateien (Update-Metadaten, nicht für Downloads)
+
+Siehe [WEB_APP_INTEGRATION.md](./WEB_APP_INTEGRATION.md) für Beispiel-Implementation mit Filterung.
+
 ## Web-App Integration
 
 Siehe [WEB_APP_INTEGRATION.md](./WEB_APP_INTEGRATION.md) für Details zur Integration in die Web-App.
-

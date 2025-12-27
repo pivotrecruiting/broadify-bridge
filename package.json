@@ -1,7 +1,7 @@
 {
   "name": "electron-vite-template",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -12,11 +12,12 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "transpile:electron": "tsc --project src/electron/tsconfig.json",
-    "dist:mac": "npm run transpile:electron && npm run build && electron-builder --mac --arm64",
-    "dist:mac:arm64": "npm run transpile:electron && npm run build && electron-builder --mac --arm64",
-    "dist:mac:x64": "npm run transpile:electron && npm run build && electron-builder --mac --x64",
-    "dist:win": "npm run transpile:electron && npm run build && electron-builder --win --x64",
-    "dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64",
+    "download:cloudflared": "node scripts/download-cloudflared.js",
+    "dist:mac": "npm run download:cloudflared && npm run transpile:electron && npm run build && electron-builder --mac --arm64",
+    "dist:mac:arm64": "npm run download:cloudflared && npm run transpile:electron && npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run download:cloudflared && npm run transpile:electron && npm run build && electron-builder --mac --x64",
+    "dist:win": "npm run download:cloudflared && npm run transpile:electron && npm run build && electron-builder --win --x64",
+    "dist:linux": "npm run download:cloudflared && npm run transpile:electron && npm run build && electron-builder --linux --x64",
     "dist:all": "npm run dist:mac:arm64 && npm run dist:mac:x64 && npm run dist:win && npm run dist:linux",
     "release": "npm run dist:all"
   },
