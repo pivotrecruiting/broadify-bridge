@@ -285,8 +285,39 @@ if (!gotTheLock) {
       // Store network binding ID
       currentNetworkBindingId = config.networkBindingId || "localhost";
 
+      // Resolve bind address to actual IP address
+      const networkConfig = loadNetworkConfig();
+      const networkBindingOptions = detectNetworkInterfaces(
+        networkConfig.networkBinding.options,
+        networkConfig.networkBinding.filters
+      );
+
+      const interfaceType = getInterfaceType(
+        currentNetworkBindingId,
+        networkBindingOptions
+      );
+      const matchingOption = networkBindingOptions.find(
+        (opt) => opt.id === currentNetworkBindingId
+      );
+
+      let resolvedHost = config.host;
+      if (matchingOption) {
+        // Resolve IP address (handles AUTO_IPV4, 0.0.0.0, etc.)
+        resolvedHost = resolveBindAddress(
+          matchingOption.bindAddress,
+          interfaceType,
+          networkConfig.networkBinding.filters
+        );
+      }
+
+      // Create resolved config for bridge
+      const resolvedConfig: BridgeConfig = {
+        ...config,
+        host: resolvedHost,
+      };
+
       // Start bridge without requiring outputs
-      const result = await bridgeProcessManager.start(config, true); // autoFindPort = true
+      const result = await bridgeProcessManager.start(resolvedConfig, true); // autoFindPort = true
       console.log("[Bridge] Start result:", result);
 
       // Start health check polling if bridge started successfully
