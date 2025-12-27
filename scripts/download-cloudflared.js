@@ -79,12 +79,20 @@ function downloadFile(url, dest) {
  */
 async function getLatestRelease() {
   return new Promise((resolve, reject) => {
+    const headers = {
+      "User-Agent": "broadify-bridge-v2",
+    };
+
+    // Add GitHub token authentication if available
+    const githubToken = process.env.GITHUB_TOKEN;
+    if (githubToken) {
+      headers["Authorization"] = `Bearer ${githubToken}`;
+    }
+
     const options = {
       hostname: "api.github.com",
       path: "/repos/cloudflare/cloudflared/releases/latest",
-      headers: {
-        "User-Agent": "broadify-bridge-v2",
-      },
+      headers,
     };
 
     https
@@ -94,11 +102,26 @@ async function getLatestRelease() {
           data += chunk;
         });
         res.on("end", () => {
+          // Log raw response for debugging (first 500 chars)
+          const preview = data.length > 500 ? data.substring(0, 500) + "..." : data;
+          console.log("GitHub API response preview:", preview);
+
+          // Check HTTP status code
+          if (res.statusCode !== 200) {
+            let errorMessage = `GitHub API returned status ${res.statusCode}`;
+            if (res.statusCode === 403 || res.statusCode === 429) {
+              errorMessage += " (Rate limit exceeded). Consider setting GITHUB_TOKEN environment variable.";
+            }
+            errorMessage += ` Response: ${preview}`;
+            reject(new Error(errorMessage));
+            return;
+          }
+
           try {
             const release = JSON.parse(data);
             resolve(release);
           } catch (err) {
-            reject(new Error(`Failed to parse release data: ${err.message}`));
+            reject(new Error(`Failed to parse release data: ${err.message}. Response: ${preview}`));
           }
         });
       })
@@ -110,6 +133,13 @@ async function getLatestRelease() {
  * Find asset URL and name for a platform using search patterns
  */
 function findAsset(release, searchPatterns, excludePatterns = []) {
+  // Validate that release.assets exists and is an array
+  if (!release.assets || !Array.isArray(release.assets)) {
+    throw new Error(
+      `Release data missing required 'assets' field. Full response: ${JSON.stringify(release)}`
+    );
+  }
+
   // First, try to find an asset that matches any of the patterns and doesn't match exclude patterns
   for (const pattern of searchPatterns) {
     const asset = release.assets.find((a) => {
