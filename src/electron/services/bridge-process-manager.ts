@@ -1,6 +1,7 @@
 import { ChildProcess, spawn } from "child_process";
 import { app } from "electron";
 import path from "path";
+import fs from "fs";
 import { isDev } from "../util.js";
 import type { BridgeConfig } from "../types.js";
 import { isPortAvailable, findAvailablePort } from "./port-checker.js";
@@ -12,6 +13,7 @@ import { isPortAvailable, findAvailablePort } from "./port-checker.js";
 export class BridgeProcessManager {
   private bridgeProcess: ChildProcess | null = null;
   private config: BridgeConfig | null = null;
+  private logStream: fs.WriteStream | null = null;
 
   /**
    * Start the bridge process with given configuration
@@ -76,34 +78,72 @@ export class BridgeProcessManager {
         ? path.join(app.getAppPath(), "apps/bridge")
         : path.join(process.resourcesPath, "bridge");
 
+      // In production, use ELECTRON_RUN_AS_NODE=1 environment variable
+      // This makes Electron run as Node.js without starting a new Electron instance
+      const env: Record<string, string> = {
+        ...process.env,
+        NODE_ENV: isDev() ? "development" : "production",
+      };
+
+      if (!isDev()) {
+        env.ELECTRON_RUN_AS_NODE = "1";
+      }
+
+      // Setup logging for production
+      if (!isDev()) {
+        const logPath = path.join(
+          app.getPath("userData"),
+          "bridge-process.log"
+        );
+        try {
+          this.logStream = fs.createWriteStream(logPath, { flags: "a" });
+          this.logStream.write(
+            `\n=== Bridge Process Started: ${new Date().toISOString()} ===\n`
+          );
+        } catch (error) {
+          console.error("[BridgeManager] Failed to create log file:", error);
+        }
+      }
+
       this.bridgeProcess = spawn(bridgePath, args, {
         stdio: ["ignore", "pipe", "pipe"],
         cwd,
-        env: {
-          ...process.env,
-          NODE_ENV: isDev() ? "development" : "production",
-        },
+        env,
       });
 
       let stderrBuffer = "";
 
       // Handle process events
       this.bridgeProcess.on("error", (error) => {
-        console.error("Bridge process error:", error);
+        const errorMsg = `Bridge process error: ${error.message}\n`;
+        console.error(errorMsg);
+        if (this.logStream) {
+          this.logStream.write(`[ERROR] ${errorMsg}`);
+        }
       });
 
       this.bridgeProcess.on("exit", (code, signal) => {
-        console.log(
-          `Bridge process exited with code ${code} and signal ${signal}`
-        );
+        const exitMsg = `Bridge process exited with code ${code} and signal ${signal}\n`;
+        console.log(exitMsg);
+        if (this.logStream) {
+          this.logStream.write(`[EXIT] ${exitMsg}`);
+          this.logStream.end();
+          this.logStream = null;
+        }
         this.bridgeProcess = null;
       });
 
       // Forward stdout/stderr for debugging
       if (this.bridgeProcess.stdout) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        this.bridgeProcess.stdout.on("data", (_data) => {
-          //   console.log(`[Bridge] ${_data.toString().trim()}`);
+        this.bridgeProcess.stdout.on("data", (data) => {
+          const text = data.toString();
+          if (isDev()) {
+            // In development, optionally log to console
+            // console.log(`[Bridge] ${text.trim()}`);
+          }
+          if (this.logStream) {
+            this.logStream.write(`[STDOUT] ${text}`);
+          }
         });
       }
 
@@ -112,6 +152,9 @@ export class BridgeProcessManager {
           const errorText = data.toString();
           stderrBuffer += errorText;
           console.error(`[Bridge Error] ${errorText.trim()}`);
+          if (this.logStream) {
+            this.logStream.write(`[STDERR] ${errorText}`);
+          }
         });
       }
 
@@ -198,6 +241,12 @@ export class BridgeProcessManager {
         });
       });
 
+      // Close log stream if open
+      if (this.logStream) {
+        this.logStream.end();
+        this.logStream = null;
+      }
+
       this.bridgeProcess = null;
       this.config = null;
 
@@ -225,14 +274,14 @@ export class BridgeProcessManager {
 
   /**
    * Get bridge executable path
-   * In production, uses Electron binary with --runAsNode flag to avoid requiring Node.js installation
+   * In production, uses Electron binary with ELECTRON_RUN_AS_NODE=1 env var to avoid requiring Node.js installation
    */
   private getBridgePath(): string {
     if (isDev()) {
       // Development: use npx to run tsx
       return "npx";
     } else {
-      // Production: use Electron binary itself with --runAsNode flag
+      // Production: use Electron binary itself with ELECTRON_RUN_AS_NODE=1 environment variable
       // This avoids requiring users to have Node.js installed
       return process.execPath;
     }
@@ -240,7 +289,8 @@ export class BridgeProcessManager {
 
   /**
    * Get bridge arguments
-   * In production, uses --runAsNode flag and process.resourcesPath to access extraResources
+   * In production, uses process.resourcesPath to access extraResources
+   * ELECTRON_RUN_AS_NODE=1 is set as environment variable, not CLI flag
    */
   private getBridgeArgs(config: BridgeConfig): string[] {
     if (isDev()) {
@@ -254,8 +304,8 @@ export class BridgeProcessManager {
         config.port.toString(),
       ];
     } else {
-      // Production: use Electron with --runAsNode flag to run bridge
-      // Bridge is packaged in extraResources at resources/bridge/dist/index.js
+      // Production: Bridge is packaged in extraResources at resources/bridge/dist/index.js
+      // ELECTRON_RUN_AS_NODE=1 is set as environment variable in spawn()
       const bridgeEntry = path.join(
         process.resourcesPath,
         "bridge",
@@ -263,7 +313,6 @@ export class BridgeProcessManager {
         "index.js"
       );
       return [
-        "--runAsNode",
         bridgeEntry,
         "--host",
         config.host,
