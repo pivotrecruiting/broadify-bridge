@@ -32,6 +32,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
   engineGetMacros: () => ipcInvoke("engineGetMacros"),
   engineRunMacro: (macroId: number) => ipcInvoke("engineRunMacro", macroId),
   engineStopMacro: (macroId: number) => ipcInvoke("engineStopMacro", macroId),
+  openExternal: (url: string) =>
+    electron.ipcRenderer.invoke("openExternal", url).then(() => undefined),
 } satisfies Window["electron"]);
 
 function ipcInvoke<Key extends keyof EventPayloadMapping>(
