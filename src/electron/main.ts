@@ -24,8 +24,17 @@ import type {
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import * as Sentry from "@sentry/electron";
 
 dotenv.config();
+
+// Initialize Sentry in Main Process (before app.on('ready'))
+// This enables both Main and Renderer process error tracking
+Sentry.init({
+  dsn: "https://a534ee90c276b99d94aec4c22e6fc8c3@o4510578425135104.ingest.de.sentry.io/4510578677645392",
+  // Electron SDK automatically handles Main + Renderer integration
+  // Renderer integration will be initialized automatically
+});
 
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
@@ -33,6 +42,7 @@ let healthCheckCleanup: (() => void) | null = null;
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let hasOpenedWebApp = false;
+let mainWindow: BrowserWindow | null = null;
 
 /**
  * Default network configuration
@@ -184,17 +194,21 @@ function getInterfaceType(
 
 /**
  * Build Web-App URL with query parameters
+ * Uses different URLs for development and production
  */
 function buildWebAppUrl(
   ip: string,
   iptype: string,
   port: number
 ): string | null {
-  const baseUrl = process.env.STUDIO_CONTROL_WEBAPP_URL;
+  // Select URL based on environment
+  const envVarName = isDev()
+    ? "DEVELOPMENT_STUDIO_CONTROL_WEBAPP_URL"
+    : "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL";
+  const baseUrl = process.env[envVarName];
+
   if (!baseUrl) {
-    console.warn(
-      "[WebApp] STUDIO_CONTROL_WEBAPP_URL not set, skipping web app open"
-    );
+    console.warn(`[WebApp] ${envVarName} not set, skipping web app open`);
     return null;
   }
 
@@ -212,331 +226,390 @@ function buildWebAppUrl(
   }
 }
 
-app.on("ready", () => {
-  const mainWindow = new BrowserWindow({
-    // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
-    webPreferences: {
-      preload: getPreloadPath(),
-    },
-    icon: getIconPath(),
-    width: 800, // sm breakpoint width (640px) + padding
-    height: 700, // Fixed height to prevent scrolling
-    minWidth: 640, // Minimum width (sm breakpoint)
-    minHeight: 600,
-    resizable: true,
+// Single Instance Lock: Prevent multiple instances of the app
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // Another instance is already running, quit this one
+  app.quit();
+} else {
+  // Handle second instance: focus existing window
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
   });
 
-  if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`);
-  else mainWindow.loadFile(getUIPath());
-
-  pollResources(mainWindow);
-
-  // Existing IPC handlers
-  ipcMainHandle("getStaticData", () => {
-    return getStaticData();
+  // macOS: Handle open-url event (for protocol handlers)
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      // Handle URL if needed (e.g., pass to renderer via IPC)
+    }
   });
 
-  // Bridge IPC handlers
-  ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
-    // console.log("[Bridge] Starting bridge with config:", config);
+  app.on("ready", () => {
+    mainWindow = new BrowserWindow({
+      // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
+      webPreferences: {
+        preload: getPreloadPath(),
+      },
+      icon: getIconPath(),
+      width: 800, // sm breakpoint width (640px) + padding
+      height: 700, // Fixed height to prevent scrolling
+      minWidth: 640, // Minimum width (sm breakpoint)
+      minHeight: 600,
+      resizable: true,
+    });
 
-    // Outputs are now configured in the web app via POST /config endpoint
-    hasOpenedWebApp = false;
+    if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`);
+    else mainWindow.loadFile(getUIPath());
 
-    // Store network binding ID
-    currentNetworkBindingId = config.networkBindingId || "localhost";
+    pollResources(mainWindow);
 
-    // Start bridge without requiring outputs
-    const result = await bridgeProcessManager.start(config, true); // autoFindPort = true
-    console.log("[Bridge] Start result:", result);
+    // Existing IPC handlers
+    ipcMainHandle("getStaticData", () => {
+      return getStaticData();
+    });
 
-    // Start health check polling if bridge started successfully
-    if (result.success) {
-      // console.log(
-      //   "[Bridge] Bridge started successfully, sending initial status update"
-      // );
-      // Immediately send status update that bridge is starting
-      const initialStatus = {
-        running: true,
-        reachable: false,
-      };
-      // console.log("[Bridge] Sending initial status:", initialStatus);
-      ipcWebContentsSend("bridgeStatus", mainWindow.webContents, initialStatus);
+    // Bridge IPC handlers
+    ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
+      // console.log("[Bridge] Starting bridge with config:", config);
 
-      // Stop existing health check if any
-      if (healthCheckCleanup) {
-        // console.log("[Bridge] Stopping existing health check");
-        healthCheckCleanup();
-      }
+      // Outputs are now configured in the web app via POST /config endpoint
+      hasOpenedWebApp = false;
 
-      const bridgeConfig = bridgeProcessManager.getConfig();
-      // console.log(
-      //   "[Bridge] Starting health check polling with config:",
-      //   bridgeConfig
-      // );
+      // Store network binding ID
+      currentNetworkBindingId = config.networkBindingId || "localhost";
 
-      // Start new health check
-      healthCheckCleanup = startHealthCheckPolling(
-        bridgeConfig,
-        (status) => {
-          // console.log("[Bridge] Health check status update:", status);
-          ipcWebContentsSend("bridgeStatus", mainWindow.webContents, status);
+      // Start bridge without requiring outputs
+      const result = await bridgeProcessManager.start(config, true); // autoFindPort = true
+      console.log("[Bridge] Start result:", result);
 
-          // Auto-open web app when bridge becomes reachable
-          // Get fresh bridge config in case it changed
-          const currentBridgeConfig = bridgeProcessManager.getConfig();
+      // Start health check polling if bridge started successfully
+      if (result.success) {
+        // console.log(
+        //   "[Bridge] Bridge started successfully, sending initial status update"
+        // );
+        // Immediately send status update that bridge is starting
+        const initialStatus = {
+          running: true,
+          reachable: false,
+        };
+        // console.log("[Bridge] Sending initial status:", initialStatus);
+        if (mainWindow) {
+          ipcWebContentsSend(
+            "bridgeStatus",
+            mainWindow.webContents,
+            initialStatus
+          );
+        }
 
-          // Auto-open web app when bridge becomes reachable
-          // Outputs are no longer required - web app can handle output configuration
-          if (
-            status.reachable &&
-            !hasOpenedWebApp &&
-            currentBridgeConfig &&
-            currentNetworkBindingId
-          ) {
-            const networkConfig = loadNetworkConfig();
-            const networkBindingOptions = detectNetworkInterfaces(
-              networkConfig.networkBinding.options,
-              networkConfig.networkBinding.filters
-            );
+        // Stop existing health check if any
+        if (healthCheckCleanup) {
+          // console.log("[Bridge] Stopping existing health check");
+          healthCheckCleanup();
+        }
 
-            const interfaceType = getInterfaceType(
-              currentNetworkBindingId,
-              networkBindingOptions
-            );
-            const matchingOption = networkBindingOptions.find(
-              (opt) => opt.id === currentNetworkBindingId
-            );
+        const bridgeConfig = bridgeProcessManager.getConfig();
+        // console.log(
+        //   "[Bridge] Starting health check polling with config:",
+        //   bridgeConfig
+        // );
 
-            if (matchingOption) {
-              // Resolve IP address
-              const resolvedIp = resolveBindAddress(
-                matchingOption.bindAddress,
-                interfaceType,
+        // Start new health check
+        healthCheckCleanup = startHealthCheckPolling(
+          bridgeConfig,
+          (status) => {
+            // console.log("[Bridge] Health check status update:", status);
+            if (mainWindow) {
+              ipcWebContentsSend(
+                "bridgeStatus",
+                mainWindow.webContents,
+                status
+              );
+            }
+
+            // Auto-open web app when bridge becomes reachable
+            // Get fresh bridge config in case it changed
+            const currentBridgeConfig = bridgeProcessManager.getConfig();
+
+            // Auto-open web app when bridge becomes reachable
+            // Outputs are no longer required - web app can handle output configuration
+            if (
+              status.reachable &&
+              !hasOpenedWebApp &&
+              currentBridgeConfig &&
+              currentNetworkBindingId
+            ) {
+              const networkConfig = loadNetworkConfig();
+              const networkBindingOptions = detectNetworkInterfaces(
+                networkConfig.networkBinding.options,
                 networkConfig.networkBinding.filters
               );
 
-              // Build and open web app URL
-              // Outputs are now configured in the web app, not via URL params
-              const webAppUrl = buildWebAppUrl(
-                resolvedIp,
-                interfaceType,
-                currentBridgeConfig.port
+              const interfaceType = getInterfaceType(
+                currentNetworkBindingId,
+                networkBindingOptions
+              );
+              const matchingOption = networkBindingOptions.find(
+                (opt) => opt.id === currentNetworkBindingId
               );
 
-              if (webAppUrl) {
-                shell.openExternal(webAppUrl);
-                hasOpenedWebApp = true;
+              if (matchingOption) {
+                // Resolve IP address
+                const resolvedIp = resolveBindAddress(
+                  matchingOption.bindAddress,
+                  interfaceType,
+                  networkConfig.networkBinding.filters
+                );
+
+                // Build and open web app URL
+                // Outputs are now configured in the web app, not via URL params
+                const webAppUrl = buildWebAppUrl(
+                  resolvedIp,
+                  interfaceType,
+                  currentBridgeConfig.port
+                );
+
+                if (webAppUrl) {
+                  shell.openExternal(webAppUrl);
+                  hasOpenedWebApp = true;
+                }
               }
             }
-          }
-        },
-        () => bridgeProcessManager.isRunning() // Pass function to check if process is running
-      );
-    } else {
-      // console.log("[Bridge] Bridge start failed:", result.error);
-    }
+          },
+          () => bridgeProcessManager.isRunning() // Pass function to check if process is running
+        );
+      } else {
+        // console.log("[Bridge] Bridge start failed:", result.error);
+      }
 
-    return result;
-  });
-
-  ipcMainHandle("bridgeStop", async () => {
-    // Stop health check
-    if (healthCheckCleanup) {
-      healthCheckCleanup();
-      healthCheckCleanup = null;
-    }
-
-    const result = await bridgeProcessManager.stop();
-
-    // Reset web app flag and outputs
-    hasOpenedWebApp = false;
-    // Outputs are managed in the web app
-    currentNetworkBindingId = null;
-
-    // Send final status update
-    ipcWebContentsSend("bridgeStatus", mainWindow.webContents, {
-      running: false,
-      reachable: false,
+      return result;
     });
 
-    return result;
-  });
+    ipcMainHandle("bridgeStop", async () => {
+      // Stop health check
+      if (healthCheckCleanup) {
+        healthCheckCleanup();
+        healthCheckCleanup = null;
+      }
 
-  ipcMainHandle("bridgeGetStatus", async () => {
-    const config = bridgeProcessManager.getConfig();
-    const isRunning = bridgeProcessManager.isRunning();
+      const result = await bridgeProcessManager.stop();
 
-    console.log(
-      `[Bridge] GetStatus - isRunning: ${isRunning}, config:`,
-      config
-    );
+      // Reset web app flag and outputs
+      hasOpenedWebApp = false;
+      // Outputs are managed in the web app
+      currentNetworkBindingId = null;
 
-    if (!isRunning || !config) {
-      // console.log(`[Bridge] GetStatus - Process not running or no config`);
-      return {
-        running: false,
-        reachable: false,
-      };
-    }
-
-    const healthStatus = await checkBridgeHealth(config);
-    // Ensure running is true if process is running, even if not reachable yet
-    const status = {
-      ...healthStatus,
-      running: isRunning, // Always use actual process state
-    };
-    // console.log(`[Bridge] GetStatus result:`, status);
-    return status;
-  });
-
-  // Port checking IPC handlers
-  ipcMainHandle(
-    "checkPortAvailability",
-    async (event, port: number, host?: string) => {
-      const available = await isPortAvailable(port, host || "0.0.0.0");
-      return { port, available };
-    }
-  );
-
-  ipcMainHandle(
-    "checkPortsAvailability",
-    async (event, ports: number[], host?: string) => {
-      const checkHost = host || "0.0.0.0";
-      const results = await checkPortsAvailability(ports, checkHost);
-      const resultArray = Array.from(results.entries()).map(
-        ([port, available]) => ({
-          port,
-          available,
-        })
-      );
-      return resultArray;
-    }
-  );
-
-  // Network configuration IPC handlers
-  ipcMainHandle("getNetworkConfig", async () => {
-    const config = loadNetworkConfig();
-    return config;
-  });
-
-  ipcMainHandle("detectNetworkInterfaces", async () => {
-    const config = loadNetworkConfig();
-    const options = detectNetworkInterfaces(
-      config.networkBinding.options,
-      config.networkBinding.filters
-    );
-
-    return options;
-  });
-
-  ipcMainHandle("getNetworkBindingOptions", async () => {
-    const config = loadNetworkConfig();
-    const options = detectNetworkInterfaces(
-      config.networkBinding.options,
-      config.networkBinding.filters
-    );
-
-    return options;
-  });
-
-  /**
-   * Helper function to make requests to Bridge API
-   */
-  async function bridgeApiRequest(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<unknown> {
-    const config = bridgeProcessManager.getConfig();
-    if (!config) {
-      throw new Error("Bridge is not running");
-    }
-
-    const host = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
-    const url = `http://${host}:${config.port}${endpoint}`;
-
-    const controller = new AbortController();
-    // Use longer timeout for engine/connect (15s) to allow for device connection timeout (10s)
-    const timeoutMs = endpoint === "/engine/connect" ? 15000 : 10000; // 15s for connect, 10s for others
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      // Build headers: only set Content-Type if body exists
-      const headers: Record<string, string> = {};
-      if (options.headers) {
-        Object.entries(options.headers).forEach(([key, value]) => {
-          if (typeof value === "string") {
-            headers[key] = value;
-          }
+      // Send final status update
+      if (mainWindow) {
+        ipcWebContentsSend("bridgeStatus", mainWindow.webContents, {
+          running: false,
+          reachable: false,
         });
       }
-      if (options.body && !headers["Content-Type"]) {
-        headers["Content-Type"] = "application/json";
-      }
 
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers,
-      });
+      return result;
+    });
 
-      clearTimeout(timeoutId);
+    ipcMainHandle("bridgeGetStatus", async () => {
+      const config = bridgeProcessManager.getConfig();
+      const isRunning = bridgeProcessManager.isRunning();
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.message || errorData.error || `HTTP ${response.status}`
-        );
-      }
+      console.log(
+        `[Bridge] GetStatus - isRunning: ${isRunning}, config:`,
+        config
+      );
 
-      return await response.json();
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (error instanceof Error) {
-        throw error;
-      }
-      throw new Error("Unknown error");
-    }
-  }
-
-  // Engine IPC handlers
-  ipcMainHandle(
-    "engineConnect",
-    async (event, type: string, ip?: string, port?: number) => {
-      try {
-        // Validate type
-        if (!type || !["atem", "tricaster", "vmix"].includes(type)) {
-          return {
-            success: false,
-            error:
-              "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
-          };
-        }
-
-        // Validate required fields
-        if (!ip) {
-          return {
-            success: false,
-            error: "IP address is required",
-          };
-        }
-
-        if (!port) {
-          return {
-            success: false,
-            error: "Port is required",
-          };
-        }
-
-        const body = {
-          type: type as "atem" | "tricaster" | "vmix",
-          ip,
-          port,
+      if (!isRunning || !config) {
+        // console.log(`[Bridge] GetStatus - Process not running or no config`);
+        return {
+          running: false,
+          reachable: false,
         };
+      }
 
-        const result = (await bridgeApiRequest("/engine/connect", {
+      const healthStatus = await checkBridgeHealth(config);
+      // Ensure running is true if process is running, even if not reachable yet
+      const status = {
+        ...healthStatus,
+        running: isRunning, // Always use actual process state
+      };
+      // console.log(`[Bridge] GetStatus result:`, status);
+      return status;
+    });
+
+    // Port checking IPC handlers
+    ipcMainHandle(
+      "checkPortAvailability",
+      async (event, port: number, host?: string) => {
+        const available = await isPortAvailable(port, host || "0.0.0.0");
+        return { port, available };
+      }
+    );
+
+    ipcMainHandle(
+      "checkPortsAvailability",
+      async (event, ports: number[], host?: string) => {
+        const checkHost = host || "0.0.0.0";
+        const results = await checkPortsAvailability(ports, checkHost);
+        const resultArray = Array.from(results.entries()).map(
+          ([port, available]) => ({
+            port,
+            available,
+          })
+        );
+        return resultArray;
+      }
+    );
+
+    // Network configuration IPC handlers
+    ipcMainHandle("getNetworkConfig", async () => {
+      const config = loadNetworkConfig();
+      return config;
+    });
+
+    ipcMainHandle("detectNetworkInterfaces", async () => {
+      const config = loadNetworkConfig();
+      const options = detectNetworkInterfaces(
+        config.networkBinding.options,
+        config.networkBinding.filters
+      );
+
+      return options;
+    });
+
+    ipcMainHandle("getNetworkBindingOptions", async () => {
+      const config = loadNetworkConfig();
+      const options = detectNetworkInterfaces(
+        config.networkBinding.options,
+        config.networkBinding.filters
+      );
+
+      return options;
+    });
+
+    /**
+     * Helper function to make requests to Bridge API
+     */
+    async function bridgeApiRequest(
+      endpoint: string,
+      options: RequestInit = {}
+    ): Promise<unknown> {
+      const config = bridgeProcessManager.getConfig();
+      if (!config) {
+        throw new Error("Bridge is not running");
+      }
+
+      const host = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
+      const url = `http://${host}:${config.port}${endpoint}`;
+
+      const controller = new AbortController();
+      // Use longer timeout for engine/connect (15s) to allow for device connection timeout (10s)
+      const timeoutMs = endpoint === "/engine/connect" ? 15000 : 10000; // 15s for connect, 10s for others
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        // Build headers: only set Content-Type if body exists
+        const headers: Record<string, string> = {};
+        if (options.headers) {
+          Object.entries(options.headers).forEach(([key, value]) => {
+            if (typeof value === "string") {
+              headers[key] = value;
+            }
+          });
+        }
+        if (options.body && !headers["Content-Type"]) {
+          headers["Content-Type"] = "application/json";
+        }
+
+        const response = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+          headers,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(
+            errorData.message || errorData.error || `HTTP ${response.status}`
+          );
+        }
+
+        return await response.json();
+      } catch (error) {
+        clearTimeout(timeoutId);
+        if (error instanceof Error) {
+          throw error;
+        }
+        throw new Error("Unknown error");
+      }
+    }
+
+    // Engine IPC handlers
+    ipcMainHandle(
+      "engineConnect",
+      async (event, type: string, ip?: string, port?: number) => {
+        try {
+          // Validate type
+          if (!type || !["atem", "tricaster", "vmix"].includes(type)) {
+            return {
+              success: false,
+              error:
+                "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
+            };
+          }
+
+          // Validate required fields
+          if (!ip) {
+            return {
+              success: false,
+              error: "IP address is required",
+            };
+          }
+
+          if (!port) {
+            return {
+              success: false,
+              error: "Port is required",
+            };
+          }
+
+          const body = {
+            type: type as "atem" | "tricaster" | "vmix",
+            ip,
+            port,
+          };
+
+          const result = (await bridgeApiRequest("/engine/connect", {
+            method: "POST",
+            body: JSON.stringify(body),
+          })) as { state?: unknown };
+
+          return {
+            success: true,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            state: result.state as any,
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error",
+          };
+        }
+      }
+    );
+
+    ipcMainHandle("engineDisconnect", async () => {
+      try {
+        const result = (await bridgeApiRequest("/engine/disconnect", {
           method: "POST",
-          body: JSON.stringify(body),
         })) as { state?: unknown };
 
         return {
@@ -550,203 +623,190 @@ app.on("ready", () => {
           error: error instanceof Error ? error.message : "Unknown error",
         };
       }
-    }
-  );
+    });
 
-  ipcMainHandle("engineDisconnect", async () => {
-    try {
-      const result = (await bridgeApiRequest("/engine/disconnect", {
-        method: "POST",
-      })) as { state?: unknown };
-
-      return {
-        success: true,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        state: result.state as any,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  });
-
-  ipcMainHandle("engineGetStatus", async () => {
-    try {
-      const result = (await bridgeApiRequest("/engine/status")) as {
-        state?: unknown;
-      };
-      return {
-        success: true,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        state: result.state as any,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-        state: {
-          status: "error",
-          macros: [],
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-      };
-    }
-  });
-
-  ipcMainHandle("engineGetMacros", async () => {
-    try {
-      const result = (await bridgeApiRequest("/engine/macros")) as {
-        success?: boolean;
-        macros?: unknown[];
-        error?: string;
-        message?: string;
-      };
-
-      // Check if response indicates failure
-      if (result.success === false) {
+    ipcMainHandle("engineGetStatus", async () => {
+      try {
+        const result = (await bridgeApiRequest("/engine/status")) as {
+          state?: unknown;
+        };
+        return {
+          success: true,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          state: result.state as any,
+        };
+      } catch (error) {
         return {
           success: false,
-          error: result.error || result.message || "Failed to get macros",
+          error: error instanceof Error ? error.message : "Unknown error",
+          state: {
+            status: "error",
+            macros: [],
+            error: error instanceof Error ? error.message : "Unknown error",
+          },
+        };
+      }
+    });
+
+    ipcMainHandle("engineGetMacros", async () => {
+      try {
+        const result = (await bridgeApiRequest("/engine/macros")) as {
+          success?: boolean;
+          macros?: unknown[];
+          error?: string;
+          message?: string;
+        };
+
+        // Check if response indicates failure
+        if (result.success === false) {
+          return {
+            success: false,
+            error: result.error || result.message || "Failed to get macros",
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            macros: (result.macros || []) as any,
+          };
+        }
+
+        return {
+          success: true,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           macros: (result.macros || []) as any,
         };
-      }
-
-      return {
-        success: true,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        macros: (result.macros || []) as any,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-        macros: [],
-      };
-    }
-  });
-
-  ipcMainHandle("engineRunMacro", async (event, macroId: number) => {
-    try {
-      const result = (await bridgeApiRequest(`/engine/macros/${macroId}/run`, {
-        method: "POST",
-      })) as {
-        success?: boolean;
-        state?: unknown;
-        error?: string;
-        message?: string;
-      };
-
-      // Check if response indicates failure
-      if (result.success === false) {
+      } catch (error) {
         return {
           success: false,
-          error: result.error || result.message || "Failed to run macro",
+          error: error instanceof Error ? error.message : "Unknown error",
+          macros: [],
         };
       }
+    });
 
-      return {
-        success: true,
-        macroId,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        state: result.state as any,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  });
+    ipcMainHandle("engineRunMacro", async (event, macroId: number) => {
+      try {
+        const result = (await bridgeApiRequest(
+          `/engine/macros/${macroId}/run`,
+          {
+            method: "POST",
+          }
+        )) as {
+          success?: boolean;
+          state?: unknown;
+          error?: string;
+          message?: string;
+        };
 
-  ipcMainHandle("engineStopMacro", async (event, macroId: number) => {
-    try {
-      const result = (await bridgeApiRequest(`/engine/macros/${macroId}/stop`, {
-        method: "POST",
-      })) as {
-        success?: boolean;
-        state?: unknown;
-        error?: string;
-        message?: string;
-      };
+        // Check if response indicates failure
+        if (result.success === false) {
+          return {
+            success: false,
+            error: result.error || result.message || "Failed to run macro",
+          };
+        }
 
-      // Check if response indicates failure
-      if (result.success === false) {
+        return {
+          success: true,
+          macroId,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          state: result.state as any,
+        };
+      } catch (error) {
         return {
           success: false,
-          error: result.error || result.message || "Failed to stop macro",
+          error: error instanceof Error ? error.message : "Unknown error",
         };
       }
+    });
 
-      return {
-        success: true,
-        macroId,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        state: result.state as any,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  });
+    ipcMainHandle("engineStopMacro", async (event, macroId: number) => {
+      try {
+        const result = (await bridgeApiRequest(
+          `/engine/macros/${macroId}/stop`,
+          {
+            method: "POST",
+          }
+        )) as {
+          success?: boolean;
+          state?: unknown;
+          error?: string;
+          message?: string;
+        };
 
-  // Bridge outputs IPC handler
-  ipcMainHandle("bridgeGetOutputs", async () => {
-    console.log("[OutputChecker] Getting outputs");
-    const config = bridgeProcessManager.getConfig();
+        // Check if response indicates failure
+        if (result.success === false) {
+          return {
+            success: false,
+            error: result.error || result.message || "Failed to stop macro",
+          };
+        }
 
-    // If bridge is running, try to get outputs from bridge (for updates)
-    if (config) {
-      const bridgeOutputs = await fetchBridgeOutputs(config);
-      if (bridgeOutputs) {
-        const output1Count = bridgeOutputs.output1?.length || 0;
-        const output2Count = bridgeOutputs.output2?.length || 0;
-        const availableOutput1Count =
-          bridgeOutputs.output1?.filter((opt) => opt.available).length || 0;
-        const availableOutput2Count =
-          bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
+        return {
+          success: true,
+          macroId,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          state: result.state as any,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        };
+      }
+    });
 
+    // Bridge outputs IPC handler
+    ipcMainHandle("bridgeGetOutputs", async () => {
+      console.log("[OutputChecker] Getting outputs");
+      const config = bridgeProcessManager.getConfig();
+
+      // If bridge is running, try to get outputs from bridge (for updates)
+      if (config) {
+        const bridgeOutputs = await fetchBridgeOutputs(config);
+        if (bridgeOutputs) {
+          const output1Count = bridgeOutputs.output1?.length || 0;
+          const output2Count = bridgeOutputs.output2?.length || 0;
+          const availableOutput1Count =
+            bridgeOutputs.output1?.filter((opt) => opt.available).length || 0;
+          const availableOutput2Count =
+            bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
+
+          console.log(
+            `[OutputChecker] Fetched outputs from bridge - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
+          );
+
+          return bridgeOutputs;
+        }
         console.log(
-          `[OutputChecker] Fetched outputs from bridge - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
+          "[OutputChecker] Bridge running but outputs not available, falling back to device detection"
         );
-
-        return bridgeOutputs;
       }
+
+      // Bridge is Single Source of Truth - no fallback detection in Main Process
       console.log(
-        "[OutputChecker] Bridge running but outputs not available, falling back to device detection"
+        "[OutputChecker] Bridge not running, returning empty outputs (Bridge is Single Source of Truth)"
       );
-    }
+      return {
+        output1: [],
+        output2: [],
+      };
+    });
 
-    // Bridge is Single Source of Truth - no fallback detection in Main Process
-    console.log(
-      "[OutputChecker] Bridge not running, returning empty outputs (Bridge is Single Source of Truth)"
-    );
-    return {
-      output1: [],
-      output2: [],
-    };
-  });
+    // Cleanup on window close
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    mainWindow.on("close", async (_event) => {
+      if (healthCheckCleanup) {
+        healthCheckCleanup();
+        healthCheckCleanup = null;
+      }
+      await bridgeProcessManager.stop();
+    });
 
-  // Cleanup on window close
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  mainWindow.on("close", async (_event) => {
-    if (healthCheckCleanup) {
-      healthCheckCleanup();
-      healthCheckCleanup = null;
-    }
-    await bridgeProcessManager.stop();
+    // Cleanup on app quit
+    app.on("before-quit", async () => {
+      if (healthCheckCleanup) {
+        healthCheckCleanup();
+        healthCheckCleanup = null;
+      }
+      await bridgeProcessManager.stop();
+    });
   });
-
-  // Cleanup on app quit
-  app.on("before-quit", async () => {
-    if (healthCheckCleanup) {
-      healthCheckCleanup();
-      healthCheckCleanup = null;
-    }
-    await bridgeProcessManager.stop();
-  });
-});
+}
