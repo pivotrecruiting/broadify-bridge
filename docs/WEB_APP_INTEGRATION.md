@@ -198,6 +198,13 @@ interface GitHubAsset {
 }
 ```
 
+**WICHTIG:** Die GitHub Releases API gibt ALLE Assets zurück, inklusive:
+- `.dmg` Dateien (Download-Links) ✅
+- `.dmg.blockmap` Dateien (für Delta-Updates, NICHT für Downloads) ❌
+- `.yml` Dateien (Update-Metadaten, NICHT für Downloads) ❌
+
+**Die Web-App muss diese Dateien filtern!** Siehe Beispiel-Implementation unten.
+
 ## Plattform-Erkennung
 
 ### User-Agent basiert
@@ -251,21 +258,45 @@ async function detectPlatform() {
 
 ### Asset-Namen Mapping
 
+**WICHTIG:** Filtere `.blockmap` und `.yml` Dateien heraus!
+
 ```javascript
+function filterDownloadableAssets(assets) {
+  // Filter out .blockmap files (used for delta updates, not downloads)
+  // Filter out .yml files (update metadata, not downloads)
+  return assets.filter(
+    (asset) =>
+      !asset.name.endsWith(".blockmap") &&
+      !asset.name.endsWith(".yml") &&
+      !asset.name.endsWith(".yaml") &&
+      asset.name !== "latest-mac.yml" &&
+      asset.name !== "latest.yml" &&
+      asset.name !== "latest-linux.yml"
+  );
+}
+
 function mapPlatformToAsset(platform, assets) {
+  // Filter downloadable assets first
+  const downloadableAssets = filterDownloadableAssets(assets);
+  
   const assetMap = {
     mac: {
-      arm64: assets.find((a) => a.name.includes("arm64.dmg")),
-      x64: assets.find(
-        (a) => a.name.includes("x64.dmg") && !a.name.includes("arm64")
+      arm64: downloadableAssets.find(
+        (a) => a.name.includes("arm64.dmg") && a.name.endsWith(".dmg")
+      ),
+      x64: downloadableAssets.find(
+        (a) =>
+          a.name.includes("x64.dmg") &&
+          !a.name.includes("arm64") &&
+          a.name.endsWith(".dmg")
       ),
     },
     windows: {
-      portable: assets.find((a) => a.name.endsWith(".exe")),
-      installer: assets.find((a) => a.name.endsWith(".msi")),
+      portable: downloadableAssets.find((a) => a.name.endsWith(".exe")),
+      installer: downloadableAssets.find((a) => a.name.endsWith(".msi")),
     },
     linux: {
-      appimage: assets.find((a) => a.name.endsWith(".AppImage")),
+      appimage: downloadableAssets.find((a) => a.name.endsWith(".AppImage")),
     },
   };
 
@@ -292,24 +323,44 @@ interface DownloadLinks {
 
 async function getDownloadLinks(): Promise<DownloadLinks> {
   const release = await getLatestRelease();
-  const assets = release.assets;
+  
+  // CRITICAL: Filter out .blockmap files and other non-downloadable assets
+  // .blockmap files are used for delta updates by electron-updater, not for downloads
+  const downloadableAssets = release.assets.filter(
+    (asset) =>
+      !asset.name.endsWith(".blockmap") &&
+      !asset.name.endsWith(".yml") &&
+      !asset.name.endsWith(".yaml") &&
+      asset.name !== "latest-mac.yml" &&
+      asset.name !== "latest.yml" &&
+      asset.name !== "latest-linux.yml"
+  );
 
   return {
     mac: {
-      arm64: assets.find((a) => a.name.includes("arm64.dmg"))
+      arm64: downloadableAssets
+        .find((a) => a.name.includes("arm64.dmg") && a.name.endsWith(".dmg"))
         ?.browser_download_url,
-      x64: assets.find(
-        (a) => a.name.includes("x64.dmg") && !a.name.includes("arm64")
-      )?.browser_download_url,
+      x64: downloadableAssets
+        .find(
+          (a) =>
+            a.name.includes("x64.dmg") &&
+            !a.name.includes("arm64") &&
+            a.name.endsWith(".dmg")
+        )
+        ?.browser_download_url,
     },
     windows: {
-      portable: assets.find((a) => a.name.endsWith(".exe"))
+      portable: downloadableAssets
+        .find((a) => a.name.endsWith(".exe"))
         ?.browser_download_url,
-      installer: assets.find((a) => a.name.endsWith(".msi"))
+      installer: downloadableAssets
+        .find((a) => a.name.endsWith(".msi"))
         ?.browser_download_url,
     },
     linux: {
-      appimage: assets.find((a) => a.name.endsWith(".AppImage"))
+      appimage: downloadableAssets
+        .find((a) => a.name.endsWith(".AppImage"))
         ?.browser_download_url,
     },
   };
