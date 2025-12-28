@@ -7,7 +7,6 @@ import {
   startHealthCheckPolling,
   checkBridgeHealth,
 } from "./services/bridge-health-check.js";
-import { cloudflareTunnelManager } from "./services/cloudflare-tunnel-manager.js";
 import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
 import {
   isPortAvailable,
@@ -195,16 +194,11 @@ function getInterfaceType(
 
 /**
  * Build Web-App URL with query parameters
- * Uses different URLs for development and production
- *
- * Production: Tunnel-URL is primary, local IP as fallback
- * Development: Local IP only, no tunnel
  */
 function buildWebAppUrl(
   ip: string,
   iptype: string,
-  port: number,
-  tunnelUrl?: string | null
+  port: number
 ): string | null {
   // Select URL based on environment
   const envVarName = isDev()
@@ -220,31 +214,9 @@ function buildWebAppUrl(
   try {
     const url = new URL(baseUrl);
 
-    if (isDev()) {
-      // Development: Local IP only, no tunnel
-      url.searchParams.set("ip", ip);
-      url.searchParams.set("iptype", iptype);
-      url.searchParams.set("port", port.toString());
-      url.searchParams.set("useTunnel", "false");
-    } else {
-      // Production: Tunnel-URL is primary, local IP as fallback
-      if (tunnelUrl) {
-        url.searchParams.set("tunnelUrl", tunnelUrl);
-        url.searchParams.set("useTunnel", "true");
-        // Local IP as fallback (in case tunnel fails later)
-        url.searchParams.set("ip", ip);
-        url.searchParams.set("port", port.toString());
-      } else {
-        // Fallback: Local IP (should not happen in Production)
-        console.warn(
-          "[WebApp] Production mode but no tunnel URL available, using local IP as fallback"
-        );
-        url.searchParams.set("ip", ip);
-        url.searchParams.set("iptype", iptype);
-        url.searchParams.set("port", port.toString());
-        url.searchParams.set("useTunnel", "false");
-      }
-    }
+    url.searchParams.set("ip", ip);
+    url.searchParams.set("iptype", iptype);
+    url.searchParams.set("port", port.toString());
     // Outputs are now configured in the web app, not via URL params
 
     return url.toString();
@@ -348,57 +320,16 @@ if (!gotTheLock) {
       const result = await bridgeProcessManager.start(resolvedConfig, true); // autoFindPort = true
       console.log("[Bridge] Start result:", result);
 
-      // Start Cloudflare Tunnel only in Production
-      if (!isDev() && result.success) {
-        const bridgeConfig = bridgeProcessManager.getConfig();
-        if (bridgeConfig) {
-          const tunnelResult = await cloudflareTunnelManager.start(
-            bridgeConfig.port
-          );
-          if (!tunnelResult.success) {
-            console.error(
-              `[Bridge] Tunnel start failed: ${tunnelResult.error}`
-            );
-            // In Production: Tunnel is required, stop bridge if tunnel fails
-            await bridgeProcessManager.stop();
-            return {
-              success: false,
-              error: `Tunnel start failed: ${tunnelResult.error}`,
-            };
-          }
-          console.log(
-            `[Bridge] Tunnel started successfully: ${tunnelResult.url}`
-          );
-        }
-      } else if (isDev() && result.success) {
-        console.log(
-          "[Bridge] Development mode: Tunnel not started (not required for local development)"
-        );
-      }
-
       // Start health check polling if bridge started successfully
       if (result.success) {
         // console.log(
         //   "[Bridge] Bridge started successfully, sending initial status update"
         // );
         // Immediately send status update that bridge is starting
-        const initialStatus: {
-          running: boolean;
-          reachable: boolean;
-          tunnelUrl?: string | null;
-          tunnelRunning?: boolean;
-        } = {
+        const initialStatus = {
           running: true,
           reachable: false,
         };
-
-        // Add tunnel information only in Production
-        if (!isDev()) {
-          const tunnelUrl = cloudflareTunnelManager.getUrl();
-          const tunnelRunning = cloudflareTunnelManager.isRunning();
-          initialStatus.tunnelUrl = tunnelUrl || null;
-          initialStatus.tunnelRunning = tunnelRunning;
-        }
 
         // console.log("[Bridge] Sending initial status:", initialStatus);
         if (mainWindow) {
@@ -427,26 +358,11 @@ if (!gotTheLock) {
           (status) => {
             // console.log("[Bridge] Health check status update:", status);
 
-            // Add tunnel information to status only in Production
-            const statusWithTunnel: typeof status & {
-              tunnelUrl?: string | null;
-              tunnelRunning?: boolean;
-            } = {
-              ...status,
-            };
-
-            if (!isDev()) {
-              const tunnelUrl = cloudflareTunnelManager.getUrl();
-              const tunnelRunning = cloudflareTunnelManager.isRunning();
-              statusWithTunnel.tunnelUrl = tunnelUrl || null;
-              statusWithTunnel.tunnelRunning = tunnelRunning;
-            }
-
             if (mainWindow) {
               ipcWebContentsSend(
                 "bridgeStatus",
                 mainWindow.webContents,
-                statusWithTunnel
+                status
               );
             }
 
@@ -486,12 +402,10 @@ if (!gotTheLock) {
 
                 // Build and open web app URL
                 // Outputs are now configured in the web app, not via URL params
-                const tunnelUrl = cloudflareTunnelManager.getUrl();
                 const webAppUrl = buildWebAppUrl(
                   resolvedIp,
                   interfaceType,
-                  currentBridgeConfig.port,
-                  tunnelUrl
+                  currentBridgeConfig.port
                 );
 
                 if (webAppUrl) {
@@ -515,11 +429,6 @@ if (!gotTheLock) {
       if (healthCheckCleanup) {
         healthCheckCleanup();
         healthCheckCleanup = null;
-      }
-
-      // Stop Cloudflare Tunnel only if running (Production)
-      if (!isDev()) {
-        await cloudflareTunnelManager.stop();
       }
 
       const result = await bridgeProcessManager.stop();
@@ -559,21 +468,10 @@ if (!gotTheLock) {
 
       const healthStatus = await checkBridgeHealth(config);
       // Ensure running is true if process is running, even if not reachable yet
-      const status: typeof healthStatus & {
-        tunnelUrl?: string | null;
-        tunnelRunning?: boolean;
-      } = {
+      const status = {
         ...healthStatus,
         running: isRunning, // Always use actual process state
       };
-
-      // Add tunnel information only in Production
-      if (!isDev()) {
-        const tunnelUrl = cloudflareTunnelManager.getUrl();
-        const tunnelRunning = cloudflareTunnelManager.isRunning();
-        status.tunnelUrl = tunnelUrl || null;
-        status.tunnelRunning = tunnelRunning;
-      }
 
       // console.log(`[Bridge] GetStatus result:`, status);
       return status;

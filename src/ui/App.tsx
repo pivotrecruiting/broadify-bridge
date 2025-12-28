@@ -6,7 +6,6 @@ import { useNetworkBinding } from "./hooks/use-network-binding";
 import { Header } from "./components/Header";
 import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
-import { TunnelLink } from "./components/TunnelLink";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
 
@@ -184,12 +183,6 @@ function App() {
       <div className="w-full max-w-4xl md:h-auto flex items-center justify-center md:overflow-visible">
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6 w-full">
           <Header bridgeStatus={bridgeStatus} />
-
-          {bridgeStatus.tunnelRunning && (
-            <div className="flex justify-center">
-              <TunnelLink bridgeStatus={bridgeStatus} />
-            </div>
-          )}
 
           <NetworkSection
             networkConfig={networkConfig}
