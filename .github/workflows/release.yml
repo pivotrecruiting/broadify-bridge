@@ -25,6 +25,8 @@ jobs:
             dist_script: dist:linux
 
     runs-on: ${{ matrix.os }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout code
