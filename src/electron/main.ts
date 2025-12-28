@@ -8,6 +8,7 @@ import {
   checkBridgeHealth,
 } from "./services/bridge-health-check.js";
 import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
+import { bridgeIdentity } from "./services/bridge-identity.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -282,6 +283,9 @@ if (!gotTheLock) {
       // Outputs are now configured in the web app via POST /config endpoint
       hasOpenedWebApp = false;
 
+      // Get bridge ID
+      const bridgeId = bridgeIdentity.getBridgeId();
+
       // Store network binding ID
       currentNetworkBindingId = config.networkBindingId || "localhost";
 
@@ -316,8 +320,17 @@ if (!gotTheLock) {
         host: resolvedHost,
       };
 
+      // Get relay URL from environment or use default
+      const relayUrl = process.env.RELAY_URL || "wss://relay.broadify.de";
+
       // Start bridge without requiring outputs
-      const result = await bridgeProcessManager.start(resolvedConfig, true); // autoFindPort = true
+      // Pass bridgeId and relayUrl as CLI args
+      const result = await bridgeProcessManager.start(
+        resolvedConfig,
+        true, // autoFindPort = true
+        bridgeId,
+        relayUrl
+      );
       console.log("[Bridge] Start result:", result);
 
       // Start health check polling if bridge started successfully
@@ -329,6 +342,7 @@ if (!gotTheLock) {
         const initialStatus = {
           running: true,
           reachable: false,
+          bridgeId,
         };
 
         // console.log("[Bridge] Sending initial status:", initialStatus);

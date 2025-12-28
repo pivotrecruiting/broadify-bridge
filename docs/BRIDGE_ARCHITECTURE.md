@@ -2,10 +2,11 @@
 
 ## Übersicht
 
-Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen lokalen Bridge-Server startet und verwaltet. Die Architektur besteht aus zwei Hauptkomponenten:
+Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen lokalen Bridge-Server startet und verwaltet. Die Architektur besteht aus drei Hauptkomponenten:
 
 1. **Desktop App (Electron)**: UI und Prozess-Management
 2. **Bridge Server**: HTTP/WebSocket Server für Device- und Engine-Kommunikation
+3. **Relay Server**: Cloud-basierter Relay für Remote-Zugriff (outbound WebSocket-Verbindung)
 
 ## Architektur-Komponenten
 
@@ -62,6 +63,8 @@ Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen loka
 - **Engine Adapter**: Abstraktion für ATEM/Tricaster/vMix
 - **Device Detection**: Automatische Device-Erkennung
 - **Output Management**: Output-Konfiguration
+- **Relay Client**: Outbound WebSocket-Verbindung zum Relay Server
+- **Command Router**: Zentrale Command-Verarbeitung für HTTP und Relay
 
 ### 3. Services (Main Process)
 
@@ -87,6 +90,12 @@ Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen loka
 
 - Polling des Bridge Status
 - Health Status Updates an UI
+- Relay Status Polling
+
+#### Bridge Identity (`src/electron/services/bridge-identity.ts`)
+
+- Generiert und persistiert Bridge ID (UUID)
+- Speichert in `userData/bridge-id.json`
 
 ## Data Flow Diagramme
 
@@ -105,25 +114,34 @@ graph TB
         Routes["Routes<br/>(/status, /engine, etc.)"]
         Modules["Device Modules<br/>(USB, Decklink)"]
         EngineAdapter["Engine Adapter<br/>(ATEM, Tricaster, vMix)"]
+        RelayClient["Relay Client<br/>(Outbound WS)"]
+        CommandRouter["Command Router"]
     end
-
+    
     subgraph External["External Services"]
+        Relay["Relay Server<br/>(Cloud)"]
         Engines["Video Engines<br/>(ATEM, Tricaster, vMix)"]
         Devices["Hardware Devices<br/>(USB, Decklink)"]
     end
-
+    
     Renderer -->|IPC via window.electron| Preload
     Preload -->|IPC| Main
     Main -->|HTTP/WS| Fastify
     Main -->|Process Management| Bridge
-
+    
     Fastify --> Routes
     Routes --> Modules
     Routes --> EngineAdapter
-
+    Routes --> CommandRouter
+    
+    RelayClient -->|WebSocket| Relay
+    RelayClient --> CommandRouter
+    CommandRouter --> EngineAdapter
+    CommandRouter --> Modules
+    
     Modules --> Devices
     EngineAdapter --> Engines
-
+    
     Engines -->|Commands| EngineAdapter
     Devices -->|Video Streams| Modules
 ```
@@ -136,15 +154,19 @@ sequenceDiagram
     participant Preload as Preload Script
     participant Main as Main Process
     participant Bridge as Bridge Server
-
+    participant Relay as Relay Server
+    
     UI->>Preload: window.electron.bridgeStart(config)
     Preload->>Main: ipcRenderer.invoke("bridgeStart", config)
+    Main->>Main: Get Bridge ID
     Main->>Main: Resolve Network Binding
-    Main->>Bridge: Start Child Process
+    Main->>Bridge: Start Child Process (with bridgeId)
     Bridge-->>Main: Process Started
-
+    Bridge->>Relay: Connect WebSocket (bridge_hello)
+    Relay-->>Bridge: Connection Established
+    
     Main->>Bridge: Health Check Polling
-    Bridge-->>Main: Status Updates
+    Bridge-->>Main: Status Updates (with relay status)
     Main->>Preload: ipcMain.send("bridgeStatus", status)
     Preload->>UI: Event: "bridgeStatus"
     UI->>UI: Update UI State
@@ -296,21 +318,27 @@ graph TB
         UI["UI"]
         Main["Main Process"]
         NetworkDetector["Network Detector"]
+        BridgeIdentity["Bridge Identity"]
     end
-
+    
     subgraph Network["Network"]
         LocalIP["Local IP<br/>(127.0.0.1, LAN IP)"]
+        Relay["Relay Server<br/>(Cloud)"]
     end
-
+    
     subgraph Bridge["Bridge Server"]
         Fastify["Fastify Server"]
+        RelayClient["Relay Client"]
     end
-
+    
     UI -->|User Selection| Main
+    Main --> BridgeIdentity
+    BridgeIdentity -->|Get/Create bridgeId| Main
     Main --> NetworkDetector
     NetworkDetector -->|Detect Interfaces| LocalIP
-    Main -->|Start Bridge| Fastify
+    Main -->|Start Bridge<br/>(with bridgeId)| Fastify
     Fastify -->|Listen on| LocalIP
+    RelayClient -->|Connect| Relay
     LocalIP -->|Direct Access| Fastify
 ```
 
@@ -429,19 +457,25 @@ graph LR
 - **Response**: `{output1: OutputDeviceT[], output2: OutputDeviceT[]}`
 - **Hardware**: Native APIs (USB, Decklink SDK)
 
-### 4. Network Setup
+### 4. Network Setup & Relay Connection
 
 **Flow:**
 
 1. User wählt Network Binding (localhost, ethernet, wifi, all)
-2. Network Interface Detector löst IP-Adresse auf
-3. Port Checker prüft Port-Verfügbarkeit
-4. Main Process startet Bridge mit resolved IP/Port
+2. Bridge Identity Service lädt/generiert `bridgeId` (UUID)
+3. Network Interface Detector löst IP-Adresse auf
+4. Port Checker prüft Port-Verfügbarkeit
+5. Main Process startet Bridge mit resolved IP/Port und `bridgeId`
+6. Bridge Server startet Relay Client (wenn `bridgeId` und `relayUrl` konfiguriert)
+7. Relay Client verbindet sich outbound zum Relay Server
+8. Relay Client sendet `bridge_hello` mit `bridgeId` und `version`
 
 **Datenfluss:**
 
+- **Bridge Identity**: UUID generiert und in `userData/bridge-id.json` gespeichert
 - **Network Binding**: `NetworkBindingOptionT` → resolved IP address
 - **Port**: Auto-fallback wenn Port belegt
+- **Relay Connection**: Outbound WebSocket zu `RELAY_URL` (env var oder default)
 
 ### 5. Configuration Management
 
@@ -451,14 +485,36 @@ graph LR
 2. User Config wird aus `userData/network-config.json` geladen
 3. Falls nicht vorhanden: Template aus `config/network-config.json`
 4. Falls nicht vorhanden: Hardcoded Default Config
-5. Network Config wird verwendet um IP/Port zu resolven
-6. Resolved Config wird als CLI Args an Bridge übergeben
+5. Bridge Identity lädt/generiert `bridgeId` aus `userData/bridge-id.json`
+6. Network Config wird verwendet um IP/Port zu resolven
+7. Resolved Config wird als CLI Args an Bridge übergeben
+8. Bridge erhält `bridgeId` und `relayUrl` als CLI Args oder Env Vars
 
 **Datenfluss:**
 
 - **Config Sources**: JSON Files → `NetworkConfigT`
 - **Resolution**: `bindAddress` → actual IP address
-- **Bridge Args**: `--host <ip> --port <port>`
+- **Bridge Args**: `--host <ip> --port <port> --bridge-id <uuid> --relay-url <url>`
+- **Relay URL**: Environment Variable `RELAY_URL` oder CLI Arg (default: `wss://relay.broadify.de`)
+
+### 6. Remote Command Flow (via Relay)
+
+**Flow:**
+
+1. Web-App sendet Command über Cloud API an Relay Server
+2. Relay Server leitet Command an Bridge Relay Client weiter (via WebSocket)
+3. Relay Client empfängt Command und leitet an Command Router weiter
+4. Command Router verarbeitet Command mit direkten Funktionsaufrufen
+5. Command Router sendet Ergebnis zurück an Relay Client
+6. Relay Client sendet Ergebnis an Relay Server
+7. Relay Server sendet Ergebnis an Cloud API zurück
+8. Web-App erhält Ergebnis
+
+**Datenfluss:**
+
+- **Command Protocol**: `{type: "command", requestId: string, command: string, payload: object}`
+- **Result Protocol**: `{type: "command_result", requestId: string, success: boolean, data?: object, error?: string}`
+- **Supported Commands**: `get_status`, `list_outputs`, `engine_connect`, `engine_disconnect`, `engine_get_status`, `engine_get_macros`, `engine_run_macro`, `engine_stop_macro`
 
 ## Technische Details
 
@@ -498,10 +554,12 @@ graph LR
 - `GET /engine/macros` - Get macros
 - `POST /engine/macros/:id/run` - Run macro
 - `POST /engine/macros/:id/stop` - Stop macro
+- `GET /relay/status` - Relay connection status
 
 **WebSocket:**
 
-- `WS /ws` - Real-time updates (topic-based subscription)
+- `WS /ws` - Real-time updates (topic-based subscription, lokal)
+- `WS Relay` - Outbound WebSocket zum Relay Server (für Remote-Commands)
 
 ### Security Considerations
 

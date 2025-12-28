@@ -7,6 +7,8 @@ const ConfigSchema = z.object({
   host: z.string().ip({ version: "v4", message: "Invalid IPv4 address" }),
   port: z.number().int().min(1).max(65535),
   mode: z.enum(["lan", "local"]),
+  bridgeId: z.string().uuid().optional(),
+  relayUrl: z.string().url().optional(),
 });
 
 export type BridgeConfigT = z.infer<typeof ConfigSchema>;
@@ -19,6 +21,8 @@ export function parseConfig(args: string[]): BridgeConfigT {
     host: string;
     port: number;
     mode: "lan" | "local";
+    bridgeId?: string;
+    relayUrl?: string;
   }> = {
     host: "127.0.0.1",
     port: 8787,
@@ -38,7 +42,21 @@ export function parseConfig(args: string[]): BridgeConfigT {
         config.port = port;
       }
       i++; // Skip next argument as it's the value
+    } else if (arg === "--bridge-id" && nextArg) {
+      config.bridgeId = nextArg;
+      i++; // Skip next argument as it's the value
+    } else if (arg === "--relay-url" && nextArg) {
+      config.relayUrl = nextArg;
+      i++; // Skip next argument as it's the value
     }
+  }
+
+  // Load from environment variables if not provided via CLI
+  if (!config.bridgeId && process.env.BRIDGE_ID) {
+    config.bridgeId = process.env.BRIDGE_ID;
+  }
+  if (!config.relayUrl && process.env.RELAY_URL) {
+    config.relayUrl = process.env.RELAY_URL;
   }
 
   // Derive mode from host

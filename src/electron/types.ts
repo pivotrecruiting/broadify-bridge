@@ -34,6 +34,8 @@ export type BridgeStatus = {
   state?: "idle" | "configured" | "active";
   outputsConfigured?: boolean;
   error?: string;
+  relayConnected?: boolean;
+  bridgeId?: string;
 };
 
 /**

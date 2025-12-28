@@ -8,8 +8,10 @@ import { registerConfigRoute } from "./routes/config.js";
 import { registerEngineRoute } from "./routes/engine.js";
 import { registerVideoRoute } from "./routes/video.js";
 import { registerWebSocketRoute } from "./routes/websocket.js";
+import { registerRelayRoute } from "./routes/relay.js";
 import { initializeModules } from "./modules/index.js";
 import type { BridgeConfigT } from "./config.js";
+import { RelayClient } from "./services/relay-client.js";
 
 /**
  * Create and configure Fastify server instance
@@ -48,6 +50,25 @@ export async function createServer(config: BridgeConfigT) {
   initializeModules();
   server.log.info("[Server] Device modules initialized");
 
+  // Initialize relay client if bridgeId and relayUrl are configured
+  let relayClient: RelayClient | undefined = undefined;
+  if (config.bridgeId && config.relayUrl) {
+    relayClient = new RelayClient(
+      config.bridgeId,
+      config.relayUrl,
+      {
+        info: (msg: string) => server.log.info(`[Relay] ${msg}`),
+        error: (msg: string) => server.log.error(`[Relay] ${msg}`),
+        warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
+      }
+    );
+    server.log.info("[Server] Relay client initialized");
+  } else {
+    server.log.info(
+      "[Server] Relay client not initialized (bridgeId or relayUrl not configured)"
+    );
+  }
+
   // Register routes
   await server.register(registerStatusRoute, { config });
   await server.register(registerDevicesRoute);
@@ -56,11 +77,16 @@ export async function createServer(config: BridgeConfigT) {
   await server.register(registerEngineRoute);
   await server.register(registerVideoRoute);
   await server.register(registerWebSocketRoute);
+  await server.register(registerRelayRoute, { config, relayClient });
   server.log.info("[Server] All routes registered");
 
   // Note: Engine connection is now controlled by the Web-App
   // The Web-App handles auto-connect and stores config in localStorage
   // Bridge no longer auto-connects on startup
+
+  // Store relay client in server instance for later use
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (server as any).relayClient = relayClient;
 
   return server;
 }
@@ -77,6 +103,14 @@ export async function startServer(
     server.log.info(
       `Bridge server listening on http://${config.host}:${config.port}`
     );
+
+    // Start relay client after server is listening
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const relayClient = (server as any).relayClient as RelayClient | undefined;
+    if (relayClient) {
+      server.log.info("[Server] Starting relay client connection...");
+      await relayClient.connect();
+    }
   } catch (err: unknown) {
     // Check for port already in use
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -124,6 +158,14 @@ export async function startServer(
   const shutdown = async (signal: string) => {
     server.log.info(`Received ${signal}, shutting down gracefully...`);
     try {
+      // Disconnect relay client
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const relayClient = (server as any).relayClient as RelayClient | undefined;
+      if (relayClient) {
+        server.log.info("[Server] Disconnecting relay client...");
+        await relayClient.disconnect();
+      }
+
       await server.close();
       server.log.info("Server closed");
       process.exit(0);
