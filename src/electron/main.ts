@@ -7,8 +7,8 @@ import {
   startHealthCheckPolling,
   checkBridgeHealth,
 } from "./services/bridge-health-check.js";
-import { cloudflareTunnelManager } from "./services/cloudflare-tunnel-manager.js";
 import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
+import { bridgeIdentity } from "./services/bridge-identity.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -19,6 +19,7 @@ import {
 } from "./services/network-interface-detector.js";
 import type {
   BridgeConfig,
+  BridgeStatus,
   NetworkConfigT,
   NetworkBindingOptionT,
 } from "./types.js";
@@ -42,7 +43,6 @@ const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 let healthCheckCleanup: (() => void) | null = null;
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
-let hasOpenedWebApp = false;
 let mainWindow: BrowserWindow | null = null;
 
 /**
@@ -194,18 +194,9 @@ function getInterfaceType(
 }
 
 /**
- * Build Web-App URL with query parameters
- * Uses different URLs for development and production
- *
- * Production: Tunnel-URL is primary, local IP as fallback
- * Development: Local IP only, no tunnel
+ * Build Web-App URL with bridgeId query parameter
  */
-function buildWebAppUrl(
-  ip: string,
-  iptype: string,
-  port: number,
-  tunnelUrl?: string | null
-): string | null {
+function buildWebAppUrl(bridgeId: string): string | null {
   // Select URL based on environment
   const envVarName = isDev()
     ? "DEVELOPMENT_STUDIO_CONTROL_WEBAPP_URL"
@@ -213,40 +204,19 @@ function buildWebAppUrl(
   const baseUrl = process.env[envVarName];
 
   if (!baseUrl) {
-    console.warn(`[WebApp] ${envVarName} not set, skipping web app open`);
+    console.warn(
+      `[WebApp] ${envVarName} not set, skipping web app URL generation`
+    );
+    return null;
+  }
+
+  if (!bridgeId) {
     return null;
   }
 
   try {
     const url = new URL(baseUrl);
-
-    if (isDev()) {
-      // Development: Local IP only, no tunnel
-      url.searchParams.set("ip", ip);
-      url.searchParams.set("iptype", iptype);
-      url.searchParams.set("port", port.toString());
-      url.searchParams.set("useTunnel", "false");
-    } else {
-      // Production: Tunnel-URL is primary, local IP as fallback
-      if (tunnelUrl) {
-        url.searchParams.set("tunnelUrl", tunnelUrl);
-        url.searchParams.set("useTunnel", "true");
-        // Local IP as fallback (in case tunnel fails later)
-        url.searchParams.set("ip", ip);
-        url.searchParams.set("port", port.toString());
-      } else {
-        // Fallback: Local IP (should not happen in Production)
-        console.warn(
-          "[WebApp] Production mode but no tunnel URL available, using local IP as fallback"
-        );
-        url.searchParams.set("ip", ip);
-        url.searchParams.set("iptype", iptype);
-        url.searchParams.set("port", port.toString());
-        url.searchParams.set("useTunnel", "false");
-      }
-    }
-    // Outputs are now configured in the web app, not via URL params
-
+    url.searchParams.set("bridgeId", bridgeId);
     return url.toString();
   } catch (error) {
     console.error("[WebApp] Error building web app URL:", error);
@@ -308,7 +278,9 @@ if (!gotTheLock) {
       // console.log("[Bridge] Starting bridge with config:", config);
 
       // Outputs are now configured in the web app via POST /config endpoint
-      hasOpenedWebApp = false;
+
+      // Get bridge ID
+      const bridgeId = bridgeIdentity.getBridgeId();
 
       // Store network binding ID
       currentNetworkBindingId = config.networkBindingId || "localhost";
@@ -344,37 +316,18 @@ if (!gotTheLock) {
         host: resolvedHost,
       };
 
-      // Start bridge without requiring outputs
-      const result = await bridgeProcessManager.start(resolvedConfig, true); // autoFindPort = true
-      console.log("[Bridge] Start result:", result);
+      // Get relay URL from environment or use default
+      const relayUrl = process.env.RELAY_URL || "wss://broadify-relay.fly.dev";
 
-      // Start Cloudflare Tunnel only in Production
-      if (!isDev() && result.success) {
-        const bridgeConfig = bridgeProcessManager.getConfig();
-        if (bridgeConfig) {
-          const tunnelResult = await cloudflareTunnelManager.start(
-            bridgeConfig.port
-          );
-          if (!tunnelResult.success) {
-            console.error(
-              `[Bridge] Tunnel start failed: ${tunnelResult.error}`
-            );
-            // In Production: Tunnel is required, stop bridge if tunnel fails
-            await bridgeProcessManager.stop();
-            return {
-              success: false,
-              error: `Tunnel start failed: ${tunnelResult.error}`,
-            };
-          }
-          console.log(
-            `[Bridge] Tunnel started successfully: ${tunnelResult.url}`
-          );
-        }
-      } else if (isDev() && result.success) {
-        console.log(
-          "[Bridge] Development mode: Tunnel not started (not required for local development)"
-        );
-      }
+      // Start bridge without requiring outputs
+      // Pass bridgeId and relayUrl as CLI args
+      const result = await bridgeProcessManager.start(
+        resolvedConfig,
+        true, // autoFindPort = true
+        bridgeId,
+        relayUrl
+      );
+      console.log("[Bridge] Start result:", result);
 
       // Start health check polling if bridge started successfully
       if (result.success) {
@@ -382,22 +335,16 @@ if (!gotTheLock) {
         //   "[Bridge] Bridge started successfully, sending initial status update"
         // );
         // Immediately send status update that bridge is starting
-        const initialStatus: {
-          running: boolean;
-          reachable: boolean;
-          tunnelUrl?: string | null;
-          tunnelRunning?: boolean;
-        } = {
+        const initialStatus: BridgeStatus = {
           running: true,
           reachable: false,
+          bridgeId,
         };
 
-        // Add tunnel information only in Production
-        if (!isDev()) {
-          const tunnelUrl = cloudflareTunnelManager.getUrl();
-          const tunnelRunning = cloudflareTunnelManager.isRunning();
-          initialStatus.tunnelUrl = tunnelUrl || null;
-          initialStatus.tunnelRunning = tunnelRunning;
+        // Build web app URL immediately so link is available right away
+        const webAppUrl = buildWebAppUrl(bridgeId);
+        if (webAppUrl) {
+          initialStatus.webAppUrl = webAppUrl;
         }
 
         // console.log("[Bridge] Sending initial status:", initialStatus);
@@ -427,78 +374,24 @@ if (!gotTheLock) {
           (status) => {
             // console.log("[Bridge] Health check status update:", status);
 
-            // Add tunnel information to status only in Production
-            const statusWithTunnel: typeof status & {
-              tunnelUrl?: string | null;
-              tunnelRunning?: boolean;
-            } = {
-              ...status,
-            };
-
-            if (!isDev()) {
-              const tunnelUrl = cloudflareTunnelManager.getUrl();
-              const tunnelRunning = cloudflareTunnelManager.isRunning();
-              statusWithTunnel.tunnelUrl = tunnelUrl || null;
-              statusWithTunnel.tunnelRunning = tunnelRunning;
+            // Build web app URL with bridgeId if available
+            // URL will be displayed as a link in the UI instead of auto-opening
+            // Must be done BEFORE sending status to UI
+            // Use bridgeId from status (from relay) or fallback to bridgeIdentity
+            const bridgeIdForUrl = status.bridgeId || bridgeId;
+            if (bridgeIdForUrl) {
+              const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
+              if (webAppUrl) {
+                status.webAppUrl = webAppUrl;
+              }
             }
 
             if (mainWindow) {
               ipcWebContentsSend(
                 "bridgeStatus",
                 mainWindow.webContents,
-                statusWithTunnel
+                status
               );
-            }
-
-            // Auto-open web app when bridge becomes reachable
-            // Get fresh bridge config in case it changed
-            const currentBridgeConfig = bridgeProcessManager.getConfig();
-
-            // Auto-open web app when bridge becomes reachable
-            // Outputs are no longer required - web app can handle output configuration
-            if (
-              status.reachable &&
-              !hasOpenedWebApp &&
-              currentBridgeConfig &&
-              currentNetworkBindingId
-            ) {
-              const networkConfig = loadNetworkConfig();
-              const networkBindingOptions = detectNetworkInterfaces(
-                networkConfig.networkBinding.options,
-                networkConfig.networkBinding.filters
-              );
-
-              const interfaceType = getInterfaceType(
-                currentNetworkBindingId,
-                networkBindingOptions
-              );
-              const matchingOption = networkBindingOptions.find(
-                (opt) => opt.id === currentNetworkBindingId
-              );
-
-              if (matchingOption) {
-                // Resolve IP address
-                const resolvedIp = resolveBindAddress(
-                  matchingOption.bindAddress,
-                  interfaceType,
-                  networkConfig.networkBinding.filters
-                );
-
-                // Build and open web app URL
-                // Outputs are now configured in the web app, not via URL params
-                const tunnelUrl = cloudflareTunnelManager.getUrl();
-                const webAppUrl = buildWebAppUrl(
-                  resolvedIp,
-                  interfaceType,
-                  currentBridgeConfig.port,
-                  tunnelUrl
-                );
-
-                if (webAppUrl) {
-                  shell.openExternal(webAppUrl);
-                  hasOpenedWebApp = true;
-                }
-              }
             }
           },
           () => bridgeProcessManager.isRunning() // Pass function to check if process is running
@@ -517,15 +410,9 @@ if (!gotTheLock) {
         healthCheckCleanup = null;
       }
 
-      // Stop Cloudflare Tunnel only if running (Production)
-      if (!isDev()) {
-        await cloudflareTunnelManager.stop();
-      }
-
       const result = await bridgeProcessManager.stop();
 
       // Reset web app flag and outputs
-      hasOpenedWebApp = false;
       // Outputs are managed in the web app
       currentNetworkBindingId = null;
 
@@ -559,20 +446,19 @@ if (!gotTheLock) {
 
       const healthStatus = await checkBridgeHealth(config);
       // Ensure running is true if process is running, even if not reachable yet
-      const status: typeof healthStatus & {
-        tunnelUrl?: string | null;
-        tunnelRunning?: boolean;
-      } = {
+      const status: BridgeStatus = {
         ...healthStatus,
         running: isRunning, // Always use actual process state
       };
 
-      // Add tunnel information only in Production
-      if (!isDev()) {
-        const tunnelUrl = cloudflareTunnelManager.getUrl();
-        const tunnelRunning = cloudflareTunnelManager.isRunning();
-        status.tunnelUrl = tunnelUrl || null;
-        status.tunnelRunning = tunnelRunning;
+      // Build web app URL with bridgeId if available
+      // Use bridgeId from status (from relay) or fallback to bridgeIdentity
+      const bridgeIdForUrl = status.bridgeId || bridgeIdentity.getBridgeId();
+      if (bridgeIdForUrl) {
+        const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
+        if (webAppUrl) {
+          status.webAppUrl = webAppUrl;
+        }
       }
 
       // console.log(`[Bridge] GetStatus result:`, status);

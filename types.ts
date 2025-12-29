@@ -31,8 +31,9 @@ export type BridgeStatus = {
   state?: "idle" | "configured" | "active";
   outputsConfigured?: boolean;
   error?: string;
-  tunnelUrl?: string | null; // Cloudflare Tunnel URL (null wenn nicht verfügbar)
-  tunnelRunning?: boolean; // Tunnel-Prozess Status
+  relayConnected?: boolean;
+  bridgeId?: string;
+  webAppUrl?: string;
 };
 
 /**

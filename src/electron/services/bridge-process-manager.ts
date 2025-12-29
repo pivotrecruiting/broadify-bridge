@@ -21,7 +21,9 @@ export class BridgeProcessManager {
    */
   async start(
     config: BridgeConfig,
-    autoFindPort: boolean = true
+    autoFindPort: boolean = true,
+    bridgeId?: string,
+    relayUrl?: string
   ): Promise<{ success: boolean; error?: string; actualPort?: number }> {
     // If already running, stop first
     if (this.bridgeProcess) {
@@ -70,7 +72,7 @@ export class BridgeProcessManager {
 
       // Determine bridge entry point and arguments
       const bridgePath = this.getBridgePath();
-      const args = this.getBridgeArgs(actualConfig);
+      const args = this.getBridgeArgs(actualConfig, bridgeId, relayUrl);
 
       // Spawn bridge process
       // In production, set cwd to bridge resources directory so relative paths work correctly
@@ -292,17 +294,17 @@ export class BridgeProcessManager {
    * In production, uses process.resourcesPath to access extraResources
    * ELECTRON_RUN_AS_NODE=1 is set as environment variable, not CLI flag
    */
-  private getBridgeArgs(config: BridgeConfig): string[] {
+  private getBridgeArgs(
+    config: BridgeConfig,
+    bridgeId?: string,
+    relayUrl?: string
+  ): string[] {
+    const args: string[] = [];
+
     if (isDev()) {
       // Development: npx tsx src/index.ts --host ... --port ...
-      return [
-        "tsx",
-        path.join(app.getAppPath(), "apps/bridge/src/index.ts"),
-        "--host",
-        config.host,
-        "--port",
-        config.port.toString(),
-      ];
+      args.push("tsx");
+      args.push(path.join(app.getAppPath(), "apps/bridge/src/index.ts"));
     } else {
       // Production: Bridge is packaged in extraResources at resources/bridge/dist/index.js
       // ELECTRON_RUN_AS_NODE=1 is set as environment variable in spawn()
@@ -312,14 +314,24 @@ export class BridgeProcessManager {
         "dist",
         "index.js"
       );
-      return [
-        bridgeEntry,
-        "--host",
-        config.host,
-        "--port",
-        config.port.toString(),
-      ];
+      args.push(bridgeEntry);
     }
+
+    // Add standard config args
+    args.push("--host", config.host);
+    args.push("--port", config.port.toString());
+
+    // Add bridge ID if provided
+    if (bridgeId) {
+      args.push("--bridge-id", bridgeId);
+    }
+
+    // Add relay URL if provided
+    if (relayUrl) {
+      args.push("--relay-url", relayUrl);
+    }
+
+    return args;
   }
 }
 
