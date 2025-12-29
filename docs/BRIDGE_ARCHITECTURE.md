@@ -475,7 +475,7 @@ graph LR
 - **Bridge Identity**: UUID generiert und in `userData/bridge-id.json` gespeichert
 - **Network Binding**: `NetworkBindingOptionT` → resolved IP address
 - **Port**: Auto-fallback wenn Port belegt
-- **Relay Connection**: Outbound WebSocket zu `wss://relay.broadify.de` (Standard, kann via `RELAY_URL` env var überschrieben werden)
+- **Relay Connection**: Outbound WebSocket zu `wss://broadify-relay.fly.dev` (Standard, kann via `RELAY_URL` env var überschrieben werden)
 
 ### 5. Configuration Management
 
@@ -495,7 +495,7 @@ graph LR
 - **Config Sources**: JSON Files → `NetworkConfigT`
 - **Resolution**: `bindAddress` → actual IP address
 - **Bridge Args**: `--host <ip> --port <port> --bridge-id <uuid> --relay-url <url>`
-- **Relay URL**: Standard ist `wss://relay.broadify.de` (wird automatisch verwendet, kann via `RELAY_URL` env var oder CLI Arg `--relay-url` überschrieben werden)
+- **Relay URL**: Standard ist `wss://broadify-relay.fly.dev` (wird automatisch verwendet, kann via `RELAY_URL` env var oder CLI Arg `--relay-url` überschrieben werden)
 
 ### 6. Remote Command Flow (via Relay)
 

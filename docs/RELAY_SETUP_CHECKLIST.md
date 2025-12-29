@@ -10,13 +10,13 @@ Diese Checkliste führt durch alle manuellen Schritte, die nach der Code-Impleme
 
 ### Bridge Server (Electron Main Process)
 
-Die Bridge verwendet standardmäßig `wss://relay.broadify.de` als Relay URL. **Du musst keine Environment Variable setzen**, es sei denn du willst einen anderen Relay Server verwenden.
+Die Bridge verwendet standardmäßig `wss://broadify-relay.fly.dev` als Relay URL. **Du musst keine Environment Variable setzen**, es sei denn du willst einen anderen Relay Server verwenden.
 
 **Optionen (optional):**
 
 1. **Environment Variable setzen** (nur wenn anderer Relay Server):
    ```bash
-   export RELAY_URL=wss://relay.broadify.de
+   export RELAY_URL=wss://broadify-relay.fly.dev
    ```
 
 2. **In `.env` Datei** (für Development mit lokalem Relay):
@@ -26,10 +26,10 @@ Die Bridge verwendet standardmäßig `wss://relay.broadify.de` als Relay URL. **
 
 3. **Als CLI Argument** (wird bereits unterstützt):
    ```bash
-   --relay-url wss://relay.broadify.de
+   --relay-url wss://broadify-relay.fly.dev
    ```
 
-**Wichtig:** Die Bridge verwendet automatisch `wss://relay.broadify.de` als Standard. Du musst nichts konfigurieren, es sei denn du testest lokal mit einem anderen Relay Server (z.B. `ws://localhost:8080`).
+**Wichtig:** Die Bridge verwendet automatisch `wss://broadify-relay.fly.dev` als Standard. Du musst nichts konfigurieren, es sei denn du testest lokal mit einem anderen Relay Server (z.B. `ws://localhost:8080`).
 
 ---
 
@@ -83,7 +83,7 @@ bridgeIdentity.resetBridgeId(); // Generiert neue UUID
 
 Der Relay Server muss folgende Endpoints unterstützen:
 
-1. **WebSocket Endpoint** (`wss://relay.broadify.de`):
+1. **WebSocket Endpoint** (`wss://broadify-relay.fly.dev`):
    - Empfängt `bridge_hello` Messages
    - Sendet `command` Messages
    - Empfängt `command_result` Messages
@@ -240,18 +240,18 @@ Der Relay Server muss folgende Endpoints unterstützen:
 
 ### Default Values
 
-- **Relay URL**: `wss://relay.broadify.de` (Standard, wird automatisch verwendet wenn nicht überschrieben)
+- **Relay URL**: `wss://broadify-relay.fly.dev` (Standard, wird automatisch verwendet wenn nicht überschrieben)
 - **Bridge ID**: Wird automatisch generiert (UUID v4)
 - **Reconnect Delay**: Startet bei 1s, max 60s (Exponential Backoff)
 - **Command Timeout**: 10s (im Relay Server zu implementieren)
 
-**Wichtig:** Die Relay URL `wss://relay.broadify.de` ist der Standard und wird automatisch verwendet. Du musst keine Environment Variable setzen, es sei denn du willst einen anderen Relay Server verwenden (z.B. für lokales Testing).
+**Wichtig:** Die Relay URL `wss://broadify-relay.fly.dev` ist der Standard und wird automatisch verwendet. Du musst keine Environment Variable setzen, es sei denn du willst einen anderen Relay Server verwenden (z.B. für lokales Testing).
 
 ### Environment Variables
 
 | Variable | Default | Beschreibung |
 |----------|---------|--------------|
-| `RELAY_URL` | `wss://relay.broadify.de` | Relay Server WebSocket URL |
+| `RELAY_URL` | `wss://broadify-relay.fly.dev` | Relay Server WebSocket URL |
 | `BRIDGE_ID` | (auto-generated) | Bridge UUID (optional, wird automatisch generiert) |
 
 ---

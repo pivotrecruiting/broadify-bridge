@@ -321,7 +321,7 @@ if (!gotTheLock) {
       };
 
       // Get relay URL from environment or use default
-      const relayUrl = process.env.RELAY_URL || "wss://relay.broadify.de";
+      const relayUrl = process.env.RELAY_URL || "wss://broadify-relay.fly.dev";
 
       // Start bridge without requiring outputs
       // Pass bridgeId and relayUrl as CLI args
