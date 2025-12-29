@@ -19,6 +19,7 @@ import {
 } from "./services/network-interface-detector.js";
 import type {
   BridgeConfig,
+  BridgeStatus,
   NetworkConfigT,
   NetworkBindingOptionT,
 } from "./types.js";
@@ -42,7 +43,6 @@ const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 let healthCheckCleanup: (() => void) | null = null;
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
-let hasOpenedWebApp = false;
 let mainWindow: BrowserWindow | null = null;
 
 /**
@@ -194,13 +194,9 @@ function getInterfaceType(
 }
 
 /**
- * Build Web-App URL with query parameters
+ * Build Web-App URL with bridgeId query parameter
  */
-function buildWebAppUrl(
-  ip: string,
-  iptype: string,
-  port: number
-): string | null {
+function buildWebAppUrl(bridgeId: string): string | null {
   // Select URL based on environment
   const envVarName = isDev()
     ? "DEVELOPMENT_STUDIO_CONTROL_WEBAPP_URL"
@@ -208,18 +204,19 @@ function buildWebAppUrl(
   const baseUrl = process.env[envVarName];
 
   if (!baseUrl) {
-    console.warn(`[WebApp] ${envVarName} not set, skipping web app open`);
+    console.warn(
+      `[WebApp] ${envVarName} not set, skipping web app URL generation`
+    );
+    return null;
+  }
+
+  if (!bridgeId) {
     return null;
   }
 
   try {
     const url = new URL(baseUrl);
-
-    url.searchParams.set("ip", ip);
-    url.searchParams.set("iptype", iptype);
-    url.searchParams.set("port", port.toString());
-    // Outputs are now configured in the web app, not via URL params
-
+    url.searchParams.set("bridgeId", bridgeId);
     return url.toString();
   } catch (error) {
     console.error("[WebApp] Error building web app URL:", error);
@@ -281,7 +278,6 @@ if (!gotTheLock) {
       // console.log("[Bridge] Starting bridge with config:", config);
 
       // Outputs are now configured in the web app via POST /config endpoint
-      hasOpenedWebApp = false;
 
       // Get bridge ID
       const bridgeId = bridgeIdentity.getBridgeId();
@@ -339,11 +335,17 @@ if (!gotTheLock) {
         //   "[Bridge] Bridge started successfully, sending initial status update"
         // );
         // Immediately send status update that bridge is starting
-        const initialStatus = {
+        const initialStatus: BridgeStatus = {
           running: true,
           reachable: false,
           bridgeId,
         };
+
+        // Build web app URL immediately so link is available right away
+        const webAppUrl = buildWebAppUrl(bridgeId);
+        if (webAppUrl) {
+          initialStatus.webAppUrl = webAppUrl;
+        }
 
         // console.log("[Bridge] Sending initial status:", initialStatus);
         if (mainWindow) {
@@ -372,61 +374,24 @@ if (!gotTheLock) {
           (status) => {
             // console.log("[Bridge] Health check status update:", status);
 
+            // Build web app URL with bridgeId if available
+            // URL will be displayed as a link in the UI instead of auto-opening
+            // Must be done BEFORE sending status to UI
+            // Use bridgeId from status (from relay) or fallback to bridgeIdentity
+            const bridgeIdForUrl = status.bridgeId || bridgeId;
+            if (bridgeIdForUrl) {
+              const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
+              if (webAppUrl) {
+                status.webAppUrl = webAppUrl;
+              }
+            }
+
             if (mainWindow) {
               ipcWebContentsSend(
                 "bridgeStatus",
                 mainWindow.webContents,
                 status
               );
-            }
-
-            // Auto-open web app when bridge becomes reachable
-            // Get fresh bridge config in case it changed
-            const currentBridgeConfig = bridgeProcessManager.getConfig();
-
-            // Auto-open web app when bridge becomes reachable
-            // Outputs are no longer required - web app can handle output configuration
-            if (
-              status.reachable &&
-              !hasOpenedWebApp &&
-              currentBridgeConfig &&
-              currentNetworkBindingId
-            ) {
-              const networkConfig = loadNetworkConfig();
-              const networkBindingOptions = detectNetworkInterfaces(
-                networkConfig.networkBinding.options,
-                networkConfig.networkBinding.filters
-              );
-
-              const interfaceType = getInterfaceType(
-                currentNetworkBindingId,
-                networkBindingOptions
-              );
-              const matchingOption = networkBindingOptions.find(
-                (opt) => opt.id === currentNetworkBindingId
-              );
-
-              if (matchingOption) {
-                // Resolve IP address
-                const resolvedIp = resolveBindAddress(
-                  matchingOption.bindAddress,
-                  interfaceType,
-                  networkConfig.networkBinding.filters
-                );
-
-                // Build and open web app URL
-                // Outputs are now configured in the web app, not via URL params
-                const webAppUrl = buildWebAppUrl(
-                  resolvedIp,
-                  interfaceType,
-                  currentBridgeConfig.port
-                );
-
-                if (webAppUrl) {
-                  shell.openExternal(webAppUrl);
-                  hasOpenedWebApp = true;
-                }
-              }
             }
           },
           () => bridgeProcessManager.isRunning() // Pass function to check if process is running
@@ -448,7 +413,6 @@ if (!gotTheLock) {
       const result = await bridgeProcessManager.stop();
 
       // Reset web app flag and outputs
-      hasOpenedWebApp = false;
       // Outputs are managed in the web app
       currentNetworkBindingId = null;
 
@@ -482,10 +446,20 @@ if (!gotTheLock) {
 
       const healthStatus = await checkBridgeHealth(config);
       // Ensure running is true if process is running, even if not reachable yet
-      const status = {
+      const status: BridgeStatus = {
         ...healthStatus,
         running: isRunning, // Always use actual process state
       };
+
+      // Build web app URL with bridgeId if available
+      // Use bridgeId from status (from relay) or fallback to bridgeIdentity
+      const bridgeIdForUrl = status.bridgeId || bridgeIdentity.getBridgeId();
+      if (bridgeIdForUrl) {
+        const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
+        if (webAppUrl) {
+          status.webAppUrl = webAppUrl;
+        }
+      }
 
       // console.log(`[Bridge] GetStatus result:`, status);
       return status;

@@ -36,6 +36,7 @@ export type BridgeStatus = {
   error?: string;
   relayConnected?: boolean;
   bridgeId?: string;
+  webAppUrl?: string;
 };
 
 /**
