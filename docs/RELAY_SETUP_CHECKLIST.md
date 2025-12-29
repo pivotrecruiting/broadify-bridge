@@ -10,18 +10,18 @@ Diese Checkliste führt durch alle manuellen Schritte, die nach der Code-Impleme
 
 ### Bridge Server (Electron Main Process)
 
-Die Bridge benötigt die `RELAY_URL` Environment Variable. Standard ist `wss://relay.broadify.de`.
+Die Bridge verwendet standardmäßig `wss://relay.broadify.de` als Relay URL. **Du musst keine Environment Variable setzen**, es sei denn du willst einen anderen Relay Server verwenden.
 
-**Optionen:**
+**Optionen (optional):**
 
-1. **Environment Variable setzen** (empfohlen für Production):
+1. **Environment Variable setzen** (nur wenn anderer Relay Server):
    ```bash
    export RELAY_URL=wss://relay.broadify.de
    ```
 
-2. **In `.env` Datei** (für Development):
+2. **In `.env` Datei** (für Development mit lokalem Relay):
    ```
-   RELAY_URL=wss://relay.broadify.de
+   RELAY_URL=ws://localhost:8080
    ```
 
 3. **Als CLI Argument** (wird bereits unterstützt):
@@ -29,7 +29,7 @@ Die Bridge benötigt die `RELAY_URL` Environment Variable. Standard ist `wss://r
    --relay-url wss://relay.broadify.de
    ```
 
-**Wichtig:** Die Bridge verwendet automatisch den Default `wss://relay.broadify.de`, wenn keine Variable gesetzt ist. Für lokales Testing kannst du auch `ws://localhost:8080` verwenden.
+**Wichtig:** Die Bridge verwendet automatisch `wss://relay.broadify.de` als Standard. Du musst nichts konfigurieren, es sei denn du testest lokal mit einem anderen Relay Server (z.B. `ws://localhost:8080`).
 
 ---
 
@@ -240,10 +240,12 @@ Der Relay Server muss folgende Endpoints unterstützen:
 
 ### Default Values
 
-- **Relay URL**: `wss://relay.broadify.de` (kann via `RELAY_URL` env var überschrieben werden)
+- **Relay URL**: `wss://relay.broadify.de` (Standard, wird automatisch verwendet wenn nicht überschrieben)
 - **Bridge ID**: Wird automatisch generiert (UUID v4)
 - **Reconnect Delay**: Startet bei 1s, max 60s (Exponential Backoff)
 - **Command Timeout**: 10s (im Relay Server zu implementieren)
+
+**Wichtig:** Die Relay URL `wss://relay.broadify.de` ist der Standard und wird automatisch verwendet. Du musst keine Environment Variable setzen, es sei denn du willst einen anderen Relay Server verwenden (z.B. für lokales Testing).
 
 ### Environment Variables
 

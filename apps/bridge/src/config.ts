@@ -57,6 +57,9 @@ export function parseConfig(args: string[]): BridgeConfigT {
   }
   if (!config.relayUrl && process.env.RELAY_URL) {
     config.relayUrl = process.env.RELAY_URL;
+  } else if (!config.relayUrl) {
+    // Default relay URL if not provided
+    config.relayUrl = "wss://relay.broadify.de";
   }
 
   // Derive mode from host

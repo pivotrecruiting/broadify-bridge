@@ -50,22 +50,24 @@ export async function createServer(config: BridgeConfigT) {
   initializeModules();
   server.log.info("[Server] Device modules initialized");
 
-  // Initialize relay client if bridgeId and relayUrl are configured
+  // Initialize relay client if bridgeId is configured
+  // relayUrl defaults to wss://relay.broadify.de if not provided
   let relayClient: RelayClient | undefined = undefined;
-  if (config.bridgeId && config.relayUrl) {
+  if (config.bridgeId) {
+    const relayUrl = config.relayUrl || "wss://relay.broadify.de";
     relayClient = new RelayClient(
       config.bridgeId,
-      config.relayUrl,
+      relayUrl,
       {
         info: (msg: string) => server.log.info(`[Relay] ${msg}`),
         error: (msg: string) => server.log.error(`[Relay] ${msg}`),
         warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
       }
     );
-    server.log.info("[Server] Relay client initialized");
+    server.log.info(`[Server] Relay client initialized (relayUrl: ${relayUrl})`);
   } else {
     server.log.info(
-      "[Server] Relay client not initialized (bridgeId or relayUrl not configured)"
+      "[Server] Relay client not initialized (bridgeId not configured)"
     );
   }
 

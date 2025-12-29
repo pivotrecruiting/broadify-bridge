@@ -78,6 +78,7 @@ export async function POST(
 
   try {
     // Send command to relay server
+    // Note: Web-App uses HTTP, Bridge uses WebSocket (wss://)
     const relayUrl = process.env.RELAY_API_URL || "https://relay.broadify.de";
     const response = await fetch(`${relayUrl}/relay/command`, {
       method: "POST",
@@ -116,8 +117,15 @@ export async function POST(
 **Environment Variable:**
 
 ```env
+# Optional: Standard ist https://relay.broadify.de
 RELAY_API_URL=https://relay.broadify.de
 ```
+
+**Wichtig:**
+
+- **Web-App** verwendet `https://relay.broadify.de` (HTTP) für API-Calls
+- **Bridge** verwendet `wss://relay.broadify.de` (WebSocket) für die Verbindung
+- Beide zeigen auf denselben Relay Server, verwenden aber unterschiedliche Protokolle
 
 ---
 

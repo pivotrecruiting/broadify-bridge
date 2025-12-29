@@ -117,31 +117,31 @@ graph TB
         RelayClient["Relay Client<br/>(Outbound WS)"]
         CommandRouter["Command Router"]
     end
-    
+
     subgraph External["External Services"]
         Relay["Relay Server<br/>(Cloud)"]
         Engines["Video Engines<br/>(ATEM, Tricaster, vMix)"]
         Devices["Hardware Devices<br/>(USB, Decklink)"]
     end
-    
+
     Renderer -->|IPC via window.electron| Preload
     Preload -->|IPC| Main
     Main -->|HTTP/WS| Fastify
     Main -->|Process Management| Bridge
-    
+
     Fastify --> Routes
     Routes --> Modules
     Routes --> EngineAdapter
     Routes --> CommandRouter
-    
+
     RelayClient -->|WebSocket| Relay
     RelayClient --> CommandRouter
     CommandRouter --> EngineAdapter
     CommandRouter --> Modules
-    
+
     Modules --> Devices
     EngineAdapter --> Engines
-    
+
     Engines -->|Commands| EngineAdapter
     Devices -->|Video Streams| Modules
 ```
@@ -155,7 +155,7 @@ sequenceDiagram
     participant Main as Main Process
     participant Bridge as Bridge Server
     participant Relay as Relay Server
-    
+
     UI->>Preload: window.electron.bridgeStart(config)
     Preload->>Main: ipcRenderer.invoke("bridgeStart", config)
     Main->>Main: Get Bridge ID
@@ -164,7 +164,7 @@ sequenceDiagram
     Bridge-->>Main: Process Started
     Bridge->>Relay: Connect WebSocket (bridge_hello)
     Relay-->>Bridge: Connection Established
-    
+
     Main->>Bridge: Health Check Polling
     Bridge-->>Main: Status Updates (with relay status)
     Main->>Preload: ipcMain.send("bridgeStatus", status)
@@ -320,17 +320,17 @@ graph TB
         NetworkDetector["Network Detector"]
         BridgeIdentity["Bridge Identity"]
     end
-    
+
     subgraph Network["Network"]
         LocalIP["Local IP<br/>(127.0.0.1, LAN IP)"]
         Relay["Relay Server<br/>(Cloud)"]
     end
-    
+
     subgraph Bridge["Bridge Server"]
         Fastify["Fastify Server"]
         RelayClient["Relay Client"]
     end
-    
+
     UI -->|User Selection| Main
     Main --> BridgeIdentity
     BridgeIdentity -->|Get/Create bridgeId| Main
@@ -475,7 +475,7 @@ graph LR
 - **Bridge Identity**: UUID generiert und in `userData/bridge-id.json` gespeichert
 - **Network Binding**: `NetworkBindingOptionT` → resolved IP address
 - **Port**: Auto-fallback wenn Port belegt
-- **Relay Connection**: Outbound WebSocket zu `RELAY_URL` (env var oder default)
+- **Relay Connection**: Outbound WebSocket zu `wss://relay.broadify.de` (Standard, kann via `RELAY_URL` env var überschrieben werden)
 
 ### 5. Configuration Management
 
@@ -495,7 +495,7 @@ graph LR
 - **Config Sources**: JSON Files → `NetworkConfigT`
 - **Resolution**: `bindAddress` → actual IP address
 - **Bridge Args**: `--host <ip> --port <port> --bridge-id <uuid> --relay-url <url>`
-- **Relay URL**: Environment Variable `RELAY_URL` oder CLI Arg (default: `wss://relay.broadify.de`)
+- **Relay URL**: Standard ist `wss://relay.broadify.de` (wird automatisch verwendet, kann via `RELAY_URL` env var oder CLI Arg `--relay-url` überschrieben werden)
 
 ### 6. Remote Command Flow (via Relay)
 
