@@ -1,9 +1,9 @@
 import { WebSocket } from "ws";
 import { commandRouter } from "./command-router.js";
-import type { RelayCommand } from "./command-router.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { RelayCommand } from "./command-router.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -58,7 +58,6 @@ export class RelayClient {
   private bridgeId: string;
   private relayUrl: string;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = Infinity; // Retry indefinitely
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 60000; // Max 60 seconds
   private reconnectTimer: NodeJS.Timeout | null = null;
