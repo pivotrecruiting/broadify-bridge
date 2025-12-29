@@ -1,4 +1,4 @@
-import WebSocket from "ws";
+import { WebSocket } from "ws";
 import { commandRouter } from "./command-router.js";
 import type { RelayCommand } from "./command-router.js";
 import { readFileSync } from "node:fs";
@@ -49,7 +49,7 @@ type RelayMessage = BridgeHelloMessage | RelayCommandMessage;
 
 /**
  * Relay Client Service
- * 
+ *
  * Manages outbound WebSocket connection to Relay Server.
  * Handles bridge registration, command reception, and result sending.
  */
@@ -65,12 +65,20 @@ export class RelayClient {
   private isConnecting = false;
   private isShuttingDown = false;
   private lastSeen: Date | null = null;
-  private logger: { info: (msg: string) => void; error: (msg: string) => void; warn: (msg: string) => void };
+  private logger: {
+    info: (msg: string) => void;
+    error: (msg: string) => void;
+    warn: (msg: string) => void;
+  };
 
   constructor(
     bridgeId: string,
     relayUrl: string,
-    logger?: { info: (msg: string) => void; error: (msg: string) => void; warn: (msg: string) => void }
+    logger?: {
+      info: (msg: string) => void;
+      error: (msg: string) => void;
+      warn: (msg: string) => void;
+    }
   ) {
     this.bridgeId = bridgeId;
     this.relayUrl = relayUrl;
@@ -150,7 +158,9 @@ export class RelayClient {
       this.isConnecting = false;
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to create WebSocket connection: ${errorMessage}`);
+      this.logger.error(
+        `Failed to create WebSocket connection: ${errorMessage}`
+      );
 
       if (!this.isShuttingDown) {
         this.scheduleReconnect();
@@ -187,7 +197,9 @@ export class RelayClient {
       if (message.type === "command") {
         await this.handleCommand(message);
       } else {
-        this.logger.warn(`Unknown message type: ${(message as { type: string }).type}`);
+        this.logger.warn(
+          `Unknown message type: ${(message as { type: string }).type}`
+        );
       }
     } catch (error: unknown) {
       const errorMessage =
@@ -303,4 +315,3 @@ export class RelayClient {
     this.logger.info("Disconnected from relay");
   }
 }
-
