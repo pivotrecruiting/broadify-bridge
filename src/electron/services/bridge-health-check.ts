@@ -70,6 +70,31 @@ export async function checkBridgeHealth(
     const data = await response.json();
     // console.log(`[HealthCheck] Bridge is healthy:`, data);
 
+    // Also check relay status
+    let relayStatus: { connected: boolean; bridgeId?: string } | null = null;
+    try {
+      const relayUrl = `http://${healthCheckHost}:${config.port}/relay/status`;
+      const relayController = new AbortController();
+      const relayTimeoutId = setTimeout(
+        () => relayController.abort(),
+        HEALTH_CHECK_TIMEOUT
+      );
+
+      const relayResponse = await fetch(relayUrl, {
+        signal: relayController.signal,
+        method: "GET",
+      });
+
+      clearTimeout(relayTimeoutId);
+
+      if (relayResponse.ok) {
+        relayStatus = await relayResponse.json();
+      }
+    } catch (error) {
+      // Relay status check failed, but that's okay - bridge might not have relay configured
+      // console.log(`[HealthCheck] Relay status check failed:`, error);
+    }
+
     return {
       running: true,
       reachable: true,
@@ -78,6 +103,8 @@ export async function checkBridgeHealth(
       mode: data.mode,
       port: data.port,
       host: data.host,
+      relayConnected: relayStatus?.connected || false,
+      bridgeId: relayStatus?.bridgeId || undefined,
     };
   } catch (error) {
     let errorMessage = error instanceof Error ? error.message : "Unknown error";
