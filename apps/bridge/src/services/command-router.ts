@@ -1,11 +1,10 @@
 import { engineAdapter } from "./engine-adapter.js";
 import { deviceCache } from "./device-cache.js";
 import { runtimeConfig } from "./runtime-config.js";
-import type { EngineStateT } from "./engine-types.js";
-import type { BridgeOutputsT, DeviceDescriptorT } from "../types.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { BridgeOutputsT, DeviceDescriptorT } from "../types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -93,10 +92,7 @@ function transformDevicesToOutputs(
 
     // Collect connection types from ports (for output2)
     for (const port of device.ports) {
-      if (
-        port.direction === "output" ||
-        port.direction === "bidirectional"
-      ) {
+      if (port.direction === "output" || port.direction === "bidirectional") {
         const connectionType = port.type;
         if (!connectionTypesSeen.has(connectionType)) {
           connectionTypesSeen.add(connectionType);
@@ -119,7 +115,7 @@ function transformDevicesToOutputs(
 
 /**
  * Command Router Service
- * 
+ *
  * Central command processing logic used by both HTTP routes and Relay Client.
  * Uses direct function calls to services (no HTTP calls to self).
  */
@@ -181,7 +177,8 @@ export class CommandRouter {
           ) {
             return {
               success: false,
-              error: "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
+              error:
+                "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
             };
           }
 
@@ -322,4 +319,3 @@ export class CommandRouter {
 
 // Singleton instance
 export const commandRouter = new CommandRouter();
-
