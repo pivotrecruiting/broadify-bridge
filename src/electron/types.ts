@@ -312,17 +312,13 @@ declare global {
         error?: string;
         macros?: MacroT[];
       }>;
-      engineRunMacro: (
-        macroId: number
-      ) => Promise<{
+      engineRunMacro: (macroId: number) => Promise<{
         success: boolean;
         error?: string;
         macroId?: number;
         state?: EngineStateT;
       }>;
-      engineStopMacro: (
-        macroId: number
-      ) => Promise<{
+      engineStopMacro: (macroId: number) => Promise<{
         success: boolean;
         error?: string;
         macroId?: number;

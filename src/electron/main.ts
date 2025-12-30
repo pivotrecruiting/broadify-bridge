@@ -183,6 +183,29 @@ function loadNetworkConfig(): NetworkConfigT {
 }
 
 /**
+ * Get Web App URL based on environment
+ * Consistent with how RELAY_URL is handled: env var with fallback to default
+ * Must be evaluated at runtime, not build time, to work in production
+ */
+function getWebAppBaseUrl(): string | null {
+  const envVarName = isDev()
+    ? "DEVELOPMENT_STUDIO_CONTROL_WEBAPP_URL"
+    : "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL";
+
+  // Try environment variable first (can be set at build time or runtime)
+  const envUrl = process.env[envVarName];
+  if (envUrl) {
+    return envUrl;
+  }
+
+  // Fallback to defaults (consistent with RELAY_URL pattern)
+  // TODO: Update prod url when going live
+  return isDev()
+    ? "http://localhost:3000"
+    : "https://studio-control-pi.vercel.app";
+}
+
+/**
  * Get interface type from binding ID
  */
 function getInterfaceType(
@@ -195,22 +218,20 @@ function getInterfaceType(
 
 /**
  * Build Web-App URL with bridgeId query parameter
+ * Consistent with how RELAY_URL is handled: env var with fallback to default
  */
 function buildWebAppUrl(bridgeId: string): string | null {
-  // Select URL based on environment
-  const envVarName = isDev()
-    ? "DEVELOPMENT_STUDIO_CONTROL_WEBAPP_URL"
-    : "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL";
-  const baseUrl = process.env[envVarName];
-
-  if (!baseUrl) {
-    console.warn(
-      `[WebApp] ${envVarName} not set, skipping web app URL generation`
-    );
+  if (!bridgeId) {
     return null;
   }
 
-  if (!bridgeId) {
+  // Get base URL based on environment (consistent with RELAY_URL pattern)
+  const baseUrl = getWebAppBaseUrl();
+
+  if (!baseUrl) {
+    console.warn(
+      "[WebApp] Web app URL not configured, skipping URL generation"
+    );
     return null;
   }
 
