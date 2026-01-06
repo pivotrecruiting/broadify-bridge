@@ -7,8 +7,11 @@
   "scripts": {
     "dev": "npm-run-all --parallel dev:react dev:electron",
     "dev:react": "vite",
-    "dev:electron": "npm run transpile:electron && cross-env NODE_ENV=development electron .",
-    "build": "tsc -b && vite build",
+    "dev:electron": "npm run build:graphics-renderer && npm run transpile:electron && cross-env NODE_ENV=development electron .",
+    "build:app": "tsc -b && vite build",
+    "build:bridge": "npm --prefix apps/bridge run build",
+    "build:graphics-renderer": "npm --prefix apps/bridge run build:graphics-renderer",
+    "build": "npm-run-all build:bridge build:graphics-renderer build:app",
     "lint": "eslint .",
     "preview": "vite preview",
     "transpile:electron": "tsc --project src/electron/tsconfig.json",

@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "dev:lan": "tsx src/index.ts --host 0.0.0.0 --port 8000",
     "build": "tsc",
+    "build:graphics-renderer": "tsc --project tsconfig-graphics-renderer.json",
     "start": "node dist/index.js"
   },
   "dependencies": {

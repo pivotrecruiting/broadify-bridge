@@ -19,6 +19,7 @@ import {
 import { outputConfigStore } from "./output-config-store.js";
 import { validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
+import { FfmpegSdiOutputAdapter } from "./output-adapters/ffmpeg-sdi-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
@@ -101,6 +102,7 @@ export class GraphicsManager {
     const persisted = outputConfigStore.getConfig();
     if (persisted) {
       this.outputConfig = persisted;
+      this.outputAdapter = this.selectOutputAdapter(persisted.outputKey);
       await this.outputAdapter.configure(persisted);
       this.startTicker(persisted.format.fps);
     }
@@ -118,6 +120,8 @@ export class GraphicsManager {
     await this.validateOutputTargets(config.outputKey, config.targets);
 
     this.outputConfig = config;
+    await this.outputAdapter.stop();
+    this.outputAdapter = this.selectOutputAdapter(config.outputKey);
     await outputConfigStore.setConfig(config);
     await this.outputAdapter.configure(config);
     this.startTicker(config.format.fps);
@@ -296,6 +300,14 @@ export class GraphicsManager {
     return new ElectronRendererClient();
   }
 
+  private selectOutputAdapter(outputKey: GraphicsOutputKeyT): GraphicsOutputAdapter {
+    if (outputKey === "video_sdi" || outputKey === "key_fill_sdi") {
+      return new FfmpegSdiOutputAdapter();
+    }
+
+    return new StubOutputAdapter();
+  }
+
   private validateLayerLimits(layerId: string, category: GraphicsCategoryT): void {
     const existingLayer = this.layers.get(layerId);
     const layerInCategory = this.categoryToLayer.get(category);
@@ -342,7 +354,6 @@ export class GraphicsManager {
 
     const devices = await deviceCache.getDevices(false);
     const availableOutputs = new Set<string>();
-    const connectionTypes = new Set<string>();
 
     for (const device of devices) {
       const hasOutputPort = device.ports.some(
@@ -352,12 +363,6 @@ export class GraphicsManager {
       if (hasOutputPort) {
         availableOutputs.add(device.id);
       }
-
-      for (const port of device.ports) {
-        if (port.direction === "output" || port.direction === "bidirectional") {
-          connectionTypes.add(port.type);
-        }
-      }
     }
 
     const outputIds = [targets.output1Id, targets.output2Id].filter(Boolean);
@@ -365,7 +370,7 @@ export class GraphicsManager {
       if (!outputId) {
         continue;
       }
-      if (!availableOutputs.has(outputId) && !connectionTypes.has(outputId)) {
+      if (!availableOutputs.has(outputId)) {
         throw new Error(`Output target not available: ${outputId}`);
       }
     }
@@ -417,7 +422,7 @@ export class GraphicsManager {
     if (this.outputConfig.outputKey === "video_sdi") {
       outputBuffer = applyBackground(
         composite,
-        BACKGROUND_COLORS.transparent
+        BACKGROUND_COLORS.black
       );
     }
 
