@@ -63,6 +63,10 @@ Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen loka
 - **Engine Adapter**: Abstraktion für ATEM/Tricaster/vMix
 - **Device Detection**: Automatische Device-Erkennung
 - **Output Management**: Output-Konfiguration
+- **Graphics Manager**: Layer Registry, Z-Order, Output-Profiles
+- **Graphics Renderer**: Electron Offscreen Child + TCP IPC (HTML/CSS -> RGBA)
+- **Output Adapter**: SDI/HDMI und NDI Ausspielung
+- **Asset Registry**: Lokaler Cache fuer Template-Assets
 - **Relay Client**: Outbound WebSocket-Verbindung zum Relay Server
 - **Command Router**: Zentrale Command-Verarbeitung für HTTP und Relay
 
@@ -114,6 +118,10 @@ graph TB
         Routes["Routes<br/>(/status, /engine, etc.)"]
         Modules["Device Modules<br/>(USB, Decklink)"]
         EngineAdapter["Engine Adapter<br/>(ATEM, Tricaster, vMix)"]
+        GraphicsManager["Graphics Manager"]
+        GraphicsRenderer["Graphics Renderer"]
+        OutputAdapter["Output Adapter<br/>(SDI/NDI)"]
+        AssetRegistry["Asset Registry"]
         RelayClient["Relay Client<br/>(Outbound WS)"]
         CommandRouter["Command Router"]
     end
@@ -138,9 +146,14 @@ graph TB
     RelayClient --> CommandRouter
     CommandRouter --> EngineAdapter
     CommandRouter --> Modules
+    CommandRouter --> GraphicsManager
+    GraphicsManager --> GraphicsRenderer
+    GraphicsManager --> AssetRegistry
+    GraphicsRenderer --> OutputAdapter
 
     Modules --> Devices
     EngineAdapter --> Engines
+    OutputAdapter --> Devices
 
     Engines -->|Commands| EngineAdapter
     Devices -->|Video Streams| Modules
@@ -265,6 +278,33 @@ sequenceDiagram
     Engine-->>EngineAdapter: Macro Started
     EngineAdapter-->>Bridge: State Update
     Bridge-->>WebApp: {success: true, state: {...}}
+```
+
+### Graphics Output Flow (via Relay)
+
+```mermaid
+sequenceDiagram
+    participant WebApp as Web App
+    participant Relay as Relay Server
+    participant Bridge as Bridge
+    participant Graphics as Graphics Manager
+    participant RendererClient as Renderer Client
+    participant Renderer as Electron Renderer (Child)
+    participant Output as Output Adapter
+
+    WebApp->>Relay: POST /relay/command (graphics_send)
+    Relay->>Bridge: command (graphics_send)
+    Bridge->>Graphics: validate + createLayer
+    Graphics->>RendererClient: renderLayer (HTML/CSS -> RGBA)
+    RendererClient->>Renderer: command via TCP IPC
+    Renderer-->>RendererClient: frame RGBA
+    RendererClient-->>Graphics: frame RGBA
+    Graphics->>Output: composite + sendFrames
+
+    WebApp->>Relay: graphics_update_values
+    Relay->>Bridge: command
+    Bridge->>Graphics: updateValues(layerId)
+    Graphics->>Renderer: applyValues
 ```
 
 ### Device Detection Flow
@@ -514,7 +554,7 @@ graph LR
 
 - **Command Protocol**: `{type: "command", requestId: string, command: string, payload: object}`
 - **Result Protocol**: `{type: "command_result", requestId: string, success: boolean, data?: object, error?: string}`
-- **Supported Commands**: `get_status`, `list_outputs`, `engine_connect`, `engine_disconnect`, `engine_get_status`, `engine_get_macros`, `engine_run_macro`, `engine_stop_macro`
+- **Supported Commands**: `get_status`, `list_outputs`, `engine_connect`, `engine_disconnect`, `engine_get_status`, `engine_get_macros`, `engine_run_macro`, `engine_stop_macro`, `graphics_send`, `graphics_update_values`, `graphics_update_layout`, `graphics_remove`, `graphics_list`, `graphics_configure_outputs`
 
 ## Technische Details
 
@@ -555,6 +595,8 @@ graph LR
 - `POST /engine/macros/:id/run` - Run macro
 - `POST /engine/macros/:id/stop` - Stop macro
 - `GET /relay/status` - Relay connection status
+
+**Hinweis:** Graphics Commands werden ausschliesslich ueber Relay gesendet (keine eigenen HTTP-Routes).
 
 **WebSocket:**
 

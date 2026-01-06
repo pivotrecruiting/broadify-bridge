@@ -461,3 +461,4 @@ Diese Updates werden automatisch gesendet, wenn sich der Makro-Status ändert, o
 - **2024-XX-XX**: Konsistente `success`-Flags in allen Responses hinzugefügt
 - **2024-XX-XX**: Defensive Fehlerbehandlung im Client implementiert
 - **2024-XX-XX**: Dokumentation erstellt
+
