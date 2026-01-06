@@ -321,6 +321,10 @@ export class BridgeProcessManager {
     args.push("--host", config.host);
     args.push("--port", config.port.toString());
 
+    if (config.userDataDir) {
+      args.push("--user-data-dir", config.userDataDir);
+    }
+
     // Add bridge ID if provided
     if (bridgeId) {
       args.push("--bridge-id", bridgeId);

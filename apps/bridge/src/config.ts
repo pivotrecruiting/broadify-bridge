@@ -9,6 +9,7 @@ const ConfigSchema = z.object({
   mode: z.enum(["lan", "local"]),
   bridgeId: z.string().uuid().optional(),
   relayUrl: z.string().url().optional(),
+  userDataDir: z.string().min(1).optional(),
 });
 
 export type BridgeConfigT = z.infer<typeof ConfigSchema>;
@@ -23,6 +24,7 @@ export function parseConfig(args: string[]): BridgeConfigT {
     mode: "lan" | "local";
     bridgeId?: string;
     relayUrl?: string;
+    userDataDir?: string;
   }> = {
     host: "127.0.0.1",
     port: 8787,
@@ -48,6 +50,9 @@ export function parseConfig(args: string[]): BridgeConfigT {
     } else if (arg === "--relay-url" && nextArg) {
       config.relayUrl = nextArg;
       i++; // Skip next argument as it's the value
+    } else if (arg === "--user-data-dir" && nextArg) {
+      config.userDataDir = nextArg;
+      i++; // Skip next argument as it's the value
     }
   }
 
@@ -60,6 +65,10 @@ export function parseConfig(args: string[]): BridgeConfigT {
   } else if (!config.relayUrl) {
     // Default relay URL if not provided
     config.relayUrl = "wss://broadify-relay.fly.dev";
+  }
+
+  if (!config.userDataDir && process.env.BRIDGE_USER_DATA_DIR) {
+    config.userDataDir = process.env.BRIDGE_USER_DATA_DIR;
   }
 
   // Derive mode from host
