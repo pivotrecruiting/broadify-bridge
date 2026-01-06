@@ -29,3 +29,6 @@ dist-electron
 
 # Cloudflared binaries
 resources/cloudflared/
+
+# Agents
+AGENTS.MD
