@@ -1,0 +1,11 @@
+{
+  "outputKey": "key_fill_ndi",
+  "targets": {
+    "ndiStreamName": "TEST_STREAM"
+  },
+  "format": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 50
+  }
+}

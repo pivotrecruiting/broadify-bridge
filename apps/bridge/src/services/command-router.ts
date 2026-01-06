@@ -1,6 +1,7 @@
 import { engineAdapter } from "./engine-adapter.js";
 import { deviceCache } from "./device-cache.js";
 import { runtimeConfig } from "./runtime-config.js";
+import { graphicsManager } from "./graphics/graphics-manager.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +21,13 @@ export type RelayCommand =
   | "engine_get_status"
   | "engine_get_macros"
   | "engine_run_macro"
-  | "engine_stop_macro";
+  | "engine_stop_macro"
+  | "graphics_configure_outputs"
+  | "graphics_send"
+  | "graphics_update_values"
+  | "graphics_update_layout"
+  | "graphics_remove"
+  | "graphics_list";
 
 /**
  * Relay command payload
@@ -297,6 +304,89 @@ export class CommandRouter {
               macroId,
               state: engineAdapter.getState(),
             },
+          };
+        }
+
+        case "graphics_configure_outputs": {
+          if (!payload) {
+            return {
+              success: false,
+              error: "Missing payload for graphics_configure_outputs",
+            };
+          }
+
+          await graphicsManager.configureOutputs(payload);
+          return {
+            success: true,
+            data: {},
+          };
+        }
+
+        case "graphics_send": {
+          if (!payload) {
+            return {
+              success: false,
+              error: "Missing payload for graphics_send",
+            };
+          }
+
+          await graphicsManager.sendLayer(payload);
+          return {
+            success: true,
+            data: {},
+          };
+        }
+
+        case "graphics_update_values": {
+          if (!payload) {
+            return {
+              success: false,
+              error: "Missing payload for graphics_update_values",
+            };
+          }
+
+          await graphicsManager.updateValues(payload);
+          return {
+            success: true,
+            data: {},
+          };
+        }
+
+        case "graphics_update_layout": {
+          if (!payload) {
+            return {
+              success: false,
+              error: "Missing payload for graphics_update_layout",
+            };
+          }
+
+          await graphicsManager.updateLayout(payload);
+          return {
+            success: true,
+            data: {},
+          };
+        }
+
+        case "graphics_remove": {
+          if (!payload) {
+            return {
+              success: false,
+              error: "Missing payload for graphics_remove",
+            };
+          }
+
+          await graphicsManager.removeLayer(payload);
+          return {
+            success: true,
+            data: {},
+          };
+        }
+
+        case "graphics_list": {
+          await graphicsManager.initialize();
+          return {
+            success: true,
+            data: graphicsManager.getStatus(),
           };
         }
 
