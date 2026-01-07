@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { platform } from "node:os";
 import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
 import { resolveFfmpegPath } from "../../utils/ffmpeg-path.js";
+import { getBridgeContext } from "../../services/bridge-context.js";
 import type { DecklinkDeviceInfo, DecklinkPortInfo } from "./decklink-types.js";
 
 /**
@@ -38,12 +41,19 @@ export class DecklinkDetector {
   private async detectViaFfmpeg(): Promise<DeviceDescriptorT[]> {
     const ffmpegPath = resolveFfmpegPath();
     const devices: DeviceDescriptorT[] = [];
+    const logger = getBridgeContext().logger;
+
+    this.logDesktopVideoHint();
+    logger.info(`[DecklinkDetector] Detecting devices via FFmpeg (${ffmpegPath})`);
 
     const [deviceList, sourceDevices, sinkDevices] = await Promise.all([
       this.listFfmpegDevices(ffmpegPath),
       this.listFfmpegSourceDevices(ffmpegPath),
       this.listFfmpegSinkDevices(ffmpegPath),
     ]);
+    logger.info(
+      `[DecklinkDetector] FFmpeg lists: devices=${deviceList.length}, sources=${sourceDevices.length}, sinks=${sinkDevices.length}`
+    );
     if (deviceList.length === 0) {
       return devices;
     }
@@ -116,6 +126,7 @@ export class DecklinkDetector {
 
       process.on("close", () => {
         clearTimeout(timeout);
+        const logger = getBridgeContext().logger;
 
         // Check if FFmpeg has DeckLink support
         const hasNoDeckLinkSupport =
@@ -124,7 +135,7 @@ export class DecklinkDetector {
           stderr.includes("Invalid data found when processing input");
 
         if (hasNoDeckLinkSupport) {
-          console.warn(
+          logger.warn(
             `[DecklinkDetector] FFmpeg does not have DeckLink support. ` +
               `The FFmpeg binary at "${ffmpegPath}" was not compiled with --enable-decklink. ` +
               `Please use a FFmpeg build with DeckLink support (e.g., Blackmagic's FFmpeg build) ` +
@@ -145,13 +156,13 @@ export class DecklinkDetector {
             .filter((line) => line.trim().length > 0)
             .slice(0, 5)
             .join("\n");
-          console.info(
+          logger.info(
             `[DecklinkDetector] No DeckLink devices found. ` +
               `This is normal if no DeckLink hardware is connected. ` +
               `FFmpeg output preview:\n${outputPreview}`
           );
         } else {
-          console.info(
+          logger.info(
             `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
           );
         }
@@ -161,7 +172,8 @@ export class DecklinkDetector {
 
       process.on("error", (error) => {
         clearTimeout(timeout);
-        console.error(
+        const logger = getBridgeContext().logger;
+        logger.error(
           `[DecklinkDetector] Failed to spawn FFmpeg process: ${error.message}. ` +
             `FFmpeg path: "${ffmpegPath}"`
         );
@@ -259,6 +271,23 @@ export class DecklinkDetector {
 
   private normalizeDeviceName(name: string): string {
     return name.trim().toLowerCase();
+  }
+
+  private logDesktopVideoHint(): void {
+    if (platform() !== "darwin") {
+      return;
+    }
+    const logger = getBridgeContext().logger;
+    const possibleApps = [
+      "/Applications/Blackmagic Desktop Video Utility.app",
+      "/Applications/Desktop Video Setup.app",
+    ];
+    const hasApp = possibleApps.some((appPath) => existsSync(appPath));
+    if (!hasApp) {
+      logger.warn(
+        "[DecklinkDetector] Blackmagic Desktop Video not detected in /Applications. DeckLink devices require Desktop Video drivers."
+      );
+    }
   }
 
   private inferDeviceDirection(

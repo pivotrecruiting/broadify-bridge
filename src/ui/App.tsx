@@ -4,6 +4,7 @@ import { useBridgeStatus } from "./hooks/use-bridge-status";
 import { usePortAvailability } from "./hooks/use-port-availability";
 import { useNetworkBinding } from "./hooks/use-network-binding";
 import { Header } from "./components/Header";
+import { LogsDialog } from "./components/LogsDialog";
 import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
@@ -56,6 +57,7 @@ function App() {
   // Bridge control state
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
 
   const handleLetsGo = async () => {
     if (!window.electron || !networkConfig) return;
@@ -182,7 +184,10 @@ function App() {
     <div className="min-h-screen md:h-screen md:overflow-hidden w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
       <div className="w-full max-w-4xl md:h-auto flex items-center justify-center md:overflow-visible">
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6 w-full">
-          <Header bridgeStatus={bridgeStatus} />
+          <Header
+            bridgeStatus={bridgeStatus}
+            onOpenDiagnostics={() => setShowLogs(true)}
+          />
 
           <NetworkSection
             networkConfig={networkConfig}
@@ -211,6 +216,7 @@ function App() {
           />
         </div>
       </div>
+      <LogsDialog isOpen={showLogs} onClose={() => setShowLogs(false)} />
     </div>
   );
 }

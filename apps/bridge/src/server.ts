@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import pino from "pino";
 import { registerStatusRoute } from "./routes/status.js";
 import { registerOutputsRoute } from "./routes/outputs.js";
 import { registerDevicesRoute } from "./routes/devices.js";
@@ -9,6 +10,7 @@ import { registerEngineRoute } from "./routes/engine.js";
 import { registerVideoRoute } from "./routes/video.js";
 import { registerWebSocketRoute } from "./routes/websocket.js";
 import { registerRelayRoute } from "./routes/relay.js";
+import { registerLogsRoute } from "./routes/logs.js";
 import { initializeModules } from "./modules/index.js";
 import { RelayClient } from "./services/relay-client.js";
 import {
@@ -17,33 +19,34 @@ import {
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { logFfmpegDeckLinkStatus } from "./services/ffmpeg-self-test.js";
+import { ensureBridgeLogFile } from "./services/log-file.js";
 import type { BridgeConfigT } from "./config.js";
 
 /**
  * Create and configure Fastify server instance
  */
 export async function createServer(config: BridgeConfigT) {
-  const logger = {
-    level: process.env.NODE_ENV === "production" ? "info" : "debug",
-    transport:
-      process.env.NODE_ENV === "production"
-        ? undefined
-        : {
-            target: "pino-pretty",
-            options: {
-              translateTime: "HH:MM:ss Z",
-              ignore: "pid,hostname",
-            },
-          },
-  };
+  const userDataDir = resolveUserDataDir(config);
+  const logPath = await ensureBridgeLogFile(userDataDir);
+
+  const consoleLevel =
+    process.env.NODE_ENV === "production" ? "info" : "debug";
+  const logger = pino(
+    { level: "debug" },
+    pino.multistream([
+      { level: consoleLevel, stream: process.stdout },
+      { level: "debug", stream: pino.destination({ dest: logPath, sync: false }) },
+    ])
+  );
 
   const server = Fastify({
     logger,
+    disableRequestLogging: true,
   });
 
-  const userDataDir = resolveUserDataDir(config);
   setBridgeContext({
     userDataDir,
+    logPath,
     logger: {
       info: (msg: string) => server.log.info(msg),
       warn: (msg: string) => server.log.warn(msg),
@@ -103,6 +106,7 @@ export async function createServer(config: BridgeConfigT) {
   await server.register(registerVideoRoute);
   await server.register(registerWebSocketRoute);
   await server.register(registerRelayRoute, { config, relayClient });
+  await server.register(registerLogsRoute);
   server.log.info("[Server] All routes registered");
 
   // Note: Engine connection is now controlled by the Web-App

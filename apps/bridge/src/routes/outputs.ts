@@ -90,6 +90,9 @@ export async function registerOutputsRoute(
     try {
       const refresh = request.query as { refresh?: string };
       const forceRefresh = refresh?.refresh === "1";
+      if (forceRefresh) {
+        fastify.log.info("[Outputs] Refresh requested");
+      }
 
       // Get devices from cache (with optional refresh)
       const devices = await deviceCache.getDevices(forceRefresh);
@@ -97,7 +100,7 @@ export async function registerOutputsRoute(
       // Transform to UI-compatible format
       const outputs = transformDevicesToOutputs(devices);
 
-      fastify.log.debug(
+      fastify.log.info(
         `[Outputs] Returning ${outputs.output1.length} output1 devices and ${outputs.output2.length} output2 connection types`
       );
 
