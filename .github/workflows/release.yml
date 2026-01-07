@@ -100,8 +100,31 @@ jobs:
           choco install ffmpeg -y
           New-Item -ItemType Directory -Force -Path resources\ffmpeg\win | Out-Null
           $ff = (Get-Command ffmpeg).Source
-          Copy-Item $ff resources\ffmpeg\win\ffmpeg.exe -Force
-          Write-Host "FFmpeg installed at: $ff"
+          $ffItem = Get-Item $ff
+          $ffToCopy = $ff
+          $isShim = $ffItem.VersionInfo.FileDescription -like "*ShimGen*"
+          if ($isShim) {
+            $chocoRoot = $env:ChocolateyInstall
+            if (-not $chocoRoot) {
+              $chocoRoot = Split-Path (Split-Path $ff -Parent) -Parent
+            }
+            $realCandidate = Join-Path $chocoRoot "lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe"
+            if (Test-Path $realCandidate) {
+              $ffToCopy = $realCandidate
+            } else {
+              $found = Get-ChildItem (Join-Path $chocoRoot "lib\ffmpeg") -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "\\bin\\ffmpeg\.exe$" } |
+                Select-Object -First 1
+              if ($found) {
+                $ffToCopy = $found.FullName
+              }
+            }
+          }
+          Copy-Item $ffToCopy resources\ffmpeg\win\ffmpeg.exe -Force
+          Write-Host "FFmpeg command path: $ff"
+          if ($ffToCopy -ne $ff) {
+            Write-Host "Resolved FFmpeg binary: $ffToCopy"
+          }
           Write-Host "FFmpeg copied to: resources\ffmpeg\win\ffmpeg.exe"
           # Verify the copy was successful
           if (-not (Test-Path "resources\ffmpeg\win\ffmpeg.exe")) {
