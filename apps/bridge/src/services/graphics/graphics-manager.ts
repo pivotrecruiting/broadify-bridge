@@ -20,22 +20,32 @@ import { outputConfigStore } from "./output-config-store.js";
 import { validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import { FfmpegSdiOutputAdapter } from "./output-adapters/ffmpeg-sdi-output-adapter.js";
+import { FfmpegNdiOutputAdapter } from "./output-adapters/ffmpeg-ndi-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
-import type { GraphicsFrameT, GraphicsRenderer } from "./renderer/graphics-renderer.js";
+import type {
+  GraphicsFrameT,
+  GraphicsRenderer,
+} from "./renderer/graphics-renderer.js";
 
 const MAX_ACTIVE_LAYERS = 3;
 
-const BACKGROUND_COLORS: Record<GraphicsBackgroundModeT, { r: number; g: number; b: number }> = {
+const BACKGROUND_COLORS: Record<
+  GraphicsBackgroundModeT,
+  { r: number; g: number; b: number }
+> = {
   transparent: { r: 0, g: 0, b: 0 },
   green: { r: 0, g: 255, b: 0 },
   black: { r: 0, g: 0, b: 0 },
   white: { r: 255, g: 255, b: 255 },
 };
 
-const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = ["key_fill_sdi", "key_fill_ndi"];
+const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
+  "key_fill_sdi",
+  "key_fill_ndi",
+];
 
 type GraphicsLayerStateT = {
   layerId: string;
@@ -278,7 +288,10 @@ export class GraphicsManager {
   /**
    * List output config and active layers.
    */
-  getStatus(): { outputConfig: GraphicsOutputConfigT | null; layers: unknown[] } {
+  getStatus(): {
+    outputConfig: GraphicsOutputConfigT | null;
+    layers: unknown[];
+  } {
     const layers = Array.from(this.layers.values()).map((layer) => ({
       layerId: layer.layerId,
       category: layer.category,
@@ -300,15 +313,24 @@ export class GraphicsManager {
     return new ElectronRendererClient();
   }
 
-  private selectOutputAdapter(outputKey: GraphicsOutputKeyT): GraphicsOutputAdapter {
+  private selectOutputAdapter(
+    outputKey: GraphicsOutputKeyT
+  ): GraphicsOutputAdapter {
     if (outputKey === "video_sdi" || outputKey === "key_fill_sdi") {
       return new FfmpegSdiOutputAdapter();
+    }
+
+    if (outputKey === "key_fill_ndi") {
+      return new FfmpegNdiOutputAdapter();
     }
 
     return new StubOutputAdapter();
   }
 
-  private validateLayerLimits(layerId: string, category: GraphicsCategoryT): void {
+  private validateLayerLimits(
+    layerId: string,
+    category: GraphicsCategoryT
+  ): void {
     const existingLayer = this.layers.get(layerId);
     const layerInCategory = this.categoryToLayer.get(category);
     if (layerInCategory && layerInCategory !== layerId) {
@@ -329,7 +351,9 @@ export class GraphicsManager {
   ): Promise<void> {
     if (outputKey === "key_fill_sdi") {
       if (!targets.output1Id || !targets.output2Id) {
-        throw new Error("Output 1 and Output 2 are required for Key & Fill SDI");
+        throw new Error(
+          "Output 1 and Output 2 are required for Key & Fill SDI"
+        );
       }
       if (targets.output1Id === targets.output2Id) {
         throw new Error("Output 1 and Output 2 must be different");
@@ -420,10 +444,7 @@ export class GraphicsManager {
 
     let outputBuffer = composite;
     if (this.outputConfig.outputKey === "video_sdi") {
-      outputBuffer = applyBackground(
-        composite,
-        BACKGROUND_COLORS.black
-      );
+      outputBuffer = applyBackground(composite, BACKGROUND_COLORS.black);
     }
 
     this.sending = true;
