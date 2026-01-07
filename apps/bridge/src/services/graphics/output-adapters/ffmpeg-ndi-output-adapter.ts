@@ -1,8 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import fs from "node:fs";
-import path from "node:path";
 import { getBridgeContext } from "../../bridge-context.js";
+import { resolveFfmpegPath } from "../../../utils/ffmpeg-path.js";
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import type {
   GraphicsOutputAdapter,
@@ -17,57 +16,6 @@ type FfmpegNdiProcessT = {
   pendingFrame: Buffer | null;
   ready: Promise<void>;
 };
-
-/**
- * Resolve FFmpeg executable path
- *
- * Priority:
- * 1. FFMPEG_PATH environment variable
- * 2. Bundled FFmpeg in production (from resources/ffmpeg)
- * 3. System FFmpeg (fallback)
- */
-function resolveFfmpegPath(): string {
-  // Check environment variable first
-  if (process.env.FFMPEG_PATH) {
-    return process.env.FFMPEG_PATH;
-  }
-
-  // In production, use bundled FFmpeg from resources
-  // process.resourcesPath is set by Electron and points to the resources directory
-  if (
-    process.env.NODE_ENV === "production" &&
-    typeof process.resourcesPath !== "undefined"
-  ) {
-    const platform = process.platform;
-    const arch = process.arch;
-
-    let platformDir = "";
-    if (platform === "darwin") {
-      platformDir = arch === "arm64" ? "mac-arm64" : "mac-x64";
-    } else if (platform === "win32") {
-      platformDir = "win";
-    } else if (platform === "linux") {
-      platformDir = "linux";
-    }
-
-    if (platformDir) {
-      const bundledPath = path.join(
-        process.resourcesPath,
-        "ffmpeg",
-        platformDir,
-        platform === "win32" ? "ffmpeg.exe" : "ffmpeg"
-      );
-
-      // Check if bundled FFmpeg exists
-      if (fs.existsSync(bundledPath)) {
-        return bundledPath;
-      }
-    }
-  }
-
-  // Fallback to system FFmpeg
-  return "ffmpeg";
-}
 
 /**
  * Build FFmpeg command-line arguments for NDI output

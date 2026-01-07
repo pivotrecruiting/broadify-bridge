@@ -1,60 +1,8 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
+import { resolveFfmpegPath } from "../../utils/ffmpeg-path.js";
 import type { DecklinkDeviceInfo, DecklinkPortInfo } from "./decklink-types.js";
-
-/**
- * Resolve FFmpeg executable path
- *
- * Priority:
- * 1. FFMPEG_PATH environment variable
- * 2. Bundled FFmpeg in production (from resources/ffmpeg)
- * 3. System FFmpeg (fallback)
- */
-function resolveFfmpegPath(): string {
-  // Check environment variable first
-  if (process.env.FFMPEG_PATH) {
-    return process.env.FFMPEG_PATH;
-  }
-
-  // In production, use bundled FFmpeg from resources
-  // process.resourcesPath is set by Electron and points to the resources directory
-  if (
-    process.env.NODE_ENV === "production" &&
-    typeof process.resourcesPath !== "undefined"
-  ) {
-    const platform = process.platform;
-    const arch = process.arch;
-
-    let platformDir = "";
-    if (platform === "darwin") {
-      platformDir = arch === "arm64" ? "mac-arm64" : "mac-x64";
-    } else if (platform === "win32") {
-      platformDir = "win";
-    } else if (platform === "linux") {
-      platformDir = "linux";
-    }
-
-    if (platformDir) {
-      const bundledPath = path.join(
-        process.resourcesPath,
-        "ffmpeg",
-        platformDir,
-        platform === "win32" ? "ffmpeg.exe" : "ffmpeg"
-      );
-
-      // Check if bundled FFmpeg exists
-      if (fs.existsSync(bundledPath)) {
-        return bundledPath;
-      }
-    }
-  }
-
-  // Fallback to system FFmpeg
-  return "ffmpeg";
-}
 
 /**
  * Decklink Detector
@@ -152,13 +100,55 @@ export class DecklinkDetector {
 
       process.on("close", () => {
         clearTimeout(timeout);
+
+        // Check if FFmpeg has DeckLink support
+        const hasNoDeckLinkSupport =
+          stderr.includes("Unknown input format: decklink") ||
+          stderr.includes("No such filter or encoder: decklink") ||
+          stderr.includes("Invalid data found when processing input");
+
+        if (hasNoDeckLinkSupport) {
+          console.warn(
+            `[DecklinkDetector] FFmpeg does not have DeckLink support. ` +
+              `The FFmpeg binary at "${ffmpegPath}" was not compiled with --enable-decklink. ` +
+              `Please use a FFmpeg build with DeckLink support (e.g., Blackmagic's FFmpeg build) ` +
+              `or compile FFmpeg with --enable-decklink. ` +
+              `FFmpeg output: ${stderr.substring(0, 300)}`
+          );
+          resolve([]);
+          return;
+        }
+
         // FFmpeg returns non-zero exit code for list_devices, this is normal
         const devices = this.parseFfmpegDevices(stderr);
+
+        if (devices.length === 0) {
+          // Log FFmpeg output for debugging when no devices found
+          const outputPreview = stderr
+            .split("\n")
+            .filter((line) => line.trim().length > 0)
+            .slice(0, 5)
+            .join("\n");
+          console.info(
+            `[DecklinkDetector] No DeckLink devices found. ` +
+              `This is normal if no DeckLink hardware is connected. ` +
+              `FFmpeg output preview:\n${outputPreview}`
+          );
+        } else {
+          console.info(
+            `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
+          );
+        }
+
         resolve(devices);
       });
 
       process.on("error", (error) => {
         clearTimeout(timeout);
+        console.error(
+          `[DecklinkDetector] Failed to spawn FFmpeg process: ${error.message}. ` +
+            `FFmpeg path: "${ffmpegPath}"`
+        );
         reject(error);
       });
     });

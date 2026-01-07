@@ -2,7 +2,13 @@
 
 /**
  * Download FFmpeg static builds for all platforms
- * Downloads from BtbN FFmpeg Builds (https://github.com/BtbN/FFmpeg-Builds)
+ * 
+ * Strategy:
+ * 1. Check if Blackmagic FFmpeg is manually placed (has DeckLink support)
+ * 2. If not, download BtbN FFmpeg Builds (for NDI, may not have DeckLink support)
+ * 
+ * Note: For SDI output, Blackmagic FFmpeg with DeckLink support is required.
+ * See docs/ffmpeg-setup.md for instructions on how to obtain and place Blackmagic FFmpeg.
  */
 
 import fs from "fs";
@@ -218,10 +224,21 @@ function makeExecutable(filePath) {
 }
 
 /**
- * Main download function
+ * Check if Blackmagic FFmpeg is manually placed
  */
-async function main() {
-  console.log("Downloading FFmpeg static builds...");
+function checkBlackmagicFfmpeg(platformName, binaryName) {
+  const destPath = path.join(resourcesDir, platformName, binaryName);
+  return fs.existsSync(destPath);
+}
+
+/**
+ * Download BtbN FFmpeg builds (fallback, may not have DeckLink support)
+ */
+async function downloadBtbNFfmpeg() {
+  console.log("Downloading BtbN FFmpeg builds (fallback for NDI)...");
+  console.log(
+    "Note: These builds may not have DeckLink support. For SDI output, use Blackmagic FFmpeg."
+  );
 
   // Create resources directory structure
   for (const platform of Object.values(platforms)) {
@@ -233,7 +250,7 @@ async function main() {
 
   try {
     // Get latest release
-    console.log("Fetching latest FFmpeg release...");
+    console.log("Fetching latest BtbN FFmpeg release...");
     const release = await getLatestRelease();
     console.log(`Latest version: ${release.tag_name}`);
 
@@ -244,6 +261,14 @@ async function main() {
         platform.name,
         platform.binaryName
       );
+
+      // Skip if Blackmagic FFmpeg already exists
+      if (checkBlackmagicFfmpeg(platform.name, platform.binaryName)) {
+        console.log(
+          `Skipping ${platform.name} (Blackmagic FFmpeg already present)`
+        );
+        continue;
+      }
 
       // Skip if already exists (for faster rebuilds)
       if (fs.existsSync(destPath)) {
@@ -285,6 +310,78 @@ async function main() {
   } catch (err) {
     console.error(`\n✗ Error: ${err.message}`);
     process.exit(1);
+  }
+}
+
+/**
+ * Main download function
+ */
+async function main() {
+  console.log("FFmpeg Download Script");
+  console.log("======================");
+  console.log("");
+
+  // Check for Blackmagic FFmpeg
+  let hasBlackmagicFfmpeg = false;
+  const blackmagicPlatforms = [];
+
+  for (const [key, platform] of Object.entries(platforms)) {
+    if (checkBlackmagicFfmpeg(platform.name, platform.binaryName)) {
+      hasBlackmagicFfmpeg = true;
+      blackmagicPlatforms.push(platform.name);
+      console.log(
+        `✓ Found Blackmagic FFmpeg for ${platform.name} (has DeckLink support)`
+      );
+    }
+  }
+
+  if (hasBlackmagicFfmpeg) {
+    console.log("");
+    console.log(
+      "Blackmagic FFmpeg detected! This has DeckLink support for SDI output."
+    );
+    console.log(
+      "Missing platforms will use BtbN FFmpeg (may not have DeckLink support)."
+    );
+    console.log("");
+  } else {
+    console.log("");
+    console.log("⚠ No Blackmagic FFmpeg found.");
+    console.log(
+      "For SDI output, you need FFmpeg with DeckLink support."
+    );
+    console.log(
+      "See docs/ffmpeg-setup.md for instructions on how to obtain Blackmagic FFmpeg."
+    );
+    console.log("");
+    console.log(
+      "Downloading BtbN FFmpeg builds (fallback for NDI, may not have DeckLink support)..."
+    );
+    console.log("");
+  }
+
+  // Download BtbN builds for missing platforms
+  await downloadBtbNFfmpeg();
+
+  // Final summary
+  console.log("");
+  console.log("Summary:");
+  for (const [key, platform] of Object.entries(platforms)) {
+    const destPath = path.join(
+      resourcesDir,
+      platform.name,
+      platform.binaryName
+    );
+    if (fs.existsSync(destPath)) {
+      const isBlackmagic = checkBlackmagicFfmpeg(
+        platform.name,
+        platform.binaryName
+      );
+      const source = isBlackmagic ? "Blackmagic (DeckLink ✓)" : "BtbN (DeckLink ?)";
+      console.log(`  ${platform.name}: ${source}`);
+    } else {
+      console.log(`  ${platform.name}: Missing`);
+    }
   }
 }
 
