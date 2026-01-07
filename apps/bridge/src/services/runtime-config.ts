@@ -10,7 +10,7 @@ export interface RuntimeConfig {
     output2: string;
   };
   engine?: {
-    type: "atem" | "tricaster";
+    type: "atem" | "tricaster" | "vmix";
     ip: string;
     port: number;
   };
@@ -96,4 +96,3 @@ class RuntimeConfigService {
  * Singleton instance
  */
 export const runtimeConfig = new RuntimeConfigService();
-

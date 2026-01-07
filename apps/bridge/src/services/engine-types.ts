@@ -38,7 +38,7 @@ export type EngineStateT = {
  * Engine configuration from runtime config
  */
 export type EngineConfigT = {
-  type: "atem" | "tricaster";
+  type: "atem" | "tricaster" | "vmix";
   ip: string;
   port: number;
 };

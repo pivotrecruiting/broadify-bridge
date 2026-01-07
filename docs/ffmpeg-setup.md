@@ -169,6 +169,44 @@ Die Bridge führt beim Start automatisch einen Self-Test durch:
 2. Prüfe ob Desktop Video Treiber installiert sind
 3. Prüfe ob FFmpeg DeckLink-Support hat: `ffmpeg -f decklink -list_devices 1 -i dummy`
 
+## UltraStudio HD Mini Support
+
+Die Bridge unterstützt das **Blackmagic Design UltraStudio HD Mini** mit folgenden Features:
+
+### Hardware-Anforderungen
+
+- **Thunderbolt 3** Verbindung erforderlich
+- **2x 3G-SDI Outputs** (für Key & Fill)
+- **1x HDMI 1.4b Output**
+
+### Unterstützte Formate
+
+- **1080p/60** (10-Bit-YUV)
+- **1080p/30** (12-Bit-RGB)
+- **2K DCI** (2048x1080, 12-Bit-RGB, max 30fps)
+
+### Port-Erkennung
+
+Die Bridge erkennt automatisch alle Ports des UltraStudio HD Mini:
+- **SDI Output 1** (Port 0)
+- **SDI Output 2** (Port 1)
+- **HDMI Output** (Port 2)
+
+### Key & Fill Konfiguration
+
+Für Key & Fill SDI können beide SDI-Ports vom **gleichen Gerät** verwendet werden:
+- **Output 1**: `decklink-xxx-sdi-0` (Fill)
+- **Output 2**: `decklink-xxx-sdi-1` (Key)
+
+Die Bridge unterstützt Port-IDs im Format: `${deviceId}-${portType}-${portIndex}`
+
+### Format-Validierung
+
+Die Bridge validiert automatisch, ob das konfigurierte Format vom UltraStudio HD Mini unterstützt wird:
+- 1080p mit max 60fps
+- 2K DCI mit max 30fps
+- Fehlermeldungen bei unsupported Formats
+
 ## Zusammenfassung
 
 | Use Case   | FFmpeg-Typ        | DeckLink-Support | Automatisch   |
