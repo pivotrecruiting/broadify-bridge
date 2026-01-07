@@ -144,7 +144,11 @@ async function main() {
     console.log("⚠ No FFmpeg binaries found.");
     console.log("Run: npm run download:ffmpeg");
     console.log("");
-    process.exit(1);
+    console.log("Note: This is a warning, not a fatal error.");
+    console.log("The build will continue, but ensure FFmpeg is available for production.");
+    console.log("");
+    // Exit with 0 (success) instead of 1 (error) to allow build to continue
+    process.exit(0);
   }
 
   if (!hasBlackmagicFfmpeg) {

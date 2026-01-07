@@ -110,6 +110,10 @@ Die automatisch heruntergeladenen BtbN FFmpeg-Builds funktionieren für NDI-Outp
 - Funktioniert für NDI-Output
 - **Nicht** für SDI-Output geeignet
 
+**Fallback für mac-arm64:**
+- Wenn BtbN Asset nicht verfügbar ist, wird automatisch Martin Riedl Builds (https://evermeet.cx/ffmpeg/) als Fallback verwendet
+- Diese Builds haben ebenfalls möglicherweise keinen DeckLink-Support
+
 ## Option 3: System FFmpeg
 
 Falls System-FFmpeg mit DeckLink-Support installiert ist, kann `FFMPEG_PATH` gesetzt werden:

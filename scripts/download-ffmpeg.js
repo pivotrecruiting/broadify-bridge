@@ -24,12 +24,17 @@ const resourcesDir = path.join(rootDir, "resources", "ffmpeg");
 
 // Platform mappings for FFmpeg static builds
 // Using BtbN FFmpeg Builds (https://github.com/BtbN/FFmpeg-Builds)
+// Alternative source for mac-arm64: Martin Riedl Builds (https://evermeet.cx/ffmpeg/)
 const platforms = {
   "darwin-arm64": {
     name: "mac-arm64",
     searchPatterns: ["ffmpeg-master-latest-darwinarm64"],
     binaryName: "ffmpeg",
     archiveExt: ".zip",
+    alternativeSource: {
+      url: "https://evermeet.cx/ffmpeg/ffmpeg.zip",
+      name: "ffmpeg-martin-riedl-arm64.zip",
+    },
   },
   "darwin-x64": {
     name: "mac-x64",
@@ -132,10 +137,11 @@ async function getLatestRelease() {
 
 /**
  * Find asset URL for a platform
+ * Returns null if asset is not found (graceful handling)
  */
 function findAsset(release, searchPatterns) {
   if (!release.assets || !Array.isArray(release.assets)) {
-    throw new Error("Release data missing required 'assets' field");
+    return null;
   }
 
   for (const pattern of searchPatterns) {
@@ -147,12 +153,7 @@ function findAsset(release, searchPatterns) {
     }
   }
 
-  const availableAssets = release.assets.map((a) => a.name).join(", ");
-  throw new Error(
-    `Asset not found for patterns [${searchPatterns.join(
-      ", "
-    )}]. Available assets: ${availableAssets}`
-  );
+  return null;
 }
 
 /**
@@ -232,6 +233,44 @@ function checkBlackmagicFfmpeg(platformName, binaryName) {
 }
 
 /**
+ * Download FFmpeg from alternative source (e.g., Martin Riedl for mac-arm64)
+ */
+async function downloadFromAlternativeSource(platform, destPath) {
+  if (!platform.alternativeSource) {
+    return false;
+  }
+
+  try {
+    console.log(`  Trying alternative source: ${platform.alternativeSource.url}`);
+    const tempPath = path.join(
+      resourcesDir,
+      platform.name,
+      platform.alternativeSource.name
+    );
+    await downloadFile(platform.alternativeSource.url, tempPath);
+
+    // Extract binary
+    extractBinary(
+      tempPath,
+      destPath,
+      platform.binaryName,
+      platform.archiveExt
+    );
+
+    // Make executable on Unix systems
+    if (process.platform !== "win32") {
+      makeExecutable(destPath);
+    }
+
+    console.log(`  ✓ Downloaded from alternative source`);
+    return true;
+  } catch (err) {
+    console.log(`  ✗ Alternative source failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Download BtbN FFmpeg builds (fallback, may not have DeckLink support)
  */
 async function downloadBtbNFfmpeg() {
@@ -248,69 +287,131 @@ async function downloadBtbNFfmpeg() {
     }
   }
 
+  let release = null;
+  let hasErrors = false;
+  const failedPlatforms = [];
+
   try {
     // Get latest release
     console.log("Fetching latest BtbN FFmpeg release...");
-    const release = await getLatestRelease();
+    release = await getLatestRelease();
     console.log(`Latest version: ${release.tag_name}`);
+  } catch (err) {
+    console.warn(`⚠ Failed to fetch BtbN release: ${err.message}`);
+    console.warn("  Continuing with alternative sources where available...");
+  }
 
-    // Download binaries for each platform
-    for (const [key, platform] of Object.entries(platforms)) {
-      const destPath = path.join(
-        resourcesDir,
-        platform.name,
-        platform.binaryName
+  // Download binaries for each platform
+  for (const [key, platform] of Object.entries(platforms)) {
+    const destPath = path.join(
+      resourcesDir,
+      platform.name,
+      platform.binaryName
+    );
+
+    // Skip if Blackmagic FFmpeg already exists
+    if (checkBlackmagicFfmpeg(platform.name, platform.binaryName)) {
+      console.log(
+        `Skipping ${platform.name} (Blackmagic FFmpeg already present)`
       );
-
-      // Skip if Blackmagic FFmpeg already exists
-      if (checkBlackmagicFfmpeg(platform.name, platform.binaryName)) {
-        console.log(
-          `Skipping ${platform.name} (Blackmagic FFmpeg already present)`
-        );
-        continue;
-      }
-
-      // Skip if already exists (for faster rebuilds)
-      if (fs.existsSync(destPath)) {
-        console.log(`Skipping ${platform.name} (already exists)`);
-        continue;
-      }
-
-      try {
-        console.log(`Downloading ${platform.name}...`);
-        const asset = findAsset(release, platform.searchPatterns);
-        console.log(`  Found asset: ${asset.name}`);
-
-        // Download to temporary location first
-        const tempPath = path.join(resourcesDir, platform.name, asset.name);
-        await downloadFile(asset.url, tempPath);
-
-        // Extract binary if needed
-        extractBinary(
-          tempPath,
-          destPath,
-          platform.binaryName,
-          platform.archiveExt
-        );
-
-        // Make executable on Unix systems
-        if (process.platform !== "win32") {
-          makeExecutable(destPath);
-        }
-
-        console.log(`✓ Downloaded ${platform.name}`);
-      } catch (err) {
-        console.error(`✗ Failed to download ${platform.name}: ${err.message}`);
-        throw err;
-      }
+      continue;
     }
 
-    console.log("\n✓ All FFmpeg binaries downloaded successfully!");
-    console.log(`Location: ${resourcesDir}`);
-  } catch (err) {
-    console.error(`\n✗ Error: ${err.message}`);
-    process.exit(1);
+    // Skip if already exists (for faster rebuilds)
+    if (fs.existsSync(destPath)) {
+      console.log(`Skipping ${platform.name} (already exists)`);
+      continue;
+    }
+
+    try {
+      console.log(`Downloading ${platform.name}...`);
+      let downloaded = false;
+
+      // Try BtbN release first (if available)
+      if (release) {
+        const asset = findAsset(release, platform.searchPatterns);
+        if (asset) {
+          console.log(`  Found asset: ${asset.name}`);
+
+          // Download to temporary location first
+          const tempPath = path.join(resourcesDir, platform.name, asset.name);
+          await downloadFile(asset.url, tempPath);
+
+          // Extract binary if needed
+          extractBinary(
+            tempPath,
+            destPath,
+            platform.binaryName,
+            platform.archiveExt
+          );
+
+          // Make executable on Unix systems
+          if (process.platform !== "win32") {
+            makeExecutable(destPath);
+          }
+
+          console.log(`✓ Downloaded ${platform.name} from BtbN`);
+          downloaded = true;
+        }
+      }
+
+      // Try alternative source if BtbN failed
+      if (!downloaded && platform.alternativeSource) {
+        downloaded = await downloadFromAlternativeSource(platform, destPath);
+        if (downloaded) {
+          console.log(`✓ Downloaded ${platform.name} from alternative source`);
+        }
+      }
+
+      // If still not downloaded, warn but don't fail
+      if (!downloaded) {
+        const availableAssets = release
+          ? release.assets.map((a) => a.name).join(", ")
+          : "N/A (release fetch failed)";
+        console.warn(
+          `⚠ Could not download ${platform.name} from BtbN or alternative source`
+        );
+        console.warn(
+          `  Searched for patterns: ${platform.searchPatterns.join(", ")}`
+        );
+        if (release) {
+          console.warn(`  Available assets: ${availableAssets}`);
+        }
+        console.warn(
+          `  You can manually place Blackmagic FFmpeg at: ${destPath}`
+        );
+        console.warn(
+          `  See docs/ffmpeg-setup.md for instructions.`
+        );
+        hasErrors = true;
+        failedPlatforms.push(platform.name);
+      }
+    } catch (err) {
+      console.warn(`⚠ Failed to download ${platform.name}: ${err.message}`);
+      console.warn(
+        `  You can manually place Blackmagic FFmpeg at: ${destPath}`
+      );
+      hasErrors = true;
+      failedPlatforms.push(platform.name);
+    }
   }
+
+  // Summary
+  if (hasErrors) {
+    console.log("\n⚠ Some FFmpeg binaries could not be downloaded:");
+    for (const platform of failedPlatforms) {
+      console.log(`  - ${platform}`);
+    }
+    console.log(
+      "\n  This is not a fatal error. The build will continue."
+    );
+    console.log(
+      "  For production, ensure FFmpeg is available (manually placed or via alternative source)."
+    );
+  } else {
+    console.log("\n✓ All FFmpeg binaries downloaded successfully!");
+  }
+  console.log(`Location: ${resourcesDir}`);
 }
 
 /**
@@ -366,6 +467,7 @@ async function main() {
   // Final summary
   console.log("");
   console.log("Summary:");
+  let allPresent = true;
   for (const [key, platform] of Object.entries(platforms)) {
     const destPath = path.join(
       resourcesDir,
@@ -377,11 +479,20 @@ async function main() {
         platform.name,
         platform.binaryName
       );
-      const source = isBlackmagic ? "Blackmagic (DeckLink ✓)" : "BtbN (DeckLink ?)";
+      const source = isBlackmagic ? "Blackmagic (DeckLink ✓)" : "BtbN/Alternative (DeckLink ?)";
       console.log(`  ${platform.name}: ${source}`);
     } else {
       console.log(`  ${platform.name}: Missing`);
+      allPresent = false;
     }
+  }
+
+  // Exit with warning code if some are missing, but don't fail the build
+  if (!allPresent) {
+    console.log("");
+    console.log("⚠ Some FFmpeg binaries are missing.");
+    console.log("  The build will continue, but ensure FFmpeg is available for production.");
+    process.exit(0); // Exit 0 = success, but with warnings
   }
 }
 

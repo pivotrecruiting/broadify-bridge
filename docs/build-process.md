@@ -38,13 +38,22 @@ cd ../..
 
 ### 2. FFmpeg Setup
 
-#### Option A: BtbN FFmpeg Builds (für NDI, kein DeckLink)
+**Wichtig:** FFmpeg ist **optional für den Build**. Der Build schlägt nicht fehl, wenn FFmpeg-Assets nicht verfügbar sind. Für Production muss FFmpeg jedoch verfügbar sein (entweder gebundelt oder manuell platziert).
+
+#### Option A: Automatischer Download (BtbN FFmpeg Builds)
 
 ```bash
 npm run download:ffmpeg
 ```
 
-**Hinweis:** BtbN Builds haben möglicherweise keinen DeckLink-Support.
+**Funktionalität:**
+
+- Lädt BtbN FFmpeg Builds von GitHub Releases
+- Für mac-arm64: Fallback auf Martin Riedl Builds (https://evermeet.cx/ffmpeg/)
+- Wenn Assets nicht verfügbar: Warnung, aber Build wird fortgesetzt
+- Speichert in `resources/ffmpeg/<platform>/`
+
+**Hinweis:** BtbN Builds haben möglicherweise keinen DeckLink-Support. Für SDI-Output wird Blackmagic FFmpeg benötigt.
 
 #### Option B: Blackmagic FFmpeg (für SDI + NDI)
 
@@ -58,6 +67,14 @@ npm run download:ffmpeg
 ```bash
 npm run build:ffmpeg:decklink
 ```
+
+#### Option C: Alternative Quellen
+
+**Für mac-arm64:**
+
+- **Martin Riedl Builds:** Automatisch als Fallback verwendet, wenn BtbN Asset nicht verfügbar ist
+- **URL:** https://evermeet.cx/ffmpeg/
+- **Hinweis:** Diese Builds haben möglicherweise keinen DeckLink-Support
 
 ### 3. TypeScript kompilieren
 
@@ -169,7 +186,7 @@ echo "Configure: --enable-gpl --enable-decklink ..." >> ../docs/ffmpeg-build-inf
 
 ### `scripts/download-ffmpeg.js`
 
-Lädt BtbN FFmpeg Builds für alle Plattformen.
+Lädt FFmpeg Builds für alle Plattformen mit robustem Fallback-Mechanismus.
 
 **Verwendung:**
 
@@ -180,8 +197,16 @@ npm run download:ffmpeg
 **Funktionalität:**
 
 - Prüft ob Blackmagic FFmpeg vorhanden (manuell platziert)
-- Falls nicht: Lädt BtbN Builds von GitHub
+- Falls nicht: Lädt BtbN Builds von GitHub Releases
+- **Fallback für mac-arm64:** Martin Riedl Builds (https://evermeet.cx/ffmpeg/)
+- **Graceful Handling:** Wenn Assets nicht verfügbar sind, wird eine Warnung ausgegeben, aber der Build wird fortgesetzt
 - Speichert in `resources/ffmpeg/<platform>/`
+
+**Verhalten bei fehlenden Assets:**
+
+- Gibt Warnung aus, aber beendet mit Exit Code 0 (Erfolg)
+- Build kann fortgesetzt werden
+- Für Production: FFmpeg muss manuell platziert werden (siehe `docs/ffmpeg-setup.md`)
 
 ### `scripts/build-ffmpeg-decklink.js` (geplant)
 
@@ -216,6 +241,8 @@ npm run check:ffmpeg
 - Prüft ob FFmpeg vorhanden
 - Testet DeckLink-Support
 - Gibt Status für alle Plattformen aus
+- **Robust:** Gibt Warnung aus, wenn FFmpeg fehlt, aber beendet mit Exit Code 0 (Erfolg)
+- Build kann fortgesetzt werden, auch wenn FFmpeg fehlt
 
 ## Build-Konfiguration
 
@@ -234,8 +261,11 @@ Definiert Build-Scripts.
 
 **Wichtig:**
 
-- `dist:*` Scripts rufen `download:ffmpeg` auf
+- `dist:*` Scripts rufen `download:ffmpeg` und `check:ffmpeg` auf
 - FFmpeg wird vor dem Build heruntergeladen/geprüft
+- **Robust:** Build schlägt nicht fehl, wenn FFmpeg-Download fehlschlägt
+- Warnungen werden ausgegeben, aber Build wird fortgesetzt
+- Für Production: Stelle sicher, dass FFmpeg verfügbar ist (entweder gebundelt oder manuell platziert)
 
 ## Lizenz-Compliance während Build
 
@@ -265,6 +295,16 @@ Definiert Build-Scripts.
 1. Prüfe ob `npm run download:ffmpeg` ausgeführt wurde
 2. Prüfe ob FFmpeg in `resources/ffmpeg/<platform>/` vorhanden ist
 3. Prüfe `FFMPEG_PATH` Environment Variable
+4. **Hinweis:** Fehlende FFmpeg-Assets blockieren den Build nicht mehr. Der Build wird mit Warnung fortgesetzt.
+5. **Für Production:** Stelle sicher, dass FFmpeg verfügbar ist (siehe `docs/ffmpeg-setup.md`)
+
+### Problem: mac-arm64 Asset nicht verfügbar
+
+**Lösung:**
+
+1. Das Script versucht automatisch Martin Riedl Builds als Fallback
+2. Falls auch das fehlschlägt: Manuell Blackmagic FFmpeg platzieren (siehe `docs/ffmpeg-setup.md`)
+3. Build wird mit Warnung fortgesetzt
 
 ### Problem: DeckLink-Support fehlt
 
