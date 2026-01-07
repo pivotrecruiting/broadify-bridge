@@ -26,8 +26,9 @@ export class StubOutputAdapter implements GraphicsOutputAdapter {
       return;
     }
 
+    // Only log frame ticks in debug mode (every 10 seconds instead of every second)
     const now = Date.now();
-    if (now - this.lastLog > 1000) {
+    if (now - this.lastLog > 10000) {
       this.lastLog = now;
       this.log(
         `Frame tick ${config.outputKey}: ${frame.width}x${frame.height} @ ${new Date(

@@ -140,8 +140,8 @@ export class BridgeProcessManager {
         this.bridgeProcess.stdout.on("data", (data) => {
           const text = data.toString();
           if (isDev()) {
-            // In development, optionally log to console
-            // console.log(`[Bridge] ${text.trim()}`);
+            // In development, log to console
+            console.log(`[Bridge] ${text.trim()}`);
           }
           if (this.logStream) {
             this.logStream.write(`[STDOUT] ${text}`);
