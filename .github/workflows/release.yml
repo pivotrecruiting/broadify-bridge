@@ -96,10 +96,22 @@ jobs:
           Copy-Item $ff resources\ffmpeg\win\ffmpeg.exe -Force
           Write-Host "FFmpeg installed at: $ff"
           Write-Host "FFmpeg copied to: resources\ffmpeg\win\ffmpeg.exe"
+          # Verify the copy was successful
+          if (-not (Test-Path "resources\ffmpeg\win\ffmpeg.exe")) {
+            Write-Host "ERROR: Failed to copy FFmpeg to expected location"
+            exit 1
+          }
+          # Make sure it's executable
+          $file = Get-Item "resources\ffmpeg\win\ffmpeg.exe"
+          Write-Host "FFmpeg file info: $($file.FullName), Size: $($file.Length) bytes"
 
       - name: Validate ffmpeg (macOS/Linux)
         if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
         run: |
+          echo "=== FFmpeg Validation Debug Info ==="
+          echo "Runner OS: $(uname -s) $(uname -m)"
+          echo "Matrix OS: ${{ matrix.os }}"
+
           if [ "${{ matrix.os }}" == "macos-15" ]; then
             FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
           elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
@@ -108,14 +120,25 @@ jobs:
             FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
           fi
 
+          echo "Expected FFmpeg path: $FFMPEG_PATH"
+          echo "Resources directory structure:"
+          find resources/ffmpeg -maxdepth 3 -type f -ls 2>/dev/null || true
+          echo ""
+
           if [ -f "$FFMPEG_PATH" ]; then
             echo "✓ FFmpeg present: $FFMPEG_PATH"
+            echo "File type:"
             file "$FFMPEG_PATH" || true
+            echo "File permissions:"
             ls -la "$FFMPEG_PATH" || true
+            echo "Testing FFmpeg execution:"
             "$FFMPEG_PATH" -version || (echo "ERROR: ffmpeg failed to run" && exit 1)
             echo "✓ FFmpeg validation successful"
           else
-            echo "ERROR: FFmpeg not found at $FFMPEG_PATH" && exit 1
+            echo "ERROR: FFmpeg not found at $FFMPEG_PATH"
+            echo "Searching for any FFmpeg binaries:"
+            find resources/ffmpeg -name "ffmpeg" -o -name "ffmpeg.exe" 2>/dev/null || true
+            exit 1
           fi
 
       - name: Validate ffmpeg (Windows)
@@ -128,17 +151,62 @@ jobs:
             Get-Item $FFMPEG_PATH | Format-List
             & $FFMPEG_PATH -version
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "ERROR: ffmpeg failed to run" && exit 1
+              Write-Host "ERROR: ffmpeg failed to run"
+              exit 1
             }
             Write-Host "✓ FFmpeg validation successful"
           } else {
-            Write-Host "ERROR: FFmpeg not found at $FFMPEG_PATH" && exit 1
+            Write-Host "ERROR: FFmpeg not found at $FFMPEG_PATH"
+            exit 1
+          }
+
+      - name: Install Bridge dependencies
+        run: |
+          cd apps/bridge
+          npm ci
+
+      - name: Copy ffmpeg-static as fallback (if system FFmpeg missing)
+        run: |
+          cd apps/bridge
+          # Only copy if FFmpeg is missing at expected location
+          if [ "${{ matrix.os }}" == "macos-15" ]; then
+            FFMPEG_PATH="../../resources/ffmpeg/mac-arm64/ffmpeg"
+          elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
+            FFMPEG_PATH="../../resources/ffmpeg/mac-x64/ffmpeg"
+          elif [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
+            FFMPEG_PATH="../../resources/ffmpeg/linux/ffmpeg"
+          else
+            FFMPEG_PATH="../../resources/ffmpeg/win/ffmpeg.exe"
+          fi
+
+          if [ ! -f "$FFMPEG_PATH" ]; then
+            echo "System FFmpeg not found, using ffmpeg-static as fallback..."
+            node scripts/copy-ffmpeg-static.js
+            echo "FFmpeg copied from ffmpeg-static:"
+            ls -la "$FFMPEG_PATH" || true
+          else
+            echo "System FFmpeg found, skipping ffmpeg-static copy"
+          fi
+        if: matrix.os != 'windows-latest'
+
+      - name: Copy ffmpeg-static as fallback (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          cd apps/bridge
+          $FFMPEG_PATH = "..\..\resources\ffmpeg\win\ffmpeg.exe"
+          if (-not (Test-Path $FFMPEG_PATH)) {
+            Write-Host "System FFmpeg not found, using ffmpeg-static as fallback..."
+            node scripts/copy-ffmpeg-static.js
+            Write-Host "FFmpeg copied from ffmpeg-static:"
+            Get-Item $FFMPEG_PATH | Format-List
+          } else {
+            Write-Host "System FFmpeg found, skipping ffmpeg-static copy"
           }
 
       - name: Build Bridge (apps/bridge)
         run: |
           cd apps/bridge
-          npm ci
           npm run build
 
       - name: Transpile Electron
@@ -147,9 +215,10 @@ jobs:
       - name: Build React
         run: npm run build
 
-      - name: Final ffmpeg validation before packaging
+      - name: Verify FFmpeg still present after download script (macOS/Linux)
         if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
         run: |
+          echo "=== Verifying FFmpeg after download:ffmpeg script ==="
           if [ "${{ matrix.os }}" == "macos-15" ]; then
             FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
           elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
@@ -158,12 +227,115 @@ jobs:
             FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
           fi
 
-          if [ ! -f "$FFMPEG_PATH" ] || [ ! -x "$FFMPEG_PATH" ]; then
-            echo "ERROR: FFmpeg missing or not executable at $FFMPEG_PATH"
-            echo "Directory contents:"
-            ls -la resources/ffmpeg/ || true
+          # The download:ffmpeg script should have skipped this file if it existed
+          if [ -f "$FFMPEG_PATH" ]; then
+            echo "✓ FFmpeg still present at $FFMPEG_PATH"
+            echo "File info:"
+            file "$FFMPEG_PATH" || true
+            ls -la "$FFMPEG_PATH" || true
+            # Test execution
+            "$FFMPEG_PATH" -version | head -n 1 || (echo "WARNING: FFmpeg exists but failed to run" && exit 1)
+          else
+            echo "ERROR: FFmpeg missing at $FFMPEG_PATH after download script"
+            echo "This should not happen - System FFmpeg should have been preserved."
+            echo "Searching for FFmpeg binaries:"
+            find resources/ffmpeg -name "ffmpeg" -type f 2>/dev/null || true
             exit 1
           fi
+
+      - name: Protect System FFmpeg from download script (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Write-Host "=== Protecting System FFmpeg from download:ffmpeg ==="
+          $expectedPath = "resources\ffmpeg\win\ffmpeg.exe"
+
+          # Check if System FFmpeg exists and get its size
+          if (Test-Path $expectedPath) {
+            $file = Get-Item $expectedPath
+            Write-Host "System FFmpeg present: $expectedPath (size: $($file.Length) bytes)"
+            Write-Host "The download:ffmpeg script should skip this file if it exists."
+          } else {
+            Write-Host "WARNING: System FFmpeg not found at $expectedPath"
+            Write-Host "This should not happen if installation steps ran correctly."
+          }
+
+      - name: Ensure FFmpeg still present after download script (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # The download:ffmpeg script might have created a nested structure
+          # or overwritten our file. Ensure it's at the expected location.
+          $expectedPath = "resources\ffmpeg\win\ffmpeg.exe"
+          $nestedPath = "resources\ffmpeg\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe"
+
+          if (-not (Test-Path $expectedPath)) {
+            Write-Host "FFmpeg not at expected path, checking for nested structure..."
+            if (Test-Path $nestedPath) {
+              Write-Host "Found FFmpeg at nested path, copying to expected location..."
+              New-Item -ItemType Directory -Force -Path resources\ffmpeg\win | Out-Null
+              Copy-Item $nestedPath $expectedPath -Force
+              Write-Host "✓ Copied FFmpeg from nested path to expected location"
+            } else {
+              Write-Host "ERROR: FFmpeg not found at expected or nested path"
+              Write-Host "Searching all FFmpeg files:"
+              Get-ChildItem resources\ffmpeg\ -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "  Found: $($_.FullName)"
+              }
+              exit 1
+            }
+          }
+
+          # Final verification
+          if (Test-Path $expectedPath) {
+            & $expectedPath -version | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "ERROR: FFmpeg exists but failed to execute"
+              exit 1
+            }
+            Write-Host "✓ FFmpeg verified at: $expectedPath"
+          } else {
+            Write-Host "ERROR: FFmpeg still not found after copy attempt"
+            exit 1
+          }
+
+      - name: Final ffmpeg validation before packaging
+        if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
+        run: |
+          echo "=== Final FFmpeg Validation Before Packaging ==="
+          echo "Runner OS: $(uname -s) $(uname -m)"
+
+          if [ "${{ matrix.os }}" == "macos-15" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
+          elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-x64/ffmpeg"
+          else
+            FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
+          fi
+
+          echo "Checking FFmpeg at: $FFMPEG_PATH"
+          echo "Full resources/ffmpeg structure:"
+          find resources/ffmpeg -type f -ls 2>/dev/null || true
+          echo ""
+
+          if [ ! -f "$FFMPEG_PATH" ]; then
+            echo "ERROR: FFmpeg missing at $FFMPEG_PATH"
+            echo "All files in resources/ffmpeg:"
+            find resources/ffmpeg -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          if [ ! -x "$FFMPEG_PATH" ]; then
+            echo "ERROR: FFmpeg not executable at $FFMPEG_PATH"
+            echo "Current permissions:"
+            ls -la "$FFMPEG_PATH" || true
+            echo "Attempting to make executable..."
+            chmod +x "$FFMPEG_PATH" || true
+            ls -la "$FFMPEG_PATH" || true
+          fi
+
+          echo "Testing FFmpeg execution:"
+          "$FFMPEG_PATH" -version || (echo "ERROR: FFmpeg exists but failed to execute" && exit 1)
           echo "✓ FFmpeg ready for packaging: $FFMPEG_PATH"
 
       - name: Final ffmpeg validation before packaging (Windows)
@@ -173,10 +345,32 @@ jobs:
           $FFMPEG_PATH = "resources\ffmpeg\win\ffmpeg.exe"
           if (-not (Test-Path $FFMPEG_PATH)) {
             Write-Host "ERROR: FFmpeg missing at $FFMPEG_PATH"
+            Write-Host "Searching for FFmpeg in resources directory:"
             Get-ChildItem resources\ffmpeg\ -Recurse -ErrorAction SilentlyContinue | Format-Table
+            Write-Host "Checking if download:ffmpeg created different structure:"
+            if (Test-Path "resources\ffmpeg\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe") {
+              Write-Host "Found FFmpeg at nested path, copying to expected location..."
+              $nestedPath = "resources\ffmpeg\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe"
+              New-Item -ItemType Directory -Force -Path resources\ffmpeg\win | Out-Null
+              Copy-Item $nestedPath resources\ffmpeg\win\ffmpeg.exe -Force
+              Write-Host "✓ Copied FFmpeg to expected location"
+            } else {
+              Write-Host "ERROR: FFmpeg not found at expected or nested path"
+              exit 1
+            }
+          }
+          # Final verification
+          if (Test-Path $FFMPEG_PATH) {
+            & $FFMPEG_PATH -version | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "ERROR: FFmpeg exists but failed to execute"
+              exit 1
+            }
+            Write-Host "✓ FFmpeg ready for packaging: $FFMPEG_PATH"
+          } else {
+            Write-Host "ERROR: FFmpeg still not found after copy attempt"
             exit 1
           }
-          Write-Host "✓ FFmpeg ready for packaging: $FFMPEG_PATH"
 
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never
