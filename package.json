@@ -1,7 +1,7 @@
 {
   "name": "electron-vite-template",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.9",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -23,7 +23,8 @@
     "dist:win": "npm run download:ffmpeg && npm run check:ffmpeg && npm run transpile:electron && npm run build && electron-builder --win --x64",
     "dist:linux": "npm run download:ffmpeg && npm run check:ffmpeg && npm run transpile:electron && npm run build && electron-builder --linux --x64",
     "dist:all": "npm run dist:mac:arm64 && npm run dist:mac:x64 && npm run dist:win && npm run dist:linux",
-    "release": "npm run dist:all"
+    "release": "npm run dist:all",
+    "test:workflow": "bash scripts/test-workflow.sh"
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.2.6",

@@ -1,16 +1,11 @@
-name: Release Build
+name: Test Release Build
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - test-release
+      - test-release/**
   workflow_dispatch:
-    inputs:
-      test_mode:
-        description: "Test mode (skip release creation)"
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   build:
@@ -54,11 +49,8 @@ jobs:
       - name: Ensure ffmpeg on macOS (ARM64)
         if: matrix.os == 'macos-15'
         run: |
-          # Install via Homebrew so we have a working ffmpeg binary
           brew update || true
           brew install ffmpeg || true
-
-          # Ensure resources/ffmpeg/mac-arm64 exists and contains an executable ffmpeg
           mkdir -p resources/ffmpeg/mac-arm64
           cp "$(which ffmpeg)" resources/ffmpeg/mac-arm64/ffmpeg
           chmod +x resources/ffmpeg/mac-arm64/ffmpeg
@@ -69,11 +61,8 @@ jobs:
       - name: Ensure ffmpeg on macOS (x64)
         if: matrix.os == 'macos-15-intel'
         run: |
-          # Install via Homebrew so we have a working ffmpeg binary
           brew update || true
           brew install ffmpeg || true
-
-          # Ensure resources/ffmpeg/mac-x64 exists and contains an executable ffmpeg
           mkdir -p resources/ffmpeg/mac-x64
           cp "$(which ffmpeg)" resources/ffmpeg/mac-x64/ffmpeg
           chmod +x resources/ffmpeg/mac-x64/ffmpeg
@@ -126,12 +115,10 @@ jobs:
             Write-Host "Resolved FFmpeg binary: $ffToCopy"
           }
           Write-Host "FFmpeg copied to: resources\ffmpeg\win\ffmpeg.exe"
-          # Verify the copy was successful
           if (-not (Test-Path "resources\ffmpeg\win\ffmpeg.exe")) {
             Write-Host "ERROR: Failed to copy FFmpeg to expected location"
             exit 1
           }
-          # Make sure it's executable
           $file = Get-Item "resources\ffmpeg\win\ffmpeg.exe"
           Write-Host "FFmpeg file info: $($file.FullName), Size: $($file.Length) bytes"
 
@@ -141,7 +128,7 @@ jobs:
           echo "=== FFmpeg Validation Debug Info ==="
           echo "Runner OS: $(uname -s) $(uname -m)"
           echo "Matrix OS: ${{ matrix.os }}"
-
+          
           if [ "${{ matrix.os }}" == "macos-15" ]; then
             FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
           elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
@@ -149,12 +136,12 @@ jobs:
           else
             FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
           fi
-
+          
           echo "Expected FFmpeg path: $FFMPEG_PATH"
           echo "Resources directory structure:"
           find resources/ffmpeg -maxdepth 3 -type f -ls 2>/dev/null || true
           echo ""
-
+          
           if [ -f "$FFMPEG_PATH" ]; then
             echo "✓ FFmpeg present: $FFMPEG_PATH"
             echo "File type:"
@@ -198,7 +185,6 @@ jobs:
       - name: Copy ffmpeg-static as fallback (if system FFmpeg missing)
         run: |
           cd apps/bridge
-          # Only copy if FFmpeg is missing at expected location
           if [ "${{ matrix.os }}" == "macos-15" ]; then
             FFMPEG_PATH="../../resources/ffmpeg/mac-arm64/ffmpeg"
           elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
@@ -208,7 +194,7 @@ jobs:
           else
             FFMPEG_PATH="../../resources/ffmpeg/win/ffmpeg.exe"
           fi
-
+          
           if [ ! -f "$FFMPEG_PATH" ]; then
             echo "System FFmpeg not found, using ffmpeg-static as fallback..."
             node scripts/copy-ffmpeg-static.js
@@ -256,77 +242,24 @@ jobs:
           else
             FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
           fi
-
-          # The download:ffmpeg script should have skipped this file if it existed
+          
           if [ -f "$FFMPEG_PATH" ]; then
             echo "✓ FFmpeg still present at $FFMPEG_PATH"
             echo "File info:"
             file "$FFMPEG_PATH" || true
             ls -la "$FFMPEG_PATH" || true
-            # Test execution
             "$FFMPEG_PATH" -version | head -n 1 || (echo "WARNING: FFmpeg exists but failed to run" && exit 1)
           else
             echo "ERROR: FFmpeg missing at $FFMPEG_PATH after download script"
-            echo "This should not happen - System FFmpeg should have been preserved."
             echo "Searching for FFmpeg binaries:"
             find resources/ffmpeg -name "ffmpeg" -type f 2>/dev/null || true
             exit 1
           fi
 
-      - name: Protect System FFmpeg from download script (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          Write-Host "=== Protecting System FFmpeg from download:ffmpeg ==="
-          $expectedPath = "resources\ffmpeg\win\ffmpeg.exe"
-
-          # Check if System FFmpeg exists and get its size
-          if (Test-Path $expectedPath) {
-            $file = Get-Item $expectedPath
-            Write-Host "System FFmpeg present: $expectedPath (size: $($file.Length) bytes)"
-            Write-Host "The download:ffmpeg script should skip this file if it exists."
-          } else {
-            Write-Host "WARNING: System FFmpeg not found at $expectedPath"
-            Write-Host "This should not happen if installation steps ran correctly."
-          }
-
-      - name: Clean up nested FFmpeg directories after download (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Remove any nested directories that might have been created by download-ffmpeg
-          # This must happen BEFORE electron-builder runs (which is in dist:win)
-          Write-Host "Cleaning up nested FFmpeg directories after download..."
-
-          $nestedDirs = @(
-            "resources\ffmpeg\lib",
-            "resources\ffmpeg\temp",
-            "resources\ffmpeg\tools"
-          )
-
-          foreach ($dir in $nestedDirs) {
-            if (Test-Path $dir) {
-              Write-Host "Removing nested directory: $dir"
-              Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-          }
-
-          # Also remove any temp directories in platform folders
-          $platformDirs = @("win", "mac-arm64", "mac-x64", "linux")
-          foreach ($platformDir in $platformDirs) {
-            $tempPath = "resources\ffmpeg\$platformDir\temp"
-            if (Test-Path $tempPath) {
-              Write-Host "Removing temp directory: $tempPath"
-              Remove-Item $tempPath -Recurse -Force -ErrorAction SilentlyContinue
-            }
-          }
-
       - name: Ensure FFmpeg still present after download script (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          # The download:ffmpeg script might have created a nested structure
-          # or overwritten our file. Ensure it's at the expected location.
           $expectedPath = "resources\ffmpeg\win\ffmpeg.exe"
           $nestedPath = "resources\ffmpeg\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe"
 
@@ -337,11 +270,8 @@ jobs:
               New-Item -ItemType Directory -Force -Path resources\ffmpeg\win | Out-Null
               Copy-Item $nestedPath $expectedPath -Force
               Write-Host "✓ Copied FFmpeg from nested path to expected location"
-              # Remove nested structure after copying
-              Remove-Item "resources\ffmpeg\lib" -Recurse -Force -ErrorAction SilentlyContinue
             } else {
               Write-Host "ERROR: FFmpeg not found at expected or nested path"
-              Write-Host "Searching all FFmpeg files:"
               Get-ChildItem resources\ffmpeg\ -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue | ForEach-Object {
                 Write-Host "  Found: $($_.FullName)"
               }
@@ -349,7 +279,6 @@ jobs:
             }
           }
 
-          # Final verification
           if (Test-Path $expectedPath) {
             & $expectedPath -version | Out-Null
             if ($LASTEXITCODE -ne 0) {
@@ -367,7 +296,7 @@ jobs:
         run: |
           echo "=== Final FFmpeg Validation Before Packaging ==="
           echo "Runner OS: $(uname -s) $(uname -m)"
-
+          
           if [ "${{ matrix.os }}" == "macos-15" ]; then
             FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
           elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
@@ -375,28 +304,25 @@ jobs:
           else
             FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
           fi
-
+          
           echo "Checking FFmpeg at: $FFMPEG_PATH"
           echo "Full resources/ffmpeg structure:"
           find resources/ffmpeg -type f -ls 2>/dev/null || true
           echo ""
-
+          
           if [ ! -f "$FFMPEG_PATH" ]; then
             echo "ERROR: FFmpeg missing at $FFMPEG_PATH"
-            echo "All files in resources/ffmpeg:"
             find resources/ffmpeg -type f 2>/dev/null || true
             exit 1
           fi
-
+          
           if [ ! -x "$FFMPEG_PATH" ]; then
             echo "ERROR: FFmpeg not executable at $FFMPEG_PATH"
-            echo "Current permissions:"
             ls -la "$FFMPEG_PATH" || true
-            echo "Attempting to make executable..."
             chmod +x "$FFMPEG_PATH" || true
             ls -la "$FFMPEG_PATH" || true
           fi
-
+          
           echo "Testing FFmpeg execution:"
           "$FFMPEG_PATH" -version || (echo "ERROR: FFmpeg exists but failed to execute" && exit 1)
           echo "✓ FFmpeg ready for packaging: $FFMPEG_PATH"
@@ -408,9 +334,7 @@ jobs:
           $FFMPEG_PATH = "resources\ffmpeg\win\ffmpeg.exe"
           if (-not (Test-Path $FFMPEG_PATH)) {
             Write-Host "ERROR: FFmpeg missing at $FFMPEG_PATH"
-            Write-Host "Searching for FFmpeg in resources directory:"
             Get-ChildItem resources\ffmpeg\ -Recurse -ErrorAction SilentlyContinue | Format-Table
-            Write-Host "Checking if download:ffmpeg created different structure:"
             if (Test-Path "resources\ffmpeg\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe") {
               Write-Host "Found FFmpeg at nested path, copying to expected location..."
               $nestedPath = "resources\ffmpeg\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe"
@@ -422,7 +346,6 @@ jobs:
               exit 1
             }
           }
-          # Final verification
           if (Test-Path $FFMPEG_PATH) {
             & $FFMPEG_PATH -version | Out-Null
             if ($LASTEXITCODE -ne 0) {
@@ -435,121 +358,13 @@ jobs:
             exit 1
           }
 
-      - name: Clean up nested FFmpeg directories (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Remove any nested directories that might have been created by download-ffmpeg
-          # electron-builder copies everything in resources/ffmpeg, so we need to clean up
-          Write-Host "Cleaning up nested FFmpeg directories..."
-
-          $nestedDirs = @(
-            "resources\ffmpeg\lib",
-            "resources\ffmpeg\temp",
-            "resources\ffmpeg\tools"
-          )
-
-          foreach ($dir in $nestedDirs) {
-            if (Test-Path $dir) {
-              Write-Host "Removing nested directory: $dir"
-              Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-          }
-
-          # List final structure
-          Write-Host "Final resources/ffmpeg structure:"
-          Get-ChildItem resources\ffmpeg\ -Directory | ForEach-Object {
-            Write-Host "  $($_.Name)"
-          }
-
-      - name: Clean up nested FFmpeg directories (macOS/Linux)
-        if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
-        run: |
-          # Remove any nested directories that might have been created by download-ffmpeg
-          # electron-builder copies everything in resources/ffmpeg, so we need to clean up
-          echo "Cleaning up nested FFmpeg directories..."
-
-          # Remove nested directories
-          rm -rf resources/ffmpeg/lib
-          rm -rf resources/ffmpeg/temp
-          rm -rf resources/ffmpeg/tools
-
-          # List final structure
-          echo "Final resources/ffmpeg structure:"
-          find resources/ffmpeg -maxdepth 1 -type d | sort
-
-      - name: Ensure FFmpeg at correct location before build (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Final check before build - ensure FFmpeg is at expected location
-          # This is a safety check to prevent electron-builder from failing
-          $expectedPath = "resources\ffmpeg\win\ffmpeg.exe"
-          if (-not (Test-Path $expectedPath)) {
-            Write-Host "ERROR: FFmpeg not found at expected location before build"
-            Write-Host "Expected path: $expectedPath"
-            Write-Host "This should have been fixed in previous steps."
-            Write-Host ""
-            Write-Host "Searching for FFmpeg in resources directory:"
-            Get-ChildItem resources\ffmpeg\ -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue | ForEach-Object {
-              Write-Host "  Found: $($_.FullName)"
-            }
-            exit 1
-          }
-
-          # Verify FFmpeg is executable
-          & $expectedPath -version | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: FFmpeg exists but failed to execute"
-            exit 1
-          }
-
-          Write-Host "✓ FFmpeg confirmed at: $expectedPath"
-          $fileInfo = Get-Item $expectedPath
-          Write-Host "  Size: $($fileInfo.Length) bytes"
-          Write-Host "  Last modified: $($fileInfo.LastWriteTime)"
-
-      - name: Ensure FFmpeg at correct location before build (macOS/Linux)
-        if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
-        run: |
-          # Final check before build - ensure FFmpeg is at expected location
-          if [ "${{ matrix.os }}" == "macos-15" ]; then
-            FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
-          elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
-            FFMPEG_PATH="resources/ffmpeg/mac-x64/ffmpeg"
-          else
-            FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
-          fi
-
-          if [ ! -f "$FFMPEG_PATH" ]; then
-            echo "ERROR: FFmpeg not found at expected location before build"
-            echo "Expected path: $FFMPEG_PATH"
-            echo "This should have been fixed in previous steps."
-            echo ""
-            echo "Searching for FFmpeg in resources directory:"
-            find resources/ffmpeg -name "ffmpeg" -type f 2>/dev/null || true
-            exit 1
-          fi
-
-          # Verify FFmpeg is executable
-          if [ ! -x "$FFMPEG_PATH" ]; then
-            echo "ERROR: FFmpeg exists but is not executable"
-            chmod +x "$FFMPEG_PATH" || exit 1
-          fi
-
-          # Test execution
-          "$FFMPEG_PATH" -version | head -n 1 || (echo "ERROR: FFmpeg exists but failed to execute" && exit 1)
-
-          echo "✓ FFmpeg confirmed at: $FFMPEG_PATH"
-          ls -lh "$FFMPEG_PATH" || true
-
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never
 
-      - name: Upload artifacts
+      - name: Upload test artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: test-${{ matrix.artifact }}
           path: |
             dist/*.dmg
             dist/*.exe
@@ -558,48 +373,3 @@ jobs:
             dist/*.yml
             dist/*.blockmap
           if-no-files-found: warn
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: ${{ !inputs.test_mode || github.event_name != 'workflow_dispatch' }}
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: List artifacts for debugging
-        run: |
-          echo "Artifacts structure:"
-          find artifacts -type f -name "*" | sort || true
-
-      - name: Rename duplicate files to avoid conflicts
-        run: |
-          # Remove builder-debug.yml files (not needed for releases)
-          find artifacts -name "builder-debug.yml" -delete 2>/dev/null || true
-          # Rename latest-mac.yml files to be unique per macOS architecture
-          if [ -f "artifacts/mac-arm64/latest-mac.yml" ]; then
-            mv "artifacts/mac-arm64/latest-mac.yml" "artifacts/mac-arm64/latest-mac-arm64.yml" 2>/dev/null || true
-          fi
-          if [ -f "artifacts/mac-x64/latest-mac.yml" ]; then
-            mv "artifacts/mac-x64/latest-mac.yml" "artifacts/mac-x64/latest-mac-x64.yml" 2>/dev/null || true
-          fi
-          echo "Final artifacts structure:"
-          find artifacts -type f | sort || true
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          files: artifacts/**/*
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
