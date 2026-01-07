@@ -158,6 +158,10 @@ function findAsset(release, searchPatterns) {
 
 /**
  * Extract binary from archive
+ * 
+ * Platform-specific extraction:
+ * - Windows: Uses PowerShell Expand-Archive
+ * - Unix: Uses unzip/tar commands
  */
 function extractBinary(archivePath, destPath, binaryName, archiveExt) {
   const tempDir = path.join(path.dirname(archivePath), "temp");
@@ -165,12 +169,32 @@ function extractBinary(archivePath, destPath, binaryName, archiveExt) {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
+  // Ensure destination directory exists
+  const destDir = path.dirname(destPath);
+  if (!fs.existsSync(destDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+  }
+
   try {
+    console.log(`  Extracting archive: ${path.basename(archivePath)}`);
+    
     if (archiveExt === ".zip") {
-      execSync(`unzip -q "${archivePath}" -d "${tempDir}"`, {
-        stdio: "ignore",
-      });
+      if (process.platform === "win32") {
+        // Use PowerShell Expand-Archive on Windows
+        const normalizedArchivePath = archivePath.replace(/\\/g, "/");
+        const normalizedTempDir = tempDir.replace(/\\/g, "/");
+        execSync(
+          `powershell -Command "Expand-Archive -Path '${normalizedArchivePath}' -DestinationPath '${normalizedTempDir}' -Force"`,
+          { stdio: "inherit" }
+        );
+      } else {
+        // Use unzip on Unix systems
+        execSync(`unzip -q "${archivePath}" -d "${tempDir}"`, {
+          stdio: "ignore",
+        });
+      }
     } else if (archiveExt === ".tar.xz") {
+      // tar is available on both Unix and Windows (via Git Bash or WSL)
       execSync(`tar -xJf "${archivePath}" -C "${tempDir}"`, {
         stdio: "ignore",
       });
@@ -193,13 +217,29 @@ function extractBinary(archivePath, destPath, binaryName, archiveExt) {
       return null;
     };
 
+    console.log(`  Searching for binary: ${binaryName}`);
     const binaryPath = findBinary(tempDir);
     if (!binaryPath) {
       throw new Error(`Binary ${binaryName} not found in archive`);
     }
 
+    console.log(`  Found binary at: ${binaryPath}`);
+    console.log(`  Copying to: ${destPath}`);
+
     // Copy to destination
     fs.copyFileSync(binaryPath, destPath);
+
+    // Verify the copy was successful
+    if (!fs.existsSync(destPath)) {
+      throw new Error(`Failed to copy binary to ${destPath}`);
+    }
+
+    const stats = fs.statSync(destPath);
+    if (stats.size === 0) {
+      throw new Error(`Copied binary is empty: ${destPath}`);
+    }
+
+    console.log(`  ✓ Successfully extracted and copied binary (${stats.size} bytes)`);
 
     // Cleanup
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -209,6 +249,7 @@ function extractBinary(archivePath, destPath, binaryName, archiveExt) {
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
+    console.error(`  ✗ Extraction failed: ${err.message}`);
     throw err;
   }
 }
@@ -337,21 +378,40 @@ async function downloadBtbNFfmpeg() {
           const tempPath = path.join(resourcesDir, platform.name, asset.name);
           await downloadFile(asset.url, tempPath);
 
-          // Extract binary if needed
-          extractBinary(
-            tempPath,
-            destPath,
-            platform.binaryName,
-            platform.archiveExt
-          );
+              // Extract binary if needed
+          try {
+            extractBinary(
+              tempPath,
+              destPath,
+              platform.binaryName,
+              platform.archiveExt
+            );
 
-          // Make executable on Unix systems
-          if (process.platform !== "win32") {
-            makeExecutable(destPath);
+            // Make executable on Unix systems
+            if (process.platform !== "win32") {
+              makeExecutable(destPath);
+            }
+
+            // Verify the binary exists and is valid
+            if (!fs.existsSync(destPath)) {
+              throw new Error(`Binary not found at destination: ${destPath}`);
+            }
+
+            const stats = fs.statSync(destPath);
+            if (stats.size === 0) {
+              throw new Error(`Binary is empty: ${destPath}`);
+            }
+
+            console.log(`✓ Downloaded ${platform.name} from BtbN`);
+            downloaded = true;
+          } catch (extractErr) {
+            console.error(`  ✗ Extraction failed: ${extractErr.message}`);
+            // Clean up partial download
+            if (fs.existsSync(tempPath)) {
+              fs.unlinkSync(tempPath);
+            }
+            throw extractErr;
           }
-
-          console.log(`✓ Downloaded ${platform.name} from BtbN`);
-          downloaded = true;
         }
       }
 
@@ -387,7 +447,10 @@ async function downloadBtbNFfmpeg() {
         failedPlatforms.push(platform.name);
       }
     } catch (err) {
-      console.warn(`⚠ Failed to download ${platform.name}: ${err.message}`);
+      console.error(`⚠ Failed to download ${platform.name}: ${err.message}`);
+      if (err.stack) {
+        console.error(`  Stack trace: ${err.stack.split('\n').slice(1, 3).join('\n')}`);
+      }
       console.warn(
         `  You can manually place Blackmagic FFmpeg at: ${destPath}`
       );

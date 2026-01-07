@@ -379,6 +379,71 @@ jobs:
             exit 1
           }
 
+      - name: Ensure FFmpeg at correct location before build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Final check before build - ensure FFmpeg is at expected location
+          # This is a safety check to prevent electron-builder from failing
+          $expectedPath = "resources\ffmpeg\win\ffmpeg.exe"
+          if (-not (Test-Path $expectedPath)) {
+            Write-Host "ERROR: FFmpeg not found at expected location before build"
+            Write-Host "Expected path: $expectedPath"
+            Write-Host "This should have been fixed in previous steps."
+            Write-Host ""
+            Write-Host "Searching for FFmpeg in resources directory:"
+            Get-ChildItem resources\ffmpeg\ -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  Found: $($_.FullName)"
+            }
+            exit 1
+          }
+          
+          # Verify FFmpeg is executable
+          & $expectedPath -version | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: FFmpeg exists but failed to execute"
+            exit 1
+          }
+          
+          Write-Host "✓ FFmpeg confirmed at: $expectedPath"
+          $fileInfo = Get-Item $expectedPath
+          Write-Host "  Size: $($fileInfo.Length) bytes"
+          Write-Host "  Last modified: $($fileInfo.LastWriteTime)"
+
+      - name: Ensure FFmpeg at correct location before build (macOS/Linux)
+        if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
+        run: |
+          # Final check before build - ensure FFmpeg is at expected location
+          if [ "${{ matrix.os }}" == "macos-15" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
+          elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-x64/ffmpeg"
+          else
+            FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
+          fi
+          
+          if [ ! -f "$FFMPEG_PATH" ]; then
+            echo "ERROR: FFmpeg not found at expected location before build"
+            echo "Expected path: $FFMPEG_PATH"
+            echo "This should have been fixed in previous steps."
+            echo ""
+            echo "Searching for FFmpeg in resources directory:"
+            find resources/ffmpeg -name "ffmpeg" -type f 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Verify FFmpeg is executable
+          if [ ! -x "$FFMPEG_PATH" ]; then
+            echo "ERROR: FFmpeg exists but is not executable"
+            chmod +x "$FFMPEG_PATH" || exit 1
+          fi
+          
+          # Test execution
+          "$FFMPEG_PATH" -version | head -n 1 || (echo "ERROR: FFmpeg exists but failed to execute" && exit 1)
+          
+          echo "✓ FFmpeg confirmed at: $FFMPEG_PATH"
+          ls -lh "$FFMPEG_PATH" || true
+
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never
 
