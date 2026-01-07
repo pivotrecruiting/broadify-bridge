@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       test_mode:
-        description: 'Test mode (skip release creation)'
+        description: "Test mode (skip release creation)"
         required: false
-        default: 'false'
+        default: false
         type: boolean
 
 jobs:
@@ -267,6 +267,37 @@ jobs:
             Write-Host "This should not happen if installation steps ran correctly."
           }
 
+      - name: Clean up nested FFmpeg directories after download (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Remove any nested directories that might have been created by download-ffmpeg
+          # This must happen BEFORE electron-builder runs (which is in dist:win)
+          Write-Host "Cleaning up nested FFmpeg directories after download..."
+
+          $nestedDirs = @(
+            "resources\ffmpeg\lib",
+            "resources\ffmpeg\temp",
+            "resources\ffmpeg\tools"
+          )
+
+          foreach ($dir in $nestedDirs) {
+            if (Test-Path $dir) {
+              Write-Host "Removing nested directory: $dir"
+              Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          # Also remove any temp directories in platform folders
+          $platformDirs = @("win", "mac-arm64", "mac-x64", "linux")
+          foreach ($platformDir in $platformDirs) {
+            $tempPath = "resources\ffmpeg\$platformDir\temp"
+            if (Test-Path $tempPath) {
+              Write-Host "Removing temp directory: $tempPath"
+              Remove-Item $tempPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
       - name: Ensure FFmpeg still present after download script (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -283,6 +314,8 @@ jobs:
               New-Item -ItemType Directory -Force -Path resources\ffmpeg\win | Out-Null
               Copy-Item $nestedPath $expectedPath -Force
               Write-Host "✓ Copied FFmpeg from nested path to expected location"
+              # Remove nested structure after copying
+              Remove-Item "resources\ffmpeg\lib" -Recurse -Force -ErrorAction SilentlyContinue
             } else {
               Write-Host "ERROR: FFmpeg not found at expected or nested path"
               Write-Host "Searching all FFmpeg files:"
@@ -379,6 +412,49 @@ jobs:
             exit 1
           }
 
+      - name: Clean up nested FFmpeg directories (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Remove any nested directories that might have been created by download-ffmpeg
+          # electron-builder copies everything in resources/ffmpeg, so we need to clean up
+          Write-Host "Cleaning up nested FFmpeg directories..."
+
+          $nestedDirs = @(
+            "resources\ffmpeg\lib",
+            "resources\ffmpeg\temp",
+            "resources\ffmpeg\tools"
+          )
+
+          foreach ($dir in $nestedDirs) {
+            if (Test-Path $dir) {
+              Write-Host "Removing nested directory: $dir"
+              Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          # List final structure
+          Write-Host "Final resources/ffmpeg structure:"
+          Get-ChildItem resources\ffmpeg\ -Directory | ForEach-Object {
+            Write-Host "  $($_.Name)"
+          }
+
+      - name: Clean up nested FFmpeg directories (macOS/Linux)
+        if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
+        run: |
+          # Remove any nested directories that might have been created by download-ffmpeg
+          # electron-builder copies everything in resources/ffmpeg, so we need to clean up
+          echo "Cleaning up nested FFmpeg directories..."
+
+          # Remove nested directories
+          rm -rf resources/ffmpeg/lib
+          rm -rf resources/ffmpeg/temp
+          rm -rf resources/ffmpeg/tools
+
+          # List final structure
+          echo "Final resources/ffmpeg structure:"
+          find resources/ffmpeg -maxdepth 1 -type d | sort
+
       - name: Ensure FFmpeg at correct location before build (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -397,14 +473,14 @@ jobs:
             }
             exit 1
           }
-          
+
           # Verify FFmpeg is executable
           & $expectedPath -version | Out-Null
           if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: FFmpeg exists but failed to execute"
             exit 1
           }
-          
+
           Write-Host "✓ FFmpeg confirmed at: $expectedPath"
           $fileInfo = Get-Item $expectedPath
           Write-Host "  Size: $($fileInfo.Length) bytes"
@@ -421,7 +497,7 @@ jobs:
           else
             FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
           fi
-          
+
           if [ ! -f "$FFMPEG_PATH" ]; then
             echo "ERROR: FFmpeg not found at expected location before build"
             echo "Expected path: $FFMPEG_PATH"
@@ -431,16 +507,16 @@ jobs:
             find resources/ffmpeg -name "ffmpeg" -type f 2>/dev/null || true
             exit 1
           fi
-          
+
           # Verify FFmpeg is executable
           if [ ! -x "$FFMPEG_PATH" ]; then
             echo "ERROR: FFmpeg exists but is not executable"
             chmod +x "$FFMPEG_PATH" || exit 1
           fi
-          
+
           # Test execution
           "$FFMPEG_PATH" -version | head -n 1 || (echo "ERROR: FFmpeg exists but failed to execute" && exit 1)
-          
+
           echo "✓ FFmpeg confirmed at: $FFMPEG_PATH"
           ls -lh "$FFMPEG_PATH" || true
 
