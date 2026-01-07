@@ -2,7 +2,7 @@
 
 /**
  * Check FFmpeg setup and DeckLink support
- * 
+ *
  * This script checks if Blackmagic FFmpeg is present and validates
  * the FFmpeg setup before building.
  */
@@ -103,7 +103,9 @@ function testDeckLinkSupport(ffmpegPath) {
           return;
         }
       } catch (err) {
-        console.warn(`  Warning: Could not check permissions for ${ffmpegPath}: ${err.message}`);
+        console.warn(
+          `  Warning: Could not check permissions for ${ffmpegPath}: ${err.message}`
+        );
         resolve(false);
         return;
       }
@@ -140,10 +142,14 @@ function testDeckLinkSupport(ffmpegPath) {
       clearTimeout(timeout);
       // Handle ENOEXEC (Exec format error) - binary is not for this platform
       if (err.code === "ENOEXEC") {
-        console.warn(`  Warning: ${ffmpegPath} is not executable on this platform (ENOEXEC)`);
+        console.warn(
+          `  Warning: ${ffmpegPath} is not executable on this platform (ENOEXEC)`
+        );
         resolve(false);
       } else {
-        console.warn(`  Warning: Failed to execute ${ffmpegPath}: ${err.message}`);
+        console.warn(
+          `  Warning: Failed to execute ${ffmpegPath}: ${err.message}`
+        );
         resolve(false);
       }
     });
@@ -182,7 +188,9 @@ async function main() {
         platform: platform.name,
         exists: exists,
         hasDeckLink: false,
-        path: exists ? path.join(resourcesDir, platform.name, platform.binaryName) : null,
+        path: exists
+          ? path.join(resourcesDir, platform.name, platform.binaryName)
+          : null,
         skipped: true,
         reason: "Not compatible with current platform",
       });
@@ -225,10 +233,14 @@ async function main() {
   // Print results
   for (const result of results) {
     if (result.skipped) {
-      const status = result.exists ? "Present (skipped - incompatible platform)" : "Missing";
+      const status = result.exists
+        ? "Present (skipped - incompatible platform)"
+        : "Missing";
       console.log(`${result.platform}: ${status}`);
     } else if (result.exists) {
-      const deckLinkStatus = result.hasDeckLink ? "✓ DeckLink" : "✗ No DeckLink";
+      const deckLinkStatus = result.hasDeckLink
+        ? "✓ DeckLink"
+        : "✗ No DeckLink";
       console.log(`${result.platform}: ${deckLinkStatus}`);
     } else {
       console.log(`${result.platform}: Missing`);
@@ -243,7 +255,9 @@ async function main() {
     console.log("Run: npm run download:ffmpeg");
     console.log("");
     console.log("Note: This is a warning, not a fatal error.");
-    console.log("The build will continue, but ensure FFmpeg is available for production.");
+    console.log(
+      "The build will continue, but ensure FFmpeg is available for production."
+    );
     console.log("");
     // Exit with 0 (success) instead of 1 (error) to allow build to continue
     process.exit(0);
@@ -252,7 +266,9 @@ async function main() {
   if (!hasBlackmagicFfmpeg) {
     console.log("⚠ No FFmpeg with DeckLink support found.");
     console.log("SDI output will not work.");
-    console.log("See docs/ffmpeg-setup.md for instructions on setting up Blackmagic FFmpeg.");
+    console.log(
+      "See docs/ffmpeg-setup.md for instructions on setting up Blackmagic FFmpeg."
+    );
     console.log("");
     console.log("NDI output will still work with the current FFmpeg builds.");
     process.exit(0);
@@ -264,4 +280,3 @@ async function main() {
 }
 
 main();
-
