@@ -140,8 +140,8 @@ export class BridgeProcessManager {
         this.bridgeProcess.stdout.on("data", (data) => {
           const text = data.toString();
           if (isDev()) {
-            // In development, optionally log to console
-            // console.log(`[Bridge] ${text.trim()}`);
+            // In development, log to console
+            console.log(`[Bridge] ${text.trim()}`);
           }
           if (this.logStream) {
             this.logStream.write(`[STDOUT] ${text}`);
@@ -320,6 +320,10 @@ export class BridgeProcessManager {
     // Add standard config args
     args.push("--host", config.host);
     args.push("--port", config.port.toString());
+
+    if (config.userDataDir) {
+      args.push("--user-data-dir", config.userDataDir);
+    }
 
     // Add bridge ID if provided
     if (bridgeId) {

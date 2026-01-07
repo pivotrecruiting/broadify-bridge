@@ -1,53 +1,320 @@
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
+import { resolveFfmpegPath } from "../../utils/ffmpeg-path.js";
 import type { DecklinkDeviceInfo, DecklinkPortInfo } from "./decklink-types.js";
 
 /**
  * Decklink Detector
  *
  * Discovery implementation for Blackmagic Decklink cards.
- * Uses Blackmagic Desktop Video SDK (BMD SDK) for device enumeration.
- *
- * IMPORTANT: Must use BMD SDK, NOT OS APIs (AVFoundation/DirectShow)
+ * Uses FFmpeg for device enumeration (Phase 1).
+ * Future: BMD SDK integration for full feature support.
  */
 export class DecklinkDetector {
   /**
-   * Detect Decklink devices using BMD SDK
+   * Detect Decklink devices using FFmpeg
    *
-   * TODO: Implement BMD SDK integration
-   * - Use Blackmagic Desktop Video SDK
-   * - Enumerate devices
-   * - Get device capabilities
-   * - Detect ports (SDI-A, SDI-B, HDMI-OUT, etc.)
+   * Falls back to empty array if FFmpeg is not available or has no DeckLink support.
    */
   async detect(): Promise<DeviceDescriptorT[]> {
-    // BMD SDK detection will be implemented here
-    // For now, return empty array (no mock data)
+    try {
+      const devices = await this.detectViaFfmpeg();
+      return devices;
+    } catch (error) {
+      // Graceful degradation: return empty array on any error
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[DecklinkDetector] Device detection failed: ${errorMessage}`
+      );
+      return [];
+    }
+  }
 
+  /**
+   * Detect devices using FFmpeg list_devices command
+   */
+  private async detectViaFfmpeg(): Promise<DeviceDescriptorT[]> {
+    const ffmpegPath = resolveFfmpegPath();
     const devices: DeviceDescriptorT[] = [];
 
-    // Example structure for future implementation:
-    //
-    // const bmdDevices = await this.detectBMDDevices();
-    // for (const deviceInfo of bmdDevices) {
-    //   const ports = await this.detectPorts(deviceInfo);
-    //   devices.push({
-    //     id: deviceInfo.id,
-    //     displayName: deviceInfo.displayName,
-    //     type: "decklink",
-    //     vendor: deviceInfo.vendor,
-    //     model: deviceInfo.model,
-    //     driver: deviceInfo.driver,
-    //     ports: ports.map(portInfo => this.createPortDescriptor(portInfo)),
-    //     status: {
-    //       present: true,
-    //       inUse: false, // Check via BMD SDK if device is in use
-    //       ready: true,  // Check if device can be opened
-    //       lastSeen: Date.now(),
-    //     },
-    //   });
-    // }
+    // Run FFmpeg to list DeckLink devices
+    const deviceList = await this.listFfmpegDevices(ffmpegPath);
+    if (deviceList.length === 0) {
+      return devices;
+    }
+
+    // Process each device
+    for (let index = 0; index < deviceList.length; index++) {
+      const deviceName = deviceList[index];
+      const deviceId = this.generateDeviceId(deviceName, index);
+      const ports = await this.detectPortsViaFfmpeg(
+        ffmpegPath,
+        deviceName,
+        deviceId
+      );
+
+      devices.push({
+        id: deviceId,
+        displayName: deviceName,
+        type: "decklink",
+        vendor: "Blackmagic Design",
+        model: this.extractModelFromName(deviceName),
+        ports: ports,
+        status: {
+          present: true,
+          inUse: false, // Cannot determine via FFmpeg
+          ready: true, // Assume ready if detected
+          lastSeen: Date.now(),
+        },
+      });
+    }
 
     return devices;
+  }
+
+  /**
+   * List DeckLink devices using FFmpeg
+   */
+  private async listFfmpegDevices(ffmpegPath: string): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      const process = spawn(ffmpegPath, [
+        "-f",
+        "decklink",
+        "-list_devices",
+        "1",
+        "-i",
+        "dummy",
+      ]);
+
+      let stderr = "";
+      const timeout = setTimeout(() => {
+        process.kill("SIGTERM");
+        reject(new Error("FFmpeg device listing timed out"));
+      }, 5000);
+
+      process.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      process.on("close", () => {
+        clearTimeout(timeout);
+
+        // Check if FFmpeg has DeckLink support
+        const hasNoDeckLinkSupport =
+          stderr.includes("Unknown input format: decklink") ||
+          stderr.includes("No such filter or encoder: decklink") ||
+          stderr.includes("Invalid data found when processing input");
+
+        if (hasNoDeckLinkSupport) {
+          console.warn(
+            `[DecklinkDetector] FFmpeg does not have DeckLink support. ` +
+              `The FFmpeg binary at "${ffmpegPath}" was not compiled with --enable-decklink. ` +
+              `Please use a FFmpeg build with DeckLink support (e.g., Blackmagic's FFmpeg build) ` +
+              `or compile FFmpeg with --enable-decklink. ` +
+              `FFmpeg output: ${stderr.substring(0, 300)}`
+          );
+          resolve([]);
+          return;
+        }
+
+        // FFmpeg returns non-zero exit code for list_devices, this is normal
+        const devices = this.parseFfmpegDevices(stderr);
+
+        if (devices.length === 0) {
+          // Log FFmpeg output for debugging when no devices found
+          const outputPreview = stderr
+            .split("\n")
+            .filter((line) => line.trim().length > 0)
+            .slice(0, 5)
+            .join("\n");
+          console.info(
+            `[DecklinkDetector] No DeckLink devices found. ` +
+              `This is normal if no DeckLink hardware is connected. ` +
+              `FFmpeg output preview:\n${outputPreview}`
+          );
+        } else {
+          console.info(
+            `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
+          );
+        }
+
+        resolve(devices);
+      });
+
+      process.on("error", (error) => {
+        clearTimeout(timeout);
+        console.error(
+          `[DecklinkDetector] Failed to spawn FFmpeg process: ${error.message}. ` +
+            `FFmpeg path: "${ffmpegPath}"`
+        );
+        reject(error);
+      });
+    });
+  }
+
+  /**
+   * Parse device list from FFmpeg stderr output
+   *
+   * FFmpeg output format:
+   * [decklink @ ...] "Device Name" (device-id)
+   */
+  private parseFfmpegDevices(stderr: string): string[] {
+    const devices: string[] = [];
+    const lines = stderr.split("\n");
+
+    for (const line of lines) {
+      // Match: [decklink @ ...] "Device Name" (optional-id)
+      const match = line.match(/\[decklink[^\]]*\]\s+"([^"]+)"/);
+      if (match && match[1]) {
+        const deviceName = match[1].trim();
+        if (deviceName && !devices.includes(deviceName)) {
+          devices.push(deviceName);
+        }
+      }
+    }
+
+    return devices;
+  }
+
+  /**
+   * Detect ports for a device using FFmpeg list_formats
+   */
+  private async detectPortsViaFfmpeg(
+    ffmpegPath: string,
+    deviceName: string,
+    deviceId: string
+  ): Promise<PortDescriptorT[]> {
+    return new Promise((resolve) => {
+      const process = spawn(ffmpegPath, [
+        "-f",
+        "decklink",
+        "-list_formats",
+        "1",
+        "-i",
+        deviceName,
+      ]);
+
+      let stderr = "";
+      const timeout = setTimeout(() => {
+        process.kill("SIGTERM");
+        resolve([]);
+      }, 3000);
+
+      process.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      process.on("close", () => {
+        clearTimeout(timeout);
+        const ports = this.parseFfmpegPorts(stderr, deviceId);
+        resolve(ports);
+      });
+
+      process.on("error", () => {
+        clearTimeout(timeout);
+        resolve([]);
+      });
+    });
+  }
+
+  /**
+   * Parse port information from FFmpeg list_formats output
+   *
+   * FFmpeg output format varies, but typically includes port information.
+   * For now, we'll create default ports based on common DeckLink configurations.
+   */
+  private parseFfmpegPorts(
+    stderr: string,
+    deviceId: string
+  ): PortDescriptorT[] {
+    const ports: PortDescriptorT[] = [];
+
+    // Common DeckLink port configurations
+    // Most cards have at least one SDI output
+    // We'll create a default SDI output port
+    // In the future, this could be enhanced by parsing FFmpeg output more carefully
+
+    // Check if output mentions specific ports
+    const hasSdi = stderr.toLowerCase().includes("sdi");
+    const hasHdmi = stderr.toLowerCase().includes("hdmi");
+
+    // Create default SDI output port (most common)
+    if (hasSdi || !hasHdmi) {
+      ports.push({
+        id: `${deviceId}-sdi-0`,
+        displayName: "SDI Output",
+        type: "sdi",
+        direction: "output",
+        capabilities: {
+          formats: [],
+        },
+        status: {
+          available: true,
+        },
+      });
+    }
+
+    // Create HDMI port if mentioned
+    if (hasHdmi) {
+      ports.push({
+        id: `${deviceId}-hdmi-0`,
+        displayName: "HDMI Output",
+        type: "hdmi",
+        direction: "output",
+        capabilities: {
+          formats: [],
+        },
+        status: {
+          available: true,
+        },
+      });
+    }
+
+    // If no ports detected, create at least one default SDI port
+    if (ports.length === 0) {
+      ports.push({
+        id: `${deviceId}-sdi-0`,
+        displayName: "SDI Output",
+        type: "sdi",
+        direction: "output",
+        capabilities: {
+          formats: [],
+        },
+        status: {
+          available: true,
+        },
+      });
+    }
+
+    return ports;
+  }
+
+  /**
+   * Generate stable device ID from device name and index
+   *
+   * Uses hash of device name + index for stability across restarts.
+   */
+  private generateDeviceId(deviceName: string, index: number): string {
+    const hash = createHash("sha256")
+      .update(`${deviceName}-${index}`)
+      .digest("hex")
+      .substring(0, 8);
+    return `decklink-${hash}-${index}`;
+  }
+
+  /**
+   * Extract model name from device display name
+   */
+  private extractModelFromName(deviceName: string): string {
+    // Try to extract model from common patterns
+    // Examples: "DeckLink Mini Recorder", "DeckLink Duo 2", etc.
+    const match = deviceName.match(/DeckLink\s+([^"]+)/i);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+    return deviceName;
   }
 
   /**

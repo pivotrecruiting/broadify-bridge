@@ -335,6 +335,7 @@ if (!gotTheLock) {
       const resolvedConfig: BridgeConfig = {
         ...config,
         host: resolvedHost,
+        userDataDir: app.getPath("userData"),
       };
 
       // Get relay URL from environment or use default

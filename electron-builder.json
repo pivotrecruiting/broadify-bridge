@@ -13,8 +13,8 @@
       "to": "bridge/node_modules"
     },
     {
-      "from": "resources/cloudflared",
-      "to": "cloudflared"
+      "from": "resources/ffmpeg",
+      "to": "ffmpeg"
     }
   ],
   "icon": "./icon.png",

@@ -1,0 +1,11 @@
+{
+  "outputKey": "key_fill_ndi",
+  "targets": {
+    "ndiStreamName": "Broadify Graphics-54f94c"
+  },
+  "format": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 50
+  }
+}
