@@ -17,7 +17,7 @@ const ConfigRequestSchema = z.object({
     .optional(),
   engine: z
     .object({
-      type: z.enum(["atem", "tricaster"]),
+      type: z.enum(["atem", "tricaster", "vmix"]),
       ip: z.string().ip({ version: "v4" }),
       port: z.number().int().min(1).max(65535),
     })
