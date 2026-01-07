@@ -215,6 +215,14 @@ export class RelayClient {
       `Received command: ${message.command} (requestId: ${message.requestId})`
     );
 
+    // Log graphics commands with detailed payload
+    if (message.command.startsWith("graphics_")) {
+      this.logger.info(`Graphics command: ${message.command}`);
+      this.logger.info(
+        `Graphics payload: ${JSON.stringify(message.payload, null, 2)}`
+      );
+    }
+
     try {
       const result = await commandRouter.handleCommand(
         message.command,

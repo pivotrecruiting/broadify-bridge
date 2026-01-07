@@ -18,6 +18,7 @@ export type BridgeConfig = {
     output2: string;
   };
   networkBindingId?: string;
+  userDataDir?: string;
 };
 
 export type BridgeStatus = {

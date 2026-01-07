@@ -10,8 +10,14 @@ import { registerVideoRoute } from "./routes/video.js";
 import { registerWebSocketRoute } from "./routes/websocket.js";
 import { registerRelayRoute } from "./routes/relay.js";
 import { initializeModules } from "./modules/index.js";
-import type { BridgeConfigT } from "./config.js";
 import { RelayClient } from "./services/relay-client.js";
+import {
+  resolveUserDataDir,
+  setBridgeContext,
+} from "./services/bridge-context.js";
+import { graphicsManager } from "./services/graphics/graphics-manager.js";
+import { logFfmpegDeckLinkStatus } from "./services/ffmpeg-self-test.js";
+import type { BridgeConfigT } from "./config.js";
 
 /**
  * Create and configure Fastify server instance
@@ -35,6 +41,25 @@ export async function createServer(config: BridgeConfigT) {
     logger,
   });
 
+  const userDataDir = resolveUserDataDir(config);
+  setBridgeContext({
+    userDataDir,
+    logger: {
+      info: (msg: string) => server.log.info(msg),
+      warn: (msg: string) => server.log.warn(msg),
+      error: (msg: string) => server.log.error(msg),
+    },
+  });
+
+  await graphicsManager.initialize();
+
+  // Test FFmpeg DeckLink support and log status
+  await logFfmpegDeckLinkStatus({
+    info: (msg: string) => server.log.info(msg),
+    warn: (msg: string) => server.log.warn(msg),
+    error: (msg: string) => server.log.error(msg),
+  });
+
   // Register CORS plugin
   await server.register(cors, {
     origin: true, // Allow all origins (for development)
@@ -55,16 +80,14 @@ export async function createServer(config: BridgeConfigT) {
   let relayClient: RelayClient | undefined = undefined;
   if (config.bridgeId) {
     const relayUrl = config.relayUrl || "wss://broadify-relay.fly.dev";
-    relayClient = new RelayClient(
-      config.bridgeId,
-      relayUrl,
-      {
-        info: (msg: string) => server.log.info(`[Relay] ${msg}`),
-        error: (msg: string) => server.log.error(`[Relay] ${msg}`),
-        warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
-      }
+    relayClient = new RelayClient(config.bridgeId, relayUrl, {
+      info: (msg: string) => server.log.info(`[Relay] ${msg}`),
+      error: (msg: string) => server.log.error(`[Relay] ${msg}`),
+      warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
+    });
+    server.log.info(
+      `[Server] Relay client initialized (relayUrl: ${relayUrl})`
     );
-    server.log.info(`[Server] Relay client initialized (relayUrl: ${relayUrl})`);
   } else {
     server.log.info(
       "[Server] Relay client not initialized (bridgeId not configured)"
@@ -162,7 +185,9 @@ export async function startServer(
     try {
       // Disconnect relay client
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const relayClient = (server as any).relayClient as RelayClient | undefined;
+      const relayClient = (server as any).relayClient as
+        | RelayClient
+        | undefined;
       if (relayClient) {
         server.log.info("[Server] Disconnecting relay client...");
         await relayClient.disconnect();
