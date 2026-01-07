@@ -208,7 +208,7 @@ export class DecklinkDetector {
 
       process.on("close", () => {
         clearTimeout(timeout);
-        const ports = this.parseFfmpegPorts(stderr, deviceId);
+        const ports = this.parseFfmpegPorts(stderr, deviceId, deviceName);
         resolve(ports);
       });
 
@@ -222,73 +222,248 @@ export class DecklinkDetector {
   /**
    * Parse port information from FFmpeg list_formats output
    *
-   * FFmpeg output format varies, but typically includes port information.
-   * For now, we'll create default ports based on common DeckLink configurations.
+   * FFmpeg output format varies, but we try to detect:
+   * - Port indices (0, 1, 2, etc.)
+   * - Port types (SDI, HDMI)
+   * - Supported formats and resolutions
+   *
+   * For devices like UltraStudio HD Mini:
+   * - Port 0: SDI Output 1
+   * - Port 1: SDI Output 2
+   * - Port 2: HDMI Output (if available)
+   *
+   * FFmpeg supports port selection via: "Device Name@portIndex"
    */
   private parseFfmpegPorts(
     stderr: string,
-    deviceId: string
+    deviceId: string,
+    deviceName: string
   ): PortDescriptorT[] {
     const ports: PortDescriptorT[] = [];
+    const lines = stderr.split("\n");
+    const lowerStderr = stderr.toLowerCase();
 
-    // Common DeckLink port configurations
-    // Most cards have at least one SDI output
-    // We'll create a default SDI output port
-    // In the future, this could be enhanced by parsing FFmpeg output more carefully
+    // Try to detect port information from FFmpeg output
+    // FFmpeg may show port indices or port types in the output
+    const detectedPorts = new Map<
+      number,
+      { type: "sdi" | "hdmi"; name: string }
+    >();
 
-    // Check if output mentions specific ports
-    const hasSdi = stderr.toLowerCase().includes("sdi");
-    const hasHdmi = stderr.toLowerCase().includes("hdmi");
+    // Look for port patterns in FFmpeg output
+    // Common patterns:
+    // - "SDI" or "HDMI" mentions
+    // - Port indices (0, 1, 2, etc.)
+    // - Format listings that may indicate ports
 
-    // Create default SDI output port (most common)
-    if (hasSdi || !hasHdmi) {
-      ports.push({
-        id: `${deviceId}-sdi-0`,
-        displayName: "SDI Output",
-        type: "sdi",
-        direction: "output",
-        capabilities: {
-          formats: [],
-        },
-        status: {
-          available: true,
-        },
-      });
+    // Check for explicit port mentions
+    for (const line of lines) {
+      const lowerLine = line.toLowerCase();
+
+      // Look for port index patterns (e.g., "port 0", "@0", "[0]")
+      const portIndexMatch = line.match(/port\s+(\d+)|@(\d+)|\[(\d+)\]/i);
+      if (portIndexMatch) {
+        const portIndex = parseInt(
+          portIndexMatch[1] || portIndexMatch[2] || portIndexMatch[3] || "0",
+          10
+        );
+
+        // Determine port type from context
+        let portType: "sdi" | "hdmi" = "sdi";
+        let portName = `Port ${portIndex}`;
+
+        if (lowerLine.includes("hdmi")) {
+          portType = "hdmi";
+          portName = `HDMI Output ${portIndex}`;
+        } else if (lowerLine.includes("sdi")) {
+          portType = "sdi";
+          portName = `SDI Output ${portIndex}`;
+        }
+
+        detectedPorts.set(portIndex, { type: portType, name: portName });
+      }
     }
 
-    // Create HDMI port if mentioned
-    if (hasHdmi) {
-      ports.push({
-        id: `${deviceId}-hdmi-0`,
-        displayName: "HDMI Output",
-        type: "hdmi",
-        direction: "output",
-        capabilities: {
-          formats: [],
-        },
-        status: {
-          available: true,
-        },
-      });
-    }
+    // If we found explicit ports, use them
+    if (detectedPorts.size > 0) {
+      for (const [index, portInfo] of detectedPorts.entries()) {
+        ports.push({
+          id: `${deviceId}-${portInfo.type}-${index}`,
+          displayName: portInfo.name,
+          type: portInfo.type,
+          direction: "output",
+          capabilities: {
+            formats: this.extractFormatsFromOutput(stderr),
+          },
+          status: {
+            available: true,
+          },
+        });
+      }
+    } else {
+      // Fallback: Use heuristics based on device model and common configurations
+      // UltraStudio HD Mini has 2x SDI + 1x HDMI
+      const lowerDeviceName = deviceName.toLowerCase();
+      const isUltraStudioMini =
+        (lowerStderr.includes("ultrastudio") && lowerStderr.includes("mini")) ||
+        (lowerDeviceName.includes("ultrastudio") &&
+          lowerDeviceName.includes("mini"));
 
-    // If no ports detected, create at least one default SDI port
-    if (ports.length === 0) {
-      ports.push({
-        id: `${deviceId}-sdi-0`,
-        displayName: "SDI Output",
-        type: "sdi",
-        direction: "output",
-        capabilities: {
-          formats: [],
-        },
-        status: {
-          available: true,
-        },
-      });
+      if (isUltraStudioMini) {
+        // UltraStudio HD Mini: 2x SDI Outputs + 1x HDMI
+        ports.push({
+          id: `${deviceId}-sdi-0`,
+          displayName: "SDI Output 1",
+          type: "sdi",
+          direction: "output",
+          capabilities: {
+            formats: this.extractFormatsFromOutput(stderr),
+          },
+          status: {
+            available: true,
+          },
+        });
+        ports.push({
+          id: `${deviceId}-sdi-1`,
+          displayName: "SDI Output 2",
+          type: "sdi",
+          direction: "output",
+          capabilities: {
+            formats: this.extractFormatsFromOutput(stderr),
+          },
+          status: {
+            available: true,
+          },
+        });
+        ports.push({
+          id: `${deviceId}-hdmi-0`,
+          displayName: "HDMI Output",
+          type: "hdmi",
+          direction: "output",
+          capabilities: {
+            formats: this.extractFormatsFromOutput(stderr),
+          },
+          status: {
+            available: true,
+          },
+        });
+      } else {
+        // Generic detection: Check for SDI/HDMI mentions
+        const hasHdmi = lowerStderr.includes("hdmi");
+
+        // Try to detect multiple SDI ports
+        // Common pattern: devices with multiple SDI ports
+        const sdiCount = this.countPortMentions(stderr, "sdi");
+        const hdmiCount = this.countPortMentions(stderr, "hdmi");
+
+        // Add SDI ports
+        for (let i = 0; i < Math.max(1, sdiCount); i++) {
+          ports.push({
+            id: `${deviceId}-sdi-${i}`,
+            displayName: sdiCount > 1 ? `SDI Output ${i + 1}` : "SDI Output",
+            type: "sdi",
+            direction: "output",
+            capabilities: {
+              formats: this.extractFormatsFromOutput(stderr),
+            },
+            status: {
+              available: true,
+            },
+          });
+        }
+
+        // Add HDMI port if detected
+        if (hasHdmi) {
+          for (let i = 0; i < Math.max(1, hdmiCount); i++) {
+            ports.push({
+              id: `${deviceId}-hdmi-${i}`,
+              displayName:
+                hdmiCount > 1 ? `HDMI Output ${i + 1}` : "HDMI Output",
+              type: "hdmi",
+              direction: "output",
+              capabilities: {
+                formats: this.extractFormatsFromOutput(stderr),
+              },
+              status: {
+                available: true,
+              },
+            });
+          }
+        }
+
+        // If no ports detected, create at least one default SDI port
+        if (ports.length === 0) {
+          ports.push({
+            id: `${deviceId}-sdi-0`,
+            displayName: "SDI Output",
+            type: "sdi",
+            direction: "output",
+            capabilities: {
+              formats: [],
+            },
+            status: {
+              available: true,
+            },
+          });
+        }
+      }
     }
 
     return ports;
+  }
+
+  /**
+   * Extract supported formats from FFmpeg output
+   *
+   * Looks for format strings like "1080p60", "1080p30", "2K DCI", etc.
+   */
+  private extractFormatsFromOutput(stderr: string): string[] {
+    const formats: string[] = [];
+    const lines = stderr.split("\n");
+
+    // Common format patterns
+    const formatPatterns = [
+      /(\d+p\d+)/i, // 1080p60, 720p50, etc.
+      /(\d+k\s+dci)/i, // 2K DCI
+      /(\d+k)/i, // 4K, 2K
+      /(ntsc|pal)/i, // NTSC, PAL
+    ];
+
+    for (const line of lines) {
+      for (const pattern of formatPatterns) {
+        const match = line.match(pattern);
+        if (match && match[1]) {
+          const format = match[1].trim();
+          if (!formats.includes(format)) {
+            formats.push(format);
+          }
+        }
+      }
+    }
+
+    return formats;
+  }
+
+  /**
+   * Count port mentions in FFmpeg output
+   *
+   * Tries to estimate number of ports by counting mentions
+   */
+  private countPortMentions(stderr: string, portType: string): number {
+    const lowerStderr = stderr.toLowerCase();
+    const lowerType = portType.toLowerCase();
+
+    // Count explicit mentions
+    const mentions = (lowerStderr.match(new RegExp(lowerType, "gi")) || [])
+      .length;
+
+    // If multiple mentions, likely multiple ports
+    // For UltraStudio HD Mini: 2 SDI ports
+    if (mentions >= 2 && lowerType === "sdi") {
+      return 2;
+    }
+
+    return mentions > 0 ? 1 : 0;
   }
 
   /**

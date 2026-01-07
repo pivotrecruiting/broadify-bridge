@@ -149,19 +149,84 @@ export class FfmpegSdiOutputAdapter implements GraphicsOutputAdapter {
   }
 
   /**
-   * Resolve device ID to device name for FFmpeg
+   * Resolve device ID or port ID to device name for FFmpeg
    *
-   * FFmpeg requires the device display name, not our internal ID.
+   * FFmpeg requires the device display name, optionally with port index.
+   * Port IDs have format: `${deviceId}-${portType}-${portIndex}`
+   * FFmpeg port syntax: "Device Name@portIndex"
+   *
+   * Examples:
+   * - Device ID: "decklink-abc123-0" -> "DeckLink Mini Recorder"
+   * - Port ID: "decklink-abc123-0-sdi-0" -> "DeckLink Mini Recorder@0"
+   * - Port ID: "decklink-abc123-0-sdi-1" -> "DeckLink Mini Recorder@1"
    */
-  private async resolveDeviceName(deviceId: string): Promise<string> {
+  private async resolveDeviceName(deviceIdOrPortId: string): Promise<string> {
     const devices = await deviceCache.getDevices(false);
-    const device = devices.find((d) => d.id === deviceId);
 
-    if (!device) {
-      throw new Error(`Device not found: ${deviceId}`);
+    // Check if this is a port ID (format: deviceId-portType-portIndex)
+    const portIdMatch = deviceIdOrPortId.match(
+      /^(.+)-(sdi|hdmi|usb|displayport|thunderbolt)-(\d+)$/
+    );
+
+    if (portIdMatch) {
+      // This is a port ID
+      const deviceId = portIdMatch[1];
+      const portIndex = parseInt(portIdMatch[3], 10);
+
+      // Find the device
+      const device = devices.find((d) => d.id === deviceId);
+      if (!device) {
+        throw new Error(`Device not found for port: ${deviceIdOrPortId}`);
+      }
+
+      // Find the port to verify it exists
+      const port = device.ports.find((p) => {
+        const portIdMatch2 = p.id.match(
+          /^(.+)-(sdi|hdmi|usb|displayport|thunderbolt)-(\d+)$/
+        );
+        return (
+          portIdMatch2 &&
+          portIdMatch2[1] === deviceId &&
+          parseInt(portIdMatch2[3], 10) === portIndex
+        );
+      });
+
+      if (!port) {
+        throw new Error(`Port not found: ${deviceIdOrPortId}`);
+      }
+
+      // Return FFmpeg device name with port index
+      // FFmpeg syntax: "Device Name@portIndex"
+      return `${device.displayName}@${portIndex}`;
     }
 
-    // FFmpeg expects the displayName (device name from FFmpeg list_devices)
+    // This is a device ID (backward compatibility)
+    const device = devices.find((d) => d.id === deviceIdOrPortId);
+    if (!device) {
+      throw new Error(`Device not found: ${deviceIdOrPortId}`);
+    }
+
+    // For backward compatibility: if device has ports, use port 0
+    // Otherwise, just return device name (FFmpeg will use default port)
+    if (device.ports.length > 0) {
+      // Try to find first output port
+      const outputPort = device.ports.find(
+        (p) => p.direction === "output" || p.direction === "bidirectional"
+      );
+
+      if (outputPort) {
+        // Extract port index from port ID
+        const portIdMatch2 = outputPort.id.match(
+          /^(.+)-(sdi|hdmi|usb|displayport|thunderbolt)-(\d+)$/
+        );
+        if (portIdMatch2) {
+          const portIndex = parseInt(portIdMatch2[3], 10);
+          return `${device.displayName}@${portIndex}`;
+        }
+      }
+    }
+
+    // Fallback: return device name without port (FFmpeg will use default)
     return device.displayName;
   }
 
