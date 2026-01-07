@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { getBridgeContext } from "../../bridge-context.js";
+import { deviceCache } from "../../device-cache.js";
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import type {
   GraphicsOutputAdapter,
@@ -113,13 +114,14 @@ export class FfmpegSdiOutputAdapter implements GraphicsOutputAdapter {
       if (!config.targets.output1Id) {
         throw new Error("Output 1 is required for video SDI");
       }
+      const deviceName = await this.resolveDeviceName(config.targets.output1Id);
       this.processes.push(
-        this.spawnProcess(config, config.targets.output1Id, "fill")
+        this.spawnProcess(config, deviceName, "fill")
       );
       await this.awaitReady();
       this.configured = true;
       logger.info(
-        `[GraphicsOutput] SDI video output configured (${config.targets.output1Id})`
+        `[GraphicsOutput] SDI video output configured (${config.targets.output1Id} -> ${deviceName})`
       );
       return;
     }
@@ -128,14 +130,20 @@ export class FfmpegSdiOutputAdapter implements GraphicsOutputAdapter {
       if (!config.targets.output1Id || !config.targets.output2Id) {
         throw new Error("Output 1 and Output 2 are required for key/fill SDI");
       }
+      const fillDeviceName = await this.resolveDeviceName(
+        config.targets.output1Id
+      );
+      const keyDeviceName = await this.resolveDeviceName(
+        config.targets.output2Id
+      );
       this.processes.push(
-        this.spawnProcess(config, config.targets.output1Id, "fill"),
-        this.spawnProcess(config, config.targets.output2Id, "key")
+        this.spawnProcess(config, fillDeviceName, "fill"),
+        this.spawnProcess(config, keyDeviceName, "key")
       );
       await this.awaitReady();
       this.configured = true;
       logger.info(
-        `[GraphicsOutput] SDI key/fill configured (fill: ${config.targets.output1Id}, key: ${config.targets.output2Id})`
+        `[GraphicsOutput] SDI key/fill configured (fill: ${config.targets.output1Id} -> ${fillDeviceName}, key: ${config.targets.output2Id} -> ${keyDeviceName})`
       );
       return;
     }
@@ -143,6 +151,23 @@ export class FfmpegSdiOutputAdapter implements GraphicsOutputAdapter {
     logger.warn(
       `[GraphicsOutput] Unsupported outputKey for FFmpeg SDI adapter: ${config.outputKey}`
     );
+  }
+
+  /**
+   * Resolve device ID to device name for FFmpeg
+   *
+   * FFmpeg requires the device display name, not our internal ID.
+   */
+  private async resolveDeviceName(deviceId: string): Promise<string> {
+    const devices = await deviceCache.getDevices(false);
+    const device = devices.find((d) => d.id === deviceId);
+
+    if (!device) {
+      throw new Error(`Device not found: ${deviceId}`);
+    }
+
+    // FFmpeg expects the displayName (device name from FFmpeg list_devices)
+    return device.displayName;
   }
 
   async sendFrame(
