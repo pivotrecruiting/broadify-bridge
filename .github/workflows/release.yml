@@ -44,6 +44,97 @@ jobs:
       - name: Install root deps
         run: npm ci
 
+      - name: Ensure ffmpeg on macOS (ARM64)
+        if: matrix.os == 'macos-15'
+        run: |
+          # Install via Homebrew so we have a working ffmpeg binary
+          brew update || true
+          brew install ffmpeg || true
+
+          # Ensure resources/ffmpeg/mac-arm64 exists and contains an executable ffmpeg
+          mkdir -p resources/ffmpeg/mac-arm64
+          cp "$(which ffmpeg)" resources/ffmpeg/mac-arm64/ffmpeg
+          chmod +x resources/ffmpeg/mac-arm64/ffmpeg
+          echo "FFmpeg installed at: $(which ffmpeg)"
+          echo "FFmpeg copied to: resources/ffmpeg/mac-arm64/ffmpeg"
+          file resources/ffmpeg/mac-arm64/ffmpeg || true
+
+      - name: Ensure ffmpeg on macOS (x64)
+        if: matrix.os == 'macos-15-intel'
+        run: |
+          # Install via Homebrew so we have a working ffmpeg binary
+          brew update || true
+          brew install ffmpeg || true
+
+          # Ensure resources/ffmpeg/mac-x64 exists and contains an executable ffmpeg
+          mkdir -p resources/ffmpeg/mac-x64
+          cp "$(which ffmpeg)" resources/ffmpeg/mac-x64/ffmpeg
+          chmod +x resources/ffmpeg/mac-x64/ffmpeg
+          echo "FFmpeg installed at: $(which ffmpeg)"
+          echo "FFmpeg copied to: resources/ffmpeg/mac-x64/ffmpeg"
+          file resources/ffmpeg/mac-x64/ffmpeg || true
+
+      - name: Ensure ffmpeg on Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          mkdir -p resources/ffmpeg/linux
+          cp "$(which ffmpeg)" resources/ffmpeg/linux/ffmpeg
+          chmod +x resources/ffmpeg/linux/ffmpeg
+          echo "FFmpeg installed at: $(which ffmpeg)"
+          echo "FFmpeg copied to: resources/ffmpeg/linux/ffmpeg"
+          file resources/ffmpeg/linux/ffmpeg || true
+
+      - name: Ensure ffmpeg on Windows
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y
+          New-Item -ItemType Directory -Force -Path resources\ffmpeg\win | Out-Null
+          $ff = (Get-Command ffmpeg).Source
+          Copy-Item $ff resources\ffmpeg\win\ffmpeg.exe -Force
+          Write-Host "FFmpeg installed at: $ff"
+          Write-Host "FFmpeg copied to: resources\ffmpeg\win\ffmpeg.exe"
+
+      - name: Validate ffmpeg (macOS/Linux)
+        if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
+        run: |
+          if [ "${{ matrix.os }}" == "macos-15" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
+          elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-x64/ffmpeg"
+          else
+            FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
+          fi
+
+          if [ -f "$FFMPEG_PATH" ]; then
+            echo "✓ FFmpeg present: $FFMPEG_PATH"
+            file "$FFMPEG_PATH" || true
+            ls -la "$FFMPEG_PATH" || true
+            "$FFMPEG_PATH" -version || (echo "ERROR: ffmpeg failed to run" && exit 1)
+            echo "✓ FFmpeg validation successful"
+          else
+            echo "ERROR: FFmpeg not found at $FFMPEG_PATH" && exit 1
+          fi
+
+      - name: Validate ffmpeg (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $FFMPEG_PATH = "resources\ffmpeg\win\ffmpeg.exe"
+          if (Test-Path $FFMPEG_PATH) {
+            Write-Host "✓ FFmpeg present: $FFMPEG_PATH"
+            Get-Item $FFMPEG_PATH | Format-List
+            & $FFMPEG_PATH -version
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "ERROR: ffmpeg failed to run" && exit 1
+            }
+            Write-Host "✓ FFmpeg validation successful"
+          } else {
+            Write-Host "ERROR: FFmpeg not found at $FFMPEG_PATH" && exit 1
+          }
+
       - name: Build Bridge (apps/bridge)
         run: |
           cd apps/bridge
@@ -55,6 +146,37 @@ jobs:
 
       - name: Build React
         run: npm run build
+
+      - name: Final ffmpeg validation before packaging
+        if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel' || matrix.os == 'ubuntu-latest'
+        run: |
+          if [ "${{ matrix.os }}" == "macos-15" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-arm64/ffmpeg"
+          elif [ "${{ matrix.os }}" == "macos-15-intel" ]; then
+            FFMPEG_PATH="resources/ffmpeg/mac-x64/ffmpeg"
+          else
+            FFMPEG_PATH="resources/ffmpeg/linux/ffmpeg"
+          fi
+
+          if [ ! -f "$FFMPEG_PATH" ] || [ ! -x "$FFMPEG_PATH" ]; then
+            echo "ERROR: FFmpeg missing or not executable at $FFMPEG_PATH"
+            echo "Directory contents:"
+            ls -la resources/ffmpeg/ || true
+            exit 1
+          fi
+          echo "✓ FFmpeg ready for packaging: $FFMPEG_PATH"
+
+      - name: Final ffmpeg validation before packaging (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $FFMPEG_PATH = "resources\ffmpeg\win\ffmpeg.exe"
+          if (-not (Test-Path $FFMPEG_PATH)) {
+            Write-Host "ERROR: FFmpeg missing at $FFMPEG_PATH"
+            Get-ChildItem resources\ffmpeg\ -Recurse -ErrorAction SilentlyContinue | Format-Table
+            exit 1
+          }
+          Write-Host "✓ FFmpeg ready for packaging: $FFMPEG_PATH"
 
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never
