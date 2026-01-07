@@ -5,7 +5,11 @@ import { graphicsManager } from "./graphics/graphics-manager.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BridgeOutputsT, DeviceDescriptorT } from "../types.js";
+import type {
+  BridgeOutputsT,
+  DeviceDescriptorT,
+  OutputDeviceT,
+} from "../types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -77,14 +81,18 @@ function transformDevicesToOutputs(
     type: "decklink" | "capture" | "connection";
     available: boolean;
   }> = [];
-  const connectionTypesSeen = new Set<string>();
+  const connectionTypeMap = new Map<string, OutputDeviceT>();
 
   // Process each device
   for (const device of devices) {
     // Add device to output1 (Hardware Devices)
     const hasOutputPort = device.ports.some(
+      (port) => port.direction === "output" || port.direction === "bidirectional"
+    );
+    const hasAvailableOutputPort = device.ports.some(
       (port) =>
-        port.direction === "output" || port.direction === "bidirectional"
+        (port.direction === "output" || port.direction === "bidirectional") &&
+        port.status.available
     );
 
     if (hasOutputPort) {
@@ -93,26 +101,39 @@ function transformDevicesToOutputs(
         name: device.displayName,
         type: device.type === "decklink" ? "decklink" : "capture",
         available:
-          device.status.present && device.status.ready && !device.status.inUse,
+          device.status.present &&
+          device.status.ready &&
+          !device.status.inUse &&
+          hasAvailableOutputPort,
       });
     }
 
     // Collect connection types from ports (for output2)
     for (const port of device.ports) {
-      if (port.direction === "output" || port.direction === "bidirectional") {
-        const connectionType = port.type;
-        if (!connectionTypesSeen.has(connectionType)) {
-          connectionTypesSeen.add(connectionType);
-          output2Devices.push({
-            id: connectionType,
-            name: port.displayName,
-            type: "connection",
-            available: port.status.available,
-          });
-        }
+      const connectionType = port.type;
+      const outputCapable =
+        port.direction === "output" || port.direction === "bidirectional";
+      if (!outputCapable) {
+        continue;
+      }
+      const available = port.status.available;
+      const existing = connectionTypeMap.get(connectionType);
+
+      if (!existing) {
+        connectionTypeMap.set(connectionType, {
+          id: connectionType,
+          name: port.displayName,
+          type: "connection",
+          available,
+        });
+      } else if (!existing.available && available) {
+        existing.available = true;
+        existing.name = port.displayName;
       }
     }
   }
+
+  output2Devices.push(...connectionTypeMap.values());
 
   return {
     output1: output1Devices,

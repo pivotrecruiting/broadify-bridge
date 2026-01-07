@@ -39,20 +39,36 @@ export class DecklinkDetector {
     const ffmpegPath = resolveFfmpegPath();
     const devices: DeviceDescriptorT[] = [];
 
-    // Run FFmpeg to list DeckLink devices
-    const deviceList = await this.listFfmpegDevices(ffmpegPath);
+    const [deviceList, sourceDevices, sinkDevices] = await Promise.all([
+      this.listFfmpegDevices(ffmpegPath),
+      this.listFfmpegSourceDevices(ffmpegPath),
+      this.listFfmpegSinkDevices(ffmpegPath),
+    ]);
     if (deviceList.length === 0) {
       return devices;
     }
 
+    const sourceSet = new Set(
+      sourceDevices.map((name) => this.normalizeDeviceName(name))
+    );
+    const sinkSet = new Set(
+      sinkDevices.map((name) => this.normalizeDeviceName(name))
+    );
+
     // Process each device
     for (let index = 0; index < deviceList.length; index++) {
       const deviceName = deviceList[index];
+      const portDirection = this.inferDeviceDirection(
+        deviceName,
+        sourceSet,
+        sinkSet
+      );
       const deviceId = this.generateDeviceId(deviceName, index);
       const ports = await this.detectPortsViaFfmpeg(
         ffmpegPath,
         deviceName,
-        deviceId
+        deviceId,
+        portDirection
       );
 
       devices.push({
@@ -155,6 +171,151 @@ export class DecklinkDetector {
   }
 
   /**
+   * List DeckLink input devices using FFmpeg sources
+   */
+  private async listFfmpegSourceDevices(ffmpegPath: string): Promise<string[]> {
+    return this.listFfmpegDeviceNames(ffmpegPath, "-sources");
+  }
+
+  /**
+   * List DeckLink output devices using FFmpeg sinks
+   */
+  private async listFfmpegSinkDevices(ffmpegPath: string): Promise<string[]> {
+    return this.listFfmpegDeviceNames(ffmpegPath, "-sinks");
+  }
+
+  private async listFfmpegDeviceNames(
+    ffmpegPath: string,
+    flag: "-sources" | "-sinks"
+  ): Promise<string[]> {
+    return new Promise((resolve) => {
+      const process = spawn(ffmpegPath, [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        flag,
+        "decklink",
+      ]);
+
+      let output = "";
+      const timeout = setTimeout(() => {
+        process.kill("SIGTERM");
+        resolve([]);
+      }, 3000);
+
+      process.stdout.on("data", (data) => {
+        output += data.toString();
+      });
+
+      process.stderr.on("data", (data) => {
+        output += data.toString();
+      });
+
+      process.on("close", () => {
+        clearTimeout(timeout);
+        resolve(this.parseFfmpegDeviceNames(output));
+      });
+
+      process.on("error", () => {
+        clearTimeout(timeout);
+        resolve([]);
+      });
+    });
+  }
+
+  private parseFfmpegDeviceNames(output: string): string[] {
+    const devices: string[] = [];
+    const lines = output.split("\n");
+
+    for (const line of lines) {
+      const quoted = line.match(/"([^"]+)"/);
+      if (quoted?.[1]) {
+        const deviceName = quoted[1].trim();
+        if (deviceName && !devices.includes(deviceName)) {
+          devices.push(deviceName);
+        }
+        continue;
+      }
+
+      const trimmed = line.trim();
+      if (
+        !trimmed ||
+        trimmed.startsWith("[") ||
+        trimmed.endsWith(":") ||
+        trimmed.toLowerCase().includes("sources") ||
+        trimmed.toLowerCase().includes("sinks") ||
+        /unrecognized option|unknown option|invalid|error/i.test(trimmed)
+      ) {
+        continue;
+      }
+
+      if (!devices.includes(trimmed)) {
+        devices.push(trimmed);
+      }
+    }
+
+    return devices;
+  }
+
+  private normalizeDeviceName(name: string): string {
+    return name.trim().toLowerCase();
+  }
+
+  private inferDeviceDirection(
+    deviceName: string,
+    sources: Set<string>,
+    sinks: Set<string>
+  ): PortDescriptorT["direction"] {
+    const normalizedName = this.normalizeDeviceName(deviceName);
+    const isSource = sources.has(normalizedName);
+    const isSink = sinks.has(normalizedName);
+
+    if (isSource && isSink) {
+      return "bidirectional";
+    }
+    if (isSource) {
+      return "input";
+    }
+    if (isSink) {
+      return "output";
+    }
+
+    const lowerName = normalizedName;
+    const looksInput =
+      lowerName.includes("recorder") ||
+      lowerName.includes("capture") ||
+      lowerName.includes("input");
+    const looksOutput =
+      lowerName.includes("monitor") ||
+      lowerName.includes("output") ||
+      lowerName.includes("playback");
+
+    if (looksInput && !looksOutput) {
+      return "input";
+    }
+    if (looksOutput && !looksInput) {
+      return "output";
+    }
+
+    return "bidirectional";
+  }
+
+  private formatPortDisplayName(
+    type: "sdi" | "hdmi",
+    direction: PortDescriptorT["direction"],
+    index: number
+  ): string {
+    const typeLabel = type.toUpperCase();
+    const directionLabel =
+      direction === "bidirectional"
+        ? "I/O"
+        : direction === "input"
+          ? "Input"
+          : "Output";
+    return `${typeLabel} ${directionLabel} ${index + 1}`;
+  }
+
+  /**
    * Parse device list from FFmpeg stderr output
    *
    * FFmpeg output format:
@@ -184,7 +345,8 @@ export class DecklinkDetector {
   private async detectPortsViaFfmpeg(
     ffmpegPath: string,
     deviceName: string,
-    deviceId: string
+    deviceId: string,
+    portDirection: PortDescriptorT["direction"]
   ): Promise<PortDescriptorT[]> {
     return new Promise((resolve) => {
       const process = spawn(ffmpegPath, [
@@ -208,7 +370,12 @@ export class DecklinkDetector {
 
       process.on("close", () => {
         clearTimeout(timeout);
-        const ports = this.parseFfmpegPorts(stderr, deviceId, deviceName);
+        const ports = this.parseFfmpegPorts(
+          stderr,
+          deviceId,
+          deviceName,
+          portDirection
+        );
         resolve(ports);
       });
 
@@ -237,7 +404,8 @@ export class DecklinkDetector {
   private parseFfmpegPorts(
     stderr: string,
     deviceId: string,
-    deviceName: string
+    deviceName: string,
+    portDirection: PortDescriptorT["direction"]
   ): PortDescriptorT[] {
     const ports: PortDescriptorT[] = [];
     const lines = stderr.split("\n");
@@ -263,6 +431,9 @@ export class DecklinkDetector {
       // Look for port index patterns (e.g., "port 0", "@0", "[0]")
       const portIndexMatch = line.match(/port\s+(\d+)|@(\d+)|\[(\d+)\]/i);
       if (portIndexMatch) {
+        if (!lowerLine.includes("hdmi") && !lowerLine.includes("sdi")) {
+          continue;
+        }
         const portIndex = parseInt(
           portIndexMatch[1] || portIndexMatch[2] || portIndexMatch[3] || "0",
           10
@@ -274,10 +445,18 @@ export class DecklinkDetector {
 
         if (lowerLine.includes("hdmi")) {
           portType = "hdmi";
-          portName = `HDMI Output ${portIndex}`;
+          portName = this.formatPortDisplayName(
+            portType,
+            portDirection,
+            portIndex
+          );
         } else if (lowerLine.includes("sdi")) {
           portType = "sdi";
-          portName = `SDI Output ${portIndex}`;
+          portName = this.formatPortDisplayName(
+            portType,
+            portDirection,
+            portIndex
+          );
         }
 
         detectedPorts.set(portIndex, { type: portType, name: portName });
@@ -291,7 +470,7 @@ export class DecklinkDetector {
           id: `${deviceId}-${portInfo.type}-${index}`,
           displayName: portInfo.name,
           type: portInfo.type,
-          direction: "output",
+          direction: portDirection,
           capabilities: {
             formats: this.extractFormatsFromOutput(stderr),
           },
@@ -313,9 +492,9 @@ export class DecklinkDetector {
         // UltraStudio HD Mini: 2x SDI Outputs + 1x HDMI
         ports.push({
           id: `${deviceId}-sdi-0`,
-          displayName: "SDI Output 1",
+          displayName: this.formatPortDisplayName("sdi", portDirection, 0),
           type: "sdi",
-          direction: "output",
+          direction: portDirection,
           capabilities: {
             formats: this.extractFormatsFromOutput(stderr),
           },
@@ -325,9 +504,9 @@ export class DecklinkDetector {
         });
         ports.push({
           id: `${deviceId}-sdi-1`,
-          displayName: "SDI Output 2",
+          displayName: this.formatPortDisplayName("sdi", portDirection, 1),
           type: "sdi",
-          direction: "output",
+          direction: portDirection,
           capabilities: {
             formats: this.extractFormatsFromOutput(stderr),
           },
@@ -337,9 +516,9 @@ export class DecklinkDetector {
         });
         ports.push({
           id: `${deviceId}-hdmi-0`,
-          displayName: "HDMI Output",
+          displayName: this.formatPortDisplayName("hdmi", portDirection, 0),
           type: "hdmi",
-          direction: "output",
+          direction: portDirection,
           capabilities: {
             formats: this.extractFormatsFromOutput(stderr),
           },
@@ -360,9 +539,9 @@ export class DecklinkDetector {
         for (let i = 0; i < Math.max(1, sdiCount); i++) {
           ports.push({
             id: `${deviceId}-sdi-${i}`,
-            displayName: sdiCount > 1 ? `SDI Output ${i + 1}` : "SDI Output",
+            displayName: this.formatPortDisplayName("sdi", portDirection, i),
             type: "sdi",
-            direction: "output",
+            direction: portDirection,
             capabilities: {
               formats: this.extractFormatsFromOutput(stderr),
             },
@@ -377,10 +556,13 @@ export class DecklinkDetector {
           for (let i = 0; i < Math.max(1, hdmiCount); i++) {
             ports.push({
               id: `${deviceId}-hdmi-${i}`,
-              displayName:
-                hdmiCount > 1 ? `HDMI Output ${i + 1}` : "HDMI Output",
+              displayName: this.formatPortDisplayName(
+                "hdmi",
+                portDirection,
+                i
+              ),
               type: "hdmi",
-              direction: "output",
+              direction: portDirection,
               capabilities: {
                 formats: this.extractFormatsFromOutput(stderr),
               },
@@ -395,9 +577,9 @@ export class DecklinkDetector {
         if (ports.length === 0) {
           ports.push({
             id: `${deviceId}-sdi-0`,
-            displayName: "SDI Output",
+            displayName: this.formatPortDisplayName("sdi", portDirection, 0),
             type: "sdi",
-            direction: "output",
+            direction: portDirection,
             capabilities: {
               formats: [],
             },

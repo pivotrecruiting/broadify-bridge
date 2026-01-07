@@ -497,6 +497,12 @@ graph LR
 - **Response**: `{output1: OutputDeviceT[], output2: OutputDeviceT[]}`
 - **Hardware**: Native APIs (USB, Decklink SDK)
 
+**Output-Filterung:**
+
+- `output1` listet nur Devices mit output- oder bidirectional-Ports.
+- `output2` listet nur Connection-Types aus output- oder bidirectional-Ports.
+- `available` wird nur gesetzt, wenn Device-Status ok ist und mindestens ein Output-Port verfügbar ist.
+
 ### 4. Network Setup & Relay Connection
 
 **Flow:**

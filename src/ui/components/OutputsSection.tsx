@@ -30,16 +30,23 @@ export function OutputsSection({
   onOutput1Change,
   onOutput2Change,
 }: OutputsSectionProps) {
-  // Get available output names (filter by available flag)
-  const availableOutput1 = output1Options.filter((opt) => opt.available);
-  const availableOutput2 = output2Options.filter((opt) => opt.available);
+  const hasAvailableOutput1 = output1Options.some((opt) => opt.available);
+  const hasAvailableOutput2 = output2Options.some((opt) => opt.available);
 
-  // Fallback to first available option if current selection is not available
-  const currentOutput1 = availableOutput1.find((opt) => opt.id === output1 || opt.name === output1);
-  const currentOutput2 = availableOutput2.find((opt) => opt.id === output2 || opt.name === output2);
+  // Fallback to first available option if current selection is not present
+  const currentOutput1 = output1Options.find(
+    (opt) => opt.id === output1 || opt.name === output1
+  );
+  const currentOutput2 = output2Options.find(
+    (opt) => opt.id === output2 || opt.name === output2
+  );
+  const fallbackOutput1 = output1Options.find((opt) => opt.available);
+  const fallbackOutput2 = output2Options.find((opt) => opt.available);
 
-  const displayOutput1 = currentOutput1?.id || currentOutput1?.name || output1;
-  const displayOutput2 = currentOutput2?.id || currentOutput2?.name || output2;
+  const displayOutput1 =
+    currentOutput1?.id || fallbackOutput1?.id || output1;
+  const displayOutput2 =
+    currentOutput2?.id || fallbackOutput2?.id || output2;
 
   return (
     <Card variant="frosted" className="p-4 sm:p-5 md:p-6" gradient>
@@ -55,20 +62,25 @@ export function OutputsSection({
             <Select
               value={displayOutput1}
               onValueChange={onOutput1Change}
-              disabled={loading || availableOutput1.length === 0}
+              disabled={loading || !hasAvailableOutput1}
             >
               <SelectTrigger className="w-full sm:w-48">
                 <SelectValue placeholder={loading ? "Loading..." : "Select output"} />
               </SelectTrigger>
               <SelectContent>
-                {availableOutput1.length === 0 ? (
+                {output1Options.length === 0 ? (
                   <SelectItem value="no-outputs" disabled>
-                    {loading ? "Loading outputs..." : "No outputs available"}
+                    {loading ? "Loading outputs..." : "No outputs detected"}
                   </SelectItem>
                 ) : (
-                  availableOutput1.map((output) => (
-                    <SelectItem key={output.id} value={output.id}>
+                  output1Options.map((output) => (
+                    <SelectItem
+                      key={output.id}
+                      value={output.id}
+                      disabled={!output.available}
+                    >
                       {output.name}
+                      {!output.available ? " (unavailable)" : ""}
                     </SelectItem>
                   ))
                 )}
@@ -82,20 +94,25 @@ export function OutputsSection({
             <Select
               value={displayOutput2}
               onValueChange={onOutput2Change}
-              disabled={loading || availableOutput2.length === 0}
+              disabled={loading || !hasAvailableOutput2}
             >
               <SelectTrigger className="w-full sm:w-48">
                 <SelectValue placeholder={loading ? "Loading..." : "Select output"} />
               </SelectTrigger>
               <SelectContent>
-                {availableOutput2.length === 0 ? (
+                {output2Options.length === 0 ? (
                   <SelectItem value="no-outputs" disabled>
-                    {loading ? "Loading outputs..." : "No outputs available"}
+                    {loading ? "Loading outputs..." : "No outputs detected"}
                   </SelectItem>
                 ) : (
-                  availableOutput2.map((output) => (
-                    <SelectItem key={output.id} value={output.id}>
+                  output2Options.map((output) => (
+                    <SelectItem
+                      key={output.id}
+                      value={output.id}
+                      disabled={!output.available}
+                    >
                       {output.name}
+                      {!output.available ? " (unavailable)" : ""}
                     </SelectItem>
                   ))
                 )}
@@ -107,4 +124,3 @@ export function OutputsSection({
     </Card>
   );
 }
-
