@@ -10,7 +10,6 @@ import type {
 import { EventEmitter } from "events";
 import {
   EngineError,
-  EngineErrorCode,
   createConnectionTimeoutError,
   createConnectionRefusedError,
   createNetworkError,
@@ -411,4 +410,3 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     return { ...this.state };
   }
 }
-
