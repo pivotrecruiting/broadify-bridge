@@ -178,7 +178,12 @@ export class CommandRouter {
         }
 
         case "list_outputs": {
-          const devices = await deviceCache.getDevices(false);
+          const refresh =
+            typeof payload?.refresh === "boolean" ? payload.refresh : false;
+          if (refresh) {
+            console.info("[CommandRouter] list_outputs refresh requested");
+          }
+          const devices = await deviceCache.getDevices(refresh);
           const outputs = transformDevicesToOutputs(devices);
 
           return {
