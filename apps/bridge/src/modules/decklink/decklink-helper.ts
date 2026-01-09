@@ -1,0 +1,183 @@
+import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
+import { accessSync, constants } from "node:fs";
+import { platform } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const DEFAULT_HELPER_TIMEOUT_MS = 4000;
+const HELPER_PATH_ENV = "DECKLINK_HELPER_PATH";
+
+export type DecklinkHelperEvent = {
+  type: "devices" | "device_added" | "device_removed";
+  devices: unknown[];
+};
+
+/**
+ * Resolve the DeckLink helper binary path.
+ */
+export function resolveDecklinkHelperPath(): string {
+  const envPath = process.env[HELPER_PATH_ENV];
+  if (envPath) {
+    return envPath;
+  }
+
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+
+  // Dev path: repo-local helper binary
+  const devPath = join(
+    __dirname,
+    "../../../../native/decklink-helper/decklink-helper"
+  );
+
+  // Production path: packaged resources
+  const resourcesPath = process.resourcesPath;
+  const prodPath = resourcesPath
+    ? join(resourcesPath, "native", "decklink-helper", "decklink-helper")
+    : "";
+
+  if (process.env.NODE_ENV === "production" && prodPath) {
+    return prodPath;
+  }
+
+  return devPath;
+}
+
+/**
+ * Execute the DeckLink helper in list mode.
+ */
+export async function listDecklinkDevices(): Promise<unknown[]> {
+  if (platform() !== "darwin") {
+    return [];
+  }
+
+  const helperPath = resolveDecklinkHelperPath();
+  try {
+    await access(helperPath, constants.X_OK);
+  } catch {
+    console.warn(
+      `[DecklinkHelper] Helper not found or not executable at ${helperPath}`
+    );
+    return [];
+  }
+
+  return new Promise((resolve) => {
+    const processRef = spawn(helperPath, ["--list"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    const timeout = setTimeout(() => {
+      processRef.kill("SIGTERM");
+      resolve([]);
+    }, DEFAULT_HELPER_TIMEOUT_MS);
+
+    processRef.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    processRef.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    processRef.on("close", (code) => {
+      clearTimeout(timeout);
+
+      if (code !== 0) {
+        console.warn(
+          `[DecklinkHelper] Helper exited with code ${code}: ${stderr.trim()}`
+        );
+        resolve([]);
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(stdout);
+        resolve(Array.isArray(parsed) ? parsed : []);
+      } catch (error) {
+        console.warn(
+          `[DecklinkHelper] Failed to parse helper output: ${error instanceof Error ? error.message : String(error)}`
+        );
+        resolve([]);
+      }
+    });
+
+    processRef.on("error", (error) => {
+      clearTimeout(timeout);
+      console.warn(
+        `[DecklinkHelper] Failed to start helper: ${error instanceof Error ? error.message : String(error)}`
+      );
+      resolve([]);
+    });
+  });
+}
+
+/**
+ * Watch DeckLink devices via helper process and stream events.
+ */
+export function watchDecklinkDevices(
+  onEvent: (event: DecklinkHelperEvent) => void
+): () => void {
+  if (platform() !== "darwin") {
+    return () => undefined;
+  }
+
+  const helperPath = resolveDecklinkHelperPath();
+  if (!helperPath) {
+    console.warn("[DecklinkHelper] Unable to resolve helper path");
+    return () => undefined;
+  }
+  try {
+    accessSync(helperPath, constants.X_OK);
+  } catch {
+    console.warn(
+      `[DecklinkHelper] Helper not found or not executable at ${helperPath}`
+    );
+    return () => undefined;
+  }
+  const processRef = spawn(helperPath, ["--watch"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let buffer = "";
+
+  processRef.stdout.on("data", (data) => {
+    buffer += data.toString();
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      newlineIndex = buffer.indexOf("\n");
+
+      if (!line) {
+        continue;
+      }
+
+      try {
+        const event = JSON.parse(line) as DecklinkHelperEvent;
+        onEvent(event);
+      } catch (error) {
+        console.warn(
+          `[DecklinkHelper] Ignoring invalid event line: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  });
+
+  processRef.stderr.on("data", (data) => {
+    console.warn(`[DecklinkHelper] ${data.toString().trim()}`);
+  });
+
+  processRef.on("error", (error) => {
+    console.warn(
+      `[DecklinkHelper] Helper failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  });
+
+  return () => {
+    processRef.kill("SIGTERM");
+  };
+}

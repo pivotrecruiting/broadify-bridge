@@ -13,6 +13,7 @@ import { registerRelayRoute } from "./routes/relay.js";
 import { registerLogsRoute } from "./routes/logs.js";
 import { initializeModules } from "./modules/index.js";
 import { RelayClient } from "./services/relay-client.js";
+import { deviceCache } from "./services/device-cache.js";
 import {
   resolveUserDataDir,
   setBridgeContext,
@@ -69,6 +70,8 @@ export async function createServer(config: BridgeConfigT) {
   // Initialize device modules
   initializeModules();
   server.log.info("[Server] Device modules initialized");
+  deviceCache.initializeWatchers();
+  server.log.info("[Server] Device watchers initialized");
 
   // Initialize relay client if bridgeId is configured
   // relayUrl defaults to wss://broadify-relay.fly.dev if not provided

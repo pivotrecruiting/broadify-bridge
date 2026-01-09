@@ -1,4 +1,8 @@
-import type { DeviceModule, DeviceController } from "./device-module.js";
+import type {
+  DeviceModule,
+  DeviceController,
+  UnsubscribeFunction,
+} from "./device-module.js";
 import type { DeviceDescriptorT } from "../types.js";
 
 const DEFAULT_DETECTION_TIMEOUT = 5000; // 5 seconds per module
@@ -139,6 +143,37 @@ export class ModuleRegistry {
     }
 
     throw new Error(`No module found for device ${deviceId}`);
+  }
+
+  /**
+   * Watch for device changes across all modules that support it.
+   */
+  watchAll(
+    callback: (moduleName: string, devices: DeviceDescriptorT[]) => void
+  ): UnsubscribeFunction {
+    const unsubscribes: UnsubscribeFunction[] = [];
+
+    for (const module of this.modules) {
+      if (!module.watch) {
+        continue;
+      }
+      const unsubscribe = module.watch((devices) =>
+        callback(module.name, devices)
+      );
+      unsubscribes.push(unsubscribe);
+    }
+
+    return () => {
+      for (const unsubscribe of unsubscribes) {
+        try {
+          unsubscribe();
+        } catch (error) {
+          console.warn(
+            `[ModuleRegistry] Failed to unsubscribe watcher: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    };
   }
 
   /**

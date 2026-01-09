@@ -69,19 +69,17 @@ function getVersion(): string {
 function transformDevicesToOutputs(
   devices: DeviceDescriptorT[]
 ): BridgeOutputsT {
-  const output1Devices: Array<{
-    id: string;
-    name: string;
-    type: "capture" | "connection";
-    available: boolean;
-  }> = [];
-  const output2Devices: Array<{
-    id: string;
-    name: string;
-    type: "capture" | "connection";
-    available: boolean;
-  }> = [];
+  const output1Devices: OutputDeviceT[] = [];
+  const output2Devices: OutputDeviceT[] = [];
   const connectionTypeMap = new Map<string, OutputDeviceT>();
+  const mapDeviceTypeToOutputType = (
+    deviceType: DeviceDescriptorT["type"]
+  ): OutputDeviceT["type"] => {
+    if (deviceType === "decklink") {
+      return "decklink";
+    }
+    return "capture";
+  };
 
   // Process each device
   for (const device of devices) {
@@ -99,7 +97,7 @@ function transformDevicesToOutputs(
       output1Devices.push({
         id: device.id,
         name: device.displayName,
-        type: "capture",
+        type: mapDeviceTypeToOutputType(device.type),
         available:
           device.status.present &&
           device.status.ready &&

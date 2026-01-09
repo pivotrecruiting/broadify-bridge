@@ -11,6 +11,10 @@
     {
       "from": "apps/bridge/node_modules",
       "to": "bridge/node_modules"
+    },
+    {
+      "from": "apps/bridge/native/decklink-helper/decklink-helper",
+      "to": "native/decklink-helper/decklink-helper"
     }
   ],
   "icon": "./icon.png",

@@ -11,6 +11,9 @@ export class DeviceCache {
   private cachedDevices: DeviceDescriptorT[] = [];
   private lastDetectionTime = 0;
   private detectionInProgress = false;
+  private watchInitialized = false;
+  private watchUnsubscribe: (() => void) | undefined;
+  private watchRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   /**
    * Cache TTL in milliseconds
@@ -106,6 +109,52 @@ export class DeviceCache {
   }
 
   /**
+   * Initialize device watchers for hotplug updates.
+   */
+  initializeWatchers(): void {
+    if (this.watchInitialized) {
+      return;
+    }
+
+    this.watchInitialized = true;
+    const logger = getBridgeContext().logger;
+    this.watchUnsubscribe = moduleRegistry.watchAll((moduleName) => {
+      logger.info(`[Devices] Watch update from ${moduleName}`);
+      this.scheduleWatchRefresh();
+    });
+  }
+
+  /**
+   * Schedule a debounced refresh when a watch event is received.
+   */
+  private scheduleWatchRefresh(): void {
+    if (this.watchRefreshTimer) {
+      return;
+    }
+
+    this.watchRefreshTimer = setTimeout(async () => {
+      this.watchRefreshTimer = undefined;
+      const logger = getBridgeContext().logger;
+      if (this.detectionInProgress) {
+        logger.info("[Devices] Detection in progress, skipping watch refresh");
+        return;
+      }
+
+      this.detectionInProgress = true;
+      try {
+        logger.info("[Devices] Refreshing cache from watch event");
+        this.cachedDevices = await moduleRegistry.detectAll();
+        this.lastDetectionTime = Date.now();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`[Devices] Watch refresh failed: ${message}`);
+      } finally {
+        this.detectionInProgress = false;
+      }
+    }, 250);
+  }
+
+  /**
    * Get cached devices without triggering detection
    */
   getCachedDevices(): DeviceDescriptorT[] {
@@ -118,6 +167,11 @@ export class DeviceCache {
   clear(): void {
     this.cachedDevices = [];
     this.lastDetectionTime = 0;
+    if (this.watchUnsubscribe) {
+      this.watchUnsubscribe();
+      this.watchUnsubscribe = undefined;
+    }
+    this.watchInitialized = false;
   }
 
   /**
