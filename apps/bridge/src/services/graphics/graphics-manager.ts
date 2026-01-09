@@ -123,7 +123,11 @@ export class GraphicsManager {
 
     const config = GraphicsConfigureOutputsSchema.parse(payload);
     await this.validateOutputTargets(config.outputKey, config.targets);
-    await this.validateOutputFormat(config.outputKey, config.targets, config.format);
+    await this.validateOutputFormat(
+      config.outputKey,
+      config.targets,
+      config.format
+    );
 
     this.outputConfig = config;
     await this.outputAdapter.stop();
@@ -346,7 +350,6 @@ export class GraphicsManager {
   ): Promise<void> {
     // Format validation placeholder
   }
-
 
   private async validateOutputTargets(
     _outputKey: GraphicsOutputKeyT,
