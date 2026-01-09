@@ -95,7 +95,7 @@ export class DeviceCache {
 
       if (this.cachedDevices.length === 0) {
         logger.warn(
-          "[Devices] No devices detected. Check FFmpeg DeckLink support and Blackmagic Desktop Video drivers."
+          "[Devices] No devices detected. Check device drivers and connections."
         );
       }
 

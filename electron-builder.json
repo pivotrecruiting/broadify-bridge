@@ -11,10 +11,6 @@
     {
       "from": "apps/bridge/node_modules",
       "to": "bridge/node_modules"
-    },
-    {
-      "from": "resources/ffmpeg",
-      "to": "ffmpeg"
     }
   ],
   "icon": "./icon.png",

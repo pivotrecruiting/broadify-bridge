@@ -2,26 +2,9 @@
 
 This file contains attributions and notices for third-party software used in this application.
 
-## FFmpeg
-
-This application includes FFmpeg, a multimedia framework.
-
-**License:** GNU Lesser General Public License (LGPL) v2.1 or later
-
-**Source Code:** https://git.ffmpeg.org/ffmpeg.git
-
-**Build Information:**
-
-- Configuration: See `docs/ffmpeg-setup.md` and `docs/build-process.md`
-- Build Scripts: See `scripts/build-ffmpeg-decklink.js` (if available)
-
-**Note:** If FFmpeg was compiled with `--enable-gpl`, the GPL license applies. See `LICENSE` file for full GPL license text.
-
----
-
 ## Blackmagic DeckLink SDK
 
-This application uses FFmpeg compiled with Blackmagic DeckLink SDK support for SDI output functionality.
+This application may use Blackmagic DeckLink SDK for device support.
 
 **Provider:** Blackmagic Design
 
@@ -43,7 +26,7 @@ This application may use NDI (Network Device Interface) for video streaming.
 
 **Website:** https://www.ndi.tv/
 
-**Note:** Commercial use of NDI requires a license from NewTek. The NDI SDK is used via FFmpeg's `libndi_newtek` format.
+**Note:** Commercial use of NDI requires a license from NewTek.
 
 ---
 

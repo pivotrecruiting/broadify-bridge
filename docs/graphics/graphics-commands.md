@@ -28,7 +28,7 @@
 {
   "command": "graphics_configure_outputs",
   "payload": {
-    "outputKey": "key_fill_sdi",
+    "outputKey": "stub",
     "targets": {
       "output1Id": "sdi-1",
       "output2Id": "sdi-2"
@@ -104,7 +104,7 @@
 ```json
 {
   "outputConfig": {
-    "outputKey": "key_fill_sdi",
+    "outputKey": "stub",
     "targets": { "output1Id": "sdi-1", "output2Id": "sdi-2" },
     "format": { "width": 1920, "height": 1080, "fps": 50 }
   },

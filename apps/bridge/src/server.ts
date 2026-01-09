@@ -18,7 +18,6 @@ import {
   setBridgeContext,
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
-import { logFfmpegDeckLinkStatus } from "./services/ffmpeg-self-test.js";
 import { ensureBridgeLogFile } from "./services/log-file.js";
 import type { BridgeConfigT } from "./config.js";
 
@@ -55,13 +54,6 @@ export async function createServer(config: BridgeConfigT) {
   });
 
   await graphicsManager.initialize();
-
-  // Test FFmpeg DeckLink support and log status
-  await logFfmpegDeckLinkStatus({
-    info: (msg: string) => server.log.info(msg),
-    warn: (msg: string) => server.log.warn(msg),
-    error: (msg: string) => server.log.error(msg),
-  });
 
   // Register CORS plugin
   await server.register(cors, {

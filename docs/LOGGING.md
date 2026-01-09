@@ -49,7 +49,7 @@ Response shape:
 ## Common Filters
 
 - `Outputs` → device/output refresh flow
-- `GraphicsOutput` → FFmpeg SDI/NDI output
+- `GraphicsOutput` → Graphics output
 - `Decklink` / `USB` → device detection
 
 ## Notes
