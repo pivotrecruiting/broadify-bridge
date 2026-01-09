@@ -1,12 +1,8 @@
 /**
- * Output 1 options (Decklink Cards and Capture devices)
+ * Output 1 options (Capture devices)
  */
 export const OUTPUT1_OPTIONS = [
-  "HDMI Decklink Card",
-  "SDI Decklink Card",
   "USB Capture",
-  "Blackmagic DeckLink 4K",
-  "Blackmagic DeckLink 8K",
 ] as const;
 
 /**

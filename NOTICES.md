@@ -2,20 +2,6 @@
 
 This file contains attributions and notices for third-party software used in this application.
 
-## Blackmagic DeckLink SDK
-
-This application may use Blackmagic DeckLink SDK for device support.
-
-**Provider:** Blackmagic Design
-
-**License:** Proprietary (see Blackmagic Design EULA)
-
-**Website:** https://www.blackmagicdesign.com/support/family/desktop-video-sdk
-
-**Note:** The DeckLink SDK is used at build time only. The SDK itself is not distributed with this application. Users must install Blackmagic Desktop Video drivers separately.
-
----
-
 ## NewTek NDI (if used)
 
 This application may use NDI (Network Device Interface) for video streaming.

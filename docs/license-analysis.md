@@ -1,24 +1,6 @@
 # Lizenz-Analyse: SDK-Lizenzen und Compliance
 
-## 1. Blackmagic DeckLink SDK
-
-### Lizenz-Status
-- **Lizenztyp:** Proprietäre Lizenz von Blackmagic Design
-- **Verwendung:** Zur Build-Zeit (falls verwendet)
-- **Redistribution:** SDK selbst wird nicht mitgeliefert
-
-### Wichtige Punkte
-- SDK darf verwendet werden, um Software zu entwickeln, die mit Blackmagic-Hardware interagiert
-- Lizenzvereinbarung muss von Blackmagic Design Website gelesen werden
-- **Empfehlung:** EULA von https://www.blackmagicdesign.com/support/family/desktop-video-sdk prüfen
-
-### Rechtliche Überlegungen
-- SDK darf zur Entwicklung verwendet werden
-- **Aktion erforderlich:** SDK EULA lesen und rechtliche Beratung einholen
-
----
-
-## 2. NewTek NDI SDK
+## 1. NewTek NDI SDK
 
 ### Lizenz-Status
 - **Lizenztyp:** Proprietäre Lizenz von NewTek (Vizrt)
@@ -46,11 +28,7 @@
 
 ### Sofortige Aktionen erforderlich
 
-1. **Blackmagic DeckLink SDK EULA lesen**
-   - Website: https://www.blackmagicdesign.com/support/family/desktop-video-sdk
-   - Prüfen: SDK-Nutzung und Redistribution erlaubt?
-
-2. **NewTek NDI SDK Lizenz prüfen**
+1. **NewTek NDI SDK Lizenz prüfen**
    - Kontakt: NewTek/Vizrt für kommerzielle Lizenz
    - Prüfen: Kommerzielle Nutzung und Redistribution erlaubt?
 

@@ -7,11 +7,9 @@
 **Dokumentiert in:** `docs/license-analysis.md`
 
 **Ergebnisse:**
-- **Blackmagic DeckLink SDK:** Proprietäre Lizenz, EULA muss von Blackmagic Design Website gelesen werden
 - **NewTek NDI SDK:** Proprietäre Lizenz, kommerzielle Nutzung erfordert separate Lizenz
 
 **Aktionen erforderlich:**
-- [ ] Blackmagic DeckLink SDK EULA lesen
 - [ ] NewTek NDI SDK Lizenz prüfen (für kommerzielle Nutzung)
 
 ---
@@ -63,7 +61,6 @@
 ### Sofortige Aktionen
 
 1. **SDK-Lizenzen prüfen:**
-   - Blackmagic DeckLink SDK EULA lesen
    - NewTek NDI SDK Lizenz prüfen
 
 2. **Rechtliche Beratung:**

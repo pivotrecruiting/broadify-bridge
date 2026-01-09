@@ -50,7 +50,7 @@ Response shape:
 
 - `Outputs` → device/output refresh flow
 - `GraphicsOutput` → Graphics output
-- `Decklink` / `USB` → device detection
+- `USB` → device detection
 
 ## Notes
 

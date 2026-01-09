@@ -55,7 +55,6 @@ Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen loka
 #### Modules (`apps/bridge/src/modules/`)
 
 - **USB Capture Module**: USB Video Capture Devices
-- **Decklink Module**: Blackmagic Decklink Cards
 - **Module Registry**: Zentrale Registrierung aller Module
 
 #### Services (`apps/bridge/src/services/`)

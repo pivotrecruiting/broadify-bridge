@@ -44,7 +44,7 @@ export class ModuleRegistry {
 
     if (useWorkerThreads) {
       // TODO: Implement worker thread isolation for Phase 2
-      // This would be useful for BMD SDK calls that might block
+      // This would be useful for native SDK calls that might block
       return this.detectAllWithWorkers(timeoutMs);
     }
 

@@ -34,7 +34,7 @@ If the bridge is not running or returns an error, the main process returns:
 type OutputDeviceT = {
   id: string;
   name: string;
-  type: "decklink" | "capture" | "connection";
+  type: "capture" | "connection";
   available: boolean;
 };
 
@@ -77,7 +77,7 @@ The renderer process receives a `BridgeOutputsT` object from the IPC handler:
 ```json
 {
   "output1": [
-    {"id":"decklink-...","name":"UltraStudio HD Mini","type":"decklink","available":true}
+    {"id":"usb-capture-...","name":"USB Capture Device","type":"capture","available":true}
   ],
   "output2": [
     {"id":"sdi","name":"SDI Output 1","type":"connection","available":true},

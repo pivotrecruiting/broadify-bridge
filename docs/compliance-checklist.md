@@ -4,12 +4,6 @@
 
 ### 1. SDK-Lizenzen prüfen
 
-- [ ] **Blackmagic DeckLink SDK EULA gelesen**
-  - [ ] SDK-Nutzung erlaubt?
-  - [ ] Kommerzielle Nutzung erlaubt?
-  - [ ] Credits/Acknowledgments erforderlich?
-  - [ ] Separate Lizenz erforderlich?
-
 - [ ] **NewTek NDI SDK Lizenz geprüft**
   - [ ] Kommerzielle Lizenz erworben? (falls NDI verwendet)
   - [ ] SDK-Nutzung erlaubt?
@@ -21,10 +15,9 @@
   - [ ] Alle verwendeten Lizenzen aufgelistet
   - [ ] GPL-Lizenztext (falls GPL aktiviert)
   - [ ] LGPL-Lizenztext (falls LGPL)
-  - [ ] SDK-Credits (Blackmagic, NewTek)
+  - [ ] SDK-Credits (NewTek)
 
 - [ ] **NOTICES.md erstellt**
-  - [ ] DeckLink SDK Credits
   - [ ] NDI Credits (falls verwendet)
   - [ ] Quellcode-Links
 

@@ -33,7 +33,7 @@ function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT
       output1Devices.push({
         id: device.id,
         name: device.displayName,
-        type: device.type === "decklink" ? "decklink" : "capture",
+        type: "capture",
         available:
           device.status.present &&
           device.status.ready &&

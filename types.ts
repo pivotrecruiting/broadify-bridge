@@ -85,7 +85,7 @@ export type PortDescriptorT = {
 export type DeviceDescriptorT = {
   id: string; // Stable ID (not name!)
   displayName: string;
-  type: "decklink" | "usb-capture" | "other";
+  type: "usb-capture" | "other";
   vendor?: string;
   model?: string;
   driver?: string;
@@ -100,7 +100,7 @@ export type DeviceDescriptorT = {
 export type OutputDeviceT = {
   id: string;
   name: string;
-  type: "decklink" | "capture" | "connection";
+  type: "capture" | "connection";
   available: boolean;
 };
 

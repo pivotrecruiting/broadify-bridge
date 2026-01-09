@@ -72,13 +72,13 @@ function transformDevicesToOutputs(
   const output1Devices: Array<{
     id: string;
     name: string;
-    type: "decklink" | "capture" | "connection";
+    type: "capture" | "connection";
     available: boolean;
   }> = [];
   const output2Devices: Array<{
     id: string;
     name: string;
-    type: "decklink" | "capture" | "connection";
+    type: "capture" | "connection";
     available: boolean;
   }> = [];
   const connectionTypeMap = new Map<string, OutputDeviceT>();
@@ -99,7 +99,7 @@ function transformDevicesToOutputs(
       output1Devices.push({
         id: device.id,
         name: device.displayName,
-        type: device.type === "decklink" ? "decklink" : "capture",
+        type: "capture",
         available:
           device.status.present &&
           device.status.ready &&
