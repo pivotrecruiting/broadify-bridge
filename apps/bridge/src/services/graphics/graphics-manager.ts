@@ -344,7 +344,7 @@ export class GraphicsManager {
     _targets: GraphicsTargetsT,
     _format: { width: number; height: number; fps: number }
   ): Promise<void> {
-    // Format validation removed - no longer needed without FFmpeg outputs
+    // Format validation placeholder
   }
 
 
@@ -352,7 +352,7 @@ export class GraphicsManager {
     _outputKey: GraphicsOutputKeyT,
     _targets: GraphicsTargetsT
   ): Promise<void> {
-    // Output target validation removed - no longer needed without FFmpeg outputs
+    // Output target validation placeholder
   }
 
   private startTicker(fps: number): void {
