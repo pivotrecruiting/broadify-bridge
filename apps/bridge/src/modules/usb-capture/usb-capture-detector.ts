@@ -185,20 +185,28 @@ export class USBCaptureDetector {
           const usbData = json?.SPUSBDataType || [];
 
           // Recursively extract USB devices
-          const extractDevices = (items: any[]): void => {
+          const extractDevices = (items: unknown[]): void => {
             for (const item of items) {
-              if (item._name && (item.vendor_id || item.product_id)) {
+              const usbItem = item as {
+                _name?: string;
+                vendor_id?: string;
+                product_id?: string;
+                manufacturer?: string;
+                driver?: string;
+                _items?: unknown[];
+              };
+              if (usbItem._name && (usbItem.vendor_id || usbItem.product_id)) {
                 devices.push({
-                  name: item._name,
-                  vendor: item.manufacturer,
-                  model: item._name,
-                  vendorId: item.vendor_id,
-                  productId: item.product_id,
-                  driver: item.driver,
+                  name: usbItem._name,
+                  vendor: usbItem.manufacturer,
+                  model: usbItem._name,
+                  vendorId: usbItem.vendor_id,
+                  productId: usbItem.product_id,
+                  driver: usbItem.driver,
                 });
               }
-              if (item._items) {
-                extractDevices(item._items);
+              if (usbItem._items) {
+                extractDevices(usbItem._items);
               }
             }
           };

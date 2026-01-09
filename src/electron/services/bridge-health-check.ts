@@ -90,9 +90,8 @@ export async function checkBridgeHealth(
       if (relayResponse.ok) {
         relayStatus = await relayResponse.json();
       }
-    } catch (error) {
+    } catch {
       // Relay status check failed, but that's okay - bridge might not have relay configured
-      // console.log(`[HealthCheck] Relay status check failed:`, error);
     }
 
     return {

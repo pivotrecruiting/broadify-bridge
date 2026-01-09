@@ -1,6 +1,5 @@
-import { deviceCache } from "../device-cache.js";
 import { assetRegistry } from "./asset-registry.js";
-import { compositeLayers, applyBackground } from "./composite.js";
+import { compositeLayers } from "./composite.js";
 import type {
   GraphicsBackgroundModeT,
   GraphicsCategoryT,
@@ -29,16 +28,6 @@ import type {
 } from "./renderer/graphics-renderer.js";
 
 const MAX_ACTIVE_LAYERS = 3;
-
-const BACKGROUND_COLORS: Record<
-  GraphicsBackgroundModeT,
-  { r: number; g: number; b: number }
-> = {
-  transparent: { r: 0, g: 0, b: 0 },
-  green: { r: 0, g: 255, b: 0 },
-  black: { r: 0, g: 0, b: 0 },
-  white: { r: 255, g: 255, b: 255 },
-};
 
 const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [];
 

@@ -264,7 +264,7 @@ if (!gotTheLock) {
   });
 
   // macOS: Handle open-url event (for protocol handlers)
-  app.on("open-url", (event, url) => {
+  app.on("open-url", (event, _url) => {
     event.preventDefault();
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -895,8 +895,7 @@ if (!gotTheLock) {
     });
 
     // Cleanup on window close
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    mainWindow.on("close", async (_event) => {
+    mainWindow.on("close", async () => {
       if (healthCheckCleanup) {
         healthCheckCleanup();
         healthCheckCleanup = null;

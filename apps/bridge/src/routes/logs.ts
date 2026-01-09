@@ -28,7 +28,6 @@ function applyFilter(lines: string[], filter?: string): string[] {
 
 export async function registerLogsRoute(
   fastify: FastifyInstance,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
   fastify.get("/logs", async (request, reply) => {

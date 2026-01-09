@@ -80,6 +80,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
   useEffect(() => {
     if (!isOpen) return;
     fetchLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, scope]);
 
   const handleCopy = async () => {

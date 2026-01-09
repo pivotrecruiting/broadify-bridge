@@ -83,7 +83,6 @@ function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT
  */
 export async function registerOutputsRoute(
   fastify: FastifyInstance,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
   fastify.get("/outputs", async (request, reply) => {
