@@ -3,6 +3,7 @@ import type { DeviceDescriptorT } from "../../types.js";
 import { DecklinkDetector, parseDecklinkHelperDevices } from "./decklink-detector.js";
 import { DecklinkDevice } from "./decklink-device.js";
 import { watchDecklinkDevices } from "./decklink-helper.js";
+import { getBridgeContext } from "../../services/bridge-context.js";
 
 /**
  * DeckLink Device Module (macOS-only).
@@ -29,6 +30,14 @@ export class DecklinkModule implements DeviceModule {
         return;
       }
       const devices = parseDecklinkHelperDevices(event.devices);
+      const logger = getBridgeContext().logger;
+      const deviceNames = devices
+        .map((device) => device.displayName || device.id)
+        .filter(Boolean)
+        .join(", ");
+      logger.info(
+        `[DecklinkModule] Event ${event.type} (${devices.length} device${devices.length === 1 ? "" : "s"}${deviceNames ? `: ${deviceNames}` : ""})`
+      );
       callback(devices);
     });
   }
