@@ -273,6 +273,15 @@ class DeckLinkNotificationCallback : public IDeckLinkDeviceNotificationCallback 
 public:
   DeckLinkNotificationCallback() : refCount(1) {}
 
+  ~DeckLinkNotificationCallback() override {
+    // Release retained device references on shutdown.
+    for (auto& entry : devices) {
+      if (entry.deckLink) {
+        entry.deckLink->Release();
+      }
+    }
+  }
+
   HRESULT QueryInterface(REFIID iid, void** ppv) override {
     if (!ppv) {
       return E_POINTER;
@@ -301,7 +310,14 @@ public:
   }
 
   HRESULT DeckLinkDeviceArrived(IDeckLink* deckLink) override {
+    if (!deckLink) {
+      return S_OK;
+    }
+
+    // Retain device reference to ensure removal notifications are reliable.
+    deckLink->AddRef();
     DeviceInfo info = buildDeviceInfo(deckLink);
+    devices.push_back(DeviceEntry{deckLink, info});
     std::ostringstream out;
     out << "{\"type\":\"device_added\",\"devices\":[";
     printDeviceJson(out, info);
@@ -312,10 +328,19 @@ public:
   }
 
   HRESULT DeckLinkDeviceRemoved(IDeckLink* deckLink) override {
-    DeviceInfo info = buildDeviceInfo(deckLink);
-    info.outputConnections.clear();
-    info.busy = false;
-    info.supportsPlayback = false;
+    if (!deckLink) {
+      return S_OK;
+    }
+
+    DeviceInfo info;
+    for (auto it = devices.begin(); it != devices.end(); ++it) {
+      if (it->deckLink == deckLink) {
+        info = it->info;
+        it->deckLink->Release();
+        devices.erase(it);
+        break;
+      }
+    }
     std::ostringstream out;
     out << "{\"type\":\"device_removed\",\"devices\":[";
     printDeviceJson(out, info);
@@ -326,6 +351,12 @@ public:
   }
 
 private:
+  struct DeviceEntry {
+    IDeckLink* deckLink = nullptr;
+    DeviceInfo info;
+  };
+
+  std::vector<DeviceEntry> devices;
   std::atomic<ULONG> refCount;
 };
 
