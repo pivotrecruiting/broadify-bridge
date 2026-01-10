@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
 import { listDecklinkDevices } from "./decklink-helper.js";
+import { getBridgeContext } from "../../services/bridge-context.js";
 
 const helperDeviceSchema = z.object({
   id: z.string().min(1),
@@ -22,9 +23,15 @@ export function parseDecklinkHelperDevices(
 ): DeviceDescriptorT[] {
   const parsed = helperDeviceListSchema.safeParse(rawDevices);
   if (!parsed.success) {
-    console.warn(
-      `[DecklinkDetector] Invalid helper payload: ${parsed.error.message}`
-    );
+    try {
+      getBridgeContext().logger.warn(
+        `[DecklinkDetector] Invalid helper payload: ${parsed.error.message}`
+      );
+    } catch {
+      console.warn(
+        `[DecklinkDetector] Invalid helper payload: ${parsed.error.message}`
+      );
+    }
     return [];
   }
 
@@ -81,16 +88,30 @@ export class DecklinkDetector {
       const devices = parseDecklinkHelperDevices(rawDevices);
 
       if (devices.length > 0) {
-        console.info(
-          `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
-        );
+        try {
+          getBridgeContext().logger.info(
+            `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
+          );
+        } catch {
+          console.info(
+            `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
+          );
+        }
       }
 
       return devices;
     } catch (error) {
-      console.warn(
-        `[DecklinkDetector] Device detection failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      const message =
+        error instanceof Error ? error.message : String(error);
+      try {
+        getBridgeContext().logger.warn(
+          `[DecklinkDetector] Device detection failed: ${message}`
+        );
+      } catch {
+        console.warn(
+          `[DecklinkDetector] Device detection failed: ${message}`
+        );
+      }
       return [];
     }
   }

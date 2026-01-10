@@ -5,6 +5,7 @@ import { graphicsManager } from "./graphics/graphics-manager.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getBridgeContext } from "./bridge-context.js";
 import type {
   BridgeOutputsT,
   DeviceDescriptorT,
@@ -181,7 +182,9 @@ export class CommandRouter {
           const refresh =
             typeof payload?.refresh === "boolean" ? payload.refresh : false;
           if (refresh) {
-            console.info("[CommandRouter] list_outputs refresh requested");
+            getBridgeContext().logger.info(
+              "[CommandRouter] list_outputs refresh requested"
+            );
           }
           const devices = await deviceCache.getDevices(refresh);
           const outputs = transformDevicesToOutputs(devices);

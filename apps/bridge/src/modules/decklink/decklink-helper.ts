@@ -4,6 +4,7 @@ import { accessSync, constants } from "node:fs";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getBridgeContext } from "../../services/bridge-context.js";
 
 const DEFAULT_HELPER_TIMEOUT_MS = 4000;
 const HELPER_PATH_ENV = "DECKLINK_HELPER_PATH";
@@ -11,6 +12,18 @@ const HELPER_PATH_ENV = "DECKLINK_HELPER_PATH";
 export type DecklinkHelperEvent = {
   type: "devices" | "device_added" | "device_removed";
   devices: unknown[];
+};
+
+const getLogger = () => {
+  try {
+    return getBridgeContext().logger;
+  } catch {
+    return {
+      info: (msg: string) => console.info(msg),
+      warn: (msg: string) => console.warn(msg),
+      error: (msg: string) => console.error(msg),
+    };
+  }
 };
 
 /**
@@ -52,11 +65,12 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
     return [];
   }
 
+  const logger = getLogger();
   const helperPath = resolveDecklinkHelperPath();
   try {
     await access(helperPath, constants.X_OK);
   } catch {
-    console.warn(
+    logger.warn(
       `[DecklinkHelper] Helper not found or not executable at ${helperPath}`
     );
     return [];
@@ -87,7 +101,7 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
       clearTimeout(timeout);
 
       if (code !== 0) {
-        console.warn(
+        logger.warn(
           `[DecklinkHelper] Helper exited with code ${code}: ${stderr.trim()}`
         );
         resolve([]);
@@ -98,7 +112,7 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
         const parsed = JSON.parse(stdout);
         resolve(Array.isArray(parsed) ? parsed : []);
       } catch (error) {
-        console.warn(
+        logger.warn(
           `[DecklinkHelper] Failed to parse helper output: ${error instanceof Error ? error.message : String(error)}`
         );
         resolve([]);
@@ -107,7 +121,7 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
 
     processRef.on("error", (error) => {
       clearTimeout(timeout);
-      console.warn(
+      logger.warn(
         `[DecklinkHelper] Failed to start helper: ${error instanceof Error ? error.message : String(error)}`
       );
       resolve([]);
@@ -125,15 +139,16 @@ export function watchDecklinkDevices(
     return () => undefined;
   }
 
+  const logger = getLogger();
   const helperPath = resolveDecklinkHelperPath();
   if (!helperPath) {
-    console.warn("[DecklinkHelper] Unable to resolve helper path");
+    logger.warn("[DecklinkHelper] Unable to resolve helper path");
     return () => undefined;
   }
   try {
     accessSync(helperPath, constants.X_OK);
   } catch {
-    console.warn(
+    logger.warn(
       `[DecklinkHelper] Helper not found or not executable at ${helperPath}`
     );
     return () => undefined;
@@ -160,7 +175,7 @@ export function watchDecklinkDevices(
         const event = JSON.parse(line) as DecklinkHelperEvent;
         onEvent(event);
       } catch (error) {
-        console.warn(
+        logger.warn(
           `[DecklinkHelper] Ignoring invalid event line: ${error instanceof Error ? error.message : String(error)}`
         );
       }
@@ -168,11 +183,11 @@ export function watchDecklinkDevices(
   });
 
   processRef.stderr.on("data", (data) => {
-    console.warn(`[DecklinkHelper] ${data.toString().trim()}`);
+    logger.warn(`[DecklinkHelper] ${data.toString().trim()}`);
   });
 
   processRef.on("error", (error) => {
-    console.warn(
+    logger.warn(
       `[DecklinkHelper] Helper failed: ${error instanceof Error ? error.message : String(error)}`
     );
   });
