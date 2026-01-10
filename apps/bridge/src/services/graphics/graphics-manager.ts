@@ -1,6 +1,5 @@
-import { deviceCache } from "../device-cache.js";
 import { assetRegistry } from "./asset-registry.js";
-import { compositeLayers, applyBackground } from "./composite.js";
+import { compositeLayers } from "./composite.js";
 import type {
   GraphicsBackgroundModeT,
   GraphicsCategoryT,
@@ -19,8 +18,6 @@ import {
 import { outputConfigStore } from "./output-config-store.js";
 import { validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
-import { FfmpegSdiOutputAdapter } from "./output-adapters/ffmpeg-sdi-output-adapter.js";
-import { FfmpegNdiOutputAdapter } from "./output-adapters/ffmpeg-ndi-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
@@ -32,20 +29,7 @@ import type {
 
 const MAX_ACTIVE_LAYERS = 3;
 
-const BACKGROUND_COLORS: Record<
-  GraphicsBackgroundModeT,
-  { r: number; g: number; b: number }
-> = {
-  transparent: { r: 0, g: 0, b: 0 },
-  green: { r: 0, g: 255, b: 0 },
-  black: { r: 0, g: 0, b: 0 },
-  white: { r: 255, g: 255, b: 255 },
-};
-
-const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
-  "key_fill_sdi",
-  "key_fill_ndi",
-];
+const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [];
 
 type GraphicsLayerStateT = {
   layerId: string;
@@ -128,7 +112,11 @@ export class GraphicsManager {
 
     const config = GraphicsConfigureOutputsSchema.parse(payload);
     await this.validateOutputTargets(config.outputKey, config.targets);
-    await this.validateOutputFormat(config.outputKey, config.targets, config.format);
+    await this.validateOutputFormat(
+      config.outputKey,
+      config.targets,
+      config.format
+    );
 
     this.outputConfig = config;
     await this.outputAdapter.stop();
@@ -315,16 +303,8 @@ export class GraphicsManager {
   }
 
   private selectOutputAdapter(
-    outputKey: GraphicsOutputKeyT
+    _outputKey: GraphicsOutputKeyT
   ): GraphicsOutputAdapter {
-    if (outputKey === "video_sdi" || outputKey === "key_fill_sdi") {
-      return new FfmpegSdiOutputAdapter();
-    }
-
-    if (outputKey === "key_fill_ndi") {
-      return new FfmpegNdiOutputAdapter();
-    }
-
     return new StubOutputAdapter();
   }
 
@@ -353,217 +333,18 @@ export class GraphicsManager {
    * by the selected output ports/devices.
    */
   private async validateOutputFormat(
-    outputKey: GraphicsOutputKeyT,
-    targets: GraphicsTargetsT,
-    format: { width: number; height: number; fps: number }
+    _outputKey: GraphicsOutputKeyT,
+    _targets: GraphicsTargetsT,
+    _format: { width: number; height: number; fps: number }
   ): Promise<void> {
-    // Only validate for SDI outputs (NDI doesn't have format restrictions)
-    if (outputKey === "key_fill_ndi") {
-      return;
-    }
-
-    const devices = await deviceCache.getDevices(false);
-    const outputIds = [targets.output1Id, targets.output2Id].filter(Boolean);
-
-    for (const outputId of outputIds) {
-      if (!outputId) {
-        continue;
-      }
-
-      // Check if it's a port ID or device ID
-      const isPortId = /^(.+)-(sdi|hdmi|usb|displayport|thunderbolt)-(\d+)$/.test(
-        outputId
-      );
-
-      if (isPortId) {
-        // Find the port and validate format
-        for (const device of devices) {
-          const port = device.ports.find((p) => p.id === outputId);
-          if (port) {
-            this.validateFormatAgainstPort(format, port, device);
-            break;
-          }
-        }
-      } else {
-        // Find device and validate against all output ports
-        const device = devices.find((d) => d.id === outputId);
-        if (device) {
-          const outputPorts = device.ports.filter(
-            (p) => p.direction === "output" || p.direction === "bidirectional"
-          );
-          if (outputPorts.length > 0) {
-            // Validate against first available port (or all ports)
-            for (const port of outputPorts) {
-              if (port.status.available) {
-                this.validateFormatAgainstPort(format, port, device);
-                break;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * Validate format against a specific port's capabilities
-   */
-  private validateFormatAgainstPort(
-    format: { width: number; height: number; fps: number },
-    port: { capabilities: { formats?: string[] }; displayName: string },
-    device: { displayName: string; model?: string }
-  ): void {
-    const { width, height, fps } = format;
-    const formatString = `${width}x${height}@${fps}fps`;
-
-    // Check device-specific limits (UltraStudio HD Mini)
-    const lowerModel = (device.model || "").toLowerCase();
-    const lowerDisplayName = device.displayName.toLowerCase();
-    const isUltraStudioMini =
-      lowerModel.includes("ultrastudio") && lowerModel.includes("mini") ||
-      lowerDisplayName.includes("ultrastudio") && lowerDisplayName.includes("mini");
-
-    if (isUltraStudioMini) {
-      // UltraStudio HD Mini supports:
-      // - 1080p/60 (10-Bit-YUV)
-      // - 1080p/30 (12-Bit-RGB)
-      // - 2K DCI (12-Bit-RGB)
-      const is1080p = width === 1920 && height === 1080;
-      const is2KDCI = width === 2048 && height === 1080;
-
-      if (!is1080p && !is2KDCI) {
-        throw new Error(
-          `UltraStudio HD Mini only supports 1080p (1920x1080) or 2K DCI (2048x1080), ` +
-            `but got ${formatString}`
-        );
-      }
-
-      if (is1080p && fps > 60) {
-        throw new Error(
-          `UltraStudio HD Mini supports max 60fps for 1080p, but got ${fps}fps`
-        );
-      }
-
-      if (is2KDCI && fps > 30) {
-        throw new Error(
-          `UltraStudio HD Mini supports max 30fps for 2K DCI, but got ${fps}fps`
-        );
-      }
-
-      // 1080p/60 is only supported in 10-Bit-YUV (not 12-Bit-RGB)
-      // 1080p/30 and 2K DCI support 12-Bit-RGB
-      // Note: We can't validate bit depth here, but we can validate fps limits
-    }
-
-    // Check port capabilities if available
-    if (port.capabilities.formats && port.capabilities.formats.length > 0) {
-      // Try to match format string against port capabilities
-      const formatMatch = port.capabilities.formats.some((capFormat) => {
-        const lowerCap = capFormat.toLowerCase();
-        const lowerFormat = formatString.toLowerCase();
-
-        // Check for resolution match (e.g., "1080p60", "1080p30")
-        const resolutionMatch = lowerCap.includes(
-          `${height}p${fps}`.toLowerCase()
-        );
-        const fullMatch = lowerCap.includes(lowerFormat);
-
-        return resolutionMatch || fullMatch;
-      });
-
-      if (!formatMatch) {
-        getBridgeContext().logger.warn(
-          `[Graphics] Format ${formatString} may not be supported by port ${port.displayName}. ` +
-            `Supported formats: ${port.capabilities.formats.join(", ")}`
-        );
-      }
-    }
+    // Format validation placeholder
   }
 
   private async validateOutputTargets(
-    outputKey: GraphicsOutputKeyT,
-    targets: GraphicsTargetsT
+    _outputKey: GraphicsOutputKeyT,
+    _targets: GraphicsTargetsT
   ): Promise<void> {
-    if (outputKey === "key_fill_sdi") {
-      if (!targets.output1Id || !targets.output2Id) {
-        throw new Error(
-          "Output 1 and Output 2 are required for Key & Fill SDI"
-        );
-      }
-      // Key & Fill can be from the same device if they are different ports
-      if (targets.output1Id === targets.output2Id) {
-        throw new Error("Output 1 and Output 2 must be different");
-      }
-    }
-
-    if (outputKey === "video_sdi") {
-      if (!targets.output1Id) {
-        throw new Error("Output 1 is required for Video SDI");
-      }
-    }
-
-    if (outputKey === "key_fill_ndi") {
-      if (!targets.ndiStreamName) {
-        throw new Error("NDI stream name is required for Key & Fill NDI");
-      }
-    }
-
-    if (outputKey === "key_fill_ndi") {
-      return;
-    }
-
-    const devices = await deviceCache.getDevices(false);
-    const availableOutputs = new Set<string>();
-    const availablePorts = new Set<string>();
-
-    // Collect available device IDs and port IDs
-    for (const device of devices) {
-      const hasOutputPort = device.ports.some(
-        (port) =>
-          port.direction === "output" || port.direction === "bidirectional"
-      );
-      if (hasOutputPort) {
-        // Add device ID for backward compatibility
-        availableOutputs.add(device.id);
-        
-        // Add all output-capable port IDs
-        for (const port of device.ports) {
-          if (
-            port.direction === "output" ||
-            port.direction === "bidirectional"
-          ) {
-            if (port.status.available) {
-              availablePorts.add(port.id);
-            }
-          }
-        }
-      }
-    }
-
-    // Validate output targets
-    const outputIds = [targets.output1Id, targets.output2Id].filter(Boolean);
-    for (const outputId of outputIds) {
-      if (!outputId) {
-        continue;
-      }
-      
-      // Check if it's a port ID or device ID
-      const isPortId = /^(.+)-(sdi|hdmi|usb|displayport|thunderbolt)-(\d+)$/.test(
-        outputId
-      );
-      
-      if (isPortId) {
-        // Validate port ID
-        if (!availablePorts.has(outputId)) {
-          throw new Error(`Output port not available: ${outputId}`);
-        }
-      } else {
-        // Validate device ID (backward compatibility)
-        if (!availableOutputs.has(outputId)) {
-          throw new Error(`Output device not available: ${outputId}`);
-        }
-      }
-    }
+    // Output target validation placeholder
   }
 
   private startTicker(fps: number): void {
@@ -608,10 +389,7 @@ export class GraphicsManager {
       height
     );
 
-    let outputBuffer = composite;
-    if (this.outputConfig.outputKey === "video_sdi") {
-      outputBuffer = applyBackground(composite, BACKGROUND_COLORS.black);
-    }
+    const outputBuffer = composite;
 
     this.sending = true;
     try {

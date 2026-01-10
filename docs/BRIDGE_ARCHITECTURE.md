@@ -55,7 +55,6 @@ Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen loka
 #### Modules (`apps/bridge/src/modules/`)
 
 - **USB Capture Module**: USB Video Capture Devices
-- **Decklink Module**: Blackmagic Decklink Cards
 - **Module Registry**: Zentrale Registrierung aller Module
 
 #### Services (`apps/bridge/src/services/`)
@@ -496,6 +495,12 @@ graph LR
 - **Request**: `GET /outputs`
 - **Response**: `{output1: OutputDeviceT[], output2: OutputDeviceT[]}`
 - **Hardware**: Native APIs (USB, Decklink SDK)
+
+**Output-Filterung:**
+
+- `output1` listet nur Devices mit output- oder bidirectional-Ports.
+- `output2` listet nur Connection-Types aus output- oder bidirectional-Ports.
+- `available` wird nur gesetzt, wenn Device-Status ok ist und mindestens ein Output-Port verfügbar ist.
 
 ### 4. Network Setup & Relay Connection
 

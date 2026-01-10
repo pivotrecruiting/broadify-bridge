@@ -10,6 +10,7 @@ export type LoggerLikeT = {
 export type BridgeContextT = {
   userDataDir: string;
   logger: LoggerLikeT;
+  logPath: string;
 };
 
 let bridgeContext: BridgeContextT | null = null;

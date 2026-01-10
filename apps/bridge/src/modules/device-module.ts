@@ -32,7 +32,7 @@ export interface DeviceController {
 /**
  * Device module interface
  * 
- * Each device type (Decklink, USB Capture, etc.) implements this interface
+ * Each device type (USB Capture, etc.) implements this interface
  */
 export interface DeviceModule {
   /**

@@ -55,10 +55,7 @@ case "$PLATFORM" in
     ;;
 esac
 
-FFMPEG_PATH="resources/ffmpeg/$PLATFORM_DIR/ffmpeg"
-
 echo "Selected platform: $PLATFORM"
-echo "FFmpeg path: $FFMPEG_PATH"
 echo "Dist script: $DIST_SCRIPT"
 echo ""
 
@@ -72,85 +69,23 @@ cd apps/bridge
 npm install
 cd ../..
 
-# Step 2: Ensure FFmpeg
-echo ""
-echo "Step 2: Ensure FFmpeg..."
-if command -v ffmpeg &> /dev/null; then
-  echo "✓ FFmpeg found at: $(which ffmpeg)"
-  mkdir -p "resources/ffmpeg/$PLATFORM_DIR"
-  cp "$(which ffmpeg)" "$FFMPEG_PATH"
-  chmod +x "$FFMPEG_PATH"
-  echo "✓ FFmpeg copied to $FFMPEG_PATH"
-else
-  echo "⚠ FFmpeg not found in PATH, trying ffmpeg-static..."
-  cd apps/bridge
-  if node scripts/copy-ffmpeg-static.js; then
-    echo "✓ FFmpeg copied from ffmpeg-static"
-  else
-    echo "ERROR: Could not get FFmpeg"
-    exit 1
-  fi
-  cd ../..
-fi
-
-# Step 3: Validate FFmpeg
-echo ""
-echo "Step 3: Validate FFmpeg..."
-if [ -f "$FFMPEG_PATH" ]; then
-  echo "File type:"
-  file "$FFMPEG_PATH" || true
-  echo "File permissions:"
-  ls -la "$FFMPEG_PATH" || true
-  echo "Testing FFmpeg execution:"
-  "$FFMPEG_PATH" -version | head -n 1
-  echo "✓ FFmpeg validation successful"
-else
-  echo "ERROR: FFmpeg not found at $FFMPEG_PATH"
-  exit 1
-fi
-
-# Step 4: Build Bridge
+# Step 2: Build Bridge
 echo ""
 echo "Step 4: Build Bridge..."
 cd apps/bridge
 npm run build
 cd ../..
 
-# Step 5: Transpile Electron
+# Step 3: Transpile Electron
 echo ""
 echo "Step 5: Transpile Electron..."
 npm run transpile:electron
 
-# Step 6: Build React
+# Step 4: Build React
 echo ""
 echo "Step 6: Build React..."
 npm run build:app
 
-# Step 7: Download FFmpeg (simulating download:ffmpeg script)
-echo ""
-echo "Step 7: Run download:ffmpeg script..."
-npm run download:ffmpeg || echo "⚠ Download script had warnings (expected if FFmpeg already exists)"
-
-# Step 8: Verify FFmpeg still present
-echo ""
-echo "Step 8: Verify FFmpeg still present..."
-if [ -f "$FFMPEG_PATH" ]; then
-  "$FFMPEG_PATH" -version | head -n 1
-  echo "✓ FFmpeg still present"
-else
-  echo "ERROR: FFmpeg missing after download script"
-  exit 1
-fi
-
-# Step 9: Final validation
-echo ""
-echo "Step 9: Final validation..."
-if [ ! -x "$FFMPEG_PATH" ]; then
-  echo "Making FFmpeg executable..."
-  chmod +x "$FFMPEG_PATH"
-fi
-"$FFMPEG_PATH" -version | head -n 1
-echo "✓ Final validation successful"
 
 echo ""
 echo "=== All workflow steps completed successfully! ==="

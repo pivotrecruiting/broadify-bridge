@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import pino from "pino";
 import { registerStatusRoute } from "./routes/status.js";
 import { registerOutputsRoute } from "./routes/outputs.js";
 import { registerDevicesRoute } from "./routes/devices.js";
@@ -9,41 +10,43 @@ import { registerEngineRoute } from "./routes/engine.js";
 import { registerVideoRoute } from "./routes/video.js";
 import { registerWebSocketRoute } from "./routes/websocket.js";
 import { registerRelayRoute } from "./routes/relay.js";
+import { registerLogsRoute } from "./routes/logs.js";
 import { initializeModules } from "./modules/index.js";
 import { RelayClient } from "./services/relay-client.js";
+import { deviceCache } from "./services/device-cache.js";
 import {
   resolveUserDataDir,
   setBridgeContext,
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
-import { logFfmpegDeckLinkStatus } from "./services/ffmpeg-self-test.js";
+import { ensureBridgeLogFile } from "./services/log-file.js";
 import type { BridgeConfigT } from "./config.js";
 
 /**
  * Create and configure Fastify server instance
  */
 export async function createServer(config: BridgeConfigT) {
-  const logger = {
-    level: process.env.NODE_ENV === "production" ? "info" : "debug",
-    transport:
-      process.env.NODE_ENV === "production"
-        ? undefined
-        : {
-            target: "pino-pretty",
-            options: {
-              translateTime: "HH:MM:ss Z",
-              ignore: "pid,hostname",
-            },
-          },
-  };
+  const userDataDir = resolveUserDataDir(config);
+  const logPath = await ensureBridgeLogFile(userDataDir);
+
+  const consoleLevel =
+    process.env.NODE_ENV === "production" ? "info" : "debug";
+  const logger = pino(
+    { level: "debug" },
+    pino.multistream([
+      { level: consoleLevel, stream: process.stdout },
+      { level: "debug", stream: pino.destination({ dest: logPath, sync: false }) },
+    ])
+  );
 
   const server = Fastify({
     logger,
+    disableRequestLogging: true,
   });
 
-  const userDataDir = resolveUserDataDir(config);
   setBridgeContext({
     userDataDir,
+    logPath,
     logger: {
       info: (msg: string) => server.log.info(msg),
       warn: (msg: string) => server.log.warn(msg),
@@ -52,13 +55,6 @@ export async function createServer(config: BridgeConfigT) {
   });
 
   await graphicsManager.initialize();
-
-  // Test FFmpeg DeckLink support and log status
-  await logFfmpegDeckLinkStatus({
-    info: (msg: string) => server.log.info(msg),
-    warn: (msg: string) => server.log.warn(msg),
-    error: (msg: string) => server.log.error(msg),
-  });
 
   // Register CORS plugin
   await server.register(cors, {
@@ -74,6 +70,8 @@ export async function createServer(config: BridgeConfigT) {
   // Initialize device modules
   initializeModules();
   server.log.info("[Server] Device modules initialized");
+  deviceCache.initializeWatchers();
+  server.log.info("[Server] Device watchers initialized");
 
   // Initialize relay client if bridgeId is configured
   // relayUrl defaults to wss://broadify-relay.fly.dev if not provided
@@ -103,6 +101,7 @@ export async function createServer(config: BridgeConfigT) {
   await server.register(registerVideoRoute);
   await server.register(registerWebSocketRoute);
   await server.register(registerRelayRoute, { config, relayClient });
+  await server.register(registerLogsRoute);
   server.log.info("[Server] All routes registered");
 
   // Note: Engine connection is now controlled by the Web-App

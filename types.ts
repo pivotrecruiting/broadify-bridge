@@ -85,7 +85,7 @@ export type PortDescriptorT = {
 export type DeviceDescriptorT = {
   id: string; // Stable ID (not name!)
   displayName: string;
-  type: "decklink" | "usb-capture" | "other";
+  type: "usb-capture" | "decklink" | "other";
   vendor?: string;
   model?: string;
   driver?: string;
@@ -111,6 +111,37 @@ export type OutputDeviceT = {
 export type BridgeOutputsT = {
   output1: OutputDeviceT[];
   output2: OutputDeviceT[];
+};
+
+export type LogFetchOptionsT = {
+  lines?: number;
+  filter?: string;
+};
+
+export type BridgeLogResponseT = {
+  scope: "bridge";
+  lines: number;
+  content: string;
+  error?: string;
+};
+
+export type BridgeLogClearResponseT = {
+  scope: "bridge";
+  cleared: boolean;
+  error?: string;
+};
+
+export type AppLogResponseT = {
+  scope: "app";
+  lines: number;
+  content: string;
+  error?: string;
+};
+
+export type AppLogClearResponseT = {
+  scope: "app";
+  cleared: boolean;
+  error?: string;
 };
 
 export type UnsubscribeFunction = () => void;
@@ -245,6 +276,10 @@ export type EventPayloadMapping = {
   detectNetworkInterfaces: NetworkBindingOptionT[];
   getNetworkBindingOptions: NetworkBindingOptionT[];
   bridgeGetOutputs: BridgeOutputsT;
+  bridgeGetLogs: BridgeLogResponseT;
+  appGetLogs: AppLogResponseT;
+  bridgeClearLogs: BridgeLogClearResponseT;
+  appClearLogs: AppLogClearResponseT;
   engineConnect: { success: boolean; error?: string; state?: EngineStateT };
   engineDisconnect: { success: boolean; error?: string; state?: EngineStateT };
   engineGetStatus: { success: boolean; error?: string; state?: EngineStateT };
@@ -291,6 +326,12 @@ declare global {
       detectNetworkInterfaces: () => Promise<NetworkBindingOptionT[]>;
       getNetworkBindingOptions: () => Promise<NetworkBindingOptionT[]>;
       bridgeGetOutputs: () => Promise<BridgeOutputsT>;
+      bridgeGetLogs: (
+        options?: LogFetchOptionsT
+      ) => Promise<BridgeLogResponseT>;
+      appGetLogs: (options?: LogFetchOptionsT) => Promise<AppLogResponseT>;
+      bridgeClearLogs: () => Promise<BridgeLogClearResponseT>;
+      appClearLogs: () => Promise<AppLogClearResponseT>;
       engineConnect: (
         ip?: string,
         port?: number

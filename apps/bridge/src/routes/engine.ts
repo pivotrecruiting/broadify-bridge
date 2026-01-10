@@ -29,7 +29,6 @@ const ConnectRequestSchema = z.object({
  */
 export async function registerEngineRoute(
   fastify: FastifyInstance,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
   /**

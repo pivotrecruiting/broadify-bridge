@@ -1,67 +1,43 @@
 import type { DeviceController } from "../device-module.js";
-import type { DeviceStatusT } from "../../types.js";
+import type { DeviceDescriptorT } from "../../types.js";
 
 /**
- * Decklink Device Controller
- * 
- * Runtime operations for Blackmagic Decklink devices.
- * Provides exclusive access and device control via BMD SDK.
+ * DeckLink device controller (placeholder).
  */
 export class DecklinkDevice implements DeviceController {
-  private deviceId: string;
-  private isOpen = false;
+  private readonly deviceId: string;
 
   constructor(deviceId: string) {
     this.deviceId = deviceId;
   }
 
   /**
-   * Open device exclusively via BMD SDK
+   * Open device exclusively.
    */
   async open(): Promise<void> {
-    if (this.isOpen) {
-      throw new Error(`Device ${this.deviceId} is already open`);
-    }
-
-    // TODO: Implement BMD SDK device opening
-    // - Open device via BMD SDK
-    // - Get exclusive access
-    // - Initialize device
-
-    this.isOpen = true;
+    // TODO: Implement exclusive open via helper process or direct SDK binding.
+    console.info(`[DecklinkDevice] open requested for ${this.deviceId}`);
   }
 
   /**
-   * Close device and release exclusive access
+   * Close device and release exclusive access.
    */
   async close(): Promise<void> {
-    if (!this.isOpen) {
-      return;
-    }
-
-    // TODO: Implement BMD SDK device closing
-    // - Release exclusive access
-    // - Cleanup resources
-
-    this.isOpen = false;
+    // TODO: Implement close via helper process or direct SDK binding.
+    console.info(`[DecklinkDevice] close requested for ${this.deviceId}`);
   }
 
   /**
-   * Get current device status via BMD SDK
+   * Get current device status.
    */
-  async getStatus(): Promise<DeviceStatusT> {
-    // TODO: Implement status checking via BMD SDK
-    // - Check if device is still present
-    // - Check if device is in use (via BMD SDK)
-    // - Check signal status (via BMD SDK)
-    // - Check error state
-
+  async getStatus(): Promise<DeviceDescriptorT["status"]> {
+    // TODO: Query real-time status from helper.
     return {
       present: true,
       inUse: false,
-      ready: this.isOpen,
+      ready: true,
+      signal: "none",
       lastSeen: Date.now(),
     };
   }
 }
-

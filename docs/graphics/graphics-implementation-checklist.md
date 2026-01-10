@@ -25,11 +25,9 @@
 
 ## Output-Konfiguration
 
-- [ ] `key_fill_sdi` -> output1Id + output2Id Pflicht, unterschiedlich.
-- [ ] `video_sdi` -> output1Id Pflicht.
-- [ ] `key_fill_ndi` -> ndiStreamName Pflicht.
+- [ ] Output-Key validieren (aktuell nur stub-Adapter unterstützt).
 - [ ] Format pruefen (aktuell fix: 1920x1080 @ 50fps).
-- [ ] Output-Adapter fuer jeden Modus korrekt konfigurieren.
+- [ ] Output-Adapter korrekt konfigurieren.
 
 ## Renderer
 
@@ -48,9 +46,7 @@
 
 ## Output Adapter
 
-- [ ] SDI Key&Fill: RGB -> Fill, Alpha -> Key.
-- [ ] NDI Key&Fill: RGBA in Stream mit Alpha.
-- [ ] Video SDI: RGBA gegen Background compositen.
+- [ ] Stub-Adapter implementiert (keine echte Ausgabe).
 
 ## Diagnostics
 
@@ -62,6 +58,3 @@
 ## Tests
 
 - [ ] Smoke Test: graphics_send mit einem Layer.
-- [ ] Key&Fill SDI Output korrekt.
-- [ ] NDI Stream sichtbar und Alpha nutzbar.
-- [ ] Video SDI mit Background korrekt.

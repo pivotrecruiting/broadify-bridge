@@ -32,3 +32,4 @@ resources/cloudflared/
 
 # Agents
 AGENTS.MD
+/docs/agents/*

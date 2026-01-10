@@ -1,6 +1,7 @@
 import { moduleRegistry } from "./module-registry.js";
 import { USBCaptureModule } from "./usb-capture/index.js";
 import { DecklinkModule } from "./decklink/index.js";
+import { platform } from "node:os";
 
 /**
  * Initialize and register all device modules
@@ -12,8 +13,9 @@ export function initializeModules(): void {
   // Register USB Capture module
   moduleRegistry.register(new USBCaptureModule());
 
-  // Register Decklink module
-  moduleRegistry.register(new DecklinkModule());
+  if (platform() === "darwin") {
+    moduleRegistry.register(new DecklinkModule());
+  }
 
   // Additional modules can be registered here in the future
 }
@@ -22,4 +24,3 @@ export function initializeModules(): void {
  * Get module registry instance
  */
 export { moduleRegistry };
-

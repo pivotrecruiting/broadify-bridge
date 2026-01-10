@@ -6,7 +6,7 @@ Dieses Dokument beschreibt die Anforderungen und die optimale Vorgehensweise fü
 
 ## Ziel
 
-Die Bridge soll als Vermittler zwischen ATEM/Tricaster Switchern und Hardware-Output-Geräten (Decklink Cards, USB Capture) fungieren, um Video-Signale über HDMI/SDI/USB zu routen.
+Die Bridge soll als Vermittler zwischen ATEM/Tricaster Switchern und Hardware-Output-Geräten (USB Capture) fungieren, um Video-Signale über HDMI/SDI/USB zu routen.
 
 ## Architektur-Ziel
 

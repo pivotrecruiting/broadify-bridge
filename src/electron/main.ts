@@ -8,7 +8,10 @@ import {
   checkBridgeHealth,
 } from "./services/bridge-health-check.js";
 import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
+import { clearBridgeLogs, fetchBridgeLogs } from "./services/bridge-logs.js";
 import { bridgeIdentity } from "./services/bridge-identity.js";
+import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
+import { logAppError, logAppInfo } from "./services/app-logger.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -261,7 +264,7 @@ if (!gotTheLock) {
   });
 
   // macOS: Handle open-url event (for protocol handlers)
-  app.on("open-url", (event, url) => {
+  app.on("open-url", (event, _url) => {
     event.preventDefault();
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -800,6 +803,7 @@ if (!gotTheLock) {
     // Bridge outputs IPC handler
     ipcMainHandle("bridgeGetOutputs", async () => {
       console.log("[OutputChecker] Getting outputs");
+      logAppInfo("IPC bridgeGetOutputs requested");
       const config = bridgeProcessManager.getConfig();
 
       // If bridge is running, try to get outputs from bridge (for updates)
@@ -813,6 +817,9 @@ if (!gotTheLock) {
           const availableOutput2Count =
             bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
 
+          logAppInfo(
+            `bridgeGetOutputs ok: output1 ${availableOutput1Count}/${output1Count}, output2 ${availableOutput2Count}/${output2Count}`
+          );
           console.log(
             `[OutputChecker] Fetched outputs from bridge - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
           );
@@ -822,16 +829,62 @@ if (!gotTheLock) {
         console.log(
           "[OutputChecker] Bridge running but outputs not available, falling back to device detection"
         );
+        logAppError("bridgeGetOutputs failed: bridge running but outputs null");
       }
 
       // Bridge is Single Source of Truth - no fallback detection in Main Process
       console.log(
         "[OutputChecker] Bridge not running, returning empty outputs (Bridge is Single Source of Truth)"
       );
+      logAppInfo("bridgeGetOutputs: bridge not running, returning empty");
       return {
         output1: [],
         output2: [],
       };
+    });
+
+    ipcMainHandle(
+      "bridgeGetLogs",
+      async (_event, options?: { lines?: number; filter?: string }) => {
+        logAppInfo("IPC bridgeGetLogs requested");
+        const config = bridgeProcessManager.getConfig();
+        const response = await fetchBridgeLogs(config, options);
+        if (response.error) {
+          logAppError(`bridgeGetLogs failed: ${response.error}`);
+        }
+        return response;
+      }
+    );
+
+    ipcMainHandle(
+      "appGetLogs",
+      async (_event, options?: { lines?: number; filter?: string }) => {
+        logAppInfo("IPC appGetLogs requested");
+        const response = await readAppLogs(options);
+        if (response.error) {
+          logAppError(`appGetLogs failed: ${response.error}`);
+        }
+        return response;
+      }
+    );
+
+    ipcMainHandle("bridgeClearLogs", async () => {
+      logAppInfo("IPC bridgeClearLogs requested");
+      const config = bridgeProcessManager.getConfig();
+      const response = await clearBridgeLogs(config);
+      if (response.error) {
+        logAppError(`bridgeClearLogs failed: ${response.error}`);
+      }
+      return response;
+    });
+
+    ipcMainHandle("appClearLogs", async () => {
+      logAppInfo("IPC appClearLogs requested");
+      const response = await clearAppLogs();
+      if (response.error) {
+        logAppError(`appClearLogs failed: ${response.error}`);
+      }
+      return response;
     });
 
     // Open external URL handler
@@ -842,8 +895,7 @@ if (!gotTheLock) {
     });
 
     // Cleanup on window close
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    mainWindow.on("close", async (_event) => {
+    mainWindow.on("close", async () => {
       if (healthCheckCleanup) {
         healthCheckCleanup();
         healthCheckCleanup = null;

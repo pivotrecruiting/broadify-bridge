@@ -128,30 +128,31 @@ export class ElectronRendererClient implements GraphicsRenderer {
       }
     });
 
-    this.child.on("message", (message: any) => {
+    this.child.on("message", (message: unknown) => {
       if (!message || typeof message !== "object") {
         return;
       }
-      console.log(`[GraphicsRenderer ipc] ${JSON.stringify(message)}`);
-      if (message.type === "ready") {
+      const msg = message as { type?: string; [key: string]: unknown };
+      console.log(`[GraphicsRenderer ipc] ${JSON.stringify(msg)}`);
+      if (msg.type === "ready") {
         if (this.readyResolver) {
           this.readyResolver();
           this.readyResolver = null;
           this.readyRejecter = null;
         }
       }
-      if (message.type === "frame" && this.frameCallback) {
+      if (msg.type === "frame" && this.frameCallback) {
         const frame: GraphicsFrameT = {
-          layerId: message.layerId,
-          width: message.width,
-          height: message.height,
-          buffer: message.buffer,
-          timestamp: message.timestamp,
+          layerId: msg.layerId as string,
+          width: msg.width as number,
+          height: msg.height as number,
+          buffer: msg.buffer as Buffer,
+          timestamp: msg.timestamp as number,
         };
         this.frameCallback(frame);
       }
-      if (message.type === "error") {
-        console.error(`[GraphicsRenderer] ${message.message}`);
+      if (msg.type === "error") {
+        console.error(`[GraphicsRenderer] ${msg.message as string}`);
       }
     });
 

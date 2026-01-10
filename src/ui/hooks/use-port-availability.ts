@@ -69,7 +69,6 @@ export function usePortAvailability({
           if (!isNaN(currentPort)) {
             // Check custom port availability
             // Don't reset, user can change it
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             void (await window.electron.checkPortAvailability(
               currentPort,
               bindAddress
@@ -79,7 +78,6 @@ export function usePortAvailability({
           const currentPort = parseInt(networkPort, 10);
           if (!isNaN(currentPort)) {
             // Note: Port availability is tracked, parent component can handle reset if needed
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             void availabilityMap.get(currentPort);
           }
         }

@@ -1,5 +1,6 @@
 import type { DeviceDescriptorT } from "../types.js";
 import { moduleRegistry } from "../modules/module-registry.js";
+import { getBridgeContext } from "./bridge-context.js";
 
 /**
  * Device cache service
@@ -10,6 +11,9 @@ export class DeviceCache {
   private cachedDevices: DeviceDescriptorT[] = [];
   private lastDetectionTime = 0;
   private detectionInProgress = false;
+  private watchInitialized = false;
+  private watchUnsubscribe: (() => void) | undefined;
+  private watchRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   /**
    * Cache TTL in milliseconds
@@ -25,6 +29,7 @@ export class DeviceCache {
    * Get cached devices or perform detection if cache expired
    */
   async getDevices(forceRefresh = false): Promise<DeviceDescriptorT[]> {
+    const logger = getBridgeContext().logger;
     const now = Date.now();
     const timeSinceLastDetection = now - this.lastDetectionTime;
 
@@ -35,6 +40,9 @@ export class DeviceCache {
       timeSinceLastDetection >= this.CACHE_TTL;
 
     if (!needsRefresh) {
+      logger.info(
+        `[Devices] Using cached results (${this.cachedDevices.length} devices)`
+      );
       return this.cachedDevices;
     }
 
@@ -53,6 +61,7 @@ export class DeviceCache {
     // Prevent concurrent detection
     if (this.detectionInProgress) {
       // Wait for ongoing detection
+      logger.info("[Devices] Detection already in progress, waiting...");
       while (this.detectionInProgress) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -62,12 +71,87 @@ export class DeviceCache {
     // Perform detection
     this.detectionInProgress = true;
     try {
+      const moduleNames = moduleRegistry.getModuleNames().join(", ");
+      logger.info(
+        `[Devices] Detecting devices (forceRefresh=${forceRefresh}) [modules: ${moduleNames || "none"}]`
+      );
       this.cachedDevices = await moduleRegistry.detectAll();
       this.lastDetectionTime = Date.now();
+
+      const typeCounts = this.cachedDevices.reduce<Record<string, number>>(
+        (acc, device) => {
+          acc[device.type] = (acc[device.type] || 0) + 1;
+          return acc;
+        },
+        {}
+      );
+      const totalPorts = this.cachedDevices.reduce(
+        (sum, device) => sum + device.ports.length,
+        0
+      );
+
+      logger.info(
+        `[Devices] Detection complete: ${this.cachedDevices.length} devices, ${totalPorts} ports (by type: ${JSON.stringify(
+          typeCounts
+        )})`
+      );
+
+      if (this.cachedDevices.length === 0) {
+        logger.warn(
+          "[Devices] No devices detected. Check device drivers and connections."
+        );
+      }
+
       return this.cachedDevices;
     } finally {
       this.detectionInProgress = false;
     }
+  }
+
+  /**
+   * Initialize device watchers for hotplug updates.
+   */
+  initializeWatchers(): void {
+    if (this.watchInitialized) {
+      return;
+    }
+
+    this.watchInitialized = true;
+    const logger = getBridgeContext().logger;
+    this.watchUnsubscribe = moduleRegistry.watchAll((moduleName) => {
+      logger.info(`[Devices] Watch update from ${moduleName}`);
+      this.scheduleWatchRefresh();
+    });
+  }
+
+  /**
+   * Schedule a debounced refresh when a watch event is received.
+   */
+  private scheduleWatchRefresh(): void {
+    if (this.watchRefreshTimer) {
+      return;
+    }
+
+    this.watchRefreshTimer = setTimeout(async () => {
+      this.watchRefreshTimer = undefined;
+      const logger = getBridgeContext().logger;
+      if (this.detectionInProgress) {
+        logger.info("[Devices] Detection in progress, skipping watch refresh");
+        return;
+      }
+
+      this.detectionInProgress = true;
+      try {
+        logger.info("[Devices] Refreshing cache from watch event");
+        this.cachedDevices = await moduleRegistry.detectAll();
+        this.lastDetectionTime = Date.now();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`[Devices] Watch refresh failed: ${message}`);
+      } finally {
+        this.detectionInProgress = false;
+      }
+    }, 250);
   }
 
   /**
@@ -83,6 +167,11 @@ export class DeviceCache {
   clear(): void {
     this.cachedDevices = [];
     this.lastDetectionTime = 0;
+    if (this.watchUnsubscribe) {
+      this.watchUnsubscribe();
+      this.watchUnsubscribe = undefined;
+    }
+    this.watchInitialized = false;
   }
 
   /**

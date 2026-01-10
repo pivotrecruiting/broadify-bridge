@@ -13,8 +13,8 @@
       "to": "bridge/node_modules"
     },
     {
-      "from": "resources/ffmpeg",
-      "to": "ffmpeg"
+      "from": "apps/bridge/native/decklink-helper/decklink-helper",
+      "to": "native/decklink-helper/decklink-helper"
     }
   ],
   "icon": "./icon.png",

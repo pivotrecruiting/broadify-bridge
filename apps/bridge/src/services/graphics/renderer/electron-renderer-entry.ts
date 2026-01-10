@@ -33,7 +33,10 @@ function sendMessage(message: unknown): void {
   }
 }
 
-function sendIpcMessage(message: { type: string; [key: string]: unknown }, buffer?: Buffer): void {
+function sendIpcMessage(
+  message: { type: string; [key: string]: unknown },
+  buffer?: Buffer
+): void {
   if (!ipcSocket || !canSend) {
     return;
   }
@@ -46,7 +49,9 @@ function sendIpcMessage(message: { type: string; [key: string]: unknown }, buffe
   const headerLength = Buffer.alloc(4);
   headerLength.writeUInt32BE(header.length, 0);
 
-  const chunks = buffer ? [headerLength, header, buffer] : [headerLength, header];
+  const chunks = buffer
+    ? [headerLength, header, buffer]
+    : [headerLength, header];
   const ok = ipcSocket.write(Buffer.concat(chunks));
   if (!ok) {
     canSend = false;
@@ -116,11 +121,13 @@ function buildHtmlDocument(options: {
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
-          .replace(/\"/g, "&quot;")
+          .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
       };
       const renderTemplate = (values) => {
-        return template.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (match, key) => {
+        // Regex needs escaped braces for literal matching
+        // eslint-disable-next-line no-useless-escape
+        return template.replace(/{{s*([w.-]+)s*}}/g, (match, key) => {
           const value = key.split(".").reduce((acc, part) => {
             if (acc && typeof acc === "object" && part in acc) {
               return acc[part];
@@ -299,40 +306,66 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
   layers.delete(message.layerId);
 }
 
-async function handleMessage(message: any): Promise<void> {
+async function handleMessage(message: unknown): Promise<void> {
   if (!message || typeof message !== "object") {
     return;
   }
 
-  if (message.type === "set_assets") {
+  const msg = message as { type?: string; [key: string]: unknown };
+
+  if (msg.type === "set_assets") {
     assetMap.clear();
-    for (const [assetId, data] of Object.entries(message.assets || {})) {
+    for (const [assetId, data] of Object.entries(
+      (msg.assets as Record<string, unknown>) || {}
+    )) {
       assetMap.set(assetId, data as { filePath: string; mime: string });
     }
     return;
   }
 
-  if (message.type === "create_layer") {
-    await createLayer(message);
+  if (msg.type === "create_layer") {
+    await createLayer(
+      msg as {
+        layerId: string;
+        html: string;
+        css: string;
+        values: Record<string, unknown>;
+        layout: { x: number; y: number; scale: number };
+        backgroundMode: string;
+        width: number;
+        height: number;
+        fps: number;
+      }
+    );
     return;
   }
 
-  if (message.type === "update_values") {
-    await updateValues(message);
+  if (msg.type === "update_values") {
+    await updateValues(
+      msg as {
+        layerId: string;
+        values: Record<string, unknown>;
+      }
+    );
     return;
   }
 
-  if (message.type === "update_layout") {
-    await updateLayout(message);
+  if (msg.type === "update_layout") {
+    await updateLayout(
+      msg as {
+        layerId: string;
+        layout: { x: number; y: number; scale: number };
+      }
+    );
     return;
   }
 
-  if (message.type === "remove_layer") {
-    await removeLayer(message);
+  if (msg.type === "remove_layer") {
+    await removeLayer(msg as { layerId: string });
     return;
   }
 
-  if (message.type === "shutdown") {
+  if (msg.type === "shutdown") {
     for (const layer of layers.values()) {
       layer.window.destroy();
     }
@@ -352,7 +385,7 @@ app.on("ready", () => {
 
 app.on("window-all-closed", () => {});
 
-process.on("message", (message) => {
+process.on("message", (message: unknown) => {
   handleMessage(message).catch((error: unknown) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
     sendMessage({ type: "error", message: errorMessage });

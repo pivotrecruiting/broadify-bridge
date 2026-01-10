@@ -68,7 +68,7 @@ Payload:
 
 ```json
 {
-  "outputKey": "key_fill_sdi" | "key_fill_ndi" | "video_sdi",
+  "outputKey": "stub",
   "targets": {
     "output1Id": "string?",
     "output2Id": "string?",
@@ -80,9 +80,7 @@ Payload:
 
 Regeln:
 
-- `key_fill_sdi`: `output1Id` (Fill) und `output2Id` (Key) sind Pflicht, muessen unterschiedlich sein.
-- `video_sdi`: `output1Id` ist Pflicht.
-- `key_fill_ndi`: `ndiStreamName` ist Pflicht.
+- Aktuell wird nur `stub` als outputKey unterstützt (keine echte Ausgabe).
 - Format wird von der WebApp fix auf `1920x1080 @ 50fps` gesetzt.
 
 Bridge-Verhalten:
@@ -121,7 +119,7 @@ Regeln:
 - Templates enthalten kein eigenes JavaScript.
 - Keine externen URLs; Assets werden ueber `asset://<assetId>` referenziert.
 - Assets koennen optional als Base64 (`data`) geliefert und in der Bridge gespeichert werden.
-- Bei `key_fill_sdi` und `key_fill_ndi` soll `backgroundMode` als `transparent` behandelt werden.
+- Bei Output-Keys mit Alpha-Unterstützung soll `backgroundMode` als `transparent` behandelt werden.
 
 Bridge-Verhalten:
 
@@ -178,7 +176,7 @@ Empfohlene Response-Daten:
 ```json
 {
   "outputConfig": {
-    "outputKey": "key_fill_sdi",
+    "outputKey": "stub",
     "targets": { "output1Id": "sdi-1", "output2Id": "sdi-2" },
     "format": { "width": 1920, "height": 1080, "fps": 50 }
   },

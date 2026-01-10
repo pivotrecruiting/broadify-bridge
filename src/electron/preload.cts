@@ -25,6 +25,12 @@ electron.contextBridge.exposeInMainWorld("electron", {
   detectNetworkInterfaces: () => ipcInvoke("detectNetworkInterfaces"),
   getNetworkBindingOptions: () => ipcInvoke("getNetworkBindingOptions"),
   bridgeGetOutputs: () => ipcInvoke("bridgeGetOutputs"),
+  bridgeGetLogs: (options?: { lines?: number; filter?: string }) =>
+    ipcInvoke("bridgeGetLogs", options),
+  appGetLogs: (options?: { lines?: number; filter?: string }) =>
+    ipcInvoke("appGetLogs", options),
+  bridgeClearLogs: () => ipcInvoke("bridgeClearLogs"),
+  appClearLogs: () => ipcInvoke("appClearLogs"),
   engineConnect: (ip?: string, port?: number) =>
     ipcInvoke("engineConnect", ip, port),
   engineDisconnect: () => ipcInvoke("engineDisconnect"),

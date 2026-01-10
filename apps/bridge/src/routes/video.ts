@@ -13,7 +13,6 @@ type VideoStatusT = "not-configured" | "configured" | "unavailable" | "error";
  */
 export async function registerVideoRoute(
   fastify: FastifyInstance,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
   /**

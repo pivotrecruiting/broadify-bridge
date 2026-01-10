@@ -1,36 +1,51 @@
 import type { DeviceModule, DeviceController } from "../device-module.js";
 import type { DeviceDescriptorT } from "../../types.js";
-import { DecklinkDetector } from "./decklink-detector.js";
+import { DecklinkDetector, parseDecklinkHelperDevices } from "./decklink-detector.js";
 import { DecklinkDevice } from "./decklink-device.js";
+import { watchDecklinkDevices } from "./decklink-helper.js";
+import { getBridgeContext } from "../../services/bridge-context.js";
 
 /**
- * Decklink Device Module
- * 
- * Implements DeviceModule interface for Blackmagic Decklink cards.
- * Uses Blackmagic Desktop Video SDK (BMD SDK) for device detection and control.
- * 
- * IMPORTANT: Must use BMD SDK, NOT OS APIs (AVFoundation/DirectShow)
+ * DeckLink Device Module (macOS-only).
  */
 export class DecklinkModule implements DeviceModule {
   readonly name = "decklink";
-  private detector: DecklinkDetector;
-
-  constructor() {
-    this.detector = new DecklinkDetector();
-  }
+  private readonly detector = new DecklinkDetector();
 
   /**
-   * Detect Decklink devices using BMD SDK
+   * Detect DeckLink devices.
    */
   async detect(): Promise<DeviceDescriptorT[]> {
     return this.detector.detect();
   }
 
   /**
-   * Create controller for a Decklink device
+   * Watch for DeckLink device changes.
+   */
+  watch(
+    callback: (devices: DeviceDescriptorT[]) => void
+  ): () => void {
+    return watchDecklinkDevices((event) => {
+      if (!event || !Array.isArray(event.devices)) {
+        return;
+      }
+      const devices = parseDecklinkHelperDevices(event.devices);
+      const logger = getBridgeContext().logger;
+      const deviceNames = devices
+        .map((device) => device.displayName || device.id)
+        .filter(Boolean)
+        .join(", ");
+      logger.info(
+        `[DecklinkModule] Event ${event.type} (${devices.length} device${devices.length === 1 ? "" : "s"}${deviceNames ? `: ${deviceNames}` : ""})`
+      );
+      callback(devices);
+    });
+  }
+
+  /**
+   * Create controller for a DeckLink device.
    */
   createController(deviceId: string): DeviceController {
     return new DecklinkDevice(deviceId);
   }
 }
-

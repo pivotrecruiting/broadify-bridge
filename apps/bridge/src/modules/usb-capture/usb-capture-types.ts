@@ -12,6 +12,8 @@ export interface USBDeviceInfo {
   model?: string;
   driver?: string;
   path: string; // Platform-specific device path
+  protocol?: "usb" | "thunderbolt" | "displayport"; // Protocol used by the device
+  connectionType?: "usb-c" | "usb-a" | "thunderbolt"; // Physical connector type
 }
 
 /**
@@ -20,8 +22,9 @@ export interface USBDeviceInfo {
 export interface USBPortInfo {
   id: string; // Stable port ID (deviceId + portIndex)
   displayName: string;
-  type: "usb";
+  type: "usb" | "thunderbolt" | "displayport"; // Port type based on protocol
   direction: "input" | "output" | "bidirectional";
   index: number;
+  formats?: string[]; // Supported video formats (e.g., "1080p60", "4K30")
 }
 

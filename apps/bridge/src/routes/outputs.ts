@@ -15,46 +15,67 @@ import { deviceCache } from "../services/device-cache.js";
 function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT {
   const output1Devices: OutputDeviceT[] = [];
   const output2Devices: OutputDeviceT[] = [];
-  const connectionTypesSeen = new Set<string>();
+  const connectionTypeMap = new Map<string, OutputDeviceT>();
+  const mapDeviceTypeToOutputType = (
+    deviceType: DeviceDescriptorT["type"]
+  ): OutputDeviceT["type"] => {
+    if (deviceType === "decklink") {
+      return "decklink";
+    }
+    return "capture";
+  };
 
   // Process each device
   for (const device of devices) {
     // Add device to output1 (Hardware Devices)
-    // Only include devices with output-capable ports
     const hasOutputPort = device.ports.some(
+      (port) => port.direction === "output" || port.direction === "bidirectional"
+    );
+    const hasAvailableOutputPort = device.ports.some(
       (port) =>
-        port.direction === "output" || port.direction === "bidirectional"
+        (port.direction === "output" || port.direction === "bidirectional") &&
+        port.status.available
     );
 
     if (hasOutputPort) {
       output1Devices.push({
         id: device.id,
         name: device.displayName,
-        type: device.type === "decklink" ? "decklink" : "capture",
-        available: device.status.present && device.status.ready && !device.status.inUse,
+        type: mapDeviceTypeToOutputType(device.type),
+        available:
+          device.status.present &&
+          device.status.ready &&
+          !device.status.inUse &&
+          hasAvailableOutputPort,
       });
     }
 
     // Collect connection types from ports (for output2)
     for (const port of device.ports) {
-      // Only include output-capable ports
-      if (
-        port.direction === "output" ||
-        port.direction === "bidirectional"
-      ) {
-        const connectionType = port.type;
-        if (!connectionTypesSeen.has(connectionType)) {
-          connectionTypesSeen.add(connectionType);
-          output2Devices.push({
-            id: connectionType,
-            name: port.displayName,
-            type: "connection",
-            available: port.status.available,
-          });
-        }
+      const connectionType = port.type;
+      const outputCapable =
+        port.direction === "output" || port.direction === "bidirectional";
+      if (!outputCapable) {
+        continue;
+      }
+      const available = port.status.available;
+      const existing = connectionTypeMap.get(connectionType);
+
+      if (!existing) {
+        connectionTypeMap.set(connectionType, {
+          id: connectionType,
+          name: port.displayName,
+          type: "connection",
+          available,
+        });
+      } else if (!existing.available && available) {
+        existing.available = true;
+        existing.name = port.displayName;
       }
     }
   }
+
+  output2Devices.push(...connectionTypeMap.values());
 
   return {
     output1: output1Devices,
@@ -70,13 +91,15 @@ function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT
  */
 export async function registerOutputsRoute(
   fastify: FastifyInstance,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _options: FastifyPluginOptions
 ): Promise<void> {
   fastify.get("/outputs", async (request, reply) => {
     try {
       const refresh = request.query as { refresh?: string };
       const forceRefresh = refresh?.refresh === "1";
+      if (forceRefresh) {
+        fastify.log.info("[Outputs] Refresh requested");
+      }
 
       // Get devices from cache (with optional refresh)
       const devices = await deviceCache.getDevices(forceRefresh);
@@ -84,7 +107,7 @@ export async function registerOutputsRoute(
       // Transform to UI-compatible format
       const outputs = transformDevicesToOutputs(devices);
 
-      fastify.log.debug(
+      fastify.log.info(
         `[Outputs] Returning ${outputs.output1.length} output1 devices and ${outputs.output2.length} output2 connection types`
       );
 
@@ -111,4 +134,3 @@ export async function registerOutputsRoute(
     }
   });
 }
-

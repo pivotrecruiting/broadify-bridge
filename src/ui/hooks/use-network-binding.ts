@@ -23,13 +23,10 @@ export function useNetworkBinding({
   networkBindingOptions,
   networkBindingId,
   setNetworkBindingId,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   networkPort: _networkPort,
   setNetworkPort,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   customPort: _customPort,
   setCustomPort,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   showAdvanced: _showAdvanced,
   setShowAdvanced,
 }: UseNetworkBindingParams) {
