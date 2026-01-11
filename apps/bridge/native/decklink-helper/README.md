@@ -36,5 +36,5 @@ Playback args (bridge-managed):
 - `--device <decklink-id>`
 - `--fill-port <device-id>-sdi-a`
 - `--key-port <device-id>-sdi-b`
-- `--output-port <device-id>-sdi|<device-id>-hdmi`
+- `--output-port <device-id>-sdi|<device-id>-sdi-a|<device-id>-hdmi`
 - `--width <int> --height <int> --fps <int>`

@@ -80,7 +80,7 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     if (!portInfo) {
       throw new Error("Invalid DeckLink port ID for video output");
     }
-    if (portInfo.portRole !== "video") {
+    if (portInfo.portRole === "key") {
       throw new Error("Output port must be a video-capable port");
     }
 

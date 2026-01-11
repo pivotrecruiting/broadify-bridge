@@ -7,6 +7,7 @@
 */
 
 #include <DeckLinkAPI.h>
+#include <DeckLinkAPIVideoFrame_v14_2_1.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFPlugInCOM.h>
 
@@ -111,12 +112,29 @@ bool getFlagAttribute(IDeckLinkProfileAttributes* attributes,
   if (!attributes) {
     return false;
   }
-  dlbool_t flagValue = false;
+  bool flagValue = false;
   if (attributes->GetFlag(id, &flagValue) != S_OK) {
     return false;
   }
   value = static_cast<bool>(flagValue);
   return true;
+}
+
+bool getFrameBytes(IDeckLinkMutableVideoFrame* frame, void** outBytes) {
+  if (!frame || !outBytes) {
+    return false;
+  }
+
+  IDeckLinkVideoFrame_v14_2_1* frameV14 = nullptr;
+  if (frame->QueryInterface(IID_IDeckLinkVideoFrame_v14_2_1,
+                            (void**)&frameV14) != S_OK ||
+      !frameV14) {
+    return false;
+  }
+
+  const HRESULT result = frameV14->GetBytes(outBytes);
+  frameV14->Release();
+  return result == S_OK && *outBytes != nullptr;
 }
 
 std::string getStringAttribute(IDeckLinkProfileAttributes* attributes,
@@ -571,7 +589,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
   }
 
   void* frameBytes = nullptr;
-  if (frame->GetBytes(&frameBytes) != S_OK || !frameBytes) {
+  if (!getFrameBytes(frame, &frameBytes)) {
     frame->Release();
     return false;
   }
@@ -791,12 +809,27 @@ bool parseOutputPort(const PlaybackConfig& config,
     return false;
   }
 
+  const std::string sdiFillSuffix = "-sdi-a";
   const std::string sdiSuffix = "-sdi";
   const std::string hdmiSuffix = "-hdmi";
 
   if (config.outputPortId.size() <= sdiSuffix.size() ||
       config.outputPortId.size() <= hdmiSuffix.size()) {
     return false;
+  }
+
+  if (config.outputPortId.size() >= sdiFillSuffix.size() &&
+      config.outputPortId.compare(
+          config.outputPortId.size() - sdiFillSuffix.size(),
+          sdiFillSuffix.size(),
+          sdiFillSuffix) == 0) {
+    outDeviceId = config.outputPortId.substr(
+        0, config.outputPortId.size() - sdiFillSuffix.size());
+    if (outDeviceId.empty()) {
+      return false;
+    }
+    outConnection = bmdVideoConnectionSDI;
+    return true;
   }
 
   if (config.outputPortId.size() >= sdiSuffix.size() &&
