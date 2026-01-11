@@ -726,7 +726,6 @@ export class GraphicsManager {
       return;
     }
 
-    const presetId = this.activePreset.presetId;
     const layerIds = Array.from(this.activePreset.layerIds);
     this.clearActivePreset();
 
