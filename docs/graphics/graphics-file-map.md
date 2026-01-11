@@ -40,6 +40,9 @@ Kompakte Uebersicht, welche Dateien fuer Graphics relevant sind und wie sie zusa
 - `apps/bridge/src/services/graphics/output-adapter.ts`
   - Output Adapter Interface.
 
+- `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
+  - DeckLink SDI Key&Fill (external keying).
+
 - `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
   - Stub Output: Logging, Frame Drop Simulation.
 

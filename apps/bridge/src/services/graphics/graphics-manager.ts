@@ -7,19 +7,24 @@ import type {
   GraphicsOutputConfigT,
   GraphicsOutputKeyT,
   GraphicsTargetsT,
+  GraphicsSendPayloadT,
 } from "./graphics-schemas.js";
+import type { DeviceDescriptorT } from "../../types.js";
 import {
   GraphicsConfigureOutputsSchema,
   GraphicsSendSchema,
   GraphicsUpdateLayoutSchema,
   GraphicsUpdateValuesSchema,
   GraphicsRemoveSchema,
+  GraphicsRemovePresetSchema,
 } from "./graphics-schemas.js";
 import { outputConfigStore } from "./output-config-store.js";
 import { validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
+import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { deviceCache } from "../device-cache.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
 import type {
@@ -28,8 +33,12 @@ import type {
 } from "./renderer/graphics-renderer.js";
 
 const MAX_ACTIVE_LAYERS = 3;
+const MAX_QUEUED_PRESETS = 10;
 
-const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [];
+const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
+  "key_fill_sdi",
+  "key_fill_ndi",
+];
 
 type GraphicsLayerStateT = {
   layerId: string;
@@ -38,7 +47,30 @@ type GraphicsLayerStateT = {
   zIndex: number;
   backgroundMode: GraphicsBackgroundModeT;
   values: Record<string, unknown>;
+  presetId?: string;
   lastFrame?: GraphicsFrameT;
+};
+
+type GraphicsActivePresetT = {
+  presetId: string;
+  durationMs: number | null;
+  layerIds: Set<string>;
+  pendingStart: boolean;
+  startedAt: number | null;
+  expiresAt: number | null;
+  timer: NodeJS.Timeout | null;
+};
+
+type GraphicsQueuedPresetT = {
+  presetId: string;
+  durationMs: number | null;
+  layers: Map<GraphicsCategoryT, PreparedLayerT>;
+  enqueuedAt: number;
+};
+
+type PreparedLayerT = GraphicsSendPayloadT & {
+  backgroundMode: GraphicsBackgroundModeT;
+  values: Record<string, unknown>;
 };
 
 /**
@@ -55,6 +87,11 @@ export class GraphicsManager {
   private sending = false;
   private droppedFrames = 0;
   private framesSent = 0;
+  private outputErrors = 0;
+  private lastOutputLogAt = 0;
+  private lastOutputErrorLogAt = 0;
+  private activePreset: GraphicsActivePresetT | null = null;
+  private presetQueue: GraphicsQueuedPresetT[] = [];
 
   constructor() {
     this.renderer = this.selectRenderer();
@@ -137,7 +174,10 @@ export class GraphicsManager {
     }
 
     const data = GraphicsSendSchema.parse(payload);
-    this.validateLayerLimits(data.layerId, data.category);
+
+    if (typeof data.durationMs === "number" && !data.presetId) {
+      throw new Error("Preset ID is required when durationMs is set");
+    }
 
     const renderInfo = data.bundle.manifest?.render as
       | { width?: number; height?: number; fps?: number }
@@ -156,66 +196,62 @@ export class GraphicsManager {
       }
     }
 
-    const { assetIds } = validateTemplate(data.bundle.html, data.bundle.css);
+    const prepared = await this.prepareLayer(data);
+    const durationMs = prepared.durationMs ?? null;
 
-    for (const asset of data.bundle.assets || []) {
-      await assetRegistry.storeAsset(asset);
+    if (
+      prepared.presetId &&
+      this.activePreset &&
+      (this.activePreset.durationMs ?? 0) > 0 &&
+      this.activePreset.presetId !== prepared.presetId
+    ) {
+      this.enqueuePresetLayer(prepared, durationMs);
+      getBridgeContext().logger.info(
+        `[Graphics] Preset queued: ${prepared.presetId}`
+      );
+      return;
     }
 
-    for (const assetId of assetIds) {
-      if (!assetRegistry.getAsset(assetId)) {
-        throw new Error(`Missing asset reference: ${assetId}`);
+    if (
+      prepared.presetId &&
+      this.activePreset &&
+      this.activePreset.presetId === prepared.presetId &&
+      (this.activePreset.durationMs ?? 0) > 0
+    ) {
+      const nextDuration = durationMs ?? this.activePreset.durationMs;
+      if (typeof nextDuration === "number" && nextDuration > 0) {
+        this.resetActivePresetTimer(nextDuration);
       }
     }
 
-    await this.renderer.setAssets(assetRegistry.getAssetMap());
-
-    const enforcedBackground = OUTPUT_KEYS_WITH_ALPHA.includes(
-      this.outputConfig.outputKey
-    )
-      ? "transparent"
-      : data.backgroundMode;
-
-    const initialValues = {
-      ...(data.bundle.defaults || {}),
-      ...(data.values || {}),
-    };
-
-    const existing = this.layers.get(data.layerId);
-    if (existing && existing.category !== data.category) {
-      this.categoryToLayer.delete(existing.category);
+    if (
+      prepared.presetId &&
+      this.activePreset &&
+      this.activePreset.presetId !== prepared.presetId &&
+      !this.activePreset.durationMs
+    ) {
+      await this.removePresetById(this.activePreset.presetId);
     }
 
-    this.layers.set(data.layerId, {
-      layerId: data.layerId,
-      category: data.category,
-      layout: data.layout,
-      zIndex: data.zIndex,
-      backgroundMode: enforcedBackground,
-      values: initialValues,
-      lastFrame: existing?.lastFrame,
-    });
+    await this.renderPreparedLayer(prepared);
 
-    this.categoryToLayer.set(data.category, data.layerId);
-
-    try {
-      await this.renderer.renderLayer({
-        layerId: data.layerId,
-        html: data.bundle.html,
-        css: data.bundle.css,
-        values: initialValues,
-        layout: data.layout,
-        backgroundMode: enforcedBackground,
-        width: this.outputConfig.format.width,
-        height: this.outputConfig.format.height,
-        fps: this.outputConfig.format.fps,
-      });
-    } catch (error) {
-      this.layers.delete(data.layerId);
-      if (this.categoryToLayer.get(data.category) === data.layerId) {
-        this.categoryToLayer.delete(data.category);
+    if (prepared.presetId) {
+      if (!this.activePreset || this.activePreset.presetId !== prepared.presetId) {
+        this.activePreset = {
+          presetId: prepared.presetId,
+          durationMs: durationMs ?? null,
+          layerIds: new Set([prepared.layerId]),
+          pendingStart: Boolean(durationMs && durationMs > 0),
+          startedAt: null,
+          expiresAt: null,
+          timer: null,
+        };
+        getBridgeContext().logger.info(
+          `[Graphics] Preset activated: ${prepared.presetId}`
+        );
+      } else {
+        this.activePreset.layerIds.add(prepared.layerId);
       }
-      throw error;
     }
   }
 
@@ -272,6 +308,35 @@ export class GraphicsManager {
     if (this.categoryToLayer.get(layer.category) === data.layerId) {
       this.categoryToLayer.delete(layer.category);
     }
+    if (layer.presetId && this.activePreset?.presetId === layer.presetId) {
+      this.activePreset.layerIds.delete(layer.layerId);
+      if (this.activePreset.layerIds.size === 0) {
+        this.clearActivePreset();
+      }
+    }
+  }
+
+  /**
+   * Remove a preset and optionally clear the queue.
+   */
+  async removePreset(payload: unknown): Promise<void> {
+    await this.initialize();
+
+    const data = GraphicsRemovePresetSchema.parse(payload);
+    await this.removePresetById(data.presetId);
+
+    if (data.clearQueue) {
+      this.presetQueue = [];
+      return;
+    }
+
+    this.presetQueue = this.presetQueue.filter(
+      (item) => item.presetId !== data.presetId
+    );
+
+    if (!this.activePreset && this.presetQueue.length > 0) {
+      await this.activateNextPreset();
+    }
   }
 
   /**
@@ -280,17 +345,48 @@ export class GraphicsManager {
   getStatus(): {
     outputConfig: GraphicsOutputConfigT | null;
     layers: unknown[];
+    activePreset: {
+      presetId: string;
+      durationMs: number | null;
+      startedAt: number | null;
+      expiresAt: number | null;
+      pendingStart: boolean;
+      layerIds: string[];
+    } | null;
+    queuedPresets: Array<{
+      presetId: string;
+      durationMs: number | null;
+      layerIds: string[];
+      enqueuedAt: number;
+    }>;
   } {
     const layers = Array.from(this.layers.values()).map((layer) => ({
       layerId: layer.layerId,
       category: layer.category,
       layout: layer.layout,
       zIndex: layer.zIndex,
+      presetId: layer.presetId,
     }));
 
     return {
       outputConfig: this.outputConfig,
       layers,
+      activePreset: this.activePreset
+        ? {
+          presetId: this.activePreset.presetId,
+          durationMs: this.activePreset.durationMs,
+          startedAt: this.activePreset.startedAt,
+          expiresAt: this.activePreset.expiresAt,
+          pendingStart: this.activePreset.pendingStart,
+          layerIds: Array.from(this.activePreset.layerIds),
+        }
+        : null,
+      queuedPresets: this.presetQueue.map((item) => ({
+        presetId: item.presetId,
+        durationMs: item.durationMs,
+        layerIds: Array.from(item.layers.values()).map((layer) => layer.layerId),
+        enqueuedAt: item.enqueuedAt,
+      })),
     };
   }
 
@@ -305,6 +401,9 @@ export class GraphicsManager {
   private selectOutputAdapter(
     _outputKey: GraphicsOutputKeyT
   ): GraphicsOutputAdapter {
+    if (_outputKey === "key_fill_sdi") {
+      return new DecklinkKeyFillOutputAdapter();
+    }
     return new StubOutputAdapter();
   }
 
@@ -341,10 +440,72 @@ export class GraphicsManager {
   }
 
   private async validateOutputTargets(
-    _outputKey: GraphicsOutputKeyT,
-    _targets: GraphicsTargetsT
+    outputKey: GraphicsOutputKeyT,
+    targets: GraphicsTargetsT
   ): Promise<void> {
-    // Output target validation placeholder
+    if (outputKey === "key_fill_sdi") {
+      if (!targets.output1Id || !targets.output2Id) {
+        throw new Error("Output 1 and Output 2 are required for Key & Fill SDI");
+      }
+      if (targets.output1Id === targets.output2Id) {
+        throw new Error("Output 1 and Output 2 must be different");
+      }
+
+      const devices = await deviceCache.getDevices();
+      const output1Match = this.findPort(devices, targets.output1Id);
+      const output2Match = this.findPort(devices, targets.output2Id);
+      if (!output1Match || !output2Match) {
+        throw new Error("Invalid output ports selected");
+      }
+      if (output1Match.device.id !== output2Match.device.id) {
+        throw new Error("Output ports must belong to the same device");
+      }
+      if (output1Match.port.type !== "sdi" || output2Match.port.type !== "sdi") {
+        throw new Error("Key & Fill SDI requires SDI output ports");
+      }
+      if (output1Match.port.role !== "fill") {
+        throw new Error("Output 1 must be the SDI Fill port");
+      }
+      if (output2Match.port.role !== "key") {
+        throw new Error("Output 2 must be the SDI Key port");
+      }
+      if (!output1Match.port.status.available || !output2Match.port.status.available) {
+        throw new Error("Selected output ports are not available");
+      }
+    }
+
+    if (outputKey === "video_sdi") {
+      if (!targets.output1Id) {
+        throw new Error("Output 1 is required for Video SDI");
+      }
+      const devices = await deviceCache.getDevices();
+      const output1Match = this.findPort(devices, targets.output1Id);
+      if (!output1Match) {
+        throw new Error("Invalid output port selected");
+      }
+      if (output1Match.port.type !== "sdi") {
+        throw new Error("Video SDI requires an SDI output port");
+      }
+      if (output1Match.port.role === "key") {
+        throw new Error("Video SDI cannot use the SDI Key port");
+      }
+      if (!output1Match.port.status.available) {
+        throw new Error("Selected output port is not available");
+      }
+    }
+  }
+
+  private findPort(
+    devices: DeviceDescriptorT[],
+    portId: string
+  ): { device: DeviceDescriptorT; port: DeviceDescriptorT["ports"][number] } | null {
+    for (const device of devices) {
+      const port = device.ports.find((entry) => entry.id === portId);
+      if (port) {
+        return { device, port };
+      }
+    }
+    return null;
   }
 
   private startTicker(fps: number): void {
@@ -403,6 +564,25 @@ export class GraphicsManager {
         this.outputConfig
       );
       this.framesSent++;
+      this.maybeStartPresetTimer(layers.map((layer) => layer.layerId));
+
+      const now = Date.now();
+      if (now - this.lastOutputLogAt >= 5000) {
+        this.lastOutputLogAt = now;
+        getBridgeContext().logger.info(
+          `[Graphics] Output ok: frames=${this.framesSent} dropped=${this.droppedFrames}`
+        );
+      }
+    } catch (error) {
+      this.outputErrors++;
+      const now = Date.now();
+      if (now - this.lastOutputErrorLogAt >= 5000) {
+        this.lastOutputErrorLogAt = now;
+        const message = error instanceof Error ? error.message : String(error);
+        getBridgeContext().logger.error(
+          `[Graphics] Output send failed: ${message}`
+        );
+      }
     } finally {
       this.sending = false;
     }
@@ -415,6 +595,225 @@ export class GraphicsManager {
     }
 
     layer.lastFrame = frame;
+  }
+
+  private async prepareLayer(
+    data: GraphicsSendPayloadT
+  ): Promise<PreparedLayerT> {
+    const { assetIds } = validateTemplate(data.bundle.html, data.bundle.css);
+
+    for (const asset of data.bundle.assets || []) {
+      await assetRegistry.storeAsset(asset);
+    }
+
+    for (const assetId of assetIds) {
+      if (!assetRegistry.getAsset(assetId)) {
+        throw new Error(`Missing asset reference: ${assetId}`);
+      }
+    }
+
+    await this.renderer.setAssets(assetRegistry.getAssetMap());
+
+    const enforcedBackground = OUTPUT_KEYS_WITH_ALPHA.includes(
+      this.outputConfig?.outputKey ?? "stub"
+    )
+      ? "transparent"
+      : data.backgroundMode;
+
+    const initialValues = {
+      ...(data.bundle.defaults || {}),
+      ...(data.values || {}),
+    };
+
+    return {
+      ...data,
+      backgroundMode: enforcedBackground,
+      values: initialValues,
+    };
+  }
+
+  private async renderPreparedLayer(data: PreparedLayerT): Promise<void> {
+    this.validateLayerLimits(data.layerId, data.category);
+
+    const existing = this.layers.get(data.layerId);
+    if (existing && existing.category !== data.category) {
+      this.categoryToLayer.delete(existing.category);
+    }
+
+    this.layers.set(data.layerId, {
+      layerId: data.layerId,
+      category: data.category,
+      layout: data.layout,
+      zIndex: data.zIndex,
+      backgroundMode: data.backgroundMode,
+      values: data.values,
+      presetId: data.presetId,
+      lastFrame: existing?.lastFrame,
+    });
+
+    this.categoryToLayer.set(data.category, data.layerId);
+
+    try {
+      await this.renderer.renderLayer({
+        layerId: data.layerId,
+        html: data.bundle.html,
+        css: data.bundle.css,
+        values: data.values,
+        layout: data.layout,
+        backgroundMode: data.backgroundMode,
+        width: this.outputConfig?.format.width ?? 1920,
+        height: this.outputConfig?.format.height ?? 1080,
+        fps: this.outputConfig?.format.fps ?? 50,
+      });
+    } catch (error) {
+      this.layers.delete(data.layerId);
+      if (this.categoryToLayer.get(data.category) === data.layerId) {
+        this.categoryToLayer.delete(data.category);
+      }
+      throw error;
+    }
+  }
+
+  private enqueuePresetLayer(
+    data: PreparedLayerT,
+    durationMs: number | null
+  ): void {
+    const existing =
+      this.presetQueue.length > 0
+        ? this.presetQueue[this.presetQueue.length - 1]
+        : null;
+
+    if (existing && existing.presetId === data.presetId) {
+      existing.layers.set(data.category, data);
+      existing.durationMs = durationMs;
+      return;
+    }
+
+    if (this.presetQueue.length >= MAX_QUEUED_PRESETS) {
+      throw new Error("Preset queue is full");
+    }
+
+    const layers = new Map<GraphicsCategoryT, PreparedLayerT>();
+    layers.set(data.category, data);
+    this.presetQueue.push({
+      presetId: data.presetId as string,
+      durationMs,
+      layers,
+      enqueuedAt: Date.now(),
+    });
+  }
+
+  private maybeStartPresetTimer(layerIds: string[]): void {
+    if (!this.activePreset || !this.activePreset.pendingStart) {
+      return;
+    }
+
+    const hasActiveLayer = layerIds.some((layerId) =>
+      this.activePreset?.layerIds.has(layerId)
+    );
+
+    if (!hasActiveLayer) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    this.activePreset.pendingStart = false;
+    this.activePreset.startedAt = startedAt;
+    this.activePreset.expiresAt = startedAt + (this.activePreset.durationMs ?? 0);
+    this.activePreset.timer = setTimeout(() => {
+      void this.expireActivePreset();
+    }, this.activePreset.durationMs ?? 0);
+  }
+
+  private resetActivePresetTimer(durationMs: number): void {
+    if (!this.activePreset) {
+      return;
+    }
+    this.clearActivePresetTimer();
+    this.activePreset.durationMs = durationMs;
+    this.activePreset.pendingStart = true;
+    this.activePreset.startedAt = null;
+    this.activePreset.expiresAt = null;
+  }
+
+  private clearActivePresetTimer(): void {
+    if (this.activePreset?.timer) {
+      clearTimeout(this.activePreset.timer);
+      this.activePreset.timer = null;
+    }
+  }
+
+  private clearActivePreset(): void {
+    this.clearActivePresetTimer();
+    this.activePreset = null;
+  }
+
+  private async expireActivePreset(): Promise<void> {
+    if (!this.activePreset) {
+      return;
+    }
+
+    const layerIds = Array.from(this.activePreset.layerIds);
+    const presetId = this.activePreset.presetId;
+    this.clearActivePreset();
+
+    for (const layerId of layerIds) {
+      const layer = this.layers.get(layerId);
+      if (!layer) continue;
+      await this.renderer.removeLayer(layerId);
+      this.layers.delete(layerId);
+      if (this.categoryToLayer.get(layer.category) === layerId) {
+        this.categoryToLayer.delete(layer.category);
+      }
+    }
+
+    getBridgeContext().logger.info(`[Graphics] Preset expired: ${presetId}`);
+
+    if (this.presetQueue.length > 0) {
+      await this.activateNextPreset();
+    }
+  }
+
+  private async activateNextPreset(): Promise<void> {
+    const next = this.presetQueue.shift();
+    if (!next) {
+      return;
+    }
+
+    this.activePreset = {
+      presetId: next.presetId,
+      durationMs: next.durationMs ?? null,
+      layerIds: new Set<string>(),
+      pendingStart: Boolean(next.durationMs && next.durationMs > 0),
+      startedAt: null,
+      expiresAt: null,
+      timer: null,
+    };
+
+    for (const layer of next.layers.values()) {
+      await this.renderPreparedLayer(layer);
+      if (this.activePreset?.presetId === next.presetId) {
+        this.activePreset.layerIds.add(layer.layerId);
+      }
+    }
+  }
+
+  private async removePresetById(presetId: string): Promise<void> {
+    const layersToRemove = Array.from(this.layers.values()).filter(
+      (layer) => layer.presetId === presetId
+    );
+
+    for (const layer of layersToRemove) {
+      await this.renderer.removeLayer(layer.layerId);
+      this.layers.delete(layer.layerId);
+      if (this.categoryToLayer.get(layer.category) === layer.layerId) {
+        this.categoryToLayer.delete(layer.category);
+      }
+    }
+
+    if (this.activePreset?.presetId === presetId) {
+      this.clearActivePreset();
+    }
   }
 }
 

@@ -1,6 +1,13 @@
 import { z } from "zod";
 
-export const GraphicsOutputKeySchema = z.enum(["stub"]);
+const MAX_DURATION_MS = 60 * 60 * 1000;
+
+export const GraphicsOutputKeySchema = z.enum([
+  "stub",
+  "key_fill_sdi",
+  "key_fill_ndi",
+  "video_sdi",
+]);
 
 export const GraphicsFormatSchema = z.object({
   width: z.literal(1920),
@@ -74,6 +81,8 @@ export const GraphicsSendSchema = z
     zIndex: z.number().int(),
     bundle: GraphicsBundleSchema,
     values: z.record(z.unknown()).optional().default({}),
+    presetId: z.string().min(1).optional(),
+    durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
   })
   .strict();
 
@@ -98,6 +107,13 @@ export const GraphicsRemoveSchema = z
   })
   .strict();
 
+export const GraphicsRemovePresetSchema = z
+  .object({
+    presetId: z.string().min(1),
+    clearQueue: z.boolean().optional(),
+  })
+  .strict();
+
 export type GraphicsOutputKeyT = z.infer<typeof GraphicsOutputKeySchema>;
 export type GraphicsFormatT = z.infer<typeof GraphicsFormatSchema>;
 export type GraphicsTargetsT = z.infer<typeof GraphicsTargetsSchema>;
@@ -115,3 +131,6 @@ export type GraphicsUpdateLayoutPayloadT = z.infer<
   typeof GraphicsUpdateLayoutSchema
 >;
 export type GraphicsRemovePayloadT = z.infer<typeof GraphicsRemoveSchema>;
+export type GraphicsRemovePresetPayloadT = z.infer<
+  typeof GraphicsRemovePresetSchema
+>;

@@ -11,6 +11,8 @@ const helperDeviceSchema = z.object({
   videoOutputConnections: z.array(z.enum(["sdi", "hdmi"])).default([]),
   busy: z.boolean().optional(),
   supportsPlayback: z.boolean().optional(),
+  supportsExternalKeying: z.boolean().optional(),
+  supportsInternalKeying: z.boolean().optional(),
 });
 
 const helperDeviceListSchema = z.array(helperDeviceSchema);
@@ -38,24 +40,79 @@ export function parseDecklinkHelperDevices(
   return parsed.data.map((device) => {
     const inUse = device.busy ?? false;
     const supportsPlayback = device.supportsPlayback ?? true;
+    const supportsExternalKeying = device.supportsExternalKeying ?? false;
     const ready = supportsPlayback && !inUse;
 
-    const ports: PortDescriptorT[] = device.videoOutputConnections.map(
-      (connectionType, index) => ({
-        id: `${device.id}-${connectionType}-${index}`,
-        displayName: connectionType === "sdi" ? "SDI Output" : "HDMI Output",
-        type: connectionType,
-        direction: "output",
-        capabilities: {
-          formats: [],
-          // TODO: Enumerate output display modes via IDeckLinkOutput.
-        },
-        status: {
-          available: ready,
-          signal: "none",
-        },
-      })
-    );
+    const ports: PortDescriptorT[] = [];
+    for (const connectionType of device.videoOutputConnections) {
+      if (connectionType === "sdi") {
+        if (supportsExternalKeying) {
+          ports.push(
+            {
+              id: `${device.id}-sdi-a`,
+              displayName: "SDI A (Fill)",
+              type: "sdi",
+              direction: "output",
+              role: "fill",
+              capabilities: {
+                formats: [],
+              },
+              status: {
+                available: ready,
+                signal: "none",
+              },
+            },
+            {
+              id: `${device.id}-sdi-b`,
+              displayName: "SDI B (Key)",
+              type: "sdi",
+              direction: "output",
+              role: "key",
+              capabilities: {
+                formats: [],
+              },
+              status: {
+                available: ready,
+                signal: "none",
+              },
+            }
+          );
+        } else {
+          ports.push({
+            id: `${device.id}-sdi`,
+            displayName: "SDI Output",
+            type: "sdi",
+            direction: "output",
+            role: "video",
+            capabilities: {
+              formats: [],
+            },
+            status: {
+              available: ready,
+              signal: "none",
+            },
+          });
+        }
+        continue;
+      }
+
+      if (connectionType === "hdmi") {
+        ports.push({
+          id: `${device.id}-hdmi`,
+          displayName: "HDMI Output",
+          type: "hdmi",
+          direction: "output",
+          role: "video",
+          capabilities: {
+            formats: [],
+          },
+          status: {
+            available: ready,
+            signal: "none",
+          },
+        });
+      }
+    }
 
     return {
       id: device.id,

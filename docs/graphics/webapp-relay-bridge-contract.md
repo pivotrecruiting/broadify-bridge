@@ -68,7 +68,7 @@ Payload:
 
 ```json
 {
-  "outputKey": "stub",
+  "outputKey": "key_fill_sdi" | "key_fill_ndi" | "video_sdi" | "stub",
   "targets": {
     "output1Id": "string?",
     "output2Id": "string?",
@@ -80,7 +80,9 @@ Payload:
 
 Regeln:
 
-- Aktuell wird nur `stub` als outputKey unterstützt (keine echte Ausgabe).
+- `key_fill_sdi`: `output1Id` (Fill) und `output2Id` (Key) sind Pflicht und muessen zur gleichen DeckLink-Device-ID gehoeren.
+- `video_sdi`: `output1Id` ist Pflicht.
+- `key_fill_ndi`: `ndiStreamName` ist Pflicht.
 - Format wird von der WebApp fix auf `1920x1080 @ 50fps` gesetzt.
 
 Bridge-Verhalten:
@@ -176,8 +178,11 @@ Empfohlene Response-Daten:
 ```json
 {
   "outputConfig": {
-    "outputKey": "stub",
-    "targets": { "output1Id": "sdi-1", "output2Id": "sdi-2" },
+    "outputKey": "key_fill_sdi",
+    "targets": {
+      "output1Id": "decklink-<device-id>-sdi-a",
+      "output2Id": "decklink-<device-id>-sdi-b"
+    },
     "format": { "width": 1920, "height": 1080, "fps": 50 }
   },
   "layers": [

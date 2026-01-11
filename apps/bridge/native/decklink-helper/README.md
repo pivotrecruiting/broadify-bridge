@@ -5,10 +5,12 @@ This directory is reserved for the native DeckLink helper binary.
 Planned behavior:
 - `decklink-helper --list` prints a JSON array of devices.
 - `decklink-helper --watch` prints JSON events (one per line) for hotplug.
+- `decklink-helper --playback` reads RGBA frames from stdin and outputs SDI key/fill.
 
 The helper must use the DeckLink SDK and follow the official samples:
 - Device enumeration via `CreateDeckLinkIteratorInstance`.
 - Hotplug via `IDeckLinkDiscovery::InstallDeviceNotifications`.
+- Output/keying via `IDeckLinkOutput` + `IDeckLinkKeyer` (external keying).
 
 The Bridge expects the helper at:
 - Dev: `apps/bridge/native/decklink-helper/decklink-helper`
@@ -28,3 +30,9 @@ Environment overrides:
 
 Requires:
 - Blackmagic Desktop Video (installs `DeckLinkAPI.framework`)
+
+Playback args (bridge-managed):
+- `--device <decklink-id>`
+- `--fill-port <device-id>-sdi-a`
+- `--key-port <device-id>-sdi-b`
+- `--width <int> --height <int> --fps <int>`

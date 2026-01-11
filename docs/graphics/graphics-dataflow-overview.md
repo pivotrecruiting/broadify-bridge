@@ -9,7 +9,7 @@ sequenceDiagram
   participant Renderer as ElectronRendererClient
   participant IPC as TCP IPC (127.0.0.1)
   participant Child as Electron Renderer Child
-  participant Output as StubOutputAdapter
+  participant Output as OutputAdapter
 
   Script->>Graphics: initialize + configure_outputs
   Script->>Graphics: sendLayer

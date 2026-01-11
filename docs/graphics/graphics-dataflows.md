@@ -10,7 +10,7 @@ Dieses Dokument beschreibt die internen Dataflows fuer Graphics in der Bridge (C
 2. Bridge `command-router` validiert und routed an `graphics-manager`.
 3. `graphics-manager` validiert Outputs/Layer, registriert Layer und triggert Rendering.
 4. Offscreen Renderer (Electron Child) rendert HTML/CSS zu RGBA und sendet Frames via TCP IPC.
-5. `graphics-manager` compositet Layer und liefert Frames an `output-adapter` (aktuell Stub).
+5. `graphics-manager` compositet Layer und liefert Frames an `output-adapter` (DeckLink Key&Fill oder Stub).
 
 ## Dataflows
 
@@ -98,6 +98,7 @@ flowchart LR
 - `apps/bridge/src/services/graphics/output-config-store.ts`
 - `apps/bridge/src/services/graphics/graphics-schemas.ts`
 - `apps/bridge/src/services/graphics/output-adapter.ts`
+- `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
 - `apps/bridge/src/services/graphics/composite.ts`
 - `apps/bridge/src/services/command-router.ts`
