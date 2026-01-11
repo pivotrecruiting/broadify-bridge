@@ -68,7 +68,7 @@ Payload:
 
 ```json
 {
-  "outputKey": "key_fill_sdi" | "key_fill_ndi" | "video_sdi" | "stub",
+  "outputKey": "key_fill_sdi" | "key_fill_ndi" | "video_sdi" | "video_hdmi" | "stub",
   "targets": {
     "output1Id": "string?",
     "output2Id": "string?",
@@ -81,7 +81,8 @@ Payload:
 Regeln:
 
 - `key_fill_sdi`: `output1Id` (Fill) und `output2Id` (Key) sind Pflicht und muessen zur gleichen DeckLink-Device-ID gehoeren.
-- `video_sdi`: `output1Id` ist Pflicht.
+- `video_sdi`: `output1Id` ist Pflicht (SDI Video Port, kein Key-Port).
+- `video_hdmi`: `output1Id` ist Pflicht (HDMI Video Port).
 - `key_fill_ndi`: `ndiStreamName` ist Pflicht.
 - Format wird von der WebApp fix auf `1920x1080 @ 50fps` gesetzt.
 

@@ -397,6 +397,7 @@ struct PlaybackConfig {
   int width = 0;
   int height = 0;
   int fps = 0;
+  std::string outputPortId;
   std::string fillPortId;
   std::string keyPortId;
 };
@@ -417,6 +418,10 @@ constexpr uint16_t kFrameTypeFrame = 1;
 constexpr uint16_t kFrameTypeShutdown = 2;
 constexpr size_t kFrameHeaderSize = 28;
 constexpr size_t kMaxQueuedFrames = 4;
+
+#ifndef bmdSupportedVideoModeDefault
+#define bmdSupportedVideoModeDefault 0
+#endif
 
 uint32_t readUint32BE(const uint8_t* data) {
   return (static_cast<uint32_t>(data[0]) << 24) |
@@ -714,6 +719,8 @@ bool findDisplayMode(IDeckLinkOutput* output,
                      int height,
                      int fps,
                      BMDPixelFormat pixelFormat,
+                     BMDVideoConnection connection,
+                     BMDSupportedVideoModeFlags modeFlags,
                      BMDDisplayMode& outDisplayMode,
                      BMDTimeValue& outFrameDuration,
                      BMDTimeScale& outTimeScale) {
@@ -750,11 +757,14 @@ bool findDisplayMode(IDeckLinkOutput* output,
     }
 
     bool supported = false;
-    HRESULT hr = output->DoesSupportVideoMode(bmdVideoConnectionUnspecified,
+    const BMDVideoConnection modeConnection =
+        connection == bmdVideoConnectionUnspecified ? bmdVideoConnectionUnspecified
+                                                    : connection;
+    HRESULT hr = output->DoesSupportVideoMode(modeConnection,
                                              mode->GetDisplayMode(),
                                              pixelFormat,
                                              bmdNoVideoOutputConversion,
-                                             bmdSupportedVideoModeKeying,
+                                             modeFlags,
                                              nullptr,
                                              &supported);
     if (FAILED(hr) || !supported) {
@@ -774,6 +784,102 @@ bool findDisplayMode(IDeckLinkOutput* output,
   return found;
 }
 
+bool parseOutputPort(const PlaybackConfig& config,
+                     std::string& outDeviceId,
+                     BMDVideoConnection& outConnection) {
+  if (config.outputPortId.empty()) {
+    return false;
+  }
+
+  const std::string sdiSuffix = "-sdi";
+  const std::string hdmiSuffix = "-hdmi";
+
+  if (config.outputPortId.size() <= sdiSuffix.size() ||
+      config.outputPortId.size() <= hdmiSuffix.size()) {
+    return false;
+  }
+
+  if (config.outputPortId.size() >= sdiSuffix.size() &&
+      config.outputPortId.compare(
+          config.outputPortId.size() - sdiSuffix.size(),
+          sdiSuffix.size(),
+          sdiSuffix) == 0) {
+    outDeviceId = config.outputPortId.substr(
+        0, config.outputPortId.size() - sdiSuffix.size());
+    if (outDeviceId.empty()) {
+      return false;
+    }
+    outConnection = bmdVideoConnectionSDI;
+    return true;
+  }
+
+  if (config.outputPortId.size() >= hdmiSuffix.size() &&
+      config.outputPortId.compare(
+          config.outputPortId.size() - hdmiSuffix.size(),
+          hdmiSuffix.size(),
+          hdmiSuffix) == 0) {
+    outDeviceId = config.outputPortId.substr(
+        0, config.outputPortId.size() - hdmiSuffix.size());
+    if (outDeviceId.empty()) {
+      return false;
+    }
+    outConnection = bmdVideoConnectionHDMI;
+    return true;
+  }
+
+  return false;
+}
+
+bool supportsOutputConnection(IDeckLink* deckLink,
+                              BMDVideoConnection connection) {
+  if (!deckLink || connection == bmdVideoConnectionUnspecified) {
+    return true;
+  }
+
+  IDeckLinkProfileAttributes* attributes = nullptr;
+  if (deckLink->QueryInterface(IID_IDeckLinkProfileAttributes,
+                               (void**)&attributes) != S_OK ||
+      !attributes) {
+    return false;
+  }
+
+  int64_t outputConnections = 0;
+  bool supported = false;
+  if (getIntAttribute(attributes, BMDDeckLinkVideoOutputConnections,
+                      outputConnections)) {
+    if (connection == bmdVideoConnectionSDI) {
+      supported = (outputConnections &
+                   (bmdVideoConnectionSDI | bmdVideoConnectionOpticalSDI)) != 0;
+    } else if (connection == bmdVideoConnectionHDMI) {
+      supported = (outputConnections & bmdVideoConnectionHDMI) != 0;
+    } else {
+      supported = (outputConnections & connection) != 0;
+    }
+  }
+
+  attributes->Release();
+  return supported;
+}
+
+bool configureOutputConnection(IDeckLink* deckLink,
+                               BMDVideoConnection connection) {
+  if (!deckLink || connection == bmdVideoConnectionUnspecified) {
+    return true;
+  }
+
+  IDeckLinkConfiguration* config = nullptr;
+  if (deckLink->QueryInterface(IID_IDeckLinkConfiguration,
+                               (void**)&config) != S_OK ||
+      !config) {
+    return false;
+  }
+
+  const HRESULT setResult =
+      config->SetInt(bmdDeckLinkConfigVideoOutputConnection, connection);
+  config->Release();
+  return setResult == S_OK;
+}
+
 int runPlayback(const PlaybackConfig& config) {
   if (config.deviceId.empty() || config.width <= 0 || config.height <= 0 ||
       config.fps <= 0) {
@@ -781,7 +887,12 @@ int runPlayback(const PlaybackConfig& config) {
     return 1;
   }
 
-  if (!config.fillPortId.empty() || !config.keyPortId.empty()) {
+  const bool useKeyer =
+      !config.fillPortId.empty() || !config.keyPortId.empty();
+  std::string outputDeviceId;
+  BMDVideoConnection outputConnection = bmdVideoConnectionUnspecified;
+
+  if (useKeyer) {
     const std::string expectedFill = config.deviceId + "-sdi-a";
     const std::string expectedKey = config.deviceId + "-sdi-b";
     if (config.fillPortId != expectedFill || config.keyPortId != expectedKey) {
@@ -789,6 +900,22 @@ int runPlayback(const PlaybackConfig& config) {
                 << std::endl;
       return 1;
     }
+    outputDeviceId = config.deviceId;
+    outputConnection = bmdVideoConnectionSDI;
+  } else if (!config.outputPortId.empty()) {
+    if (!parseOutputPort(config, outputDeviceId, outputConnection)) {
+      std::cerr << "Output port does not match the selected device."
+                << std::endl;
+      return 1;
+    }
+    if (outputDeviceId != config.deviceId) {
+      std::cerr << "Output port does not match the selected device."
+                << std::endl;
+      return 1;
+    }
+  } else {
+    std::cerr << "Output port is required for video playback." << std::endl;
+    return 1;
   }
 
   IDeckLink* deckLink = findDeckLinkById(config.deviceId);
@@ -806,29 +933,31 @@ int runPlayback(const PlaybackConfig& config) {
   }
 
   IDeckLinkKeyer* keyer = nullptr;
-  if (deckLink->QueryInterface(IID_IDeckLinkKeyer, (void**)&keyer) != S_OK ||
-      !keyer) {
-    std::cerr << "Failed to acquire IDeckLinkKeyer." << std::endl;
-    output->Release();
-    deckLink->Release();
-    return 1;
-  }
+  if (useKeyer) {
+    if (deckLink->QueryInterface(IID_IDeckLinkKeyer, (void**)&keyer) != S_OK ||
+        !keyer) {
+      std::cerr << "Failed to acquire IDeckLinkKeyer." << std::endl;
+      output->Release();
+      deckLink->Release();
+      return 1;
+    }
 
-  IDeckLinkProfileAttributes* attributes = nullptr;
-  bool supportsExternalKeying = false;
-  if (deckLink->QueryInterface(IID_IDeckLinkProfileAttributes,
-                               (void**)&attributes) == S_OK) {
-    getFlagAttribute(attributes, BMDDeckLinkSupportsExternalKeying,
-                     supportsExternalKeying);
-    attributes->Release();
-  }
+    IDeckLinkProfileAttributes* attributes = nullptr;
+    bool supportsExternalKeying = false;
+    if (deckLink->QueryInterface(IID_IDeckLinkProfileAttributes,
+                                 (void**)&attributes) == S_OK) {
+      getFlagAttribute(attributes, BMDDeckLinkSupportsExternalKeying,
+                       supportsExternalKeying);
+      attributes->Release();
+    }
 
-  if (!supportsExternalKeying) {
-    std::cerr << "External keying not supported by device." << std::endl;
-    keyer->Release();
-    output->Release();
-    deckLink->Release();
-    return 1;
+    if (!supportsExternalKeying) {
+      std::cerr << "External keying not supported by device." << std::endl;
+      keyer->Release();
+      output->Release();
+      deckLink->Release();
+      return 1;
+    }
   }
 
   BMDDisplayMode displayMode = bmdModeUnknown;
@@ -837,16 +966,44 @@ int runPlayback(const PlaybackConfig& config) {
   state.width = config.width;
   state.height = config.height;
 
+  const BMDSupportedVideoModeFlags modeFlags =
+      useKeyer ? bmdSupportedVideoModeKeying : bmdSupportedVideoModeDefault;
+
   if (!findDisplayMode(output,
                        config.width,
                        config.height,
                        config.fps,
                        state.pixelFormat,
+                       outputConnection,
+                       modeFlags,
                        displayMode,
                        state.frameDuration,
                        state.timeScale)) {
     std::cerr << "No supported display mode for requested format." << std::endl;
-    keyer->Release();
+    if (keyer) {
+      keyer->Release();
+    }
+    output->Release();
+    deckLink->Release();
+    return 1;
+  }
+
+  if (!supportsOutputConnection(deckLink, outputConnection)) {
+    std::cerr << "Requested output connection not supported by device."
+              << std::endl;
+    if (keyer) {
+      keyer->Release();
+    }
+    output->Release();
+    deckLink->Release();
+    return 1;
+  }
+
+  if (!configureOutputConnection(deckLink, outputConnection)) {
+    std::cerr << "Failed to set output connection." << std::endl;
+    if (keyer) {
+      keyer->Release();
+    }
     output->Release();
     deckLink->Release();
     return 1;
@@ -854,22 +1011,26 @@ int runPlayback(const PlaybackConfig& config) {
 
   if (output->EnableVideoOutput(displayMode, bmdVideoOutputFlagDefault) != S_OK) {
     std::cerr << "EnableVideoOutput failed." << std::endl;
-    keyer->Release();
+    if (keyer) {
+      keyer->Release();
+    }
     output->Release();
     deckLink->Release();
     return 1;
   }
 
-  if (keyer->Enable(true) != S_OK) {
-    std::cerr << "Keyer enable failed." << std::endl;
-    output->DisableVideoOutput();
-    keyer->Release();
-    output->Release();
-    deckLink->Release();
-    return 1;
-  }
-  if (keyer->SetLevel(255) != S_OK) {
-    std::cerr << "Keyer SetLevel failed." << std::endl;
+  if (keyer) {
+    if (keyer->Enable(true) != S_OK) {
+      std::cerr << "Keyer enable failed." << std::endl;
+      output->DisableVideoOutput();
+      keyer->Release();
+      output->Release();
+      deckLink->Release();
+      return 1;
+    }
+    if (keyer->SetLevel(255) != S_OK) {
+      std::cerr << "Keyer SetLevel failed." << std::endl;
+    }
   }
 
   DeckLinkPlaybackCallback* callback = new DeckLinkPlaybackCallback(&state);
@@ -960,12 +1121,16 @@ int runPlayback(const PlaybackConfig& config) {
   }
 
   output->StopScheduledPlayback(0, nullptr, 0);
-  keyer->Disable();
+  if (keyer) {
+    keyer->Disable();
+  }
   output->DisableVideoOutput();
   output->SetScheduledFrameCompletionCallback(nullptr);
 
   callback->Release();
-  keyer->Release();
+  if (keyer) {
+    keyer->Release();
+  }
   output->Release();
   deckLink->Release();
   return 0;
@@ -1082,6 +1247,10 @@ int main(int argc, char** argv) {
       }
       if (arg == "--key-port" && i + 1 < argc) {
         config.keyPortId = argv[++i];
+        continue;
+      }
+      if (arg == "--output-port" && i + 1 < argc) {
+        config.outputPortId = argv[++i];
         continue;
       }
     }

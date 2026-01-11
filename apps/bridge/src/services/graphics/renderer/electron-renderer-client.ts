@@ -95,16 +95,22 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
     const ipcPort = await this.startIpcServer();
 
-    console.log(`[GraphicsRenderer] Spawning: ${electronBinary} ${entry}`);
+    console.log(
+      `[GraphicsRenderer] Spawning: ${electronBinary} --graphics-renderer --renderer-entry ${entry}`
+    );
 
     const env = { ...process.env } as Record<string, string>;
     delete env.ELECTRON_RUN_AS_NODE;
     env.BRIDGE_GRAPHICS_IPC_PORT = String(ipcPort);
 
-    this.child = spawn(electronBinary, [entry], {
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env,
-    });
+    this.child = spawn(
+      electronBinary,
+      ["--graphics-renderer", "--renderer-entry", entry],
+      {
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+        env,
+      }
+    );
 
     this.child.stdout?.on("data", (data) => {
       const text = data.toString().trim();

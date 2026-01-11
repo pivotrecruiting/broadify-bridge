@@ -25,7 +25,7 @@
 
 ## Output-Konfiguration
 
-- [ ] Output-Key validieren (`key_fill_sdi`, `video_sdi`, `key_fill_ndi`, `stub`).
+- [ ] Output-Key validieren (`key_fill_sdi`, `video_sdi`, `video_hdmi`, `key_fill_ndi`, `stub`).
 - [ ] Format pruefen (aktuell fix: 1920x1080 @ 50fps).
 - [ ] Output-Adapter korrekt konfigurieren.
 
