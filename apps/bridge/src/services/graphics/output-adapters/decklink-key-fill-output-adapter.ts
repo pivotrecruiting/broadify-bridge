@@ -65,6 +65,8 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
   private canSend = true;
   private width = 0;
   private height = 0;
+  private lastWarningAt = 0;
+  private readonly warningThrottleMs = 5000;
 
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
@@ -148,6 +150,9 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       this.readyRejecter = null;
       this.readyResolver = null;
       this.child = null;
+      this.getLogger().error(
+        `[DeckLinkOutput] Helper exited (code ${code}, signal ${signal})`
+      );
     });
 
     await this.readyPromise;
@@ -160,6 +165,7 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     _config: GraphicsOutputConfigT
   ): Promise<void> {
     if (!this.child || !this.child.stdin) {
+      this.logThrottledWarning("Output helper not running");
       return;
     }
     if (this.readyPromise) {
@@ -178,12 +184,18 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
 
     if (this.width && this.height) {
       if (frame.width !== this.width || frame.height !== this.height) {
+        this.logThrottledWarning(
+          `Frame size mismatch: ${frame.width}x${frame.height}`
+        );
         return;
       }
     }
 
     const expectedLength = frame.width * frame.height * 4;
     if (frame.rgba.length !== expectedLength) {
+      this.logThrottledWarning(
+        `Frame buffer length mismatch: ${frame.rgba.length} !== ${expectedLength}`
+      );
       return;
     }
 
@@ -267,5 +279,14 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     } catch {
       return console;
     }
+  }
+
+  private logThrottledWarning(message: string): void {
+    const now = Date.now();
+    if (now - this.lastWarningAt < this.warningThrottleMs) {
+      return;
+    }
+    this.lastWarningAt = now;
+    this.getLogger().warn(`[DeckLinkOutput] ${message}`);
   }
 }

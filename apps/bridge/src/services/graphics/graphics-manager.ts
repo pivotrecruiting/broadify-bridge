@@ -87,6 +87,9 @@ export class GraphicsManager {
   private sending = false;
   private droppedFrames = 0;
   private framesSent = 0;
+  private outputErrors = 0;
+  private lastOutputLogAt = 0;
+  private lastOutputErrorLogAt = 0;
   private activePreset: GraphicsActivePresetT | null = null;
   private presetQueue: GraphicsQueuedPresetT[] = [];
 
@@ -203,6 +206,9 @@ export class GraphicsManager {
       this.activePreset.presetId !== prepared.presetId
     ) {
       this.enqueuePresetLayer(prepared, durationMs);
+      getBridgeContext().logger.info(
+        `[Graphics] Preset queued: ${prepared.presetId}`
+      );
       return;
     }
 
@@ -240,6 +246,9 @@ export class GraphicsManager {
           expiresAt: null,
           timer: null,
         };
+        getBridgeContext().logger.info(
+          `[Graphics] Preset activated: ${prepared.presetId}`
+        );
       } else {
         this.activePreset.layerIds.add(prepared.layerId);
       }
@@ -556,6 +565,24 @@ export class GraphicsManager {
       );
       this.framesSent++;
       this.maybeStartPresetTimer(layers.map((layer) => layer.layerId));
+
+      const now = Date.now();
+      if (now - this.lastOutputLogAt >= 5000) {
+        this.lastOutputLogAt = now;
+        getBridgeContext().logger.info(
+          `[Graphics] Output ok: frames=${this.framesSent} dropped=${this.droppedFrames}`
+        );
+      }
+    } catch (error) {
+      this.outputErrors++;
+      const now = Date.now();
+      if (now - this.lastOutputErrorLogAt >= 5000) {
+        this.lastOutputErrorLogAt = now;
+        const message = error instanceof Error ? error.message : String(error);
+        getBridgeContext().logger.error(
+          `[Graphics] Output send failed: ${message}`
+        );
+      }
     } finally {
       this.sending = false;
     }
@@ -727,6 +754,7 @@ export class GraphicsManager {
     }
 
     const layerIds = Array.from(this.activePreset.layerIds);
+    const presetId = this.activePreset.presetId;
     this.clearActivePreset();
 
     for (const layerId of layerIds) {
@@ -738,6 +766,8 @@ export class GraphicsManager {
         this.categoryToLayer.delete(layer.category);
       }
     }
+
+    getBridgeContext().logger.info(`[Graphics] Preset expired: ${presetId}`);
 
     if (this.presetQueue.length > 0) {
       await this.activateNextPreset();
