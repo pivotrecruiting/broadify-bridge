@@ -93,12 +93,14 @@ flowchart LR
 
 - Composite: `apps/bridge/src/services/graphics/composite.ts`
 - Output Interface: `apps/bridge/src/services/graphics/output-adapter.ts`
-- Aktuell: Stub Output `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
+- Aktuell: DeckLink Key&Fill + Stub Output
+  - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
+  - `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
 
 ## Endgeraete (Output)
 
 - SDI/NDI werden ueber `output-adapter` abstraktiert.
-- In Production wird hier der echte SDI/NDI Adapter eingeklinkt (noch nicht implementiert).
+- SDI Key&Fill ist ueber den DeckLink Adapter implementiert.
 
 ## Relevante Dateien (Kurz)
 

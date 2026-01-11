@@ -75,6 +75,7 @@ export type PortDescriptorT = {
   displayName: string; // e.g. "SDI-A", "HDMI-OUT"
   type: "sdi" | "hdmi" | "usb" | "displayport" | "thunderbolt";
   direction: "input" | "output" | "bidirectional";
+  role?: "fill" | "key" | "video";
   capabilities: PortCapabilitiesT;
   status: PortStatusT;
 };
@@ -102,6 +103,9 @@ export type OutputDeviceT = {
   name: string;
   type: "decklink" | "capture" | "connection";
   available: boolean;
+  deviceId?: string;
+  portType?: PortDescriptorT["type"];
+  portRole?: PortDescriptorT["role"];
 };
 
 /**

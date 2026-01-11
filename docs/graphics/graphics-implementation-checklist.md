@@ -25,7 +25,7 @@
 
 ## Output-Konfiguration
 
-- [ ] Output-Key validieren (aktuell nur stub-Adapter unterstützt).
+- [ ] Output-Key validieren (`key_fill_sdi`, `video_sdi`, `key_fill_ndi`, `stub`).
 - [ ] Format pruefen (aktuell fix: 1920x1080 @ 50fps).
 - [ ] Output-Adapter korrekt konfigurieren.
 
@@ -46,6 +46,7 @@
 
 ## Output Adapter
 
+- [ ] DeckLink Key&Fill Adapter (SDI, external keying).
 - [ ] Stub-Adapter implementiert (keine echte Ausgabe).
 
 ## Diagnostics

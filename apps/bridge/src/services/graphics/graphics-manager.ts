@@ -8,6 +8,7 @@ import type {
   GraphicsOutputKeyT,
   GraphicsTargetsT,
 } from "./graphics-schemas.js";
+import type { DeviceDescriptorT } from "../../types.js";
 import {
   GraphicsConfigureOutputsSchema,
   GraphicsSendSchema,
@@ -18,8 +19,10 @@ import {
 import { outputConfigStore } from "./output-config-store.js";
 import { validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
+import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { deviceCache } from "../device-cache.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
 import type {
@@ -29,7 +32,10 @@ import type {
 
 const MAX_ACTIVE_LAYERS = 3;
 
-const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [];
+const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
+  "key_fill_sdi",
+  "key_fill_ndi",
+];
 
 type GraphicsLayerStateT = {
   layerId: string;
@@ -305,6 +311,9 @@ export class GraphicsManager {
   private selectOutputAdapter(
     _outputKey: GraphicsOutputKeyT
   ): GraphicsOutputAdapter {
+    if (_outputKey === "key_fill_sdi") {
+      return new DecklinkKeyFillOutputAdapter();
+    }
     return new StubOutputAdapter();
   }
 
@@ -341,10 +350,72 @@ export class GraphicsManager {
   }
 
   private async validateOutputTargets(
-    _outputKey: GraphicsOutputKeyT,
-    _targets: GraphicsTargetsT
+    outputKey: GraphicsOutputKeyT,
+    targets: GraphicsTargetsT
   ): Promise<void> {
-    // Output target validation placeholder
+    if (outputKey === "key_fill_sdi") {
+      if (!targets.output1Id || !targets.output2Id) {
+        throw new Error("Output 1 and Output 2 are required for Key & Fill SDI");
+      }
+      if (targets.output1Id === targets.output2Id) {
+        throw new Error("Output 1 and Output 2 must be different");
+      }
+
+      const devices = await deviceCache.getDevices();
+      const output1Match = this.findPort(devices, targets.output1Id);
+      const output2Match = this.findPort(devices, targets.output2Id);
+      if (!output1Match || !output2Match) {
+        throw new Error("Invalid output ports selected");
+      }
+      if (output1Match.device.id !== output2Match.device.id) {
+        throw new Error("Output ports must belong to the same device");
+      }
+      if (output1Match.port.type !== "sdi" || output2Match.port.type !== "sdi") {
+        throw new Error("Key & Fill SDI requires SDI output ports");
+      }
+      if (output1Match.port.role !== "fill") {
+        throw new Error("Output 1 must be the SDI Fill port");
+      }
+      if (output2Match.port.role !== "key") {
+        throw new Error("Output 2 must be the SDI Key port");
+      }
+      if (!output1Match.port.status.available || !output2Match.port.status.available) {
+        throw new Error("Selected output ports are not available");
+      }
+    }
+
+    if (outputKey === "video_sdi") {
+      if (!targets.output1Id) {
+        throw new Error("Output 1 is required for Video SDI");
+      }
+      const devices = await deviceCache.getDevices();
+      const output1Match = this.findPort(devices, targets.output1Id);
+      if (!output1Match) {
+        throw new Error("Invalid output port selected");
+      }
+      if (output1Match.port.type !== "sdi") {
+        throw new Error("Video SDI requires an SDI output port");
+      }
+      if (output1Match.port.role === "key") {
+        throw new Error("Video SDI cannot use the SDI Key port");
+      }
+      if (!output1Match.port.status.available) {
+        throw new Error("Selected output port is not available");
+      }
+    }
+  }
+
+  private findPort(
+    devices: DeviceDescriptorT[],
+    portId: string
+  ): { device: DeviceDescriptorT; port: DeviceDescriptorT["ports"][number] } | null {
+    for (const device of devices) {
+      const port = device.ports.find((entry) => entry.id === portId);
+      if (port) {
+        return { device, port };
+      }
+    }
+    return null;
   }
 
   private startTicker(fps: number): void {

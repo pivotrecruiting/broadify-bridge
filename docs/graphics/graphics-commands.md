@@ -28,10 +28,10 @@
 {
   "command": "graphics_configure_outputs",
   "payload": {
-    "outputKey": "stub",
+    "outputKey": "key_fill_sdi",
     "targets": {
-      "output1Id": "sdi-1",
-      "output2Id": "sdi-2"
+      "output1Id": "decklink-<device-id>-sdi-a",
+      "output2Id": "decklink-<device-id>-sdi-b"
     },
     "format": {
       "width": 1920,
@@ -104,8 +104,11 @@
 ```json
 {
   "outputConfig": {
-    "outputKey": "stub",
-    "targets": { "output1Id": "sdi-1", "output2Id": "sdi-2" },
+    "outputKey": "key_fill_sdi",
+    "targets": {
+      "output1Id": "decklink-<device-id>-sdi-a",
+      "output2Id": "decklink-<device-id>-sdi-b"
+    },
     "format": { "width": 1920, "height": 1080, "fps": 50 }
   },
   "layers": [

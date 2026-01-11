@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-export const GraphicsOutputKeySchema = z.enum(["stub"]);
+export const GraphicsOutputKeySchema = z.enum([
+  "stub",
+  "key_fill_sdi",
+  "key_fill_ndi",
+  "video_sdi",
+]);
 
 export const GraphicsFormatSchema = z.object({
   width: z.literal(1920),
