@@ -791,12 +791,27 @@ bool parseOutputPort(const PlaybackConfig& config,
     return false;
   }
 
+  const std::string sdiFillSuffix = "-sdi-a";
   const std::string sdiSuffix = "-sdi";
   const std::string hdmiSuffix = "-hdmi";
 
   if (config.outputPortId.size() <= sdiSuffix.size() ||
       config.outputPortId.size() <= hdmiSuffix.size()) {
     return false;
+  }
+
+  if (config.outputPortId.size() >= sdiFillSuffix.size() &&
+      config.outputPortId.compare(
+          config.outputPortId.size() - sdiFillSuffix.size(),
+          sdiFillSuffix.size(),
+          sdiFillSuffix) == 0) {
+    outDeviceId = config.outputPortId.substr(
+        0, config.outputPortId.size() - sdiFillSuffix.size());
+    if (outDeviceId.empty()) {
+      return false;
+    }
+    outConnection = bmdVideoConnectionSDI;
+    return true;
   }
 
   if (config.outputPortId.size() >= sdiSuffix.size() &&
