@@ -17,6 +17,11 @@ The Bridge expects the helper at:
 - Dev: `apps/bridge/native/decklink-helper/decklink-helper`
 - Prod: `${process.resourcesPath}/native/decklink-helper/decklink-helper`
 
+Release workflow (best practice):
+- Build helper binaries locally (macOS arm64 + x64) using the SDK.
+- Publish the binaries as artifacts (no SDK shipped).
+- CI downloads artifacts via `DECKLINK_HELPER_URL_*` and verifies SHA256.
+
 Security note: Keep SDK calls in the helper to isolate crashes and blocking calls.
 
 ## Build (macOS)
