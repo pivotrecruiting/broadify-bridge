@@ -584,6 +584,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
   }
 
   state.nextFrameTime += state.frameDuration;
+  frame->Release();
   return true;
 }
 
@@ -621,9 +622,7 @@ public:
 
   HRESULT ScheduledFrameCompleted(IDeckLinkVideoFrame* completedFrame,
                                   BMDOutputFrameCompletionResult) override {
-    if (completedFrame) {
-      completedFrame->Release();
-    }
+    (void)completedFrame;
     if (!playbackState) {
       return S_OK;
     }

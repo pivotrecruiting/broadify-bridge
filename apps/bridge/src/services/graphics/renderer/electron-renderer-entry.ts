@@ -127,7 +127,7 @@ function buildHtmlDocument(options: {
       const renderTemplate = (values) => {
         // Regex needs escaped braces for literal matching
         // eslint-disable-next-line no-useless-escape
-        return template.replace(/{{s*([w.-]+)s*}}/g, (match, key) => {
+        return template.replace(/{{\\s*([\\w.-]+)\\s*}}/g, (match, key) => {
           const value = key.split(".").reduce((acc, part) => {
             if (acc && typeof acc === "object" && part in acc) {
               return acc[part];
