@@ -7,6 +7,7 @@ export const GraphicsOutputKeySchema = z.enum([
   "key_fill_sdi",
   "key_fill_ndi",
   "video_sdi",
+  "video_hdmi",
 ]);
 
 export const GraphicsFormatSchema = z.object({

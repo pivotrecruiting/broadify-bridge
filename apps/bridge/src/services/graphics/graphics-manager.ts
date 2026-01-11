@@ -22,6 +22,7 @@ import { outputConfigStore } from "./output-config-store.js";
 import { validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
+import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { deviceCache } from "../device-cache.js";
@@ -404,6 +405,9 @@ export class GraphicsManager {
     if (_outputKey === "key_fill_sdi") {
       return new DecklinkKeyFillOutputAdapter();
     }
+    if (_outputKey === "video_sdi" || _outputKey === "video_hdmi") {
+      return new DecklinkVideoOutputAdapter();
+    }
     return new StubOutputAdapter();
   }
 
@@ -488,6 +492,23 @@ export class GraphicsManager {
       }
       if (output1Match.port.role === "key") {
         throw new Error("Video SDI cannot use the SDI Key port");
+      }
+      if (!output1Match.port.status.available) {
+        throw new Error("Selected output port is not available");
+      }
+    }
+
+    if (outputKey === "video_hdmi") {
+      if (!targets.output1Id) {
+        throw new Error("Output 1 is required for Video HDMI");
+      }
+      const devices = await deviceCache.getDevices();
+      const output1Match = this.findPort(devices, targets.output1Id);
+      if (!output1Match) {
+        throw new Error("Invalid output port selected");
+      }
+      if (output1Match.port.type !== "hdmi") {
+        throw new Error("Video HDMI requires an HDMI output port");
       }
       if (!output1Match.port.status.available) {
         throw new Error("Selected output port is not available");
