@@ -73,7 +73,6 @@ function transformDevicesToOutputs(
 ): BridgeOutputsT {
   const output1Devices: OutputDeviceT[] = [];
   const output2Devices: OutputDeviceT[] = [];
-  const connectionTypeMap = new Map<string, OutputDeviceT>();
   const mapDeviceTypeToOutputType = (
     deviceType: DeviceDescriptorT["type"]
   ): OutputDeviceT["type"] => {
@@ -83,57 +82,36 @@ function transformDevicesToOutputs(
     return "capture";
   };
 
-  // Process each device
   for (const device of devices) {
-    // Add device to output1 (Hardware Devices)
-    const hasOutputPort = device.ports.some(
-      (port) => port.direction === "output" || port.direction === "bidirectional"
-    );
-    const hasAvailableOutputPort = device.ports.some(
-      (port) =>
-        (port.direction === "output" || port.direction === "bidirectional") &&
-        port.status.available
-    );
-
-    if (hasOutputPort) {
-      output1Devices.push({
-        id: device.id,
-        name: device.displayName,
-        type: mapDeviceTypeToOutputType(device.type),
-        available:
-          device.status.present &&
-          device.status.ready &&
-          !device.status.inUse &&
-          hasAvailableOutputPort,
-      });
-    }
-
-    // Collect connection types from ports (for output2)
     for (const port of device.ports) {
-      const connectionType = port.type;
       const outputCapable =
         port.direction === "output" || port.direction === "bidirectional";
       if (!outputCapable) {
         continue;
       }
-      const available = port.status.available;
-      const existing = connectionTypeMap.get(connectionType);
 
-      if (!existing) {
-        connectionTypeMap.set(connectionType, {
-          id: connectionType,
-          name: port.displayName,
-          type: "connection",
-          available,
-        });
-      } else if (!existing.available && available) {
-        existing.available = true;
-        existing.name = port.displayName;
+      const available =
+        device.status.present &&
+        device.status.ready &&
+        !device.status.inUse &&
+        port.status.available;
+      const outputEntry: OutputDeviceT = {
+        id: port.id,
+        name: `${device.displayName} - ${port.displayName}`,
+        type: mapDeviceTypeToOutputType(device.type),
+        available,
+        deviceId: device.id,
+        portType: port.type,
+        portRole: port.role,
+      };
+
+      if (port.role === "key") {
+        output2Devices.push(outputEntry);
+      } else {
+        output1Devices.push(outputEntry);
       }
     }
   }
-
-  output2Devices.push(...connectionTypeMap.values());
 
   return {
     output1: output1Devices,
