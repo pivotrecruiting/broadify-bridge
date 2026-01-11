@@ -516,6 +516,8 @@ struct PlaybackState {
   FrameQueue queue;
   std::vector<uint8_t> lastFrame;
   bool hasLastFrame = false;
+  std::chrono::steady_clock::time_point lastBufferedLog =
+      std::chrono::steady_clock::now();
 };
 
 void convertRgbaToArgbRows(const uint8_t* src,
@@ -578,9 +580,23 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
   HRESULT scheduled = state.output->ScheduleVideoFrame(
       frame, state.nextFrameTime, state.frameDuration, state.timeScale);
   if (scheduled != S_OK) {
-    std::cerr << "ScheduleVideoFrame failed." << std::endl;
+    std::cerr << "ScheduleVideoFrame failed. HRESULT=0x" << std::hex
+              << static_cast<uint32_t>(scheduled) << std::dec << std::endl;
     frame->Release();
     return false;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+  if (now - state.lastBufferedLog >= std::chrono::seconds(2)) {
+    uint32_t bufferedCount = 0;
+    HRESULT countResult = state.output->GetBufferedVideoFrameCount(&bufferedCount);
+    if (countResult == S_OK) {
+      std::cerr << "Buffered video frame count: " << bufferedCount << std::endl;
+    } else {
+      std::cerr << "GetBufferedVideoFrameCount failed. HRESULT=0x" << std::hex
+                << static_cast<uint32_t>(countResult) << std::dec << std::endl;
+    }
+    state.lastBufferedLog = now;
   }
 
   state.nextFrameTime += state.frameDuration;

@@ -211,10 +211,6 @@ export class RelayClient {
    * Handle command from relay
    */
   private async handleCommand(message: RelayCommandMessage): Promise<void> {
-    this.logger.info(
-      `Received command: ${message.command} (requestId: ${message.requestId})`
-    );
-
     // Log graphics commands with detailed payload
     if (message.command.startsWith("graphics_")) {
       this.logger.info(`Graphics command: ${message.command}`);
