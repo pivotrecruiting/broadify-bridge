@@ -29,9 +29,79 @@ import type {
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "url";
 import * as Sentry from "@sentry/electron";
 
 dotenv.config();
+
+function getArgValue(flag: string): string | null {
+  const index = process.argv.findIndex((arg) => arg === flag);
+  if (index === -1) {
+    return null;
+  }
+  const value = process.argv[index + 1];
+  return value && !value.startsWith("--") ? value : null;
+}
+
+function getArgMap(argv: string[]): Map<string, string | true> {
+  const map = new Map<string, string | true>();
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg.startsWith("--")) {
+      continue;
+    }
+    const eqIndex = arg.indexOf("=");
+    if (eqIndex > -1) {
+      const key = arg.slice(2, eqIndex);
+      const value = arg.slice(eqIndex + 1);
+      map.set(key, value);
+      continue;
+    }
+    const next = argv[i + 1];
+    if (next && !next.startsWith("--")) {
+      map.set(arg.slice(2), next);
+      i += 1;
+    } else {
+      map.set(arg.slice(2), true);
+    }
+  }
+  return map;
+}
+
+function resolveRendererEntry(argv: string[]): string | null {
+  const args = getArgMap(argv);
+  const explicit = args.get("renderer-entry");
+  if (typeof explicit === "string" && explicit.length > 0) {
+    return explicit;
+  }
+  const direct = getArgValue("--renderer-entry");
+  if (direct) {
+    return direct;
+  }
+  return argv.find((arg) => arg.endsWith("electron-renderer-entry.js")) || null;
+}
+
+const argMap = getArgMap(process.argv);
+const rendererEntry = resolveRendererEntry(process.argv);
+const isRendererProcess =
+  argMap.has("graphics-renderer") || Boolean(rendererEntry);
+
+if (isRendererProcess) {
+  if (!rendererEntry) {
+    console.error("[GraphicsRenderer] Missing --renderer-entry argument");
+    app.exit(1);
+  } else {
+    console.log(
+      `[GraphicsRenderer] Renderer mode enabled (entry: ${rendererEntry})`
+    );
+    const rendererUrl = pathToFileURL(rendererEntry).toString();
+    import(rendererUrl).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
+      app.exit(1);
+    });
+  }
+}
 
 // Initialize Sentry in Main Process (before app.on('ready'))
 // This enables both Main and Renderer process error tracking
@@ -249,12 +319,13 @@ function buildWebAppUrl(bridgeId: string): string | null {
 }
 
 // Single Instance Lock: Prevent multiple instances of the app
-const gotTheLock = app.requestSingleInstanceLock();
+if (!isRendererProcess) {
+  const gotTheLock = app.requestSingleInstanceLock();
 
-if (!gotTheLock) {
-  // Another instance is already running, quit this one
-  app.quit();
-} else {
+  if (!gotTheLock) {
+    // Another instance is already running, quit this one
+    app.quit();
+  } else {
   // Handle second instance: focus existing window
   app.on("second-instance", () => {
     if (mainWindow) {
@@ -912,4 +983,5 @@ if (!gotTheLock) {
       await bridgeProcessManager.stop();
     });
   });
+  }
 }
