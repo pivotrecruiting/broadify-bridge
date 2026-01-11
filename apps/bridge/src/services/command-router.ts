@@ -32,6 +32,7 @@ export type RelayCommand =
   | "graphics_update_values"
   | "graphics_update_layout"
   | "graphics_remove"
+  | "graphics_remove_preset"
   | "graphics_list";
 
 /**
@@ -403,6 +404,21 @@ export class CommandRouter {
           }
 
           await graphicsManager.removeLayer(payload);
+          return {
+            success: true,
+            data: {},
+          };
+        }
+
+        case "graphics_remove_preset": {
+          if (!payload) {
+            return {
+              success: false,
+              error: "Missing payload for graphics_remove_preset",
+            };
+          }
+
+          await graphicsManager.removePreset(payload);
           return {
             success: true,
             data: {},
