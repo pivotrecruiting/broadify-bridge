@@ -135,8 +135,30 @@ export class GraphicsManager {
     if (persisted) {
       this.outputConfig = persisted;
       this.outputAdapter = this.selectOutputAdapter(persisted.outputKey);
-      await this.outputAdapter.configure(persisted);
-      this.startTicker(persisted.format.fps);
+      try {
+        await this.outputAdapter.configure(persisted);
+        this.startTicker(persisted.format.fps);
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        getBridgeContext().logger.error(
+          `[Graphics] Failed to apply persisted output config, falling back to stub: ${errorMessage}`
+        );
+        this.outputConfig = null;
+        this.outputAdapter = new StubOutputAdapter();
+        try {
+          await outputConfigStore.clear();
+          getBridgeContext().logger.warn(
+            "[Graphics] Cleared persisted output config after startup failure"
+          );
+        } catch (clearError) {
+          const clearMessage =
+            clearError instanceof Error ? clearError.message : String(clearError);
+          getBridgeContext().logger.warn(
+            `[Graphics] Failed to clear persisted output config: ${clearMessage}`
+          );
+        }
+      }
     }
 
     this.initialized = true;
