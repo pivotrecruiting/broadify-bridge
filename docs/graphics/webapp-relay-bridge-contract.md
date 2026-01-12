@@ -84,7 +84,8 @@ Regeln:
 - `video_sdi`: `output1Id` ist Pflicht (SDI Video Port, kein Key-Port).
 - `video_hdmi`: `output1Id` ist Pflicht (HDMI Video Port).
 - `key_fill_ndi`: `ndiStreamName` ist Pflicht.
-- Format wird von der WebApp fix auf `1920x1080 @ 50fps` gesetzt.
+- Format wird von der WebApp fix auf `1920x1080` gesetzt.
+- `fps: 50` steht fuer 1080p50, `fps: 25` steht fuer 1080i50.
 
 Bridge-Verhalten:
 

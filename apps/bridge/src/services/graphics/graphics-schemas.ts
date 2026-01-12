@@ -13,7 +13,8 @@ export const GraphicsOutputKeySchema = z.enum([
 export const GraphicsFormatSchema = z.object({
   width: z.literal(1920),
   height: z.literal(1080),
-  fps: z.literal(50),
+  // 25 fps represents 1080i50 timing.
+  fps: z.union([z.literal(50), z.literal(25)]),
 });
 
 export const GraphicsTargetsSchema = z

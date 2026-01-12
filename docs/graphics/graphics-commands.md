@@ -42,6 +42,8 @@
 }
 ```
 
+Hinweis: `fps: 25` steht fuer 1080i50, `fps: 50` steht fuer 1080p50.
+
 ## graphics_send
 
 ```json
