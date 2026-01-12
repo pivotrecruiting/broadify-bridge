@@ -7,7 +7,7 @@ export type CompositeLayerT = {
 const CHANNELS = 4;
 
 /**
- * Composite multiple RGBA layers into a single RGBA buffer.
+ * Composite premultiplied RGBA layers into a single premultiplied RGBA buffer.
  */
 export function compositeLayers(
   layers: CompositeLayerT[],
@@ -27,13 +27,6 @@ export function compositeLayers(
         continue;
       }
 
-      const dstA = output[i + 3] / 255;
-      const outA = srcA + dstA * (1 - srcA);
-
-      if (outA <= 0) {
-        continue;
-      }
-
       const srcR = layer.buffer[i];
       const srcG = layer.buffer[i + 1];
       const srcB = layer.buffer[i + 2];
@@ -41,10 +34,13 @@ export function compositeLayers(
       const dstR = output[i];
       const dstG = output[i + 1];
       const dstB = output[i + 2];
+      const dstA = output[i + 3] / 255;
+      const invSrcA = 1 - srcA;
 
-      const outR = (srcR * srcA + dstR * dstA * (1 - srcA)) / outA;
-      const outG = (srcG * srcA + dstG * dstA * (1 - srcA)) / outA;
-      const outB = (srcB * srcA + dstB * dstA * (1 - srcA)) / outA;
+      const outR = srcR + dstR * invSrcA;
+      const outG = srcG + dstG * invSrcA;
+      const outB = srcB + dstB * invSrcA;
+      const outA = srcA + dstA * invSrcA;
 
       output[i] = Math.round(outR);
       output[i + 1] = Math.round(outG);
@@ -57,7 +53,7 @@ export function compositeLayers(
 }
 
 /**
- * Apply a solid background to an RGBA buffer.
+ * Apply a solid background to a premultiplied RGBA buffer.
  */
 export function applyBackground(
   buffer: Buffer,
@@ -70,9 +66,9 @@ export function applyBackground(
     }
 
     const invAlpha = 1 - alpha;
-    buffer[i] = Math.round(buffer[i] * alpha + color.r * invAlpha);
-    buffer[i + 1] = Math.round(buffer[i + 1] * alpha + color.g * invAlpha);
-    buffer[i + 2] = Math.round(buffer[i + 2] * alpha + color.b * invAlpha);
+    buffer[i] = Math.round(buffer[i] + color.r * invAlpha);
+    buffer[i + 1] = Math.round(buffer[i + 1] + color.g * invAlpha);
+    buffer[i + 2] = Math.round(buffer[i + 2] + color.b * invAlpha);
     buffer[i + 3] = 255;
   }
 

@@ -20,6 +20,12 @@ const FRAME_VERSION = 1;
 const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
+const VIDEO_PIXEL_FORMAT_PRIORITY = [
+  "10bit_yuv",
+  "8bit_yuv",
+  "8bit_bgra",
+  "8bit_argb",
+];
 
 function parseDecklinkPortId(portId: string): DecklinkPortInfo | null {
   if (portId.endsWith("-sdi-a")) {
@@ -111,10 +117,16 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
         String(config.format.height),
         "--fps",
         String(config.format.fps),
+        "--pixel-format-priority",
+        VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
       }
+    );
+
+    this.getLogger().info(
+      `[DeckLinkOutput] Pixel format priority: ${VIDEO_PIXEL_FORMAT_PRIORITY.join(",")}`
     );
 
     this.child.stdout?.on("data", (data) => this.handleStdout(data));

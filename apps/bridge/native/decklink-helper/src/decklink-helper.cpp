@@ -130,6 +130,26 @@ std::string pixelFormatLabel(BMDPixelFormat format) {
   }
 }
 
+bool parsePixelFormatLabel(const std::string& value, BMDPixelFormat& outFormat) {
+  if (value == "8bit_yuv" || value == "yuv8") {
+    outFormat = bmdFormat8BitYUV;
+    return true;
+  }
+  if (value == "10bit_yuv" || value == "yuv10") {
+    outFormat = bmdFormat10BitYUV;
+    return true;
+  }
+  if (value == "8bit_argb" || value == "argb") {
+    outFormat = bmdFormat8BitARGB;
+    return true;
+  }
+  if (value == "8bit_bgra" || value == "bgra") {
+    outFormat = bmdFormat8BitBGRA;
+    return true;
+  }
+  return false;
+}
+
 struct PlaybackConfig;
 
 bool parseOutputPort(const PlaybackConfig& config,
@@ -457,6 +477,7 @@ struct PlaybackConfig {
   std::string outputPortId;
   std::string fillPortId;
   std::string keyPortId;
+  std::vector<BMDPixelFormat> pixelFormatPriority;
 };
 
 struct ModeListConfig {
@@ -575,6 +596,8 @@ private:
 struct PlaybackState {
   IDeckLinkOutput* output = nullptr;
   BMDPixelFormat pixelFormat = bmdFormat8BitARGB;
+  BMDPixelFormat sourcePixelFormat = bmdFormat8BitBGRA;
+  BMDColorspace colorspace = bmdColorspaceUnknown;
   BMDTimeValue frameDuration = 0;
   BMDTimeScale timeScale = 0;
   BMDTimeValue nextFrameTime = 0;
@@ -586,15 +609,21 @@ struct PlaybackState {
   FrameQueue queue;
   std::vector<uint8_t> lastFrame;
   bool hasLastFrame = false;
+  IDeckLinkVideoConversion* converter = nullptr;
   std::chrono::steady_clock::time_point lastBufferedLog =
       std::chrono::steady_clock::now();
 };
 
-void convertRgbaToArgbRows(const uint8_t* src,
-                           uint8_t* dst,
-                           int width,
-                           int height,
-                           int dstRowBytes) {
+bool isYuvPixelFormat(BMDPixelFormat format) {
+  return format == bmdFormat8BitYUV || format == bmdFormat10BitYUV;
+}
+
+bool convertRgbaToOutputRows(const uint8_t* src,
+                             uint8_t* dst,
+                             int width,
+                             int height,
+                             int dstRowBytes,
+                             BMDPixelFormat pixelFormat) {
   const int srcRowBytes = width * 4;
   for (int y = 0; y < height; ++y) {
     const uint8_t* srcRow = src + y * srcRowBytes;
@@ -605,12 +634,25 @@ void convertRgbaToArgbRows(const uint8_t* src,
       const uint8_t g = srcRow[offset + 1];
       const uint8_t b = srcRow[offset + 2];
       const uint8_t a = srcRow[offset + 3];
-      dstRow[offset] = a;
-      dstRow[offset + 1] = r;
-      dstRow[offset + 2] = g;
-      dstRow[offset + 3] = b;
+      switch (pixelFormat) {
+        case bmdFormat8BitARGB:
+          dstRow[offset] = a;
+          dstRow[offset + 1] = r;
+          dstRow[offset + 2] = g;
+          dstRow[offset + 3] = b;
+          break;
+        case bmdFormat8BitBGRA:
+          dstRow[offset] = b;
+          dstRow[offset + 1] = g;
+          dstRow[offset + 2] = r;
+          dstRow[offset + 3] = a;
+          break;
+        default:
+          return false;
+      }
     }
   }
+  return true;
 }
 
 bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) {
@@ -618,41 +660,105 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
     return false;
   }
 
-  IDeckLinkMutableVideoFrame* frame = nullptr;
-  int32_t rowBytes = 0;
-  if (state.output->RowBytesForPixelFormat(state.pixelFormat,
-                                           state.width,
-                                           &rowBytes) != S_OK) {
-    return false;
-  }
+  IDeckLinkVideoFrame* scheduledFrame = nullptr;
 
-  if (state.output->CreateVideoFrame(state.width,
-                                     state.height,
-                                     rowBytes,
-                                     state.pixelFormat,
-                                     bmdFrameFlagDefault,
-                                     &frame) != S_OK) {
-    return false;
-  }
+  if (isYuvPixelFormat(state.pixelFormat)) {
+    if (!state.converter) {
+      state.converter = CreateVideoConversionInstance();
+      if (!state.converter) {
+        std::cerr << "Failed to create video conversion instance." << std::endl;
+        return false;
+      }
+    }
 
-  void* frameBytes = nullptr;
-  if (!getFrameBytes(frame, &frameBytes)) {
-    frame->Release();
-    return false;
-  }
+    int32_t srcRowBytes = 0;
+    if (state.output->RowBytesForPixelFormat(state.sourcePixelFormat,
+                                             state.width,
+                                             &srcRowBytes) != S_OK) {
+      return false;
+    }
 
-  convertRgbaToArgbRows(frameData.data(),
-                        static_cast<uint8_t*>(frameBytes),
-                        state.width,
-                        state.height,
-                        rowBytes);
+    IDeckLinkMutableVideoFrame* srcFrame = nullptr;
+    if (state.output->CreateVideoFrame(state.width,
+                                       state.height,
+                                       srcRowBytes,
+                                       state.sourcePixelFormat,
+                                       bmdFrameFlagDefault,
+                                       &srcFrame) != S_OK) {
+      return false;
+    }
+
+    void* srcBytes = nullptr;
+    if (!getFrameBytes(srcFrame, &srcBytes)) {
+      srcFrame->Release();
+      return false;
+    }
+
+    if (!convertRgbaToOutputRows(frameData.data(),
+                                 static_cast<uint8_t*>(srcBytes),
+                                 state.width,
+                                 state.height,
+                                 srcRowBytes,
+                                 state.sourcePixelFormat)) {
+      std::cerr << "Unsupported pixel format for RGBA conversion: "
+                << pixelFormatLabel(state.sourcePixelFormat) << std::endl;
+      srcFrame->Release();
+      return false;
+    }
+
+    HRESULT converted = state.converter->ConvertNewFrame(
+        srcFrame, state.pixelFormat, state.colorspace, nullptr, &scheduledFrame);
+    srcFrame->Release();
+    if (converted != S_OK || !scheduledFrame) {
+      std::cerr << "ConvertNewFrame failed. HRESULT=0x" << std::hex
+                << static_cast<uint32_t>(converted) << std::dec << std::endl;
+      return false;
+    }
+  } else {
+    IDeckLinkMutableVideoFrame* frame = nullptr;
+    int32_t rowBytes = 0;
+    if (state.output->RowBytesForPixelFormat(state.pixelFormat,
+                                             state.width,
+                                             &rowBytes) != S_OK) {
+      return false;
+    }
+
+    if (state.output->CreateVideoFrame(state.width,
+                                       state.height,
+                                       rowBytes,
+                                       state.pixelFormat,
+                                       bmdFrameFlagDefault,
+                                       &frame) != S_OK) {
+      return false;
+    }
+
+    void* frameBytes = nullptr;
+    if (!getFrameBytes(frame, &frameBytes)) {
+      frame->Release();
+      return false;
+    }
+
+    if (!convertRgbaToOutputRows(frameData.data(),
+                                 static_cast<uint8_t*>(frameBytes),
+                                 state.width,
+                                 state.height,
+                                 rowBytes,
+                                 state.pixelFormat)) {
+      std::cerr << "Unsupported pixel format for RGBA conversion: "
+                << pixelFormatLabel(state.pixelFormat) << std::endl;
+      frame->Release();
+      return false;
+    }
+
+    scheduledFrame = frame;
+  }
 
   HRESULT scheduled = state.output->ScheduleVideoFrame(
-      frame, state.nextFrameTime, state.frameDuration, state.timeScale);
+      scheduledFrame, state.nextFrameTime, state.frameDuration, state.timeScale);
   if (scheduled != S_OK) {
     std::cerr << "ScheduleVideoFrame failed. HRESULT=0x" << std::hex
               << static_cast<uint32_t>(scheduled) << std::dec << std::endl;
-    frame->Release();
+    scheduledFrame->Release();
     return false;
   }
 
@@ -670,7 +776,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
   }
 
   state.nextFrameTime += state.frameDuration;
-  frame->Release();
+  scheduledFrame->Release();
   return true;
 }
 
@@ -783,12 +889,14 @@ bool findDisplayMode(IDeckLinkOutput* output,
                      int width,
                      int height,
                      double fps,
-                     BMDPixelFormat pixelFormat,
+                     const std::vector<BMDPixelFormat>& pixelFormats,
                      BMDVideoConnection connection,
                      BMDSupportedVideoModeFlags modeFlags,
                      BMDDisplayMode& outDisplayMode,
+                     BMDPixelFormat& outPixelFormat,
                      BMDTimeValue& outFrameDuration,
-                     BMDTimeScale& outTimeScale) {
+                     BMDTimeScale& outTimeScale,
+                     BMDDisplayModeFlags& outModeFlags) {
   if (!output) {
     return false;
   }
@@ -821,28 +929,37 @@ bool findDisplayMode(IDeckLinkOutput* output,
       continue;
     }
 
-    bool supported = false;
-    const BMDVideoConnection modeConnection =
-        connection == bmdVideoConnectionUnspecified ? bmdVideoConnectionUnspecified
-                                                    : connection;
-    HRESULT hr = output->DoesSupportVideoMode(modeConnection,
-                                             mode->GetDisplayMode(),
-                                             pixelFormat,
-                                             bmdNoVideoOutputConversion,
-                                             modeFlags,
-                                             nullptr,
-                                             &supported);
-    if (FAILED(hr) || !supported) {
-      mode->Release();
-      continue;
+    for (const auto format : pixelFormats) {
+      bool supported = false;
+      const BMDVideoConnection modeConnection =
+          connection == bmdVideoConnectionUnspecified ? bmdVideoConnectionUnspecified
+                                                      : connection;
+      const HRESULT hr = output->DoesSupportVideoMode(modeConnection,
+                                                      mode->GetDisplayMode(),
+                                                      format,
+                                                      bmdNoVideoOutputConversion,
+                                                      modeFlags,
+                                                      nullptr,
+                                                      &supported);
+      if (FAILED(hr) || !supported) {
+        continue;
+      }
+
+      outDisplayMode = mode->GetDisplayMode();
+      outPixelFormat = format;
+      outFrameDuration = frameDuration;
+      outTimeScale = timeScale;
+      found = true;
+      break;
     }
 
-    outDisplayMode = mode->GetDisplayMode();
-    outFrameDuration = frameDuration;
-    outTimeScale = timeScale;
-    found = true;
+    if (found) {
+      outModeFlags = mode->GetFlags();
+      mode->Release();
+      break;
+    }
+
     mode->Release();
-    break;
   }
 
   iterator->Release();
@@ -854,7 +971,8 @@ bool getDisplayModeDetails(IDeckLinkOutput* output,
                            std::string& outName,
                            BMDFieldDominance& outDominance,
                            BMDTimeValue& outFrameDuration,
-                           BMDTimeScale& outTimeScale) {
+                           BMDTimeScale& outTimeScale,
+                           BMDDisplayModeFlags& outFlags) {
   if (!output) {
     return false;
   }
@@ -881,6 +999,7 @@ bool getDisplayModeDetails(IDeckLinkOutput* output,
     }
 
     outDominance = mode->GetFieldDominance();
+    outFlags = mode->GetFlags();
     if (mode->GetFrameRate(&outFrameDuration, &outTimeScale) != S_OK) {
       outFrameDuration = 0;
       outTimeScale = 0;
@@ -893,6 +1012,20 @@ bool getDisplayModeDetails(IDeckLinkOutput* output,
 
   iterator->Release();
   return found;
+}
+
+BMDColorspace selectColorspaceFromFlags(BMDDisplayModeFlags flags, int height) {
+  if (flags & bmdDisplayModeColorspaceRec2020) {
+    return bmdColorspaceRec2020;
+  }
+  if (flags & bmdDisplayModeColorspaceRec709) {
+    return bmdColorspaceRec709;
+  }
+  if (flags & bmdDisplayModeColorspaceRec601) {
+    return bmdColorspaceRec601;
+  }
+  (void)height;
+  return bmdColorspaceUnknown;
 }
 
 bool listDisplayModes(const ModeListConfig& config, std::ostream& out) {
@@ -1230,6 +1363,7 @@ int runPlayback(const PlaybackConfig& config) {
   }
 
   BMDDisplayMode displayMode = bmdModeUnknown;
+  BMDDisplayModeFlags displayModeFlags = 0;
   PlaybackState state;
   state.output = output;
   state.width = config.width;
@@ -1238,17 +1372,40 @@ int runPlayback(const PlaybackConfig& config) {
   const BMDSupportedVideoModeFlags modeFlags =
       useKeyer ? bmdSupportedVideoModeKeying : bmdSupportedVideoModeDefault;
 
+  std::vector<BMDPixelFormat> pixelFormats = config.pixelFormatPriority;
+  if (pixelFormats.empty()) {
+    if (useKeyer) {
+      pixelFormats = { bmdFormat8BitARGB, bmdFormat8BitBGRA };
+    } else {
+      pixelFormats = { bmdFormat8BitBGRA, bmdFormat8BitARGB };
+    }
+  }
+
+  BMDPixelFormat selectedPixelFormat = bmdFormat8BitARGB;
   if (!findDisplayMode(output,
                        config.width,
                        config.height,
                        config.fps,
-                       state.pixelFormat,
+                       pixelFormats,
                        outputConnection,
                        modeFlags,
                        displayMode,
+                       selectedPixelFormat,
                        state.frameDuration,
-                       state.timeScale)) {
+                       state.timeScale,
+                       displayModeFlags)) {
     std::cerr << "No supported display mode for requested format." << std::endl;
+    if (keyer) {
+      keyer->Release();
+    }
+    output->Release();
+    deckLink->Release();
+    return 1;
+  }
+  state.pixelFormat = selectedPixelFormat;
+  state.colorspace = selectColorspaceFromFlags(displayModeFlags, config.height);
+  if (state.colorspace == bmdColorspaceUnknown) {
+    std::cerr << "Colorspace flags not provided by display mode." << std::endl;
     if (keyer) {
       keyer->Release();
     }
@@ -1262,23 +1419,35 @@ int runPlayback(const PlaybackConfig& config) {
     BMDFieldDominance dominance = bmdUnknownFieldDominance;
     BMDTimeValue frameDuration = 0;
     BMDTimeScale timeScale = 0;
+    BMDDisplayModeFlags modeFlags = 0;
     if (getDisplayModeDetails(output,
                               displayMode,
                               modeName,
                               dominance,
                               frameDuration,
-                              timeScale)) {
+                              timeScale,
+                              modeFlags)) {
       const double fps =
           (frameDuration > 0 && timeScale > 0)
               ? static_cast<double>(timeScale) /
                     static_cast<double>(frameDuration)
               : 0.0;
+      const BMDColorspace loggedColorspace =
+          selectColorspaceFromFlags(modeFlags, config.height);
       std::cerr << "Selected display mode: "
                 << (modeName.empty() ? "unknown" : modeName) << " ("
                 << config.width << "x" << config.height << " @ " << std::fixed
                 << std::setprecision(3) << fps << ", "
                 << fieldDominanceLabel(dominance) << ", pixelFormat "
-                << pixelFormatLabel(state.pixelFormat) << ")" << std::endl;
+                << pixelFormatLabel(state.pixelFormat) << ", colorspace "
+                << (loggedColorspace == bmdColorspaceRec601
+                        ? "rec601"
+                        : loggedColorspace == bmdColorspaceRec709
+                              ? "rec709"
+                              : loggedColorspace == bmdColorspaceRec2020
+                                    ? "rec2020"
+                                    : "unknown")
+                << ")" << std::endl;
     }
   }
 
@@ -1424,6 +1593,10 @@ int runPlayback(const PlaybackConfig& config) {
   callback->Release();
   if (keyer) {
     keyer->Release();
+  }
+  if (state.converter) {
+    state.converter->Release();
+    state.converter = nullptr;
   }
   output->Release();
   deckLink->Release();
@@ -1592,6 +1765,39 @@ int main(int argc, char** argv) {
       }
       if (arg == "--output-port" && i + 1 < argc) {
         config.outputPortId = argv[++i];
+        continue;
+      }
+      if (arg == "--pixel-format" && i + 1 < argc) {
+        const std::string value = argv[++i];
+        BMDPixelFormat format = bmdFormatUnspecified;
+        if (!parsePixelFormatLabel(value, format)) {
+          std::cerr << "Unknown pixel format: " << value << std::endl;
+          return 1;
+        }
+        config.pixelFormatPriority.clear();
+        config.pixelFormatPriority.push_back(format);
+        continue;
+      }
+      if (arg == "--pixel-format-priority" && i + 1 < argc) {
+        const std::string value = argv[++i];
+        config.pixelFormatPriority.clear();
+        std::stringstream stream(value);
+        std::string token;
+        while (std::getline(stream, token, ',')) {
+          if (token.empty()) {
+            continue;
+          }
+          BMDPixelFormat format = bmdFormatUnspecified;
+          if (!parsePixelFormatLabel(token, format)) {
+            std::cerr << "Unknown pixel format: " << token << std::endl;
+            return 1;
+          }
+          config.pixelFormatPriority.push_back(format);
+        }
+        if (config.pixelFormatPriority.empty()) {
+          std::cerr << "Pixel format priority cannot be empty." << std::endl;
+          return 1;
+        }
         continue;
       }
     }
