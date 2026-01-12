@@ -130,6 +130,8 @@ std::string pixelFormatLabel(BMDPixelFormat format) {
   }
 }
 
+struct PlaybackConfig;
+
 bool parseOutputPort(const PlaybackConfig& config,
                      std::string& outDeviceId,
                      BMDVideoConnection& outConnection);
