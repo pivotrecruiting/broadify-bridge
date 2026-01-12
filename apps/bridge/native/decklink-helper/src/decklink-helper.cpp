@@ -130,6 +130,10 @@ std::string pixelFormatLabel(BMDPixelFormat format) {
   }
 }
 
+bool parseOutputPort(const PlaybackConfig& config,
+                     std::string& outDeviceId,
+                     BMDVideoConnection& outConnection);
+
 bool getIntAttribute(IDeckLinkProfileAttributes* attributes,
                      BMDDeckLinkAttributeID id,
                      int64_t& value) {
