@@ -1,12 +1,15 @@
 import { z } from "zod";
-import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
+import type {
+  DeviceDescriptorT,
+  OutputDisplayModeT,
+  PortDescriptorT,
+} from "../../types.js";
 import {
   listDecklinkDevices,
   listDecklinkDisplayModes,
   type DecklinkDisplayModeT,
 } from "./decklink-helper.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
-import type { OutputDisplayModeT, PortDescriptorT } from "../../types.js";
 
 const helperDeviceSchema = z.object({
   id: z.string().min(1),
