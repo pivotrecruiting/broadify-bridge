@@ -21,9 +21,6 @@ jobs:
           - os: macos-15
             artifact: mac-arm64
             dist_script: dist:mac:arm64
-          - os: macos-15-intel
-            artifact: mac-x64
-            dist_script: dist:mac:x64
           - os: windows-latest
             artifact: win-x64
             dist_script: dist:win
@@ -35,7 +32,10 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SKIP_DECKLINK_HELPER_BUILD: "1"
-      USE_PREBUILT_DECKLINK_HELPER: "1"
+      DECKLINK_HELPER_URL_ARM64: ${{ secrets.DECKLINK_HELPER_URL_ARM64 }}
+      DECKLINK_HELPER_SHA256_ARM64: ${{ secrets.DECKLINK_HELPER_SHA256_ARM64 }}
+      DECKLINK_HELPER_URL_X64: ${{ secrets.DECKLINK_HELPER_URL_X64 }}
+      DECKLINK_HELPER_SHA256_X64: ${{ secrets.DECKLINK_HELPER_SHA256_X64 }}
 
     steps:
       - name: Checkout code

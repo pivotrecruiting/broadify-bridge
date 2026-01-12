@@ -42,6 +42,8 @@
 }
 ```
 
+Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS.
+
 ## graphics_send
 
 ```json

@@ -11,9 +11,9 @@ export const GraphicsOutputKeySchema = z.enum([
 ]);
 
 export const GraphicsFormatSchema = z.object({
-  width: z.literal(1920),
-  height: z.literal(1080),
-  fps: z.literal(50),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fps: z.number().positive(),
 });
 
 export const GraphicsTargetsSchema = z

@@ -9,6 +9,53 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
 - Git Repository mit `main`, `dev` und Feature-Branches
 - GitHub Actions Workflow (`.github/workflows/release.yml`) muss auf `main` vorhanden sein
 - Version in `package.json` sollte aktualisiert sein
+- DeckLink Helper Binary (macOS arm64) ist als Release-Asset verfügbar
+- GitHub Secrets gesetzt: `DECKLINK_HELPER_URL_ARM64`, `DECKLINK_HELPER_SHA256_ARM64`
+
+## DeckLink Helper Hosting (ohne SDK) - Einmalig vorbereiten
+
+Best Practice: Eigener GitHub Release (separates Repo) mit nur dem fertigen Helper-Binary. Keine SDK-Dateien hochladen.
+
+Security-Hinweis: Die CI lädt die Helper-Binaries von einer URL. Die Integrität wird per SHA256 geprüft. Nutze nur kontrollierte Release-Assets und aktualisiere die Hashes bei jedem neuen Helper-Build.
+
+### Schritt A: Helper lokal bauen (macOS arm64)
+
+1. DeckLink SDK lokal installieren (nur auf deinem Build-Mac).
+2. Im Repo: `apps/bridge/native/decklink-helper/README.md` folgen.
+3. `./build.sh` ausführen, das Binary landet in:
+   - `apps/bridge/native/decklink-helper/decklink-helper`
+4. Datei umbenennen zu `decklink-helper-arm64`.
+
+### Schritt B: Release-Assets hochladen (GitHub UI)
+
+1. Öffne GitHub → Repo für den Helper (z. B. `broadify-decklink-helper`).
+2. Klicke **Releases** → **Draft a new release**.
+3. Tag setzen, z. B. `v1.0.0` (beliebig, aber konsistent).
+4. Titel vergeben, z. B. `DeckLink Helper v1.0.0`.
+5. Asset hochladen:
+   - `decklink-helper-arm64`
+6. **Publish release**.
+
+### Schritt C: SHA256 berechnen (lokal)
+
+```bash
+shasum -a 256 apps/bridge/native/decklink-helper/decklink-helper-arm64
+```
+
+### Schritt D: Secrets im App-Repo setzen (GitHub UI)
+
+1. Öffne GitHub → App-Repo (dieses Repo).
+2. Klicke **Settings** → **Secrets and variables** → **Actions**.
+3. **New repository secret** anlegen:
+   - `DECKLINK_HELPER_URL_ARM64` = `https://github.com/<owner>/<helper-repo>/releases/download/<tag>/decklink-helper-arm64`
+   - `DECKLINK_HELPER_SHA256_ARM64` = Hash aus Schritt C
+
+### Schritt E: Test-Run (optional, manuell)
+
+1. GitHub → App-Repo → **Actions**.
+2. Workflow **Test Release Build** auswählen.
+3. **Run workflow** klicken.
+4. Nach Abschluss unter **Artifacts** prüfen, ob alle Plattformen gebaut wurden.
 
 ## Release-Prozess
 
@@ -231,4 +278,3 @@ Tags müssen dem Format `v{VERSION}` entsprechen:
 
 - [RELEASES.md](./RELEASES.md) - Detaillierte Release-Dokumentation
 - [WEB_APP_INTEGRATION.md](./WEB_APP_INTEGRATION.md) - Integration in Web-App
-

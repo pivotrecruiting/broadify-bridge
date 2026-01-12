@@ -2,8 +2,9 @@
   DeckLink Helper (macOS)
 
   Modes:
-    --list  : print JSON array of devices to stdout
-    --watch : print JSON events (one per line) to stdout
+    --list       : print JSON array of devices to stdout
+    --watch      : print JSON events (one per line) to stdout
+    --list-modes : print JSON array of display modes for a device
 */
 
 #include <DeckLinkAPI.h>
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <deque>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <csignal>
@@ -96,6 +98,43 @@ std::string jsonEscape(const std::string& input) {
   }
   return out.str();
 }
+
+std::string fieldDominanceLabel(BMDFieldDominance dominance) {
+  switch (dominance) {
+    case bmdLowerFieldFirst:
+      return "interlaced_lower_first";
+    case bmdUpperFieldFirst:
+      return "interlaced_upper_first";
+    case bmdProgressiveFrame:
+      return "progressive";
+    case bmdProgressiveSegmentedFrame:
+      return "psf";
+    case bmdUnknownFieldDominance:
+    default:
+      return "unknown";
+  }
+}
+
+std::string pixelFormatLabel(BMDPixelFormat format) {
+  switch (format) {
+    case bmdFormat8BitYUV:
+      return "8bit_yuv";
+    case bmdFormat10BitYUV:
+      return "10bit_yuv";
+    case bmdFormat8BitARGB:
+      return "8bit_argb";
+    case bmdFormat8BitBGRA:
+      return "8bit_bgra";
+    default:
+      return "unknown";
+  }
+}
+
+struct PlaybackConfig;
+
+bool parseOutputPort(const PlaybackConfig& config,
+                     std::string& outDeviceId,
+                     BMDVideoConnection& outConnection);
 
 bool getIntAttribute(IDeckLinkProfileAttributes* attributes,
                      BMDDeckLinkAttributeID id,
@@ -414,10 +453,18 @@ struct PlaybackConfig {
   std::string deviceId;
   int width = 0;
   int height = 0;
-  int fps = 0;
+  double fps = 0;
   std::string outputPortId;
   std::string fillPortId;
   std::string keyPortId;
+};
+
+struct ModeListConfig {
+  std::string deviceId;
+  std::string outputPortId;
+  int width = 0;
+  int height = 0;
+  double fps = 0;
 };
 
 struct PlaybackFrameHeader {
@@ -735,7 +782,7 @@ IDeckLink* findDeckLinkById(const std::string& targetId) {
 bool findDisplayMode(IDeckLinkOutput* output,
                      int width,
                      int height,
-                     int fps,
+                     double fps,
                      BMDPixelFormat pixelFormat,
                      BMDVideoConnection connection,
                      BMDSupportedVideoModeFlags modeFlags,
@@ -769,7 +816,7 @@ bool findDisplayMode(IDeckLinkOutput* output,
 
     const double actualFps =
         static_cast<double>(timeScale) / static_cast<double>(frameDuration);
-    if (std::abs(actualFps - static_cast<double>(fps)) > 0.01) {
+    if (std::abs(actualFps - fps) > 0.01) {
       mode->Release();
       continue;
     }
@@ -800,6 +847,195 @@ bool findDisplayMode(IDeckLinkOutput* output,
 
   iterator->Release();
   return found;
+}
+
+bool getDisplayModeDetails(IDeckLinkOutput* output,
+                           BMDDisplayMode target,
+                           std::string& outName,
+                           BMDFieldDominance& outDominance,
+                           BMDTimeValue& outFrameDuration,
+                           BMDTimeScale& outTimeScale) {
+  if (!output) {
+    return false;
+  }
+
+  IDeckLinkDisplayModeIterator* iterator = nullptr;
+  if (output->GetDisplayModeIterator(&iterator) != S_OK || !iterator) {
+    return false;
+  }
+
+  bool found = false;
+  IDeckLinkDisplayMode* mode = nullptr;
+  while (iterator->Next(&mode) == S_OK) {
+    if (mode->GetDisplayMode() != target) {
+      mode->Release();
+      continue;
+    }
+
+    CFStringRef nameRef = nullptr;
+    if (mode->GetName(&nameRef) == S_OK && nameRef) {
+      outName = cfStringToStdString(nameRef);
+      CFRelease(nameRef);
+    } else {
+      outName.clear();
+    }
+
+    outDominance = mode->GetFieldDominance();
+    if (mode->GetFrameRate(&outFrameDuration, &outTimeScale) != S_OK) {
+      outFrameDuration = 0;
+      outTimeScale = 0;
+    }
+
+    found = true;
+    mode->Release();
+    break;
+  }
+
+  iterator->Release();
+  return found;
+}
+
+bool listDisplayModes(const ModeListConfig& config, std::ostream& out) {
+  if (config.deviceId.empty() || config.outputPortId.empty()) {
+    std::cerr << "Device ID and output port are required for list-modes."
+              << std::endl;
+    return false;
+  }
+
+  std::string outputDeviceId;
+  BMDVideoConnection outputConnection = bmdVideoConnectionUnspecified;
+  PlaybackConfig portConfig;
+  portConfig.outputPortId = config.outputPortId;
+  if (!parseOutputPort(portConfig, outputDeviceId, outputConnection) ||
+      outputDeviceId != config.deviceId) {
+    std::cerr << "Output port does not match the selected device."
+              << std::endl;
+    return false;
+  }
+
+  IDeckLink* deckLink = findDeckLinkById(config.deviceId);
+  if (!deckLink) {
+    std::cerr << "DeckLink device not found: " << config.deviceId << std::endl;
+    return false;
+  }
+
+  IDeckLinkOutput* output = nullptr;
+  if (deckLink->QueryInterface(IID_IDeckLinkOutput, (void**)&output) != S_OK ||
+      !output) {
+    std::cerr << "Failed to acquire IDeckLinkOutput." << std::endl;
+    deckLink->Release();
+    return false;
+  }
+
+  IDeckLinkDisplayModeIterator* iterator = nullptr;
+  if (output->GetDisplayModeIterator(&iterator) != S_OK || !iterator) {
+    std::cerr << "Failed to get display mode iterator." << std::endl;
+    output->Release();
+    deckLink->Release();
+    return false;
+  }
+
+  const std::vector<BMDPixelFormat> pixelFormats = {
+      bmdFormat8BitYUV,
+      bmdFormat10BitYUV,
+      bmdFormat8BitARGB,
+      bmdFormat8BitBGRA,
+  };
+
+  bool first = true;
+  out << "[";
+  IDeckLinkDisplayMode* mode = nullptr;
+  while (iterator->Next(&mode) == S_OK) {
+    const int width = static_cast<int>(mode->GetWidth());
+    const int height = static_cast<int>(mode->GetHeight());
+    if (config.width > 0 && width != config.width) {
+      mode->Release();
+      continue;
+    }
+    if (config.height > 0 && height != config.height) {
+      mode->Release();
+      continue;
+    }
+
+    BMDTimeValue frameDuration = 0;
+    BMDTimeScale timeScale = 0;
+    if (mode->GetFrameRate(&frameDuration, &timeScale) != S_OK ||
+        frameDuration == 0 || timeScale == 0) {
+      mode->Release();
+      continue;
+    }
+    const double fps =
+        static_cast<double>(timeScale) / static_cast<double>(frameDuration);
+    if (config.fps > 0 &&
+        std::abs(fps - static_cast<double>(config.fps)) > 0.01) {
+      mode->Release();
+      continue;
+    }
+
+    std::string modeName;
+    CFStringRef nameRef = nullptr;
+    if (mode->GetName(&nameRef) == S_OK && nameRef) {
+      modeName = cfStringToStdString(nameRef);
+      CFRelease(nameRef);
+    }
+
+    std::vector<std::string> supportedFormats;
+    for (const auto format : pixelFormats) {
+      bool supported = false;
+      const HRESULT hr = output->DoesSupportVideoMode(
+          outputConnection,
+          mode->GetDisplayMode(),
+          format,
+          bmdNoVideoOutputConversion,
+          bmdSupportedVideoModeDefault,
+          nullptr,
+          &supported);
+      if (SUCCEEDED(hr) && supported) {
+        supportedFormats.push_back(pixelFormatLabel(format));
+      }
+    }
+
+    if (!first) {
+      out << ",";
+    }
+    first = false;
+
+    out << "{";
+    out << "\"name\":\"" << jsonEscape(modeName) << "\",";
+    out << "\"id\":" << static_cast<uint32_t>(mode->GetDisplayMode()) << ",";
+    out << "\"width\":" << width << ",";
+    out << "\"height\":" << height << ",";
+    out << "\"fps\":" << std::fixed << std::setprecision(3) << fps << ",";
+    out << "\"frameDuration\":" << frameDuration << ",";
+    out << "\"timeScale\":" << timeScale << ",";
+    out << "\"fieldDominance\":\""
+        << jsonEscape(fieldDominanceLabel(mode->GetFieldDominance())) << "\",";
+    out << "\"connection\":\""
+        << jsonEscape(outputConnection == bmdVideoConnectionSDI
+                          ? "sdi"
+                          : outputConnection == bmdVideoConnectionHDMI
+                                ? "hdmi"
+                                : "unspecified")
+        << "\",";
+    out << "\"pixelFormats\":[";
+    for (size_t i = 0; i < supportedFormats.size(); ++i) {
+      out << "\"" << jsonEscape(supportedFormats[i]) << "\"";
+      if (i + 1 < supportedFormats.size()) {
+        out << ",";
+      }
+    }
+    out << "]";
+    out << "}";
+
+    mode->Release();
+  }
+
+  out << "]";
+
+  iterator->Release();
+  output->Release();
+  deckLink->Release();
+  return true;
 }
 
 bool parseOutputPort(const PlaybackConfig& config,
@@ -1021,6 +1257,31 @@ int runPlayback(const PlaybackConfig& config) {
     return 1;
   }
 
+  {
+    std::string modeName;
+    BMDFieldDominance dominance = bmdUnknownFieldDominance;
+    BMDTimeValue frameDuration = 0;
+    BMDTimeScale timeScale = 0;
+    if (getDisplayModeDetails(output,
+                              displayMode,
+                              modeName,
+                              dominance,
+                              frameDuration,
+                              timeScale)) {
+      const double fps =
+          (frameDuration > 0 && timeScale > 0)
+              ? static_cast<double>(timeScale) /
+                    static_cast<double>(frameDuration)
+              : 0.0;
+      std::cerr << "Selected display mode: "
+                << (modeName.empty() ? "unknown" : modeName) << " ("
+                << config.width << "x" << config.height << " @ " << std::fixed
+                << std::setprecision(3) << fps << ", "
+                << fieldDominanceLabel(dominance) << ", pixelFormat "
+                << pixelFormatLabel(state.pixelFormat) << ")" << std::endl;
+    }
+  }
+
   if (!supportsOutputConnection(deckLink, outputConnection)) {
     std::cerr << "Requested output connection not supported by device."
               << std::endl;
@@ -1182,8 +1443,9 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, handleSignal);
 
   if (argc < 2) {
-    std::cerr << "Usage: decklink-helper --list|--watch|--playback"
-              << std::endl;
+    std::cerr
+        << "Usage: decklink-helper --list|--watch|--list-modes|--playback"
+        << std::endl;
     return 1;
   }
 
@@ -1242,6 +1504,52 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  if (mode == "--list-modes") {
+    ModeListConfig config;
+    for (int i = 2; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--device" && i + 1 < argc) {
+        config.deviceId = argv[++i];
+        continue;
+      }
+      if (arg == "--output-port" && i + 1 < argc) {
+        config.outputPortId = argv[++i];
+        continue;
+      }
+      if (arg == "--width" && i + 1 < argc) {
+        try {
+          config.width = std::stoi(argv[++i]);
+        } catch (...) {
+          config.width = 0;
+        }
+        continue;
+      }
+      if (arg == "--height" && i + 1 < argc) {
+        try {
+          config.height = std::stoi(argv[++i]);
+        } catch (...) {
+          config.height = 0;
+        }
+        continue;
+      }
+      if (arg == "--fps" && i + 1 < argc) {
+        try {
+          config.fps = std::stod(argv[++i]);
+        } catch (...) {
+          config.fps = 0;
+        }
+        continue;
+      }
+    }
+
+    std::ostringstream out;
+    if (!listDisplayModes(config, out)) {
+      return 1;
+    }
+    std::cout << out.str() << std::endl;
+    return 0;
+  }
+
   if (mode == "--playback") {
     PlaybackConfig config;
     for (int i = 2; i < argc; ++i) {
@@ -1268,7 +1576,7 @@ int main(int argc, char** argv) {
       }
       if (arg == "--fps" && i + 1 < argc) {
         try {
-          config.fps = std::stoi(argv[++i]);
+          config.fps = std::stod(argv[++i]);
         } catch (...) {
           config.fps = 0;
         }

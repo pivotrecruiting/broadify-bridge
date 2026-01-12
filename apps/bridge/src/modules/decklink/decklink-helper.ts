@@ -14,6 +14,19 @@ export type DecklinkHelperEvent = {
   devices: unknown[];
 };
 
+export type DecklinkDisplayModeT = {
+  name: string;
+  id: number;
+  width: number;
+  height: number;
+  fps: number;
+  frameDuration: number;
+  timeScale: number;
+  fieldDominance: string;
+  connection: string;
+  pixelFormats: string[];
+};
+
 const getLogger = () => {
   try {
     return getBridgeContext().logger;
@@ -123,6 +136,83 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
       clearTimeout(timeout);
       logger.warn(
         `[DecklinkHelper] Failed to start helper: ${error instanceof Error ? error.message : String(error)}`
+      );
+      resolve([]);
+    });
+  });
+}
+
+/**
+ * Execute the DeckLink helper to list display modes.
+ */
+export async function listDecklinkDisplayModes(
+  deviceId: string,
+  outputPortId: string
+): Promise<DecklinkDisplayModeT[]> {
+  if (platform() !== "darwin") {
+    return [];
+  }
+
+  const logger = getLogger();
+  const helperPath = resolveDecklinkHelperPath();
+  try {
+    await access(helperPath, constants.X_OK);
+  } catch {
+    logger.warn(
+      `[DecklinkHelper] Helper not found or not executable at ${helperPath}`
+    );
+    return [];
+  }
+
+  return new Promise((resolve) => {
+    const processRef = spawn(
+      helperPath,
+      ["--list-modes", "--device", deviceId, "--output-port", outputPortId],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    let stdout = "";
+    let stderr = "";
+
+    const timeout = setTimeout(() => {
+      processRef.kill("SIGTERM");
+      resolve([]);
+    }, DEFAULT_HELPER_TIMEOUT_MS);
+
+    processRef.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    processRef.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    processRef.on("close", (code) => {
+      clearTimeout(timeout);
+
+      if (code !== 0) {
+        logger.warn(
+          `[DecklinkHelper] list-modes exited with code ${code}: ${stderr.trim()}`
+        );
+        resolve([]);
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(stdout) as unknown;
+        resolve(Array.isArray(parsed) ? (parsed as DecklinkDisplayModeT[]) : []);
+      } catch (error) {
+        logger.warn(
+          `[DecklinkHelper] Failed to parse list-modes output: ${error instanceof Error ? error.message : String(error)}`
+        );
+        resolve([]);
+      }
+    });
+
+    processRef.on("error", (error) => {
+      clearTimeout(timeout);
+      logger.warn(
+        `[DecklinkHelper] Failed to start list-modes: ${error instanceof Error ? error.message : String(error)}`
       );
       resolve([]);
     });
