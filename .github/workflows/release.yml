@@ -21,9 +21,6 @@ jobs:
           - os: macos-15
             artifact: mac-arm64
             dist_script: dist:mac:arm64
-          - os: macos-15-intel
-            artifact: mac-x64
-            dist_script: dist:mac:x64
           - os: windows-latest
             artifact: win-x64
             dist_script: dist:win
