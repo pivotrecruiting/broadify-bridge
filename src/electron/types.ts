@@ -56,6 +56,7 @@ export type PortStatusT = {
 export type PortCapabilitiesT = {
   formats: string[]; // e.g. ["1080p50", "1080p60", "4K30"]
   maxResolution?: string;
+  modes?: OutputDisplayModeT[];
 };
 
 /**
@@ -109,6 +110,18 @@ export type OutputDeviceT = {
   deviceId?: string;
   portType?: PortDescriptorT["type"];
   portRole?: PortDescriptorT["role"];
+  formats?: string[];
+  modes?: OutputDisplayModeT[];
+};
+
+export type OutputDisplayModeT = {
+  id: number;
+  label: string;
+  width: number;
+  height: number;
+  fps: number;
+  fieldDominance: string;
+  pixelFormats: string[];
 };
 
 /**

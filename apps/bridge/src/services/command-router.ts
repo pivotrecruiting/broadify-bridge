@@ -103,6 +103,8 @@ function transformDevicesToOutputs(
         deviceId: device.id,
         portType: port.type,
         portRole: port.role,
+        formats: port.capabilities.formats,
+        modes: port.capabilities.modes,
       };
 
       if (port.role === "key") {

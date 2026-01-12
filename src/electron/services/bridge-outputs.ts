@@ -8,8 +8,23 @@ const OUTPUTS_FETCH_TIMEOUT = 5000; // 5 seconds timeout
 export type OutputDeviceT = {
   id: string;
   name: string;
-  type: "capture" | "connection";
+  type: "decklink" | "capture" | "connection";
   available: boolean;
+  deviceId?: string;
+  portType?: "sdi" | "hdmi" | "usb" | "displayport" | "thunderbolt";
+  portRole?: "fill" | "key" | "video";
+  formats?: string[];
+  modes?: OutputDisplayModeT[];
+};
+
+export type OutputDisplayModeT = {
+  id: number;
+  label: string;
+  width: number;
+  height: number;
+  fps: number;
+  fieldDominance: string;
+  pixelFormats: string[];
 };
 
 /**

@@ -42,7 +42,7 @@
 }
 ```
 
-Hinweis: `fps: 25` steht fuer 1080i50, `fps: 50` steht fuer 1080p50.
+Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS.
 
 ## graphics_send
 

@@ -1,7 +1,12 @@
 import { z } from "zod";
 import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
-import { listDecklinkDevices } from "./decklink-helper.js";
+import {
+  listDecklinkDevices,
+  listDecklinkDisplayModes,
+  type DecklinkDisplayModeT,
+} from "./decklink-helper.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
+import type { OutputDisplayModeT, PortDescriptorT } from "../../types.js";
 
 const helperDeviceSchema = z.object({
   id: z.string().min(1),
@@ -16,6 +21,64 @@ const helperDeviceSchema = z.object({
 });
 
 const helperDeviceListSchema = z.array(helperDeviceSchema);
+
+const formatFpsLabel = (fps: number): string => {
+  const rounded = Math.round(fps * 1000) / 1000;
+  if (Math.abs(rounded - Math.round(rounded)) < 0.01) {
+    return String(Math.round(rounded));
+  }
+  return rounded.toFixed(2).replace(/\.00$/, "");
+};
+
+const toFormatLabel = (mode: DecklinkDisplayModeT): string => {
+  const fpsLabel = formatFpsLabel(mode.fps);
+  if (mode.fieldDominance.startsWith("interlaced")) {
+    const fieldRate = formatFpsLabel(mode.fps * 2);
+    return `${mode.height}i${fieldRate}`;
+  }
+  if (mode.fieldDominance === "psf") {
+    return `${mode.height}psf${fpsLabel}`;
+  }
+  return `${mode.height}p${fpsLabel}`;
+};
+
+const toOutputMode = (mode: DecklinkDisplayModeT): OutputDisplayModeT => ({
+  id: mode.id,
+  label: `${toFormatLabel(mode)} (${mode.width}x${mode.height})`,
+  width: mode.width,
+  height: mode.height,
+  fps: mode.fps,
+  fieldDominance: mode.fieldDominance,
+  pixelFormats: mode.pixelFormats ?? [],
+});
+
+const attachModes = (
+  ports: PortDescriptorT[],
+  targetType: PortDescriptorT["type"],
+  modes: OutputDisplayModeT[]
+): PortDescriptorT[] => {
+  if (modes.length === 0) {
+    return ports;
+  }
+
+  const formats = Array.from(
+    new Set(modes.map((mode) => mode.label.split(" ")[0]))
+  );
+
+  return ports.map((port) => {
+    if (port.type !== targetType) {
+      return port;
+    }
+    return {
+      ...port,
+      capabilities: {
+        ...port.capabilities,
+        formats,
+        modes,
+      },
+    };
+  });
+};
 
 /**
  * Parse helper device payloads into Bridge device descriptors.
@@ -144,19 +207,58 @@ export class DecklinkDetector {
       const rawDevices = await listDecklinkDevices();
       const devices = parseDecklinkHelperDevices(rawDevices);
 
-      if (devices.length > 0) {
+      const enriched = await Promise.all(
+        devices.map(async (device) => {
+          const sdiPort =
+            device.ports.find((port) => port.type === "sdi" && port.role !== "key") ??
+            device.ports.find((port) => port.type === "sdi");
+          const hdmiPort = device.ports.find((port) => port.type === "hdmi");
+
+          const [sdiModes, hdmiModes] = await Promise.all([
+            sdiPort
+              ? listDecklinkDisplayModes(device.id, sdiPort.id)
+              : Promise.resolve([]),
+            hdmiPort
+              ? listDecklinkDisplayModes(device.id, hdmiPort.id)
+              : Promise.resolve([]),
+          ]);
+
+          let nextPorts = device.ports;
+          if (sdiModes.length > 0) {
+            nextPorts = attachModes(
+              nextPorts,
+              "sdi",
+              sdiModes.map(toOutputMode)
+            );
+          }
+          if (hdmiModes.length > 0) {
+            nextPorts = attachModes(
+              nextPorts,
+              "hdmi",
+              hdmiModes.map(toOutputMode)
+            );
+          }
+
+          return {
+            ...device,
+            ports: nextPorts,
+          };
+        })
+      );
+
+      if (enriched.length > 0) {
         try {
           getBridgeContext().logger.info(
-            `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
+            `[DecklinkDetector] Found ${enriched.length} DeckLink device(s)`
           );
         } catch {
           console.info(
-            `[DecklinkDetector] Found ${devices.length} DeckLink device(s)`
+            `[DecklinkDetector] Found ${enriched.length} DeckLink device(s)`
           );
         }
       }
 
-      return devices;
+      return enriched;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error);

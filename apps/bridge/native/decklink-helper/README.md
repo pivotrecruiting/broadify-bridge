@@ -6,6 +6,7 @@ Planned behavior:
 - `decklink-helper --list` prints a JSON array of devices.
 - `decklink-helper --watch` prints JSON events (one per line) for hotplug.
 - `decklink-helper --playback` reads RGBA frames from stdin and outputs SDI key/fill or single video.
+- `decklink-helper --list-modes` prints JSON display modes for a device/connection.
 
 The helper must use the DeckLink SDK and follow the official samples:
 - Device enumeration via `CreateDeckLinkIteratorInstance`.
@@ -43,3 +44,7 @@ Playback args (bridge-managed):
 - `--key-port <device-id>-sdi-b`
 - `--output-port <device-id>-sdi|<device-id>-sdi-a|<device-id>-hdmi`
 - `--width <int> --height <int> --fps <int>`
+
+Mode listing (diagnostics):
+- `decklink-helper --list-modes --device <decklink-id> --output-port <device-id>-sdi`
+- Optional filters: `--width <int> --height <int> --fps <int>`
