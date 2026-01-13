@@ -617,6 +617,11 @@ struct PlaybackState {
   IDeckLinkVideoConversion* converter = nullptr;
   std::chrono::steady_clock::time_point lastBufferedLog =
       std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point lastCompletionLog =
+      std::chrono::steady_clock::now();
+  uint64_t completedFrames = 0;
+  uint64_t lateFrames = 0;
+  uint64_t droppedFrames = 0;
 };
 
 bool isYuvPixelFormat(BMDPixelFormat format) {
@@ -836,10 +841,32 @@ public:
   }
 
   HRESULT ScheduledFrameCompleted(IDeckLinkVideoFrame* completedFrame,
-                                  BMDOutputFrameCompletionResult) override {
+                                  BMDOutputFrameCompletionResult result) override {
     (void)completedFrame;
     if (!playbackState) {
       return S_OK;
+    }
+
+    playbackState->completedFrames += 1;
+    switch (result) {
+      case bmdOutputFrameDisplayedLate:
+        playbackState->lateFrames += 1;
+        break;
+      case bmdOutputFrameDropped:
+      case bmdOutputFrameFlushed:
+        playbackState->droppedFrames += 1;
+        break;
+      case bmdOutputFrameCompleted:
+      default:
+        break;
+    }
+    auto now = std::chrono::steady_clock::now();
+    if (now - playbackState->lastCompletionLog >= std::chrono::seconds(1)) {
+      std::cerr << "Playback stats: completed="
+                << playbackState->completedFrames
+                << " late=" << playbackState->lateFrames
+                << " dropped=" << playbackState->droppedFrames << std::endl;
+      playbackState->lastCompletionLog = now;
     }
 
     std::vector<uint8_t> frameData;
