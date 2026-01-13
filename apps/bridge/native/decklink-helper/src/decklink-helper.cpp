@@ -34,6 +34,11 @@ namespace {
 
 std::atomic<bool> gShouldExit{false};
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
+constexpr bool kUseLegalRange = true;
+constexpr uint8_t kLegalMin = 16;
+constexpr uint8_t kLegalMax = 235;
+constexpr int kFullRange = 255;
+constexpr int kLegalRange = kLegalMax - kLegalMin;
 
 struct DeviceInfo {
   std::string id;
@@ -618,6 +623,19 @@ bool isYuvPixelFormat(BMDPixelFormat format) {
   return format == bmdFormat8BitYUV || format == bmdFormat10BitYUV;
 }
 
+uint8_t mapToLegalRange(uint8_t value) {
+  const int scaled =
+      (static_cast<int>(value) * kLegalRange + (kFullRange / 2)) / kFullRange +
+      kLegalMin;
+  if (scaled < kLegalMin) {
+    return kLegalMin;
+  }
+  if (scaled > kLegalMax) {
+    return kLegalMax;
+  }
+  return static_cast<uint8_t>(scaled);
+}
+
 bool convertRgbaToOutputRows(const uint8_t* src,
                              uint8_t* dst,
                              int width,
@@ -630,10 +648,15 @@ bool convertRgbaToOutputRows(const uint8_t* src,
     uint8_t* dstRow = dst + y * dstRowBytes;
     for (int x = 0; x < width; ++x) {
       const size_t offset = static_cast<size_t>(x) * 4;
-      const uint8_t r = srcRow[offset];
-      const uint8_t g = srcRow[offset + 1];
-      const uint8_t b = srcRow[offset + 2];
+      uint8_t r = srcRow[offset];
+      uint8_t g = srcRow[offset + 1];
+      uint8_t b = srcRow[offset + 2];
       const uint8_t a = srcRow[offset + 3];
+      if (kUseLegalRange) {
+        r = mapToLegalRange(r);
+        g = mapToLegalRange(g);
+        b = mapToLegalRange(b);
+      }
       switch (pixelFormat) {
         case bmdFormat8BitARGB:
           dstRow[offset] = a;
