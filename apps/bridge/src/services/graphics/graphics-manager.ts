@@ -19,7 +19,7 @@ import {
   GraphicsRemovePresetSchema,
 } from "./graphics-schemas.js";
 import { outputConfigStore } from "./output-config-store.js";
-import { validateTemplate } from "./template-sanitizer.js";
+import { sanitizeTemplateCss, validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
 import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
@@ -690,9 +690,14 @@ export class GraphicsManager {
   private async prepareLayer(
     data: GraphicsSendPayloadT
   ): Promise<PreparedLayerT> {
-    const { assetIds } = validateTemplate(data.bundle.html, data.bundle.css);
+    const sanitizedCss = sanitizeTemplateCss(data.bundle.css);
+    const sanitizedBundle = {
+      ...data.bundle,
+      css: sanitizedCss,
+    };
+    const { assetIds } = validateTemplate(data.bundle.html, sanitizedCss);
 
-    for (const asset of data.bundle.assets || []) {
+    for (const asset of sanitizedBundle.assets || []) {
       await assetRegistry.storeAsset(asset);
     }
 
@@ -711,14 +716,15 @@ export class GraphicsManager {
       : data.backgroundMode;
 
     const initialValues = {
-      ...(data.bundle.defaults || {}),
+      ...(sanitizedBundle.defaults || {}),
       ...(data.values || {}),
     };
 
-    const bindings = deriveTemplateBindings(data.bundle, initialValues);
+    const bindings = deriveTemplateBindings(sanitizedBundle, initialValues);
 
     return {
       ...data,
+      bundle: sanitizedBundle,
       backgroundMode: enforcedBackground,
       values: initialValues,
       bindings,
