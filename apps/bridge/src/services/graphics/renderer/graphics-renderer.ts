@@ -11,11 +11,22 @@ export type GraphicsFrameT = {
   timestamp: number;
 };
 
+/**
+ * Precomputed template bindings applied by the renderer.
+ */
+export type GraphicsTemplateBindingsT = {
+  cssVariables: Record<string, string>;
+  textContent: Record<string, string>;
+  textTypes: Record<string, string>;
+  animationClass: string;
+};
+
 export type GraphicsRenderLayerInputT = {
   layerId: string;
   html: string;
   css: string;
   values: Record<string, unknown>;
+  bindings?: GraphicsTemplateBindingsT;
   layout: GraphicsLayoutT;
   backgroundMode: GraphicsBackgroundModeT;
   width: number;
@@ -30,7 +41,11 @@ export interface GraphicsRenderer {
   initialize(): Promise<void>;
   setAssets(assets: Record<string, { filePath: string; mime: string }>): Promise<void>;
   renderLayer(input: GraphicsRenderLayerInputT): Promise<void>;
-  updateValues(layerId: string, values: Record<string, unknown>): Promise<void>;
+  updateValues(
+    layerId: string,
+    values: Record<string, unknown>,
+    bindings?: GraphicsTemplateBindingsT
+  ): Promise<void>;
   updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void>;
   removeLayer(layerId: string): Promise<void>;
   onFrame(callback: (frame: GraphicsFrameT) => void): void;

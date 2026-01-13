@@ -116,10 +116,10 @@ git checkout main
 git pull origin main
 
 # Tag erstellen
-git tag -a v0.1.0 -m "Release version 0.1.0"
+git tag -a v0.5.18 -m "Release version 0.5.18"
 
 # Tag zu GitHub pushen
-git push origin v0.1.0
+git push origin v0.5.18
 ```
 
 ### Schritt 5: GitHub Actions Workflow prüfen
@@ -253,6 +253,7 @@ git push origin v0.1.0
 ### Git Tags Format
 
 Tags müssen dem Format `v{VERSION}` entsprechen:
+
 - `v1.0.0` für Major Release
 - `v0.1.0` für Minor Release
 - `v0.0.1` für Patch Release

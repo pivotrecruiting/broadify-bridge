@@ -1,5 +1,5 @@
 import { assetRegistry } from "./asset-registry.js";
-import { compositeLayers } from "./composite.js";
+import { applyBackground, compositeLayers } from "./composite.js";
 import type {
   GraphicsBackgroundModeT,
   GraphicsCategoryT,
@@ -25,6 +25,7 @@ import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fil
 import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { isDevelopmentMode } from "../dev-mode.js";
 import { deviceCache } from "../device-cache.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
@@ -32,6 +33,8 @@ import type {
   GraphicsFrameT,
   GraphicsRenderer,
 } from "./renderer/graphics-renderer.js";
+import type { TemplateBindingsT } from "./template-bindings.js";
+import { deriveTemplateBindings } from "./template-bindings.js";
 
 const MAX_ACTIVE_LAYERS = 3;
 const MAX_QUEUED_PRESETS = 10;
@@ -41,6 +44,16 @@ const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
   "key_fill_ndi",
 ];
 
+const BACKGROUND_COLORS: Record<
+  GraphicsBackgroundModeT,
+  { r: number; g: number; b: number } | null
+> = {
+  transparent: null,
+  green: { r: 0, g: 255, b: 0 },
+  black: { r: 0, g: 0, b: 0 },
+  white: { r: 255, g: 255, b: 255 },
+};
+
 type GraphicsLayerStateT = {
   layerId: string;
   category: GraphicsCategoryT;
@@ -48,6 +61,9 @@ type GraphicsLayerStateT = {
   zIndex: number;
   backgroundMode: GraphicsBackgroundModeT;
   values: Record<string, unknown>;
+  bindings: TemplateBindingsT;
+  schema: Record<string, unknown>;
+  defaults: Record<string, unknown>;
   presetId?: string;
   lastFrame?: GraphicsFrameT;
 };
@@ -72,6 +88,7 @@ type GraphicsQueuedPresetT = {
 type PreparedLayerT = GraphicsSendPayloadT & {
   backgroundMode: GraphicsBackgroundModeT;
   values: Record<string, unknown>;
+  bindings: TemplateBindingsT;
 };
 
 /**
@@ -171,12 +188,19 @@ export class GraphicsManager {
     await this.initialize();
 
     const config = GraphicsConfigureOutputsSchema.parse(payload);
-    await this.validateOutputTargets(config.outputKey, config.targets);
-    await this.validateOutputFormat(
-      config.outputKey,
-      config.targets,
-      config.format
-    );
+    const devMode = isDevelopmentMode();
+    if (devMode) {
+      getBridgeContext().logger.warn(
+        "[Graphics] DEVELOPMENT mode enabled: skipping output validation and using stub output adapter"
+      );
+    } else {
+      await this.validateOutputTargets(config.outputKey, config.targets);
+      await this.validateOutputFormat(
+        config.outputKey,
+        config.targets,
+        config.format
+      );
+    }
 
     this.outputConfig = config;
     await this.outputAdapter.stop();
@@ -291,7 +315,14 @@ export class GraphicsManager {
     }
 
     layer.values = { ...layer.values, ...data.values };
-    await this.renderer.updateValues(data.layerId, data.values);
+    layer.bindings = deriveTemplateBindings(
+      {
+        schema: layer.schema,
+        defaults: layer.defaults,
+      },
+      layer.values
+    );
+    await this.renderer.updateValues(data.layerId, layer.values, layer.bindings);
   }
 
   /**
@@ -424,6 +455,9 @@ export class GraphicsManager {
   private selectOutputAdapter(
     _outputKey: GraphicsOutputKeyT
   ): GraphicsOutputAdapter {
+    if (isDevelopmentMode()) {
+      return new StubOutputAdapter();
+    }
     if (_outputKey === "key_fill_sdi") {
       return new DecklinkKeyFillOutputAdapter();
     }
@@ -431,6 +465,12 @@ export class GraphicsManager {
       return new DecklinkVideoOutputAdapter();
     }
     return new StubOutputAdapter();
+  }
+
+  private resolveBackgroundColor(
+    mode: GraphicsBackgroundModeT
+  ): { r: number; g: number; b: number } | null {
+    return BACKGROUND_COLORS[mode] ?? null;
   }
 
   private validateLayerLimits(
@@ -593,7 +633,14 @@ export class GraphicsManager {
       height
     );
 
-    const outputBuffer = composite;
+    let outputBuffer = composite;
+    if (!OUTPUT_KEYS_WITH_ALPHA.includes(this.outputConfig.outputKey)) {
+      const backgroundMode = layers[0]?.backgroundMode ?? "transparent";
+      const backgroundColor = this.resolveBackgroundColor(backgroundMode);
+      if (backgroundColor) {
+        outputBuffer = applyBackground(outputBuffer, backgroundColor);
+      }
+    }
 
     this.sending = true;
     try {
@@ -668,10 +715,13 @@ export class GraphicsManager {
       ...(data.values || {}),
     };
 
+    const bindings = deriveTemplateBindings(data.bundle, initialValues);
+
     return {
       ...data,
       backgroundMode: enforcedBackground,
       values: initialValues,
+      bindings,
     };
   }
 
@@ -690,6 +740,9 @@ export class GraphicsManager {
       zIndex: data.zIndex,
       backgroundMode: data.backgroundMode,
       values: data.values,
+      bindings: data.bindings,
+      schema: { ...(data.bundle.schema || {}) },
+      defaults: { ...(data.bundle.defaults || {}) },
       presetId: data.presetId,
       lastFrame: existing?.lastFrame,
     });
@@ -702,6 +755,7 @@ export class GraphicsManager {
         html: data.bundle.html,
         css: data.bundle.css,
         values: data.values,
+        bindings: data.bindings,
         layout: data.layout,
         backgroundMode: data.backgroundMode,
         width: this.outputConfig?.format.width ?? 1920,

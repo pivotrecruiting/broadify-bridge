@@ -2,6 +2,7 @@ import { z } from "zod";
 import { runtimeConfig } from "../services/runtime-config.js";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { deviceCache } from "../services/device-cache.js";
+import { isDevelopmentMode } from "../services/dev-mode.js";
 import type { FastifyInstance } from "fastify";
 import type { DeviceDescriptorT } from "../types.js";
 
@@ -178,32 +179,39 @@ export async function registerConfigRoute(
     try {
       // Validate request body
       const body = ConfigRequestSchema.parse(request.body);
+      const devMode = isDevelopmentMode();
 
       // If outputs are provided, validate them
       if (body.outputs) {
-        const validation = await validateOutputs(
-          body.outputs.output1,
-          body.outputs.output2
-        );
+        if (devMode) {
+          fastify.log.warn(
+            "[Config] DEVELOPMENT mode enabled: skipping output validation and controller open"
+          );
+        } else {
+          const validation = await validateOutputs(
+            body.outputs.output1,
+            body.outputs.output2
+          );
 
-        if (!validation.valid) {
-          return reply.code(400).send({
-            error: "Invalid outputs",
-            message: validation.error,
-          });
-        }
+          if (!validation.valid) {
+            return reply.code(400).send({
+              error: "Invalid outputs",
+              message: validation.error,
+            });
+          }
 
-        // Open device controllers
-        const openResult = await openControllers(
-          body.outputs.output1,
-          body.outputs.output2
-        );
+          // Open device controllers
+          const openResult = await openControllers(
+            body.outputs.output1,
+            body.outputs.output2
+          );
 
-        if (!openResult.success) {
-          return reply.code(500).send({
-            error: "Failed to open device controllers",
-            message: openResult.error,
-          });
+          if (!openResult.success) {
+            return reply.code(500).send({
+              error: "Failed to open device controllers",
+              message: openResult.error,
+            });
+          }
         }
       }
 

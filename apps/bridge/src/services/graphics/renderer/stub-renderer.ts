@@ -3,6 +3,7 @@ import type {
   GraphicsFrameT,
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
+  GraphicsTemplateBindingsT,
 } from "./graphics-renderer.js";
 
 /**
@@ -34,7 +35,11 @@ export class StubRenderer implements GraphicsRenderer {
     this.emitFrame(input.layerId);
   }
 
-  async updateValues(layerId: string, _values: Record<string, unknown>): Promise<void> {
+  async updateValues(
+    layerId: string,
+    _values: Record<string, unknown>,
+    _bindings?: GraphicsTemplateBindingsT
+  ): Promise<void> {
     this.emitFrame(layerId);
   }
 

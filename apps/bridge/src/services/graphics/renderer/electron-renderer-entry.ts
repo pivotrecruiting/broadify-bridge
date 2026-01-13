@@ -1,5 +1,6 @@
 import { app, BrowserWindow, protocol } from "electron";
 import net from "node:net";
+import { getStandardAnimationCss } from "./animation-css.js";
 
 const layers = new Map<
   string,
@@ -71,12 +72,28 @@ function buildHtmlDocument(options: {
   html: string;
   css: string;
   values: Record<string, unknown>;
+  bindings?: {
+    cssVariables?: Record<string, string>;
+    textContent?: Record<string, string>;
+    textTypes?: Record<string, string>;
+    animationClass?: string;
+  };
   backgroundColor: string;
   layout: { x: number; y: number; scale: number };
 }): string {
-  const { html, css, values, backgroundColor, layout } = options;
+  const { html, css, values, bindings, backgroundColor, layout } = options;
+  const resolvedBindings = {
+    cssVariables: bindings?.cssVariables ?? {},
+    textContent: bindings?.textContent ?? {},
+    textTypes: bindings?.textTypes ?? {},
+    animationClass: bindings?.animationClass ?? "anim-ease-out",
+  };
+  const cssVariableLines = Object.entries(resolvedBindings.cssVariables)
+    .map(([key, value]) => `  ${key}: ${value};`)
+    .join("\n");
 
   const safeValues = JSON.stringify(values || {});
+  const safeBindings = JSON.stringify(resolvedBindings);
   const template = JSON.stringify(html);
   const layoutJson = JSON.stringify(layout);
 
@@ -105,6 +122,10 @@ function buildHtmlDocument(options: {
         top: 0;
         transform-origin: top left;
       }
+      :root {
+${cssVariableLines}
+      }
+      ${getStandardAnimationCss()}
       ${css}
     </style>
   </head>
@@ -114,7 +135,10 @@ function buildHtmlDocument(options: {
     </div>
     <script>
       const template = ${template};
+      const hasPlaceholders = template.includes("{{");
+      const initialBindings = ${safeBindings};
       const root = document.getElementById("graphic-root");
+      const cssVarsRoot = document.documentElement;
       const escapeHtml = (value) => {
         const str = value === undefined || value === null ? "" : String(value);
         return str
@@ -137,10 +161,63 @@ function buildHtmlDocument(options: {
           return escapeHtml(value);
         });
       };
-      window.__applyValues = (values) => {
+      const getRootElement = () => {
+        return root.querySelector('[data-root="graphic"]') || root;
+      };
+      const applyAnimationClass = (element, animationClass) => {
+        if (!element) return;
+        const classes = String(element.className || "")
+          .split(/\\s+/)
+          .filter((entry) => entry.length > 0);
+        const nextClasses = classes.filter(
+          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
+        );
+        if (animationClass) {
+          nextClasses.push(animationClass);
+        }
+        if (!nextClasses.includes("state-enter")) {
+          nextClasses.push("state-enter");
+        }
+        element.className = nextClasses.join(" ");
+      };
+      const applyCssVariables = (vars) => {
+        if (!vars || !cssVarsRoot) return;
+        Object.entries(vars).forEach(([key, value]) => {
+          if (!key.startsWith("--")) return;
+          cssVarsRoot.style.setProperty(key, String(value));
+        });
+      };
+      const applyTextContent = (textContent, textTypes) => {
+        if (!textContent) return;
+        const rootElement = getRootElement();
+        if (!rootElement) return;
+        Object.entries(textContent).forEach(([key, value]) => {
+          const target = rootElement.querySelector('[data-bid="' + key + '"]');
+          if (!target) return;
+          const contentType = textTypes ? textTypes[key] : undefined;
+          if (contentType === "list") {
+            const items = String(value || "")
+              .split("\\n")
+              .map((item) => item.trim())
+              .filter(Boolean);
+            target.innerHTML = items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("");
+            return;
+          }
+          target.textContent = String(value ?? "");
+        });
+      };
+      window.__applyValues = (values, bindings) => {
         const merged = Object.assign({}, window.__currentValues || {}, values || {});
         window.__currentValues = merged;
-        root.innerHTML = renderTemplate(merged);
+        if (hasPlaceholders) {
+          root.innerHTML = renderTemplate(merged);
+        }
+        const resolved = Object.assign({}, initialBindings, bindings || {});
+        window.__currentBindings = resolved;
+        const rootElement = getRootElement();
+        applyAnimationClass(rootElement, resolved.animationClass);
+        applyTextContent(resolved.textContent, resolved.textTypes);
+        applyCssVariables(resolved.cssVariables);
       };
       window.__updateLayout = (layout) => {
         const x = Number(layout?.x || 0);
@@ -150,8 +227,12 @@ function buildHtmlDocument(options: {
           "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
       };
       window.__currentValues = ${safeValues};
+      window.__currentBindings = initialBindings;
+      if (!hasPlaceholders) {
+        root.innerHTML = template;
+      }
       window.__updateLayout(${layoutJson});
-      window.__applyValues(window.__currentValues);
+      window.__applyValues(window.__currentValues, initialBindings);
     </script>
   </body>
 </html>`;
@@ -185,6 +266,12 @@ async function createLayer(message: {
   html: string;
   css: string;
   values: Record<string, unknown>;
+  bindings?: {
+    cssVariables?: Record<string, string>;
+    textContent?: Record<string, string>;
+    textTypes?: Record<string, string>;
+    animationClass?: string;
+  };
   layout: { x: number; y: number; scale: number };
   backgroundMode: string;
   width: number;
@@ -243,6 +330,7 @@ async function createLayer(message: {
     html: message.html,
     css: message.css,
     values: message.values,
+    bindings: message.bindings,
     backgroundColor: resolveBackgroundColor(message.backgroundMode),
     layout: message.layout,
   });
@@ -270,6 +358,12 @@ async function createLayer(message: {
 async function updateValues(message: {
   layerId: string;
   values: Record<string, unknown>;
+  bindings?: {
+    cssVariables?: Record<string, string>;
+    textContent?: Record<string, string>;
+    textTypes?: Record<string, string>;
+    animationClass?: string;
+  };
 }): Promise<void> {
   const layer = layers.get(message.layerId);
   if (!layer) {
@@ -277,7 +371,9 @@ async function updateValues(message: {
   }
 
   await layer.window.webContents.executeJavaScript(
-    `window.__applyValues(${JSON.stringify(message.values || {})});`,
+    `window.__applyValues(${JSON.stringify(
+      message.values || {}
+    )}, ${JSON.stringify(message.bindings || {})});`,
     true
   );
 }
@@ -330,6 +426,12 @@ async function handleMessage(message: unknown): Promise<void> {
         html: string;
         css: string;
         values: Record<string, unknown>;
+        bindings?: {
+          cssVariables?: Record<string, string>;
+          textContent?: Record<string, string>;
+          textTypes?: Record<string, string>;
+          animationClass?: string;
+        };
         layout: { x: number; y: number; scale: number };
         backgroundMode: string;
         width: number;
@@ -345,6 +447,12 @@ async function handleMessage(message: unknown): Promise<void> {
       msg as {
         layerId: string;
         values: Record<string, unknown>;
+        bindings?: {
+          cssVariables?: Record<string, string>;
+          textContent?: Record<string, string>;
+          textTypes?: Record<string, string>;
+          animationClass?: string;
+        };
       }
     );
     return;
