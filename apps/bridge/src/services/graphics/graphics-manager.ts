@@ -25,6 +25,7 @@ import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fil
 import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { isDevelopmentMode } from "../dev-mode.js";
 import { deviceCache } from "../device-cache.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
@@ -171,12 +172,19 @@ export class GraphicsManager {
     await this.initialize();
 
     const config = GraphicsConfigureOutputsSchema.parse(payload);
-    await this.validateOutputTargets(config.outputKey, config.targets);
-    await this.validateOutputFormat(
-      config.outputKey,
-      config.targets,
-      config.format
-    );
+    const devMode = isDevelopmentMode();
+    if (devMode) {
+      getBridgeContext().logger.warn(
+        "[Graphics] DEVELOPMENT mode enabled: skipping output validation and using stub output adapter"
+      );
+    } else {
+      await this.validateOutputTargets(config.outputKey, config.targets);
+      await this.validateOutputFormat(
+        config.outputKey,
+        config.targets,
+        config.format
+      );
+    }
 
     this.outputConfig = config;
     await this.outputAdapter.stop();
@@ -424,6 +432,9 @@ export class GraphicsManager {
   private selectOutputAdapter(
     _outputKey: GraphicsOutputKeyT
   ): GraphicsOutputAdapter {
+    if (isDevelopmentMode()) {
+      return new StubOutputAdapter();
+    }
     if (_outputKey === "key_fill_sdi") {
       return new DecklinkKeyFillOutputAdapter();
     }
