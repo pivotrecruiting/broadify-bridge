@@ -7,6 +7,7 @@ import type {
   GraphicsFrameT,
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
+  GraphicsTemplateBindingsT,
 } from "./graphics-renderer.js";
 
 const ELECTRON_BINARIES = {
@@ -217,6 +218,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
       html: input.html,
       css: input.css,
       values: input.values,
+      bindings: input.bindings,
       layout: input.layout,
       backgroundMode: input.backgroundMode,
       width: input.width,
@@ -225,9 +227,13 @@ export class ElectronRendererClient implements GraphicsRenderer {
     });
   }
 
-  async updateValues(layerId: string, values: Record<string, unknown>): Promise<void> {
+  async updateValues(
+    layerId: string,
+    values: Record<string, unknown>,
+    bindings?: GraphicsTemplateBindingsT
+  ): Promise<void> {
     await this.ensureReady();
-    this.sendCommand({ type: "update_values", layerId, values });
+    this.sendCommand({ type: "update_values", layerId, values, bindings });
   }
 
   async updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void> {

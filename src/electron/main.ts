@@ -506,6 +506,14 @@ if (!isRendererProcess) {
         healthCheckCleanup = null;
       }
 
+      const config = bridgeProcessManager.getConfig();
+      if (config) {
+        const clearResponse = await clearBridgeLogs(config);
+        if (clearResponse.error) {
+          logAppError(`bridgeClearLogs on stop failed: ${clearResponse.error}`);
+        }
+      }
+
       const result = await bridgeProcessManager.stop();
 
       // Reset web app flag and outputs

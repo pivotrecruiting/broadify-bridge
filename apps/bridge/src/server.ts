@@ -20,6 +20,7 @@ import {
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { ensureBridgeLogFile } from "./services/log-file.js";
+import { bindConsoleToLogger } from "./services/console-to-pino.js";
 import type { BridgeConfigT } from "./config.js";
 
 /**
@@ -38,6 +39,7 @@ export async function createServer(config: BridgeConfigT) {
       { level: "debug", stream: pino.destination({ dest: logPath, sync: false }) },
     ])
   );
+  bindConsoleToLogger(logger);
 
   const server = Fastify({
     logger,
