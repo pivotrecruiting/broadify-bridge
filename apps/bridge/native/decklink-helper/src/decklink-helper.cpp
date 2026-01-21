@@ -644,6 +644,7 @@ struct PlaybackState {
   BMDTimeValue nextFrameTime = 0;
   int width = 0;
   int height = 0;
+  bool useLegalRange = true;
   bool started = false;
   size_t prerollTarget = 3;
   size_t prerollScheduled = 0;
