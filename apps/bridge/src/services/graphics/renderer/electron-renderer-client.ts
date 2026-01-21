@@ -4,7 +4,7 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import type { GraphicsLayoutT } from "../graphics-schemas.js";
-import { getBridgeContext } from "../../bridge-context.js";
+import { getBridgeContext, type LoggerLikeT } from "../../bridge-context.js";
 import type {
   GraphicsFrameT,
   GraphicsRenderer,
@@ -312,12 +312,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.ipcServer = null;
   }
 
-  private getLogger(): {
-    info: (...args: unknown[]) => void;
-    warn: (...args: unknown[]) => void;
-    error: (...args: unknown[]) => void;
-    debug?: (...args: unknown[]) => void;
-  } {
+  private getLogger(): LoggerLikeT & { debug?: (msg: string) => void } {
     try {
       return getBridgeContext().logger;
     } catch {
@@ -341,11 +336,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
             : logger.error;
     const contextSuffix =
       Object.keys(context).length > 0 ? ` ${JSON.stringify(context)}` : "";
-    if (logFn.length <= 1 || logger === console) {
-      logFn.call(logger, `${message}${contextSuffix}`);
-      return;
-    }
-    logFn.call(logger, context, message);
+    logFn.call(logger, `${message}${contextSuffix}`);
   }
 
   private handleRendererOutput(
