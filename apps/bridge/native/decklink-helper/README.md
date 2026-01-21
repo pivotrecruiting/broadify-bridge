@@ -2,10 +2,11 @@
 
 This directory is reserved for the native DeckLink helper binary.
 
-Planned behavior:
+Current behavior:
 - `decklink-helper --list` prints a JSON array of devices.
 - `decklink-helper --watch` prints JSON events (one per line) for hotplug.
-- `decklink-helper --playback` reads RGBA frames from stdin and outputs SDI key/fill or single video.
+- `decklink-helper --playback` reads RGBA 8-bit frames from stdin (RGBA order, 4 Bpp),
+  then outputs SDI key/fill or single video using the selected pixel format.
 - `decklink-helper --list-modes` prints JSON display modes for a device/connection.
 
 The helper must use the DeckLink SDK and follow the official samples:
@@ -13,6 +14,12 @@ The helper must use the DeckLink SDK and follow the official samples:
 - Hotplug via `IDeckLinkDiscovery::InstallDeviceNotifications`.
 - Output/keying via `IDeckLinkOutput` + `IDeckLinkKeyer` (external keying).
 - Single video output via `IDeckLinkOutput` (no keyer).
+
+Pixel format + colorspace notes (actual behavior):
+- Pixel format is selected via `--pixel-format` or `--pixel-format-priority`.
+- YUV output uses `IDeckLinkVideoConversion::ConvertNewFrame` with colorspace from
+  display mode flags (Rec601/709/2020).
+- RGB channels are mapped to legal range (16-235) before output.
 
 The Bridge expects the helper at:
 - Dev: `apps/bridge/native/decklink-helper/decklink-helper`
@@ -44,6 +51,8 @@ Playback args (bridge-managed):
 - `--key-port <device-id>-sdi-b`
 - `--output-port <device-id>-sdi|<device-id>-sdi-a|<device-id>-hdmi`
 - `--width <int> --height <int> --fps <int>`
+- `--pixel-format <label>` (single choice)
+- `--pixel-format-priority <label,label,...>` (priority list)
 
 Mode listing (diagnostics):
 - `decklink-helper --list-modes --device <decklink-id> --output-port <device-id>-sdi`

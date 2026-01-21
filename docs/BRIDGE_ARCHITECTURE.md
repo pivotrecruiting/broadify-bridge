@@ -64,7 +64,7 @@ Die Broadify Bridge ist eine Electron-basierte Desktop-Anwendung, die einen loka
 - **Output Management**: Output-Konfiguration
 - **Graphics Manager**: Layer Registry, Z-Order, Output-Profiles
 - **Graphics Renderer**: Electron Offscreen Child + TCP IPC (HTML/CSS -> RGBA)
-- **Output Adapter**: SDI/HDMI und NDI Ausspielung
+- **Output Adapter**: SDI/HDMI via DeckLink Helper (NDI aktuell Stub)
 - **Asset Registry**: Lokaler Cache fuer Template-Assets
 - **Relay Client**: Outbound WebSocket-Verbindung zum Relay Server
 - **Command Router**: Zentrale Command-Verarbeitung für HTTP und Relay
@@ -119,7 +119,7 @@ graph TB
         EngineAdapter["Engine Adapter<br/>(ATEM, Tricaster, vMix)"]
         GraphicsManager["Graphics Manager"]
         GraphicsRenderer["Graphics Renderer"]
-        OutputAdapter["Output Adapter<br/>(SDI/NDI)"]
+        OutputAdapter["Output Adapter<br/>(SDI/HDMI, NDI stub)"]
         AssetRegistry["Asset Registry"]
         RelayClient["Relay Client<br/>(Outbound WS)"]
         CommandRouter["Command Router"]
@@ -290,6 +290,7 @@ sequenceDiagram
     participant RendererClient as Renderer Client
     participant Renderer as Electron Renderer (Child)
     participant Output as Output Adapter
+    participant Helper as DeckLink Helper
 
     WebApp->>Relay: POST /relay/command (graphics_send)
     Relay->>Bridge: command (graphics_send)
@@ -299,12 +300,15 @@ sequenceDiagram
     Renderer-->>RendererClient: frame RGBA
     RendererClient-->>Graphics: frame RGBA
     Graphics->>Output: composite + sendFrames
+    Output->>Helper: RGBA frames
 
     WebApp->>Relay: graphics_update_values
     Relay->>Bridge: command
     Bridge->>Graphics: updateValues(layerId)
     Graphics->>Renderer: applyValues
 ```
+
+Hinweis: Renderer liefert RGBA 8-bit; DeckLink Helper konvertiert zu YUV (v210) fuer Video-Ausgabe.
 
 ### Device Detection Flow
 

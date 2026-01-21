@@ -10,6 +10,7 @@ sequenceDiagram
   participant IPC as TCP IPC (127.0.0.1)
   participant Child as Electron Renderer Child
   participant Output as OutputAdapter
+  participant Helper as DeckLink Helper
 
   Script->>Graphics: initialize + configure_outputs
   Script->>Graphics: sendLayer
@@ -18,7 +19,10 @@ sequenceDiagram
   Child->>IPC: frame (RGBA)
   Renderer-->>Graphics: onFrame
   Graphics->>Output: composite + sendFrame
+  Output->>Helper: RGBA frames
 ```
+
+Hinweis: Renderer liefert RGBA 8-bit; DeckLink Helper konvertiert nach YUV (v210) fuer `video_sdi`/`video_hdmi`.
 
 ## 2) Real Command Flow (WebApp -> Relay -> Bridge)
 
@@ -33,6 +37,7 @@ sequenceDiagram
   participant IPC as TCP IPC (127.0.0.1)
   participant Child as Electron Renderer Child
   participant Output as Output Adapter
+  participant Helper as DeckLink Helper
 
   WebApp->>Relay: POST /relay/command (graphics_*)
   Relay->>Bridge: WS command
@@ -43,6 +48,7 @@ sequenceDiagram
   Child->>IPC: frame (RGBA)
   Renderer-->>Graphics: onFrame
   Graphics->>Output: composite + sendFrame
+  Output->>Helper: RGBA frames
 ```
 
 ## 3) Persistenz + Assets (Kurz)
