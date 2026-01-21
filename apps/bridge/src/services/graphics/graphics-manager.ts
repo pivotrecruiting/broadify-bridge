@@ -17,6 +17,7 @@ import {
   GraphicsUpdateValuesSchema,
   GraphicsRemoveSchema,
   GraphicsRemovePresetSchema,
+  GRAPHICS_OUTPUT_CONFIG_VERSION,
 } from "./graphics-schemas.js";
 import { outputConfigStore } from "./output-config-store.js";
 import { sanitizeTemplateCss, validateTemplate } from "./template-sanitizer.js";
@@ -194,6 +195,11 @@ export class GraphicsManager {
     await this.initialize();
 
     const config = GraphicsConfigureOutputsSchema.parse(payload);
+    if (config.version > GRAPHICS_OUTPUT_CONFIG_VERSION) {
+      throw new Error(
+        `Unsupported graphics output config version: ${config.version}`
+      );
+    }
     const devMode = isDevelopmentMode();
     if (devMode) {
       getBridgeContext().logger.warn(
