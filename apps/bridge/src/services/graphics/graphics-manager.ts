@@ -23,6 +23,7 @@ import { outputConfigStore } from "./output-config-store.js";
 import { sanitizeTemplateCss, validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
+import { DecklinkSplitOutputAdapter } from "./output-adapters/decklink-split-output-adapter.js";
 import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
@@ -48,6 +49,7 @@ const MAX_QUEUED_PRESETS = 10;
 
 const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
   "key_fill_sdi",
+  "key_fill_split_sdi",
   "key_fill_ndi",
 ];
 
@@ -473,6 +475,9 @@ export class GraphicsManager {
     if (_outputKey === "key_fill_sdi") {
       return new DecklinkKeyFillOutputAdapter();
     }
+    if (_outputKey === "key_fill_split_sdi") {
+      return new DecklinkSplitOutputAdapter();
+    }
     if (_outputKey === "video_sdi" || _outputKey === "video_hdmi") {
       return new DecklinkVideoOutputAdapter();
     }
@@ -518,44 +523,49 @@ export class GraphicsManager {
       return;
     }
 
-    const output1Id = _targets.output1Id;
-    if (!output1Id) {
-      return;
-    }
+    const outputIds =
+      _outputKey === "key_fill_split_sdi"
+        ? [_targets.output1Id, _targets.output2Id]
+        : [_targets.output1Id];
 
     const devices = await deviceCache.getDevices();
-    const outputMatch = this.findPort(devices, output1Id);
-    if (!outputMatch || outputMatch.device.type !== "decklink") {
-      return;
-    }
-
     const requireKeying = _outputKey === "key_fill_sdi";
-    const modes = await listDecklinkDisplayModes(
-      outputMatch.device.id,
-      output1Id,
-      {
-        width: _format.width,
-        height: _format.height,
-        fps: _format.fps,
-        requireKeying,
-      }
-    );
-
-    if (modes.length === 0) {
-      throw new Error("Output format not supported by selected device");
-    }
-
     const preferredFormats =
       _outputKey === "key_fill_sdi"
         ? KEY_FILL_PIXEL_FORMAT_PRIORITY
         : VIDEO_PIXEL_FORMAT_PRIORITY;
 
-    const hasSupportedFormat = modes.some((mode) =>
-      supportsAnyPixelFormat(mode.pixelFormats, preferredFormats)
-    );
+    for (const outputId of outputIds) {
+      if (!outputId) {
+        continue;
+      }
+      const outputMatch = this.findPort(devices, outputId);
+      if (!outputMatch || outputMatch.device.type !== "decklink") {
+        return;
+      }
 
-    if (!hasSupportedFormat) {
-      throw new Error("Output pixel format not supported by selected device");
+      const modes = await listDecklinkDisplayModes(
+        outputMatch.device.id,
+        outputId,
+        {
+          width: _format.width,
+          height: _format.height,
+          fps: _format.fps,
+          requireKeying,
+        }
+      );
+
+      if (modes.length === 0) {
+        throw new Error("Output format not supported by selected device");
+      }
+
+      const hasSupportedFormat = modes.some((mode) =>
+        supportsAnyPixelFormat(mode.pixelFormats, preferredFormats)
+      );
+
+      if (!hasSupportedFormat) {
+        throw new Error("Output pixel format not supported by selected device");
+      }
     }
   }
 
@@ -588,6 +598,36 @@ export class GraphicsManager {
       }
       if (output2Match.port.role !== "key") {
         throw new Error("Output 2 must be the SDI Key port");
+      }
+      if (!output1Match.port.status.available || !output2Match.port.status.available) {
+        throw new Error("Selected output ports are not available");
+      }
+    }
+    if (outputKey === "key_fill_split_sdi") {
+      if (!targets.output1Id || !targets.output2Id) {
+        throw new Error("Output 1 and Output 2 are required for Key & Fill SDI");
+      }
+      if (targets.output1Id === targets.output2Id) {
+        throw new Error("Output 1 and Output 2 must be different");
+      }
+
+      const devices = await deviceCache.getDevices();
+      const output1Match = this.findPort(devices, targets.output1Id);
+      const output2Match = this.findPort(devices, targets.output2Id);
+      if (!output1Match || !output2Match) {
+        throw new Error("Invalid output ports selected");
+      }
+      if (
+        output1Match.device.type !== "decklink" ||
+        output2Match.device.type !== "decklink"
+      ) {
+        throw new Error("Key & Fill Split requires DeckLink outputs");
+      }
+      if (output1Match.port.type !== "sdi" || output2Match.port.type !== "sdi") {
+        throw new Error("Key & Fill Split requires SDI output ports");
+      }
+      if (output1Match.port.role === "key" || output2Match.port.role === "key") {
+        throw new Error("Key & Fill Split cannot use SDI Key ports");
       }
       if (!output1Match.port.status.available || !output2Match.port.status.available) {
         throw new Error("Selected output ports are not available");

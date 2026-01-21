@@ -7,6 +7,7 @@ const MAX_DURATION_MS = 60 * 60 * 1000;
 export const GraphicsOutputKeySchema = z.enum([
   "stub",
   "key_fill_sdi",
+  "key_fill_split_sdi",
   "key_fill_ndi",
   "video_sdi",
   "video_hdmi",
