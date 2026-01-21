@@ -16,6 +16,10 @@ let paintCount = 0;
 let ipcSocket: net.Socket | null = null;
 let canSend = true;
 let ipcBuffer = Buffer.alloc(0);
+const ipcToken = process.env.BRIDGE_GRAPHICS_IPC_TOKEN || "";
+let isAppReady = false;
+let isIpcConnected = false;
+let readySent = false;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -28,12 +32,6 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-function sendMessage(message: unknown): void {
-  if (typeof process.send === "function") {
-    process.send(message);
-  }
-}
-
 function sendIpcMessage(
   message: { type: string; [key: string]: unknown },
   buffer?: Buffer
@@ -44,6 +42,7 @@ function sendIpcMessage(
 
   const payload = {
     ...message,
+    token: ipcToken || undefined,
     bufferLength: buffer ? buffer.length : 0,
   };
   const header = Buffer.from(JSON.stringify(payload), "utf-8");
@@ -57,6 +56,14 @@ function sendIpcMessage(
   if (!ok) {
     canSend = false;
   }
+}
+
+function maybeSendReady(): void {
+  if (readySent || !isAppReady || !isIpcConnected) {
+    return;
+  }
+  readySent = true;
+  sendIpcMessage({ type: "ready" });
 }
 
 function bgraToRgba(buffer: Buffer): Buffer {
@@ -316,14 +323,6 @@ async function createLayer(message: {
       },
       buffer
     );
-    sendMessage({
-      type: "frame",
-      layerId: message.layerId,
-      width: message.width,
-      height: message.height,
-      buffer,
-      timestamp: Date.now(),
-    });
   });
 
   const html = buildHtmlDocument({
@@ -351,8 +350,6 @@ async function createLayer(message: {
     width: message.width,
     height: message.height,
   });
-
-  sendMessage({ type: "layer_ready", layerId: message.layerId });
 }
 
 async function updateValues(message: {
@@ -484,21 +481,12 @@ async function handleMessage(message: unknown): Promise<void> {
 
 app.on("ready", () => {
   console.log("[GraphicsRenderer] Electron renderer ready");
-  console.log(
-    `[GraphicsRenderer] IPC available: ${typeof process.send === "function"}`
-  );
   registerAssetProtocol();
-  sendMessage({ type: "ready" });
+  isAppReady = true;
+  maybeSendReady();
 });
 
 app.on("window-all-closed", () => {});
-
-process.on("message", (message: unknown) => {
-  handleMessage(message).catch((error: unknown) => {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    sendMessage({ type: "error", message: errorMessage });
-  });
-});
 
 function connectIpcSocket(): void {
   const port = Number(process.env.BRIDGE_GRAPHICS_IPC_PORT || 0);
@@ -508,7 +496,9 @@ function connectIpcSocket(): void {
 
   ipcSocket = net.createConnection({ host: "127.0.0.1", port }, () => {
     console.log("[GraphicsRenderer] IPC socket connected");
-    sendIpcMessage({ type: "ready" });
+    isIpcConnected = true;
+    sendIpcMessage({ type: "hello" });
+    maybeSendReady();
   });
 
   ipcSocket.on("data", (data) => {
@@ -531,7 +521,17 @@ function connectIpcSocket(): void {
       }
 
       ipcBuffer = ipcBuffer.subarray(4 + headerLength);
-      void handleMessage(header);
+      const messageToken =
+        typeof header.token === "string" ? header.token : "";
+      if (ipcToken && messageToken !== ipcToken) {
+        console.warn("[GraphicsRenderer] IPC token mismatch");
+        ipcSocket?.destroy();
+        return;
+      }
+      void handleMessage(header).catch((error: unknown) => {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        sendIpcMessage({ type: "error", message: errorMessage });
+      });
     }
   });
 
@@ -546,6 +546,8 @@ function connectIpcSocket(): void {
   ipcSocket.on("close", () => {
     console.warn("[GraphicsRenderer] IPC socket closed");
     ipcSocket = null;
+    isIpcConnected = false;
+    readySent = false;
   });
 }
 
@@ -554,12 +556,12 @@ connectIpcSocket();
 process.on("uncaughtException", (error) => {
   const errorMessage = error instanceof Error ? error.message : String(error);
   console.error(`[GraphicsRenderer] Uncaught exception: ${errorMessage}`);
-  sendMessage({ type: "error", message: errorMessage });
+  sendIpcMessage({ type: "error", message: errorMessage });
 });
 
 process.on("unhandledRejection", (reason) => {
   const errorMessage =
     reason instanceof Error ? reason.message : String(reason);
   console.error(`[GraphicsRenderer] Unhandled rejection: ${errorMessage}`);
-  sendMessage({ type: "error", message: errorMessage });
+  sendIpcMessage({ type: "error", message: errorMessage });
 });

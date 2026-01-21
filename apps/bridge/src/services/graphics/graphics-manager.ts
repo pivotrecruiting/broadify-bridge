@@ -27,6 +27,7 @@ import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { isDevelopmentMode } from "../dev-mode.js";
 import { deviceCache } from "../device-cache.js";
+import { listDecklinkDisplayModes } from "../../modules/decklink/decklink-helper.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
 import type {
@@ -35,6 +36,11 @@ import type {
 } from "./renderer/graphics-renderer.js";
 import type { TemplateBindingsT } from "./template-bindings.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
+import {
+  KEY_FILL_PIXEL_FORMAT_PRIORITY,
+  VIDEO_PIXEL_FORMAT_PRIORITY,
+  supportsAnyPixelFormat,
+} from "./output-format-policy.js";
 
 const MAX_ACTIVE_LAYERS = 3;
 const MAX_QUEUED_PRESETS = 10;
@@ -502,7 +508,49 @@ export class GraphicsManager {
     _targets: GraphicsTargetsT,
     _format: { width: number; height: number; fps: number }
   ): Promise<void> {
-    // Format validation placeholder
+    if (_outputKey === "stub" || _outputKey === "key_fill_ndi") {
+      return;
+    }
+
+    const output1Id = _targets.output1Id;
+    if (!output1Id) {
+      return;
+    }
+
+    const devices = await deviceCache.getDevices();
+    const outputMatch = this.findPort(devices, output1Id);
+    if (!outputMatch || outputMatch.device.type !== "decklink") {
+      return;
+    }
+
+    const requireKeying = _outputKey === "key_fill_sdi";
+    const modes = await listDecklinkDisplayModes(
+      outputMatch.device.id,
+      output1Id,
+      {
+        width: _format.width,
+        height: _format.height,
+        fps: _format.fps,
+        requireKeying,
+      }
+    );
+
+    if (modes.length === 0) {
+      throw new Error("Output format not supported by selected device");
+    }
+
+    const preferredFormats =
+      _outputKey === "key_fill_sdi"
+        ? KEY_FILL_PIXEL_FORMAT_PRIORITY
+        : VIDEO_PIXEL_FORMAT_PRIORITY;
+
+    const hasSupportedFormat = modes.some((mode) =>
+      supportsAnyPixelFormat(mode.pixelFormats, preferredFormats)
+    );
+
+    if (!hasSupportedFormat) {
+      throw new Error("Output pixel format not supported by selected device");
+    }
   }
 
   private async validateOutputTargets(

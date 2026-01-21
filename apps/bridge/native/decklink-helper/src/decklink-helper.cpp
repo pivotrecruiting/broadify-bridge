@@ -34,7 +34,6 @@ namespace {
 
 std::atomic<bool> gShouldExit{false};
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
-constexpr bool kUseLegalRange = true;
 constexpr uint8_t kLegalMin = 16;
 constexpr uint8_t kLegalMax = 235;
 constexpr int kFullRange = 255;
@@ -478,11 +477,13 @@ struct PlaybackConfig {
   std::string deviceId;
   int width = 0;
   int height = 0;
+  bool useLegalRange = true;
   double fps = 0;
   std::string outputPortId;
   std::string fillPortId;
   std::string keyPortId;
   std::vector<BMDPixelFormat> pixelFormatPriority;
+  bool useLegalRange = true;
 };
 
 struct ModeListConfig {
@@ -491,6 +492,7 @@ struct ModeListConfig {
   int width = 0;
   int height = 0;
   double fps = 0;
+  bool requireKeying = false;
 };
 
 struct PlaybackFrameHeader {
@@ -646,7 +648,8 @@ bool convertRgbaToOutputRows(const uint8_t* src,
                              int width,
                              int height,
                              int dstRowBytes,
-                             BMDPixelFormat pixelFormat) {
+                             BMDPixelFormat pixelFormat,
+                             bool useLegalRange) {
   const int srcRowBytes = width * 4;
   for (int y = 0; y < height; ++y) {
     const uint8_t* srcRow = src + y * srcRowBytes;
@@ -657,7 +660,7 @@ bool convertRgbaToOutputRows(const uint8_t* src,
       uint8_t g = srcRow[offset + 1];
       uint8_t b = srcRow[offset + 2];
       const uint8_t a = srcRow[offset + 3];
-      if (kUseLegalRange) {
+      if (useLegalRange) {
         r = mapToLegalRange(r);
         g = mapToLegalRange(g);
         b = mapToLegalRange(b);
@@ -727,7 +730,8 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                                  state.width,
                                  state.height,
                                  srcRowBytes,
-                                 state.sourcePixelFormat)) {
+                                 state.sourcePixelFormat,
+                                 state.useLegalRange)) {
       std::cerr << "Unsupported pixel format for RGBA conversion: "
                 << pixelFormatLabel(state.sourcePixelFormat) << std::endl;
       srcFrame->Release();
@@ -771,7 +775,8 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                                  state.width,
                                  state.height,
                                  rowBytes,
-                                 state.pixelFormat)) {
+                                 state.pixelFormat,
+                                 state.useLegalRange)) {
       std::cerr << "Unsupported pixel format for RGBA conversion: "
                 << pixelFormatLabel(state.pixelFormat) << std::endl;
       frame->Release();
@@ -1078,6 +1083,13 @@ BMDColorspace selectColorspaceFromFlags(BMDDisplayModeFlags flags, int height) {
   return bmdColorspaceUnknown;
 }
 
+BMDColorspace fallbackColorspaceFromHeight(int height) {
+  if (height > 0 && height <= 576) {
+    return bmdColorspaceRec601;
+  }
+  return bmdColorspaceRec709;
+}
+
 bool listDisplayModes(const ModeListConfig& config, std::ostream& out) {
   if (config.deviceId.empty() || config.outputPortId.empty()) {
     std::cerr << "Device ID and output port are required for list-modes."
@@ -1124,6 +1136,9 @@ bool listDisplayModes(const ModeListConfig& config, std::ostream& out) {
       bmdFormat8BitARGB,
       bmdFormat8BitBGRA,
   };
+  const BMDSupportedVideoModeFlags modeFlags =
+      config.requireKeying ? bmdSupportedVideoModeKeying
+                           : bmdSupportedVideoModeDefault;
 
   bool first = true;
   out << "[";
@@ -1170,7 +1185,7 @@ bool listDisplayModes(const ModeListConfig& config, std::ostream& out) {
           mode->GetDisplayMode(),
           format,
           bmdNoVideoOutputConversion,
-          bmdSupportedVideoModeDefault,
+          modeFlags,
           nullptr,
           &supported);
       if (SUCCEEDED(hr) && supported) {
@@ -1418,6 +1433,7 @@ int runPlayback(const PlaybackConfig& config) {
   state.output = output;
   state.width = config.width;
   state.height = config.height;
+  state.useLegalRange = config.useLegalRange;
 
   const BMDSupportedVideoModeFlags modeFlags =
       useKeyer ? bmdSupportedVideoModeKeying : bmdSupportedVideoModeDefault;
@@ -1455,13 +1471,11 @@ int runPlayback(const PlaybackConfig& config) {
   state.pixelFormat = selectedPixelFormat;
   state.colorspace = selectColorspaceFromFlags(displayModeFlags, config.height);
   if (state.colorspace == bmdColorspaceUnknown) {
-    std::cerr << "Colorspace flags not provided by display mode." << std::endl;
-    if (keyer) {
-      keyer->Release();
-    }
-    output->Release();
-    deckLink->Release();
-    return 1;
+    state.colorspace = fallbackColorspaceFromHeight(config.height);
+    std::cerr << "Colorspace flags not provided by display mode. "
+              << "Falling back to "
+              << (state.colorspace == bmdColorspaceRec601 ? "rec601" : "rec709")
+              << "." << std::endl;
   }
 
   {
@@ -1497,6 +1511,7 @@ int runPlayback(const PlaybackConfig& config) {
                               : loggedColorspace == bmdColorspaceRec2020
                                     ? "rec2020"
                                     : "unknown")
+                << ", range " << (state.useLegalRange ? "legal" : "full")
                 << ")" << std::endl;
     }
   }
@@ -1763,6 +1778,10 @@ int main(int argc, char** argv) {
         }
         continue;
       }
+      if (arg == "--keying") {
+        config.requireKeying = true;
+        continue;
+      }
     }
 
     std::ostringstream out;
@@ -1846,6 +1865,18 @@ int main(int argc, char** argv) {
         }
         if (config.pixelFormatPriority.empty()) {
           std::cerr << "Pixel format priority cannot be empty." << std::endl;
+          return 1;
+        }
+        continue;
+      }
+      if (arg == "--range" && i + 1 < argc) {
+        const std::string value = argv[++i];
+        if (value == "full") {
+          config.useLegalRange = false;
+        } else if (value == "legal") {
+          config.useLegalRange = true;
+        } else {
+          std::cerr << "Unknown range: " << value << std::endl;
           return 1;
         }
         continue;

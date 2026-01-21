@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
@@ -13,51 +14,6 @@ import type {
 const ELECTRON_BINARIES = {
   win32: "electron.cmd",
   default: "electron",
-};
-
-type IpcMessageT = { type?: string; [key: string]: unknown };
-
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null;
-};
-
-const getBufferPreview = (
-  bufferValue: unknown
-): { preview: string; length: number } | null => {
-  if (Buffer.isBuffer(bufferValue)) {
-    return {
-      preview: bufferValue.toString("base64").slice(0, 10),
-      length: bufferValue.length,
-    };
-  }
-
-  if (isRecord(bufferValue) && Array.isArray(bufferValue.data)) {
-    const data = bufferValue.data;
-    if (!data.every((entry) => typeof entry === "number")) {
-      return null;
-    }
-    const length = data.length;
-    const previewBuffer = Buffer.from(data.slice(0, 10));
-    return {
-      preview: previewBuffer.toString("base64").slice(0, 10),
-      length,
-    };
-  }
-
-  return null;
-};
-
-const sanitizeIpcMessageForLog = (message: IpcMessageT): Record<string, unknown> => {
-  const sanitized: Record<string, unknown> = { ...message };
-  if (message.type === "frame") {
-    const preview = getBufferPreview(message.buffer);
-    if (preview) {
-      sanitized.bufferPreview = preview.preview;
-      sanitized.bufferLength = preview.length;
-    }
-    delete sanitized.buffer;
-  }
-  return sanitized;
 };
 
 function resolveElectronBinary(): string | null {
@@ -118,6 +74,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private ipcServer: net.Server | null = null;
   private ipcSocket: net.Socket | null = null;
   private ipcBuffer = Buffer.alloc(0);
+  private ipcToken: string | null = null;
+  private ipcAuthenticated = false;
+  private pendingCommands: Array<Record<string, unknown>> = [];
 
   async initialize(): Promise<void> {
     if (this.child) {
@@ -140,6 +99,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     });
 
     const ipcPort = await this.startIpcServer();
+    this.ipcToken = randomBytes(16).toString("hex");
 
     console.log(
       `[GraphicsRenderer] Spawning: ${electronBinary} --graphics-renderer --renderer-entry ${entry}`
@@ -148,12 +108,13 @@ export class ElectronRendererClient implements GraphicsRenderer {
     const env = { ...process.env } as Record<string, string>;
     delete env.ELECTRON_RUN_AS_NODE;
     env.BRIDGE_GRAPHICS_IPC_PORT = String(ipcPort);
+    env.BRIDGE_GRAPHICS_IPC_TOKEN = this.ipcToken;
 
     this.child = spawn(
       electronBinary,
       ["--graphics-renderer", "--renderer-entry", entry],
       {
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
+        stdio: ["ignore", "pipe", "pipe"],
         env,
       }
     );
@@ -163,50 +124,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
       if (text.length > 0) {
         console.log(`[GraphicsRenderer stdout] ${text}`);
       }
-      if (
-        text.includes("Electron renderer ready") &&
-        this.readyResolver
-      ) {
-        this.readyResolver();
-        this.readyResolver = null;
-        this.readyRejecter = null;
-      }
     });
 
     this.child.stderr?.on("data", (data) => {
       const text = data.toString().trim();
       if (text.length > 0) {
         console.error(`[GraphicsRenderer stderr] ${text}`);
-      }
-    });
-
-    this.child.on("message", (message: unknown) => {
-      if (!message || typeof message !== "object") {
-        return;
-      }
-      const msg = message as IpcMessageT;
-      console.log(
-        `[GraphicsRenderer ipc] ${JSON.stringify(sanitizeIpcMessageForLog(msg))}`
-      );
-      if (msg.type === "ready") {
-        if (this.readyResolver) {
-          this.readyResolver();
-          this.readyResolver = null;
-          this.readyRejecter = null;
-        }
-      }
-      if (msg.type === "frame" && this.frameCallback) {
-        const frame: GraphicsFrameT = {
-          layerId: msg.layerId as string,
-          width: msg.width as number,
-          height: msg.height as number,
-          buffer: msg.buffer as Buffer,
-          timestamp: msg.timestamp as number,
-        };
-        this.frameCallback(frame);
-      }
-      if (msg.type === "error") {
-        console.error(`[GraphicsRenderer] ${msg.message as string}`);
       }
     });
 
@@ -305,6 +228,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.child = null;
     this.ipcSocket?.destroy();
     this.ipcSocket = null;
+    this.ipcAuthenticated = false;
+    this.pendingCommands = [];
+    this.ipcToken = null;
     await this.stopIpcServer();
   }
 
@@ -324,12 +250,20 @@ export class ElectronRendererClient implements GraphicsRenderer {
     }
 
     this.ipcServer = net.createServer((socket) => {
+      if (this.ipcSocket) {
+        console.warn("[GraphicsRenderer IPC] Rejecting extra client");
+        socket.destroy();
+        return;
+      }
       this.ipcSocket = socket;
+      this.ipcAuthenticated = false;
+      this.ipcBuffer = Buffer.alloc(0);
       console.log("[GraphicsRenderer IPC] Client connected");
       socket.on("data", (data) => this.handleIpcData(data));
       socket.on("close", () => {
         console.warn("[GraphicsRenderer IPC] Client disconnected");
         this.ipcSocket = null;
+        this.ipcAuthenticated = false;
       });
       socket.on("error", (error) => {
         console.error(`[GraphicsRenderer IPC] ${error.message}`);
@@ -397,6 +331,30 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
       this.ipcBuffer = this.ipcBuffer.subarray(totalLength);
 
+      const messageToken =
+        typeof header.token === "string" ? header.token : "";
+      if (header.type === "hello") {
+        if (this.ipcToken && messageToken === this.ipcToken) {
+          this.ipcAuthenticated = true;
+          console.log("[GraphicsRenderer IPC] Handshake complete");
+          this.flushPendingCommands();
+        } else {
+          console.warn("[GraphicsRenderer IPC] Invalid token from client");
+          this.ipcSocket?.destroy();
+        }
+        continue;
+      }
+
+      if (this.ipcToken && messageToken !== this.ipcToken) {
+        console.warn("[GraphicsRenderer IPC] Token mismatch on message");
+        continue;
+      }
+
+      if (!this.ipcAuthenticated) {
+        console.warn("[GraphicsRenderer IPC] Ignoring message before handshake");
+        continue;
+      }
+
       if (header.type === "ready" && this.readyResolver) {
         this.readyResolver();
         this.readyResolver = null;
@@ -413,20 +371,39 @@ export class ElectronRendererClient implements GraphicsRenderer {
         };
         this.frameCallback(frame);
       }
+
+      if (header.type === "error" && typeof header.message === "string") {
+        console.error(`[GraphicsRenderer] ${header.message}`);
+      }
     }
   }
 
   private sendCommand(message: Record<string, unknown>): void {
-    if (this.ipcSocket) {
+    const payload = this.ipcToken ? { ...message, token: this.ipcToken } : message;
+    if (!this.ipcSocket || !this.ipcAuthenticated) {
+      this.pendingCommands.push(payload);
+      return;
+    }
+
+    const header = Buffer.from(JSON.stringify(payload), "utf-8");
+    const headerLength = Buffer.alloc(4);
+    headerLength.writeUInt32BE(header.length, 0);
+    this.ipcSocket.write(Buffer.concat([headerLength, header]));
+  }
+
+  private flushPendingCommands(): void {
+    if (!this.ipcSocket || !this.ipcAuthenticated) {
+      return;
+    }
+    while (this.pendingCommands.length > 0) {
+      const message = this.pendingCommands.shift();
+      if (!message) {
+        continue;
+      }
       const header = Buffer.from(JSON.stringify(message), "utf-8");
       const headerLength = Buffer.alloc(4);
       headerLength.writeUInt32BE(header.length, 0);
       this.ipcSocket.write(Buffer.concat([headerLength, header]));
-      return;
-    }
-
-    if (this.child) {
-      this.child.send(message);
     }
   }
 }

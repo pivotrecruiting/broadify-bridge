@@ -8,6 +8,7 @@ import type {
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
+import { VIDEO_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
 
 type DecklinkPortInfo = {
   deviceId: string;
@@ -20,14 +21,6 @@ const FRAME_VERSION = 1;
 const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
-const VIDEO_PIXEL_FORMAT_PRIORITY = [
-  "10bit_yuv",
-  // TODO: Addback
-  // "8bit_yuv",
-  // "8bit_bgra",
-  // "8bit_argb",
-];
-
 function parseDecklinkPortId(portId: string): DecklinkPortInfo | null {
   if (portId.endsWith("-sdi-a")) {
     return {
@@ -120,6 +113,8 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
         String(config.format.fps),
         "--pixel-format-priority",
         VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
+        "--range",
+        config.range,
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],

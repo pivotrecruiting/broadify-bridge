@@ -53,7 +53,9 @@ Playback args (bridge-managed):
 - `--width <int> --height <int> --fps <int>`
 - `--pixel-format <label>` (single choice)
 - `--pixel-format-priority <label,label,...>` (priority list)
+- `--range <legal|full>` (RGB range mapping)
 
 Mode listing (diagnostics):
 - `decklink-helper --list-modes --device <decklink-id> --output-port <device-id>-sdi`
 - Optional filters: `--width <int> --height <int> --fps <int>`
+- Keying modes only: `--keying`

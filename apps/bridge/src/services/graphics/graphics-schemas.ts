@@ -16,6 +16,11 @@ export const GraphicsFormatSchema = z.object({
   fps: z.number().positive(),
 });
 
+export const GraphicsRangeSchema = z
+  .enum(["legal", "full"])
+  .optional()
+  .default("legal");
+
 export const GraphicsTargetsSchema = z
   .object({
     output1Id: z.string().min(1).optional(),
@@ -29,6 +34,7 @@ export const GraphicsConfigureOutputsSchema = z
     outputKey: GraphicsOutputKeySchema,
     targets: GraphicsTargetsSchema,
     format: GraphicsFormatSchema,
+    range: GraphicsRangeSchema,
   })
   .strict();
 
@@ -117,6 +123,7 @@ export const GraphicsRemovePresetSchema = z
 
 export type GraphicsOutputKeyT = z.infer<typeof GraphicsOutputKeySchema>;
 export type GraphicsFormatT = z.infer<typeof GraphicsFormatSchema>;
+export type GraphicsRangeT = z.infer<typeof GraphicsRangeSchema>;
 export type GraphicsTargetsT = z.infer<typeof GraphicsTargetsSchema>;
 export type GraphicsOutputConfigT = z.infer<typeof GraphicsConfigureOutputsSchema>;
 export type GraphicsLayoutT = z.infer<typeof GraphicsLayoutSchema>;

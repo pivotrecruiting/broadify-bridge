@@ -8,6 +8,7 @@ import type {
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
+import { KEY_FILL_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
 
 type DecklinkPortInfo = {
   deviceId: string;
@@ -20,8 +21,6 @@ const FRAME_VERSION = 1;
 const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
-const KEYER_PIXEL_FORMAT_PRIORITY = ["8bit_argb", "8bit_bgra"];
-
 function parseDecklinkPortId(portId: string): DecklinkPortInfo | null {
   if (portId.endsWith("-sdi-a")) {
     return {
@@ -119,7 +118,9 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
         "--fps",
         String(config.format.fps),
         "--pixel-format-priority",
-        KEYER_PIXEL_FORMAT_PRIORITY.join(","),
+        KEY_FILL_PIXEL_FORMAT_PRIORITY.join(","),
+        "--range",
+        config.range,
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
@@ -127,7 +128,7 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     );
 
     this.getLogger().info(
-      `[DeckLinkOutput] Pixel format priority: ${KEYER_PIXEL_FORMAT_PRIORITY.join(",")}`
+      `[DeckLinkOutput] Pixel format priority: ${KEY_FILL_PIXEL_FORMAT_PRIORITY.join(",")}`
     );
 
     this.child.stdout?.on("data", (data) => this.handleStdout(data));
