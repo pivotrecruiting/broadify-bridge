@@ -1,6 +1,17 @@
 import { app, BrowserWindow, protocol } from "electron";
 import net from "node:net";
+import pino from "pino";
 import { getStandardAnimationCss } from "./animation-css.js";
+
+const logger = pino({
+  level: process.env.NODE_ENV === "production" ? "info" : "debug",
+  base: { component: "graphics-renderer" },
+});
+
+const MAX_IPC_HEADER_BYTES = 64 * 1024;
+const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
+const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
+const MAX_FRAME_DIMENSION = 8192;
 
 const layers = new Map<
   string,
@@ -40,12 +51,21 @@ function sendIpcMessage(
     return;
   }
 
+  if (buffer && buffer.length > MAX_IPC_PAYLOAD_BYTES) {
+    logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
+    return;
+  }
+
   const payload = {
     ...message,
     token: ipcToken || undefined,
     bufferLength: buffer ? buffer.length : 0,
   };
   const header = Buffer.from(JSON.stringify(payload), "utf-8");
+  if (header.length > MAX_IPC_HEADER_BYTES) {
+    logger.warn("[GraphicsRenderer] IPC header exceeds limit");
+    return;
+  }
   const headerLength = Buffer.alloc(4);
   headerLength.writeUInt32BE(header.length, 0);
 
@@ -309,10 +329,23 @@ async function createLayer(message: {
   window.webContents.setFrameRate(message.fps);
   window.webContents.on("paint", (_event, _dirty, image) => {
     if (paintCount === 0) {
-      console.log("[GraphicsRenderer] First paint received");
+      logger.info("[GraphicsRenderer] First paint received");
     }
     paintCount += 1;
     const buffer = bgraToRgba(image.toBitmap());
+    if (message.width > MAX_FRAME_DIMENSION || message.height > MAX_FRAME_DIMENSION) {
+      logger.warn("[GraphicsRenderer] Frame dimensions exceed limit");
+      return;
+    }
+    const expectedLength = message.width * message.height * 4;
+    if (buffer.length !== expectedLength) {
+      logger.warn("[GraphicsRenderer] Frame buffer length mismatch");
+      return;
+    }
+    if (buffer.length > MAX_IPC_PAYLOAD_BYTES) {
+      logger.warn("[GraphicsRenderer] Frame buffer exceeds payload limit");
+      return;
+    }
     sendIpcMessage(
       {
         type: "frame",
@@ -338,7 +371,7 @@ async function createLayer(message: {
     window.webContents.startPainting();
     window.webContents.invalidate();
     const isPainting = window.webContents.isPainting();
-    console.log(`[GraphicsRenderer] isPainting: ${isPainting}`);
+    logger.info(`[GraphicsRenderer] isPainting: ${isPainting}`);
   });
 
   await window.loadURL(
@@ -480,7 +513,7 @@ async function handleMessage(message: unknown): Promise<void> {
 }
 
 app.on("ready", () => {
-  console.log("[GraphicsRenderer] Electron renderer ready");
+  logger.info("[GraphicsRenderer] Electron renderer ready");
   registerAssetProtocol();
   isAppReady = true;
   maybeSendReady();
@@ -495,7 +528,7 @@ function connectIpcSocket(): void {
   }
 
   ipcSocket = net.createConnection({ host: "127.0.0.1", port }, () => {
-    console.log("[GraphicsRenderer] IPC socket connected");
+    logger.info("[GraphicsRenderer] IPC socket connected");
     isIpcConnected = true;
     sendIpcMessage({ type: "hello" });
     maybeSendReady();
@@ -503,8 +536,20 @@ function connectIpcSocket(): void {
 
   ipcSocket.on("data", (data) => {
     ipcBuffer = Buffer.concat([ipcBuffer, data]);
+    if (ipcBuffer.length > MAX_IPC_BUFFER_BYTES) {
+      logger.warn("[GraphicsRenderer] IPC buffer exceeds limit");
+      ipcBuffer = Buffer.alloc(0);
+      ipcSocket?.destroy();
+      return;
+    }
     while (ipcBuffer.length >= 4) {
       const headerLength = ipcBuffer.readUInt32BE(0);
+      if (headerLength === 0 || headerLength > MAX_IPC_HEADER_BYTES) {
+        logger.warn("[GraphicsRenderer] IPC header length exceeds limit");
+        ipcBuffer = Buffer.alloc(0);
+        ipcSocket?.destroy();
+        return;
+      }
       if (ipcBuffer.length < 4 + headerLength) {
         return;
       }
@@ -520,11 +565,38 @@ function connectIpcSocket(): void {
         return;
       }
 
-      ipcBuffer = ipcBuffer.subarray(4 + headerLength);
+      const hasBufferLength = Object.prototype.hasOwnProperty.call(
+        header,
+        "bufferLength"
+      );
+      if (hasBufferLength && typeof header.bufferLength !== "number") {
+        logger.warn("[GraphicsRenderer] IPC buffer length type invalid");
+        ipcBuffer = Buffer.alloc(0);
+        ipcSocket?.destroy();
+        return;
+      }
+      const bufferLength =
+        typeof header.bufferLength === "number" ? header.bufferLength : 0;
+      if (bufferLength < 0 || bufferLength > MAX_IPC_PAYLOAD_BYTES) {
+        logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
+        ipcBuffer = Buffer.alloc(0);
+        ipcSocket?.destroy();
+        return;
+      }
+      const totalLength = 4 + headerLength + bufferLength;
+      if (ipcBuffer.length < totalLength) {
+        return;
+      }
+
+      ipcBuffer = ipcBuffer.subarray(totalLength);
+      if (bufferLength > 0) {
+        logger.warn("[GraphicsRenderer] Unexpected IPC payload");
+        continue;
+      }
       const messageToken =
         typeof header.token === "string" ? header.token : "";
       if (ipcToken && messageToken !== ipcToken) {
-        console.warn("[GraphicsRenderer] IPC token mismatch");
+        logger.warn("[GraphicsRenderer] IPC token mismatch");
         ipcSocket?.destroy();
         return;
       }
@@ -540,11 +612,11 @@ function connectIpcSocket(): void {
   });
 
   ipcSocket.on("error", (error) => {
-    console.error(`[GraphicsRenderer] IPC socket error: ${error.message}`);
+    logger.error(`[GraphicsRenderer] IPC socket error: ${error.message}`);
   });
 
   ipcSocket.on("close", () => {
-    console.warn("[GraphicsRenderer] IPC socket closed");
+    logger.warn("[GraphicsRenderer] IPC socket closed");
     ipcSocket = null;
     isIpcConnected = false;
     readySent = false;
@@ -555,13 +627,13 @@ connectIpcSocket();
 
 process.on("uncaughtException", (error) => {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  console.error(`[GraphicsRenderer] Uncaught exception: ${errorMessage}`);
+  logger.error(`[GraphicsRenderer] Uncaught exception: ${errorMessage}`);
   sendIpcMessage({ type: "error", message: errorMessage });
 });
 
 process.on("unhandledRejection", (reason) => {
   const errorMessage =
     reason instanceof Error ? reason.message : String(reason);
-  console.error(`[GraphicsRenderer] Unhandled rejection: ${errorMessage}`);
+  logger.error(`[GraphicsRenderer] Unhandled rejection: ${errorMessage}`);
   sendIpcMessage({ type: "error", message: errorMessage });
 });
