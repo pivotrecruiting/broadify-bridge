@@ -12,7 +12,7 @@
 
 1) Renderer (Electron Offscreen)
 - `electron-renderer-entry.ts` nutzt `image.toBitmap()` (BGRA) und swapt zu RGBA 8-bit.
-- Frame Payload (RGBA, 4 Bpp) geht via TCP IPC (localhost) und zusätzlich via process IPC.
+- Frame Payload (RGBA, 4 Bpp) geht via TCP IPC (localhost) mit Token-Handshake.
 
 2) Graphics Manager
 - `graphics-manager.ts` haelt letzte Frames pro Layer, compositet premultiplied RGBA.
@@ -26,11 +26,11 @@
 4) DeckLink Helper (native)
 - Erwartet RGBA 8-bit (width * height * 4).
 - Waehlt Pixel-Format aus Priority:
-  - Video: `10bit_yuv` (v210) only.
+  - Video: `10bit_yuv` (v210), `8bit_yuv` (2vuy).
   - Key/Fill: `8bit_argb`, `8bit_bgra`.
 - Wenn YUV: RGBA -> BGRA -> `IDeckLinkVideoConversion::ConvertNewFrame` nach YUV.
 - Colorspace kommt aus DisplayMode Flags (Rec601/709/2020).
-- RGB wird immer auf Legal Range (16-235) gemappt.
+- RGB Range ist konfigurierbar (`legal`/`full`).
 
 ## SDK Fakten (Referenz)
 
@@ -41,31 +41,11 @@
 
 ## Altlasten / Bad Practices / Risiken
 
-- [HIGH] Video Output ist hart auf `10bit_yuv` festgelegt und nutzt `bmdNoVideoOutputConversion`.
-  - Kein Fallback auf `8bit_yuv` oder RGB, obwohl Code-Comment existiert.
-  - Risiko: Output faellt bei Modi/Geraeten ohne v210 Support.
-  - Code: `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`,
-          `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`.
-
-- [HIGH] Colorspace wird nur ueber DisplayMode Flags ermittelt; bei `unknown` wird Output abgebrochen.
-  - Kein Fallback (z.B. Rec709 fuer HD, Rec601 fuer SD), kein Override im Config.
-  - Code: `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`.
-
-- [MED] Legal Range Mapping ist global aktiv und nicht konfigurierbar.
-  - RGB wird fuer alle Outputs geklemmt (auch ARGB/BGRA Key/Fill).
-  - Risiko: unklare Levels, moegliche Doppel-Range-Kompression.
-  - Code: `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`.
-
 - [MED] Doppeltes Channel-Swapping ohne Single Source of Truth.
   - Renderer: BGRA -> RGBA, Helper: RGBA -> BGRA (vor YUV-Conversion).
   - Performance-Overhead, hoehere Fehlergefahr bei künftigen Aenderungen.
   - Code: `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`,
           `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`.
-
-- [MED] `validateOutputFormat()` ist Placeholder.
-  - Unsupported width/height/fps werden nicht vorab validiert.
-  - Risiko: Fehler erst im Helper/Device.
-  - Code: `apps/bridge/src/services/graphics/graphics-manager.ts`.
 
 - [MED] `key_fill_ndi` ist im Schema vorhanden, aber ohne Implementation.
   - Output faellt auf Stub zurueck.
@@ -76,14 +56,9 @@
   - Risiko: undefiniertes Verhalten bei falscher Bufferlaenge.
   - Code: `apps/bridge/src/services/graphics/composite.ts`.
 
-- [LOW] Zwei parallele Frame-Transportwege (TCP + process IPC).
-  - Risiko: doppelte Frames / Logging-Overhead / uneindeutiger Datenfluss.
-  - Code: `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`,
-          `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`.
-
 ## Security Hinweise (IPC / Device Zugriff)
 
-- Renderer IPC ist lokal auf 127.0.0.1 gebunden. Das ist gut, aber es gibt keine Auth.
+- Renderer IPC ist lokal auf 127.0.0.1 gebunden und per Token-Handshake abgesichert.
 - DeckLink Helper hat direkten Device-Zugriff. Nur Bridge darf Frames liefern.
 - Template Sanitizer blockt JS/externe URLs; das reduziert Renderer-Risiken.
 
@@ -95,10 +70,12 @@
 - DeckLink Helper mit RGBA -> YUV Conversion via SDK (ConvertNewFrame).
 - Key/Fill SDI via ARGB/BGRA + IDeckLinkKeyer.
 - Output Config Persistenz (userData/graphics/graphics-output.json).
+- Format-Validierung via DeckLink Helper (list-modes).
+- Pixel-Format-Policy zentral in `output-format-policy.ts`.
+- Range-Config fuer Legal/Full Mapping.
 
 ## Was wir nicht haben (Luecken)
 
 - NDI Output Adapter.
-- Format-Validierung gegen DeckLink Display Modes.
-- Konfigurierbarer Pixel-Format/Colorspace/Range als Single Source of Truth.
 - Explizite Doku, ob Daten premultiplied oder straight alpha sind.
+- Bufferlaengen-Validation im Composite.

@@ -74,7 +74,8 @@ Payload:
     "output2Id": "string?",
     "ndiStreamName": "string?"
   },
-  "format": { "width": 1920, "height": 1080, "fps": 50 }
+  "format": { "width": 1920, "height": 1080, "fps": 50 },
+  "range": "legal"
 }
 ```
 
@@ -85,13 +86,14 @@ Regeln:
 - `video_hdmi`: `output1Id` ist Pflicht (HDMI Video Port).
 - `key_fill_ndi`: `ndiStreamName` ist Pflicht (Output ist aktuell Stub, kein NDI).
 - Format wird von der WebApp aus den vom Device gemeldeten Display-Modes gewaehlt
-  (Bridge validiert Format aktuell nicht).
+  (Bridge validiert Format via DeckLink Helper).
 - `fps` entspricht der gewaehlten Mode-FPS (z. B. `25` fuer 1080i50).
+- `range` steuert die RGB-Range-Mapping-Logik im Helper (`legal` oder `full`, Default: `legal`).
 
 Bridge-Verhalten:
 
 - Targets validieren, Output Adapter setzen.
-- Format-Validierung ist aktuell Placeholder.
+- Format-Validierung erfolgt via DeckLink Helper (list-modes).
 - Output-Pipeline entsprechend setzen.
 - Bei Fehler `{ success: false, error }` senden.
 

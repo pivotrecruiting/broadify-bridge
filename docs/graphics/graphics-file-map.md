@@ -24,6 +24,9 @@ Kompakte Uebersicht, welche Dateien fuer Graphics relevant sind und wie sie zusa
 - `apps/bridge/src/services/graphics/template-bindings.ts`
   - Ableitung von CSS Variablen, Text Content, Animationen.
 
+- `apps/bridge/src/services/graphics/output-format-policy.ts`
+  - Single Source of Truth fuer Pixel-Format-Prioritaeten.
+
 ## Renderer
 
 - `apps/bridge/src/services/graphics/renderer/graphics-renderer.ts`

@@ -27,8 +27,9 @@
 ## Output-Konfiguration
 
 - [x] Output-Key validieren (`key_fill_sdi`, `video_sdi`, `video_hdmi`, `key_fill_ndi`, `stub`).
-- [ ] Format pruefen gegen Device/Modes (aktuell Placeholder).
+- [x] Format pruefen gegen Device/Modes (DeckLink Helper list-modes).
 - [x] Output-Adapter korrekt konfigurieren.
+- [x] Range-Config fuer Legal/Full implementiert.
 
 ## Renderer
 

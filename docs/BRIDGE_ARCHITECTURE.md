@@ -309,6 +309,7 @@ sequenceDiagram
 ```
 
 Hinweis: Renderer liefert RGBA 8-bit; DeckLink Helper konvertiert zu YUV (v210) fuer Video-Ausgabe.
+IPC nutzt lokalen TCP Socket mit Token-Handshake.
 
 ### Device Detection Flow
 

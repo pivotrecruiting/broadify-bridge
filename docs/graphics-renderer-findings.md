@@ -10,7 +10,7 @@ Status (code-basiert)
 
 2) Frame Transport
 - Frames gehen via TCP IPC (127.0.0.1) vom Renderer zum Bridge-Prozess.
-- Zusaetzlich werden Frames noch via process IPC gesendet (doppelter Pfad).
+- IPC ist per Token-Handshake abgesichert.
 
 3) graphics_list
 - `graphics_list` liefert `outputConfig` + `layers` (siehe
@@ -18,6 +18,5 @@ Status (code-basiert)
 
 Offene Punkte
 
-- Nur einen Frame-Pfad nutzen (TCP oder process IPC), sonst doppelte Frames.
 - Bufferlaenge in `compositeLayers()` validieren.
 - Premultiplied/straight Alpha explizit dokumentieren.

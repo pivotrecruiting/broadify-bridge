@@ -9,23 +9,24 @@
 
 ### 1) Redundanter Frame-Transport entfernen
 
-- [ ] Transport-Entscheidung treffen (TCP IPC **oder** process IPC als Single Source).
+- [x] Transport-Entscheidung treffen (TCP IPC **oder** process IPC als Single Source).
   - Verify: Entscheidung dokumentiert in `docs/debug/graphics-umsetzungsplan.md`.
+  - Entscheidung: TCP IPC.
 
-- [ ] Nicht genutzten Transportpfad entfernen (Code + Logs).
+- [x] Nicht genutzten Transportpfad entfernen (Code + Logs).
   - Betroffene Files: 
     - `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`
     - `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`
   - Verify: `rg -n "process.send|child.on\("message"\)"` zeigt nur noch den gewaehlten Pfad.
 
-- [ ] IPC-Sicherheit dokumentieren (lokal + ohne Auth) und ggf. Handshake planen.
+- [x] IPC-Sicherheit dokumentieren und Token-Handshake implementieren.
   - Security Risiko: lokaler IPC ohne Auth kann Frames injizieren, wenn lokaler Zugriff kompromittiert ist.
   - Mitigation: Token-Handshake ueber ENV + Header-Feld in IPC.
   - Verify: Security-Abschnitt aktualisiert in `docs/graphics/graphics-dataflows.md`.
 
 ### 2) Format-Validierung (Placeholder ersetzen)
 
-- [ ] Display-Modes ueber DeckLink Helper lesen und format/fps validieren.
+- [x] Display-Modes ueber DeckLink Helper lesen und format/fps validieren.
   - Betroffene Files:
     - `apps/bridge/src/services/graphics/graphics-manager.ts`
     - `apps/bridge/src/modules/decklink/decklink-helper.ts`
@@ -33,7 +34,7 @@
 
 ### 3) Colorspace-Fallback
 
-- [ ] Fallback definieren, wenn DisplayMode keine Colorspace-Flags liefert.
+- [x] Fallback definieren, wenn DisplayMode keine Colorspace-Flags liefert.
   - Vorschlag: Rec709 fuer HD, Rec601 fuer SD (klar dokumentieren).
   - Betroffene Files:
     - `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`
@@ -41,7 +42,7 @@
 
 ### 4) Pixel-Format-Policy als Single Source of Truth
 
-- [ ] Pixel-Format-Policy zentral definieren (Video vs. Key/Fill) und in Adapter + Helper spiegeln.
+- [x] Pixel-Format-Policy zentral definieren (Video vs. Key/Fill) und in Adapter + Helper spiegeln.
   - Betroffene Files:
     - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
     - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
@@ -50,7 +51,7 @@
 
 ### 5) Legal-Range-Mapping konfigurierbar machen
 
-- [ ] Range-Option (Full vs. Legal) in Config aufnehmen und an Helper uebergeben.
+- [x] Range-Option (Full vs. Legal) in Config aufnehmen und an Helper uebergeben.
   - Betroffene Files:
     - `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`
     - `apps/bridge/src/services/graphics/graphics-schemas.ts`
@@ -59,9 +60,8 @@
 
 ### 6) Datenfluss-Transparenz sicherstellen
 
-- [ ] Doku + Logging so anpassen, dass Datenfluss eindeutig ist.
+- [x] Doku + Logging so anpassen, dass Datenfluss eindeutig ist.
   - Betroffene Files:
     - `docs/graphics/graphics-dataflows.md`
     - `docs/graphics/bridge-production-dataflow.md`
   - Verify: Doku benennt exakt den aktiven Frame-Transportpfad und Pixel-Format-Policy.
-

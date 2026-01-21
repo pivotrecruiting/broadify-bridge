@@ -96,6 +96,7 @@ flowchart LR
 - Output Interface: `apps/bridge/src/services/graphics/output-adapter.ts`
 - DeckLink Helper konvertiert RGBA -> YUV (v210) fuer `video_sdi`/`video_hdmi`.
 - Key/Fill nutzt ARGB/BGRA und IDeckLinkKeyer.
+- Range-Mapping wird ueber `range` in `graphics_configure_outputs` gesteuert (`legal`/`full`).
 - Aktuell: DeckLink Key&Fill, DeckLink Video (SDI/HDMI) + Stub Output
   - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
   - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`

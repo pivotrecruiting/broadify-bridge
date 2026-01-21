@@ -37,12 +37,13 @@
       "width": 1920,
       "height": 1080,
       "fps": 50
-    }
+    },
+    "range": "legal"
   }
 }
 ```
 
-Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS.
+Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS. `range` ist optional und defaultet auf `legal`.
 
 ## graphics_send
 

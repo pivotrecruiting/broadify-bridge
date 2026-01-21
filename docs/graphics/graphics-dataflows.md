@@ -94,6 +94,7 @@ Hinweis:
 - Templates: kein JS, keine externen URLs, nur `asset://` erlaubt.
 - Output Targets werden validiert gegen bekannte Devices/Ports.
 - Renderer Child laeuft ohne Node Integration (sandboxed).
+- IPC nutzt lokalen TCP Socket mit Token-Handshake (keine process IPC).
 
 ## Relevante Dateien
 

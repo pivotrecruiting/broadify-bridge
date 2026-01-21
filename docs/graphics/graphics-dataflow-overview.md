@@ -23,6 +23,7 @@ sequenceDiagram
 ```
 
 Hinweis: Renderer liefert RGBA 8-bit; DeckLink Helper konvertiert nach YUV (v210) fuer `video_sdi`/`video_hdmi`.
+IPC nutzt lokalen TCP Socket mit Token-Handshake.
 
 ## 2) Real Command Flow (WebApp -> Relay -> Bridge)
 
