@@ -9,49 +9,13 @@ import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
 import { VIDEO_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
-
-type DecklinkPortInfo = {
-  deviceId: string;
-  portType: "sdi" | "hdmi";
-  portRole: "fill" | "key" | "video";
-};
+import { parseDecklinkPortId } from "./decklink-port.js";
 
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
 const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
-function parseDecklinkPortId(portId: string): DecklinkPortInfo | null {
-  if (portId.endsWith("-sdi-a")) {
-    return {
-      deviceId: portId.slice(0, -"-sdi-a".length),
-      portType: "sdi",
-      portRole: "fill",
-    };
-  }
-  if (portId.endsWith("-sdi-b")) {
-    return {
-      deviceId: portId.slice(0, -"-sdi-b".length),
-      portType: "sdi",
-      portRole: "key",
-    };
-  }
-  if (portId.endsWith("-sdi")) {
-    return {
-      deviceId: portId.slice(0, -"-sdi".length),
-      portType: "sdi",
-      portRole: "video",
-    };
-  }
-  if (portId.endsWith("-hdmi")) {
-    return {
-      deviceId: portId.slice(0, -"-hdmi".length),
-      portType: "hdmi",
-      portRole: "video",
-    };
-  }
-  return null;
-}
 
 /**
  * DeckLink output adapter for single video output (no key/fill).
@@ -115,6 +79,8 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
         VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
         "--range",
         config.range,
+        "--colorspace",
+        config.colorspace,
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
