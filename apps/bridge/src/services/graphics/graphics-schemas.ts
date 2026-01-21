@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const GRAPHICS_OUTPUT_CONFIG_VERSION = 1;
+
 const MAX_DURATION_MS = 60 * 60 * 1000;
 
 export const GraphicsOutputKeySchema = z.enum([
@@ -21,6 +23,11 @@ export const GraphicsRangeSchema = z
   .optional()
   .default("legal");
 
+export const GraphicsColorspaceSchema = z
+  .enum(["auto", "rec601", "rec709", "rec2020"])
+  .optional()
+  .default("auto");
+
 export const GraphicsTargetsSchema = z
   .object({
     output1Id: z.string().min(1).optional(),
@@ -31,10 +38,17 @@ export const GraphicsTargetsSchema = z
 
 export const GraphicsConfigureOutputsSchema = z
   .object({
+    version: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .default(GRAPHICS_OUTPUT_CONFIG_VERSION),
     outputKey: GraphicsOutputKeySchema,
     targets: GraphicsTargetsSchema,
     format: GraphicsFormatSchema,
     range: GraphicsRangeSchema,
+    colorspace: GraphicsColorspaceSchema,
   })
   .strict();
 
@@ -124,6 +138,7 @@ export const GraphicsRemovePresetSchema = z
 export type GraphicsOutputKeyT = z.infer<typeof GraphicsOutputKeySchema>;
 export type GraphicsFormatT = z.infer<typeof GraphicsFormatSchema>;
 export type GraphicsRangeT = z.infer<typeof GraphicsRangeSchema>;
+export type GraphicsColorspaceT = z.infer<typeof GraphicsColorspaceSchema>;
 export type GraphicsTargetsT = z.infer<typeof GraphicsTargetsSchema>;
 export type GraphicsOutputConfigT = z.infer<typeof GraphicsConfigureOutputsSchema>;
 export type GraphicsLayoutT = z.infer<typeof GraphicsLayoutSchema>;
