@@ -134,6 +134,19 @@ std::string pixelFormatLabel(BMDPixelFormat format) {
   }
 }
 
+std::string colorspaceLabel(BMDColorspace colorspace) {
+  switch (colorspace) {
+    case bmdColorspaceRec601:
+      return "rec601";
+    case bmdColorspaceRec709:
+      return "rec709";
+    case bmdColorspaceRec2020:
+      return "rec2020";
+    default:
+      return "unknown";
+  }
+}
+
 bool parsePixelFormatLabel(const std::string& value, BMDPixelFormat& outFormat) {
   if (value == "8bit_yuv" || value == "yuv8") {
     outFormat = bmdFormat8BitYUV;
@@ -149,6 +162,27 @@ bool parsePixelFormatLabel(const std::string& value, BMDPixelFormat& outFormat) 
   }
   if (value == "8bit_bgra" || value == "bgra") {
     outFormat = bmdFormat8BitBGRA;
+    return true;
+  }
+  return false;
+}
+
+bool parseColorspaceLabel(const std::string& value,
+                          BMDColorspace& outColorspace) {
+  if (value == "auto") {
+    outColorspace = bmdColorspaceUnknown;
+    return true;
+  }
+  if (value == "rec601" || value == "bt601") {
+    outColorspace = bmdColorspaceRec601;
+    return true;
+  }
+  if (value == "rec709" || value == "bt709") {
+    outColorspace = bmdColorspaceRec709;
+    return true;
+  }
+  if (value == "rec2020" || value == "bt2020") {
+    outColorspace = bmdColorspaceRec2020;
     return true;
   }
   return false;
@@ -477,13 +511,13 @@ struct PlaybackConfig {
   std::string deviceId;
   int width = 0;
   int height = 0;
-  bool useLegalRange = true;
   double fps = 0;
   std::string outputPortId;
   std::string fillPortId;
   std::string keyPortId;
   std::vector<BMDPixelFormat> pixelFormatPriority;
   bool useLegalRange = true;
+  BMDColorspace colorspaceOverride = bmdColorspaceUnknown;
 };
 
 struct ModeListConfig {
@@ -1469,13 +1503,28 @@ int runPlayback(const PlaybackConfig& config) {
     return 1;
   }
   state.pixelFormat = selectedPixelFormat;
-  state.colorspace = selectColorspaceFromFlags(displayModeFlags, config.height);
-  if (state.colorspace == bmdColorspaceUnknown) {
-    state.colorspace = fallbackColorspaceFromHeight(config.height);
+  BMDColorspace autoColorspace =
+      selectColorspaceFromFlags(displayModeFlags, config.height);
+  if (autoColorspace == bmdColorspaceUnknown) {
+    autoColorspace = fallbackColorspaceFromHeight(config.height);
     std::cerr << "Colorspace flags not provided by display mode. "
               << "Falling back to "
-              << (state.colorspace == bmdColorspaceRec601 ? "rec601" : "rec709")
+              << (autoColorspace == bmdColorspaceRec601 ? "rec601" : "rec709")
               << "." << std::endl;
+  }
+
+  state.colorspace = autoColorspace;
+  if (config.colorspaceOverride != bmdColorspaceUnknown) {
+    if (config.colorspaceOverride == bmdColorspaceRec2020 &&
+        !(displayModeFlags & bmdDisplayModeColorspaceRec2020)) {
+      std::cerr << "Requested colorspace rec2020 is not supported by "
+                   "display mode. Using auto colorspace."
+                << std::endl;
+    } else {
+      state.colorspace = config.colorspaceOverride;
+      std::cerr << "Using colorspace override: "
+                << colorspaceLabel(state.colorspace) << std::endl;
+    }
   }
 
   {
@@ -1496,21 +1545,13 @@ int runPlayback(const PlaybackConfig& config) {
               ? static_cast<double>(timeScale) /
                     static_cast<double>(frameDuration)
               : 0.0;
-      const BMDColorspace loggedColorspace =
-          selectColorspaceFromFlags(modeFlags, config.height);
       std::cerr << "Selected display mode: "
                 << (modeName.empty() ? "unknown" : modeName) << " ("
                 << config.width << "x" << config.height << " @ " << std::fixed
                 << std::setprecision(3) << fps << ", "
                 << fieldDominanceLabel(dominance) << ", pixelFormat "
                 << pixelFormatLabel(state.pixelFormat) << ", colorspace "
-                << (loggedColorspace == bmdColorspaceRec601
-                        ? "rec601"
-                        : loggedColorspace == bmdColorspaceRec709
-                              ? "rec709"
-                              : loggedColorspace == bmdColorspaceRec2020
-                                    ? "rec2020"
-                                    : "unknown")
+                << colorspaceLabel(state.colorspace)
                 << ", range " << (state.useLegalRange ? "legal" : "full")
                 << ")" << std::endl;
     }
@@ -1879,6 +1920,16 @@ int main(int argc, char** argv) {
           std::cerr << "Unknown range: " << value << std::endl;
           return 1;
         }
+        continue;
+      }
+      if (arg == "--colorspace" && i + 1 < argc) {
+        const std::string value = argv[++i];
+        BMDColorspace override = bmdColorspaceUnknown;
+        if (!parseColorspaceLabel(value, override)) {
+          std::cerr << "Unknown colorspace: " << value << std::endl;
+          return 1;
+        }
+        config.colorspaceOverride = override;
         continue;
       }
     }
