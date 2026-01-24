@@ -12,6 +12,7 @@ const MAX_IPC_HEADER_BYTES = 64 * 1024;
 const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
 const MAX_FRAME_DIMENSION = 8192;
+const DEBUG_GRAPHICS = true;
 
 const layers = new Map<
   string,
@@ -31,6 +32,8 @@ const ipcToken = process.env.BRIDGE_GRAPHICS_IPC_TOKEN || "";
 let isAppReady = false;
 let isIpcConnected = false;
 let readySent = false;
+const debugFirstPaintLogged = new Set<string>();
+const debugMismatchLogged = new Set<string>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -45,7 +48,7 @@ protocol.registerSchemesAsPrivileged([
 
 function sendIpcMessage(
   message: { type: string; [key: string]: unknown },
-  buffer?: Buffer
+  buffer?: Buffer,
 ): void {
   if (!ipcSocket || !canSend) {
     return;
@@ -326,19 +329,84 @@ async function createLayer(message: {
     },
   });
 
+  if (DEBUG_GRAPHICS) {
+    const [contentWidth, contentHeight] = window.getContentSize();
+    logger.info(
+      {
+        layerId: message.layerId,
+        width: message.width,
+        height: message.height,
+        contentWidth,
+        contentHeight,
+        fps: message.fps,
+        backgroundMode: message.backgroundMode,
+      },
+      "[GraphicsRenderer] Debug layer created",
+    );
+  }
+
   window.webContents.setFrameRate(message.fps);
   window.webContents.on("paint", (_event, _dirty, image) => {
     if (paintCount === 0) {
       logger.info("[GraphicsRenderer] First paint received");
     }
     paintCount += 1;
+    const imageSize = image.getSize();
     const buffer = bgraToRgba(image.toBitmap());
-    if (message.width > MAX_FRAME_DIMENSION || message.height > MAX_FRAME_DIMENSION) {
+    if (DEBUG_GRAPHICS && !debugFirstPaintLogged.has(message.layerId)) {
+      debugFirstPaintLogged.add(message.layerId);
+      const scaleX = message.width > 0 ? imageSize.width / message.width : 0;
+      const scaleY = message.height > 0 ? imageSize.height / message.height : 0;
+      logger.info(
+        {
+          layerId: message.layerId,
+          messageWidth: message.width,
+          messageHeight: message.height,
+          imageWidth: imageSize.width,
+          imageHeight: imageSize.height,
+          bufferLength: buffer.length,
+          expectedMessageLength: message.width * message.height * 4,
+          expectedImageLength: imageSize.width * imageSize.height * 4,
+          dirtyRect: _dirty,
+          scaleX,
+          scaleY,
+        },
+        "[GraphicsRenderer] Debug first paint",
+      );
+    }
+    if (
+      message.width > MAX_FRAME_DIMENSION ||
+      message.height > MAX_FRAME_DIMENSION
+    ) {
       logger.warn("[GraphicsRenderer] Frame dimensions exceed limit");
       return;
     }
     const expectedLength = message.width * message.height * 4;
     if (buffer.length !== expectedLength) {
+      if (DEBUG_GRAPHICS && !debugMismatchLogged.has(message.layerId)) {
+        debugMismatchLogged.add(message.layerId);
+        const dirtyExpectedLength =
+          _dirty &&
+          typeof _dirty.width === "number" &&
+          typeof _dirty.height === "number"
+            ? _dirty.width * _dirty.height * 4
+            : null;
+        logger.warn(
+          {
+            layerId: message.layerId,
+            messageWidth: message.width,
+            messageHeight: message.height,
+            imageWidth: imageSize.width,
+            imageHeight: imageSize.height,
+            bufferLength: buffer.length,
+            expectedMessageLength: expectedLength,
+            expectedImageLength: imageSize.width * imageSize.height * 4,
+            dirtyRect: _dirty,
+            dirtyExpectedLength,
+          },
+          "[GraphicsRenderer] Debug buffer length mismatch",
+        );
+      }
       logger.warn("[GraphicsRenderer] Frame buffer length mismatch");
       return;
     }
@@ -354,7 +422,7 @@ async function createLayer(message: {
         height: message.height,
         timestamp: Date.now(),
       },
-      buffer
+      buffer,
     );
   });
 
@@ -372,10 +440,20 @@ async function createLayer(message: {
     window.webContents.invalidate();
     const isPainting = window.webContents.isPainting();
     logger.info(`[GraphicsRenderer] isPainting: ${isPainting}`);
+    if (DEBUG_GRAPHICS) {
+      logger.info(
+        {
+          layerId: message.layerId,
+          zoomFactor: window.webContents.getZoomFactor(),
+          zoomLevel: window.webContents.getZoomLevel(),
+        },
+        "[GraphicsRenderer] Debug zoom",
+      );
+    }
   });
 
   await window.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
   );
 
   layers.set(message.layerId, {
@@ -402,9 +480,9 @@ async function updateValues(message: {
 
   await layer.window.webContents.executeJavaScript(
     `window.__applyValues(${JSON.stringify(
-      message.values || {}
+      message.values || {},
     )}, ${JSON.stringify(message.bindings || {})});`,
-    true
+    true,
   );
 }
 
@@ -419,7 +497,7 @@ async function updateLayout(message: {
 
   await layer.window.webContents.executeJavaScript(
     `window.__updateLayout(${JSON.stringify(message.layout)});`,
-    true
+    true,
   );
 }
 
@@ -442,7 +520,7 @@ async function handleMessage(message: unknown): Promise<void> {
   if (msg.type === "set_assets") {
     assetMap.clear();
     for (const [assetId, data] of Object.entries(
-      (msg.assets as Record<string, unknown>) || {}
+      (msg.assets as Record<string, unknown>) || {},
     )) {
       assetMap.set(assetId, data as { filePath: string; mime: string });
     }
@@ -467,7 +545,7 @@ async function handleMessage(message: unknown): Promise<void> {
         width: number;
         height: number;
         fps: number;
-      }
+      },
     );
     return;
   }
@@ -483,7 +561,7 @@ async function handleMessage(message: unknown): Promise<void> {
           textTypes?: Record<string, string>;
           animationClass?: string;
         };
-      }
+      },
     );
     return;
   }
@@ -493,7 +571,7 @@ async function handleMessage(message: unknown): Promise<void> {
       msg as {
         layerId: string;
         layout: { x: number; y: number; scale: number };
-      }
+      },
     );
     return;
   }
@@ -567,7 +645,7 @@ function connectIpcSocket(): void {
 
       const hasBufferLength = Object.prototype.hasOwnProperty.call(
         header,
-        "bufferLength"
+        "bufferLength",
       );
       if (hasBufferLength && typeof header.bufferLength !== "number") {
         logger.warn("[GraphicsRenderer] IPC buffer length type invalid");
@@ -593,15 +671,15 @@ function connectIpcSocket(): void {
         logger.warn("[GraphicsRenderer] Unexpected IPC payload");
         continue;
       }
-      const messageToken =
-        typeof header.token === "string" ? header.token : "";
+      const messageToken = typeof header.token === "string" ? header.token : "";
       if (ipcToken && messageToken !== ipcToken) {
         logger.warn("[GraphicsRenderer] IPC token mismatch");
         ipcSocket?.destroy();
         return;
       }
       void handleMessage(header).catch((error: unknown) => {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         sendIpcMessage({ type: "error", message: errorMessage });
       });
     }
