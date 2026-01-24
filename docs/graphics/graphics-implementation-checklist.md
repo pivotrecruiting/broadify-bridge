@@ -8,54 +8,57 @@
 
 ## Vorbereitungen
 
-- [ ] Renderer-Umgebung (Electron Offscreen) bereitstellen.
-- [ ] Asset-Registry fuer lokale Assets.
-- [ ] Output-Adapter fuer SDI/NDI initialisieren.
-- [ ] Renderer IPC (TCP) zwischen Bridge und Electron Child.
+- [x] Renderer-Umgebung (Electron Offscreen) bereitstellen.
+- [x] Asset-Registry fuer lokale Assets.
+- [x] Output-Adapter fuer SDI initialisieren.
+- [ ] Output-Adapter fuer NDI (noch offen).
+- [x] Renderer IPC (TCP) zwischen Bridge und Electron Child.
 
 ## Command Router
 
-- [ ] `graphics_configure_outputs` validieren (outputKey + targets + format).
-- [ ] `graphics_send` validieren (bundle + values + layout + zIndex).
-- [ ] `graphics_update_values` validieren.
-- [ ] `graphics_update_layout` validieren.
-- [ ] `graphics_remove` validieren.
-- [ ] `graphics_list` implementieren.
-- [ ] Einheitliches Response-Format `{ success, data, error }`.
+- [x] `graphics_configure_outputs` validieren (outputKey + targets + format).
+- [x] `graphics_send` validieren (bundle + values + layout + zIndex).
+- [x] `graphics_update_values` validieren.
+- [x] `graphics_update_layout` validieren.
+- [x] `graphics_remove` validieren.
+- [x] `graphics_list` implementieren.
+- [x] Einheitliches Response-Format `{ success, data, error }`.
 
 ## Output-Konfiguration
 
-- [ ] Output-Key validieren (`key_fill_sdi`, `video_sdi`, `video_hdmi`, `key_fill_ndi`, `stub`).
-- [ ] Format pruefen (aktuell fix: 1920x1080 @ 50fps).
-- [ ] Output-Adapter korrekt konfigurieren.
+- [x] Output-Key validieren (`key_fill_sdi`, `video_sdi`, `video_hdmi`, `key_fill_ndi`, `stub`).
+- [x] Format pruefen gegen Device/Modes (DeckLink Helper list-modes).
+- [x] Output-Adapter korrekt konfigurieren.
+- [x] Range-Config fuer Legal/Full implementiert.
 
 ## Renderer
 
-- [ ] Template-Bundle sanitizen (kein JS, keine externen URLs).
-- [ ] HTML/CSS rendern -> RGBA Framebuffer.
-- [ ] Values ohne Full-Reload anwenden.
-- [ ] Hintergrund bei Key&Fill immer als transparent behandeln.
-- [ ] Renderer Child startet ohne Node Integration.
+- [x] Template-Bundle sanitizen (kein JS, keine externen URLs).
+- [x] HTML/CSS rendern -> RGBA Framebuffer.
+- [x] Values ohne Full-Reload anwenden.
+- [x] Hintergrund bei Key&Fill immer als transparent behandeln.
+- [x] Renderer Child startet ohne Node Integration.
 
 ## Layer-Management
 
-- [ ] Layer Registry (layerId -> state).
-- [ ] Z-Order und Layout beruecksichtigen.
-- [ ] Composite Pipeline (alle aktiven Layer).
-- [ ] `graphics_remove` entfernt Layer aus Composite.
+- [x] Layer Registry (layerId -> state).
+- [x] Z-Order und Layout beruecksichtigen.
+- [x] Composite Pipeline (alle aktiven Layer).
+- [x] `graphics_remove` entfernt Layer aus Composite.
 
 ## Output Adapter
 
-- [ ] DeckLink Key&Fill Adapter (SDI, external keying).
-- [ ] Stub-Adapter implementiert (keine echte Ausgabe).
+- [x] DeckLink Key&Fill Adapter (SDI, external keying).
+- [x] DeckLink Video Adapter (SDI/HDMI).
+- [x] Stub-Adapter implementiert (keine echte Ausgabe).
 
 ## Diagnostics
 
-- [ ] `graphics_list` liefert outputConfig + aktive Layer.
-- [ ] Errors mit klaren Strings zurueckgeben.
-- [ ] Basic Metrics: fps, droppedFrames (optional).
-- [ ] Output-Config persistieren (userData/graphics-output.json).
+- [x] `graphics_list` liefert outputConfig + aktive Layer.
+- [x] Errors mit klaren Strings zurueckgeben.
+- [x] Basic Metrics: fps, droppedFrames (optional).
+- [x] Output-Config persistieren (userData/graphics-output.json).
 
 ## Tests
 
-- [ ] Smoke Test: graphics_send mit einem Layer.
+- [x] Smoke Test Script: `apps/bridge/scripts/graphics-smoke.ts`.

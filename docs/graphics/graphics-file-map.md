@@ -21,6 +21,12 @@ Kompakte Uebersicht, welche Dateien fuer Graphics relevant sind und wie sie zusa
 - `apps/bridge/src/services/graphics/composite.ts`
   - RGBA Composite und Background Handling.
 
+- `apps/bridge/src/services/graphics/template-bindings.ts`
+  - Ableitung von CSS Variablen, Text Content, Animationen.
+
+- `apps/bridge/src/services/graphics/output-format-policy.ts`
+  - Single Source of Truth fuer Pixel-Format-Prioritaeten.
+
 ## Renderer
 
 - `apps/bridge/src/services/graphics/renderer/graphics-renderer.ts`
@@ -43,8 +49,17 @@ Kompakte Uebersicht, welche Dateien fuer Graphics relevant sind und wie sie zusa
 - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
   - DeckLink SDI Key&Fill (external keying).
 
+- `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
+  - DeckLink SDI/HDMI Video Output (ohne Key).
+
 - `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
   - Stub Output: Logging, Frame Drop Simulation.
+
+- `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`
+  - Native Helper: RGBA -> YUV Conversion und Device Output.
+
+- `apps/bridge/src/modules/decklink/decklink-helper.ts`
+  - Bridge Wrapper fuer Helper CLI (list, list-modes).
 
 ## Bridge Glue
 

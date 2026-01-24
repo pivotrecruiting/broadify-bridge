@@ -27,6 +27,13 @@ export type DecklinkDisplayModeT = {
   pixelFormats: string[];
 };
 
+export type DecklinkDisplayModeQueryT = {
+  width?: number;
+  height?: number;
+  fps?: number;
+  requireKeying?: boolean;
+};
+
 const getLogger = () => {
   try {
     return getBridgeContext().logger;
@@ -147,7 +154,8 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
  */
 export async function listDecklinkDisplayModes(
   deviceId: string,
-  outputPortId: string
+  outputPortId: string,
+  query: DecklinkDisplayModeQueryT = {}
 ): Promise<DecklinkDisplayModeT[]> {
   if (platform() !== "darwin") {
     return [];
@@ -165,11 +173,24 @@ export async function listDecklinkDisplayModes(
   }
 
   return new Promise((resolve) => {
-    const processRef = spawn(
-      helperPath,
-      ["--list-modes", "--device", deviceId, "--output-port", outputPortId],
-      { stdio: ["ignore", "pipe", "pipe"] }
-    );
+    const args = ["--list-modes", "--device", deviceId, "--output-port", outputPortId];
+
+    if (typeof query.width === "number" && query.width > 0) {
+      args.push("--width", String(query.width));
+    }
+    if (typeof query.height === "number" && query.height > 0) {
+      args.push("--height", String(query.height));
+    }
+    if (typeof query.fps === "number" && query.fps > 0) {
+      args.push("--fps", String(query.fps));
+    }
+    if (query.requireKeying) {
+      args.push("--keying");
+    }
+
+    const processRef = spawn(helperPath, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     let stdout = "";
     let stderr = "";

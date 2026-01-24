@@ -1,7 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getBridgeContext } from "../bridge-context.js";
-import { GraphicsConfigureOutputsSchema } from "./graphics-schemas.js";
+import {
+  GRAPHICS_OUTPUT_CONFIG_VERSION,
+  GraphicsConfigureOutputsSchema,
+} from "./graphics-schemas.js";
 import { atomicWriteJson, ensureDir } from "./file-utils.js";
 import type { GraphicsOutputConfigT } from "./graphics-schemas.js";
 
@@ -41,8 +44,9 @@ export class OutputConfigStore {
       await this.initialize();
     }
 
-    this.config = config;
-    await atomicWriteJson(this.filePath as string, config);
+    const { config: normalized } = this.normalizeConfig(config);
+    this.config = normalized;
+    await atomicWriteJson(this.filePath as string, normalized);
   }
 
   /**
@@ -69,9 +73,75 @@ export class OutputConfigStore {
     try {
       const raw = await fs.readFile(this.filePath, "utf-8");
       const parsed = JSON.parse(raw) as unknown;
-      this.config = GraphicsConfigureOutputsSchema.parse(parsed);
-    } catch {
+      const result = this.parseConfig(parsed);
+      this.config = result.config;
+      if (result.deleteFile) {
+        await this.deleteConfigFile();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.warn(
+        `[Graphics] Failed to load output config: ${message}`
+      );
+      await this.deleteConfigFile();
       this.config = null;
+    }
+  }
+
+  private parseConfig(data: unknown): {
+    config: GraphicsOutputConfigT | null;
+    deleteFile: boolean;
+  } {
+    const logger = getBridgeContext().logger;
+    if (!data || typeof data !== "object") {
+      logger.warn("[Graphics] Output config invalid (not an object); deleting");
+      return { config: null, deleteFile: true };
+    }
+
+    const raw = data as Record<string, unknown>;
+    const version = raw.version;
+    if (typeof version !== "number" || !Number.isFinite(version)) {
+      logger.warn("[Graphics] Output config missing version; deleting");
+      return { config: null, deleteFile: true };
+    }
+    if (version !== GRAPHICS_OUTPUT_CONFIG_VERSION) {
+      logger.warn(
+        `[Graphics] Output config version ${version} does not match supported (${GRAPHICS_OUTPUT_CONFIG_VERSION}). Deleting.`
+      );
+      return { config: null, deleteFile: true };
+    }
+
+    const strictResult = GraphicsConfigureOutputsSchema.safeParse(data);
+    if (!strictResult.success) {
+      logger.warn("[Graphics] Output config schema invalid; deleting");
+      return { config: null, deleteFile: true };
+    }
+
+    const normalized = this.normalizeConfig(strictResult.data);
+    return { config: normalized.config, deleteFile: false };
+  }
+
+  private normalizeConfig(
+    config: GraphicsOutputConfigT
+  ): { config: GraphicsOutputConfigT; migrated: boolean } {
+    const migrated = config.version !== GRAPHICS_OUTPUT_CONFIG_VERSION;
+    return {
+      config: {
+        ...config,
+        version: GRAPHICS_OUTPUT_CONFIG_VERSION,
+      },
+      migrated,
+    };
+  }
+
+  private async deleteConfigFile(): Promise<void> {
+    if (!this.filePath) {
+      return;
+    }
+    try {
+      await fs.unlink(this.filePath);
+    } catch {
+      // Ignore if file does not exist.
     }
   }
 }

@@ -8,56 +8,14 @@ import type {
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
-
-type DecklinkPortInfo = {
-  deviceId: string;
-  portType: "sdi" | "hdmi";
-  portRole: "fill" | "key" | "video";
-};
+import { VIDEO_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
+import { parseDecklinkPortId } from "./decklink-port.js";
 
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
 const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
-const VIDEO_PIXEL_FORMAT_PRIORITY = [
-  "10bit_yuv",
-  "8bit_yuv",
-  "8bit_bgra",
-  "8bit_argb",
-];
-
-function parseDecklinkPortId(portId: string): DecklinkPortInfo | null {
-  if (portId.endsWith("-sdi-a")) {
-    return {
-      deviceId: portId.slice(0, -"-sdi-a".length),
-      portType: "sdi",
-      portRole: "fill",
-    };
-  }
-  if (portId.endsWith("-sdi-b")) {
-    return {
-      deviceId: portId.slice(0, -"-sdi-b".length),
-      portType: "sdi",
-      portRole: "key",
-    };
-  }
-  if (portId.endsWith("-sdi")) {
-    return {
-      deviceId: portId.slice(0, -"-sdi".length),
-      portType: "sdi",
-      portRole: "video",
-    };
-  }
-  if (portId.endsWith("-hdmi")) {
-    return {
-      deviceId: portId.slice(0, -"-hdmi".length),
-      portType: "hdmi",
-      portRole: "video",
-    };
-  }
-  return null;
-}
 
 /**
  * DeckLink output adapter for single video output (no key/fill).
@@ -119,6 +77,10 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
         String(config.format.fps),
         "--pixel-format-priority",
         VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
+        "--range",
+        config.range,
+        "--colorspace",
+        config.colorspace,
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
@@ -126,7 +88,9 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     );
 
     this.getLogger().info(
-      `[DeckLinkOutput] Pixel format priority: ${VIDEO_PIXEL_FORMAT_PRIORITY.join(",")}`
+      `[DeckLinkOutput] Pixel format priority: ${VIDEO_PIXEL_FORMAT_PRIORITY.join(
+        ","
+      )}`
     );
 
     this.child.stdout?.on("data", (data) => this.handleStdout(data));

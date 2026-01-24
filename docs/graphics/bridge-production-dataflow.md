@@ -88,19 +88,26 @@ sequenceDiagram
 flowchart LR
   Layers[Layer Frames RGBA] --> Composite[compositeLayers()]
   Composite --> Output[output-adapter]
-  Output --> Device[SDI/NDI Device or Stream]
+  Output --> Helper[DeckLink helper]
+  Helper --> Device[SDI Device]
 ```
 
 - Composite: `apps/bridge/src/services/graphics/composite.ts`
 - Output Interface: `apps/bridge/src/services/graphics/output-adapter.ts`
-- Aktuell: DeckLink Key&Fill + Stub Output
+- DeckLink Helper konvertiert RGBA -> YUV (v210) fuer `video_sdi`/`video_hdmi`.
+- Key/Fill nutzt ARGB/BGRA und IDeckLinkKeyer.
+- Range-Mapping wird ueber `range` in `graphics_configure_outputs` gesteuert (`legal`/`full`).
+- Aktuell: DeckLink Key&Fill, DeckLink Video (SDI/HDMI) + Stub Output
   - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
+  - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
   - `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
+  - Native Helper: `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`
 
 ## Endgeraete (Output)
 
-- SDI/NDI werden ueber `output-adapter` abstraktiert.
+- SDI wird ueber `output-adapter` + DeckLink Helper bedient.
 - SDI Key&Fill ist ueber den DeckLink Adapter implementiert.
+- `key_fill_ndi` ist aktuell Stub (kein NDI Output).
 
 ## Relevante Dateien (Kurz)
 

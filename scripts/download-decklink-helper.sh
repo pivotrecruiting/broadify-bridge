@@ -39,6 +39,7 @@ fi
 mkdir -p "$TARGET_DIR"
 tmpfile="$(mktemp)"
 
+echo "Downloading DeckLink helper (${arch}) from: $url"
 curl -fsSL "$url" -o "$tmpfile"
 
 download_hash="$(shasum -a 256 "$tmpfile" | awk '{print $1}')"

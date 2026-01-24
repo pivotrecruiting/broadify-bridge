@@ -74,7 +74,8 @@ Payload:
     "output2Id": "string?",
     "ndiStreamName": "string?"
   },
-  "format": { "width": 1920, "height": 1080, "fps": 50 }
+  "format": { "width": 1920, "height": 1080, "fps": 50 },
+  "range": "legal"
 }
 ```
 
@@ -83,13 +84,16 @@ Regeln:
 - `key_fill_sdi`: `output1Id` (Fill) und `output2Id` (Key) sind Pflicht und muessen zur gleichen DeckLink-Device-ID gehoeren.
 - `video_sdi`: `output1Id` ist Pflicht (SDI Video Port, kein Key-Port).
 - `video_hdmi`: `output1Id` ist Pflicht (HDMI Video Port).
-- `key_fill_ndi`: `ndiStreamName` ist Pflicht.
-- Format wird von der WebApp aus den vom Device gemeldeten Display-Modes gewaehlt.
+- `key_fill_ndi`: `ndiStreamName` ist Pflicht (Output ist aktuell Stub, kein NDI).
+- Format wird von der WebApp aus den vom Device gemeldeten Display-Modes gewaehlt
+  (Bridge validiert Format via DeckLink Helper).
 - `fps` entspricht der gewaehlten Mode-FPS (z. B. `25` fuer 1080i50).
+- `range` steuert die RGB-Range-Mapping-Logik im Helper (`legal` oder `full`, Default: `legal`).
 
 Bridge-Verhalten:
 
-- Konfiguration validieren.
+- Targets validieren, Output Adapter setzen.
+- Format-Validierung erfolgt via DeckLink Helper (list-modes).
 - Output-Pipeline entsprechend setzen.
 - Bei Fehler `{ success: false, error }` senden.
 
@@ -167,6 +171,18 @@ Bridge-Verhalten:
 
 - Layer aus Registry entfernen und aus Composite entfernen.
 
+#### `graphics_remove_preset`
+
+Payload:
+
+```json
+{ "presetId": "string", "clearQueue": true }
+```
+
+Bridge-Verhalten:
+
+- Preset entfernen, Queue optional leeren.
+
 #### `graphics_list`
 
 Payload:
@@ -193,6 +209,22 @@ Empfohlene Response-Daten:
       "category": "lower-thirds",
       "layout": { "x": 0, "y": 780, "scale": 1 },
       "zIndex": 30
+    }
+  ],
+  "activePreset": {
+    "presetId": "string",
+    "durationMs": 10000,
+    "startedAt": 0,
+    "expiresAt": 0,
+    "pendingStart": false,
+    "layerIds": ["lower-thirds-..."]
+  },
+  "queuedPresets": [
+    {
+      "presetId": "string",
+      "durationMs": 10000,
+      "layerIds": ["lower-thirds-..."],
+      "enqueuedAt": 0
     }
   ]
 }

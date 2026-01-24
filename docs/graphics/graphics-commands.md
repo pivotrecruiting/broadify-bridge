@@ -37,12 +37,13 @@
       "width": 1920,
       "height": 1080,
       "fps": 50
-    }
+    },
+    "range": "legal"
   }
 }
 ```
 
-Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS.
+Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS. `range` ist optional und defaultet auf `legal`.
 
 ## graphics_send
 
@@ -101,6 +102,15 @@ Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS.
 }
 ```
 
+## graphics_remove_preset
+
+```json
+{
+  "command": "graphics_remove_preset",
+  "payload": { "presetId": "preset-123", "clearQueue": true }
+}
+```
+
 ## graphics_list (Response Data)
 
 ```json
@@ -119,6 +129,22 @@ Hinweis: `fps` entspricht der gewaehlten Display-Mode-FPS.
       "category": "lower-thirds",
       "layout": { "x": 0, "y": 780, "scale": 1 },
       "zIndex": 30
+    }
+  ],
+  "activePreset": {
+    "presetId": "string",
+    "durationMs": 10000,
+    "startedAt": 0,
+    "expiresAt": 0,
+    "pendingStart": false,
+    "layerIds": ["lower-thirds-abc-1704456000"]
+  },
+  "queuedPresets": [
+    {
+      "presetId": "string",
+      "durationMs": 10000,
+      "layerIds": ["lower-thirds-abc-1704456000"],
+      "enqueuedAt": 0
     }
   ]
 }
