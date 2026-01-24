@@ -14,6 +14,8 @@ const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
 const MAX_FRAME_DIMENSION = 8192;
 const DEBUG_GRAPHICS = true;
 
+app.commandLine.appendSwitch("force-device-scale-factor", "1");
+
 const layers = new Map<
   string,
   {
@@ -34,6 +36,7 @@ let isIpcConnected = false;
 let readySent = false;
 const debugFirstPaintLogged = new Set<string>();
 const debugMismatchLogged = new Set<string>();
+const debugEmptyLogged = new Set<string>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -352,6 +355,23 @@ async function createLayer(message: {
     }
     paintCount += 1;
     const imageSize = image.getSize();
+    if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {
+      if (DEBUG_GRAPHICS && !debugEmptyLogged.has(message.layerId)) {
+        debugEmptyLogged.add(message.layerId);
+        logger.warn(
+          {
+            layerId: message.layerId,
+            messageWidth: message.width,
+            messageHeight: message.height,
+            imageWidth: imageSize.width,
+            imageHeight: imageSize.height,
+            dirtyRect: _dirty,
+          },
+          "[GraphicsRenderer] Debug empty paint frame",
+        );
+      }
+      return;
+    }
     const buffer = bgraToRgba(image.toBitmap());
     if (DEBUG_GRAPHICS && !debugFirstPaintLogged.has(message.layerId)) {
       debugFirstPaintLogged.add(message.layerId);

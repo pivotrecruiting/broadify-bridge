@@ -38,6 +38,7 @@ import type {
 } from "./renderer/graphics-renderer.js";
 import type { TemplateBindingsT } from "./template-bindings.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
+import { createTestPatternPayload } from "./test-pattern.js";
 import {
   KEY_FILL_PIXEL_FORMAT_PRIORITY,
   VIDEO_PIXEL_FORMAT_PRIORITY,
@@ -408,6 +409,15 @@ export class GraphicsManager {
   }
 
   /**
+   * Render the built-in test pattern, replacing any active layers.
+   */
+  async sendTestPattern(): Promise<void> {
+    await this.initialize();
+    await this.clearAllLayers();
+    await this.sendLayer(createTestPatternPayload());
+  }
+
+  /**
    * List output config and active layers.
    */
   getStatus(): {
@@ -506,6 +516,24 @@ export class GraphicsManager {
         throw new Error("Maximum active layers reached");
       }
     }
+  }
+
+  private async clearAllLayers(): Promise<void> {
+    const layers = Array.from(this.layers.values());
+    for (const layer of layers) {
+      try {
+        await this.renderer.removeLayer(layer.layerId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        getBridgeContext().logger.warn(
+          `[Graphics] Failed to remove layer ${layer.layerId}: ${message}`
+        );
+      }
+    }
+    this.layers.clear();
+    this.categoryToLayer.clear();
+    this.presetQueue = [];
+    this.clearActivePreset();
   }
 
   /**

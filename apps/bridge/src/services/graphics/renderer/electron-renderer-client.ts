@@ -124,7 +124,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
     this.child = spawn(
       electronBinary,
-      ["--graphics-renderer", "--renderer-entry", entry],
+      [
+        "--force-device-scale-factor=1",
+        "--graphics-renderer",
+        "--renderer-entry",
+        entry,
+      ],
       {
         stdio: ["ignore", "pipe", "pipe"],
         env,

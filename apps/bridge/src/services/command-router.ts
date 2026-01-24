@@ -29,6 +29,7 @@ export type RelayCommand =
   | "engine_stop_macro"
   | "graphics_configure_outputs"
   | "graphics_send"
+  | "graphics_test_pattern"
   | "graphics_update_values"
   | "graphics_update_layout"
   | "graphics_remove"
@@ -339,6 +340,14 @@ export class CommandRouter {
           }
 
           await graphicsManager.sendLayer(payload);
+          return {
+            success: true,
+            data: {},
+          };
+        }
+
+        case "graphics_test_pattern": {
+          await graphicsManager.sendTestPattern();
           return {
             success: true,
             data: {},
