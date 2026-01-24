@@ -15,6 +15,65 @@ export type TemplateValidationResultT = {
 };
 
 /**
+ * Remove CSS block comments before validation/rendering.
+ */
+export function sanitizeTemplateCss(css: string): string {
+  if (!css) {
+    return "";
+  }
+
+  let result = "";
+  let inComment = false;
+  let inString: "'" | "\"" | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < css.length; i += 1) {
+    const char = css[i];
+    const next = i + 1 < css.length ? css[i + 1] : "";
+
+    if (inComment) {
+      if (char === "*" && next === "/") {
+        inComment = false;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (inString) {
+      result += char;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      inString = char;
+      result += char;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      inComment = true;
+      i += 1;
+      continue;
+    }
+
+    result += char;
+  }
+
+  return result.trim();
+}
+
+/**
  * Validate and sanitize HTML/CSS templates.
  */
 export function validateTemplate(html: string, css: string): TemplateValidationResultT {

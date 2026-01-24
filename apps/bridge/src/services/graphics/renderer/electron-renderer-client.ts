@@ -15,6 +15,51 @@ const ELECTRON_BINARIES = {
   default: "electron",
 };
 
+type IpcMessageT = { type?: string; [key: string]: unknown };
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null;
+};
+
+const getBufferPreview = (
+  bufferValue: unknown
+): { preview: string; length: number } | null => {
+  if (Buffer.isBuffer(bufferValue)) {
+    return {
+      preview: bufferValue.toString("base64").slice(0, 10),
+      length: bufferValue.length,
+    };
+  }
+
+  if (isRecord(bufferValue) && Array.isArray(bufferValue.data)) {
+    const data = bufferValue.data;
+    if (!data.every((entry) => typeof entry === "number")) {
+      return null;
+    }
+    const length = data.length;
+    const previewBuffer = Buffer.from(data.slice(0, 10));
+    return {
+      preview: previewBuffer.toString("base64").slice(0, 10),
+      length,
+    };
+  }
+
+  return null;
+};
+
+const sanitizeIpcMessageForLog = (message: IpcMessageT): Record<string, unknown> => {
+  const sanitized: Record<string, unknown> = { ...message };
+  if (message.type === "frame") {
+    const preview = getBufferPreview(message.buffer);
+    if (preview) {
+      sanitized.bufferPreview = preview.preview;
+      sanitized.bufferLength = preview.length;
+    }
+    delete sanitized.buffer;
+  }
+  return sanitized;
+};
+
 function resolveElectronBinary(): string | null {
   if (process.env.ELECTRON_RUN_AS_NODE === "1") {
     return process.execPath;
@@ -139,8 +184,10 @@ export class ElectronRendererClient implements GraphicsRenderer {
       if (!message || typeof message !== "object") {
         return;
       }
-      const msg = message as { type?: string; [key: string]: unknown };
-      console.log(`[GraphicsRenderer ipc] ${JSON.stringify(msg)}`);
+      const msg = message as IpcMessageT;
+      console.log(
+        `[GraphicsRenderer ipc] ${JSON.stringify(sanitizeIpcMessageForLog(msg))}`
+      );
       if (msg.type === "ready") {
         if (this.readyResolver) {
           this.readyResolver();

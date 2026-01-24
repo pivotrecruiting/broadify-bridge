@@ -21,6 +21,39 @@ function getVersion(): string {
   }
 }
 
+const CSS_COMMENT_PATTERN = /\/\*[\s\S]*?\*\//g;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null;
+};
+
+const stripCssComments = (value: unknown): unknown => {
+  if (typeof value !== "string") {
+    return value;
+  }
+  return value.replace(CSS_COMMENT_PATTERN, "").trim();
+};
+
+const sanitizeGraphicsPayload = (
+  payload?: Record<string, unknown>
+): Record<string, unknown> | undefined => {
+  if (!payload) {
+    return payload;
+  }
+
+  const sanitized: Record<string, unknown> = { ...payload };
+  const bundle = payload.bundle;
+  if (isRecord(bundle)) {
+    const sanitizedBundle = { ...bundle };
+    if (typeof bundle.css === "string") {
+      sanitizedBundle.css = stripCssComments(bundle.css);
+    }
+    sanitized.bundle = sanitizedBundle;
+  }
+
+  return sanitized;
+};
+
 /**
  * Relay message types
  */
@@ -215,7 +248,11 @@ export class RelayClient {
     if (message.command.startsWith("graphics_")) {
       this.logger.info(`Graphics command: ${message.command}`);
       this.logger.info(
-        `Graphics payload: ${JSON.stringify(message.payload, null, 2)}`
+        `Graphics payload: ${JSON.stringify(
+          sanitizeGraphicsPayload(message.payload),
+          null,
+          2
+        )}`
       );
     }
 
