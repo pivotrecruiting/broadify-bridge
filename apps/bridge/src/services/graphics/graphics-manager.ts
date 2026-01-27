@@ -64,6 +64,38 @@ const BACKGROUND_COLORS: Record<
   white: { r: 255, g: 255, b: 255 },
 };
 
+const DEBUG_GRAPHICS = true;
+
+const sampleRgbaBuffer = (
+  buffer: Buffer,
+  width: number,
+  height: number
+): Array<{ name: string; x: number; y: number; rgba: number[] | null }> => {
+  const maxX = Math.max(0, width - 1);
+  const maxY = Math.max(0, height - 1);
+  const positions = [
+    { name: "topLeft", x: 0, y: 0 },
+    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
+    { name: "bottomRight", x: maxX, y: maxY },
+  ];
+
+  return positions.map((pos) => {
+    const index = (pos.y * width + pos.x) * 4;
+    if (index < 0 || index + 3 >= buffer.length) {
+      return { ...pos, rgba: null };
+    }
+    return {
+      ...pos,
+      rgba: [
+        buffer[index],
+        buffer[index + 1],
+        buffer[index + 2],
+        buffer[index + 3],
+      ],
+    };
+  });
+};
+
 type GraphicsLayerStateT = {
   layerId: string;
   category: GraphicsCategoryT;
@@ -118,6 +150,7 @@ export class GraphicsManager {
   private outputErrors = 0;
   private lastOutputLogAt = 0;
   private lastOutputErrorLogAt = 0;
+  private outputSampleLogged = false;
   private activePreset: GraphicsActivePresetT | null = null;
   private presetQueue: GraphicsQueuedPresetT[] = [];
 
@@ -220,6 +253,7 @@ export class GraphicsManager {
     this.outputConfig = config;
     await this.outputAdapter.stop();
     this.outputAdapter = this.selectOutputAdapter(config.outputKey);
+    this.outputSampleLogged = false;
     await outputConfigStore.setConfig(config);
     await this.outputAdapter.configure(config);
     this.startTicker(config.format.fps);
@@ -766,6 +800,18 @@ export class GraphicsManager {
 
     this.sending = true;
     try {
+      if (DEBUG_GRAPHICS && !this.outputSampleLogged) {
+        this.outputSampleLogged = true;
+        const samples = sampleRgbaBuffer(outputBuffer, width, height);
+        getBridgeContext().logger.info(
+          `[Graphics] Debug output pixel samples ${JSON.stringify({
+            outputKey: this.outputConfig.outputKey,
+            width,
+            height,
+            samples,
+          })}`
+        );
+      }
       await this.outputAdapter.sendFrame(
         {
           width,

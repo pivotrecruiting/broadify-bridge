@@ -37,6 +37,7 @@ let readySent = false;
 const debugFirstPaintLogged = new Set<string>();
 const debugMismatchLogged = new Set<string>();
 const debugEmptyLogged = new Set<string>();
+const debugSampleLogged = new Set<string>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -99,6 +100,36 @@ function bgraToRgba(buffer: Buffer): Buffer {
     buffer[i + 2] = blue;
   }
   return buffer;
+}
+
+function sampleRgbaBuffer(
+  buffer: Buffer,
+  width: number,
+  height: number,
+): Array<{ name: string; x: number; y: number; rgba: number[] | null }> {
+  const maxX = Math.max(0, width - 1);
+  const maxY = Math.max(0, height - 1);
+  const positions = [
+    { name: "topLeft", x: 0, y: 0 },
+    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
+    { name: "bottomRight", x: maxX, y: maxY },
+  ];
+
+  return positions.map((pos) => {
+    const index = (pos.y * width + pos.x) * 4;
+    if (index < 0 || index + 3 >= buffer.length) {
+      return { ...pos, rgba: null };
+    }
+    return {
+      ...pos,
+      rgba: [
+        buffer[index],
+        buffer[index + 1],
+        buffer[index + 2],
+        buffer[index + 3],
+      ],
+    };
+  });
 }
 
 function buildHtmlDocument(options: {
@@ -429,6 +460,23 @@ async function createLayer(message: {
       }
       logger.warn("[GraphicsRenderer] Frame buffer length mismatch");
       return;
+    }
+    if (DEBUG_GRAPHICS && !debugSampleLogged.has(message.layerId)) {
+      debugSampleLogged.add(message.layerId);
+      const samples = sampleRgbaBuffer(
+        buffer,
+        message.width,
+        message.height,
+      );
+      logger.info(
+        {
+          layerId: message.layerId,
+          width: message.width,
+          height: message.height,
+          samples,
+        },
+        "[GraphicsRenderer] Debug pixel samples",
+      );
     }
     if (buffer.length > MAX_IPC_PAYLOAD_BYTES) {
       logger.warn("[GraphicsRenderer] Frame buffer exceeds payload limit");

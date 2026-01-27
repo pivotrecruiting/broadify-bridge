@@ -659,6 +659,7 @@ struct PlaybackState {
   uint64_t completedFrames = 0;
   uint64_t lateFrames = 0;
   uint64_t droppedFrames = 0;
+  bool sampleLogged = false;
 };
 
 bool isYuvPixelFormat(BMDPixelFormat format) {
@@ -676,6 +677,43 @@ uint8_t mapToLegalRange(uint8_t value) {
     return kLegalMax;
   }
   return static_cast<uint8_t>(scaled);
+}
+
+std::string formatSampleSet(const uint8_t* data,
+                            size_t dataSize,
+                            int width,
+                            int height,
+                            int rowBytes) {
+  const int maxX = std::max(0, width - 1);
+  const int maxY = std::max(0, height - 1);
+  struct SamplePoint {
+    const char* name;
+    int x;
+    int y;
+  };
+  const SamplePoint points[] = {
+    { "topLeft", 0, 0 },
+    { "center", width / 2, height / 2 },
+    { "bottomRight", maxX, maxY },
+  };
+  std::ostringstream out;
+  for (const auto& point : points) {
+    const int x = std::min(std::max(point.x, 0), maxX);
+    const int y = std::min(std::max(point.y, 0), maxY);
+    const size_t index = static_cast<size_t>(y) * rowBytes +
+                         static_cast<size_t>(x) * 4;
+    out << point.name << "=[";
+    if (index + 3 < dataSize) {
+      out << static_cast<int>(data[index]) << ","
+          << static_cast<int>(data[index + 1]) << ","
+          << static_cast<int>(data[index + 2]) << ","
+          << static_cast<int>(data[index + 3]) << "]";
+    } else {
+      out << "invalid]";
+    }
+    out << " ";
+  }
+  return out.str();
 }
 
 bool convertRgbaToOutputRows(const uint8_t* src,
@@ -726,6 +764,20 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
     return false;
   }
 
+  const bool shouldLogSamples = !state.sampleLogged;
+  if (shouldLogSamples) {
+    const size_t inputSize =
+        static_cast<size_t>(state.width) * static_cast<size_t>(state.height) * 4;
+    std::cerr << "[DeckLinkHelper] Input RGBA samples (rowBytes="
+              << (state.width * 4) << "): "
+              << formatSampleSet(frameData.data(),
+                                 inputSize,
+                                 state.width,
+                                 state.height,
+                                 state.width * 4)
+              << std::endl;
+  }
+
   IDeckLinkVideoFrame* scheduledFrame = nullptr;
 
   if (isYuvPixelFormat(state.pixelFormat)) {
@@ -772,6 +824,21 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
       srcFrame->Release();
       return false;
     }
+    if (shouldLogSamples) {
+      const size_t srcSize = static_cast<size_t>(srcRowBytes) *
+                             static_cast<size_t>(state.height);
+      std::cerr << "[DeckLinkHelper] Output samples (pre-YUV "
+                << pixelFormatLabel(state.sourcePixelFormat) << ", rowBytes="
+                << srcRowBytes << ", range="
+                << (state.useLegalRange ? "legal" : "full") << "): "
+                << formatSampleSet(static_cast<uint8_t*>(srcBytes),
+                                   srcSize,
+                                   state.width,
+                                   state.height,
+                                   srcRowBytes)
+                << std::endl;
+      state.sampleLogged = true;
+    }
 
     HRESULT converted = state.converter->ConvertNewFrame(
         srcFrame, state.pixelFormat, state.colorspace, nullptr, &scheduledFrame);
@@ -816,6 +883,21 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                 << pixelFormatLabel(state.pixelFormat) << std::endl;
       frame->Release();
       return false;
+    }
+    if (shouldLogSamples) {
+      const size_t outSize =
+          static_cast<size_t>(rowBytes) * static_cast<size_t>(state.height);
+      std::cerr << "[DeckLinkHelper] Output samples ("
+                << pixelFormatLabel(state.pixelFormat) << ", rowBytes="
+                << rowBytes << ", range="
+                << (state.useLegalRange ? "legal" : "full") << "): "
+                << formatSampleSet(static_cast<uint8_t*>(frameBytes),
+                                   outSize,
+                                   state.width,
+                                   state.height,
+                                   rowBytes)
+                << std::endl;
+      state.sampleLogged = true;
     }
 
     scheduledFrame = frame;

@@ -16,6 +16,37 @@ const FRAME_VERSION = 1;
 const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
+const DEBUG_GRAPHICS = true;
+
+const sampleRgbaBuffer = (
+  buffer: Buffer,
+  width: number,
+  height: number
+): Array<{ name: string; x: number; y: number; rgba: number[] | null }> => {
+  const maxX = Math.max(0, width - 1);
+  const maxY = Math.max(0, height - 1);
+  const positions = [
+    { name: "topLeft", x: 0, y: 0 },
+    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
+    { name: "bottomRight", x: maxX, y: maxY },
+  ];
+
+  return positions.map((pos) => {
+    const index = (pos.y * width + pos.x) * 4;
+    if (index < 0 || index + 3 >= buffer.length) {
+      return { ...pos, rgba: null };
+    }
+    return {
+      ...pos,
+      rgba: [
+        buffer[index],
+        buffer[index + 1],
+        buffer[index + 2],
+        buffer[index + 3],
+      ],
+    };
+  });
+};
 
 /**
  * DeckLink output adapter for external keying (SDI fill + key).
@@ -31,9 +62,11 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
   private height = 0;
   private lastWarningAt = 0;
   private readonly warningThrottleMs = 5000;
+  private sampleLogged = false;
 
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
+    this.sampleLogged = false;
 
     const output1Id = config.targets.output1Id;
     const output2Id = config.targets.output2Id;
@@ -173,6 +206,18 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       return;
     }
 
+    if (DEBUG_GRAPHICS && !this.sampleLogged) {
+      this.sampleLogged = true;
+      const samples = sampleRgbaBuffer(frame.rgba, frame.width, frame.height);
+      this.getLogger().info(
+        `[DeckLinkOutput] Debug pixel samples ${JSON.stringify({
+          width: frame.width,
+          height: frame.height,
+          samples,
+        })}`
+      );
+    }
+
     const header = Buffer.alloc(FRAME_HEADER_LENGTH);
     header.writeUInt32BE(FRAME_MAGIC, 0);
     header.writeUInt16BE(FRAME_VERSION, 4);
@@ -220,6 +265,7 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     this.canSend = true;
     this.width = 0;
     this.height = 0;
+    this.sampleLogged = false;
   }
 
   private handleStdout(data: Buffer): void {

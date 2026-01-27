@@ -14,10 +14,15 @@ export function compositeLayers(
   width: number,
   height: number
 ): Buffer {
-  const output = Buffer.alloc(width * height * CHANNELS, 0);
+  const expectedLength = width * height * CHANNELS;
+  const output = Buffer.alloc(expectedLength, 0);
 
   for (const layer of layers) {
     if (layer.width !== width || layer.height !== height) {
+      continue;
+    }
+    // Validate buffer size to avoid out-of-bounds reads.
+    if (layer.buffer.length !== expectedLength) {
       continue;
     }
 
