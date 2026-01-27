@@ -18,6 +18,12 @@
 - `graphics-manager.ts` haelt letzte Frames pro Layer, compositet premultiplied RGBA.
 - Fuer Outputs ohne Alpha wird nach Composite `applyBackground()` genutzt.
 
+### Alpha Handling (Explizit)
+
+- Renderer + Composite arbeiten mit **premultiplied RGBA**.
+- `key_fill_split_sdi` un-premultipliziert RGB vor dem Split (Fill = RGB, Key = Alpha).
+- `key_fill_sdi` sendet premultiplied RGBA direkt an den Helper (kein Un‑Premultiply).
+
 3) Output Adapter
 - `video_sdi` / `video_hdmi` -> `DecklinkVideoOutputAdapter` -> DeckLink Helper.
 - `key_fill_sdi` -> `DecklinkKeyFillOutputAdapter` -> DeckLink Helper.
@@ -52,8 +58,8 @@
   - Code: `apps/bridge/src/services/graphics/graphics-schemas.ts`,
           `apps/bridge/src/services/graphics/graphics-manager.ts`.
 
-- [LOW] Composite geht von premultiplied RGBA aus, validiert aber Bufferlaenge nicht.
-  - Risiko: undefiniertes Verhalten bei falscher Bufferlaenge.
+- [LOW] Composite erwartet premultiplied RGBA.
+  - Hinweis: Bufferlaengen werden validiert, ungueltige Layer werden uebersprungen.
   - Code: `apps/bridge/src/services/graphics/composite.ts`.
 
 ## Security Hinweise (IPC / Device Zugriff)
@@ -77,5 +83,3 @@
 ## Was wir nicht haben (Luecken)
 
 - NDI Output Adapter.
-- Explizite Doku, ob Daten premultiplied oder straight alpha sind.
-- Bufferlaengen-Validation im Composite.

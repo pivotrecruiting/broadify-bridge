@@ -38,6 +38,7 @@ import type {
 } from "./renderer/graphics-renderer.js";
 import type { TemplateBindingsT } from "./template-bindings.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
+import { createTestPatternPayload } from "./test-pattern.js";
 import {
   KEY_FILL_PIXEL_FORMAT_PRIORITY,
   VIDEO_PIXEL_FORMAT_PRIORITY,
@@ -61,6 +62,38 @@ const BACKGROUND_COLORS: Record<
   green: { r: 0, g: 255, b: 0 },
   black: { r: 0, g: 0, b: 0 },
   white: { r: 255, g: 255, b: 255 },
+};
+
+const DEBUG_GRAPHICS = true;
+
+const sampleRgbaBuffer = (
+  buffer: Buffer,
+  width: number,
+  height: number
+): Array<{ name: string; x: number; y: number; rgba: number[] | null }> => {
+  const maxX = Math.max(0, width - 1);
+  const maxY = Math.max(0, height - 1);
+  const positions = [
+    { name: "topLeft", x: 0, y: 0 },
+    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
+    { name: "bottomRight", x: maxX, y: maxY },
+  ];
+
+  return positions.map((pos) => {
+    const index = (pos.y * width + pos.x) * 4;
+    if (index < 0 || index + 3 >= buffer.length) {
+      return { ...pos, rgba: null };
+    }
+    return {
+      ...pos,
+      rgba: [
+        buffer[index],
+        buffer[index + 1],
+        buffer[index + 2],
+        buffer[index + 3],
+      ],
+    };
+  });
 };
 
 type GraphicsLayerStateT = {
@@ -117,6 +150,7 @@ export class GraphicsManager {
   private outputErrors = 0;
   private lastOutputLogAt = 0;
   private lastOutputErrorLogAt = 0;
+  private outputSampleLogged = false;
   private activePreset: GraphicsActivePresetT | null = null;
   private presetQueue: GraphicsQueuedPresetT[] = [];
 
@@ -219,6 +253,7 @@ export class GraphicsManager {
     this.outputConfig = config;
     await this.outputAdapter.stop();
     this.outputAdapter = this.selectOutputAdapter(config.outputKey);
+    this.outputSampleLogged = false;
     await outputConfigStore.setConfig(config);
     await this.outputAdapter.configure(config);
     this.startTicker(config.format.fps);
@@ -408,6 +443,15 @@ export class GraphicsManager {
   }
 
   /**
+   * Render the built-in test pattern, replacing any active layers.
+   */
+  async sendTestPattern(): Promise<void> {
+    await this.initialize();
+    await this.clearAllLayers();
+    await this.sendLayer(createTestPatternPayload());
+  }
+
+  /**
    * List output config and active layers.
    */
   getStatus(): {
@@ -506,6 +550,24 @@ export class GraphicsManager {
         throw new Error("Maximum active layers reached");
       }
     }
+  }
+
+  private async clearAllLayers(): Promise<void> {
+    const layers = Array.from(this.layers.values());
+    for (const layer of layers) {
+      try {
+        await this.renderer.removeLayer(layer.layerId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        getBridgeContext().logger.warn(
+          `[Graphics] Failed to remove layer ${layer.layerId}: ${message}`
+        );
+      }
+    }
+    this.layers.clear();
+    this.categoryToLayer.clear();
+    this.presetQueue = [];
+    this.clearActivePreset();
   }
 
   /**
@@ -738,6 +800,18 @@ export class GraphicsManager {
 
     this.sending = true;
     try {
+      if (DEBUG_GRAPHICS && !this.outputSampleLogged) {
+        this.outputSampleLogged = true;
+        const samples = sampleRgbaBuffer(outputBuffer, width, height);
+        getBridgeContext().logger.info(
+          `[Graphics] Debug output pixel samples ${JSON.stringify({
+            outputKey: this.outputConfig.outputKey,
+            width,
+            height,
+            samples,
+          })}`
+        );
+      }
       await this.outputAdapter.sendFrame(
         {
           width,
