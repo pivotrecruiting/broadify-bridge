@@ -38,6 +38,7 @@ const debugFirstPaintLogged = new Set<string>();
 const debugMismatchLogged = new Set<string>();
 const debugEmptyLogged = new Set<string>();
 const debugSampleLogged = new Set<string>();
+const debugDomLogged = new Set<string>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -130,6 +131,66 @@ function sampleRgbaBuffer(
       ],
     };
   });
+}
+
+async function logDomStateOnce(
+  window: BrowserWindow,
+  layerId: string,
+): Promise<void> {
+  if (!DEBUG_GRAPHICS || debugDomLogged.has(layerId)) {
+    return;
+  }
+  debugDomLogged.add(layerId);
+  try {
+    const domState = await window.webContents.executeJavaScript(
+      `(() => {
+        const container = document.getElementById("graphic-container");
+        const root = document.getElementById("graphic-root");
+        const rootElement =
+          (root && root.querySelector('[data-root="graphic"]')) || root;
+        const rectToJson = (rect) => rect
+          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          : null;
+        const getStyle = (el) => {
+          if (!el) return null;
+          const style = getComputedStyle(el);
+          return {
+            display: style.display,
+            visibility: style.visibility,
+            opacity: style.opacity,
+            transform: style.transform,
+          };
+        };
+        return {
+          containerRect: rectToJson(container?.getBoundingClientRect()),
+          rootRect: rectToJson(root?.getBoundingClientRect()),
+          elementRect: rectToJson(rootElement?.getBoundingClientRect()),
+          hasElement: Boolean(rootElement),
+          hasContent: Boolean(
+            rootElement &&
+              (rootElement.children.length > 0 ||
+                (rootElement.textContent || "").trim().length > 0),
+          ),
+          rootHtmlLength: root?.innerHTML?.length || 0,
+          elementStyle: getStyle(rootElement),
+        };
+      })()`,
+      true,
+    );
+    logger.info(
+      {
+        layerId,
+        ...domState,
+      },
+      "[GraphicsRenderer] Debug DOM state",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      { layerId, message },
+      "[GraphicsRenderer] Debug DOM state failed",
+    );
+  }
 }
 
 function buildHtmlDocument(options: {
@@ -520,6 +581,7 @@ async function createLayer(message: {
         "[GraphicsRenderer] Debug zoom",
       );
     }
+    void logDomStateOnce(window, message.layerId);
   });
 
   await window.loadURL(
