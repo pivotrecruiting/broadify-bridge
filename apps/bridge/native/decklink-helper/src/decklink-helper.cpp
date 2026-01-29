@@ -8,7 +8,6 @@
 */
 
 #include <DeckLinkAPI.h>
-#include <DeckLinkAPIVideoFrame_v14_2_1.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFPlugInCOM.h>
 
@@ -217,33 +216,72 @@ bool getFlagAttribute(IDeckLinkProfileAttributes* attributes,
   return true;
 }
 
-bool getFrameBytes(IDeckLinkMutableVideoFrame* frame, void** outBytes) {
-  if (!frame || !outBytes) {
-    return false;
+class FrameBufferLock {
+public:
+  FrameBufferLock() = default;
+  ~FrameBufferLock() { release(); }
+
+  bool acquire(IDeckLinkMutableVideoFrame* frame, BMDBufferAccessFlags flags) {
+    release();
+    if (!frame) {
+      return false;
+    }
+
+    flags_ = flags;
+    const HRESULT queryResult = frame->QueryInterface(IID_IDeckLinkVideoBuffer,
+                                                      (void**)&buffer_);
+    if (queryResult != S_OK || !buffer_) {
+      std::cerr << "[DeckLinkHelper] QueryInterface(IDeckLinkVideoBuffer) failed."
+                << " HRESULT=0x" << std::hex << static_cast<uint32_t>(queryResult)
+                << std::dec << " buffer=" << (buffer_ ? "non-null" : "null")
+                << std::endl;
+      return false;
+    }
+
+    const HRESULT startResult = buffer_->StartAccess(flags_);
+    if (startResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] StartAccess failed."
+                << " HRESULT=0x" << std::hex << static_cast<uint32_t>(startResult)
+                << std::dec << std::endl;
+      buffer_->Release();
+      buffer_ = nullptr;
+      return false;
+    }
+
+    const HRESULT bytesResult = buffer_->GetBytes(&bytes_);
+    if (bytesResult != S_OK || !bytes_) {
+      std::cerr << "[DeckLinkHelper] GetBytes failed."
+                << " HRESULT=0x" << std::hex << static_cast<uint32_t>(bytesResult)
+                << std::dec << " bytes=" << (bytes_ ? "non-null" : "null")
+                << std::endl;
+      buffer_->EndAccess(flags_);
+      buffer_->Release();
+      buffer_ = nullptr;
+      bytes_ = nullptr;
+      return false;
+    }
+
+    return true;
   }
 
-  IDeckLinkVideoFrame_v14_2_1* frameV14 = nullptr;
-  const HRESULT queryResult = frame->QueryInterface(IID_IDeckLinkVideoFrame_v14_2_1,
-                                                    (void**)&frameV14);
-  if (queryResult != S_OK || !frameV14) {
-    std::cerr << "[DeckLinkHelper] QueryInterface(IDeckLinkVideoFrame_v14_2_1) failed."
-              << " HRESULT=0x" << std::hex << static_cast<uint32_t>(queryResult)
-              << std::dec << " frame=" << (frameV14 ? "non-null" : "null")
-              << std::endl;
-    return false;
+  void* bytes() const { return bytes_; }
+
+  void release() {
+    if (!buffer_) {
+      bytes_ = nullptr;
+      return;
+    }
+    buffer_->EndAccess(flags_);
+    buffer_->Release();
+    buffer_ = nullptr;
+    bytes_ = nullptr;
   }
 
-  const HRESULT result = frameV14->GetBytes(outBytes);
-  frameV14->Release();
-  if (result != S_OK || !*outBytes) {
-    std::cerr << "[DeckLinkHelper] GetBytes failed."
-              << " HRESULT=0x" << std::hex << static_cast<uint32_t>(result)
-              << std::dec << " bytes=" << (*outBytes ? "non-null" : "null")
-              << std::endl;
-    return false;
-  }
-  return true;
-}
+private:
+  IDeckLinkVideoBuffer* buffer_ = nullptr;
+  void* bytes_ = nullptr;
+  BMDBufferAccessFlags flags_ = bmdBufferAccessReadAndWrite;
+};
 
 std::string getStringAttribute(IDeckLinkProfileAttributes* attributes,
                                BMDDeckLinkAttributeID id) {
@@ -851,15 +889,15 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                 << " rowBytes=" << srcRowBytes << std::endl;
     }
 
-    void* srcBytes = nullptr;
-    if (!getFrameBytes(srcFrame, &srcBytes)) {
+    FrameBufferLock srcLock;
+    if (!srcLock.acquire(srcFrame, bmdBufferAccessWrite)) {
       std::cerr << "[DeckLinkHelper] getFrameBytes failed (source)" << std::endl;
       srcFrame->Release();
       return false;
     }
 
     if (!convertRgbaToOutputRows(frameData.data(),
-                                 static_cast<uint8_t*>(srcBytes),
+                                 static_cast<uint8_t*>(srcLock.bytes()),
                                  state.width,
                                  state.height,
                                  srcRowBytes,
@@ -877,7 +915,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                 << pixelFormatLabel(state.sourcePixelFormat) << ", rowBytes="
                 << srcRowBytes << ", range="
                 << (state.useLegalRange ? "legal" : "full") << "): "
-                << formatSampleSet(static_cast<uint8_t*>(srcBytes),
+                << formatSampleSet(static_cast<uint8_t*>(srcLock.bytes()),
                                    srcSize,
                                    state.width,
                                    state.height,
@@ -886,6 +924,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
       state.sampleLogged = true;
     }
 
+    srcLock.release();
     HRESULT converted = state.converter->ConvertNewFrame(
         srcFrame, state.pixelFormat, state.colorspace, nullptr, &scheduledFrame);
     srcFrame->Release();
@@ -937,15 +976,15 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                 << " rowBytes=" << rowBytes << std::endl;
     }
 
-    void* frameBytes = nullptr;
-    if (!getFrameBytes(frame, &frameBytes)) {
+    FrameBufferLock frameLock;
+    if (!frameLock.acquire(frame, bmdBufferAccessWrite)) {
       std::cerr << "[DeckLinkHelper] getFrameBytes failed (output)" << std::endl;
       frame->Release();
       return false;
     }
 
     if (!convertRgbaToOutputRows(frameData.data(),
-                                 static_cast<uint8_t*>(frameBytes),
+                                 static_cast<uint8_t*>(frameLock.bytes()),
                                  state.width,
                                  state.height,
                                  rowBytes,
@@ -963,7 +1002,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                 << pixelFormatLabel(state.pixelFormat) << ", rowBytes="
                 << rowBytes << ", range="
                 << (state.useLegalRange ? "legal" : "full") << "): "
-                << formatSampleSet(static_cast<uint8_t*>(frameBytes),
+                << formatSampleSet(static_cast<uint8_t*>(frameLock.bytes()),
                                    outSize,
                                    state.width,
                                    state.height,
@@ -972,6 +1011,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
       state.sampleLogged = true;
     }
 
+    frameLock.release();
     scheduledFrame = frame;
   }
 
