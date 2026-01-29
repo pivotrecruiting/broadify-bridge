@@ -761,6 +761,9 @@ bool convertRgbaToOutputRows(const uint8_t* src,
 
 bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) {
   if (!state.output || frameData.empty()) {
+    std::cerr << "[DeckLinkHelper] ScheduleFrame aborted: "
+              << (!state.output ? "output=null" : "frameData=empty")
+              << std::endl;
     return false;
   }
 
@@ -790,24 +793,39 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
     }
 
     int32_t srcRowBytes = 0;
-    if (state.output->RowBytesForPixelFormat(state.sourcePixelFormat,
-                                             state.width,
-                                             &srcRowBytes) != S_OK) {
+    HRESULT srcRowBytesResult = state.output->RowBytesForPixelFormat(
+        state.sourcePixelFormat, state.width, &srcRowBytes);
+    if (srcRowBytesResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] RowBytesForPixelFormat failed (source): "
+                << "format=" << pixelFormatLabel(state.sourcePixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(srcRowBytesResult) << std::dec
+                << std::endl;
       return false;
     }
 
     IDeckLinkMutableVideoFrame* srcFrame = nullptr;
-    if (state.output->CreateVideoFrame(state.width,
-                                       state.height,
-                                       srcRowBytes,
-                                       state.sourcePixelFormat,
-                                       bmdFrameFlagDefault,
-                                       &srcFrame) != S_OK) {
+    HRESULT srcCreateResult = state.output->CreateVideoFrame(
+        state.width,
+        state.height,
+        srcRowBytes,
+        state.sourcePixelFormat,
+        bmdFrameFlagDefault,
+        &srcFrame);
+    if (srcCreateResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] CreateVideoFrame failed (source): "
+                << "format=" << pixelFormatLabel(state.sourcePixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " rowBytes=" << srcRowBytes << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(srcCreateResult) << std::dec
+                << std::endl;
       return false;
     }
 
     void* srcBytes = nullptr;
     if (!getFrameBytes(srcFrame, &srcBytes)) {
+      std::cerr << "[DeckLinkHelper] getFrameBytes failed (source)" << std::endl;
       srcFrame->Release();
       return false;
     }
@@ -851,23 +869,38 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
   } else {
     IDeckLinkMutableVideoFrame* frame = nullptr;
     int32_t rowBytes = 0;
-    if (state.output->RowBytesForPixelFormat(state.pixelFormat,
+    HRESULT rowBytesResult =
+        state.output->RowBytesForPixelFormat(state.pixelFormat,
                                              state.width,
-                                             &rowBytes) != S_OK) {
+                                             &rowBytes);
+    if (rowBytesResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] RowBytesForPixelFormat failed (output): "
+                << "format=" << pixelFormatLabel(state.pixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(rowBytesResult) << std::dec
+                << std::endl;
       return false;
     }
 
-    if (state.output->CreateVideoFrame(state.width,
-                                       state.height,
-                                       rowBytes,
-                                       state.pixelFormat,
-                                       bmdFrameFlagDefault,
-                                       &frame) != S_OK) {
+    HRESULT createResult = state.output->CreateVideoFrame(state.width,
+                                                          state.height,
+                                                          rowBytes,
+                                                          state.pixelFormat,
+                                                          bmdFrameFlagDefault,
+                                                          &frame);
+    if (createResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] CreateVideoFrame failed (output): "
+                << "format=" << pixelFormatLabel(state.pixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " rowBytes=" << rowBytes << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(createResult) << std::dec << std::endl;
       return false;
     }
 
     void* frameBytes = nullptr;
     if (!getFrameBytes(frame, &frameBytes)) {
+      std::cerr << "[DeckLinkHelper] getFrameBytes failed (output)" << std::endl;
       frame->Release();
       return false;
     }
