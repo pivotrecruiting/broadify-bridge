@@ -136,6 +136,7 @@ function sampleRgbaBuffer(
 async function logDomStateOnce(
   window: BrowserWindow,
   layerId: string,
+  layout: { x: number; y: number; scale: number },
 ): Promise<void> {
   if (!DEBUG_GRAPHICS || debugDomLogged.has(layerId)) {
     return;
@@ -162,6 +163,7 @@ async function logDomStateOnce(
           };
         };
         return {
+          layout,
           containerRect: rectToJson(container?.getBoundingClientRect()),
           rootRect: rectToJson(root?.getBoundingClientRect()),
           elementRect: rectToJson(rootElement?.getBoundingClientRect()),
@@ -191,6 +193,74 @@ async function logDomStateOnce(
       "[GraphicsRenderer] Debug DOM state failed",
     );
   }
+}
+
+async function logDomStateWithDelay(
+  window: BrowserWindow,
+  layerId: string,
+  layout: { x: number; y: number; scale: number },
+  delayMs: number,
+): Promise<void> {
+  if (!DEBUG_GRAPHICS || debugDomLogged.has(`${layerId}-delayed`)) {
+    return;
+  }
+  debugDomLogged.add(`${layerId}-delayed`);
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const domState = await window.webContents.executeJavaScript(
+          `(() => {
+            const container = document.getElementById("graphic-container");
+            const root = document.getElementById("graphic-root");
+            const rootElement =
+              (root && root.querySelector('[data-root="graphic"]')) || root;
+            const rectToJson = (rect) => rect
+              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+              : null;
+            const getStyle = (el) => {
+              if (!el) return null;
+              const style = getComputedStyle(el);
+              return {
+                display: style.display,
+                visibility: style.visibility,
+                opacity: style.opacity,
+                transform: style.transform,
+              };
+            };
+            return {
+              layout,
+              containerRect: rectToJson(container?.getBoundingClientRect()),
+              rootRect: rectToJson(root?.getBoundingClientRect()),
+              elementRect: rectToJson(rootElement?.getBoundingClientRect()),
+              hasElement: Boolean(rootElement),
+              hasContent: Boolean(
+                rootElement &&
+                  (rootElement.children.length > 0 ||
+                    (rootElement.textContent || "").trim().length > 0),
+              ),
+              rootHtmlLength: root?.innerHTML?.length || 0,
+              elementStyle: getStyle(rootElement),
+            };
+          })()`,
+          true,
+        );
+        logger.info(
+          {
+            layerId,
+            delayMs,
+            ...domState,
+          },
+          "[GraphicsRenderer] Debug DOM state (delayed)",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          { layerId, message },
+          "[GraphicsRenderer] Debug DOM state (delayed) failed",
+        );
+      }
+    })();
+  }, delayMs);
 }
 
 function buildHtmlDocument(options: {
@@ -581,7 +651,8 @@ async function createLayer(message: {
         "[GraphicsRenderer] Debug zoom",
       );
     }
-    void logDomStateOnce(window, message.layerId);
+    void logDomStateOnce(window, message.layerId, message.layout);
+    void logDomStateWithDelay(window, message.layerId, message.layout, 200);
   });
 
   await window.loadURL(
