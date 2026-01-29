@@ -143,8 +143,10 @@ async function logDomStateOnce(
   }
   debugDomLogged.add(layerId);
   try {
+    const layoutJson = JSON.stringify(layout);
     const domState = await window.webContents.executeJavaScript(
       `(() => {
+        const layout = ${layoutJson};
         const container = document.getElementById("graphic-container");
         const root = document.getElementById("graphic-root");
         const rootElement =
@@ -205,11 +207,13 @@ async function logDomStateWithDelay(
     return;
   }
   debugDomLogged.add(`${layerId}-delayed`);
+  const layoutJson = JSON.stringify(layout);
   setTimeout(() => {
     void (async () => {
       try {
         const domState = await window.webContents.executeJavaScript(
           `(() => {
+            const layout = ${layoutJson};
             const container = document.getElementById("graphic-container");
             const root = document.getElementById("graphic-root");
             const rootElement =
