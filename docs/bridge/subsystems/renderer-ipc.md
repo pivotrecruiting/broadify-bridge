@@ -43,7 +43,7 @@ sequenceDiagram
   GM->>RC: initialize()
   RC->>ER: spawn + IPC server
   ER-->>RC: hello (token)
-  RC-->>ER: ready
+  ER-->>RC: ready
 
   GM->>RC: renderLayer/updateValues
   RC->>ER: create_layer/update_values
@@ -60,6 +60,16 @@ sequenceDiagram
 - Renderer Entry nicht gefunden → Initialisierung schlägt fehl, Stub‑Renderer fallback.
 - Token‑Mismatch → IPC wird verworfen.
 - Buffer‑Mismatch → Frame wird verworfen.
+
+## IPC‑Framing (Detail)
+- 4‑Byte Big‑Endian Header‑Length\n
+- JSON‑Header enthält `type`, `token`, optional `bufferLength` + Metadaten\n
+- Danach optionaler Binary‑Payload (`bufferLength` Bytes)\n
+- Limits: Header 64KB, Payload 64MB, Max Frame Dimension 8192px
+
+## Startparameter (Renderer‑Process)
+- CLI: `--graphics-renderer --renderer-entry <path>`\n
+- Env: `BRIDGE_GRAPHICS_IPC_PORT`, `BRIDGE_GRAPHICS_IPC_TOKEN`
 
 ## Relevante Dateien
 - `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`

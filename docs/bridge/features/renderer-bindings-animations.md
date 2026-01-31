@@ -38,6 +38,8 @@ sequenceDiagram
 - Text‑Bindings werden über `data-bid` gesetzt
 - CSS‑Variablen werden direkt auf `:root` gesetzt
 - Animation‑Class wird dem Root‑Element zugewiesen
+- Root‑Element ist entweder `[data-root="graphic"]` oder das `#graphic-root`
+- Animation‑CSS wirkt nur, wenn das Root‑Element die Klasse `root` trägt
 
 ## Fehlerbilder
 - Ungültiger Animation‑Wert → Fallback `anim-ease-out`

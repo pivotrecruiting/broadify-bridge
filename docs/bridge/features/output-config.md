@@ -41,7 +41,8 @@ Diese Doku beschreibt, wie Outputs konfiguriert, validiert und für Hardware‑A
   - Output1 erforderlich
   - HDMI‑Port
 - `key_fill_ndi`
-  - NDI Streamname erforderlich
+  - NDI Streamname optional (derzeit nicht validiert)
+  - Output‑Adapter ist aktuell Stub (NDI nicht implementiert)
 - `stub`
   - Keine Targets erforderlich
 
@@ -50,10 +51,15 @@ Validierung erfolgt in `GraphicsManager.validateOutputFormat`:
 - Für DeckLink‑Outputs wird der Helper nach Display‑Modes abgefragt
 - `requireKeying` wird gesetzt, wenn Key/Fill genutzt wird
 - Pixel‑Formate werden gegen die Policy geprüft
+- In Development‑Mode wird Validierung übersprungen (Stub‑Output)
 
 ### Pixel‑Policy
 - Video: `VIDEO_PIXEL_FORMAT_PRIORITY = ["10bit_yuv", "8bit_yuv"]`
 - Key/Fill: `KEY_FILL_PIXEL_FORMAT_PRIORITY = ["8bit_argb", "8bit_bgra"]`
+
+## Range & Colorspace
+- `range` und `colorspace` werden an den DeckLink Helper übergeben
+- Stub‑Output ignoriert diese Felder
 
 ## Ablauf (Mermaid)
 ```mermaid
