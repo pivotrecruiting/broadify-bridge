@@ -3,6 +3,8 @@
 ## Einstieg
 - Architektur & Struktur: `docs/bridge/architecture-overview.md`
 - Subsystem Graphics: `docs/bridge/subsystems/graphics.md`
+- Subsystem Relay & Command Router: `docs/bridge/subsystems/relay-command-router.md`
+- Subsystem Device Discovery: `docs/bridge/subsystems/device-discovery.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 
