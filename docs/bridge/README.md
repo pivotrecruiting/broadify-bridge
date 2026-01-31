@@ -9,6 +9,7 @@
 - Subsystem Server & Routes: `docs/bridge/subsystems/server-routes.md`
 - Subsystem Output & Helper: `docs/bridge/subsystems/output-helper.md`
 - Subsystem Config & Logging: `docs/bridge/subsystems/config-logging.md`
+- Feature: Graphics Commands & Payloads: `docs/bridge/features/graphics-commands.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 

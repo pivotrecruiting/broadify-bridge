@@ -1,9 +1,15 @@
 import { z } from "zod";
 
+/**
+ * Current version of the graphics output configuration schema.
+ */
 export const GRAPHICS_OUTPUT_CONFIG_VERSION = 1;
 
 const MAX_DURATION_MS = 60 * 60 * 1000;
 
+/**
+ * Supported output modes for graphics rendering.
+ */
 export const GraphicsOutputKeySchema = z.enum([
   "stub",
   "key_fill_sdi",
@@ -13,22 +19,34 @@ export const GraphicsOutputKeySchema = z.enum([
   "video_hdmi",
 ]);
 
+/**
+ * Target render format (size + frame rate).
+ */
 export const GraphicsFormatSchema = z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   fps: z.number().positive(),
 });
 
+/**
+ * SDI/HDMI range (legal/full).
+ */
 export const GraphicsRangeSchema = z
   .enum(["legal", "full"])
   .optional()
   .default("legal");
 
+/**
+ * Output colorspace selection.
+ */
 export const GraphicsColorspaceSchema = z
   .enum(["auto", "rec601", "rec709", "rec2020"])
   .optional()
   .default("auto");
 
+/**
+ * Output target identifiers (ports or NDI stream).
+ */
 export const GraphicsTargetsSchema = z
   .object({
     output1Id: z.string().min(1).optional(),
@@ -37,6 +55,9 @@ export const GraphicsTargetsSchema = z
   })
   .strict();
 
+/**
+ * Output configuration payload.
+ */
 export const GraphicsConfigureOutputsSchema = z
   .object({
     version: z
@@ -53,6 +74,9 @@ export const GraphicsConfigureOutputsSchema = z
   })
   .strict();
 
+/**
+ * Layout parameters for a layer.
+ */
 export const GraphicsLayoutSchema = z
   .object({
     x: z.number().finite(),
@@ -61,6 +85,9 @@ export const GraphicsLayoutSchema = z
   })
   .strict();
 
+/**
+ * Asset descriptor (data is optional for updates).
+ */
 export const GraphicsAssetSchema = z
   .object({
     assetId: z.string().regex(/^[a-zA-Z0-9_-]+$/),
@@ -70,6 +97,9 @@ export const GraphicsAssetSchema = z
   })
   .strict();
 
+/**
+ * Bundle containing HTML/CSS and schema/defaults metadata.
+ */
 export const GraphicsBundleSchema = z
   .object({
     manifest: z.record(z.unknown()),
@@ -81,6 +111,9 @@ export const GraphicsBundleSchema = z
   })
   .strict();
 
+/**
+ * Supported background modes when alpha is not available.
+ */
 export const GraphicsBackgroundModeSchema = z.enum([
   "transparent",
   "green",
@@ -88,12 +121,18 @@ export const GraphicsBackgroundModeSchema = z.enum([
   "white",
 ]);
 
+/**
+ * Layer categories (one active layer per category).
+ */
 export const GraphicsCategorySchema = z.enum([
   "lower-thirds",
   "overlays",
   "slides",
 ]);
 
+/**
+ * Payload for creating/updating a graphics layer.
+ */
 export const GraphicsSendSchema = z
   .object({
     layerId: z.string().min(1),
@@ -108,6 +147,9 @@ export const GraphicsSendSchema = z
   })
   .strict();
 
+/**
+ * Payload for updating layer values.
+ */
 export const GraphicsUpdateValuesSchema = z
   .object({
     layerId: z.string().min(1),
@@ -115,6 +157,9 @@ export const GraphicsUpdateValuesSchema = z
   })
   .strict();
 
+/**
+ * Payload for updating layer layout.
+ */
 export const GraphicsUpdateLayoutSchema = z
   .object({
     layerId: z.string().min(1),
@@ -123,12 +168,18 @@ export const GraphicsUpdateLayoutSchema = z
   })
   .strict();
 
+/**
+ * Payload for removing a layer.
+ */
 export const GraphicsRemoveSchema = z
   .object({
     layerId: z.string().min(1),
   })
   .strict();
 
+/**
+ * Payload for removing a preset (and optionally clearing queue).
+ */
 export const GraphicsRemovePresetSchema = z
   .object({
     presetId: z.string().min(1),
