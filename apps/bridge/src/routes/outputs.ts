@@ -7,10 +7,13 @@ import type {
 import { deviceCache } from "../services/device-cache.js";
 
 /**
- * Transform Device/Port model to UI-compatible output format
- * 
+ * Transform Device/Port model to UI-compatible output format.
+ *
  * This is a view on the internal Device/Port model that provides
  * the simple output1/output2 structure expected by the UI.
+ *
+ * @param devices Device descriptors from detection layer.
+ * @returns UI-friendly outputs list.
  */
 function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT {
   const output1Devices: OutputDeviceT[] = [];

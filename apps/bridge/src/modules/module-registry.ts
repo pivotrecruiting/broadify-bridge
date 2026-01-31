@@ -8,7 +8,7 @@ import type { DeviceDescriptorT } from "../types.js";
 const DEFAULT_DETECTION_TIMEOUT = 5000; // 5 seconds per module
 
 /**
- * Module registry for device detection
+ * Module registry for device detection.
  *
  * Manages multiple device modules and coordinates parallel detection
  * with error isolation and timeout protection.
@@ -17,14 +17,16 @@ export class ModuleRegistry {
   private modules: DeviceModule[] = [];
 
   /**
-   * Register a device module
+   * Register a device module.
+   *
+   * @param module Device module instance.
    */
   register(module: DeviceModule): void {
     this.modules.push(module);
   }
 
   /**
-   * Detect devices from all registered modules in parallel
+   * Detect devices from all registered modules in parallel.
    *
    * Features:
    * - Parallel detection (all modules simultaneously)
@@ -35,9 +37,9 @@ export class ModuleRegistry {
    * Phase 1: Async Detection + Timeout + Cache (current implementation)
    * Phase 2: Worker Thread isolation for native SDK calls (can be added later)
    *
-   * @param timeoutMs Timeout per module in milliseconds
-   * @param useWorkerThreads Whether to use worker threads for isolation (Phase 2)
-   * @returns Array of all detected devices
+   * @param timeoutMs Timeout per module in milliseconds.
+   * @param useWorkerThreads Whether to use worker threads for isolation (Phase 2).
+   * @returns Array of all detected devices.
    */
   async detectAll(
     timeoutMs: number = DEFAULT_DETECTION_TIMEOUT,
@@ -95,7 +97,7 @@ export class ModuleRegistry {
   }
 
   /**
-   * Detect devices using worker threads (Phase 2)
+   * Detect devices using worker threads (Phase 2).
    *
    * TODO: Implement worker thread isolation for native SDK calls
    * This prevents SDK blocking from affecting Fastify request threads
@@ -110,7 +112,7 @@ export class ModuleRegistry {
   }
 
   /**
-   * Get device controller for a specific device
+   * Get device controller for a specific device.
    *
    * Finds the module that owns the device and creates a controller.
    *
@@ -147,6 +149,9 @@ export class ModuleRegistry {
 
   /**
    * Watch for device changes across all modules that support it.
+   *
+   * @param callback Called on each module's change event.
+   * @returns Unsubscribe function.
    */
   watchAll(
     callback: (moduleName: string, devices: DeviceDescriptorT[]) => void
@@ -177,14 +182,14 @@ export class ModuleRegistry {
   }
 
   /**
-   * Get all registered module names
+   * Get all registered module names.
    */
   getModuleNames(): string[] {
     return this.modules.map((m) => m.name);
   }
 
   /**
-   * Get number of registered modules
+   * Get number of registered modules.
    */
   getModuleCount(): number {
     return this.modules.length;
