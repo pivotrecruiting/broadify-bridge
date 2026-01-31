@@ -274,6 +274,12 @@ async function logDomStateWithDelay(
   }, delayMs);
 }
 
+/**
+ * Build a self-contained HTML document for the offscreen renderer.
+ *
+ * @param options Template html/css and runtime values.
+ * @returns Serialized HTML document string.
+ */
 function buildHtmlDocument(options: {
   html: string;
   css: string;
@@ -469,6 +475,11 @@ function registerAssetProtocol(): void {
   });
 }
 
+/**
+ * Create a new offscreen layer window and start rendering frames.
+ *
+ * @param message Layer creation payload.
+ */
 async function createLayer(message: {
   layerId: string;
   html: string;
@@ -677,6 +688,11 @@ async function createLayer(message: {
   });
 }
 
+/**
+ * Update template values and bindings for an existing layer.
+ *
+ * @param message Update payload.
+ */
 async function updateValues(message: {
   layerId: string;
   values: Record<string, unknown>;
@@ -700,6 +716,11 @@ async function updateValues(message: {
   );
 }
 
+/**
+ * Update layout transform for an existing layer.
+ *
+ * @param message Update payload.
+ */
 async function updateLayout(message: {
   layerId: string;
   layout: { x: number; y: number; scale: number };
@@ -715,6 +736,11 @@ async function updateLayout(message: {
   );
 }
 
+/**
+ * Remove a layer and destroy its offscreen window.
+ *
+ * @param message Remove payload.
+ */
 async function removeLayer(message: { layerId: string }): Promise<void> {
   const layer = layers.get(message.layerId);
   if (!layer) {
@@ -724,6 +750,11 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
   layers.delete(message.layerId);
 }
 
+/**
+ * Handle inbound IPC messages from the bridge process.
+ *
+ * @param message Parsed IPC header payload.
+ */
 async function handleMessage(message: unknown): Promise<void> {
   if (!message || typeof message !== "object") {
     return;
@@ -813,6 +844,9 @@ app.on("ready", () => {
 
 app.on("window-all-closed", () => {});
 
+/**
+ * Connect to the bridge IPC server and start processing messages.
+ */
 function connectIpcSocket(): void {
   const port = Number(process.env.BRIDGE_GRAPHICS_IPC_PORT || 0);
   if (!port) {

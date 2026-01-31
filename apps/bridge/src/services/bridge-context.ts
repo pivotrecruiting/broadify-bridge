@@ -17,6 +17,9 @@ let bridgeContext: BridgeContextT | null = null;
 
 /**
  * Resolve the bridge user data directory.
+ *
+ * @param config Bridge startup config.
+ * @returns Resolved user data directory path.
  */
 export function resolveUserDataDir(config: BridgeConfigT): string {
   if (config.userDataDir) {
@@ -28,6 +31,8 @@ export function resolveUserDataDir(config: BridgeConfigT): string {
 
 /**
  * Store shared bridge context (paths, logger).
+ *
+ * @param context Bridge context object.
  */
 export function setBridgeContext(context: BridgeContextT): void {
   bridgeContext = context;
@@ -35,6 +40,8 @@ export function setBridgeContext(context: BridgeContextT): void {
 
 /**
  * Read shared bridge context.
+ *
+ * @returns Current bridge context.
  */
 export function getBridgeContext(): BridgeContextT {
   if (!bridgeContext) {

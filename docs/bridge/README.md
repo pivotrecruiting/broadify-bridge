@@ -5,6 +5,10 @@
 - Subsystem Graphics: `docs/bridge/subsystems/graphics.md`
 - Subsystem Relay & Command Router: `docs/bridge/subsystems/relay-command-router.md`
 - Subsystem Device Discovery: `docs/bridge/subsystems/device-discovery.md`
+- Subsystem Renderer & IPC: `docs/bridge/subsystems/renderer-ipc.md`
+- Subsystem Server & Routes: `docs/bridge/subsystems/server-routes.md`
+- Subsystem Output & Helper: `docs/bridge/subsystems/output-helper.md`
+- Subsystem Config & Logging: `docs/bridge/subsystems/config-logging.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 

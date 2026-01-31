@@ -1,8 +1,8 @@
 /**
- * Runtime configuration state
- * 
- * Stores configuration (outputs, engine) that is set via POST /config
- * This is separate from the startup config (host, port, mode)
+ * Runtime configuration state.
+ *
+ * Stores configuration (outputs, engine) that is set via POST /config.
+ * This is separate from the startup config (host, port, mode).
  */
 export interface RuntimeConfig {
   outputs?: {
@@ -17,28 +17,34 @@ export interface RuntimeConfig {
 }
 
 /**
- * Runtime config state
+ * Runtime config state.
  */
 class RuntimeConfigService {
   private config: RuntimeConfig | null = null;
   private state: "idle" | "configured" | "active" = "idle";
 
   /**
-   * Get current runtime config
+   * Get current runtime config.
+   *
+   * @returns Runtime config or null.
    */
   getConfig(): RuntimeConfig | null {
     return this.config;
   }
 
   /**
-   * Get current state
+   * Get current state.
+   *
+   * @returns Current runtime state.
    */
   getState(): "idle" | "configured" | "active" {
     return this.state;
   }
 
   /**
-   * Check if outputs are configured
+   * Check if outputs are configured.
+   *
+   * @returns True when output1 and output2 are set.
    */
   hasOutputs(): boolean {
     return !!(
@@ -47,21 +53,27 @@ class RuntimeConfigService {
   }
 
   /**
-   * Check if engine is configured
+   * Check if engine is configured.
+   *
+   * @returns True when engine config is set.
    */
   hasEngine(): boolean {
     return !!this.config?.engine;
   }
 
   /**
-   * Get engine configuration
+   * Get engine configuration.
+   *
+   * @returns Engine config or undefined if not set.
    */
   getEngineConfig(): RuntimeConfig["engine"] {
     return this.config?.engine || undefined;
   }
 
   /**
-   * Set runtime config
+   * Set runtime config.
+   *
+   * @param config Runtime configuration payload.
    */
   setConfig(config: RuntimeConfig): void {
     this.config = config;
@@ -75,7 +87,7 @@ class RuntimeConfigService {
   }
 
   /**
-   * Set state to active (when controllers are opened)
+   * Set state to active (when controllers are opened).
    */
   setActive(): void {
     if (this.config && (this.config.outputs || this.config.engine)) {
@@ -84,7 +96,7 @@ class RuntimeConfigService {
   }
 
   /**
-   * Clear runtime config
+   * Clear runtime config.
    */
   clear(): void {
     this.config = null;

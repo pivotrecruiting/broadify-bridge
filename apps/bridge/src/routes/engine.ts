@@ -7,8 +7,8 @@ import {
 } from "../services/engine/engine-errors.js";
 
 /**
- * Connect request schema
- * All fields are required - no fallback to runtimeConfig
+ * Connect request schema.
+ * All fields are required - no fallback to runtimeConfig.
  */
 const ConnectRequestSchema = z.object({
   type: z.enum(["atem", "tricaster", "vmix"]),
@@ -17,7 +17,7 @@ const ConnectRequestSchema = z.object({
 });
 
 /**
- * Register engine routes
+ * Register engine routes.
  *
  * POST /engine/connect - Connect to engine
  * POST /engine/disconnect - Disconnect from engine

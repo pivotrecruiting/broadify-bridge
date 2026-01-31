@@ -7,6 +7,13 @@ type LogsQuery = {
   filter?: string;
 };
 
+/**
+ * Return the last N lines from a log file.
+ *
+ * @param text Full log file content.
+ * @param maxLines Max number of lines to return.
+ * @returns Tail lines (up to maxLines).
+ */
 function tailLines(text: string, maxLines: number): string[] {
   if (maxLines <= 0) {
     return [];
@@ -18,6 +25,13 @@ function tailLines(text: string, maxLines: number): string[] {
   return lines.slice(lines.length - maxLines);
 }
 
+/**
+ * Apply a case-insensitive filter to log lines.
+ *
+ * @param lines Raw log lines.
+ * @param filter Optional filter string.
+ * @returns Filtered lines.
+ */
 function applyFilter(lines: string[], filter?: string): string[] {
   if (!filter) {
     return lines;
@@ -30,6 +44,7 @@ export async function registerLogsRoute(
   fastify: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
+  // Security: log access is local; no auth is implemented here.
   fastify.get("/logs", async (request, reply) => {
     const { logPath } = getBridgeContext();
     const query = request.query as LogsQuery;

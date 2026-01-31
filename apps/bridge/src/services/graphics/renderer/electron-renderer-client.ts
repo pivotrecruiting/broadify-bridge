@@ -94,6 +94,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private stderrBuffer = "";
   private debugFirstFrameLogged = new Set<string>();
 
+  /**
+   * Initialize the renderer process and IPC channel.
+   *
+   * @returns Promise resolved once the renderer is ready.
+   */
   async initialize(): Promise<void> {
     if (this.child) {
       return;
@@ -187,6 +192,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     await Promise.race([this.readyPromise, timeoutPromise]);
   }
 
+  /**
+   * Provide asset map to the renderer process.
+   *
+   * @param assets Map of assetId to file path and mime type.
+   */
   async setAssets(
     assets: Record<string, { filePath: string; mime: string }>,
   ): Promise<void> {
@@ -197,6 +207,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.sendCommand({ type: "set_assets", assets });
   }
 
+  /**
+   * Render or update a layer in the renderer process.
+   *
+   * @param input Render payload (HTML/CSS + layout).
+   */
   async renderLayer(input: GraphicsRenderLayerInputT): Promise<void> {
     await this.ensureReady();
     this.sendCommand({
@@ -214,6 +229,13 @@ export class ElectronRendererClient implements GraphicsRenderer {
     });
   }
 
+  /**
+   * Update values for an existing layer.
+   *
+   * @param layerId Layer identifier.
+   * @param values Values to merge into the template.
+   * @param bindings Optional precomputed bindings.
+   */
   async updateValues(
     layerId: string,
     values: Record<string, unknown>,
@@ -223,20 +245,39 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.sendCommand({ type: "update_values", layerId, values, bindings });
   }
 
+  /**
+   * Update layout for an existing layer.
+   *
+   * @param layerId Layer identifier.
+   * @param layout Layout payload.
+   */
   async updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void> {
     await this.ensureReady();
     this.sendCommand({ type: "update_layout", layerId, layout });
   }
 
+  /**
+   * Remove a layer from the renderer process.
+   *
+   * @param layerId Layer identifier.
+   */
   async removeLayer(layerId: string): Promise<void> {
     await this.ensureReady();
     this.sendCommand({ type: "remove_layer", layerId });
   }
 
+  /**
+   * Register a callback to receive rendered frames.
+   *
+   * @param callback Frame callback.
+   */
   onFrame(callback: (frame: GraphicsFrameT) => void): void {
     this.frameCallback = callback;
   }
 
+  /**
+   * Shutdown renderer process and IPC server.
+   */
   async shutdown(): Promise<void> {
     if (!this.child) {
       return;

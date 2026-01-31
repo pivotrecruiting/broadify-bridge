@@ -7,7 +7,7 @@ import type { FastifyInstance } from "fastify";
 import type { DeviceDescriptorT } from "../types.js";
 
 /**
- * Config request schema
+ * Config request schema.
  */
 const ConfigRequestSchema = z.object({
   outputs: z
@@ -26,7 +26,7 @@ const ConfigRequestSchema = z.object({
 });
 
 /**
- * Register config route
+ * Register config route.
  *
  * POST /config - Configure outputs and/or engine
  * POST /config/clear - Clear configuration
@@ -35,7 +35,11 @@ export async function registerConfigRoute(
   fastify: FastifyInstance
 ): Promise<void> {
   /**
-   * Validate and find device by ID or name
+   * Validate and find device by ID or name.
+   *
+   * @param deviceIdOrName Device id or display name.
+   * @param devices Current device list.
+   * @returns Matching device or null.
    */
   async function findDevice(
     deviceIdOrName: string,
@@ -53,7 +57,11 @@ export async function registerConfigRoute(
   }
 
   /**
-   * Validate outputs exist and are available
+   * Validate outputs exist and are available.
+   *
+   * @param output1 Output 1 identifier.
+   * @param output2 Output 2 identifier or connection type.
+   * @returns Validation result.
    */
   async function validateOutputs(
     output1: string,
@@ -125,7 +133,11 @@ export async function registerConfigRoute(
   }
 
   /**
-   * Open device controllers
+   * Open device controllers.
+   *
+   * @param output1 Output 1 identifier.
+   * @param output2 Output 2 identifier or connection type.
+   * @returns Result of controller open operations.
    */
   async function openControllers(
     output1: string,
@@ -215,13 +227,13 @@ export async function registerConfigRoute(
         }
       }
 
-      // Set runtime config
+      // Set runtime config (in-memory state only).
       runtimeConfig.setConfig({
         outputs: body.outputs,
         engine: body.engine,
       });
 
-      // Set state to active if controllers were opened
+      // Set state to active if controllers were opened.
       if (body.outputs) {
         runtimeConfig.setActive();
       }
