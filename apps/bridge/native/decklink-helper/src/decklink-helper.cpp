@@ -8,7 +8,6 @@
 */
 
 #include <DeckLinkAPI.h>
-#include <DeckLinkAPIVideoFrame_v14_2_1.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFPlugInCOM.h>
 
@@ -217,22 +216,72 @@ bool getFlagAttribute(IDeckLinkProfileAttributes* attributes,
   return true;
 }
 
-bool getFrameBytes(IDeckLinkMutableVideoFrame* frame, void** outBytes) {
-  if (!frame || !outBytes) {
-    return false;
+class FrameBufferLock {
+public:
+  FrameBufferLock() = default;
+  ~FrameBufferLock() { release(); }
+
+  bool acquire(IDeckLinkMutableVideoFrame* frame, BMDBufferAccessFlags flags) {
+    release();
+    if (!frame) {
+      return false;
+    }
+
+    flags_ = flags;
+    const HRESULT queryResult = frame->QueryInterface(IID_IDeckLinkVideoBuffer,
+                                                      (void**)&buffer_);
+    if (queryResult != S_OK || !buffer_) {
+      std::cerr << "[DeckLinkHelper] QueryInterface(IDeckLinkVideoBuffer) failed."
+                << " HRESULT=0x" << std::hex << static_cast<uint32_t>(queryResult)
+                << std::dec << " buffer=" << (buffer_ ? "non-null" : "null")
+                << std::endl;
+      return false;
+    }
+
+    const HRESULT startResult = buffer_->StartAccess(flags_);
+    if (startResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] StartAccess failed."
+                << " HRESULT=0x" << std::hex << static_cast<uint32_t>(startResult)
+                << std::dec << std::endl;
+      buffer_->Release();
+      buffer_ = nullptr;
+      return false;
+    }
+
+    const HRESULT bytesResult = buffer_->GetBytes(&bytes_);
+    if (bytesResult != S_OK || !bytes_) {
+      std::cerr << "[DeckLinkHelper] GetBytes failed."
+                << " HRESULT=0x" << std::hex << static_cast<uint32_t>(bytesResult)
+                << std::dec << " bytes=" << (bytes_ ? "non-null" : "null")
+                << std::endl;
+      buffer_->EndAccess(flags_);
+      buffer_->Release();
+      buffer_ = nullptr;
+      bytes_ = nullptr;
+      return false;
+    }
+
+    return true;
   }
 
-  IDeckLinkVideoFrame_v14_2_1* frameV14 = nullptr;
-  if (frame->QueryInterface(IID_IDeckLinkVideoFrame_v14_2_1,
-                            (void**)&frameV14) != S_OK ||
-      !frameV14) {
-    return false;
+  void* bytes() const { return bytes_; }
+
+  void release() {
+    if (!buffer_) {
+      bytes_ = nullptr;
+      return;
+    }
+    buffer_->EndAccess(flags_);
+    buffer_->Release();
+    buffer_ = nullptr;
+    bytes_ = nullptr;
   }
 
-  const HRESULT result = frameV14->GetBytes(outBytes);
-  frameV14->Release();
-  return result == S_OK && *outBytes != nullptr;
-}
+private:
+  IDeckLinkVideoBuffer* buffer_ = nullptr;
+  void* bytes_ = nullptr;
+  BMDBufferAccessFlags flags_ = bmdBufferAccessReadAndWrite;
+};
 
 std::string getStringAttribute(IDeckLinkProfileAttributes* attributes,
                                BMDDeckLinkAttributeID id) {
@@ -660,6 +709,7 @@ struct PlaybackState {
   uint64_t lateFrames = 0;
   uint64_t droppedFrames = 0;
   bool sampleLogged = false;
+  int debugLogFramesRemaining = 2;
 };
 
 bool isYuvPixelFormat(BMDPixelFormat format) {
@@ -761,7 +811,15 @@ bool convertRgbaToOutputRows(const uint8_t* src,
 
 bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) {
   if (!state.output || frameData.empty()) {
+    std::cerr << "[DeckLinkHelper] ScheduleFrame aborted: "
+              << (!state.output ? "output=null" : "frameData=empty")
+              << std::endl;
     return false;
+  }
+
+  const bool shouldLogDetails = state.debugLogFramesRemaining > 0;
+  if (shouldLogDetails) {
+    state.debugLogFramesRemaining -= 1;
   }
 
   const bool shouldLogSamples = !state.sampleLogged;
@@ -790,30 +848,56 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
     }
 
     int32_t srcRowBytes = 0;
-    if (state.output->RowBytesForPixelFormat(state.sourcePixelFormat,
-                                             state.width,
-                                             &srcRowBytes) != S_OK) {
+    HRESULT srcRowBytesResult = state.output->RowBytesForPixelFormat(
+        state.sourcePixelFormat, state.width, &srcRowBytes);
+    if (srcRowBytesResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] RowBytesForPixelFormat failed (source): "
+                << "format=" << pixelFormatLabel(state.sourcePixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(srcRowBytesResult) << std::dec
+                << std::endl;
       return false;
+    }
+    if (shouldLogDetails) {
+      std::cerr << "[DeckLinkHelper] RowBytesForPixelFormat (source) ok: "
+                << "format=" << pixelFormatLabel(state.sourcePixelFormat)
+                << " rowBytes=" << srcRowBytes << std::endl;
     }
 
     IDeckLinkMutableVideoFrame* srcFrame = nullptr;
-    if (state.output->CreateVideoFrame(state.width,
-                                       state.height,
-                                       srcRowBytes,
-                                       state.sourcePixelFormat,
-                                       bmdFrameFlagDefault,
-                                       &srcFrame) != S_OK) {
+    HRESULT srcCreateResult = state.output->CreateVideoFrame(
+        state.width,
+        state.height,
+        srcRowBytes,
+        state.sourcePixelFormat,
+        bmdFrameFlagDefault,
+        &srcFrame);
+    if (srcCreateResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] CreateVideoFrame failed (source): "
+                << "format=" << pixelFormatLabel(state.sourcePixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " rowBytes=" << srcRowBytes << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(srcCreateResult) << std::dec
+                << std::endl;
       return false;
     }
+    if (shouldLogDetails) {
+      std::cerr << "[DeckLinkHelper] CreateVideoFrame (source) ok: "
+                << "format=" << pixelFormatLabel(state.sourcePixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " rowBytes=" << srcRowBytes << std::endl;
+    }
 
-    void* srcBytes = nullptr;
-    if (!getFrameBytes(srcFrame, &srcBytes)) {
+    FrameBufferLock srcLock;
+    if (!srcLock.acquire(srcFrame, bmdBufferAccessWrite)) {
+      std::cerr << "[DeckLinkHelper] getFrameBytes failed (source)" << std::endl;
       srcFrame->Release();
       return false;
     }
 
     if (!convertRgbaToOutputRows(frameData.data(),
-                                 static_cast<uint8_t*>(srcBytes),
+                                 static_cast<uint8_t*>(srcLock.bytes()),
                                  state.width,
                                  state.height,
                                  srcRowBytes,
@@ -831,7 +915,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                 << pixelFormatLabel(state.sourcePixelFormat) << ", rowBytes="
                 << srcRowBytes << ", range="
                 << (state.useLegalRange ? "legal" : "full") << "): "
-                << formatSampleSet(static_cast<uint8_t*>(srcBytes),
+                << formatSampleSet(static_cast<uint8_t*>(srcLock.bytes()),
                                    srcSize,
                                    state.width,
                                    state.height,
@@ -840,6 +924,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
       state.sampleLogged = true;
     }
 
+    srcLock.release();
     HRESULT converted = state.converter->ConvertNewFrame(
         srcFrame, state.pixelFormat, state.colorspace, nullptr, &scheduledFrame);
     srcFrame->Release();
@@ -851,29 +936,55 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
   } else {
     IDeckLinkMutableVideoFrame* frame = nullptr;
     int32_t rowBytes = 0;
-    if (state.output->RowBytesForPixelFormat(state.pixelFormat,
+    HRESULT rowBytesResult =
+        state.output->RowBytesForPixelFormat(state.pixelFormat,
                                              state.width,
-                                             &rowBytes) != S_OK) {
+                                             &rowBytes);
+    if (rowBytesResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] RowBytesForPixelFormat failed (output): "
+                << "format=" << pixelFormatLabel(state.pixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(rowBytesResult) << std::dec
+                << std::endl;
       return false;
     }
-
-    if (state.output->CreateVideoFrame(state.width,
-                                       state.height,
-                                       rowBytes,
-                                       state.pixelFormat,
-                                       bmdFrameFlagDefault,
-                                       &frame) != S_OK) {
-      return false;
+    if (shouldLogDetails) {
+      std::cerr << "[DeckLinkHelper] RowBytesForPixelFormat (output) ok: "
+                << "format=" << pixelFormatLabel(state.pixelFormat)
+                << " rowBytes=" << rowBytes << std::endl;
     }
 
-    void* frameBytes = nullptr;
-    if (!getFrameBytes(frame, &frameBytes)) {
+    HRESULT createResult = state.output->CreateVideoFrame(state.width,
+                                                          state.height,
+                                                          rowBytes,
+                                                          state.pixelFormat,
+                                                          bmdFrameFlagDefault,
+                                                          &frame);
+    if (createResult != S_OK) {
+      std::cerr << "[DeckLinkHelper] CreateVideoFrame failed (output): "
+                << "format=" << pixelFormatLabel(state.pixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " rowBytes=" << rowBytes << " hresult=0x" << std::hex
+                << static_cast<uint32_t>(createResult) << std::dec << std::endl;
+      return false;
+    }
+    if (shouldLogDetails) {
+      std::cerr << "[DeckLinkHelper] CreateVideoFrame (output) ok: "
+                << "format=" << pixelFormatLabel(state.pixelFormat)
+                << " width=" << state.width << " height=" << state.height
+                << " rowBytes=" << rowBytes << std::endl;
+    }
+
+    FrameBufferLock frameLock;
+    if (!frameLock.acquire(frame, bmdBufferAccessWrite)) {
+      std::cerr << "[DeckLinkHelper] getFrameBytes failed (output)" << std::endl;
       frame->Release();
       return false;
     }
 
     if (!convertRgbaToOutputRows(frameData.data(),
-                                 static_cast<uint8_t*>(frameBytes),
+                                 static_cast<uint8_t*>(frameLock.bytes()),
                                  state.width,
                                  state.height,
                                  rowBytes,
@@ -891,7 +1002,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
                 << pixelFormatLabel(state.pixelFormat) << ", rowBytes="
                 << rowBytes << ", range="
                 << (state.useLegalRange ? "legal" : "full") << "): "
-                << formatSampleSet(static_cast<uint8_t*>(frameBytes),
+                << formatSampleSet(static_cast<uint8_t*>(frameLock.bytes()),
                                    outSize,
                                    state.width,
                                    state.height,
@@ -900,6 +1011,7 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
       state.sampleLogged = true;
     }
 
+    frameLock.release();
     scheduledFrame = frame;
   }
 
@@ -907,7 +1019,13 @@ bool scheduleFrame(PlaybackState& state, const std::vector<uint8_t>& frameData) 
       scheduledFrame, state.nextFrameTime, state.frameDuration, state.timeScale);
   if (scheduled != S_OK) {
     std::cerr << "ScheduleVideoFrame failed. HRESULT=0x" << std::hex
-              << static_cast<uint32_t>(scheduled) << std::dec << std::endl;
+              << static_cast<uint32_t>(scheduled) << std::dec;
+    if (shouldLogDetails) {
+      std::cerr << " nextFrameTime=" << state.nextFrameTime
+                << " frameDuration=" << state.frameDuration
+                << " timeScale=" << state.timeScale;
+    }
+    std::cerr << std::endl;
     scheduledFrame->Release();
     return false;
   }
@@ -1502,6 +1620,18 @@ int runPlayback(const PlaybackConfig& config) {
     return 1;
   }
 
+  std::cerr << "Playback config: device=" << config.deviceId
+            << " output="
+            << (outputConnection == bmdVideoConnectionSDI
+                    ? "sdi"
+                    : outputConnection == bmdVideoConnectionHDMI
+                          ? "hdmi"
+                          : "unspecified")
+            << " keying=" << (useKeyer ? "external" : "none")
+            << " " << config.width << "x" << config.height
+            << " fps=" << std::fixed << std::setprecision(3) << config.fps
+            << std::endl;
+
   IDeckLink* deckLink = findDeckLinkById(config.deviceId);
   if (!deckLink) {
     std::cerr << "DeckLink device not found: " << config.deviceId << std::endl;
@@ -1661,8 +1791,11 @@ int runPlayback(const PlaybackConfig& config) {
     return 1;
   }
 
-  if (output->EnableVideoOutput(displayMode, bmdVideoOutputFlagDefault) != S_OK) {
-    std::cerr << "EnableVideoOutput failed." << std::endl;
+  const HRESULT enableResult =
+      output->EnableVideoOutput(displayMode, bmdVideoOutputFlagDefault);
+  if (enableResult != S_OK) {
+    std::cerr << "EnableVideoOutput failed. HRESULT=0x" << std::hex
+              << static_cast<uint32_t>(enableResult) << std::dec << std::endl;
     if (keyer) {
       keyer->Release();
     }
@@ -1672,16 +1805,22 @@ int runPlayback(const PlaybackConfig& config) {
   }
 
   if (keyer) {
-    if (keyer->Enable(true) != S_OK) {
-      std::cerr << "Keyer enable failed." << std::endl;
+    const HRESULT keyerEnableResult = keyer->Enable(true);
+    if (keyerEnableResult != S_OK) {
+      std::cerr << "Keyer enable failed. HRESULT=0x" << std::hex
+                << static_cast<uint32_t>(keyerEnableResult) << std::dec
+                << std::endl;
       output->DisableVideoOutput();
       keyer->Release();
       output->Release();
       deckLink->Release();
       return 1;
     }
-    if (keyer->SetLevel(255) != S_OK) {
-      std::cerr << "Keyer SetLevel failed." << std::endl;
+    const HRESULT keyerLevelResult = keyer->SetLevel(255);
+    if (keyerLevelResult != S_OK) {
+      std::cerr << "Keyer SetLevel failed. HRESULT=0x" << std::hex
+                << static_cast<uint32_t>(keyerLevelResult) << std::dec
+                << std::endl;
     }
   }
 
@@ -1696,6 +1835,8 @@ int runPlayback(const PlaybackConfig& config) {
       static_cast<size_t>(config.height) * 4;
   const int stdinFd = fileno(stdin);
   std::vector<uint8_t> headerBuffer(kFrameHeaderSize);
+  int headerMismatchLogsRemaining = 2;
+  int headerInvalidLogsRemaining = 2;
 
   while (!gShouldExit.load()) {
     if (!readExact(stdinFd, headerBuffer.data(), kFrameHeaderSize)) {
@@ -1712,7 +1853,13 @@ int runPlayback(const PlaybackConfig& config) {
     header.bufferLength = readUint32BE(headerBuffer.data() + 24);
 
     if (header.magic != kFrameMagic || header.version != kFrameVersion) {
-      std::cerr << "Invalid frame header." << std::endl;
+      if (headerInvalidLogsRemaining > 0) {
+        std::cerr << "Invalid frame header."
+                  << " magic=0x" << std::hex << header.magic
+                  << " version=" << std::dec << header.version
+                  << std::endl;
+        headerInvalidLogsRemaining -= 1;
+      }
       break;
     }
 
@@ -1732,6 +1879,14 @@ int runPlayback(const PlaybackConfig& config) {
     if (header.width != static_cast<uint32_t>(config.width) ||
         header.height != static_cast<uint32_t>(config.height) ||
         header.bufferLength != expectedBytes) {
+      if (headerMismatchLogsRemaining > 0) {
+        std::cerr << "Frame header mismatch. expected="
+                  << config.width << "x" << config.height
+                  << " bytes=" << expectedBytes
+                  << " got=" << header.width << "x" << header.height
+                  << " bytes=" << header.bufferLength << std::endl;
+        headerMismatchLogsRemaining -= 1;
+      }
       if (header.bufferLength > 0) {
         if (!discardBytes(stdinFd, header.bufferLength)) {
           break;
@@ -1763,10 +1918,14 @@ int runPlayback(const PlaybackConfig& config) {
       }
 
       if (state.prerollScheduled >= state.prerollTarget) {
-        if (output->StartScheduledPlayback(0, state.timeScale, 1.0) == S_OK) {
+        const HRESULT startResult =
+            output->StartScheduledPlayback(0, state.timeScale, 1.0);
+        if (startResult == S_OK) {
           state.started = true;
         } else {
-          std::cerr << "StartScheduledPlayback failed." << std::endl;
+          std::cerr << "StartScheduledPlayback failed. HRESULT=0x" << std::hex
+                    << static_cast<uint32_t>(startResult) << std::dec
+                    << std::endl;
         }
       }
     }

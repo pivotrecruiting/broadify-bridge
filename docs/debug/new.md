@@ -5,10 +5,11 @@ Hinweis: Desktop Video Setup (Key/Fill‑Pairing) ist **korrekt** und wird ausge
 #### Plan
 1) Pixel‑Stichproben‑Logs implementieren (Renderer → Composite → Output/Helper).
 2) Testpattern senden und RGBA‑Samples prüfen (Ecke + Mitte + Ecke).
-3) Abgleich mit DeckLink SDK Manual:
+3) Wenn Helper‑Output‑Samples fehlen: Logging erweitern, sodass Input/Output direkt vergleichbar sind.
+4) Abgleich mit DeckLink SDK Manual:
    - Pixel‑Format Byte‑Order (ARGB/BGRA, Little‑Endian)
    - Keyer verwendet Alpha‑Kanal (kein Luma‑Key)
-4) Hypothesen nach Evidenz neu ordnen und Fix ableiten.
+5) Hypothesen nach Evidenz neu ordnen und Fix ableiten.
 
 #### Pixel‑Stichprobe (Sollwerte Testbild)
 - Ecke (Rotfläche): RGBA ≈ 255,0,0,255
