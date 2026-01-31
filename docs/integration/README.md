@@ -3,6 +3,7 @@
 ## Einstieg
 - Architektur & Struktur: `docs/integration/architecture-overview.md`
 - Graphics Flow (E2E): `docs/integration/flows/graphics.md`
+- Device Discovery Flow (E2E): `docs/integration/flows/device-discovery.md`
 - To-do Tracking: `docs/integration/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 

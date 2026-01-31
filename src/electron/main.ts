@@ -34,6 +34,12 @@ import * as Sentry from "@sentry/electron";
 
 dotenv.config();
 
+/**
+ * Read a CLI flag value from process arguments.
+ *
+ * @param flag Flag name (e.g., --renderer-entry).
+ * @returns Flag value or null when missing.
+ */
 function getArgValue(flag: string): string | null {
   const index = process.argv.findIndex((arg) => arg === flag);
   if (index === -1) {
@@ -43,6 +49,12 @@ function getArgValue(flag: string): string | null {
   return value && !value.startsWith("--") ? value : null;
 }
 
+/**
+ * Parse argv into a simple flag map.
+ *
+ * @param argv Process argument list.
+ * @returns Map of flag -> value or true.
+ */
 function getArgMap(argv: string[]): Map<string, string | true> {
   const map = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i += 1) {
@@ -68,6 +80,12 @@ function getArgMap(argv: string[]): Map<string, string | true> {
   return map;
 }
 
+/**
+ * Resolve the renderer entry path for graphics renderer mode.
+ *
+ * @param argv Process argument list.
+ * @returns Renderer entry path or null.
+ */
 function resolveRendererEntry(argv: string[]): string | null {
   const args = getArgMap(argv);
   const explicit = args.get("renderer-entry");
@@ -189,7 +207,7 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
 };
 
 /**
- * Load network configuration for the Desktop App (not the Bridge)
+ * Load network configuration for the Desktop App (not the Bridge).
  *
  * This config is used by the Desktop App UI to show network interface options
  * and port settings. The Bridge itself receives these values as CLI arguments.
@@ -256,7 +274,7 @@ function loadNetworkConfig(): NetworkConfigT {
 }
 
 /**
- * Get Web App URL based on environment
+ * Get Web App URL based on environment.
  * Consistent with how RELAY_URL is handled: env var with fallback to default
  * Must be evaluated at runtime, not build time, to work in production
  */
@@ -279,7 +297,11 @@ function getWebAppBaseUrl(): string | null {
 }
 
 /**
- * Get interface type from binding ID
+ * Get interface type from binding ID.
+ *
+ * @param bindingId Selected binding id.
+ * @param options Available binding options.
+ * @returns Interface type string.
  */
 function getInterfaceType(
   bindingId: string,
@@ -290,7 +312,7 @@ function getInterfaceType(
 }
 
 /**
- * Build Web-App URL with bridgeId query parameter
+ * Build Web-App URL with bridgeId query parameter.
  * Consistent with how RELAY_URL is handled: env var with fallback to default
  */
 function buildWebAppUrl(bridgeId: string): string | null {
@@ -620,7 +642,11 @@ if (!isRendererProcess) {
     });
 
     /**
-     * Helper function to make requests to Bridge API
+     * Helper function to make requests to Bridge API.
+     *
+     * @param endpoint Bridge API endpoint (path only).
+     * @param options Fetch options.
+     * @returns Parsed JSON response.
      */
     async function bridgeApiRequest(
       endpoint: string,

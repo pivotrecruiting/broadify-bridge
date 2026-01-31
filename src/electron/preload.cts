@@ -4,6 +4,7 @@ import type {
   EventPayloadMapping,
 } from "./types.js" with { "resolution-mode": "import" };
 
+// Expose a minimal, whitelisted API surface to the renderer.
 electron.contextBridge.exposeInMainWorld("electron", {
   subscribeStatistics: (callback) =>
     ipcOn("statistics", (stats) => {
@@ -42,6 +43,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
     electron.ipcRenderer.invoke("openExternal", url).then(() => undefined),
 } satisfies Window["electron"]);
 
+/**
+ * Invoke a typed IPC handler from the renderer.
+ */
 function ipcInvoke<Key extends keyof EventPayloadMapping>(
   key: Key,
   ...args: any[]
@@ -49,6 +53,9 @@ function ipcInvoke<Key extends keyof EventPayloadMapping>(
   return electron.ipcRenderer.invoke(key, ...args);
 }
 
+/**
+ * Subscribe to a typed IPC event from the main process.
+ */
 function ipcOn<Key extends keyof EventPayloadMapping>(
   key: Key,
   callback: (payload: EventPayloadMapping[Key]) => void
