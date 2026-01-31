@@ -48,6 +48,8 @@ const getLogger = () => {
 
 /**
  * Resolve the DeckLink helper binary path.
+ *
+ * @returns Absolute path to the helper binary.
  */
 export function resolveDecklinkHelperPath(): string {
   const envPath = process.env[HELPER_PATH_ENV];
@@ -79,6 +81,8 @@ export function resolveDecklinkHelperPath(): string {
 
 /**
  * Execute the DeckLink helper in list mode.
+ *
+ * @returns Array of raw device objects from helper output.
  */
 export async function listDecklinkDevices(): Promise<unknown[]> {
   if (platform() !== "darwin") {
@@ -151,6 +155,11 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
 
 /**
  * Execute the DeckLink helper to list display modes.
+ *
+ * @param deviceId DeckLink device ID.
+ * @param outputPortId DeckLink output port ID.
+ * @param query Optional filtering for width/height/fps/keying.
+ * @returns Display modes supported by the given output.
  */
 export async function listDecklinkDisplayModes(
   deviceId: string,
@@ -242,6 +251,9 @@ export async function listDecklinkDisplayModes(
 
 /**
  * Watch DeckLink devices via helper process and stream events.
+ *
+ * @param onEvent Callback invoked for each helper event line.
+ * @returns Unsubscribe function to stop the helper process.
  */
 export function watchDecklinkDevices(
   onEvent: (event: DecklinkHelperEvent) => void

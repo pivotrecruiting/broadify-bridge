@@ -8,6 +8,7 @@ const logger = pino({
   base: { component: "graphics-renderer" },
 });
 
+// IPC hard limits to avoid oversized payloads and memory pressure.
 const MAX_IPC_HEADER_BYTES = 64 * 1024;
 const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
@@ -40,6 +41,7 @@ const debugEmptyLogged = new Set<string>();
 const debugSampleLogged = new Set<string>();
 const debugDomLogged = new Set<string>();
 
+// Register a custom asset:// protocol for local graphics assets.
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "asset",
@@ -51,6 +53,11 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+/**
+ * Send an IPC message to the bridge process.
+ *
+ * Includes a token for authentication and enforces payload limits.
+ */
 function sendIpcMessage(
   message: { type: string; [key: string]: unknown },
   buffer?: Buffer,
@@ -812,6 +819,7 @@ function connectIpcSocket(): void {
     return;
   }
 
+  // IPC is local-only; token handshake prevents spoofed commands.
   ipcSocket = net.createConnection({ host: "127.0.0.1", port }, () => {
     logger.info("[GraphicsRenderer] IPC socket connected");
     isIpcConnected = true;

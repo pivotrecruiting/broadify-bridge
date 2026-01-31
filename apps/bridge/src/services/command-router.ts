@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
- * Relay command types
+ * Relay command types accepted by the bridge.
  */
 export type RelayCommand =
   | "get_status"
@@ -37,7 +37,7 @@ export type RelayCommand =
   | "graphics_list";
 
 /**
- * Relay command payload
+ * Relay command payload.
  */
 export interface RelayCommandPayload {
   command: RelayCommand;
@@ -45,7 +45,7 @@ export interface RelayCommandPayload {
 }
 
 /**
- * Relay command result
+ * Relay command result.
  */
 export interface RelayCommandResult {
   success: boolean;
@@ -123,14 +123,18 @@ function transformDevicesToOutputs(
 }
 
 /**
- * Command Router Service
+ * Command Router Service.
  *
  * Central command processing logic used by both HTTP routes and Relay Client.
  * Uses direct function calls to services (no HTTP calls to self).
  */
 export class CommandRouter {
   /**
-   * Handle relay command
+   * Handle relay command.
+   *
+   * @param command Command name from relay or HTTP route.
+   * @param payload Untrusted payload (validated by downstream services).
+   * @returns Command execution result.
    */
   async handleCommand(
     command: RelayCommand,
@@ -324,6 +328,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.configureOutputs(payload);
           return {
             success: true,
@@ -339,6 +344,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.sendLayer(payload);
           return {
             success: true,
@@ -362,6 +368,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.updateValues(payload);
           return {
             success: true,
@@ -377,6 +384,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.updateLayout(payload);
           return {
             success: true,
@@ -392,6 +400,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.removeLayer(payload);
           return {
             success: true,
@@ -407,6 +416,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.removePreset(payload);
           return {
             success: true,

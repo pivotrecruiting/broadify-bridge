@@ -17,6 +17,7 @@ const ELECTRON_BINARIES = {
   default: "electron",
 };
 
+// IPC hard limits to prevent memory abuse or oversized frame payloads.
 const MAX_IPC_HEADER_BYTES = 64 * 1024;
 const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
@@ -71,6 +72,9 @@ function resolveRendererEntry(): string | null {
 
 /**
  * Electron-based offscreen renderer client.
+ *
+ * Spawns a separate Electron process and communicates over local TCP IPC.
+ * A per-process token is used to authenticate IPC messages.
  */
 export class ElectronRendererClient implements GraphicsRenderer {
   private child: ChildProcess | null = null;
@@ -81,8 +85,10 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private ipcServer: net.Server | null = null;
   private ipcSocket: net.Socket | null = null;
   private ipcBuffer = Buffer.alloc(0);
+  // Token used to authenticate IPC messages with the renderer process.
   private ipcToken: string | null = null;
   private ipcAuthenticated = false;
+  // Commands queued before IPC handshake is complete.
   private pendingCommands: Array<Record<string, unknown>> = [];
   private stdoutBuffer = "";
   private stderrBuffer = "";
@@ -255,6 +261,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     }
   }
 
+  /**
+   * Start a local IPC server bound to localhost only.
+   *
+   * @returns Allocated port number for IPC server.
+   */
   private async startIpcServer(): Promise<number> {
     if (this.ipcServer) {
       return 0;
@@ -278,6 +289,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         { component: "graphics-renderer" },
         "[GraphicsRenderer IPC] Client connected",
       );
+      // IPC data is untrusted until the token handshake completes.
       socket.on("data", (data) => this.handleIpcData(data));
       socket.on("close", () => {
         this.logStructured(
@@ -523,6 +535,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         continue;
       }
 
+      // Drop messages without a matching token (prevents spoofed frames).
       if (this.ipcToken && messageToken !== this.ipcToken) {
         this.logStructured(
           "warn",

@@ -16,6 +16,9 @@ export type TemplateValidationResultT = {
 
 /**
  * Remove CSS block comments before validation/rendering.
+ *
+ * @param css Raw CSS string.
+ * @returns CSS without block comments.
  */
 export function sanitizeTemplateCss(css: string): string {
   if (!css) {
@@ -74,7 +77,11 @@ export function sanitizeTemplateCss(css: string): string {
 }
 
 /**
- * Validate and sanitize HTML/CSS templates.
+ * Validate HTML/CSS templates against a safe subset.
+ *
+ * @param html Raw HTML template string.
+ * @param css Raw CSS template string.
+ * @returns Validation result with referenced asset ids.
  */
 export function validateTemplate(html: string, css: string): TemplateValidationResultT {
   if (SCRIPT_PATTERN.test(html)) {

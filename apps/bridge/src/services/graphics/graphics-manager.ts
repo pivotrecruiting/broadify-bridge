@@ -161,6 +161,8 @@ export class GraphicsManager {
 
   /**
    * Initialize renderer, assets, and persisted output config.
+   *
+   * @returns Promise resolved when initialization completes.
    */
   async initialize(): Promise<void> {
     if (this.initialized) {
@@ -226,6 +228,9 @@ export class GraphicsManager {
 
   /**
    * Configure graphics outputs.
+   *
+   * @param payload Untrusted output configuration payload.
+   * @returns Promise resolved when outputs are configured.
    */
   async configureOutputs(payload: unknown): Promise<void> {
     await this.initialize();
@@ -261,6 +266,9 @@ export class GraphicsManager {
 
   /**
    * Create or update a graphics layer.
+   *
+   * @param payload Untrusted graphics layer payload.
+   * @returns Promise resolved when the layer is scheduled for render.
    */
   async sendLayer(payload: unknown): Promise<void> {
     await this.initialize();
@@ -353,6 +361,9 @@ export class GraphicsManager {
 
   /**
    * Update values for an existing layer.
+   *
+   * @param payload Untrusted update payload.
+   * @returns Promise resolved after values are applied.
    */
   async updateValues(payload: unknown): Promise<void> {
     await this.initialize();
@@ -376,6 +387,9 @@ export class GraphicsManager {
 
   /**
    * Update layout for an existing layer.
+   *
+   * @param payload Untrusted update payload.
+   * @returns Promise resolved after layout is applied.
    */
   async updateLayout(payload: unknown): Promise<void> {
     await this.initialize();
@@ -396,6 +410,9 @@ export class GraphicsManager {
 
   /**
    * Remove a layer.
+   *
+   * @param payload Untrusted remove payload.
+   * @returns Promise resolved after layer removal.
    */
   async removeLayer(payload: unknown): Promise<void> {
     await this.initialize();
@@ -421,6 +438,9 @@ export class GraphicsManager {
 
   /**
    * Remove a preset and optionally clear the queue.
+   *
+   * @param payload Untrusted preset removal payload.
+   * @returns Promise resolved after preset removal.
    */
   async removePreset(payload: unknown): Promise<void> {
     await this.initialize();
@@ -444,6 +464,8 @@ export class GraphicsManager {
 
   /**
    * Render the built-in test pattern, replacing any active layers.
+   *
+   * @returns Promise resolved after test pattern is queued.
    */
   async sendTestPattern(): Promise<void> {
     await this.initialize();
@@ -453,6 +475,8 @@ export class GraphicsManager {
 
   /**
    * List output config and active layers.
+   *
+   * @returns Snapshot of output configuration and layer state.
    */
   getStatus(): {
     outputConfig: GraphicsOutputConfigT | null;
@@ -812,6 +836,7 @@ export class GraphicsManager {
           })}`
         );
       }
+      // External IO: output adapter streams raw frames to hardware/helper.
       await this.outputAdapter.sendFrame(
         {
           width,
@@ -858,11 +883,13 @@ export class GraphicsManager {
   private async prepareLayer(
     data: GraphicsSendPayloadT
   ): Promise<PreparedLayerT> {
+    // Sanitize CSS before validation to avoid style/script injection vectors.
     const sanitizedCss = sanitizeTemplateCss(data.bundle.css);
     const sanitizedBundle = {
       ...data.bundle,
       css: sanitizedCss,
     };
+    // Validate template HTML/CSS against a safe subset (no scripts/externals).
     const { assetIds } = validateTemplate(data.bundle.html, sanitizedCss);
 
     for (const asset of sanitizedBundle.assets || []) {
@@ -875,8 +902,10 @@ export class GraphicsManager {
       }
     }
 
+    // Provide renderer a resolved asset map (file paths only, no raw data).
     await this.renderer.setAssets(assetRegistry.getAssetMap());
 
+    // If output supports alpha, enforce transparent background regardless of payload.
     const enforcedBackground = OUTPUT_KEYS_WITH_ALPHA.includes(
       this.outputConfig?.outputKey ?? "stub"
     )

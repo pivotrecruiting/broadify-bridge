@@ -60,6 +60,9 @@ const normalizeSchemaEntry = (value: unknown): TemplateSchemaEntryT | null => {
 
 /**
  * Resolve the animation class name from a value.
+ *
+ * @param value Raw animation value from payload/defaults.
+ * @returns Normalized animation CSS class.
  */
 export function getAnimationClassFromValue(value: unknown): string {
   const normalized = String(value ?? "ease-out").toLowerCase().trim();
@@ -71,6 +74,10 @@ export function getAnimationClassFromValue(value: unknown): string {
 
 /**
  * Derive template bindings (CSS variables, text content, animation class).
+ *
+ * @param bundle Template schema/defaults definition.
+ * @param values Runtime values for the template.
+ * @returns Precomputed bindings for renderer updates.
  */
 export function deriveTemplateBindings(
   bundle: Pick<GraphicsBundleT, "schema" | "defaults">,

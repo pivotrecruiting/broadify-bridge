@@ -27,6 +27,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null;
 };
 
+/**
+ * Remove CSS block comments to keep logs readable and avoid log injection.
+ * This is a logging-only sanitization and does not affect render behavior.
+ */
 const stripCssComments = (value: unknown): unknown => {
   if (typeof value !== "string") {
     return value;
@@ -34,6 +38,12 @@ const stripCssComments = (value: unknown): unknown => {
   return value.replace(CSS_COMMENT_PATTERN, "").trim();
 };
 
+/**
+ * Create a sanitized copy of a graphics payload for logging.
+ *
+ * @param payload Untrusted graphics payload from relay.
+ * @returns Sanitized shallow copy for safe logging.
+ */
 const sanitizeGraphicsPayload = (
   payload?: Record<string, unknown>
 ): Record<string, unknown> | undefined => {
@@ -44,6 +54,7 @@ const sanitizeGraphicsPayload = (
   const sanitized: Record<string, unknown> = { ...payload };
   const bundle = payload.bundle;
   if (isRecord(bundle)) {
+    // Avoid mutating the original payload object (used for command handling).
     const sanitizedBundle = { ...bundle };
     if (typeof bundle.css === "string") {
       sanitizedBundle.css = stripCssComments(bundle.css);
@@ -136,7 +147,9 @@ export class RelayClient {
   }
 
   /**
-   * Connect to relay server
+   * Connect to relay server.
+   *
+   * @returns Promise resolved when connection attempt is initiated.
    */
   async connect(): Promise<void> {
     if (this.isConnecting || this.isShuttingDown) {
@@ -219,7 +232,9 @@ export class RelayClient {
   }
 
   /**
-   * Handle incoming message from relay
+   * Handle incoming message from relay.
+   *
+   * Relay data is untrusted and must be validated downstream.
    */
   private async handleMessage(data: WebSocket.Data): Promise<void> {
     try {
@@ -241,7 +256,9 @@ export class RelayClient {
   }
 
   /**
-   * Handle command from relay
+   * Handle command from relay.
+   *
+   * @param message Untrusted relay command message.
    */
   private async handleCommand(message: RelayCommandMessage): Promise<void> {
     // Log graphics commands with detailed payload

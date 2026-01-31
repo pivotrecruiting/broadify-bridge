@@ -75,12 +75,19 @@ const buildSplitConfig = (
 
 /**
  * DeckLink output adapter for software-split key/fill (two independent outputs).
+ *
+ * Splits alpha into a separate key frame and sends both frames to two helpers.
  */
 export class DecklinkSplitOutputAdapter implements GraphicsOutputAdapter {
   private fillAdapter = new DecklinkVideoOutputAdapter();
   private keyAdapter = new DecklinkVideoOutputAdapter();
   private configured = false;
 
+  /**
+   * Configure both fill and key helper processes.
+   *
+   * @param config Output configuration payload (validated upstream).
+   */
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
 
@@ -104,6 +111,12 @@ export class DecklinkSplitOutputAdapter implements GraphicsOutputAdapter {
     this.configured = true;
   }
 
+  /**
+   * Send a single RGBA frame to both fill and key helpers.
+   *
+   * @param frame RGBA frame buffer with width/height metadata.
+   * @param config Output configuration payload.
+   */
   async sendFrame(
     frame: GraphicsOutputFrameT,
     config: GraphicsOutputConfigT
@@ -134,6 +147,9 @@ export class DecklinkSplitOutputAdapter implements GraphicsOutputAdapter {
     await this.keyAdapter.sendFrame(keyFrame, keyConfig);
   }
 
+  /**
+   * Stop both helper processes and release resources.
+   */
   async stop(): Promise<void> {
     await this.fillAdapter.stop();
     await this.keyAdapter.stop();

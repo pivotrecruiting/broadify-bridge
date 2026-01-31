@@ -4,6 +4,12 @@ export type DecklinkPortInfoT = {
   portRole: "fill" | "key" | "video";
 };
 
+/**
+ * Parse a DeckLink port id into its components.
+ *
+ * @param portId Port id string from device descriptor.
+ * @returns Parsed port info or null if the id is not recognized.
+ */
 export function parseDecklinkPortId(portId: string): DecklinkPortInfoT | null {
   if (portId.endsWith("-sdi-a")) {
     return {
