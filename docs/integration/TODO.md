@@ -3,10 +3,10 @@
 Ziel: Systemweite Doku, die die Verbindungen und Verantwortlichkeiten zwischen Desktop-App, Bridge und nativen Helpern erklärt.
 
 ## Stufe 1 – Architektur & Struktur (High-Level)
-- [ ] Systemüberblick (Desktop, Bridge, Helper, externe Systeme)
-- [ ] Gesamtarchitekturdiagramm (Mermaid)
-- [ ] End-to-End Datenfluss: UI-Aktion → Output-Frame
-- [ ] Security-Boundaries zwischen Prozessen/Netzwerk
+- [x] Systemüberblick (Desktop, Bridge, Helper, externe Systeme)
+- [x] Gesamtarchitekturdiagramm (Mermaid)
+- [x] End-to-End Datenfluss: UI-Aktion → Output-Frame
+- [x] Security-Boundaries zwischen Prozessen/Netzwerk
 
 ## Stufe 2 – Schnittstellen (Mid-Level)
 - [ ] IPC- und API-Schnittstellen Desktop ↔ Bridge
@@ -15,8 +15,8 @@ Ziel: Systemweite Doku, die die Verbindungen und Verantwortlichkeiten zwischen D
 - [ ] Konfig-Pfade (UserData, Assets, Output-Config)
 
 ## Stufe 3 – Feature-Flows (Deep-Dive)
-- [ ] Graphics-Setup-Flow (Outputs → Render → SDI/HDMI)
-- [ ] Device-Discovery-Flow (Detect → Cache → UI)
+- [x] Graphics-Setup-Flow (Outputs → Render → SDI/HDMI)
+- [x] Device-Discovery-Flow (Detect → Cache → UI)
 - [ ] Health/Status-Flow (Status-Endpoints, WebSocket)
 - [ ] Logging- und Diagnose-Flow (Desktop/Bridge/Helper)
 
@@ -27,5 +27,5 @@ Ziel: Systemweite Doku, die die Verbindungen und Verantwortlichkeiten zwischen D
 
 ## Abnahmekriterien (Definition of Done)
 - [ ] In `docs/integration/` existieren Stufe‑Docs mit klarer Navigation
-- [ ] Mermaid-Diagramme für jeden Hauptflow
+- [x] Mermaid-Diagramme für jeden Hauptflow
 - [ ] Alle Schnittstellen sind mit Payloads & Beispielen dokumentiert
