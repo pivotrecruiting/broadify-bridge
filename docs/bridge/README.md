@@ -12,6 +12,8 @@
 - Feature: Graphics Commands & Payloads: `docs/bridge/features/graphics-commands.md`
 - Feature: Output-Konfiguration & Pixel-Policy: `docs/bridge/features/output-config.md`
 - Feature: Assets & Template-Security: `docs/bridge/features/assets-and-template-security.md`
+- Feature: Preset-Queue & Lifecycle: `docs/bridge/features/preset-queue.md`
+- Feature: Renderer Bindings & Animations: `docs/bridge/features/renderer-bindings-animations.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 

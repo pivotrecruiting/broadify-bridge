@@ -978,6 +978,7 @@ export class GraphicsManager {
     data: PreparedLayerT,
     durationMs: number | null
   ): void {
+    // Coalesce layers for the same preset into a single queued entry.
     const existing =
       this.presetQueue.length > 0
         ? this.presetQueue[this.presetQueue.length - 1]
@@ -1053,6 +1054,7 @@ export class GraphicsManager {
       return;
     }
 
+    // Remove all layers belonging to the active preset.
     const layerIds = Array.from(this.activePreset.layerIds);
     const presetId = this.activePreset.presetId;
     this.clearActivePreset();
@@ -1080,6 +1082,7 @@ export class GraphicsManager {
       return;
     }
 
+    // Activate queued preset and render its layers immediately.
     this.activePreset = {
       presetId: next.presetId,
       durationMs: next.durationMs ?? null,
