@@ -15,6 +15,9 @@ Kurze Referenzen für zentrale Dateien. Jede Seite beschreibt Zweck, Ein-/Ausgä
 - `docs/bridge/reference/files/output-adapter-decklink-split.md`
 - `docs/bridge/reference/files/output-adapter-stub.md`
 - `docs/bridge/reference/files/decklink-helper.md`
+- `docs/bridge/reference/files/decklink-helper-cpp.md`
 - `docs/bridge/reference/files/decklink-detector.md`
+- `docs/bridge/reference/files/decklink-module.md`
+- `docs/bridge/reference/files/decklink-device.md`
 - `docs/bridge/reference/files/device-cache.md`
 - `docs/bridge/reference/files/module-registry.md`

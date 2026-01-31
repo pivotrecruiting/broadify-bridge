@@ -36,6 +36,7 @@ function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT
         continue;
       }
 
+      // Availability is derived from device + port status (UI-friendly flag).
       const available =
         device.status.present &&
         device.status.ready &&

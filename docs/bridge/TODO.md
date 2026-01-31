@@ -27,8 +27,8 @@ Ziel: Vollständige interne Dokumentation der Bridge inkl. Graphics-Flow, Device
 - [x] Asset-Management: Store, Limits, asset://-Auflösung
 - [x] Template-Sicherheit: Sanitizing, Binding-Regeln
 - [x] Preset-Queue & Expiry-Mechanik
-- [ ] Device-Outputs: Port-Model, Availability, Modes
-- [ ] Relay-Protokoll: command/command_result/bridge_hello
+- [x] Device-Outputs: Port-Model, Availability, Modes
+- [x] Relay-Protokoll: command/command_result/bridge_hello
 
 ## Stufe 4 – Wichtige Dateien (Low-Level Referenzen)
 - [x] `apps/bridge/src/server.ts`
@@ -38,8 +38,8 @@ Ziel: Vollständige interne Dokumentation der Bridge inkl. Graphics-Flow, Device
 - [x] `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`
 - [x] `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`
 - [x] `apps/bridge/src/services/graphics/output-adapters/*`
-- [ ] `apps/bridge/src/modules/decklink/*`
-- [ ] `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`
+- [x] `apps/bridge/src/modules/decklink/*`
+- [x] `apps/bridge/native/decklink-helper/src/decklink-helper.cpp`
 
 ## Stufe 5 – Betrieb & Entwicklung
 - [ ] Build/Run (Dev/Prod), benötigte Binaries

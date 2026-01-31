@@ -68,12 +68,18 @@ const sanitizeGraphicsPayload = (
 /**
  * Relay message types
  */
+/**
+ * Sent to the relay upon connection to announce bridge identity/version.
+ */
 interface BridgeHelloMessage {
   type: "bridge_hello";
   bridgeId: string;
   version: string;
 }
 
+/**
+ * Command payload received from relay.
+ */
 interface RelayCommandMessage {
   type: "command";
   requestId: string;
@@ -81,6 +87,9 @@ interface RelayCommandMessage {
   payload?: Record<string, unknown>;
 }
 
+/**
+ * Command result response sent back to relay.
+ */
 interface CommandResultMessage {
   type: "command_result";
   requestId: string;

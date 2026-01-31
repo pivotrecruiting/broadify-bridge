@@ -15,6 +15,8 @@
 - Feature: Preset-Queue & Lifecycle: `docs/bridge/features/preset-queue.md`
 - Feature: Renderer Bindings & Animations: `docs/bridge/features/renderer-bindings-animations.md`
 - Datei-Referenzen: `docs/bridge/reference/README.md`
+- Feature: Device Outputs: `docs/bridge/features/device-outputs.md`
+- Feature: Relay-Protokoll: `docs/bridge/features/relay-protocol.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 

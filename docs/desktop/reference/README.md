@@ -14,3 +14,6 @@ Kurze Referenzen für zentrale Desktop‑Dateien.
 - `docs/desktop/reference/files/port-checker.md`
 - `docs/desktop/reference/files/network-interface-detector.md`
 - `docs/desktop/reference/files/app-ui.md`
+- `docs/desktop/reference/files/ui-main.md`
+- `docs/desktop/reference/files/ui-hooks.md`
+- `docs/desktop/reference/files/ui-components.md`

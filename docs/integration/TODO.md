@@ -9,23 +9,23 @@ Ziel: Systemweite Doku, die die Verbindungen und Verantwortlichkeiten zwischen D
 - [x] Security-Boundaries zwischen Prozessen/Netzwerk
 
 ## Stufe 2 – Schnittstellen (Mid-Level)
-- [ ] IPC- und API-Schnittstellen Desktop ↔ Bridge
-- [ ] Relay-Flow (Cloud ↔ Bridge ↔ Desktop falls relevant)
-- [ ] Helper-Protokolle (DeckLink List/Modes/Playback)
-- [ ] Konfig-Pfade (UserData, Assets, Output-Config)
+- [x] IPC- und API-Schnittstellen Desktop ↔ Bridge
+- [x] Relay-Flow (Cloud ↔ Bridge ↔ Desktop falls relevant)
+- [x] Helper-Protokolle (DeckLink List/Modes/Playback)
+- [x] Konfig-Pfade (UserData, Assets, Output-Config)
 
 ## Stufe 3 – Feature-Flows (Deep-Dive)
 - [x] Graphics-Setup-Flow (Outputs → Render → SDI/HDMI)
 - [x] Device-Discovery-Flow (Detect → Cache → UI)
-- [ ] Health/Status-Flow (Status-Endpoints, WebSocket)
-- [ ] Logging- und Diagnose-Flow (Desktop/Bridge/Helper)
+- [x] Health/Status-Flow (Status-Endpoints, WebSocket)
+- [x] Logging- und Diagnose-Flow (Desktop/Bridge/Helper)
 
 ## Stufe 4 – Referenzen & Glossar
-- [ ] Begriffe/Abkürzungen (OutputKey, Layer, Preset, PortRole)
-- [ ] Fehlerkatalog (häufige Fehler + Ursachen)
-- [ ] Konfig-Schema-Referenzen (Zod/JSON)
+- [x] Begriffe/Abkürzungen (OutputKey, Layer, Preset, PortRole)
+- [x] Fehlerkatalog (häufige Fehler + Ursachen)
+- [x] Konfig-Schema-Referenzen (Zod/JSON)
 
 ## Abnahmekriterien (Definition of Done)
-- [ ] In `docs/integration/` existieren Stufe‑Docs mit klarer Navigation
+- [x] In `docs/integration/` existieren Stufe‑Docs mit klarer Navigation
 - [x] Mermaid-Diagramme für jeden Hauptflow
-- [ ] Alle Schnittstellen sind mit Payloads & Beispielen dokumentiert
+- [x] Alle Schnittstellen sind mit Payloads & Beispielen dokumentiert
