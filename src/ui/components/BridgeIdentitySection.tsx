@@ -48,7 +48,7 @@ export function BridgeIdentitySection({
             Bridge
           </h2>
           <span className="text-xs text-muted-foreground">
-            Software-Version {appVersion || "—"}
+            Version {appVersion || "—"}
           </span>
         </div>
         <div className="space-y-3">
