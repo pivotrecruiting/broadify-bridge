@@ -213,8 +213,8 @@ Bridge:
 - Relay: enforces org↔bridge binding (Supabase `organization_bridges`).
 - Bridge:
   - Graphics payloads validated by Zod schemas and template sanitization.
-  - engine_connect validates type/ip/port in CommandRouter and in engine routes.
-  - Other commands have minimal or no payload validation.
+  - Nicht-Graphics Commands werden via Zod in `CommandRouter` validiert
+    (`relay-command-schemas.ts`).
   - Signature/TTL/Replay validation for relay commands.
   - Public key source: `BRIDGE_RELAY_SIGNING_PUBLIC_KEY` oder `BRIDGE_RELAY_JWKS_URL`
 

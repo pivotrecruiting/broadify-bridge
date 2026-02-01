@@ -13,6 +13,7 @@ Dieses Subsystem nimmt Commands aus dem Relay (WebSocket) entgegen, protokollier
 ## Hauptkomponenten
 - `apps/bridge/src/services/relay-client.ts`
 - `apps/bridge/src/services/command-router.ts`
+- `apps/bridge/src/services/relay-command-schemas.ts`
 
 ## Ablauf (Mermaid)
 ```mermaid
@@ -31,7 +32,8 @@ sequenceDiagram
 ```
 
 ## Security & Risiken
-- **Untrusted Payloads:** Relay ist extern. Payloads werden downstream via Zod validiert.
+- **Untrusted Payloads:** Relay ist extern. Payloads werden downstream via Zod validiert
+  (non-graphics im `CommandRouter`, graphics im `GraphicsManager`).
 - **Signatur:** Commands sind signiert; Bridge verifiziert Signatur, TTL und Replay‑Schutz.
 - **Transport:** Relay‑Verbindung ist WebSocket; Reconnect mit Backoff.
 - **Pairing:** `bridge_pair_validate` prüft Code + Ablaufzeit aus dem Bridge‑Context (keine Secrets loggen).

@@ -22,3 +22,5 @@ Maintained eine ausgehende WebSocket‑Verbindung zum Relay‑Server, empfängt 
 - Command‑Allowlist vor Dispatch
 - Payloads sind untrusted → Validierung downstream (Zod)
 - Public Keys via `BRIDGE_RELAY_SIGNING_PUBLIC_KEY` oder `BRIDGE_RELAY_JWKS_URL`
+- Env‑Variablen werden beim Prozessstart gelesen; `.env` nur im Dev-Modus
+  (siehe `apps/bridge/src/index.ts`).

@@ -85,13 +85,16 @@ sequenceDiagram
 - Reconnect nur wenn nicht shutting down
 
 ## Security
-- Payloads sind untrusted → Validation downstream (Zod)
+- Payloads sind untrusted → Zod-Validierung im `CommandRouter`
+  (`relay-command-schemas.ts`) und im `GraphicsManager`
 - Commands sind signiert (Ed25519) und enthalten `meta` + `signature`
 - Bridge validiert Signatur, TTL und Replay‑Schutz (jti‑Cache)
 
 ## Key Distribution
 - Relay stellt Public Keys via `/.well-known/jwks.json` bereit (`kid` fuer Rotation).
 - Bridge erwartet `BRIDGE_RELAY_SIGNING_PUBLIC_KEY` (PEM) oder `BRIDGE_RELAY_JWKS_URL`.
+- `.env` wird nur im Dev-Modus geladen (`apps/bridge/src/index.ts`);
+  in Produktion muessen Env‑Variablen vom Launcher gesetzt werden.
 
 ## Relevante Dateien
 - `apps/bridge/src/services/relay-client.ts`

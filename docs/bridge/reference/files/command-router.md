@@ -12,6 +12,7 @@ Zentrale Dispatch‑Logik für Commands (Relay + HTTP). Keine Self‑HTTP‑Call
 - `device-cache.ts`
 - `runtime-config.ts`
 - `graphics-manager.ts`
+- `relay-command-schemas.ts`
 
 ## Side‑Effects
 - Ruft Engine‑Connect/Macro‑Actions auf
@@ -19,4 +20,5 @@ Zentrale Dispatch‑Logik für Commands (Relay + HTTP). Keine Self‑HTTP‑Call
 
 ## Fehlerfälle
 - Missing payload
-- Zod‑Validation in `GraphicsManager`
+- Zod‑Validation in `GraphicsManager` (graphics)
+- Zod‑Validation in `CommandRouter` (non-graphics)
