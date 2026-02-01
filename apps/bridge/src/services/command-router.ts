@@ -2,6 +2,14 @@ import { engineAdapter } from "./engine-adapter.js";
 import { deviceCache } from "./device-cache.js";
 import { runtimeConfig } from "./runtime-config.js";
 import { graphicsManager } from "./graphics/graphics-manager.js";
+import {
+  EmptyPayloadSchema,
+  EngineConnectSchema,
+  ListOutputsSchema,
+  MacroIdSchema,
+  PairingCodeSchema,
+  parseRelayPayload,
+} from "./relay-command-schemas.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -159,6 +167,11 @@ export class CommandRouter {
     try {
       switch (command) {
         case "get_status": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for get_status"
+          );
           const engineState = engineAdapter.getState();
           const runtimeConfigData = runtimeConfig.getConfig();
           const context = getBridgeContext();
@@ -194,17 +207,11 @@ export class CommandRouter {
             };
           }
 
-          const providedCode =
-            typeof payload?.pairingCode === "string"
-              ? payload.pairingCode.trim()
-              : "";
-
-          if (!providedCode) {
-            return {
-              success: false,
-              error: "Pairing code is required",
-            };
-          }
+          const { pairingCode: providedCode } = parseRelayPayload(
+            PairingCodeSchema,
+            payload ?? {},
+            "Invalid pairing code format"
+          );
 
           if (pairingExpiresAt && Date.now() > pairingExpiresAt) {
             return {
@@ -230,8 +237,11 @@ export class CommandRouter {
         }
 
         case "list_outputs": {
-          const refresh =
-            typeof payload?.refresh === "boolean" ? payload.refresh : false;
+          const { refresh = false } = parseRelayPayload(
+            ListOutputsSchema,
+            payload ?? {},
+            "Invalid payload for list_outputs"
+          );
           if (refresh) {
             getBridgeContext().logger.info(
               "[CommandRouter] list_outputs refresh requested"
@@ -247,42 +257,14 @@ export class CommandRouter {
         }
 
         case "engine_connect": {
-          if (!payload) {
-            return {
-              success: false,
-              error: "Missing payload for engine_connect",
-            };
-          }
-
-          const { type, ip, port } = payload;
-
-          if (
-            !type ||
-            !["atem", "tricaster", "vmix"].includes(type as string)
-          ) {
-            return {
-              success: false,
-              error:
-                "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
-            };
-          }
-
-          if (!ip || typeof ip !== "string") {
-            return {
-              success: false,
-              error: "IP address is required",
-            };
-          }
-
-          if (!port || typeof port !== "number") {
-            return {
-              success: false,
-              error: "Port is required and must be a number",
-            };
-          }
+          const { type, ip, port } = parseRelayPayload(
+            EngineConnectSchema,
+            payload ?? {},
+            "Invalid payload for engine_connect"
+          );
 
           await engineAdapter.connect({
-            type: type as "atem" | "tricaster" | "vmix",
+            type,
             ip,
             port,
           });
@@ -296,6 +278,11 @@ export class CommandRouter {
         }
 
         case "engine_disconnect": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_disconnect"
+          );
           await engineAdapter.disconnect();
 
           return {
@@ -307,6 +294,11 @@ export class CommandRouter {
         }
 
         case "engine_get_status": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_get_status"
+          );
           const state = engineAdapter.getState();
           const connectedSince = engineAdapter.getConnectedSince();
           const lastError = engineAdapter.getLastError();
@@ -324,6 +316,11 @@ export class CommandRouter {
         }
 
         case "engine_get_macros": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_get_macros"
+          );
           const macros = engineAdapter.getMacros();
           const status = engineAdapter.getStatus();
 
@@ -346,14 +343,11 @@ export class CommandRouter {
         }
 
         case "engine_run_macro": {
-          if (!payload || typeof payload.macroId !== "number") {
-            return {
-              success: false,
-              error: "Macro ID is required and must be a number",
-            };
-          }
-
-          const macroId = payload.macroId as number;
+          const { macroId } = parseRelayPayload(
+            MacroIdSchema,
+            payload ?? {},
+            "Macro ID is required and must be a number"
+          );
           await engineAdapter.runMacro(macroId);
 
           return {
@@ -366,14 +360,11 @@ export class CommandRouter {
         }
 
         case "engine_stop_macro": {
-          if (!payload || typeof payload.macroId !== "number") {
-            return {
-              success: false,
-              error: "Macro ID is required and must be a number",
-            };
-          }
-
-          const macroId = payload.macroId as number;
+          const { macroId } = parseRelayPayload(
+            MacroIdSchema,
+            payload ?? {},
+            "Macro ID is required and must be a number"
+          );
           await engineAdapter.stopMacro(macroId);
 
           return {
