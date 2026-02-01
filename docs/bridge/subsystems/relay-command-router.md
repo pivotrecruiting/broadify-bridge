@@ -32,7 +32,7 @@ sequenceDiagram
 
 ## Security & Risiken
 - **Untrusted Payloads:** Relay ist extern. Payloads werden downstream via Zod validiert.
-- **Log‑Sicherheit:** Graphics‑Payloads werden für Logging sanitize‑t (CSS‑Comments entfernen).
+- **Signatur:** Commands sind signiert; Bridge verifiziert Signatur, TTL und Replay‑Schutz.
 - **Transport:** Relay‑Verbindung ist WebSocket; Reconnect mit Backoff.
 - **Pairing:** `bridge_pair_validate` prüft Code + Ablaufzeit aus dem Bridge‑Context (keine Secrets loggen).
 

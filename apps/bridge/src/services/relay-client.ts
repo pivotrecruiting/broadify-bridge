@@ -1,4 +1,5 @@
 import { WebSocket } from "ws";
+import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { commandRouter, isRelayCommand } from "./command-router.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -8,7 +9,14 @@ import type { RelayCommand } from "./command-router.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const MAX_RELAY_MESSAGE_BYTES = 20 * 1024 * 1024;
+const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
+const RELAY_COMMAND_TTL_SECONDS = 30;
+const RELAY_COMMAND_SKEW_SECONDS = 60;
+const MAX_JTI_CACHE_SIZE = 5000;
+
+const RELAY_PUBLIC_KEY_PEM = process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY;
+const RELAY_PUBLIC_KEY_KID = process.env.BRIDGE_RELAY_SIGNING_KID;
+const RELAY_JWKS_URL = process.env.BRIDGE_RELAY_JWKS_URL;
 
 /**
  * Get version from package.json
@@ -76,6 +84,8 @@ interface RelayCommandMessage {
   requestId: string;
   command: string;
   payload?: Record<string, unknown>;
+  meta?: RelayCommandMeta;
+  signature?: string;
 }
 
 /**
@@ -90,6 +100,130 @@ interface CommandResultMessage {
 }
 
 type RelayMessage = BridgeHelloMessage | RelayCommandMessage;
+
+type RelayCommandMeta = {
+  bridgeId: string;
+  orgId: string;
+  scope: string[];
+  iat: number;
+  exp: number;
+  jti: string;
+  kid: string;
+};
+
+type PublicKeyCacheEntry = {
+  kid: string;
+  key: ReturnType<typeof createPublicKey>;
+};
+
+const publicKeyCache = new Map<string, PublicKeyCacheEntry>();
+let jwksRefreshInFlight: Promise<void> | null = null;
+const seenJti = new Map<string, number>();
+
+const base64UrlDecode = (value: string): Buffer => {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padLength = (4 - (padded.length % 4)) % 4;
+  const normalized = padded + "=".repeat(padLength);
+  return Buffer.from(normalized, "base64");
+};
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const entries = keys.map(
+    (key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`,
+  );
+  return `{${entries.join(",")}}`;
+};
+
+const registerPublicKey = (
+  kid: string,
+  key: ReturnType<typeof createPublicKey>,
+) => {
+  publicKeyCache.set(kid, { kid, key });
+};
+
+const loadPublicKeyFromEnv = () => {
+  if (!RELAY_PUBLIC_KEY_PEM || !RELAY_PUBLIC_KEY_KID) {
+    return;
+  }
+  if (!publicKeyCache.has(RELAY_PUBLIC_KEY_KID)) {
+    const key = createPublicKey(RELAY_PUBLIC_KEY_PEM);
+    registerPublicKey(RELAY_PUBLIC_KEY_KID, key);
+  }
+};
+
+const refreshJwks = async () => {
+  if (!RELAY_JWKS_URL) {
+    return;
+  }
+  if (jwksRefreshInFlight) {
+    await jwksRefreshInFlight;
+    return;
+  }
+  jwksRefreshInFlight = (async () => {
+    const response = await fetch(RELAY_JWKS_URL, { method: "GET" });
+    if (!response.ok) {
+      throw new Error(`JWKS fetch failed: ${response.status}`);
+    }
+    const data = (await response.json()) as {
+      keys?: Record<string, unknown>[];
+    };
+    if (!Array.isArray(data.keys)) {
+      throw new Error("JWKS response missing keys");
+    }
+    for (const key of data.keys) {
+      if (typeof key?.kid !== "string") {
+        continue;
+      }
+      try {
+        const publicKey = createPublicKey({ key, format: "jwk" });
+        registerPublicKey(key.kid, publicKey);
+      } catch {
+        // ignore invalid keys
+      }
+    }
+  })();
+  try {
+    await jwksRefreshInFlight;
+  } finally {
+    jwksRefreshInFlight = null;
+  }
+};
+
+const getPublicKey = async (kid: string) => {
+  loadPublicKeyFromEnv();
+  const cached = publicKeyCache.get(kid);
+  if (cached) {
+    return cached.key;
+  }
+  if (RELAY_JWKS_URL) {
+    await refreshJwks();
+    return publicKeyCache.get(kid)?.key;
+  }
+  return undefined;
+};
+
+const pruneJtiCache = (nowSec: number) => {
+  for (const [jti, exp] of seenJti.entries()) {
+    if (exp <= nowSec) {
+      seenJti.delete(jti);
+    }
+  }
+  while (seenJti.size > MAX_JTI_CACHE_SIZE) {
+    const oldest = seenJti.keys().next().value as string | undefined;
+    if (!oldest) {
+      break;
+    }
+    seenJti.delete(oldest);
+  }
+};
 
 /**
  * Relay Client Service
@@ -131,7 +265,7 @@ export class RelayClient {
       error: (msg: string) => void;
       warn: (msg: string) => void;
     },
-    bridgeName?: string
+    bridgeName?: string,
   ) {
     this.bridgeId = bridgeId;
     this.relayUrl = relayUrl;
@@ -215,7 +349,7 @@ export class RelayClient {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       this.logger.error(
-        `Failed to create WebSocket connection: ${errorMessage}`
+        `Failed to create WebSocket connection: ${errorMessage}`,
       );
 
       if (!this.isShuttingDown) {
@@ -255,7 +389,7 @@ export class RelayClient {
       const messageSize = getRelayMessageByteLength(data);
       if (messageSize > MAX_RELAY_MESSAGE_BYTES) {
         this.logger.warn(
-          `Dropped relay message exceeding size limit (${messageSize} bytes)`
+          `Dropped relay message exceeding size limit (${messageSize} bytes)`,
         );
         return;
       }
@@ -271,7 +405,7 @@ export class RelayClient {
         await this.handleCommand(message);
       } else {
         this.logger.warn(
-          `Unknown message type: ${(message as { type: string }).type}`
+          `Unknown message type: ${(message as { type: string }).type}`,
         );
       }
     } catch (error: unknown) {
@@ -287,6 +421,23 @@ export class RelayClient {
    * @param message Untrusted relay command message.
    */
   private async handleCommand(message: RelayCommandMessage): Promise<void> {
+    try {
+      await this.verifySignedCommand(message);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Invalid relay signature";
+      this.logger.warn(
+        `Rejected relay command (requestId: ${message.requestId}): ${errorMessage}`,
+      );
+      this.send({
+        type: "command_result",
+        requestId: message.requestId,
+        success: false,
+        error: errorMessage,
+      });
+      return;
+    }
+
     if (!isRelayCommand(message.command)) {
       this.logger.warn(`Rejected unknown command: ${String(message.command)}`);
       this.send({
@@ -300,11 +451,14 @@ export class RelayClient {
 
     const command = message.command as RelayCommand;
     this.logger.info(
-      `Received relay command: ${command} (requestId: ${message.requestId})`
+      `Received relay command: ${command} (requestId: ${message.requestId})`,
     );
 
     try {
-      const result = await commandRouter.handleCommand(command, message.payload);
+      const result = await commandRouter.handleCommand(
+        command,
+        message.payload,
+      );
 
       // Send result back to relay
       const resultMessage: CommandResultMessage = {
@@ -350,6 +504,70 @@ export class RelayClient {
     }
   }
 
+  private async verifySignedCommand(
+    message: RelayCommandMessage,
+  ): Promise<void> {
+    if (!message.meta || !message.signature) {
+      throw new Error("Missing command signature");
+    }
+
+    const meta = message.meta;
+    if (
+      typeof meta.bridgeId !== "string" ||
+      typeof meta.orgId !== "string" ||
+      !Array.isArray(meta.scope) ||
+      typeof meta.iat !== "number" ||
+      typeof meta.exp !== "number" ||
+      typeof meta.jti !== "string" ||
+      typeof meta.kid !== "string"
+    ) {
+      throw new Error("Invalid command metadata");
+    }
+
+    if (meta.bridgeId !== this.bridgeId) {
+      throw new Error("Bridge ID mismatch");
+    }
+
+    const scopeToken = `command:${message.command}`;
+    if (!meta.scope.includes(scopeToken) && !meta.scope.includes("*")) {
+      throw new Error("Scope mismatch");
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (meta.exp + RELAY_COMMAND_SKEW_SECONDS < nowSec) {
+      throw new Error("Command expired");
+    }
+    if (meta.iat - RELAY_COMMAND_SKEW_SECONDS > nowSec) {
+      throw new Error("Command timestamp invalid");
+    }
+
+    pruneJtiCache(nowSec);
+    const existing = seenJti.get(meta.jti);
+    if (existing && existing > nowSec) {
+      throw new Error("Replay detected");
+    }
+
+    const publicKey = await getPublicKey(meta.kid);
+    if (!publicKey) {
+      throw new Error("Signing key not found");
+    }
+
+    const signingPayload = {
+      requestId: message.requestId,
+      command: message.command,
+      payload: message.payload ?? null,
+      meta,
+    };
+    const data = Buffer.from(stableStringify(signingPayload));
+    const signature = base64UrlDecode(message.signature);
+    const valid = verifySignature(null, data, publicKey, signature);
+    if (!valid) {
+      throw new Error("Invalid signature");
+    }
+
+    seenJti.set(meta.jti, meta.exp || nowSec + RELAY_COMMAND_TTL_SECONDS);
+  }
+
   /**
    * Schedule reconnect with exponential backoff
    */
@@ -367,11 +585,11 @@ export class RelayClient {
     // Exponential backoff: 1s, 2s, 4s, 8s, ... up to 60s
     const delay = Math.min(
       this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
-      this.maxReconnectDelay
+      this.maxReconnectDelay,
     );
 
     this.logger.info(
-      `Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`
+      `Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`,
     );
 
     this.reconnectTimer = setTimeout(() => {

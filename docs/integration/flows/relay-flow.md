@@ -12,7 +12,7 @@ sequenceDiagram
 
   Bridge->>Relay: WS connect
   Bridge->>Relay: bridge_hello (bridgeId, version, optional bridgeName)
-  Relay->>Bridge: command (graphics_*)
+  Relay->>Bridge: command (signed, meta + signature)
   Bridge->>Router: handleCommand
   Router-->>Bridge: result
   Bridge-->>Relay: command_result
@@ -27,7 +27,8 @@ sequenceDiagram
 
 ## Sicherheit
 - Payloads sind untrusted → Validierung downstream (Zod)
-- Logging mit sanitized CSS‑Payloads
+- Commands sind signiert (Ed25519) und enthalten `meta` + `signature`
+- Bridge prueft Signatur, TTL und Replay‑Schutz (jti)
 - Pairing‑Command validiert Code + Ablaufzeit im Bridge‑Context
 
 ## Relevante Dateien

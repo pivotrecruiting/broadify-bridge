@@ -12,6 +12,7 @@ WebApp (Next.js, repo: broadify):
 
 Relay server (repo: broadify-relay):
 - broadify-relay/src/index.ts
+  - JWKS: `/.well-known/jwks.json`
 
 Bridge (repo: broadify-bridge-v2):
 - apps/bridge/src/services/relay-client.ts
@@ -79,7 +80,7 @@ sequenceDiagram
 ### Next.js API -> Relay (HTTP)
 `POST /relay/command`
 ```json
-{ "bridgeId": "string", "command": "string", "payload": {} }
+{ "bridgeId": "string", "orgId": "string", "command": "string", "payload": {} }
 ```
 
 ### Relay -> Bridge (WebSocket)
@@ -87,7 +88,22 @@ sequenceDiagram
 { "type": "bridge_hello", "bridgeId": "string", "version": "string?" }
 ```
 ```json
-{ "type": "command", "requestId": "uuid", "command": "string", "payload": {} }
+{
+  "type": "command",
+  "requestId": "uuid",
+  "command": "string",
+  "payload": {},
+  "meta": {
+    "bridgeId": "uuid",
+    "orgId": "uuid",
+    "scope": ["command:<name>"],
+    "iat": 1712345678,
+    "exp": 1712345708,
+    "jti": "uuid",
+    "kid": "string"
+  },
+  "signature": "base64url"
+}
 ```
 ```json
 { "type": "command_result", "requestId": "uuid", "success": true, "data": {} }
@@ -193,11 +209,13 @@ Bridge:
 
 ## Validation and sanitization points
 - WebApp API: validates only that command is a string; does not validate payload structure.
-- Relay: no validation, forwards payload as-is.
+- Relay: signs commands (Ed25519) and forwards payload as-is.
 - Bridge:
   - Graphics payloads validated by Zod schemas and template sanitization.
   - engine_connect validates type/ip/port in CommandRouter and in engine routes.
   - Other commands have minimal or no payload validation.
+  - Signature/TTL/Replay validation for relay commands.
+  - Public key source: `BRIDGE_RELAY_SIGNING_PUBLIC_KEY` oder `BRIDGE_RELAY_JWKS_URL`
 
 ## Security observations relevant to data traffic
 - Relay transportiert weiterhin volle Payloads und Responses (Content bleibt sensitiv).
@@ -213,4 +231,4 @@ Bridge:
 - Relay HTTP bodyLimit: 2 MB
 - Relay WS maxPayload: 2 MB
 - Bridge request timeout: 15s
-- WebApp error message on size exceed: "Payload zu groß. Maximal 20 MB."
+- WebApp error message on size exceed: "Payload zu groß. Maximal 2 MB."

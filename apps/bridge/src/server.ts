@@ -23,8 +23,8 @@ import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
 import type { BridgeConfigT } from "./config.js";
 
-const MAX_HTTP_BODY_BYTES = 20 * 1024 * 1024;
-const MAX_WS_PAYLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /**

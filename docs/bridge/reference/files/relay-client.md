@@ -5,7 +5,7 @@ Maintained eine ausgehende WebSocket‑Verbindung zum Relay‑Server, empfängt 
 
 ## Ein-/Ausgänge
 - Input: `bridgeId`, `relayUrl`, Logger
-- Input (WS): `{ type: "command", command, payload }`
+- Input (WS): `{ type: "command", command, payload, meta, signature }`
 - Output (WS): `{ type: "command_result", success, data|error }`
 
 ## Abhängigkeiten
@@ -14,7 +14,11 @@ Maintained eine ausgehende WebSocket‑Verbindung zum Relay‑Server, empfängt 
 
 ## Side‑Effects
 - Reconnect‑Backoff
-- Logging (inkl. sanitized Graphics payloads)
+- Logging (nur Command‑Name + requestId)
+- Replay‑Schutz (jti‑Cache)
 
 ## Security
+- Signatur‑Verifikation (Ed25519) + TTL + Replay‑Schutz
+- Command‑Allowlist vor Dispatch
 - Payloads sind untrusted → Validierung downstream (Zod)
+- Public Keys via `BRIDGE_RELAY_SIGNING_PUBLIC_KEY` oder `BRIDGE_RELAY_JWKS_URL`

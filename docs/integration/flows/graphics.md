@@ -40,7 +40,7 @@ sequenceDiagram
 - Helper: binäre Ausführung mit festen Args
 
 ## Debug‑Punkte
-- Relay Logs: Graphics payload logging (sanitized)
+- Relay Logs: Command‑Name + requestId (keine Payload‑Dumps)
 - Renderer Logs: Debug frames + DOM‑State
 - Output Adapter: Pixel‑Format + Ready‑Handshake
 - Helper: stdout/stderr parsing
