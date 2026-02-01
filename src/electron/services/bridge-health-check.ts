@@ -105,6 +105,7 @@ export async function checkBridgeHealth(
       mode: data.mode,
       port: data.port,
       host: data.host,
+      bridgeName: data.bridgeName || undefined,
       relayConnected: relayStatus?.connected || false,
       bridgeId: relayStatus?.bridgeId || undefined,
     };

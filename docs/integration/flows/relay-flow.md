@@ -11,7 +11,7 @@ sequenceDiagram
   participant Router as CommandRouter
 
   Bridge->>Relay: WS connect
-  Bridge->>Relay: bridge_hello
+  Bridge->>Relay: bridge_hello (bridgeId, version, optional bridgeName)
   Relay->>Bridge: command (graphics_*)
   Bridge->>Router: handleCommand
   Router-->>Bridge: result
@@ -28,6 +28,7 @@ sequenceDiagram
 ## Sicherheit
 - Payloads sind untrusted → Validierung downstream (Zod)
 - Logging mit sanitized CSS‑Payloads
+- Pairing‑Command validiert Code + Ablaufzeit im Bridge‑Context
 
 ## Relevante Dateien
 - `apps/bridge/src/services/relay-client.ts`

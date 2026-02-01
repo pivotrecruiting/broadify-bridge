@@ -20,6 +20,7 @@ const __dirname = dirname(__filename);
  */
 export type RelayCommand =
   | "get_status"
+  | "bridge_pair_validate"
   | "list_outputs"
   | "engine_connect"
   | "engine_disconnect"
@@ -145,12 +146,14 @@ export class CommandRouter {
         case "get_status": {
           const engineState = engineAdapter.getState();
           const runtimeConfigData = runtimeConfig.getConfig();
+          const context = getBridgeContext();
 
           return {
             success: true,
             data: {
               running: true,
               version: getVersion(),
+              bridgeName: context.bridgeName || null,
               state: runtimeConfig.getState(),
               outputsConfigured: runtimeConfig.hasOutputs(),
               engine: {
@@ -160,6 +163,53 @@ export class CommandRouter {
                 connected: engineState.status === "connected",
                 macrosCount: engineState.macros.length,
               },
+            },
+          };
+        }
+
+        case "bridge_pair_validate": {
+          const context = getBridgeContext();
+          const pairingCode = context.pairingCode;
+          const pairingExpiresAt = context.pairingExpiresAt;
+
+          if (!pairingCode) {
+            return {
+              success: false,
+              error: "Pairing is not enabled on this bridge",
+            };
+          }
+
+          const providedCode =
+            typeof payload?.pairingCode === "string"
+              ? payload.pairingCode.trim()
+              : "";
+
+          if (!providedCode) {
+            return {
+              success: false,
+              error: "Pairing code is required",
+            };
+          }
+
+          if (pairingExpiresAt && Date.now() > pairingExpiresAt) {
+            return {
+              success: false,
+              error: "Pairing code has expired",
+            };
+          }
+
+          if (providedCode !== pairingCode) {
+            return {
+              success: false,
+              error: "Invalid pairing code",
+            };
+          }
+
+          return {
+            success: true,
+            data: {
+              bridgeId: context.bridgeId || null,
+              bridgeName: context.bridgeName || null,
             },
           };
         }

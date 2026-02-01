@@ -57,6 +57,10 @@ export async function createServer(config: BridgeConfigT) {
       warn: (msg: string) => server.log.warn(msg),
       error: (msg: string) => server.log.error(msg),
     },
+    bridgeId: config.bridgeId,
+    bridgeName: config.bridgeName,
+    pairingCode: config.pairingCode,
+    pairingExpiresAt: config.pairingExpiresAt,
   });
 
   await graphicsManager.initialize();
@@ -83,11 +87,16 @@ export async function createServer(config: BridgeConfigT) {
   let relayClient: RelayClient | undefined = undefined;
   if (config.bridgeId) {
     const relayUrl = config.relayUrl || "wss://broadify-relay.fly.dev";
-    relayClient = new RelayClient(config.bridgeId, relayUrl, {
-      info: (msg: string) => server.log.info(`[Relay] ${msg}`),
-      error: (msg: string) => server.log.error(`[Relay] ${msg}`),
-      warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
-    });
+    relayClient = new RelayClient(
+      config.bridgeId,
+      relayUrl,
+      {
+        info: (msg: string) => server.log.info(`[Relay] ${msg}`),
+        error: (msg: string) => server.log.error(`[Relay] ${msg}`),
+        warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
+      },
+      config.bridgeName
+    );
     server.log.info(
       `[Server] Relay client initialized (relayUrl: ${relayUrl})`
     );

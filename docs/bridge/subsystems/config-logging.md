@@ -8,6 +8,7 @@ Dieses Subsystem verwaltet Runtime‑Konfiguration und Logging/Log‑Rotation de
 - Status über `/status` bereitstellen
 - Log‑Datei anlegen und rotieren
 - Log‑Abruf und Filterung via `/logs`
+- Bridge‑Context (u. a. bridgeId/bridgeName/Pairing‑Metadaten) bereitstellen
 
 ## Hauptkomponenten
 - Runtime Config: `apps/bridge/src/services/runtime-config.ts`
@@ -29,6 +30,7 @@ flowchart LR
 ## Security‑Hinweise
 - Logs können sensitive Informationen enthalten → keine Tokens/Secrets loggen.
 - `/logs` hat derzeit keine Auth‑Schicht.
+- Pairing‑Code bleibt im Memory/Context und wird nicht geloggt.
 
 ## Fehlerbilder
 - Log‑Datei nicht lesbar → `/logs` liefert 500

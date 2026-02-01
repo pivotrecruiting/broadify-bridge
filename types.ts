@@ -34,7 +34,11 @@ export type BridgeStatus = {
   error?: string;
   relayConnected?: boolean;
   bridgeId?: string;
+  bridgeName?: string;
   webAppUrl?: string;
+  pairingCode?: string;
+  pairingExpiresAt?: string;
+  pairingExpired?: boolean;
 };
 
 /**
@@ -283,6 +287,8 @@ export type EngineStateT = {
 export type EventPayloadMapping = {
   statistics: Statistics;
   getStaticData: StaticData;
+  bridgeGetProfile: { bridgeId: string; bridgeName: string | null };
+  bridgeSetName: { success: boolean; error?: string };
   bridgeStart: { success: boolean; error?: string; actualPort?: number };
   bridgeStop: { success: boolean; error?: string };
   bridgeGetStatus: BridgeStatus;
@@ -323,6 +329,14 @@ declare global {
         callback: (statistics: Statistics) => void
       ) => UnsubscribeFunction;
       getStaticData: () => Promise<StaticData>;
+      bridgeGetProfile: () => Promise<{
+        bridgeId: string;
+        bridgeName: string | null;
+      }>;
+      bridgeSetName: (bridgeName: string) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
       bridgeStart: (
         config: BridgeConfig
       ) => Promise<{ success: boolean; error?: string; actualPort?: number }>;

@@ -4,6 +4,7 @@
 Diese Seite beschreibt die wichtigsten Schnittstellen zwischen Desktop‑App und Bridge (IPC + HTTP).
 
 ## Desktop IPC → Main
+- `bridgeGetProfile()` / `bridgeSetName(name)`
 - `bridgeStart(config)` / `bridgeStop()`
 - `bridgeGetStatus()` / `subscribeBridgeStatus(cb)`
 - `bridgeGetOutputs()`
@@ -12,7 +13,7 @@ Diese Seite beschreibt die wichtigsten Schnittstellen zwischen Desktop‑App und
 - `engineConnect()` / `engineDisconnect()` / `engineGetStatus()` / `engineGetMacros()` / `engineRunMacro()` / `engineStopMacro()`
 
 ## Main → Bridge HTTP
-- `GET /status`
+- `GET /status` (inkl. optional `bridgeName`)
 - `GET /relay/status`
 - `GET /outputs`
 - `POST /engine/connect`
@@ -26,6 +27,7 @@ Diese Seite beschreibt die wichtigsten Schnittstellen zwischen Desktop‑App und
 
 ## Bridge Internal (Relay)
 - `bridge_hello`, `command`, `command_result`
+- Command: `bridge_pair_validate` (Pairing‑Code prüfen)
 
 ## Payloads
 Siehe:

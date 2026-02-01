@@ -36,7 +36,7 @@ flowchart LR
 ```
 
 ## Routen (Auszug)
-- `GET /status` – Laufzeit‑Status, Version, Engine‑Status
+- `GET /status` – Laufzeit‑Status, Version, Engine‑Status, optionaler `bridgeName`
 - `GET /outputs` – UI‑kompatible Output‑Liste
 - `POST /config` – Runtime‑Config (Outputs/Engine)
 - `POST /engine/connect` – Engine‑Connect

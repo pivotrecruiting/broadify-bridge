@@ -13,6 +13,7 @@ Das Preload‑Subsystem definiert die sichere API‑Oberfläche (`window.electro
 - `src/electron/types.ts`
 
 ## IPC‑API (Auszug)
+- `bridgeGetProfile()` / `bridgeSetName(name)`
 - `bridgeStart(config)` / `bridgeStop()`
 - `bridgeGetStatus()` / `subscribeBridgeStatus(cb)`
 - `bridgeGetOutputs()`

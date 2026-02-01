@@ -10,6 +10,8 @@ import {
 import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
 import { clearBridgeLogs, fetchBridgeLogs } from "./services/bridge-logs.js";
 import { bridgeIdentity } from "./services/bridge-identity.js";
+import { bridgeProfile } from "./services/bridge-profile.js";
+import { bridgePairing } from "./services/bridge-pairing.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
 import { logAppError, logAppInfo } from "./services/app-logger.js";
 import {
@@ -31,8 +33,11 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import * as Sentry from "@sentry/electron";
+import { z } from "zod";
 
 dotenv.config();
+
+const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
 
 /**
  * Read a CLI flag value from process arguments.
@@ -315,7 +320,10 @@ function getInterfaceType(
  * Build Web-App URL with bridgeId query parameter.
  * Consistent with how RELAY_URL is handled: env var with fallback to default
  */
-function buildWebAppUrl(bridgeId: string): string | null {
+function buildWebAppUrl(
+  bridgeId: string,
+  pairingCode?: string
+): string | null {
   if (!bridgeId) {
     return null;
   }
@@ -333,11 +341,22 @@ function buildWebAppUrl(bridgeId: string): string | null {
   try {
     const url = new URL(baseUrl);
     url.searchParams.set("bridgeId", bridgeId);
+    if (pairingCode) {
+      url.hash = `pair=${encodeURIComponent(pairingCode)}`;
+    }
     return url.toString();
   } catch (error) {
     console.error("[WebApp] Error building web app URL:", error);
     return null;
   }
+}
+
+function getActivePairingInfo() {
+  const info = bridgePairing.getPairingInfo();
+  if (!info || info.expired) {
+    return null;
+  }
+  return info;
 }
 
 // Single Instance Lock: Prevent multiple instances of the app
@@ -391,6 +410,32 @@ if (!isRendererProcess) {
     });
 
     // Bridge IPC handlers
+    ipcMainHandle("bridgeGetProfile", () => {
+      const profile = bridgeProfile.getProfile();
+      return {
+        bridgeId: profile.bridgeId,
+        bridgeName: profile.bridgeName,
+      };
+    });
+
+    ipcMainHandle("bridgeSetName", async (event, bridgeName: string) => {
+      const parsedName = BRIDGE_NAME_SCHEMA.safeParse(bridgeName);
+      if (!parsedName.success) {
+        return {
+          success: false,
+          error: "Bridge name must be between 1 and 64 characters.",
+        };
+      }
+      try {
+        bridgeProfile.setBridgeName(parsedName.data);
+        return { success: true };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Unknown error";
+        return { success: false, error: errorMessage };
+      }
+    });
+
     ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
       // console.log("[Bridge] Starting bridge with config:", config);
 
@@ -398,6 +443,17 @@ if (!isRendererProcess) {
 
       // Get bridge ID
       const bridgeId = bridgeIdentity.getBridgeId();
+      const profile = bridgeProfile.getProfile();
+      const bridgeName = profile.bridgeName;
+
+      if (!bridgeName) {
+        return {
+          success: false,
+          error: "Bridge name is required before starting.",
+        };
+      }
+
+      const pairingInfo = bridgePairing.startPairing();
 
       // Store network binding ID
       currentNetworkBindingId = config.networkBindingId || "localhost";
@@ -443,7 +499,10 @@ if (!isRendererProcess) {
         resolvedConfig,
         true, // autoFindPort = true
         bridgeId,
-        relayUrl
+        relayUrl,
+        bridgeName,
+        pairingInfo.code,
+        pairingInfo.expiresAt
       );
       console.log("[Bridge] Start result:", result);
 
@@ -457,10 +516,14 @@ if (!isRendererProcess) {
           running: true,
           reachable: false,
           bridgeId,
+          bridgeName,
+          pairingCode: pairingInfo.code,
+          pairingExpiresAt: new Date(pairingInfo.expiresAt).toISOString(),
+          pairingExpired: false,
         };
 
         // Build web app URL immediately so link is available right away
-        const webAppUrl = buildWebAppUrl(bridgeId);
+        const webAppUrl = buildWebAppUrl(bridgeId, pairingInfo.code);
         if (webAppUrl) {
           initialStatus.webAppUrl = webAppUrl;
         }
@@ -497,8 +560,22 @@ if (!isRendererProcess) {
             // Must be done BEFORE sending status to UI
             // Use bridgeId from status (from relay) or fallback to bridgeIdentity
             const bridgeIdForUrl = status.bridgeId || bridgeId;
+            const pairingInfo = bridgePairing.getPairingInfo();
+            if (pairingInfo) {
+              status.pairingCode = pairingInfo.code;
+              status.pairingExpiresAt = new Date(
+                pairingInfo.expiresAt
+              ).toISOString();
+              status.pairingExpired = pairingInfo.expired;
+            }
+            status.bridgeName = status.bridgeName || bridgeName;
+
             if (bridgeIdForUrl) {
-              const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
+              const activePairing = getActivePairingInfo();
+              const webAppUrl = buildWebAppUrl(
+                bridgeIdForUrl,
+                activePairing?.code
+              );
               if (webAppUrl) {
                 status.webAppUrl = webAppUrl;
               }
@@ -516,6 +593,7 @@ if (!isRendererProcess) {
         );
       } else {
         // console.log("[Bridge] Bridge start failed:", result.error);
+        bridgePairing.clear();
       }
 
       return result;
@@ -537,6 +615,7 @@ if (!isRendererProcess) {
       }
 
       const result = await bridgeProcessManager.stop();
+      bridgePairing.clear();
 
       // Reset web app flag and outputs
       // Outputs are managed in the web app
@@ -556,6 +635,8 @@ if (!isRendererProcess) {
     ipcMainHandle("bridgeGetStatus", async () => {
       const config = bridgeProcessManager.getConfig();
       const isRunning = bridgeProcessManager.isRunning();
+      const profile = bridgeProfile.getProfile();
+      const pairingInfo = bridgePairing.getPairingInfo();
 
       console.log(
         `[Bridge] GetStatus - isRunning: ${isRunning}, config:`,
@@ -576,12 +657,24 @@ if (!isRendererProcess) {
         ...healthStatus,
         running: isRunning, // Always use actual process state
       };
+      status.bridgeName = status.bridgeName || profile.bridgeName || undefined;
+      if (pairingInfo) {
+        status.pairingCode = pairingInfo.code;
+        status.pairingExpiresAt = new Date(
+          pairingInfo.expiresAt
+        ).toISOString();
+        status.pairingExpired = pairingInfo.expired;
+      }
 
       // Build web app URL with bridgeId if available
       // Use bridgeId from status (from relay) or fallback to bridgeIdentity
       const bridgeIdForUrl = status.bridgeId || bridgeIdentity.getBridgeId();
       if (bridgeIdForUrl) {
-        const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
+        const activePairing = getActivePairingInfo();
+        const webAppUrl = buildWebAppUrl(
+          bridgeIdForUrl,
+          activePairing?.code
+        );
         if (webAppUrl) {
           status.webAppUrl = webAppUrl;
         }

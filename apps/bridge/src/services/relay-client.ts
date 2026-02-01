@@ -75,6 +75,7 @@ interface BridgeHelloMessage {
   type: "bridge_hello";
   bridgeId: string;
   version: string;
+  bridgeName?: string;
 }
 
 /**
@@ -110,6 +111,7 @@ export class RelayClient {
   private ws: WebSocket | null = null;
   private bridgeId: string;
   private relayUrl: string;
+  private bridgeName?: string;
   private reconnectAttempts = 0;
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 60000; // Max 60 seconds
@@ -123,6 +125,14 @@ export class RelayClient {
     warn: (msg: string) => void;
   };
 
+  /**
+   * Create a relay client instance.
+   *
+   * @param bridgeId Bridge identifier.
+   * @param relayUrl Relay WebSocket URL.
+   * @param logger Optional logger implementation.
+   * @param bridgeName Optional bridge display name.
+   */
   constructor(
     bridgeId: string,
     relayUrl: string,
@@ -130,10 +140,12 @@ export class RelayClient {
       info: (msg: string) => void;
       error: (msg: string) => void;
       warn: (msg: string) => void;
-    }
+    },
+    bridgeName?: string
   ) {
     this.bridgeId = bridgeId;
     this.relayUrl = relayUrl;
+    this.bridgeName = bridgeName;
     this.logger = logger || {
       info: (msg: string) => console.log(`[RelayClient] ${msg}`),
       error: (msg: string) => console.error(`[RelayClient] ${msg}`),
@@ -235,6 +247,9 @@ export class RelayClient {
       bridgeId: this.bridgeId,
       version: getVersion(),
     };
+    if (this.bridgeName) {
+      message.bridgeName = this.bridgeName;
+    }
 
     this.send(message);
     this.logger.info(`Sent bridge_hello with bridgeId: ${this.bridgeId}`);

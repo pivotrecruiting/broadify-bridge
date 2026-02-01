@@ -23,10 +23,17 @@ sequenceDiagram
 - `src/electron/services/bridge-process-manager.ts`
 - `src/electron/services/bridge-health-check.ts`
 - `src/electron/services/bridge-outputs.ts`
+- `src/electron/services/bridge-profile.ts`
+- `src/electron/services/bridge-pairing.ts`
+
+## Hinweise
+- Der Main‑Process erzeugt einen Pairing‑Code pro Start und gibt ihn per Env‑Var an die Bridge weiter.
+- Die Bridge kann ohne gesetzten Namen nicht gestartet werden.
 
 ## Fehlerbilder
 - Port belegt → autoFallback oder Fehler
 - Bridge nicht erreichbar → Status `reachable=false`
+- Bridge‑Name fehlt → Start wird abgelehnt
 
 ## Relevante Dateien
 - `src/electron/main.ts`

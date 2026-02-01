@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNetworkConfig } from "./hooks/use-network-config";
 import { useBridgeStatus } from "./hooks/use-bridge-status";
 import { usePortAvailability } from "./hooks/use-port-availability";
@@ -7,6 +7,8 @@ import { Header } from "./components/Header";
 import { LogsDialog } from "./components/LogsDialog";
 import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
+import { BridgeIdentitySection } from "./components/BridgeIdentitySection";
+import { BridgeNameDialog } from "./components/BridgeNameDialog";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
 
@@ -58,9 +60,43 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [bridgeProfile, setBridgeProfile] = useState<{
+    bridgeId: string;
+    bridgeName: string | null;
+  } | null>(null);
+  const [showNameDialog, setShowNameDialog] = useState(false);
+
+  // Load bridge profile (name + id) on startup
+  useEffect(() => {
+    if (!window.electron) return;
+    window.electron.bridgeGetProfile().then((profile) => {
+      setBridgeProfile(profile);
+      if (!profile.bridgeName) {
+        setShowNameDialog(true);
+      }
+    });
+  }, []);
+
+  const handleSaveBridgeName = async (name: string) => {
+    if (!window.electron) {
+      return { success: false, error: "Electron API not available" };
+    }
+    const result = await window.electron.bridgeSetName(name);
+    if (result.success) {
+      const profile = await window.electron.bridgeGetProfile();
+      setBridgeProfile(profile);
+      setShowNameDialog(false);
+    }
+    return result;
+  };
 
   const handleLetsGo = async () => {
     if (!window.electron || !networkConfig) return;
+    if (!bridgeProfile?.bridgeName) {
+      setShowNameDialog(true);
+      alert("Bitte zuerst einen Bridge-Namen setzen.");
+      return;
+    }
 
     const portConfig = getCurrentPortConfig();
     const portToUse = calculatePortToUse(
@@ -164,6 +200,7 @@ function App() {
   // Bridge starts in "idle" mode and outputs can be configured later via POST /config
   const isStartDisabled = () => {
     if (isStarting) return true;
+    const hasBridgeName = Boolean(bridgeProfile?.bridgeName);
 
     // Check port configuration
     const portConfig = getCurrentPortConfig();
@@ -177,8 +214,11 @@ function App() {
       : networkPort && networkPort.trim() !== "";
 
     // Only port validation is required - outputs are optional
-    return !portValid;
+    return !portValid || !hasBridgeName;
   };
+
+  const bridgeName = bridgeProfile?.bridgeName || bridgeStatus.bridgeName || null;
+  const bridgeId = bridgeProfile?.bridgeId || bridgeStatus.bridgeId;
 
   return (
     <div className="min-h-screen md:h-screen md:overflow-hidden w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
@@ -187,6 +227,15 @@ function App() {
           <Header
             bridgeStatus={bridgeStatus}
             onOpenDiagnostics={() => setShowLogs(true)}
+          />
+
+          <BridgeIdentitySection
+            bridgeId={bridgeId}
+            bridgeName={bridgeName}
+            pairingCode={bridgeStatus.pairingCode}
+            pairingExpiresAt={bridgeStatus.pairingExpiresAt}
+            pairingExpired={bridgeStatus.pairingExpired}
+            isRunning={bridgeStatus.running}
           />
 
           <NetworkSection
@@ -217,6 +266,11 @@ function App() {
         </div>
       </div>
       <LogsDialog isOpen={showLogs} onClose={() => setShowLogs(false)} />
+      <BridgeNameDialog
+        isOpen={showNameDialog}
+        initialName={bridgeName}
+        onSave={handleSaveBridgeName}
+      />
     </div>
   );
 }

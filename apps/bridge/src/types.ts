@@ -35,6 +35,13 @@ export type BridgeStatus = {
   state?: "idle" | "configured" | "active";
   outputsConfigured?: boolean;
   error?: string;
+  relayConnected?: boolean;
+  bridgeId?: string;
+  bridgeName?: string;
+  webAppUrl?: string;
+  pairingCode?: string;
+  pairingExpiresAt?: string;
+  pairingExpired?: boolean;
 };
 
 /**

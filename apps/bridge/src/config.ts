@@ -8,7 +8,10 @@ const ConfigSchema = z.object({
   port: z.number().int().min(1).max(65535),
   mode: z.enum(["lan", "local"]),
   bridgeId: z.string().uuid().optional(),
+  bridgeName: z.string().min(1).max(64).optional(),
   relayUrl: z.string().url().optional(),
+  pairingCode: z.string().min(4).max(32).optional(),
+  pairingExpiresAt: z.number().int().positive().optional(),
   userDataDir: z.string().min(1).optional(),
 });
 
@@ -23,7 +26,10 @@ export function parseConfig(args: string[]): BridgeConfigT {
     port: number;
     mode: "lan" | "local";
     bridgeId?: string;
+    bridgeName?: string;
     relayUrl?: string;
+    pairingCode?: string;
+    pairingExpiresAt?: number;
     userDataDir?: string;
   }> = {
     host: "127.0.0.1",
@@ -47,8 +53,20 @@ export function parseConfig(args: string[]): BridgeConfigT {
     } else if (arg === "--bridge-id" && nextArg) {
       config.bridgeId = nextArg;
       i++; // Skip next argument as it's the value
+    } else if (arg === "--bridge-name" && nextArg) {
+      config.bridgeName = nextArg;
+      i++; // Skip next argument as it's the value
     } else if (arg === "--relay-url" && nextArg) {
       config.relayUrl = nextArg;
+      i++; // Skip next argument as it's the value
+    } else if (arg === "--pairing-code" && nextArg) {
+      config.pairingCode = nextArg;
+      i++; // Skip next argument as it's the value
+    } else if (arg === "--pairing-expires-at" && nextArg) {
+      const expiresAt = parseInt(nextArg, 10);
+      if (!isNaN(expiresAt)) {
+        config.pairingExpiresAt = expiresAt;
+      }
       i++; // Skip next argument as it's the value
     } else if (arg === "--user-data-dir" && nextArg) {
       config.userDataDir = nextArg;
@@ -60,11 +78,24 @@ export function parseConfig(args: string[]): BridgeConfigT {
   if (!config.bridgeId && process.env.BRIDGE_ID) {
     config.bridgeId = process.env.BRIDGE_ID;
   }
+  if (!config.bridgeName && process.env.BRIDGE_NAME) {
+    config.bridgeName = process.env.BRIDGE_NAME;
+  }
   if (!config.relayUrl && process.env.RELAY_URL) {
     config.relayUrl = process.env.RELAY_URL;
   } else if (!config.relayUrl) {
     // Default relay URL if not provided
     config.relayUrl = "wss://broadify-relay.fly.dev";
+  }
+  if (!config.pairingCode && process.env.PAIRING_CODE) {
+    config.pairingCode = process.env.PAIRING_CODE;
+  }
+  if (
+    !config.pairingExpiresAt &&
+    process.env.PAIRING_EXPIRES_AT &&
+    !isNaN(parseInt(process.env.PAIRING_EXPIRES_AT, 10))
+  ) {
+    config.pairingExpiresAt = parseInt(process.env.PAIRING_EXPIRES_AT, 10);
   }
 
   if (!config.userDataDir && process.env.BRIDGE_USER_DATA_DIR) {

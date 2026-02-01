@@ -11,6 +11,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
       callback(stats);
     }),
   getStaticData: () => ipcInvoke("getStaticData"),
+  bridgeGetProfile: () => ipcInvoke("bridgeGetProfile"),
+  bridgeSetName: (bridgeName: string) =>
+    ipcInvoke("bridgeSetName", bridgeName),
   bridgeStart: (config: BridgeConfig) => ipcInvoke("bridgeStart", config),
   bridgeStop: () => ipcInvoke("bridgeStop"),
   bridgeGetStatus: () => ipcInvoke("bridgeGetStatus"),

@@ -34,6 +34,7 @@ sequenceDiagram
 - **Untrusted Payloads:** Relay ist extern. Payloads werden downstream via Zod validiert.
 - **Log‑Sicherheit:** Graphics‑Payloads werden für Logging sanitize‑t (CSS‑Comments entfernen).
 - **Transport:** Relay‑Verbindung ist WebSocket; Reconnect mit Backoff.
+- **Pairing:** `bridge_pair_validate` prüft Code + Ablaufzeit aus dem Bridge‑Context (keine Secrets loggen).
 
 ## Fehlerbehandlung
 - JSON Parse Errors werden geloggt und verworfen.
@@ -41,6 +42,7 @@ sequenceDiagram
 - Command‑Errors führen zu `command_result` mit `success=false`.
 
 ## Relevante Commands (Auszug)
+- `bridge_pair_validate`
 - `graphics_configure_outputs`
 - `graphics_send`
 - `graphics_update_values`

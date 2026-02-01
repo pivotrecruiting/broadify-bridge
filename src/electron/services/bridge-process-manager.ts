@@ -23,7 +23,10 @@ export class BridgeProcessManager {
     config: BridgeConfig,
     autoFindPort: boolean = true,
     bridgeId?: string,
-    relayUrl?: string
+    relayUrl?: string,
+    bridgeName?: string,
+    pairingCode?: string,
+    pairingExpiresAt?: number
   ): Promise<{ success: boolean; error?: string; actualPort?: number }> {
     // If already running, stop first
     if (this.bridgeProcess) {
@@ -72,7 +75,12 @@ export class BridgeProcessManager {
 
       // Determine bridge entry point and arguments
       const bridgePath = this.getBridgePath();
-      const args = this.getBridgeArgs(actualConfig, bridgeId, relayUrl);
+      const args = this.getBridgeArgs(
+        actualConfig,
+        bridgeId,
+        relayUrl,
+        bridgeName
+      );
 
       // Spawn bridge process
       // In production, set cwd to bridge resources directory so relative paths work correctly
@@ -86,6 +94,14 @@ export class BridgeProcessManager {
         ...process.env,
         NODE_ENV: isDev() ? "development" : "production",
       };
+
+      // Avoid leaking pairing secrets via argv by passing them through env vars.
+      if (pairingCode) {
+        env.PAIRING_CODE = pairingCode;
+      }
+      if (typeof pairingExpiresAt === "number") {
+        env.PAIRING_EXPIRES_AT = pairingExpiresAt.toString();
+      }
 
       if (!isDev()) {
         env.ELECTRON_RUN_AS_NODE = "1";
@@ -297,7 +313,8 @@ export class BridgeProcessManager {
   private getBridgeArgs(
     config: BridgeConfig,
     bridgeId?: string,
-    relayUrl?: string
+    relayUrl?: string,
+    bridgeName?: string
   ): string[] {
     const args: string[] = [];
 
@@ -328,6 +345,10 @@ export class BridgeProcessManager {
     // Add bridge ID if provided
     if (bridgeId) {
       args.push("--bridge-id", bridgeId);
+    }
+
+    if (bridgeName) {
+      args.push("--bridge-name", bridgeName);
     }
 
     // Add relay URL if provided

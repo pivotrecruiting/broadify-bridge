@@ -19,6 +19,7 @@ sequenceDiagram
 ```
 
 ## Channels (Auszug)
+- `bridgeGetProfile`, `bridgeSetName`
 - `bridgeStart`, `bridgeStop`, `bridgeGetStatus`
 - `bridgeGetOutputs`, `bridgeGetLogs`, `bridgeClearLogs`
 - `engineConnect`, `engineDisconnect`, `engineGetStatus`, `engineRunMacro`

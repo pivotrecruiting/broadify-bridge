@@ -11,6 +11,10 @@ export type BridgeContextT = {
   userDataDir: string;
   logger: LoggerLikeT;
   logPath: string;
+  bridgeId?: string;
+  bridgeName?: string;
+  pairingCode?: string;
+  pairingExpiresAt?: number;
 };
 
 let bridgeContext: BridgeContextT | null = null;

@@ -24,9 +24,16 @@ sequenceDiagram
 - Bridge: `apps/bridge/src/routes/status.ts`, `apps/bridge/src/routes/relay.ts`
 - Relay: `apps/bridge/src/services/relay-client.ts`
 
+## Hinweise
+- Pairing‑Infos stammen aus dem Main‑Process (nicht aus `/status`).
+- `webAppUrl` wird im Main‑Process erzeugt und nicht von der Bridge geliefert.
+- Wenn aktiv, enthält `webAppUrl` den Pairing‑Code im URL‑Hash → als sensitiven Wert behandeln.
+
 ## Felder (BridgeStatus)
 - `running`, `reachable`, `version`, `uptime`, `mode`, `host`, `port`
-- `relayConnected`, `bridgeId` (falls Relay aktiv)
+- `relayConnected`, `bridgeId`, `bridgeName` (falls Relay aktiv)
+- `webAppUrl` (vom Main gebaut)
+- `pairingCode`, `pairingExpiresAt`, `pairingExpired` (vom Main ergänzt)
 
 ## Fehlerbilder
 - Port belegt → Status liefert Fehler

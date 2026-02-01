@@ -11,13 +11,24 @@ Beschreibt das Relay‑Protokoll (Message‑Typen, Command‑Envelope, Resultate
 ### bridge_hello
 Wird direkt nach Verbindungsaufbau gesendet.
 ```json
-{ "type": "bridge_hello", "bridgeId": "<id>", "version": "<semver>" }
+{ "type": "bridge_hello", "bridgeId": "<id>", "version": "<semver>", "bridgeName": "<optional>" }
 ```
 
 ### command
 Command‑Envelope vom Relay an die Bridge.
 ```json
 { "type": "command", "requestId": "<uuid>", "command": "graphics_send", "payload": { ... } }
+```
+
+#### bridge_pair_validate
+Validiert einen Pairing‑Code gegen die Bridge‑Context‑Daten (Code + Ablaufzeit).
+```json
+{ "type": "command", "requestId": "<uuid>", "command": "bridge_pair_validate", "payload": { "pairingCode": "ABCD1234" } }
+```
+
+Antwort (success):
+```json
+{ "type": "command_result", "requestId": "<uuid>", "success": true, "data": { "bridgeId": "<id>", "bridgeName": "<name|null>" } }
 ```
 
 ### command_result

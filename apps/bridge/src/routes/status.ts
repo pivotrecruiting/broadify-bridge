@@ -59,6 +59,7 @@ export async function registerStatusRoute(
       mode: config.mode,
       port: config.port,
       host: config.host,
+      bridgeName: config.bridgeName || null,
       state: runtimeConfig.getState(),
       outputsConfigured: runtimeConfig.hasOutputs(),
       engine: {

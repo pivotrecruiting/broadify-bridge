@@ -7,12 +7,15 @@ Die Renderer‑UI ist die React‑basierte Oberfläche zur Konfiguration und Ste
 - UI‑State (Network, Ports, Bridge‑Status)
 - Start/Stop‑Flows
 - Darstellung von Logs/Status/Fehlern
+- Anzeigen von Bridge‑Identität und Pairing‑Code
 
 ## Hauptkomponenten
 - `src/ui/App.tsx`
 - `src/ui/hooks/*`
 - `src/ui/components/*`
 - `src/ui/utils/*`
+- `src/ui/components/BridgeIdentitySection.tsx`
+- `src/ui/components/BridgeNameDialog.tsx`
 
 ## Ablauf (Mermaid)
 ```mermaid

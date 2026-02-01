@@ -16,6 +16,7 @@ export type BridgeConfig = {
     output2: string;
   };
   networkBindingId?: string;
+  userDataDir?: string;
 };
 export type BridgeStatus = {
   running: boolean;
@@ -28,6 +29,13 @@ export type BridgeStatus = {
   state?: "idle" | "configured" | "active";
   outputsConfigured?: boolean;
   error?: string;
+  relayConnected?: boolean;
+  bridgeId?: string;
+  bridgeName?: string;
+  webAppUrl?: string;
+  pairingCode?: string;
+  pairingExpiresAt?: string;
+  pairingExpired?: boolean;
 };
 /**
  * Port status information
@@ -209,6 +217,14 @@ export type EngineStateT = {
 export type EventPayloadMapping = {
   statistics: Statistics;
   getStaticData: StaticData;
+  bridgeGetProfile: {
+    bridgeId: string;
+    bridgeName: string | null;
+  };
+  bridgeSetName: {
+    success: boolean;
+    error?: string;
+  };
   bridgeStart: {
     success: boolean;
     error?: string;
@@ -226,6 +242,10 @@ export type EventPayloadMapping = {
   detectNetworkInterfaces: NetworkBindingOptionT[];
   getNetworkBindingOptions: NetworkBindingOptionT[];
   bridgeGetOutputs: BridgeOutputsT;
+  bridgeGetLogs: BridgeLogResponseT;
+  appGetLogs: AppLogResponseT;
+  bridgeClearLogs: BridgeLogClearResponseT;
+  appClearLogs: AppLogClearResponseT;
   engineConnect: {
     success: boolean;
     error?: string;
@@ -258,6 +278,7 @@ export type EventPayloadMapping = {
     macroId?: number;
     state?: EngineStateT;
   };
+  openExternal: void;
 };
 declare global {
   interface Window {
@@ -266,6 +287,14 @@ declare global {
         callback: (statistics: Statistics) => void
       ) => UnsubscribeFunction;
       getStaticData: () => Promise<StaticData>;
+      bridgeGetProfile: () => Promise<{
+        bridgeId: string;
+        bridgeName: string | null;
+      }>;
+      bridgeSetName: (bridgeName: string) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
       bridgeStart: (config: BridgeConfig) => Promise<{
         success: boolean;
         error?: string;
@@ -291,6 +320,10 @@ declare global {
       detectNetworkInterfaces: () => Promise<NetworkBindingOptionT[]>;
       getNetworkBindingOptions: () => Promise<NetworkBindingOptionT[]>;
       bridgeGetOutputs: () => Promise<BridgeOutputsT>;
+      bridgeGetLogs: (options?: LogFetchOptionsT) => Promise<BridgeLogResponseT>;
+      appGetLogs: (options?: LogFetchOptionsT) => Promise<AppLogResponseT>;
+      bridgeClearLogs: () => Promise<BridgeLogClearResponseT>;
+      appClearLogs: () => Promise<AppLogClearResponseT>;
       engineConnect: (
         ip?: string,
         port?: number
@@ -326,6 +359,7 @@ declare global {
         macroId?: number;
         state?: EngineStateT;
       }>;
+      openExternal: (url: string) => Promise<void>;
     };
   }
 }
