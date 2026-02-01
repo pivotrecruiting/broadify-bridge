@@ -496,12 +496,14 @@ export class GraphicsManager {
 
     if (data.clearQueue) {
       this.presetQueue = [];
+      this.logPresetQueue("cleared_by_remove_preset");
       return;
     }
 
     this.presetQueue = this.presetQueue.filter(
       (item) => item.presetId !== data.presetId
     );
+    this.logPresetQueue("filtered_by_remove_preset");
 
     if (!this.activePreset && this.presetQueue.length > 0) {
       await this.activateNextPreset();
@@ -638,6 +640,7 @@ export class GraphicsManager {
     this.categoryToLayer.clear();
     this.presetQueue = [];
     this.clearActivePreset();
+    this.logPresetQueue("cleared");
   }
 
   /**
@@ -1033,6 +1036,7 @@ export class GraphicsManager {
     if (existing && existing.presetId === data.presetId) {
       existing.layers.set(data.category, data);
       existing.durationMs = durationMs;
+      this.logPresetQueue("coalesced");
       return;
     }
 
@@ -1048,6 +1052,7 @@ export class GraphicsManager {
       layers,
       enqueuedAt: Date.now(),
     });
+    this.logPresetQueue("enqueued");
   }
 
   private maybeStartPresetTimer(layerIds: string[]): void {
@@ -1131,6 +1136,7 @@ export class GraphicsManager {
 
       const layerIds: string[] = [];
       try {
+        await this.removeCategoryConflicts(next);
         for (const layer of next.layers.values()) {
           await this.renderPreparedLayer(layer);
           layerIds.push(layer.layerId);
@@ -1148,6 +1154,7 @@ export class GraphicsManager {
         getBridgeContext().logger.info(
           `[Graphics] Preset activated: ${next.presetId}`
         );
+        this.logPresetQueue("activated");
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1155,6 +1162,7 @@ export class GraphicsManager {
           `[Graphics] Failed to activate queued preset ${next.presetId}: ${message}`
         );
         await this.removePresetById(next.presetId);
+        this.logPresetQueue("activation_failed");
       }
     }
   }
@@ -1175,6 +1183,67 @@ export class GraphicsManager {
     if (this.activePreset?.presetId === presetId) {
       this.clearActivePreset();
     }
+  }
+
+  private async removeCategoryConflicts(
+    preset: GraphicsQueuedPresetT
+  ): Promise<void> {
+    const categories = Array.from(preset.layers.keys());
+    for (const category of categories) {
+      const existingLayerId = this.categoryToLayer.get(category);
+      if (!existingLayerId) {
+        continue;
+      }
+      await this.removeLayerById(existingLayerId, "queued_preset_override");
+    }
+  }
+
+  private async removeLayerById(
+    layerId: string,
+    reason: "queued_preset_override"
+  ): Promise<void> {
+    const layer = this.layers.get(layerId);
+    if (!layer) {
+      return;
+    }
+    try {
+      await this.renderer.removeLayer(layerId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.warn(
+        `[Graphics] Failed to remove layer ${layerId} (${reason}): ${message}`
+      );
+    }
+    this.layers.delete(layerId);
+    if (this.categoryToLayer.get(layer.category) === layerId) {
+      this.categoryToLayer.delete(layer.category);
+    }
+    if (layer.presetId && this.activePreset?.presetId === layer.presetId) {
+      this.activePreset.layerIds.delete(layer.layerId);
+      if (this.activePreset.layerIds.size === 0) {
+        const clearedPresetId = this.activePreset.presetId;
+        this.clearActivePreset();
+        getBridgeContext().logger.info(
+          `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
+        );
+      }
+    }
+  }
+
+  private logPresetQueue(context: string): void {
+    const snapshot = this.presetQueue.map((item) => ({
+      presetId: item.presetId,
+      durationMs: item.durationMs ?? null,
+      layerCount: item.layers.size,
+      categories: Array.from(item.layers.keys()),
+      enqueuedAt: item.enqueuedAt,
+    }));
+    getBridgeContext().logger.info(
+      `[Graphics] Preset queue ${context}: ${JSON.stringify({
+        length: snapshot.length,
+        items: snapshot,
+      })}`
+    );
   }
 }
 
