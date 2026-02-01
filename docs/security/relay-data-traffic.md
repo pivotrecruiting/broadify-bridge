@@ -210,6 +210,7 @@ Bridge:
 ## Validation and sanitization points
 - WebApp API: validates only that command is a string; does not validate payload structure.
 - Relay: signs commands (Ed25519) and forwards payload as-is.
+- Relay: enforces org↔bridge binding (Supabase `organization_bridges`).
 - Bridge:
   - Graphics payloads validated by Zod schemas and template sanitization.
   - engine_connect validates type/ip/port in CommandRouter and in engine routes.

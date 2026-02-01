@@ -67,7 +67,7 @@ Akzeptanzkriterien:
 ### Phase 1 - AuthN/AuthZ Basis (2-6 Wochen)
 Technisch:
 - [ ] Device Enrollment: Pairing-Code wird nur fuer initiales Onboarding genutzt.
-- [ ] Relay muss Bridge-ID an org_id binden (serverseitig), nur dann Commands.
+- [x] Relay muss Bridge-ID an org_id binden (serverseitig), nur dann Commands.
 - [x] Command-Envelope signieren (exp, jti, scope, org_id, bridge_id).
 - [x] Bridge verifiziert Signatur, TTL und Replay-Schutz (jti-cache).
 - [ ] Zod-Validierung fuer alle Commands (nicht nur graphics).
