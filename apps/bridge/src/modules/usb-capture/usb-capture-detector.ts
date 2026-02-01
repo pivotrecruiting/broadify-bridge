@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readdir, access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
-import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
+import type { DeviceDescriptorT, PortDescriptorT } from "@broadify/protocol";
 import type { USBDeviceInfo, USBPortInfo } from "./usb-capture-types.js";
 
 /**

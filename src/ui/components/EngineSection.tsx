@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 import { ENGINE_ATEM_OPTIONS, ENGINE_PORT_OPTIONS } from "../constants/engine-constants";
-import type { EngineStateT } from "types";
+import type { EngineStateT } from "@broadify/protocol";
 
 interface EngineSectionProps {
   engineAtem: string;

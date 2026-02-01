@@ -10,7 +10,7 @@ import type {
   BridgeOutputsT,
   DeviceDescriptorT,
   OutputDeviceT,
-} from "../types.js";
+} from "@broadify/protocol";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

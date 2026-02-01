@@ -9,7 +9,7 @@ Parst Helper‑Devices, enrichiert Ports mit Display‑Modes und liefert Bridge�
 
 ## Abhängigkeiten
 - `decklink-helper.ts`
-- `types.ts`
+- `packages/protocol/src/index.ts`
 
 ## Side‑Effects
 - Keine (nur Datenaufbereitung)

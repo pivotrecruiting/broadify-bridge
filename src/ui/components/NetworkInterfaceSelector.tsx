@@ -5,7 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { NetworkBindingOptionT } from "types";
+import type { NetworkBindingOptionT } from "@broadify/protocol";
 
 interface NetworkInterfaceSelectorProps {
   value: string;

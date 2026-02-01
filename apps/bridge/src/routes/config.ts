@@ -4,7 +4,7 @@ import { moduleRegistry } from "../modules/module-registry.js";
 import { deviceCache } from "../services/device-cache.js";
 import { isDevelopmentMode } from "../services/dev-mode.js";
 import type { FastifyInstance } from "fastify";
-import type { DeviceDescriptorT } from "../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 
 /**
  * Config request schema.

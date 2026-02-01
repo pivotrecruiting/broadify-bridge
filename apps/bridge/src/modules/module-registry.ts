@@ -3,7 +3,7 @@ import type {
   DeviceController,
   UnsubscribeFunction,
 } from "./device-module.js";
-import type { DeviceDescriptorT } from "../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 
 const DEFAULT_DETECTION_TIMEOUT = 5000; // 5 seconds per module
 

@@ -3,7 +3,7 @@ import type {
   DeviceDescriptorT,
   OutputDisplayModeT,
   PortDescriptorT,
-} from "../../types.js";
+} from "@broadify/protocol";
 import {
   listDecklinkDevices,
   listDecklinkDisplayModes,

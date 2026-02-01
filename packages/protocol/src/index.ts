@@ -1,3 +1,6 @@
+/**
+ * Shared protocol types for Bridge and Desktop integration.
+ */
 export type Statistics = {
   cpuUsage: number;
   ramUsage: number;
@@ -45,7 +48,7 @@ export type BridgeStatus = {
  * Port status information
  */
 export type PortStatusT = {
-  available: boolean; // UI-Filter: present && ready && !inUse
+  available: boolean; // UI filter: present && ready && !inUse
   signal?: "none" | "detected" | "locked";
   format?: string; // Current signal format (e.g. "1080p50")
   error?: string;
@@ -283,122 +286,3 @@ export type EngineStateT = {
   lastUpdate?: number;
   error?: string;
 };
-
-export type EventPayloadMapping = {
-  statistics: Statistics;
-  getStaticData: StaticData;
-  bridgeGetProfile: { bridgeId: string; bridgeName: string | null };
-  bridgeSetName: { success: boolean; error?: string };
-  bridgeStart: { success: boolean; error?: string; actualPort?: number };
-  bridgeStop: { success: boolean; error?: string };
-  bridgeGetStatus: BridgeStatus;
-  bridgeStatus: BridgeStatus;
-  checkPortAvailability: PortAvailability;
-  checkPortsAvailability: PortAvailability[];
-  getNetworkConfig: NetworkConfigT;
-  detectNetworkInterfaces: NetworkBindingOptionT[];
-  getNetworkBindingOptions: NetworkBindingOptionT[];
-  bridgeGetOutputs: BridgeOutputsT;
-  bridgeGetLogs: BridgeLogResponseT;
-  appGetLogs: AppLogResponseT;
-  bridgeClearLogs: BridgeLogClearResponseT;
-  appClearLogs: AppLogClearResponseT;
-  engineConnect: { success: boolean; error?: string; state?: EngineStateT };
-  engineDisconnect: { success: boolean; error?: string; state?: EngineStateT };
-  engineGetStatus: { success: boolean; error?: string; state?: EngineStateT };
-  engineGetMacros: { success: boolean; error?: string; macros?: MacroT[] };
-  engineRunMacro: {
-    success: boolean;
-    error?: string;
-    macroId?: number;
-    state?: EngineStateT;
-  };
-  engineStopMacro: {
-    success: boolean;
-    error?: string;
-    macroId?: number;
-    state?: EngineStateT;
-  };
-  openExternal: void;
-};
-
-declare global {
-  interface Window {
-    electron: {
-      subscribeStatistics: (
-        callback: (statistics: Statistics) => void
-      ) => UnsubscribeFunction;
-      getStaticData: () => Promise<StaticData>;
-      bridgeGetProfile: () => Promise<{
-        bridgeId: string;
-        bridgeName: string | null;
-      }>;
-      bridgeSetName: (bridgeName: string) => Promise<{
-        success: boolean;
-        error?: string;
-      }>;
-      bridgeStart: (
-        config: BridgeConfig
-      ) => Promise<{ success: boolean; error?: string; actualPort?: number }>;
-      bridgeStop: () => Promise<{ success: boolean; error?: string }>;
-      bridgeGetStatus: () => Promise<BridgeStatus>;
-      subscribeBridgeStatus: (
-        callback: (status: BridgeStatus) => void
-      ) => UnsubscribeFunction;
-      checkPortAvailability: (
-        port: number,
-        host?: string
-      ) => Promise<PortAvailability>;
-      checkPortsAvailability: (
-        ports: number[],
-        host?: string
-      ) => Promise<PortAvailability[]>;
-      getNetworkConfig: () => Promise<NetworkConfigT>;
-      detectNetworkInterfaces: () => Promise<NetworkBindingOptionT[]>;
-      getNetworkBindingOptions: () => Promise<NetworkBindingOptionT[]>;
-      bridgeGetOutputs: () => Promise<BridgeOutputsT>;
-      bridgeGetLogs: (
-        options?: LogFetchOptionsT
-      ) => Promise<BridgeLogResponseT>;
-      appGetLogs: (options?: LogFetchOptionsT) => Promise<AppLogResponseT>;
-      bridgeClearLogs: () => Promise<BridgeLogClearResponseT>;
-      appClearLogs: () => Promise<AppLogClearResponseT>;
-      engineConnect: (
-        ip?: string,
-        port?: number
-      ) => Promise<{ success: boolean; error?: string; state?: EngineStateT }>;
-      engineDisconnect: () => Promise<{
-        success: boolean;
-        error?: string;
-        state?: EngineStateT;
-      }>;
-      engineGetStatus: () => Promise<{
-        success: boolean;
-        error?: string;
-        state?: EngineStateT;
-      }>;
-      engineGetMacros: () => Promise<{
-        success: boolean;
-        error?: string;
-        macros?: MacroT[];
-      }>;
-      engineRunMacro: (
-        macroId: number
-      ) => Promise<{
-        success: boolean;
-        error?: string;
-        macroId?: number;
-        state?: EngineStateT;
-      }>;
-      engineStopMacro: (
-        macroId: number
-      ) => Promise<{
-        success: boolean;
-        error?: string;
-        macroId?: number;
-        state?: EngineStateT;
-      }>;
-      openExternal: (url: string) => Promise<void>;
-    };
-  }
-}

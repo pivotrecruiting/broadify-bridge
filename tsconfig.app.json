@@ -25,11 +25,11 @@
         "paths": {
             "@/*": [
                 "./src/*"
+            ],
+            "@broadify/protocol": [
+                "./packages/protocol/dist/index.d.ts"
             ]
-        },
-        "types": [
-            "./types"
-        ]
+        }
     },
     "include": [
         "src"

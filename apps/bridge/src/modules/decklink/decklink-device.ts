@@ -1,5 +1,5 @@
 import type { DeviceController } from "../device-module.js";
-import type { DeviceDescriptorT } from "../../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 
 /**
  * DeckLink device controller (placeholder).

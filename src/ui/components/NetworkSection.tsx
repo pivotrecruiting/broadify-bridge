@@ -3,7 +3,7 @@ import type {
   NetworkConfigT,
   NetworkBindingOptionT,
   BridgeStatus,
-} from "types";
+} from "@broadify/protocol";
 import { NetworkInterfaceSelector } from "./NetworkInterfaceSelector";
 import { PortSelector } from "./PortSelector";
 import { getPortConfig } from "../utils/network-utils";

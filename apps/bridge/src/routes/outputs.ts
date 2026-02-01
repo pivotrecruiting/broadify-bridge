@@ -3,7 +3,7 @@ import type {
   OutputDeviceT,
   BridgeOutputsT,
   DeviceDescriptorT,
-} from "../types.js";
+} from "@broadify/protocol";
 import { deviceCache } from "../services/device-cache.js";
 
 /**

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { BridgeStatus } from "types";
+import type { BridgeStatus } from "@broadify/protocol";
 
 /**
  * Hook to subscribe to bridge status updates

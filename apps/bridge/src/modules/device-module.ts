@@ -1,4 +1,4 @@
-import type { DeviceDescriptorT } from "../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 
 /**
  * Unsubscribe function for device watch callbacks

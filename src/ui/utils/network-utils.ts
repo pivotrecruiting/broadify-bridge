@@ -1,4 +1,4 @@
-import type { NetworkBindingOptionT, InterfacePortConfigT } from "types";
+import type { NetworkBindingOptionT, InterfacePortConfigT } from "@broadify/protocol";
 
 /**
  * Gets the bind address for a given network binding ID

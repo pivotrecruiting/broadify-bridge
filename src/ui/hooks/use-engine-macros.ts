@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { MacroT } from "types";
+import type { MacroT } from "@broadify/protocol";
 
 /**
  * Hook to manage engine macros

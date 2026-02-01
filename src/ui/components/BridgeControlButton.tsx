@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import type { BridgeStatus } from "types";
+import type { BridgeStatus } from "@broadify/protocol";
 
 interface BridgeControlButtonProps {
   bridgeStatus: BridgeStatus;

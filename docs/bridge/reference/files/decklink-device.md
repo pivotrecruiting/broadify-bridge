@@ -8,7 +8,7 @@ Device‑Controller Placeholder für DeckLink (open/close/status).
 - Output: Device‑Status
 
 ## Abhängigkeiten
-- `types.ts`
+- `packages/protocol/src/index.ts`
 
 ## Side‑Effects
 - Aktuell keine (nur Logs)

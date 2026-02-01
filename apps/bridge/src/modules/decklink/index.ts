@@ -1,5 +1,5 @@
 import type { DeviceModule, DeviceController } from "../device-module.js";
-import type { DeviceDescriptorT } from "../../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 import { DecklinkDetector, parseDecklinkHelperDevices } from "./decklink-detector.js";
 import { DecklinkDevice } from "./decklink-device.js";
 import { watchDecklinkDevices } from "./decklink-helper.js";

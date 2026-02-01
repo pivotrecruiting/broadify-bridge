@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { NetworkConfigT, NetworkBindingOptionT } from "types";
+import type { NetworkConfigT, NetworkBindingOptionT } from "@broadify/protocol";
 import { getBindAddress, getPortConfig } from "../utils/network-utils";
 
 interface UseNetworkBindingParams {

@@ -17,7 +17,7 @@ Diese Doku beschreibt das Device/Port‑Modell, wie daraus UI‑Outputs abgeleit
 - `capabilities`: `formats`, `modes`
 - `status`: `available`, `signal`, `format`
 
-Quelle: `apps/bridge/src/types.ts`
+Quelle: `packages/protocol/src/index.ts`
 
 ## Ableitung der UI‑Outputs
 Die Route `/outputs` mappt Devices/Ports auf UI‑Outputs:
@@ -61,7 +61,7 @@ sequenceDiagram
 - Port nicht verfügbar → `available=false`
 
 ## Relevante Dateien
-- `apps/bridge/src/types.ts`
+- `packages/protocol/src/index.ts`
 - `apps/bridge/src/routes/outputs.ts`
 - `apps/bridge/src/services/device-cache.ts`
 - `apps/bridge/src/modules/decklink/decklink-detector.ts`

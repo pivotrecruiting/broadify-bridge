@@ -9,7 +9,7 @@ import type {
   GraphicsTargetsT,
   GraphicsSendPayloadT,
 } from "./graphics-schemas.js";
-import type { DeviceDescriptorT } from "../../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 import {
   GraphicsConfigureOutputsSchema,
   GraphicsSendSchema,

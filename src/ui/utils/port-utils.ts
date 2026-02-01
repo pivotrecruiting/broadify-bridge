@@ -1,4 +1,4 @@
-import type { NetworkConfigT, InterfacePortConfigT } from "types";
+import type { NetworkConfigT, InterfacePortConfigT } from "@broadify/protocol";
 
 /**
  * Validates if a port string is a valid port number (1-65535)
