@@ -45,22 +45,24 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 ## Implementierungsplan
 
 ### Phase 0 - Sofortmassnahmen (0-2 Wochen)
+Status: Technische Punkte umgesetzt; organisatorische Tasks offen.
+
 Technisch:
-- Relay-Verbindung per Default deaktivieren; nur bei lokaler Freigabe aktivieren.
-- Pairing-Code nicht in URLs (kein Hash/Query). Nur lokal anzeigen/QR.
-- Payload-Logging entfernen oder strikt redactionen (WebApp + Bridge).
-- /logs, /ws und /engine Endpoints nur lokal oder mit Auth-Token.
-- Payload-Groessenlimit und Timeouts erzwingen.
-- Command-Allowlist auf Bridge (harte Ablehnung unbekannter Commands).
+- [x] Relay-Verbindung per Default deaktivieren; nur bei lokaler Freigabe aktivieren.
+- [x] Pairing-Code nicht in URLs (kein Hash/Query). Nur lokal anzeigen/QR.
+- [x] Payload-Logging entfernen oder strikt redactionen (WebApp + Bridge).
+- [x] /logs, /ws und /engine Endpoints nur lokal oder mit Auth-Token.
+- [x] Payload-Groessenlimit und Timeouts erzwingen.
+- [x] Command-Allowlist auf Bridge (harte Ablehnung unbekannter Commands).
 
 Organisatorisch:
-- Interne Security-Policy fuer Logs und Debug-Outputs definieren.
-- Incident-Response-Prozess entwerfen (Owner, SLA, Eskalation).
+- [ ] Interne Security-Policy fuer Logs und Debug-Outputs definieren.
+- [ ] Incident-Response-Prozess entwerfen (Owner, SLA, Eskalation).
 
 Akzeptanzkriterien:
-- Ohne lokale Freigabe keine Relay-Commands.
-- Pairing-Code taucht in keiner URL, keinem Log auf.
-- Unbekannte Commands werden serverseitig geblockt.
+- [x] Ohne lokale Freigabe keine Relay-Commands.
+- [x] Pairing-Code taucht in keiner URL, keinem Log auf.
+- [x] Unbekannte Commands werden serverseitig geblockt.
 
 ### Phase 1 - AuthN/AuthZ Basis (2-6 Wochen)
 Technisch:
@@ -134,4 +136,3 @@ Akzeptanzkriterien:
 - Datenresidenz-Anforderungen pro Kunde
 - SLA fuer Remote Access und Incident Response
 - Umfang der Audit-Logs (Payload ja/nein, Sampling)
-

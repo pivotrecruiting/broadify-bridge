@@ -322,7 +322,6 @@ function getInterfaceType(
  */
 function buildWebAppUrl(
   bridgeId: string,
-  pairingCode?: string
 ): string | null {
   if (!bridgeId) {
     return null;
@@ -341,22 +340,11 @@ function buildWebAppUrl(
   try {
     const url = new URL(baseUrl);
     url.searchParams.set("bridgeId", bridgeId);
-    if (pairingCode) {
-      url.hash = `pair=${encodeURIComponent(pairingCode)}`;
-    }
     return url.toString();
   } catch (error) {
     console.error("[WebApp] Error building web app URL:", error);
     return null;
   }
-}
-
-function getActivePairingInfo() {
-  const info = bridgePairing.getPairingInfo();
-  if (!info || info.expired) {
-    return null;
-  }
-  return info;
 }
 
 // Single Instance Lock: Prevent multiple instances of the app
@@ -453,6 +441,7 @@ if (!isRendererProcess) {
         };
       }
 
+      const relayEnabled = true;
       const pairingInfo = bridgePairing.startPairing();
 
       // Store network binding ID
@@ -492,17 +481,19 @@ if (!isRendererProcess) {
 
       // Get relay URL from environment or use default
       const relayUrl = process.env.RELAY_URL || "wss://broadify-relay.fly.dev";
+      const relayBridgeId = bridgeId;
 
       // Start bridge without requiring outputs
       // Pass bridgeId and relayUrl as CLI args
       const result = await bridgeProcessManager.start(
         resolvedConfig,
         true, // autoFindPort = true
-        bridgeId,
+        relayBridgeId,
         relayUrl,
         bridgeName,
-        pairingInfo.code,
-        pairingInfo.expiresAt
+        pairingInfo?.code,
+        pairingInfo?.expiresAt,
+        relayEnabled
       );
       console.log("[Bridge] Start result:", result);
 
@@ -517,13 +508,17 @@ if (!isRendererProcess) {
           reachable: false,
           bridgeId,
           bridgeName,
-          pairingCode: pairingInfo.code,
-          pairingExpiresAt: new Date(pairingInfo.expiresAt).toISOString(),
-          pairingExpired: false,
         };
+        if (pairingInfo) {
+          initialStatus.pairingCode = pairingInfo.code;
+          initialStatus.pairingExpiresAt = new Date(
+            pairingInfo.expiresAt
+          ).toISOString();
+          initialStatus.pairingExpired = false;
+        }
 
         // Build web app URL immediately so link is available right away
-        const webAppUrl = buildWebAppUrl(bridgeId, pairingInfo.code);
+        const webAppUrl = buildWebAppUrl(bridgeId);
         if (webAppUrl) {
           initialStatus.webAppUrl = webAppUrl;
         }
@@ -571,11 +566,7 @@ if (!isRendererProcess) {
             status.bridgeName = status.bridgeName || bridgeName;
 
             if (bridgeIdForUrl) {
-              const activePairing = getActivePairingInfo();
-              const webAppUrl = buildWebAppUrl(
-                bridgeIdForUrl,
-                activePairing?.code
-              );
+              const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
               if (webAppUrl) {
                 status.webAppUrl = webAppUrl;
               }
@@ -670,11 +661,7 @@ if (!isRendererProcess) {
       // Use bridgeId from status (from relay) or fallback to bridgeIdentity
       const bridgeIdForUrl = status.bridgeId || bridgeIdentity.getBridgeId();
       if (bridgeIdForUrl) {
-        const activePairing = getActivePairingInfo();
-        const webAppUrl = buildWebAppUrl(
-          bridgeIdForUrl,
-          activePairing?.code
-        );
+        const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
         if (webAppUrl) {
           status.webAppUrl = webAppUrl;
         }

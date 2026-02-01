@@ -174,17 +174,22 @@ Operational data:
 - status, engine macros, outputsConfigured, version
 
 ## Logging behavior (data exposure)
+Phase-0 Aenderungen:
+- WebApp: Voll-Payload-Logging entfernt; optionales Debug-Logging nur als Zusammenfassung
+  (gesteuert ueber NEXT_PUBLIC_BRIDGE_DEBUG=true).
+- Relay: HTTP-Body- und WS-Payload-Limits je 20 MB; Logs ohne Payloads (nur Message-Typ).
+- Bridge: Relay-Payload-Logging entfernt; lokale Endpoints per Token/Loopback geschuetzt.
+
 WebApp:
-- bridge-commands.ts logs payload summaries for most commands.
-- graphics_send logs full payload (including html/css/values).
-- list_outputs logs full response data.
+- bridge-commands.ts loggt nur Zusammenfassungen (keine Payload-Dumps).
+- list_outputs Debug-Logging ist optional und auf Summaries reduziert.
 
 Relay:
-- Does not explicitly log payloads, but will log unknown message payloads as part of the message object.
+- Logs enthalten keine Payloads, nur Message-Typen.
 
 Bridge:
-- relay-client logs sanitized graphics payloads (CSS comments removed only) via JSON.stringify.
-- /logs endpoint returns log file content (no auth by default).
+- relay-client logs nur Command-Name + RequestId (keine Payload-Dumps).
+- /logs endpoint ist lokal oder per Token geschuetzt.
 
 ## Validation and sanitization points
 - WebApp API: validates only that command is a string; does not validate payload structure.
@@ -195,8 +200,17 @@ Bridge:
   - Other commands have minimal or no payload validation.
 
 ## Security observations relevant to data traffic
-- Relay transport is used for full payloads and responses, not just command names.
-- Pairing is a separate command and does not gate other commands.
-- The Relay accepts any command/payload pair for a connected bridgeId.
-- Multiple layers log sensitive payloads (graphics and outputs), increasing DSGVO exposure.
+- Relay transportiert weiterhin volle Payloads und Responses (Content bleibt sensitiv).
+- Pairing ist ein separater Command und gate-keine anderen Commands.
+- Relay akzeptiert Command/Payload fuer jede verbundene bridgeId (AuthN/AuthZ ist Phase-1).
+- Payload-Logging wurde reduziert, dennoch bleibt Content-Exposure im Transportpfad bestehen.
 
+
+## Payload limits and timeouts
+- Bridge HTTP bodyLimit: 20 MB
+- Bridge WS maxPayload: 20 MB
+- Bridge Relay inbound WS message drop: 20 MB
+- Relay HTTP bodyLimit: 20 MB
+- Relay WS maxPayload: 20 MB
+- Bridge request timeout: 15s
+- WebApp error message on size exceed: "Payload zu groß. Maximal 20 MB."

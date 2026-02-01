@@ -1,5 +1,5 @@
 import { WebSocket } from "ws";
-import { commandRouter } from "./command-router.js";
+import { commandRouter, isRelayCommand } from "./command-router.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,8 @@ import type { RelayCommand } from "./command-router.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+const MAX_RELAY_MESSAGE_BYTES = 20 * 1024 * 1024;
 
 /**
  * Get version from package.json
@@ -21,48 +23,36 @@ function getVersion(): string {
   }
 }
 
-const CSS_COMMENT_PATTERN = /\/\*[\s\S]*?\*\//g;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null;
+const getRelayMessageByteLength = (data: WebSocket.Data): number => {
+  if (typeof data === "string") {
+    return Buffer.byteLength(data, "utf-8");
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.length;
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  if (Array.isArray(data)) {
+    return data.reduce((total, chunk) => total + chunk.length, 0);
+  }
+  return 0;
 };
 
-/**
- * Remove CSS block comments to keep logs readable and avoid log injection.
- * This is a logging-only sanitization and does not affect render behavior.
- */
-const stripCssComments = (value: unknown): unknown => {
-  if (typeof value !== "string") {
-    return value;
+const relayMessageToString = (data: WebSocket.Data): string => {
+  if (typeof data === "string") {
+    return data;
   }
-  return value.replace(CSS_COMMENT_PATTERN, "").trim();
-};
-
-/**
- * Create a sanitized copy of a graphics payload for logging.
- *
- * @param payload Untrusted graphics payload from relay.
- * @returns Sanitized shallow copy for safe logging.
- */
-const sanitizeGraphicsPayload = (
-  payload?: Record<string, unknown>
-): Record<string, unknown> | undefined => {
-  if (!payload) {
-    return payload;
+  if (Buffer.isBuffer(data)) {
+    return data.toString("utf-8");
   }
-
-  const sanitized: Record<string, unknown> = { ...payload };
-  const bundle = payload.bundle;
-  if (isRecord(bundle)) {
-    // Avoid mutating the original payload object (used for command handling).
-    const sanitizedBundle = { ...bundle };
-    if (typeof bundle.css === "string") {
-      sanitizedBundle.css = stripCssComments(bundle.css);
-    }
-    sanitized.bundle = sanitizedBundle;
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString("utf-8");
   }
-
-  return sanitized;
+  if (Array.isArray(data)) {
+    return Buffer.concat(data).toString("utf-8");
+  }
+  return "";
 };
 
 /**
@@ -84,7 +74,7 @@ interface BridgeHelloMessage {
 interface RelayCommandMessage {
   type: "command";
   requestId: string;
-  command: RelayCommand;
+  command: string;
   payload?: Record<string, unknown>;
 }
 
@@ -262,7 +252,19 @@ export class RelayClient {
    */
   private async handleMessage(data: WebSocket.Data): Promise<void> {
     try {
-      const message: RelayMessage = JSON.parse(data.toString());
+      const messageSize = getRelayMessageByteLength(data);
+      if (messageSize > MAX_RELAY_MESSAGE_BYTES) {
+        this.logger.warn(
+          `Dropped relay message exceeding size limit (${messageSize} bytes)`
+        );
+        return;
+      }
+      const messageText = relayMessageToString(data);
+      if (!messageText) {
+        this.logger.warn("Dropped relay message: empty payload");
+        return;
+      }
+      const message: RelayMessage = JSON.parse(messageText);
       this.lastSeen = new Date();
 
       if (message.type === "command") {
@@ -285,23 +287,24 @@ export class RelayClient {
    * @param message Untrusted relay command message.
    */
   private async handleCommand(message: RelayCommandMessage): Promise<void> {
-    // Log graphics commands with detailed payload
-    if (message.command.startsWith("graphics_")) {
-      this.logger.info(`Graphics command: ${message.command}`);
-      this.logger.info(
-        `Graphics payload: ${JSON.stringify(
-          sanitizeGraphicsPayload(message.payload),
-          null,
-          2
-        )}`
-      );
+    if (!isRelayCommand(message.command)) {
+      this.logger.warn(`Rejected unknown command: ${String(message.command)}`);
+      this.send({
+        type: "command_result",
+        requestId: message.requestId,
+        success: false,
+        error: "Unknown command",
+      });
+      return;
     }
 
+    const command = message.command as RelayCommand;
+    this.logger.info(
+      `Received relay command: ${command} (requestId: ${message.requestId})`
+    );
+
     try {
-      const result = await commandRouter.handleCommand(
-        message.command,
-        message.payload
-      );
+      const result = await commandRouter.handleCommand(command, message.payload);
 
       // Send result back to relay
       const resultMessage: CommandResultMessage = {

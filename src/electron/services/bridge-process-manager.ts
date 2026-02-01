@@ -26,7 +26,8 @@ export class BridgeProcessManager {
     relayUrl?: string,
     bridgeName?: string,
     pairingCode?: string,
-    pairingExpiresAt?: number
+    pairingExpiresAt?: number,
+    relayEnabled: boolean = false
   ): Promise<{ success: boolean; error?: string; actualPort?: number }> {
     // If already running, stop first
     if (this.bridgeProcess) {
@@ -79,7 +80,8 @@ export class BridgeProcessManager {
         actualConfig,
         bridgeId,
         relayUrl,
-        bridgeName
+        bridgeName,
+        relayEnabled
       );
 
       // Spawn bridge process
@@ -94,6 +96,10 @@ export class BridgeProcessManager {
         ...process.env,
         NODE_ENV: isDev() ? "development" : "production",
       };
+
+      if (relayEnabled) {
+        env.BRIDGE_RELAY_ENABLED = "true";
+      }
 
       // Avoid leaking pairing secrets via argv by passing them through env vars.
       if (pairingCode) {
@@ -314,7 +320,8 @@ export class BridgeProcessManager {
     config: BridgeConfig,
     bridgeId?: string,
     relayUrl?: string,
-    bridgeName?: string
+    bridgeName?: string,
+    relayEnabled: boolean = false
   ): string[] {
     const args: string[] = [];
 
@@ -349,6 +356,10 @@ export class BridgeProcessManager {
 
     if (bridgeName) {
       args.push("--bridge-name", bridgeName);
+    }
+
+    if (relayEnabled) {
+      args.push("--relay-enabled");
     }
 
     // Add relay URL if provided

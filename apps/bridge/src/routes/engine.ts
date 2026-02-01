@@ -5,6 +5,7 @@ import {
   EngineError,
   EngineErrorCode,
 } from "../services/engine/engine-errors.js";
+import { getAuthFailure } from "./route-guards.js";
 
 /**
  * Connect request schema.
@@ -31,6 +32,19 @@ export async function registerEngineRoute(
   fastify: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
+  fastify.addHook("preHandler", async (request, reply) => {
+    const authFailure = getAuthFailure(request);
+    if (authFailure) {
+      return reply.code(authFailure.status).send({
+        success: false,
+        error: {
+          code: "UNAUTHORIZED",
+          message: authFailure.message,
+        },
+      });
+    }
+  });
+
   /**
    * POST /engine/connect
    * Connect to engine (ATEM/Tricaster)

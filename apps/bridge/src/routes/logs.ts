@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { getBridgeContext } from "../services/bridge-context.js";
+import { enforceLocalOrToken } from "./route-guards.js";
 
 type LogsQuery = {
   lines?: string;
@@ -44,8 +45,11 @@ export async function registerLogsRoute(
   fastify: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  // Security: log access is local; no auth is implemented here.
+  // Security: log access is restricted to local requests or a shared token.
   fastify.get("/logs", async (request, reply) => {
+    if (!enforceLocalOrToken(request, reply)) {
+      return;
+    }
     const { logPath } = getBridgeContext();
     const query = request.query as LogsQuery;
     const maxLines = Math.min(
@@ -76,6 +80,9 @@ export async function registerLogsRoute(
   });
 
   fastify.post("/logs/clear", async (_request, reply) => {
+    if (!enforceLocalOrToken(_request, reply)) {
+      return;
+    }
     const { logPath } = getBridgeContext();
     try {
       await readFile(logPath, "utf-8");

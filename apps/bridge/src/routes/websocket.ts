@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { websocketManager } from "../services/websocket-manager.js";
 import { engineAdapter } from "../services/engine-adapter.js";
+import { getAuthFailure } from "./route-guards.js";
 
 /**
  * WebSocket message types
@@ -27,9 +28,18 @@ export async function registerWebSocketRoute(
   _options: FastifyPluginOptions
 ): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fastify.get("/ws", { websocket: true } as any, (connection, _request) => {
+  fastify.get("/ws", { websocket: true } as any, (connection, request) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = connection.socket as any;
+    const authFailure = getAuthFailure(request);
+    if (authFailure) {
+      fastify.log.warn(
+        { reason: authFailure.message, ip: request.ip },
+        "[WebSocket] Rejected client connection"
+      );
+      client.close(1008, "Forbidden");
+      return;
+    }
     fastify.log.info("[WebSocket] Client connected");
 
     // Register client

@@ -23,6 +23,10 @@ import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
 import type { BridgeConfigT } from "./config.js";
 
+const MAX_HTTP_BODY_BYTES = 20 * 1024 * 1024;
+const MAX_WS_PAYLOAD_BYTES = 20 * 1024 * 1024;
+const REQUEST_TIMEOUT_MS = 15_000;
+
 /**
  * Create and configure Fastify server instance.
  *
@@ -47,7 +51,12 @@ export async function createServer(config: BridgeConfigT) {
   const server = Fastify({
     logger,
     disableRequestLogging: true,
+    bodyLimit: MAX_HTTP_BODY_BYTES,
+    connectionTimeout: REQUEST_TIMEOUT_MS,
   });
+
+  server.server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.server.headersTimeout = REQUEST_TIMEOUT_MS + 2000;
 
   setBridgeContext({
     userDataDir,
@@ -73,7 +82,11 @@ export async function createServer(config: BridgeConfigT) {
   server.log.info("[Server] CORS plugin registered");
 
   // Register WebSocket plugin.
-  await server.register(websocket);
+  await server.register(websocket, {
+    options: {
+      maxPayload: MAX_WS_PAYLOAD_BYTES,
+    },
+  });
   server.log.info("[Server] WebSocket plugin registered");
 
   // Initialize device modules and device watchers.
@@ -82,10 +95,10 @@ export async function createServer(config: BridgeConfigT) {
   deviceCache.initializeWatchers();
   server.log.info("[Server] Device watchers initialized");
 
-  // Initialize relay client if bridgeId is configured.
+  // Initialize relay client only if explicitly enabled.
   // relayUrl defaults to wss://broadify-relay.fly.dev if not provided.
   let relayClient: RelayClient | undefined = undefined;
-  if (config.bridgeId) {
+  if (config.relayEnabled && config.bridgeId) {
     const relayUrl = config.relayUrl || "wss://broadify-relay.fly.dev";
     relayClient = new RelayClient(
       config.bridgeId,
