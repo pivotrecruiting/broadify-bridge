@@ -46,7 +46,7 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "graphics_list",
 ] as const;
 
-const RELAY_COMMAND_ALLOWLIST_SET = new Set(RELAY_COMMAND_ALLOWLIST);
+const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);
 
 /**
  * Relay command types accepted by the bridge.
