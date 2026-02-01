@@ -29,6 +29,7 @@ sequenceDiagram
 ## Hinweise
 - Der Main‑Process erzeugt einen Pairing‑Code pro Start und gibt ihn per Env‑Var an die Bridge weiter.
 - Die Bridge kann ohne gesetzten Namen nicht gestartet werden.
+- Relay wird beim Bridge‑Start (GUI) aktiviert und beim Stop deaktiviert.
 
 ## Fehlerbilder
 - Port belegt → autoFallback oder Fehler

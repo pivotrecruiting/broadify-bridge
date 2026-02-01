@@ -45,6 +45,7 @@ sequenceDiagram
 - Bridge‑API wird lokal via HTTP angesprochen.
 - BrowserWindow‑Security‑Flags prüfen (Sandbox/Isolation).
 - Pairing‑Code wird nicht über CLI‑Args, sondern via Env‑Vars an die Bridge übergeben.
+- Relay wird beim Bridge‑Start (GUI) aktiviert und beim Stop deaktiviert.
 
 ## Relevante Dateien
 - `src/electron/main.ts`

@@ -48,7 +48,7 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 Status: Technische Punkte umgesetzt; organisatorische Tasks offen.
 
 Technisch:
-- [x] Relay-Verbindung per Default deaktivieren; nur bei lokaler Freigabe aktivieren.
+- [x] Relay-Verbindung wird beim Bridge-Start (GUI) aktiviert und beim Stop deaktiviert; CLI bleibt default off ohne `--relay-enabled`.
 - [x] Pairing-Code nicht in URLs (kein Hash/Query). Nur lokal anzeigen/QR.
 - [x] Payload-Logging entfernen oder strikt redactionen (WebApp + Bridge).
 - [x] /logs, /ws und /engine Endpoints nur lokal oder mit Auth-Token.
@@ -60,7 +60,7 @@ Organisatorisch:
 - [ ] Incident-Response-Prozess entwerfen (Owner, SLA, Eskalation).
 
 Akzeptanzkriterien:
-- [x] Ohne lokale Freigabe keine Relay-Commands.
+- [x] Relay ist nur aktiv, wenn die Bridge lokal ueber die Desktop-App gestartet wurde.
 - [x] Pairing-Code taucht in keiner URL, keinem Log auf.
 - [x] Unbekannte Commands werden serverseitig geblockt.
 

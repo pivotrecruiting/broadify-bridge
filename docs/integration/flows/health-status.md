@@ -27,7 +27,7 @@ sequenceDiagram
 ## Hinweise
 - Pairing‑Infos stammen aus dem Main‑Process (nicht aus `/status`).
 - `webAppUrl` wird im Main‑Process erzeugt und nicht von der Bridge geliefert.
-- Wenn aktiv, enthält `webAppUrl` den Pairing‑Code im URL‑Hash → als sensitiven Wert behandeln.
+- `webAppUrl` enthaelt nur die Bridge‑ID; Pairing‑Code wird nicht ueber die URL transportiert.
 
 ## Felder (BridgeStatus)
 - `running`, `reachable`, `version`, `uptime`, `mode`, `host`, `port`

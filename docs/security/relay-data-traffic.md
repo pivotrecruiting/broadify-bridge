@@ -177,7 +177,7 @@ Operational data:
 Phase-0 Aenderungen:
 - WebApp: Voll-Payload-Logging entfernt; optionales Debug-Logging nur als Zusammenfassung
   (gesteuert ueber NEXT_PUBLIC_BRIDGE_DEBUG=true).
-- Relay: HTTP-Body- und WS-Payload-Limits je 20 MB; Logs ohne Payloads (nur Message-Typ).
+- Relay: HTTP-Body- und WS-Payload-Limits je 2 MB; Logs ohne Payloads (nur Message-Typ).
 - Bridge: Relay-Payload-Logging entfernt; lokale Endpoints per Token/Loopback geschuetzt.
 
 WebApp:
@@ -207,10 +207,10 @@ Bridge:
 
 
 ## Payload limits and timeouts
-- Bridge HTTP bodyLimit: 20 MB
-- Bridge WS maxPayload: 20 MB
-- Bridge Relay inbound WS message drop: 20 MB
-- Relay HTTP bodyLimit: 20 MB
-- Relay WS maxPayload: 20 MB
+- Bridge HTTP bodyLimit: 2 MB
+- Bridge WS maxPayload: 2 MB
+- Bridge Relay inbound WS message drop: 2 MB
+- Relay HTTP bodyLimit: 2 MB
+- Relay WS maxPayload: 2 MB
 - Bridge request timeout: 15s
 - WebApp error message on size exceed: "Payload zu groß. Maximal 20 MB."
