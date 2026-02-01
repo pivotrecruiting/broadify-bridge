@@ -206,6 +206,16 @@ export async function startServer(
         await relayClient.disconnect();
       }
 
+      server.log.info("[Graphics] Shutting down renderer...");
+      try {
+        await graphicsManager.shutdown();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(
+          `[Graphics] Shutdown encountered an error: ${message}`
+        );
+      }
+
       await server.close();
       server.log.info("Server closed");
       process.exit(0);

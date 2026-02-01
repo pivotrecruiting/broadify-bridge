@@ -60,6 +60,7 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [bridgeProfile, setBridgeProfile] = useState<{
     bridgeId: string;
     bridgeName: string | null;
@@ -69,6 +70,10 @@ function App() {
   // Load bridge profile (name + id) on startup
   useEffect(() => {
     if (!window.electron) return;
+    window.electron
+      .appGetVersion()
+      .then((version) => setAppVersion(version))
+      .catch(() => setAppVersion(null));
     window.electron.bridgeGetProfile().then((profile) => {
       setBridgeProfile(profile);
       if (!profile.bridgeName) {
@@ -232,6 +237,7 @@ function App() {
           <BridgeIdentitySection
             bridgeId={bridgeId}
             bridgeName={bridgeName}
+            appVersion={appVersion || undefined}
             pairingCode={bridgeStatus.pairingCode}
             pairingExpiresAt={bridgeStatus.pairingExpiresAt}
             pairingExpired={bridgeStatus.pairingExpired}

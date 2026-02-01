@@ -265,6 +265,45 @@ export class GraphicsManager {
   }
 
   /**
+   * Shutdown graphics renderer and output resources.
+   *
+   * @returns Promise resolved once resources are released.
+   */
+  async shutdown(): Promise<void> {
+    if (this.ticker) {
+      clearInterval(this.ticker);
+      this.ticker = null;
+    }
+
+    this.clearActivePreset();
+    this.presetQueue = [];
+    this.layers.clear();
+    this.categoryToLayer.clear();
+    this.outputConfig = null;
+    this.outputSampleLogged = false;
+
+    try {
+      await this.outputAdapter.stop();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.warn(
+        `[Graphics] Output adapter stop failed during shutdown: ${message}`
+      );
+    }
+
+    try {
+      await this.renderer.shutdown();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.warn(
+        `[Graphics] Renderer shutdown failed: ${message}`
+      );
+    }
+
+    this.initialized = false;
+  }
+
+  /**
    * Create or update a graphics layer.
    *
    * @param payload Untrusted graphics layer payload.

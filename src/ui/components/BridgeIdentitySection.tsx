@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 interface BridgeIdentitySectionProps {
   bridgeId?: string;
   bridgeName?: string | null;
+  appVersion?: string;
   pairingCode?: string;
   pairingExpiresAt?: string;
   pairingExpired?: boolean;
@@ -17,6 +18,7 @@ interface BridgeIdentitySectionProps {
 export function BridgeIdentitySection({
   bridgeId,
   bridgeName,
+  appVersion,
   pairingCode,
   pairingExpiresAt,
   pairingExpired,
@@ -41,9 +43,14 @@ export function BridgeIdentitySection({
   return (
     <Card variant="frosted" className="p-4 sm:p-5 md:p-6" gradient>
       <div className="grid grid-cols-1 md:grid-cols-[140px_1fr] gap-4 md:gap-6 items-start">
-        <h2 className="text-card-foreground font-bold text-base sm:text-lg md:text-lg">
-          Bridge
-        </h2>
+        <div className="space-y-1">
+          <h2 className="text-card-foreground font-bold text-base sm:text-lg md:text-lg">
+            Bridge
+          </h2>
+          <span className="text-xs text-muted-foreground">
+            Software-Version {appVersion || "—"}
+          </span>
+        </div>
         <div className="space-y-3">
           <div className="flex flex-col gap-1">
             <span className="text-xs text-muted-foreground">Name</span>

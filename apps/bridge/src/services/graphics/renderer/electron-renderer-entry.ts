@@ -836,6 +836,10 @@ async function handleMessage(message: unknown): Promise<void> {
 }
 
 app.on("ready", () => {
+  if (process.platform === "darwin" && app.dock) {
+    // Hide Dock icon for the headless renderer process.
+    app.dock.hide();
+  }
   logger.info("[GraphicsRenderer] Electron renderer ready");
   registerAssetProtocol();
   isAppReady = true;

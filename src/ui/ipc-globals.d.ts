@@ -24,6 +24,10 @@ declare global {
         callback: (statistics: Statistics) => void
       ) => UnsubscribeFunction;
       getStaticData: () => Promise<StaticData>;
+      /**
+       * Get the desktop application version.
+       */
+      appGetVersion: () => Promise<string>;
       bridgeGetProfile: () => Promise<{
         bridgeId: string;
         bridgeName: string | null;

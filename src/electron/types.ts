@@ -48,6 +48,7 @@ export type {
 export type EventPayloadMapping = {
   statistics: Statistics;
   getStaticData: StaticData;
+  appGetVersion: string;
   bridgeGetProfile: { bridgeId: string; bridgeName: string | null };
   bridgeSetName: { success: boolean; error?: string };
   bridgeStart: { success: boolean; error?: string; actualPort?: number };

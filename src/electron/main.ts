@@ -1066,6 +1066,8 @@ if (!isRendererProcess) {
       }
     );
 
+    ipcMainHandle("appGetVersion", async () => app.getVersion());
+
     ipcMainHandle("bridgeClearLogs", async () => {
       logAppInfo("IPC bridgeClearLogs requested");
       const config = bridgeProcessManager.getConfig();
