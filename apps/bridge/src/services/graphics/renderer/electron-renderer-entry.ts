@@ -618,11 +618,7 @@ async function createLayer(message: {
     }
     if (DEBUG_GRAPHICS && !debugSampleLogged.has(message.layerId)) {
       debugSampleLogged.add(message.layerId);
-      const samples = sampleRgbaBuffer(
-        buffer,
-        message.width,
-        message.height,
-      );
+      const samples = sampleRgbaBuffer(buffer, message.width, message.height);
       logger.info(
         {
           layerId: message.layerId,

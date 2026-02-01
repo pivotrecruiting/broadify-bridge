@@ -282,7 +282,48 @@ export class ElectronRendererClient implements GraphicsRenderer {
     if (!this.child) {
       return;
     }
+
+    const child = this.child;
+    const hasExited = () =>
+      child.exitCode !== null || child.signalCode !== null;
+    const awaitExit = () =>
+      new Promise<void>((resolve) => {
+        if (hasExited()) {
+          resolve();
+          return;
+        }
+        child.once("exit", () => resolve());
+      });
+
     this.sendCommand({ type: "shutdown" });
+
+    const gracefulTimeoutMs = 4000;
+    const forceTimeoutMs = 2000;
+
+    await Promise.race([
+      awaitExit(),
+      new Promise<void>((resolve) => {
+        const timeoutId = setTimeout(() => resolve(), gracefulTimeoutMs);
+        void awaitExit().then(() => clearTimeout(timeoutId));
+      }),
+    ]);
+
+    if (!hasExited()) {
+      child.kill("SIGTERM");
+      await Promise.race([
+        awaitExit(),
+        new Promise<void>((resolve) => {
+          const timeoutId = setTimeout(() => resolve(), forceTimeoutMs);
+          void awaitExit().then(() => clearTimeout(timeoutId));
+        }),
+      ]);
+    }
+
+    if (!hasExited()) {
+      child.kill("SIGKILL");
+      await awaitExit();
+    }
+
     this.child = null;
     this.ipcSocket?.destroy();
     this.ipcSocket = null;
