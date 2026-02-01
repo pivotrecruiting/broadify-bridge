@@ -470,7 +470,14 @@ export class GraphicsManager {
     if (layer.presetId && this.activePreset?.presetId === layer.presetId) {
       this.activePreset.layerIds.delete(layer.layerId);
       if (this.activePreset.layerIds.size === 0) {
+        const clearedPresetId = this.activePreset.presetId;
         this.clearActivePreset();
+        getBridgeContext().logger.info(
+          `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
+        );
+        if (this.presetQueue.length > 0) {
+          await this.activateNextPreset();
+        }
       }
     }
   }
@@ -1116,26 +1123,38 @@ export class GraphicsManager {
   }
 
   private async activateNextPreset(): Promise<void> {
-    const next = this.presetQueue.shift();
-    if (!next) {
-      return;
-    }
+    while (this.presetQueue.length > 0) {
+      const next = this.presetQueue.shift();
+      if (!next) {
+        return;
+      }
 
-    // Activate queued preset and render its layers immediately.
-    this.activePreset = {
-      presetId: next.presetId,
-      durationMs: next.durationMs ?? null,
-      layerIds: new Set<string>(),
-      pendingStart: Boolean(next.durationMs && next.durationMs > 0),
-      startedAt: null,
-      expiresAt: null,
-      timer: null,
-    };
+      const layerIds: string[] = [];
+      try {
+        for (const layer of next.layers.values()) {
+          await this.renderPreparedLayer(layer);
+          layerIds.push(layer.layerId);
+        }
 
-    for (const layer of next.layers.values()) {
-      await this.renderPreparedLayer(layer);
-      if (this.activePreset?.presetId === next.presetId) {
-        this.activePreset.layerIds.add(layer.layerId);
+        this.activePreset = {
+          presetId: next.presetId,
+          durationMs: next.durationMs ?? null,
+          layerIds: new Set<string>(layerIds),
+          pendingStart: Boolean(next.durationMs && next.durationMs > 0),
+          startedAt: null,
+          expiresAt: null,
+          timer: null,
+        };
+        getBridgeContext().logger.info(
+          `[Graphics] Preset activated: ${next.presetId}`
+        );
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        getBridgeContext().logger.error(
+          `[Graphics] Failed to activate queued preset ${next.presetId}: ${message}`
+        );
+        await this.removePresetById(next.presetId);
       }
     }
   }
