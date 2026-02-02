@@ -116,10 +116,10 @@ git checkout main
 git pull origin main
 
 # Tag erstellen
-git tag -a v0.5.18 -m "Release version 0.5.18"
+git tag -a v0.7.0 -m "Release version 0.7.0"
 
 # Tag zu GitHub pushen
-git push origin v0.5.18
+git push origin v0.7.0
 ```
 
 ### Schritt 5: GitHub Actions Workflow prüfen
