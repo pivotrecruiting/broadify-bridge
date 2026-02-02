@@ -137,12 +137,11 @@ Schema: `GraphicsRemovePresetSchema`
 
 **Payload**
 ```json
-{ "presetId": "package-1", "clearQueue": true }
+{ "presetId": "package-1" }
 ```
 
 **Verhalten**
 - Entfernt alle Layer dieses Presets.
-- Optional: Preset‑Queue komplett leeren.
 
 ## 7) graphics_test_pattern
 **Payload:** none
@@ -159,8 +158,7 @@ Schema: `GraphicsRemovePresetSchema`
 {
   "outputConfig": { ... },
   "layers": [ { "layerId": "...", "category": "...", "layout": { ... }, "zIndex": 30 } ],
-  "activePreset": { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] },
-  "queuedPresets": [ { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] } ]
+  "activePreset": { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] }
 }
 ```
 

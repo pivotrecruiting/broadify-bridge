@@ -135,7 +135,7 @@ Graphics:
 - graphics_update_values -> { layerId, values }
 - graphics_update_layout -> { layerId, layout, zIndex? }
 - graphics_remove -> { layerId }
-- graphics_remove_preset -> { presetId, clearQueue? }
+- graphics_remove_preset -> { presetId }
 - graphics_list -> {}
 
 Note: bridge-commands.ts also contains a legacy `configure_outputs` command helper that does not match the Bridge command list. It appears unused in current UI flows.
