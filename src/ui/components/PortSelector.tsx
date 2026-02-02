@@ -7,7 +7,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import type { NetworkConfigT, InterfacePortConfigT } from "types";
+import type { NetworkConfigT, InterfacePortConfigT } from "@broadify/protocol";
 
 interface PortSelectorProps {
   portConfig: InterfacePortConfigT | undefined;

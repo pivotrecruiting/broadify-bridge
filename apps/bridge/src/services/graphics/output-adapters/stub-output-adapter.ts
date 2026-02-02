@@ -11,6 +11,11 @@ export class StubOutputAdapter implements GraphicsOutputAdapter {
   private configured = false;
   private lastLog = 0;
 
+  /**
+   * Configure stub output (no-op other than logging).
+   *
+   * @param config Output configuration payload.
+   */
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     this.configured = true;
     this.log(
@@ -18,6 +23,12 @@ export class StubOutputAdapter implements GraphicsOutputAdapter {
     );
   }
 
+  /**
+   * Drop frames, optionally logging periodic ticks.
+   *
+   * @param frame RGBA frame buffer with width/height metadata.
+   * @param config Output configuration payload.
+   */
   async sendFrame(
     frame: GraphicsOutputFrameT,
     config: GraphicsOutputConfigT
@@ -38,6 +49,9 @@ export class StubOutputAdapter implements GraphicsOutputAdapter {
     }
   }
 
+  /**
+   * Stop stub output (no-op).
+   */
   async stop(): Promise<void> {
     this.configured = false;
   }

@@ -1,11 +1,11 @@
-import type { DeviceDescriptorT } from "../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { getBridgeContext } from "./bridge-context.js";
 
 /**
- * Device cache service
+ * Device cache service.
  *
- * Manages caching of device detection results with refresh logic
+ * Manages caching of device detection results with refresh logic.
  */
 export class DeviceCache {
   private cachedDevices: DeviceDescriptorT[] = [];
@@ -26,7 +26,10 @@ export class DeviceCache {
   private readonly REFRESH_RATE_LIMIT = 2000; // 2 seconds
 
   /**
-   * Get cached devices or perform detection if cache expired
+   * Get cached devices or perform detection if cache expired.
+   *
+   * @param forceRefresh Force immediate detection (rate-limited).
+   * @returns Array of detected devices.
    */
   async getDevices(forceRefresh = false): Promise<DeviceDescriptorT[]> {
     const logger = getBridgeContext().logger;
@@ -110,6 +113,8 @@ export class DeviceCache {
 
   /**
    * Initialize device watchers for hotplug updates.
+   *
+   * Note: Watchers are debounced to avoid heavy detection bursts.
    */
   initializeWatchers(): void {
     if (this.watchInitialized) {
@@ -155,14 +160,16 @@ export class DeviceCache {
   }
 
   /**
-   * Get cached devices without triggering detection
+   * Get cached devices without triggering detection.
+   *
+   * @returns Cached devices (may be stale).
    */
   getCachedDevices(): DeviceDescriptorT[] {
     return this.cachedDevices;
   }
 
   /**
-   * Clear cache
+   * Clear cache and stop watchers.
    */
   clear(): void {
     this.cachedDevices = [];
@@ -175,7 +182,9 @@ export class DeviceCache {
   }
 
   /**
-   * Check if cache is fresh
+   * Check if cache is fresh.
+   *
+   * @returns True when cache is recent and non-empty.
    */
   isFresh(): boolean {
     const now = Date.now();

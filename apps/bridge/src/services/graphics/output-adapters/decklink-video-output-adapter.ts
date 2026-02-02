@@ -19,6 +19,8 @@ const FRAME_HEADER_LENGTH = 28;
 
 /**
  * DeckLink output adapter for single video output (no key/fill).
+ *
+ * Streams raw RGBA frames to the native DeckLink helper via stdin.
  */
 export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
   private child: ChildProcess | null = null;
@@ -32,6 +34,11 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
   private lastWarningAt = 0;
   private readonly warningThrottleMs = 5000;
 
+  /**
+   * Configure helper process for the selected output port and format.
+   *
+   * @param config Output configuration payload (validated upstream).
+   */
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
 
@@ -130,6 +137,12 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     this.height = config.format.height;
   }
 
+  /**
+   * Send a single RGBA frame to the helper process.
+   *
+   * @param frame RGBA frame buffer with width/height metadata.
+   * @param _config Output configuration (unused here).
+   */
   async sendFrame(
     frame: GraphicsOutputFrameT,
     _config: GraphicsOutputConfigT
@@ -188,6 +201,9 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     }
   }
 
+  /**
+   * Stop helper process and release resources.
+   */
   async stop(): Promise<void> {
     if (!this.child) {
       return;

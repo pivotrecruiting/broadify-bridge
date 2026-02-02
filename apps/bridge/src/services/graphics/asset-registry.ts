@@ -46,6 +46,8 @@ export class AssetRegistry {
 
   /**
    * Initialize registry and load manifest from disk.
+   *
+   * @returns Promise resolved when manifest is loaded.
    */
   async initialize(): Promise<void> {
     const { userDataDir } = getBridgeContext();
@@ -58,6 +60,9 @@ export class AssetRegistry {
 
   /**
    * Store or update an asset.
+   *
+   * @param asset Asset payload (may include base64 data).
+   * @returns Persisted asset record with file path and metadata.
    */
   async storeAsset(asset: GraphicsAssetT): Promise<AssetRecordT> {
     if (!this.assetsDir || !this.manifestPath) {
@@ -107,6 +112,9 @@ export class AssetRegistry {
 
   /**
    * Get asset record by id.
+   *
+   * @param assetId Asset identifier.
+   * @returns Asset record or null if missing.
    */
   getAsset(assetId: string): AssetRecordT | null {
     return this.assets.get(assetId) || null;
@@ -114,6 +122,8 @@ export class AssetRegistry {
 
   /**
    * Get asset records as a map for protocol resolution.
+   *
+   * @returns Map of assetId to file path and mime type.
    */
   getAssetMap(): Record<string, { filePath: string; mime: string }> {
     const entries: Record<string, { filePath: string; mime: string }> = {};

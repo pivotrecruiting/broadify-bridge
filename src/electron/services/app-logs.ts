@@ -11,6 +11,13 @@ export type AppLogResponse = {
   error?: string;
 };
 
+/**
+ * Return the last N lines from a log file.
+ *
+ * @param text Full log file content.
+ * @param maxLines Max number of lines to return.
+ * @returns Tail lines (up to maxLines).
+ */
 function tailLines(text: string, maxLines: number): string[] {
   if (maxLines <= 0) {
     return [];
@@ -22,6 +29,13 @@ function tailLines(text: string, maxLines: number): string[] {
   return lines.slice(lines.length - maxLines);
 }
 
+/**
+ * Apply a case-insensitive filter to log lines.
+ *
+ * @param lines Raw log lines.
+ * @param filter Optional filter string.
+ * @returns Filtered lines.
+ */
 function applyFilter(lines: string[], filter?: string): string[] {
   if (!filter) {
     return lines;
@@ -30,6 +44,12 @@ function applyFilter(lines: string[], filter?: string): string[] {
   return lines.filter((line) => line.toLowerCase().includes(needle));
 }
 
+/**
+ * Read application log file with optional filtering.
+ *
+ * @param options Log fetch options.
+ * @returns AppLogResponse with content or error.
+ */
 export async function readAppLogs(
   options: LogFetchOptions = {}
 ): Promise<AppLogResponse> {
@@ -65,6 +85,11 @@ export async function readAppLogs(
   }
 }
 
+/**
+ * Clear application log file.
+ *
+ * @returns AppLogClearResponseT with result or error.
+ */
 export async function clearAppLogs(): Promise<AppLogClearResponseT> {
   try {
     await fs.writeFile(getAppLogPath(), "");

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { NetworkConfigT, NetworkBindingOptionT } from "types";
+import type { NetworkConfigT, NetworkBindingOptionT } from "@broadify/protocol";
 import { getDefaultPortForBinding } from "../utils/network-utils";
 
 /**

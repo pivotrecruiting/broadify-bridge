@@ -1,5 +1,5 @@
 import { Settings } from "lucide-react";
-import type { BridgeStatus } from "types";
+import type { BridgeStatus } from "@broadify/protocol";
 import { StatusIndicator } from "./StatusIndicator";
 import logo from "../assets/logo.svg";
 

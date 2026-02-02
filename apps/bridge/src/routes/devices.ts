@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
-import type { DeviceDescriptorT } from "../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 import { moduleRegistry } from "../modules/module-registry.js";
 
 /**

@@ -1,5 +1,5 @@
 import type { DeviceModule, DeviceController } from "../device-module.js";
-import type { DeviceDescriptorT } from "../../types.js";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 import { USBCaptureDetector } from "./usb-capture-detector.js";
 import { USBCaptureDevice } from "./usb-capture-device.js";
 
@@ -18,17 +18,21 @@ export class USBCaptureModule implements DeviceModule {
   }
 
   /**
-   * Detect USB capture devices
+   * Detect USB capture devices.
+   *
+   * @returns Array of detected device descriptors.
    */
   async detect(): Promise<DeviceDescriptorT[]> {
     return this.detector.detect();
   }
 
   /**
-   * Create controller for a USB capture device
+   * Create controller for a USB capture device.
+   *
+   * @param deviceId USB capture device identifier.
+   * @returns Device controller instance.
    */
   createController(deviceId: string): DeviceController {
     return new USBCaptureDevice(deviceId);
   }
 }
-

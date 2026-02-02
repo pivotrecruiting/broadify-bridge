@@ -1,10 +1,11 @@
 import { createServer } from "net";
 
 /**
- * Check if a port is available
- * @param port Port number to check
- * @param host Host to bind to (default: 0.0.0.0)
- * @returns Promise<boolean> - true if port is available, false if in use
+ * Check if a port is available.
+ *
+ * @param port Port number to check.
+ * @param host Host to bind to (default: 0.0.0.0).
+ * @returns True if port is available, false if in use.
  */
 export async function isPortAvailable(
   port: number,
@@ -66,11 +67,12 @@ export async function isPortAvailable(
 }
 
 /**
- * Find the next available port starting from a given port
- * @param startPort Starting port number
- * @param maxPort Maximum port to check (default: startPort + 100)
- * @param host Host to bind to (default: 0.0.0.0)
- * @returns Promise<number | null> - Available port number or null if none found
+ * Find the next available port starting from a given port.
+ *
+ * @param startPort Starting port number.
+ * @param maxPort Maximum port to check (default: startPort + 100).
+ * @param host Host to bind to (default: 0.0.0.0).
+ * @returns Available port number or null if none found.
  */
 export async function findAvailablePort(
   startPort: number,
@@ -90,10 +92,11 @@ export async function findAvailablePort(
 }
 
 /**
- * Check multiple ports in parallel
- * @param ports Array of port numbers to check
- * @param host Host to bind to (default: 0.0.0.0)
- * @returns Promise<Map<number, boolean>> - Map of port -> isAvailable
+ * Check multiple ports in parallel.
+ *
+ * @param ports Array of port numbers to check.
+ * @param host Host to bind to (default: 0.0.0.0).
+ * @returns Map of port -> availability.
  */
 export async function checkPortsAvailability(
   ports: number[],

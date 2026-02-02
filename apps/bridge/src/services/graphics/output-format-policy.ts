@@ -16,6 +16,10 @@ export const KEY_FILL_PIXEL_FORMAT_PRIORITY = [
 
 /**
  * Check whether any of the preferred pixel formats is supported.
+ *
+ * @param supportedFormats Formats reported by the device.
+ * @param preferredFormats Ordered list of preferred formats.
+ * @returns True if at least one preferred format is supported.
  */
 export const supportsAnyPixelFormat = (
   supportedFormats: string[],

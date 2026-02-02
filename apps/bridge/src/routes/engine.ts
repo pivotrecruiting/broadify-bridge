@@ -5,10 +5,11 @@ import {
   EngineError,
   EngineErrorCode,
 } from "../services/engine/engine-errors.js";
+import { getAuthFailure } from "./route-guards.js";
 
 /**
- * Connect request schema
- * All fields are required - no fallback to runtimeConfig
+ * Connect request schema.
+ * All fields are required - no fallback to runtimeConfig.
  */
 const ConnectRequestSchema = z.object({
   type: z.enum(["atem", "tricaster", "vmix"]),
@@ -17,7 +18,7 @@ const ConnectRequestSchema = z.object({
 });
 
 /**
- * Register engine routes
+ * Register engine routes.
  *
  * POST /engine/connect - Connect to engine
  * POST /engine/disconnect - Disconnect from engine
@@ -31,6 +32,19 @@ export async function registerEngineRoute(
   fastify: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
+  fastify.addHook("preHandler", async (request, reply) => {
+    const authFailure = getAuthFailure(request);
+    if (authFailure) {
+      return reply.code(authFailure.status).send({
+        success: false,
+        error: {
+          code: "UNAUTHORIZED",
+          message: authFailure.message,
+        },
+      });
+    }
+  });
+
   /**
    * POST /engine/connect
    * Connect to engine (ATEM/Tricaster)

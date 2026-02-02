@@ -8,6 +8,11 @@ const CHANNELS = 4;
 
 /**
  * Composite premultiplied RGBA layers into a single premultiplied RGBA buffer.
+ *
+ * @param layers Source layers in draw order (back to front).
+ * @param width Output width in pixels.
+ * @param height Output height in pixels.
+ * @returns Composited RGBA buffer.
  */
 export function compositeLayers(
   layers: CompositeLayerT[],
@@ -59,6 +64,10 @@ export function compositeLayers(
 
 /**
  * Apply a solid background to a premultiplied RGBA buffer.
+ *
+ * @param buffer Premultiplied RGBA buffer (mutated in place).
+ * @param color Background color.
+ * @returns Buffer reference for chaining.
  */
 export function applyBackground(
   buffer: Buffer,

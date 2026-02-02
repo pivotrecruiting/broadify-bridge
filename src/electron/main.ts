@@ -10,6 +10,8 @@ import {
 import { fetchBridgeOutputs } from "./services/bridge-outputs.js";
 import { clearBridgeLogs, fetchBridgeLogs } from "./services/bridge-logs.js";
 import { bridgeIdentity } from "./services/bridge-identity.js";
+import { bridgeProfile } from "./services/bridge-profile.js";
+import { bridgePairing } from "./services/bridge-pairing.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
 import { logAppError, logAppInfo } from "./services/app-logger.js";
 import {
@@ -31,9 +33,18 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import * as Sentry from "@sentry/electron";
+import { z } from "zod";
 
 dotenv.config();
 
+const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
+
+/**
+ * Read a CLI flag value from process arguments.
+ *
+ * @param flag Flag name (e.g., --renderer-entry).
+ * @returns Flag value or null when missing.
+ */
 function getArgValue(flag: string): string | null {
   const index = process.argv.findIndex((arg) => arg === flag);
   if (index === -1) {
@@ -43,6 +54,12 @@ function getArgValue(flag: string): string | null {
   return value && !value.startsWith("--") ? value : null;
 }
 
+/**
+ * Parse argv into a simple flag map.
+ *
+ * @param argv Process argument list.
+ * @returns Map of flag -> value or true.
+ */
 function getArgMap(argv: string[]): Map<string, string | true> {
   const map = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i += 1) {
@@ -68,6 +85,12 @@ function getArgMap(argv: string[]): Map<string, string | true> {
   return map;
 }
 
+/**
+ * Resolve the renderer entry path for graphics renderer mode.
+ *
+ * @param argv Process argument list.
+ * @returns Renderer entry path or null.
+ */
 function resolveRendererEntry(argv: string[]): string | null {
   const args = getArgMap(argv);
   const explicit = args.get("renderer-entry");
@@ -189,7 +212,7 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
 };
 
 /**
- * Load network configuration for the Desktop App (not the Bridge)
+ * Load network configuration for the Desktop App (not the Bridge).
  *
  * This config is used by the Desktop App UI to show network interface options
  * and port settings. The Bridge itself receives these values as CLI arguments.
@@ -256,7 +279,7 @@ function loadNetworkConfig(): NetworkConfigT {
 }
 
 /**
- * Get Web App URL based on environment
+ * Get Web App URL based on environment.
  * Consistent with how RELAY_URL is handled: env var with fallback to default
  * Must be evaluated at runtime, not build time, to work in production
  */
@@ -279,7 +302,11 @@ function getWebAppBaseUrl(): string | null {
 }
 
 /**
- * Get interface type from binding ID
+ * Get interface type from binding ID.
+ *
+ * @param bindingId Selected binding id.
+ * @param options Available binding options.
+ * @returns Interface type string.
  */
 function getInterfaceType(
   bindingId: string,
@@ -290,10 +317,12 @@ function getInterfaceType(
 }
 
 /**
- * Build Web-App URL with bridgeId query parameter
+ * Build Web-App URL with bridgeId query parameter.
  * Consistent with how RELAY_URL is handled: env var with fallback to default
  */
-function buildWebAppUrl(bridgeId: string): string | null {
+function buildWebAppUrl(
+  bridgeId: string,
+): string | null {
   if (!bridgeId) {
     return null;
   }
@@ -369,6 +398,32 @@ if (!isRendererProcess) {
     });
 
     // Bridge IPC handlers
+    ipcMainHandle("bridgeGetProfile", () => {
+      const profile = bridgeProfile.getProfile();
+      return {
+        bridgeId: profile.bridgeId,
+        bridgeName: profile.bridgeName,
+      };
+    });
+
+    ipcMainHandle("bridgeSetName", async (event, bridgeName: string) => {
+      const parsedName = BRIDGE_NAME_SCHEMA.safeParse(bridgeName);
+      if (!parsedName.success) {
+        return {
+          success: false,
+          error: "Bridge name must be between 1 and 64 characters.",
+        };
+      }
+      try {
+        bridgeProfile.setBridgeName(parsedName.data);
+        return { success: true };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Unknown error";
+        return { success: false, error: errorMessage };
+      }
+    });
+
     ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
       // console.log("[Bridge] Starting bridge with config:", config);
 
@@ -376,6 +431,18 @@ if (!isRendererProcess) {
 
       // Get bridge ID
       const bridgeId = bridgeIdentity.getBridgeId();
+      const profile = bridgeProfile.getProfile();
+      const bridgeName = profile.bridgeName;
+
+      if (!bridgeName) {
+        return {
+          success: false,
+          error: "Bridge name is required before starting.",
+        };
+      }
+
+      const relayEnabled = true;
+      const pairingInfo = bridgePairing.startPairing();
 
       // Store network binding ID
       currentNetworkBindingId = config.networkBindingId || "localhost";
@@ -414,14 +481,19 @@ if (!isRendererProcess) {
 
       // Get relay URL from environment or use default
       const relayUrl = process.env.RELAY_URL || "wss://broadify-relay.fly.dev";
+      const relayBridgeId = bridgeId;
 
       // Start bridge without requiring outputs
       // Pass bridgeId and relayUrl as CLI args
       const result = await bridgeProcessManager.start(
         resolvedConfig,
         true, // autoFindPort = true
-        bridgeId,
-        relayUrl
+        relayBridgeId,
+        relayUrl,
+        bridgeName,
+        pairingInfo?.code,
+        pairingInfo?.expiresAt,
+        relayEnabled
       );
       console.log("[Bridge] Start result:", result);
 
@@ -435,7 +507,15 @@ if (!isRendererProcess) {
           running: true,
           reachable: false,
           bridgeId,
+          bridgeName,
         };
+        if (pairingInfo) {
+          initialStatus.pairingCode = pairingInfo.code;
+          initialStatus.pairingExpiresAt = new Date(
+            pairingInfo.expiresAt
+          ).toISOString();
+          initialStatus.pairingExpired = false;
+        }
 
         // Build web app URL immediately so link is available right away
         const webAppUrl = buildWebAppUrl(bridgeId);
@@ -475,6 +555,16 @@ if (!isRendererProcess) {
             // Must be done BEFORE sending status to UI
             // Use bridgeId from status (from relay) or fallback to bridgeIdentity
             const bridgeIdForUrl = status.bridgeId || bridgeId;
+            const pairingInfo = bridgePairing.getPairingInfo();
+            if (pairingInfo) {
+              status.pairingCode = pairingInfo.code;
+              status.pairingExpiresAt = new Date(
+                pairingInfo.expiresAt
+              ).toISOString();
+              status.pairingExpired = pairingInfo.expired;
+            }
+            status.bridgeName = status.bridgeName || bridgeName;
+
             if (bridgeIdForUrl) {
               const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
               if (webAppUrl) {
@@ -494,6 +584,7 @@ if (!isRendererProcess) {
         );
       } else {
         // console.log("[Bridge] Bridge start failed:", result.error);
+        bridgePairing.clear();
       }
 
       return result;
@@ -515,6 +606,7 @@ if (!isRendererProcess) {
       }
 
       const result = await bridgeProcessManager.stop();
+      bridgePairing.clear();
 
       // Reset web app flag and outputs
       // Outputs are managed in the web app
@@ -534,6 +626,8 @@ if (!isRendererProcess) {
     ipcMainHandle("bridgeGetStatus", async () => {
       const config = bridgeProcessManager.getConfig();
       const isRunning = bridgeProcessManager.isRunning();
+      const profile = bridgeProfile.getProfile();
+      const pairingInfo = bridgePairing.getPairingInfo();
 
       console.log(
         `[Bridge] GetStatus - isRunning: ${isRunning}, config:`,
@@ -554,6 +648,14 @@ if (!isRendererProcess) {
         ...healthStatus,
         running: isRunning, // Always use actual process state
       };
+      status.bridgeName = status.bridgeName || profile.bridgeName || undefined;
+      if (pairingInfo) {
+        status.pairingCode = pairingInfo.code;
+        status.pairingExpiresAt = new Date(
+          pairingInfo.expiresAt
+        ).toISOString();
+        status.pairingExpired = pairingInfo.expired;
+      }
 
       // Build web app URL with bridgeId if available
       // Use bridgeId from status (from relay) or fallback to bridgeIdentity
@@ -620,7 +722,11 @@ if (!isRendererProcess) {
     });
 
     /**
-     * Helper function to make requests to Bridge API
+     * Helper function to make requests to Bridge API.
+     *
+     * @param endpoint Bridge API endpoint (path only).
+     * @param options Fetch options.
+     * @returns Parsed JSON response.
      */
     async function bridgeApiRequest(
       endpoint: string,
@@ -946,6 +1052,8 @@ if (!isRendererProcess) {
         return response;
       }
     );
+
+    ipcMainHandle("appGetVersion", async () => app.getVersion());
 
     ipcMainHandle("bridgeClearLogs", async () => {
       logAppInfo("IPC bridgeClearLogs requested");

@@ -1,7 +1,7 @@
 import { Card } from "@/components/card";
 import { Button } from "@/components/ui/button";
 import { Loader2, Play, Square } from "lucide-react";
-import type { MacroT } from "types";
+import type { MacroT } from "@broadify/protocol";
 
 interface MacroListProps {
   macros: MacroT[];
