@@ -28,14 +28,11 @@ import type {
   NetworkConfigT,
   NetworkBindingOptionT,
 } from "./types.js";
-import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import * as Sentry from "@sentry/electron";
 import { z } from "zod";
-
-dotenv.config();
 
 const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
 

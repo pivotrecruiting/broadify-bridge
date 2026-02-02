@@ -2,6 +2,8 @@ import { WebSocket } from "ws";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { commandRouter, isRelayCommand } from "./command-router.js";
 import { readFileSync } from "node:fs";
+import { lookup } from "node:dns/promises";
+import net from "node:net";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RelayCommand } from "./command-router.js";
@@ -14,9 +16,94 @@ const RELAY_COMMAND_TTL_SECONDS = 30;
 const RELAY_COMMAND_SKEW_SECONDS = 60;
 const MAX_JTI_CACHE_SIZE = 5000;
 
-const RELAY_PUBLIC_KEY_PEM = process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY;
-const RELAY_PUBLIC_KEY_KID = process.env.BRIDGE_RELAY_SIGNING_KID;
-const RELAY_JWKS_URL = process.env.BRIDGE_RELAY_JWKS_URL;
+const RELAY_PUBLIC_KEY_PEM =
+  process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY ||
+  process.env.RELAY_SIGNING_PUBLIC_KEY;
+const RELAY_PUBLIC_KEY_KID =
+  process.env.BRIDGE_RELAY_SIGNING_KID || process.env.RELAY_SIGNING_KID;
+const RELAY_JWKS_URL =
+  process.env.BRIDGE_RELAY_JWKS_URL || process.env.RELAY_JWKS_URL;
+
+const isPrivateIpv4 = (ip: string): boolean => {
+  const parts = ip.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part))) {
+    return true;
+  }
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 192 && b === 0) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  if (a >= 224) return true;
+  return false;
+};
+
+const isPrivateIpv6 = (ip: string): boolean => {
+  const normalized = ip.toLowerCase();
+  if (normalized === "::" || normalized === "::1") return true;
+  if (normalized.startsWith("fe80:")) return true;
+  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+  if (normalized.startsWith("ff")) return true;
+  if (normalized.startsWith("2001:db8")) return true;
+  if (normalized.startsWith("::ffff:")) {
+    const mapped = normalized.slice("::ffff:".length);
+    if (net.isIP(mapped) === 4) {
+      return isPrivateIpv4(mapped);
+    }
+  }
+  return false;
+};
+
+const isPrivateAddress = (ip: string): boolean => {
+  const ipVersion = net.isIP(ip);
+  if (ipVersion === 4) {
+    return isPrivateIpv4(ip);
+  }
+  if (ipVersion === 6) {
+    return isPrivateIpv6(ip);
+  }
+  return true;
+};
+
+const validateJwksUrl = async (): Promise<URL> => {
+  if (!RELAY_JWKS_URL) {
+    throw new Error("JWKS URL not configured");
+  }
+  let url: URL;
+  try {
+    url = new URL(RELAY_JWKS_URL);
+  } catch {
+    throw new Error("Invalid JWKS URL");
+  }
+  if (url.protocol !== "https:") {
+    throw new Error("JWKS URL must use https");
+  }
+  if (url.username || url.password) {
+    throw new Error("JWKS URL must not include credentials");
+  }
+  const host = url.hostname;
+  if (net.isIP(host)) {
+    if (isPrivateAddress(host)) {
+      throw new Error("JWKS URL resolves to private address");
+    }
+    return url;
+  }
+  const addresses = await lookup(host, { all: true });
+  if (addresses.length === 0) {
+    throw new Error("JWKS URL DNS lookup failed");
+  }
+  for (const record of addresses) {
+    if (isPrivateAddress(record.address)) {
+      throw new Error("JWKS URL resolves to private address");
+    }
+  }
+  return url;
+};
 
 /**
  * Get version from package.json
@@ -168,7 +255,8 @@ const refreshJwks = async () => {
     return;
   }
   jwksRefreshInFlight = (async () => {
-    const response = await fetch(RELAY_JWKS_URL, { method: "GET" });
+    const jwksUrl = await validateJwksUrl();
+    const response = await fetch(jwksUrl.toString(), { method: "GET" });
     if (!response.ok) {
       throw new Error(`JWKS fetch failed: ${response.status}`);
     }
