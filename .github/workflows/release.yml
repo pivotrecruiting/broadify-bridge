@@ -71,6 +71,7 @@ jobs:
         run: npm run build
 
       - name: Write Bridge env for packaging
+        shell: bash
         run: |
           if [ -n "$BRIDGE_RELAY_JWKS_URL" ]; then
             mkdir -p apps/bridge/dist
