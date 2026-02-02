@@ -125,12 +125,23 @@ type GraphicsQueuedPresetT = {
   durationMs: number | null;
   layers: Map<GraphicsCategoryT, PreparedLayerT>;
   enqueuedAt: number;
+  presetSendId?: string;
 };
 
 type PreparedLayerT = GraphicsSendPayloadT & {
   backgroundMode: GraphicsBackgroundModeT;
   values: Record<string, unknown>;
   bindings: TemplateBindingsT;
+};
+
+type PresetSendDecisionT = {
+  presetSendId: string;
+  presetId: string;
+  expectedCategories: Set<GraphicsCategoryT>;
+  seenCategories: Set<GraphicsCategoryT>;
+  decision: "queue" | "send";
+  durationMs: number | null;
+  createdAt: number;
 };
 
 /**
@@ -151,8 +162,10 @@ export class GraphicsManager {
   private lastOutputLogAt = 0;
   private lastOutputErrorLogAt = 0;
   private outputSampleLogged = false;
-  private activePreset: GraphicsActivePresetT | null = null;
+  private activePresets = new Map<string, GraphicsActivePresetT>();
+  private lastActivatedPresetId: string | null = null;
   private presetQueue: GraphicsQueuedPresetT[] = [];
+  private presetSendDecisions = new Map<string, PresetSendDecisionT>();
 
   constructor() {
     this.renderer = this.selectRenderer();
@@ -275,8 +288,9 @@ export class GraphicsManager {
       this.ticker = null;
     }
 
-    this.clearActivePreset();
+    this.clearAllActivePresets();
     this.presetQueue = [];
+    this.presetSendDecisions.clear();
     this.layers.clear();
     this.categoryToLayer.clear();
     this.outputConfig = null;
@@ -339,64 +353,90 @@ export class GraphicsManager {
       }
     }
 
-    const prepared = await this.prepareLayer(data);
-    const durationMs = prepared.durationMs ?? null;
+      const prepared = await this.prepareLayer(data);
+      const durationMs = prepared.durationMs ?? null;
 
-    if (
-      prepared.presetId &&
-      this.activePreset &&
-      (this.activePreset.durationMs ?? 0) > 0 &&
-      this.activePreset.presetId !== prepared.presetId
-    ) {
-      this.enqueuePresetLayer(prepared, durationMs);
-      getBridgeContext().logger.info(
-        `[Graphics] Preset queued: ${prepared.presetId}`
-      );
-      return;
-    }
+      if (prepared.presetId) {
+        const presetCategories = this.resolvePresetCategories(prepared);
+        const presetSendId = prepared.presetSendId;
+        const decision = this.getOrCreatePresetSendDecision({
+          presetId: prepared.presetId,
+          durationMs,
+          categories: presetCategories,
+          presetSendId,
+        });
 
-    if (
-      prepared.presetId &&
-      this.activePreset &&
-      this.activePreset.presetId === prepared.presetId &&
-      (this.activePreset.durationMs ?? 0) > 0
-    ) {
-      const nextDuration = durationMs ?? this.activePreset.durationMs;
-      if (typeof nextDuration === "number" && nextDuration > 0) {
-        this.resetActivePresetTimer(nextDuration);
+        if (decision.decision === "queue") {
+          this.enqueuePresetLayer(prepared, durationMs, presetSendId);
+          this.trackPresetSendCategory(presetSendId, prepared.category);
+          getBridgeContext().logger.info(
+            `[Graphics] Preset queued: ${prepared.presetId}`
+          );
+          return;
+        }
+
+        if (decision.replacePresetIds.size > 0) {
+          for (const presetId of decision.replacePresetIds) {
+            await this.removePresetById(presetId);
+          }
+        }
+
+        const activePreset = this.activePresets.get(prepared.presetId);
+        if (activePreset && (activePreset.durationMs ?? 0) > 0) {
+          const nextDuration = durationMs ?? activePreset.durationMs;
+          if (typeof nextDuration === "number" && nextDuration > 0) {
+            this.resetActivePresetTimer(prepared.presetId, nextDuration);
+          }
+        } else if (activePreset && durationMs === null) {
+          this.clearActivePresetTimer(prepared.presetId);
+          activePreset.durationMs = null;
+          activePreset.pendingStart = false;
+          activePreset.startedAt = null;
+          activePreset.expiresAt = null;
+        }
       }
-    }
-
-    if (
-      prepared.presetId &&
-      this.activePreset &&
-      this.activePreset.presetId !== prepared.presetId &&
-      !this.activePreset.durationMs
-    ) {
-      await this.removePresetById(this.activePreset.presetId);
-    }
-
-    await this.renderPreparedLayer(prepared);
 
     if (prepared.presetId) {
-      if (!this.activePreset || this.activePreset.presetId !== prepared.presetId) {
-        this.activePreset = {
-          presetId: prepared.presetId,
-          durationMs: durationMs ?? null,
-          layerIds: new Set([prepared.layerId]),
-          pendingStart: Boolean(durationMs && durationMs > 0),
-          startedAt: null,
-          expiresAt: null,
-          timer: null,
-        };
-        getBridgeContext().logger.info(
-          `[Graphics] Preset activated: ${prepared.presetId}`
-        );
-      } else {
-        this.activePreset.layerIds.add(prepared.layerId);
+      await this.removeCategoryConflict(prepared.category, prepared.layerId);
+    }
+
+      await this.renderPreparedLayer(prepared);
+
+      if (prepared.presetId) {
+        const existingPreset = this.activePresets.get(prepared.presetId);
+        if (!existingPreset) {
+          this.activePresets.set(prepared.presetId, {
+            presetId: prepared.presetId,
+            durationMs: durationMs ?? null,
+            layerIds: new Set([prepared.layerId]),
+            pendingStart: Boolean(durationMs && durationMs > 0),
+            startedAt: null,
+            expiresAt: null,
+            timer: null,
+          });
+          this.lastActivatedPresetId = prepared.presetId;
+          getBridgeContext().logger.info(
+            `[Graphics] Preset activated: ${prepared.presetId}`
+          );
+        } else {
+          existingPreset.layerIds.add(prepared.layerId);
+          if (typeof durationMs === "number") {
+            existingPreset.durationMs = durationMs;
+            if (durationMs > 0) {
+              existingPreset.pendingStart = true;
+            }
+          } else if (durationMs === null) {
+            existingPreset.durationMs = null;
+            existingPreset.pendingStart = false;
+            existingPreset.startedAt = null;
+            existingPreset.expiresAt = null;
+            this.clearActivePresetTimer(prepared.presetId);
+          }
+        }
+
+        this.trackPresetSendCategory(prepared.presetSendId, prepared.category);
       }
     }
-  }
 
   /**
    * Update values for an existing layer.
@@ -467,19 +507,22 @@ export class GraphicsManager {
     if (this.categoryToLayer.get(layer.category) === data.layerId) {
       this.categoryToLayer.delete(layer.category);
     }
-    if (layer.presetId && this.activePreset?.presetId === layer.presetId) {
-      this.activePreset.layerIds.delete(layer.layerId);
-      if (this.activePreset.layerIds.size === 0) {
-        const clearedPresetId = this.activePreset.presetId;
-        this.clearActivePreset();
-        getBridgeContext().logger.info(
-          `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
-        );
-        if (this.presetQueue.length > 0) {
-          await this.activateNextPreset();
+      if (layer.presetId) {
+        const activePreset = this.activePresets.get(layer.presetId);
+        if (activePreset) {
+          activePreset.layerIds.delete(layer.layerId);
+          if (activePreset.layerIds.size === 0) {
+            const clearedPresetId = activePreset.presetId;
+            this.removeActivePreset(clearedPresetId);
+            getBridgeContext().logger.info(
+              `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
+            );
+            if (this.presetQueue.length > 0) {
+              await this.activateNextPreset();
+            }
+          }
         }
       }
-    }
   }
 
   /**
@@ -493,6 +536,7 @@ export class GraphicsManager {
 
     const data = GraphicsRemovePresetSchema.parse(payload);
     await this.removePresetById(data.presetId);
+    this.clearPresetSendDecisions(data.presetId);
 
     if (data.clearQueue) {
       this.presetQueue = [];
@@ -505,7 +549,7 @@ export class GraphicsManager {
     );
     this.logPresetQueue("filtered_by_remove_preset");
 
-    if (!this.activePreset && this.presetQueue.length > 0) {
+    if (this.presetQueue.length > 0) {
       await this.activateNextPreset();
     }
   }
@@ -536,7 +580,17 @@ export class GraphicsManager {
       expiresAt: number | null;
       pendingStart: boolean;
       layerIds: string[];
+      categories?: GraphicsCategoryT[];
     } | null;
+    activePresets: Array<{
+      presetId: string;
+      durationMs: number | null;
+      startedAt: number | null;
+      expiresAt: number | null;
+      pendingStart: boolean;
+      layerIds: string[];
+      categories?: GraphicsCategoryT[];
+    }>;
     queuedPresets: Array<{
       presetId: string;
       durationMs: number | null;
@@ -552,19 +606,38 @@ export class GraphicsManager {
       presetId: layer.presetId,
     }));
 
+    const activePresets = Array.from(this.activePresets.values()).map(
+      (preset) => {
+        const categories = new Set<GraphicsCategoryT>();
+        preset.layerIds.forEach((layerId) => {
+          const layer = this.layers.get(layerId);
+          if (layer?.category) {
+            categories.add(layer.category);
+          }
+        });
+        return {
+          presetId: preset.presetId,
+          durationMs: preset.durationMs,
+          startedAt: preset.startedAt,
+          expiresAt: preset.expiresAt,
+          pendingStart: preset.pendingStart,
+          layerIds: Array.from(preset.layerIds),
+          categories: Array.from(categories),
+        };
+      }
+    );
+    const activePreset =
+      (this.lastActivatedPresetId
+        ? activePresets.find(
+            (preset) => preset.presetId === this.lastActivatedPresetId
+          )
+        : activePresets[0]) ?? null;
+
     return {
       outputConfig: this.outputConfig,
       layers,
-      activePreset: this.activePreset
-        ? {
-          presetId: this.activePreset.presetId,
-          durationMs: this.activePreset.durationMs,
-          startedAt: this.activePreset.startedAt,
-          expiresAt: this.activePreset.expiresAt,
-          pendingStart: this.activePreset.pendingStart,
-          layerIds: Array.from(this.activePreset.layerIds),
-        }
-        : null,
+      activePreset,
+      activePresets,
       queuedPresets: this.presetQueue.map((item) => ({
         presetId: item.presetId,
         durationMs: item.durationMs,
@@ -639,7 +712,8 @@ export class GraphicsManager {
     this.layers.clear();
     this.categoryToLayer.clear();
     this.presetQueue = [];
-    this.clearActivePreset();
+    this.clearAllActivePresets();
+    this.presetSendDecisions.clear();
     this.logPresetQueue("cleared");
   }
 
@@ -896,7 +970,7 @@ export class GraphicsManager {
         this.outputConfig
       );
       this.framesSent++;
-      this.maybeStartPresetTimer(layers.map((layer) => layer.layerId));
+        this.maybeStartPresetTimers(layers.map((layer) => layer.layerId));
 
       const now = Date.now();
       if (now - this.lastOutputLogAt >= 5000) {
@@ -1025,15 +1099,31 @@ export class GraphicsManager {
 
   private enqueuePresetLayer(
     data: PreparedLayerT,
-    durationMs: number | null
+    durationMs: number | null,
+    presetSendId?: string
   ): void {
     // Coalesce layers for the same preset into a single queued entry.
-    const existing =
+    const existingBySendId = presetSendId
+      ? this.presetQueue.find(
+          (item) =>
+            item.presetId === data.presetId &&
+            item.presetSendId === presetSendId
+        )
+      : null;
+    const existingTail =
       this.presetQueue.length > 0
         ? this.presetQueue[this.presetQueue.length - 1]
         : null;
+    const existing =
+      existingBySendId ??
+      (!presetSendId &&
+      existingTail &&
+      existingTail.presetId === data.presetId &&
+      !existingTail.presetSendId
+        ? existingTail
+        : null);
 
-    if (existing && existing.presetId === data.presetId) {
+    if (existing) {
       existing.layers.set(data.category, data);
       existing.durationMs = durationMs;
       this.logPresetQueue("coalesced");
@@ -1051,64 +1141,87 @@ export class GraphicsManager {
       durationMs,
       layers,
       enqueuedAt: Date.now(),
+      presetSendId,
     });
     this.logPresetQueue("enqueued");
   }
 
-  private maybeStartPresetTimer(layerIds: string[]): void {
-    if (!this.activePreset || !this.activePreset.pendingStart) {
+  private maybeStartPresetTimers(layerIds: string[]): void {
+    if (this.activePresets.size === 0) {
       return;
     }
 
-    const hasActiveLayer = layerIds.some((layerId) =>
-      this.activePreset?.layerIds.has(layerId)
-    );
+    for (const preset of this.activePresets.values()) {
+      if (!preset.pendingStart) {
+        continue;
+      }
 
-    if (!hasActiveLayer) {
+      const hasActiveLayer = layerIds.some((layerId) =>
+        preset.layerIds.has(layerId)
+      );
+
+      if (!hasActiveLayer) {
+        continue;
+      }
+
+      const startedAt = Date.now();
+      preset.pendingStart = false;
+      preset.startedAt = startedAt;
+      preset.expiresAt = startedAt + (preset.durationMs ?? 0);
+      preset.timer = setTimeout(() => {
+        void this.expireActivePreset(preset.presetId);
+      }, preset.durationMs ?? 0);
+    }
+  }
+
+  private resetActivePresetTimer(
+    presetId: string,
+    durationMs: number
+  ): void {
+    const preset = this.activePresets.get(presetId);
+    if (!preset) {
       return;
     }
-
-    const startedAt = Date.now();
-    this.activePreset.pendingStart = false;
-    this.activePreset.startedAt = startedAt;
-    this.activePreset.expiresAt = startedAt + (this.activePreset.durationMs ?? 0);
-    this.activePreset.timer = setTimeout(() => {
-      void this.expireActivePreset();
-    }, this.activePreset.durationMs ?? 0);
+    this.clearActivePresetTimer(presetId);
+    preset.durationMs = durationMs;
+    preset.pendingStart = true;
+    preset.startedAt = null;
+    preset.expiresAt = null;
   }
 
-  private resetActivePresetTimer(durationMs: number): void {
-    if (!this.activePreset) {
-      return;
-    }
-    this.clearActivePresetTimer();
-    this.activePreset.durationMs = durationMs;
-    this.activePreset.pendingStart = true;
-    this.activePreset.startedAt = null;
-    this.activePreset.expiresAt = null;
-  }
-
-  private clearActivePresetTimer(): void {
-    if (this.activePreset?.timer) {
-      clearTimeout(this.activePreset.timer);
-      this.activePreset.timer = null;
+  private clearActivePresetTimer(presetId: string): void {
+    const preset = this.activePresets.get(presetId);
+    if (preset?.timer) {
+      clearTimeout(preset.timer);
+      preset.timer = null;
     }
   }
 
-  private clearActivePreset(): void {
-    this.clearActivePresetTimer();
-    this.activePreset = null;
+  private removeActivePreset(presetId: string): void {
+    this.clearActivePresetTimer(presetId);
+    this.activePresets.delete(presetId);
+    if (this.lastActivatedPresetId === presetId) {
+      this.lastActivatedPresetId = null;
+    }
   }
 
-  private async expireActivePreset(): Promise<void> {
-    if (!this.activePreset) {
+  private clearAllActivePresets(): void {
+    for (const presetId of this.activePresets.keys()) {
+      this.clearActivePresetTimer(presetId);
+    }
+    this.activePresets.clear();
+    this.lastActivatedPresetId = null;
+  }
+
+  private async expireActivePreset(presetId: string): Promise<void> {
+    const preset = this.activePresets.get(presetId);
+    if (!preset) {
       return;
     }
 
     // Remove all layers belonging to the active preset.
-    const layerIds = Array.from(this.activePreset.layerIds);
-    const presetId = this.activePreset.presetId;
-    this.clearActivePreset();
+    const layerIds = Array.from(preset.layerIds);
+    this.removeActivePreset(presetId);
 
     for (const layerId of layerIds) {
       const layer = this.layers.get(layerId);
@@ -1129,20 +1242,26 @@ export class GraphicsManager {
 
   private async activateNextPreset(): Promise<void> {
     while (this.presetQueue.length > 0) {
-      const next = this.presetQueue.shift();
+      const next = this.presetQueue[0];
       if (!next) {
         return;
       }
 
+      if (!this.canActivateQueuedPreset(next)) {
+        return;
+      }
+
+      this.presetQueue.shift();
       const layerIds: string[] = [];
       try {
+        await this.removeConflictingPresets(next);
         await this.removeCategoryConflicts(next);
         for (const layer of next.layers.values()) {
           await this.renderPreparedLayer(layer);
           layerIds.push(layer.layerId);
         }
 
-        this.activePreset = {
+        this.activePresets.set(next.presetId, {
           presetId: next.presetId,
           durationMs: next.durationMs ?? null,
           layerIds: new Set<string>(layerIds),
@@ -1150,7 +1269,8 @@ export class GraphicsManager {
           startedAt: null,
           expiresAt: null,
           timer: null,
-        };
+        });
+        this.lastActivatedPresetId = next.presetId;
         getBridgeContext().logger.info(
           `[Graphics] Preset activated: ${next.presetId}`
         );
@@ -1167,6 +1287,142 @@ export class GraphicsManager {
     }
   }
 
+  private resolvePresetCategories(data: PreparedLayerT): GraphicsCategoryT[] {
+    const categories =
+      Array.isArray(data.presetCategories) && data.presetCategories.length > 0
+        ? data.presetCategories
+        : [data.category];
+    return Array.from(new Set(categories));
+  }
+
+  private getOrCreatePresetSendDecision(input: {
+    presetId: string;
+    durationMs: number | null;
+    categories: GraphicsCategoryT[];
+    presetSendId?: string;
+  }): { decision: "queue" | "send"; replacePresetIds: Set<string> } {
+    if (input.presetSendId) {
+      const existing = this.presetSendDecisions.get(input.presetSendId);
+      if (existing) {
+        return {
+          decision: existing.decision,
+          replacePresetIds: new Set<string>(),
+        };
+      }
+    }
+
+    const conflicts = this.getPresetConflictInfo(
+      input.categories,
+      input.presetId
+    );
+    const hasDuration = typeof input.durationMs === "number" && input.durationMs > 0;
+    const decision: "queue" | "send" = hasDuration
+      ? conflicts.hasConflict
+        ? "queue"
+        : "send"
+      : conflicts.hasCountConflict
+        ? "queue"
+        : "send";
+    const replacePresetIds =
+      decision === "send" ? conflicts.replacePresetIds : new Set<string>();
+
+    if (input.presetSendId) {
+      this.presetSendDecisions.set(input.presetSendId, {
+        presetSendId: input.presetSendId,
+        presetId: input.presetId,
+        expectedCategories: new Set(input.categories),
+        seenCategories: new Set<GraphicsCategoryT>(),
+        decision,
+        durationMs: input.durationMs ?? null,
+        createdAt: Date.now(),
+      });
+    }
+
+    return { decision, replacePresetIds };
+  }
+
+  private trackPresetSendCategory(
+    presetSendId: string | undefined,
+    category: GraphicsCategoryT
+  ): void {
+    if (!presetSendId) {
+      return;
+    }
+    const entry = this.presetSendDecisions.get(presetSendId);
+    if (!entry) {
+      return;
+    }
+    entry.seenCategories.add(category);
+    if (entry.seenCategories.size >= entry.expectedCategories.size) {
+      this.presetSendDecisions.delete(presetSendId);
+    }
+  }
+
+  private clearPresetSendDecisions(presetId: string): void {
+    for (const [sendId, entry] of this.presetSendDecisions.entries()) {
+      if (entry.presetId === presetId) {
+        this.presetSendDecisions.delete(sendId);
+      }
+    }
+  }
+
+  private getPresetConflictInfo(
+    categories: GraphicsCategoryT[],
+    presetId: string
+  ): {
+    hasConflict: boolean;
+    hasCountConflict: boolean;
+    replacePresetIds: Set<string>;
+  } {
+    let hasConflict = false;
+    let hasCountConflict = false;
+    const replacePresetIds = new Set<string>();
+
+    for (const category of categories) {
+      const existingLayerId = this.categoryToLayer.get(category);
+      if (!existingLayerId) {
+        continue;
+      }
+      const layer = this.layers.get(existingLayerId);
+      if (!layer?.presetId || layer.presetId === presetId) {
+        continue;
+      }
+      hasConflict = true;
+      const activePreset = this.activePresets.get(layer.presetId);
+      const durationMs = activePreset?.durationMs ?? null;
+      if (durationMs && durationMs > 0) {
+        hasCountConflict = true;
+      } else {
+        replacePresetIds.add(layer.presetId);
+      }
+    }
+
+    return { hasConflict, hasCountConflict, replacePresetIds };
+  }
+
+  private canActivateQueuedPreset(preset: GraphicsQueuedPresetT): boolean {
+    const categories = Array.from(preset.layers.keys());
+    const conflicts = this.getPresetConflictInfo(categories, preset.presetId);
+    const hasDuration = typeof preset.durationMs === "number" && preset.durationMs > 0;
+    if (hasDuration) {
+      return !conflicts.hasConflict;
+    }
+    return !conflicts.hasCountConflict;
+  }
+
+  private async removeConflictingPresets(
+    preset: GraphicsQueuedPresetT
+  ): Promise<void> {
+    const categories = Array.from(preset.layers.keys());
+    const conflicts = this.getPresetConflictInfo(categories, preset.presetId);
+    if (conflicts.replacePresetIds.size === 0) {
+      return;
+    }
+    for (const presetId of conflicts.replacePresetIds) {
+      await this.removePresetById(presetId);
+    }
+  }
+
   private async removePresetById(presetId: string): Promise<void> {
     const layersToRemove = Array.from(this.layers.values()).filter(
       (layer) => layer.presetId === presetId
@@ -1180,9 +1436,10 @@ export class GraphicsManager {
       }
     }
 
-    if (this.activePreset?.presetId === presetId) {
-      this.clearActivePreset();
+    if (this.activePresets.has(presetId)) {
+      this.removeActivePreset(presetId);
     }
+    this.clearPresetSendDecisions(presetId);
   }
 
   private async removeCategoryConflicts(
@@ -1196,6 +1453,17 @@ export class GraphicsManager {
       }
       await this.removeLayerById(existingLayerId, "queued_preset_override");
     }
+  }
+
+  private async removeCategoryConflict(
+    category: GraphicsCategoryT,
+    layerId: string
+  ): Promise<void> {
+    const existingLayerId = this.categoryToLayer.get(category);
+    if (!existingLayerId || existingLayerId === layerId) {
+      return;
+    }
+    await this.removeLayerById(existingLayerId, "queued_preset_override");
   }
 
   private async removeLayerById(
@@ -1218,14 +1486,17 @@ export class GraphicsManager {
     if (this.categoryToLayer.get(layer.category) === layerId) {
       this.categoryToLayer.delete(layer.category);
     }
-    if (layer.presetId && this.activePreset?.presetId === layer.presetId) {
-      this.activePreset.layerIds.delete(layer.layerId);
-      if (this.activePreset.layerIds.size === 0) {
-        const clearedPresetId = this.activePreset.presetId;
-        this.clearActivePreset();
-        getBridgeContext().logger.info(
-          `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
-        );
+    if (layer.presetId) {
+      const activePreset = this.activePresets.get(layer.presetId);
+      if (activePreset) {
+        activePreset.layerIds.delete(layer.layerId);
+        if (activePreset.layerIds.size === 0) {
+          const clearedPresetId = activePreset.presetId;
+          this.removeActivePreset(clearedPresetId);
+          getBridgeContext().logger.info(
+            `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
+          );
+        }
       }
     }
   }
@@ -1237,6 +1508,7 @@ export class GraphicsManager {
       layerCount: item.layers.size,
       categories: Array.from(item.layers.keys()),
       enqueuedAt: item.enqueuedAt,
+      presetSendId: item.presetSendId ?? null,
     }));
     getBridgeContext().logger.info(
       `[Graphics] Preset queue ${context}: ${JSON.stringify({

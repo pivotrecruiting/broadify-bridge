@@ -133,19 +133,21 @@ export const GraphicsCategorySchema = z.enum([
 /**
  * Payload for creating/updating a graphics layer.
  */
-export const GraphicsSendSchema = z
-  .object({
-    layerId: z.string().min(1),
-    category: GraphicsCategorySchema,
-    backgroundMode: GraphicsBackgroundModeSchema,
-    layout: GraphicsLayoutSchema,
-    zIndex: z.number().int(),
-    bundle: GraphicsBundleSchema,
-    values: z.record(z.unknown()).optional().default({}),
-    presetId: z.string().min(1).optional(),
-    durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
-  })
-  .strict();
+  export const GraphicsSendSchema = z
+    .object({
+      layerId: z.string().min(1),
+      category: GraphicsCategorySchema,
+      backgroundMode: GraphicsBackgroundModeSchema,
+      layout: GraphicsLayoutSchema,
+      zIndex: z.number().int(),
+      bundle: GraphicsBundleSchema,
+      values: z.record(z.unknown()).optional().default({}),
+      presetId: z.string().min(1).optional(),
+      durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
+      presetSendId: z.string().min(1).optional(),
+      presetCategories: z.array(GraphicsCategorySchema).nonempty().optional(),
+    })
+    .strict();
 
 /**
  * Payload for updating layer values.
