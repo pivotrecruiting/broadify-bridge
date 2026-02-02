@@ -33,3 +33,7 @@ resources/cloudflared/
 # Agents
 AGENTS.MD
 /docs/agents/*
+
+# Protocol types (generated)
+!packages/protocol/dist/
+!packages/protocol/dist/**

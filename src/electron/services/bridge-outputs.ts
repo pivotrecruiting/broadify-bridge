@@ -3,7 +3,7 @@ import type { BridgeConfig } from "../types.js";
 const OUTPUTS_FETCH_TIMEOUT = 5000; // 5 seconds timeout
 
 /**
- * Output device information from bridge
+ * Output device information from bridge.
  */
 export type OutputDeviceT = {
   id: string;
@@ -28,7 +28,7 @@ export type OutputDisplayModeT = {
 };
 
 /**
- * Outputs response from bridge
+ * Outputs response from bridge.
  */
 export type BridgeOutputsT = {
   output1: OutputDeviceT[];
@@ -36,7 +36,10 @@ export type BridgeOutputsT = {
 };
 
 /**
- * Fetch available outputs from bridge
+ * Fetch available outputs from bridge.
+ *
+ * @param config Bridge config (host/port).
+ * @returns Outputs payload or null on error.
  */
 export async function fetchBridgeOutputs(
   config: BridgeConfig | null

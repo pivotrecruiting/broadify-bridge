@@ -4,7 +4,10 @@ const HEALTH_CHECK_INTERVAL = 2000; // 2 seconds
 const HEALTH_CHECK_TIMEOUT = 3000; // 3 seconds timeout
 
 /**
- * Check bridge health by calling /status endpoint
+ * Check bridge health by calling /status endpoint.
+ *
+ * @param config Bridge config (host/port).
+ * @returns BridgeStatus with reachability and metadata.
  */
 export async function checkBridgeHealth(
   config: BridgeConfig | null
@@ -102,6 +105,7 @@ export async function checkBridgeHealth(
       mode: data.mode,
       port: data.port,
       host: data.host,
+      bridgeName: data.bridgeName || undefined,
       relayConnected: relayStatus?.connected || false,
       bridgeId: relayStatus?.bridgeId || undefined,
     };
@@ -123,7 +127,12 @@ export async function checkBridgeHealth(
 }
 
 /**
- * Start health check polling
+ * Start health check polling.
+ *
+ * @param config Bridge config.
+ * @param onStatusUpdate Callback invoked with latest status.
+ * @param isProcessRunning Optional predicate to override running flag.
+ * @returns Cleanup function to stop polling.
  */
 export function startHealthCheckPolling(
   config: BridgeConfig | null,

@@ -3,6 +3,12 @@ import path from "node:path";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Ensure a bridge log file exists and rotate if it exceeds size limit.
+ *
+ * @param userDataDir Bridge user data directory.
+ * @returns Absolute path to the active log file.
+ */
 export async function ensureBridgeLogFile(
   userDataDir: string
 ): Promise<string> {

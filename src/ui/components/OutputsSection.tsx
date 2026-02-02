@@ -6,7 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { OutputDeviceT } from "types";
+import type { OutputDeviceT } from "@broadify/protocol";
 
 interface OutputsSectionProps {
   output1: string;

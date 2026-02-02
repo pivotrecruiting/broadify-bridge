@@ -38,16 +38,55 @@ export type GraphicsRenderLayerInputT = {
  * Graphics renderer interface for offscreen Chromium rendering.
  */
 export interface GraphicsRenderer {
+  /**
+   * Initialize renderer resources.
+   */
   initialize(): Promise<void>;
+  /**
+   * Provide asset map to renderer for local loading.
+   *
+   * @param assets Map of assetId to file path and mime type.
+   */
   setAssets(assets: Record<string, { filePath: string; mime: string }>): Promise<void>;
+  /**
+   * Render or update a layer.
+   *
+   * @param input Render payload.
+   */
   renderLayer(input: GraphicsRenderLayerInputT): Promise<void>;
+  /**
+   * Update layer values.
+   *
+   * @param layerId Layer identifier.
+   * @param values New values object.
+   * @param bindings Optional precomputed bindings.
+   */
   updateValues(
     layerId: string,
     values: Record<string, unknown>,
     bindings?: GraphicsTemplateBindingsT
   ): Promise<void>;
+  /**
+   * Update layer layout (position/scale).
+   *
+   * @param layerId Layer identifier.
+   * @param layout Layout payload.
+   */
   updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void>;
+  /**
+   * Remove a layer.
+   *
+   * @param layerId Layer identifier.
+   */
   removeLayer(layerId: string): Promise<void>;
+  /**
+   * Register a frame callback.
+   *
+   * @param callback Invoked for each rendered frame.
+   */
   onFrame(callback: (frame: GraphicsFrameT) => void): void;
+  /**
+   * Shutdown renderer and release resources.
+   */
   shutdown(): Promise<void>;
 }

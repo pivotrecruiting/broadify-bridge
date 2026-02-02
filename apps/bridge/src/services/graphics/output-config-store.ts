@@ -19,6 +19,8 @@ export class OutputConfigStore {
 
   /**
    * Initialize the store and load config from disk.
+   *
+   * @returns Promise resolved when config is loaded.
    */
   async initialize(): Promise<void> {
     const { userDataDir } = getBridgeContext();
@@ -31,6 +33,8 @@ export class OutputConfigStore {
 
   /**
    * Get current output config.
+   *
+   * @returns Output config or null if not configured.
    */
   getConfig(): GraphicsOutputConfigT | null {
     return this.config;
@@ -38,6 +42,9 @@ export class OutputConfigStore {
 
   /**
    * Persist and set output config.
+   *
+   * @param config Output configuration payload.
+   * @returns Promise resolved when config is written.
    */
   async setConfig(config: GraphicsOutputConfigT): Promise<void> {
     if (!this.filePath) {
@@ -51,6 +58,8 @@ export class OutputConfigStore {
 
   /**
    * Clear output config on disk.
+   *
+   * @returns Promise resolved when config file is removed.
    */
   async clear(): Promise<void> {
     if (!this.filePath) {

@@ -23,8 +23,15 @@ import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
 import type { BridgeConfigT } from "./config.js";
 
+const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024;
+const REQUEST_TIMEOUT_MS = 15_000;
+
 /**
- * Create and configure Fastify server instance
+ * Create and configure Fastify server instance.
+ *
+ * @param config Bridge startup config.
+ * @returns Fastify server instance.
  */
 export async function createServer(config: BridgeConfigT) {
   const userDataDir = resolveUserDataDir(config);
@@ -44,7 +51,12 @@ export async function createServer(config: BridgeConfigT) {
   const server = Fastify({
     logger,
     disableRequestLogging: true,
+    bodyLimit: MAX_HTTP_BODY_BYTES,
+    connectionTimeout: REQUEST_TIMEOUT_MS,
   });
+
+  server.server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.server.headersTimeout = REQUEST_TIMEOUT_MS + 2000;
 
   setBridgeContext({
     userDataDir,
@@ -54,37 +66,50 @@ export async function createServer(config: BridgeConfigT) {
       warn: (msg: string) => server.log.warn(msg),
       error: (msg: string) => server.log.error(msg),
     },
+    bridgeId: config.bridgeId,
+    bridgeName: config.bridgeName,
+    pairingCode: config.pairingCode,
+    pairingExpiresAt: config.pairingExpiresAt,
   });
 
   await graphicsManager.initialize();
 
-  // Register CORS plugin
+  // Register CORS plugin (dev-friendly; tighten in production).
   await server.register(cors, {
     origin: true, // Allow all origins (for development)
     // For production: origin: ["http://localhost:3000", "https://yourdomain.com"]
   });
   server.log.info("[Server] CORS plugin registered");
 
-  // Register WebSocket plugin
-  await server.register(websocket);
+  // Register WebSocket plugin.
+  await server.register(websocket, {
+    options: {
+      maxPayload: MAX_WS_PAYLOAD_BYTES,
+    },
+  });
   server.log.info("[Server] WebSocket plugin registered");
 
-  // Initialize device modules
+  // Initialize device modules and device watchers.
   initializeModules();
   server.log.info("[Server] Device modules initialized");
   deviceCache.initializeWatchers();
   server.log.info("[Server] Device watchers initialized");
 
-  // Initialize relay client if bridgeId is configured
-  // relayUrl defaults to wss://broadify-relay.fly.dev if not provided
+  // Initialize relay client only if explicitly enabled.
+  // relayUrl defaults to wss://broadify-relay.fly.dev if not provided.
   let relayClient: RelayClient | undefined = undefined;
-  if (config.bridgeId) {
+  if (config.relayEnabled && config.bridgeId) {
     const relayUrl = config.relayUrl || "wss://broadify-relay.fly.dev";
-    relayClient = new RelayClient(config.bridgeId, relayUrl, {
-      info: (msg: string) => server.log.info(`[Relay] ${msg}`),
-      error: (msg: string) => server.log.error(`[Relay] ${msg}`),
-      warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
-    });
+    relayClient = new RelayClient(
+      config.bridgeId,
+      relayUrl,
+      {
+        info: (msg: string) => server.log.info(`[Relay] ${msg}`),
+        error: (msg: string) => server.log.error(`[Relay] ${msg}`),
+        warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
+      },
+      config.bridgeName
+    );
     server.log.info(
       `[Server] Relay client initialized (relayUrl: ${relayUrl})`
     );
@@ -94,7 +119,7 @@ export async function createServer(config: BridgeConfigT) {
     );
   }
 
-  // Register routes
+  // Register routes.
   await server.register(registerStatusRoute, { config });
   await server.register(registerDevicesRoute);
   await server.register(registerOutputsRoute);
@@ -192,6 +217,16 @@ export async function startServer(
       if (relayClient) {
         server.log.info("[Server] Disconnecting relay client...");
         await relayClient.disconnect();
+      }
+
+      server.log.info("[Graphics] Shutting down renderer...");
+      try {
+        await graphicsManager.shutdown();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(
+          `[Graphics] Shutdown encountered an error: ${message}`
+        );
       }
 
       await server.close();

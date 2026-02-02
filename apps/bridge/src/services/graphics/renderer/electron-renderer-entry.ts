@@ -8,6 +8,7 @@ const logger = pino({
   base: { component: "graphics-renderer" },
 });
 
+// IPC hard limits to avoid oversized payloads and memory pressure.
 const MAX_IPC_HEADER_BYTES = 64 * 1024;
 const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
@@ -40,6 +41,7 @@ const debugEmptyLogged = new Set<string>();
 const debugSampleLogged = new Set<string>();
 const debugDomLogged = new Set<string>();
 
+// Register a custom asset:// protocol for local graphics assets.
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "asset",
@@ -51,6 +53,11 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+/**
+ * Send an IPC message to the bridge process.
+ *
+ * Includes a token for authentication and enforces payload limits.
+ */
 function sendIpcMessage(
   message: { type: string; [key: string]: unknown },
   buffer?: Buffer,
@@ -267,6 +274,12 @@ async function logDomStateWithDelay(
   }, delayMs);
 }
 
+/**
+ * Build a self-contained HTML document for the offscreen renderer.
+ *
+ * @param options Template html/css and runtime values.
+ * @returns Serialized HTML document string.
+ */
 function buildHtmlDocument(options: {
   html: string;
   css: string;
@@ -462,6 +475,11 @@ function registerAssetProtocol(): void {
   });
 }
 
+/**
+ * Create a new offscreen layer window and start rendering frames.
+ *
+ * @param message Layer creation payload.
+ */
 async function createLayer(message: {
   layerId: string;
   html: string;
@@ -600,11 +618,7 @@ async function createLayer(message: {
     }
     if (DEBUG_GRAPHICS && !debugSampleLogged.has(message.layerId)) {
       debugSampleLogged.add(message.layerId);
-      const samples = sampleRgbaBuffer(
-        buffer,
-        message.width,
-        message.height,
-      );
+      const samples = sampleRgbaBuffer(buffer, message.width, message.height);
       logger.info(
         {
           layerId: message.layerId,
@@ -670,6 +684,11 @@ async function createLayer(message: {
   });
 }
 
+/**
+ * Update template values and bindings for an existing layer.
+ *
+ * @param message Update payload.
+ */
 async function updateValues(message: {
   layerId: string;
   values: Record<string, unknown>;
@@ -693,6 +712,11 @@ async function updateValues(message: {
   );
 }
 
+/**
+ * Update layout transform for an existing layer.
+ *
+ * @param message Update payload.
+ */
 async function updateLayout(message: {
   layerId: string;
   layout: { x: number; y: number; scale: number };
@@ -708,6 +732,11 @@ async function updateLayout(message: {
   );
 }
 
+/**
+ * Remove a layer and destroy its offscreen window.
+ *
+ * @param message Remove payload.
+ */
 async function removeLayer(message: { layerId: string }): Promise<void> {
   const layer = layers.get(message.layerId);
   if (!layer) {
@@ -717,6 +746,11 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
   layers.delete(message.layerId);
 }
 
+/**
+ * Handle inbound IPC messages from the bridge process.
+ *
+ * @param message Parsed IPC header payload.
+ */
 async function handleMessage(message: unknown): Promise<void> {
   if (!message || typeof message !== "object") {
     return;
@@ -798,6 +832,10 @@ async function handleMessage(message: unknown): Promise<void> {
 }
 
 app.on("ready", () => {
+  if (process.platform === "darwin" && app.dock) {
+    // Hide Dock icon for the headless renderer process.
+    app.dock.hide();
+  }
   logger.info("[GraphicsRenderer] Electron renderer ready");
   registerAssetProtocol();
   isAppReady = true;
@@ -806,12 +844,16 @@ app.on("ready", () => {
 
 app.on("window-all-closed", () => {});
 
+/**
+ * Connect to the bridge IPC server and start processing messages.
+ */
 function connectIpcSocket(): void {
   const port = Number(process.env.BRIDGE_GRAPHICS_IPC_PORT || 0);
   if (!port) {
     return;
   }
 
+  // IPC is local-only; token handshake prevents spoofed commands.
   ipcSocket = net.createConnection({ host: "127.0.0.1", port }, () => {
     logger.info("[GraphicsRenderer] IPC socket connected");
     isIpcConnected = true;

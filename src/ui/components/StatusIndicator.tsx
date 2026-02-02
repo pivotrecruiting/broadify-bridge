@@ -1,4 +1,4 @@
-import type { BridgeStatus } from "types";
+import type { BridgeStatus } from "@broadify/protocol";
 
 interface StatusIndicatorProps {
   status: BridgeStatus;

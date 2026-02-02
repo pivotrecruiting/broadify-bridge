@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { EngineStateT } from "types";
+import type { EngineStateT } from "@broadify/protocol";
 
 /**
  * Hook to manage engine connection status

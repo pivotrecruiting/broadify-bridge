@@ -1,7 +1,7 @@
 import { platform } from "node:os";
 import { access, constants } from "node:fs/promises";
 import type { DeviceController } from "../device-module.js";
-import type { DeviceStatusT } from "../../types.js";
+import type { DeviceStatusT } from "@broadify/protocol";
 
 /**
  * USB Capture Device Controller

@@ -4,8 +4,8 @@ import { DecklinkModule } from "./decklink/index.js";
 import { platform } from "node:os";
 
 /**
- * Initialize and register all device modules
- * 
+ * Initialize and register all device modules.
+ *
  * This function should be called during bridge startup to register
  * all available device modules.
  */
@@ -21,6 +21,6 @@ export function initializeModules(): void {
 }
 
 /**
- * Get module registry instance
+ * Get module registry instance.
  */
 export { moduleRegistry };

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { BridgeOutputsT } from "types";
+import type { BridgeOutputsT } from "@broadify/protocol";
 
 /**
  * Hook to fetch and manage bridge outputs

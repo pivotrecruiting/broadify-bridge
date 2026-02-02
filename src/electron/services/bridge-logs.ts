@@ -20,6 +20,13 @@ export type LogClearResponse = {
   error?: string;
 };
 
+/**
+ * Fetch bridge logs with optional filtering and line limits.
+ *
+ * @param config Bridge config (host/port).
+ * @param options Log fetch options.
+ * @returns LogResponse with content or error.
+ */
 export async function fetchBridgeLogs(
   config: BridgeConfig | null,
   options: LogFetchOptions = {}
@@ -75,6 +82,12 @@ export async function fetchBridgeLogs(
   }
 }
 
+/**
+ * Clear bridge log file.
+ *
+ * @param config Bridge config (host/port).
+ * @returns LogClearResponse with result or error.
+ */
 export async function clearBridgeLogs(
   config: BridgeConfig | null
 ): Promise<LogClearResponse> {

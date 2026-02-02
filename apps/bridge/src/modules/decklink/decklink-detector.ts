@@ -3,7 +3,7 @@ import type {
   DeviceDescriptorT,
   OutputDisplayModeT,
   PortDescriptorT,
-} from "../../types.js";
+} from "@broadify/protocol";
 import {
   listDecklinkDevices,
   listDecklinkDisplayModes,
@@ -85,6 +85,9 @@ const attachModes = (
 
 /**
  * Parse helper device payloads into Bridge device descriptors.
+ *
+ * @param rawDevices Raw helper output payload.
+ * @returns Normalized device descriptors.
  */
 export function parseDecklinkHelperDevices(
   rawDevices: unknown
@@ -204,6 +207,8 @@ export function parseDecklinkHelperDevices(
 export class DecklinkDetector {
   /**
    * Detect DeckLink devices via helper process.
+   *
+   * @returns Array of DeckLink device descriptors.
    */
   async detect(): Promise<DeviceDescriptorT[]> {
     try {

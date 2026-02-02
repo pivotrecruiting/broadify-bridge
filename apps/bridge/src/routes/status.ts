@@ -13,7 +13,9 @@ const __dirname = dirname(__filename);
 const serverStartTime = Date.now();
 
 /**
- * Get version from package.json
+ * Get version from package.json.
+ *
+ * @returns Version string or default.
  */
 function getVersion(): string {
   try {
@@ -26,14 +28,19 @@ function getVersion(): string {
 }
 
 /**
- * Calculate uptime in seconds
+ * Calculate uptime in seconds.
+ *
+ * @returns Uptime in seconds since server start.
  */
 function getUptime(): number {
   return Math.floor((Date.now() - serverStartTime) / 1000);
 }
 
 /**
- * Register status route
+ * Register status route.
+ *
+ * @param fastify Fastify instance.
+ * @param options Plugin options with bridge config.
  */
 export async function registerStatusRoute(
   fastify: FastifyInstance,
@@ -52,6 +59,7 @@ export async function registerStatusRoute(
       mode: config.mode,
       port: config.port,
       host: config.host,
+      bridgeName: config.bridgeName || null,
       state: runtimeConfig.getState(),
       outputsConfigured: runtimeConfig.hasOutputs(),
       engine: {

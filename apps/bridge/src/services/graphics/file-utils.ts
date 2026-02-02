@@ -3,6 +3,8 @@ import path from "node:path";
 
 /**
  * Ensure a directory exists.
+ *
+ * @param dirPath Directory path to create.
  */
 export async function ensureDir(dirPath: string): Promise<void> {
   await fs.mkdir(dirPath, { recursive: true });
@@ -10,6 +12,9 @@ export async function ensureDir(dirPath: string): Promise<void> {
 
 /**
  * Write JSON to disk atomically.
+ *
+ * @param filePath Destination path.
+ * @param data JSON-serializable payload.
  */
 export async function atomicWriteJson(
   filePath: string,

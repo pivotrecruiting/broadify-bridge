@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readdir, access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
-import type { DeviceDescriptorT, PortDescriptorT } from "../../types.js";
+import type { DeviceDescriptorT, PortDescriptorT } from "@broadify/protocol";
 import type { USBDeviceInfo, USBPortInfo } from "./usb-capture-types.js";
 
 /**
@@ -21,6 +21,8 @@ export class USBCaptureDetector {
    * - macOS: AVFoundation (AVCaptureDevice)
    * - Windows: Media Foundation (not DirectShow - deprecated)
    * - Linux: v4l2 (Video4Linux2)
+   *
+   * @returns Array of detected device descriptors.
    */
   async detect(): Promise<DeviceDescriptorT[]> {
     try {
@@ -65,7 +67,9 @@ export class USBCaptureDetector {
   }
 
   /**
-   * Detect platform and delegate to platform-specific implementation
+   * Detect platform and delegate to platform-specific implementation.
+   *
+   * @returns Raw USB device info list for the current platform.
    */
   private async detectPlatformDevices(): Promise<USBDeviceInfo[]> {
     const platformType = platform();

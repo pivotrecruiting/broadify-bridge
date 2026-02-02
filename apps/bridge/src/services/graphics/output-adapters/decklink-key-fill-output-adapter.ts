@@ -50,6 +50,8 @@ const sampleRgbaBuffer = (
 
 /**
  * DeckLink output adapter for external keying (SDI fill + key).
+ *
+ * Streams raw RGBA frames to the native helper which performs key/fill output.
  */
 export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
   private child: ChildProcess | null = null;
@@ -64,6 +66,11 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
   private readonly warningThrottleMs = 5000;
   private sampleLogged = false;
 
+  /**
+   * Configure helper process for key/fill output.
+   *
+   * @param config Output configuration payload (validated upstream).
+   */
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
     this.sampleLogged = false;
@@ -167,6 +174,12 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     this.height = config.format.height;
   }
 
+  /**
+   * Send a single RGBA frame to the helper process.
+   *
+   * @param frame RGBA frame buffer with width/height metadata.
+   * @param _config Output configuration (unused here).
+   */
   async sendFrame(
     frame: GraphicsOutputFrameT,
     _config: GraphicsOutputConfigT
@@ -237,6 +250,9 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     }
   }
 
+  /**
+   * Stop helper process and release resources.
+   */
   async stop(): Promise<void> {
     if (!this.child) {
       return;

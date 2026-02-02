@@ -2,6 +2,14 @@ import { engineAdapter } from "./engine-adapter.js";
 import { deviceCache } from "./device-cache.js";
 import { runtimeConfig } from "./runtime-config.js";
 import { graphicsManager } from "./graphics/graphics-manager.js";
+import {
+  EmptyPayloadSchema,
+  EngineConnectSchema,
+  ListOutputsSchema,
+  MacroIdSchema,
+  PairingCodeSchema,
+  parseRelayPayload,
+} from "./relay-command-schemas.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,34 +18,50 @@ import type {
   BridgeOutputsT,
   DeviceDescriptorT,
   OutputDeviceT,
-} from "../types.js";
+} from "@broadify/protocol";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
- * Relay command types
+ * Relay command allowlist accepted by the bridge.
  */
-export type RelayCommand =
-  | "get_status"
-  | "list_outputs"
-  | "engine_connect"
-  | "engine_disconnect"
-  | "engine_get_status"
-  | "engine_get_macros"
-  | "engine_run_macro"
-  | "engine_stop_macro"
-  | "graphics_configure_outputs"
-  | "graphics_send"
-  | "graphics_test_pattern"
-  | "graphics_update_values"
-  | "graphics_update_layout"
-  | "graphics_remove"
-  | "graphics_remove_preset"
-  | "graphics_list";
+export const RELAY_COMMAND_ALLOWLIST = [
+  "get_status",
+  "bridge_pair_validate",
+  "list_outputs",
+  "engine_connect",
+  "engine_disconnect",
+  "engine_get_status",
+  "engine_get_macros",
+  "engine_run_macro",
+  "engine_stop_macro",
+  "graphics_configure_outputs",
+  "graphics_send",
+  "graphics_test_pattern",
+  "graphics_update_values",
+  "graphics_update_layout",
+  "graphics_remove",
+  "graphics_remove_preset",
+  "graphics_list",
+] as const;
+
+const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);
 
 /**
- * Relay command payload
+ * Relay command types accepted by the bridge.
+ */
+export type RelayCommand = (typeof RELAY_COMMAND_ALLOWLIST)[number];
+
+/**
+ * Runtime allowlist check for relay commands.
+ */
+export const isRelayCommand = (value: unknown): value is RelayCommand => {
+  return typeof value === "string" && RELAY_COMMAND_ALLOWLIST_SET.has(value);
+};
+
+/**
+ * Relay command payload.
  */
 export interface RelayCommandPayload {
   command: RelayCommand;
@@ -45,7 +69,7 @@ export interface RelayCommandPayload {
 }
 
 /**
- * Relay command result
+ * Relay command result.
  */
 export interface RelayCommandResult {
   success: boolean;
@@ -123,14 +147,18 @@ function transformDevicesToOutputs(
 }
 
 /**
- * Command Router Service
+ * Command Router Service.
  *
  * Central command processing logic used by both HTTP routes and Relay Client.
  * Uses direct function calls to services (no HTTP calls to self).
  */
 export class CommandRouter {
   /**
-   * Handle relay command
+   * Handle relay command.
+   *
+   * @param command Command name from relay or HTTP route.
+   * @param payload Untrusted payload (validated by downstream services).
+   * @returns Command execution result.
    */
   async handleCommand(
     command: RelayCommand,
@@ -139,14 +167,21 @@ export class CommandRouter {
     try {
       switch (command) {
         case "get_status": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for get_status"
+          );
           const engineState = engineAdapter.getState();
           const runtimeConfigData = runtimeConfig.getConfig();
+          const context = getBridgeContext();
 
           return {
             success: true,
             data: {
               running: true,
               version: getVersion(),
+              bridgeName: context.bridgeName || null,
               state: runtimeConfig.getState(),
               outputsConfigured: runtimeConfig.hasOutputs(),
               engine: {
@@ -160,9 +195,53 @@ export class CommandRouter {
           };
         }
 
+        case "bridge_pair_validate": {
+          const context = getBridgeContext();
+          const pairingCode = context.pairingCode;
+          const pairingExpiresAt = context.pairingExpiresAt;
+
+          if (!pairingCode) {
+            return {
+              success: false,
+              error: "Pairing is not enabled on this bridge",
+            };
+          }
+
+          const { pairingCode: providedCode } = parseRelayPayload(
+            PairingCodeSchema,
+            payload ?? {},
+            "Invalid pairing code format"
+          );
+
+          if (pairingExpiresAt && Date.now() > pairingExpiresAt) {
+            return {
+              success: false,
+              error: "Pairing code has expired",
+            };
+          }
+
+          if (providedCode !== pairingCode) {
+            return {
+              success: false,
+              error: "Invalid pairing code",
+            };
+          }
+
+          return {
+            success: true,
+            data: {
+              bridgeId: context.bridgeId || null,
+              bridgeName: context.bridgeName || null,
+            },
+          };
+        }
+
         case "list_outputs": {
-          const refresh =
-            typeof payload?.refresh === "boolean" ? payload.refresh : false;
+          const { refresh = false } = parseRelayPayload(
+            ListOutputsSchema,
+            payload ?? {},
+            "Invalid payload for list_outputs"
+          );
           if (refresh) {
             getBridgeContext().logger.info(
               "[CommandRouter] list_outputs refresh requested"
@@ -178,42 +257,14 @@ export class CommandRouter {
         }
 
         case "engine_connect": {
-          if (!payload) {
-            return {
-              success: false,
-              error: "Missing payload for engine_connect",
-            };
-          }
-
-          const { type, ip, port } = payload;
-
-          if (
-            !type ||
-            !["atem", "tricaster", "vmix"].includes(type as string)
-          ) {
-            return {
-              success: false,
-              error:
-                "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
-            };
-          }
-
-          if (!ip || typeof ip !== "string") {
-            return {
-              success: false,
-              error: "IP address is required",
-            };
-          }
-
-          if (!port || typeof port !== "number") {
-            return {
-              success: false,
-              error: "Port is required and must be a number",
-            };
-          }
+          const { type, ip, port } = parseRelayPayload(
+            EngineConnectSchema,
+            payload ?? {},
+            "Invalid payload for engine_connect"
+          );
 
           await engineAdapter.connect({
-            type: type as "atem" | "tricaster" | "vmix",
+            type,
             ip,
             port,
           });
@@ -227,6 +278,11 @@ export class CommandRouter {
         }
 
         case "engine_disconnect": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_disconnect"
+          );
           await engineAdapter.disconnect();
 
           return {
@@ -238,6 +294,11 @@ export class CommandRouter {
         }
 
         case "engine_get_status": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_get_status"
+          );
           const state = engineAdapter.getState();
           const connectedSince = engineAdapter.getConnectedSince();
           const lastError = engineAdapter.getLastError();
@@ -255,6 +316,11 @@ export class CommandRouter {
         }
 
         case "engine_get_macros": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_get_macros"
+          );
           const macros = engineAdapter.getMacros();
           const status = engineAdapter.getStatus();
 
@@ -277,14 +343,11 @@ export class CommandRouter {
         }
 
         case "engine_run_macro": {
-          if (!payload || typeof payload.macroId !== "number") {
-            return {
-              success: false,
-              error: "Macro ID is required and must be a number",
-            };
-          }
-
-          const macroId = payload.macroId as number;
+          const { macroId } = parseRelayPayload(
+            MacroIdSchema,
+            payload ?? {},
+            "Macro ID is required and must be a number"
+          );
           await engineAdapter.runMacro(macroId);
 
           return {
@@ -297,14 +360,11 @@ export class CommandRouter {
         }
 
         case "engine_stop_macro": {
-          if (!payload || typeof payload.macroId !== "number") {
-            return {
-              success: false,
-              error: "Macro ID is required and must be a number",
-            };
-          }
-
-          const macroId = payload.macroId as number;
+          const { macroId } = parseRelayPayload(
+            MacroIdSchema,
+            payload ?? {},
+            "Macro ID is required and must be a number"
+          );
           await engineAdapter.stopMacro(macroId);
 
           return {
@@ -324,6 +384,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.configureOutputs(payload);
           return {
             success: true,
@@ -339,6 +400,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.sendLayer(payload);
           return {
             success: true,
@@ -362,6 +424,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.updateValues(payload);
           return {
             success: true,
@@ -377,6 +440,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.updateLayout(payload);
           return {
             success: true,
@@ -392,6 +456,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.removeLayer(payload);
           return {
             success: true,
@@ -407,6 +472,7 @@ export class CommandRouter {
             };
           }
 
+          // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           await graphicsManager.removePreset(payload);
           return {
             success: true,

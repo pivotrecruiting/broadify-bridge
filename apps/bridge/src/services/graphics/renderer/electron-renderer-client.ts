@@ -17,6 +17,7 @@ const ELECTRON_BINARIES = {
   default: "electron",
 };
 
+// IPC hard limits to prevent memory abuse or oversized frame payloads.
 const MAX_IPC_HEADER_BYTES = 64 * 1024;
 const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
@@ -71,6 +72,9 @@ function resolveRendererEntry(): string | null {
 
 /**
  * Electron-based offscreen renderer client.
+ *
+ * Spawns a separate Electron process and communicates over local TCP IPC.
+ * A per-process token is used to authenticate IPC messages.
  */
 export class ElectronRendererClient implements GraphicsRenderer {
   private child: ChildProcess | null = null;
@@ -81,13 +85,20 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private ipcServer: net.Server | null = null;
   private ipcSocket: net.Socket | null = null;
   private ipcBuffer = Buffer.alloc(0);
+  // Token used to authenticate IPC messages with the renderer process.
   private ipcToken: string | null = null;
   private ipcAuthenticated = false;
+  // Commands queued before IPC handshake is complete.
   private pendingCommands: Array<Record<string, unknown>> = [];
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private debugFirstFrameLogged = new Set<string>();
 
+  /**
+   * Initialize the renderer process and IPC channel.
+   *
+   * @returns Promise resolved once the renderer is ready.
+   */
   async initialize(): Promise<void> {
     if (this.child) {
       return;
@@ -181,6 +192,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     await Promise.race([this.readyPromise, timeoutPromise]);
   }
 
+  /**
+   * Provide asset map to the renderer process.
+   *
+   * @param assets Map of assetId to file path and mime type.
+   */
   async setAssets(
     assets: Record<string, { filePath: string; mime: string }>,
   ): Promise<void> {
@@ -191,6 +207,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.sendCommand({ type: "set_assets", assets });
   }
 
+  /**
+   * Render or update a layer in the renderer process.
+   *
+   * @param input Render payload (HTML/CSS + layout).
+   */
   async renderLayer(input: GraphicsRenderLayerInputT): Promise<void> {
     await this.ensureReady();
     this.sendCommand({
@@ -208,6 +229,13 @@ export class ElectronRendererClient implements GraphicsRenderer {
     });
   }
 
+  /**
+   * Update values for an existing layer.
+   *
+   * @param layerId Layer identifier.
+   * @param values Values to merge into the template.
+   * @param bindings Optional precomputed bindings.
+   */
   async updateValues(
     layerId: string,
     values: Record<string, unknown>,
@@ -217,25 +245,85 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.sendCommand({ type: "update_values", layerId, values, bindings });
   }
 
+  /**
+   * Update layout for an existing layer.
+   *
+   * @param layerId Layer identifier.
+   * @param layout Layout payload.
+   */
   async updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void> {
     await this.ensureReady();
     this.sendCommand({ type: "update_layout", layerId, layout });
   }
 
+  /**
+   * Remove a layer from the renderer process.
+   *
+   * @param layerId Layer identifier.
+   */
   async removeLayer(layerId: string): Promise<void> {
     await this.ensureReady();
     this.sendCommand({ type: "remove_layer", layerId });
   }
 
+  /**
+   * Register a callback to receive rendered frames.
+   *
+   * @param callback Frame callback.
+   */
   onFrame(callback: (frame: GraphicsFrameT) => void): void {
     this.frameCallback = callback;
   }
 
+  /**
+   * Shutdown renderer process and IPC server.
+   */
   async shutdown(): Promise<void> {
     if (!this.child) {
       return;
     }
+
+    const child = this.child;
+    const hasExited = () =>
+      child.exitCode !== null || child.signalCode !== null;
+    const awaitExit = () =>
+      new Promise<void>((resolve) => {
+        if (hasExited()) {
+          resolve();
+          return;
+        }
+        child.once("exit", () => resolve());
+      });
+
     this.sendCommand({ type: "shutdown" });
+
+    const gracefulTimeoutMs = 4000;
+    const forceTimeoutMs = 2000;
+
+    await Promise.race([
+      awaitExit(),
+      new Promise<void>((resolve) => {
+        const timeoutId = setTimeout(() => resolve(), gracefulTimeoutMs);
+        void awaitExit().then(() => clearTimeout(timeoutId));
+      }),
+    ]);
+
+    if (!hasExited()) {
+      child.kill("SIGTERM");
+      await Promise.race([
+        awaitExit(),
+        new Promise<void>((resolve) => {
+          const timeoutId = setTimeout(() => resolve(), forceTimeoutMs);
+          void awaitExit().then(() => clearTimeout(timeoutId));
+        }),
+      ]);
+    }
+
+    if (!hasExited()) {
+      child.kill("SIGKILL");
+      await awaitExit();
+    }
+
     this.child = null;
     this.ipcSocket?.destroy();
     this.ipcSocket = null;
@@ -255,6 +343,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     }
   }
 
+  /**
+   * Start a local IPC server bound to localhost only.
+   *
+   * @returns Allocated port number for IPC server.
+   */
   private async startIpcServer(): Promise<number> {
     if (this.ipcServer) {
       return 0;
@@ -278,6 +371,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         { component: "graphics-renderer" },
         "[GraphicsRenderer IPC] Client connected",
       );
+      // IPC data is untrusted until the token handshake completes.
       socket.on("data", (data) => this.handleIpcData(data));
       socket.on("close", () => {
         this.logStructured(
@@ -523,6 +617,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         continue;
       }
 
+      // Drop messages without a matching token (prevents spoofed frames).
       if (this.ipcToken && messageToken !== this.ipcToken) {
         this.logStructured(
           "warn",

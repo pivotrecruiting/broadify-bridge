@@ -1,7 +1,7 @@
 import os from "os";
 
 /**
- * Network interface information
+ * Network interface information.
  */
 export interface NetworkInterfaceInfo {
   name: string;
@@ -11,7 +11,7 @@ export interface NetworkInterfaceInfo {
 }
 
 /**
- * Port configuration for a specific network binding
+ * Port configuration for a specific network binding.
  */
 export interface InterfacePortConfig {
   customOnly: boolean;
@@ -19,7 +19,7 @@ export interface InterfacePortConfig {
 }
 
 /**
- * Network binding option with resolved IP address
+ * Network binding option with resolved IP address.
  */
 export interface NetworkBindingOption {
   id: string;
@@ -33,7 +33,7 @@ export interface NetworkBindingOption {
 }
 
 /**
- * Configuration for interface filtering
+ * Configuration for interface filtering.
  */
 export interface InterfaceFilterConfig {
   excludeInterfaces: string[];
@@ -42,7 +42,11 @@ export interface InterfaceFilterConfig {
 }
 
 /**
- * Check if an IP address is in an excluded range
+ * Check if an IP address is in an excluded range.
+ *
+ * @param ip IPv4 address.
+ * @param range CIDR-like range token.
+ * @returns True if IP is excluded.
  */
 function isIpInRange(ip: string, range: string): boolean {
   if (range === "169.254.0.0/16") {
@@ -58,7 +62,11 @@ function isIpInRange(ip: string, range: string): boolean {
 }
 
 /**
- * Check if an interface name should be excluded
+ * Check if an interface name should be excluded.
+ *
+ * @param name Interface name.
+ * @param excludeInterfaces Exclusion list.
+ * @returns True if excluded.
  */
 function shouldExcludeInterface(
   name: string,
@@ -71,7 +79,11 @@ function shouldExcludeInterface(
 }
 
 /**
- * Detect network interfaces and return available options
+ * Detect network interfaces and return available options.
+ *
+ * @param configOptions UI-configured binding options.
+ * @param filters Interface filter settings.
+ * @returns Resolved binding options with concrete IPs.
  */
 export function detectNetworkInterfaces(
   configOptions: Array<{
@@ -191,8 +203,13 @@ export function detectNetworkInterfaces(
 }
 
 /**
- * Resolve bind address to actual IP address
- * Handles AUTO_IPV4, 0.0.0.0, and other special cases
+ * Resolve bind address to actual IP address.
+ * Handles AUTO_IPV4, 0.0.0.0, and other special cases.
+ *
+ * @param bindAddress Bind address token.
+ * @param interfaceType Interface type (loopback/ethernet/wifi/all).
+ * @param filters Optional filters.
+ * @returns Resolved IPv4 address.
  */
 export function resolveBindAddress(
   bindAddress: string,
@@ -320,4 +337,3 @@ export function resolveBindAddress(
   // Fallback
   return bindAddress;
 }
-
