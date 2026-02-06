@@ -7,6 +7,11 @@ export type LoggerLikeT = {
   error: (msg: string) => void;
 };
 
+export type BridgeEventPayloadT = {
+  event: string;
+  data?: unknown;
+};
+
 export type BridgeContextT = {
   userDataDir: string;
   logger: LoggerLikeT;
@@ -15,6 +20,7 @@ export type BridgeContextT = {
   bridgeName?: string;
   pairingCode?: string;
   pairingExpiresAt?: number;
+  publishBridgeEvent?: (payload: BridgeEventPayloadT) => void;
 };
 
 let bridgeContext: BridgeContextT | null = null;

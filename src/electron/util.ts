@@ -1,10 +1,10 @@
 import { ipcMain, WebContents, WebFrameMain } from "electron";
 import { getUIPath } from "./pathResolver.js";
 import { pathToFileURL } from "url";
+import { loadAppEnv } from "./services/env-loader.js";
 import type { EventPayloadMapping } from "./types.js";
-import dotenv from "dotenv";
 
-dotenv.config();
+loadAppEnv();
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 // Checks if you are in development mode
@@ -19,7 +19,7 @@ export function ipcMainHandle<Key extends keyof EventPayloadMapping>(
     event: Electron.IpcMainInvokeEvent,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ...args: any[]
-  ) => EventPayloadMapping[Key] | Promise<EventPayloadMapping[Key]>
+  ) => EventPayloadMapping[Key] | Promise<EventPayloadMapping[Key]>,
 ) {
   ipcMain.handle(key as string, (event, ...args) => {
     if (event.senderFrame) validateEventFrame(event.senderFrame);
@@ -31,7 +31,7 @@ export function ipcMainHandle<Key extends keyof EventPayloadMapping>(
 export function ipcWebContentsSend<Key extends keyof EventPayloadMapping>(
   key: Key,
   webContents: WebContents,
-  payload: EventPayloadMapping[Key]
+  payload: EventPayloadMapping[Key],
 ) {
   webContents.send(key as string, payload);
 }

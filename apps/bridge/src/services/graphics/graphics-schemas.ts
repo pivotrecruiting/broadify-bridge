@@ -144,8 +144,6 @@ export const GraphicsCategorySchema = z.enum([
       values: z.record(z.unknown()).optional().default({}),
       presetId: z.string().min(1).optional(),
       durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
-      presetSendId: z.string().min(1).optional(),
-      presetCategories: z.array(GraphicsCategorySchema).nonempty().optional(),
     })
     .strict();
 
@@ -180,12 +178,11 @@ export const GraphicsRemoveSchema = z
   .strict();
 
 /**
- * Payload for removing a preset (and optionally clearing queue).
+ * Payload for removing a preset.
  */
 export const GraphicsRemovePresetSchema = z
   .object({
     presetId: z.string().min(1),
-    clearQueue: z.boolean().optional(),
   })
   .strict();
 

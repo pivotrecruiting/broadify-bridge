@@ -58,7 +58,7 @@ export async function createServer(config: BridgeConfigT) {
   server.server.requestTimeout = REQUEST_TIMEOUT_MS;
   server.server.headersTimeout = REQUEST_TIMEOUT_MS + 2000;
 
-  setBridgeContext({
+  const baseContext = {
     userDataDir,
     logPath,
     logger: {
@@ -70,7 +70,8 @@ export async function createServer(config: BridgeConfigT) {
     bridgeName: config.bridgeName,
     pairingCode: config.pairingCode,
     pairingExpiresAt: config.pairingExpiresAt,
-  });
+  };
+  setBridgeContext(baseContext);
 
   await graphicsManager.initialize();
 
@@ -118,6 +119,13 @@ export async function createServer(config: BridgeConfigT) {
       "[Server] Relay client not initialized (bridgeId not configured)"
     );
   }
+
+  setBridgeContext({
+    ...baseContext,
+    publishBridgeEvent: relayClient
+      ? (payload) => relayClient?.sendBridgeEvent(payload)
+      : undefined,
+  });
 
   // Register routes.
   await server.register(registerStatusRoute, { config });

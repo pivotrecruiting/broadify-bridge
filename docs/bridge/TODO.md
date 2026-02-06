@@ -26,7 +26,7 @@ Ziel: Vollständige interne Dokumentation der Bridge inkl. Graphics-Flow, Device
 - [x] Output-Konfiguration: Targets, Formats, Pixel-Policy
 - [x] Asset-Management: Store, Limits, asset://-Auflösung
 - [x] Template-Sicherheit: Sanitizing, Binding-Regeln
-- [x] Preset-Queue & Expiry-Mechanik
+- [x] Preset-Lifecycle & Expiry-Mechanik
 - [x] Device-Outputs: Port-Model, Availability, Modes
 - [x] Relay-Protokoll: command/command_result/bridge_hello
 
