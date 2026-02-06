@@ -335,11 +335,32 @@ export class GraphicsManager {
 
     if (prepared.presetId) {
       await this.removeLayersNotInPreset(prepared.presetId);
+      const existingLayerId = this.categoryToLayer.get(prepared.category);
+      if (existingLayerId) {
+        const existingLayer = this.layers.get(existingLayerId);
+        if (existingLayer?.presetId === prepared.presetId) {
+          try {
+            await this.renderer.removeLayer(existingLayerId);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            getBridgeContext().logger.warn(
+              `[Graphics] Failed to remove layer ${existingLayerId} (preset_resend): ${message}`
+            );
+          }
+          this.layers.delete(existingLayerId);
+          this.categoryToLayer.delete(prepared.category);
+          if (this.activePreset?.presetId === prepared.presetId) {
+            this.activePreset.layerIds.delete(existingLayerId);
+          }
+        }
+      }
     } else if (this.activePreset) {
       await this.removePresetById(this.activePreset.presetId, "send_non_preset");
     }
 
     await this.renderPreparedLayer(prepared);
+
+    let shouldPublishPreset = false;
 
     if (prepared.presetId) {
       if (!this.activePreset || this.activePreset.presetId !== prepared.presetId) {
@@ -355,21 +376,29 @@ export class GraphicsManager {
         getBridgeContext().logger.info(
           `[Graphics] Preset activated: ${prepared.presetId}`
         );
+        shouldPublishPreset = true;
       } else {
         this.activePreset.layerIds.add(prepared.layerId);
+        shouldPublishPreset = true;
       }
 
       if (hasDuration) {
         if (durationMs > 0) {
           this.resetActivePresetTimer(durationMs);
+          shouldPublishPreset = true;
         } else {
           this.clearActivePresetTimer();
           this.activePreset.durationMs = null;
           this.activePreset.pendingStart = false;
           this.activePreset.startedAt = null;
           this.activePreset.expiresAt = null;
+          shouldPublishPreset = true;
         }
       }
+    }
+
+    if (shouldPublishPreset) {
+      this.publishGraphicsStatus("preset_update");
     }
   }
 
@@ -450,6 +479,7 @@ export class GraphicsManager {
         getBridgeContext().logger.info(
           `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
         );
+        this.publishGraphicsStatus("preset_cleared");
       }
     }
   }
@@ -608,6 +638,7 @@ export class GraphicsManager {
     this.layers.clear();
     this.categoryToLayer.clear();
     this.clearActivePreset();
+    this.publishGraphicsStatus("clear_all_layers");
   }
 
   /**
@@ -1015,6 +1046,7 @@ export class GraphicsManager {
     this.activePreset.timer = setTimeout(() => {
       void this.expireActivePreset(presetId);
     }, this.activePreset.durationMs ?? 0);
+    this.publishGraphicsStatus("preset_started");
   }
 
   private resetActivePresetTimer(durationMs: number): void {
@@ -1102,6 +1134,7 @@ export class GraphicsManager {
     const layersToRemove = Array.from(this.layers.values()).filter(
       (layer) => layer.presetId === presetId
     );
+    const wasActive = this.activePreset?.presetId === presetId;
 
     for (const layer of layersToRemove) {
       try {
@@ -1118,7 +1151,7 @@ export class GraphicsManager {
       }
     }
 
-    if (this.activePreset?.presetId === presetId) {
+    if (wasActive) {
       this.clearActivePreset();
     }
 
@@ -1131,6 +1164,29 @@ export class GraphicsManager {
         })}`
       );
     }
+
+    if (layersToRemove.length > 0 || wasActive) {
+      this.publishGraphicsStatus("preset_removed");
+    }
+  }
+
+  private publishGraphicsStatus(reason: string): void {
+    const publishBridgeEvent = getBridgeContext().publishBridgeEvent;
+    if (!publishBridgeEvent) {
+      return;
+    }
+    const status = this.getStatus();
+    getBridgeContext().logger.info(
+      `[Graphics] Publish status: ${reason}`
+    );
+    publishBridgeEvent({
+      event: "graphics_status",
+      data: {
+        reason,
+        activePreset: status.activePreset,
+        activePresets: status.activePresets,
+      },
+    });
   }
 }
 

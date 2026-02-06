@@ -163,6 +163,14 @@ interface BridgeHelloMessage {
   bridgeName?: string;
 }
 
+interface BridgeEventMessage {
+  type: "bridge_event";
+  bridgeId: string;
+  event: string;
+  data?: unknown;
+  timestamp: number;
+}
+
 /**
  * Command payload received from relay.
  */
@@ -363,6 +371,26 @@ export class RelayClient {
       error: (msg: string) => console.error(`[RelayClient] ${msg}`),
       warn: (msg: string) => console.warn(`[RelayClient] ${msg}`),
     };
+  }
+
+  /**
+   * Publish bridge event to relay subscribers.
+   *
+   * @param payload Event payload (type + data).
+   */
+  sendBridgeEvent(payload: { event: string; data?: unknown }): void {
+    if (!this.isConnected()) {
+      this.logger.warn("Cannot send bridge event: not connected to relay");
+      return;
+    }
+    const message: BridgeEventMessage = {
+      type: "bridge_event",
+      bridgeId: this.bridgeId,
+      event: payload.event,
+      data: payload.data,
+      timestamp: Date.now(),
+    };
+    this.send(message);
   }
 
   /**
