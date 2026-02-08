@@ -312,20 +312,21 @@ export class GraphicsManager {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       getBridgeContext().logger.error(
-        "[Graphics] graphics_send payload rejected (schema)",
-        {
+        `[Graphics] graphics_send payload rejected (schema): ${message} ${JSON.stringify({
           error: message,
           payload: this.summarizeRawPayload(payload),
           outputConfig: this.outputConfig,
-        }
+        })}`
       );
       throw error;
     }
 
-    getBridgeContext().logger.info("[Graphics] graphics_send payload", {
-      payload: this.summarizeSendPayload(data),
-      outputConfig: this.outputConfig,
-    });
+    getBridgeContext().logger.info(
+      `[Graphics] graphics_send payload ${JSON.stringify({
+        payload: this.summarizeSendPayload(data),
+        outputConfig: this.outputConfig,
+      })}`
+    );
 
     if (typeof data.durationMs === "number" && !data.presetId) {
       throw new Error("Preset ID is required when durationMs is set");
@@ -345,14 +346,13 @@ export class GraphicsManager {
           renderInfo.fps !== this.outputConfig.format.fps)
       ) {
         getBridgeContext().logger.error(
-          "[Graphics] Bundle manifest render format mismatch",
-          {
+          `[Graphics] Bundle manifest render format mismatch ${JSON.stringify({
             renderInfo,
             outputFormat: this.outputConfig.format,
             layerId: data.layerId,
             category: data.category,
             presetId: data.presetId ?? null,
-          }
+          })}`
         );
         throw new Error("Bundle manifest render format mismatch");
       }
