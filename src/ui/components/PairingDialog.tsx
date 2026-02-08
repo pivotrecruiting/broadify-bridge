@@ -71,7 +71,7 @@ export function PairingDialog({
         }
       }}
     >
-      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
 
       <div className="relative w-full max-w-lg overflow-hidden rounded-lg glass-frosted border border-white/20 shadow-2xl">
         <div className="flex items-center justify-between p-6 border-b border-white/10">
@@ -91,7 +91,7 @@ export function PairingDialog({
         </div>
 
         <div className="p-6 space-y-4">
-          <div className="rounded-md border border-white/10 bg-black/30 p-4">
+          <div className="rounded-md border border-black/10 bg-white/60 p-4">
             {hasPairingCode ? (
               <div className="flex items-center justify-between gap-3">
                 <span className="text-lg font-mono text-card-foreground">

@@ -38,7 +38,7 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
       }}
     >
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
 
       {/* Dialog */}
       <div className="relative w-full max-w-2xl max-h-[90vh] overflow-hidden rounded-lg glass-frosted border border-white/20 shadow-2xl">

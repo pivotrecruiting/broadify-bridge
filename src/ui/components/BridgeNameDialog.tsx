@@ -47,7 +47,7 @@ export function BridgeNameDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
 
       <div className="relative w-full max-w-lg rounded-lg bg-white border border-white/20 shadow-2xl p-6 space-y-4">
         <div>
