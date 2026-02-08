@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { X, RefreshCw, Clipboard, Trash2 } from "lucide-react";
+import { X, RefreshCw, Copy, Check, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -17,6 +17,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const fetchLogs = async () => {
     if (!window.electron) {
@@ -85,7 +86,13 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
 
   const handleCopy = async () => {
     if (!content) return;
-    await navigator.clipboard.writeText(content);
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -173,12 +180,18 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
                 Clear
               </Button>
               <Button
-                variant="outline"
+                variant="ghost"
+                size="icon"
                 onClick={handleCopy}
                 disabled={!content}
+                aria-label="Copy logs"
+                className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/10"
               >
-                <Clipboard className="w-4 h-4" />
-                Copy
+                {copied ? (
+                  <Check className="copy-check-animate" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
               </Button>
             </div>
           </div>

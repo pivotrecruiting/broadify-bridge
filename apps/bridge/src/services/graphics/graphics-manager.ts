@@ -306,7 +306,26 @@ export class GraphicsManager {
       throw new Error("Outputs not configured");
     }
 
-    const data = GraphicsSendSchema.parse(payload);
+    let data: GraphicsSendPayloadT;
+    try {
+      data = GraphicsSendSchema.parse(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.error(
+        "[Graphics] graphics_send payload rejected (schema)",
+        {
+          error: message,
+          payload: this.summarizeRawPayload(payload),
+          outputConfig: this.outputConfig,
+        }
+      );
+      throw error;
+    }
+
+    getBridgeContext().logger.info("[Graphics] graphics_send payload", {
+      payload: this.summarizeSendPayload(data),
+      outputConfig: this.outputConfig,
+    });
 
     if (typeof data.durationMs === "number" && !data.presetId) {
       throw new Error("Preset ID is required when durationMs is set");
@@ -325,6 +344,16 @@ export class GraphicsManager {
         (typeof renderInfo.fps === "number" &&
           renderInfo.fps !== this.outputConfig.format.fps)
       ) {
+        getBridgeContext().logger.error(
+          "[Graphics] Bundle manifest render format mismatch",
+          {
+            renderInfo,
+            outputFormat: this.outputConfig.format,
+            layerId: data.layerId,
+            category: data.category,
+            presetId: data.presetId ?? null,
+          }
+        );
         throw new Error("Bundle manifest render format mismatch");
       }
     }
@@ -925,6 +954,90 @@ export class GraphicsManager {
     }
 
     layer.lastFrame = frame;
+  }
+
+  private summarizeSendPayload(
+    data: GraphicsSendPayloadT
+  ): Record<string, unknown> {
+    const manifest = data.bundle?.manifest ?? {};
+    const render =
+      typeof (manifest as Record<string, unknown>).render === "object" &&
+      (manifest as Record<string, unknown>).render !== null
+        ? (manifest as Record<string, unknown>).render
+        : null;
+    const values = data.values ?? {};
+    const schema =
+      typeof data.bundle?.schema === "object" && data.bundle.schema !== null
+        ? data.bundle.schema
+        : {};
+    const defaults =
+      typeof data.bundle?.defaults === "object" && data.bundle.defaults !== null
+        ? data.bundle.defaults
+        : {};
+    const assets = Array.isArray(data.bundle?.assets) ? data.bundle.assets : [];
+
+    return {
+      layerId: data.layerId,
+      category: data.category,
+      presetId: data.presetId ?? null,
+      durationMs: typeof data.durationMs === "number" ? data.durationMs : null,
+      backgroundMode: data.backgroundMode,
+      layout: data.layout,
+      zIndex: data.zIndex,
+      manifest: {
+        name: (manifest as Record<string, unknown>).name ?? null,
+        version: (manifest as Record<string, unknown>).version ?? null,
+        type: (manifest as Record<string, unknown>).type ?? null,
+        render,
+      },
+      htmlLength:
+        typeof data.bundle?.html === "string" ? data.bundle.html.length : 0,
+      cssLength: typeof data.bundle?.css === "string" ? data.bundle.css.length : 0,
+      schemaKeys: Object.keys(schema),
+      defaultsKeys: Object.keys(defaults),
+      valuesKeys: Object.keys(values),
+      valuesCount: Object.keys(values).length,
+      assetsCount: assets.length,
+      assetIds: assets.map((asset) => asset.assetId),
+    };
+  }
+
+  private summarizeRawPayload(payload: unknown): Record<string, unknown> | null {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    const record = payload as Record<string, unknown>;
+    const bundle =
+      typeof record.bundle === "object" && record.bundle !== null
+        ? (record.bundle as Record<string, unknown>)
+        : null;
+    const values =
+      typeof record.values === "object" && record.values !== null
+        ? (record.values as Record<string, unknown>)
+        : null;
+    const manifest =
+      bundle && typeof bundle.manifest === "object" && bundle.manifest !== null
+        ? (bundle.manifest as Record<string, unknown>)
+        : null;
+
+    return {
+      layerId: record.layerId ?? null,
+      category: record.category ?? null,
+      presetId: record.presetId ?? null,
+      durationMs: record.durationMs ?? null,
+      backgroundMode: record.backgroundMode ?? null,
+      layout: record.layout ?? null,
+      zIndex: record.zIndex ?? null,
+      manifest: {
+        name: manifest?.name ?? null,
+        version: manifest?.version ?? null,
+        type: manifest?.type ?? null,
+        render: manifest?.render ?? null,
+      },
+      htmlLength: typeof bundle?.html === "string" ? bundle.html.length : 0,
+      cssLength: typeof bundle?.css === "string" ? bundle.css.length : 0,
+      valuesKeys: values ? Object.keys(values) : [],
+    };
   }
 
   private async prepareLayer(

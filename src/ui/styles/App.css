@@ -523,6 +523,25 @@
   }
 }
 
+@keyframes copyCheckPulse {
+  0% {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  20% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.copy-check-animate {
+  animation: copyCheckPulse 1500ms ease-out;
+}
+
 /* Sonner Toast Notifications - Glass Effect Overrides */
 [data-sonner-toast] {
   background: var(--glass-bg) !important;

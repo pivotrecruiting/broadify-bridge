@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Copy, Check } from "lucide-react";
 import { Card } from "@/components/card";
 import { Button } from "@/components/ui/button";
 
@@ -10,6 +11,7 @@ interface BridgeIdentitySectionProps {
   pairingExpiresAt?: string;
   pairingExpired?: boolean;
   isRunning: boolean;
+  onOpenPairing: () => void;
 }
 
 /**
@@ -23,6 +25,7 @@ export function BridgeIdentitySection({
   pairingExpiresAt,
   pairingExpired,
   isRunning,
+  onOpenPairing,
 }: BridgeIdentitySectionProps) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
@@ -30,7 +33,7 @@ export function BridgeIdentitySection({
     try {
       await navigator.clipboard.writeText(value);
       setCopiedField(field);
-      setTimeout(() => setCopiedField(null), 1200);
+      setTimeout(() => setCopiedField(null), 1500);
     } catch {
       setCopiedField(null);
     }
@@ -39,6 +42,16 @@ export function BridgeIdentitySection({
   const expiresLabel = pairingExpiresAt
     ? new Date(pairingExpiresAt).toLocaleTimeString()
     : null;
+  const hasPairingCode = Boolean(pairingCode) && isRunning;
+  const pairingStatus = !isRunning
+    ? "Not available"
+    : pairingExpired
+    ? `Expired${expiresLabel ? ` (${expiresLabel})` : ""}`
+    : expiresLabel
+    ? `Valid until ${expiresLabel}`
+    : hasPairingCode
+    ? "Available"
+    : "";
 
   return (
     <Card variant="frosted" className="p-4 sm:p-5 md:p-6" gradient>
@@ -67,41 +80,39 @@ export function BridgeIdentitySection({
               </span>
               {bridgeId && (
                 <Button
-                  variant="outline"
-                  size="sm"
+                  variant="ghost"
+                  size="icon"
                   onClick={() => copyToClipboard(bridgeId, "id")}
+                  aria-label="Copy bridge ID"
+                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/10"
                 >
-                  {copiedField === "id" ? "Copied" : "Copy"}
+                  {copiedField === "id" ? (
+                    <Check className="copy-check-animate" />
+                  ) : (
+                    <Copy />
+                  )}
                 </Button>
               )}
             </div>
           </div>
 
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Pairing Code</span>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-base font-mono text-card-foreground">
-                {isRunning ? pairingCode || "—" : "-"}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onOpenPairing}
+                disabled={!hasPairingCode}
+              >
+                Pairing
+              </Button>
+              <span
+                className={`text-xs ${
+                  pairingExpired ? "text-red-400" : "text-muted-foreground"
+                }`}
+              >
+                {pairingStatus}
               </span>
-              {isRunning && pairingCode && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => copyToClipboard(pairingCode, "pairing")}
-                >
-                  {copiedField === "pairing" ? "Copied" : "Copy"}
-                </Button>
-              )}
-              {pairingExpired && (
-                <span className="text-xs text-red-400">
-                  Expired{expiresLabel ? ` (${expiresLabel})` : ""}
-                </span>
-              )}
-              {!pairingExpired && expiresLabel && (
-                <span className="text-xs text-muted-foreground">
-                  Valid until {expiresLabel}
-                </span>
-              )}
             </div>
           </div>
         </div>
