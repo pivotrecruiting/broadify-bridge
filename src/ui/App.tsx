@@ -99,7 +99,7 @@ function App() {
     if (!window.electron || !networkConfig) return;
     if (!bridgeProfile?.bridgeName) {
       setShowNameDialog(true);
-      alert("Bitte zuerst einen Bridge-Namen setzen.");
+      alert("Please set a bridge name first.");
       return;
     }
 
@@ -119,9 +119,9 @@ function App() {
         customPort
       );
       if (useCustomPort) {
-        alert("Bitte geben Sie einen Port ein.");
+        alert("Please enter a port.");
       } else {
-        alert("Bitte wählen Sie einen Port aus.");
+        alert("Please select a port.");
       }
       return;
     }

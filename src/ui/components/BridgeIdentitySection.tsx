@@ -55,7 +55,7 @@ export function BridgeIdentitySection({
           <div className="flex flex-col gap-1">
             <span className="text-xs text-muted-foreground">Name</span>
             <div className="text-sm font-medium text-card-foreground">
-              {bridgeName || "Nicht gesetzt"}
+              {bridgeName || "Not set"}
             </div>
           </div>
 
@@ -71,14 +71,14 @@ export function BridgeIdentitySection({
                   size="sm"
                   onClick={() => copyToClipboard(bridgeId, "id")}
                 >
-                  {copiedField === "id" ? "Kopiert" : "Kopieren"}
+                  {copiedField === "id" ? "Copied" : "Copy"}
                 </Button>
               )}
             </div>
           </div>
 
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Pairing-Code</span>
+            <span className="text-xs text-muted-foreground">Pairing Code</span>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-base font-mono text-card-foreground">
                 {isRunning ? pairingCode || "—" : "-"}
@@ -89,17 +89,17 @@ export function BridgeIdentitySection({
                   size="sm"
                   onClick={() => copyToClipboard(pairingCode, "pairing")}
                 >
-                  {copiedField === "pairing" ? "Kopiert" : "Kopieren"}
+                  {copiedField === "pairing" ? "Copied" : "Copy"}
                 </Button>
               )}
               {pairingExpired && (
                 <span className="text-xs text-red-400">
-                  Abgelaufen{expiresLabel ? ` (${expiresLabel})` : ""}
+                  Expired{expiresLabel ? ` (${expiresLabel})` : ""}
                 </span>
               )}
               {!pairingExpired && expiresLabel && (
                 <span className="text-xs text-muted-foreground">
-                  Gültig bis {expiresLabel}
+                  Valid until {expiresLabel}
                 </span>
               )}
             </div>

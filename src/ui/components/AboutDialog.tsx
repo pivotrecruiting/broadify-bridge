@@ -45,12 +45,12 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-white/10">
           <h2 className="text-2xl font-bold text-foreground">
-            Über Broadify Bridge
+            About Broadify Bridge
           </h2>
           <button
             onClick={onClose}
             className="p-2 rounded-md hover:bg-white/10 transition-colors text-foreground hover:text-foreground/80"
-            aria-label="Schließen"
+            aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
@@ -69,14 +69,14 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
           {/* License Information */}
           <div>
             <h3 className="text-lg font-semibold text-foreground mb-3">
-              Lizenzinformationen
+              License Information
             </h3>
             <div className="space-y-4 text-sm text-muted-foreground">
               <div className="pt-3 border-t border-white/10">
                 <h4 className="font-medium text-foreground mb-1">Electron</h4>
-                <p>Diese Anwendung wurde mit Electron erstellt.</p>
+                <p>This application was built with Electron.</p>
                 <p className="mt-1">
-                  <strong>Lizenz:</strong> MIT
+                  <strong>License:</strong> MIT
                 </p>
                 <p className="mt-1">
                   <strong>Website:</strong>{" "}
@@ -95,10 +95,10 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
               <div className="pt-3 border-t border-white/10">
                 <h4 className="font-medium text-foreground mb-1">React</h4>
                 <p>
-                  Diese Anwendung verwendet React für die Benutzeroberfläche.
+                  This application uses React for the user interface.
                 </p>
                 <p className="mt-1">
-                  <strong>Lizenz:</strong> MIT
+                  <strong>License:</strong> MIT
                 </p>
                 <p className="mt-1">
                   <strong>Website:</strong>{" "}
@@ -119,19 +119,18 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
           {/* Additional Information */}
           <div>
             <h3 className="text-lg font-semibold text-foreground mb-3">
-              Weitere Informationen
+              Additional Information
             </h3>
             <div className="space-y-2 text-sm text-muted-foreground">
               <p>
-                Alle npm-Abhängigkeiten sind in{" "}
-                <code className="bg-white/10 px-1 rounded">package.json</code>{" "}
-                aufgelistet. Die meisten Abhängigkeiten verwenden permissive
-                Lizenzen (MIT, Apache-2.0, BSD-2-Clause, ISC).
+                All npm dependencies are listed in{" "}
+                <code className="bg-white/10 px-1 rounded">package.json</code>.
+                Most dependencies use permissive licenses (MIT, Apache-2.0,
+                BSD-2-Clause, ISC).
               </p>
               <p>
-                Für eine vollständige Liste der Abhängigkeiten und ihrer
-                Lizenzen, siehe{" "}
-                <code className="bg-white/10 px-1 rounded">NOTICES.md</code> und{" "}
+                For a complete list of dependencies and their licenses, see{" "}
+                <code className="bg-white/10 px-1 rounded">NOTICES.md</code> and{" "}
                 <code className="bg-white/10 px-1 rounded">LICENSE</code>.
               </p>
             </div>
@@ -144,7 +143,7 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium text-foreground bg-primary hover:bg-primary/90 rounded-md transition-colors"
           >
-            Schließen
+            Close
           </button>
         </div>
       </div>

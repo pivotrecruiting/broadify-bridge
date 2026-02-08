@@ -106,13 +106,13 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
           <div>
             <h2 className="text-2xl font-bold text-foreground">Diagnostics</h2>
             <p className="text-sm text-muted-foreground">
-              Bridge- und App-Logs direkt aus der Tray-App
+              Bridge and app logs directly from the tray app
             </p>
           </div>
           <button
             onClick={onClose}
             className="p-2 rounded-md hover:bg-white/10 transition-colors text-foreground hover:text-foreground/80"
-            aria-label="Schließen"
+            aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
@@ -154,7 +154,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
                 className="w-48"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter (z.B. Outputs)"
+                placeholder="Filter (e.g. Outputs)"
               />
               <Button
                 variant="secondary"
