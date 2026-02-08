@@ -32,7 +32,7 @@ export function BridgeNameDialog({
   const handleSave = async () => {
     const trimmed = name.trim();
     if (!trimmed) {
-      setError("Bitte einen Bridge-Namen eingeben.");
+      setError("Please enter a bridge name.");
       return;
     }
 
@@ -40,21 +40,20 @@ export function BridgeNameDialog({
     setError(null);
     const result = await onSave(trimmed);
     if (!result.success) {
-      setError(result.error || "Speichern fehlgeschlagen");
+      setError(result.error || "Save failed");
     }
     setSaving(false);
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
 
       <div className="relative w-full max-w-lg rounded-lg bg-white border border-white/20 shadow-2xl p-6 space-y-4">
         <div>
-          <h2 className="text-xl font-bold text-foreground">Bridge-Name</h2>
+          <h2 className="text-xl font-bold text-foreground">Bridge Name</h2>
           <p className="text-sm text-muted-foreground">
-            Bitte vergebe einen eindeutigen Namen, damit Sie Ihre Bridge später
-            wiederfinden können.
+            Please choose a unique name so you can find your bridge later.
           </p>
         </div>
 
@@ -66,7 +65,7 @@ export function BridgeNameDialog({
               setName(event.target.value);
               if (error) setError(null);
             }}
-            placeholder="z.B. Studio A"
+            placeholder="e.g. Studio A"
             maxLength={64}
           />
           {error && (
@@ -78,7 +77,7 @@ export function BridgeNameDialog({
 
         <div className="flex justify-end">
           <Button onClick={handleSave} disabled={saving}>
-            {saving ? "Speichern..." : "Speichern"}
+            {saving ? "Saving..." : "Save"}
           </Button>
         </div>
       </div>

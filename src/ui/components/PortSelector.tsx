@@ -93,7 +93,7 @@ export function PortSelector({
                         />
                         <span>{port}</span>
                         {available === false && (
-                          <span className="text-xs text-red-400">(belegt)</span>
+                          <span className="text-xs text-red-400">(in use)</span>
                         )}
                       </div>
                     </SelectItem>
@@ -115,8 +115,8 @@ export function PortSelector({
                 }`}
                 title={
                   portAvailability.get(parseInt(networkPort, 10))
-                    ? "Port ist frei"
-                    : "Port ist belegt"
+                    ? "Port is available"
+                    : "Port is in use"
                 }
               />
             )}

@@ -19,7 +19,7 @@ export function Header({ bridgeStatus, onOpenDiagnostics }: HeaderProps) {
           <button
             className="text-card-foreground hover:text-card-foreground/80 transition-colors"
             onClick={onOpenDiagnostics}
-            aria-label="Diagnostics öffnen"
+            aria-label="Open diagnostics"
           >
             <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
@@ -65,7 +65,7 @@ function WebAppLink({ bridgeStatus }: { bridgeStatus: BridgeStatus }) {
       onClick={handleClick}
       className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-md transition-colors"
     >
-      <span>Web-App öffnen</span>
+      <span>Open web app</span>
       <svg
         className="w-4 h-4"
         fill="none"

@@ -9,6 +9,7 @@ import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { BridgeIdentitySection } from "./components/BridgeIdentitySection";
 import { BridgeNameDialog } from "./components/BridgeNameDialog";
+import { PairingDialog } from "./components/PairingDialog";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
 
@@ -60,6 +61,7 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [showPairing, setShowPairing] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [bridgeProfile, setBridgeProfile] = useState<{
     bridgeId: string;
@@ -99,7 +101,7 @@ function App() {
     if (!window.electron || !networkConfig) return;
     if (!bridgeProfile?.bridgeName) {
       setShowNameDialog(true);
-      alert("Bitte zuerst einen Bridge-Namen setzen.");
+      alert("Please set a bridge name first.");
       return;
     }
 
@@ -119,9 +121,9 @@ function App() {
         customPort
       );
       if (useCustomPort) {
-        alert("Bitte geben Sie einen Port ein.");
+        alert("Please enter a port.");
       } else {
-        alert("Bitte wählen Sie einen Port aus.");
+        alert("Please select a port.");
       }
       return;
     }
@@ -242,6 +244,7 @@ function App() {
             pairingExpiresAt={bridgeStatus.pairingExpiresAt}
             pairingExpired={bridgeStatus.pairingExpired}
             isRunning={bridgeStatus.running}
+            onOpenPairing={() => setShowPairing(true)}
           />
 
           <NetworkSection
@@ -272,6 +275,14 @@ function App() {
         </div>
       </div>
       <LogsDialog isOpen={showLogs} onClose={() => setShowLogs(false)} />
+      <PairingDialog
+        isOpen={showPairing}
+        onClose={() => setShowPairing(false)}
+        pairingCode={bridgeStatus.pairingCode}
+        pairingExpiresAt={bridgeStatus.pairingExpiresAt}
+        pairingExpired={bridgeStatus.pairingExpired}
+        isRunning={bridgeStatus.running}
+      />
       <BridgeNameDialog
         isOpen={showNameDialog}
         initialName={bridgeName}
