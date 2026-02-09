@@ -8,6 +8,6 @@
   "include": [
     "src/services/graphics/renderer/electron-renderer-entry.ts",
     "src/services/graphics/display/display-output-entry.ts",
-    "src/services/graphics/display/display-output-preload.ts"
+    "src/services/graphics/display/display-output-preload.cts"
   ]
 }

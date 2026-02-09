@@ -77,7 +77,18 @@ const resolveDisplayEntry = (): string | null => {
 
 // Resolve the compiled preload script for the helper renderer.
 const resolveDisplayPreload = (): string | null => {
-  const distEntry = path.resolve(
+  const cjsEntry = path.resolve(
+    process.cwd(),
+    "dist",
+    "services",
+    "graphics",
+    "display",
+    "display-output-preload.cjs"
+  );
+  if (fs.existsSync(cjsEntry)) {
+    return cjsEntry;
+  }
+  const jsEntry = path.resolve(
     process.cwd(),
     "dist",
     "services",
@@ -85,7 +96,7 @@ const resolveDisplayPreload = (): string | null => {
     "display",
     "display-output-preload.js"
   );
-  return fs.existsSync(distEntry) ? distEntry : null;
+  return fs.existsSync(jsEntry) ? jsEntry : null;
 };
 
 /**
@@ -175,6 +186,11 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     env.BRIDGE_DISPLAY_FRAME_WIDTH = String(config.format.width);
     env.BRIDGE_DISPLAY_FRAME_HEIGHT = String(config.format.height);
     env.BRIDGE_DISPLAY_FRAME_FPS = String(config.format.fps);
+    if (process.env.BRIDGE_DISPLAY_DEBUG) {
+      env.BRIDGE_DISPLAY_DEBUG = process.env.BRIDGE_DISPLAY_DEBUG;
+    } else if (process.env.NODE_ENV !== "production") {
+      env.BRIDGE_DISPLAY_DEBUG = "1";
+    }
 
     // Security: spawn a fixed Electron entry with controlled args only.
     this.child = spawn(

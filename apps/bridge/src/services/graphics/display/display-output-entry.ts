@@ -21,6 +21,7 @@ const targetName = process.env.BRIDGE_DISPLAY_MATCH_NAME || "";
 const targetPortType = process.env.BRIDGE_DISPLAY_MATCH_PORT_TYPE || "";
 const targetWidth = Number(process.env.BRIDGE_DISPLAY_MATCH_WIDTH || "");
 const targetHeight = Number(process.env.BRIDGE_DISPLAY_MATCH_HEIGHT || "");
+const debugEnabled = process.env.BRIDGE_DISPLAY_DEBUG === "1";
 
 // Inline HTML avoids external file access and keeps the helper self-contained.
 const html = `<!doctype html>
@@ -43,30 +44,63 @@ const html = `<!doctype html>
         display: block;
         image-rendering: auto;
       }
+      #debug-overlay {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        padding: 8px 10px;
+        background: rgba(0, 0, 0, 0.6);
+        color: #00ff6a;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;
+        z-index: 9999;
+        white-space: pre;
+        pointer-events: none;
+      }
+      #debug-overlay.hidden {
+        display: none;
+      }
     </style>
   </head>
   <body>
+    <div id="debug-overlay" class="${debugEnabled ? "" : "hidden"}">Display Output Debug</div>
     <canvas id="canvas"></canvas>
     <script>
       (function () {
-        const api = window.displayOutput;
-        if (!api || !api.onFrame) {
-          console.error("[DisplayOutput] Missing preload API");
-          return;
-        }
         const canvas = document.getElementById("canvas");
         const ctx = canvas.getContext("2d", { alpha: false });
         const offscreen = document.createElement("canvas");
         const offCtx = offscreen.getContext("2d", { alpha: false });
+        const overlay = document.getElementById("debug-overlay");
+        const debugEnabled = ${debugEnabled ? "true" : "false"};
+        let frameCount = 0;
         let drawing = false;
         let pending = null;
+        const api = window.displayOutput;
+        const setOverlay = (lines) => {
+          if (!debugEnabled || !overlay) return;
+          overlay.textContent = lines.join("\\n");
+        };
 
         const resize = () => {
           canvas.width = window.innerWidth;
           canvas.height = window.innerHeight;
+          setOverlay([
+            "Display Output Debug",
+            "Canvas: " + canvas.width + "x" + canvas.height,
+          ]);
         };
         window.addEventListener("resize", resize);
         resize();
+
+        if (!api || !api.onFrame) {
+          setOverlay([
+            "Display Output Debug",
+            "Canvas: " + canvas.width + "x" + canvas.height,
+            "Missing preload API",
+          ]);
+          console.error("[DisplayOutput] Missing preload API");
+          return;
+        }
 
         const drawFrame = (frame) => {
           if (!ctx || !offCtx) return;
@@ -83,6 +117,13 @@ const html = `<!doctype html>
           offCtx.putImageData(imageData, 0, 0);
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+          frameCount += 1;
+          setOverlay([
+            "Display Output Debug",
+            "Canvas: " + canvas.width + "x" + canvas.height,
+            "Frame: " + width + "x" + height,
+            "Count: " + frameCount,
+          ]);
         };
 
         // Draw on RAF to avoid queue buildup on slow displays.
@@ -127,6 +168,11 @@ let pendingFrame:
   | { width: number; height: number; buffer: Buffer; timestamp: number }
   | null = null;
 let inputBuffer = Buffer.alloc(0);
+let framesReceived = 0;
+let firstFrameLogged = false;
+let bytesReceived = 0;
+let framesParsed = 0;
+let lastByteLogAt = 0;
 
 // Electron display objects can vary by version; tolerate missing fields.
 function getDisplayLabel(display: Electron.Display): string {
@@ -186,6 +232,22 @@ function sendFrame(frame: {
   if (!windowRef || windowRef.isDestroyed()) {
     pendingFrame = frame;
     return;
+  }
+  if (debugEnabled) {
+    framesReceived += 1;
+    if (!firstFrameLogged) {
+      firstFrameLogged = true;
+      logger.info(
+        {
+          frameWidth: frame.width,
+          frameHeight: frame.height,
+          canvasWidth: windowRef.getBounds().width,
+          canvasHeight: windowRef.getBounds().height,
+          framesReceived,
+        },
+        "[DisplayOutput] First frame received"
+      );
+    }
   }
   windowRef.webContents.send("display-frame", frame);
 }
@@ -251,6 +313,17 @@ function processInputBuffer(): void {
     const payloadEnd = FRAME_HEADER_LENGTH + header.bufferLength;
     const payload = Buffer.from(inputBuffer.subarray(payloadStart, payloadEnd));
     inputBuffer = inputBuffer.subarray(payloadEnd);
+    framesParsed += 1;
+    if (debugEnabled && framesParsed === 1) {
+      logger.info(
+        {
+          frameWidth: header.width,
+          frameHeight: header.height,
+          bufferLength: header.bufferLength,
+        },
+        "[DisplayOutput] First frame parsed from stdin"
+      );
+    }
     sendFrame({
       width: header.width,
       height: header.height,
@@ -310,6 +383,33 @@ app.on("ready", () => {
   windowRef.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
   windowRef.webContents.on("did-finish-load", () => {
+    if (debugEnabled) {
+      logger.info("[DisplayOutput] Debug overlay enabled");
+    }
+    if (debugEnabled) {
+      const win = windowRef;
+      if (!win) {
+        return;
+      }
+      win.webContents
+        .executeJavaScript(
+          "Boolean(window.displayOutput && window.displayOutput.onFrame)"
+        )
+        .then((hasApi) => {
+          logger.info(
+            { hasApi },
+            "[DisplayOutput] Preload API availability"
+          );
+        })
+        .catch((error) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          logger.warn(
+            { error: message },
+            "[DisplayOutput] Failed to check preload API"
+          );
+        });
+    }
     sendReady();
     if (pendingFrame) {
       const frame = pendingFrame;
@@ -328,5 +428,19 @@ app.on("window-all-closed", () => {
 // Stream raw frame data from stdin (bridge adapter process).
 process.stdin.on("data", (chunk) => {
   inputBuffer = Buffer.concat([inputBuffer, chunk]);
+  if (debugEnabled) {
+    bytesReceived += chunk.length;
+    const now = Date.now();
+    if (now - lastByteLogAt > 1000) {
+      lastByteLogAt = now;
+      logger.info(
+        {
+          bytesReceived,
+          bufferLength: inputBuffer.length,
+        },
+        "[DisplayOutput] Stdin bytes received"
+      );
+    }
+  }
   processInputBuffer();
 });

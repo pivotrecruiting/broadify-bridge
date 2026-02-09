@@ -81,9 +81,20 @@ UI‑Logik kann damit externe Displays getrennt von DeckLink und Capture anzeige
   - Siehe Logs: `[DisplayDetector] Missing connection type ...`
 - Keine Modes:
   - Prüfe, ob `resolution`/`refresh` im `system_profiler` Output vorhanden ist
+- Display‑Helper zeigt nur Schwarz / kein Frame:
+  - Prüfe, ob der Preload geladen wird (Overlay zeigt **nicht** `Missing preload API`).
+  - Ursache kann ein ESM‑Preload sein. Electron‑Preload muss **CommonJS** sein.
+  - Lösung: Preload als CJS bauen (z. B. `display-output-preload.cts` → `display-output-preload.cjs`) und im Adapter bevorzugen.
+  - Nach Änderungen `npm --prefix apps/bridge run build:graphics-renderer` ausführen und Bridge neu starten.
+- Erstes Bild kommt verzögert:
+  - Der Helper kann einige Sekunden bis zum ersten Frame brauchen.
+  - Optionales Debug‑Overlay aktivieren: `BRIDGE_DISPLAY_DEBUG=1`.
 
 ## Relevante Dateien
 - `apps/bridge/src/modules/display/display-module.ts`
 - `apps/bridge/src/modules/index.ts`
 - `apps/bridge/src/routes/outputs.ts`
 - `packages/protocol/src/index.ts`
+- `apps/bridge/src/services/graphics/output-adapters/display-output-adapter.ts`
+- `apps/bridge/src/services/graphics/display/display-output-entry.ts`
+- `apps/bridge/src/services/graphics/display/display-output-preload.cts`
