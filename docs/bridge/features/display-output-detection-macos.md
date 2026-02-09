@@ -89,6 +89,9 @@ UI‑Logik kann damit externe Displays getrennt von DeckLink und Capture anzeige
 - Erstes Bild kommt verzögert:
   - Der Helper kann einige Sekunden bis zum ersten Frame brauchen.
   - Optionales Debug‑Overlay aktivieren: `BRIDGE_DISPLAY_DEBUG=1`.
+  - In `development` wird das Overlay automatisch aktiviert (wenn nicht explizit gesetzt).
+  - Deaktivieren: `BRIDGE_DISPLAY_DEBUG=0`.
+  - Overlay‑Infos: Canvas‑Größe, Frame‑Größe, Frame‑Counter, Preload‑Status (`Missing preload API`).
 
 ## Relevante Dateien
 - `apps/bridge/src/modules/display/display-module.ts`
