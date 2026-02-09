@@ -2,6 +2,12 @@ import { app, BrowserWindow, protocol } from "electron";
 import net from "node:net";
 import pino from "pino";
 import { getStandardAnimationCss } from "./animation-css.js";
+import {
+  isFrameBusEnabled,
+  loadFrameBusModule,
+  type FrameBusModuleT,
+  type FrameBusWriterT,
+} from "../framebus/framebus-client.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -17,6 +23,11 @@ const DEBUG_GRAPHICS = true;
 // Design baseline for templates (format-agnostic rendering).
 const BASE_RENDER_WIDTH = 1920;
 const BASE_RENDER_HEIGHT = 1080;
+const ENABLE_SINGLE_RENDERER =
+  process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1";
+let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
+let frameBusSlotCount = Number(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT || 0);
+let frameBusPixelFormat = Number(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT || 1);
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 
@@ -43,12 +54,21 @@ const debugMismatchLogged = new Set<string>();
 const debugEmptyLogged = new Set<string>();
 const debugSampleLogged = new Set<string>();
 const debugDomLogged = new Set<string>();
+const debugFrameBusLogged = new Set<string>();
 let perfLastLogAt = Date.now();
 let perfPaintCount = 0;
 let perfSentCount = 0;
 let perfDroppedCount = 0;
 let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
+
+let singleWindow: BrowserWindow | null = null;
+let singleWindowReady: Promise<void> | null = null;
+let singleWindowFormat: { width: number; height: number; fps: number } | null =
+  null;
+let frameBusModule: FrameBusModuleT | null = null;
+let frameBusWriter: FrameBusWriterT | null = null;
+let frameBusInitAttempted = false;
 
 function logPerfIfNeeded(): void {
   const now = Date.now();
@@ -507,6 +527,464 @@ function resolveBackgroundColor(mode: string): string {
   return "transparent";
 }
 
+function logFrameBusOnce(key: string, message: string): void {
+  if (debugFrameBusLogged.has(key)) {
+    return;
+  }
+  debugFrameBusLogged.add(key);
+  logger.warn(message);
+}
+
+function ensureFrameBusWriter(
+  width: number,
+  height: number,
+  fps: number
+): void {
+  if (!ENABLE_SINGLE_RENDERER) {
+    return;
+  }
+  if (!isFrameBusEnabled()) {
+    logFrameBusOnce(
+      "disabled",
+      "[GraphicsRenderer] FrameBus disabled; single renderer requires FrameBus"
+    );
+    return;
+  }
+  if (frameBusWriter || frameBusInitAttempted) {
+    return;
+  }
+  frameBusInitAttempted = true;
+
+  if (!frameBusName) {
+    logFrameBusOnce(
+      "missing-name",
+      "[GraphicsRenderer] FrameBus name missing (BRIDGE_FRAMEBUS_NAME)"
+    );
+    return;
+  }
+  if (!Number.isFinite(frameBusSlotCount) || frameBusSlotCount < 2) {
+    logFrameBusOnce(
+      "invalid-slot",
+      "[GraphicsRenderer] FrameBus slotCount missing or invalid (BRIDGE_FRAMEBUS_SLOT_COUNT)"
+    );
+    return;
+  }
+
+  try {
+    frameBusModule = loadFrameBusModule();
+    if (!frameBusModule) {
+      logFrameBusOnce(
+        "module-null",
+        "[GraphicsRenderer] FrameBus module not loaded"
+      );
+      return;
+    }
+    frameBusWriter = frameBusModule.createWriter({
+      name: frameBusName,
+      width,
+      height,
+      fps,
+      pixelFormat: Number.isFinite(frameBusPixelFormat)
+        ? (frameBusPixelFormat as 1 | 2 | 3)
+        : 1,
+      slotCount: frameBusSlotCount,
+    });
+    logger.info(
+      {
+        name: frameBusWriter.name,
+        size: frameBusWriter.size,
+        header: frameBusWriter.header,
+      },
+      "[GraphicsRenderer] FrameBus writer initialized"
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logFrameBusOnce(
+      "init-failed",
+      `[GraphicsRenderer] FrameBus init failed: ${message}`
+    );
+  }
+}
+
+function applyRendererConfig(message: {
+  framebusName?: string;
+  framebusSlotCount?: number;
+  framebusPixelFormat?: number;
+}): void {
+  if (typeof message.framebusName === "string" && message.framebusName.trim()) {
+    frameBusName = message.framebusName.trim();
+  }
+  if (
+    typeof message.framebusSlotCount === "number" &&
+    message.framebusSlotCount >= 2
+  ) {
+    frameBusSlotCount = message.framebusSlotCount;
+  }
+  if (
+    typeof message.framebusPixelFormat === "number" &&
+    message.framebusPixelFormat > 0
+  ) {
+    frameBusPixelFormat = message.framebusPixelFormat;
+  }
+}
+
+async function ensureSingleWindow(
+  width: number,
+  height: number,
+  fps: number,
+  backgroundMode: string
+): Promise<BrowserWindow> {
+  if (singleWindow && singleWindowFormat) {
+    if (
+      singleWindowFormat.width !== width ||
+      singleWindowFormat.height !== height ||
+      singleWindowFormat.fps !== fps
+    ) {
+      logger.warn(
+        {
+          existing: singleWindowFormat,
+          next: { width, height, fps },
+        },
+        "[GraphicsRenderer] Single renderer format mismatch"
+      );
+    }
+    return singleWindow;
+  }
+
+  if (!singleWindow) {
+    singleWindow = new BrowserWindow({
+      width,
+      height,
+      show: false,
+      transparent: true,
+      paintWhenInitiallyHidden: true,
+      webPreferences: {
+        offscreen: true,
+        backgroundThrottling: false,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    });
+
+    singleWindowFormat = { width, height, fps };
+
+    singleWindow.webContents.setFrameRate(fps);
+    singleWindow.webContents.on("paint", (_event, _dirty, image) => {
+      if (paintCount === 0) {
+        logger.info("[GraphicsRenderer] First paint received");
+      }
+      paintCount += 1;
+      perfPaintCount += 1;
+
+      const imageSize = image.getSize();
+      if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {
+        if (DEBUG_GRAPHICS && !debugEmptyLogged.has("single")) {
+          debugEmptyLogged.add("single");
+          logger.warn(
+            {
+              width,
+              height,
+              imageWidth: imageSize.width,
+              imageHeight: imageSize.height,
+              dirtyRect: _dirty,
+            },
+            "[GraphicsRenderer] Debug empty paint frame (single)"
+          );
+        }
+        return;
+      }
+
+      const buffer = bgraToRgba(image.toBitmap());
+      if (buffer.length !== width * height * 4) {
+        logger.warn("[GraphicsRenderer] Frame buffer length mismatch (single)");
+        return;
+      }
+
+      ensureFrameBusWriter(width, height, fps);
+      if (!frameBusWriter) {
+        perfDroppedCount += 1;
+        logPerfIfNeeded();
+        return;
+      }
+
+      try {
+        frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
+        perfSentCount += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          { message },
+          "[GraphicsRenderer] FrameBus write failed (single)"
+        );
+      }
+      logPerfIfNeeded();
+    });
+
+    singleWindowReady = new Promise((resolve) => {
+      singleWindow?.webContents.once("did-finish-load", () => {
+        singleWindow?.webContents.startPainting();
+        singleWindow?.webContents.invalidate();
+        const isPainting = singleWindow?.webContents.isPainting();
+        logger.info(`[GraphicsRenderer] isPainting: ${isPainting}`);
+        resolve();
+      });
+    });
+
+    const html = buildSingleWindowDocument();
+    await singleWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+    );
+  }
+
+  if (singleWindowReady) {
+    await singleWindowReady;
+  }
+
+  if (backgroundMode) {
+    try {
+      await singleWindow.webContents.executeJavaScript(
+        `window.__setBackground && window.__setBackground(${JSON.stringify(backgroundMode)});`,
+        true
+      );
+    } catch {
+      // No-op; background set via create_layer.
+    }
+  }
+
+  return singleWindow;
+}
+
+function buildSingleWindowDocument(): string {
+  const standardCss = JSON.stringify(getStandardAnimationCss());
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+      #graphics-background {
+        position: absolute;
+        inset: 0;
+        background: transparent;
+      }
+      #graphics-root {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="graphics-background"></div>
+    <div id="graphics-root"></div>
+    <script>
+      const BASE_WIDTH = ${BASE_RENDER_WIDTH};
+      const BASE_HEIGHT = ${BASE_RENDER_HEIGHT};
+      const STANDARD_CSS = ${standardCss};
+      const layers = new Map();
+
+      const escapeHtml = (value) => {
+        const str = value === undefined || value === null ? "" : String(value);
+        return str
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      };
+
+      const renderTemplate = (template, values) => {
+        // eslint-disable-next-line no-useless-escape
+        return template.replace(/{{\\s*([\\w.-]+)\\s*}}/g, (_match, key) => {
+          const value = key.split(".").reduce((acc, part) => {
+            if (acc && typeof acc === "object" && part in acc) {
+              return acc[part];
+            }
+            return undefined;
+          }, values);
+          return escapeHtml(value);
+        });
+      };
+
+      const getRootElement = (root) => {
+        return (root && root.querySelector('[data-root="graphic"]')) || root;
+      };
+
+      const applyAnimationClass = (element, animationClass) => {
+        if (!element) return;
+        if (!element.classList.contains("root")) {
+          element.classList.add("root");
+        }
+        const classes = String(element.className || "")
+          .split(/\\s+/)
+          .filter((entry) => entry.length > 0);
+        const nextClasses = classes.filter(
+          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
+        );
+        if (animationClass) {
+          nextClasses.push(animationClass);
+        }
+        if (!nextClasses.includes("state-enter")) {
+          nextClasses.push("state-enter");
+        }
+        element.className = nextClasses.join(" ");
+      };
+
+      const applyCssVariables = (host, vars) => {
+        if (!host || !vars) return;
+        Object.entries(vars).forEach(([key, value]) => {
+          if (!key.startsWith("--")) return;
+          host.style.setProperty(key, String(value));
+        });
+      };
+
+      const applyTextContent = (root, textContent, textTypes) => {
+        if (!root || !textContent) return;
+        Object.entries(textContent).forEach(([key, value]) => {
+          const target = root.querySelector('[data-bid="' + key + '"]');
+          if (!target) return;
+          const contentType = textTypes ? textTypes[key] : undefined;
+          if (contentType === "list") {
+            const items = String(value || "")
+              .split("\\n")
+              .map((item) => item.trim())
+              .filter(Boolean);
+            target.innerHTML = items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("");
+            return;
+          }
+          target.textContent = String(value ?? "");
+        });
+      };
+
+      const applyLayout = (host, layout) => {
+        if (!host) return;
+        const x = Number(layout?.x || 0);
+        const y = Number(layout?.y || 0);
+        const scale = Number(layout?.scale || 1);
+        host.style.transform = "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
+      };
+
+      const resolveBackgroundColor = (mode) => {
+        if (mode === "green") return "#00FF00";
+        if (mode === "black") return "#000000";
+        if (mode === "white") return "#FFFFFF";
+        return "transparent";
+      };
+
+      const setBackground = (mode) => {
+        const background = document.getElementById("graphics-background");
+        if (!background) return;
+        background.style.background = resolveBackgroundColor(mode);
+      };
+      window.__setBackground = setBackground;
+
+      window.__createLayer = (payload) => {
+        const root = document.getElementById("graphics-root");
+        if (!root || !payload || !payload.layerId) return;
+        let host = root.querySelector('[data-layer-id="' + payload.layerId + '"]');
+        if (!host) {
+          host = document.createElement("div");
+          host.dataset.layerId = payload.layerId;
+          host.style.position = "absolute";
+          host.style.left = "0";
+          host.style.top = "0";
+          root.appendChild(host);
+        }
+        host.style.width = BASE_WIDTH + "px";
+        host.style.height = BASE_HEIGHT + "px";
+        host.style.transformOrigin = "top left";
+        if (payload.zIndex !== undefined && payload.zIndex !== null) {
+          host.style.zIndex = String(payload.zIndex);
+        }
+
+        let shadow = host.shadowRoot;
+        if (!shadow) {
+          shadow = host.attachShadow({ mode: "closed" });
+        }
+        shadow.innerHTML = "";
+
+        const style = document.createElement("style");
+        style.textContent = STANDARD_CSS + "\\n" + String(payload.css || "");
+        shadow.appendChild(style);
+
+        const container = document.createElement("div");
+        container.id = "graphic-root";
+        container.style.width = BASE_WIDTH + "px";
+        container.style.height = BASE_HEIGHT + "px";
+        shadow.appendChild(container);
+
+        const template = String(payload.html || "");
+        const hasPlaceholders = template.includes("{{");
+        if (!hasPlaceholders) {
+          container.innerHTML = template;
+        }
+
+        const layerState = {
+          host,
+          shadow,
+          container,
+          template,
+          hasPlaceholders,
+          values: payload.values || {},
+          bindings: payload.bindings || {},
+        };
+        layers.set(payload.layerId, layerState);
+
+        if (payload.backgroundMode) {
+          setBackground(payload.backgroundMode);
+        }
+
+        window.__updateValues(payload.layerId, payload.values || {}, payload.bindings || {});
+        window.__updateLayout(payload.layerId, payload.layout || { x: 0, y: 0, scale: 1 }, payload.zIndex);
+      };
+
+      window.__updateValues = (layerId, values, bindings) => {
+        const layer = layers.get(layerId);
+        if (!layer) return;
+        const nextValues = Object.assign({}, layer.values || {}, values || {});
+        layer.values = nextValues;
+        const nextBindings = Object.assign({}, layer.bindings || {}, bindings || {});
+        layer.bindings = nextBindings;
+
+        const container = layer.container;
+        if (layer.hasPlaceholders) {
+          container.innerHTML = renderTemplate(layer.template, nextValues);
+        }
+
+        const rootElement = getRootElement(container);
+        applyAnimationClass(rootElement, nextBindings.animationClass);
+        applyTextContent(rootElement, nextBindings.textContent, nextBindings.textTypes);
+        applyCssVariables(layer.host, nextBindings.cssVariables);
+      };
+
+      window.__updateLayout = (layerId, layout, zIndex) => {
+        const layer = layers.get(layerId);
+        if (!layer) return;
+        if (zIndex !== undefined && zIndex !== null) {
+          layer.host.style.zIndex = String(zIndex);
+        }
+        applyLayout(layer.host, layout);
+      };
+
+      window.__removeLayer = (layerId) => {
+        const layer = layers.get(layerId);
+        if (!layer) return;
+        layer.host.remove();
+        layers.delete(layerId);
+      };
+    </script>
+  </body>
+</html>`;
+}
+
 function registerAssetProtocol(): void {
   protocol.registerFileProtocol("asset", (request, callback) => {
     try {
@@ -545,6 +1023,10 @@ async function createLayer(message: {
   height: number;
   fps: number;
 }): Promise<void> {
+  if (ENABLE_SINGLE_RENDERER) {
+    await createLayerSingle(message);
+    return;
+  }
   const existing = layers.get(message.layerId);
   if (existing) {
     existing.window.destroy();
@@ -734,6 +1216,48 @@ async function createLayer(message: {
   });
 }
 
+async function createLayerSingle(message: {
+  layerId: string;
+  html: string;
+  css: string;
+  values: Record<string, unknown>;
+  bindings?: {
+    cssVariables?: Record<string, string>;
+    textContent?: Record<string, string>;
+    textTypes?: Record<string, string>;
+    animationClass?: string;
+  };
+  layout: { x: number; y: number; scale: number };
+  backgroundMode: string;
+  width: number;
+  height: number;
+  fps: number;
+  zIndex?: number;
+}): Promise<void> {
+  const window = await ensureSingleWindow(
+    message.width,
+    message.height,
+    message.fps,
+    message.backgroundMode
+  );
+
+  const payload = {
+    layerId: message.layerId,
+    html: message.html,
+    css: message.css,
+    values: message.values,
+    bindings: message.bindings,
+    layout: message.layout,
+    backgroundMode: message.backgroundMode,
+    zIndex: message.zIndex,
+  };
+
+  await window.webContents.executeJavaScript(
+    `window.__createLayer(${JSON.stringify(payload)});`,
+    true
+  );
+}
+
 /**
  * Update template values and bindings for an existing layer.
  *
@@ -749,6 +1273,10 @@ async function updateValues(message: {
     animationClass?: string;
   };
 }): Promise<void> {
+  if (ENABLE_SINGLE_RENDERER) {
+    await updateValuesSingle(message);
+    return;
+  }
   const layer = layers.get(message.layerId);
   if (!layer) {
     return;
@@ -762,6 +1290,27 @@ async function updateValues(message: {
   );
 }
 
+async function updateValuesSingle(message: {
+  layerId: string;
+  values: Record<string, unknown>;
+  bindings?: {
+    cssVariables?: Record<string, string>;
+    textContent?: Record<string, string>;
+    textTypes?: Record<string, string>;
+    animationClass?: string;
+  };
+}): Promise<void> {
+  if (!singleWindow) {
+    return;
+  }
+  await singleWindow.webContents.executeJavaScript(
+    `window.__updateValues(${JSON.stringify(message.layerId)}, ${JSON.stringify(
+      message.values || {}
+    )}, ${JSON.stringify(message.bindings || {})});`,
+    true
+  );
+}
+
 /**
  * Update layout transform for an existing layer.
  *
@@ -770,7 +1319,12 @@ async function updateValues(message: {
 async function updateLayout(message: {
   layerId: string;
   layout: { x: number; y: number; scale: number };
+  zIndex?: number;
 }): Promise<void> {
+  if (ENABLE_SINGLE_RENDERER) {
+    await updateLayoutSingle(message);
+    return;
+  }
   const layer = layers.get(message.layerId);
   if (!layer) {
     return;
@@ -782,18 +1336,48 @@ async function updateLayout(message: {
   );
 }
 
+async function updateLayoutSingle(message: {
+  layerId: string;
+  layout: { x: number; y: number; scale: number };
+  zIndex?: number;
+}): Promise<void> {
+  if (!singleWindow) {
+    return;
+  }
+  await singleWindow.webContents.executeJavaScript(
+    `window.__updateLayout(${JSON.stringify(message.layerId)}, ${JSON.stringify(
+      message.layout
+    )}, ${JSON.stringify(message.zIndex)});`,
+    true
+  );
+}
+
 /**
  * Remove a layer and destroy its offscreen window.
  *
  * @param message Remove payload.
  */
 async function removeLayer(message: { layerId: string }): Promise<void> {
+  if (ENABLE_SINGLE_RENDERER) {
+    await removeLayerSingle(message);
+    return;
+  }
   const layer = layers.get(message.layerId);
   if (!layer) {
     return;
   }
   layer.window.destroy();
   layers.delete(message.layerId);
+}
+
+async function removeLayerSingle(message: { layerId: string }): Promise<void> {
+  if (!singleWindow) {
+    return;
+  }
+  await singleWindow.webContents.executeJavaScript(
+    `window.__removeLayer(${JSON.stringify(message.layerId)});`,
+    true
+  );
 }
 
 /**
@@ -807,6 +1391,17 @@ async function handleMessage(message: unknown): Promise<void> {
   }
 
   const msg = message as { type?: string; [key: string]: unknown };
+
+  if (msg.type === "renderer_configure") {
+    applyRendererConfig(
+      msg as {
+        framebusName?: string;
+        framebusSlotCount?: number;
+        framebusPixelFormat?: number;
+      }
+    );
+    return;
+  }
 
   if (msg.type === "set_assets") {
     assetMap.clear();
@@ -836,6 +1431,7 @@ async function handleMessage(message: unknown): Promise<void> {
         width: number;
         height: number;
         fps: number;
+        zIndex?: number;
       },
     );
     return;
@@ -862,6 +1458,7 @@ async function handleMessage(message: unknown): Promise<void> {
       msg as {
         layerId: string;
         layout: { x: number; y: number; scale: number };
+        zIndex?: number;
       },
     );
     return;
@@ -877,6 +1474,14 @@ async function handleMessage(message: unknown): Promise<void> {
       layer.window.destroy();
     }
     layers.clear();
+    if (singleWindow) {
+      singleWindow.destroy();
+      singleWindow = null;
+    }
+    if (frameBusWriter) {
+      frameBusWriter.close();
+      frameBusWriter = null;
+    }
     app.quit();
   }
 }
