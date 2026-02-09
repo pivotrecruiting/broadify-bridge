@@ -12,19 +12,26 @@ Definiert die API und Speicherstruktur für den Shared-Memory FrameBus. Ziel ist
 - `magic` dient zur Validierung (z. B. `BRGF`).
 
 ## Shared Memory Layout (Vorschlag)
-### Header (fixed size)
-- `magic: u32`
-- `version: u16`
-- `flags: u16`
-- `width: u32`
-- `height: u32`
-- `fps: u32`
-- `pixelFormat: u32` (enum)
-- `frameSize: u32`
-- `slotCount: u32`
-- `seq: u64` (atomic, monoton)
-- `lastWriteNs: u64`
-- `reserved[64]`
+### Endianness
+- Alle Integer sind **Little Endian**.
+
+### Header (fixed size = 128 bytes)
+| Offset | Size | Type | Name | Beschreibung |
+| --- | --- | --- | --- | --- |
+| 0 | 4 | u32 | magic | ASCII `BRGF` |
+| 4 | 2 | u16 | version | Header-Version |
+| 6 | 2 | u16 | flags | Reserviert |
+| 8 | 4 | u32 | headerSize | Muss 128 sein |
+| 12 | 4 | u32 | width | Frame-Width |
+| 16 | 4 | u32 | height | Frame-Height |
+| 20 | 4 | u32 | fps | Ziel-FPS |
+| 24 | 4 | u32 | pixelFormat | enum, siehe unten |
+| 28 | 4 | u32 | frameSize | width * height * 4 |
+| 32 | 4 | u32 | slotCount | z. B. 2 |
+| 36 | 4 | u32 | slotStride | i. d. R. = frameSize |
+| 40 | 8 | u64 | seq | Atomic, monoton |
+| 48 | 8 | u64 | lastWriteNs | Monotonic Timestamp |
+| 56 | 72 | bytes | reserved | Zukünftige Felder |
 
 ### Slots (variable)
 - `slot[0..slotCount-1]`: raw frame bytes
@@ -51,8 +58,16 @@ Definiert die API und Speicherstruktur für den Shared-Memory FrameBus. Ziel ist
   - Key/Fill: `KEY_FILL_PIXEL_FORMAT_PRIORITY = ["8bit_argb", "8bit_bgra"]`
   Quelle: `apps/bridge/src/services/graphics/output-format-policy.ts`
 
+### PixelFormat Enum (FrameBus)
+- `1 = RGBA8` (aktuell, verpflichtend)
+- `2 = BGRA8` (reserved)
+- `3 = ARGB8` (reserved)
+
+## Memory Size
+- `totalSize = headerSize + slotStride * slotCount`
+
 ## TODO
-- [ ] Header-Felder final definieren.
-- [ ] PixelFormat Enum festlegen.
+- [ ] Header-Layout implementieren (C++ + N-API).
+- [ ] PixelFormat Enum in Code spiegeln.
 - [ ] N-API Signaturen definieren.
 - [ ] OS-spezifische Shared-Memory Implementierung festlegen.

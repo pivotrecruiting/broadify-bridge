@@ -13,10 +13,11 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
 - Zweck: Session-Parameter setzen, bevor Layers erstellt werden.
 - Payload:
   - `width`, `height`, `fps`
-  - `pixelFormat`
+  - `pixelFormat` (FrameBus PixelFormat Enum)
   - `framebusName`
   - `framebusSize`
   - `backgroundMode`
+  - `clearColor` (optional, `{ r, g, b, a }`)
 
 ## Asset-Handling
 ### `set_assets` (bestehend, beibehalten)
@@ -33,6 +34,7 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
   - `bindings`
   - `layout`
   - `backgroundMode`
+  - `zIndex`
 
 ### `update_values`
 - Payload:
@@ -44,6 +46,7 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
 - Payload:
   - `layerId`
   - `layout`
+  - `zIndex` (optional)
 
 ### `remove_layer`
 - Payload:
@@ -51,6 +54,18 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
 
 ### `shutdown`
 - Payload: none
+
+## Events (Renderer -> Bridge)
+### `ready`
+- Zweck: Renderer ist konfiguriert, FrameBus verbunden.
+- Payload:
+  - `width`, `height`, `fps`
+  - `pixelFormat`
+  - `framebusName`
+
+### `error`
+- Payload:
+  - `message`
 
 ## Renderer-Verhalten (Shadow DOM)
 - Pro `create_layer` wird ein Host-Element erstellt.

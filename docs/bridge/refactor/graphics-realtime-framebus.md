@@ -3,6 +3,9 @@
 ## Zweck
 Zero-Copy Transport von Frames zwischen Renderer und Output-Helper. Der FrameBus ersetzt den bisherigen TCP-IPC-Transport.
 
+## API Spec
+Siehe: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
+
 ## Design
 - Shared Memory Segment pro Session.
 - Double-Buffer oder Ring-Buffer (latest-frame-wins).
