@@ -86,7 +86,10 @@ export type PortDescriptorT = {
 export type DeviceDescriptorT = {
     id: string;
     displayName: string;
-    type: "usb-capture" | "decklink" | "other";
+    /**
+     * "display" refers to external monitor outputs detected on macOS.
+     */
+    type: "usb-capture" | "decklink" | "display" | "other";
     vendor?: string;
     model?: string;
     driver?: string;
@@ -100,7 +103,10 @@ export type DeviceDescriptorT = {
 export type OutputDeviceT = {
     id: string;
     name: string;
-    type: "decklink" | "capture" | "connection";
+    /**
+     * "display" represents external monitor outputs (HDMI/DP/Thunderbolt).
+     */
+    type: "decklink" | "display" | "capture" | "connection";
     available: boolean;
     deviceId?: string;
     portType?: PortDescriptorT["type"];

@@ -25,6 +25,7 @@ import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
 import { DecklinkSplitOutputAdapter } from "./output-adapters/decklink-split-output-adapter.js";
 import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
+import { DisplayVideoOutputAdapter } from "./output-adapters/display-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { isDevelopmentMode } from "../dev-mode.js";
@@ -187,7 +188,7 @@ export class GraphicsManager {
     const persisted = outputConfigStore.getConfig();
     if (persisted) {
       this.outputConfig = persisted;
-      this.outputAdapter = this.selectOutputAdapter(persisted.outputKey);
+      this.outputAdapter = await this.selectOutputAdapter(persisted);
       try {
         await this.outputAdapter.configure(persisted);
         this.startTicker(persisted.format.fps);
@@ -248,7 +249,7 @@ export class GraphicsManager {
 
     this.outputConfig = config;
     await this.outputAdapter.stop();
-    this.outputAdapter = this.selectOutputAdapter(config.outputKey);
+    this.outputAdapter = await this.selectOutputAdapter(config);
     this.outputSampleLogged = false;
     await outputConfigStore.setConfig(config);
     await this.outputAdapter.configure(config);
@@ -610,22 +611,38 @@ export class GraphicsManager {
     return new ElectronRendererClient();
   }
 
-  private selectOutputAdapter(
-    _outputKey: GraphicsOutputKeyT
-  ): GraphicsOutputAdapter {
+  private async selectOutputAdapter(
+    config: GraphicsOutputConfigT
+  ): Promise<GraphicsOutputAdapter> {
     if (isDevelopmentMode()) {
       return new StubOutputAdapter();
     }
-    if (_outputKey === "key_fill_sdi") {
+    if (config.outputKey === "key_fill_sdi") {
       return new DecklinkKeyFillOutputAdapter();
     }
-    if (_outputKey === "key_fill_split_sdi") {
+    if (config.outputKey === "key_fill_split_sdi") {
       return new DecklinkSplitOutputAdapter();
     }
-    if (_outputKey === "video_sdi" || _outputKey === "video_hdmi") {
+    if (config.outputKey === "video_sdi") {
+      return new DecklinkVideoOutputAdapter();
+    }
+    if (config.outputKey === "video_hdmi") {
+      // HDMI output can target DeckLink or external display outputs on macOS.
+      const outputId = config.targets.output1Id;
+      const portMatch = outputId ? await this.findPortById(outputId) : null;
+      if (portMatch?.device.type === "display") {
+        return new DisplayVideoOutputAdapter();
+      }
       return new DecklinkVideoOutputAdapter();
     }
     return new StubOutputAdapter();
+  }
+
+  private async findPortById(
+    portId: string
+  ): Promise<{ device: DeviceDescriptorT; port: DeviceDescriptorT["ports"][number] } | null> {
+    const devices = await deviceCache.getDevices();
+    return this.findPort(devices, portId);
   }
 
   private resolveBackgroundColor(
@@ -702,8 +719,9 @@ export class GraphicsManager {
         continue;
       }
       const outputMatch = this.findPort(devices, outputId);
+      // Only DeckLink devices report full mode lists today.
       if (!outputMatch || outputMatch.device.type !== "decklink") {
-        return;
+        continue;
       }
 
       const modes = await listDecklinkDisplayModes(
@@ -825,8 +843,14 @@ export class GraphicsManager {
       if (!output1Match) {
         throw new Error("Invalid output port selected");
       }
-      if (output1Match.port.type !== "hdmi") {
-        throw new Error("Video HDMI requires an HDMI output port");
+      if (
+        output1Match.port.type !== "hdmi" &&
+        output1Match.port.type !== "displayport" &&
+        output1Match.port.type !== "thunderbolt"
+      ) {
+        throw new Error(
+          "Video HDMI requires an HDMI/DisplayPort/Thunderbolt output port"
+        );
       }
       if (!output1Match.port.status.available) {
         throw new Error("Selected output port is not available");

@@ -104,6 +104,10 @@ function transformDevicesToOutputs(
     if (deviceType === "decklink") {
       return "decklink";
     }
+    if (deviceType === "display") {
+      // External display outputs detected on macOS (HDMI/DP/Thunderbolt).
+      return "display";
+    }
     return "capture";
   };
 
