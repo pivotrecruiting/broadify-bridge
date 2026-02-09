@@ -45,6 +45,12 @@ import {
   VIDEO_PIXEL_FORMAT_PRIORITY,
   supportsAnyPixelFormat,
 } from "./output-format-policy.js";
+import {
+  applyFrameBusEnv,
+  buildFrameBusConfig,
+  isFrameBusEnabled,
+  type FrameBusConfigT,
+} from "./framebus/framebus-config.js";
 
 const MAX_ACTIVE_LAYERS = 3;
 
@@ -147,6 +153,7 @@ export class GraphicsManager {
   private activePreset: GraphicsActivePresetT | null = null;
   private framesReceived = 0;
   private lastFrameLogAt = 0;
+  private frameBusConfig: FrameBusConfigT | null = null;
 
   constructor() {
     this.renderer = this.selectRenderer();
@@ -190,6 +197,7 @@ export class GraphicsManager {
     const persisted = outputConfigStore.getConfig();
     if (persisted) {
       this.outputConfig = persisted;
+      this.applyFrameBusConfig(persisted);
       this.outputAdapter = await this.selectOutputAdapter(persisted);
       try {
         await this.outputAdapter.configure(persisted);
@@ -250,6 +258,7 @@ export class GraphicsManager {
     }
 
     this.outputConfig = config;
+    this.applyFrameBusConfig(config);
     await this.outputAdapter.stop();
     this.outputAdapter = await this.selectOutputAdapter(config);
     this.outputSampleLogged = false;
@@ -1336,6 +1345,39 @@ export class GraphicsManager {
         activePresets: status.activePresets,
       },
     });
+  }
+
+  private applyFrameBusConfig(config: GraphicsOutputConfigT): void {
+    if (!isFrameBusEnabled()) {
+      return;
+    }
+
+    const previous = this.frameBusConfig;
+    const next = buildFrameBusConfig(config, previous);
+    this.frameBusConfig = next;
+    applyFrameBusEnv(next);
+
+    const changed =
+      !previous ||
+      previous.name !== next.name ||
+      previous.slotCount !== next.slotCount ||
+      previous.pixelFormat !== next.pixelFormat ||
+      previous.width !== next.width ||
+      previous.height !== next.height ||
+      previous.fps !== next.fps;
+
+    if (changed) {
+      getBridgeContext().logger.info(
+        `[Graphics] FrameBus config ${JSON.stringify({
+          name: next.name,
+          slotCount: next.slotCount,
+          pixelFormat: next.pixelFormat,
+          width: next.width,
+          height: next.height,
+          fps: next.fps,
+        })}`
+      );
+    }
   }
 }
 

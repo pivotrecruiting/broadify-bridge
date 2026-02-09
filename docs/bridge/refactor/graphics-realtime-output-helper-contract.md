@@ -32,6 +32,7 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 - Frames werden in der Helper-Schicht in das benötigte Pixel-Format gebracht.
 - Bei Key/Fill werden zwei Outputs synchronisiert.
 - Pixel-Format-Prioritäten bleiben unverändert (SSOT: `output-format-policy.ts`).
+- Hinweis: `key_fill_split_sdi` bleibt vorerst im Legacy-Pfad (stdin), bis ein nativer Split im Helper implementiert ist.
 
 ### Display
 - GPU Rendering, optional Skalierung auf Monitor-Größe.

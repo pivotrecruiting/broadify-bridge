@@ -550,7 +550,29 @@ function ensureFrameBusWriter(
     );
     return;
   }
-  if (frameBusWriter || frameBusInitAttempted) {
+  if (frameBusWriter) {
+    const header = frameBusWriter.header;
+    const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
+      ? frameBusPixelFormat
+      : 1;
+    const matches =
+      header.width === width &&
+      header.height === height &&
+      header.fps === fps &&
+      header.slotCount === frameBusSlotCount &&
+      header.pixelFormat === desiredPixelFormat;
+    if (matches) {
+      return;
+    }
+    try {
+      frameBusWriter.close();
+    } catch {
+      // Ignore close failures; writer will be recreated.
+    }
+    frameBusWriter = null;
+    frameBusInitAttempted = false;
+  }
+  if (frameBusInitAttempted) {
     return;
   }
 

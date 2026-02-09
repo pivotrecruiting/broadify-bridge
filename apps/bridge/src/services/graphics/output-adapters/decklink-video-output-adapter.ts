@@ -10,6 +10,7 @@ import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
 import { VIDEO_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
 import { parseDecklinkPortId } from "./decklink-port.js";
+import { isFrameBusOutputEnabled } from "../framebus/framebus-config.js";
 
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
@@ -23,6 +24,7 @@ const FRAME_HEADER_LENGTH = 28;
  * Streams raw RGBA frames to the native DeckLink helper via stdin.
  */
 export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
+  private useFrameBus: boolean;
   private child: ChildProcess | null = null;
   private readyPromise: Promise<void> | null = null;
   private readyResolver: (() => void) | null = null;
@@ -33,6 +35,10 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
   private height = 0;
   private lastWarningAt = 0;
   private readonly warningThrottleMs = 5000;
+
+  constructor(options?: { useFrameBus?: boolean }) {
+    this.useFrameBus = options?.useFrameBus ?? true;
+  }
 
   /**
    * Configure helper process for the selected output port and format.
@@ -68,31 +74,37 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
       this.readyRejecter = reject;
     });
 
-    this.child = spawn(
-      helperPath,
-      [
-        "--playback",
-        "--device",
-        portInfo.deviceId,
-        "--output-port",
-        output1Id,
-        "--width",
-        String(config.format.width),
-        "--height",
-        String(config.format.height),
-        "--fps",
-        String(config.format.fps),
-        "--pixel-format-priority",
-        VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
-        "--range",
-        config.range,
-        "--colorspace",
-        config.colorspace,
-      ],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-      }
-    );
+    const args = [
+      "--playback",
+      "--device",
+      portInfo.deviceId,
+      "--output-port",
+      output1Id,
+      "--width",
+      String(config.format.width),
+      "--height",
+      String(config.format.height),
+      "--fps",
+      String(config.format.fps),
+      "--pixel-format-priority",
+      VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
+      "--range",
+      config.range,
+      "--colorspace",
+      config.colorspace,
+    ];
+
+    if (
+      this.useFrameBus &&
+      process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1" &&
+      process.env.BRIDGE_FRAMEBUS_NAME
+    ) {
+      args.push("--framebus-name", process.env.BRIDGE_FRAMEBUS_NAME);
+    }
+
+    this.child = spawn(helperPath, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     this.getLogger().info(
       `[DeckLinkOutput] Pixel format priority: ${VIDEO_PIXEL_FORMAT_PRIORITY.join(
@@ -147,6 +159,9 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     frame: GraphicsOutputFrameT,
     _config: GraphicsOutputConfigT
   ): Promise<void> {
+    if (this.useFrameBus && isFrameBusOutputEnabled()) {
+      return;
+    }
     if (!this.child || !this.child.stdin) {
       this.logThrottledWarning("Output helper not running");
       return;

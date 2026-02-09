@@ -11,6 +11,7 @@ import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { deviceCache } from "../../device-cache.js";
 import type { DeviceDescriptorT } from "@broadify/protocol";
+import { isFrameBusOutputEnabled } from "../framebus/framebus-config.js";
 
 // Binary frame protocol shared with the helper (big-endian header + RGBA payload).
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
@@ -191,6 +192,20 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     } else if (process.env.NODE_ENV !== "production") {
       env.BRIDGE_DISPLAY_DEBUG = "1";
     }
+    if (process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1") {
+      env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS = "1";
+      env.BRIDGE_GRAPHICS_FRAMEBUS = "1";
+      if (process.env.BRIDGE_FRAMEBUS_NAME) {
+        env.BRIDGE_FRAMEBUS_NAME = process.env.BRIDGE_FRAMEBUS_NAME;
+      }
+      if (process.env.BRIDGE_FRAMEBUS_SLOT_COUNT) {
+        env.BRIDGE_FRAMEBUS_SLOT_COUNT = process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+      }
+      if (process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT) {
+        env.BRIDGE_FRAMEBUS_PIXEL_FORMAT =
+          process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
+      }
+    }
 
     // Security: spawn a fixed Electron entry with controlled args only.
     this.child = spawn(
@@ -243,6 +258,9 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     frame: GraphicsOutputFrameT,
     _config: GraphicsOutputConfigT
   ): Promise<void> {
+    if (isFrameBusOutputEnabled()) {
+      return;
+    }
     if (!this.child || !this.child.stdin) {
       this.logThrottledWarning("Display helper not running");
       return;

@@ -1,5 +1,11 @@
 import { app, BrowserWindow, screen } from "electron";
 import pino from "pino";
+import {
+  isFrameBusEnabled,
+  loadFrameBusModule,
+  type FrameBusModuleT,
+  type FrameBusReaderT,
+} from "../framebus/framebus-client.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -22,6 +28,11 @@ const targetPortType = process.env.BRIDGE_DISPLAY_MATCH_PORT_TYPE || "";
 const targetWidth = Number(process.env.BRIDGE_DISPLAY_MATCH_WIDTH || "");
 const targetHeight = Number(process.env.BRIDGE_DISPLAY_MATCH_HEIGHT || "");
 const debugEnabled = process.env.BRIDGE_DISPLAY_DEBUG === "1";
+const useFrameBus =
+  process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1" &&
+  isFrameBusEnabled();
+const frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
+const frameBusFps = Number(process.env.BRIDGE_DISPLAY_FRAME_FPS || 0);
 
 // Inline HTML avoids external file access and keeps the helper self-contained.
 const html = `<!doctype html>
@@ -173,6 +184,10 @@ let firstFrameLogged = false;
 let bytesReceived = 0;
 let framesParsed = 0;
 let lastByteLogAt = 0;
+let frameBusModule: FrameBusModuleT | null = null;
+let frameBusReader: FrameBusReaderT | null = null;
+let frameBusInterval: NodeJS.Timeout | null = null;
+let frameBusLastSeq = 0n;
 
 // Electron display objects can vary by version; tolerate missing fields.
 function getDisplayLabel(display: Electron.Display): string {
@@ -250,6 +265,72 @@ function sendFrame(frame: {
     }
   }
   windowRef.webContents.send("display-frame", frame);
+}
+
+function startFrameBusReader(): void {
+  if (!useFrameBus) {
+    return;
+  }
+  if (!frameBusName) {
+    logger.error("[DisplayOutput] FrameBus name missing");
+    return;
+  }
+  if (frameBusReader) {
+    return;
+  }
+
+  try {
+    frameBusModule = loadFrameBusModule();
+    if (!frameBusModule) {
+      logger.error("[DisplayOutput] FrameBus module not loaded");
+      return;
+    }
+    frameBusReader = frameBusModule.openReader({ name: frameBusName });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`[DisplayOutput] FrameBus open failed: ${message}`);
+    return;
+  }
+
+  const intervalMs =
+    frameBusFps > 0 ? Math.max(1, Math.round(1000 / frameBusFps)) : 16;
+
+  frameBusInterval = setInterval(() => {
+    if (!frameBusReader) {
+      return;
+    }
+    const frame = frameBusReader.readLatest();
+    if (!frame) {
+      return;
+    }
+    if (frame.seq === frameBusLastSeq) {
+      return;
+    }
+    frameBusLastSeq = frame.seq;
+
+    const header = frameBusReader.header;
+    const timestampMs = Number(frame.timestampNs / 1_000_000n);
+    const buffer = Buffer.from(frame.buffer);
+    sendFrame({
+      width: header.width,
+      height: header.height,
+      buffer,
+      timestamp: Number.isFinite(timestampMs) ? timestampMs : Date.now(),
+    });
+  }, intervalMs);
+}
+
+function stopFrameBusReader(): void {
+  if (frameBusInterval) {
+    clearInterval(frameBusInterval);
+    frameBusInterval = null;
+  }
+  if (frameBusReader) {
+    frameBusReader.close();
+    frameBusReader = null;
+  }
+  frameBusModule = null;
+  frameBusLastSeq = 0n;
 }
 
 // Parse the fixed-width header for each frame.
@@ -416,31 +497,37 @@ app.on("ready", () => {
       pendingFrame = null;
       sendFrame(frame);
     }
+    if (useFrameBus) {
+      startFrameBusReader();
+    }
   });
 
   windowRef.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 });
 
 app.on("window-all-closed", () => {
+  stopFrameBusReader();
   app.quit();
 });
 
-// Stream raw frame data from stdin (bridge adapter process).
-process.stdin.on("data", (chunk) => {
-  inputBuffer = Buffer.concat([inputBuffer, chunk]);
-  if (debugEnabled) {
-    bytesReceived += chunk.length;
-    const now = Date.now();
-    if (now - lastByteLogAt > 1000) {
-      lastByteLogAt = now;
-      logger.info(
-        {
-          bytesReceived,
-          bufferLength: inputBuffer.length,
-        },
-        "[DisplayOutput] Stdin bytes received"
-      );
+if (!useFrameBus) {
+  // Stream raw frame data from stdin (bridge adapter process).
+  process.stdin.on("data", (chunk) => {
+    inputBuffer = Buffer.concat([inputBuffer, chunk]);
+    if (debugEnabled) {
+      bytesReceived += chunk.length;
+      const now = Date.now();
+      if (now - lastByteLogAt > 1000) {
+        lastByteLogAt = now;
+        logger.info(
+          {
+            bytesReceived,
+            bufferLength: inputBuffer.length,
+          },
+          "[DisplayOutput] Stdin bytes received"
+        );
+      }
     }
-  }
-  processInputBuffer();
-});
+    processInputBuffer();
+  });
+}
