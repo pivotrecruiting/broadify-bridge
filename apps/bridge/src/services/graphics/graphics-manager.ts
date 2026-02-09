@@ -145,6 +145,8 @@ export class GraphicsManager {
   private lastOutputErrorLogAt = 0;
   private outputSampleLogged = false;
   private activePreset: GraphicsActivePresetT | null = null;
+  private framesReceived = 0;
+  private lastFrameLogAt = 0;
 
   constructor() {
     this.renderer = this.selectRenderer();
@@ -978,6 +980,15 @@ export class GraphicsManager {
     }
 
     layer.lastFrame = frame;
+    this.framesReceived += 1;
+    const now = Date.now();
+    if (now - this.lastFrameLogAt >= 1000) {
+      getBridgeContext().logger.info(
+        `[Graphics] Renderer frames/s=${this.framesReceived}`
+      );
+      this.framesReceived = 0;
+      this.lastFrameLogAt = now;
+    }
   }
 
   private summarizeSendPayload(

@@ -43,6 +43,40 @@ const debugMismatchLogged = new Set<string>();
 const debugEmptyLogged = new Set<string>();
 const debugSampleLogged = new Set<string>();
 const debugDomLogged = new Set<string>();
+let perfLastLogAt = Date.now();
+let perfPaintCount = 0;
+let perfSentCount = 0;
+let perfDroppedCount = 0;
+let backpressureStartAt: number | null = null;
+let backpressureTotalMs = 0;
+
+function logPerfIfNeeded(): void {
+  const now = Date.now();
+  const intervalMs = now - perfLastLogAt;
+  if (intervalMs < 1000) {
+    return;
+  }
+  const paintPerSec = Math.round((perfPaintCount * 1000) / intervalMs);
+  const sentPerSec = Math.round((perfSentCount * 1000) / intervalMs);
+  const droppedPerSec = Math.round((perfDroppedCount * 1000) / intervalMs);
+  const backpressureActiveMs =
+    backpressureStartAt !== null ? now - backpressureStartAt : 0;
+  logger.info(
+    {
+      paintPerSec,
+      sentPerSec,
+      droppedPerSec,
+      backpressureMs: backpressureTotalMs + backpressureActiveMs,
+      ipcConnected: isIpcConnected,
+    },
+    "[GraphicsRenderer] Perf",
+  );
+  perfLastLogAt = now;
+  perfPaintCount = 0;
+  perfSentCount = 0;
+  perfDroppedCount = 0;
+  backpressureTotalMs = 0;
+}
 
 // Register a custom asset:// protocol for local graphics assets.
 protocol.registerSchemesAsPrivileged([
@@ -66,6 +100,10 @@ function sendIpcMessage(
   buffer?: Buffer,
 ): void {
   if (!ipcSocket || !canSend) {
+    if (message.type === "frame" && canSend === false) {
+      perfDroppedCount += 1;
+      logPerfIfNeeded();
+    }
     return;
   }
 
@@ -93,6 +131,13 @@ function sendIpcMessage(
   const ok = ipcSocket.write(Buffer.concat(chunks));
   if (!ok) {
     canSend = false;
+    if (backpressureStartAt === null) {
+      backpressureStartAt = Date.now();
+    }
+  }
+  if (message.type === "frame") {
+    perfSentCount += 1;
+    logPerfIfNeeded();
   }
 }
 
@@ -543,6 +588,8 @@ async function createLayer(message: {
       logger.info("[GraphicsRenderer] First paint received");
     }
     paintCount += 1;
+    perfPaintCount += 1;
+    logPerfIfNeeded();
     const imageSize = image.getSize();
     if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {
       if (DEBUG_GRAPHICS && !debugEmptyLogged.has(message.layerId)) {
@@ -939,6 +986,10 @@ function connectIpcSocket(): void {
 
   ipcSocket.on("drain", () => {
     canSend = true;
+    if (backpressureStartAt !== null) {
+      backpressureTotalMs += Date.now() - backpressureStartAt;
+      backpressureStartAt = null;
+    }
   });
 
   ipcSocket.on("error", (error) => {
