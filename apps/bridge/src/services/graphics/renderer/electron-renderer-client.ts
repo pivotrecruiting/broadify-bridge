@@ -362,6 +362,8 @@ export class ElectronRendererClient implements GraphicsRenderer {
     }
     this.rendererConfigureAttempted = true;
 
+    // FrameBus-backed single renderer is the primary path.
+    // Without the flags below, the legacy IPC frame path remains active.
     if (process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE !== "1") {
       return;
     }

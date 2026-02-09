@@ -31,8 +31,14 @@ Trennung von Control-Plane und Data-Plane. Die Bridge steuert, die Frame-Daten l
 
 ## Abgeleitete Prinzipien
 - Renderer ist die einzige Instanz, die Layer-HTML/CSS versteht.
-- Bridge sendet nur strukturierte Commands und keine Frames.
+- Im Primärpfad sendet die Bridge nur strukturierte Commands und keine Frames.
 - Output-Helper sind reine Frame-Consumer ohne Template-Wissen.
+
+## Legacy-Fallback (Notfall)
+- Nur aktiv, wenn FrameBus/Single-Renderer deaktiviert ist oder explizit per Feature-Flag zurückgeschaltet wird.
+- Bridge nutzt dann den alten IPC-Framefluss, Compositing und Ticker.
+- Output-Helper erhalten Frames über den Legacy-stdin-Transport.
+- Darf nur im Notfall verwendet werden.
 
 ## TODO
 - [ ] Interface-Änderungen für Renderer-Client definieren.

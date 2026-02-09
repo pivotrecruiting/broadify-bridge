@@ -57,19 +57,22 @@ Definiert die API und Speicherstruktur für den Shared-Memory FrameBus. Ziel ist
 - FrameBus transportiert RGBA, wie aktuell im Renderer/Bridge-Flow.
 - Pixel-Format-Prioritäten bleiben exakt wie implementiert:
   - Video: `VIDEO_PIXEL_FORMAT_PRIORITY = ["10bit_yuv", "8bit_yuv"]`
-  - Key/Fill: `KEY_FILL_PIXEL_FORMAT_PRIORITY = ["8bit_argb", "8bit_bgra"]`
-  Quelle: `apps/bridge/src/services/graphics/output-format-policy.ts`
+  - Key/Fill: `KEY_FILL_PIXEL_FORMAT_PRIORITY = ["8bit_argb"]` (ARGB8-only, kein BGRA-Fallback)
+- Quelle: `apps/bridge/src/services/graphics/output-format-policy.ts`
+- Key/Fill-Outputs werden im Helper von RGBA8 nach ARGB8 konvertiert.
 
 ### PixelFormat Enum (FrameBus)
 - `1 = RGBA8` (aktuell, verpflichtend)
-- `2 = BGRA8` (reserved)
-- `3 = ARGB8` (reserved)
+- `2 = BGRA8` (reserved, derzeit nicht genutzt)
+- `3 = ARGB8` (reserved, derzeit nicht genutzt)
 
 ## Memory Size
 - `totalSize = headerSize + slotStride * slotCount`
 
+## Status (Stand heute)
+- Header-Layout implementiert (C++ Header + N-API).
+- PixelFormat Enum in Code gespiegelt.
+- N-API Signaturen definiert.
+
 ## TODO
-- [ ] Header-Layout implementieren (C++ + N-API).
-- [ ] PixelFormat Enum in Code spiegeln.
-- [ ] N-API Signaturen definieren.
-- [ ] OS-spezifische Shared-Memory Implementierung festlegen.
+- [ ] OS-spezifische Shared-Memory Implementierung festlegen (macOS only aktuell).

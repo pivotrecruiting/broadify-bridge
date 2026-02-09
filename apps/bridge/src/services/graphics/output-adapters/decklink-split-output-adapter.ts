@@ -79,6 +79,7 @@ const buildSplitConfig = (
  * Splits alpha into a separate key frame and sends both frames to two helpers.
  */
 export class DecklinkSplitOutputAdapter implements GraphicsOutputAdapter {
+  // Split key/fill uses the legacy stdin path only (no FrameBus support).
   private fillAdapter = new DecklinkVideoOutputAdapter({ useFrameBus: false });
   private keyAdapter = new DecklinkVideoOutputAdapter({ useFrameBus: false });
   private configured = false;

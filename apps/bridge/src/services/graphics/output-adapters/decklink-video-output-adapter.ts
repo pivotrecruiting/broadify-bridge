@@ -160,6 +160,7 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     _config: GraphicsOutputConfigT
   ): Promise<void> {
     if (this.useFrameBus && isFrameBusOutputEnabled()) {
+      // FrameBus is the primary path. Legacy stdin frames are emergency-only.
       return;
     }
     if (!this.child || !this.child.stdin) {

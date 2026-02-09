@@ -22,6 +22,7 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 - Helper liest `readLatest()` pro Tick.
 - Tick-Frequenz = `fps` aus Output-Config.
 - Wenn kein neues Frame: letztes Frame wiederholen.
+- Legacy-Fallback: Wenn FrameBus deaktiviert ist, erhält der Helper Frames über den bisherigen stdin-Transport.
 
 ## Stop
 - Bridge sendet Shutdown-Signal.
@@ -32,13 +33,15 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 - Frames werden in der Helper-Schicht in das benötigte Pixel-Format gebracht.
 - Bei Key/Fill werden zwei Outputs synchronisiert.
 - Pixel-Format-Prioritäten bleiben unverändert (SSOT: `output-format-policy.ts`).
+- Eingangsformat aus Renderer/FrameBus ist immer RGBA8.
+- Key/Fill-Output ist ARGB8-only. BGRA ist nicht erlaubt; bei fehlender ARGB-Unterstützung muss die Konfiguration fehlschlagen.
 - Hinweis: `key_fill_split_sdi` bleibt vorerst im Legacy-Pfad (stdin), bis ein nativer Split im Helper implementiert ist.
 
 ### Display
 - GPU Rendering, optional Skalierung auf Monitor-Größe.
 - Debug-Overlay optional.
 
-## TODO
-- [ ] Env-Parameter final festlegen.
-- [ ] DeckLink Helper Konfiguration mit FrameBus kombinieren.
-- [ ] Display Helper FrameBus Support definieren.
+## Status (Stand heute)
+- DeckLink Helper kann FrameBus lesen.
+- Display Helper kann FrameBus lesen.
+- Doku-Abgleich zu den real genutzten Env-Parametern erforderlich.

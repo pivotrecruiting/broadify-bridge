@@ -40,7 +40,13 @@ Siehe: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
 - Rechte restriktiv setzen.
 - Zugriff nur vom Helper-Prozess.
 
+## Entscheidung Pixel-Format
+- FrameBus transportiert ausschließlich RGBA8.
+- BGRA ist nicht erlaubt.
+- Key/Fill-Outputs werden im Helper nach ARGB8 konvertiert.
+
+## Status (Stand heute)
+- N-API Interface für macOS implementiert.
+
 ## TODO
-- [ ] Cross-Platform Shared-Memory Implementierung spezifizieren.
-- [ ] N-API Interface definieren.
-- [ ] BGRA/RGBA Entscheidung finalisieren.
+- [ ] Windows/Linux Shared-Memory Implementierung spezifizieren (macOS only aktuell).

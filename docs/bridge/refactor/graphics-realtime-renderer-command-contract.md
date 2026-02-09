@@ -74,8 +74,13 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
 - Bindings werden auf den Layer-Host angewendet.
 
 ## Änderungen am Interface
-- `onFrame()` wird durch FrameBus ersetzt und entfällt.
+- Im Primärpfad wird `onFrame()` durch FrameBus ersetzt.
 - `initialize()` wird durch `renderer_configure()` erweitert.
+
+## Legacy-Fallback (Notfall)
+- Wenn FrameBus deaktiviert ist, bleibt der IPC-Frame-Transport aktiv.
+- Bridge nutzt dann `onFrame()` für den alten Compositing/Ticker-Flow.
+- Dieser Pfad ist nur für Notfälle vorgesehen.
 
 ## TODO
 - [ ] Commands final gegen `graphics-renderer.ts` spiegeln.

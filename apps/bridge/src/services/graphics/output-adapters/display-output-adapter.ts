@@ -259,6 +259,7 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     _config: GraphicsOutputConfigT
   ): Promise<void> {
     if (isFrameBusOutputEnabled()) {
+      // FrameBus is the primary path. Legacy stdin frames are emergency-only.
       return;
     }
     if (!this.child || !this.child.stdin) {

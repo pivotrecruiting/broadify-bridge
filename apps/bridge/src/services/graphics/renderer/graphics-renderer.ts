@@ -87,6 +87,8 @@ export interface GraphicsRenderer {
   /**
    * Register a frame callback.
    *
+   * Legacy fallback path when FrameBus output is disabled.
+   *
    * @param callback Invoked for each rendered frame.
    */
   onFrame(callback: (frame: GraphicsFrameT) => void): void;

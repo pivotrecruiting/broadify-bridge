@@ -29,8 +29,8 @@ Ein einzelnes Offscreen-Window rendert alle Layer in einem DOM-Tree. Frames werd
 - `paint`-Event liefert Frame-Buffer.
 - Frame wird direkt in den FrameBus geschrieben.
 
-## TODO
-- [ ] Shadow-DOM Wrapper-Komponente definieren.
-- [ ] Bindings auf Layer-Host umstellen.
-- [ ] FrameBus-Writer integrieren.
-- [ ] Update-Commands auf Layer-Host mappen (no global DOM).
+## Status (Stand heute)
+- Shadow-DOM Wrapper pro Layer umgesetzt.
+- Bindings auf Layer-Host umgestellt.
+- FrameBus-Writer integriert.
+- Update-Commands auf Layer-Host gemappt (kein globales DOM).

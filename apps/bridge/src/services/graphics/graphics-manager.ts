@@ -914,6 +914,8 @@ export class GraphicsManager {
     const width = this.outputConfig.format.width;
     const height = this.outputConfig.format.height;
 
+    // Legacy compositor path kept for emergency fallback. When FrameBus output
+    // is enabled, output adapters will no-op and this buffer will not be sent.
     const composite = compositeLayers(
       layers.map((layer) => ({
         buffer: (layer.lastFrame as GraphicsFrameT).buffer,

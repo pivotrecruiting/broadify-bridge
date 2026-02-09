@@ -7,6 +7,7 @@
 - Observability vor Performance-Optimierung.
 - Messbare Akzeptanzkriterien pro Phase.
 - Rollback-Strategie für jede Phase.
+- Plattform-Status: macOS only (Windows/Linux deferred).
 
 ## Phasen
 ### Phase 0 – Vorbereitung
@@ -80,14 +81,21 @@
 
 ## TODO
 - [ ] Finales Frame-Format pro Output-Key dokumentieren.
+- [x] Entscheidung festhalten: Key/Fill nutzt ARGB8-only (kein BGRA-Fallback).
 - [ ] Hinweis: Akzeptanzkriterien ggf. pro Hardware/Output anpassen.
 - [ ] Display-Output Format-Validierung ergänzen.
-- [ ] Migrations-Reihenfolge pro Platform finalisieren.
+- [ ] Migrations-Reihenfolge für macOS finalisieren (Windows/Linux deferred).
 
 ## Feature-Flags (Vorschlag)
 - `BRIDGE_GRAPHICS_FRAMEBUS=1` aktiviert FrameBus.
 - `BRIDGE_GRAPHICS_RENDERER_SINGLE=1` aktiviert Single-Window Renderer.
 - `BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS=1` aktiviert FrameBus Reader im Helper.
+
+## Legacy-Fallback (Notfall)
+- Wird nur genutzt, wenn die Feature-Flags oben deaktiviert sind oder explizit zurückgeschaltet wird.
+- Bridge nutzt dann den alten IPC-Frame-Transport, Compositing und Ticker.
+- Output-Helper erhält Frames über den bisherigen stdin-Transport.
+- Darf nur im größten Notfall verwendet werden.
 
 ## Rollback-Plan (pro Phase)
 - Phase 1: FrameBus deaktivieren, IPC bleibt aktiv.
@@ -119,26 +127,27 @@
 - [ ] `template-bindings.ts`: Binding-Targets für Shadow DOM planen.
 
 ### Renderer (Electron)
-- [ ] `electron-renderer-entry.ts`: Single-Window + Layer-Host-Registry.
-- [ ] `electron-renderer-entry.ts`: Shadow DOM pro Layer erstellen.
-- [ ] `electron-renderer-entry.ts`: `applyValues` auf Shadow DOM ausrichten.
-- [ ] `electron-renderer-entry.ts`: FrameBus-Writer integrieren.
-- [ ] `animation-css.ts`: Injection-Strategie pro Layer festlegen.
+- [x] `electron-renderer-entry.ts`: Single-Window + Layer-Host-Registry.
+- [x] `electron-renderer-entry.ts`: Shadow DOM pro Layer erstellen.
+- [x] `electron-renderer-entry.ts`: `applyValues` auf Shadow DOM ausrichten.
+- [x] `electron-renderer-entry.ts`: FrameBus-Writer integrieren.
+- [x] `animation-css.ts`: Injection-Strategie pro Layer festlegen.
 
 ### Output-Helper
-- [ ] DeckLink Helper: FrameBus Reader + FPS-Ticker.
-- [ ] Display Helper: FrameBus Reader + GPU-Renderer.
+- [x] DeckLink Helper: FrameBus Reader + FPS-Ticker.
+- [x] Display Helper: FrameBus Reader.
+- [ ] Display Helper: GPU-Renderer finalisieren.
 - [ ] Output-Adapter: Start/Stop-Handshakes anpassen.
 
 ### Native / FrameBus
-- [ ] Shared Memory API definieren (C++ Header).
-- [ ] N-API Bindings für Node/Electron bauen.
-- [ ] Cross-Platform Implementierung (macOS/Win/Linux).
+- [x] Shared Memory API definieren (C++ Header).
+- [x] N-API Bindings für Node/Electron bauen (macOS).
+- [ ] Cross-Platform Implementierung (Windows/Linux deferred).
 - [ ] FrameBus API Spec finalisieren: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
 
 ### Observability
 - [ ] FPS/Latency Metrics in Renderer und Output-Helper.
-- [ ] Debug-Overlay optional für Display-Output.
+- [x] Debug-Overlay optional für Display-Output.
 
 ### Contracts
 - [ ] Renderer Command Contract finalisieren: `docs/bridge/refactor/graphics-realtime-renderer-command-contract.md`

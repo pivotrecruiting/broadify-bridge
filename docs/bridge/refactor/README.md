@@ -27,6 +27,9 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 ## Status
 - Phase 0: Architektur entschieden und dokumentiert.
 - Phase 1: Implementierung startet nach Freigabe.
+- Plattform-Status: macOS only (Windows/Linux deferred).
 
 ## Festgelegte Entscheidungen
 - CSS-Isolation: Shadow DOM pro Layer.
+- Legacy-Fallback bleibt als Notfallpfad (IPC Frames + Compositing + stdin).
+- Key/Fill ist ARGB8-only. BGRA ist nicht erlaubt.

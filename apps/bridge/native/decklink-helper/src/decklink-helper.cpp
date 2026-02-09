@@ -1772,11 +1772,8 @@ int runPlayback(const PlaybackConfig& config) {
 
   std::vector<BMDPixelFormat> pixelFormats = config.pixelFormatPriority;
   if (pixelFormats.empty()) {
-    if (useKeyer) {
-      pixelFormats = { bmdFormat8BitARGB, bmdFormat8BitBGRA };
-    } else {
-      pixelFormats = { bmdFormat8BitBGRA, bmdFormat8BitARGB };
-    }
+    // ARGB is the only permitted fallback pixel format; BGRA is disallowed.
+    pixelFormats = { bmdFormat8BitARGB };
   }
 
   BMDPixelFormat selectedPixelFormat = bmdFormat8BitARGB;

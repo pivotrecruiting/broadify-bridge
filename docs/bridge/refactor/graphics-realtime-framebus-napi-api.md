@@ -2,6 +2,7 @@
 
 ## Zweck
 Definiert die JS/TS API für den FrameBus. Diese API wird von Renderer und Output-Helper genutzt.
+Plattform-Status: aktuell macOS only (Windows/Linux deferred).
 
 ## Module Name
 - `@broadify/framebus` (Vorschlag)
@@ -40,6 +41,8 @@ type FrameBusReader = {
   close(): void;
 };
 ```
+
+Hinweis: Aktuell ist nur `pixelFormat = 1 (RGBA8)` erlaubt. BGRA/ARGB bleiben reserviert; BGRA ist nicht zulässig.
 
 ## API (JS)
 ```ts

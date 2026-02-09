@@ -10,6 +10,7 @@
 - Output-Format wird über `graphics_configure_outputs` vorgegeben.
 - DeckLink-Formate müssen gegen Display-Modes validiert werden.
 - Display-Outputs dürfen keine Frames über TCP-IPC erhalten.
+- Plattform-Status: macOS only (Windows/Linux deferred).
 
 ## Nicht-Ziele
 - Multi-Output parallel in einer Session.
