@@ -93,6 +93,8 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private debugFirstFrameLogged = new Set<string>();
+  private rendererConfigured = false;
+  private rendererConfigureAttempted = false;
 
   /**
    * Initialize the renderer process and IPC channel.
@@ -214,6 +216,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
    */
   async renderLayer(input: GraphicsRenderLayerInputT): Promise<void> {
     await this.ensureReady();
+    this.ensureRendererConfigured();
     this.sendCommand({
       type: "create_layer",
       layerId: input.layerId,
@@ -226,6 +229,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
       width: input.width,
       height: input.height,
       fps: input.fps,
+      zIndex: input.zIndex,
     });
   }
 
@@ -251,8 +255,17 @@ export class ElectronRendererClient implements GraphicsRenderer {
    * @param layerId Layer identifier.
    * @param layout Layout payload.
    */
-  async updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void> {
+  async updateLayout(
+    layerId: string,
+    layout: GraphicsLayoutT,
+    zIndex?: number
+  ): Promise<void> {
     await this.ensureReady();
+    this.ensureRendererConfigured();
+    if (typeof zIndex === "number") {
+      this.sendCommand({ type: "update_layout", layerId, layout, zIndex });
+      return;
+    }
     this.sendCommand({ type: "update_layout", layerId, layout });
   }
 
@@ -341,6 +354,41 @@ export class ElectronRendererClient implements GraphicsRenderer {
     if (this.readyPromise) {
       await this.readyPromise;
     }
+  }
+
+  private ensureRendererConfigured(): void {
+    if (this.rendererConfigured || this.rendererConfigureAttempted) {
+      return;
+    }
+    this.rendererConfigureAttempted = true;
+
+    if (process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE !== "1") {
+      return;
+    }
+    if (process.env.BRIDGE_GRAPHICS_FRAMEBUS !== "1") {
+      return;
+    }
+
+    const framebusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
+    const slotCount = Number(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT || 0);
+    const pixelFormat = Number(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT || 1);
+
+    if (!framebusName || !Number.isFinite(slotCount) || slotCount < 2) {
+      this.logStructured(
+        "warn",
+        { component: "graphics-renderer" },
+        "[GraphicsRenderer] FrameBus config missing; renderer_configure skipped"
+      );
+      return;
+    }
+
+    this.sendCommand({
+      type: "renderer_configure",
+      framebusName,
+      framebusSlotCount: slotCount,
+      framebusPixelFormat: pixelFormat,
+    });
+    this.rendererConfigured = true;
   }
 
   /**

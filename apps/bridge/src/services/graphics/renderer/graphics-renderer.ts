@@ -32,6 +32,7 @@ export type GraphicsRenderLayerInputT = {
   width: number;
   height: number;
   fps: number;
+  zIndex?: number;
 };
 
 /**
@@ -72,7 +73,11 @@ export interface GraphicsRenderer {
    * @param layerId Layer identifier.
    * @param layout Layout payload.
    */
-  updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void>;
+  updateLayout(
+    layerId: string,
+    layout: GraphicsLayoutT,
+    zIndex?: number
+  ): Promise<void>;
   /**
    * Remove a layer.
    *

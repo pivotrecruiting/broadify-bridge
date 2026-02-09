@@ -553,7 +553,6 @@ function ensureFrameBusWriter(
   if (frameBusWriter || frameBusInitAttempted) {
     return;
   }
-  frameBusInitAttempted = true;
 
   if (!frameBusName) {
     logFrameBusOnce(
@@ -571,6 +570,7 @@ function ensureFrameBusWriter(
   }
 
   try {
+    frameBusInitAttempted = true;
     frameBusModule = loadFrameBusModule();
     if (!frameBusModule) {
       logFrameBusOnce(
@@ -1344,10 +1344,11 @@ async function updateLayoutSingle(message: {
   if (!singleWindow) {
     return;
   }
+  const zIndexValue = typeof message.zIndex === "number" ? message.zIndex : null;
   await singleWindow.webContents.executeJavaScript(
     `window.__updateLayout(${JSON.stringify(message.layerId)}, ${JSON.stringify(
       message.layout
-    )}, ${JSON.stringify(message.zIndex)});`,
+    )}, ${JSON.stringify(zIndexValue)});`,
     true
   );
 }

@@ -43,7 +43,11 @@ export class StubRenderer implements GraphicsRenderer {
     this.emitFrame(layerId);
   }
 
-  async updateLayout(layerId: string, _layout: GraphicsLayoutT): Promise<void> {
+  async updateLayout(
+    layerId: string,
+    _layout: GraphicsLayoutT,
+    _zIndex?: number
+  ): Promise<void> {
     this.emitFrame(layerId);
   }
 

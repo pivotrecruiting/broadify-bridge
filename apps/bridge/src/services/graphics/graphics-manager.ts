@@ -480,7 +480,7 @@ export class GraphicsManager {
       layer.zIndex = data.zIndex;
     }
 
-    await this.renderer.updateLayout(data.layerId, data.layout);
+    await this.renderer.updateLayout(data.layerId, data.layout, data.zIndex);
   }
 
   /**
@@ -1148,18 +1148,19 @@ export class GraphicsManager {
     this.categoryToLayer.set(data.category, data.layerId);
 
     try {
-      await this.renderer.renderLayer({
-        layerId: data.layerId,
-        html: data.bundle.html,
-        css: data.bundle.css,
-        values: data.values,
-        bindings: data.bindings,
-        layout: data.layout,
-        backgroundMode: data.backgroundMode,
-        width: this.outputConfig?.format.width ?? 1920,
-        height: this.outputConfig?.format.height ?? 1080,
-        fps: this.outputConfig?.format.fps ?? 50,
-      });
+    await this.renderer.renderLayer({
+      layerId: data.layerId,
+      html: data.bundle.html,
+      css: data.bundle.css,
+      values: data.values,
+      bindings: data.bindings,
+      layout: data.layout,
+      backgroundMode: data.backgroundMode,
+      width: this.outputConfig?.format.width ?? 1920,
+      height: this.outputConfig?.format.height ?? 1080,
+      fps: this.outputConfig?.format.fps ?? 50,
+      zIndex: data.zIndex,
+    });
     } catch (error) {
       this.layers.delete(data.layerId);
       if (this.categoryToLayer.get(data.category) === data.layerId) {
