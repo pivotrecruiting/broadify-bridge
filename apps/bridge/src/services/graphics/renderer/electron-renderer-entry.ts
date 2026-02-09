@@ -14,6 +14,9 @@ const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
 const MAX_FRAME_DIMENSION = 8192;
 const DEBUG_GRAPHICS = true;
+// Design baseline for templates (format-agnostic rendering).
+const BASE_RENDER_WIDTH = 1920;
+const BASE_RENDER_HEIGHT = 1080;
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 
@@ -332,8 +335,8 @@ function buildHtmlDocument(options: {
         position: absolute;
         left: 0;
         top: 0;
-        width: 100%;
-        height: 100%;
+        width: ${BASE_RENDER_WIDTH}px;
+        height: ${BASE_RENDER_HEIGHT}px;
         transform-origin: top left;
       }
       :root {
