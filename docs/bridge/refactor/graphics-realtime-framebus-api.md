@@ -6,6 +6,8 @@ Definiert die API und Speicherstruktur für den Shared-Memory FrameBus. Ziel ist
 ## SSOT Referenzen
 - Output-Format Payload: `apps/bridge/src/services/graphics/graphics-schemas.ts`
 - Output-Policy (Pixel-Formate): `apps/bridge/src/services/graphics/output-format-policy.ts`
+- C/C++ Header Spec: `docs/bridge/refactor/graphics-realtime-framebus-c-header.md`
+- N-API Spec: `docs/bridge/refactor/graphics-realtime-framebus-napi-api.md`
 
 ## Naming & Versioning
 - FrameBus hat eine `version` im Header.

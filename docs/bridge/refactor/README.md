@@ -16,6 +16,8 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 - Dataflow: `docs/bridge/refactor/graphics-realtime-dataflow.md`
 - FrameBus (Shared Memory): `docs/bridge/refactor/graphics-realtime-framebus.md`
 - FrameBus API Spec: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
+- FrameBus C/C++ Header: `docs/bridge/refactor/graphics-realtime-framebus-c-header.md`
+- FrameBus N-API API: `docs/bridge/refactor/graphics-realtime-framebus-napi-api.md`
 - Renderer-Design: `docs/bridge/refactor/graphics-realtime-renderer.md`
 - Renderer Command Contract: `docs/bridge/refactor/graphics-realtime-renderer-command-contract.md`
 - Output-Helper: `docs/bridge/refactor/graphics-realtime-output-helpers.md`
