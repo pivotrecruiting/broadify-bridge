@@ -30,6 +30,8 @@ const targetPortType = process.env.BRIDGE_DISPLAY_MATCH_PORT_TYPE || "";
 const targetWidth = Number(process.env.BRIDGE_DISPLAY_MATCH_WIDTH || "");
 const targetHeight = Number(process.env.BRIDGE_DISPLAY_MATCH_HEIGHT || "");
 const debugEnabled = process.env.BRIDGE_DISPLAY_DEBUG === "1";
+const force2d = process.env.BRIDGE_DISPLAY_FORCE_2D === "1";
+const disableGpu = process.env.BRIDGE_DISPLAY_DISABLE_GPU === "1";
 const useFrameBus =
   process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1" &&
   isFrameBusEnabled();
@@ -96,6 +98,7 @@ const html = `<!doctype html>
         const canvas = document.getElementById("canvas");
         const overlay = document.getElementById("debug-overlay");
         const debugEnabled = ${debugEnabled ? "true" : "false"};
+        const force2d = ${force2d ? "true" : "false"};
         let frameCount = 0;
         let drawing = false;
         let pending = null;
@@ -120,6 +123,7 @@ const html = `<!doctype html>
         let texHeight = 0;
 
         const initWebGL = () => {
+          if (force2d) return false;
           if (!gl) return false;
           const vsSource =
             "attribute vec2 aPosition;" +
@@ -240,6 +244,7 @@ const html = `<!doctype html>
             "Display Output Debug",
             "Canvas: " + canvas.width + "x" + canvas.height,
             "Renderer: " + rendererLabel,
+            force2d ? "Mode: Force2D" : "Mode: Auto",
           ]);
         };
         window.addEventListener("resize", resize);
@@ -261,6 +266,15 @@ const html = `<!doctype html>
           if (!width || !height) return;
           const buffer = frame.buffer;
           if (!buffer) return;
+          const expectedLength = width * height * 4;
+          if (buffer.length !== expectedLength) {
+            console.warn(
+              "[DisplayOutput] Frame buffer length mismatch",
+              buffer.length,
+              expectedLength
+            );
+            return;
+          }
           if (gl && program && texture) {
             const data = new Uint8Array(buffer);
             gl.activeTexture(gl.TEXTURE0);
@@ -697,8 +711,19 @@ if (!preloadPath) {
 
 // Force 1:1 scaling so output resolution matches frame pixels.
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
+if (disableGpu) {
+  // Security: disable GPU only for debugging to avoid driver crashes.
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+}
 
 app.on("ready", () => {
+  logger.info(
+    { force2d, disableGpu },
+    "[DisplayOutput] Renderer mode"
+  );
   const display = selectTargetDisplay();
   logger.info(
     {
