@@ -1586,7 +1586,11 @@ async function handleMessage(message: unknown): Promise<void> {
   const msg = message as { type?: string; [key: string]: unknown };
 
   if (msg.type === "renderer_configure") {
-    applyRendererConfig(msg);
+    const { type: _type, token: _token, ...rest } = msg as Record<
+      string,
+      unknown
+    >;
+    applyRendererConfig(rest);
     return;
   }
 
