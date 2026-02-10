@@ -34,6 +34,7 @@ let frameBusPixelFormat = Number(
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT ||
     1
 );
+const frameBusForceRecreate = process.env.BRIDGE_FRAMEBUS_FORCE_RECREATE === "1";
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 
@@ -680,6 +681,7 @@ function ensureFrameBusWriter(
         ? (frameBusPixelFormat as 1 | 2 | 3)
         : 1,
       slotCount: frameBusSlotCount,
+      forceRecreate: frameBusForceRecreate,
     });
     logger.info(
       {

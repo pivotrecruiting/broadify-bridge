@@ -305,6 +305,16 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
     name = "/" + name;
   }
 
+  bool force_recreate = false;
+  napi_value force_value;
+  if (napi_get_named_property(env, options, "forceRecreate", &force_value) == napi_ok) {
+    napi_valuetype force_type;
+    if (napi_typeof(env, force_value, &force_type) == napi_ok &&
+        force_type == napi_boolean) {
+      napi_get_value_bool(env, force_value, &force_recreate);
+    }
+  }
+
   napi_value width_value;
   napi_get_named_property(env, options, "width", &width_value);
   uint32_t width = 0;
@@ -354,6 +364,10 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
   }
 
   const size_t total_size = static_cast<size_t>(total_size_64);
+
+  if (force_recreate) {
+    shm_unlink(name.c_str());
+  }
 
   int fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0600);
   if (fd < 0) {

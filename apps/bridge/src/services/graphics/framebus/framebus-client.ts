@@ -65,6 +65,7 @@ export type FrameBusModuleT = {
     fps: number;
     pixelFormat: FrameBusPixelFormatT;
     slotCount: number;
+    forceRecreate?: boolean;
   }): FrameBusWriterT;
   openReader(options: { name: string }): FrameBusReaderT;
 };
