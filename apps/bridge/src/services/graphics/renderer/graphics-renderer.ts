@@ -35,6 +35,24 @@ export type GraphicsRenderLayerInputT = {
   zIndex?: number;
 };
 
+export type GraphicsRendererClearColorT = {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+};
+
+export type GraphicsRendererConfigT = {
+  width: number;
+  height: number;
+  fps: number;
+  pixelFormat: number;
+  framebusName: string;
+  framebusSize: number;
+  backgroundMode: GraphicsBackgroundModeT;
+  clearColor?: GraphicsRendererClearColorT;
+};
+
 /**
  * Graphics renderer interface for offscreen Chromium rendering.
  */
@@ -43,6 +61,12 @@ export interface GraphicsRenderer {
    * Initialize renderer resources.
    */
   initialize(): Promise<void>;
+  /**
+   * Configure a renderer session before creating layers.
+   *
+   * @param config Session configuration payload.
+   */
+  configureSession(config: GraphicsRendererConfigT): Promise<void>;
   /**
    * Provide asset map to renderer for local loading.
    *
@@ -92,6 +116,12 @@ export interface GraphicsRenderer {
    * @param callback Invoked for each rendered frame.
    */
   onFrame(callback: (frame: GraphicsFrameT) => void): void;
+  /**
+   * Register an error callback.
+   *
+   * @param callback Invoked for renderer errors.
+   */
+  onError(callback: (error: Error) => void): void;
   /**
    * Shutdown renderer and release resources.
    */

@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <iostream>
@@ -573,6 +574,7 @@ struct PlaybackConfig {
   bool useLegalRange = true;
   BMDColorspace colorspaceOverride = bmdColorspaceUnknown;
   std::string frameBusName;
+  size_t frameBusSize = 0;
 };
 
 struct ModeListConfig {
@@ -634,6 +636,12 @@ uint64_t readUint64BE(const uint8_t* data) {
          (static_cast<uint64_t>(data[5]) << 16) |
          (static_cast<uint64_t>(data[6]) << 8) |
          static_cast<uint64_t>(data[7]);
+}
+
+uint64_t nowSystemNs() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }
 
 uint64_t atomicLoad64(uint64_t* ptr) {
@@ -1909,9 +1917,6 @@ int runPlayback(const PlaybackConfig& config) {
   DeckLinkPlaybackCallback* callback = new DeckLinkPlaybackCallback(&state);
   output->SetScheduledFrameCompletionCallback(callback);
 
-  std::cout << "{\"type\":\"ready\"}" << std::endl;
-  std::cout.flush();
-
   const size_t expectedBytes =
       static_cast<size_t>(config.width) *
       static_cast<size_t>(config.height) * 4;
@@ -1953,9 +1958,14 @@ int runPlayback(const PlaybackConfig& config) {
       std::cerr << "FrameBus open failed: " << frameBusError << std::endl;
       gShouldExit.store(true);
     } else {
-      if (reader.header->frame_size != expectedBytes ||
-          reader.header->width != static_cast<uint32_t>(config.width) ||
-          reader.header->height != static_cast<uint32_t>(config.height)) {
+      if (config.frameBusSize > 0 && reader.size != config.frameBusSize) {
+        std::cerr << "FrameBus size mismatch. expected="
+                  << config.frameBusSize << " got=" << reader.size << std::endl;
+        closeFrameBusReader(reader);
+        gShouldExit.store(true);
+      } else if (reader.header->frame_size != expectedBytes ||
+                 reader.header->width != static_cast<uint32_t>(config.width) ||
+                 reader.header->height != static_cast<uint32_t>(config.height)) {
         std::cerr << "FrameBus header mismatch. expected="
                   << config.width << "x" << config.height
                   << " bytes=" << expectedBytes
@@ -1969,14 +1979,68 @@ int runPlayback(const PlaybackConfig& config) {
         closeFrameBusReader(reader);
         gShouldExit.store(true);
       } else {
+        std::cout << "{\"type\":\"ready\"}" << std::endl;
+        std::cout.flush();
+
         uint64_t lastSeq = 0;
+        uint64_t droppedFrames = 0;
+        uint64_t framesObserved = 0;
+        double latencyTotalMs = 0.0;
+        double latencyMaxMs = 0.0;
+        auto lastLogAt = std::chrono::steady_clock::now();
+
+        auto logMetricsIfNeeded = [&]() {
+          const auto now = std::chrono::steady_clock::now();
+          const auto elapsedMs =
+              std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLogAt)
+                  .count();
+          if (elapsedMs < 1000) {
+            return;
+          }
+          const double fps = elapsedMs > 0 ? (framesObserved * 1000.0) / elapsedMs : 0.0;
+          const double latencyAvg = framesObserved > 0 ? latencyTotalMs / framesObserved : 0.0;
+          std::ostringstream out;
+          out << "{\"type\":\"metrics\",\"source\":\"framebus\""
+              << ",\"fps\":" << std::fixed << std::setprecision(1) << fps
+              << ",\"drops\":" << droppedFrames
+              << ",\"latencyMsAvg\":" << std::fixed << std::setprecision(1)
+              << latencyAvg
+              << ",\"latencyMsMax\":" << std::fixed << std::setprecision(1)
+              << latencyMaxMs
+              << "}";
+          std::cout << out.str() << std::endl;
+          std::cout.flush();
+          framesObserved = 0;
+          droppedFrames = 0;
+          latencyTotalMs = 0.0;
+          latencyMaxMs = 0.0;
+          lastLogAt = now;
+        };
+
         while (!gShouldExit.load()) {
           const uint64_t seq = atomicLoad64(&reader.header->seq);
           if (seq == 0 || seq == lastSeq) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
           }
+          if (lastSeq > 0 && seq > lastSeq + 1) {
+            droppedFrames += (seq - lastSeq - 1);
+          }
           lastSeq = seq;
+          const uint64_t timestampNs = atomicLoad64(&reader.header->last_write_ns);
+          if (timestampNs > 0) {
+            const uint64_t nowNs = nowSystemNs();
+            if (nowNs >= timestampNs) {
+              const double latencyMs =
+                  static_cast<double>(nowNs - timestampNs) / 1'000'000.0;
+              latencyTotalMs += latencyMs;
+              if (latencyMs > latencyMaxMs) {
+                latencyMaxMs = latencyMs;
+              }
+            }
+          }
+          framesObserved += 1;
+          logMetricsIfNeeded();
           const uint32_t slotIndex =
               static_cast<uint32_t>((seq - 1) % reader.header->slot_count);
           const uint8_t* slotPtr =
@@ -1990,6 +2054,43 @@ int runPlayback(const PlaybackConfig& config) {
       }
     }
   } else {
+    std::cout << "{\"type\":\"ready\"}" << std::endl;
+    std::cout.flush();
+
+    uint64_t droppedFrames = 0;
+    uint64_t framesObserved = 0;
+    double latencyTotalMs = 0.0;
+    double latencyMaxMs = 0.0;
+    auto lastLogAt = std::chrono::steady_clock::now();
+
+    auto logMetricsIfNeeded = [&]() {
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsedMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLogAt)
+              .count();
+      if (elapsedMs < 1000) {
+        return;
+      }
+      const double fps = elapsedMs > 0 ? (framesObserved * 1000.0) / elapsedMs : 0.0;
+      const double latencyAvg = framesObserved > 0 ? latencyTotalMs / framesObserved : 0.0;
+      std::ostringstream out;
+      out << "{\"type\":\"metrics\",\"source\":\"stdin\""
+          << ",\"fps\":" << std::fixed << std::setprecision(1) << fps
+          << ",\"drops\":" << droppedFrames
+          << ",\"latencyMsAvg\":" << std::fixed << std::setprecision(1)
+          << latencyAvg
+          << ",\"latencyMsMax\":" << std::fixed << std::setprecision(1)
+          << latencyMaxMs
+          << "}";
+      std::cout << out.str() << std::endl;
+      std::cout.flush();
+      framesObserved = 0;
+      droppedFrames = 0;
+      latencyTotalMs = 0.0;
+      latencyMaxMs = 0.0;
+      lastLogAt = now;
+    };
+
     const int stdinFd = fileno(stdin);
     std::vector<uint8_t> headerBuffer(kFrameHeaderSize);
     int headerMismatchLogsRemaining = 2;
@@ -2056,6 +2157,21 @@ int runPlayback(const PlaybackConfig& config) {
       if (!readExact(stdinFd, frameBuffer.data(), frameBuffer.size())) {
         break;
       }
+
+      const uint64_t nowMs = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch())
+              .count());
+      if (header.timestamp > 0 && nowMs >= header.timestamp) {
+        const double latencyMs =
+            static_cast<double>(nowMs - header.timestamp);
+        latencyTotalMs += latencyMs;
+        if (latencyMs > latencyMaxMs) {
+          latencyMaxMs = latencyMs;
+        }
+      }
+      framesObserved += 1;
+      logMetricsIfNeeded();
 
       state.queue.push(std::move(frameBuffer));
       maybeStartPlayback();
@@ -2309,6 +2425,61 @@ int main(int argc, char** argv) {
         config.frameBusName = argv[++i];
         continue;
       }
+    }
+
+    auto readEnvInt = [](const char* name) -> int {
+      const char* value = std::getenv(name);
+      if (!value || !*value) {
+        return 0;
+      }
+      try {
+        return std::stoi(value);
+      } catch (...) {
+        return 0;
+      }
+    };
+
+    auto readEnvDouble = [](const char* name) -> double {
+      const char* value = std::getenv(name);
+      if (!value || !*value) {
+        return 0.0;
+      }
+      try {
+        return std::stod(value);
+      } catch (...) {
+        return 0.0;
+      }
+    };
+
+    auto readEnvSize = [](const char* name) -> size_t {
+      const char* value = std::getenv(name);
+      if (!value || !*value) {
+        return 0;
+      }
+      try {
+        return static_cast<size_t>(std::stoll(value));
+      } catch (...) {
+        return 0;
+      }
+    };
+
+    if (config.width <= 0) {
+      config.width = readEnvInt("BRIDGE_FRAME_WIDTH");
+    }
+    if (config.height <= 0) {
+      config.height = readEnvInt("BRIDGE_FRAME_HEIGHT");
+    }
+    if (config.fps <= 0) {
+      config.fps = readEnvDouble("BRIDGE_FRAME_FPS");
+    }
+    if (config.frameBusName.empty()) {
+      const char* envFrameBusName = std::getenv("BRIDGE_FRAMEBUS_NAME");
+      if (envFrameBusName && *envFrameBusName) {
+        config.frameBusName = envFrameBusName;
+      }
+    }
+    if (config.frameBusSize == 0) {
+      config.frameBusSize = readEnvSize("BRIDGE_FRAMEBUS_SIZE");
     }
 
     return runPlayback(config);

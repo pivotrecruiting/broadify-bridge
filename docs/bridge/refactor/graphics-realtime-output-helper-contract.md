@@ -24,9 +24,13 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 - Wenn kein neues Frame: letztes Frame wiederholen.
 - Legacy-Fallback: Wenn FrameBus deaktiviert ist, erhält der Helper Frames über den bisherigen stdin-Transport.
 
+## Handshake
+- Helper sendet `{"type":"ready"}` erst nach erfolgreicher FrameBus-Validierung bzw. nach erfolgreichem Legacy-Setup.
+
 ## Stop
 - Bridge sendet Shutdown-Signal.
 - Helper schließt FrameBus und beendet Prozess.
+- Bridge wartet kurz auf Exit und sendet bei Bedarf `SIGTERM`/`SIGKILL`.
 
 ## Output-spezifisch
 ### DeckLink
@@ -44,4 +48,4 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 ## Status (Stand heute)
 - DeckLink Helper kann FrameBus lesen.
 - Display Helper kann FrameBus lesen.
-- Doku-Abgleich zu den real genutzten Env-Parametern erforderlich.
+- Env-Parameter sind auf Bridge-Seite gesetzt (Name/Size/Format/FPS).

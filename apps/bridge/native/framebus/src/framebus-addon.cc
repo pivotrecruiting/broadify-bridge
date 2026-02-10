@@ -96,6 +96,10 @@ napi_value BuildHeaderObject(napi_env env, const FrameBusHeader* header) {
   napi_create_uint32(env, header->version, &version);
   napi_set_named_property(env, result, "version", version);
 
+  napi_value flags;
+  napi_create_uint32(env, header->flags, &flags);
+  napi_set_named_property(env, result, "flags", flags);
+
   napi_value header_size;
   napi_create_uint32(env, header->header_size, &header_size);
   napi_set_named_property(env, result, "headerSize", header_size);
@@ -158,6 +162,9 @@ void FinalizeHandle(napi_env env, void* data, void* hint) {
   }
   if (handle->fd >= 0) {
     close(handle->fd);
+  }
+  if (handle->is_writer && !handle->name.empty()) {
+    shm_unlink(handle->name.c_str());
   }
 #endif
   delete handle;

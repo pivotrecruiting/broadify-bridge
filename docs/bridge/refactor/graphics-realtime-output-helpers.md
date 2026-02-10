@@ -10,7 +10,7 @@
 
 ## Display Helper
 - Liest Frames aus dem FrameBus.
-- Rendert per GPU (Metal/D3D/OpenGL).
+- Rendert per GPU (WebGL im Electron-Helper, spätere native GPU-Pfade möglich).
 - Skalierung auf Ziel-Display falls nötig.
 - Legacy-stdin-Frames bleiben als Notfallpfad.
 

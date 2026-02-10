@@ -80,10 +80,10 @@
 - `docs/bridge/README.md`
 
 ## TODO
-- [ ] Finales Frame-Format pro Output-Key dokumentieren.
+- [x] Finales Frame-Format pro Output-Key dokumentieren.
 - [x] Entscheidung festhalten: Key/Fill nutzt ARGB8-only (kein BGRA-Fallback).
 - [ ] Hinweis: Akzeptanzkriterien ggf. pro Hardware/Output anpassen.
-- [ ] Display-Output Format-Validierung ergänzen.
+- [x] Display-Output Format-Validierung ergänzen.
 - [ ] Migrations-Reihenfolge für macOS finalisieren (Windows/Linux deferred).
 
 ## Feature-Flags (Vorschlag)
@@ -107,7 +107,14 @@
 - 1080p@50: Renderer fps ≥ 50, Drops ≈ 0 über 60s.
 - Output-Helper fps stabil ±1 fps über 60s.
 - Trigger->Frame Latenz messbar < 200ms.
- - Hinweis: Werte ggf. pro Hardware/Output anpassen.
+- Hinweis: Werte ggf. pro Hardware/Output anpassen.
+
+## Frame-Format pro Output-Key
+- `video_sdi`: FrameBus RGBA8 -> DeckLink Helper konvertiert gemäß `VIDEO_PIXEL_FORMAT_PRIORITY` (10bit_yuv, 8bit_yuv).
+- `video_hdmi`: FrameBus RGBA8 -> DeckLink Helper (wie oben) oder Display Helper (RGBA8 -> Display).
+- `key_fill_sdi`: FrameBus RGBA8 -> DeckLink Helper konvertiert zu ARGB8-only für Key/Fill.
+- `key_fill_split_sdi` (Legacy): RGBA8 wird softwareseitig in Fill/Key gesplittet und per Legacy-stdin an zwei DeckLink Video Helper gesendet.
+- `key_fill_ndi`: Stub/Non-Goal im Refactor.
 
 ## Risiken
 - CSS-Kollisionen ohne Shadow DOM.
@@ -136,19 +143,19 @@
 ### Output-Helper
 - [x] DeckLink Helper: FrameBus Reader + FPS-Ticker.
 - [x] Display Helper: FrameBus Reader.
-- [ ] Display Helper: GPU-Renderer finalisieren.
-- [ ] Output-Adapter: Start/Stop-Handshakes anpassen.
+- [x] Display Helper: GPU-Renderer finalisieren (WebGL).
+- [x] Output-Adapter: Start/Stop-Handshakes anpassen.
 
 ### Native / FrameBus
 - [x] Shared Memory API definieren (C++ Header).
 - [x] N-API Bindings für Node/Electron bauen (macOS).
 - [ ] Cross-Platform Implementierung (Windows/Linux deferred).
-- [ ] FrameBus API Spec finalisieren: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
+- [x] FrameBus API Spec finalisieren: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
 
 ### Observability
-- [ ] FPS/Latency Metrics in Renderer und Output-Helper.
+- [x] FPS/Latency Metrics in Renderer und Output-Helper.
 - [x] Debug-Overlay optional für Display-Output.
 
 ### Contracts
-- [ ] Renderer Command Contract finalisieren: `docs/bridge/refactor/graphics-realtime-renderer-command-contract.md`
-- [ ] Output Helper Contract finalisieren: `docs/bridge/refactor/graphics-realtime-output-helper-contract.md`
+- [x] Renderer Command Contract finalisieren: `docs/bridge/refactor/graphics-realtime-renderer-command-contract.md`
+- [x] Output Helper Contract finalisieren: `docs/bridge/refactor/graphics-realtime-output-helper-contract.md`

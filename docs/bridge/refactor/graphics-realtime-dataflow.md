@@ -35,5 +35,9 @@ sequenceDiagram
 - Bridge compositet Frames und tickt pro Output-FPS.
 - Output-Helper erhält Frames über Legacy-stdin.
 
-## TODO
-- [ ] Error-Codes und Status-Events final definieren.
+## Finalisiert
+### Status-Events
+- `graphics_status`: `reason` = `preset_update` | `preset_cleared` | `clear_all_layers` | `preset_started` | `preset_removed`.
+
+### Error-Codes
+- `graphics_error`: `code` = `output_config_error` | `renderer_error` | `output_helper_error`.

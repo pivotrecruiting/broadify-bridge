@@ -9,11 +9,16 @@ export type FrameBusConfigT = {
   width: number;
   height: number;
   fps: number;
+  frameSize: number;
+  slotStride: number;
+  headerSize: number;
+  size: number;
 };
 
 // TODO: Tune slot count per hardware/output if drops persist.
 const DEFAULT_SLOT_COUNT = 2;
 const DEFAULT_PIXEL_FORMAT: FrameBusPixelFormatT = 1;
+const FRAMEBUS_HEADER_SIZE = 128;
 
 const parseSlotCount = (value: string | undefined): number | null => {
   if (!value) {
@@ -31,7 +36,7 @@ const parsePixelFormat = (value: string | undefined): FrameBusPixelFormatT | nul
     return null;
   }
   const parsed = Number(value);
-  if (parsed === 1 || parsed === 2 || parsed === 3) {
+  if (parsed === 1) {
     return parsed;
   }
   return null;
@@ -66,9 +71,15 @@ export const buildFrameBusConfig = (
     previous?.slotCount ??
     DEFAULT_SLOT_COUNT;
   const pixelFormat =
-    parsePixelFormat(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT) ??
+    parsePixelFormat(
+      process.env.BRIDGE_FRAME_PIXEL_FORMAT ?? process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT
+    ) ??
     previous?.pixelFormat ??
     DEFAULT_PIXEL_FORMAT;
+  const frameSize = outputConfig.format.width * outputConfig.format.height * 4;
+  const slotStride = frameSize;
+  const headerSize = FRAMEBUS_HEADER_SIZE;
+  const size = headerSize + slotStride * slotCount;
 
   return {
     name,
@@ -77,6 +88,10 @@ export const buildFrameBusConfig = (
     width: outputConfig.format.width,
     height: outputConfig.format.height,
     fps: outputConfig.format.fps,
+    frameSize,
+    slotStride,
+    headerSize,
+    size,
   };
 };
 
@@ -84,4 +99,20 @@ export const applyFrameBusEnv = (config: FrameBusConfigT): void => {
   process.env.BRIDGE_FRAMEBUS_NAME = config.name;
   process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(config.slotCount);
   process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = String(config.pixelFormat);
+  process.env.BRIDGE_FRAMEBUS_SIZE = String(config.size);
+  process.env.BRIDGE_FRAME_WIDTH = String(config.width);
+  process.env.BRIDGE_FRAME_HEIGHT = String(config.height);
+  process.env.BRIDGE_FRAME_FPS = String(config.fps);
+  process.env.BRIDGE_FRAME_PIXEL_FORMAT = String(config.pixelFormat);
+};
+
+export const clearFrameBusEnv = (): void => {
+  delete process.env.BRIDGE_FRAMEBUS_NAME;
+  delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+  delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
+  delete process.env.BRIDGE_FRAMEBUS_SIZE;
+  delete process.env.BRIDGE_FRAME_WIDTH;
+  delete process.env.BRIDGE_FRAME_HEIGHT;
+  delete process.env.BRIDGE_FRAME_FPS;
+  delete process.env.BRIDGE_FRAME_PIXEL_FORMAT;
 };

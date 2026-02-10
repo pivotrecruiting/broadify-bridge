@@ -40,12 +40,11 @@ Definiert die API und Speicherstruktur für den Shared-Memory FrameBus. Ziel ist
 - Optional pro Slot: `slotTimestampNs[]`
 
 ## Writer-API (Renderer)
-- `framebus.create(name, size, header)`
-- `framebus.write(frameBuffer, timestampNs)`
-- `framebus.close()`
+- Renderer nutzt N-API `createWriter()`; `framebusSize` bestimmt SlotCount (Header 128 + FrameSize * N).
+- `writeFrame(buffer, timestampNs)` schreibt das aktuellste Frame (latest-frame-wins).
 
 ## Reader-API (Output-Helper)
-- `framebus.open(name)`
+- `openReader(name)`
 - `framebus.readLatest()` -> { buffer, timestampNs, seq }
 - `framebus.close()`
 
@@ -74,5 +73,5 @@ Definiert die API und Speicherstruktur für den Shared-Memory FrameBus. Ziel ist
 - PixelFormat Enum in Code gespiegelt.
 - N-API Signaturen definiert.
 
-## TODO
-- [ ] OS-spezifische Shared-Memory Implementierung festlegen (macOS only aktuell).
+## Finalisiert
+- macOS: POSIX `shm_open` + `mmap` (0600). Windows/Linux deferred.

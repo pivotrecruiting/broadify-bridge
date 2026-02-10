@@ -1,6 +1,7 @@
 import { app, BrowserWindow, protocol } from "electron";
 import net from "node:net";
 import pino from "pino";
+import { z } from "zod";
 import { getStandardAnimationCss } from "./animation-css.js";
 import {
   isFrameBusEnabled,
@@ -19,6 +20,7 @@ const MAX_IPC_HEADER_BYTES = 64 * 1024;
 const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
 const MAX_FRAME_DIMENSION = 8192;
+const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = true;
 // Design baseline for templates (format-agnostic rendering).
 const BASE_RENDER_WIDTH = 1920;
@@ -26,8 +28,12 @@ const BASE_RENDER_HEIGHT = 1080;
 const ENABLE_SINGLE_RENDERER =
   process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
-let frameBusSlotCount = Number(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT || 0);
-let frameBusPixelFormat = Number(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT || 1);
+let frameBusSlotCount = 0;
+let frameBusPixelFormat = Number(
+  process.env.BRIDGE_FRAME_PIXEL_FORMAT ||
+    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT ||
+    1
+);
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 
@@ -59,8 +65,26 @@ let perfLastLogAt = Date.now();
 let perfPaintCount = 0;
 let perfSentCount = 0;
 let perfDroppedCount = 0;
+let perfLatencyTotalMs = 0;
+let perfLatencyMaxMs = 0;
 let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
+let rendererConfigReady = false;
+let rendererConfig:
+  | {
+      width: number;
+      height: number;
+      fps: number;
+      pixelFormat: number;
+      framebusName: string;
+      framebusSize: number;
+      backgroundMode: string;
+      clearColor?: { r: number; g: number; b: number; a: number };
+    }
+  | null = null;
+let rendererBackgroundMode = "transparent";
+let rendererClearColor: { r: number; g: number; b: number; a: number } | null =
+  null;
 
 let singleWindow: BrowserWindow | null = null;
 let singleWindowReady: Promise<void> | null = null;
@@ -79,6 +103,10 @@ function logPerfIfNeeded(): void {
   const paintPerSec = Math.round((perfPaintCount * 1000) / intervalMs);
   const sentPerSec = Math.round((perfSentCount * 1000) / intervalMs);
   const droppedPerSec = Math.round((perfDroppedCount * 1000) / intervalMs);
+  const latencyAvg =
+    perfSentCount > 0
+      ? Math.round(perfLatencyTotalMs / perfSentCount)
+      : 0;
   const backpressureActiveMs =
     backpressureStartAt !== null ? now - backpressureStartAt : 0;
   logger.info(
@@ -86,6 +114,8 @@ function logPerfIfNeeded(): void {
       paintPerSec,
       sentPerSec,
       droppedPerSec,
+      latencyMsAvg: latencyAvg,
+      latencyMsMax: Math.round(perfLatencyMaxMs),
       backpressureMs: backpressureTotalMs + backpressureActiveMs,
       ipcConnected: isIpcConnected,
     },
@@ -95,6 +125,8 @@ function logPerfIfNeeded(): void {
   perfPaintCount = 0;
   perfSentCount = 0;
   perfDroppedCount = 0;
+  perfLatencyTotalMs = 0;
+  perfLatencyMaxMs = 0;
   backpressureTotalMs = 0;
 }
 
@@ -162,11 +194,18 @@ function sendIpcMessage(
 }
 
 function maybeSendReady(): void {
-  if (readySent || !isAppReady || !isIpcConnected) {
+  if (readySent || !isAppReady || !isIpcConnected || !rendererConfigReady) {
     return;
   }
   readySent = true;
-  sendIpcMessage({ type: "ready" });
+  sendIpcMessage({
+    type: "ready",
+    width: rendererConfig?.width,
+    height: rendererConfig?.height,
+    fps: rendererConfig?.fps,
+    pixelFormat: rendererConfig?.pixelFormat,
+    framebusName: rendererConfig?.framebusName,
+  });
 }
 
 function bgraToRgba(buffer: Buffer): Buffer {
@@ -535,6 +574,37 @@ function logFrameBusOnce(key: string, message: string): void {
   logger.warn(message);
 }
 
+const ClearColorSchema = z
+  .object({
+    r: z.number().min(0).max(255),
+    g: z.number().min(0).max(255),
+    b: z.number().min(0).max(255),
+    a: z.number().min(0).max(1),
+  })
+  .strict();
+
+const RendererConfigureSchema = z
+  .object({
+    width: z.number().int().positive().max(MAX_FRAME_DIMENSION),
+    height: z.number().int().positive().max(MAX_FRAME_DIMENSION),
+    fps: z.number().positive(),
+    pixelFormat: z
+      .number()
+      .int()
+      .positive()
+      .refine((value) => value === 1, {
+        message: "pixelFormat must be RGBA8 (1)",
+      }),
+    framebusName: z.string().optional().default(""),
+    framebusSize: z.number().int().nonnegative().optional().default(0),
+    backgroundMode: z
+      .enum(["transparent", "green", "black", "white"])
+      .optional()
+      .default("transparent"),
+    clearColor: ClearColorSchema.optional(),
+  })
+  .strict();
+
 function ensureFrameBusWriter(
   width: number,
   height: number,
@@ -586,7 +656,7 @@ function ensureFrameBusWriter(
   if (!Number.isFinite(frameBusSlotCount) || frameBusSlotCount < 2) {
     logFrameBusOnce(
       "invalid-slot",
-      "[GraphicsRenderer] FrameBus slotCount missing or invalid (BRIDGE_FRAMEBUS_SLOT_COUNT)"
+      "[GraphicsRenderer] FrameBus slotCount missing or invalid (framebusSize)"
     );
     return;
   }
@@ -628,26 +698,78 @@ function ensureFrameBusWriter(
   }
 }
 
-function applyRendererConfig(message: {
-  framebusName?: string;
-  framebusSlotCount?: number;
-  framebusPixelFormat?: number;
-}): void {
-  if (typeof message.framebusName === "string" && message.framebusName.trim()) {
-    frameBusName = message.framebusName.trim();
+function applyRendererConfig(message: unknown): void {
+  const parsed = RendererConfigureSchema.safeParse(message);
+  if (!parsed.success) {
+    logger.warn(
+      { issues: parsed.error.issues },
+      "[GraphicsRenderer] Invalid renderer_configure payload"
+    );
+    return;
   }
-  if (
-    typeof message.framebusSlotCount === "number" &&
-    message.framebusSlotCount >= 2
-  ) {
-    frameBusSlotCount = message.framebusSlotCount;
+
+  const config = parsed.data;
+  rendererConfig = {
+    width: config.width,
+    height: config.height,
+    fps: config.fps,
+    pixelFormat: config.pixelFormat,
+    framebusName: config.framebusName,
+    framebusSize: config.framebusSize,
+    backgroundMode: config.backgroundMode,
+    clearColor: config.clearColor,
+  };
+  rendererBackgroundMode = config.backgroundMode;
+  rendererClearColor = config.clearColor ?? null;
+
+  if (config.framebusName && config.framebusName.trim()) {
+    frameBusName = config.framebusName.trim();
   }
-  if (
-    typeof message.framebusPixelFormat === "number" &&
-    message.framebusPixelFormat > 0
-  ) {
-    frameBusPixelFormat = message.framebusPixelFormat;
+  if (config.framebusSize > 0) {
+    const frameSize = config.width * config.height * 4;
+    const slotBytes = config.framebusSize - FRAMEBUS_HEADER_SIZE;
+    if (frameSize <= 0) {
+      logFrameBusOnce(
+        "slotcount",
+        "[GraphicsRenderer] FrameBus frame size invalid"
+      );
+      frameBusSlotCount = 0;
+    } else {
+      const slotCount = Math.floor(slotBytes / frameSize);
+      if (slotBytes % frameSize !== 0 || slotCount < 2) {
+      logFrameBusOnce(
+        "slotcount",
+        "[GraphicsRenderer] FrameBus size invalid for slot count calculation"
+      );
+      frameBusSlotCount = 0;
+      } else {
+        frameBusSlotCount = slotCount;
+      }
+    }
+  } else {
+    frameBusSlotCount = 0;
   }
+  if (config.pixelFormat > 0) {
+    frameBusPixelFormat = config.pixelFormat;
+  }
+
+  readySent = false;
+  rendererConfigReady = true;
+  if (singleWindow) {
+    void singleWindow.webContents
+      .executeJavaScript(
+        rendererClearColor
+          ? `window.__setClearColor && window.__setClearColor(${JSON.stringify(
+              rendererClearColor
+            )});`
+          : `window.__setBackground && window.__setBackground(${JSON.stringify(
+              rendererBackgroundMode
+            )});`,
+        true
+      )
+      .catch(() => null);
+  }
+  maybeSendReady();
 }
 
 async function ensureSingleWindow(
@@ -693,6 +815,7 @@ async function ensureSingleWindow(
 
     singleWindow.webContents.setFrameRate(fps);
     singleWindow.webContents.on("paint", (_event, _dirty, image) => {
+      const frameStartAt = Date.now();
       if (paintCount === 0) {
         logger.info("[GraphicsRenderer] First paint received");
       }
@@ -733,6 +856,11 @@ async function ensureSingleWindow(
       try {
         frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
         perfSentCount += 1;
+        const latencyMs = Date.now() - frameStartAt;
+        perfLatencyTotalMs += latencyMs;
+        if (latencyMs > perfLatencyMaxMs) {
+          perfLatencyMaxMs = latencyMs;
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(
@@ -763,10 +891,24 @@ async function ensureSingleWindow(
     await singleWindowReady;
   }
 
-  if (backgroundMode) {
+  const sessionBackgroundMode = rendererBackgroundMode || backgroundMode;
+  if (rendererClearColor) {
     try {
       await singleWindow.webContents.executeJavaScript(
-        `window.__setBackground && window.__setBackground(${JSON.stringify(backgroundMode)});`,
+        `window.__setClearColor && window.__setClearColor(${JSON.stringify(
+          rendererClearColor
+        )});`,
+        true
+      );
+    } catch {
+      // No-op; background set via create_layer.
+    }
+  } else if (sessionBackgroundMode) {
+    try {
+      await singleWindow.webContents.executeJavaScript(
+        `window.__setBackground && window.__setBackground(${JSON.stringify(
+          sessionBackgroundMode
+        )});`,
         true
       );
     } catch {
@@ -901,12 +1043,34 @@ function buildSingleWindowDocument(): string {
         return "transparent";
       };
 
+      const resolveClearColor = (color) => {
+        if (!color || typeof color !== "object") return null;
+        const r = Math.max(0, Math.min(255, Number(color.r)));
+        const g = Math.max(0, Math.min(255, Number(color.g)));
+        const b = Math.max(0, Math.min(255, Number(color.b)));
+        const a = Math.max(0, Math.min(1, Number(color.a)));
+        if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b) || !Number.isFinite(a)) {
+          return null;
+        }
+        return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+      };
+
       const setBackground = (mode) => {
         const background = document.getElementById("graphics-background");
         if (!background) return;
         background.style.background = resolveBackgroundColor(mode);
       };
       window.__setBackground = setBackground;
+
+      const setClearColor = (color) => {
+        const background = document.getElementById("graphics-background");
+        if (!background) return;
+        const resolved = resolveClearColor(color);
+        if (resolved) {
+          background.style.background = resolved;
+        }
+      };
+      window.__setClearColor = setClearColor;
 
       window.__createLayer = (payload) => {
         const root = document.getElementById("graphics-root");
@@ -1187,6 +1351,7 @@ async function createLayer(message: {
       logger.warn("[GraphicsRenderer] Frame buffer exceeds payload limit");
       return;
     }
+    const frameStartAt = Date.now();
     sendIpcMessage(
       {
         type: "frame",
@@ -1197,6 +1362,11 @@ async function createLayer(message: {
       },
       buffer,
     );
+    const latencyMs = Date.now() - frameStartAt;
+    perfLatencyTotalMs += latencyMs;
+    if (latencyMs > perfLatencyMaxMs) {
+      perfLatencyMaxMs = latencyMs;
+    }
   });
 
   const html = buildHtmlDocument({
@@ -1416,13 +1586,7 @@ async function handleMessage(message: unknown): Promise<void> {
   const msg = message as { type?: string; [key: string]: unknown };
 
   if (msg.type === "renderer_configure") {
-    applyRendererConfig(
-      msg as {
-        framebusName?: string;
-        framebusSlotCount?: number;
-        framebusPixelFormat?: number;
-      }
-    );
+    applyRendererConfig(msg);
     return;
   }
 

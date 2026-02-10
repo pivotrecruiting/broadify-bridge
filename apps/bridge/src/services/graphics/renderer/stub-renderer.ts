@@ -1,6 +1,7 @@
 import type { GraphicsLayoutT } from "../graphics-schemas.js";
 import type {
   GraphicsFrameT,
+  GraphicsRendererConfigT,
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
   GraphicsTemplateBindingsT,
@@ -11,12 +12,17 @@ import type {
  */
 export class StubRenderer implements GraphicsRenderer {
   private frameCallback: ((frame: GraphicsFrameT) => void) | null = null;
+  private errorCallback: ((error: Error) => void) | null = null;
   private layers = new Map<
     string,
     { width: number; height: number; buffer: Buffer }
   >();
 
   async initialize(): Promise<void> {
+    return;
+  }
+
+  async configureSession(_config: GraphicsRendererConfigT): Promise<void> {
     return;
   }
 
@@ -59,9 +65,14 @@ export class StubRenderer implements GraphicsRenderer {
     this.frameCallback = callback;
   }
 
+  onError(callback: (error: Error) => void): void {
+    this.errorCallback = callback;
+  }
+
   async shutdown(): Promise<void> {
     this.layers.clear();
     this.frameCallback = null;
+    this.errorCallback = null;
   }
 
   private emitFrame(layerId: string): void {

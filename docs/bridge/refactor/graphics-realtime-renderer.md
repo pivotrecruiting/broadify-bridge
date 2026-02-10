@@ -29,6 +29,11 @@ Ein einzelnes Offscreen-Window rendert alle Layer in einem DOM-Tree. Frames werd
 - `paint`-Event liefert Frame-Buffer.
 - Frame wird direkt in den FrameBus geschrieben.
 
+## Session-Handshake
+- `renderer_configure` vor `create_layer` (width/height/fps/pixelFormat/framebusName/framebusSize).
+- `ready` Event erst nach erfolgreicher Konfiguration.
+- `backgroundMode` default: `transparent`; optional `clearColor` überschreibt den Hintergrund.
+
 ## Status (Stand heute)
 - Shadow-DOM Wrapper pro Layer umgesetzt.
 - Bindings auf Layer-Host umgestellt.

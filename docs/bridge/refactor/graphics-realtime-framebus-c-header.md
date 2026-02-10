@@ -48,6 +48,6 @@ _Static_assert(sizeof(FrameBusHeader) == FRAMEBUS_HEADER_SIZE, "FrameBusHeader s
 - Startadresse: `base + header_size`.
 - Slot-N: `base + header_size + slot_stride * N`.
 
-## TODO
-- [ ] Flags definieren (z. B. alpha handling, colorspace hints).
-- [ ] `slotTimestampNs[]` optional festlegen.
+## Finalisiert
+- Flags: `flags = 0` (reserviert). Keine Alpha/Colorspace-Flags im MVP.
+- `slotTimestampNs[]` wird im MVP nicht verwendet; `last_write_ns` bleibt SSOT.

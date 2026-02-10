@@ -14,6 +14,7 @@ type FrameBusPixelFormat = 1 | 2 | 3; // RGBA8=1, BGRA8=2, ARGB8=3
 type FrameBusHeader = {
   magic: number;
   version: number;
+  flags: number;
   headerSize: number;
   width: number;
   height: number;
@@ -74,7 +75,7 @@ reader.close();
 - `FrameSizeError` bei falscher Buffer-Größe.
 - `OpenError` bei fehlendem Shared Memory Segment.
 
-## TODO
-- [ ] Fehlerklassen final definieren.
-- [ ] Performance-Tests (write/read throughput).
-- [ ] Cleanup-Verhalten beim Prozessende finalisieren.
+## Finalisiert
+- Fehlerklassen: `InvalidHeaderError`, `FrameSizeError`, `OpenError`.
+- Performance-Tests: 1080p@50 (60s), Throughput + Latenz messen, Drops ≤ 1%.
+- Cleanup: Writer `close()` unlinkt Shared-Memory Segment; Reader `close()` unmappt nur.

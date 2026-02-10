@@ -40,6 +40,15 @@ Trennung von Control-Plane und Data-Plane. Die Bridge steuert, die Frame-Daten l
 - Output-Helper erhalten Frames über den Legacy-stdin-Transport.
 - Darf nur im Notfall verwendet werden.
 
-## TODO
-- [ ] Interface-Änderungen für Renderer-Client definieren.
-- [ ] FrameBus API finalisieren.
+## Finalisiert
+### Renderer-Client Änderungen
+- `renderer_configure` als verpflichtender Session-Handshake vor `create_layer`.
+- Payload: `width`, `height`, `fps`, `pixelFormat`, `framebusName`, `framebusSize`, `backgroundMode`, `clearColor`.
+- `ready` Event erst nach erfolgreichem `renderer_configure` (FrameBus-Writer gebunden).
+- Bridge-API: `configureSession()` im Renderer-Client (vor Layer-Erzeugung).
+
+### FrameBus API Final
+- Header Flags bleiben `0` (reserviert), keine optionalen Slot-Timestamps im MVP.
+- FrameBus akzeptiert nur RGBA8 (`pixelFormat = 1`).
+- SlotCount wird aus `framebusSize` berechnet (Header 128 + FrameSize * N).
+- Writer `close()` unlinkt das Shared-Memory Segment (POSIX).

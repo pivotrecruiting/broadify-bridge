@@ -48,5 +48,5 @@ Siehe: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
 ## Status (Stand heute)
 - N-API Interface für macOS implementiert.
 
-## TODO
-- [ ] Windows/Linux Shared-Memory Implementierung spezifizieren (macOS only aktuell).
+## Finalisiert
+- Windows/Linux: vorerst deferred. macOS nutzt POSIX `shm_open` + `mmap` mit `0600` Rechten.

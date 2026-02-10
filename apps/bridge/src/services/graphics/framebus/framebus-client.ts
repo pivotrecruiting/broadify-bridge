@@ -8,6 +8,7 @@ export type FrameBusPixelFormatT = 1 | 2 | 3;
 export type FrameBusHeaderT = {
   magic: number;
   version: number;
+  flags: number;
   headerSize: number;
   width: number;
   height: number;
@@ -34,6 +35,27 @@ export type FrameBusReaderT = {
   readLatest(): { buffer: Buffer; timestampNs: bigint; seq: bigint } | null;
   close(): void;
 };
+
+export class InvalidHeaderError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidHeaderError";
+  }
+}
+
+export class FrameSizeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FrameSizeError";
+  }
+}
+
+export class OpenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenError";
+  }
+}
 
 export type FrameBusModuleT = {
   createWriter(options: {
@@ -99,6 +121,82 @@ const findNativeAddonPath = (): string | null => {
   return null;
 };
 
+const mapFrameBusError = (error: unknown): Error => {
+  if (!(error instanceof Error)) {
+    return new Error(String(error));
+  }
+  const message = error.message || "FrameBus error";
+  if (
+    message.includes("Invalid FrameBus header") ||
+    message.includes("Invalid header")
+  ) {
+    return new InvalidHeaderError(message);
+  }
+  if (message.includes("Frame size mismatch") || message.includes("size too large")) {
+    return new FrameSizeError(message);
+  }
+  if (
+    message.includes("openReader") ||
+    message.includes("createWriter") ||
+    message.includes("FrameBus name is required") ||
+    message.includes("not implemented")
+  ) {
+    return new OpenError(message);
+  }
+  return error;
+};
+
+const wrapWriter = (writer: FrameBusWriterT): FrameBusWriterT => {
+  return {
+    ...writer,
+    writeFrame(buffer: Buffer, timestampNs?: bigint): void {
+      try {
+        writer.writeFrame(buffer, timestampNs);
+      } catch (error) {
+        throw mapFrameBusError(error);
+      }
+    },
+    close(): void {
+      writer.close();
+    },
+  };
+};
+
+const wrapReader = (reader: FrameBusReaderT): FrameBusReaderT => {
+  return {
+    ...reader,
+    readLatest(): { buffer: Buffer; timestampNs: bigint; seq: bigint } | null {
+      try {
+        return reader.readLatest();
+      } catch (error) {
+        throw mapFrameBusError(error);
+      }
+    },
+    close(): void {
+      reader.close();
+    },
+  };
+};
+
+const wrapModule = (module: FrameBusModuleT): FrameBusModuleT => {
+  return {
+    createWriter(options) {
+      try {
+        return wrapWriter(module.createWriter(options));
+      } catch (error) {
+        throw mapFrameBusError(error);
+      }
+    },
+    openReader(options) {
+      try {
+        return wrapReader(module.openReader(options));
+      } catch (error) {
+        throw mapFrameBusError(error);
+      }
+    },
+  };
+};
+
 /**
  * Check whether the FrameBus feature flag is enabled.
  */
@@ -120,5 +218,5 @@ export const loadFrameBusModule = (): FrameBusModuleT | null => {
   }
 
   const requireFn = createRequire(import.meta.url);
-  return requireFn(addonPath) as FrameBusModuleT;
+  return wrapModule(requireFn(addonPath) as FrameBusModuleT);
 };

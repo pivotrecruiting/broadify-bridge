@@ -36,6 +36,7 @@ import { StubRenderer } from "./renderer/stub-renderer.js";
 import type {
   GraphicsFrameT,
   GraphicsRenderer,
+  GraphicsRendererConfigT,
 } from "./renderer/graphics-renderer.js";
 import type { TemplateBindingsT } from "./template-bindings.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
@@ -46,9 +47,11 @@ import {
   supportsAnyPixelFormat,
 } from "./output-format-policy.js";
 import {
+  clearFrameBusEnv,
   applyFrameBusEnv,
   buildFrameBusConfig,
   isFrameBusEnabled,
+  isFrameBusOutputEnabled,
   type FrameBusConfigT,
 } from "./framebus/framebus-config.js";
 
@@ -192,19 +195,41 @@ export class GraphicsManager {
     }
 
     this.renderer.onFrame((frame) => this.handleFrame(frame));
+    this.renderer.onError((error) => {
+      this.publishGraphicsError("renderer_error", error.message);
+    });
     await this.renderer.setAssets(assetRegistry.getAssetMap());
 
     const persisted = outputConfigStore.getConfig();
     if (persisted) {
       this.outputConfig = persisted;
       this.applyFrameBusConfig(persisted);
-      this.outputAdapter = await this.selectOutputAdapter(persisted);
+      if (
+        process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1" &&
+        !isFrameBusOutputEnabled()
+      ) {
+        throw new Error(
+          "Single renderer requires FrameBus output; enable BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS"
+        );
+      }
+      let stage: "renderer" | "output_helper" = "renderer";
       try {
+        await this.renderer.configureSession(this.buildRendererConfig(persisted));
+        stage = "output_helper";
+        this.outputAdapter = await this.selectOutputAdapter(persisted);
         await this.outputAdapter.configure(persisted);
-        this.startTicker(persisted.format.fps);
+        if (this.isLegacyFramePathEnabled()) {
+          this.startTicker(persisted.format.fps);
+        } else {
+          this.stopTicker();
+        }
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
+        this.publishGraphicsError(
+          stage === "renderer" ? "renderer_error" : "output_helper_error",
+          errorMessage
+        );
         getBridgeContext().logger.error(
           `[Graphics] Failed to apply persisted output config, falling back to stub: ${errorMessage}`
         );
@@ -237,11 +262,20 @@ export class GraphicsManager {
   async configureOutputs(payload: unknown): Promise<void> {
     await this.initialize();
 
-    const config = GraphicsConfigureOutputsSchema.parse(payload);
+    let config: GraphicsOutputConfigT;
+    try {
+      config = GraphicsConfigureOutputsSchema.parse(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.publishGraphicsError("output_config_error", message);
+      throw error;
+    }
     if (config.version > GRAPHICS_OUTPUT_CONFIG_VERSION) {
-      throw new Error(
+      const error = new Error(
         `Unsupported graphics output config version: ${config.version}`
       );
+      this.publishGraphicsError("output_config_error", error.message);
+      throw error;
     }
     const devMode = isDevelopmentMode();
     if (devMode) {
@@ -249,22 +283,56 @@ export class GraphicsManager {
         "[Graphics] DEVELOPMENT mode enabled: skipping output validation and using stub output adapter"
       );
     } else {
-      await this.validateOutputTargets(config.outputKey, config.targets);
-      await this.validateOutputFormat(
-        config.outputKey,
-        config.targets,
-        config.format
+      try {
+        await this.validateOutputTargets(config.outputKey, config.targets);
+        await this.validateOutputFormat(
+          config.outputKey,
+          config.targets,
+          config.format
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.publishGraphicsError("output_config_error", message);
+        throw error;
+      }
+    }
+
+    if (
+      process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1" &&
+      !isFrameBusOutputEnabled()
+    ) {
+      const error = new Error(
+        "Single renderer requires FrameBus output; enable BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS"
       );
+      this.publishGraphicsError("output_config_error", error.message);
+      throw error;
     }
 
     this.outputConfig = config;
     this.applyFrameBusConfig(config);
+    try {
+      await this.renderer.configureSession(this.buildRendererConfig(config));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.publishGraphicsError("renderer_error", message);
+      throw error;
+    }
     await this.outputAdapter.stop();
     this.outputAdapter = await this.selectOutputAdapter(config);
     this.outputSampleLogged = false;
     await outputConfigStore.setConfig(config);
-    await this.outputAdapter.configure(config);
-    this.startTicker(config.format.fps);
+    try {
+      await this.outputAdapter.configure(config);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.publishGraphicsError("output_helper_error", message);
+      throw error;
+    }
+    if (this.isLegacyFramePathEnabled()) {
+      this.startTicker(config.format.fps);
+    } else {
+      this.stopTicker();
+    }
   }
 
   /**
@@ -273,10 +341,7 @@ export class GraphicsManager {
    * @returns Promise resolved once resources are released.
    */
   async shutdown(): Promise<void> {
-    if (this.ticker) {
-      clearInterval(this.ticker);
-      this.ticker = null;
-    }
+    this.stopTicker();
 
     this.clearActivePreset();
     this.layers.clear();
@@ -622,6 +687,21 @@ export class GraphicsManager {
     return new ElectronRendererClient();
   }
 
+  private buildRendererConfig(
+    config: GraphicsOutputConfigT
+  ): GraphicsRendererConfigT {
+    const frameBusConfig = this.frameBusConfig;
+    return {
+      width: config.format.width,
+      height: config.format.height,
+      fps: config.format.fps,
+      pixelFormat: frameBusConfig?.pixelFormat ?? 1,
+      framebusName: frameBusConfig?.name ?? "",
+      framebusSize: frameBusConfig?.size ?? 0,
+      backgroundMode: "transparent",
+    };
+  }
+
   private async selectOutputAdapter(
     config: GraphicsOutputConfigT
   ): Promise<GraphicsOutputAdapter> {
@@ -731,7 +811,31 @@ export class GraphicsManager {
       }
       const outputMatch = this.findPort(devices, outputId);
       // Only DeckLink devices report full mode lists today.
-      if (!outputMatch || outputMatch.device.type !== "decklink") {
+      if (!outputMatch) {
+        continue;
+      }
+
+      if (outputMatch.device.type === "display") {
+        const modes = outputMatch.port.capabilities.modes ?? [];
+        if (modes.length === 0) {
+          getBridgeContext().logger.warn(
+            `[Graphics] Display output has no mode list; skipping format validation for ${outputId}`
+          );
+          continue;
+        }
+        const hasMatch = modes.some(
+          (mode) =>
+            mode.width === _format.width &&
+            mode.height === _format.height &&
+            Math.abs(mode.fps - _format.fps) < 0.01
+        );
+        if (!hasMatch) {
+          throw new Error("Output format not supported by selected display");
+        }
+        continue;
+      }
+
+      if (outputMatch.device.type !== "decklink") {
         continue;
       }
 
@@ -883,14 +987,23 @@ export class GraphicsManager {
   }
 
   private startTicker(fps: number): void {
-    if (this.ticker) {
-      clearInterval(this.ticker);
-    }
+    this.stopTicker();
 
     const interval = Math.max(1, Math.round(1000 / fps));
     this.ticker = setInterval(() => {
       void this.tick();
     }, interval);
+  }
+
+  private stopTicker(): void {
+    if (this.ticker) {
+      clearInterval(this.ticker);
+      this.ticker = null;
+    }
+  }
+
+  private isLegacyFramePathEnabled(): boolean {
+    return !isFrameBusOutputEnabled();
   }
 
   private async tick(): Promise<void> {
@@ -1349,9 +1462,37 @@ export class GraphicsManager {
     });
   }
 
+  private publishGraphicsError(code: string, message: string): void {
+    const publishBridgeEvent = getBridgeContext().publishBridgeEvent;
+    if (!publishBridgeEvent) {
+      return;
+    }
+    getBridgeContext().logger.error(
+      `[Graphics] Error reported: ${code} ${message}`
+    );
+    publishBridgeEvent({
+      event: "graphics_error",
+      data: {
+        code,
+        message,
+      },
+    });
+  }
+
   private applyFrameBusConfig(config: GraphicsOutputConfigT): void {
     if (!isFrameBusEnabled()) {
+      this.frameBusConfig = null;
+      clearFrameBusEnv();
       return;
+    }
+
+    const requestedPixelFormat =
+      process.env.BRIDGE_FRAME_PIXEL_FORMAT ??
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
+    if (requestedPixelFormat && requestedPixelFormat !== "1") {
+      getBridgeContext().logger.warn(
+        `[Graphics] FrameBus pixel format ${requestedPixelFormat} not supported; enforcing RGBA8`
+      );
     }
 
     const previous = this.frameBusConfig;
@@ -1377,6 +1518,7 @@ export class GraphicsManager {
           width: next.width,
           height: next.height,
           fps: next.fps,
+          size: next.size,
         })}`
       );
     }

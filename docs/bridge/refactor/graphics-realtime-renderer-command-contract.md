@@ -17,7 +17,7 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
   - `framebusName`
   - `framebusSize`
   - `backgroundMode`
-  - `clearColor` (optional, `{ r, g, b, a }`)
+  - `clearColor` (optional, `{ r, g, b, a }`, r/g/b 0-255, a 0-1)
 
 ## Asset-Handling
 ### `set_assets` (bestehend, beibehalten)
@@ -82,7 +82,9 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
 - Bridge nutzt dann `onFrame()` für den alten Compositing/Ticker-Flow.
 - Dieser Pfad ist nur für Notfälle vorgesehen.
 
-## TODO
-- [ ] Commands final gegen `graphics-renderer.ts` spiegeln.
-- [ ] Payloads minimieren und validieren.
-- [ ] IPC-Handshake an FrameBus koppeln.
+## Finalisiert
+### Finaler Abgleich
+- `renderer_configure` Payload: `width`, `height`, `fps`, `pixelFormat`, `framebusName`, `framebusSize`, `backgroundMode`, `clearColor`.
+- `ready` Payload: `width`, `height`, `fps`, `pixelFormat`, `framebusName`.
+- IPC-Handshake: Renderer sendet `ready` erst nach `renderer_configure`.
+- Payloads werden strikt validiert (Zod) im Renderer.
