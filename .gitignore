@@ -37,3 +37,6 @@ AGENTS.MD
 # Protocol types (generated)
 !packages/protocol/dist/
 !packages/protocol/dist/**
+
+# Native addons (generated)
+apps/bridge/native/framebus/build/
