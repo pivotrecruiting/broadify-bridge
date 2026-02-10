@@ -96,7 +96,6 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private stderrBuffer = "";
   private debugFirstFrameLogged = new Set<string>();
   private rendererConfigured = false;
-  private rendererConfigureAttempted = false;
   private sessionConfig: GraphicsRendererConfigT | null = null;
   private lastSentConfigKey: string | null = null;
 
@@ -415,7 +414,6 @@ export class ElectronRendererClient implements GraphicsRenderer {
       return;
     }
 
-    this.rendererConfigureAttempted = true;
     this.lastSentConfigKey = configKey;
 
     if (process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1") {

@@ -12,7 +12,6 @@ import type {
  */
 export class StubRenderer implements GraphicsRenderer {
   private frameCallback: ((frame: GraphicsFrameT) => void) | null = null;
-  private errorCallback: ((error: Error) => void) | null = null;
   private layers = new Map<
     string,
     { width: number; height: number; buffer: Buffer }
@@ -66,13 +65,12 @@ export class StubRenderer implements GraphicsRenderer {
   }
 
   onError(callback: (error: Error) => void): void {
-    this.errorCallback = callback;
+    void callback;
   }
 
   async shutdown(): Promise<void> {
     this.layers.clear();
     this.frameCallback = null;
-    this.errorCallback = null;
   }
 
   private emitFrame(layerId: string): void {
