@@ -82,9 +82,9 @@
 ## TODO
 - [x] Finales Frame-Format pro Output-Key dokumentieren.
 - [x] Entscheidung festhalten: Key/Fill nutzt ARGB8-only (kein BGRA-Fallback).
-- [ ] Hinweis: Akzeptanzkriterien ggf. pro Hardware/Output anpassen.
+- [x] Hinweis: Akzeptanzkriterien pro Hardware/Output angepasst.
 - [x] Display-Output Format-Validierung ergänzen.
-- [ ] Migrations-Reihenfolge für macOS finalisieren (Windows/Linux deferred).
+- [x] Migrations-Reihenfolge für macOS finalisiert (Windows/Linux deferred).
 
 ## Feature-Flags (Vorschlag)
 - `BRIDGE_GRAPHICS_FRAMEBUS=1` aktiviert FrameBus.
@@ -109,6 +109,20 @@
 - Trigger->Frame Latenz messbar < 200ms.
 - Hinweis: Werte ggf. pro Hardware/Output anpassen.
 
+## Hardware-spezifische Richtwerte (macOS)
+- Apple Silicon (M1/M2): 1080p@50 Ziel bleibt, Drops ≤ 1% über 60s.
+- Intel Mac + ältere DeckLink: 1080p@50 Ziel bleibt, Drops ≤ 2% über 60s.
+- 4K‑Outputs: Ziel 30 fps stabil ±1 fps; Latenz < 250ms (Median).
+
+## macOS Migrations-Reihenfolge (final)
+1. FrameBus Addon bauen und signieren (Debug/Release).
+2. DeckLink Helper neu bauen (FrameBus + ARGB‑Pfad verifizieren).
+3. Feature-Flags aktivieren: `BRIDGE_GRAPHICS_FRAMEBUS=1`, `BRIDGE_GRAPHICS_RENDERER_SINGLE=1`, `BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS=1`.
+4. Display Helper starten (WebGL Renderer prüfen).
+5. Test-Templates ausführen (`static-card`, `lower-third-slide`, `ticker-stress`).
+6. Output-Validierung pro Output-Key durchführen (SDI/HDMI/Display).
+7. Realtime‑Messung (fps/drops/latency) dokumentieren.
+
 ## Frame-Format pro Output-Key
 - `video_sdi`: FrameBus RGBA8 -> DeckLink Helper konvertiert gemäß `VIDEO_PIXEL_FORMAT_PRIORITY` (10bit_yuv, 8bit_yuv).
 - `video_hdmi`: FrameBus RGBA8 -> DeckLink Helper (wie oben) oder Display Helper (RGBA8 -> Display).
@@ -129,9 +143,9 @@
 ## Detail-TODOs (nach Verantwortlichkeit)
 ### Bridge (Control-Plane)
 - [ ] `graphics-manager.ts`: Compositing und Ticker entfernen.
-- [ ] `graphics-manager.ts`: Renderer-Lifecycle auf Single-Window umstellen.
-- [ ] `command-router.ts`: Fehlercodes für Output-Helper-Fehler definieren.
-- [ ] `template-bindings.ts`: Binding-Targets für Shadow DOM planen.
+- [x] `graphics-manager.ts`: Renderer-Lifecycle auf Single-Window umstellen.
+- [x] `command-router.ts`: Fehlercodes für Output-Helper-Fehler definieren.
+- [x] `template-bindings.ts`: Binding-Targets für Shadow DOM planen.
 
 ### Renderer (Electron)
 - [x] `electron-renderer-entry.ts`: Single-Window + Layer-Host-Registry.

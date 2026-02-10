@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getBridgeContext } from "./bridge-context.js";
+import { GraphicsError } from "./graphics/graphics-errors.js";
 import type {
   BridgeOutputsT,
   DeviceDescriptorT,
@@ -75,6 +76,7 @@ export interface RelayCommandResult {
   success: boolean;
   data?: unknown;
   error?: string;
+  errorCode?: string;
 }
 
 /**
@@ -501,9 +503,12 @@ export class CommandRouter {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
+      const errorCode =
+        error instanceof GraphicsError ? error.code : undefined;
       return {
         success: false,
         error: errorMessage,
+        errorCode,
       };
     }
   }

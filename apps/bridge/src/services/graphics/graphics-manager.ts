@@ -54,6 +54,10 @@ import {
   isFrameBusOutputEnabled,
   type FrameBusConfigT,
 } from "./framebus/framebus-config.js";
+import {
+  GraphicsError,
+  type GraphicsErrorCodeT,
+} from "./graphics-errors.js";
 
 const MAX_ACTIVE_LAYERS = 3;
 
@@ -267,15 +271,13 @@ export class GraphicsManager {
       config = GraphicsConfigureOutputsSchema.parse(payload);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.publishGraphicsError("output_config_error", message);
-      throw error;
+      this.failGraphics("output_config_error", message);
     }
     if (config.version > GRAPHICS_OUTPUT_CONFIG_VERSION) {
-      const error = new Error(
+      this.failGraphics(
+        "output_config_error",
         `Unsupported graphics output config version: ${config.version}`
       );
-      this.publishGraphicsError("output_config_error", error.message);
-      throw error;
     }
     const devMode = isDevelopmentMode();
     if (devMode) {
@@ -292,8 +294,7 @@ export class GraphicsManager {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.publishGraphicsError("output_config_error", message);
-        throw error;
+        this.failGraphics("output_config_error", message);
       }
     }
 
@@ -301,11 +302,10 @@ export class GraphicsManager {
       process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1" &&
       !isFrameBusOutputEnabled()
     ) {
-      const error = new Error(
+      this.failGraphics(
+        "output_config_error",
         "Single renderer requires FrameBus output; enable BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS"
       );
-      this.publishGraphicsError("output_config_error", error.message);
-      throw error;
     }
 
     this.outputConfig = config;
@@ -314,8 +314,7 @@ export class GraphicsManager {
       await this.renderer.configureSession(this.buildRendererConfig(config));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.publishGraphicsError("renderer_error", message);
-      throw error;
+      this.failGraphics("renderer_error", message);
     }
     await this.outputAdapter.stop();
     this.outputAdapter = await this.selectOutputAdapter(config);
@@ -325,8 +324,7 @@ export class GraphicsManager {
       await this.outputAdapter.configure(config);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.publishGraphicsError("output_helper_error", message);
-      throw error;
+      this.failGraphics("output_helper_error", message);
     }
     if (this.isLegacyFramePathEnabled()) {
       this.startTicker(config.format.fps);
@@ -1477,6 +1475,11 @@ export class GraphicsManager {
         message,
       },
     });
+  }
+
+  private failGraphics(code: GraphicsErrorCodeT, message: string): never {
+    this.publishGraphicsError(code, message);
+    throw new GraphicsError(code, message);
   }
 
   private applyFrameBusConfig(config: GraphicsOutputConfigT): void {
