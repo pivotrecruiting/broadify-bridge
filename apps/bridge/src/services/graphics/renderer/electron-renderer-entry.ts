@@ -609,16 +609,16 @@ function ensureFrameBusWriter(
   width: number,
   height: number,
   fps: number
-): void {
+): boolean {
   if (!ENABLE_SINGLE_RENDERER) {
-    return;
+    return true;
   }
   if (!isFrameBusEnabled()) {
     logFrameBusOnce(
       "disabled",
       "[GraphicsRenderer] FrameBus disabled; single renderer requires FrameBus"
     );
-    return;
+    return false;
   }
   if (frameBusWriter) {
     const header = frameBusWriter.header;
@@ -632,7 +632,7 @@ function ensureFrameBusWriter(
       header.slotCount === frameBusSlotCount &&
       header.pixelFormat === desiredPixelFormat;
     if (matches) {
-      return;
+      return true;
     }
     try {
       frameBusWriter.close();
@@ -643,7 +643,7 @@ function ensureFrameBusWriter(
     frameBusInitAttempted = false;
   }
   if (frameBusInitAttempted) {
-    return;
+    return false;
   }
 
   if (!frameBusName) {
@@ -651,14 +651,14 @@ function ensureFrameBusWriter(
       "missing-name",
       "[GraphicsRenderer] FrameBus name missing (BRIDGE_FRAMEBUS_NAME)"
     );
-    return;
+    return false;
   }
   if (!Number.isFinite(frameBusSlotCount) || frameBusSlotCount < 2) {
     logFrameBusOnce(
       "invalid-slot",
       "[GraphicsRenderer] FrameBus slotCount missing or invalid (framebusSize)"
     );
-    return;
+    return false;
   }
 
   try {
@@ -669,7 +669,7 @@ function ensureFrameBusWriter(
         "module-null",
         "[GraphicsRenderer] FrameBus module not loaded"
       );
-      return;
+      return false;
     }
     frameBusWriter = frameBusModule.createWriter({
       name: frameBusName,
@@ -689,12 +689,14 @@ function ensureFrameBusWriter(
       },
       "[GraphicsRenderer] FrameBus writer initialized"
     );
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logFrameBusOnce(
       "init-failed",
       `[GraphicsRenderer] FrameBus init failed: ${message}`
     );
+    return false;
   }
 }
 
@@ -753,8 +755,21 @@ function applyRendererConfig(message: unknown): void {
     frameBusPixelFormat = config.pixelFormat;
   }
 
+  const frameBusReady = ensureFrameBusWriter(
+    config.width,
+    config.height,
+    config.fps
+  );
+
   readySent = false;
-  rendererConfigReady = true;
+  rendererConfigReady = !ENABLE_SINGLE_RENDERER || frameBusReady;
+  if (ENABLE_SINGLE_RENDERER && !rendererConfigReady) {
+    sendIpcMessage({
+      type: "error",
+      message: "FrameBus writer not ready",
+    });
+    return;
+  }
   if (singleWindow) {
     void singleWindow.webContents
       .executeJavaScript(

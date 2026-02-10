@@ -20,6 +20,8 @@ const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
 const MAX_FRAME_DIMENSION = 8192;
 const MAX_FRAME_BYTES = 256 * 1024 * 1024;
+const FRAMEBUS_OPEN_RETRY_MS = 200;
+const FRAMEBUS_OPEN_RETRY_COUNT = 10;
 
 const preloadPath = process.env.BRIDGE_DISPLAY_PRELOAD || "";
 const targetName = process.env.BRIDGE_DISPLAY_MATCH_NAME || "";
@@ -766,12 +768,7 @@ app.on("ready", () => {
         });
     }
     if (useFrameBus) {
-      const started = startFrameBusReader();
-      if (!started) {
-        app.quit();
-        return;
-      }
-      sendReady();
+      startFrameBusReaderWithRetry(0);
     } else {
       sendReady();
     }
@@ -789,6 +786,21 @@ app.on("window-all-closed", () => {
   stopFrameBusReader();
   app.quit();
 });
+
+function startFrameBusReaderWithRetry(attempt: number): void {
+  const started = startFrameBusReader();
+  if (started) {
+    sendReady();
+    return;
+  }
+  if (attempt >= FRAMEBUS_OPEN_RETRY_COUNT) {
+    app.quit();
+    return;
+  }
+  setTimeout(() => {
+    startFrameBusReaderWithRetry(attempt + 1);
+  }, FRAMEBUS_OPEN_RETRY_MS);
+}
 
 if (!useFrameBus) {
   // Stream raw frame data from stdin (bridge adapter process).

@@ -98,6 +98,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private rendererConfigured = false;
   private sessionConfig: GraphicsRendererConfigT | null = null;
   private lastSentConfigKey: string | null = null;
+  private configReadyPromise: Promise<void> | null = null;
+  private configReadyResolver: (() => void) | null = null;
+  private configReadyRejecter: ((error: Error) => void) | null = null;
 
   /**
    * Initialize the renderer process and IPC channel.
@@ -217,7 +220,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
   async configureSession(config: GraphicsRendererConfigT): Promise<void> {
     this.sessionConfig = config;
     await this.ensureReady();
-    this.ensureRendererConfigured();
+    await this.ensureRendererConfigured();
   }
 
   /**
@@ -242,7 +245,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
    */
   async renderLayer(input: GraphicsRenderLayerInputT): Promise<void> {
     await this.ensureReady();
-    this.ensureRendererConfigured();
+    await this.ensureRendererConfigured();
     this.sendCommand({
       type: "create_layer",
       layerId: input.layerId,
@@ -287,7 +290,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     zIndex?: number
   ): Promise<void> {
     await this.ensureReady();
-    this.ensureRendererConfigured();
+    await this.ensureRendererConfigured();
     if (typeof zIndex === "number") {
       this.sendCommand({ type: "update_layout", layerId, layout, zIndex });
       return;
@@ -378,6 +381,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.ipcAuthenticated = false;
     this.pendingCommands = [];
     this.ipcToken = null;
+    if (this.configReadyRejecter) {
+      this.configReadyRejecter(new Error("Renderer shutdown"));
+    }
+    this.configReadyResolver = null;
+    this.configReadyRejecter = null;
+    this.configReadyPromise = null;
     await this.stopIpcServer();
   }
 
@@ -391,7 +400,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     }
   }
 
-  private ensureRendererConfigured(): void {
+  private async ensureRendererConfigured(): Promise<void> {
     if (!this.sessionConfig) {
       return;
     }
@@ -427,6 +436,14 @@ export class ElectronRendererClient implements GraphicsRenderer {
       }
     }
 
+    if (this.configReadyRejecter) {
+      this.configReadyRejecter(new Error("Renderer config superseded"));
+    }
+    this.configReadyPromise = new Promise((resolve, reject) => {
+      this.configReadyResolver = resolve;
+      this.configReadyRejecter = reject;
+    });
+
     this.sendCommand({
       type: "renderer_configure",
       width: config.width,
@@ -439,6 +456,10 @@ export class ElectronRendererClient implements GraphicsRenderer {
       clearColor: config.clearColor,
     });
     this.rendererConfigured = false;
+
+    if (this.configReadyPromise) {
+      await this.configReadyPromise;
+    }
   }
 
   /**
@@ -741,6 +762,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
       if (header.type === "ready") {
         this.rendererConfigured = true;
+        if (this.configReadyResolver) {
+          this.configReadyResolver();
+        }
+        this.configReadyResolver = null;
+        this.configReadyRejecter = null;
+        this.configReadyPromise = null;
       }
 
       if (header.type === "frame" && payloadBuffer && this.frameCallback) {
@@ -812,6 +839,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
       if (header.type === "error" && typeof header.message === "string") {
         const error = new Error(header.message);
+        if (this.configReadyRejecter) {
+          this.configReadyRejecter(error);
+          this.configReadyResolver = null;
+          this.configReadyRejecter = null;
+          this.configReadyPromise = null;
+        }
         if (this.errorCallback) {
           this.errorCallback(error);
         }
