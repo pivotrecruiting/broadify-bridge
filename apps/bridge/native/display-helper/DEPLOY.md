@@ -2,7 +2,7 @@
 
 ## Ziel
 
-Build und Deployment des Display Helper Binaries für macOS (arm64, x64). Der Helper wird bei `BRIDGE_DISPLAY_NATIVE_HELPER=1` statt des Electron Display Helpers gestartet.
+Build und Deployment des Display Helper Binaries für macOS (arm64, x64). Der Helper wird vom Display Video Output Adapter gestartet (immer, kein Electron-Fallback mehr).
 
 ## Voraussetzungen
 

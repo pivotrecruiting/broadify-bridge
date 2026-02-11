@@ -71,18 +71,21 @@ jobs:
       - name: Build React
         run: npm run build
 
-      - name: Write Bridge env for packaging
+      - name: Prepare Bridge config for packaging
         shell: bash
         run: |
           mkdir -p apps/bridge/dist
-          if [ -f config/bridge.env ]; then
-            cp config/bridge.env apps/bridge/dist/.env
-          fi
           if [ -n "${BRIDGE_RELAY_JWKS_URL:-}" ]; then
-            printf "\nBRIDGE_RELAY_JWKS_URL=%s\n" "$BRIDGE_RELAY_JWKS_URL" >> apps/bridge/dist/.env
+            node -e "
+              const fs = require('fs');
+              const p = 'config/default.json';
+              const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+              c.relay = c.relay || {};
+              c.relay.jwksUrl = process.env.BRIDGE_RELAY_JWKS_URL;
+              fs.writeFileSync(p, JSON.stringify(c, null, 2));
+            "
           fi
-          echo "Bridge .env keys (values redacted):"
-          grep -E '^[A-Z_]+=' apps/bridge/dist/.env 2>/dev/null | cut -d= -f1 | sort || echo "(file missing or empty)"
+          echo "Bridge config prepared"
 
       - name: Install SDL2 (macOS, for display-helper)
         if: matrix.os == 'macos-15'

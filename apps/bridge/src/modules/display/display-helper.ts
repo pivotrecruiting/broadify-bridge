@@ -5,8 +5,8 @@ const DISPLAY_HELPER_PATH_ENV = "BRIDGE_DISPLAY_HELPER_PATH";
 /**
  * Resolve the native Display helper binary path.
  *
- * Used when BRIDGE_DISPLAY_NATIVE_HELPER=1 to run the C++/SDL2 helper
- * instead of the Electron Display Helper.
+ * Used by the Display Video Output Adapter to run the C++/SDL2 helper
+ * for fullscreen display output (FrameBus).
  *
  * Bridge is always spawned with cwd = apps/bridge (see bridge-process-manager),
  * so process.cwd() is the most reliable source for the helper path.

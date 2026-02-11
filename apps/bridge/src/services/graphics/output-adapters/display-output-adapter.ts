@@ -1,8 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import fs from "node:fs";
-import path from "node:path";
 import type {
   GraphicsOutputAdapter,
   GraphicsOutputFrameT,
@@ -13,95 +11,15 @@ import { deviceCache } from "../../device-cache.js";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import { resolveDisplayHelperPath } from "../../../modules/display/display-helper.js";
 
-// Binary frame protocol shared with the helper (big-endian header + RGBA payload).
-const FRAME_MAGIC = 0x42524746; // 'BRGF'
-const FRAME_VERSION = 1;
-const FRAME_TYPE_SHUTDOWN = 2;
-const FRAME_HEADER_LENGTH = 28;
-
-// Electron binary resolution for dev/packaged environments.
-const ELECTRON_BINARIES = {
-  win32: "electron.cmd",
-  default: "electron",
-};
-
 type OutputPortMatchT = {
   device: DeviceDescriptorT;
   port: DeviceDescriptorT["ports"][number];
 };
 
-// Resolve the Electron CLI used to launch the helper.
-const resolveElectronBinary = (): string | null => {
-  if (process.env.ELECTRON_RUN_AS_NODE === "1") {
-    return process.execPath;
-  }
-
-  if (process.execPath.toLowerCase().includes("electron")) {
-    return process.execPath;
-  }
-
-  const binaryName =
-    process.platform === "win32"
-      ? ELECTRON_BINARIES.win32
-      : ELECTRON_BINARIES.default;
-
-  const candidate = path.resolve(
-    process.cwd(),
-    "..",
-    "..",
-    "node_modules",
-    ".bin",
-    binaryName
-  );
-
-  if (fs.existsSync(candidate)) {
-    return candidate;
-  }
-
-  return null;
-};
-
-// Resolve the compiled helper entry in the bridge dist folder.
-const resolveDisplayEntry = (): string | null => {
-  const distEntry = path.resolve(
-    process.cwd(),
-    "dist",
-    "services",
-    "graphics",
-    "display",
-    "display-output-entry.js"
-  );
-  return fs.existsSync(distEntry) ? distEntry : null;
-};
-
-// Resolve the compiled preload script for the helper renderer.
-const resolveDisplayPreload = (): string | null => {
-  const cjsEntry = path.resolve(
-    process.cwd(),
-    "dist",
-    "services",
-    "graphics",
-    "display",
-    "display-output-preload.cjs"
-  );
-  if (fs.existsSync(cjsEntry)) {
-    return cjsEntry;
-  }
-  const jsEntry = path.resolve(
-    process.cwd(),
-    "dist",
-    "services",
-    "graphics",
-    "display",
-    "display-output-preload.js"
-  );
-  return fs.existsSync(jsEntry) ? jsEntry : null;
-};
-
 /**
  * Display output adapter for HDMI/DisplayPort/Thunderbolt screens.
  *
- * Streams raw RGBA frames to a fullscreen Electron helper window.
+ * Streams raw RGBA frames to fullscreen via the native C++ SDL2 helper (FrameBus).
  */
 export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
   private child: ChildProcess | null = null;
@@ -135,136 +53,11 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       throw new Error("Display output requires HDMI/DisplayPort/Thunderbolt");
     }
 
-    const useNativeHelper = process.env.BRIDGE_DISPLAY_NATIVE_HELPER === "1";
-
-    if (useNativeHelper) {
-      await this.configureNativeHelper(config, match);
-      return;
-    }
-
-    const electronBinary = resolveElectronBinary();
-    if (!electronBinary) {
-      throw new Error("Electron binary not found for display output");
-    }
-
-    const entry = resolveDisplayEntry();
-    if (!entry) {
-      throw new Error("Display output entry not found");
-    }
-
-    const preload = resolveDisplayPreload();
-    if (!preload) {
-      throw new Error("Display output preload not found");
-    }
-
-    // Security: verify helper files are readable before spawning a child process.
-    try {
-      await access(entry, constants.R_OK);
-      await access(preload, constants.R_OK);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Display output files not readable: ${message}`);
-    }
-
-    this.readyPromise = new Promise((resolve, reject) => {
-      this.readyResolver = resolve;
-      this.readyRejecter = reject;
-    });
-
-    // Pass only whitelisted environment values to target display selection.
-    const env = { ...process.env } as Record<string, string>;
-    env.BRIDGE_DISPLAY_PRELOAD = preload;
-    env.BRIDGE_DISPLAY_MATCH_NAME = match.device.displayName;
-    env.BRIDGE_DISPLAY_MATCH_PORT_TYPE = match.port.type;
-    if (match.port.capabilities.modes?.[0]) {
-      env.BRIDGE_DISPLAY_MATCH_WIDTH = String(
-        match.port.capabilities.modes[0].width
-      );
-      env.BRIDGE_DISPLAY_MATCH_HEIGHT = String(
-        match.port.capabilities.modes[0].height
-      );
-    }
-    env.BRIDGE_DISPLAY_FRAME_WIDTH = String(config.format.width);
-    env.BRIDGE_DISPLAY_FRAME_HEIGHT = String(config.format.height);
-    env.BRIDGE_DISPLAY_FRAME_FPS = String(config.format.fps);
-    if (process.env.BRIDGE_DISPLAY_DEBUG) {
-      env.BRIDGE_DISPLAY_DEBUG = process.env.BRIDGE_DISPLAY_DEBUG;
-    } else if (process.env.NODE_ENV !== "production") {
-      env.BRIDGE_DISPLAY_DEBUG = "1";
-    }
-    if (process.env.BRIDGE_FRAMEBUS_NAME) {
-      env.BRIDGE_FRAMEBUS_NAME = process.env.BRIDGE_FRAMEBUS_NAME;
-    }
-    if (process.env.BRIDGE_FRAMEBUS_SIZE) {
-      env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
-    }
-    if (process.env.BRIDGE_FRAME_WIDTH) {
-      env.BRIDGE_FRAME_WIDTH = process.env.BRIDGE_FRAME_WIDTH;
-    }
-    if (process.env.BRIDGE_FRAME_HEIGHT) {
-      env.BRIDGE_FRAME_HEIGHT = process.env.BRIDGE_FRAME_HEIGHT;
-    }
-    if (process.env.BRIDGE_FRAME_FPS) {
-      env.BRIDGE_FRAME_FPS = process.env.BRIDGE_FRAME_FPS;
-    }
-    if (process.env.BRIDGE_FRAME_PIXEL_FORMAT) {
-      env.BRIDGE_FRAME_PIXEL_FORMAT = process.env.BRIDGE_FRAME_PIXEL_FORMAT;
-    }
-    if (process.env.BRIDGE_FRAMEBUS_SLOT_COUNT) {
-      env.BRIDGE_FRAMEBUS_SLOT_COUNT = process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
-    }
-    if (process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT) {
-      env.BRIDGE_FRAMEBUS_PIXEL_FORMAT =
-        process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
-    }
-
-    // Security: spawn a fixed Electron entry with controlled args only.
-    this.child = spawn(
-      electronBinary,
-      ["--display-output", "--display-entry", entry],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-        env,
-      }
-    );
-
-    this.child.stdout?.on("data", (data) => this.handleStdout(data));
-    this.child.stderr?.on("data", (data) => {
-      const text = data.toString().trim();
-      if (text.length > 0) {
-        this.getLogger().warn(`[DisplayOutput] ${text}`);
-      }
-    });
-
-    this.child.on("error", (error) => {
-      if (this.readyRejecter) {
-        this.readyRejecter(error);
-      }
-      this.readyRejecter = null;
-      this.readyResolver = null;
-    });
-
-    this.child.on("exit", (code, signal) => {
-      if (this.readyRejecter) {
-        this.readyRejecter(
-          new Error(
-            `Display output helper exited before ready (code ${code}, signal ${signal})`
-          )
-        );
-      }
-      this.readyRejecter = null;
-      this.readyResolver = null;
-      this.child = null;
-      this.getLogger().error(
-        `[DisplayOutput] Helper exited (code ${code}, signal ${signal})`
-      );
-    });
-
-    await this.readyPromise;
+    await this.configureNativeHelper(config, match);
   }
 
   /**
-   * Configure and start the native C++ Display Helper (FrameBus only, no Electron).
+   * Configure and start the native C++ Display Helper (FrameBus).
    */
   private async configureNativeHelper(
     config: GraphicsOutputConfigT,
@@ -364,20 +157,6 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     }
 
     const child = this.child;
-    const stdin = child.stdin;
-    if (stdin) {
-      const header = Buffer.alloc(FRAME_HEADER_LENGTH);
-      header.writeUInt32BE(FRAME_MAGIC, 0);
-      header.writeUInt16BE(FRAME_VERSION, 4);
-      header.writeUInt16BE(FRAME_TYPE_SHUTDOWN, 6);
-      header.writeUInt32BE(0, 8);
-      header.writeUInt32BE(0, 12);
-      header.writeBigUInt64BE(BigInt(Date.now()), 16);
-      header.writeUInt32BE(0, 24);
-      stdin.write(header);
-      stdin.end();
-    }
-
     const hasExited = () =>
       child.exitCode !== null || child.signalCode !== null;
     const awaitExit = () =>

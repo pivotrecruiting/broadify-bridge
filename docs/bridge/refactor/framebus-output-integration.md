@@ -47,7 +47,7 @@ Comment: "Split key/fill uses the legacy stdin path only (no FrameBus support)."
 
 ## Configuration
 
-`BRIDGE_FRAMEBUS_NAME` must be set (e.g. in `config/bridge.env`). The Graphics Manager creates the shared memory and passes the name to output helpers. No feature flags required.
+`BRIDGE_FRAMEBUS_NAME` must be set (e.g. in `config/default.json`). The Graphics Manager creates the shared memory and passes the name to output helpers. No feature flags required.
 
 ## Data Flow
 

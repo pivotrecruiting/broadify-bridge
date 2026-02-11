@@ -21,8 +21,8 @@
       "to": "native/display-helper/display-helper"
     },
     {
-      "from": "config/bridge.env",
-      "to": "bridge/.env"
+      "from": "config/default.json",
+      "to": "bridge/config/default.json"
     }
   ],
   "icon": "./icon.png",
