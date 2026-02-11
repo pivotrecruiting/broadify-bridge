@@ -10,6 +10,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -187,15 +188,33 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
     std::cerr << "SDL_Init failed: " << SDL_GetError() << std::endl;
     closeFrameBusReader(reader);
     return 1;
   }
 
+  // Resolve display index from match name (e.g. "Odyssey G5") if provided.
+  const char* matchNameEnv = std::getenv("BRIDGE_DISPLAY_MATCH_NAME");
+  std::string matchName = matchNameEnv ? matchNameEnv : "";
   const int numDisplays = SDL_GetNumVideoDisplays();
   if (displayIndex < 0 || displayIndex >= numDisplays) {
     displayIndex = 0;
+  }
+  if (!matchName.empty()) {
+    std::string matchLower = matchName;
+    std::transform(matchLower.begin(), matchLower.end(), matchLower.begin(), ::tolower);
+    for (int i = 0; i < numDisplays; ++i) {
+      const char* name = SDL_GetDisplayName(i);
+      if (name) {
+        std::string dispName = name;
+        std::transform(dispName.begin(), dispName.end(), dispName.begin(), ::tolower);
+        if (dispName.find(matchLower) != std::string::npos) {
+          displayIndex = i;
+          break;
+        }
+      }
+    }
   }
 
   SDL_Rect displayBounds;
@@ -206,11 +225,14 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // Use FULLSCREEN_DESKTOP instead of FULLSCREEN: on macOS, FULLSCREEN uses
+  // exclusive mode that blocks CMD+Tab, mouse, and makes the system unresponsive.
+  // FULLSCREEN_DESKTOP allows normal macOS multitasking while still filling the display.
   SDL_Window* window = SDL_CreateWindow(
     "Broadify Display Output",
     displayBounds.x, displayBounds.y,
     displayBounds.w, displayBounds.h,
-    SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN
+    SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN
   );
   if (!window) {
     std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
@@ -261,6 +283,12 @@ int main(int argc, char* argv[]) {
       SDL_Event e;
       while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) gShouldExit.store(true);
+        if (e.type == SDL_KEYDOWN) {
+          if (e.key.keysym.sym == SDLK_ESCAPE ||
+              (e.key.keysym.sym == SDLK_q && (e.key.keysym.mod & KMOD_GUI))) {
+            gShouldExit.store(true);
+          }
+        }
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
@@ -295,6 +323,12 @@ int main(int argc, char* argv[]) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_QUIT) gShouldExit.store(true);
+      if (e.type == SDL_KEYDOWN) {
+        if (e.key.keysym.sym == SDLK_ESCAPE ||
+            (e.key.keysym.sym == SDLK_q && (e.key.keysym.mod & KMOD_GUI))) {
+          gShouldExit.store(true);
+        }
+      }
     }
 
     nextFrameAt += frameInterval;
