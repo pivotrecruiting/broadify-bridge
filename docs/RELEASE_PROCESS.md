@@ -61,6 +61,14 @@ shasum -a 256 apps/bridge/native/decklink-helper/decklink-helper-arm64
 3. **Run workflow** klicken.
 4. Nach Abschluss unter **Artifacts** prüfen, ob alle Plattformen gebaut wurden.
 
+## FrameBus Addon - CI-Build
+
+Das native FrameBus Node-Addon wird automatisch beim `dist:*` Build erstellt:
+
+- **Build:** `npm run build:framebus` (via `scripts/build-framebus.sh`) – baut für die eingesetzte Electron-Version
+- **Paketierung:** `framebus.node` landet via `extraResources` in `bridge/native/framebus/build/Release/`
+- **Kein separater Schritt nötig** – das Addon wird vor jedem Release-Build gebaut
+
 ## Display Helper (ohne SDK) - CI-Build
 
 Der Display Helper wird **nicht** separat gehostet wie der DeckLink Helper. Er wird direkt in der CI gebaut:

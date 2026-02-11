@@ -1,7 +1,10 @@
 {
   "appId": "com.georgimy.electron-template",
   "productName": "Broadify Bridge",
-  "files": ["dist-electron/**", "dist-react/**"],
+  "files": [
+    "dist-electron/**",
+    "dist-react/**"
+  ],
   "asar": true,
   "extraResources": [
     {
@@ -23,6 +26,10 @@
     {
       "from": "config/default.json",
       "to": "bridge/config/default.json"
+    },
+    {
+      "from": "apps/bridge/native/framebus/build/Release/framebus.node",
+      "to": "bridge/native/framebus/build/Release/framebus.node"
     }
   ],
   "icon": "./icon.png",
@@ -37,7 +44,10 @@
     "icon": "./icon.png"
   },
   "win": {
-    "target": ["portable", "msi"],
+    "target": [
+      "portable",
+      "msi"
+    ],
     "icon": "./icon.png"
   },
   "nsis": {

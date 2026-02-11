@@ -93,12 +93,11 @@ const resolveNativeCandidates = (): string[] => {
     path.join(bridgeRoot, "native", "framebus", "build", "Debug", "framebus.node")
   );
 
+  // Production: extraResources puts addon at resources/bridge/native/framebus/build/Release/framebus.node
   if (process.resourcesPath) {
     candidates.push(
       path.join(
         process.resourcesPath,
-        "app.asar.unpacked",
-        "apps",
         "bridge",
         "native",
         "framebus",
