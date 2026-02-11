@@ -9,8 +9,12 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
 - Git Repository mit `main`, `dev` und Feature-Branches
 - GitHub Actions Workflow (`.github/workflows/release.yml`) muss auf `main` vorhanden sein
 - Version in `package.json` sollte aktualisiert sein
-- DeckLink Helper Binary (macOS arm64) ist als Release-Asset verfügbar
-- GitHub Secrets gesetzt: `DECKLINK_HELPER_URL_ARM64`, `DECKLINK_HELPER_SHA256_ARM64`
+- DeckLink Helper Binary (macOS) ist als Release-Asset verfügbar
+- GitHub Secrets gesetzt:
+  - `DECKLINK_HELPER_URL_ARM64`, `DECKLINK_HELPER_SHA256_ARM64`
+  - `DECKLINK_HELPER_URL_X64`, `DECKLINK_HELPER_SHA256_X64` (falls x64-Builds)
+  - `APPLE_SIGNING_IDENTITY` (für macOS Code-Signing / Notarization, z.B. `Developer ID Application: Your Team (XXXXX)`)
+  - `BRIDGE_RELAY_JWKS_URL` (für Production Relay)
 
 ## DeckLink Helper Hosting (ohne SDK) - Einmalig vorbereiten
 
@@ -56,6 +60,14 @@ shasum -a 256 apps/bridge/native/decklink-helper/decklink-helper-arm64
 2. Workflow **Test Release Build** auswählen.
 3. **Run workflow** klicken.
 4. Nach Abschluss unter **Artifacts** prüfen, ob alle Plattformen gebaut wurden.
+
+## Display Helper (ohne SDK) - CI-Build
+
+Der Display Helper wird **nicht** separat gehostet wie der DeckLink Helper. Er wird direkt in der CI gebaut:
+
+- **macOS Runners:** SDL2 wird per `brew install sdl2` installiert, danach `build:display-helper`.
+- **Signing:** Bei gesetztem `APPLE_SIGNING_IDENTITY` wird das Binary automatisch mit `codesign` signiert (für Notarization).
+- **Kein separater Release nötig** – das Binary landet in der gepackten App.
 
 ## Release-Prozess
 
@@ -267,6 +279,7 @@ Tags müssen dem Format `v{VERSION}` entsprechen:
 - [ ] Workflow-File (`.github/workflows/release.yml`) ist auf `main`
 - [ ] `main` Branch ist aktuell (`git pull origin main`)
 - [ ] Tag wird auf `main` erstellt (nicht auf Feature-Branch)
+- [ ] GitHub Secrets gesetzt: DeckLink URLs/Hashes, ggf. `APPLE_SIGNING_IDENTITY`, `BRIDGE_RELAY_JWKS_URL`
 
 ## Nach dem Release
 
