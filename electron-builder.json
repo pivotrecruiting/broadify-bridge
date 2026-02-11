@@ -15,6 +15,14 @@
     {
       "from": "apps/bridge/native/decklink-helper/decklink-helper",
       "to": "native/decklink-helper/decklink-helper"
+    },
+    {
+      "from": "apps/bridge/native/display-helper/display-helper",
+      "to": "native/display-helper/display-helper"
+    },
+    {
+      "from": "config/bridge.env",
+      "to": "bridge/.env"
     }
   ],
   "icon": "./icon.png",
