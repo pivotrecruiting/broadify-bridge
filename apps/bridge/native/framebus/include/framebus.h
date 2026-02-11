@@ -30,5 +30,10 @@ typedef struct FrameBusHeader {
 } FrameBusHeader;
 #pragma pack(pop)
 
+#if defined(__cplusplus)
+static_assert(sizeof(FrameBusHeader) == FRAMEBUS_HEADER_SIZE,
+              "FrameBusHeader size must be 128");
+#else
 _Static_assert(sizeof(FrameBusHeader) == FRAMEBUS_HEADER_SIZE,
-               "FrameBusHeader size must be 128");
+              "FrameBusHeader size must be 128");
+#endif

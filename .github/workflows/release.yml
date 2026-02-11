@@ -91,6 +91,12 @@ jobs:
         if: matrix.os == 'macos-15'
         run: brew install sdl2
 
+      # node-gyp (used by build:framebus) requires distutils, removed in Python 3.12+
+      - name: Setup Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never
 
