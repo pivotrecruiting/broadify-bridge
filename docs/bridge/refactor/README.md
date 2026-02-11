@@ -23,6 +23,7 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 - Output-Helper: `docs/bridge/refactor/graphics-realtime-output-helpers.md`
 - Output Helper Contract: `docs/bridge/refactor/graphics-realtime-output-helper-contract.md`
 - Migrationsplan & Dateiliste: `docs/bridge/refactor/graphics-realtime-migration-plan.md`
+- **Display Native Helper Migration:** `docs/bridge/refactor/display-native-helper-migration-plan.md`
 
 ## Status
 - Phase 0: Architektur entschieden und dokumentiert.
