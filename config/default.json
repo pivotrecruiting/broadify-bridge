@@ -1,0 +1,7 @@
+{
+  "graphics": {
+    "renderer": "electron",
+    "rendererSingle": true,
+    "framebusName": "broadify-framebus"
+  }
+}

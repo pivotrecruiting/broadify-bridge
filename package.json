@@ -1,13 +1,13 @@
 {
   "name": "electron-vite-template",
   "private": true,
-  "version": "0.8.1",
+  "version": "0.8.7",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "npm-run-all --parallel dev:react dev:electron",
     "dev:react": "vite",
-    "dev:electron": "npm run build:display-helper && npm run build:graphics-renderer && npm run transpile:electron && cross-env NODE_ENV=development electron .",
+    "dev:electron": "npm run build:display-helper && npm run build:framebus && npm run build:graphics-renderer && npm run transpile:electron && cross-env NODE_ENV=development electron .",
     "build:app": "tsc -b && vite build",
     "build:protocol": "npm --prefix packages/protocol run build",
     "build:bridge": "npm --prefix apps/bridge run build",
@@ -21,14 +21,15 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "transpile:electron": "tsc --project src/electron/tsconfig.json",
-    "dist:mac": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run transpile:electron && npm run build && electron-builder --mac --arm64",
-    "dist:mac:arm64": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run transpile:electron && npm run build && electron-builder --mac --arm64",
-    "dist:mac:x64": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run transpile:electron && npm run build && electron-builder --mac --x64",
-    "dist:win": "npm run transpile:electron && npm run build && electron-builder --win --x64",
-    "dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64",
+    "dist:mac": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run build:framebus && npm run transpile:electron && npm run build && electron-builder --mac --arm64",
+    "dist:mac:arm64": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run build:framebus && npm run transpile:electron && npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run build:framebus && npm run transpile:electron && npm run build && electron-builder --mac --x64",
+    "dist:win": "npm run build:framebus && npm run transpile:electron && npm run build && electron-builder --win --x64",
+    "dist:linux": "npm run build:framebus && npm run transpile:electron && npm run build && electron-builder --linux --x64",
     "dist:all": "npm run dist:mac:arm64 && npm run dist:mac:x64 && npm run dist:win && npm run dist:linux",
     "release": "npm run dist:all",
-    "test:workflow": "bash scripts/test-workflow.sh"
+    "test:workflow": "bash scripts/test-workflow.sh",
+    "build:framebus": "bash scripts/build-framebus.sh"
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.2.6",

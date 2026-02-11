@@ -71,20 +71,31 @@ jobs:
       - name: Build React
         run: npm run build
 
-      - name: Write Bridge env for packaging
+      - name: Prepare Bridge config for packaging
         shell: bash
         run: |
           mkdir -p apps/bridge/dist
-          if [ -f config/bridge.env ]; then
-            cp config/bridge.env apps/bridge/dist/.env
-          fi
           if [ -n "${BRIDGE_RELAY_JWKS_URL:-}" ]; then
-            printf "\nBRIDGE_RELAY_JWKS_URL=%s\n" "$BRIDGE_RELAY_JWKS_URL" >> apps/bridge/dist/.env
+            node -e "
+              const fs = require('fs');
+              const p = 'config/default.json';
+              const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+              c.relay = c.relay || {};
+              c.relay.jwksUrl = process.env.BRIDGE_RELAY_JWKS_URL;
+              fs.writeFileSync(p, JSON.stringify(c, null, 2));
+            "
           fi
+          echo "Bridge config prepared"
 
       - name: Install SDL2 (macOS, for display-helper)
         if: matrix.os == 'macos-15'
         run: brew install sdl2
+
+      # node-gyp (used by build:framebus) requires distutils, removed in Python 3.12+
+      - name: Setup Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never

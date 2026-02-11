@@ -47,11 +47,8 @@ import {
   supportsAnyPixelFormat,
 } from "./output-format-policy.js";
 import {
-  clearFrameBusEnv,
   applyFrameBusEnv,
   buildFrameBusConfig,
-  isFrameBusEnabled,
-  isFrameBusOutputEnabled,
   type FrameBusConfigT,
 } from "./framebus/framebus-config.js";
 import {
@@ -208,14 +205,6 @@ export class GraphicsManager {
     if (persisted) {
       this.outputConfig = persisted;
       this.applyFrameBusConfig(persisted);
-      if (
-        process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1" &&
-        !isFrameBusOutputEnabled()
-      ) {
-        throw new Error(
-          "Single renderer requires FrameBus output; enable BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS"
-        );
-      }
       let stage: "renderer" | "output_helper" = "renderer";
       try {
         await this.renderer.configureSession(this.buildRendererConfig(persisted));
@@ -296,16 +285,6 @@ export class GraphicsManager {
         const message = error instanceof Error ? error.message : String(error);
         this.failGraphics("output_config_error", message);
       }
-    }
-
-    if (
-      process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1" &&
-      !isFrameBusOutputEnabled()
-    ) {
-      this.failGraphics(
-        "output_config_error",
-        "Single renderer requires FrameBus output; enable BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS"
-      );
     }
 
     this.outputConfig = config;
@@ -1001,7 +980,7 @@ export class GraphicsManager {
   }
 
   private isLegacyFramePathEnabled(): boolean {
-    return !isFrameBusOutputEnabled();
+    return false;
   }
 
   private async tick(): Promise<void> {
@@ -1483,12 +1462,6 @@ export class GraphicsManager {
   }
 
   private applyFrameBusConfig(config: GraphicsOutputConfigT): void {
-    if (!isFrameBusEnabled()) {
-      this.frameBusConfig = null;
-      clearFrameBusEnv();
-      return;
-    }
-
     const requestedPixelFormat =
       process.env.BRIDGE_FRAME_PIXEL_FORMAT ??
       process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;

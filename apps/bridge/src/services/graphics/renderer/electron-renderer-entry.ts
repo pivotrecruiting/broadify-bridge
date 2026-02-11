@@ -4,7 +4,6 @@ import pino from "pino";
 import { z } from "zod";
 import { getStandardAnimationCss } from "./animation-css.js";
 import {
-  isFrameBusEnabled,
   loadFrameBusModule,
   type FrameBusModuleT,
   type FrameBusWriterT,
@@ -613,13 +612,6 @@ function ensureFrameBusWriter(
 ): boolean {
   if (!ENABLE_SINGLE_RENDERER) {
     return true;
-  }
-  if (!isFrameBusEnabled()) {
-    logFrameBusOnce(
-      "disabled",
-      "[GraphicsRenderer] FrameBus disabled; single renderer requires FrameBus"
-    );
-    return false;
   }
   if (frameBusWriter) {
     const header = frameBusWriter.header;

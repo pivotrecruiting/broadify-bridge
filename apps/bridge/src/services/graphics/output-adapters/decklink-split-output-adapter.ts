@@ -80,8 +80,8 @@ const buildSplitConfig = (
  */
 export class DecklinkSplitOutputAdapter implements GraphicsOutputAdapter {
   // Split key/fill uses the legacy stdin path only (no FrameBus support).
-  private fillAdapter = new DecklinkVideoOutputAdapter({ useFrameBus: false });
-  private keyAdapter = new DecklinkVideoOutputAdapter({ useFrameBus: false });
+  private fillAdapter = new DecklinkVideoOutputAdapter();
+  private keyAdapter = new DecklinkVideoOutputAdapter();
   private configured = false;
 
   /**

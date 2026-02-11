@@ -46,18 +46,6 @@ const buildFrameBusName = (): string => {
   return `broadify-framebus-${randomBytes(6).toString("hex")}`;
 };
 
-export const isFrameBusEnabled = (): boolean => {
-  return process.env.BRIDGE_GRAPHICS_FRAMEBUS === "1";
-};
-
-export const isFrameBusOutputEnabled = (): boolean => {
-  return (
-    process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1" &&
-    process.env.BRIDGE_GRAPHICS_FRAMEBUS === "1" &&
-    Boolean(process.env.BRIDGE_FRAMEBUS_NAME)
-  );
-};
-
 export const buildFrameBusConfig = (
   outputConfig: GraphicsOutputConfigT,
   previous: FrameBusConfigT | null

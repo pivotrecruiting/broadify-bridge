@@ -1,6 +1,6 @@
 # Display Helper (macOS)
 
-Native C++ helper that reads RGBA frames from FrameBus shared memory and displays fullscreen via SDL2. Replaces the Electron Display Helper when `BRIDGE_DISPLAY_NATIVE_HELPER=1` to eliminate IPC bottlenecks (SIGSEGV at 60 fps with large frames).
+Native C++ helper that reads RGBA frames from FrameBus shared memory and displays fullscreen via SDL2. Used by the Display Video Output Adapter on macOS.
 
 ## Prerequisites
 

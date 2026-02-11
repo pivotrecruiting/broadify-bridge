@@ -101,53 +101,21 @@ function resolveRendererEntry(argv: string[]): string | null {
   return argv.find((arg) => arg.endsWith("electron-renderer-entry.js")) || null;
 }
 
-/**
- * Resolve the entry path for display output mode.
- *
- * @param argv Process argument list.
- * @returns Display output entry path or null.
- */
-function resolveDisplayEntry(argv: string[]): string | null {
-  const args = getArgMap(argv);
-  const explicit = args.get("display-entry");
-  if (typeof explicit === "string" && explicit.length > 0) {
-    return explicit;
-  }
-  const direct = getArgValue("--display-entry");
-  if (direct) {
-    return direct;
-  }
-  return argv.find((arg) => arg.endsWith("display-output-entry.js")) || null;
-}
-
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
-const displayEntry = resolveDisplayEntry(process.argv);
 const isRendererProcess =
   argMap.has("graphics-renderer") || Boolean(rendererEntry);
-const isDisplayProcess =
-  argMap.has("display-output") || Boolean(displayEntry);
-const isAuxProcess = isRendererProcess || isDisplayProcess;
 
-if (isRendererProcess || isDisplayProcess) {
-  if (isRendererProcess && isDisplayProcess) {
-    console.error(
-      "[AuxProcess] Both graphics renderer and display output flags provided"
-    );
-    app.exit(1);
-  }
-  const entry = isRendererProcess ? rendererEntry : displayEntry;
-  const label = isRendererProcess ? "GraphicsRenderer" : "DisplayOutput";
-  const flagLabel = isRendererProcess ? "--renderer-entry" : "--display-entry";
-  if (!entry) {
-    console.error(`[${label}] Missing ${flagLabel} argument`);
+if (isRendererProcess) {
+  if (!rendererEntry) {
+    console.error("[GraphicsRenderer] Missing --renderer-entry argument");
     app.exit(1);
   } else {
-    console.log(`[${label}] Aux mode enabled (entry: ${entry})`);
-    const entryUrl = pathToFileURL(entry).toString();
+    console.log(`[GraphicsRenderer] Aux mode enabled (entry: ${rendererEntry})`);
+    const entryUrl = pathToFileURL(rendererEntry).toString();
     import(entryUrl).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[${label}] Failed to load entry: ${message}`);
+      console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
       app.exit(1);
     });
   }
@@ -376,7 +344,7 @@ function buildWebAppUrl(
 
 // Single Instance Lock: Prevent multiple instances of the app
 // Only the main desktop app should acquire the single-instance lock.
-if (!isAuxProcess) {
+if (!isRendererProcess) {
   const gotTheLock = app.requestSingleInstanceLock();
 
   if (!gotTheLock) {

@@ -9,7 +9,11 @@ FrameBus im Development zuverlässig starten, ohne Production-Builds.
 - `python3`
 
 **Einmalig**
-- Native Addon bauen:
+- Native Addon bauen (für aktuelle Electron-Version):
+```bash
+npm run build:framebus
+```
+Alternativ manuell:
 ```bash
 cd apps/bridge/native/framebus
 npx node-gyp rebuild
@@ -28,15 +32,12 @@ npm --prefix apps/bridge run build
 **Umgebungsvariablen (Beispiel)**
 ```bash
 BRIDGE_GRAPHICS_RENDERER_SINGLE=1
-BRIDGE_GRAPHICS_FRAMEBUS=1
-BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS=1
 BRIDGE_FRAMEBUS_NAME=broadify-framebus-dev
 BRIDGE_FRAMEBUS_FORCE_RECREATE=1
-# Optional: Native Display Helper statt Electron (kein IPC für Frames)
-BRIDGE_DISPLAY_NATIVE_HELPER=1
 ```
+FrameBus wird immer genutzt (keine Flags).
 
-**Display Native Helper bauen** (wenn BRIDGE_DISPLAY_NATIVE_HELPER=1)
+**Display Native Helper bauen** (für Display Output)
 ```bash
 cd apps/bridge/native/display-helper
 ./build.sh
