@@ -16,8 +16,9 @@ const loadEnvFile = (envPath: string): boolean => {
 /**
  * Load environment variables from known runtime locations.
  *
- * Priority: userData -> packaged resources -> cwd.
- * Existing process.env values are never overridden.
+ * Load order: dev project .env | userData | packaged resources.
+ * With override: false, earlier files win; later files fill in missing vars.
+ * Prod: userData (may be old) + packaged bridge/.env fills in BRIDGE_GRAPHICS_* etc.
  */
 export const loadAppEnv = (): void => {
   if (envLoaded) {
@@ -28,11 +29,12 @@ export const loadAppEnv = (): void => {
   const candidates: string[] = [];
   let userEnvPath: string | null = null;
   const resourceEnvPaths: string[] = [];
+  const projectEnv = path.join(process.cwd(), ".env");
+  const isDev = process.env.NODE_ENV !== "production";
 
   try {
     const userDataDir = app.getPath("userData");
     userEnvPath = path.join(userDataDir, ".env");
-    candidates.push(userEnvPath);
   } catch {
     // Ignore userData lookup errors.
   }
@@ -42,10 +44,19 @@ export const loadAppEnv = (): void => {
       path.join(process.resourcesPath, "bridge", "dist", ".env")
     );
     resourceEnvPaths.push(path.join(process.resourcesPath, "bridge", ".env"));
-    candidates.push(...resourceEnvPaths);
   }
 
-  candidates.push(path.join(process.cwd(), ".env"));
+  // Dev: project .env first so local overrides (e.g. BRIDGE_GRAPHICS_*) are used.
+  if (isDev) {
+    candidates.push(projectEnv);
+  }
+  if (userEnvPath) {
+    candidates.push(userEnvPath);
+  }
+  candidates.push(...resourceEnvPaths);
+  if (!candidates.includes(projectEnv)) {
+    candidates.push(projectEnv);
+  }
 
   if (userEnvPath && !fs.existsSync(userEnvPath)) {
     const seedSource = resourceEnvPaths.find((envPath) =>
@@ -60,9 +71,10 @@ export const loadAppEnv = (): void => {
     }
   }
 
+  // Prod: load userData first, then packaged resources. With override: false,
+  // packaged vars (e.g. BRIDGE_GRAPHICS_*) fill in for keys userData doesn't have.
+  // Dev: project first wins; others fill in. Never break – load all to merge.
   for (const candidate of candidates) {
-    if (loadEnvFile(candidate)) {
-      break;
-    }
+    loadEnvFile(candidate);
   }
 };
