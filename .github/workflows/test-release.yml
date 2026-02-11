@@ -58,6 +58,10 @@ jobs:
           cd apps/bridge
           npm run build
 
+      - name: Install SDL2 (macOS, for display-helper)
+        if: matrix.os == 'macos-15'
+        run: brew install sdl2
+
       - name: Transpile Electron
         run: npm run transpile:electron
 

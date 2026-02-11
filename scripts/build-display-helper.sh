@@ -14,3 +14,6 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 bash "$ROOT_DIR/apps/bridge/native/display-helper/build.sh"
+
+# Sign for release when identity is set (CI/notarization)
+bash "$ROOT_DIR/scripts/sign-display-helper.sh"

@@ -32,12 +32,16 @@ mv display-helper display-helper-arm64
 shasum -a 256 display-helper-arm64
 ```
 
-### 4) Code-Signing (Release)
+### 4) Code-Signing (Release / CI)
 
-Für gepackte macOS-App muss das Binary signiert werden:
+Für Notarization muss das Binary signiert sein. Manuell oder via Script:
 
 ```bash
-codesign --force --sign "Developer ID Application: <Team>" display-helper-arm64
+# Manuell
+codesign --force --sign "Developer ID Application: <Team>" display-helper
+
+# Oder: Script (wird von build-display-helper.sh automatisch aufgerufen)
+APPLE_SIGNING_IDENTITY="Developer ID Application: <Team>" ./scripts/sign-display-helper.sh
 ```
 
 ### 5) electron-builder Integration
