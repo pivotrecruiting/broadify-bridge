@@ -70,7 +70,6 @@ export type FrameBusModuleT = {
   openReader(options: { name: string }): FrameBusReaderT;
 };
 
-const FRAMEBUS_ENV_FLAG = "BRIDGE_GRAPHICS_FRAMEBUS";
 const FRAMEBUS_NATIVE_PATH_ENV = "BRIDGE_FRAMEBUS_NATIVE_PATH";
 
 const resolveBridgeRoot = (): string => {
@@ -199,20 +198,9 @@ const wrapModule = (module: FrameBusModuleT): FrameBusModuleT => {
 };
 
 /**
- * Check whether the FrameBus feature flag is enabled.
- */
-export const isFrameBusEnabled = (): boolean => {
-  return process.env[FRAMEBUS_ENV_FLAG] === "1";
-};
-
-/**
- * Load the native FrameBus addon when enabled.
+ * Load the native FrameBus addon. FrameBus is always used for graphics output.
  */
 export const loadFrameBusModule = (): FrameBusModuleT | null => {
-  if (!isFrameBusEnabled()) {
-    return null;
-  }
-
   const addonPath = findNativeAddonPath();
   if (!addonPath) {
     throw new Error("FrameBus addon not found (BRIDGE_FRAMEBUS_NATIVE_PATH)");

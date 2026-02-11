@@ -11,16 +11,13 @@ import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { deviceCache } from "../../device-cache.js";
 import type { DeviceDescriptorT } from "@broadify/protocol";
-import { isFrameBusOutputEnabled } from "../framebus/framebus-config.js";
 import { resolveDisplayHelperPath } from "../../../modules/display/display-helper.js";
 
 // Binary frame protocol shared with the helper (big-endian header + RGBA payload).
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
-const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
-const MAX_FRAME_DIMENSION = 8192;
 
 // Electron binary resolution for dev/packaged environments.
 const ELECTRON_BINARIES = {
@@ -113,11 +110,6 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
   private readyResolver: (() => void) | null = null;
   private readyRejecter: ((error: Error) => void) | null = null;
   private stdoutBuffer = "";
-  private canSend = true;
-  private width = 0;
-  private height = 0;
-  private lastWarningAt = 0;
-  private readonly warningThrottleMs = 5000;
 
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
@@ -143,9 +135,7 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       throw new Error("Display output requires HDMI/DisplayPort/Thunderbolt");
     }
 
-    const useNativeHelper =
-      process.env.BRIDGE_DISPLAY_NATIVE_HELPER === "1" &&
-      isFrameBusOutputEnabled();
+    const useNativeHelper = process.env.BRIDGE_DISPLAY_NATIVE_HELPER === "1";
 
     if (useNativeHelper) {
       await this.configureNativeHelper(config, match);
@@ -202,34 +192,30 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     } else if (process.env.NODE_ENV !== "production") {
       env.BRIDGE_DISPLAY_DEBUG = "1";
     }
-    if (process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1") {
-      env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS = "1";
-      env.BRIDGE_GRAPHICS_FRAMEBUS = "1";
-      if (process.env.BRIDGE_FRAMEBUS_NAME) {
-        env.BRIDGE_FRAMEBUS_NAME = process.env.BRIDGE_FRAMEBUS_NAME;
-      }
-      if (process.env.BRIDGE_FRAMEBUS_SIZE) {
-        env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
-      }
-      if (process.env.BRIDGE_FRAME_WIDTH) {
-        env.BRIDGE_FRAME_WIDTH = process.env.BRIDGE_FRAME_WIDTH;
-      }
-      if (process.env.BRIDGE_FRAME_HEIGHT) {
-        env.BRIDGE_FRAME_HEIGHT = process.env.BRIDGE_FRAME_HEIGHT;
-      }
-      if (process.env.BRIDGE_FRAME_FPS) {
-        env.BRIDGE_FRAME_FPS = process.env.BRIDGE_FRAME_FPS;
-      }
-      if (process.env.BRIDGE_FRAME_PIXEL_FORMAT) {
-        env.BRIDGE_FRAME_PIXEL_FORMAT = process.env.BRIDGE_FRAME_PIXEL_FORMAT;
-      }
-      if (process.env.BRIDGE_FRAMEBUS_SLOT_COUNT) {
-        env.BRIDGE_FRAMEBUS_SLOT_COUNT = process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
-      }
-      if (process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT) {
-        env.BRIDGE_FRAMEBUS_PIXEL_FORMAT =
-          process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
-      }
+    if (process.env.BRIDGE_FRAMEBUS_NAME) {
+      env.BRIDGE_FRAMEBUS_NAME = process.env.BRIDGE_FRAMEBUS_NAME;
+    }
+    if (process.env.BRIDGE_FRAMEBUS_SIZE) {
+      env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
+    }
+    if (process.env.BRIDGE_FRAME_WIDTH) {
+      env.BRIDGE_FRAME_WIDTH = process.env.BRIDGE_FRAME_WIDTH;
+    }
+    if (process.env.BRIDGE_FRAME_HEIGHT) {
+      env.BRIDGE_FRAME_HEIGHT = process.env.BRIDGE_FRAME_HEIGHT;
+    }
+    if (process.env.BRIDGE_FRAME_FPS) {
+      env.BRIDGE_FRAME_FPS = process.env.BRIDGE_FRAME_FPS;
+    }
+    if (process.env.BRIDGE_FRAME_PIXEL_FORMAT) {
+      env.BRIDGE_FRAME_PIXEL_FORMAT = process.env.BRIDGE_FRAME_PIXEL_FORMAT;
+    }
+    if (process.env.BRIDGE_FRAMEBUS_SLOT_COUNT) {
+      env.BRIDGE_FRAMEBUS_SLOT_COUNT = process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+    }
+    if (process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT) {
+      env.BRIDGE_FRAMEBUS_PIXEL_FORMAT =
+        process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
     }
 
     // Security: spawn a fixed Electron entry with controlled args only.
@@ -275,8 +261,6 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     });
 
     await this.readyPromise;
-    this.width = config.format.width;
-    this.height = config.format.height;
   }
 
   /**
@@ -365,78 +349,13 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     });
 
     await this.readyPromise;
-    this.width = config.format.width;
-    this.height = config.format.height;
   }
 
   async sendFrame(
-    frame: GraphicsOutputFrameT,
+    _frame: GraphicsOutputFrameT,
     _config: GraphicsOutputConfigT
   ): Promise<void> {
-    if (isFrameBusOutputEnabled()) {
-      // FrameBus is the primary path. Legacy stdin frames are emergency-only.
-      return;
-    }
-    if (!this.child || !this.child.stdin) {
-      this.logThrottledWarning("Display helper not running");
-      return;
-    }
-    if (this.readyPromise) {
-      try {
-        await this.readyPromise;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.getLogger().warn(`[DisplayOutput] Not ready: ${message}`);
-        return;
-      }
-    }
-
-    if (!this.canSend) {
-      return;
-    }
-
-    if (
-      frame.width > MAX_FRAME_DIMENSION ||
-      frame.height > MAX_FRAME_DIMENSION
-    ) {
-      this.logThrottledWarning("Frame dimensions exceed limit");
-      return;
-    }
-
-    if (this.width && this.height) {
-      if (frame.width !== this.width || frame.height !== this.height) {
-        this.logThrottledWarning(
-          `Frame size mismatch: ${frame.width}x${frame.height}`
-        );
-        return;
-      }
-    }
-
-    const expectedLength = frame.width * frame.height * 4;
-    if (frame.rgba.length !== expectedLength) {
-      this.logThrottledWarning(
-        `Frame buffer length mismatch: ${frame.rgba.length} !== ${expectedLength}`
-      );
-      return;
-    }
-
-    const header = Buffer.alloc(FRAME_HEADER_LENGTH);
-    header.writeUInt32BE(FRAME_MAGIC, 0);
-    header.writeUInt16BE(FRAME_VERSION, 4);
-    header.writeUInt16BE(FRAME_TYPE_FRAME, 6);
-    header.writeUInt32BE(frame.width, 8);
-    header.writeUInt32BE(frame.height, 12);
-    header.writeBigUInt64BE(BigInt(frame.timestamp), 16);
-    header.writeUInt32BE(frame.rgba.length, 24);
-
-    const payload = Buffer.concat([header, frame.rgba]);
-    const ok = this.child.stdin.write(payload);
-    if (!ok) {
-      this.canSend = false;
-      this.child.stdin.once("drain", () => {
-        this.canSend = true;
-      });
-    }
+    // FrameBus is always used; helpers read from shared memory. No-op.
   }
 
   async stop(): Promise<void> {
@@ -502,9 +421,6 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     this.readyResolver = null;
     this.readyRejecter = null;
     this.stdoutBuffer = "";
-    this.canSend = true;
-    this.width = 0;
-    this.height = 0;
   }
 
   private async findOutputPort(
@@ -547,14 +463,6 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
         this.getLogger().warn(`[DisplayOutput] Non-JSON output: ${line}`);
       }
       newlineIndex = this.stdoutBuffer.indexOf("\n");
-    }
-  }
-
-  private logThrottledWarning(message: string): void {
-    const now = Date.now();
-    if (now - this.lastWarningAt > this.warningThrottleMs) {
-      this.getLogger().warn(`[DisplayOutput] ${message}`);
-      this.lastWarningAt = now;
     }
   }
 

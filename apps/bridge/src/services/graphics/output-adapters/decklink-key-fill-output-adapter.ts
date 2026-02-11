@@ -10,44 +10,10 @@ import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
 import { KEY_FILL_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
 import { parseDecklinkPortId } from "./decklink-port.js";
-import { isFrameBusOutputEnabled } from "../framebus/framebus-config.js";
-
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
-const FRAME_TYPE_FRAME = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
 const FRAME_HEADER_LENGTH = 28;
-const DEBUG_GRAPHICS = true;
-
-const sampleRgbaBuffer = (
-  buffer: Buffer,
-  width: number,
-  height: number
-): Array<{ name: string; x: number; y: number; rgba: number[] | null }> => {
-  const maxX = Math.max(0, width - 1);
-  const maxY = Math.max(0, height - 1);
-  const positions = [
-    { name: "topLeft", x: 0, y: 0 },
-    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
-    { name: "bottomRight", x: maxX, y: maxY },
-  ];
-
-  return positions.map((pos) => {
-    const index = (pos.y * width + pos.x) * 4;
-    if (index < 0 || index + 3 >= buffer.length) {
-      return { ...pos, rgba: null };
-    }
-    return {
-      ...pos,
-      rgba: [
-        buffer[index],
-        buffer[index + 1],
-        buffer[index + 2],
-        buffer[index + 3],
-      ],
-    };
-  });
-};
 
 /**
  * DeckLink output adapter for external keying (SDI fill + key).
@@ -60,12 +26,6 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
   private readyResolver: (() => void) | null = null;
   private readyRejecter: ((error: Error) => void) | null = null;
   private stdoutBuffer = "";
-  private canSend = true;
-  private width = 0;
-  private height = 0;
-  private lastWarningAt = 0;
-  private readonly warningThrottleMs = 5000;
-  private sampleLogged = false;
 
   /**
    * Configure helper process for key/fill output.
@@ -74,7 +34,6 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
    */
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
-    this.sampleLogged = false;
 
     const output1Id = config.targets.output1Id;
     const output2Id = config.targets.output2Id;
@@ -128,35 +87,28 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       config.colorspace,
     ];
 
-    if (
-      process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1" &&
-      process.env.BRIDGE_FRAMEBUS_NAME
-    ) {
+    if (process.env.BRIDGE_FRAMEBUS_NAME) {
       args.push("--framebus-name", process.env.BRIDGE_FRAMEBUS_NAME);
     }
 
     const env = { ...process.env } as Record<string, string>;
-    if (isFrameBusOutputEnabled()) {
-      env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS = "1";
-      env.BRIDGE_GRAPHICS_FRAMEBUS = "1";
-      if (process.env.BRIDGE_FRAMEBUS_NAME) {
-        env.BRIDGE_FRAMEBUS_NAME = process.env.BRIDGE_FRAMEBUS_NAME;
-      }
-      if (process.env.BRIDGE_FRAMEBUS_SIZE) {
-        env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
-      }
-      if (process.env.BRIDGE_FRAME_WIDTH) {
-        env.BRIDGE_FRAME_WIDTH = process.env.BRIDGE_FRAME_WIDTH;
-      }
-      if (process.env.BRIDGE_FRAME_HEIGHT) {
-        env.BRIDGE_FRAME_HEIGHT = process.env.BRIDGE_FRAME_HEIGHT;
-      }
-      if (process.env.BRIDGE_FRAME_FPS) {
-        env.BRIDGE_FRAME_FPS = process.env.BRIDGE_FRAME_FPS;
-      }
-      if (process.env.BRIDGE_FRAME_PIXEL_FORMAT) {
-        env.BRIDGE_FRAME_PIXEL_FORMAT = process.env.BRIDGE_FRAME_PIXEL_FORMAT;
-      }
+    if (process.env.BRIDGE_FRAMEBUS_NAME) {
+      env.BRIDGE_FRAMEBUS_NAME = process.env.BRIDGE_FRAMEBUS_NAME;
+    }
+    if (process.env.BRIDGE_FRAMEBUS_SIZE) {
+      env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
+    }
+    if (process.env.BRIDGE_FRAME_WIDTH) {
+      env.BRIDGE_FRAME_WIDTH = process.env.BRIDGE_FRAME_WIDTH;
+    }
+    if (process.env.BRIDGE_FRAME_HEIGHT) {
+      env.BRIDGE_FRAME_HEIGHT = process.env.BRIDGE_FRAME_HEIGHT;
+    }
+    if (process.env.BRIDGE_FRAME_FPS) {
+      env.BRIDGE_FRAME_FPS = process.env.BRIDGE_FRAME_FPS;
+    }
+    if (process.env.BRIDGE_FRAME_PIXEL_FORMAT) {
+      env.BRIDGE_FRAME_PIXEL_FORMAT = process.env.BRIDGE_FRAME_PIXEL_FORMAT;
     }
 
     this.child = spawn(helperPath, args, {
@@ -201,8 +153,6 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     });
 
     await this.readyPromise;
-    this.width = config.format.width;
-    this.height = config.format.height;
   }
 
   /**
@@ -212,77 +162,10 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
    * @param _config Output configuration (unused here).
    */
   async sendFrame(
-    frame: GraphicsOutputFrameT,
+    _frame: GraphicsOutputFrameT,
     _config: GraphicsOutputConfigT
   ): Promise<void> {
-    if (isFrameBusOutputEnabled()) {
-      // FrameBus is the primary path. Legacy stdin frames are emergency-only.
-      return;
-    }
-    if (!this.child || !this.child.stdin) {
-      this.logThrottledWarning("Output helper not running");
-      return;
-    }
-    if (this.readyPromise) {
-      try {
-        await this.readyPromise;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.getLogger().warn(`[DeckLinkOutput] Not ready: ${message}`);
-        return;
-      }
-    }
-
-    if (!this.canSend) {
-      return;
-    }
-
-    if (this.width && this.height) {
-      if (frame.width !== this.width || frame.height !== this.height) {
-        this.logThrottledWarning(
-          `Frame size mismatch: ${frame.width}x${frame.height}`
-        );
-        return;
-      }
-    }
-
-    const expectedLength = frame.width * frame.height * 4;
-    if (frame.rgba.length !== expectedLength) {
-      this.logThrottledWarning(
-        `Frame buffer length mismatch: ${frame.rgba.length} !== ${expectedLength}`
-      );
-      return;
-    }
-
-    if (DEBUG_GRAPHICS && !this.sampleLogged) {
-      this.sampleLogged = true;
-      const samples = sampleRgbaBuffer(frame.rgba, frame.width, frame.height);
-      this.getLogger().info(
-        `[DeckLinkOutput] Debug pixel samples ${JSON.stringify({
-          width: frame.width,
-          height: frame.height,
-          samples,
-        })}`
-      );
-    }
-
-    const header = Buffer.alloc(FRAME_HEADER_LENGTH);
-    header.writeUInt32BE(FRAME_MAGIC, 0);
-    header.writeUInt16BE(FRAME_VERSION, 4);
-    header.writeUInt16BE(FRAME_TYPE_FRAME, 6);
-    header.writeUInt32BE(frame.width, 8);
-    header.writeUInt32BE(frame.height, 12);
-    header.writeBigUInt64BE(BigInt(frame.timestamp), 16);
-    header.writeUInt32BE(frame.rgba.length, 24);
-
-    const payload = Buffer.concat([header, frame.rgba]);
-    const ok = this.child.stdin.write(payload);
-    if (!ok) {
-      this.canSend = false;
-      this.child.stdin.once("drain", () => {
-        this.canSend = true;
-      });
-    }
+    // FrameBus is always used; helpers read from shared memory. No-op.
   }
 
   /**
@@ -351,10 +234,6 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     this.readyResolver = null;
     this.readyRejecter = null;
     this.stdoutBuffer = "";
-    this.canSend = true;
-    this.width = 0;
-    this.height = 0;
-    this.sampleLogged = false;
   }
 
   private handleStdout(data: Buffer): void {
@@ -392,12 +271,4 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     }
   }
 
-  private logThrottledWarning(message: string): void {
-    const now = Date.now();
-    if (now - this.lastWarningAt < this.warningThrottleMs) {
-      return;
-    }
-    this.lastWarningAt = now;
-    this.getLogger().warn(`[DeckLinkOutput] ${message}`);
-  }
 }

@@ -1,7 +1,6 @@
 import { app, BrowserWindow, screen } from "electron";
 import pino from "pino";
 import {
-  isFrameBusEnabled,
   loadFrameBusModule,
   type FrameBusModuleT,
   type FrameBusReaderT,
@@ -12,14 +11,6 @@ const logger = pino({
   base: { component: "display-output" },
 });
 
-// Binary frame protocol from bridge -> helper (big-endian header + RGBA payload).
-const FRAME_MAGIC = 0x42524746; // 'BRGF'
-const FRAME_VERSION = 1;
-const FRAME_TYPE_FRAME = 1;
-const FRAME_TYPE_SHUTDOWN = 2;
-const FRAME_HEADER_LENGTH = 28;
-const MAX_FRAME_DIMENSION = 8192;
-const MAX_FRAME_BYTES = 256 * 1024 * 1024;
 const FRAMEBUS_OPEN_RETRY_MS = 200;
 const FRAMEBUS_OPEN_RETRY_COUNT = 10;
 
@@ -32,9 +23,6 @@ const targetHeight = Number(process.env.BRIDGE_DISPLAY_MATCH_HEIGHT || "");
 const debugEnabled = process.env.BRIDGE_DISPLAY_DEBUG === "1";
 const force2d = process.env.BRIDGE_DISPLAY_FORCE_2D === "1";
 const disableGpu = process.env.BRIDGE_DISPLAY_DISABLE_GPU === "1";
-const useFrameBus =
-  process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1" &&
-  isFrameBusEnabled();
 const frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 const frameBusWidth = Number(
   process.env.BRIDGE_FRAME_WIDTH || process.env.BRIDGE_DISPLAY_FRAME_WIDTH || 0
@@ -354,27 +342,13 @@ const html = `<!doctype html>
   </body>
 </html>`;
 
-type FrameHeaderT = {
-  magic: number;
-  version: number;
-  type: number;
-  width: number;
-  height: number;
-  timestamp: bigint;
-  bufferLength: number;
-};
-
 let windowRef: BrowserWindow | null = null;
 let readySent = false;
 let pendingFrame:
   | { width: number; height: number; buffer: Buffer; timestamp: number }
   | null = null;
-let inputBuffer = Buffer.alloc(0);
 let framesReceived = 0;
 let firstFrameLogged = false;
-let bytesReceived = 0;
-let framesParsed = 0;
-let lastByteLogAt = 0;
 let perfFrames = 0;
 let perfDrops = 0;
 let perfRepeats = 0;
@@ -490,7 +464,7 @@ function logPerfIfNeeded(): void {
       repeats: perfRepeats,
       latencyMsAvg: latencyAvg,
       latencyMsMax: perfLatencyMaxMs,
-      mode: useFrameBus ? "framebus" : "stdin",
+      mode: "framebus",
     },
     "[DisplayOutput] Perf"
   );
@@ -503,9 +477,6 @@ function logPerfIfNeeded(): void {
 }
 
 function startFrameBusReader(): boolean {
-  if (!useFrameBus) {
-    return false;
-  }
   if (!frameBusName) {
     logger.error("[DisplayOutput] FrameBus name missing");
     return false;
@@ -623,87 +594,6 @@ function stopFrameBusReader(): void {
   frameBusLastSeq = 0n;
 }
 
-// Parse the fixed-width header for each frame.
-function parseHeader(buffer: Buffer): FrameHeaderT {
-  return {
-    magic: buffer.readUInt32BE(0),
-    version: buffer.readUInt16BE(4),
-    type: buffer.readUInt16BE(6),
-    width: buffer.readUInt32BE(8),
-    height: buffer.readUInt32BE(12),
-    timestamp: buffer.readBigUInt64BE(16),
-    bufferLength: buffer.readUInt32BE(24),
-  };
-}
-
-// Security: validate headers, enforce size limits, and drop malformed frames.
-function processInputBuffer(): void {
-  while (inputBuffer.length >= FRAME_HEADER_LENGTH) {
-    const header = parseHeader(inputBuffer.subarray(0, FRAME_HEADER_LENGTH));
-    if (header.magic !== FRAME_MAGIC || header.version !== FRAME_VERSION) {
-      logger.error(
-        { magic: header.magic, version: header.version },
-        "[DisplayOutput] Invalid frame header"
-      );
-      app.quit();
-      return;
-    }
-    if (header.type === FRAME_TYPE_SHUTDOWN) {
-      app.quit();
-      return;
-    }
-    if (
-      header.bufferLength > MAX_FRAME_BYTES ||
-      header.width > MAX_FRAME_DIMENSION ||
-      header.height > MAX_FRAME_DIMENSION
-    ) {
-      logger.warn("[DisplayOutput] Frame exceeds limits");
-      inputBuffer = Buffer.alloc(0);
-      return;
-    }
-    if (inputBuffer.length < FRAME_HEADER_LENGTH + header.bufferLength) {
-      return;
-    }
-    if (header.type !== FRAME_TYPE_FRAME) {
-      inputBuffer = inputBuffer.subarray(FRAME_HEADER_LENGTH + header.bufferLength);
-      continue;
-    }
-    const expectedLength = header.width * header.height * 4;
-    if (header.bufferLength !== expectedLength) {
-      logger.warn(
-        {
-          expected: expectedLength,
-          received: header.bufferLength,
-        },
-        "[DisplayOutput] Frame length mismatch"
-      );
-      inputBuffer = inputBuffer.subarray(FRAME_HEADER_LENGTH + header.bufferLength);
-      continue;
-    }
-    const payloadStart = FRAME_HEADER_LENGTH;
-    const payloadEnd = FRAME_HEADER_LENGTH + header.bufferLength;
-    const payload = Buffer.from(inputBuffer.subarray(payloadStart, payloadEnd));
-    inputBuffer = inputBuffer.subarray(payloadEnd);
-    framesParsed += 1;
-    if (debugEnabled && framesParsed === 1) {
-      logger.info(
-        {
-          frameWidth: header.width,
-          frameHeight: header.height,
-          bufferLength: header.bufferLength,
-        },
-        "[DisplayOutput] First frame parsed from stdin"
-      );
-    }
-    sendFrame({
-      width: header.width,
-      height: header.height,
-      buffer: payload,
-      timestamp: Number(header.timestamp),
-    });
-  }
-}
-
 if (!preloadPath) {
   logger.error("[DisplayOutput] Missing preload path");
   app.exit(1);
@@ -792,11 +682,7 @@ app.on("ready", () => {
           );
         });
     }
-    if (useFrameBus) {
-      startFrameBusReaderWithRetry(0);
-    } else {
-      sendReady();
-    }
+    startFrameBusReaderWithRetry(0);
     if (pendingFrame) {
       const frame = pendingFrame;
       pendingFrame = null;
@@ -827,24 +713,3 @@ function startFrameBusReaderWithRetry(attempt: number): void {
   }, FRAMEBUS_OPEN_RETRY_MS);
 }
 
-if (!useFrameBus) {
-  // Stream raw frame data from stdin (bridge adapter process).
-  process.stdin.on("data", (chunk) => {
-    inputBuffer = Buffer.concat([inputBuffer, chunk]);
-    if (debugEnabled) {
-      bytesReceived += chunk.length;
-      const now = Date.now();
-      if (now - lastByteLogAt > 1000) {
-        lastByteLogAt = now;
-        logger.info(
-          {
-            bytesReceived,
-            bufferLength: inputBuffer.length,
-          },
-          "[DisplayOutput] Stdin bytes received"
-        );
-      }
-    }
-    processInputBuffer();
-  });
-}
