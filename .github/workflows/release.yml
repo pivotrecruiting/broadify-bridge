@@ -81,6 +81,8 @@ jobs:
           if [ -n "${BRIDGE_RELAY_JWKS_URL:-}" ]; then
             printf "\nBRIDGE_RELAY_JWKS_URL=%s\n" "$BRIDGE_RELAY_JWKS_URL" >> apps/bridge/dist/.env
           fi
+          echo "Bridge .env keys (values redacted):"
+          grep -E '^[A-Z_]+=' apps/bridge/dist/.env 2>/dev/null | cut -d= -f1 | sort || echo "(file missing or empty)"
 
       - name: Install SDL2 (macOS, for display-helper)
         if: matrix.os == 'macos-15'
