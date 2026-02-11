@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <atomic>
 #include <string>
 
 #include "framebus.h"
@@ -70,7 +71,7 @@ bool GetOptionalBigint(napi_env env, napi_value value, uint64_t* out, bool* has_
 
 uint64_t AtomicLoad64(uint64_t* ptr) {
 #if defined(_MSC_VER)
-  return static_cast<uint64_t>(__atomic_load_n(ptr, __ATOMIC_ACQUIRE));
+  return reinterpret_cast<std::atomic<uint64_t>*>(ptr)->load(std::memory_order_acquire);
 #else
   return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
 #endif
@@ -78,7 +79,7 @@ uint64_t AtomicLoad64(uint64_t* ptr) {
 
 void AtomicStore64(uint64_t* ptr, uint64_t value) {
 #if defined(_MSC_VER)
-  __atomic_store_n(ptr, value, __ATOMIC_RELEASE);
+  reinterpret_cast<std::atomic<uint64_t>*>(ptr)->store(value, std::memory_order_release);
 #else
   __atomic_store_n(ptr, value, __ATOMIC_RELEASE);
 #endif
