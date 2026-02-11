@@ -12,6 +12,7 @@ import { getBridgeContext } from "../../bridge-context.js";
 import { deviceCache } from "../../device-cache.js";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import { isFrameBusOutputEnabled } from "../framebus/framebus-config.js";
+import { resolveDisplayHelperPath } from "../../../modules/display/display-helper.js";
 
 // Binary frame protocol shared with the helper (big-endian header + RGBA payload).
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
@@ -142,6 +143,15 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       throw new Error("Display output requires HDMI/DisplayPort/Thunderbolt");
     }
 
+    const useNativeHelper =
+      process.env.BRIDGE_DISPLAY_NATIVE_HELPER === "1" &&
+      isFrameBusOutputEnabled();
+
+    if (useNativeHelper) {
+      await this.configureNativeHelper(config, match);
+      return;
+    }
+
     const electronBinary = resolveElectronBinary();
     if (!electronBinary) {
       throw new Error("Electron binary not found for display output");
@@ -253,6 +263,96 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
         this.readyRejecter(
           new Error(
             `Display output helper exited before ready (code ${code}, signal ${signal})`
+          )
+        );
+      }
+      this.readyRejecter = null;
+      this.readyResolver = null;
+      this.child = null;
+      this.getLogger().error(
+        `[DisplayOutput] Helper exited (code ${code}, signal ${signal})`
+      );
+    });
+
+    await this.readyPromise;
+    this.width = config.format.width;
+    this.height = config.format.height;
+  }
+
+  /**
+   * Configure and start the native C++ Display Helper (FrameBus only, no Electron).
+   */
+  private async configureNativeHelper(
+    config: GraphicsOutputConfigT,
+    match: OutputPortMatchT
+  ): Promise<void> {
+    const helperPath = resolveDisplayHelperPath();
+    try {
+      await access(helperPath, constants.X_OK);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Display helper binary not found or not executable: ${message}`);
+    }
+
+    const frameBusName = process.env.BRIDGE_FRAMEBUS_NAME;
+    if (!frameBusName) {
+      throw new Error("Native display helper requires BRIDGE_FRAMEBUS_NAME");
+    }
+
+    this.readyPromise = new Promise((resolve, reject) => {
+      this.readyResolver = resolve;
+      this.readyRejecter = reject;
+    });
+
+    const args = [
+      "--framebus-name",
+      frameBusName,
+      "--width",
+      String(config.format.width),
+      "--height",
+      String(config.format.height),
+      "--fps",
+      String(config.format.fps),
+      "--display-index",
+      "0",
+    ];
+
+    const env = { ...process.env } as Record<string, string>;
+    env.BRIDGE_FRAMEBUS_NAME = frameBusName;
+    env.BRIDGE_FRAME_WIDTH = String(config.format.width);
+    env.BRIDGE_FRAME_HEIGHT = String(config.format.height);
+    env.BRIDGE_FRAME_FPS = String(config.format.fps);
+    if (process.env.BRIDGE_FRAMEBUS_SIZE) {
+      env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
+    }
+    env.BRIDGE_DISPLAY_MATCH_NAME = match.device.displayName;
+
+    this.child = spawn(helperPath, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env,
+    });
+
+    this.child.stdout?.on("data", (data) => this.handleStdout(data));
+    this.child.stderr?.on("data", (data) => {
+      const text = data.toString().trim();
+      if (text.length > 0) {
+        this.getLogger().warn(`[DisplayOutput] ${text}`);
+      }
+    });
+
+    this.child.on("error", (error) => {
+      if (this.readyRejecter) {
+        this.readyRejecter(error);
+      }
+      this.readyRejecter = null;
+      this.readyResolver = null;
+    });
+
+    this.child.on("exit", (code, signal) => {
+      if (this.readyRejecter) {
+        this.readyRejecter(
+          new Error(
+            `Display helper exited before ready (code ${code}, signal ${signal})`
           )
         );
       }

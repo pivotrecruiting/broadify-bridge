@@ -1,5 +1,18 @@
 # Display Native Helper – Migrationsplan
 
+## Status (Stand Implementierung)
+
+| Phase | Status |
+|-------|--------|
+| Phase 0: Vorbereitung | Abgeschlossen |
+| Phase 1: Native Helper MVP | Abgeschlossen |
+| Phase 2: Adapter-Integration | Abgeschlossen |
+| Phase 3: Display-Auswahl | Teilweise (MVP: `--display-index 0`) |
+| Phase 4: Stabilisierung | Ausstehend |
+| Phase 5: Cleanup | Ausstehend |
+
+**Implementierte Dateien:** `apps/bridge/native/display-helper/`, `apps/bridge/src/modules/display/display-helper.ts`, Änderungen in `display-output-adapter.ts`.
+
 ## Zweck
 
 Dokumentation der Migration vom Electron Display Helper zu einem nativen C++ Display Helper. Ziel ist die Beseitigung des IPC-Bottlenecks (SIGSEGV bei ~14,7 MB @ 60 fps) durch Zero-Copy Frame-Transport über Shared Memory – analog zur DeckLink-Architektur.
@@ -16,6 +29,8 @@ Ersetzung des Electron-Helpers durch einen nativen Prozess, der direkt aus dem F
 
 ### Referenz
 
+- Native Display Helper: `apps/bridge/native/display-helper/`
+- Display Helper Pfad-Auflösung: `apps/bridge/src/modules/display/display-helper.ts`
 - DeckLink Helper: `apps/bridge/native/decklink-helper/`
 - FrameBus C-Header: `apps/bridge/native/framebus/include/framebus.h`
 - Output Helper Contract: `docs/bridge/refactor/graphics-realtime-output-helper-contract.md`
@@ -145,34 +160,35 @@ flowchart LR
 
 ### Phase 0: Vorbereitung
 
-- [ ] SDL2 als Build-Abhängigkeit dokumentieren und in README/CI erfassen.
-- [ ] Feature-Flag definieren: `BRIDGE_DISPLAY_NATIVE_HELPER=1`.
-- [ ] Pfad-Auflösung für Helper-Binary definieren (analog `resolveDecklinkHelperPath`).
-- [ ] Output Helper Contract um Native Display Helper erweitern.
+- [x] SDL2 als Build-Abhängigkeit dokumentieren und in README/CI erfassen.
+- [x] Feature-Flag definieren: `BRIDGE_DISPLAY_NATIVE_HELPER=1`.
+- [x] Pfad-Auflösung für Helper-Binary definieren (analog `resolveDecklinkHelperPath`).
+- [x] Output Helper Contract um Native Display Helper erweitern.
 
 ### Phase 1: Native Helper (MVP)
 
-- [ ] Verzeichnis anlegen: `apps/bridge/native/display-helper/`.
-- [ ] `build.sh` für macOS (clang + SDL2).
-- [ ] FrameBus-Reader aus DeckLink-Code wiederverwenden/extrahieren.
-- [ ] SDL-Fenster erstellen, Fullscreen auf Primär- oder konfiguriertem Display.
-- [ ] Renderloop: readLatest → Texture-Upload → Present @ 60 fps.
-- [ ] Ready-Signal auf stdout.
-- [ ] SIGTERM-Handler für sauberen Shutdown.
+- [x] Verzeichnis anlegen: `apps/bridge/native/display-helper/`.
+- [x] `build.sh` für macOS (clang + SDL2).
+- [x] FrameBus-Reader aus DeckLink-Code wiederverwenden/extrahieren.
+- [x] SDL-Fenster erstellen, Fullscreen auf Primär- oder konfiguriertem Display.
+- [x] Renderloop: readLatest → Texture-Upload → Present @ 60 fps.
+- [x] Ready-Signal auf stdout.
+- [x] SIGTERM-Handler für sauberen Shutdown.
 
 ### Phase 2: Adapter-Integration
 
-- [ ] `resolveDisplayHelperPath()` analog zu DeckLink.
-- [ ] Display-Adapter erweitern: Bei `BRIDGE_DISPLAY_NATIVE_HELPER=1` nativen Helper starten statt Electron.
-- [ ] Env-Parameter durchreichen: FrameBus-Name, Size, Width, Height, FPS, Display-Match-Name, -Width, -Height.
-- [ ] Ready-Handshake prüfen.
-- [ ] Stop/Shutdown mit SIGTERM, Timeout, SIGKILL (wie Display-Adapter heute).
+- [x] `resolveDisplayHelperPath()` analog zu DeckLink.
+- [x] Display-Adapter erweitern: Bei `BRIDGE_DISPLAY_NATIVE_HELPER=1` nativen Helper starten statt Electron.
+- [x] Env-Parameter durchreichen: FrameBus-Name, Size, Width, Height, FPS, Display-Match-Name, -Width, -Height.
+- [x] Ready-Handshake prüfen.
+- [x] Stop/Shutdown mit SIGTERM, Timeout, SIGKILL (wie Display-Adapter heute).
 
 ### Phase 3: Display-Auswahl
 
+- [x] CLI-Args: `--display-index` (MVP: Index 0, Primär-Display)
 - [ ] CLI-Args: `--display-name`, `--display-width`, `--display-height`.
 - [ ] SDL-Display-Enumeration mit Match-Logik (Name, Auflösung).
-- [ ] Fallback: Primärer oder erster externer Monitor.
+- [x] Fallback: Primärer Monitor (Index 0).
 
 ### Phase 4: Stabilisierung
 
@@ -183,8 +199,8 @@ flowchart LR
 
 ### Phase 5: Cleanup (optional)
 
-- [ ] Electron Display Helper als Fallback behalten (Feature-Flag aus → Legacy).
-- [ ] Dokumentation finalisieren.
+- [x] Electron Display Helper als Fallback behalten (Feature-Flag aus → Legacy).
+- [x] Dokumentation finalisieren (README, Contract, framebus-dev-setup).
 - [ ] Debug-Overlay für Native Helper (optional).
 
 ---
@@ -193,27 +209,27 @@ flowchart LR
 
 ### Build & Infrastruktur
 
-- [ ] `apps/bridge/native/display-helper/build.sh` erstellen
-- [ ] `apps/bridge/native/display-helper/README.md` mit Build-Anleitung
-- [ ] SDL2-Version festlegen (z.B. 2.28+)
+- [x] `apps/bridge/native/display-helper/build.sh` erstellen
+- [x] `apps/bridge/native/display-helper/README.md` mit Build-Anleitung
+- [x] SDL2-Version: Homebrew/Framework, sdl2-config oder Fallback-Pfade
 - [ ] CMake oder Makefile als Alternative zu reinem build.sh (optional)
 - [ ] CI: Build-Step für display-helper (macOS arm64, x64)
 
 ### Source-Code
 
-- [ ] `display-helper.cpp` – Hauptprogramm
-- [ ] FrameBus-Reader-Logik (aus DeckLink extrahieren oder kopieren)
-- [ ] SDL-Init, Fenster, Renderer
-- [ ] Renderloop mit FPS-Ticker
-- [ ] Display-Auswahl-Logik
-- [ ] Signal-Handler (SIGTERM, SIGINT)
+- [x] `display-helper.cpp` – Hauptprogramm
+- [x] FrameBus-Reader-Logik (aus DeckLink übernommen)
+- [x] SDL-Init, Fenster, Renderer
+- [x] Renderloop mit FPS-Ticker
+- [x] Display-Auswahl-Logik (MVP: `--display-index`)
+- [x] Signal-Handler (SIGTERM, SIGINT)
 
 ### Bridge-Integration
 
-- [ ] `resolveDisplayHelperPath()` in neuem Modul oder decklink-helper-Modul erweitern
-- [ ] `display-output-adapter.ts`: Branch für Native vs. Electron
-- [ ] Env-Parameter für Native Helper
-- [ ] Stop-Logik: SIGTERM statt stdin Shutdown für Native
+- [x] `resolveDisplayHelperPath()` in `apps/bridge/src/modules/display/display-helper.ts`
+- [x] `display-output-adapter.ts`: Branch für Native vs. Electron
+- [x] Env-Parameter für Native Helper
+- [x] Stop-Logik: SIGTERM statt stdin Shutdown für Native (stdio: ignore)
 
 ### Tests & Validierung
 
@@ -225,10 +241,11 @@ flowchart LR
 
 ### Dokumentation
 
-- [ ] README im display-helper-Ordner
-- [ ] Output Helper Contract aktualisieren
-- [ ] Migrationsplan (dieses Dokument) als abgearbeitet markieren
-- [ ] DEPLOY.md für Release-Workflow (analog DeckLink)
+- [x] README im display-helper-Ordner
+- [x] Output Helper Contract aktualisieren
+- [x] Migrationsplan auf aktuellen Stand gebracht
+- [x] framebus-dev-setup.md: BRIDGE_DISPLAY_NATIVE_HELPER + Build-Anleitung
+- [x] DEPLOY.md für Release-Workflow (analog DeckLink)
 
 ---
 
@@ -271,15 +288,16 @@ flowchart LR
 
 ## CLI-Argumente (Native Helper)
 
-| Arg | Beschreibung |
-|-----|--------------|
-| `--framebus-name <name>` | FrameBus Shared-Memory-Name |
-| `--width <int>` | Frame-Breite |
-| `--height <int>` | Frame-Höhe |
-| `--fps <int>` | Ziel-FPS |
-| `--display-name <string>` | Display-Name zum Matchen (optional) |
-| `--display-width <int>` | Display-Auflösung Filter (optional) |
-| `--display-height <int>` | Display-Auflösung Filter (optional) |
+| Arg | Beschreibung | Implementiert |
+|-----|--------------|---------------|
+| `--framebus-name <name>` | FrameBus Shared-Memory-Name | Ja |
+| `--width <int>` | Frame-Breite | Ja |
+| `--height <int>` | Frame-Höhe | Ja |
+| `--fps <int>` | Ziel-FPS | Ja |
+| `--display-index <int>` | SDL-Display-Index (0 = primär) | Ja |
+| `--display-name <string>` | Display-Name zum Matchen (optional) | Nein |
+| `--display-width <int>` | Display-Auflösung Filter (optional) | Nein |
+| `--display-height <int>` | Display-Auflösung Filter (optional) | Nein |
 
 ---
 

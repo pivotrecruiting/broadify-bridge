@@ -44,8 +44,9 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 ### Display
 - GPU Rendering, optional Skalierung auf Monitor-Größe.
 - Debug-Overlay optional.
+- **Native Display Helper** (optional): Bei `BRIDGE_DISPLAY_NATIVE_HELPER=1` wird ein C++/SDL2-Prozess statt des Electron-Helpers gestartet. Liest FrameBus direkt, rendert per SDL/OpenGL fullscreen. Kein IPC für Frames. Pfad-Auflösung: `resolveDisplayHelperPath()` in `apps/bridge/src/modules/display/display-helper.ts`.
 
 ## Status (Stand heute)
 - DeckLink Helper kann FrameBus lesen.
-- Display Helper kann FrameBus lesen.
+- Display Helper kann FrameBus lesen (Electron oder Native).
 - Env-Parameter sind auf Bridge-Seite gesetzt (Name/Size/Format/FPS).

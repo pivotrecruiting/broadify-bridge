@@ -40,3 +40,6 @@ AGENTS.MD
 
 # Native addons (generated)
 apps/bridge/native/framebus/build/
+
+# Native display helper binary (built via build.sh)
+apps/bridge/native/display-helper/display-helper
