@@ -9,6 +9,7 @@ import type {
   GraphicsFrameT,
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
+  GraphicsRendererConfigT,
   GraphicsTemplateBindingsT,
 } from "./graphics-renderer.js";
 
@@ -82,6 +83,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private readyResolver: (() => void) | null = null;
   private readyRejecter: ((error: Error) => void) | null = null;
   private frameCallback: ((frame: GraphicsFrameT) => void) | null = null;
+  private errorCallback: ((error: Error) => void) | null = null;
   private ipcServer: net.Server | null = null;
   private ipcSocket: net.Socket | null = null;
   private ipcBuffer = Buffer.alloc(0);
@@ -93,11 +95,17 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private debugFirstFrameLogged = new Set<string>();
+  private rendererConfigured = false;
+  private sessionConfig: GraphicsRendererConfigT | null = null;
+  private lastSentConfigKey: string | null = null;
+  private configReadyPromise: Promise<void> | null = null;
+  private configReadyResolver: (() => void) | null = null;
+  private configReadyRejecter: ((error: Error) => void) | null = null;
 
   /**
    * Initialize the renderer process and IPC channel.
    *
-   * @returns Promise resolved once the renderer is ready.
+   * @returns Promise resolved once the IPC handshake is complete.
    */
   async initialize(): Promise<void> {
     if (this.child) {
@@ -161,6 +169,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
         this.readyRejecter = null;
         this.readyResolver = null;
       }
+      if (this.errorCallback) {
+        this.errorCallback(error);
+      }
     });
 
     this.child.on("exit", (code, signal) => {
@@ -172,6 +183,15 @@ export class ElectronRendererClient implements GraphicsRenderer {
         );
         this.readyRejecter = null;
         this.readyResolver = null;
+      }
+      if (this.errorCallback) {
+        this.errorCallback(
+          new Error(
+            `Graphics renderer exited (code ${code ?? "unknown"}, signal ${
+              signal ?? "unknown"
+            })`
+          )
+        );
       }
       this.child = null;
     });
@@ -190,6 +210,17 @@ export class ElectronRendererClient implements GraphicsRenderer {
     });
 
     await Promise.race([this.readyPromise, timeoutPromise]);
+  }
+
+  /**
+   * Configure the renderer session before creating layers.
+   *
+   * @param config Session configuration payload.
+   */
+  async configureSession(config: GraphicsRendererConfigT): Promise<void> {
+    this.sessionConfig = config;
+    await this.ensureReady();
+    await this.ensureRendererConfigured();
   }
 
   /**
@@ -214,6 +245,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
    */
   async renderLayer(input: GraphicsRenderLayerInputT): Promise<void> {
     await this.ensureReady();
+    await this.ensureRendererConfigured();
     this.sendCommand({
       type: "create_layer",
       layerId: input.layerId,
@@ -226,6 +258,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
       width: input.width,
       height: input.height,
       fps: input.fps,
+      zIndex: input.zIndex,
     });
   }
 
@@ -251,8 +284,17 @@ export class ElectronRendererClient implements GraphicsRenderer {
    * @param layerId Layer identifier.
    * @param layout Layout payload.
    */
-  async updateLayout(layerId: string, layout: GraphicsLayoutT): Promise<void> {
+  async updateLayout(
+    layerId: string,
+    layout: GraphicsLayoutT,
+    zIndex?: number
+  ): Promise<void> {
     await this.ensureReady();
+    await this.ensureRendererConfigured();
+    if (typeof zIndex === "number") {
+      this.sendCommand({ type: "update_layout", layerId, layout, zIndex });
+      return;
+    }
     this.sendCommand({ type: "update_layout", layerId, layout });
   }
 
@@ -273,6 +315,15 @@ export class ElectronRendererClient implements GraphicsRenderer {
    */
   onFrame(callback: (frame: GraphicsFrameT) => void): void {
     this.frameCallback = callback;
+  }
+
+  /**
+   * Register a callback for renderer errors.
+   *
+   * @param callback Error callback.
+   */
+  onError(callback: (error: Error) => void): void {
+    this.errorCallback = callback;
   }
 
   /**
@@ -330,6 +381,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.ipcAuthenticated = false;
     this.pendingCommands = [];
     this.ipcToken = null;
+    if (this.configReadyRejecter) {
+      this.configReadyRejecter(new Error("Renderer shutdown"));
+    }
+    this.configReadyResolver = null;
+    this.configReadyRejecter = null;
+    this.configReadyPromise = null;
     await this.stopIpcServer();
   }
 
@@ -340,6 +397,68 @@ export class ElectronRendererClient implements GraphicsRenderer {
     }
     if (this.readyPromise) {
       await this.readyPromise;
+    }
+  }
+
+  private async ensureRendererConfigured(): Promise<void> {
+    if (!this.sessionConfig) {
+      return;
+    }
+    const config = this.sessionConfig;
+    const clearColor = config.clearColor
+      ? `${config.clearColor.r},${config.clearColor.g},${config.clearColor.b},${config.clearColor.a}`
+      : "none";
+    const configKey = [
+      config.width,
+      config.height,
+      config.fps,
+      config.pixelFormat,
+      config.framebusName,
+      config.framebusSize,
+      config.backgroundMode,
+      clearColor,
+    ].join("|");
+
+    if (this.rendererConfigured && this.lastSentConfigKey === configKey) {
+      return;
+    }
+
+    this.lastSentConfigKey = configKey;
+
+    if (process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1") {
+      if (!config.framebusName || config.framebusSize <= 0) {
+        this.logStructured(
+          "warn",
+          { component: "graphics-renderer" },
+          "[GraphicsRenderer] FrameBus config missing; renderer_configure skipped"
+        );
+        return;
+      }
+    }
+
+    if (this.configReadyRejecter) {
+      this.configReadyRejecter(new Error("Renderer config superseded"));
+    }
+    this.configReadyPromise = new Promise((resolve, reject) => {
+      this.configReadyResolver = resolve;
+      this.configReadyRejecter = reject;
+    });
+
+    this.sendCommand({
+      type: "renderer_configure",
+      width: config.width,
+      height: config.height,
+      fps: config.fps,
+      pixelFormat: config.pixelFormat,
+      framebusName: config.framebusName,
+      framebusSize: config.framebusSize,
+      backgroundMode: config.backgroundMode,
+      clearColor: config.clearColor,
+    });
+    this.rendererConfigured = false;
+
+    if (this.configReadyPromise) {
+      await this.configReadyPromise;
     }
   }
 
@@ -606,6 +725,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
             "[GraphicsRenderer IPC] Handshake complete",
           );
           this.flushPendingCommands();
+          if (this.readyResolver) {
+            this.readyResolver();
+            this.readyResolver = null;
+            this.readyRejecter = null;
+          }
         } else {
           this.logStructured(
             "warn",
@@ -636,10 +760,14 @@ export class ElectronRendererClient implements GraphicsRenderer {
         continue;
       }
 
-      if (header.type === "ready" && this.readyResolver) {
-        this.readyResolver();
-        this.readyResolver = null;
-        this.readyRejecter = null;
+      if (header.type === "ready") {
+        this.rendererConfigured = true;
+        if (this.configReadyResolver) {
+          this.configReadyResolver();
+        }
+        this.configReadyResolver = null;
+        this.configReadyRejecter = null;
+        this.configReadyPromise = null;
       }
 
       if (header.type === "frame" && payloadBuffer && this.frameCallback) {
@@ -710,6 +838,16 @@ export class ElectronRendererClient implements GraphicsRenderer {
       }
 
       if (header.type === "error" && typeof header.message === "string") {
+        const error = new Error(header.message);
+        if (this.configReadyRejecter) {
+          this.configReadyRejecter(error);
+          this.configReadyResolver = null;
+          this.configReadyRejecter = null;
+          this.configReadyPromise = null;
+        }
+        if (this.errorCallback) {
+          this.errorCallback(error);
+        }
         this.logStructured(
           "error",
           { component: "graphics-renderer" },

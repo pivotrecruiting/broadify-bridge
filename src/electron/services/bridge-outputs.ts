@@ -8,7 +8,8 @@ const OUTPUTS_FETCH_TIMEOUT = 5000; // 5 seconds timeout
 export type OutputDeviceT = {
   id: string;
   name: string;
-  type: "decklink" | "capture" | "connection";
+  // "display" represents external monitor outputs detected on macOS.
+  type: "decklink" | "display" | "capture" | "connection";
   available: boolean;
   deviceId?: string;
   portType?: "sdi" | "hdmi" | "usb" | "displayport" | "thunderbolt";

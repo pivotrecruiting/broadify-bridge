@@ -6,6 +6,9 @@
     "sourceMap": true
   },
   "include": [
-    "src/services/graphics/renderer/electron-renderer-entry.ts"
+    "src/services/graphics/renderer/electron-renderer-entry.ts",
+    "src/services/graphics/display/display-output-entry.ts",
+    "src/services/graphics/display/display-output-preload.cts",
+    "src/services/graphics/framebus/framebus-client.ts"
   ]
 }

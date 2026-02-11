@@ -85,9 +85,10 @@ Renderer‑Entry: `apps/bridge/src/services/graphics/renderer/electron-renderer-
 - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/decklink-split-output-adapter.ts`
+- `apps/bridge/src/services/graphics/output-adapters/display-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
 
-Frames werden mit Header‑Protokoll an den nativen Helper gestreamt.
+Frames werden mit Header‑Protokoll an den nativen Helper (DeckLink) oder an den Display‑Helper (Electron Fullscreen) gestreamt.
 
 ## Fehlerbilder (typisch)
 - Output nicht konfiguriert → `Outputs not configured`
