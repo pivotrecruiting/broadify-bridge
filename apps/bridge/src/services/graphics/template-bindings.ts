@@ -8,6 +8,11 @@ type TemplateSchemaEntryT = {
 
 /**
  * Derived template bindings used by the renderer.
+ *
+ * Shadow DOM targets:
+ * - cssVariables: applied to the layer host element
+ * - textContent/textTypes: applied inside the shadow root
+ * - animationClass: applied to the shadow root element
  */
 export type TemplateBindingsT = {
   cssVariables: Record<string, string>;

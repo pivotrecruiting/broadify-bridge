@@ -10,6 +10,7 @@ import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
 import { VIDEO_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
 import { parseDecklinkPortId } from "./decklink-port.js";
+import { isFrameBusOutputEnabled } from "../framebus/framebus-config.js";
 
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
@@ -23,6 +24,7 @@ const FRAME_HEADER_LENGTH = 28;
  * Streams raw RGBA frames to the native DeckLink helper via stdin.
  */
 export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
+  private useFrameBus: boolean;
   private child: ChildProcess | null = null;
   private readyPromise: Promise<void> | null = null;
   private readyResolver: (() => void) | null = null;
@@ -33,6 +35,10 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
   private height = 0;
   private lastWarningAt = 0;
   private readonly warningThrottleMs = 5000;
+
+  constructor(options?: { useFrameBus?: boolean }) {
+    this.useFrameBus = options?.useFrameBus ?? true;
+  }
 
   /**
    * Configure helper process for the selected output port and format.
@@ -68,31 +74,62 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
       this.readyRejecter = reject;
     });
 
-    this.child = spawn(
-      helperPath,
-      [
-        "--playback",
-        "--device",
-        portInfo.deviceId,
-        "--output-port",
-        output1Id,
-        "--width",
-        String(config.format.width),
-        "--height",
-        String(config.format.height),
-        "--fps",
-        String(config.format.fps),
-        "--pixel-format-priority",
-        VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
-        "--range",
-        config.range,
-        "--colorspace",
-        config.colorspace,
-      ],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
+    const args = [
+      "--playback",
+      "--device",
+      portInfo.deviceId,
+      "--output-port",
+      output1Id,
+      "--width",
+      String(config.format.width),
+      "--height",
+      String(config.format.height),
+      "--fps",
+      String(config.format.fps),
+      "--pixel-format-priority",
+      VIDEO_PIXEL_FORMAT_PRIORITY.join(","),
+      "--range",
+      config.range,
+      "--colorspace",
+      config.colorspace,
+    ];
+
+    if (
+      this.useFrameBus &&
+      process.env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS === "1" &&
+      process.env.BRIDGE_FRAMEBUS_NAME
+    ) {
+      args.push("--framebus-name", process.env.BRIDGE_FRAMEBUS_NAME);
+    }
+
+    const env = { ...process.env } as Record<string, string>;
+    if (this.useFrameBus && isFrameBusOutputEnabled()) {
+      env.BRIDGE_GRAPHICS_OUTPUT_HELPER_FRAMEBUS = "1";
+      env.BRIDGE_GRAPHICS_FRAMEBUS = "1";
+      if (process.env.BRIDGE_FRAMEBUS_NAME) {
+        env.BRIDGE_FRAMEBUS_NAME = process.env.BRIDGE_FRAMEBUS_NAME;
       }
-    );
+      if (process.env.BRIDGE_FRAMEBUS_SIZE) {
+        env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
+      }
+      if (process.env.BRIDGE_FRAME_WIDTH) {
+        env.BRIDGE_FRAME_WIDTH = process.env.BRIDGE_FRAME_WIDTH;
+      }
+      if (process.env.BRIDGE_FRAME_HEIGHT) {
+        env.BRIDGE_FRAME_HEIGHT = process.env.BRIDGE_FRAME_HEIGHT;
+      }
+      if (process.env.BRIDGE_FRAME_FPS) {
+        env.BRIDGE_FRAME_FPS = process.env.BRIDGE_FRAME_FPS;
+      }
+      if (process.env.BRIDGE_FRAME_PIXEL_FORMAT) {
+        env.BRIDGE_FRAME_PIXEL_FORMAT = process.env.BRIDGE_FRAME_PIXEL_FORMAT;
+      }
+    }
+
+    this.child = spawn(helperPath, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env,
+    });
 
     this.getLogger().info(
       `[DeckLinkOutput] Pixel format priority: ${VIDEO_PIXEL_FORMAT_PRIORITY.join(
@@ -147,6 +184,10 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     frame: GraphicsOutputFrameT,
     _config: GraphicsOutputConfigT
   ): Promise<void> {
+    if (this.useFrameBus && isFrameBusOutputEnabled()) {
+      // FrameBus is the primary path. Legacy stdin frames are emergency-only.
+      return;
+    }
     if (!this.child || !this.child.stdin) {
       this.logThrottledWarning("Output helper not running");
       return;
@@ -209,7 +250,8 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
       return;
     }
 
-    const stdin = this.child.stdin;
+    const child = this.child;
+    const stdin = child.stdin;
     if (stdin) {
       const header = Buffer.alloc(FRAME_HEADER_LENGTH);
       header.writeUInt32BE(FRAME_MAGIC, 0);
@@ -223,7 +265,44 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
       stdin.end();
     }
 
-    this.child.kill("SIGTERM");
+    const hasExited = () =>
+      child.exitCode !== null || child.signalCode !== null;
+    const awaitExit = () =>
+      new Promise<void>((resolve) => {
+        if (hasExited()) {
+          resolve();
+          return;
+        }
+        child.once("exit", () => resolve());
+      });
+
+    const gracefulTimeoutMs = 4000;
+    const forceTimeoutMs = 2000;
+
+    await Promise.race([
+      awaitExit(),
+      new Promise<void>((resolve) => {
+        const timeoutId = setTimeout(() => resolve(), gracefulTimeoutMs);
+        void awaitExit().then(() => clearTimeout(timeoutId));
+      }),
+    ]);
+
+    if (!hasExited()) {
+      child.kill("SIGTERM");
+      await Promise.race([
+        awaitExit(),
+        new Promise<void>((resolve) => {
+          const timeoutId = setTimeout(() => resolve(), forceTimeoutMs);
+          void awaitExit().then(() => clearTimeout(timeoutId));
+        }),
+      ]);
+    }
+
+    if (!hasExited()) {
+      child.kill("SIGKILL");
+      await awaitExit();
+    }
+
     this.child = null;
     this.readyPromise = null;
     this.readyResolver = null;
@@ -252,6 +331,8 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
           this.readyResolver();
           this.readyResolver = null;
           this.readyRejecter = null;
+        } else if (message.type === "metrics") {
+          this.getLogger().info(`[DeckLinkOutput] ${line}`);
         }
       } catch {
         this.getLogger().warn(`[DeckLinkOutput] Non-JSON output: ${line}`);

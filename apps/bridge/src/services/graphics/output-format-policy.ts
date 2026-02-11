@@ -10,8 +10,9 @@ export const VIDEO_PIXEL_FORMAT_PRIORITY = [
  * Pixel format priorities for DeckLink key/fill output.
  */
 export const KEY_FILL_PIXEL_FORMAT_PRIORITY = [
+  // Key/fill output is ARGB-only on macOS. BGRA is not permitted.
+  // If ARGB is not supported by the device, configuration must fail.
   "8bit_argb",
-  "8bit_bgra",
 ] as const;
 
 /**

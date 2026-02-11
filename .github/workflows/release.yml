@@ -32,6 +32,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SKIP_DECKLINK_HELPER_BUILD: "1"
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       DECKLINK_HELPER_URL_ARM64: ${{ secrets.DECKLINK_HELPER_URL_ARM64 }}
       DECKLINK_HELPER_SHA256_ARM64: ${{ secrets.DECKLINK_HELPER_SHA256_ARM64 }}
       DECKLINK_HELPER_URL_X64: ${{ secrets.DECKLINK_HELPER_URL_X64 }}
@@ -73,10 +74,17 @@ jobs:
       - name: Write Bridge env for packaging
         shell: bash
         run: |
-          if [ -n "$BRIDGE_RELAY_JWKS_URL" ]; then
-            mkdir -p apps/bridge/dist
-            printf "BRIDGE_RELAY_JWKS_URL=%s\n" "$BRIDGE_RELAY_JWKS_URL" > apps/bridge/dist/.env
+          mkdir -p apps/bridge/dist
+          if [ -f config/bridge.env ]; then
+            cp config/bridge.env apps/bridge/dist/.env
           fi
+          if [ -n "${BRIDGE_RELAY_JWKS_URL:-}" ]; then
+            printf "\nBRIDGE_RELAY_JWKS_URL=%s\n" "$BRIDGE_RELAY_JWKS_URL" >> apps/bridge/dist/.env
+          fi
+
+      - name: Install SDL2 (macOS, for display-helper)
+        if: matrix.os == 'macos-15'
+        run: brew install sdl2
 
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never

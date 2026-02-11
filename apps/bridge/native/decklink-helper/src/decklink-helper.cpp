@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <iostream>
@@ -28,6 +29,11 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#include "../../framebus/include/framebus.h"
 
 namespace {
 
@@ -567,6 +573,8 @@ struct PlaybackConfig {
   std::vector<BMDPixelFormat> pixelFormatPriority;
   bool useLegalRange = true;
   BMDColorspace colorspaceOverride = bmdColorspaceUnknown;
+  std::string frameBusName;
+  size_t frameBusSize = 0;
 };
 
 struct ModeListConfig {
@@ -595,6 +603,14 @@ constexpr uint16_t kFrameTypeShutdown = 2;
 constexpr size_t kFrameHeaderSize = 28;
 constexpr size_t kMaxQueuedFrames = 4;
 
+struct FrameBusReader {
+  int fd = -1;
+  uint8_t* base = nullptr;
+  size_t size = 0;
+  FrameBusHeader* header = nullptr;
+  uint8_t* slots = nullptr;
+};
+
 #ifndef bmdSupportedVideoModeDefault
 #define bmdSupportedVideoModeDefault 0
 #endif
@@ -620,6 +636,83 @@ uint64_t readUint64BE(const uint8_t* data) {
          (static_cast<uint64_t>(data[5]) << 16) |
          (static_cast<uint64_t>(data[6]) << 8) |
          static_cast<uint64_t>(data[7]);
+}
+
+uint64_t nowSystemNs() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+uint64_t atomicLoad64(uint64_t* ptr) {
+  return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
+}
+
+bool openFrameBusReader(const std::string& name, FrameBusReader& out, std::string& error) {
+  if (name.empty()) {
+    error = "FrameBus name is empty";
+    return false;
+  }
+  std::string shmName = name;
+  if (shmName[0] != '/') {
+    shmName = "/" + shmName;
+  }
+
+  const int fd = shm_open(shmName.c_str(), O_RDWR, 0600);
+  if (fd < 0) {
+    error = "Failed to open FrameBus shared memory";
+    return false;
+  }
+
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    close(fd);
+    error = "Failed to stat FrameBus shared memory";
+    return false;
+  }
+
+  size_t totalSize = static_cast<size_t>(st.st_size);
+  if (totalSize < FRAMEBUS_HEADER_SIZE) {
+    close(fd);
+    error = "FrameBus shared memory too small";
+    return false;
+  }
+
+  void* base = mmap(nullptr, totalSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (base == MAP_FAILED) {
+    close(fd);
+    error = "Failed to map FrameBus shared memory";
+    return false;
+  }
+
+  auto* header = static_cast<FrameBusHeader*>(base);
+  if (header->magic != FRAMEBUS_MAGIC_LE || header->header_size != FRAMEBUS_HEADER_SIZE) {
+    munmap(base, totalSize);
+    close(fd);
+    error = "FrameBus header invalid";
+    return false;
+  }
+
+  out.fd = fd;
+  out.base = static_cast<uint8_t*>(base);
+  out.size = totalSize;
+  out.header = header;
+  out.slots = out.base + FRAMEBUS_HEADER_SIZE;
+  return true;
+}
+
+void closeFrameBusReader(FrameBusReader& reader) {
+  if (reader.base && reader.size > 0) {
+    munmap(reader.base, reader.size);
+  }
+  if (reader.fd >= 0) {
+    close(reader.fd);
+  }
+  reader.fd = -1;
+  reader.base = nullptr;
+  reader.size = 0;
+  reader.header = nullptr;
+  reader.slots = nullptr;
 }
 
 bool readExact(int fd, uint8_t* buffer, size_t length) {
@@ -1687,11 +1780,8 @@ int runPlayback(const PlaybackConfig& config) {
 
   std::vector<BMDPixelFormat> pixelFormats = config.pixelFormatPriority;
   if (pixelFormats.empty()) {
-    if (useKeyer) {
-      pixelFormats = { bmdFormat8BitARGB, bmdFormat8BitBGRA };
-    } else {
-      pixelFormats = { bmdFormat8BitBGRA, bmdFormat8BitARGB };
-    }
+    // ARGB is the only permitted fallback pixel format; BGRA is disallowed.
+    pixelFormats = { bmdFormat8BitARGB };
   }
 
   BMDPixelFormat selectedPixelFormat = bmdFormat8BitARGB;
@@ -1827,107 +1917,264 @@ int runPlayback(const PlaybackConfig& config) {
   DeckLinkPlaybackCallback* callback = new DeckLinkPlaybackCallback(&state);
   output->SetScheduledFrameCompletionCallback(callback);
 
-  std::cout << "{\"type\":\"ready\"}" << std::endl;
-  std::cout.flush();
-
   const size_t expectedBytes =
       static_cast<size_t>(config.width) *
       static_cast<size_t>(config.height) * 4;
-  const int stdinFd = fileno(stdin);
-  std::vector<uint8_t> headerBuffer(kFrameHeaderSize);
-  int headerMismatchLogsRemaining = 2;
-  int headerInvalidLogsRemaining = 2;
-
-  while (!gShouldExit.load()) {
-    if (!readExact(stdinFd, headerBuffer.data(), kFrameHeaderSize)) {
-      break;
+  auto maybeStartPlayback = [&]() {
+    if (state.started) {
+      return;
+    }
+    while (state.prerollScheduled < state.prerollTarget) {
+      std::vector<uint8_t> frameData;
+      if (!state.queue.pop(frameData)) {
+        break;
+      }
+      state.lastFrame = frameData;
+      state.hasLastFrame = true;
+      if (scheduleFrame(state, frameData)) {
+        state.prerollScheduled += 1;
+      } else {
+        break;
+      }
     }
 
-    PlaybackFrameHeader header;
-    header.magic = readUint32BE(headerBuffer.data());
-    header.version = readUint16BE(headerBuffer.data() + 4);
-    header.type = readUint16BE(headerBuffer.data() + 6);
-    header.width = readUint32BE(headerBuffer.data() + 8);
-    header.height = readUint32BE(headerBuffer.data() + 12);
-    header.timestamp = readUint64BE(headerBuffer.data() + 16);
-    header.bufferLength = readUint32BE(headerBuffer.data() + 24);
-
-    if (header.magic != kFrameMagic || header.version != kFrameVersion) {
-      if (headerInvalidLogsRemaining > 0) {
-        std::cerr << "Invalid frame header."
-                  << " magic=0x" << std::hex << header.magic
-                  << " version=" << std::dec << header.version
+    if (state.prerollScheduled >= state.prerollTarget) {
+      const HRESULT startResult =
+          output->StartScheduledPlayback(0, state.timeScale, 1.0);
+      if (startResult == S_OK) {
+        state.started = true;
+      } else {
+        std::cerr << "StartScheduledPlayback failed. HRESULT=0x" << std::hex
+                  << static_cast<uint32_t>(startResult) << std::dec
                   << std::endl;
-        headerInvalidLogsRemaining -= 1;
       }
-      break;
     }
+  };
 
-    if (header.type == kFrameTypeShutdown) {
-      break;
-    }
-
-    if (header.type != kFrameTypeFrame) {
-      if (header.bufferLength > 0) {
-        if (!discardBytes(stdinFd, header.bufferLength)) {
-          break;
-        }
-      }
-      continue;
-    }
-
-    if (header.width != static_cast<uint32_t>(config.width) ||
-        header.height != static_cast<uint32_t>(config.height) ||
-        header.bufferLength != expectedBytes) {
-      if (headerMismatchLogsRemaining > 0) {
-        std::cerr << "Frame header mismatch. expected="
+  if (!config.frameBusName.empty()) {
+    FrameBusReader reader;
+    std::string frameBusError;
+    if (!openFrameBusReader(config.frameBusName, reader, frameBusError)) {
+      std::cerr << "FrameBus open failed: " << frameBusError << std::endl;
+      gShouldExit.store(true);
+    } else {
+      if (config.frameBusSize > 0 && reader.size != config.frameBusSize) {
+        std::cerr << "FrameBus size mismatch. expected="
+                  << config.frameBusSize << " got=" << reader.size << std::endl;
+        closeFrameBusReader(reader);
+        gShouldExit.store(true);
+      } else if (reader.header->frame_size != expectedBytes ||
+                 reader.header->width != static_cast<uint32_t>(config.width) ||
+                 reader.header->height != static_cast<uint32_t>(config.height)) {
+        std::cerr << "FrameBus header mismatch. expected="
                   << config.width << "x" << config.height
                   << " bytes=" << expectedBytes
-                  << " got=" << header.width << "x" << header.height
-                  << " bytes=" << header.bufferLength << std::endl;
-        headerMismatchLogsRemaining -= 1;
-      }
-      if (header.bufferLength > 0) {
-        if (!discardBytes(stdinFd, header.bufferLength)) {
-          break;
+                  << " got=" << reader.header->width << "x"
+                  << reader.header->height
+                  << " bytes=" << reader.header->frame_size << std::endl;
+        closeFrameBusReader(reader);
+        gShouldExit.store(true);
+      } else if (reader.header->pixel_format != FRAMEBUS_PIXELFORMAT_RGBA8) {
+        std::cerr << "FrameBus pixel format mismatch (expected RGBA8)." << std::endl;
+        closeFrameBusReader(reader);
+        gShouldExit.store(true);
+      } else {
+        std::cout << "{\"type\":\"ready\"}" << std::endl;
+        std::cout.flush();
+
+        uint64_t lastSeq = 0;
+        uint64_t droppedFrames = 0;
+        uint64_t framesObserved = 0;
+        double latencyTotalMs = 0.0;
+        double latencyMaxMs = 0.0;
+        auto lastLogAt = std::chrono::steady_clock::now();
+
+        auto logMetricsIfNeeded = [&]() {
+          const auto now = std::chrono::steady_clock::now();
+          const auto elapsedMs =
+              std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLogAt)
+                  .count();
+          if (elapsedMs < 1000) {
+            return;
+          }
+          const double fps = elapsedMs > 0 ? (framesObserved * 1000.0) / elapsedMs : 0.0;
+          const double latencyAvg = framesObserved > 0 ? latencyTotalMs / framesObserved : 0.0;
+          std::ostringstream out;
+          out << "{\"type\":\"metrics\",\"source\":\"framebus\""
+              << ",\"fps\":" << std::fixed << std::setprecision(1) << fps
+              << ",\"drops\":" << droppedFrames
+              << ",\"latencyMsAvg\":" << std::fixed << std::setprecision(1)
+              << latencyAvg
+              << ",\"latencyMsMax\":" << std::fixed << std::setprecision(1)
+              << latencyMaxMs
+              << "}";
+          std::cout << out.str() << std::endl;
+          std::cout.flush();
+          framesObserved = 0;
+          droppedFrames = 0;
+          latencyTotalMs = 0.0;
+          latencyMaxMs = 0.0;
+          lastLogAt = now;
+        };
+
+        while (!gShouldExit.load()) {
+          const uint64_t seq = atomicLoad64(&reader.header->seq);
+          if (seq == 0 || seq == lastSeq) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+          }
+          if (lastSeq > 0 && seq > lastSeq + 1) {
+            droppedFrames += (seq - lastSeq - 1);
+          }
+          lastSeq = seq;
+          const uint64_t timestampNs = atomicLoad64(&reader.header->last_write_ns);
+          if (timestampNs > 0) {
+            const uint64_t nowNs = nowSystemNs();
+            if (nowNs >= timestampNs) {
+              const double latencyMs =
+                  static_cast<double>(nowNs - timestampNs) / 1'000'000.0;
+              latencyTotalMs += latencyMs;
+              if (latencyMs > latencyMaxMs) {
+                latencyMaxMs = latencyMs;
+              }
+            }
+          }
+          framesObserved += 1;
+          logMetricsIfNeeded();
+          const uint32_t slotIndex =
+              static_cast<uint32_t>((seq - 1) % reader.header->slot_count);
+          const uint8_t* slotPtr =
+              reader.slots + (static_cast<size_t>(slotIndex) * reader.header->slot_stride);
+          std::vector<uint8_t> frameBuffer(reader.header->frame_size);
+          std::memcpy(frameBuffer.data(), slotPtr, frameBuffer.size());
+          state.queue.push(std::move(frameBuffer));
+          maybeStartPlayback();
         }
+        closeFrameBusReader(reader);
       }
-      continue;
     }
+  } else {
+    std::cout << "{\"type\":\"ready\"}" << std::endl;
+    std::cout.flush();
 
-    std::vector<uint8_t> frameBuffer(header.bufferLength);
-    if (!readExact(stdinFd, frameBuffer.data(), frameBuffer.size())) {
-      break;
-    }
+    uint64_t droppedFrames = 0;
+    uint64_t framesObserved = 0;
+    double latencyTotalMs = 0.0;
+    double latencyMaxMs = 0.0;
+    auto lastLogAt = std::chrono::steady_clock::now();
 
-    state.queue.push(std::move(frameBuffer));
+    auto logMetricsIfNeeded = [&]() {
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsedMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLogAt)
+              .count();
+      if (elapsedMs < 1000) {
+        return;
+      }
+      const double fps = elapsedMs > 0 ? (framesObserved * 1000.0) / elapsedMs : 0.0;
+      const double latencyAvg = framesObserved > 0 ? latencyTotalMs / framesObserved : 0.0;
+      std::ostringstream out;
+      out << "{\"type\":\"metrics\",\"source\":\"stdin\""
+          << ",\"fps\":" << std::fixed << std::setprecision(1) << fps
+          << ",\"drops\":" << droppedFrames
+          << ",\"latencyMsAvg\":" << std::fixed << std::setprecision(1)
+          << latencyAvg
+          << ",\"latencyMsMax\":" << std::fixed << std::setprecision(1)
+          << latencyMaxMs
+          << "}";
+      std::cout << out.str() << std::endl;
+      std::cout.flush();
+      framesObserved = 0;
+      droppedFrames = 0;
+      latencyTotalMs = 0.0;
+      latencyMaxMs = 0.0;
+      lastLogAt = now;
+    };
 
-    if (!state.started) {
-      while (state.prerollScheduled < state.prerollTarget) {
-        std::vector<uint8_t> frameData;
-        if (!state.queue.pop(frameData)) {
-          break;
-        }
-        state.lastFrame = frameData;
-        state.hasLastFrame = true;
-        if (scheduleFrame(state, frameData)) {
-          state.prerollScheduled += 1;
-        } else {
-          break;
-        }
+    const int stdinFd = fileno(stdin);
+    std::vector<uint8_t> headerBuffer(kFrameHeaderSize);
+    int headerMismatchLogsRemaining = 2;
+    int headerInvalidLogsRemaining = 2;
+
+    while (!gShouldExit.load()) {
+      if (!readExact(stdinFd, headerBuffer.data(), kFrameHeaderSize)) {
+        break;
       }
 
-      if (state.prerollScheduled >= state.prerollTarget) {
-        const HRESULT startResult =
-            output->StartScheduledPlayback(0, state.timeScale, 1.0);
-        if (startResult == S_OK) {
-          state.started = true;
-        } else {
-          std::cerr << "StartScheduledPlayback failed. HRESULT=0x" << std::hex
-                    << static_cast<uint32_t>(startResult) << std::dec
+      PlaybackFrameHeader header;
+      header.magic = readUint32BE(headerBuffer.data());
+      header.version = readUint16BE(headerBuffer.data() + 4);
+      header.type = readUint16BE(headerBuffer.data() + 6);
+      header.width = readUint32BE(headerBuffer.data() + 8);
+      header.height = readUint32BE(headerBuffer.data() + 12);
+      header.timestamp = readUint64BE(headerBuffer.data() + 16);
+      header.bufferLength = readUint32BE(headerBuffer.data() + 24);
+
+      if (header.magic != kFrameMagic || header.version != kFrameVersion) {
+        if (headerInvalidLogsRemaining > 0) {
+          std::cerr << "Invalid frame header."
+                    << " magic=0x" << std::hex << header.magic
+                    << " version=" << std::dec << header.version
                     << std::endl;
+          headerInvalidLogsRemaining -= 1;
+        }
+        break;
+      }
+
+      if (header.type == kFrameTypeShutdown) {
+        break;
+      }
+
+      if (header.type != kFrameTypeFrame) {
+        if (header.bufferLength > 0) {
+          if (!discardBytes(stdinFd, header.bufferLength)) {
+            break;
+          }
+        }
+        continue;
+      }
+
+      if (header.width != static_cast<uint32_t>(config.width) ||
+          header.height != static_cast<uint32_t>(config.height) ||
+          header.bufferLength != expectedBytes) {
+        if (headerMismatchLogsRemaining > 0) {
+          std::cerr << "Frame header mismatch. expected="
+                    << config.width << "x" << config.height
+                    << " bytes=" << expectedBytes
+                    << " got=" << header.width << "x" << header.height
+                    << " bytes=" << header.bufferLength << std::endl;
+          headerMismatchLogsRemaining -= 1;
+        }
+        if (header.bufferLength > 0) {
+          if (!discardBytes(stdinFd, header.bufferLength)) {
+            break;
+          }
+        }
+        continue;
+      }
+
+      std::vector<uint8_t> frameBuffer(header.bufferLength);
+      if (!readExact(stdinFd, frameBuffer.data(), frameBuffer.size())) {
+        break;
+      }
+
+      const uint64_t nowMs = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch())
+              .count());
+      if (header.timestamp > 0 && nowMs >= header.timestamp) {
+        const double latencyMs =
+            static_cast<double>(nowMs - header.timestamp);
+        latencyTotalMs += latencyMs;
+        if (latencyMs > latencyMaxMs) {
+          latencyMaxMs = latencyMs;
         }
       }
+      framesObserved += 1;
+      logMetricsIfNeeded();
+
+      state.queue.push(std::move(frameBuffer));
+      maybeStartPlayback();
     }
   }
 
@@ -2174,6 +2421,65 @@ int main(int argc, char** argv) {
         config.colorspaceOverride = override;
         continue;
       }
+      if (arg == "--framebus-name" && i + 1 < argc) {
+        config.frameBusName = argv[++i];
+        continue;
+      }
+    }
+
+    auto readEnvInt = [](const char* name) -> int {
+      const char* value = std::getenv(name);
+      if (!value || !*value) {
+        return 0;
+      }
+      try {
+        return std::stoi(value);
+      } catch (...) {
+        return 0;
+      }
+    };
+
+    auto readEnvDouble = [](const char* name) -> double {
+      const char* value = std::getenv(name);
+      if (!value || !*value) {
+        return 0.0;
+      }
+      try {
+        return std::stod(value);
+      } catch (...) {
+        return 0.0;
+      }
+    };
+
+    auto readEnvSize = [](const char* name) -> size_t {
+      const char* value = std::getenv(name);
+      if (!value || !*value) {
+        return 0;
+      }
+      try {
+        return static_cast<size_t>(std::stoll(value));
+      } catch (...) {
+        return 0;
+      }
+    };
+
+    if (config.width <= 0) {
+      config.width = readEnvInt("BRIDGE_FRAME_WIDTH");
+    }
+    if (config.height <= 0) {
+      config.height = readEnvInt("BRIDGE_FRAME_HEIGHT");
+    }
+    if (config.fps <= 0) {
+      config.fps = readEnvDouble("BRIDGE_FRAME_FPS");
+    }
+    if (config.frameBusName.empty()) {
+      const char* envFrameBusName = std::getenv("BRIDGE_FRAMEBUS_NAME");
+      if (envFrameBusName && *envFrameBusName) {
+        config.frameBusName = envFrameBusName;
+      }
+    }
+    if (config.frameBusSize == 0) {
+      config.frameBusSize = readEnvSize("BRIDGE_FRAMEBUS_SIZE");
     }
 
     return runPlayback(config);
