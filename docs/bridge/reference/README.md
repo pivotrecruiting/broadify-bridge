@@ -7,6 +7,7 @@ Kurze Referenzen für zentrale Dateien. Jede Seite beschreibt Zweck, Ein-/Ausgä
 - `docs/bridge/reference/files/relay-client.md`
 - `docs/bridge/reference/files/command-router.md`
 - `docs/bridge/reference/files/graphics-manager.md`
+- `docs/bridge/reference/files/graphics-framebus-session-service.md`
 - `docs/bridge/reference/files/renderer-client.md`
 - `docs/bridge/reference/files/renderer-entry.md`
 - `docs/bridge/reference/files/output-adapter.md`

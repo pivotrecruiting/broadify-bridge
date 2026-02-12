@@ -62,11 +62,19 @@ Für jede bearbeitete Datei wird erfasst:
 
 ### apps/bridge/src/services/graphics/graphics-manager.ts
 - Status: step-2 advanced
-- Änderungen: atomare Transition vollständig an `graphics-output-transition-service.ts` delegiert; Layer-Prepare-Pipeline an `graphics-layer-prepare-service.ts` ausgelagert; Payload-Diagnostics an `graphics-payload-diagnostics.ts` ausgelagert; Startup-/Recovery-Logik an `graphics-runtime-init-service.ts` delegiert.
-- Line Count: 609
+- Änderungen: atomare Transition vollständig an `graphics-output-transition-service.ts` delegiert; Layer-Prepare-Pipeline an `graphics-layer-prepare-service.ts` ausgelagert; Payload-Diagnostics an `graphics-payload-diagnostics.ts` ausgelagert; Startup-/Recovery-Logik an `graphics-runtime-init-service.ts` delegiert; FrameBus-Session-Auflösung/Env/Change-Logging in `graphics-framebus-session-service.ts` ausgelagert.
+- Line Count: 561
 - Komplexität: mittel-hoch
-- SSOT/SRP Analyse: SRP weiter verbessert, da Transition-/Rollback, Prepare-Pipeline, Diagnostics und Runtime-Init außerhalb liegen; verbleibend ist primär Use-Case-Orchestrierung.
-- Nächster Refactor: optional Status-Projektion (`getStatus`/`getStatusSnapshot`) in eigenen Projection-Service auslagern.
+- SSOT/SRP Analyse: SRP weiter verbessert, da Transition-/Rollback, Prepare-Pipeline, Diagnostics, Runtime-Init und FrameBus-Session-Details außerhalb liegen; verbleibend ist primär Use-Case-Orchestrierung mit klaren Service-Grenzen.
+- Nächster Refactor: Status-Projektion (`getStatus`/`getStatusSnapshot`) und Error-Mapping (`failGraphics`) in dedizierte Services extrahieren, um den Manager auf reine Command-Orchestrierung zu reduzieren.
+
+### apps/bridge/src/services/graphics/graphics-framebus-session-service.ts
+- Status: step-2 done (new)
+- Änderungen: `resolveFrameBusConfig`, `logFrameBusConfigChange` und `applyFrameBusSessionConfig` aus `graphics-manager.ts` ausgelagert.
+- Line Count: 83
+- Komplexität: niedrig
+- SSOT/SRP Analyse: zentrale SSOT für FrameBus-Session-Policy (Config-Resolution, Env-Apply, Config-Delta-Logging); reduziert Drift-Risiko zwischen Init/Transition-Pfaden.
+- Nächster Refactor: optional Logger als Dependency injizieren, um Testbarkeit ohne globalen Bridge-Context zu erhöhen.
 
 ### apps/bridge/src/services/graphics/graphics-runtime-init-service.ts
 - Status: step-2 done (new)

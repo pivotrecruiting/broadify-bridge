@@ -25,11 +25,7 @@ import type {
 } from "./renderer/graphics-renderer.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
 import { createTestPatternPayload } from "./test-pattern.js";
-import {
-  applyFrameBusEnv,
-  buildFrameBusConfig,
-  type FrameBusConfigT,
-} from "./framebus/framebus-config.js";
+import { type FrameBusConfigT } from "./framebus/framebus-config.js";
 import { selectOutputAdapter } from "./graphics-output-adapter-factory.js";
 import {
   validateOutputFormat,
@@ -64,6 +60,11 @@ import {
   summarizeSendPayload,
 } from "./graphics-payload-diagnostics.js";
 import { GraphicsRuntimeInitService } from "./graphics-runtime-init-service.js";
+import {
+  applyFrameBusSessionConfig,
+  logFrameBusConfigChange,
+  resolveFrameBusConfig,
+} from "./graphics-framebus-session-service.js";
 
 /**
  * Graphics manager orchestrates layers, rendering, and output.
@@ -112,12 +113,10 @@ export class GraphicsManager {
       selectOutputAdapter,
       persistConfig: (config) => outputConfigStore.setConfig(config),
       clearPersistedConfig: () => outputConfigStore.clear(),
-      resolveFrameBusConfig: (config, previous) =>
-        this.resolveFrameBusConfig(config, previous),
+      resolveFrameBusConfig,
       buildRendererConfig: (config, frameBusConfig) =>
         this.buildRendererConfig(config, frameBusConfig),
-      logFrameBusConfigChange: (previous, next) =>
-        this.logFrameBusConfigChange(previous, next),
+      logFrameBusConfigChange,
     });
     this.runtimeInitService = new GraphicsRuntimeInitService({
       getRenderer: () => this.renderer,
@@ -133,7 +132,12 @@ export class GraphicsManager {
       createStubRenderer: () => new StubRenderer(),
       createStubOutputAdapter: () => new StubOutputAdapter(),
       selectOutputAdapter,
-      applyFrameBusConfig: (config) => this.applyFrameBusConfig(config),
+      applyFrameBusConfig: (config) => {
+        this.frameBusConfig = applyFrameBusSessionConfig(
+          config,
+          this.frameBusConfig
+        );
+      },
       buildRendererConfig: (config) => this.buildRendererConfig(config),
       publishGraphicsError: (code, message) =>
         publishGraphicsErrorEvent(code, message),
@@ -549,60 +553,6 @@ export class GraphicsManager {
   private failGraphics(code: GraphicsErrorCodeT, message: string): never {
     publishGraphicsErrorEvent(code, message);
     throw new GraphicsError(code, message);
-  }
-
-  private resolveFrameBusConfig(
-    config: GraphicsOutputConfigT,
-    previous: FrameBusConfigT | null
-  ): FrameBusConfigT {
-    const requestedPixelFormat =
-      process.env.BRIDGE_FRAME_PIXEL_FORMAT ??
-      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
-    if (requestedPixelFormat && requestedPixelFormat !== "1") {
-      getBridgeContext().logger.warn(
-        `[Graphics] FrameBus pixel format ${requestedPixelFormat} not supported; enforcing RGBA8`
-      );
-    }
-
-    return buildFrameBusConfig(config, previous);
-  }
-
-  private logFrameBusConfigChange(
-    previous: FrameBusConfigT | null,
-    next: FrameBusConfigT
-  ): void {
-    const changed =
-      !previous ||
-      previous.name !== next.name ||
-      previous.slotCount !== next.slotCount ||
-      previous.pixelFormat !== next.pixelFormat ||
-      previous.width !== next.width ||
-      previous.height !== next.height ||
-      previous.fps !== next.fps;
-
-    if (!changed) {
-      return;
-    }
-
-    getBridgeContext().logger.info(
-      `[Graphics] FrameBus config ${JSON.stringify({
-        name: next.name,
-        slotCount: next.slotCount,
-        pixelFormat: next.pixelFormat,
-        width: next.width,
-        height: next.height,
-        fps: next.fps,
-        size: next.size,
-      })}`
-    );
-  }
-
-  private applyFrameBusConfig(config: GraphicsOutputConfigT): void {
-    const previous = this.frameBusConfig;
-    const next = this.resolveFrameBusConfig(config, previous);
-    this.frameBusConfig = next;
-    applyFrameBusEnv(next);
-    this.logFrameBusConfigChange(previous, next);
   }
 }
 
