@@ -120,7 +120,7 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
     this.child.stderr?.on("data", (data) => {
       const text = data.toString().trim();
       if (text.length > 0) {
-        this.getLogger().warn(`[DeckLinkOutput] ${text}`);
+        this.getLogger().error(`[DeckLinkOutput] ${text}`);
       }
     });
 

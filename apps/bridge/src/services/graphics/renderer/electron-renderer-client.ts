@@ -101,6 +101,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private configReadyPromise: Promise<void> | null = null;
   private configReadyResolver: (() => void) | null = null;
   private configReadyRejecter: ((error: Error) => void) | null = null;
+  private isShuttingDown = false;
 
   /**
    * Initialize the renderer process and IPC channel.
@@ -184,7 +185,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         this.readyRejecter = null;
         this.readyResolver = null;
       }
-      if (this.errorCallback) {
+      if (!this.isShuttingDown && this.errorCallback) {
         this.errorCallback(
           new Error(
             `Graphics renderer exited (code ${code ?? "unknown"}, signal ${
@@ -199,10 +200,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
     const timeoutPromise = new Promise<void>((_resolve, reject) => {
       const timeoutId = setTimeout(() => {
         if (this.child) {
+          this.readyRejecter = null;
+          this.readyResolver = null;
           this.child.kill();
         }
         reject(new Error("Graphics renderer startup timed out"));
-      }, 5000);
+      }, 12000);
 
       this.readyPromise
         ?.then(() => clearTimeout(timeoutId))
@@ -334,6 +337,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
       return;
     }
 
+    this.isShuttingDown = true;
     const child = this.child;
     const hasExited = () =>
       child.exitCode !== null || child.signalCode !== null;
@@ -387,6 +391,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.configReadyResolver = null;
     this.configReadyRejecter = null;
     this.configReadyPromise = null;
+    this.isShuttingDown = false;
     await this.stopIpcServer();
   }
 
