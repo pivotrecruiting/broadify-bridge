@@ -62,11 +62,19 @@ Für jede bearbeitete Datei wird erfasst:
 
 ### apps/bridge/src/services/graphics/graphics-manager.ts
 - Status: step-2 advanced
-- Änderungen: Layer-/Preset-/Event-Logik auf Services umgehängt (`graphics-layer-service.ts`, `graphics-preset-service.ts`, `graphics-event-publisher.ts`); Manager fokussiert stärker auf API-Flow-Orchestrierung.
-- Line Count: 734
+- Änderungen: atomare Transition vollständig an `graphics-output-transition-service.ts` delegiert; Manager übernimmt nur noch Validierung + Orchestrierung + Fehler-Mapping.
+- Line Count: 782
 - Komplexität: mittel-hoch
-- SSOT/SRP Analyse: klare SRP-Verbesserung, da Device/Layer/Preset/Event-Detailregeln außerhalb liegen; verbleibend sind Payload-Summarizer + Prepare-Flow + Session/Output-Orchestrierung in einer Datei.
-- Nächster Refactor: `graphics-payload-diagnostics.ts` (summarize*), optional `graphics-layer-prepare-service.ts` (asset/sanitize/validate pipeline).
+- SSOT/SRP Analyse: SRP weiter verbessert, da Transition-/Rollback-Komplexität nicht mehr im Manager liegt; verbleibend sind Payload-Diagnostik und Layer-Prepare-Pipeline.
+- Nächster Refactor: `graphics-payload-diagnostics.ts` auslagern, optional `graphics-layer-prepare-service.ts`.
+
+### apps/bridge/src/services/graphics/graphics-output-transition-service.ts
+- Status: step-2 done (new)
+- Änderungen: serialisierte atomare Output-Transition extrahiert (queue, staged apply, persist-last, rollback, rollback-fallback).
+- Line Count: 219
+- Komplexität: hoch
+- SSOT/SRP Analyse: zentrale SSOT für Output-Transition-Konsistenz; reduziert Risiko inkonsistenter Runtime-/Persistenzzustände.
+- Nächster Refactor: optional adapter-rollback/details in `graphics-output-rollback-service.ts` splitten, falls Umfang wächst.
 
 ### apps/bridge/src/services/graphics/graphics-manager-types.ts
 - Status: step-2 done (new)

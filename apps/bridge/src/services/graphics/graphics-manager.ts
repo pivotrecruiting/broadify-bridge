@@ -58,6 +58,10 @@ import {
   publishGraphicsStatusEvent,
 } from "./graphics-event-publisher.js";
 import { GraphicsPresetService } from "./graphics-preset-service.js";
+import {
+  GraphicsOutputTransitionError,
+  GraphicsOutputTransitionService,
+} from "./graphics-output-transition-service.js";
 
 const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
   "key_fill_sdi",
@@ -78,6 +82,7 @@ export class GraphicsManager {
   private activePreset: GraphicsActivePresetT | null = null;
   private frameBusConfig: FrameBusConfigT | null = null;
   private presetService: GraphicsPresetService;
+  private outputTransitionService: GraphicsOutputTransitionService;
 
   constructor() {
     this.renderer = this.selectRenderer();
@@ -93,6 +98,28 @@ export class GraphicsManager {
       publishStatus: (reason) => {
         publishGraphicsStatusEvent(reason, this.getStatusSnapshot());
       },
+    });
+    this.outputTransitionService = new GraphicsOutputTransitionService({
+      getRenderer: () => this.renderer,
+      getRuntime: () => ({
+        outputConfig: this.outputConfig,
+        frameBusConfig: this.frameBusConfig,
+        outputAdapter: this.outputAdapter,
+      }),
+      setRuntime: (runtime) => {
+        this.outputConfig = runtime.outputConfig;
+        this.frameBusConfig = runtime.frameBusConfig;
+        this.outputAdapter = runtime.outputAdapter;
+      },
+      selectOutputAdapter,
+      persistConfig: (config) => outputConfigStore.setConfig(config),
+      clearPersistedConfig: () => outputConfigStore.clear(),
+      resolveFrameBusConfig: (config, previous) =>
+        this.resolveFrameBusConfig(config, previous),
+      buildRendererConfig: (config, frameBusConfig) =>
+        this.buildRendererConfig(config, frameBusConfig),
+      logFrameBusConfigChange: (previous, next) =>
+        this.logFrameBusConfigChange(previous, next),
     });
   }
 
@@ -180,7 +207,6 @@ export class GraphicsManager {
    */
   async configureOutputs(payload: unknown): Promise<void> {
     await this.initialize();
-
     let config: GraphicsOutputConfigT;
     try {
       config = GraphicsConfigureOutputsSchema.parse(payload);
@@ -212,23 +238,20 @@ export class GraphicsManager {
         this.failGraphics("output_config_error", message);
       }
     }
-
-    this.outputConfig = config;
-    this.applyFrameBusConfig(config);
     try {
-      await this.renderer.configureSession(this.buildRendererConfig(config));
+      await this.outputTransitionService.runAtomicTransition(config);
     } catch (error) {
+      if (error instanceof GraphicsOutputTransitionError) {
+        const code =
+          error.stage === "renderer_configure"
+            ? "renderer_error"
+            : error.stage === "persist"
+              ? "output_config_error"
+              : "output_helper_error";
+        this.failGraphics(code, error.message);
+      }
       const message = error instanceof Error ? error.message : String(error);
-      this.failGraphics("renderer_error", message);
-    }
-    await this.outputAdapter.stop();
-    this.outputAdapter = await selectOutputAdapter(config);
-    await outputConfigStore.setConfig(config);
-    try {
-      await this.outputAdapter.configure(config);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.failGraphics("output_helper_error", message);
+      this.failGraphics("output_config_error", message);
     }
   }
 
@@ -272,6 +295,7 @@ export class GraphicsManager {
    */
   async sendLayer(payload: unknown): Promise<void> {
     await this.initialize();
+    await this.waitForOutputTransition();
 
     if (!this.outputConfig) {
       throw new Error("Outputs not configured");
@@ -360,6 +384,7 @@ export class GraphicsManager {
    */
   async updateValues(payload: unknown): Promise<void> {
     await this.initialize();
+    await this.waitForOutputTransition();
 
     const data = GraphicsUpdateValuesSchema.parse(payload);
     const layer = this.layers.get(data.layerId);
@@ -386,6 +411,7 @@ export class GraphicsManager {
    */
   async updateLayout(payload: unknown): Promise<void> {
     await this.initialize();
+    await this.waitForOutputTransition();
 
     const data = GraphicsUpdateLayoutSchema.parse(payload);
     const layer = this.layers.get(data.layerId);
@@ -409,6 +435,7 @@ export class GraphicsManager {
    */
   async removeLayer(payload: unknown): Promise<void> {
     await this.initialize();
+    await this.waitForOutputTransition();
 
     const data = GraphicsRemoveSchema.parse(payload);
     const layer = this.layers.get(data.layerId);
@@ -436,6 +463,7 @@ export class GraphicsManager {
    */
   async removePreset(payload: unknown): Promise<void> {
     await this.initialize();
+    await this.waitForOutputTransition();
 
     const data = GraphicsRemovePresetSchema.parse(payload);
     await this.presetService.removePresetById(data.presetId, "manual");
@@ -448,6 +476,7 @@ export class GraphicsManager {
    */
   async sendTestPattern(): Promise<void> {
     await this.initialize();
+    await this.waitForOutputTransition();
     await clearAllLayers({
       renderer: this.renderer,
       layers: this.layers,
@@ -531,6 +560,10 @@ export class GraphicsManager {
     };
   }
 
+  private async waitForOutputTransition(): Promise<void> {
+    await this.outputTransitionService.waitForTransition();
+  }
+
   private selectRenderer(): GraphicsRenderer {
     if (process.env.BRIDGE_GRAPHICS_RENDERER === "stub") {
       return new StubRenderer();
@@ -540,9 +573,9 @@ export class GraphicsManager {
   }
 
   private buildRendererConfig(
-    config: GraphicsOutputConfigT
+    config: GraphicsOutputConfigT,
+    frameBusConfig: FrameBusConfigT | null = this.frameBusConfig
   ): GraphicsRendererConfigT {
-    const frameBusConfig = this.frameBusConfig;
     return {
       width: config.format.width,
       height: config.format.height,
@@ -691,7 +724,10 @@ export class GraphicsManager {
     throw new GraphicsError(code, message);
   }
 
-  private applyFrameBusConfig(config: GraphicsOutputConfigT): void {
+  private resolveFrameBusConfig(
+    config: GraphicsOutputConfigT,
+    previous: FrameBusConfigT | null
+  ): FrameBusConfigT {
     const requestedPixelFormat =
       process.env.BRIDGE_FRAME_PIXEL_FORMAT ??
       process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
@@ -701,11 +737,13 @@ export class GraphicsManager {
       );
     }
 
-    const previous = this.frameBusConfig;
-    const next = buildFrameBusConfig(config, previous);
-    this.frameBusConfig = next;
-    applyFrameBusEnv(next);
+    return buildFrameBusConfig(config, previous);
+  }
 
+  private logFrameBusConfigChange(
+    previous: FrameBusConfigT | null,
+    next: FrameBusConfigT
+  ): void {
     const changed =
       !previous ||
       previous.name !== next.name ||
@@ -715,19 +753,29 @@ export class GraphicsManager {
       previous.height !== next.height ||
       previous.fps !== next.fps;
 
-    if (changed) {
-      getBridgeContext().logger.info(
-        `[Graphics] FrameBus config ${JSON.stringify({
-          name: next.name,
-          slotCount: next.slotCount,
-          pixelFormat: next.pixelFormat,
-          width: next.width,
-          height: next.height,
-          fps: next.fps,
-          size: next.size,
-        })}`
-      );
+    if (!changed) {
+      return;
     }
+
+    getBridgeContext().logger.info(
+      `[Graphics] FrameBus config ${JSON.stringify({
+        name: next.name,
+        slotCount: next.slotCount,
+        pixelFormat: next.pixelFormat,
+        width: next.width,
+        height: next.height,
+        fps: next.fps,
+        size: next.size,
+      })}`
+    );
+  }
+
+  private applyFrameBusConfig(config: GraphicsOutputConfigT): void {
+    const previous = this.frameBusConfig;
+    const next = this.resolveFrameBusConfig(config, previous);
+    this.frameBusConfig = next;
+    applyFrameBusEnv(next);
+    this.logFrameBusConfigChange(previous, next);
   }
 }
 
