@@ -60,6 +60,10 @@ import {
   GraphicsOutputTransitionService,
 } from "./graphics-output-transition-service.js";
 import { prepareLayerForRender } from "./graphics-layer-prepare-service.js";
+import {
+  summarizeRawPayload,
+  summarizeSendPayload,
+} from "./graphics-payload-diagnostics.js";
 
 /**
  * Graphics manager orchestrates layers, rendering, and output.
@@ -302,7 +306,7 @@ export class GraphicsManager {
       getBridgeContext().logger.error(
         `[Graphics] graphics_send payload rejected (schema): ${message} ${JSON.stringify({
           error: message,
-          payload: this.summarizeRawPayload(payload),
+          payload: summarizeRawPayload(payload),
           outputConfig: this.outputConfig,
         })}`
       );
@@ -311,7 +315,7 @@ export class GraphicsManager {
 
     getBridgeContext().logger.info(
       `[Graphics] graphics_send payload ${JSON.stringify({
-        payload: this.summarizeSendPayload(data),
+        payload: summarizeSendPayload(data),
         outputConfig: this.outputConfig,
       })}`
     );
@@ -581,90 +585,6 @@ export class GraphicsManager {
       framebusName: frameBusConfig?.name ?? "",
       framebusSize: frameBusConfig?.size ?? 0,
       backgroundMode: "transparent",
-    };
-  }
-
-  private summarizeSendPayload(
-    data: GraphicsSendPayloadT
-  ): Record<string, unknown> {
-    const manifest = data.bundle?.manifest ?? {};
-    const render =
-      typeof (manifest as Record<string, unknown>).render === "object" &&
-      (manifest as Record<string, unknown>).render !== null
-        ? (manifest as Record<string, unknown>).render
-        : null;
-    const values = data.values ?? {};
-    const schema =
-      typeof data.bundle?.schema === "object" && data.bundle.schema !== null
-        ? data.bundle.schema
-        : {};
-    const defaults =
-      typeof data.bundle?.defaults === "object" && data.bundle.defaults !== null
-        ? data.bundle.defaults
-        : {};
-    const assets = Array.isArray(data.bundle?.assets) ? data.bundle.assets : [];
-
-    return {
-      layerId: data.layerId,
-      category: data.category,
-      presetId: data.presetId ?? null,
-      durationMs: typeof data.durationMs === "number" ? data.durationMs : null,
-      backgroundMode: data.backgroundMode,
-      layout: data.layout,
-      zIndex: data.zIndex,
-      manifest: {
-        name: (manifest as Record<string, unknown>).name ?? null,
-        version: (manifest as Record<string, unknown>).version ?? null,
-        type: (manifest as Record<string, unknown>).type ?? null,
-        render,
-      },
-      htmlLength:
-        typeof data.bundle?.html === "string" ? data.bundle.html.length : 0,
-      cssLength: typeof data.bundle?.css === "string" ? data.bundle.css.length : 0,
-      schemaKeys: Object.keys(schema),
-      defaultsKeys: Object.keys(defaults),
-      valuesKeys: Object.keys(values),
-      valuesCount: Object.keys(values).length,
-      assetsCount: assets.length,
-      assetIds: assets.map((asset) => asset.assetId),
-    };
-  }
-
-  private summarizeRawPayload(payload: unknown): Record<string, unknown> | null {
-    if (!payload || typeof payload !== "object") {
-      return null;
-    }
-    const record = payload as Record<string, unknown>;
-    const bundle =
-      typeof record.bundle === "object" && record.bundle !== null
-        ? (record.bundle as Record<string, unknown>)
-        : null;
-    const values =
-      typeof record.values === "object" && record.values !== null
-        ? (record.values as Record<string, unknown>)
-        : null;
-    const manifest =
-      bundle && typeof bundle.manifest === "object" && bundle.manifest !== null
-        ? (bundle.manifest as Record<string, unknown>)
-        : null;
-
-    return {
-      layerId: record.layerId ?? null,
-      category: record.category ?? null,
-      presetId: record.presetId ?? null,
-      durationMs: record.durationMs ?? null,
-      backgroundMode: record.backgroundMode ?? null,
-      layout: record.layout ?? null,
-      zIndex: record.zIndex ?? null,
-      manifest: {
-        name: manifest?.name ?? null,
-        version: manifest?.version ?? null,
-        type: manifest?.type ?? null,
-        render: manifest?.render ?? null,
-      },
-      htmlLength: typeof bundle?.html === "string" ? bundle.html.length : 0,
-      cssLength: typeof bundle?.css === "string" ? bundle.css.length : 0,
-      valuesKeys: values ? Object.keys(values) : [],
     };
   }
 

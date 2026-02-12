@@ -62,11 +62,11 @@ Für jede bearbeitete Datei wird erfasst:
 
 ### apps/bridge/src/services/graphics/graphics-manager.ts
 - Status: step-2 advanced
-- Änderungen: atomare Transition vollständig an `graphics-output-transition-service.ts` delegiert; Layer-Prepare-Pipeline an `graphics-layer-prepare-service.ts` ausgelagert.
-- Line Count: 731
+- Änderungen: atomare Transition vollständig an `graphics-output-transition-service.ts` delegiert; Layer-Prepare-Pipeline an `graphics-layer-prepare-service.ts` ausgelagert; Payload-Diagnostics an `graphics-payload-diagnostics.ts` ausgelagert.
+- Line Count: 651
 - Komplexität: mittel-hoch
-- SSOT/SRP Analyse: SRP weiter verbessert, da Transition-/Rollback und Prepare-Pipeline außerhalb liegen; verbleibend ist primär Orchestrierung plus Payload-Diagnostics.
-- Nächster Refactor: `graphics-payload-diagnostics.ts` auslagern.
+- SSOT/SRP Analyse: SRP weiter verbessert, da Transition-/Rollback, Prepare-Pipeline und Diagnostics außerhalb liegen; verbleibend ist primär Use-Case-Orchestrierung.
+- Nächster Refactor: optional `initialize`-Recovery in `graphics-runtime-init-service.ts` auslagern.
 
 ### apps/bridge/src/services/graphics/graphics-output-transition-service.ts
 - Status: step-2 done (new)
@@ -99,6 +99,14 @@ Für jede bearbeitete Datei wird erfasst:
 - Komplexität: mittel
 - SSOT/SRP Analyse: klare SSOT für Layer-Prepare-Regeln; reduziert Regression-Risiko bei Template-/Asset-Änderungen.
 - Nächster Refactor: optional Aufteilung in `graphics-template-security-service.ts` und `graphics-asset-validation-service.ts`.
+
+### apps/bridge/src/services/graphics/graphics-payload-diagnostics.ts
+- Status: step-2 done (new)
+- Änderungen: `summarizeSendPayload` und `summarizeRawPayload` aus `graphics-manager.ts` ausgelagert.
+- Line Count: 98
+- Komplexität: niedrig
+- SSOT/SRP Analyse: klare Trennung von Logging-Diagnostics und Orchestrierung; reduziert Noise im Manager.
+- Nächster Refactor: optional Erweiterung um standardisierte redaction policy für sensible Felder.
 
 ### apps/bridge/src/services/graphics/graphics-preset-service.ts
 - Status: step-2 advanced
