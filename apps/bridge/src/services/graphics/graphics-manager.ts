@@ -1,4 +1,3 @@
-import { assetRegistry } from "./asset-registry.js";
 import type {
   GraphicsCategoryT,
   GraphicsOutputConfigT,
@@ -64,6 +63,7 @@ import {
   summarizeRawPayload,
   summarizeSendPayload,
 } from "./graphics-payload-diagnostics.js";
+import { GraphicsRuntimeInitService } from "./graphics-runtime-init-service.js";
 
 /**
  * Graphics manager orchestrates layers, rendering, and output.
@@ -80,6 +80,7 @@ export class GraphicsManager {
   private frameBusConfig: FrameBusConfigT | null = null;
   private presetService: GraphicsPresetService;
   private outputTransitionService: GraphicsOutputTransitionService;
+  private runtimeInitService: GraphicsRuntimeInitService;
 
   constructor() {
     this.renderer = this.selectRenderer();
@@ -118,6 +119,25 @@ export class GraphicsManager {
       logFrameBusConfigChange: (previous, next) =>
         this.logFrameBusConfigChange(previous, next),
     });
+    this.runtimeInitService = new GraphicsRuntimeInitService({
+      getRenderer: () => this.renderer,
+      setRenderer: (renderer) => {
+        this.renderer = renderer;
+      },
+      setOutputAdapter: (adapter) => {
+        this.outputAdapter = adapter;
+      },
+      setOutputConfig: (config) => {
+        this.outputConfig = config;
+      },
+      createStubRenderer: () => new StubRenderer(),
+      createStubOutputAdapter: () => new StubOutputAdapter(),
+      selectOutputAdapter,
+      applyFrameBusConfig: (config) => this.applyFrameBusConfig(config),
+      buildRendererConfig: (config) => this.buildRendererConfig(config),
+      publishGraphicsError: (code, message) =>
+        publishGraphicsErrorEvent(code, message),
+    });
   }
 
   /**
@@ -129,69 +149,7 @@ export class GraphicsManager {
     if (this.initialized) {
       return;
     }
-
-    await assetRegistry.initialize();
-    await outputConfigStore.initialize();
-
-    try {
-      await this.renderer.initialize();
-      getBridgeContext().logger.info(
-        `[Graphics] Renderer initialized: ${this.renderer.constructor.name}`
-      );
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      getBridgeContext().logger.warn(
-        `[Graphics] Renderer init failed, falling back to stub: ${errorMessage}`
-      );
-      this.renderer = new StubRenderer();
-      await this.renderer.initialize();
-      getBridgeContext().logger.info(
-        `[Graphics] Renderer initialized: ${this.renderer.constructor.name}`
-      );
-    }
-
-    this.renderer.onError((error) => {
-      publishGraphicsErrorEvent("renderer_error", error.message);
-    });
-    await this.renderer.setAssets(assetRegistry.getAssetMap());
-
-    const persisted = outputConfigStore.getConfig();
-    if (persisted) {
-      this.outputConfig = persisted;
-      this.applyFrameBusConfig(persisted);
-      let stage: "renderer" | "output_helper" = "renderer";
-      try {
-        await this.renderer.configureSession(this.buildRendererConfig(persisted));
-        stage = "output_helper";
-        this.outputAdapter = await selectOutputAdapter(persisted);
-        await this.outputAdapter.configure(persisted);
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        publishGraphicsErrorEvent(
-          stage === "renderer" ? "renderer_error" : "output_helper_error",
-          errorMessage
-        );
-        getBridgeContext().logger.error(
-          `[Graphics] Failed to apply persisted output config, falling back to stub: ${errorMessage}`
-        );
-        this.outputConfig = null;
-        this.outputAdapter = new StubOutputAdapter();
-        try {
-          await outputConfigStore.clear();
-          getBridgeContext().logger.warn(
-            "[Graphics] Cleared persisted output config after startup failure"
-          );
-        } catch (clearError) {
-          const clearMessage =
-            clearError instanceof Error ? clearError.message : String(clearError);
-          getBridgeContext().logger.warn(
-            `[Graphics] Failed to clear persisted output config: ${clearMessage}`
-          );
-        }
-      }
-    }
+    await this.runtimeInitService.initialize();
 
     this.initialized = true;
   }

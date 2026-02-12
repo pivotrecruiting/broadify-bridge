@@ -62,11 +62,19 @@ Für jede bearbeitete Datei wird erfasst:
 
 ### apps/bridge/src/services/graphics/graphics-manager.ts
 - Status: step-2 advanced
-- Änderungen: atomare Transition vollständig an `graphics-output-transition-service.ts` delegiert; Layer-Prepare-Pipeline an `graphics-layer-prepare-service.ts` ausgelagert; Payload-Diagnostics an `graphics-payload-diagnostics.ts` ausgelagert.
-- Line Count: 651
+- Änderungen: atomare Transition vollständig an `graphics-output-transition-service.ts` delegiert; Layer-Prepare-Pipeline an `graphics-layer-prepare-service.ts` ausgelagert; Payload-Diagnostics an `graphics-payload-diagnostics.ts` ausgelagert; Startup-/Recovery-Logik an `graphics-runtime-init-service.ts` delegiert.
+- Line Count: 609
 - Komplexität: mittel-hoch
-- SSOT/SRP Analyse: SRP weiter verbessert, da Transition-/Rollback, Prepare-Pipeline und Diagnostics außerhalb liegen; verbleibend ist primär Use-Case-Orchestrierung.
-- Nächster Refactor: optional `initialize`-Recovery in `graphics-runtime-init-service.ts` auslagern.
+- SSOT/SRP Analyse: SRP weiter verbessert, da Transition-/Rollback, Prepare-Pipeline, Diagnostics und Runtime-Init außerhalb liegen; verbleibend ist primär Use-Case-Orchestrierung.
+- Nächster Refactor: optional Status-Projektion (`getStatus`/`getStatusSnapshot`) in eigenen Projection-Service auslagern.
+
+### apps/bridge/src/services/graphics/graphics-runtime-init-service.ts
+- Status: step-2 done (new)
+- Änderungen: Renderer-Startup mit Stub-Fallback, Asset-Bootstrap, persisted Output-Config-Recovery und Recovery-Cleanup aus `graphics-manager.ts` extrahiert.
+- Line Count: 126
+- Komplexität: mittel
+- SSOT/SRP Analyse: zentrale SSOT für Runtime-Init/Recovery; reduziert Komplexität und Fehlerrisiko im Manager-Entry-Flow.
+- Nächster Refactor: optional Init-Lock (`initializingPromise`) ergänzen, um parallele Erstinitialisierung strikt zu serialisieren.
 
 ### apps/bridge/src/services/graphics/graphics-output-transition-service.ts
 - Status: step-2 done (new)
