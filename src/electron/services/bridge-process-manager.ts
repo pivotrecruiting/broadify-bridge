@@ -15,6 +15,45 @@ export class BridgeProcessManager {
   private config: BridgeConfig | null = null;
   private logStream: fs.WriteStream | null = null;
 
+  private describeArtifact(relativePath: string): string {
+    const absolutePath = path.join(process.resourcesPath, relativePath);
+    if (!fs.existsSync(absolutePath)) {
+      return `${relativePath}: missing`;
+    }
+    try {
+      const stat = fs.statSync(absolutePath);
+      const mode = `0${(stat.mode & 0o777).toString(8)}`;
+      return `${relativePath}: ok size=${stat.size} mode=${mode}`;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `${relativePath}: stat failed (${message})`;
+    }
+  }
+
+  private logProductionArtifactStatus(): void {
+    if (isDev()) {
+      return;
+    }
+
+    const lines = [
+      this.describeArtifact("bridge/dist/index.js"),
+      this.describeArtifact(
+        "bridge/dist/services/graphics/renderer/electron-renderer-entry.js"
+      ),
+      this.describeArtifact("bridge/native/framebus/build/Release/framebus.node"),
+      this.describeArtifact("native/display-helper/display-helper"),
+      this.describeArtifact("native/decklink-helper/decklink-helper"),
+    ];
+
+    lines.forEach((line) => {
+      const message = `[BridgeManager] Release artifact check: ${line}\n`;
+      if (this.logStream) {
+        this.logStream.write(message);
+      }
+      console.log(message.trim());
+    });
+  }
+
   /**
    * Start the bridge process with given configuration
    * Automatically finds available port if requested port is in use
@@ -134,6 +173,7 @@ export class BridgeProcessManager {
         cwd,
         env,
       });
+      this.logProductionArtifactStatus();
 
       let stderrBuffer = "";
 

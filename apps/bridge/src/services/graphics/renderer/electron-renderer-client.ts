@@ -25,6 +25,26 @@ const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
 const MAX_FRAME_DIMENSION = 8192;
 const DEBUG_GRAPHICS = true;
 
+const formatStatMode = (mode: number): string => {
+  return `0${(mode & 0o777).toString(8)}`;
+};
+
+const describeBinary = (filePath: string): string => {
+  if (!filePath) {
+    return "path is empty";
+  }
+  if (!fs.existsSync(filePath)) {
+    return `missing (${filePath})`;
+  }
+  try {
+    const stat = fs.statSync(filePath);
+    return `path=${filePath} size=${stat.size} mode=${formatStatMode(stat.mode)}`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `unreadable (${filePath}): ${message}`;
+  }
+};
+
 function resolveElectronBinary(): string | null {
   if (process.env.ELECTRON_RUN_AS_NODE === "1") {
     return process.execPath;
@@ -123,6 +143,28 @@ export class ElectronRendererClient implements GraphicsRenderer {
       throw new Error("Electron renderer entry not found");
     }
 
+    this.logStructured(
+      "info",
+      {
+        component: "graphics-renderer",
+        nodeEnv: process.env.NODE_ENV || "",
+        cwd: process.cwd(),
+        execPath: process.execPath,
+        resourcesPath: process.resourcesPath || "",
+      },
+      "[GraphicsRenderer] Runtime context",
+    );
+    this.logStructured(
+      "info",
+      { component: "graphics-renderer" },
+      `[GraphicsRenderer] Binary resolved: ${describeBinary(electronBinary)}`,
+    );
+    this.logStructured(
+      "info",
+      { component: "graphics-renderer" },
+      `[GraphicsRenderer] Entry resolved: ${describeBinary(entry)}`,
+    );
+
     this.readyPromise = new Promise((resolve, reject) => {
       this.readyResolver = resolve;
       this.readyRejecter = reject;
@@ -141,6 +183,16 @@ export class ElectronRendererClient implements GraphicsRenderer {
     delete env.ELECTRON_RUN_AS_NODE;
     env.BRIDGE_GRAPHICS_IPC_PORT = String(ipcPort);
     env.BRIDGE_GRAPHICS_IPC_TOKEN = this.ipcToken;
+    this.logStructured(
+      "info",
+      {
+        component: "graphics-renderer",
+        ipcPort,
+        ipcTokenSet: Boolean(this.ipcToken),
+        electronRunAsNode: env.ELECTRON_RUN_AS_NODE === "1",
+      },
+      "[GraphicsRenderer] IPC environment prepared",
+    );
 
     this.child = spawn(
       electronBinary,
@@ -516,9 +568,17 @@ export class ElectronRendererClient implements GraphicsRenderer {
     });
 
     return new Promise((resolve, reject) => {
+      this.ipcServer?.once("error", (error) => {
+        reject(error);
+      });
       this.ipcServer?.listen(0, "127.0.0.1", () => {
         const address = this.ipcServer?.address();
         if (typeof address === "object" && address?.port) {
+          this.logStructured(
+            "info",
+            { component: "graphics-renderer", port: address.port },
+            "[GraphicsRenderer IPC] Server listening",
+          );
           resolve(address.port);
           return;
         }

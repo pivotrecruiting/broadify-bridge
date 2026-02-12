@@ -78,7 +78,12 @@ const resolveBridgeRoot = (): string => {
   return path.resolve(baseDir, "../../../../");
 };
 
-const resolveNativeCandidates = (): string[] => {
+/**
+ * Resolve all possible native addon paths in lookup order.
+ *
+ * @returns Candidate paths for framebus.node.
+ */
+export const resolveFrameBusNativeCandidates = (): string[] => {
   const candidates: string[] = [];
   const envPath = process.env[FRAMEBUS_NATIVE_PATH_ENV];
   if (envPath) {
@@ -112,7 +117,7 @@ const resolveNativeCandidates = (): string[] => {
 };
 
 const findNativeAddonPath = (): string | null => {
-  for (const candidate of resolveNativeCandidates()) {
+  for (const candidate of resolveFrameBusNativeCandidates()) {
     if (candidate && fs.existsSync(candidate)) {
       return candidate;
     }

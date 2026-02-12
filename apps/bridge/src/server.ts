@@ -21,6 +21,7 @@ import {
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
+import { logRuntimeDiagnostics } from "./services/runtime-diagnostics.js";
 import type { BridgeConfigT } from "./config.js";
 
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
@@ -72,6 +73,7 @@ export async function createServer(config: BridgeConfigT) {
     pairingExpiresAt: config.pairingExpiresAt,
   };
   setBridgeContext(baseContext);
+  logRuntimeDiagnostics(baseContext.logger);
 
   await graphicsManager.initialize();
 

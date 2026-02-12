@@ -35,6 +35,19 @@ let frameBusPixelFormat = Number(
 );
 const frameBusForceRecreate = process.env.BRIDGE_FRAMEBUS_FORCE_RECREATE === "1";
 
+logger.info(
+  {
+    nodeEnv: process.env.NODE_ENV || "",
+    cwd: process.cwd(),
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath || "",
+    ipcPortSet: Boolean(process.env.BRIDGE_GRAPHICS_IPC_PORT),
+    ipcTokenSet: Boolean(process.env.BRIDGE_GRAPHICS_IPC_TOKEN),
+    electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE === "1",
+  },
+  "[GraphicsRenderer] Startup context"
+);
+
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 
 const layers = new Map<
@@ -1705,8 +1718,18 @@ app.on("window-all-closed", () => {});
 function connectIpcSocket(): void {
   const port = Number(process.env.BRIDGE_GRAPHICS_IPC_PORT || 0);
   if (!port) {
+    logger.error(
+      {
+        rawPortValue: process.env.BRIDGE_GRAPHICS_IPC_PORT || "",
+      },
+      "[GraphicsRenderer] Missing/invalid IPC port (BRIDGE_GRAPHICS_IPC_PORT)"
+    );
     return;
   }
+  if (!ipcToken) {
+    logger.warn("[GraphicsRenderer] IPC token missing (BRIDGE_GRAPHICS_IPC_TOKEN)");
+  }
+  logger.info({ port }, "[GraphicsRenderer] Connecting IPC socket");
 
   // IPC is local-only; token handshake prevents spoofed commands.
   ipcSocket = net.createConnection({ host: "127.0.0.1", port }, () => {
@@ -1798,7 +1821,10 @@ function connectIpcSocket(): void {
   });
 
   ipcSocket.on("error", (error) => {
-    logger.error(`[GraphicsRenderer] IPC socket error: ${error.message}`);
+    logger.error(
+      { port, message: error.message },
+      "[GraphicsRenderer] IPC socket error"
+    );
   });
 
   ipcSocket.on("close", () => {
