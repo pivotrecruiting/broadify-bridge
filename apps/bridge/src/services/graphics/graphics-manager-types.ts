@@ -2,6 +2,7 @@ import type {
   GraphicsBackgroundModeT,
   GraphicsCategoryT,
   GraphicsLayoutT,
+  GraphicsOutputConfigT,
   GraphicsSendPayloadT,
 } from "./graphics-schemas.js";
 import type { TemplateBindingsT } from "./template-bindings.js";
@@ -36,6 +37,7 @@ export type PreparedLayerT = GraphicsSendPayloadT & {
 };
 
 export type GraphicsStatusSnapshotT = {
+  outputConfig: GraphicsOutputConfigT | null;
   activePreset: {
     presetId: string;
     durationMs: number | null;

@@ -95,9 +95,10 @@ export class GraphicsPresetService {
 
     const hasDuration = durationMs !== null;
     let activePreset = this.deps.getActivePreset();
+    const isNewPreset = !activePreset || activePreset.presetId !== presetId;
     let shouldPublishPreset = false;
 
-    if (!activePreset || activePreset.presetId !== presetId) {
+    if (isNewPreset) {
       activePreset = {
         presetId,
         durationMs: durationMs ?? null,
@@ -110,18 +111,35 @@ export class GraphicsPresetService {
       this.deps.setActivePreset(activePreset);
       getBridgeContext().logger.info(`[Graphics] Preset activated: ${presetId}`);
       shouldPublishPreset = true;
-    } else {
+    } else if (activePreset) {
       activePreset.layerIds.add(layerId);
       shouldPublishPreset = true;
     }
 
     if (hasDuration && activePreset) {
       if (durationMs > 0) {
-        setPresetDurationPending(activePreset, durationMs);
-        shouldPublishPreset = true;
+        const durationChanged = activePreset.durationMs !== durationMs;
+        const timerStateMissing =
+          activePreset.startedAt === null &&
+          activePreset.expiresAt === null &&
+          activePreset.timer === null &&
+          !activePreset.pendingStart;
+
+        if (durationChanged || timerStateMissing) {
+          setPresetDurationPending(activePreset, durationMs);
+          shouldPublishPreset = true;
+        }
       } else {
-        clearPresetDuration(activePreset);
-        shouldPublishPreset = true;
+        const hasTimerState =
+          activePreset.durationMs !== null ||
+          activePreset.pendingStart ||
+          activePreset.timer !== null ||
+          activePreset.startedAt !== null ||
+          activePreset.expiresAt !== null;
+        if (hasTimerState) {
+          clearPresetDuration(activePreset);
+          shouldPublishPreset = true;
+        }
       }
     }
 

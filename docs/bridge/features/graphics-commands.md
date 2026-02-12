@@ -93,7 +93,8 @@ Schema: `GraphicsSendSchema`
 
 **Validierung / Regeln**
 - `durationMs` erfordert `presetId`.
-- Wenn `manifest.render` gesetzt ist, muss es Output‑Format matchen.
+- `manifest.render` wird auf das aktive Output-Format normalisiert (`outputConfig.format`).
+- Bei Abweichung zwischen Payload und aktivem Output-Format wird ein Warn-Log geschrieben, der Send wird nicht abgebrochen.
 - HTML/CSS wird gesäubert und gegen gefährliche Inhalte geprüft.
 - Assets müssen im Bundle enthalten oder bereits registriert sein.
 - Bei Outputs mit Alpha wird `backgroundMode` erzwungen auf `transparent`.

@@ -299,7 +299,7 @@ export class GraphicsManager {
         (typeof renderInfo.fps === "number" &&
           renderInfo.fps !== this.outputConfig.format.fps)
       ) {
-        getBridgeContext().logger.error(
+        getBridgeContext().logger.warn(
           `[Graphics] Bundle manifest render format mismatch ${JSON.stringify({
             renderInfo,
             outputFormat: this.outputConfig.format,
@@ -308,12 +308,30 @@ export class GraphicsManager {
             presetId: data.presetId ?? null,
           })}`
         );
-        throw new Error("Bundle manifest render format mismatch");
       }
     }
 
+    const normalizedRender = {
+      ...(renderInfo && typeof renderInfo === "object"
+        ? (renderInfo as Record<string, unknown>)
+        : {}),
+      width: this.outputConfig.format.width,
+      height: this.outputConfig.format.height,
+      fps: this.outputConfig.format.fps,
+    };
+    const normalizedData: GraphicsSendPayloadT = {
+      ...data,
+      bundle: {
+        ...data.bundle,
+        manifest: {
+          ...data.bundle.manifest,
+          render: normalizedRender,
+        },
+      },
+    };
+
     const prepared = await prepareLayerForRender(
-      data,
+      normalizedData,
       this.outputConfig.outputKey,
       this.renderer
     );
@@ -323,19 +341,25 @@ export class GraphicsManager {
       prepared.category
     );
 
+    let renderedLayerIds: string[] = [];
     await renderPreparedLayer({
       renderer: this.renderer,
       layers: this.layers,
       categoryToLayer: this.categoryToLayer,
       outputFormat: this.outputConfig?.format ?? null,
       data: prepared,
-      onRendered: (layerIds) => this.presetService.maybeStartPresetTimers(layerIds),
+      onRendered: (layerIds) => {
+        renderedLayerIds = layerIds;
+      },
     });
 
     this.presetService.syncAfterRender(
       prepared.layerId,
       prepared.presetId,
       durationMs
+    );
+    this.presetService.maybeStartPresetTimers(
+      renderedLayerIds.length > 0 ? renderedLayerIds : [prepared.layerId]
     );
   }
 
@@ -518,6 +542,7 @@ export class GraphicsManager {
       : null;
 
     return {
+      outputConfig: this.outputConfig,
       activePreset,
       activePresets: activePreset ? [activePreset] : [],
     };

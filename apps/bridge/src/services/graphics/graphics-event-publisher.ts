@@ -20,6 +20,7 @@ export function publishGraphicsStatusEvent(
     event: "graphics_status",
     data: {
       reason,
+      outputConfig: status.outputConfig,
       activePreset: status.activePreset,
       activePresets: status.activePresets,
     },
