@@ -61,12 +61,44 @@ Für jede bearbeitete Datei wird erfasst:
 - Nächster Refactor: `renderer-framebus-runtime.ts` und `renderer-ipc-client.ts` extrahieren.
 
 ### apps/bridge/src/services/graphics/graphics-manager.ts
-- Status: step-2 in progress
-- Änderungen: Output-Adapter-Selektion und Target/Format-Validierung ausgelagert in dedizierte Services; Manager orchestriert jetzt stärker statt Device-Details zu enthalten.
-- Line Count: 1049
+- Status: step-2 advanced
+- Änderungen: Layer-/Preset-/Event-Logik auf Services umgehängt (`graphics-layer-service.ts`, `graphics-preset-service.ts`, `graphics-event-publisher.ts`); Manager fokussiert stärker auf API-Flow-Orchestrierung.
+- Line Count: 734
+- Komplexität: mittel-hoch
+- SSOT/SRP Analyse: klare SRP-Verbesserung, da Device/Layer/Preset/Event-Detailregeln außerhalb liegen; verbleibend sind Payload-Summarizer + Prepare-Flow + Session/Output-Orchestrierung in einer Datei.
+- Nächster Refactor: `graphics-payload-diagnostics.ts` (summarize*), optional `graphics-layer-prepare-service.ts` (asset/sanitize/validate pipeline).
+
+### apps/bridge/src/services/graphics/graphics-manager-types.ts
+- Status: step-2 done (new)
+- Änderungen: gemeinsame Runtime-Typen (`GraphicsLayerStateT`, `GraphicsActivePresetT`, `PreparedLayerT`, Status-Snapshot) zentralisiert.
+- Line Count: 57
+- Komplexität: niedrig
+- SSOT/SRP Analyse: SSOT für Manager-nahe Domain-States; reduziert Typ-Drift zwischen Manager und Services.
+- Nächster Refactor: optional Trennung zwischen API-Types und Runtime-Types, falls externe Nutzung entsteht.
+
+### apps/bridge/src/services/graphics/graphics-layer-service.ts
+- Status: step-2 done (new)
+- Änderungen: Layer-Limits, Render-State-Apply, globales Layer-Clearing und generische Layer-Removal-Helfer ausgelagert.
+- Line Count: 161
+- Komplexität: mittel
+- SSOT/SRP Analyse: SRP klar auf Layer-Lifecycle fokussiert; vom Manager entkoppelt über explizite Dependency-Parameter.
+- Nächster Refactor: optional split in `graphics-layer-render-service.ts` und `graphics-layer-state-service.ts`.
+
+### apps/bridge/src/services/graphics/graphics-preset-service.ts
+- Status: step-2 done (new)
+- Änderungen: komplette Preset-Lifecycle-Steuerung (prepareBeforeRender, Timer, remove/expire, preset-update events) in dedizierten Service verlagert.
+- Line Count: 311
 - Komplexität: hoch
-- SSOT/SRP Analyse: deutliche SRP-Verbesserung im Output-Bereich; Datei bleibt weiterhin groß durch Preset-/Layer-/Event-Orchestrierung.
-- Nächster Refactor: `graphics-layer-service`, `graphics-preset-service`, `graphics-event-publisher` auslagern, um Manager auf reine Flow-Orchestrierung zu reduzieren.
+- SSOT/SRP Analyse: Preset-Regeln sind jetzt zentral, aber Datei bündelt weiterhin Timer- und Removal-Strategien.
+- Nächster Refactor: optional Timer-Handling in `graphics-preset-timer.ts` auslagern.
+
+### apps/bridge/src/services/graphics/graphics-event-publisher.ts
+- Status: step-2 done (new)
+- Änderungen: `graphics_status`/`graphics_error` Publishing als zentrale Bridge-Event-Funktionen ausgelagert.
+- Line Count: 48
+- Komplexität: niedrig
+- SSOT/SRP Analyse: klarer SRP-Gewinn, konsistente Event-Payload-Struktur an einer Stelle.
+- Nächster Refactor: optional typed event contracts statt `string` reason/code.
 
 ### apps/bridge/src/services/graphics/graphics-output-validation-service.ts
 - Status: step-2 done (new)

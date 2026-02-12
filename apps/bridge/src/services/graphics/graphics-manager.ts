@@ -1,8 +1,6 @@
 import { assetRegistry } from "./asset-registry.js";
 import type {
-  GraphicsBackgroundModeT,
   GraphicsCategoryT,
-  GraphicsLayoutT,
   GraphicsOutputConfigT,
   GraphicsOutputKeyT,
   GraphicsSendPayloadT,
@@ -28,7 +26,6 @@ import type {
   GraphicsRenderer,
   GraphicsRendererConfigT,
 } from "./renderer/graphics-renderer.js";
-import type { TemplateBindingsT } from "./template-bindings.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
 import { createTestPatternPayload } from "./test-pattern.js";
 import {
@@ -45,42 +42,27 @@ import {
   GraphicsError,
   type GraphicsErrorCodeT,
 } from "./graphics-errors.js";
-
-const MAX_ACTIVE_LAYERS = 3;
+import type {
+  GraphicsActivePresetT,
+  GraphicsLayerStateT,
+  PreparedLayerT,
+  GraphicsStatusSnapshotT,
+} from "./graphics-manager-types.js";
+import {
+  clearAllLayers,
+  removeLayerWithRenderer,
+  renderPreparedLayer,
+} from "./graphics-layer-service.js";
+import {
+  publishGraphicsErrorEvent,
+  publishGraphicsStatusEvent,
+} from "./graphics-event-publisher.js";
+import { GraphicsPresetService } from "./graphics-preset-service.js";
 
 const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
   "key_fill_sdi",
   "key_fill_ndi",
 ];
-
-type GraphicsLayerStateT = {
-  layerId: string;
-  category: GraphicsCategoryT;
-  layout: GraphicsLayoutT;
-  zIndex: number;
-  backgroundMode: GraphicsBackgroundModeT;
-  values: Record<string, unknown>;
-  bindings: TemplateBindingsT;
-  schema: Record<string, unknown>;
-  defaults: Record<string, unknown>;
-  presetId?: string;
-};
-
-type GraphicsActivePresetT = {
-  presetId: string;
-  durationMs: number | null;
-  layerIds: Set<string>;
-  pendingStart: boolean;
-  startedAt: number | null;
-  expiresAt: number | null;
-  timer: NodeJS.Timeout | null;
-};
-
-type PreparedLayerT = GraphicsSendPayloadT & {
-  backgroundMode: GraphicsBackgroundModeT;
-  values: Record<string, unknown>;
-  bindings: TemplateBindingsT;
-};
 
 /**
  * Graphics manager orchestrates layers, rendering, and output.
@@ -95,10 +77,23 @@ export class GraphicsManager {
   private outputConfig: GraphicsOutputConfigT | null = null;
   private activePreset: GraphicsActivePresetT | null = null;
   private frameBusConfig: FrameBusConfigT | null = null;
+  private presetService: GraphicsPresetService;
 
   constructor() {
     this.renderer = this.selectRenderer();
     this.outputAdapter = new StubOutputAdapter();
+    this.presetService = new GraphicsPresetService({
+      getRenderer: () => this.renderer,
+      layers: this.layers,
+      categoryToLayer: this.categoryToLayer,
+      getActivePreset: () => this.activePreset,
+      setActivePreset: (preset) => {
+        this.activePreset = preset;
+      },
+      publishStatus: (reason) => {
+        publishGraphicsStatusEvent(reason, this.getStatusSnapshot());
+      },
+    });
   }
 
   /**
@@ -133,7 +128,7 @@ export class GraphicsManager {
     }
 
     this.renderer.onError((error) => {
-      this.publishGraphicsError("renderer_error", error.message);
+      publishGraphicsErrorEvent("renderer_error", error.message);
     });
     await this.renderer.setAssets(assetRegistry.getAssetMap());
 
@@ -150,7 +145,7 @@ export class GraphicsManager {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        this.publishGraphicsError(
+        publishGraphicsErrorEvent(
           stage === "renderer" ? "renderer_error" : "output_helper_error",
           errorMessage
         );
@@ -243,7 +238,7 @@ export class GraphicsManager {
    * @returns Promise resolved once resources are released.
    */
   async shutdown(): Promise<void> {
-    this.clearActivePreset();
+    this.presetService.clearActivePreset();
     this.layers.clear();
     this.categoryToLayer.clear();
     this.outputConfig = null;
@@ -336,75 +331,25 @@ export class GraphicsManager {
 
     const prepared = await this.prepareLayer(data);
     const durationMs = typeof data.durationMs === "number" ? data.durationMs : null;
-    const hasDuration = durationMs !== null;
+    await this.presetService.prepareBeforeRender(
+      prepared.presetId,
+      prepared.category
+    );
 
-    if (prepared.presetId) {
-      await this.removeLayersNotInPreset(prepared.presetId);
-      const existingLayerId = this.categoryToLayer.get(prepared.category);
-      if (existingLayerId) {
-        const existingLayer = this.layers.get(existingLayerId);
-        if (existingLayer?.presetId === prepared.presetId) {
-          try {
-            await this.renderer.removeLayer(existingLayerId);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            getBridgeContext().logger.warn(
-              `[Graphics] Failed to remove layer ${existingLayerId} (preset_resend): ${message}`
-            );
-          }
-          this.layers.delete(existingLayerId);
-          this.categoryToLayer.delete(prepared.category);
-          if (this.activePreset?.presetId === prepared.presetId) {
-            this.activePreset.layerIds.delete(existingLayerId);
-          }
-        }
-      }
-    } else if (this.activePreset) {
-      await this.removePresetById(this.activePreset.presetId, "send_non_preset");
-    }
+    await renderPreparedLayer({
+      renderer: this.renderer,
+      layers: this.layers,
+      categoryToLayer: this.categoryToLayer,
+      outputFormat: this.outputConfig?.format ?? null,
+      data: prepared,
+      onRendered: (layerIds) => this.presetService.maybeStartPresetTimers(layerIds),
+    });
 
-    await this.renderPreparedLayer(prepared);
-
-    let shouldPublishPreset = false;
-
-    if (prepared.presetId) {
-      if (!this.activePreset || this.activePreset.presetId !== prepared.presetId) {
-        this.activePreset = {
-          presetId: prepared.presetId,
-          durationMs: durationMs ?? null,
-          layerIds: new Set([prepared.layerId]),
-          pendingStart: Boolean(durationMs && durationMs > 0),
-          startedAt: null,
-          expiresAt: null,
-          timer: null,
-        };
-        getBridgeContext().logger.info(
-          `[Graphics] Preset activated: ${prepared.presetId}`
-        );
-        shouldPublishPreset = true;
-      } else {
-        this.activePreset.layerIds.add(prepared.layerId);
-        shouldPublishPreset = true;
-      }
-
-      if (hasDuration) {
-        if (durationMs > 0) {
-          this.resetActivePresetTimer(durationMs);
-          shouldPublishPreset = true;
-        } else {
-          this.clearActivePresetTimer();
-          this.activePreset.durationMs = null;
-          this.activePreset.pendingStart = false;
-          this.activePreset.startedAt = null;
-          this.activePreset.expiresAt = null;
-          shouldPublishPreset = true;
-        }
-      }
-    }
-
-    if (shouldPublishPreset) {
-      this.publishGraphicsStatus("preset_update");
-    }
+    this.presetService.syncAfterRender(
+      prepared.layerId,
+      prepared.presetId,
+      durationMs
+    );
   }
 
   /**
@@ -471,22 +416,16 @@ export class GraphicsManager {
       return;
     }
 
-    await this.renderer.removeLayer(data.layerId);
-    this.layers.delete(data.layerId);
-    if (this.categoryToLayer.get(layer.category) === data.layerId) {
-      this.categoryToLayer.delete(layer.category);
-    }
-    if (layer.presetId && this.activePreset?.presetId === layer.presetId) {
-      this.activePreset.layerIds.delete(layer.layerId);
-      if (this.activePreset.layerIds.size === 0) {
-        const clearedPresetId = this.activePreset.presetId;
-        this.clearActivePreset();
-        getBridgeContext().logger.info(
-          `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
-        );
-        this.publishGraphicsStatus("preset_cleared");
-      }
-    }
+    await removeLayerWithRenderer(
+      {
+        renderer: this.renderer,
+        layers: this.layers,
+        categoryToLayer: this.categoryToLayer,
+      },
+      data.layerId,
+      "remove_layer"
+    );
+    this.presetService.handleLayerRemoved(layer);
   }
 
   /**
@@ -499,7 +438,7 @@ export class GraphicsManager {
     await this.initialize();
 
     const data = GraphicsRemovePresetSchema.parse(payload);
-    await this.removePresetById(data.presetId, "manual");
+    await this.presetService.removePresetById(data.presetId, "manual");
   }
 
   /**
@@ -509,7 +448,14 @@ export class GraphicsManager {
    */
   async sendTestPattern(): Promise<void> {
     await this.initialize();
-    await this.clearAllLayers();
+    await clearAllLayers({
+      renderer: this.renderer,
+      layers: this.layers,
+      categoryToLayer: this.categoryToLayer,
+      clearActivePreset: () => this.presetService.clearActivePreset(),
+      publishStatus: (reason) =>
+        publishGraphicsStatusEvent(reason, this.getStatusSnapshot()),
+    });
     await this.sendLayer(createTestPatternPayload());
   }
 
@@ -547,7 +493,17 @@ export class GraphicsManager {
       zIndex: layer.zIndex,
       presetId: layer.presetId,
     }));
+    const status = this.getStatusSnapshot();
 
+    return {
+      outputConfig: this.outputConfig,
+      layers,
+      activePreset: status.activePreset,
+      activePresets: status.activePresets,
+    };
+  }
+
+  private getStatusSnapshot(): GraphicsStatusSnapshotT {
     const activePreset = this.activePreset
       ? (() => {
           const categories = new Set<GraphicsCategoryT>();
@@ -568,13 +524,10 @@ export class GraphicsManager {
           };
         })()
       : null;
-    const activePresets = activePreset ? [activePreset] : [];
 
     return {
-      outputConfig: this.outputConfig,
-      layers,
       activePreset,
-      activePresets,
+      activePresets: activePreset ? [activePreset] : [],
     };
   }
 
@@ -599,42 +552,6 @@ export class GraphicsManager {
       framebusSize: frameBusConfig?.size ?? 0,
       backgroundMode: "transparent",
     };
-  }
-
-  private validateLayerLimits(
-    layerId: string,
-    category: GraphicsCategoryT
-  ): void {
-    const existingLayer = this.layers.get(layerId);
-    const layerInCategory = this.categoryToLayer.get(category);
-    if (layerInCategory && layerInCategory !== layerId) {
-      throw new Error(`Layer already active for category ${category}`);
-    }
-
-    if (!existingLayer) {
-      const activeLayers = this.layers.size;
-      if (activeLayers >= MAX_ACTIVE_LAYERS) {
-        throw new Error("Maximum active layers reached");
-      }
-    }
-  }
-
-  private async clearAllLayers(): Promise<void> {
-    const layers = Array.from(this.layers.values());
-    for (const layer of layers) {
-      try {
-        await this.renderer.removeLayer(layer.layerId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        getBridgeContext().logger.warn(
-          `[Graphics] Failed to remove layer ${layer.layerId}: ${message}`
-        );
-      }
-    }
-    this.layers.clear();
-    this.categoryToLayer.clear();
-    this.clearActivePreset();
-    this.publishGraphicsStatus("clear_all_layers");
   }
 
   private summarizeSendPayload(
@@ -769,240 +686,8 @@ export class GraphicsManager {
     };
   }
 
-  private async renderPreparedLayer(data: PreparedLayerT): Promise<void> {
-    this.validateLayerLimits(data.layerId, data.category);
-
-    const existing = this.layers.get(data.layerId);
-    if (existing && existing.category !== data.category) {
-      this.categoryToLayer.delete(existing.category);
-    }
-
-    this.layers.set(data.layerId, {
-      layerId: data.layerId,
-      category: data.category,
-      layout: data.layout,
-      zIndex: data.zIndex,
-      backgroundMode: data.backgroundMode,
-      values: data.values,
-      bindings: data.bindings,
-      schema: { ...(data.bundle.schema || {}) },
-      defaults: { ...(data.bundle.defaults || {}) },
-      presetId: data.presetId,
-    });
-
-    this.categoryToLayer.set(data.category, data.layerId);
-
-    try {
-      await this.renderer.renderLayer({
-        layerId: data.layerId,
-        html: data.bundle.html,
-        css: data.bundle.css,
-        values: data.values,
-        bindings: data.bindings,
-        layout: data.layout,
-        backgroundMode: data.backgroundMode,
-        width: this.outputConfig?.format.width ?? 1920,
-        height: this.outputConfig?.format.height ?? 1080,
-        fps: this.outputConfig?.format.fps ?? 50,
-        zIndex: data.zIndex,
-      });
-      this.maybeStartPresetTimers([data.layerId]);
-    } catch (error) {
-      this.layers.delete(data.layerId);
-      if (this.categoryToLayer.get(data.category) === data.layerId) {
-        this.categoryToLayer.delete(data.category);
-      }
-      throw error;
-    }
-  }
-
-  private maybeStartPresetTimers(layerIds: string[]): void {
-    if (!this.activePreset) {
-      return;
-    }
-
-    if (!this.activePreset.pendingStart) {
-      return;
-    }
-
-    const hasActiveLayer = layerIds.some((layerId) =>
-      this.activePreset?.layerIds.has(layerId)
-    );
-
-    if (!hasActiveLayer) {
-      return;
-    }
-
-    const startedAt = Date.now();
-    const presetId = this.activePreset.presetId;
-    this.activePreset.pendingStart = false;
-    this.activePreset.startedAt = startedAt;
-    this.activePreset.expiresAt = startedAt + (this.activePreset.durationMs ?? 0);
-    this.activePreset.timer = setTimeout(() => {
-      void this.expireActivePreset(presetId);
-    }, this.activePreset.durationMs ?? 0);
-    this.publishGraphicsStatus("preset_started");
-  }
-
-  private resetActivePresetTimer(durationMs: number): void {
-    if (!this.activePreset) {
-      return;
-    }
-    this.clearActivePresetTimer();
-    this.activePreset.durationMs = durationMs;
-    this.activePreset.pendingStart = true;
-    this.activePreset.startedAt = null;
-    this.activePreset.expiresAt = null;
-  }
-
-  private clearActivePresetTimer(): void {
-    if (this.activePreset?.timer) {
-      clearTimeout(this.activePreset.timer);
-      this.activePreset.timer = null;
-    }
-  }
-
-  private clearActivePreset(): void {
-    this.clearActivePresetTimer();
-    this.activePreset = null;
-  }
-
-  private async expireActivePreset(presetId: string): Promise<void> {
-    if (!this.activePreset || this.activePreset.presetId !== presetId) {
-      return;
-    }
-
-    await this.removePresetById(presetId, "expired");
-    getBridgeContext().logger.info(`[Graphics] Preset expired: ${presetId}`);
-  }
-
-  private async removeLayersNotInPreset(presetId: string): Promise<void> {
-    const layersToRemove = Array.from(this.layers.values()).filter(
-      (layer) => layer.presetId !== presetId
-    );
-    const presetIds = new Set<string>();
-    let nonPresetCount = 0;
-
-    for (const layer of layersToRemove) {
-      if (layer.presetId) {
-        presetIds.add(layer.presetId);
-      } else {
-        nonPresetCount += 1;
-      }
-    }
-
-    for (const layer of layersToRemove) {
-      try {
-        await this.renderer.removeLayer(layer.layerId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        getBridgeContext().logger.warn(
-          `[Graphics] Failed to remove layer ${layer.layerId} (preset_replace): ${message}`
-        );
-      }
-      this.layers.delete(layer.layerId);
-      if (this.categoryToLayer.get(layer.category) === layer.layerId) {
-        this.categoryToLayer.delete(layer.category);
-      }
-    }
-
-    if (this.activePreset && this.activePreset.presetId !== presetId) {
-      this.clearActivePreset();
-    }
-
-    if (layersToRemove.length > 0) {
-      getBridgeContext().logger.info(
-        `[Graphics] Preset replaced: ${JSON.stringify({
-          newPresetId: presetId,
-          removedPresets: Array.from(presetIds),
-          removedNonPresetLayers: nonPresetCount,
-          removedLayerCount: layersToRemove.length,
-        })}`
-      );
-    }
-  }
-
-  private async removePresetById(
-    presetId: string,
-    reason: "manual" | "expired" | "replace" | "send_non_preset" = "manual"
-  ): Promise<void> {
-    const layersToRemove = Array.from(this.layers.values()).filter(
-      (layer) => layer.presetId === presetId
-    );
-    const wasActive = this.activePreset?.presetId === presetId;
-
-    for (const layer of layersToRemove) {
-      try {
-        await this.renderer.removeLayer(layer.layerId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        getBridgeContext().logger.warn(
-          `[Graphics] Failed to remove layer ${layer.layerId} (preset_remove): ${message}`
-        );
-      }
-      this.layers.delete(layer.layerId);
-      if (this.categoryToLayer.get(layer.category) === layer.layerId) {
-        this.categoryToLayer.delete(layer.category);
-      }
-    }
-
-    if (wasActive) {
-      this.clearActivePreset();
-    }
-
-    if (layersToRemove.length > 0) {
-      getBridgeContext().logger.info(
-        `[Graphics] Preset removed: ${JSON.stringify({
-          presetId,
-          reason,
-          removedLayerCount: layersToRemove.length,
-        })}`
-      );
-    }
-
-    if (layersToRemove.length > 0 || wasActive) {
-      this.publishGraphicsStatus("preset_removed");
-    }
-  }
-
-  private publishGraphicsStatus(reason: string): void {
-    const publishBridgeEvent = getBridgeContext().publishBridgeEvent;
-    if (!publishBridgeEvent) {
-      return;
-    }
-    const status = this.getStatus();
-    getBridgeContext().logger.info(
-      `[Graphics] Publish status: ${reason}`
-    );
-    publishBridgeEvent({
-      event: "graphics_status",
-      data: {
-        reason,
-        activePreset: status.activePreset,
-        activePresets: status.activePresets,
-      },
-    });
-  }
-
-  private publishGraphicsError(code: string, message: string): void {
-    const publishBridgeEvent = getBridgeContext().publishBridgeEvent;
-    if (!publishBridgeEvent) {
-      return;
-    }
-    getBridgeContext().logger.error(
-      `[Graphics] Error reported: ${code} ${message}`
-    );
-    publishBridgeEvent({
-      event: "graphics_error",
-      data: {
-        code,
-        message,
-      },
-    });
-  }
-
   private failGraphics(code: GraphicsErrorCodeT, message: string): never {
-    this.publishGraphicsError(code, message);
+    publishGraphicsErrorEvent(code, message);
     throw new GraphicsError(code, message);
   }
 
