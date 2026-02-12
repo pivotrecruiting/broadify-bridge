@@ -167,7 +167,29 @@ export class GraphicsPresetService {
       },
     });
     if (started) {
+      getBridgeContext().logger.info(
+        `[Graphics] Preset timer started: ${JSON.stringify({
+          presetId: activePreset.presetId,
+          durationMs: activePreset.durationMs,
+          layerIds: Array.from(activePreset.layerIds),
+          renderedLayerIds: layerIds,
+          startedAt: activePreset.startedAt,
+          expiresAt: activePreset.expiresAt,
+        })}`
+      );
       this.deps.publishStatus("preset_started");
+      return;
+    }
+
+    if (activePreset.pendingStart) {
+      getBridgeContext().logger.warn(
+        `[Graphics] Preset timer pending (start deferred): ${JSON.stringify({
+          presetId: activePreset.presetId,
+          durationMs: activePreset.durationMs,
+          layerIds: Array.from(activePreset.layerIds),
+          renderedLayerIds: layerIds,
+        })}`
+      );
     }
   }
 
@@ -255,6 +277,15 @@ export class GraphicsPresetService {
       return;
     }
 
+    getBridgeContext().logger.info(
+      `[Graphics] Expiring preset: ${JSON.stringify({
+        presetId,
+        durationMs: activePreset.durationMs,
+        layerIds: Array.from(activePreset.layerIds),
+        startedAt: activePreset.startedAt,
+        expiresAt: activePreset.expiresAt,
+      })}`
+    );
     await this.removePresetById(presetId, "expired");
     getBridgeContext().logger.info(`[Graphics] Preset expired: ${presetId}`);
   }

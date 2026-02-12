@@ -542,6 +542,23 @@ async function ensureSingleWindow(
   return singleWindow;
 }
 
+/**
+ * Force an offscreen repaint after a control-plane DOM mutation.
+ *
+ * Some Chromium offscreen scenarios may delay paint dispatch for non-animated
+ * DOM updates. Triggering invalidate ensures the next frame is emitted.
+ */
+function requestSingleWindowRepaint(): void {
+  if (!singleWindow || singleWindow.isDestroyed()) {
+    return;
+  }
+  try {
+    singleWindow.webContents.invalidate();
+  } catch {
+    // No-op; repaint is best-effort and should never break command processing.
+  }
+}
+
 function registerAssetProtocol(): void {
   protocol.registerFileProtocol("asset", (request, callback) => {
     try {
@@ -605,6 +622,7 @@ async function createLayer(message: {
     `window.__createLayer(${JSON.stringify(payload)});`,
     true
   );
+  requestSingleWindowRepaint();
 }
 
 /**
@@ -631,6 +649,7 @@ async function updateValues(message: {
     )}, ${JSON.stringify(message.bindings || {})});`,
     true
   );
+  requestSingleWindowRepaint();
 }
 
 /**
@@ -653,6 +672,7 @@ async function updateLayout(message: {
     )}, ${JSON.stringify(zIndexValue)});`,
     true
   );
+  requestSingleWindowRepaint();
 }
 
 /**
@@ -668,6 +688,7 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
     `window.__removeLayer(${JSON.stringify(message.layerId)});`,
     true
   );
+  requestSingleWindowRepaint();
 }
 
 /**
