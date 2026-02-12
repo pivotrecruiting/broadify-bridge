@@ -6,7 +6,6 @@ import path from "node:path";
 import type { GraphicsLayoutT } from "../graphics-schemas.js";
 import { getBridgeContext, type LoggerLikeT } from "../../bridge-context.js";
 import type {
-  GraphicsFrameT,
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
   GraphicsRendererConfigT,
@@ -22,8 +21,6 @@ const ELECTRON_BINARIES = {
 const MAX_IPC_HEADER_BYTES = 64 * 1024;
 const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
-const MAX_FRAME_DIMENSION = 8192;
-const DEBUG_GRAPHICS = true;
 
 const formatStatMode = (mode: number): string => {
   return `0${(mode & 0o777).toString(8)}`;
@@ -102,7 +99,6 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private readyPromise: Promise<void> | null = null;
   private readyResolver: (() => void) | null = null;
   private readyRejecter: ((error: Error) => void) | null = null;
-  private frameCallback: ((frame: GraphicsFrameT) => void) | null = null;
   private errorCallback: ((error: Error) => void) | null = null;
   private ipcServer: net.Server | null = null;
   private ipcSocket: net.Socket | null = null;
@@ -114,7 +110,6 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private pendingCommands: Array<Record<string, unknown>> = [];
   private stdoutBuffer = "";
   private stderrBuffer = "";
-  private debugFirstFrameLogged = new Set<string>();
   private rendererConfigured = false;
   private sessionConfig: GraphicsRendererConfigT | null = null;
   private lastSentConfigKey: string | null = null;
@@ -364,15 +359,6 @@ export class ElectronRendererClient implements GraphicsRenderer {
   }
 
   /**
-   * Register a callback to receive rendered frames.
-   *
-   * @param callback Frame callback.
-   */
-  onFrame(callback: (frame: GraphicsFrameT) => void): void {
-    this.frameCallback = callback;
-  }
-
-  /**
    * Register a callback for renderer errors.
    *
    * @param callback Error callback.
@@ -482,15 +468,13 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
     this.lastSentConfigKey = configKey;
 
-    if (process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1") {
-      if (!config.framebusName || config.framebusSize <= 0) {
-        this.logStructured(
-          "warn",
-          { component: "graphics-renderer" },
-          "[GraphicsRenderer] FrameBus config missing; renderer_configure skipped"
-        );
-        return;
-      }
+    if (!config.framebusName || config.framebusSize <= 0) {
+      this.logStructured(
+        "warn",
+        { component: "graphics-renderer" },
+        "[GraphicsRenderer] FrameBus config missing; renderer_configure skipped"
+      );
+      return;
     }
 
     if (this.configReadyRejecter) {
@@ -773,11 +757,6 @@ export class ElectronRendererClient implements GraphicsRenderer {
         return;
       }
 
-      let payloadBuffer: Buffer | null = null;
-      if (bufferLength > 0) {
-        payloadBuffer = this.ipcBuffer.subarray(4 + headerLength, totalLength);
-      }
-
       this.ipcBuffer = this.ipcBuffer.subarray(totalLength);
 
       const messageToken = typeof header.token === "string" ? header.token : "";
@@ -825,6 +804,15 @@ export class ElectronRendererClient implements GraphicsRenderer {
         continue;
       }
 
+      if (bufferLength > 0) {
+        this.logStructured(
+          "warn",
+          { component: "graphics-renderer" },
+          "[GraphicsRenderer IPC] Unexpected binary payload; ignored",
+        );
+        continue;
+      }
+
       if (header.type === "ready") {
         this.rendererConfigured = true;
         if (this.configReadyResolver) {
@@ -835,71 +823,14 @@ export class ElectronRendererClient implements GraphicsRenderer {
         this.configReadyPromise = null;
       }
 
-      if (header.type === "frame" && payloadBuffer && this.frameCallback) {
-        const layerId = String(header.layerId || "");
-        const width = Number(header.width || 0);
-        const height = Number(header.height || 0);
-        if (DEBUG_GRAPHICS && !this.debugFirstFrameLogged.has(layerId)) {
-          this.debugFirstFrameLogged.add(layerId);
-          this.logStructured(
-            "debug",
-            {
-              component: "graphics-renderer",
-              layerId,
-              width,
-              height,
-              bufferLength: payloadBuffer.length,
-              expectedLength: width * height * 4,
-            },
-            "[GraphicsRenderer IPC] Debug frame received",
-          );
-        }
-        if (
-          !Number.isFinite(width) ||
-          !Number.isFinite(height) ||
-          width <= 0 ||
-          height <= 0 ||
-          width > MAX_FRAME_DIMENSION ||
-          height > MAX_FRAME_DIMENSION
-        ) {
-          this.logStructured(
-            "warn",
-            { component: "graphics-renderer" },
-            "[GraphicsRenderer IPC] Invalid frame dimensions",
-          );
-          continue;
-        }
-        const expectedLength = width * height * 4;
-        if (payloadBuffer.length !== expectedLength) {
-          if (DEBUG_GRAPHICS) {
-            this.logStructured(
-              "warn",
-              {
-                component: "graphics-renderer",
-                layerId,
-                width,
-                height,
-                bufferLength: payloadBuffer.length,
-                expectedLength,
-              },
-              "[GraphicsRenderer IPC] Debug buffer length mismatch",
-            );
-          }
-          this.logStructured(
-            "warn",
-            { component: "graphics-renderer" },
-            "[GraphicsRenderer IPC] Frame buffer length mismatch",
-          );
-          continue;
-        }
-        const frame: GraphicsFrameT = {
-          layerId: String(header.layerId || ""),
-          width,
-          height,
-          buffer: payloadBuffer,
-          timestamp: Number(header.timestamp || Date.now()),
-        };
-        this.frameCallback(frame);
+      // Frame payloads over IPC were removed. Data plane is FrameBus only.
+      if (header.type === "frame") {
+        this.logStructured(
+          "warn",
+          { component: "graphics-renderer" },
+          "[GraphicsRenderer IPC] Unexpected frame payload; ignored",
+        );
+        continue;
       }
 
       if (header.type === "error" && typeof header.message === "string") {

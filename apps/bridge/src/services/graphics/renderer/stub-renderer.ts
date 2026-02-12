@@ -1,6 +1,5 @@
 import type { GraphicsLayoutT } from "../graphics-schemas.js";
 import type {
-  GraphicsFrameT,
   GraphicsRendererConfigT,
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
@@ -8,14 +7,10 @@ import type {
 } from "./graphics-renderer.js";
 
 /**
- * Stub renderer that emits transparent frames.
+ * Stub renderer used for development/testing without real rendering output.
  */
 export class StubRenderer implements GraphicsRenderer {
-  private frameCallback: ((frame: GraphicsFrameT) => void) | null = null;
-  private layers = new Map<
-    string,
-    { width: number; height: number; buffer: Buffer }
-  >();
+  private layers = new Set<string>();
 
   async initialize(): Promise<void> {
     return;
@@ -30,38 +25,27 @@ export class StubRenderer implements GraphicsRenderer {
   }
 
   async renderLayer(input: GraphicsRenderLayerInputT): Promise<void> {
-    const buffer = Buffer.alloc(input.width * input.height * 4, 0);
-    this.layers.set(input.layerId, {
-      width: input.width,
-      height: input.height,
-      buffer,
-    });
-
-    this.emitFrame(input.layerId);
+    this.layers.add(input.layerId);
   }
 
   async updateValues(
-    layerId: string,
+    _layerId: string,
     _values: Record<string, unknown>,
     _bindings?: GraphicsTemplateBindingsT
   ): Promise<void> {
-    this.emitFrame(layerId);
+    return;
   }
 
   async updateLayout(
-    layerId: string,
+    _layerId: string,
     _layout: GraphicsLayoutT,
     _zIndex?: number
   ): Promise<void> {
-    this.emitFrame(layerId);
+    return;
   }
 
   async removeLayer(layerId: string): Promise<void> {
     this.layers.delete(layerId);
-  }
-
-  onFrame(callback: (frame: GraphicsFrameT) => void): void {
-    this.frameCallback = callback;
   }
 
   onError(callback: (error: Error) => void): void {
@@ -70,23 +54,5 @@ export class StubRenderer implements GraphicsRenderer {
 
   async shutdown(): Promise<void> {
     this.layers.clear();
-    this.frameCallback = null;
-  }
-
-  private emitFrame(layerId: string): void {
-    if (!this.frameCallback) {
-      return;
-    }
-    const layer = this.layers.get(layerId);
-    if (!layer) {
-      return;
-    }
-    this.frameCallback({
-      layerId,
-      width: layer.width,
-      height: layer.height,
-      buffer: layer.buffer,
-      timestamp: Date.now(),
-    });
   }
 }

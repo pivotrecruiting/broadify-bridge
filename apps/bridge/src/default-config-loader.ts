@@ -10,7 +10,6 @@ const DEFAULT_CONFIG_FILENAME = "default.json";
 interface DefaultConfigT {
   graphics?: {
     renderer?: string;
-    rendererSingle?: boolean;
     framebusName?: string;
   };
   relay?: {
@@ -43,6 +42,7 @@ function resolveDefaultConfigPath(): string | null {
 
 /**
  * Load default config and apply graphics values to process.env.
+ * Legacy renderer mode flags were removed; runtime is single-renderer only.
  * Only sets env vars that are not already defined (allows override via env).
  */
 export function loadDefaultConfig(): void {
@@ -66,9 +66,6 @@ export function loadDefaultConfig(): void {
 
   if (g.renderer !== undefined && process.env.BRIDGE_GRAPHICS_RENDERER === undefined) {
     process.env.BRIDGE_GRAPHICS_RENDERER = g.renderer;
-  }
-  if (g.rendererSingle !== undefined && process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === undefined) {
-    process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE = g.rendererSingle ? "1" : "0";
   }
   if (g.framebusName !== undefined && process.env.BRIDGE_FRAMEBUS_NAME === undefined) {
     process.env.BRIDGE_FRAMEBUS_NAME = g.framebusName;

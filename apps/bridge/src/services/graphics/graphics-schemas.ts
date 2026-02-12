@@ -13,7 +13,6 @@ const MAX_DURATION_MS = 60 * 60 * 1000;
 export const GraphicsOutputKeySchema = z.enum([
   "stub",
   "key_fill_sdi",
-  "key_fill_split_sdi",
   "key_fill_ndi",
   "video_sdi",
   "video_hdmi",
@@ -133,19 +132,19 @@ export const GraphicsCategorySchema = z.enum([
 /**
  * Payload for creating/updating a graphics layer.
  */
-  export const GraphicsSendSchema = z
-    .object({
-      layerId: z.string().min(1),
-      category: GraphicsCategorySchema,
-      backgroundMode: GraphicsBackgroundModeSchema,
-      layout: GraphicsLayoutSchema,
-      zIndex: z.number().int(),
-      bundle: GraphicsBundleSchema,
-      values: z.record(z.unknown()).optional().default({}),
-      presetId: z.string().min(1).optional(),
-      durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
-    })
-    .strict();
+export const GraphicsSendSchema = z
+  .object({
+    layerId: z.string().min(1),
+    category: GraphicsCategorySchema,
+    backgroundMode: GraphicsBackgroundModeSchema,
+    layout: GraphicsLayoutSchema,
+    zIndex: z.number().int(),
+    bundle: GraphicsBundleSchema,
+    values: z.record(z.unknown()).optional().default({}),
+    presetId: z.string().min(1).optional(),
+    durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
+  })
+  .strict();
 
 /**
  * Payload for updating layer values.

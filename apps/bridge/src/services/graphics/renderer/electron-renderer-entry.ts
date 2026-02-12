@@ -24,8 +24,6 @@ const DEBUG_GRAPHICS = true;
 // Design baseline for templates (format-agnostic rendering).
 const BASE_RENDER_WIDTH = 1920;
 const BASE_RENDER_HEIGHT = 1080;
-const ENABLE_SINGLE_RENDERER =
-  process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
 let frameBusPixelFormat = Number(
@@ -50,15 +48,6 @@ logger.info(
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 
-const layers = new Map<
-  string,
-  {
-    window: BrowserWindow;
-    width: number;
-    height: number;
-  }
->();
-
 const assetMap = new Map<string, { filePath: string; mime: string }>();
 let paintCount = 0;
 let ipcSocket: net.Socket | null = null;
@@ -68,11 +57,7 @@ const ipcToken = process.env.BRIDGE_GRAPHICS_IPC_TOKEN || "";
 let isAppReady = false;
 let isIpcConnected = false;
 let readySent = false;
-const debugFirstPaintLogged = new Set<string>();
-const debugMismatchLogged = new Set<string>();
 const debugEmptyLogged = new Set<string>();
-const debugSampleLogged = new Set<string>();
-const debugDomLogged = new Set<string>();
 const debugFrameBusLogged = new Set<string>();
 let perfLastLogAt = Date.now();
 let perfPaintCount = 0;
@@ -230,355 +215,6 @@ function bgraToRgba(buffer: Buffer): Buffer {
   return buffer;
 }
 
-function sampleRgbaBuffer(
-  buffer: Buffer,
-  width: number,
-  height: number,
-): Array<{ name: string; x: number; y: number; rgba: number[] | null }> {
-  const maxX = Math.max(0, width - 1);
-  const maxY = Math.max(0, height - 1);
-  const positions = [
-    { name: "topLeft", x: 0, y: 0 },
-    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
-    { name: "bottomRight", x: maxX, y: maxY },
-  ];
-
-  return positions.map((pos) => {
-    const index = (pos.y * width + pos.x) * 4;
-    if (index < 0 || index + 3 >= buffer.length) {
-      return { ...pos, rgba: null };
-    }
-    return {
-      ...pos,
-      rgba: [
-        buffer[index],
-        buffer[index + 1],
-        buffer[index + 2],
-        buffer[index + 3],
-      ],
-    };
-  });
-}
-
-async function logDomStateOnce(
-  window: BrowserWindow,
-  layerId: string,
-  layout: { x: number; y: number; scale: number },
-): Promise<void> {
-  if (!DEBUG_GRAPHICS || debugDomLogged.has(layerId)) {
-    return;
-  }
-  debugDomLogged.add(layerId);
-  try {
-    const layoutJson = JSON.stringify(layout);
-    const domState = await window.webContents.executeJavaScript(
-      `(() => {
-        const layout = ${layoutJson};
-        const container = document.getElementById("graphic-container");
-        const root = document.getElementById("graphic-root");
-        const rootElement =
-          (root && root.querySelector('[data-root="graphic"]')) || root;
-        const rectToJson = (rect) => rect
-          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          : null;
-        const getStyle = (el) => {
-          if (!el) return null;
-          const style = getComputedStyle(el);
-          return {
-            display: style.display,
-            visibility: style.visibility,
-            opacity: style.opacity,
-            transform: style.transform,
-          };
-        };
-        return {
-          layout,
-          containerRect: rectToJson(container?.getBoundingClientRect()),
-          rootRect: rectToJson(root?.getBoundingClientRect()),
-          elementRect: rectToJson(rootElement?.getBoundingClientRect()),
-          hasElement: Boolean(rootElement),
-          hasContent: Boolean(
-            rootElement &&
-              (rootElement.children.length > 0 ||
-                (rootElement.textContent || "").trim().length > 0),
-          ),
-          rootHtmlLength: root?.innerHTML?.length || 0,
-          elementStyle: getStyle(rootElement),
-        };
-      })()`,
-      true,
-    );
-    logger.info(
-      {
-        layerId,
-        ...domState,
-      },
-      "[GraphicsRenderer] Debug DOM state",
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(
-      { layerId, message },
-      "[GraphicsRenderer] Debug DOM state failed",
-    );
-  }
-}
-
-async function logDomStateWithDelay(
-  window: BrowserWindow,
-  layerId: string,
-  layout: { x: number; y: number; scale: number },
-  delayMs: number,
-): Promise<void> {
-  if (!DEBUG_GRAPHICS || debugDomLogged.has(`${layerId}-delayed`)) {
-    return;
-  }
-  debugDomLogged.add(`${layerId}-delayed`);
-  const layoutJson = JSON.stringify(layout);
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const domState = await window.webContents.executeJavaScript(
-          `(() => {
-            const layout = ${layoutJson};
-            const container = document.getElementById("graphic-container");
-            const root = document.getElementById("graphic-root");
-            const rootElement =
-              (root && root.querySelector('[data-root="graphic"]')) || root;
-            const rectToJson = (rect) => rect
-              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-              : null;
-            const getStyle = (el) => {
-              if (!el) return null;
-              const style = getComputedStyle(el);
-              return {
-                display: style.display,
-                visibility: style.visibility,
-                opacity: style.opacity,
-                transform: style.transform,
-              };
-            };
-            return {
-              layout,
-              containerRect: rectToJson(container?.getBoundingClientRect()),
-              rootRect: rectToJson(root?.getBoundingClientRect()),
-              elementRect: rectToJson(rootElement?.getBoundingClientRect()),
-              hasElement: Boolean(rootElement),
-              hasContent: Boolean(
-                rootElement &&
-                  (rootElement.children.length > 0 ||
-                    (rootElement.textContent || "").trim().length > 0),
-              ),
-              rootHtmlLength: root?.innerHTML?.length || 0,
-              elementStyle: getStyle(rootElement),
-            };
-          })()`,
-          true,
-        );
-        logger.info(
-          {
-            layerId,
-            delayMs,
-            ...domState,
-          },
-          "[GraphicsRenderer] Debug DOM state (delayed)",
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn(
-          { layerId, message },
-          "[GraphicsRenderer] Debug DOM state (delayed) failed",
-        );
-      }
-    })();
-  }, delayMs);
-}
-
-/**
- * Build a self-contained HTML document for the offscreen renderer.
- *
- * @param options Template html/css and runtime values.
- * @returns Serialized HTML document string.
- */
-function buildHtmlDocument(options: {
-  html: string;
-  css: string;
-  values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
-  backgroundColor: string;
-  layout: { x: number; y: number; scale: number };
-}): string {
-  const { html, css, values, bindings, backgroundColor, layout } = options;
-  const resolvedBindings = {
-    cssVariables: bindings?.cssVariables ?? {},
-    textContent: bindings?.textContent ?? {},
-    textTypes: bindings?.textTypes ?? {},
-    animationClass: bindings?.animationClass ?? "anim-ease-out",
-  };
-  const cssVariableLines = Object.entries(resolvedBindings.cssVariables)
-    .map(([key, value]) => `  ${key}: ${value};`)
-    .join("\n");
-
-  const safeValues = JSON.stringify(values || {});
-  const safeBindings = JSON.stringify(resolvedBindings);
-  const template = JSON.stringify(html);
-  const layoutJson = JSON.stringify(layout);
-
-  return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        background: ${backgroundColor};
-      }
-      #graphic-container {
-        position: relative;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-      }
-      #graphic-root {
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: ${BASE_RENDER_WIDTH}px;
-        height: ${BASE_RENDER_HEIGHT}px;
-        transform-origin: top left;
-      }
-      :root {
-${cssVariableLines}
-      }
-      ${getStandardAnimationCss()}
-      ${css}
-    </style>
-  </head>
-  <body>
-    <div id="graphic-container">
-      <div id="graphic-root"></div>
-    </div>
-    <script>
-      const template = ${template};
-      const hasPlaceholders = template.includes("{{");
-      const initialBindings = ${safeBindings};
-      const root = document.getElementById("graphic-root");
-      const cssVarsRoot = document.documentElement;
-      const escapeHtml = (value) => {
-        const str = value === undefined || value === null ? "" : String(value);
-        return str
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#39;");
-      };
-      const renderTemplate = (values) => {
-        // Regex needs escaped braces for literal matching
-        // eslint-disable-next-line no-useless-escape
-        return template.replace(/{{\\s*([\\w.-]+)\\s*}}/g, (match, key) => {
-          const value = key.split(".").reduce((acc, part) => {
-            if (acc && typeof acc === "object" && part in acc) {
-              return acc[part];
-            }
-            return undefined;
-          }, values);
-          return escapeHtml(value);
-        });
-      };
-      const getRootElement = () => {
-        return root.querySelector('[data-root="graphic"]') || root;
-      };
-      const applyAnimationClass = (element, animationClass) => {
-        if (!element) return;
-        const classes = String(element.className || "")
-          .split(/\\s+/)
-          .filter((entry) => entry.length > 0);
-        const nextClasses = classes.filter(
-          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
-        );
-        if (animationClass) {
-          nextClasses.push(animationClass);
-        }
-        if (!nextClasses.includes("state-enter")) {
-          nextClasses.push("state-enter");
-        }
-        element.className = nextClasses.join(" ");
-      };
-      const applyCssVariables = (vars) => {
-        if (!vars || !cssVarsRoot) return;
-        Object.entries(vars).forEach(([key, value]) => {
-          if (!key.startsWith("--")) return;
-          cssVarsRoot.style.setProperty(key, String(value));
-        });
-      };
-      const applyTextContent = (textContent, textTypes) => {
-        if (!textContent) return;
-        const rootElement = getRootElement();
-        if (!rootElement) return;
-        Object.entries(textContent).forEach(([key, value]) => {
-          const target = rootElement.querySelector('[data-bid="' + key + '"]');
-          if (!target) return;
-          const contentType = textTypes ? textTypes[key] : undefined;
-          if (contentType === "list") {
-            const items = String(value || "")
-              .split("\\n")
-              .map((item) => item.trim())
-              .filter(Boolean);
-            target.innerHTML = items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("");
-            return;
-          }
-          target.textContent = String(value ?? "");
-        });
-      };
-      window.__applyValues = (values, bindings) => {
-        const merged = Object.assign({}, window.__currentValues || {}, values || {});
-        window.__currentValues = merged;
-        if (hasPlaceholders) {
-          root.innerHTML = renderTemplate(merged);
-        }
-        const resolved = Object.assign({}, initialBindings, bindings || {});
-        window.__currentBindings = resolved;
-        const rootElement = getRootElement();
-        applyAnimationClass(rootElement, resolved.animationClass);
-        applyTextContent(resolved.textContent, resolved.textTypes);
-        applyCssVariables(resolved.cssVariables);
-      };
-      window.__updateLayout = (layout) => {
-        const x = Number(layout?.x || 0);
-        const y = Number(layout?.y || 0);
-        const scale = Number(layout?.scale || 1);
-        root.style.transform =
-          "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
-      };
-      window.__currentValues = ${safeValues};
-      window.__currentBindings = initialBindings;
-      if (!hasPlaceholders) {
-        root.innerHTML = template;
-      }
-      window.__updateLayout(${layoutJson});
-      window.__applyValues(window.__currentValues, initialBindings);
-    </script>
-  </body>
-</html>`;
-}
-
-function resolveBackgroundColor(mode: string): string {
-  if (mode === "green") return "#00FF00";
-  if (mode === "black") return "#000000";
-  if (mode === "white") return "#FFFFFF";
-  return "transparent";
-}
-
 function logFrameBusOnce(key: string, message: string): void {
   if (debugFrameBusLogged.has(key)) {
     return;
@@ -623,9 +259,6 @@ function ensureFrameBusWriter(
   height: number,
   fps: number
 ): boolean {
-  if (!ENABLE_SINGLE_RENDERER) {
-    return true;
-  }
   if (frameBusWriter) {
     const header = frameBusWriter.header;
     const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
@@ -769,8 +402,8 @@ function applyRendererConfig(message: unknown): void {
   );
 
   readySent = false;
-  rendererConfigReady = !ENABLE_SINGLE_RENDERER || frameBusReady;
-  if (ENABLE_SINGLE_RENDERER && !rendererConfigReady) {
+  rendererConfigReady = frameBusReady;
+  if (!rendererConfigReady) {
     sendIpcMessage({
       type: "error",
       message: "FrameBus writer not ready",
@@ -1210,227 +843,13 @@ function registerAssetProtocol(): void {
 }
 
 /**
- * Create a new offscreen layer window and start rendering frames.
+ * Create or replace a layer inside the single offscreen renderer window.
+ *
+ * Legacy multi-window rendering was removed.
  *
  * @param message Layer creation payload.
  */
 async function createLayer(message: {
-  layerId: string;
-  html: string;
-  css: string;
-  values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
-  layout: { x: number; y: number; scale: number };
-  backgroundMode: string;
-  width: number;
-  height: number;
-  fps: number;
-}): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await createLayerSingle(message);
-    return;
-  }
-  const existing = layers.get(message.layerId);
-  if (existing) {
-    existing.window.destroy();
-    layers.delete(message.layerId);
-  }
-
-  const window = new BrowserWindow({
-    width: message.width,
-    height: message.height,
-    show: false,
-    transparent: true,
-    paintWhenInitiallyHidden: true,
-    webPreferences: {
-      offscreen: true,
-      backgroundThrottling: false,
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-    },
-  });
-
-  if (DEBUG_GRAPHICS) {
-    const [contentWidth, contentHeight] = window.getContentSize();
-    logger.info(
-      {
-        layerId: message.layerId,
-        width: message.width,
-        height: message.height,
-        contentWidth,
-        contentHeight,
-        fps: message.fps,
-        backgroundMode: message.backgroundMode,
-      },
-      "[GraphicsRenderer] Debug layer created",
-    );
-  }
-
-  window.webContents.setFrameRate(message.fps);
-  window.webContents.on("paint", (_event, _dirty, image) => {
-    if (paintCount === 0) {
-      logger.info("[GraphicsRenderer] First paint received");
-    }
-    paintCount += 1;
-    perfPaintCount += 1;
-    logPerfIfNeeded();
-    const imageSize = image.getSize();
-    if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {
-      if (DEBUG_GRAPHICS && !debugEmptyLogged.has(message.layerId)) {
-        debugEmptyLogged.add(message.layerId);
-        logger.warn(
-          {
-            layerId: message.layerId,
-            messageWidth: message.width,
-            messageHeight: message.height,
-            imageWidth: imageSize.width,
-            imageHeight: imageSize.height,
-            dirtyRect: _dirty,
-          },
-          "[GraphicsRenderer] Debug empty paint frame",
-        );
-      }
-      return;
-    }
-    const buffer = bgraToRgba(image.toBitmap());
-    if (DEBUG_GRAPHICS && !debugFirstPaintLogged.has(message.layerId)) {
-      debugFirstPaintLogged.add(message.layerId);
-      const scaleX = message.width > 0 ? imageSize.width / message.width : 0;
-      const scaleY = message.height > 0 ? imageSize.height / message.height : 0;
-      logger.info(
-        {
-          layerId: message.layerId,
-          messageWidth: message.width,
-          messageHeight: message.height,
-          imageWidth: imageSize.width,
-          imageHeight: imageSize.height,
-          bufferLength: buffer.length,
-          expectedMessageLength: message.width * message.height * 4,
-          expectedImageLength: imageSize.width * imageSize.height * 4,
-          dirtyRect: _dirty,
-          scaleX,
-          scaleY,
-        },
-        "[GraphicsRenderer] Debug first paint",
-      );
-    }
-    if (
-      message.width > MAX_FRAME_DIMENSION ||
-      message.height > MAX_FRAME_DIMENSION
-    ) {
-      logger.warn("[GraphicsRenderer] Frame dimensions exceed limit");
-      return;
-    }
-    const expectedLength = message.width * message.height * 4;
-    if (buffer.length !== expectedLength) {
-      if (DEBUG_GRAPHICS && !debugMismatchLogged.has(message.layerId)) {
-        debugMismatchLogged.add(message.layerId);
-        const dirtyExpectedLength =
-          _dirty &&
-          typeof _dirty.width === "number" &&
-          typeof _dirty.height === "number"
-            ? _dirty.width * _dirty.height * 4
-            : null;
-        logger.warn(
-          {
-            layerId: message.layerId,
-            messageWidth: message.width,
-            messageHeight: message.height,
-            imageWidth: imageSize.width,
-            imageHeight: imageSize.height,
-            bufferLength: buffer.length,
-            expectedMessageLength: expectedLength,
-            expectedImageLength: imageSize.width * imageSize.height * 4,
-            dirtyRect: _dirty,
-            dirtyExpectedLength,
-          },
-          "[GraphicsRenderer] Debug buffer length mismatch",
-        );
-      }
-      logger.warn("[GraphicsRenderer] Frame buffer length mismatch");
-      return;
-    }
-    if (DEBUG_GRAPHICS && !debugSampleLogged.has(message.layerId)) {
-      debugSampleLogged.add(message.layerId);
-      const samples = sampleRgbaBuffer(buffer, message.width, message.height);
-      logger.info(
-        {
-          layerId: message.layerId,
-          width: message.width,
-          height: message.height,
-          samples,
-        },
-        "[GraphicsRenderer] Debug pixel samples",
-      );
-    }
-    if (buffer.length > MAX_IPC_PAYLOAD_BYTES) {
-      logger.warn("[GraphicsRenderer] Frame buffer exceeds payload limit");
-      return;
-    }
-    const frameStartAt = Date.now();
-    sendIpcMessage(
-      {
-        type: "frame",
-        layerId: message.layerId,
-        width: message.width,
-        height: message.height,
-        timestamp: Date.now(),
-      },
-      buffer,
-    );
-    const latencyMs = Date.now() - frameStartAt;
-    perfLatencyTotalMs += latencyMs;
-    if (latencyMs > perfLatencyMaxMs) {
-      perfLatencyMaxMs = latencyMs;
-    }
-  });
-
-  const html = buildHtmlDocument({
-    html: message.html,
-    css: message.css,
-    values: message.values,
-    bindings: message.bindings,
-    backgroundColor: resolveBackgroundColor(message.backgroundMode),
-    layout: message.layout,
-  });
-
-  window.webContents.once("did-finish-load", () => {
-    window.webContents.startPainting();
-    window.webContents.invalidate();
-    const isPainting = window.webContents.isPainting();
-    logger.info(`[GraphicsRenderer] isPainting: ${isPainting}`);
-    if (DEBUG_GRAPHICS) {
-      logger.info(
-        {
-          layerId: message.layerId,
-          zoomFactor: window.webContents.getZoomFactor(),
-          zoomLevel: window.webContents.getZoomLevel(),
-        },
-        "[GraphicsRenderer] Debug zoom",
-      );
-    }
-    void logDomStateOnce(window, message.layerId, message.layout);
-    void logDomStateWithDelay(window, message.layerId, message.layout, 200);
-  });
-
-  await window.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-  );
-
-  layers.set(message.layerId, {
-    window,
-    width: message.width,
-    height: message.height,
-  });
-}
-
-async function createLayerSingle(message: {
   layerId: string;
   html: string;
   css: string;
@@ -1487,33 +906,6 @@ async function updateValues(message: {
     animationClass?: string;
   };
 }): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await updateValuesSingle(message);
-    return;
-  }
-  const layer = layers.get(message.layerId);
-  if (!layer) {
-    return;
-  }
-
-  await layer.window.webContents.executeJavaScript(
-    `window.__applyValues(${JSON.stringify(
-      message.values || {},
-    )}, ${JSON.stringify(message.bindings || {})});`,
-    true,
-  );
-}
-
-async function updateValuesSingle(message: {
-  layerId: string;
-  values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
-}): Promise<void> {
   if (!singleWindow) {
     return;
   }
@@ -1531,26 +923,6 @@ async function updateValuesSingle(message: {
  * @param message Update payload.
  */
 async function updateLayout(message: {
-  layerId: string;
-  layout: { x: number; y: number; scale: number };
-  zIndex?: number;
-}): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await updateLayoutSingle(message);
-    return;
-  }
-  const layer = layers.get(message.layerId);
-  if (!layer) {
-    return;
-  }
-
-  await layer.window.webContents.executeJavaScript(
-    `window.__updateLayout(${JSON.stringify(message.layout)});`,
-    true,
-  );
-}
-
-async function updateLayoutSingle(message: {
   layerId: string;
   layout: { x: number; y: number; scale: number };
   zIndex?: number;
@@ -1573,19 +945,6 @@ async function updateLayoutSingle(message: {
  * @param message Remove payload.
  */
 async function removeLayer(message: { layerId: string }): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await removeLayerSingle(message);
-    return;
-  }
-  const layer = layers.get(message.layerId);
-  if (!layer) {
-    return;
-  }
-  layer.window.destroy();
-  layers.delete(message.layerId);
-}
-
-async function removeLayerSingle(message: { layerId: string }): Promise<void> {
   if (!singleWindow) {
     return;
   }
@@ -1683,10 +1042,6 @@ async function handleMessage(message: unknown): Promise<void> {
   }
 
   if (msg.type === "shutdown") {
-    for (const layer of layers.values()) {
-      layer.window.destroy();
-    }
-    layers.clear();
     if (singleWindow) {
       singleWindow.destroy();
       singleWindow = null;

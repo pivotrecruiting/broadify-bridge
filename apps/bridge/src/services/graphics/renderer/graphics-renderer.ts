@@ -3,14 +3,6 @@ import type {
   GraphicsLayoutT,
 } from "../graphics-schemas.js";
 
-export type GraphicsFrameT = {
-  layerId: string;
-  width: number;
-  height: number;
-  buffer: Buffer;
-  timestamp: number;
-};
-
 /**
  * Precomputed template bindings applied by the renderer.
  */
@@ -55,6 +47,7 @@ export type GraphicsRendererConfigT = {
 
 /**
  * Graphics renderer interface for offscreen Chromium rendering.
+ * Frame transport is handled by FrameBus; this interface only exposes control-plane operations.
  */
 export interface GraphicsRenderer {
   /**
@@ -108,14 +101,6 @@ export interface GraphicsRenderer {
    * @param layerId Layer identifier.
    */
   removeLayer(layerId: string): Promise<void>;
-  /**
-   * Register a frame callback.
-   *
-   * Legacy fallback path when FrameBus output is disabled.
-   *
-   * @param callback Invoked for each rendered frame.
-   */
-  onFrame(callback: (frame: GraphicsFrameT) => void): void;
   /**
    * Register an error callback.
    *

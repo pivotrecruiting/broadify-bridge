@@ -1,5 +1,4 @@
 import { assetRegistry } from "./asset-registry.js";
-import { applyBackground, compositeLayers } from "./composite.js";
 import type {
   GraphicsBackgroundModeT,
   GraphicsCategoryT,
@@ -23,7 +22,6 @@ import { outputConfigStore } from "./output-config-store.js";
 import { sanitizeTemplateCss, validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
-import { DecklinkSplitOutputAdapter } from "./output-adapters/decklink-split-output-adapter.js";
 import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
 import { DisplayVideoOutputAdapter } from "./output-adapters/display-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
@@ -34,7 +32,6 @@ import { listDecklinkDisplayModes } from "../../modules/decklink/decklink-helper
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
 import type {
-  GraphicsFrameT,
   GraphicsRenderer,
   GraphicsRendererConfigT,
 } from "./renderer/graphics-renderer.js";
@@ -60,51 +57,8 @@ const MAX_ACTIVE_LAYERS = 3;
 
 const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
   "key_fill_sdi",
-  "key_fill_split_sdi",
   "key_fill_ndi",
 ];
-
-const BACKGROUND_COLORS: Record<
-  GraphicsBackgroundModeT,
-  { r: number; g: number; b: number } | null
-> = {
-  transparent: null,
-  green: { r: 0, g: 255, b: 0 },
-  black: { r: 0, g: 0, b: 0 },
-  white: { r: 255, g: 255, b: 255 },
-};
-
-const DEBUG_GRAPHICS = true;
-
-const sampleRgbaBuffer = (
-  buffer: Buffer,
-  width: number,
-  height: number
-): Array<{ name: string; x: number; y: number; rgba: number[] | null }> => {
-  const maxX = Math.max(0, width - 1);
-  const maxY = Math.max(0, height - 1);
-  const positions = [
-    { name: "topLeft", x: 0, y: 0 },
-    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
-    { name: "bottomRight", x: maxX, y: maxY },
-  ];
-
-  return positions.map((pos) => {
-    const index = (pos.y * width + pos.x) * 4;
-    if (index < 0 || index + 3 >= buffer.length) {
-      return { ...pos, rgba: null };
-    }
-    return {
-      ...pos,
-      rgba: [
-        buffer[index],
-        buffer[index + 1],
-        buffer[index + 2],
-        buffer[index + 3],
-      ],
-    };
-  });
-};
 
 type GraphicsLayerStateT = {
   layerId: string;
@@ -117,7 +71,6 @@ type GraphicsLayerStateT = {
   schema: Record<string, unknown>;
   defaults: Record<string, unknown>;
   presetId?: string;
-  lastFrame?: GraphicsFrameT;
 };
 
 type GraphicsActivePresetT = {
@@ -138,6 +91,7 @@ type PreparedLayerT = GraphicsSendPayloadT & {
 
 /**
  * Graphics manager orchestrates layers, rendering, and output.
+ * Legacy frame compositing/ticker paths were removed; renderer + helpers operate on FrameBus.
  */
 export class GraphicsManager {
   private renderer: GraphicsRenderer;
@@ -146,17 +100,7 @@ export class GraphicsManager {
   private layers = new Map<string, GraphicsLayerStateT>();
   private categoryToLayer = new Map<GraphicsCategoryT, string>();
   private outputConfig: GraphicsOutputConfigT | null = null;
-  private ticker: NodeJS.Timeout | null = null;
-  private sending = false;
-  private droppedFrames = 0;
-  private framesSent = 0;
-  private outputErrors = 0;
-  private lastOutputLogAt = 0;
-  private lastOutputErrorLogAt = 0;
-  private outputSampleLogged = false;
   private activePreset: GraphicsActivePresetT | null = null;
-  private framesReceived = 0;
-  private lastFrameLogAt = 0;
   private frameBusConfig: FrameBusConfigT | null = null;
 
   constructor() {
@@ -195,7 +139,6 @@ export class GraphicsManager {
       );
     }
 
-    this.renderer.onFrame((frame) => this.handleFrame(frame));
     this.renderer.onError((error) => {
       this.publishGraphicsError("renderer_error", error.message);
     });
@@ -211,11 +154,6 @@ export class GraphicsManager {
         stage = "output_helper";
         this.outputAdapter = await this.selectOutputAdapter(persisted);
         await this.outputAdapter.configure(persisted);
-        if (this.isLegacyFramePathEnabled()) {
-          this.startTicker(persisted.format.fps);
-        } else {
-          this.stopTicker();
-        }
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -297,18 +235,12 @@ export class GraphicsManager {
     }
     await this.outputAdapter.stop();
     this.outputAdapter = await this.selectOutputAdapter(config);
-    this.outputSampleLogged = false;
     await outputConfigStore.setConfig(config);
     try {
       await this.outputAdapter.configure(config);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.failGraphics("output_helper_error", message);
-    }
-    if (this.isLegacyFramePathEnabled()) {
-      this.startTicker(config.format.fps);
-    } else {
-      this.stopTicker();
     }
   }
 
@@ -318,13 +250,10 @@ export class GraphicsManager {
    * @returns Promise resolved once resources are released.
    */
   async shutdown(): Promise<void> {
-    this.stopTicker();
-
     this.clearActivePreset();
     this.layers.clear();
     this.categoryToLayer.clear();
     this.outputConfig = null;
-    this.outputSampleLogged = false;
 
     try {
       await this.outputAdapter.stop();
@@ -688,9 +617,6 @@ export class GraphicsManager {
     if (config.outputKey === "key_fill_sdi") {
       return new DecklinkKeyFillOutputAdapter();
     }
-    if (config.outputKey === "key_fill_split_sdi") {
-      return new DecklinkSplitOutputAdapter();
-    }
     if (config.outputKey === "video_sdi") {
       return new DecklinkVideoOutputAdapter();
     }
@@ -711,12 +637,6 @@ export class GraphicsManager {
   ): Promise<{ device: DeviceDescriptorT; port: DeviceDescriptorT["ports"][number] } | null> {
     const devices = await deviceCache.getDevices();
     return this.findPort(devices, portId);
-  }
-
-  private resolveBackgroundColor(
-    mode: GraphicsBackgroundModeT
-  ): { r: number; g: number; b: number } | null {
-    return BACKGROUND_COLORS[mode] ?? null;
   }
 
   private validateLayerLimits(
@@ -770,10 +690,7 @@ export class GraphicsManager {
       return;
     }
 
-    const outputIds =
-      _outputKey === "key_fill_split_sdi"
-        ? [_targets.output1Id, _targets.output2Id]
-        : [_targets.output1Id];
+    const outputIds = [_targets.output1Id];
 
     const devices = await deviceCache.getDevices();
     const requireKeying = _outputKey === "key_fill_sdi";
@@ -875,37 +792,6 @@ export class GraphicsManager {
         throw new Error("Selected output ports are not available");
       }
     }
-    if (outputKey === "key_fill_split_sdi") {
-      if (!targets.output1Id || !targets.output2Id) {
-        throw new Error("Output 1 and Output 2 are required for Key & Fill SDI");
-      }
-      if (targets.output1Id === targets.output2Id) {
-        throw new Error("Output 1 and Output 2 must be different");
-      }
-
-      const devices = await deviceCache.getDevices();
-      const output1Match = this.findPort(devices, targets.output1Id);
-      const output2Match = this.findPort(devices, targets.output2Id);
-      if (!output1Match || !output2Match) {
-        throw new Error("Invalid output ports selected");
-      }
-      if (
-        output1Match.device.type !== "decklink" ||
-        output2Match.device.type !== "decklink"
-      ) {
-        throw new Error("Key & Fill Split requires DeckLink outputs");
-      }
-      if (output1Match.port.type !== "sdi" || output2Match.port.type !== "sdi") {
-        throw new Error("Key & Fill Split requires SDI output ports");
-      }
-      if (output1Match.port.role === "key" || output2Match.port.role === "key") {
-        throw new Error("Key & Fill Split cannot use SDI Key ports");
-      }
-      if (!output1Match.port.status.available || !output2Match.port.status.available) {
-        throw new Error("Selected output ports are not available");
-      }
-    }
-
     if (outputKey === "video_sdi") {
       if (!targets.output1Id) {
         throw new Error("Output 1 is required for Video SDI");
@@ -961,135 +847,6 @@ export class GraphicsManager {
       }
     }
     return null;
-  }
-
-  private startTicker(fps: number): void {
-    this.stopTicker();
-
-    const interval = Math.max(1, Math.round(1000 / fps));
-    this.ticker = setInterval(() => {
-      void this.tick();
-    }, interval);
-  }
-
-  private stopTicker(): void {
-    if (this.ticker) {
-      clearInterval(this.ticker);
-      this.ticker = null;
-    }
-  }
-
-  private isLegacyFramePathEnabled(): boolean {
-    return false;
-  }
-
-  private async tick(): Promise<void> {
-    if (!this.outputConfig) {
-      return;
-    }
-
-    if (this.sending) {
-      this.droppedFrames++;
-      return;
-    }
-
-    const layers = Array.from(this.layers.values())
-      .filter((layer) => layer.lastFrame)
-      .sort((a, b) => a.zIndex - b.zIndex);
-
-    if (layers.length === 0) {
-      return;
-    }
-
-    const width = this.outputConfig.format.width;
-    const height = this.outputConfig.format.height;
-
-    // Legacy compositor path kept for emergency fallback. When FrameBus output
-    // is enabled, output adapters will no-op and this buffer will not be sent.
-    const composite = compositeLayers(
-      layers.map((layer) => ({
-        buffer: (layer.lastFrame as GraphicsFrameT).buffer,
-        width,
-        height,
-      })),
-      width,
-      height
-    );
-
-    let outputBuffer = composite;
-    if (!OUTPUT_KEYS_WITH_ALPHA.includes(this.outputConfig.outputKey)) {
-      const backgroundMode = layers[0]?.backgroundMode ?? "transparent";
-      const backgroundColor = this.resolveBackgroundColor(backgroundMode);
-      if (backgroundColor) {
-        outputBuffer = applyBackground(outputBuffer, backgroundColor);
-      }
-    }
-
-    this.sending = true;
-    try {
-      if (DEBUG_GRAPHICS && !this.outputSampleLogged) {
-        this.outputSampleLogged = true;
-        const samples = sampleRgbaBuffer(outputBuffer, width, height);
-        getBridgeContext().logger.info(
-          `[Graphics] Debug output pixel samples ${JSON.stringify({
-            outputKey: this.outputConfig.outputKey,
-            width,
-            height,
-            samples,
-          })}`
-        );
-      }
-      // External IO: output adapter streams raw frames to hardware/helper.
-      await this.outputAdapter.sendFrame(
-        {
-          width,
-          height,
-          rgba: outputBuffer,
-          timestamp: Date.now(),
-        },
-        this.outputConfig
-      );
-      this.framesSent++;
-        this.maybeStartPresetTimers(layers.map((layer) => layer.layerId));
-
-      const now = Date.now();
-      if (now - this.lastOutputLogAt >= 5000) {
-        this.lastOutputLogAt = now;
-        getBridgeContext().logger.info(
-          `[Graphics] Output ok: frames=${this.framesSent} dropped=${this.droppedFrames}`
-        );
-      }
-    } catch (error) {
-      this.outputErrors++;
-      const now = Date.now();
-      if (now - this.lastOutputErrorLogAt >= 5000) {
-        this.lastOutputErrorLogAt = now;
-        const message = error instanceof Error ? error.message : String(error);
-        getBridgeContext().logger.error(
-          `[Graphics] Output send failed: ${message}`
-        );
-      }
-    } finally {
-      this.sending = false;
-    }
-  }
-
-  private handleFrame(frame: GraphicsFrameT): void {
-    const layer = this.layers.get(frame.layerId);
-    if (!layer) {
-      return;
-    }
-
-    layer.lastFrame = frame;
-    this.framesReceived += 1;
-    const now = Date.now();
-    if (now - this.lastFrameLogAt >= 1000) {
-      getBridgeContext().logger.info(
-        `[Graphics] Renderer frames/s=${this.framesReceived}`
-      );
-      this.framesReceived = 0;
-      this.lastFrameLogAt = now;
-    }
   }
 
   private summarizeSendPayload(
@@ -1243,25 +1000,25 @@ export class GraphicsManager {
       schema: { ...(data.bundle.schema || {}) },
       defaults: { ...(data.bundle.defaults || {}) },
       presetId: data.presetId,
-      lastFrame: existing?.lastFrame,
     });
 
     this.categoryToLayer.set(data.category, data.layerId);
 
     try {
-    await this.renderer.renderLayer({
-      layerId: data.layerId,
-      html: data.bundle.html,
-      css: data.bundle.css,
-      values: data.values,
-      bindings: data.bindings,
-      layout: data.layout,
-      backgroundMode: data.backgroundMode,
-      width: this.outputConfig?.format.width ?? 1920,
-      height: this.outputConfig?.format.height ?? 1080,
-      fps: this.outputConfig?.format.fps ?? 50,
-      zIndex: data.zIndex,
-    });
+      await this.renderer.renderLayer({
+        layerId: data.layerId,
+        html: data.bundle.html,
+        css: data.bundle.css,
+        values: data.values,
+        bindings: data.bindings,
+        layout: data.layout,
+        backgroundMode: data.backgroundMode,
+        width: this.outputConfig?.format.width ?? 1920,
+        height: this.outputConfig?.format.height ?? 1080,
+        fps: this.outputConfig?.format.fps ?? 50,
+        zIndex: data.zIndex,
+      });
+      this.maybeStartPresetTimers([data.layerId]);
     } catch (error) {
       this.layers.delete(data.layerId);
       if (this.categoryToLayer.get(data.category) === data.layerId) {
