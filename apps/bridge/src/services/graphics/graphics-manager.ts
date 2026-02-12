@@ -5,10 +5,8 @@ import type {
   GraphicsLayoutT,
   GraphicsOutputConfigT,
   GraphicsOutputKeyT,
-  GraphicsTargetsT,
   GraphicsSendPayloadT,
 } from "./graphics-schemas.js";
-import type { DeviceDescriptorT } from "@broadify/protocol";
 import {
   GraphicsConfigureOutputsSchema,
   GraphicsSendSchema,
@@ -21,14 +19,9 @@ import {
 import { outputConfigStore } from "./output-config-store.js";
 import { sanitizeTemplateCss, validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
-import { DecklinkKeyFillOutputAdapter } from "./output-adapters/decklink-key-fill-output-adapter.js";
-import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
-import { DisplayVideoOutputAdapter } from "./output-adapters/display-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { isDevelopmentMode } from "../dev-mode.js";
-import { deviceCache } from "../device-cache.js";
-import { listDecklinkDisplayModes } from "../../modules/decklink/decklink-helper.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
 import type {
@@ -39,15 +32,15 @@ import type { TemplateBindingsT } from "./template-bindings.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
 import { createTestPatternPayload } from "./test-pattern.js";
 import {
-  KEY_FILL_PIXEL_FORMAT_PRIORITY,
-  VIDEO_PIXEL_FORMAT_PRIORITY,
-  supportsAnyPixelFormat,
-} from "./output-format-policy.js";
-import {
   applyFrameBusEnv,
   buildFrameBusConfig,
   type FrameBusConfigT,
 } from "./framebus/framebus-config.js";
+import { selectOutputAdapter } from "./graphics-output-adapter-factory.js";
+import {
+  validateOutputFormat,
+  validateOutputTargets,
+} from "./graphics-output-validation-service.js";
 import {
   GraphicsError,
   type GraphicsErrorCodeT,
@@ -152,7 +145,7 @@ export class GraphicsManager {
       try {
         await this.renderer.configureSession(this.buildRendererConfig(persisted));
         stage = "output_helper";
-        this.outputAdapter = await this.selectOutputAdapter(persisted);
+        this.outputAdapter = await selectOutputAdapter(persisted);
         await this.outputAdapter.configure(persisted);
       } catch (error) {
         const errorMessage =
@@ -213,8 +206,8 @@ export class GraphicsManager {
       );
     } else {
       try {
-        await this.validateOutputTargets(config.outputKey, config.targets);
-        await this.validateOutputFormat(
+        await validateOutputTargets(config.outputKey, config.targets);
+        await validateOutputFormat(
           config.outputKey,
           config.targets,
           config.format
@@ -234,7 +227,7 @@ export class GraphicsManager {
       this.failGraphics("renderer_error", message);
     }
     await this.outputAdapter.stop();
-    this.outputAdapter = await this.selectOutputAdapter(config);
+    this.outputAdapter = await selectOutputAdapter(config);
     await outputConfigStore.setConfig(config);
     try {
       await this.outputAdapter.configure(config);
@@ -608,37 +601,6 @@ export class GraphicsManager {
     };
   }
 
-  private async selectOutputAdapter(
-    config: GraphicsOutputConfigT
-  ): Promise<GraphicsOutputAdapter> {
-    if (isDevelopmentMode()) {
-      return new StubOutputAdapter();
-    }
-    if (config.outputKey === "key_fill_sdi") {
-      return new DecklinkKeyFillOutputAdapter();
-    }
-    if (config.outputKey === "video_sdi") {
-      return new DecklinkVideoOutputAdapter();
-    }
-    if (config.outputKey === "video_hdmi") {
-      // HDMI output can target DeckLink or external display outputs on macOS.
-      const outputId = config.targets.output1Id;
-      const portMatch = outputId ? await this.findPortById(outputId) : null;
-      if (portMatch?.device.type === "display") {
-        return new DisplayVideoOutputAdapter();
-      }
-      return new DecklinkVideoOutputAdapter();
-    }
-    return new StubOutputAdapter();
-  }
-
-  private async findPortById(
-    portId: string
-  ): Promise<{ device: DeviceDescriptorT; port: DeviceDescriptorT["ports"][number] } | null> {
-    const devices = await deviceCache.getDevices();
-    return this.findPort(devices, portId);
-  }
-
   private validateLayerLimits(
     layerId: string,
     category: GraphicsCategoryT
@@ -673,180 +635,6 @@ export class GraphicsManager {
     this.categoryToLayer.clear();
     this.clearActivePreset();
     this.publishGraphicsStatus("clear_all_layers");
-  }
-
-  /**
-   * Validate output format against port capabilities
-   *
-   * Checks if the requested format (width, height, fps) is supported
-   * by the selected output ports/devices.
-   */
-  private async validateOutputFormat(
-    _outputKey: GraphicsOutputKeyT,
-    _targets: GraphicsTargetsT,
-    _format: { width: number; height: number; fps: number }
-  ): Promise<void> {
-    if (_outputKey === "stub" || _outputKey === "key_fill_ndi") {
-      return;
-    }
-
-    const outputIds = [_targets.output1Id];
-
-    const devices = await deviceCache.getDevices();
-    const requireKeying = _outputKey === "key_fill_sdi";
-    const preferredFormats =
-      _outputKey === "key_fill_sdi"
-        ? KEY_FILL_PIXEL_FORMAT_PRIORITY
-        : VIDEO_PIXEL_FORMAT_PRIORITY;
-
-    for (const outputId of outputIds) {
-      if (!outputId) {
-        continue;
-      }
-      const outputMatch = this.findPort(devices, outputId);
-      // Only DeckLink devices report full mode lists today.
-      if (!outputMatch) {
-        continue;
-      }
-
-      if (outputMatch.device.type === "display") {
-        const modes = outputMatch.port.capabilities.modes ?? [];
-        if (modes.length === 0) {
-          getBridgeContext().logger.warn(
-            `[Graphics] Display output has no mode list; skipping format validation for ${outputId}`
-          );
-          continue;
-        }
-        const hasMatch = modes.some(
-          (mode) =>
-            mode.width === _format.width &&
-            mode.height === _format.height &&
-            Math.abs(mode.fps - _format.fps) < 0.01
-        );
-        if (!hasMatch) {
-          throw new Error("Output format not supported by selected display");
-        }
-        continue;
-      }
-
-      if (outputMatch.device.type !== "decklink") {
-        continue;
-      }
-
-      const modes = await listDecklinkDisplayModes(
-        outputMatch.device.id,
-        outputId,
-        {
-          width: _format.width,
-          height: _format.height,
-          fps: _format.fps,
-          requireKeying,
-        }
-      );
-
-      if (modes.length === 0) {
-        throw new Error("Output format not supported by selected device");
-      }
-
-      const hasSupportedFormat = modes.some((mode) =>
-        supportsAnyPixelFormat(mode.pixelFormats, preferredFormats)
-      );
-
-      if (!hasSupportedFormat) {
-        throw new Error("Output pixel format not supported by selected device");
-      }
-    }
-  }
-
-  private async validateOutputTargets(
-    outputKey: GraphicsOutputKeyT,
-    targets: GraphicsTargetsT
-  ): Promise<void> {
-    if (outputKey === "key_fill_sdi") {
-      if (!targets.output1Id || !targets.output2Id) {
-        throw new Error("Output 1 and Output 2 are required for Key & Fill SDI");
-      }
-      if (targets.output1Id === targets.output2Id) {
-        throw new Error("Output 1 and Output 2 must be different");
-      }
-
-      const devices = await deviceCache.getDevices();
-      const output1Match = this.findPort(devices, targets.output1Id);
-      const output2Match = this.findPort(devices, targets.output2Id);
-      if (!output1Match || !output2Match) {
-        throw new Error("Invalid output ports selected");
-      }
-      if (output1Match.device.id !== output2Match.device.id) {
-        throw new Error("Output ports must belong to the same device");
-      }
-      if (output1Match.port.type !== "sdi" || output2Match.port.type !== "sdi") {
-        throw new Error("Key & Fill SDI requires SDI output ports");
-      }
-      if (output1Match.port.role !== "fill") {
-        throw new Error("Output 1 must be the SDI Fill port");
-      }
-      if (output2Match.port.role !== "key") {
-        throw new Error("Output 2 must be the SDI Key port");
-      }
-      if (!output1Match.port.status.available || !output2Match.port.status.available) {
-        throw new Error("Selected output ports are not available");
-      }
-    }
-    if (outputKey === "video_sdi") {
-      if (!targets.output1Id) {
-        throw new Error("Output 1 is required for Video SDI");
-      }
-      const devices = await deviceCache.getDevices();
-      const output1Match = this.findPort(devices, targets.output1Id);
-      if (!output1Match) {
-        throw new Error("Invalid output port selected");
-      }
-      if (output1Match.port.type !== "sdi") {
-        throw new Error("Video SDI requires an SDI output port");
-      }
-      if (output1Match.port.role === "key") {
-        throw new Error("Video SDI cannot use the SDI Key port");
-      }
-      if (!output1Match.port.status.available) {
-        throw new Error("Selected output port is not available");
-      }
-    }
-
-    if (outputKey === "video_hdmi") {
-      if (!targets.output1Id) {
-        throw new Error("Output 1 is required for Video HDMI");
-      }
-      const devices = await deviceCache.getDevices();
-      const output1Match = this.findPort(devices, targets.output1Id);
-      if (!output1Match) {
-        throw new Error("Invalid output port selected");
-      }
-      if (
-        output1Match.port.type !== "hdmi" &&
-        output1Match.port.type !== "displayport" &&
-        output1Match.port.type !== "thunderbolt"
-      ) {
-        throw new Error(
-          "Video HDMI requires an HDMI/DisplayPort/Thunderbolt output port"
-        );
-      }
-      if (!output1Match.port.status.available) {
-        throw new Error("Selected output port is not available");
-      }
-    }
-  }
-
-  private findPort(
-    devices: DeviceDescriptorT[],
-    portId: string
-  ): { device: DeviceDescriptorT; port: DeviceDescriptorT["ports"][number] } | null {
-    for (const device of devices) {
-      const port = device.ports.find((entry) => entry.id === portId);
-      if (port) {
-        return { device, port };
-      }
-    }
-    return null;
   }
 
   private summarizeSendPayload(

@@ -1,4 +1,4 @@
-# Legacy Removal – Implementation Log (Step 1)
+# Legacy Removal – Implementation Log (Step 1 + Step 2)
 
 ## Zweck
 Laufende Umsetzungsdokumentation für die vollständige Entfernung der Legacy-Graphics-Pfade.
@@ -45,36 +45,116 @@ Für jede bearbeitete Datei wird erfasst:
 - Step-2 Refactor: optional generischer `NoopRendererBase` für Stub-/Test-Renderer einführen.
 
 ### apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts
-- Status: done
-- Änderungen: Legacy-`onFrame` API entfernt; IPC-`frame`/Binary-Payloads werden ignoriert; Client ist Control-Plane-only.
-- Line Count: 886
-- Komplexität: hoch
-- SSOT/SRP Analyse: Legacy-Zweig entfernt, aber Datei bleibt sehr umfangreich (Process-Lifecycle, IPC-Protokoll, Logging, Config-State in einer Klasse).
-- Step-2 Refactor: in Module zerlegen: `renderer-process-launcher`, `renderer-ipc-protocol`, `renderer-config-sync`, `renderer-log-parser`.
+- Status: step-2 done
+- Änderungen: Prozess-/Entry-Resolution ausgelagert (`electron-renderer-launch.ts`), IPC-Framing ausgelagert (`renderer-ipc-framing.ts`), Log-Line-Parsing ausgelagert (`renderer-log-parser.ts`).
+- Line Count: 754
+- Komplexität: mittel-hoch
+- SSOT/SRP Analyse: deutlich bessere Trennung zwischen Lifecycle-Orchestrierung und Infrastruktur-Helfern; Klasse enthält weiterhin Config-Sync + Process-State.
+- Nächster Refactor: `renderer-config-sync` als eigenes Modul extrahieren, um die Klasse auf Process/IPC-Orchestrierung zu begrenzen.
 
 ### apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts
-- Status: done
-- Änderungen: Multi-Window/IPC-Frame-Legacy entfernt; Single-Window + FrameBus als einziger Datenpfad; `renderer_configure` erzwingt FrameBus-Ready.
-- Line Count: 1206
+- Status: step-2 done
+- Änderungen: DOM-Runtime ausgelagert (`electron-renderer-dom-runtime.ts`), Configure-Schema ausgelagert (`renderer-config-schema.ts`), IPC-Framing auf shared Utility umgestellt (`renderer-ipc-framing.ts`).
+- Line Count: 897
 - Komplexität: hoch
-- SSOT/SRP Analyse: Legacy-Bifurkation entfernt, aber Datei bleibt sehr groß (Window-Bootstrap, DOM-Template-Engine, FrameBus, IPC-Protokoll in einem Modul).
-- Step-2 Refactor: auslagern in `renderer-bootstrap.ts`, `renderer-framebus-writer.ts`, `renderer-dom-runtime.ts`, `renderer-ipc-server.ts`.
+- SSOT/SRP Analyse: SRP klar verbessert (DOM/Schema/Framing getrennt), aber FrameBus-Writer-State + IPC-Verbindungssteuerung + Window-Lifecycle liegen noch gemeinsam.
+- Nächster Refactor: `renderer-framebus-runtime.ts` und `renderer-ipc-client.ts` extrahieren.
 
 ### apps/bridge/src/services/graphics/graphics-manager.ts
-- Status: done
-- Änderungen: Legacy-Compositing/Ticker/`onFrame`-Pfad vollständig entfernt; `DecklinkSplitOutputAdapter`-Auswahl entfernt; Preset-Timer-Start auf `renderPreparedLayer` verschoben.
-- Line Count: 1261
+- Status: step-2 in progress
+- Änderungen: Output-Adapter-Selektion und Target/Format-Validierung ausgelagert in dedizierte Services; Manager orchestriert jetzt stärker statt Device-Details zu enthalten.
+- Line Count: 1049
 - Komplexität: hoch
-- SSOT/SRP Analyse: Funktional korrekt auf Single-Path vereinfacht, aber Datei bleibt zu groß und bündelt zu viele Verantwortlichkeiten (Validation, Presets, Renderer-Orchestrierung, Output-Adapter-Selektion, Event-Publishing).
-- Step-2 Refactor: in Services splitten: `graphics-output-config-service`, `graphics-layer-service`, `graphics-preset-service`, `graphics-output-validation-service`, `graphics-event-publisher`.
+- SSOT/SRP Analyse: deutliche SRP-Verbesserung im Output-Bereich; Datei bleibt weiterhin groß durch Preset-/Layer-/Event-Orchestrierung.
+- Nächster Refactor: `graphics-layer-service`, `graphics-preset-service`, `graphics-event-publisher` auslagern, um Manager auf reine Flow-Orchestrierung zu reduzieren.
+
+### apps/bridge/src/services/graphics/graphics-output-validation-service.ts
+- Status: step-2 done (new)
+- Änderungen: Ziel-/Portvalidierung und Formatvalidierung zentralisiert; keine Verteilungslogik mehr im Manager.
+- Line Count: 173
+- Komplexität: mittel
+- SSOT/SRP Analyse: klare SSOT für Output-Validierungsregeln; SRP fokussiert auf Validierung.
+- Nächster Refactor: optional `device-capability-validator` abspalten, falls weitere Output-Typen dazukommen.
+
+### apps/bridge/src/services/graphics/graphics-output-adapter-factory.ts
+- Status: step-2 done (new)
+- Änderungen: Adapterauswahl zentralisiert (`key_fill_sdi`/`video_sdi`/`video_hdmi`/`stub`) inkl. Display-vs-DeckLink-Entscheidung.
+- Line Count: 37
+- Komplexität: niedrig
+- SSOT/SRP Analyse: SRP klar; Auswahlregeln liegen an einer Stelle.
+- Nächster Refactor: optional Mapping-basierte Registry statt if-Kette bei wachsender Adapterzahl.
+
+### apps/bridge/src/services/graphics/graphics-device-port-resolver.ts
+- Status: step-2 done (new)
+- Änderungen: Wiederverwendbare Port-Resolution (`findDevicePort`, Cache-Lookup) extrahiert.
+- Line Count: 40
+- Komplexität: niedrig
+- SSOT/SRP Analyse: SRP klar; reduziert doppelte Port-Suchlogik in Manager/Validierung/Factory.
+- Nächster Refactor: optional Caching-Strategie + typed error results statt `null`.
 
 ### apps/bridge/src/services/graphics/graphics-schemas.ts
-- Status: done
-- Änderungen: Legacy-Output-Key `key_fill_split_sdi` aus `GraphicsOutputKeySchema` entfernt; Einrückungs-/Formatierungsfehler bei `GraphicsSendSchema` bereinigt.
-- Line Count: 209
+- Status: step-2 done
+- Änderungen: Datei in Aggregator transformiert; Schema-Gruppen in Teilmodule ausgelagert (`schemas/output-schemas.ts`, `schemas/layer-schemas.ts`).
+- Line Count: 44
+- Komplexität: niedrig
+- SSOT/SRP Analyse: SSOT bleibt erhalten (ein stabiler Importpunkt), Änderungsradius pro Feature deutlich reduziert.
+- Nächster Refactor: optional `schemas/runtime-validation.ts` für gemeinsame Validator-Helfer.
+
+### apps/bridge/src/services/graphics/renderer/electron-renderer-launch.ts
+- Status: step-2 done (new)
+- Änderungen: Binary-/Entry-Resolution und Diagnostik aus Client ausgelagert.
+- Line Count: 89
+- Komplexität: niedrig
+- SSOT/SRP Analyse: SRP klar, Fokus auf Launch-Auflösung.
+- Nächster Refactor: optional Plattform-spezifische Auflösung via Strategy-Map.
+
+### apps/bridge/src/services/graphics/renderer/renderer-ipc-framing.ts
+- Status: step-2 done (new)
+- Änderungen: Gemeinsames IPC-Framing (Limits, Encode, Decode) für Client und Entry eingeführt.
+- Line Count: 113
 - Komplexität: mittel
-- SSOT/SRP Analyse: SSOT gestärkt, da veralteter Output-Modus entfernt wurde.
-- Step-2 Refactor: Schema-Gruppen (`output`, `layer`, `preset`) in Teilmodule splitten, um Änderungsradius zu reduzieren.
+- SSOT/SRP Analyse: zentrale SSOT für IPC-Protokollgrenzen; reduziert Duplikation und Drift-Risiko.
+- Nächster Refactor: optional `IpcProtocolErrorT` Typen statt String-Reasons.
+
+### apps/bridge/src/services/graphics/renderer/renderer-log-parser.ts
+- Status: step-2 done (new)
+- Änderungen: Stream-Line-Drain und pino/plain-text Parsing aus Client ausgelagert.
+- Line Count: 74
+- Komplexität: niedrig
+- SSOT/SRP Analyse: SRP klar; Logging-Parsing ist isoliert testbar.
+- Nächster Refactor: optional dedizierte Unit-Tests für Level-Mapping.
+
+### apps/bridge/src/services/graphics/renderer/electron-renderer-dom-runtime.ts
+- Status: step-2 done (new)
+- Änderungen: Vollständige Single-Window DOM/Template-Runtime aus Entry ausgelagert.
+- Line Count: 262
+- Komplexität: mittel
+- SSOT/SRP Analyse: SRP verbessert (Entry enthält weniger UI-Embedded-Code), aber DOM-Runtime selbst bleibt komplex.
+- Nächster Refactor: Template-/Binding-Helfer intern weiter splitten (`runtime-template.ts`, `runtime-layer-state.ts`).
+
+### apps/bridge/src/services/graphics/renderer/renderer-config-schema.ts
+- Status: step-2 done (new)
+- Änderungen: `renderer_configure` Zod-Schema aus Entry ausgelagert.
+- Line Count: 36
+- Komplexität: niedrig
+- SSOT/SRP Analyse: zentrale SSOT für Configure-Payload-Validierung.
+- Nächster Refactor: optional gemeinsame IPC-Command-Schemas ergänzen.
+
+### apps/bridge/src/services/graphics/schemas/output-schemas.ts
+- Status: step-2 done (new)
+- Änderungen: Output-bezogene Schemas/Typen extrahiert.
+- Line Count: 79
+- Komplexität: niedrig
+- SSOT/SRP Analyse: klare Domänentrennung; SRP für Output-Contracts.
+- Nächster Refactor: optional output-key-spezifische Validatoren neben Schema gruppieren.
+
+### apps/bridge/src/services/graphics/schemas/layer-schemas.ts
+- Status: step-2 done (new)
+- Änderungen: Layer-/Preset-bezogene Schemas/Typen extrahiert.
+- Line Count: 132
+- Komplexität: mittel
+- SSOT/SRP Analyse: Layer-Contracts sind konsolidiert und unabhängig von Output-Contracts.
+- Nächster Refactor: optional Preset-Schemas separat, falls Preset-Logik wächst.
 
 ### apps/bridge/src/services/graphics/output-adapters/decklink-split-output-adapter.ts
 - Status: done (removed)

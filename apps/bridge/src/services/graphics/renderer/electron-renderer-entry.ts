@@ -1,29 +1,27 @@
 import { app, BrowserWindow, protocol } from "electron";
 import net from "node:net";
 import pino from "pino";
-import { z } from "zod";
-import { getStandardAnimationCss } from "./animation-css.js";
 import {
   loadFrameBusModule,
   type FrameBusModuleT,
   type FrameBusWriterT,
 } from "../framebus/framebus-client.js";
+import { buildSingleWindowDocument } from "./electron-renderer-dom-runtime.js";
+import { RendererConfigureSchema } from "./renderer-config-schema.js";
+import {
+  appendIpcBuffer,
+  decodeNextIpcPacket,
+  encodeIpcPacket,
+  isIpcBufferWithinLimit,
+} from "./renderer-ipc-framing.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
   base: { component: "graphics-renderer" },
 });
 
-// IPC hard limits to avoid oversized payloads and memory pressure.
-const MAX_IPC_HEADER_BYTES = 64 * 1024;
-const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
-const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
-const MAX_FRAME_DIMENSION = 8192;
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = true;
-// Design baseline for templates (format-agnostic rendering).
-const BASE_RENDER_WIDTH = 1920;
-const BASE_RENDER_HEIGHT = 1080;
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
 let frameBusPixelFormat = Number(
@@ -157,28 +155,29 @@ function sendIpcMessage(
     return;
   }
 
-  if (buffer && buffer.length > MAX_IPC_PAYLOAD_BYTES) {
-    logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
-    return;
-  }
-
   const payload = {
     ...message,
     token: ipcToken || undefined,
     bufferLength: buffer ? buffer.length : 0,
   };
-  const header = Buffer.from(JSON.stringify(payload), "utf-8");
-  if (header.length > MAX_IPC_HEADER_BYTES) {
-    logger.warn("[GraphicsRenderer] IPC header exceeds limit");
+  let packet: Buffer;
+  try {
+    packet = encodeIpcPacket(payload, buffer);
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : String(error);
+    if (messageText === "ipc_header_exceeds_limit") {
+      logger.warn("[GraphicsRenderer] IPC header exceeds limit");
+      return;
+    }
+    if (messageText === "ipc_payload_exceeds_limit") {
+      logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
+      return;
+    }
+    logger.warn({ message: messageText }, "[GraphicsRenderer] IPC encode failed");
     return;
   }
-  const headerLength = Buffer.alloc(4);
-  headerLength.writeUInt32BE(header.length, 0);
 
-  const chunks = buffer
-    ? [headerLength, header, buffer]
-    : [headerLength, header];
-  const ok = ipcSocket.write(Buffer.concat(chunks));
+  const ok = ipcSocket.write(packet);
   if (!ok) {
     canSend = false;
     if (backpressureStartAt === null) {
@@ -222,37 +221,6 @@ function logFrameBusOnce(key: string, message: string): void {
   debugFrameBusLogged.add(key);
   logger.warn(message);
 }
-
-const ClearColorSchema = z
-  .object({
-    r: z.number().min(0).max(255),
-    g: z.number().min(0).max(255),
-    b: z.number().min(0).max(255),
-    a: z.number().min(0).max(1),
-  })
-  .strict();
-
-const RendererConfigureSchema = z
-  .object({
-    width: z.number().int().positive().max(MAX_FRAME_DIMENSION),
-    height: z.number().int().positive().max(MAX_FRAME_DIMENSION),
-    fps: z.number().positive(),
-    pixelFormat: z
-      .number()
-      .int()
-      .positive()
-      .refine((value) => value === 1, {
-        message: "pixelFormat must be RGBA8 (1)",
-      }),
-    framebusName: z.string().optional().default(""),
-    framebusSize: z.number().int().nonnegative().optional().default(0),
-    backgroundMode: z
-      .enum(["transparent", "green", "black", "white"])
-      .optional()
-      .default("transparent"),
-    clearColor: ClearColorSchema.optional(),
-  })
-  .strict();
 
 function ensureFrameBusWriter(
   width: number,
@@ -574,258 +542,6 @@ async function ensureSingleWindow(
   return singleWindow;
 }
 
-function buildSingleWindowDocument(): string {
-  const standardCss = JSON.stringify(getStandardAnimationCss());
-  return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        background: transparent;
-      }
-      #graphics-background {
-        position: absolute;
-        inset: 0;
-        background: transparent;
-      }
-      #graphics-root {
-        position: absolute;
-        inset: 0;
-        overflow: hidden;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="graphics-background"></div>
-    <div id="graphics-root"></div>
-    <script>
-      const BASE_WIDTH = ${BASE_RENDER_WIDTH};
-      const BASE_HEIGHT = ${BASE_RENDER_HEIGHT};
-      const STANDARD_CSS = ${standardCss};
-      const layers = new Map();
-
-      const escapeHtml = (value) => {
-        const str = value === undefined || value === null ? "" : String(value);
-        return str
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#39;");
-      };
-
-      const renderTemplate = (template, values) => {
-        // eslint-disable-next-line no-useless-escape
-        return template.replace(/{{\\s*([\\w.-]+)\\s*}}/g, (_match, key) => {
-          const value = key.split(".").reduce((acc, part) => {
-            if (acc && typeof acc === "object" && part in acc) {
-              return acc[part];
-            }
-            return undefined;
-          }, values);
-          return escapeHtml(value);
-        });
-      };
-
-      const getRootElement = (root) => {
-        return (root && root.querySelector('[data-root="graphic"]')) || root;
-      };
-
-      const applyAnimationClass = (element, animationClass) => {
-        if (!element) return;
-        if (!element.classList.contains("root")) {
-          element.classList.add("root");
-        }
-        const classes = String(element.className || "")
-          .split(/\\s+/)
-          .filter((entry) => entry.length > 0);
-        const nextClasses = classes.filter(
-          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
-        );
-        if (animationClass) {
-          nextClasses.push(animationClass);
-        }
-        if (!nextClasses.includes("state-enter")) {
-          nextClasses.push("state-enter");
-        }
-        element.className = nextClasses.join(" ");
-      };
-
-      const applyCssVariables = (host, vars) => {
-        if (!host || !vars) return;
-        Object.entries(vars).forEach(([key, value]) => {
-          if (!key.startsWith("--")) return;
-          host.style.setProperty(key, String(value));
-        });
-      };
-
-      const applyTextContent = (root, textContent, textTypes) => {
-        if (!root || !textContent) return;
-        Object.entries(textContent).forEach(([key, value]) => {
-          const target = root.querySelector('[data-bid="' + key + '"]');
-          if (!target) return;
-          const contentType = textTypes ? textTypes[key] : undefined;
-          if (contentType === "list") {
-            const items = String(value || "")
-              .split("\\n")
-              .map((item) => item.trim())
-              .filter(Boolean);
-            target.innerHTML = items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("");
-            return;
-          }
-          target.textContent = String(value ?? "");
-        });
-      };
-
-      const applyLayout = (host, layout) => {
-        if (!host) return;
-        const x = Number(layout?.x || 0);
-        const y = Number(layout?.y || 0);
-        const scale = Number(layout?.scale || 1);
-        host.style.transform = "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
-      };
-
-      const resolveBackgroundColor = (mode) => {
-        if (mode === "green") return "#00FF00";
-        if (mode === "black") return "#000000";
-        if (mode === "white") return "#FFFFFF";
-        return "transparent";
-      };
-
-      const resolveClearColor = (color) => {
-        if (!color || typeof color !== "object") return null;
-        const r = Math.max(0, Math.min(255, Number(color.r)));
-        const g = Math.max(0, Math.min(255, Number(color.g)));
-        const b = Math.max(0, Math.min(255, Number(color.b)));
-        const a = Math.max(0, Math.min(1, Number(color.a)));
-        if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b) || !Number.isFinite(a)) {
-          return null;
-        }
-        return "rgba(" + r + "," + g + "," + b + "," + a + ")";
-      };
-
-      const setBackground = (mode) => {
-        const background = document.getElementById("graphics-background");
-        if (!background) return;
-        background.style.background = resolveBackgroundColor(mode);
-      };
-      window.__setBackground = setBackground;
-
-      const setClearColor = (color) => {
-        const background = document.getElementById("graphics-background");
-        if (!background) return;
-        const resolved = resolveClearColor(color);
-        if (resolved) {
-          background.style.background = resolved;
-        }
-      };
-      window.__setClearColor = setClearColor;
-
-      window.__createLayer = (payload) => {
-        const root = document.getElementById("graphics-root");
-        if (!root || !payload || !payload.layerId) return;
-        let host = root.querySelector('[data-layer-id="' + payload.layerId + '"]');
-        if (!host) {
-          host = document.createElement("div");
-          host.dataset.layerId = payload.layerId;
-          host.style.position = "absolute";
-          host.style.left = "0";
-          host.style.top = "0";
-          root.appendChild(host);
-        }
-        host.style.width = BASE_WIDTH + "px";
-        host.style.height = BASE_HEIGHT + "px";
-        host.style.transformOrigin = "top left";
-        if (payload.zIndex !== undefined && payload.zIndex !== null) {
-          host.style.zIndex = String(payload.zIndex);
-        }
-
-        let shadow = host.shadowRoot;
-        if (!shadow) {
-          shadow = host.attachShadow({ mode: "closed" });
-        }
-        shadow.innerHTML = "";
-
-        const style = document.createElement("style");
-        style.textContent = STANDARD_CSS + "\\n" + String(payload.css || "");
-        shadow.appendChild(style);
-
-        const container = document.createElement("div");
-        container.id = "graphic-root";
-        container.style.width = BASE_WIDTH + "px";
-        container.style.height = BASE_HEIGHT + "px";
-        shadow.appendChild(container);
-
-        const template = String(payload.html || "");
-        const hasPlaceholders = template.includes("{{");
-        if (!hasPlaceholders) {
-          container.innerHTML = template;
-        }
-
-        const layerState = {
-          host,
-          shadow,
-          container,
-          template,
-          hasPlaceholders,
-          values: payload.values || {},
-          bindings: payload.bindings || {},
-        };
-        layers.set(payload.layerId, layerState);
-
-        if (payload.backgroundMode) {
-          setBackground(payload.backgroundMode);
-        }
-
-        window.__updateValues(payload.layerId, payload.values || {}, payload.bindings || {});
-        window.__updateLayout(payload.layerId, payload.layout || { x: 0, y: 0, scale: 1 }, payload.zIndex);
-      };
-
-      window.__updateValues = (layerId, values, bindings) => {
-        const layer = layers.get(layerId);
-        if (!layer) return;
-        const nextValues = Object.assign({}, layer.values || {}, values || {});
-        layer.values = nextValues;
-        const nextBindings = Object.assign({}, layer.bindings || {}, bindings || {});
-        layer.bindings = nextBindings;
-
-        const container = layer.container;
-        if (layer.hasPlaceholders) {
-          container.innerHTML = renderTemplate(layer.template, nextValues);
-        }
-
-        const rootElement = getRootElement(container);
-        applyAnimationClass(rootElement, nextBindings.animationClass);
-        applyTextContent(rootElement, nextBindings.textContent, nextBindings.textTypes);
-        applyCssVariables(layer.host, nextBindings.cssVariables);
-      };
-
-      window.__updateLayout = (layerId, layout, zIndex) => {
-        const layer = layers.get(layerId);
-        if (!layer) return;
-        if (zIndex !== undefined && zIndex !== null) {
-          layer.host.style.zIndex = String(zIndex);
-        }
-        applyLayout(layer.host, layout);
-      };
-
-      window.__removeLayer = (layerId) => {
-        const layer = layers.get(layerId);
-        if (!layer) return;
-        layer.host.remove();
-        layers.delete(layerId);
-      };
-    </script>
-  </body>
-</html>`;
-}
-
 function registerAssetProtocol(): void {
   protocol.registerFileProtocol("asset", (request, callback) => {
     try {
@@ -1095,64 +811,39 @@ function connectIpcSocket(): void {
   });
 
   ipcSocket.on("data", (data) => {
-    ipcBuffer = Buffer.concat([ipcBuffer, data]);
-    if (ipcBuffer.length > MAX_IPC_BUFFER_BYTES) {
+    ipcBuffer = appendIpcBuffer(ipcBuffer, data);
+    if (!isIpcBufferWithinLimit(ipcBuffer)) {
       logger.warn("[GraphicsRenderer] IPC buffer exceeds limit");
       ipcBuffer = Buffer.alloc(0);
       ipcSocket?.destroy();
       return;
     }
-    while (ipcBuffer.length >= 4) {
-      const headerLength = ipcBuffer.readUInt32BE(0);
-      if (headerLength === 0 || headerLength > MAX_IPC_HEADER_BYTES) {
-        logger.warn("[GraphicsRenderer] IPC header length exceeds limit");
+    while (true) {
+      const decoded = decodeNextIpcPacket(ipcBuffer);
+      if (decoded.kind === "incomplete") {
+        return;
+      }
+      if (decoded.kind === "invalid") {
+        const reasonMessage =
+          decoded.reason === "header_length_exceeds_limit"
+            ? "[GraphicsRenderer] IPC header length exceeds limit"
+            : decoded.reason === "invalid_buffer_length_type"
+              ? "[GraphicsRenderer] IPC buffer length type invalid"
+              : decoded.reason === "payload_length_exceeds_limit"
+                ? "[GraphicsRenderer] IPC payload exceeds limit"
+                : "[GraphicsRenderer] IPC invalid message framing";
+        logger.warn(reasonMessage);
         ipcBuffer = Buffer.alloc(0);
         ipcSocket?.destroy();
-        return;
-      }
-      if (ipcBuffer.length < 4 + headerLength) {
-        return;
-      }
-      const headerRaw = ipcBuffer.subarray(4, 4 + headerLength);
-      let header: Record<string, unknown>;
-      try {
-        header = JSON.parse(headerRaw.toString("utf-8")) as Record<
-          string,
-          unknown
-        >;
-      } catch {
-        ipcBuffer = Buffer.alloc(0);
         return;
       }
 
-      const hasBufferLength = Object.prototype.hasOwnProperty.call(
-        header,
-        "bufferLength",
-      );
-      if (hasBufferLength && typeof header.bufferLength !== "number") {
-        logger.warn("[GraphicsRenderer] IPC buffer length type invalid");
-        ipcBuffer = Buffer.alloc(0);
-        ipcSocket?.destroy();
-        return;
-      }
-      const bufferLength =
-        typeof header.bufferLength === "number" ? header.bufferLength : 0;
-      if (bufferLength < 0 || bufferLength > MAX_IPC_PAYLOAD_BYTES) {
-        logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
-        ipcBuffer = Buffer.alloc(0);
-        ipcSocket?.destroy();
-        return;
-      }
-      const totalLength = 4 + headerLength + bufferLength;
-      if (ipcBuffer.length < totalLength) {
-        return;
-      }
-
-      ipcBuffer = ipcBuffer.subarray(totalLength);
-      if (bufferLength > 0) {
+      ipcBuffer = decoded.remaining;
+      if (decoded.payload.length > 0) {
         logger.warn("[GraphicsRenderer] Unexpected IPC payload");
         continue;
       }
+      const header = decoded.header as Record<string, unknown>;
       const messageToken = typeof header.token === "string" ? header.token : "";
       if (ipcToken && messageToken !== ipcToken) {
         logger.warn("[GraphicsRenderer] IPC token mismatch");

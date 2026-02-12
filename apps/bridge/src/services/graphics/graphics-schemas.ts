@@ -1,209 +1,44 @@
-import { z } from "zod";
-
 /**
- * Current version of the graphics output configuration schema.
+ * SSOT aggregator for graphics schemas and inferred types.
+ *
+ * The schemas are split by concern (`output` and `layer/preset`) to keep
+ * module size and change surface small while preserving existing imports.
  */
-export const GRAPHICS_OUTPUT_CONFIG_VERSION = 1;
+export {
+  GRAPHICS_OUTPUT_CONFIG_VERSION,
+  GraphicsOutputKeySchema,
+  GraphicsFormatSchema,
+  GraphicsRangeSchema,
+  GraphicsColorspaceSchema,
+  GraphicsTargetsSchema,
+  GraphicsConfigureOutputsSchema,
+  type GraphicsOutputKeyT,
+  type GraphicsFormatT,
+  type GraphicsRangeT,
+  type GraphicsColorspaceT,
+  type GraphicsTargetsT,
+  type GraphicsOutputConfigT,
+} from "./schemas/output-schemas.js";
 
-const MAX_DURATION_MS = 60 * 60 * 1000;
-
-/**
- * Supported output modes for graphics rendering.
- */
-export const GraphicsOutputKeySchema = z.enum([
-  "stub",
-  "key_fill_sdi",
-  "key_fill_ndi",
-  "video_sdi",
-  "video_hdmi",
-]);
-
-/**
- * Target render format (size + frame rate).
- */
-export const GraphicsFormatSchema = z.object({
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  fps: z.number().positive(),
-});
-
-/**
- * SDI/HDMI range (legal/full).
- */
-export const GraphicsRangeSchema = z
-  .enum(["legal", "full"])
-  .optional()
-  .default("legal");
-
-/**
- * Output colorspace selection.
- */
-export const GraphicsColorspaceSchema = z
-  .enum(["auto", "rec601", "rec709", "rec2020"])
-  .optional()
-  .default("auto");
-
-/**
- * Output target identifiers (ports or NDI stream).
- */
-export const GraphicsTargetsSchema = z
-  .object({
-    output1Id: z.string().min(1).optional(),
-    output2Id: z.string().min(1).optional(),
-    ndiStreamName: z.string().min(1).optional(),
-  })
-  .strict();
-
-/**
- * Output configuration payload.
- */
-export const GraphicsConfigureOutputsSchema = z
-  .object({
-    version: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .default(GRAPHICS_OUTPUT_CONFIG_VERSION),
-    outputKey: GraphicsOutputKeySchema,
-    targets: GraphicsTargetsSchema,
-    format: GraphicsFormatSchema,
-    range: GraphicsRangeSchema,
-    colorspace: GraphicsColorspaceSchema,
-  })
-  .strict();
-
-/**
- * Layout parameters for a layer.
- */
-export const GraphicsLayoutSchema = z
-  .object({
-    x: z.number().finite(),
-    y: z.number().finite(),
-    scale: z.number().finite().positive(),
-  })
-  .strict();
-
-/**
- * Asset descriptor (data is optional for updates).
- */
-export const GraphicsAssetSchema = z
-  .object({
-    assetId: z.string().regex(/^[a-zA-Z0-9_-]+$/),
-    name: z.string().min(1),
-    mime: z.string().min(1),
-    data: z.string().optional(),
-  })
-  .strict();
-
-/**
- * Bundle containing HTML/CSS and schema/defaults metadata.
- */
-export const GraphicsBundleSchema = z
-  .object({
-    manifest: z.record(z.unknown()),
-    html: z.string().min(1),
-    css: z.string().optional().default(""),
-    schema: z.record(z.unknown()).optional().default({}),
-    defaults: z.record(z.unknown()).optional().default({}),
-    assets: z.array(GraphicsAssetSchema).optional().default([]),
-  })
-  .strict();
-
-/**
- * Supported background modes when alpha is not available.
- */
-export const GraphicsBackgroundModeSchema = z.enum([
-  "transparent",
-  "green",
-  "black",
-  "white",
-]);
-
-/**
- * Layer categories (one active layer per category).
- */
-export const GraphicsCategorySchema = z.enum([
-  "lower-thirds",
-  "overlays",
-  "slides",
-]);
-
-/**
- * Payload for creating/updating a graphics layer.
- */
-export const GraphicsSendSchema = z
-  .object({
-    layerId: z.string().min(1),
-    category: GraphicsCategorySchema,
-    backgroundMode: GraphicsBackgroundModeSchema,
-    layout: GraphicsLayoutSchema,
-    zIndex: z.number().int(),
-    bundle: GraphicsBundleSchema,
-    values: z.record(z.unknown()).optional().default({}),
-    presetId: z.string().min(1).optional(),
-    durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
-  })
-  .strict();
-
-/**
- * Payload for updating layer values.
- */
-export const GraphicsUpdateValuesSchema = z
-  .object({
-    layerId: z.string().min(1),
-    values: z.record(z.unknown()),
-  })
-  .strict();
-
-/**
- * Payload for updating layer layout.
- */
-export const GraphicsUpdateLayoutSchema = z
-  .object({
-    layerId: z.string().min(1),
-    layout: GraphicsLayoutSchema,
-    zIndex: z.number().int().optional(),
-  })
-  .strict();
-
-/**
- * Payload for removing a layer.
- */
-export const GraphicsRemoveSchema = z
-  .object({
-    layerId: z.string().min(1),
-  })
-  .strict();
-
-/**
- * Payload for removing a preset.
- */
-export const GraphicsRemovePresetSchema = z
-  .object({
-    presetId: z.string().min(1),
-  })
-  .strict();
-
-export type GraphicsOutputKeyT = z.infer<typeof GraphicsOutputKeySchema>;
-export type GraphicsFormatT = z.infer<typeof GraphicsFormatSchema>;
-export type GraphicsRangeT = z.infer<typeof GraphicsRangeSchema>;
-export type GraphicsColorspaceT = z.infer<typeof GraphicsColorspaceSchema>;
-export type GraphicsTargetsT = z.infer<typeof GraphicsTargetsSchema>;
-export type GraphicsOutputConfigT = z.infer<typeof GraphicsConfigureOutputsSchema>;
-export type GraphicsLayoutT = z.infer<typeof GraphicsLayoutSchema>;
-export type GraphicsAssetT = z.infer<typeof GraphicsAssetSchema>;
-export type GraphicsBundleT = z.infer<typeof GraphicsBundleSchema>;
-export type GraphicsBackgroundModeT = z.infer<typeof GraphicsBackgroundModeSchema>;
-export type GraphicsCategoryT = z.infer<typeof GraphicsCategorySchema>;
-export type GraphicsSendPayloadT = z.infer<typeof GraphicsSendSchema>;
-export type GraphicsUpdateValuesPayloadT = z.infer<
-  typeof GraphicsUpdateValuesSchema
->;
-export type GraphicsUpdateLayoutPayloadT = z.infer<
-  typeof GraphicsUpdateLayoutSchema
->;
-export type GraphicsRemovePayloadT = z.infer<typeof GraphicsRemoveSchema>;
-export type GraphicsRemovePresetPayloadT = z.infer<
-  typeof GraphicsRemovePresetSchema
->;
+export {
+  GraphicsLayoutSchema,
+  GraphicsAssetSchema,
+  GraphicsBundleSchema,
+  GraphicsBackgroundModeSchema,
+  GraphicsCategorySchema,
+  GraphicsSendSchema,
+  GraphicsUpdateValuesSchema,
+  GraphicsUpdateLayoutSchema,
+  GraphicsRemoveSchema,
+  GraphicsRemovePresetSchema,
+  type GraphicsLayoutT,
+  type GraphicsAssetT,
+  type GraphicsBundleT,
+  type GraphicsBackgroundModeT,
+  type GraphicsCategoryT,
+  type GraphicsSendPayloadT,
+  type GraphicsUpdateValuesPayloadT,
+  type GraphicsUpdateLayoutPayloadT,
+  type GraphicsRemovePayloadT,
+  type GraphicsRemovePresetPayloadT,
+} from "./schemas/layer-schemas.js";

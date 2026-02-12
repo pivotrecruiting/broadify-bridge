@@ -1,92 +1,29 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import net from "node:net";
-import fs from "node:fs";
-import path from "node:path";
 import type { GraphicsLayoutT } from "../graphics-schemas.js";
 import { getBridgeContext, type LoggerLikeT } from "../../bridge-context.js";
+import {
+  decodeNextIpcPacket,
+  encodeIpcPacket,
+  isIpcBufferWithinLimit,
+  appendIpcBuffer,
+} from "./renderer-ipc-framing.js";
+import {
+  drainLines,
+  parseRendererLogLine,
+} from "./renderer-log-parser.js";
+import {
+  describeBinary,
+  resolveElectronBinary,
+  resolveRendererEntry,
+} from "./electron-renderer-launch.js";
 import type {
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
   GraphicsRendererConfigT,
   GraphicsTemplateBindingsT,
 } from "./graphics-renderer.js";
-
-const ELECTRON_BINARIES = {
-  win32: "electron.cmd",
-  default: "electron",
-};
-
-// IPC hard limits to prevent memory abuse or oversized frame payloads.
-const MAX_IPC_HEADER_BYTES = 64 * 1024;
-const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
-const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
-
-const formatStatMode = (mode: number): string => {
-  return `0${(mode & 0o777).toString(8)}`;
-};
-
-const describeBinary = (filePath: string): string => {
-  if (!filePath) {
-    return "path is empty";
-  }
-  if (!fs.existsSync(filePath)) {
-    return `missing (${filePath})`;
-  }
-  try {
-    const stat = fs.statSync(filePath);
-    return `path=${filePath} size=${stat.size} mode=${formatStatMode(stat.mode)}`;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return `unreadable (${filePath}): ${message}`;
-  }
-};
-
-function resolveElectronBinary(): string | null {
-  if (process.env.ELECTRON_RUN_AS_NODE === "1") {
-    return process.execPath;
-  }
-
-  if (process.execPath.toLowerCase().includes("electron")) {
-    return process.execPath;
-  }
-
-  const binaryName =
-    process.platform === "win32"
-      ? ELECTRON_BINARIES.win32
-      : ELECTRON_BINARIES.default;
-
-  const candidate = path.resolve(
-    process.cwd(),
-    "..",
-    "..",
-    "node_modules",
-    ".bin",
-    binaryName,
-  );
-
-  if (fs.existsSync(candidate)) {
-    return candidate;
-  }
-
-  return null;
-}
-
-function resolveRendererEntry(): string | null {
-  const distEntry = path.resolve(
-    process.cwd(),
-    "dist",
-    "services",
-    "graphics",
-    "renderer",
-    "electron-renderer-entry.js",
-  );
-  if (fs.existsSync(distEntry)) {
-    return distEntry;
-  }
-
-  return null;
-}
 
 /**
  * Electron-based offscreen renderer client.
@@ -615,74 +552,37 @@ export class ElectronRendererClient implements GraphicsRenderer {
     const text = data.toString();
     if (stream === "stdout") {
       this.stdoutBuffer += text;
-      this.flushRendererLines("stdout");
+      this.flushRendererStream("stdout");
       return;
     }
     this.stderrBuffer += text;
-    this.flushRendererLines("stderr");
+    this.flushRendererStream("stderr");
   }
 
-  private flushRendererLines(stream: "stdout" | "stderr"): void {
-    let buffer = stream === "stdout" ? this.stdoutBuffer : this.stderrBuffer;
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const line = buffer.slice(0, newlineIndex).trim();
-      buffer = buffer.slice(newlineIndex + 1);
-      this.logRendererLine(line, stream === "stderr" ? "warn" : "info");
-      newlineIndex = buffer.indexOf("\n");
-    }
+  private flushRendererStream(stream: "stdout" | "stderr"): void {
+    const buffer = stream === "stdout" ? this.stdoutBuffer : this.stderrBuffer;
+    const { lines, remainder } = drainLines(buffer);
     if (stream === "stdout") {
-      this.stdoutBuffer = buffer;
+      this.stdoutBuffer = remainder;
     } else {
-      this.stderrBuffer = buffer;
+      this.stderrBuffer = remainder;
     }
-  }
-
-  private logRendererLine(
-    line: string,
-    fallbackLevel: "info" | "warn" | "error",
-  ): void {
-    if (!line) {
-      return;
+    for (const line of lines) {
+      const parsed = parseRendererLogLine(
+        line,
+        stream === "stderr" ? "warn" : "info"
+      );
+      this.logStructured(
+        parsed.level,
+        { component: "graphics-renderer", ...parsed.context },
+        parsed.message
+      );
     }
-    try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      const levelValue = typeof parsed.level === "number" ? parsed.level : null;
-      const msgValue = typeof parsed.msg === "string" ? parsed.msg : line;
-      const rest = { ...parsed };
-      delete rest.level;
-      delete rest.msg;
-      delete rest.time;
-      delete rest.pid;
-      delete rest.hostname;
-      const context = { component: "graphics-renderer", ...rest };
-      if (levelValue !== null) {
-        if (levelValue >= 50) {
-          this.logStructured("error", context, msgValue);
-          return;
-        }
-        if (levelValue >= 40) {
-          this.logStructured("warn", context, msgValue);
-          return;
-        }
-        if (levelValue >= 30) {
-          this.logStructured("info", context, msgValue);
-          return;
-        }
-        this.logStructured("debug", context, msgValue);
-        return;
-      }
-    } catch {
-      // Fall through to text logging.
-    }
-
-    const context = { component: "graphics-renderer" };
-    this.logStructured(fallbackLevel, context, line);
   }
 
   private handleIpcData(data: Buffer): void {
-    this.ipcBuffer = Buffer.concat([this.ipcBuffer, data]);
-    if (this.ipcBuffer.length > MAX_IPC_BUFFER_BYTES) {
+    this.ipcBuffer = appendIpcBuffer(this.ipcBuffer, data);
+    if (!isIpcBufferWithinLimit(this.ipcBuffer)) {
       this.logStructured(
         "warn",
         { component: "graphics-renderer" },
@@ -693,74 +593,31 @@ export class ElectronRendererClient implements GraphicsRenderer {
       return;
     }
 
-    while (this.ipcBuffer.length >= 4) {
-      const headerLength = this.ipcBuffer.readUInt32BE(0);
-      if (headerLength === 0 || headerLength > MAX_IPC_HEADER_BYTES) {
-        this.logStructured(
-          "warn",
-          { component: "graphics-renderer" },
-          "[GraphicsRenderer IPC] Header length exceeds limit",
-        );
+    while (true) {
+      const decoded = decodeNextIpcPacket(this.ipcBuffer);
+      if (decoded.kind === "incomplete") {
+        return;
+      }
+      if (decoded.kind === "invalid") {
+        const reasonMessage =
+          decoded.reason === "header_length_exceeds_limit"
+            ? "[GraphicsRenderer IPC] Header length exceeds limit"
+            : decoded.reason === "invalid_buffer_length_type"
+              ? "[GraphicsRenderer IPC] Invalid buffer length type"
+              : decoded.reason === "payload_length_exceeds_limit"
+                ? "[GraphicsRenderer IPC] Payload length exceeds limit"
+                : "[GraphicsRenderer IPC] Invalid message framing";
+        this.logStructured("warn", { component: "graphics-renderer" }, reasonMessage);
         this.ipcBuffer = Buffer.alloc(0);
         this.ipcSocket?.destroy();
         return;
       }
-      if (this.ipcBuffer.length < 4 + headerLength) {
-        return;
-      }
 
-      const headerRaw = this.ipcBuffer.subarray(4, 4 + headerLength);
-      let header: {
-        type: string;
-        bufferLength?: number;
-        [key: string]: unknown;
-      };
-      try {
-        header = JSON.parse(headerRaw.toString("utf-8")) as {
-          type: string;
-          bufferLength?: number;
-          [key: string]: unknown;
-        };
-      } catch {
-        this.ipcBuffer = Buffer.alloc(0);
-        return;
-      }
-
-      const hasBufferLength = Object.prototype.hasOwnProperty.call(
-        header,
-        "bufferLength",
-      );
-      if (hasBufferLength && typeof header.bufferLength !== "number") {
-        this.logStructured(
-          "warn",
-          { component: "graphics-renderer" },
-          "[GraphicsRenderer IPC] Invalid buffer length type",
-        );
-        this.ipcBuffer = Buffer.alloc(0);
-        this.ipcSocket?.destroy();
-        return;
-      }
-      const bufferLength =
-        typeof header.bufferLength === "number" ? header.bufferLength : 0;
-      if (bufferLength < 0 || bufferLength > MAX_IPC_PAYLOAD_BYTES) {
-        this.logStructured(
-          "warn",
-          { component: "graphics-renderer" },
-          "[GraphicsRenderer IPC] Payload length exceeds limit",
-        );
-        this.ipcBuffer = Buffer.alloc(0);
-        this.ipcSocket?.destroy();
-        return;
-      }
-      const totalLength = 4 + headerLength + bufferLength;
-      if (this.ipcBuffer.length < totalLength) {
-        return;
-      }
-
-      this.ipcBuffer = this.ipcBuffer.subarray(totalLength);
-
+      this.ipcBuffer = decoded.remaining;
+      const header = decoded.header;
+      const messageType = typeof header.type === "string" ? header.type : "";
       const messageToken = typeof header.token === "string" ? header.token : "";
-      if (header.type === "hello") {
+      if (messageType === "hello") {
         if (this.ipcToken && messageToken === this.ipcToken) {
           this.ipcAuthenticated = true;
           this.logStructured(
@@ -804,7 +661,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         continue;
       }
 
-      if (bufferLength > 0) {
+      if (decoded.payload.length > 0) {
         this.logStructured(
           "warn",
           { component: "graphics-renderer" },
@@ -813,7 +670,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         continue;
       }
 
-      if (header.type === "ready") {
+      if (messageType === "ready") {
         this.rendererConfigured = true;
         if (this.configReadyResolver) {
           this.configReadyResolver();
@@ -824,7 +681,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
       }
 
       // Frame payloads over IPC were removed. Data plane is FrameBus only.
-      if (header.type === "frame") {
+      if (messageType === "frame") {
         this.logStructured(
           "warn",
           { component: "graphics-renderer" },
@@ -833,7 +690,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         continue;
       }
 
-      if (header.type === "error" && typeof header.message === "string") {
+      if (messageType === "error" && typeof header.message === "string") {
         const error = new Error(header.message);
         if (this.configReadyRejecter) {
           this.configReadyRejecter(error);
@@ -861,11 +718,16 @@ export class ElectronRendererClient implements GraphicsRenderer {
       this.pendingCommands.push(payload);
       return;
     }
-
-    const header = Buffer.from(JSON.stringify(payload), "utf-8");
-    const headerLength = Buffer.alloc(4);
-    headerLength.writeUInt32BE(header.length, 0);
-    this.ipcSocket.write(Buffer.concat([headerLength, header]));
+    try {
+      this.ipcSocket.write(encodeIpcPacket(payload));
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      this.logStructured(
+        "warn",
+        { component: "graphics-renderer" },
+        `[GraphicsRenderer IPC] Failed to encode command: ${messageText}`,
+      );
+    }
   }
 
   private flushPendingCommands(): void {
@@ -877,10 +739,16 @@ export class ElectronRendererClient implements GraphicsRenderer {
       if (!message) {
         continue;
       }
-      const header = Buffer.from(JSON.stringify(message), "utf-8");
-      const headerLength = Buffer.alloc(4);
-      headerLength.writeUInt32BE(header.length, 0);
-      this.ipcSocket.write(Buffer.concat([headerLength, header]));
+      try {
+        this.ipcSocket.write(encodeIpcPacket(message));
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : String(error);
+        this.logStructured(
+          "warn",
+          { component: "graphics-renderer" },
+          `[GraphicsRenderer IPC] Failed to flush command: ${messageText}`,
+        );
+      }
     }
   }
 }
