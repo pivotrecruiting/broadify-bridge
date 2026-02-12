@@ -6,6 +6,12 @@ import type {
 } from "./graphics-manager-types.js";
 import type { GraphicsRenderer } from "./renderer/graphics-renderer.js";
 import { removeLayerWithRenderer } from "./graphics-layer-service.js";
+import {
+  clearPresetDuration,
+  clearPresetTimer,
+  maybeStartPresetTimer,
+  setPresetDurationPending,
+} from "./graphics-preset-timer.js";
 
 type RemovePresetReasonT =
   | "manual"
@@ -111,14 +117,10 @@ export class GraphicsPresetService {
 
     if (hasDuration && activePreset) {
       if (durationMs > 0) {
-        this.resetActivePresetTimer(durationMs);
+        setPresetDurationPending(activePreset, durationMs);
         shouldPublishPreset = true;
       } else {
-        this.clearActivePresetTimer();
-        activePreset.durationMs = null;
-        activePreset.pendingStart = false;
-        activePreset.startedAt = null;
-        activePreset.expiresAt = null;
+        clearPresetDuration(activePreset);
         shouldPublishPreset = true;
       }
     }
@@ -135,33 +137,27 @@ export class GraphicsPresetService {
    */
   maybeStartPresetTimers(layerIds: string[]): void {
     const activePreset = this.deps.getActivePreset();
-    if (!activePreset || !activePreset.pendingStart) {
+    if (!activePreset) {
       return;
     }
 
-    const hasActiveLayer = layerIds.some((layerId) =>
-      activePreset.layerIds.has(layerId)
-    );
-    if (!hasActiveLayer) {
-      return;
+    const started = maybeStartPresetTimer({
+      preset: activePreset,
+      renderedLayerIds: layerIds,
+      onExpire: (presetId) => {
+        void this.expireActivePreset(presetId);
+      },
+    });
+    if (started) {
+      this.deps.publishStatus("preset_started");
     }
-
-    const startedAt = Date.now();
-    const presetId = activePreset.presetId;
-    activePreset.pendingStart = false;
-    activePreset.startedAt = startedAt;
-    activePreset.expiresAt = startedAt + (activePreset.durationMs ?? 0);
-    activePreset.timer = setTimeout(() => {
-      void this.expireActivePreset(presetId);
-    }, activePreset.durationMs ?? 0);
-    this.deps.publishStatus("preset_started");
   }
 
   /**
    * Clear active preset including timer state.
    */
   clearActivePreset(): void {
-    this.clearActivePresetTimer();
+    clearPresetTimer(this.deps.getActivePreset());
     this.deps.setActivePreset(null);
   }
 
@@ -232,26 +228,6 @@ export class GraphicsPresetService {
 
     if (layersToRemove.length > 0 || wasActive) {
       this.deps.publishStatus("preset_removed");
-    }
-  }
-
-  private resetActivePresetTimer(durationMs: number): void {
-    const activePreset = this.deps.getActivePreset();
-    if (!activePreset) {
-      return;
-    }
-    this.clearActivePresetTimer();
-    activePreset.durationMs = durationMs;
-    activePreset.pendingStart = true;
-    activePreset.startedAt = null;
-    activePreset.expiresAt = null;
-  }
-
-  private clearActivePresetTimer(): void {
-    const activePreset = this.deps.getActivePreset();
-    if (activePreset?.timer) {
-      clearTimeout(activePreset.timer);
-      activePreset.timer = null;
     }
   }
 

@@ -85,12 +85,20 @@ Für jede bearbeitete Datei wird erfasst:
 - Nächster Refactor: optional split in `graphics-layer-render-service.ts` und `graphics-layer-state-service.ts`.
 
 ### apps/bridge/src/services/graphics/graphics-preset-service.ts
+- Status: step-2 advanced
+- Änderungen: Preset-Timer vollständig in `graphics-preset-timer.ts` ausgelagert; Service nutzt jetzt Timer-SSOT über klare Funktionsaufrufe.
+- Line Count: 287
+- Komplexität: mittel-hoch
+- SSOT/SRP Analyse: deutlich bessere SRP-Trennung zwischen Preset-Orchestrierung und Timer-Mechanik; verbleibend sind Removal-/Replacement-Strategien in einer Datei.
+- Nächster Refactor: optional Removal-Pfade in `graphics-preset-removal-service.ts` auslagern.
+
+### apps/bridge/src/services/graphics/graphics-preset-timer.ts
 - Status: step-2 done (new)
-- Änderungen: komplette Preset-Lifecycle-Steuerung (prepareBeforeRender, Timer, remove/expire, preset-update events) in dedizierten Service verlagert.
-- Line Count: 311
-- Komplexität: hoch
-- SSOT/SRP Analyse: Preset-Regeln sind jetzt zentral, aber Datei bündelt weiterhin Timer- und Removal-Strategien.
-- Nächster Refactor: optional Timer-Handling in `graphics-preset-timer.ts` auslagern.
+- Änderungen: Timer-SSOT eingeführt (`maybeStartPresetTimer`, `setPresetDurationPending`, `clearPresetDuration`, `clearPresetTimer`).
+- Line Count: 80
+- Komplexität: niedrig
+- SSOT/SRP Analyse: klare Isolation der Timer-Lifecycle-Regeln; reduziert Kopplung und senkt Regression-Risiko bei Preset-Duration-Änderungen.
+- Nächster Refactor: optional Unit-Tests mit Fake-Time für Start/Stop/Expire-Edge-Cases.
 
 ### apps/bridge/src/services/graphics/graphics-event-publisher.ts
 - Status: step-2 done (new)
