@@ -2,7 +2,6 @@ import { assetRegistry } from "./asset-registry.js";
 import type {
   GraphicsCategoryT,
   GraphicsOutputConfigT,
-  GraphicsOutputKeyT,
   GraphicsSendPayloadT,
 } from "./graphics-schemas.js";
 import {
@@ -15,7 +14,6 @@ import {
   GRAPHICS_OUTPUT_CONFIG_VERSION,
 } from "./graphics-schemas.js";
 import { outputConfigStore } from "./output-config-store.js";
-import { sanitizeTemplateCss, validateTemplate } from "./template-sanitizer.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
@@ -45,7 +43,6 @@ import {
 import type {
   GraphicsActivePresetT,
   GraphicsLayerStateT,
-  PreparedLayerT,
   GraphicsStatusSnapshotT,
 } from "./graphics-manager-types.js";
 import {
@@ -62,11 +59,7 @@ import {
   GraphicsOutputTransitionError,
   GraphicsOutputTransitionService,
 } from "./graphics-output-transition-service.js";
-
-const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
-  "key_fill_sdi",
-  "key_fill_ndi",
-];
+import { prepareLayerForRender } from "./graphics-layer-prepare-service.js";
 
 /**
  * Graphics manager orchestrates layers, rendering, and output.
@@ -353,7 +346,11 @@ export class GraphicsManager {
       }
     }
 
-    const prepared = await this.prepareLayer(data);
+    const prepared = await prepareLayerForRender(
+      data,
+      this.outputConfig.outputKey,
+      this.renderer
+    );
     const durationMs = typeof data.durationMs === "number" ? data.durationMs : null;
     await this.presetService.prepareBeforeRender(
       prepared.presetId,
@@ -668,54 +665,6 @@ export class GraphicsManager {
       htmlLength: typeof bundle?.html === "string" ? bundle.html.length : 0,
       cssLength: typeof bundle?.css === "string" ? bundle.css.length : 0,
       valuesKeys: values ? Object.keys(values) : [],
-    };
-  }
-
-  private async prepareLayer(
-    data: GraphicsSendPayloadT
-  ): Promise<PreparedLayerT> {
-    // Sanitize CSS before validation to avoid style/script injection vectors.
-    const sanitizedCss = sanitizeTemplateCss(data.bundle.css);
-    const sanitizedBundle = {
-      ...data.bundle,
-      css: sanitizedCss,
-    };
-    // Validate template HTML/CSS against a safe subset (no scripts/externals).
-    const { assetIds } = validateTemplate(data.bundle.html, sanitizedCss);
-
-    for (const asset of sanitizedBundle.assets || []) {
-      await assetRegistry.storeAsset(asset);
-    }
-
-    for (const assetId of assetIds) {
-      if (!assetRegistry.getAsset(assetId)) {
-        throw new Error(`Missing asset reference: ${assetId}`);
-      }
-    }
-
-    // Provide renderer a resolved asset map (file paths only, no raw data).
-    await this.renderer.setAssets(assetRegistry.getAssetMap());
-
-    // If output supports alpha, enforce transparent background regardless of payload.
-    const enforcedBackground = OUTPUT_KEYS_WITH_ALPHA.includes(
-      this.outputConfig?.outputKey ?? "stub"
-    )
-      ? "transparent"
-      : data.backgroundMode;
-
-    const initialValues = {
-      ...(sanitizedBundle.defaults || {}),
-      ...(data.values || {}),
-    };
-
-    const bindings = deriveTemplateBindings(sanitizedBundle, initialValues);
-
-    return {
-      ...data,
-      bundle: sanitizedBundle,
-      backgroundMode: enforcedBackground,
-      values: initialValues,
-      bindings,
     };
   }
 
