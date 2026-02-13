@@ -24,6 +24,7 @@ export const RendererConfigureSchema = z
         message: "pixelFormat must be RGBA8 (1)",
       }),
     framebusName: z.string().optional().default(""),
+    framebusSlotCount: z.number().int().nonnegative().optional().default(0),
     framebusSize: z.number().int().nonnegative().optional().default(0),
     backgroundMode: z
       .enum(["transparent", "green", "black", "white"])

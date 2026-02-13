@@ -40,6 +40,7 @@ export type GraphicsRendererConfigT = {
   fps: number;
   pixelFormat: number;
   framebusName: string;
+  framebusSlotCount: number;
   framebusSize: number;
   backgroundMode: GraphicsBackgroundModeT;
   clearColor?: GraphicsRendererClearColorT;

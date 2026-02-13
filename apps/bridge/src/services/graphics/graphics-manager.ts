@@ -580,6 +580,7 @@ export class GraphicsManager {
       fps: config.format.fps,
       pixelFormat: frameBusConfig?.pixelFormat ?? 1,
       framebusName: frameBusConfig?.name ?? "",
+      framebusSlotCount: frameBusConfig?.slotCount ?? 0,
       framebusSize: frameBusConfig?.size ?? 0,
       backgroundMode: "transparent",
     };

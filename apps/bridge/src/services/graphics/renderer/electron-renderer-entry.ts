@@ -74,6 +74,7 @@ let rendererConfig: {
   fps: number;
   pixelFormat: number;
   framebusName: string;
+  framebusSlotCount: number;
   framebusSize: number;
   backgroundMode: string;
   clearColor?: { r: number; g: number; b: number; a: number };
@@ -267,7 +268,7 @@ function ensureFrameBusWriter(
   if (!Number.isFinite(frameBusSlotCount) || frameBusSlotCount < 2) {
     logFrameBusOnce(
       "invalid-slot",
-      "[GraphicsRenderer] FrameBus slotCount missing or invalid (framebusSize)",
+      "[GraphicsRenderer] FrameBus slotCount missing or invalid",
     );
     return false;
   }
@@ -329,6 +330,7 @@ function applyRendererConfig(message: unknown): void {
     fps: config.fps,
     pixelFormat: config.pixelFormat,
     framebusName: config.framebusName,
+    framebusSlotCount: config.framebusSlotCount,
     framebusSize: config.framebusSize,
     backgroundMode: config.backgroundMode,
     clearColor: config.clearColor,
@@ -339,7 +341,9 @@ function applyRendererConfig(message: unknown): void {
   if (config.framebusName && config.framebusName.trim()) {
     frameBusName = config.framebusName.trim();
   }
-  if (config.framebusSize > 0) {
+  if (config.framebusSlotCount > 0) {
+    frameBusSlotCount = config.framebusSlotCount;
+  } else if (config.framebusSize > 0) {
     const frameSize = config.width * config.height * 4;
     const slotBytes = config.framebusSize - FRAMEBUS_HEADER_SIZE;
     if (frameSize <= 0) {
@@ -350,13 +354,19 @@ function applyRendererConfig(message: unknown): void {
       frameBusSlotCount = 0;
     } else {
       const slotCount = Math.floor(slotBytes / frameSize);
-      if (slotBytes % frameSize !== 0 || slotCount < 2) {
+      if (slotCount < 2) {
         logFrameBusOnce(
           "slotcount",
           "[GraphicsRenderer] FrameBus size invalid for slot count calculation",
         );
         frameBusSlotCount = 0;
       } else {
+        if (slotBytes % frameSize !== 0) {
+          logFrameBusOnce(
+            "slotcount-padding",
+            "[GraphicsRenderer] FrameBus size includes padding; slot count derived from floor()",
+          );
+        }
         frameBusSlotCount = slotCount;
       }
     }
