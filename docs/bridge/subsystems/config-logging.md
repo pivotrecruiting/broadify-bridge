@@ -36,6 +36,8 @@ flowchart LR
 - Default‑Level: `info` (konfigurierbar über `BRIDGE_LOG_LEVEL`).
 - Stdout‑Level: `BRIDGE_LOG_STDOUT_LEVEL`.
 - File‑Level: `BRIDGE_LOG_FILE_LEVEL`.
+- In `NODE_ENV=production` werden Bridge‑Logs mindestens auf `info` erzwungen,
+  damit Errors, Output‑Configs und Graphics‑Payload‑Summaries immer im Log landen.
 - Perf‑Logs nur bei `BRIDGE_LOG_PERF=1`.
 - Renderer‑Debug nur bei `BRIDGE_GRAPHICS_DEBUG=1`.
 - Stub‑Output Logs nur bei `BRIDGE_LOG_STUB_OUTPUT=1`.

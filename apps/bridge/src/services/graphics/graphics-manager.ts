@@ -173,6 +173,16 @@ export class GraphicsManager {
       const message = error instanceof Error ? error.message : String(error);
       this.failGraphics("output_config_error", message);
     }
+    getBridgeContext().logger.info(
+      `[Graphics] Configure outputs ${JSON.stringify({
+        outputKey: config.outputKey,
+        targets: config.targets,
+        format: config.format,
+        range: config.range,
+        colorspace: config.colorspace,
+        version: config.version,
+      })}`
+    );
     if (config.version > GRAPHICS_OUTPUT_CONFIG_VERSION) {
       this.failGraphics(
         "output_config_error",
@@ -275,7 +285,7 @@ export class GraphicsManager {
       throw error;
     }
 
-    getBridgeContext().logger.debug?.(
+    getBridgeContext().logger.info(
       `[Graphics] graphics_send payload ${JSON.stringify({
         payload: summarizeSendPayload(data),
         outputConfig: this.outputConfig,

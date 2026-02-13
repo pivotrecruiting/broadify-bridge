@@ -38,15 +38,49 @@ export async function createServer(config: BridgeConfigT) {
   const userDataDir = resolveUserDataDir(config);
   const logPath = await ensureBridgeLogFile(userDataDir);
 
-  const defaultLevel =
-    process.env.BRIDGE_LOG_LEVEL ||
-    (process.env.NODE_ENV === "production" ? "info" : "info");
-  const consoleLevel =
-    process.env.BRIDGE_LOG_STDOUT_LEVEL || defaultLevel;
-  const fileLevel =
-    process.env.BRIDGE_LOG_FILE_LEVEL || defaultLevel;
+  const LOG_LEVELS: Record<string, number> = {
+    trace: 10,
+    debug: 20,
+    info: 30,
+    warn: 40,
+    error: 50,
+    fatal: 60,
+    silent: 70,
+  };
+  const normalizeLevel = (value: string | undefined, fallback: string): string => {
+    if (!value) {
+      return fallback;
+    }
+    const key = value.toLowerCase();
+    return LOG_LEVELS[key] ? key : fallback;
+  };
+  const clampMaxLevel = (value: string, maxLevel: string): string => {
+    const current = LOG_LEVELS[value] ?? LOG_LEVELS.info;
+    const max = LOG_LEVELS[maxLevel] ?? LOG_LEVELS.info;
+    return current > max ? maxLevel : value;
+  };
+
+  const requestedLevel = normalizeLevel(
+    process.env.BRIDGE_LOG_LEVEL,
+    "info"
+  );
+  const enforceImportantLogs = process.env.NODE_ENV === "production";
+  const baseLevel = enforceImportantLogs
+    ? clampMaxLevel(requestedLevel, "info")
+    : requestedLevel;
+  const consoleLevel = normalizeLevel(
+    process.env.BRIDGE_LOG_STDOUT_LEVEL,
+    baseLevel
+  );
+  const fileLevelRaw = normalizeLevel(
+    process.env.BRIDGE_LOG_FILE_LEVEL,
+    baseLevel
+  );
+  const fileLevel = enforceImportantLogs
+    ? clampMaxLevel(fileLevelRaw, "info")
+    : fileLevelRaw;
   const logger = pino(
-    { level: defaultLevel },
+    { level: baseLevel },
     pino.multistream([
       { level: consoleLevel, stream: process.stdout },
       { level: fileLevel, stream: pino.destination({ dest: logPath, sync: false }) },
