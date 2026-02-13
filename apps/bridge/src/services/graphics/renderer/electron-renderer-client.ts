@@ -26,6 +26,8 @@ import type {
   GraphicsTemplateBindingsT,
 } from "./graphics-renderer.js";
 
+type RendererAssetMapT = Record<string, { filePath: string; mime: string }>;
+
 /**
  * Electron-based offscreen renderer client.
  *
@@ -57,6 +59,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private configReadyResolver: (() => void) | null = null;
   private configReadyRejecter: ((error: Error) => void) | null = null;
   private isShuttingDown = false;
+  private latestAssets: RendererAssetMapT | null = null;
+  private launchWithGpuDisabled =
+    process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
+  private gpuFallbackAttempted = this.launchWithGpuDisabled;
+  private recoveringWithGpuFallback = false;
 
   /**
    * Initialize the renderer process and IPC channel.
@@ -116,6 +123,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
     const env = { ...process.env } as Record<string, string>;
     delete env.ELECTRON_RUN_AS_NODE;
+    if (this.launchWithGpuDisabled) {
+      env.BRIDGE_GRAPHICS_DISABLE_GPU = "1";
+    }
     env.BRIDGE_GRAPHICS_IPC_PORT = String(ipcPort);
     env.BRIDGE_GRAPHICS_IPC_TOKEN = this.ipcToken;
     this.logStructured(
@@ -125,6 +135,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         ipcPort,
         ipcTokenSet: Boolean(this.ipcToken),
         electronRunAsNode: env.ELECTRON_RUN_AS_NODE === "1",
+        gpuDisabled: env.BRIDGE_GRAPHICS_DISABLE_GPU === "1",
       },
       "[GraphicsRenderer] IPC environment prepared",
     );
@@ -163,6 +174,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     });
 
     this.child.on("exit", (code, signal) => {
+      const exitedBeforeReady = Boolean(this.readyRejecter);
       if (this.readyRejecter) {
         this.readyRejecter(
           new Error(
@@ -172,16 +184,30 @@ export class ElectronRendererClient implements GraphicsRenderer {
         this.readyRejecter = null;
         this.readyResolver = null;
       }
-      if (!this.isShuttingDown && this.errorCallback) {
-        this.errorCallback(
-          new Error(
-            `Graphics renderer exited (code ${code ?? "unknown"}, signal ${
-              signal ?? "unknown"
-            })`
-          )
+
+      const exitError = this.createRendererExitError(code, signal);
+      const attemptGpuFallback =
+        !this.isShuttingDown &&
+        this.shouldAttemptGpuFallback(signal, exitedBeforeReady);
+
+      this.resetRuntimeStateAfterExit(exitError);
+
+      if (attemptGpuFallback) {
+        this.launchWithGpuDisabled = true;
+        this.gpuFallbackAttempted = true;
+        this.recoveringWithGpuFallback = true;
+        this.logStructured(
+          "warn",
+          { component: "graphics-renderer" },
+          "[GraphicsRenderer] Renderer crashed with SIGSEGV; retrying once with GPU disabled",
         );
+        void this.recoverWithGpuFallback();
+        return;
       }
-      this.child = null;
+
+      if (!this.isShuttingDown && this.errorCallback) {
+        this.errorCallback(exitError);
+      }
     });
 
     const timeoutPromise = new Promise<void>((_resolve, reject) => {
@@ -219,8 +245,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
    * @param assets Map of assetId to file path and mime type.
    */
   async setAssets(
-    assets: Record<string, { filePath: string; mime: string }>,
+    assets: RendererAssetMapT,
   ): Promise<void> {
+    this.latestAssets = assets;
     if (!this.child) {
       return;
     }
@@ -371,6 +398,89 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.configReadyPromise = null;
     this.isShuttingDown = false;
     await this.stopIpcServer();
+  }
+
+  private createRendererExitError(
+    code: number | null,
+    signal: NodeJS.Signals | null
+  ): Error {
+    return new Error(
+      `Graphics renderer exited (code ${code ?? "unknown"}, signal ${
+        signal ?? "unknown"
+      })`
+    );
+  }
+
+  private shouldAttemptGpuFallback(
+    signal: NodeJS.Signals | null,
+    exitedBeforeReady: boolean
+  ): boolean {
+    if (exitedBeforeReady) {
+      return false;
+    }
+    if (this.recoveringWithGpuFallback || this.gpuFallbackAttempted) {
+      return false;
+    }
+    if (process.env.NODE_ENV !== "production") {
+      return false;
+    }
+    if (this.launchWithGpuDisabled) {
+      return false;
+    }
+    if (process.env.BRIDGE_GRAPHICS_AUTO_GPU_FALLBACK === "0") {
+      return false;
+    }
+    return signal === "SIGSEGV";
+  }
+
+  private resetRuntimeStateAfterExit(exitError: Error): void {
+    this.child = null;
+    this.rendererConfigured = false;
+    this.lastSentConfigKey = null;
+    this.ipcSocket?.destroy();
+    this.ipcSocket = null;
+    this.ipcAuthenticated = false;
+    this.ipcBuffer = Buffer.alloc(0);
+    this.pendingCommands = [];
+
+    if (this.configReadyRejecter) {
+      this.configReadyRejecter(exitError);
+    }
+    this.configReadyResolver = null;
+    this.configReadyRejecter = null;
+    this.configReadyPromise = null;
+  }
+
+  private async recoverWithGpuFallback(): Promise<void> {
+    try {
+      await this.initialize();
+      if (this.latestAssets) {
+        await this.setAssets(this.latestAssets);
+      }
+      if (this.sessionConfig) {
+        await this.configureSession(this.sessionConfig);
+      }
+      this.logStructured(
+        "info",
+        { component: "graphics-renderer" },
+        "[GraphicsRenderer] GPU fallback renderer restart completed",
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const recoveryError = new Error(
+        `Graphics renderer GPU fallback restart failed: ${message}`
+      );
+      this.logStructured(
+        "error",
+        { component: "graphics-renderer" },
+        `[GraphicsRenderer] ${recoveryError.message}`,
+      );
+      if (this.errorCallback) {
+        this.errorCallback(recoveryError);
+      }
+    } finally {
+      this.recoveringWithGpuFallback = false;
+    }
   }
 
   private async ensureReady(): Promise<void> {

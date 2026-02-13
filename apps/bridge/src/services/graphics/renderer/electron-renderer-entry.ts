@@ -24,6 +24,7 @@ const logger = pino({
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
+const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
 let frameBusPixelFormat = Number(
@@ -47,6 +48,11 @@ logger.info(
 );
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
+if (disableGpu) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+}
 
 const assetMap = new Map<string, { filePath: string; mime: string }>();
 let paintCount = 0;

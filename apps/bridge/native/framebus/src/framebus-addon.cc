@@ -176,13 +176,17 @@ napi_value WriterClose(napi_env env, napi_callback_info info) {
   napi_get_cb_info(env, info, nullptr, nullptr, &this_arg, nullptr);
 
   FrameBusHandle* handle = nullptr;
-  napi_unwrap(env, this_arg, reinterpret_cast<void**>(&handle));
+  // Remove wrap first so the finalizer cannot run again for the same handle.
+  const napi_status status =
+      napi_remove_wrap(env, this_arg, reinterpret_cast<void**>(&handle));
+  if (status != napi_ok) {
+    return nullptr;
+  }
   if (!handle) {
     return nullptr;
   }
 
   FinalizeHandle(env, handle, nullptr);
-  napi_wrap(env, this_arg, nullptr, nullptr, nullptr, nullptr);
   return nullptr;
 }
 
