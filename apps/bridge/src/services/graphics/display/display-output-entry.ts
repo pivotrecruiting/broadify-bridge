@@ -5,6 +5,7 @@ import {
   type FrameBusModuleT,
   type FrameBusReaderT,
 } from "../framebus/framebus-client.js";
+import { getExpectedFrameBusSizeFromHeader } from "../framebus/framebus-layout.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -540,7 +541,7 @@ function startFrameBusReader(): boolean {
     return false;
   }
   if (frameBusSize > 0) {
-    const expectedSize = header.headerSize + header.slotStride * header.slotCount;
+    const expectedSize = getExpectedFrameBusSizeFromHeader(header);
     if (expectedSize !== frameBusSize) {
       logger.error(
         `[DisplayOutput] FrameBus size mismatch (expected ${frameBusSize}, got ${expectedSize})`
