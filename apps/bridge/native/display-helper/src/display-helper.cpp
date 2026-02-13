@@ -119,7 +119,7 @@ int main(int argc, char* argv[]) {
   std::string frameBusName;
   uint32_t width = 0;
   uint32_t height = 0;
-  uint32_t fps = 60;
+  uint32_t fps = 50;
   int displayIndex = 0;
 
   // Parse CLI args
@@ -155,7 +155,7 @@ int main(int argc, char* argv[]) {
     const char* env = std::getenv("BRIDGE_FRAME_FPS");
     if (env) fps = static_cast<uint32_t>(std::atoi(env));
   }
-  if (fps == 0) fps = 60;
+  if (fps == 0) fps = 50;
 
   if (frameBusName.empty()) {
     std::cerr << "Display Helper: framebus name required (--framebus-name or BRIDGE_FRAMEBUS_NAME)" << std::endl;
