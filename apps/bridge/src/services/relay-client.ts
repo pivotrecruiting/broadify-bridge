@@ -361,6 +361,7 @@ export class RelayClient {
       info: (msg: string) => void;
       error: (msg: string) => void;
       warn: (msg: string) => void;
+      debug?: (msg: string) => void;
     },
     bridgeName?: string,
   ) {
