@@ -8,6 +8,7 @@ import {
   encodeIpcPacket,
   isIpcBufferWithinLimit,
   appendIpcBuffer,
+  type IpcBufferT,
 } from "./renderer-ipc-framing.js";
 import {
   drainLines,
@@ -39,7 +40,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private errorCallback: ((error: Error) => void) | null = null;
   private ipcServer: net.Server | null = null;
   private ipcSocket: net.Socket | null = null;
-  private ipcBuffer = Buffer.alloc(0);
+  private ipcBuffer: IpcBufferT = Buffer.alloc(0);
+  private ipcPort: number | null = null;
+  private ipcServerReady: Promise<number> | null = null;
   // Token used to authenticate IPC messages with the renderer process.
   private ipcToken: string | null = null;
   private ipcAuthenticated = false;
@@ -446,8 +449,14 @@ export class ElectronRendererClient implements GraphicsRenderer {
    * @returns Allocated port number for IPC server.
    */
   private async startIpcServer(): Promise<number> {
+    if (this.ipcServerReady) {
+      return this.ipcServerReady;
+    }
     if (this.ipcServer) {
-      return 0;
+      if (this.ipcPort) {
+        return this.ipcPort;
+      }
+      throw new Error("IPC server already started without a port");
     }
 
     this.ipcServer = net.createServer((socket) => {
@@ -488,13 +497,15 @@ export class ElectronRendererClient implements GraphicsRenderer {
       });
     });
 
-    return new Promise((resolve, reject) => {
+    this.ipcServerReady = new Promise((resolve, reject) => {
       this.ipcServer?.once("error", (error) => {
+        this.ipcServerReady = null;
         reject(error);
       });
       this.ipcServer?.listen(0, "127.0.0.1", () => {
         const address = this.ipcServer?.address();
         if (typeof address === "object" && address?.port) {
+          this.ipcPort = address.port;
           this.logStructured(
             "info",
             { component: "graphics-renderer", port: address.port },
@@ -503,9 +514,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
           resolve(address.port);
           return;
         }
+        this.ipcServerReady = null;
         reject(new Error("Failed to allocate IPC port"));
       });
     });
+    return this.ipcServerReady;
   }
 
   private async stopIpcServer(): Promise<void> {
@@ -516,6 +529,8 @@ export class ElectronRendererClient implements GraphicsRenderer {
       this.ipcServer?.close(() => resolve());
     });
     this.ipcServer = null;
+    this.ipcPort = null;
+    this.ipcServerReady = null;
   }
 
   private getLogger(): LoggerLikeT & { debug?: (msg: string) => void } {

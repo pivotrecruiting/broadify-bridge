@@ -12,6 +12,7 @@ import {
   appendIpcBuffer,
   decodeNextIpcPacket,
   encodeIpcPacket,
+  type IpcBufferT,
   isIpcBufferWithinLimit,
 } from "./renderer-ipc-framing.js";
 
@@ -22,16 +23,15 @@ const logger = pino({
 
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
-const LOG_PERF =
-  process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
+const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
 let frameBusPixelFormat = Number(
   process.env.BRIDGE_FRAME_PIXEL_FORMAT ||
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT ||
-    1
+    1,
 );
-const frameBusForceRecreate = process.env.BRIDGE_FRAMEBUS_FORCE_RECREATE === "1";
+const frameBusForceRecreate = true; // IMMER TRUE LASSEN!
 
 logger.info(
   {
@@ -43,7 +43,7 @@ logger.info(
     ipcTokenSet: Boolean(process.env.BRIDGE_GRAPHICS_IPC_TOKEN),
     electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE === "1",
   },
-  "[GraphicsRenderer] Startup context"
+  "[GraphicsRenderer] Startup context",
 );
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
@@ -52,7 +52,7 @@ const assetMap = new Map<string, { filePath: string; mime: string }>();
 let paintCount = 0;
 let ipcSocket: net.Socket | null = null;
 let canSend = true;
-let ipcBuffer = Buffer.alloc(0);
+let ipcBuffer: IpcBufferT = Buffer.alloc(0);
 const ipcToken = process.env.BRIDGE_GRAPHICS_IPC_TOKEN || "";
 let isAppReady = false;
 let isIpcConnected = false;
@@ -68,18 +68,16 @@ let perfLatencyMaxMs = 0;
 let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
 let rendererConfigReady = false;
-let rendererConfig:
-  | {
-      width: number;
-      height: number;
-      fps: number;
-      pixelFormat: number;
-      framebusName: string;
-      framebusSize: number;
-      backgroundMode: string;
-      clearColor?: { r: number; g: number; b: number; a: number };
-    }
-  | null = null;
+let rendererConfig: {
+  width: number;
+  height: number;
+  fps: number;
+  pixelFormat: number;
+  framebusName: string;
+  framebusSize: number;
+  backgroundMode: string;
+  clearColor?: { r: number; g: number; b: number; a: number };
+} | null = null;
 let rendererBackgroundMode = "transparent";
 let rendererClearColor: { r: number; g: number; b: number; a: number } | null =
   null;
@@ -105,9 +103,7 @@ function logPerfIfNeeded(): void {
   const sentPerSec = Math.round((perfSentCount * 1000) / intervalMs);
   const droppedPerSec = Math.round((perfDroppedCount * 1000) / intervalMs);
   const latencyAvg =
-    perfSentCount > 0
-      ? Math.round(perfLatencyTotalMs / perfSentCount)
-      : 0;
+    perfSentCount > 0 ? Math.round(perfLatencyTotalMs / perfSentCount) : 0;
   const backpressureActiveMs =
     backpressureStartAt !== null ? now - backpressureStartAt : 0;
   logger.info(
@@ -178,7 +174,10 @@ function sendIpcMessage(
       logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
       return;
     }
-    logger.warn({ message: messageText }, "[GraphicsRenderer] IPC encode failed");
+    logger.warn(
+      { message: messageText },
+      "[GraphicsRenderer] IPC encode failed",
+    );
     return;
   }
 
@@ -230,7 +229,7 @@ function logFrameBusOnce(key: string, message: string): void {
 function ensureFrameBusWriter(
   width: number,
   height: number,
-  fps: number
+  fps: number,
 ): boolean {
   if (frameBusWriter) {
     const header = frameBusWriter.header;
@@ -261,14 +260,14 @@ function ensureFrameBusWriter(
   if (!frameBusName) {
     logFrameBusOnce(
       "missing-name",
-      "[GraphicsRenderer] FrameBus name missing (BRIDGE_FRAMEBUS_NAME)"
+      "[GraphicsRenderer] FrameBus name missing (BRIDGE_FRAMEBUS_NAME)",
     );
     return false;
   }
   if (!Number.isFinite(frameBusSlotCount) || frameBusSlotCount < 2) {
     logFrameBusOnce(
       "invalid-slot",
-      "[GraphicsRenderer] FrameBus slotCount missing or invalid (framebusSize)"
+      "[GraphicsRenderer] FrameBus slotCount missing or invalid (framebusSize)",
     );
     return false;
   }
@@ -279,7 +278,7 @@ function ensureFrameBusWriter(
     if (!frameBusModule) {
       logFrameBusOnce(
         "module-null",
-        "[GraphicsRenderer] FrameBus module not loaded"
+        "[GraphicsRenderer] FrameBus module not loaded",
       );
       return false;
     }
@@ -300,14 +299,14 @@ function ensureFrameBusWriter(
         size: frameBusWriter.size,
         header: frameBusWriter.header,
       },
-      "[GraphicsRenderer] FrameBus writer initialized"
+      "[GraphicsRenderer] FrameBus writer initialized",
     );
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logFrameBusOnce(
       "init-failed",
-      `[GraphicsRenderer] FrameBus init failed: ${message}`
+      `[GraphicsRenderer] FrameBus init failed: ${message}`,
     );
     return false;
   }
@@ -318,7 +317,7 @@ function applyRendererConfig(message: unknown): void {
   if (!parsed.success) {
     logger.warn(
       { issues: parsed.error.issues },
-      "[GraphicsRenderer] Invalid renderer_configure payload"
+      "[GraphicsRenderer] Invalid renderer_configure payload",
     );
     return;
   }
@@ -346,17 +345,17 @@ function applyRendererConfig(message: unknown): void {
     if (frameSize <= 0) {
       logFrameBusOnce(
         "slotcount",
-        "[GraphicsRenderer] FrameBus frame size invalid"
+        "[GraphicsRenderer] FrameBus frame size invalid",
       );
       frameBusSlotCount = 0;
     } else {
       const slotCount = Math.floor(slotBytes / frameSize);
       if (slotBytes % frameSize !== 0 || slotCount < 2) {
-      logFrameBusOnce(
-        "slotcount",
-        "[GraphicsRenderer] FrameBus size invalid for slot count calculation"
-      );
-      frameBusSlotCount = 0;
+        logFrameBusOnce(
+          "slotcount",
+          "[GraphicsRenderer] FrameBus size invalid for slot count calculation",
+        );
+        frameBusSlotCount = 0;
       } else {
         frameBusSlotCount = slotCount;
       }
@@ -371,7 +370,7 @@ function applyRendererConfig(message: unknown): void {
   const frameBusReady = ensureFrameBusWriter(
     config.width,
     config.height,
-    config.fps
+    config.fps,
   );
 
   readySent = false;
@@ -388,12 +387,12 @@ function applyRendererConfig(message: unknown): void {
       .executeJavaScript(
         rendererClearColor
           ? `window.__setClearColor && window.__setClearColor(${JSON.stringify(
-              rendererClearColor
+              rendererClearColor,
             )});`
           : `window.__setBackground && window.__setBackground(${JSON.stringify(
-              rendererBackgroundMode
+              rendererBackgroundMode,
             )});`,
-        true
+        true,
       )
       .catch(() => null);
   }
@@ -404,7 +403,7 @@ async function ensureSingleWindow(
   width: number,
   height: number,
   fps: number,
-  backgroundMode: string
+  backgroundMode: string,
 ): Promise<BrowserWindow> {
   if (singleWindow && singleWindowFormat) {
     if (
@@ -417,7 +416,7 @@ async function ensureSingleWindow(
           existing: singleWindowFormat,
           next: { width, height, fps },
         },
-        "[GraphicsRenderer] Single renderer format mismatch"
+        "[GraphicsRenderer] Single renderer format mismatch",
       );
     }
     return singleWindow;
@@ -462,7 +461,7 @@ async function ensureSingleWindow(
               imageHeight: imageSize.height,
               dirtyRect: _dirty,
             },
-            "[GraphicsRenderer] Debug empty paint frame (single)"
+            "[GraphicsRenderer] Debug empty paint frame (single)",
           );
         }
         return;
@@ -493,7 +492,7 @@ async function ensureSingleWindow(
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(
           { message },
-          "[GraphicsRenderer] FrameBus write failed (single)"
+          "[GraphicsRenderer] FrameBus write failed (single)",
         );
       }
       logPerfIfNeeded();
@@ -511,7 +510,7 @@ async function ensureSingleWindow(
 
     const html = buildSingleWindowDocument();
     await singleWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
     );
   }
 
@@ -524,9 +523,9 @@ async function ensureSingleWindow(
     try {
       await singleWindow.webContents.executeJavaScript(
         `window.__setClearColor && window.__setClearColor(${JSON.stringify(
-          rendererClearColor
+          rendererClearColor,
         )});`,
-        true
+        true,
       );
     } catch {
       // No-op; background set via create_layer.
@@ -535,9 +534,9 @@ async function ensureSingleWindow(
     try {
       await singleWindow.webContents.executeJavaScript(
         `window.__setBackground && window.__setBackground(${JSON.stringify(
-          sessionBackgroundMode
+          sessionBackgroundMode,
         )});`,
-        true
+        true,
       );
     } catch {
       // No-op; background set via create_layer.
@@ -609,7 +608,7 @@ async function createLayer(message: {
     message.width,
     message.height,
     message.fps,
-    message.backgroundMode
+    message.backgroundMode,
   );
 
   const payload = {
@@ -625,7 +624,7 @@ async function createLayer(message: {
 
   await window.webContents.executeJavaScript(
     `window.__createLayer(${JSON.stringify(payload)});`,
-    true
+    true,
   );
   requestSingleWindowRepaint();
 }
@@ -650,9 +649,9 @@ async function updateValues(message: {
   }
   await singleWindow.webContents.executeJavaScript(
     `window.__updateValues(${JSON.stringify(message.layerId)}, ${JSON.stringify(
-      message.values || {}
+      message.values || {},
     )}, ${JSON.stringify(message.bindings || {})});`,
-    true
+    true,
   );
   requestSingleWindowRepaint();
 }
@@ -670,12 +669,13 @@ async function updateLayout(message: {
   if (!singleWindow) {
     return;
   }
-  const zIndexValue = typeof message.zIndex === "number" ? message.zIndex : null;
+  const zIndexValue =
+    typeof message.zIndex === "number" ? message.zIndex : null;
   await singleWindow.webContents.executeJavaScript(
     `window.__updateLayout(${JSON.stringify(message.layerId)}, ${JSON.stringify(
-      message.layout
+      message.layout,
     )}, ${JSON.stringify(zIndexValue)});`,
-    true
+    true,
   );
   requestSingleWindowRepaint();
 }
@@ -691,7 +691,7 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
   }
   await singleWindow.webContents.executeJavaScript(
     `window.__removeLayer(${JSON.stringify(message.layerId)});`,
-    true
+    true,
   );
   requestSingleWindowRepaint();
 }
@@ -709,10 +709,11 @@ async function handleMessage(message: unknown): Promise<void> {
   const msg = message as { type?: string; [key: string]: unknown };
 
   if (msg.type === "renderer_configure") {
-    const { type: _type, token: _token, ...rest } = msg as Record<
-      string,
-      unknown
-    >;
+    const {
+      type: _type,
+      token: _token,
+      ...rest
+    } = msg as Record<string, unknown>;
     applyRendererConfig(rest);
     return;
   }
@@ -819,12 +820,14 @@ function connectIpcSocket(): void {
       {
         rawPortValue: process.env.BRIDGE_GRAPHICS_IPC_PORT || "",
       },
-      "[GraphicsRenderer] Missing/invalid IPC port (BRIDGE_GRAPHICS_IPC_PORT)"
+      "[GraphicsRenderer] Missing/invalid IPC port (BRIDGE_GRAPHICS_IPC_PORT)",
     );
     return;
   }
   if (!ipcToken) {
-    logger.warn("[GraphicsRenderer] IPC token missing (BRIDGE_GRAPHICS_IPC_TOKEN)");
+    logger.warn(
+      "[GraphicsRenderer] IPC token missing (BRIDGE_GRAPHICS_IPC_TOKEN)",
+    );
   }
   logger.info({ port }, "[GraphicsRenderer] Connecting IPC socket");
 
@@ -895,7 +898,7 @@ function connectIpcSocket(): void {
   ipcSocket.on("error", (error) => {
     logger.error(
       { port, message: error.message },
-      "[GraphicsRenderer] IPC socket error"
+      "[GraphicsRenderer] IPC socket error",
     );
   });
 
