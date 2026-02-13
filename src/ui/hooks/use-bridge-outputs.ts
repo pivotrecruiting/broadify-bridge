@@ -26,17 +26,7 @@ export function useBridgeOutputs() {
     setError(null);
 
     try {
-      console.log("[OutputChecker] Fetching outputs from bridge...");
       const result = await window.electron.bridgeGetOutputs();
-      
-      const output1Count = result.output1?.length || 0;
-      const output2Count = result.output2?.length || 0;
-      const availableOutput1Count = result.output1?.filter((opt) => opt.available).length || 0;
-      const availableOutput2Count = result.output2?.filter((opt) => opt.available).length || 0;
-      
-      console.log(
-        `[OutputChecker] Received outputs - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
-      );
       
       setOutputs(result);
     } catch (err) {
@@ -62,4 +52,3 @@ export function useBridgeOutputs() {
     refetch: fetchOutputs,
   };
 }
-

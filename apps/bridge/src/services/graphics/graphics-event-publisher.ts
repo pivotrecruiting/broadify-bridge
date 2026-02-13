@@ -15,7 +15,7 @@ export function publishGraphicsStatusEvent(
   if (!publishBridgeEvent) {
     return;
   }
-  getBridgeContext().logger.info(`[Graphics] Publish status: ${reason}`);
+  getBridgeContext().logger.debug?.(`[Graphics] Publish status: ${reason}`);
   publishBridgeEvent({
     event: "graphics_status",
     data: {

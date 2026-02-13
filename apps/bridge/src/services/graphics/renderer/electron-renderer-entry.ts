@@ -21,7 +21,9 @@ const logger = pino({
 });
 
 const FRAMEBUS_HEADER_SIZE = 128;
-const DEBUG_GRAPHICS = true;
+const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
+const LOG_PERF =
+  process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
 let frameBusPixelFormat = Number(
@@ -91,6 +93,9 @@ let frameBusWriter: FrameBusWriterT | null = null;
 let frameBusInitAttempted = false;
 
 function logPerfIfNeeded(): void {
+  if (!LOG_PERF) {
+    return;
+  }
   const now = Date.now();
   const intervalMs = now - perfLastLogAt;
   if (intervalMs < 1000) {

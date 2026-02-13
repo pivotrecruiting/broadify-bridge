@@ -40,7 +40,7 @@ export async function registerWebSocketRoute(
       client.close(1008, "Forbidden");
       return;
     }
-    fastify.log.info("[WebSocket] Client connected");
+    fastify.log.debug("[WebSocket] Client connected");
 
     // Register client
     websocketManager.registerClient(client);
@@ -93,7 +93,7 @@ export async function registerWebSocketRoute(
 
           if (validTopics.length > 0) {
             websocketManager.subscribe(client, validTopics);
-            fastify.log.info(
+            fastify.log.debug(
               `[WebSocket] Client subscribed to topics: ${validTopics.join(
                 ", "
               )}`
@@ -109,7 +109,7 @@ export async function registerWebSocketRoute(
 
           if (validTopics.length > 0) {
             websocketManager.unsubscribe(client, validTopics);
-            fastify.log.info(
+            fastify.log.debug(
               `[WebSocket] Client unsubscribed from topics: ${validTopics.join(
                 ", "
               )}`
@@ -125,7 +125,7 @@ export async function registerWebSocketRoute(
 
     // Handle disconnect
     client.on("close", () => {
-      fastify.log.info("[WebSocket] Client disconnected");
+      fastify.log.debug("[WebSocket] Client disconnected");
       websocketManager.unregisterClient(client);
     });
 

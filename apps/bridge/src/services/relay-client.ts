@@ -343,6 +343,7 @@ export class RelayClient {
     info: (msg: string) => void;
     error: (msg: string) => void;
     warn: (msg: string) => void;
+    debug?: (msg: string) => void;
   };
 
   /**
@@ -370,6 +371,7 @@ export class RelayClient {
       info: (msg: string) => console.log(`[RelayClient] ${msg}`),
       error: (msg: string) => console.error(`[RelayClient] ${msg}`),
       warn: (msg: string) => console.warn(`[RelayClient] ${msg}`),
+      debug: (msg: string) => console.debug(`[RelayClient] ${msg}`),
     };
   }
 
@@ -418,7 +420,7 @@ export class RelayClient {
     }
 
     if (this.isConnected()) {
-      this.logger.info("Already connected to relay");
+      this.logger.debug?.("Already connected to relay");
       return;
     }
 
@@ -492,7 +494,7 @@ export class RelayClient {
     }
 
     this.send(message);
-    this.logger.info(`Sent bridge_hello with bridgeId: ${this.bridgeId}`);
+    this.logger.debug?.(`Sent bridge_hello with bridgeId: ${this.bridgeId}`);
   }
 
   /**
@@ -566,7 +568,7 @@ export class RelayClient {
     }
 
     const command = message.command as RelayCommand;
-    this.logger.info(
+    this.logger.debug?.(
       `Received relay command: ${command} (requestId: ${message.requestId})`,
     );
 
@@ -704,7 +706,7 @@ export class RelayClient {
       this.maxReconnectDelay,
     );
 
-    this.logger.info(
+    this.logger.debug?.(
       `Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`,
     );
 

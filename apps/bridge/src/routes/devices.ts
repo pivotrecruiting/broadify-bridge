@@ -55,7 +55,7 @@ export async function registerDevicesRoute(
         }
 
         // Force refresh
-        fastify.log.info(
+        fastify.log.debug(
           "[Devices] Refresh requested, performing new detection"
         );
         cachedDevices = await performDetection();

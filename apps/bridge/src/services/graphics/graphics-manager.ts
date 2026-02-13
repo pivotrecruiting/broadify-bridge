@@ -275,7 +275,7 @@ export class GraphicsManager {
       throw error;
     }
 
-    getBridgeContext().logger.info(
+    getBridgeContext().logger.debug?.(
       `[Graphics] graphics_send payload ${JSON.stringify({
         payload: summarizeSendPayload(data),
         outputConfig: this.outputConfig,

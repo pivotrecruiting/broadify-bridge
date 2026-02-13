@@ -249,7 +249,7 @@ export class CommandRouter {
             "Invalid payload for list_outputs"
           );
           if (refresh) {
-            getBridgeContext().logger.info(
+            getBridgeContext().logger.debug?.(
               "[CommandRouter] list_outputs refresh requested"
             );
           }

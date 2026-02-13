@@ -24,6 +24,11 @@ sequenceDiagram
 - `src/electron/services/app-logs.ts`
 - `src/electron/services/bridge-logs.ts`
 
+## Debug‑Flags
+- Bridge‑Stdout im Main Process nur bei `BRIDGE_LOG_BRIDGE_STDOUT=1`.
+- Output‑Fetch Debug nur bei `BRIDGE_LOG_OUTPUTS=1`.
+- Preload‑Pfad‑Check nur bei `BRIDGE_LOG_PRELOAD_PATH=1`.
+
 ## Relevante Dateien
 - `src/electron/services/app-logger.ts`
 - `src/electron/services/app-logs.ts`

@@ -38,13 +38,18 @@ export async function createServer(config: BridgeConfigT) {
   const userDataDir = resolveUserDataDir(config);
   const logPath = await ensureBridgeLogFile(userDataDir);
 
+  const defaultLevel =
+    process.env.BRIDGE_LOG_LEVEL ||
+    (process.env.NODE_ENV === "production" ? "info" : "info");
   const consoleLevel =
-    process.env.NODE_ENV === "production" ? "info" : "debug";
+    process.env.BRIDGE_LOG_STDOUT_LEVEL || defaultLevel;
+  const fileLevel =
+    process.env.BRIDGE_LOG_FILE_LEVEL || defaultLevel;
   const logger = pino(
-    { level: "debug" },
+    { level: defaultLevel },
     pino.multistream([
       { level: consoleLevel, stream: process.stdout },
-      { level: "debug", stream: pino.destination({ dest: logPath, sync: false }) },
+      { level: fileLevel, stream: pino.destination({ dest: logPath, sync: false }) },
     ])
   );
   bindConsoleToLogger(logger);
@@ -63,6 +68,7 @@ export async function createServer(config: BridgeConfigT) {
     userDataDir,
     logPath,
     logger: {
+      debug: (msg: string) => server.log.debug(msg),
       info: (msg: string) => server.log.info(msg),
       warn: (msg: string) => server.log.warn(msg),
       error: (msg: string) => server.log.error(msg),
@@ -103,14 +109,15 @@ export async function createServer(config: BridgeConfigT) {
   let relayClient: RelayClient | undefined = undefined;
   if (config.relayEnabled && config.bridgeId) {
     const relayUrl = config.relayUrl || "wss://broadify-relay.fly.dev";
-    relayClient = new RelayClient(
-      config.bridgeId,
-      relayUrl,
-      {
-        info: (msg: string) => server.log.info(`[Relay] ${msg}`),
-        error: (msg: string) => server.log.error(`[Relay] ${msg}`),
-        warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
-      },
+      relayClient = new RelayClient(
+        config.bridgeId,
+        relayUrl,
+        {
+          debug: (msg: string) => server.log.debug(`[Relay] ${msg}`),
+          info: (msg: string) => server.log.info(`[Relay] ${msg}`),
+          error: (msg: string) => server.log.error(`[Relay] ${msg}`),
+          warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
+        },
       config.bridgeName
     );
     server.log.info(

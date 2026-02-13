@@ -49,7 +49,7 @@ export class USBCaptureDetector {
       }
 
       if (devices.length > 0) {
-        console.info(
+        console.debug(
           `[USBCaptureDetector] Found ${devices.length} USB capture device(s)`
         );
       }

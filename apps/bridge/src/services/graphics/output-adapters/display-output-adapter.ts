@@ -234,9 +234,9 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
             this.readyRejecter = null;
           }
         } else if (message.type === "metrics") {
-          this.getLogger().info(`[DisplayOutput] ${line}`);
+          this.getLogger().debug?.(`[DisplayOutput] ${line}`);
         } else {
-          this.getLogger().info(`[DisplayOutput] ${line}`);
+          this.getLogger().debug?.(`[DisplayOutput] ${line}`);
         }
       } catch {
         this.getLogger().warn(`[DisplayOutput] Non-JSON output: ${line}`);

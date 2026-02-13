@@ -16,7 +16,7 @@ export class DecklinkDevice implements DeviceController {
    */
   async open(): Promise<void> {
     // TODO: Implement exclusive open via helper process or direct SDK binding.
-    console.info(`[DecklinkDevice] open requested for ${this.deviceId}`);
+    console.debug(`[DecklinkDevice] open requested for ${this.deviceId}`);
   }
 
   /**
@@ -24,7 +24,7 @@ export class DecklinkDevice implements DeviceController {
    */
   async close(): Promise<void> {
     // TODO: Implement close via helper process or direct SDK binding.
-    console.info(`[DecklinkDevice] close requested for ${this.deviceId}`);
+    console.debug(`[DecklinkDevice] close requested for ${this.deviceId}`);
   }
 
   /**

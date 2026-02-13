@@ -110,7 +110,7 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
       env,
     });
 
-    this.getLogger().info(
+    this.getLogger().debug?.(
       `[DeckLinkOutput] Pixel format priority: ${VIDEO_PIXEL_FORMAT_PRIORITY.join(
         ","
       )}`
@@ -251,7 +251,7 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
           this.readyResolver = null;
           this.readyRejecter = null;
         } else if (message.type === "metrics") {
-          this.getLogger().info(`[DeckLinkOutput] ${line}`);
+          this.getLogger().debug?.(`[DeckLinkOutput] ${line}`);
         }
       } catch {
         this.getLogger().warn(`[DeckLinkOutput] Non-JSON output: ${line}`);

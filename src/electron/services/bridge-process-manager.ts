@@ -176,6 +176,8 @@ export class BridgeProcessManager {
       this.logProductionArtifactStatus();
 
       let stderrBuffer = "";
+      const shouldLogBridgeStdout =
+        isDev() && process.env.BRIDGE_LOG_BRIDGE_STDOUT === "1";
 
       // Handle process events
       this.bridgeProcess.on("error", (error) => {
@@ -201,7 +203,7 @@ export class BridgeProcessManager {
       if (this.bridgeProcess.stdout) {
         this.bridgeProcess.stdout.on("data", (data) => {
           const text = data.toString();
-          if (isDev()) {
+          if (shouldLogBridgeStdout) {
             // In development, log to console
             console.log(`[Bridge] ${text.trim()}`);
           }

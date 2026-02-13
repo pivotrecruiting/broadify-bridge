@@ -109,7 +109,9 @@ export class GraphicsPresetService {
         timer: null,
       };
       this.deps.setActivePreset(activePreset);
-      getBridgeContext().logger.info(`[Graphics] Preset activated: ${presetId}`);
+      getBridgeContext().logger.debug?.(
+        `[Graphics] Preset activated: ${presetId}`
+      );
       shouldPublishPreset = true;
     } else if (activePreset) {
       activePreset.layerIds.add(layerId);
@@ -167,7 +169,7 @@ export class GraphicsPresetService {
       },
     });
     if (started) {
-      getBridgeContext().logger.info(
+      getBridgeContext().logger.debug?.(
         `[Graphics] Preset timer started: ${JSON.stringify({
           presetId: activePreset.presetId,
           durationMs: activePreset.durationMs,
@@ -218,7 +220,7 @@ export class GraphicsPresetService {
 
     const clearedPresetId = activePreset.presetId;
     this.clearActivePreset();
-    getBridgeContext().logger.info(
+    getBridgeContext().logger.debug?.(
       `[Graphics] Preset cleared via layer remove: ${clearedPresetId}`
     );
     this.deps.publishStatus("preset_cleared");
@@ -257,7 +259,7 @@ export class GraphicsPresetService {
     }
 
     if (layersToRemove.length > 0) {
-      getBridgeContext().logger.info(
+      getBridgeContext().logger.debug?.(
         `[Graphics] Preset removed: ${JSON.stringify({
           presetId,
           reason,
@@ -277,7 +279,7 @@ export class GraphicsPresetService {
       return;
     }
 
-    getBridgeContext().logger.info(
+    getBridgeContext().logger.debug?.(
       `[Graphics] Expiring preset: ${JSON.stringify({
         presetId,
         durationMs: activePreset.durationMs,
@@ -287,7 +289,9 @@ export class GraphicsPresetService {
       })}`
     );
     await this.removePresetById(presetId, "expired");
-    getBridgeContext().logger.info(`[Graphics] Preset expired: ${presetId}`);
+    getBridgeContext().logger.debug?.(
+      `[Graphics] Preset expired: ${presetId}`
+    );
   }
 
   private async removeLayersNotInPreset(presetId: string): Promise<void> {
@@ -323,7 +327,7 @@ export class GraphicsPresetService {
     }
 
     if (layersToRemove.length > 0) {
-      getBridgeContext().logger.info(
+      getBridgeContext().logger.debug?.(
         `[Graphics] Preset replaced: ${JSON.stringify({
           newPresetId: presetId,
           removedPresets: Array.from(presetIds),

@@ -32,6 +32,14 @@ flowchart LR
 - `/logs` hat derzeit keine Auth‑Schicht.
 - Pairing‑Code bleibt im Memory/Context und wird nicht geloggt.
 
+## Log‑Level & Debug‑Flags
+- Default‑Level: `info` (konfigurierbar über `BRIDGE_LOG_LEVEL`).
+- Stdout‑Level: `BRIDGE_LOG_STDOUT_LEVEL`.
+- File‑Level: `BRIDGE_LOG_FILE_LEVEL`.
+- Perf‑Logs nur bei `BRIDGE_LOG_PERF=1`.
+- Renderer‑Debug nur bei `BRIDGE_GRAPHICS_DEBUG=1`.
+- Stub‑Output Logs nur bei `BRIDGE_LOG_STUB_OUTPUT=1`.
+
 ## Fehlerbilder
 - Log‑Datei nicht lesbar → `/logs` liefert 500
 - Runtime‑Config inkonsistent → Status zeigt `configured`/`active` fehlerhaft
