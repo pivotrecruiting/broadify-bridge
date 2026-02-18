@@ -103,6 +103,11 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
     }
     env.BRIDGE_DISPLAY_MATCH_NAME = match.device.displayName;
+    const matchMode = match.port.capabilities.modes?.[0];
+    if (matchMode?.width && matchMode?.height) {
+      env.BRIDGE_DISPLAY_MATCH_WIDTH = String(matchMode.width);
+      env.BRIDGE_DISPLAY_MATCH_HEIGHT = String(matchMode.height);
+    }
 
     this.child = spawn(helperPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
