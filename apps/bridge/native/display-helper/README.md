@@ -44,7 +44,7 @@ BRIDGE_FRAME_FPS=60 \
 | `--framebus-name <name>` | FrameBus shared memory name |
 | `--width <int>` | Frame width |
 | `--height <int>` | Frame height |
-| `--fps <int>` | Target FPS (default 60) |
+| `--fps <int>` | Target FPS (default 50) |
 | `--display-index <int>` | SDL display index (default 0) |
 
 ## Handshake

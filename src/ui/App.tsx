@@ -159,13 +159,6 @@ function App() {
             `Port ${portToUse} was not available. Bridge started on port ${result.actualPort} instead.`
           );
         }
-        console.log("Lets Go!", {
-          network: {
-            binding: networkBindingId,
-            bindAddress,
-            port: result.actualPort || portToUse,
-          },
-        });
       }
     } catch (error) {
       console.error("Error starting bridge:", error);

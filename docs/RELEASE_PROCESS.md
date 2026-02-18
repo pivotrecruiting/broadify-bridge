@@ -186,10 +186,10 @@ git checkout main
 git pull origin main
 
 # Tag neu erstellen
-git tag -a v0.1.0 -m "Release version 0.1.0"
+git tag -a v0.9.0 -m "Version update 0.9.0"
 
 # Tag pushen
-git push origin v0.1.0
+git push origin v0.9.0
 ```
 
 ### Problem: Workflow-File fehlt auf main

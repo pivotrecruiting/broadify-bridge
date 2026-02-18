@@ -119,7 +119,7 @@ int main(int argc, char* argv[]) {
   std::string frameBusName;
   uint32_t width = 0;
   uint32_t height = 0;
-  uint32_t fps = 60;
+  uint32_t fps = 50;
   int displayIndex = 0;
 
   // Parse CLI args
@@ -155,7 +155,7 @@ int main(int argc, char* argv[]) {
     const char* env = std::getenv("BRIDGE_FRAME_FPS");
     if (env) fps = static_cast<uint32_t>(std::atoi(env));
   }
-  if (fps == 0) fps = 60;
+  if (fps == 0) fps = 50;
 
   if (frameBusName.empty()) {
     std::cerr << "Display Helper: framebus name required (--framebus-name or BRIDGE_FRAMEBUS_NAME)" << std::endl;
@@ -197,10 +197,15 @@ int main(int argc, char* argv[]) {
   // Resolve display index from match name (e.g. "Odyssey G5") if provided.
   const char* matchNameEnv = std::getenv("BRIDGE_DISPLAY_MATCH_NAME");
   std::string matchName = matchNameEnv ? matchNameEnv : "";
+  const char* matchWidthEnv = std::getenv("BRIDGE_DISPLAY_MATCH_WIDTH");
+  const char* matchHeightEnv = std::getenv("BRIDGE_DISPLAY_MATCH_HEIGHT");
+  const int matchWidth = matchWidthEnv ? std::atoi(matchWidthEnv) : 0;
+  const int matchHeight = matchHeightEnv ? std::atoi(matchHeightEnv) : 0;
   const int numDisplays = SDL_GetNumVideoDisplays();
   if (displayIndex < 0 || displayIndex >= numDisplays) {
     displayIndex = 0;
   }
+  bool matchedByName = false;
   if (!matchName.empty()) {
     std::string matchLower = matchName;
     std::transform(matchLower.begin(), matchLower.end(), matchLower.begin(), ::tolower);
@@ -211,8 +216,21 @@ int main(int argc, char* argv[]) {
         std::transform(dispName.begin(), dispName.end(), dispName.begin(), ::tolower);
         if (dispName.find(matchLower) != std::string::npos) {
           displayIndex = i;
+          matchedByName = true;
           break;
         }
+      }
+    }
+  }
+  if (!matchedByName && matchWidth > 0 && matchHeight > 0) {
+    for (int i = 0; i < numDisplays; ++i) {
+      SDL_Rect bounds;
+      if (SDL_GetDisplayBounds(i, &bounds) != 0) {
+        continue;
+      }
+      if (bounds.w == matchWidth && bounds.h == matchHeight) {
+        displayIndex = i;
+        break;
       }
     }
   }

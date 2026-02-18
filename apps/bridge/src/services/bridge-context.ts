@@ -2,6 +2,7 @@ import path from "node:path";
 import type { BridgeConfigT } from "../config.js";
 
 export type LoggerLikeT = {
+  debug?: (msg: string) => void;
   info: (msg: string) => void;
   warn: (msg: string) => void;
   error: (msg: string) => void;

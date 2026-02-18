@@ -18,7 +18,9 @@ export function getPreloadPath() {
         const preloadPath = path.join(__dirname, "preload.cjs")
         
         // Sanity check: log path and existence (helpful for debugging)
-        console.log("[Preload] Path:", preloadPath, "exists:", fs.existsSync(preloadPath))
+        if (process.env.BRIDGE_LOG_PRELOAD_PATH === "1") {
+            console.log("[Preload] Path:", preloadPath, "exists:", fs.existsSync(preloadPath))
+        }
         
         return preloadPath
     }

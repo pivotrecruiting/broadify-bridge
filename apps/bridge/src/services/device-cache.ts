@@ -33,6 +33,7 @@ export class DeviceCache {
    */
   async getDevices(forceRefresh = false): Promise<DeviceDescriptorT[]> {
     const logger = getBridgeContext().logger;
+    const logDebug = logger.debug?.bind(logger);
     const now = Date.now();
     const timeSinceLastDetection = now - this.lastDetectionTime;
 
@@ -43,7 +44,7 @@ export class DeviceCache {
       timeSinceLastDetection >= this.CACHE_TTL;
 
     if (!needsRefresh) {
-      logger.info(
+      logDebug?.(
         `[Devices] Using cached results (${this.cachedDevices.length} devices)`
       );
       return this.cachedDevices;
@@ -64,7 +65,7 @@ export class DeviceCache {
     // Prevent concurrent detection
     if (this.detectionInProgress) {
       // Wait for ongoing detection
-      logger.info("[Devices] Detection already in progress, waiting...");
+      logDebug?.("[Devices] Detection already in progress, waiting...");
       while (this.detectionInProgress) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -75,7 +76,7 @@ export class DeviceCache {
     this.detectionInProgress = true;
     try {
       const moduleNames = moduleRegistry.getModuleNames().join(", ");
-      logger.info(
+      logDebug?.(
         `[Devices] Detecting devices (forceRefresh=${forceRefresh}) [modules: ${moduleNames || "none"}]`
       );
       this.cachedDevices = await moduleRegistry.detectAll();
@@ -93,7 +94,7 @@ export class DeviceCache {
         0
       );
 
-      logger.info(
+      logDebug?.(
         `[Devices] Detection complete: ${this.cachedDevices.length} devices, ${totalPorts} ports (by type: ${JSON.stringify(
           typeCounts
         )})`
@@ -123,8 +124,9 @@ export class DeviceCache {
 
     this.watchInitialized = true;
     const logger = getBridgeContext().logger;
+    const logDebug = logger.debug?.bind(logger);
     this.watchUnsubscribe = moduleRegistry.watchAll((moduleName) => {
-      logger.info(`[Devices] Watch update from ${moduleName}`);
+      logDebug?.(`[Devices] Watch update from ${moduleName}`);
       this.scheduleWatchRefresh();
     });
   }
@@ -140,14 +142,15 @@ export class DeviceCache {
     this.watchRefreshTimer = setTimeout(async () => {
       this.watchRefreshTimer = undefined;
       const logger = getBridgeContext().logger;
+      const logDebug = logger.debug?.bind(logger);
       if (this.detectionInProgress) {
-        logger.info("[Devices] Detection in progress, skipping watch refresh");
+        logDebug?.("[Devices] Detection in progress, skipping watch refresh");
         return;
       }
 
       this.detectionInProgress = true;
       try {
-        logger.info("[Devices] Refreshing cache from watch event");
+        logDebug?.("[Devices] Refreshing cache from watch event");
         this.cachedDevices = await moduleRegistry.detectAll();
         this.lastDetectionTime = Date.now();
       } catch (error) {

@@ -1,65 +1,69 @@
 import { app, BrowserWindow, protocol } from "electron";
 import net from "node:net";
 import pino from "pino";
-import { z } from "zod";
-import { getStandardAnimationCss } from "./animation-css.js";
 import {
   loadFrameBusModule,
   type FrameBusModuleT,
   type FrameBusWriterT,
 } from "../framebus/framebus-client.js";
+import { buildSingleWindowDocument } from "./electron-renderer-dom-runtime.js";
+import { RendererConfigureSchema } from "./renderer-config-schema.js";
+import {
+  appendIpcBuffer,
+  decodeNextIpcPacket,
+  encodeIpcPacket,
+  type IpcBufferT,
+  isIpcBufferWithinLimit,
+} from "./renderer-ipc-framing.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
   base: { component: "graphics-renderer" },
 });
 
-// IPC hard limits to avoid oversized payloads and memory pressure.
-const MAX_IPC_HEADER_BYTES = 64 * 1024;
-const MAX_IPC_PAYLOAD_BYTES = 64 * 1024 * 1024;
-const MAX_IPC_BUFFER_BYTES = MAX_IPC_HEADER_BYTES + MAX_IPC_PAYLOAD_BYTES + 4;
-const MAX_FRAME_DIMENSION = 8192;
 const FRAMEBUS_HEADER_SIZE = 128;
-const DEBUG_GRAPHICS = true;
-// Design baseline for templates (format-agnostic rendering).
-const BASE_RENDER_WIDTH = 1920;
-const BASE_RENDER_HEIGHT = 1080;
-const ENABLE_SINGLE_RENDERER =
-  process.env.BRIDGE_GRAPHICS_RENDERER_SINGLE === "1";
+const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
+const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
+const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
 let frameBusPixelFormat = Number(
   process.env.BRIDGE_FRAME_PIXEL_FORMAT ||
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT ||
-    1
+    1,
 );
-const frameBusForceRecreate = process.env.BRIDGE_FRAMEBUS_FORCE_RECREATE === "1";
+const frameBusForceRecreate = true; // IMMER TRUE LASSEN!
+
+logger.info(
+  {
+    nodeEnv: process.env.NODE_ENV || "",
+    cwd: process.cwd(),
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath || "",
+    ipcPortSet: Boolean(process.env.BRIDGE_GRAPHICS_IPC_PORT),
+    ipcTokenSet: Boolean(process.env.BRIDGE_GRAPHICS_IPC_TOKEN),
+    electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE === "1",
+  },
+  "[GraphicsRenderer] Startup context",
+);
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
-
-const layers = new Map<
-  string,
-  {
-    window: BrowserWindow;
-    width: number;
-    height: number;
-  }
->();
+if (disableGpu) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+}
 
 const assetMap = new Map<string, { filePath: string; mime: string }>();
 let paintCount = 0;
 let ipcSocket: net.Socket | null = null;
 let canSend = true;
-let ipcBuffer = Buffer.alloc(0);
+let ipcBuffer: IpcBufferT = Buffer.alloc(0);
 const ipcToken = process.env.BRIDGE_GRAPHICS_IPC_TOKEN || "";
 let isAppReady = false;
 let isIpcConnected = false;
 let readySent = false;
-const debugFirstPaintLogged = new Set<string>();
-const debugMismatchLogged = new Set<string>();
 const debugEmptyLogged = new Set<string>();
-const debugSampleLogged = new Set<string>();
-const debugDomLogged = new Set<string>();
 const debugFrameBusLogged = new Set<string>();
 let perfLastLogAt = Date.now();
 let perfPaintCount = 0;
@@ -70,18 +74,17 @@ let perfLatencyMaxMs = 0;
 let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
 let rendererConfigReady = false;
-let rendererConfig:
-  | {
-      width: number;
-      height: number;
-      fps: number;
-      pixelFormat: number;
-      framebusName: string;
-      framebusSize: number;
-      backgroundMode: string;
-      clearColor?: { r: number; g: number; b: number; a: number };
-    }
-  | null = null;
+let rendererConfig: {
+  width: number;
+  height: number;
+  fps: number;
+  pixelFormat: number;
+  framebusName: string;
+  framebusSlotCount: number;
+  framebusSize: number;
+  backgroundMode: string;
+  clearColor?: { r: number; g: number; b: number; a: number };
+} | null = null;
 let rendererBackgroundMode = "transparent";
 let rendererClearColor: { r: number; g: number; b: number; a: number } | null =
   null;
@@ -95,6 +98,9 @@ let frameBusWriter: FrameBusWriterT | null = null;
 let frameBusInitAttempted = false;
 
 function logPerfIfNeeded(): void {
+  if (!LOG_PERF) {
+    return;
+  }
   const now = Date.now();
   const intervalMs = now - perfLastLogAt;
   if (intervalMs < 1000) {
@@ -104,9 +110,7 @@ function logPerfIfNeeded(): void {
   const sentPerSec = Math.round((perfSentCount * 1000) / intervalMs);
   const droppedPerSec = Math.round((perfDroppedCount * 1000) / intervalMs);
   const latencyAvg =
-    perfSentCount > 0
-      ? Math.round(perfLatencyTotalMs / perfSentCount)
-      : 0;
+    perfSentCount > 0 ? Math.round(perfLatencyTotalMs / perfSentCount) : 0;
   const backpressureActiveMs =
     backpressureStartAt !== null ? now - backpressureStartAt : 0;
   logger.info(
@@ -159,28 +163,32 @@ function sendIpcMessage(
     return;
   }
 
-  if (buffer && buffer.length > MAX_IPC_PAYLOAD_BYTES) {
-    logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
-    return;
-  }
-
   const payload = {
     ...message,
     token: ipcToken || undefined,
     bufferLength: buffer ? buffer.length : 0,
   };
-  const header = Buffer.from(JSON.stringify(payload), "utf-8");
-  if (header.length > MAX_IPC_HEADER_BYTES) {
-    logger.warn("[GraphicsRenderer] IPC header exceeds limit");
+  let packet: Buffer;
+  try {
+    packet = encodeIpcPacket(payload, buffer);
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : String(error);
+    if (messageText === "ipc_header_exceeds_limit") {
+      logger.warn("[GraphicsRenderer] IPC header exceeds limit");
+      return;
+    }
+    if (messageText === "ipc_payload_exceeds_limit") {
+      logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
+      return;
+    }
+    logger.warn(
+      { message: messageText },
+      "[GraphicsRenderer] IPC encode failed",
+    );
     return;
   }
-  const headerLength = Buffer.alloc(4);
-  headerLength.writeUInt32BE(header.length, 0);
 
-  const chunks = buffer
-    ? [headerLength, header, buffer]
-    : [headerLength, header];
-  const ok = ipcSocket.write(Buffer.concat(chunks));
+  const ok = ipcSocket.write(packet);
   if (!ok) {
     canSend = false;
     if (backpressureStartAt === null) {
@@ -217,355 +225,6 @@ function bgraToRgba(buffer: Buffer): Buffer {
   return buffer;
 }
 
-function sampleRgbaBuffer(
-  buffer: Buffer,
-  width: number,
-  height: number,
-): Array<{ name: string; x: number; y: number; rgba: number[] | null }> {
-  const maxX = Math.max(0, width - 1);
-  const maxY = Math.max(0, height - 1);
-  const positions = [
-    { name: "topLeft", x: 0, y: 0 },
-    { name: "center", x: Math.floor(width / 2), y: Math.floor(height / 2) },
-    { name: "bottomRight", x: maxX, y: maxY },
-  ];
-
-  return positions.map((pos) => {
-    const index = (pos.y * width + pos.x) * 4;
-    if (index < 0 || index + 3 >= buffer.length) {
-      return { ...pos, rgba: null };
-    }
-    return {
-      ...pos,
-      rgba: [
-        buffer[index],
-        buffer[index + 1],
-        buffer[index + 2],
-        buffer[index + 3],
-      ],
-    };
-  });
-}
-
-async function logDomStateOnce(
-  window: BrowserWindow,
-  layerId: string,
-  layout: { x: number; y: number; scale: number },
-): Promise<void> {
-  if (!DEBUG_GRAPHICS || debugDomLogged.has(layerId)) {
-    return;
-  }
-  debugDomLogged.add(layerId);
-  try {
-    const layoutJson = JSON.stringify(layout);
-    const domState = await window.webContents.executeJavaScript(
-      `(() => {
-        const layout = ${layoutJson};
-        const container = document.getElementById("graphic-container");
-        const root = document.getElementById("graphic-root");
-        const rootElement =
-          (root && root.querySelector('[data-root="graphic"]')) || root;
-        const rectToJson = (rect) => rect
-          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          : null;
-        const getStyle = (el) => {
-          if (!el) return null;
-          const style = getComputedStyle(el);
-          return {
-            display: style.display,
-            visibility: style.visibility,
-            opacity: style.opacity,
-            transform: style.transform,
-          };
-        };
-        return {
-          layout,
-          containerRect: rectToJson(container?.getBoundingClientRect()),
-          rootRect: rectToJson(root?.getBoundingClientRect()),
-          elementRect: rectToJson(rootElement?.getBoundingClientRect()),
-          hasElement: Boolean(rootElement),
-          hasContent: Boolean(
-            rootElement &&
-              (rootElement.children.length > 0 ||
-                (rootElement.textContent || "").trim().length > 0),
-          ),
-          rootHtmlLength: root?.innerHTML?.length || 0,
-          elementStyle: getStyle(rootElement),
-        };
-      })()`,
-      true,
-    );
-    logger.info(
-      {
-        layerId,
-        ...domState,
-      },
-      "[GraphicsRenderer] Debug DOM state",
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(
-      { layerId, message },
-      "[GraphicsRenderer] Debug DOM state failed",
-    );
-  }
-}
-
-async function logDomStateWithDelay(
-  window: BrowserWindow,
-  layerId: string,
-  layout: { x: number; y: number; scale: number },
-  delayMs: number,
-): Promise<void> {
-  if (!DEBUG_GRAPHICS || debugDomLogged.has(`${layerId}-delayed`)) {
-    return;
-  }
-  debugDomLogged.add(`${layerId}-delayed`);
-  const layoutJson = JSON.stringify(layout);
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const domState = await window.webContents.executeJavaScript(
-          `(() => {
-            const layout = ${layoutJson};
-            const container = document.getElementById("graphic-container");
-            const root = document.getElementById("graphic-root");
-            const rootElement =
-              (root && root.querySelector('[data-root="graphic"]')) || root;
-            const rectToJson = (rect) => rect
-              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-              : null;
-            const getStyle = (el) => {
-              if (!el) return null;
-              const style = getComputedStyle(el);
-              return {
-                display: style.display,
-                visibility: style.visibility,
-                opacity: style.opacity,
-                transform: style.transform,
-              };
-            };
-            return {
-              layout,
-              containerRect: rectToJson(container?.getBoundingClientRect()),
-              rootRect: rectToJson(root?.getBoundingClientRect()),
-              elementRect: rectToJson(rootElement?.getBoundingClientRect()),
-              hasElement: Boolean(rootElement),
-              hasContent: Boolean(
-                rootElement &&
-                  (rootElement.children.length > 0 ||
-                    (rootElement.textContent || "").trim().length > 0),
-              ),
-              rootHtmlLength: root?.innerHTML?.length || 0,
-              elementStyle: getStyle(rootElement),
-            };
-          })()`,
-          true,
-        );
-        logger.info(
-          {
-            layerId,
-            delayMs,
-            ...domState,
-          },
-          "[GraphicsRenderer] Debug DOM state (delayed)",
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn(
-          { layerId, message },
-          "[GraphicsRenderer] Debug DOM state (delayed) failed",
-        );
-      }
-    })();
-  }, delayMs);
-}
-
-/**
- * Build a self-contained HTML document for the offscreen renderer.
- *
- * @param options Template html/css and runtime values.
- * @returns Serialized HTML document string.
- */
-function buildHtmlDocument(options: {
-  html: string;
-  css: string;
-  values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
-  backgroundColor: string;
-  layout: { x: number; y: number; scale: number };
-}): string {
-  const { html, css, values, bindings, backgroundColor, layout } = options;
-  const resolvedBindings = {
-    cssVariables: bindings?.cssVariables ?? {},
-    textContent: bindings?.textContent ?? {},
-    textTypes: bindings?.textTypes ?? {},
-    animationClass: bindings?.animationClass ?? "anim-ease-out",
-  };
-  const cssVariableLines = Object.entries(resolvedBindings.cssVariables)
-    .map(([key, value]) => `  ${key}: ${value};`)
-    .join("\n");
-
-  const safeValues = JSON.stringify(values || {});
-  const safeBindings = JSON.stringify(resolvedBindings);
-  const template = JSON.stringify(html);
-  const layoutJson = JSON.stringify(layout);
-
-  return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        background: ${backgroundColor};
-      }
-      #graphic-container {
-        position: relative;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-      }
-      #graphic-root {
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: ${BASE_RENDER_WIDTH}px;
-        height: ${BASE_RENDER_HEIGHT}px;
-        transform-origin: top left;
-      }
-      :root {
-${cssVariableLines}
-      }
-      ${getStandardAnimationCss()}
-      ${css}
-    </style>
-  </head>
-  <body>
-    <div id="graphic-container">
-      <div id="graphic-root"></div>
-    </div>
-    <script>
-      const template = ${template};
-      const hasPlaceholders = template.includes("{{");
-      const initialBindings = ${safeBindings};
-      const root = document.getElementById("graphic-root");
-      const cssVarsRoot = document.documentElement;
-      const escapeHtml = (value) => {
-        const str = value === undefined || value === null ? "" : String(value);
-        return str
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#39;");
-      };
-      const renderTemplate = (values) => {
-        // Regex needs escaped braces for literal matching
-        // eslint-disable-next-line no-useless-escape
-        return template.replace(/{{\\s*([\\w.-]+)\\s*}}/g, (match, key) => {
-          const value = key.split(".").reduce((acc, part) => {
-            if (acc && typeof acc === "object" && part in acc) {
-              return acc[part];
-            }
-            return undefined;
-          }, values);
-          return escapeHtml(value);
-        });
-      };
-      const getRootElement = () => {
-        return root.querySelector('[data-root="graphic"]') || root;
-      };
-      const applyAnimationClass = (element, animationClass) => {
-        if (!element) return;
-        const classes = String(element.className || "")
-          .split(/\\s+/)
-          .filter((entry) => entry.length > 0);
-        const nextClasses = classes.filter(
-          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
-        );
-        if (animationClass) {
-          nextClasses.push(animationClass);
-        }
-        if (!nextClasses.includes("state-enter")) {
-          nextClasses.push("state-enter");
-        }
-        element.className = nextClasses.join(" ");
-      };
-      const applyCssVariables = (vars) => {
-        if (!vars || !cssVarsRoot) return;
-        Object.entries(vars).forEach(([key, value]) => {
-          if (!key.startsWith("--")) return;
-          cssVarsRoot.style.setProperty(key, String(value));
-        });
-      };
-      const applyTextContent = (textContent, textTypes) => {
-        if (!textContent) return;
-        const rootElement = getRootElement();
-        if (!rootElement) return;
-        Object.entries(textContent).forEach(([key, value]) => {
-          const target = rootElement.querySelector('[data-bid="' + key + '"]');
-          if (!target) return;
-          const contentType = textTypes ? textTypes[key] : undefined;
-          if (contentType === "list") {
-            const items = String(value || "")
-              .split("\\n")
-              .map((item) => item.trim())
-              .filter(Boolean);
-            target.innerHTML = items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("");
-            return;
-          }
-          target.textContent = String(value ?? "");
-        });
-      };
-      window.__applyValues = (values, bindings) => {
-        const merged = Object.assign({}, window.__currentValues || {}, values || {});
-        window.__currentValues = merged;
-        if (hasPlaceholders) {
-          root.innerHTML = renderTemplate(merged);
-        }
-        const resolved = Object.assign({}, initialBindings, bindings || {});
-        window.__currentBindings = resolved;
-        const rootElement = getRootElement();
-        applyAnimationClass(rootElement, resolved.animationClass);
-        applyTextContent(resolved.textContent, resolved.textTypes);
-        applyCssVariables(resolved.cssVariables);
-      };
-      window.__updateLayout = (layout) => {
-        const x = Number(layout?.x || 0);
-        const y = Number(layout?.y || 0);
-        const scale = Number(layout?.scale || 1);
-        root.style.transform =
-          "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
-      };
-      window.__currentValues = ${safeValues};
-      window.__currentBindings = initialBindings;
-      if (!hasPlaceholders) {
-        root.innerHTML = template;
-      }
-      window.__updateLayout(${layoutJson});
-      window.__applyValues(window.__currentValues, initialBindings);
-    </script>
-  </body>
-</html>`;
-}
-
-function resolveBackgroundColor(mode: string): string {
-  if (mode === "green") return "#00FF00";
-  if (mode === "black") return "#000000";
-  if (mode === "white") return "#FFFFFF";
-  return "transparent";
-}
-
 function logFrameBusOnce(key: string, message: string): void {
   if (debugFrameBusLogged.has(key)) {
     return;
@@ -574,45 +233,11 @@ function logFrameBusOnce(key: string, message: string): void {
   logger.warn(message);
 }
 
-const ClearColorSchema = z
-  .object({
-    r: z.number().min(0).max(255),
-    g: z.number().min(0).max(255),
-    b: z.number().min(0).max(255),
-    a: z.number().min(0).max(1),
-  })
-  .strict();
-
-const RendererConfigureSchema = z
-  .object({
-    width: z.number().int().positive().max(MAX_FRAME_DIMENSION),
-    height: z.number().int().positive().max(MAX_FRAME_DIMENSION),
-    fps: z.number().positive(),
-    pixelFormat: z
-      .number()
-      .int()
-      .positive()
-      .refine((value) => value === 1, {
-        message: "pixelFormat must be RGBA8 (1)",
-      }),
-    framebusName: z.string().optional().default(""),
-    framebusSize: z.number().int().nonnegative().optional().default(0),
-    backgroundMode: z
-      .enum(["transparent", "green", "black", "white"])
-      .optional()
-      .default("transparent"),
-    clearColor: ClearColorSchema.optional(),
-  })
-  .strict();
-
 function ensureFrameBusWriter(
   width: number,
   height: number,
-  fps: number
+  fps: number,
 ): boolean {
-  if (!ENABLE_SINGLE_RENDERER) {
-    return true;
-  }
   if (frameBusWriter) {
     const header = frameBusWriter.header;
     const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
@@ -642,14 +267,14 @@ function ensureFrameBusWriter(
   if (!frameBusName) {
     logFrameBusOnce(
       "missing-name",
-      "[GraphicsRenderer] FrameBus name missing (BRIDGE_FRAMEBUS_NAME)"
+      "[GraphicsRenderer] FrameBus name missing (BRIDGE_FRAMEBUS_NAME)",
     );
     return false;
   }
   if (!Number.isFinite(frameBusSlotCount) || frameBusSlotCount < 2) {
     logFrameBusOnce(
       "invalid-slot",
-      "[GraphicsRenderer] FrameBus slotCount missing or invalid (framebusSize)"
+      "[GraphicsRenderer] FrameBus slotCount missing or invalid",
     );
     return false;
   }
@@ -660,7 +285,7 @@ function ensureFrameBusWriter(
     if (!frameBusModule) {
       logFrameBusOnce(
         "module-null",
-        "[GraphicsRenderer] FrameBus module not loaded"
+        "[GraphicsRenderer] FrameBus module not loaded",
       );
       return false;
     }
@@ -681,14 +306,14 @@ function ensureFrameBusWriter(
         size: frameBusWriter.size,
         header: frameBusWriter.header,
       },
-      "[GraphicsRenderer] FrameBus writer initialized"
+      "[GraphicsRenderer] FrameBus writer initialized",
     );
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logFrameBusOnce(
       "init-failed",
-      `[GraphicsRenderer] FrameBus init failed: ${message}`
+      `[GraphicsRenderer] FrameBus init failed: ${message}`,
     );
     return false;
   }
@@ -699,7 +324,7 @@ function applyRendererConfig(message: unknown): void {
   if (!parsed.success) {
     logger.warn(
       { issues: parsed.error.issues },
-      "[GraphicsRenderer] Invalid renderer_configure payload"
+      "[GraphicsRenderer] Invalid renderer_configure payload",
     );
     return;
   }
@@ -711,6 +336,7 @@ function applyRendererConfig(message: unknown): void {
     fps: config.fps,
     pixelFormat: config.pixelFormat,
     framebusName: config.framebusName,
+    framebusSlotCount: config.framebusSlotCount,
     framebusSize: config.framebusSize,
     backgroundMode: config.backgroundMode,
     clearColor: config.clearColor,
@@ -721,24 +347,32 @@ function applyRendererConfig(message: unknown): void {
   if (config.framebusName && config.framebusName.trim()) {
     frameBusName = config.framebusName.trim();
   }
-  if (config.framebusSize > 0) {
+  if (config.framebusSlotCount > 0) {
+    frameBusSlotCount = config.framebusSlotCount;
+  } else if (config.framebusSize > 0) {
     const frameSize = config.width * config.height * 4;
     const slotBytes = config.framebusSize - FRAMEBUS_HEADER_SIZE;
     if (frameSize <= 0) {
       logFrameBusOnce(
         "slotcount",
-        "[GraphicsRenderer] FrameBus frame size invalid"
+        "[GraphicsRenderer] FrameBus frame size invalid",
       );
       frameBusSlotCount = 0;
     } else {
       const slotCount = Math.floor(slotBytes / frameSize);
-      if (slotBytes % frameSize !== 0 || slotCount < 2) {
-      logFrameBusOnce(
-        "slotcount",
-        "[GraphicsRenderer] FrameBus size invalid for slot count calculation"
-      );
-      frameBusSlotCount = 0;
+      if (slotCount < 2) {
+        logFrameBusOnce(
+          "slotcount",
+          "[GraphicsRenderer] FrameBus size invalid for slot count calculation",
+        );
+        frameBusSlotCount = 0;
       } else {
+        if (slotBytes % frameSize !== 0) {
+          logFrameBusOnce(
+            "slotcount-padding",
+            "[GraphicsRenderer] FrameBus size includes padding; slot count derived from floor()",
+          );
+        }
         frameBusSlotCount = slotCount;
       }
     }
@@ -752,12 +386,12 @@ function applyRendererConfig(message: unknown): void {
   const frameBusReady = ensureFrameBusWriter(
     config.width,
     config.height,
-    config.fps
+    config.fps,
   );
 
   readySent = false;
-  rendererConfigReady = !ENABLE_SINGLE_RENDERER || frameBusReady;
-  if (ENABLE_SINGLE_RENDERER && !rendererConfigReady) {
+  rendererConfigReady = frameBusReady;
+  if (!rendererConfigReady) {
     sendIpcMessage({
       type: "error",
       message: "FrameBus writer not ready",
@@ -769,12 +403,12 @@ function applyRendererConfig(message: unknown): void {
       .executeJavaScript(
         rendererClearColor
           ? `window.__setClearColor && window.__setClearColor(${JSON.stringify(
-              rendererClearColor
+              rendererClearColor,
             )});`
           : `window.__setBackground && window.__setBackground(${JSON.stringify(
-              rendererBackgroundMode
+              rendererBackgroundMode,
             )});`,
-        true
+        true,
       )
       .catch(() => null);
   }
@@ -785,7 +419,7 @@ async function ensureSingleWindow(
   width: number,
   height: number,
   fps: number,
-  backgroundMode: string
+  backgroundMode: string,
 ): Promise<BrowserWindow> {
   if (singleWindow && singleWindowFormat) {
     if (
@@ -798,7 +432,7 @@ async function ensureSingleWindow(
           existing: singleWindowFormat,
           next: { width, height, fps },
         },
-        "[GraphicsRenderer] Single renderer format mismatch"
+        "[GraphicsRenderer] Single renderer format mismatch",
       );
     }
     return singleWindow;
@@ -843,7 +477,7 @@ async function ensureSingleWindow(
               imageHeight: imageSize.height,
               dirtyRect: _dirty,
             },
-            "[GraphicsRenderer] Debug empty paint frame (single)"
+            "[GraphicsRenderer] Debug empty paint frame (single)",
           );
         }
         return;
@@ -874,7 +508,7 @@ async function ensureSingleWindow(
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(
           { message },
-          "[GraphicsRenderer] FrameBus write failed (single)"
+          "[GraphicsRenderer] FrameBus write failed (single)",
         );
       }
       logPerfIfNeeded();
@@ -892,7 +526,7 @@ async function ensureSingleWindow(
 
     const html = buildSingleWindowDocument();
     await singleWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
     );
   }
 
@@ -905,9 +539,9 @@ async function ensureSingleWindow(
     try {
       await singleWindow.webContents.executeJavaScript(
         `window.__setClearColor && window.__setClearColor(${JSON.stringify(
-          rendererClearColor
+          rendererClearColor,
         )});`,
-        true
+        true,
       );
     } catch {
       // No-op; background set via create_layer.
@@ -916,9 +550,9 @@ async function ensureSingleWindow(
     try {
       await singleWindow.webContents.executeJavaScript(
         `window.__setBackground && window.__setBackground(${JSON.stringify(
-          sessionBackgroundMode
+          sessionBackgroundMode,
         )});`,
-        true
+        true,
       );
     } catch {
       // No-op; background set via create_layer.
@@ -928,256 +562,21 @@ async function ensureSingleWindow(
   return singleWindow;
 }
 
-function buildSingleWindowDocument(): string {
-  const standardCss = JSON.stringify(getStandardAnimationCss());
-  return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        background: transparent;
-      }
-      #graphics-background {
-        position: absolute;
-        inset: 0;
-        background: transparent;
-      }
-      #graphics-root {
-        position: absolute;
-        inset: 0;
-        overflow: hidden;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="graphics-background"></div>
-    <div id="graphics-root"></div>
-    <script>
-      const BASE_WIDTH = ${BASE_RENDER_WIDTH};
-      const BASE_HEIGHT = ${BASE_RENDER_HEIGHT};
-      const STANDARD_CSS = ${standardCss};
-      const layers = new Map();
-
-      const escapeHtml = (value) => {
-        const str = value === undefined || value === null ? "" : String(value);
-        return str
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#39;");
-      };
-
-      const renderTemplate = (template, values) => {
-        // eslint-disable-next-line no-useless-escape
-        return template.replace(/{{\\s*([\\w.-]+)\\s*}}/g, (_match, key) => {
-          const value = key.split(".").reduce((acc, part) => {
-            if (acc && typeof acc === "object" && part in acc) {
-              return acc[part];
-            }
-            return undefined;
-          }, values);
-          return escapeHtml(value);
-        });
-      };
-
-      const getRootElement = (root) => {
-        return (root && root.querySelector('[data-root="graphic"]')) || root;
-      };
-
-      const applyAnimationClass = (element, animationClass) => {
-        if (!element) return;
-        if (!element.classList.contains("root")) {
-          element.classList.add("root");
-        }
-        const classes = String(element.className || "")
-          .split(/\\s+/)
-          .filter((entry) => entry.length > 0);
-        const nextClasses = classes.filter(
-          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
-        );
-        if (animationClass) {
-          nextClasses.push(animationClass);
-        }
-        if (!nextClasses.includes("state-enter")) {
-          nextClasses.push("state-enter");
-        }
-        element.className = nextClasses.join(" ");
-      };
-
-      const applyCssVariables = (host, vars) => {
-        if (!host || !vars) return;
-        Object.entries(vars).forEach(([key, value]) => {
-          if (!key.startsWith("--")) return;
-          host.style.setProperty(key, String(value));
-        });
-      };
-
-      const applyTextContent = (root, textContent, textTypes) => {
-        if (!root || !textContent) return;
-        Object.entries(textContent).forEach(([key, value]) => {
-          const target = root.querySelector('[data-bid="' + key + '"]');
-          if (!target) return;
-          const contentType = textTypes ? textTypes[key] : undefined;
-          if (contentType === "list") {
-            const items = String(value || "")
-              .split("\\n")
-              .map((item) => item.trim())
-              .filter(Boolean);
-            target.innerHTML = items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("");
-            return;
-          }
-          target.textContent = String(value ?? "");
-        });
-      };
-
-      const applyLayout = (host, layout) => {
-        if (!host) return;
-        const x = Number(layout?.x || 0);
-        const y = Number(layout?.y || 0);
-        const scale = Number(layout?.scale || 1);
-        host.style.transform = "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
-      };
-
-      const resolveBackgroundColor = (mode) => {
-        if (mode === "green") return "#00FF00";
-        if (mode === "black") return "#000000";
-        if (mode === "white") return "#FFFFFF";
-        return "transparent";
-      };
-
-      const resolveClearColor = (color) => {
-        if (!color || typeof color !== "object") return null;
-        const r = Math.max(0, Math.min(255, Number(color.r)));
-        const g = Math.max(0, Math.min(255, Number(color.g)));
-        const b = Math.max(0, Math.min(255, Number(color.b)));
-        const a = Math.max(0, Math.min(1, Number(color.a)));
-        if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b) || !Number.isFinite(a)) {
-          return null;
-        }
-        return "rgba(" + r + "," + g + "," + b + "," + a + ")";
-      };
-
-      const setBackground = (mode) => {
-        const background = document.getElementById("graphics-background");
-        if (!background) return;
-        background.style.background = resolveBackgroundColor(mode);
-      };
-      window.__setBackground = setBackground;
-
-      const setClearColor = (color) => {
-        const background = document.getElementById("graphics-background");
-        if (!background) return;
-        const resolved = resolveClearColor(color);
-        if (resolved) {
-          background.style.background = resolved;
-        }
-      };
-      window.__setClearColor = setClearColor;
-
-      window.__createLayer = (payload) => {
-        const root = document.getElementById("graphics-root");
-        if (!root || !payload || !payload.layerId) return;
-        let host = root.querySelector('[data-layer-id="' + payload.layerId + '"]');
-        if (!host) {
-          host = document.createElement("div");
-          host.dataset.layerId = payload.layerId;
-          host.style.position = "absolute";
-          host.style.left = "0";
-          host.style.top = "0";
-          root.appendChild(host);
-        }
-        host.style.width = BASE_WIDTH + "px";
-        host.style.height = BASE_HEIGHT + "px";
-        host.style.transformOrigin = "top left";
-        if (payload.zIndex !== undefined && payload.zIndex !== null) {
-          host.style.zIndex = String(payload.zIndex);
-        }
-
-        let shadow = host.shadowRoot;
-        if (!shadow) {
-          shadow = host.attachShadow({ mode: "closed" });
-        }
-        shadow.innerHTML = "";
-
-        const style = document.createElement("style");
-        style.textContent = STANDARD_CSS + "\\n" + String(payload.css || "");
-        shadow.appendChild(style);
-
-        const container = document.createElement("div");
-        container.id = "graphic-root";
-        container.style.width = BASE_WIDTH + "px";
-        container.style.height = BASE_HEIGHT + "px";
-        shadow.appendChild(container);
-
-        const template = String(payload.html || "");
-        const hasPlaceholders = template.includes("{{");
-        if (!hasPlaceholders) {
-          container.innerHTML = template;
-        }
-
-        const layerState = {
-          host,
-          shadow,
-          container,
-          template,
-          hasPlaceholders,
-          values: payload.values || {},
-          bindings: payload.bindings || {},
-        };
-        layers.set(payload.layerId, layerState);
-
-        if (payload.backgroundMode) {
-          setBackground(payload.backgroundMode);
-        }
-
-        window.__updateValues(payload.layerId, payload.values || {}, payload.bindings || {});
-        window.__updateLayout(payload.layerId, payload.layout || { x: 0, y: 0, scale: 1 }, payload.zIndex);
-      };
-
-      window.__updateValues = (layerId, values, bindings) => {
-        const layer = layers.get(layerId);
-        if (!layer) return;
-        const nextValues = Object.assign({}, layer.values || {}, values || {});
-        layer.values = nextValues;
-        const nextBindings = Object.assign({}, layer.bindings || {}, bindings || {});
-        layer.bindings = nextBindings;
-
-        const container = layer.container;
-        if (layer.hasPlaceholders) {
-          container.innerHTML = renderTemplate(layer.template, nextValues);
-        }
-
-        const rootElement = getRootElement(container);
-        applyAnimationClass(rootElement, nextBindings.animationClass);
-        applyTextContent(rootElement, nextBindings.textContent, nextBindings.textTypes);
-        applyCssVariables(layer.host, nextBindings.cssVariables);
-      };
-
-      window.__updateLayout = (layerId, layout, zIndex) => {
-        const layer = layers.get(layerId);
-        if (!layer) return;
-        if (zIndex !== undefined && zIndex !== null) {
-          layer.host.style.zIndex = String(zIndex);
-        }
-        applyLayout(layer.host, layout);
-      };
-
-      window.__removeLayer = (layerId) => {
-        const layer = layers.get(layerId);
-        if (!layer) return;
-        layer.host.remove();
-        layers.delete(layerId);
-      };
-    </script>
-  </body>
-</html>`;
+/**
+ * Force an offscreen repaint after a control-plane DOM mutation.
+ *
+ * Some Chromium offscreen scenarios may delay paint dispatch for non-animated
+ * DOM updates. Triggering invalidate ensures the next frame is emitted.
+ */
+function requestSingleWindowRepaint(): void {
+  if (!singleWindow || singleWindow.isDestroyed()) {
+    return;
+  }
+  try {
+    singleWindow.webContents.invalidate();
+  } catch {
+    // No-op; repaint is best-effort and should never break command processing.
+  }
 }
 
 function registerAssetProtocol(): void {
@@ -1197,227 +596,13 @@ function registerAssetProtocol(): void {
 }
 
 /**
- * Create a new offscreen layer window and start rendering frames.
+ * Create or replace a layer inside the single offscreen renderer window.
+ *
+ * Legacy multi-window rendering was removed.
  *
  * @param message Layer creation payload.
  */
 async function createLayer(message: {
-  layerId: string;
-  html: string;
-  css: string;
-  values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
-  layout: { x: number; y: number; scale: number };
-  backgroundMode: string;
-  width: number;
-  height: number;
-  fps: number;
-}): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await createLayerSingle(message);
-    return;
-  }
-  const existing = layers.get(message.layerId);
-  if (existing) {
-    existing.window.destroy();
-    layers.delete(message.layerId);
-  }
-
-  const window = new BrowserWindow({
-    width: message.width,
-    height: message.height,
-    show: false,
-    transparent: true,
-    paintWhenInitiallyHidden: true,
-    webPreferences: {
-      offscreen: true,
-      backgroundThrottling: false,
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-    },
-  });
-
-  if (DEBUG_GRAPHICS) {
-    const [contentWidth, contentHeight] = window.getContentSize();
-    logger.info(
-      {
-        layerId: message.layerId,
-        width: message.width,
-        height: message.height,
-        contentWidth,
-        contentHeight,
-        fps: message.fps,
-        backgroundMode: message.backgroundMode,
-      },
-      "[GraphicsRenderer] Debug layer created",
-    );
-  }
-
-  window.webContents.setFrameRate(message.fps);
-  window.webContents.on("paint", (_event, _dirty, image) => {
-    if (paintCount === 0) {
-      logger.info("[GraphicsRenderer] First paint received");
-    }
-    paintCount += 1;
-    perfPaintCount += 1;
-    logPerfIfNeeded();
-    const imageSize = image.getSize();
-    if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {
-      if (DEBUG_GRAPHICS && !debugEmptyLogged.has(message.layerId)) {
-        debugEmptyLogged.add(message.layerId);
-        logger.warn(
-          {
-            layerId: message.layerId,
-            messageWidth: message.width,
-            messageHeight: message.height,
-            imageWidth: imageSize.width,
-            imageHeight: imageSize.height,
-            dirtyRect: _dirty,
-          },
-          "[GraphicsRenderer] Debug empty paint frame",
-        );
-      }
-      return;
-    }
-    const buffer = bgraToRgba(image.toBitmap());
-    if (DEBUG_GRAPHICS && !debugFirstPaintLogged.has(message.layerId)) {
-      debugFirstPaintLogged.add(message.layerId);
-      const scaleX = message.width > 0 ? imageSize.width / message.width : 0;
-      const scaleY = message.height > 0 ? imageSize.height / message.height : 0;
-      logger.info(
-        {
-          layerId: message.layerId,
-          messageWidth: message.width,
-          messageHeight: message.height,
-          imageWidth: imageSize.width,
-          imageHeight: imageSize.height,
-          bufferLength: buffer.length,
-          expectedMessageLength: message.width * message.height * 4,
-          expectedImageLength: imageSize.width * imageSize.height * 4,
-          dirtyRect: _dirty,
-          scaleX,
-          scaleY,
-        },
-        "[GraphicsRenderer] Debug first paint",
-      );
-    }
-    if (
-      message.width > MAX_FRAME_DIMENSION ||
-      message.height > MAX_FRAME_DIMENSION
-    ) {
-      logger.warn("[GraphicsRenderer] Frame dimensions exceed limit");
-      return;
-    }
-    const expectedLength = message.width * message.height * 4;
-    if (buffer.length !== expectedLength) {
-      if (DEBUG_GRAPHICS && !debugMismatchLogged.has(message.layerId)) {
-        debugMismatchLogged.add(message.layerId);
-        const dirtyExpectedLength =
-          _dirty &&
-          typeof _dirty.width === "number" &&
-          typeof _dirty.height === "number"
-            ? _dirty.width * _dirty.height * 4
-            : null;
-        logger.warn(
-          {
-            layerId: message.layerId,
-            messageWidth: message.width,
-            messageHeight: message.height,
-            imageWidth: imageSize.width,
-            imageHeight: imageSize.height,
-            bufferLength: buffer.length,
-            expectedMessageLength: expectedLength,
-            expectedImageLength: imageSize.width * imageSize.height * 4,
-            dirtyRect: _dirty,
-            dirtyExpectedLength,
-          },
-          "[GraphicsRenderer] Debug buffer length mismatch",
-        );
-      }
-      logger.warn("[GraphicsRenderer] Frame buffer length mismatch");
-      return;
-    }
-    if (DEBUG_GRAPHICS && !debugSampleLogged.has(message.layerId)) {
-      debugSampleLogged.add(message.layerId);
-      const samples = sampleRgbaBuffer(buffer, message.width, message.height);
-      logger.info(
-        {
-          layerId: message.layerId,
-          width: message.width,
-          height: message.height,
-          samples,
-        },
-        "[GraphicsRenderer] Debug pixel samples",
-      );
-    }
-    if (buffer.length > MAX_IPC_PAYLOAD_BYTES) {
-      logger.warn("[GraphicsRenderer] Frame buffer exceeds payload limit");
-      return;
-    }
-    const frameStartAt = Date.now();
-    sendIpcMessage(
-      {
-        type: "frame",
-        layerId: message.layerId,
-        width: message.width,
-        height: message.height,
-        timestamp: Date.now(),
-      },
-      buffer,
-    );
-    const latencyMs = Date.now() - frameStartAt;
-    perfLatencyTotalMs += latencyMs;
-    if (latencyMs > perfLatencyMaxMs) {
-      perfLatencyMaxMs = latencyMs;
-    }
-  });
-
-  const html = buildHtmlDocument({
-    html: message.html,
-    css: message.css,
-    values: message.values,
-    bindings: message.bindings,
-    backgroundColor: resolveBackgroundColor(message.backgroundMode),
-    layout: message.layout,
-  });
-
-  window.webContents.once("did-finish-load", () => {
-    window.webContents.startPainting();
-    window.webContents.invalidate();
-    const isPainting = window.webContents.isPainting();
-    logger.info(`[GraphicsRenderer] isPainting: ${isPainting}`);
-    if (DEBUG_GRAPHICS) {
-      logger.info(
-        {
-          layerId: message.layerId,
-          zoomFactor: window.webContents.getZoomFactor(),
-          zoomLevel: window.webContents.getZoomLevel(),
-        },
-        "[GraphicsRenderer] Debug zoom",
-      );
-    }
-    void logDomStateOnce(window, message.layerId, message.layout);
-    void logDomStateWithDelay(window, message.layerId, message.layout, 200);
-  });
-
-  await window.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-  );
-
-  layers.set(message.layerId, {
-    window,
-    width: message.width,
-    height: message.height,
-  });
-}
-
-async function createLayerSingle(message: {
   layerId: string;
   html: string;
   css: string;
@@ -1439,7 +624,7 @@ async function createLayerSingle(message: {
     message.width,
     message.height,
     message.fps,
-    message.backgroundMode
+    message.backgroundMode,
   );
 
   const payload = {
@@ -1455,8 +640,9 @@ async function createLayerSingle(message: {
 
   await window.webContents.executeJavaScript(
     `window.__createLayer(${JSON.stringify(payload)});`,
-    true
+    true,
   );
+  requestSingleWindowRepaint();
 }
 
 /**
@@ -1474,42 +660,16 @@ async function updateValues(message: {
     animationClass?: string;
   };
 }): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await updateValuesSingle(message);
-    return;
-  }
-  const layer = layers.get(message.layerId);
-  if (!layer) {
-    return;
-  }
-
-  await layer.window.webContents.executeJavaScript(
-    `window.__applyValues(${JSON.stringify(
-      message.values || {},
-    )}, ${JSON.stringify(message.bindings || {})});`,
-    true,
-  );
-}
-
-async function updateValuesSingle(message: {
-  layerId: string;
-  values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
-}): Promise<void> {
   if (!singleWindow) {
     return;
   }
   await singleWindow.webContents.executeJavaScript(
     `window.__updateValues(${JSON.stringify(message.layerId)}, ${JSON.stringify(
-      message.values || {}
+      message.values || {},
     )}, ${JSON.stringify(message.bindings || {})});`,
-    true
+    true,
   );
+  requestSingleWindowRepaint();
 }
 
 /**
@@ -1522,36 +682,18 @@ async function updateLayout(message: {
   layout: { x: number; y: number; scale: number };
   zIndex?: number;
 }): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await updateLayoutSingle(message);
-    return;
-  }
-  const layer = layers.get(message.layerId);
-  if (!layer) {
-    return;
-  }
-
-  await layer.window.webContents.executeJavaScript(
-    `window.__updateLayout(${JSON.stringify(message.layout)});`,
-    true,
-  );
-}
-
-async function updateLayoutSingle(message: {
-  layerId: string;
-  layout: { x: number; y: number; scale: number };
-  zIndex?: number;
-}): Promise<void> {
   if (!singleWindow) {
     return;
   }
-  const zIndexValue = typeof message.zIndex === "number" ? message.zIndex : null;
+  const zIndexValue =
+    typeof message.zIndex === "number" ? message.zIndex : null;
   await singleWindow.webContents.executeJavaScript(
     `window.__updateLayout(${JSON.stringify(message.layerId)}, ${JSON.stringify(
-      message.layout
+      message.layout,
     )}, ${JSON.stringify(zIndexValue)});`,
-    true
+    true,
   );
+  requestSingleWindowRepaint();
 }
 
 /**
@@ -1560,26 +702,14 @@ async function updateLayoutSingle(message: {
  * @param message Remove payload.
  */
 async function removeLayer(message: { layerId: string }): Promise<void> {
-  if (ENABLE_SINGLE_RENDERER) {
-    await removeLayerSingle(message);
-    return;
-  }
-  const layer = layers.get(message.layerId);
-  if (!layer) {
-    return;
-  }
-  layer.window.destroy();
-  layers.delete(message.layerId);
-}
-
-async function removeLayerSingle(message: { layerId: string }): Promise<void> {
   if (!singleWindow) {
     return;
   }
   await singleWindow.webContents.executeJavaScript(
     `window.__removeLayer(${JSON.stringify(message.layerId)});`,
-    true
+    true,
   );
+  requestSingleWindowRepaint();
 }
 
 /**
@@ -1595,10 +725,11 @@ async function handleMessage(message: unknown): Promise<void> {
   const msg = message as { type?: string; [key: string]: unknown };
 
   if (msg.type === "renderer_configure") {
-    const { type: _type, token: _token, ...rest } = msg as Record<
-      string,
-      unknown
-    >;
+    const {
+      type: _type,
+      token: _token,
+      ...rest
+    } = msg as Record<string, unknown>;
     applyRendererConfig(rest);
     return;
   }
@@ -1670,10 +801,6 @@ async function handleMessage(message: unknown): Promise<void> {
   }
 
   if (msg.type === "shutdown") {
-    for (const layer of layers.values()) {
-      layer.window.destroy();
-    }
-    layers.clear();
     if (singleWindow) {
       singleWindow.destroy();
       singleWindow = null;
@@ -1705,8 +832,20 @@ app.on("window-all-closed", () => {});
 function connectIpcSocket(): void {
   const port = Number(process.env.BRIDGE_GRAPHICS_IPC_PORT || 0);
   if (!port) {
+    logger.error(
+      {
+        rawPortValue: process.env.BRIDGE_GRAPHICS_IPC_PORT || "",
+      },
+      "[GraphicsRenderer] Missing/invalid IPC port (BRIDGE_GRAPHICS_IPC_PORT)",
+    );
     return;
   }
+  if (!ipcToken) {
+    logger.warn(
+      "[GraphicsRenderer] IPC token missing (BRIDGE_GRAPHICS_IPC_TOKEN)",
+    );
+  }
+  logger.info({ port }, "[GraphicsRenderer] Connecting IPC socket");
 
   // IPC is local-only; token handshake prevents spoofed commands.
   ipcSocket = net.createConnection({ host: "127.0.0.1", port }, () => {
@@ -1717,64 +856,39 @@ function connectIpcSocket(): void {
   });
 
   ipcSocket.on("data", (data) => {
-    ipcBuffer = Buffer.concat([ipcBuffer, data]);
-    if (ipcBuffer.length > MAX_IPC_BUFFER_BYTES) {
+    ipcBuffer = appendIpcBuffer(ipcBuffer, data);
+    if (!isIpcBufferWithinLimit(ipcBuffer)) {
       logger.warn("[GraphicsRenderer] IPC buffer exceeds limit");
       ipcBuffer = Buffer.alloc(0);
       ipcSocket?.destroy();
       return;
     }
-    while (ipcBuffer.length >= 4) {
-      const headerLength = ipcBuffer.readUInt32BE(0);
-      if (headerLength === 0 || headerLength > MAX_IPC_HEADER_BYTES) {
-        logger.warn("[GraphicsRenderer] IPC header length exceeds limit");
+    while (true) {
+      const decoded = decodeNextIpcPacket(ipcBuffer);
+      if (decoded.kind === "incomplete") {
+        return;
+      }
+      if (decoded.kind === "invalid") {
+        const reasonMessage =
+          decoded.reason === "header_length_exceeds_limit"
+            ? "[GraphicsRenderer] IPC header length exceeds limit"
+            : decoded.reason === "invalid_buffer_length_type"
+              ? "[GraphicsRenderer] IPC buffer length type invalid"
+              : decoded.reason === "payload_length_exceeds_limit"
+                ? "[GraphicsRenderer] IPC payload exceeds limit"
+                : "[GraphicsRenderer] IPC invalid message framing";
+        logger.warn(reasonMessage);
         ipcBuffer = Buffer.alloc(0);
         ipcSocket?.destroy();
-        return;
-      }
-      if (ipcBuffer.length < 4 + headerLength) {
-        return;
-      }
-      const headerRaw = ipcBuffer.subarray(4, 4 + headerLength);
-      let header: Record<string, unknown>;
-      try {
-        header = JSON.parse(headerRaw.toString("utf-8")) as Record<
-          string,
-          unknown
-        >;
-      } catch {
-        ipcBuffer = Buffer.alloc(0);
         return;
       }
 
-      const hasBufferLength = Object.prototype.hasOwnProperty.call(
-        header,
-        "bufferLength",
-      );
-      if (hasBufferLength && typeof header.bufferLength !== "number") {
-        logger.warn("[GraphicsRenderer] IPC buffer length type invalid");
-        ipcBuffer = Buffer.alloc(0);
-        ipcSocket?.destroy();
-        return;
-      }
-      const bufferLength =
-        typeof header.bufferLength === "number" ? header.bufferLength : 0;
-      if (bufferLength < 0 || bufferLength > MAX_IPC_PAYLOAD_BYTES) {
-        logger.warn("[GraphicsRenderer] IPC payload exceeds limit");
-        ipcBuffer = Buffer.alloc(0);
-        ipcSocket?.destroy();
-        return;
-      }
-      const totalLength = 4 + headerLength + bufferLength;
-      if (ipcBuffer.length < totalLength) {
-        return;
-      }
-
-      ipcBuffer = ipcBuffer.subarray(totalLength);
-      if (bufferLength > 0) {
+      ipcBuffer = decoded.remaining;
+      if (decoded.payload.length > 0) {
         logger.warn("[GraphicsRenderer] Unexpected IPC payload");
         continue;
       }
+      const header = decoded.header as Record<string, unknown>;
       const messageToken = typeof header.token === "string" ? header.token : "";
       if (ipcToken && messageToken !== ipcToken) {
         logger.warn("[GraphicsRenderer] IPC token mismatch");
@@ -1798,7 +912,10 @@ function connectIpcSocket(): void {
   });
 
   ipcSocket.on("error", (error) => {
-    logger.error(`[GraphicsRenderer] IPC socket error: ${error.message}`);
+    logger.error(
+      { port, message: error.message },
+      "[GraphicsRenderer] IPC socket error",
+    );
   });
 
   ipcSocket.on("close", () => {

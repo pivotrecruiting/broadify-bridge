@@ -1958,12 +1958,27 @@ int runPlayback(const PlaybackConfig& config) {
       std::cerr << "FrameBus open failed: " << frameBusError << std::endl;
       gShouldExit.store(true);
     } else {
-      if (config.frameBusSize > 0 && reader.size != config.frameBusSize) {
-        std::cerr << "FrameBus size mismatch. expected="
-                  << config.frameBusSize << " got=" << reader.size << std::endl;
+      const size_t headerExpectedSize =
+          static_cast<size_t>(reader.header->header_size) +
+          static_cast<size_t>(reader.header->slot_stride) *
+              static_cast<size_t>(reader.header->slot_count);
+      if (reader.size < headerExpectedSize) {
+        std::cerr << "FrameBus size mismatch (too small). expected="
+                  << headerExpectedSize << " got=" << reader.size << std::endl;
         closeFrameBusReader(reader);
         gShouldExit.store(true);
-      } else if (reader.header->frame_size != expectedBytes ||
+      } else if (reader.size > headerExpectedSize) {
+        std::cerr << "FrameBus size mismatch (tolerated). expected="
+                  << headerExpectedSize << " got=" << reader.size << std::endl;
+      }
+
+      if (config.frameBusSize > 0 && config.frameBusSize != headerExpectedSize) {
+        std::cerr << "FrameBus expected size differs from config. expected="
+                  << headerExpectedSize << " config=" << config.frameBusSize
+                  << std::endl;
+      }
+
+      if (reader.header->frame_size != expectedBytes ||
                  reader.header->width != static_cast<uint32_t>(config.width) ||
                  reader.header->height != static_cast<uint32_t>(config.height)) {
         std::cerr << "FrameBus header mismatch. expected="

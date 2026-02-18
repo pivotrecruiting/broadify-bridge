@@ -1,4 +1,4 @@
-# Graphics Preset Send & Replace (Stand: 2026-02-02)
+# Graphics Preset Send & Replace (Stand: 2026-02-12)
 
 ## Kurzfassung
 
@@ -22,12 +22,15 @@
    - Entfernt alle Layer, die nicht zu diesem Preset gehoeren.
    - Rendert die neuen Layer und markiert das Preset als aktiv.
    - Count startet beim ersten Output-Frame; nach `durationMs` wird das Preset entfernt.
+   - Bei Multi-Category-Preset-Sends wird ein laufender Count nicht pro Layer neu gestartet, solange `durationMs` unveraendert bleibt.
+   - `manifest.render` im Payload wird auf `outputConfig.format` normalisiert; Formatabweichungen werden als Warnung protokolliert.
 3. **graphics_remove_preset(presetId)**
    - Entfernt alle Layer dieses Presets und loescht den Active-Status.
 
 ## Status
 
 - `graphics_list` liefert `activePreset` und optional `activePresets` (max. 1 Eintrag).
+- `graphics_status` Events enthalten ebenfalls `outputConfig`, `activePreset` und `activePresets`.
 - Keine `queuedPresets`.
 
 ## Code-Referenzen

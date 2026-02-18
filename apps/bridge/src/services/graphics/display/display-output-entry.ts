@@ -5,6 +5,7 @@ import {
   type FrameBusModuleT,
   type FrameBusReaderT,
 } from "../framebus/framebus-client.js";
+import { getExpectedFrameBusSizeFromHeader } from "../framebus/framebus-layout.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -21,6 +22,8 @@ const targetPortType = process.env.BRIDGE_DISPLAY_MATCH_PORT_TYPE || "";
 const targetWidth = Number(process.env.BRIDGE_DISPLAY_MATCH_WIDTH || "");
 const targetHeight = Number(process.env.BRIDGE_DISPLAY_MATCH_HEIGHT || "");
 const debugEnabled = process.env.BRIDGE_DISPLAY_DEBUG === "1";
+const LOG_PERF =
+  process.env.BRIDGE_LOG_PERF === "1" || debugEnabled;
 const force2d = process.env.BRIDGE_DISPLAY_FORCE_2D === "1";
 const disableGpu = process.env.BRIDGE_DISPLAY_DISABLE_GPU === "1";
 const frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
@@ -449,6 +452,9 @@ function sendFrame(frame: {
 }
 
 function logPerfIfNeeded(): void {
+  if (!LOG_PERF) {
+    return;
+  }
   const now = Date.now();
   const elapsedMs = now - perfLastLogAt;
   if (elapsedMs < 1000) {
@@ -535,7 +541,7 @@ function startFrameBusReader(): boolean {
     return false;
   }
   if (frameBusSize > 0) {
-    const expectedSize = header.headerSize + header.slotStride * header.slotCount;
+    const expectedSize = getExpectedFrameBusSizeFromHeader(header);
     if (expectedSize !== frameBusSize) {
       logger.error(
         `[DisplayOutput] FrameBus size mismatch (expected ${frameBusSize}, got ${expectedSize})`
@@ -712,4 +718,3 @@ function startFrameBusReaderWithRetry(attempt: number): void {
     startFrameBusReaderWithRetry(attempt + 1);
   }, FRAMEBUS_OPEN_RETRY_MS);
 }
-

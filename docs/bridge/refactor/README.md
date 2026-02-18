@@ -23,6 +23,7 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 - Output-Helper: `docs/bridge/refactor/graphics-realtime-output-helpers.md`
 - Output Helper Contract: `docs/bridge/refactor/graphics-realtime-output-helper-contract.md`
 - Migrationsplan & Dateiliste: `docs/bridge/refactor/graphics-realtime-migration-plan.md`
+- **Legacy Removal Plan (No Rollback):** `docs/bridge/refactor/legacy-removal-plan.md`
 - **Display Native Helper Migration:** `docs/bridge/refactor/display-native-helper-migration-plan.md`
 
 ## Status
@@ -32,5 +33,5 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 
 ## Festgelegte Entscheidungen
 - CSS-Isolation: Shadow DOM pro Layer.
-- Legacy-Fallback bleibt als Notfallpfad (IPC Frames + Compositing + stdin).
+- Legacy-Pfade werden vollständig entfernt (siehe `legacy-removal-plan.md`).
 - Key/Fill ist ARGB8-only. BGRA ist nicht erlaubt.

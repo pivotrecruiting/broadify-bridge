@@ -21,6 +21,7 @@ import {
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
+import { logRuntimeDiagnostics } from "./services/runtime-diagnostics.js";
 import type { BridgeConfigT } from "./config.js";
 
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
@@ -37,13 +38,52 @@ export async function createServer(config: BridgeConfigT) {
   const userDataDir = resolveUserDataDir(config);
   const logPath = await ensureBridgeLogFile(userDataDir);
 
-  const consoleLevel =
-    process.env.NODE_ENV === "production" ? "info" : "debug";
+  const LOG_LEVELS: Record<string, number> = {
+    trace: 10,
+    debug: 20,
+    info: 30,
+    warn: 40,
+    error: 50,
+    fatal: 60,
+    silent: 70,
+  };
+  const normalizeLevel = (value: string | undefined, fallback: string): string => {
+    if (!value) {
+      return fallback;
+    }
+    const key = value.toLowerCase();
+    return LOG_LEVELS[key] ? key : fallback;
+  };
+  const clampMaxLevel = (value: string, maxLevel: string): string => {
+    const current = LOG_LEVELS[value] ?? LOG_LEVELS.info;
+    const max = LOG_LEVELS[maxLevel] ?? LOG_LEVELS.info;
+    return current > max ? maxLevel : value;
+  };
+
+  const requestedLevel = normalizeLevel(
+    process.env.BRIDGE_LOG_LEVEL,
+    "info"
+  );
+  const enforceImportantLogs = process.env.NODE_ENV === "production";
+  const baseLevel = enforceImportantLogs
+    ? clampMaxLevel(requestedLevel, "info")
+    : requestedLevel;
+  const consoleLevel = normalizeLevel(
+    process.env.BRIDGE_LOG_STDOUT_LEVEL,
+    baseLevel
+  );
+  const fileLevelRaw = normalizeLevel(
+    process.env.BRIDGE_LOG_FILE_LEVEL,
+    baseLevel
+  );
+  const fileLevel = enforceImportantLogs
+    ? clampMaxLevel(fileLevelRaw, "info")
+    : fileLevelRaw;
   const logger = pino(
-    { level: "debug" },
+    { level: baseLevel },
     pino.multistream([
       { level: consoleLevel, stream: process.stdout },
-      { level: "debug", stream: pino.destination({ dest: logPath, sync: false }) },
+      { level: fileLevel, stream: pino.destination({ dest: logPath, sync: false }) },
     ])
   );
   bindConsoleToLogger(logger);
@@ -62,6 +102,7 @@ export async function createServer(config: BridgeConfigT) {
     userDataDir,
     logPath,
     logger: {
+      debug: (msg: string) => server.log.debug(msg),
       info: (msg: string) => server.log.info(msg),
       warn: (msg: string) => server.log.warn(msg),
       error: (msg: string) => server.log.error(msg),
@@ -72,6 +113,7 @@ export async function createServer(config: BridgeConfigT) {
     pairingExpiresAt: config.pairingExpiresAt,
   };
   setBridgeContext(baseContext);
+  logRuntimeDiagnostics(baseContext.logger);
 
   await graphicsManager.initialize();
 
@@ -101,14 +143,15 @@ export async function createServer(config: BridgeConfigT) {
   let relayClient: RelayClient | undefined = undefined;
   if (config.relayEnabled && config.bridgeId) {
     const relayUrl = config.relayUrl || "wss://broadify-relay.fly.dev";
-    relayClient = new RelayClient(
-      config.bridgeId,
-      relayUrl,
-      {
-        info: (msg: string) => server.log.info(`[Relay] ${msg}`),
-        error: (msg: string) => server.log.error(`[Relay] ${msg}`),
-        warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
-      },
+      relayClient = new RelayClient(
+        config.bridgeId,
+        relayUrl,
+        {
+          debug: (msg: string) => server.log.debug(`[Relay] ${msg}`),
+          info: (msg: string) => server.log.info(`[Relay] ${msg}`),
+          error: (msg: string) => server.log.error(`[Relay] ${msg}`),
+          warn: (msg: string) => server.log.warn(`[Relay] ${msg}`),
+        },
       config.bridgeName
     );
     server.log.info(

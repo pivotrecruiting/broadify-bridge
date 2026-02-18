@@ -13,7 +13,7 @@ import { bridgeIdentity } from "./services/bridge-identity.js";
 import { bridgeProfile } from "./services/bridge-profile.js";
 import { bridgePairing } from "./services/bridge-pairing.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
-import { logAppError, logAppInfo } from "./services/app-logger.js";
+import { logAppError } from "./services/app-logger.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -491,7 +491,6 @@ if (!isRendererProcess) {
         pairingInfo?.expiresAt,
         relayEnabled
       );
-      console.log("[Bridge] Start result:", result);
 
       // Start health check polling if bridge started successfully
       if (result.success) {
@@ -624,11 +623,6 @@ if (!isRendererProcess) {
       const isRunning = bridgeProcessManager.isRunning();
       const profile = bridgeProfile.getProfile();
       const pairingInfo = bridgePairing.getPairingInfo();
-
-      console.log(
-        `[Bridge] GetStatus - isRunning: ${isRunning}, config:`,
-        config
-      );
 
       if (!isRunning || !config) {
         // console.log(`[Bridge] GetStatus - Process not running or no config`);
@@ -983,8 +977,6 @@ if (!isRendererProcess) {
 
     // Bridge outputs IPC handler
     ipcMainHandle("bridgeGetOutputs", async () => {
-      console.log("[OutputChecker] Getting outputs");
-      logAppInfo("IPC bridgeGetOutputs requested");
       const config = bridgeProcessManager.getConfig();
 
       // If bridge is running, try to get outputs from bridge (for updates)
@@ -998,26 +990,12 @@ if (!isRendererProcess) {
           const availableOutput2Count =
             bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
 
-          logAppInfo(
-            `bridgeGetOutputs ok: output1 ${availableOutput1Count}/${output1Count}, output2 ${availableOutput2Count}/${output2Count}`
-          );
-          console.log(
-            `[OutputChecker] Fetched outputs from bridge - Output1: ${availableOutput1Count}/${output1Count} available, Output2: ${availableOutput2Count}/${output2Count} available`
-          );
-
           return bridgeOutputs;
         }
-        console.log(
-          "[OutputChecker] Bridge running but outputs not available, falling back to device detection"
-        );
         logAppError("bridgeGetOutputs failed: bridge running but outputs null");
       }
 
       // Bridge is Single Source of Truth - no fallback detection in Main Process
-      console.log(
-        "[OutputChecker] Bridge not running, returning empty outputs (Bridge is Single Source of Truth)"
-      );
-      logAppInfo("bridgeGetOutputs: bridge not running, returning empty");
       return {
         output1: [],
         output2: [],
@@ -1027,7 +1005,6 @@ if (!isRendererProcess) {
     ipcMainHandle(
       "bridgeGetLogs",
       async (_event, options?: { lines?: number; filter?: string }) => {
-        logAppInfo("IPC bridgeGetLogs requested");
         const config = bridgeProcessManager.getConfig();
         const response = await fetchBridgeLogs(config, options);
         if (response.error) {
@@ -1040,7 +1017,6 @@ if (!isRendererProcess) {
     ipcMainHandle(
       "appGetLogs",
       async (_event, options?: { lines?: number; filter?: string }) => {
-        logAppInfo("IPC appGetLogs requested");
         const response = await readAppLogs(options);
         if (response.error) {
           logAppError(`appGetLogs failed: ${response.error}`);
@@ -1052,7 +1028,6 @@ if (!isRendererProcess) {
     ipcMainHandle("appGetVersion", async () => app.getVersion());
 
     ipcMainHandle("bridgeClearLogs", async () => {
-      logAppInfo("IPC bridgeClearLogs requested");
       const config = bridgeProcessManager.getConfig();
       const response = await clearBridgeLogs(config);
       if (response.error) {
@@ -1062,7 +1037,6 @@ if (!isRendererProcess) {
     });
 
     ipcMainHandle("appClearLogs", async () => {
-      logAppInfo("IPC appClearLogs requested");
       const response = await clearAppLogs();
       if (response.error) {
         logAppError(`appClearLogs failed: ${response.error}`);

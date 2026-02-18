@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import type { FrameBusPixelFormatT } from "./framebus-client.js";
+import { buildFrameBusLayout } from "./framebus-layout.js";
 
 export type FrameBusConfigT = {
   name: string;
@@ -18,7 +19,6 @@ export type FrameBusConfigT = {
 // TODO: Tune slot count per hardware/output if drops persist.
 const DEFAULT_SLOT_COUNT = 2;
 const DEFAULT_PIXEL_FORMAT: FrameBusPixelFormatT = 1;
-const FRAMEBUS_HEADER_SIZE = 128;
 
 const parseSlotCount = (value: string | undefined): number | null => {
   if (!value) {
@@ -64,10 +64,12 @@ export const buildFrameBusConfig = (
     ) ??
     previous?.pixelFormat ??
     DEFAULT_PIXEL_FORMAT;
-  const frameSize = outputConfig.format.width * outputConfig.format.height * 4;
-  const slotStride = frameSize;
-  const headerSize = FRAMEBUS_HEADER_SIZE;
-  const size = headerSize + slotStride * slotCount;
+  const layout = buildFrameBusLayout({
+    width: outputConfig.format.width,
+    height: outputConfig.format.height,
+    pixelFormat,
+    slotCount,
+  });
 
   return {
     name,
@@ -76,10 +78,10 @@ export const buildFrameBusConfig = (
     width: outputConfig.format.width,
     height: outputConfig.format.height,
     fps: outputConfig.format.fps,
-    frameSize,
-    slotStride,
-    headerSize,
-    size,
+    frameSize: layout.frameSize,
+    slotStride: layout.slotStride,
+    headerSize: layout.headerSize,
+    size: layout.size,
   };
 };
 

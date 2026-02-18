@@ -57,6 +57,9 @@ export class StubOutputAdapter implements GraphicsOutputAdapter {
   }
 
   private log(message: string): void {
+    if (process.env.BRIDGE_LOG_STUB_OUTPUT !== "1") {
+      return;
+    }
     console.log(`[GraphicsOutputStub] ${message}`);
   }
 }

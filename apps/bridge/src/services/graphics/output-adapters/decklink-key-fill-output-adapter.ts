@@ -116,7 +116,7 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       env,
     });
 
-    this.getLogger().info(
+    this.getLogger().debug?.(
       `[DeckLinkOutput] Pixel format priority: ${KEY_FILL_PIXEL_FORMAT_PRIORITY.join(",")}`
     );
 
@@ -124,7 +124,7 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
     this.child.stderr?.on("data", (data) => {
       const text = data.toString().trim();
       if (text.length > 0) {
-        this.getLogger().warn(`[DeckLinkOutput] ${text}`);
+        this.getLogger().error(`[DeckLinkOutput] ${text}`);
       }
     });
 
@@ -255,7 +255,7 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
           this.readyResolver = null;
           this.readyRejecter = null;
         } else if (message.type === "metrics") {
-          this.getLogger().info(`[DeckLinkOutput] ${line}`);
+          this.getLogger().debug?.(`[DeckLinkOutput] ${line}`);
         }
       } catch {
         this.getLogger().warn(`[DeckLinkOutput] Non-JSON output: ${line}`);
