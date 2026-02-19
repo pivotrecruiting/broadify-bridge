@@ -28,7 +28,7 @@ Hinweis: Keine Rechtsberatung. Diese Bewertung ist technisch-organisatorisch.
 
 ### 3.1 Desktop <-> Bridge (lokal)
 
-- Polling Health: `src/electron/services/bridge-health-check.ts` (2s Intervall, 3s Timeout).
+- Polling Health: `src/electron/services/bridge-health-check.ts` (2s Intervall, 5s Timeout).
 - Desktop ruft Bridge-HTTP Endpoints lokal auf (z. B. `/status`, `/engine/*`, `/outputs`, `/relay/status`).
 
 ### 3.2 Webapp -> Relay -> Bridge (Commands)
