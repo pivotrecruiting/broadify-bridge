@@ -1,7 +1,7 @@
 # Broadify – Formale Risikodokumentation, DPIA/DSFA und Retention-Regeln
 
 **Stand:** 19. Februar 2026  
-**Version:** 2.2  
+**Version:** 2.3  
 **Owner:** Security Lead (Bridge / Relay / WebApp)  
 **Review-Zyklus:** Quartalsweise sowie bei wesentlichen Architektur- oder Prozessänderungen  
 **Gültig für:** Broadify Bridge V2, Relay, WebApp, Supabase, Vercel, Fly.io  
@@ -181,28 +181,30 @@ Der aktuelle Umsetzungsstand umfasst:
 ## 5.1 Grundprinzipien
 
 - Speicherung nur solange erforderlich.
-- Automatische Löschung per Policy-Job.
+- Automatische Löschung erfolgt nur, wenn dies durch interne Policy festgelegt ist.
 - Legal Hold oder Incident Hold setzen Löschung aus.
 - Löschung ist auditierbar zu dokumentieren.
+- Für Templates/Presets besteht keine generelle DSGVO-Pflicht zur Löschung nach 12 Monaten Inaktivität; die Frist ist zweck- und vertragsbasiert festzulegen und zu dokumentieren.
 
 ---
 
 ## 5.2 Retention-Matrix
 
-| Datenklasse            | Speicherort    | Max. Dauer                              | Löschmethode            |
-| ---------------------- | -------------- | --------------------------------------- | ----------------------- |
-| Pairing-Secrets        | Bridge lokal   | 10 Minuten                              | TTL-Expiry              |
-| Session/Auth-Metadaten | Supabase/Relay | 30 Tage                                 | TTL + Purge             |
-| Audit-Events           | Backend        | 180 Tage hot + 365 cold                 | Archiv-Löschung         |
-| Security-Logs          | SIEM/Bridge    | 90 Tage hot                             | Retention-Policy        |
-| Betriebslogs           | Observability  | 30 Tage                                 | Rolling Retention       |
-| Templates/Presets      | DB             | Bis Löschung oder 12 Monate Inaktivität | Soft + Hard Delete      |
-| Incident-Records       | SecOps-System  | 3 Jahre                                 | Frist-Löschung          |
-| DSAR-Nachweise         | Privacy-System | 3 Jahre                                 | Frist-Löschung          |
-| Backups                | Backup-System  | 35 Tage rolling + 12 Monate Snapshots   | Rotation + Crypto-Erase |
+| Datenklasse            | Speicherort    | Max. Dauer                                                | Löschmethode                             |
+| ---------------------- | -------------- | --------------------------------------------------------- | ---------------------------------------- |
+| Pairing-Secrets        | Bridge lokal   | 10 Minuten                                                | TTL-Expiry                               |
+| Session/Auth-Metadaten | Supabase/Relay | 30 Tage                                                   | TTL + Purge                              |
+| Audit-Events           | Backend        | 180 Tage hot + 365 cold                                   | Archiv-Löschung                          |
+| Security-Logs          | SIEM/Bridge    | 90 Tage hot                                               | Retention-Policy                         |
+| Betriebslogs           | Observability  | 30 Tage                                                   | Rolling Retention                        |
+| Templates/Presets      | DB             | Policy-basiert (zweck-/vertragsabhängig)                  | Soft + Hard Delete (falls Policy aktiv)  |
+| Incident-Records       | SecOps-System  | 3 Jahre                                                   | Frist-Löschung                           |
+| DSAR-Nachweise         | Privacy-System | 3 Jahre                                                   | Frist-Löschung                           |
+| Backups                | Supabase Pro   | 7 Tage Standard-Retention (tägliche automatische Backups) | Supabase-Rotation + Ablauf der Retention |
 
 **Hinweis zu Backups:**
 Selektive Löschung ist nicht möglich. Löschwirkung tritt nach Ablauf der Backup-Retention ein. Restore-Prozesse beinhalten Re-Deletion.
+Längere PITR-Retention kann optional konfiguriert werden, ist jedoch nicht Bestandteil des Supabase-Pro-Basispakets.
 
 ---
 
