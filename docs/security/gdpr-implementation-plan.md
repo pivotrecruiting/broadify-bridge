@@ -22,9 +22,10 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 ## Ausgangslage (technisch)
 - Relay transportiert volle Payloads (z.B. HTML/CSS/Values) und Response-Daten.
 - Pairing ist ein separater Command und schuetzt keine anderen Commands.
-- AuthN/AuthZ auf Relay/Bridge-Ebene fehlt.
-- Logging enthaelt Payloads (WebApp + Bridge).
-- Bridge-Endpoints (HTTP/WS) sind lokal, aber ohne Auth.
+- AuthN/AuthZ ist teilweise umgesetzt (signierte Commands, Scope/TTL/Replay, Org-Bridge-Mapping), aber unvollstaendig
+  (keine starke Client-Authentisierung am Relay-Command-Endpoint, keine Bridge-Authentisierung bei `bridge_hello`).
+- Logging wurde in WebApp/Bridge reduziert (Summaries statt Full-Payloads), verbleibende Exposition ist transportseitig relevant.
+- Bridge-Endpoints (HTTP/WS) sind nur teilweise abgesichert (voll geschuetzt: `/engine`, `/ws`, `/logs`; offen: `/status`, `/devices`, `/outputs`, `/config`, `/video/status`).
 
 ## Dateninventar (Kategorien)
 - Identifikatoren: bridgeId, orgId, requestId
@@ -45,13 +46,14 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 ## Implementierungsplan
 
 ### Phase 0 - Sofortmassnahmen (0-2 Wochen)
-Status: Technische Punkte umgesetzt; organisatorische Tasks offen.
+Status: Teilweise umgesetzt; mehrere technische Kernpunkte offen.
 
 Technisch:
 - [x] Relay-Verbindung wird beim Bridge-Start (GUI) aktiviert und beim Stop deaktiviert; CLI bleibt default off ohne `--relay-enabled`.
-- [x] Pairing-Code nicht in URLs (kein Hash/Query). Nur lokal anzeigen/QR.
+- [ ] Pairing-Code nicht in URLs (kein Hash/Query). Nur lokal anzeigen/QR.
 - [x] Payload-Logging entfernen oder strikt redactionen (WebApp + Bridge).
 - [x] /logs, /ws und /engine Endpoints nur lokal oder mit Auth-Token.
+- [ ] Alle mutierenden Bridge-Endpoints lokal-oder-token-geschuetzt (inkl. `/config`).
 - [x] Payload-Groessenlimit und Timeouts erzwingen.
 - [x] Command-Allowlist auf Bridge (harte Ablehnung unbekannter Commands).
 
@@ -61,16 +63,17 @@ Organisatorisch:
 
 Akzeptanzkriterien:
 - [x] Relay ist nur aktiv, wenn die Bridge lokal ueber die Desktop-App gestartet wurde.
-- [x] Pairing-Code taucht in keiner URL, keinem Log auf.
+- [ ] Pairing-Code taucht in keiner URL, keinem Log auf.
 - [x] Unbekannte Commands werden serverseitig geblockt.
 
 ### Phase 1 - AuthN/AuthZ Basis (2-6 Wochen)
 Technisch:
 - [ ] Device Enrollment: Pairing-Code wird nur fuer initiales Onboarding genutzt.
-- [x] Relay muss Bridge-ID an org_id binden (serverseitig), nur dann Commands.
+- [ ] Relay muss Bridge-ID an org_id binden und den aufrufenden Client kryptografisch authentisieren, nur dann Commands.
 - [x] Command-Envelope signieren (exp, jti, scope, org_id, bridge_id).
 - [x] Bridge verifiziert Signatur, TTL und Replay-Schutz (jti-cache).
 - [x] Zod-Validierung fuer alle Commands (nicht nur graphics).
+- [ ] Bridge-Authentisierung gegen Relay (z.B. Enrollment Secret / mTLS bei `bridge_hello`).
 
 Organisatorisch:
 - Rollenmodell definieren (Org-Admin, Operator, Read-only).

@@ -37,8 +37,8 @@ sequenceDiagram
   participant Router as CommandRouter
 
   WebApp->>Api: POST /api/bridges/[bridgeId]/command
-  Api->>Relay: POST /relay/command { bridgeId, command, payload }
-  Relay->>Bridge: WS message { type: "command", requestId, command, payload }
+  Api->>Relay: POST /relay/command { bridgeId, orgId, command, payload }
+  Relay->>Bridge: WS message { type: "command", requestId, command, payload, meta, signature }
   Bridge->>Router: handleCommand(command, payload)
   Router-->>Bridge: result { success, data|error }
   Bridge-->>Relay: WS message { type: "command_result", requestId, success, data|error }
@@ -56,7 +56,7 @@ sequenceDiagram
   participant Router as CommandRouter
 
   WebApp->>Api: POST /api/bridges/pair { bridgeId, pairingCode }
-  Api->>Relay: POST /relay/command { bridgeId, command: "bridge_pair_validate", payload: { pairingCode } }
+  Api->>Relay: POST /relay/command { bridgeId, orgId, command: "bridge_pair_validate", payload: { pairingCode } }
   Relay->>Bridge: WS command bridge_pair_validate
   Bridge->>Router: handleCommand
   Router-->>Bridge: { success, data|error }
@@ -221,7 +221,8 @@ Bridge:
 ## Security observations relevant to data traffic
 - Relay transportiert weiterhin volle Payloads und Responses (Content bleibt sensitiv).
 - Pairing ist ein separater Command und gate-keine anderen Commands.
-- Relay akzeptiert Command/Payload fuer jede verbundene bridgeId (AuthN/AuthZ ist Phase-1).
+- Relay hat bereits signierte Command-Envelope + Org-Bridge-Mapping, aber es fehlt eine starke Client-Authentisierung am HTTP-Command-Einstieg (`POST /relay/command`).
+- Relay registriert Bridges aktuell ueber `bridge_hello` ohne zusaetzliche Bridge-Authentisierung (Impersonation/Hijack-Risiko).
 - Payload-Logging wurde reduziert, dennoch bleibt Content-Exposure im Transportpfad bestehen.
 
 
