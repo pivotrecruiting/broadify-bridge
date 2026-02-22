@@ -1,5 +1,5 @@
 {
-  "appId": "com.georgimy.electron-template",
+  "appId": "com.broadify.bridge",
   "productName": "Broadify Bridge",
   "files": [
     "dist-electron/**",
@@ -36,7 +36,12 @@
   "mac": {
     "target": "dmg",
     "icon": "./icon.png",
-    "category": "public.app-category.utilities"
+    "category": "public.app-category.utilities",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist",
+    "notarize": true
   },
   "linux": {
     "target": "AppImage",

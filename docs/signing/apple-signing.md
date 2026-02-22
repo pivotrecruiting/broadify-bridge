@@ -3,6 +3,7 @@ Stand: 19. Februar 2026.
 ## Ziel
 
 macOS-App (`.app` im `.dmg`) korrekt für Direct Distribution bereitstellen:
+
 1. Code Signing
 2. Notarization
 3. Stapling
@@ -18,6 +19,7 @@ macOS-App (`.app` im `.dmg`) korrekt für Direct Distribution bereitstellen:
    - `.p8` Datei herunterladen
 
 Hinweis:
+
 - Für euren aktuellen DMG-Flow reicht `Developer ID Application`.
 - `Developer ID Installer` braucht ihr erst bei `.pkg`.
 
@@ -34,7 +36,7 @@ In `Settings -> Secrets and variables -> Actions` anlegen:
 
 ## Schritt 3: `electron-builder.json` ergänzen
 
-Eure Datei hat aktuell nur `mac.target = dmg`. Ergänze für Signing/Notarization:
+Ergänze (bzw. prüfe) für Signing/Notarization mindestens:
 
 ```json
 {
@@ -46,14 +48,17 @@ Eure Datei hat aktuell nur `mac.target = dmg`. Ergänze für Signing/Notarizatio
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
-    "entitlementsInherit": "build/entitlements.mac.plist"
+    "entitlementsInherit": "build/entitlements.mac.plist",
+    "notarize": true
   }
 }
 ```
 
 Wichtig:
+
 1. `appId` auf finalen Broadify-Wert setzen (kein Template-Wert).
 2. Entitlements minimal halten.
+3. `notarize: true` ist optional, macht die Intention aber explizit. Die Notarization startet nur mit gesetzten Apple-Notary-Env-Variablen.
 
 ## Schritt 4: Entitlements-Datei anlegen
 
@@ -113,6 +118,7 @@ xcrun stapler validate "dist/Broadify Bridge-<version>-arm64.dmg"
 ```
 
 Erwartung:
+
 1. `codesign` ohne Fehler
 2. `spctl` akzeptiert Artefakt
 3. `stapler validate` erfolgreich
@@ -120,6 +126,7 @@ Erwartung:
 ## Schritt 8: Manual Fallback (wenn CI hängt)
 
 Wenn Notarization in CI fehlschlägt:
+
 1. Lokal auf macOS signieren
 2. Manuell mit `xcrun notarytool submit ... --wait` notarize
 3. Mit `xcrun stapler staple` staplen
