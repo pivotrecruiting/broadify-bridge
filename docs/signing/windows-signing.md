@@ -14,28 +14,34 @@ Stand: 19. Februar 2026.
 
 In electron-builder.json unter win ergänzen (du hast aktuell portable + msi in electron-builder.json:46):
 
+```json
 {
-"win": {
-"target": ["portable", "msi"],
-"icon": "./icon.png",
-"azureSignOptions": {
-"publisherName": "DEIN LEGALER FIRMENNAME (CN exakt)",
-"endpoint": "https://weu.codesigning.azure.net",
-"codeSigningAccountName": "dein-signing-account",
-"certificateProfileName": "dein-public-trust-profile",
-"TimestampRfc3161": "http://timestamp.acs.microsoft.com",
-"TimestampDigest": "SHA256"
+  "win": {
+    "target": ["portable", "msi"],
+    "icon": "./icon.png",
+    "azureSignOptions": {
+      "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",
+      "endpoint": "${env.AZURE_CODE_SIGNING_ENDPOINT}",
+      "codeSigningAccountName": "${env.AZURE_CODE_SIGNING_ACCOUNT_NAME}",
+      "certificateProfileName": "${env.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME}",
+      "TimestampRfc3161": "http://timestamp.acs.microsoft.com",
+      "TimestampDigest": "SHA256"
+    }
+  }
 }
-}
-}
+```
 
 ## 3. CI/Build-Umgebung (Secrets)
 
-Als Umgebungsvariablen setzen (CI Secret Store, niemals im Repo):
+Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.yml`) als Env bereitstellen:
 
 - AZURE_TENANT_ID
 - AZURE_CLIENT_ID
 - AZURE_CLIENT_SECRET
+- AZURE_CODE_SIGNING_ENDPOINT
+- AZURE_CODE_SIGNING_ACCOUNT_NAME
+- AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME
+- AZURE_CODE_SIGNING_PUBLISHER_NAME
 
 ## 4. Build ausführen (am besten Windows Runner)
 
@@ -47,9 +53,11 @@ Als Umgebungsvariablen setzen (CI Secret Store, niemals im Repo):
 
 Nach dem Build im CI:
 
-Get-ChildItem dist -Recurse -Include _.exe,_.msi | ForEach-Object {
-signtool verify /pa /v $\_.FullName
+```powershell
+Get-ChildItem dist -Recurse -Include *.exe,*.msi | ForEach-Object {
+  signtool verify /pa /v $_.FullName
 }
+```
 
 ## 6. Release-Best-Practices (kurz)
 

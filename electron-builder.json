@@ -53,7 +53,15 @@
       "portable",
       "msi"
     ],
-    "icon": "./icon.png"
+    "icon": "./icon.png",
+    "azureSignOptions": {
+      "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",
+      "endpoint": "${env.AZURE_CODE_SIGNING_ENDPOINT}",
+      "codeSigningAccountName": "${env.AZURE_CODE_SIGNING_ACCOUNT_NAME}",
+      "certificateProfileName": "${env.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME}",
+      "TimestampRfc3161": "http://timestamp.acs.microsoft.com",
+      "TimestampDigest": "SHA256"
+    }
   },
   "nsis": {
     "oneClick": false,
