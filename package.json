@@ -2,6 +2,8 @@
   "name": "electron-vite-template",
   "private": true,
   "version": "0.9.9",
+  "description": "Broadify Bridge desktop application for device bridging and realtime graphics output.",
+  "author": "Broadify",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
