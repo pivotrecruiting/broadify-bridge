@@ -34,8 +34,22 @@ const hasCompleteAzureTrustedSigningConfig = azureVars.every((name) => {
   return typeof value === "string" && value.trim() !== "";
 });
 
-if (!hasCompleteAzureTrustedSigningConfig && config.win) {
-  delete config.win.azureSignOptions;
+if (config.win) {
+  if (!hasCompleteAzureTrustedSigningConfig) {
+    delete config.win.azureSignOptions;
+  } else if (config.win.azureSignOptions) {
+    // Inject resolved values directly because Azure Trusted Signing options are not
+    // reliably macro-expanded when passed through a JS config object.
+    config.win.azureSignOptions = {
+      ...config.win.azureSignOptions,
+      publisherName: process.env.AZURE_CODE_SIGNING_PUBLISHER_NAME.trim(),
+      endpoint: process.env.AZURE_CODE_SIGNING_ENDPOINT.trim(),
+      codeSigningAccountName:
+        process.env.AZURE_CODE_SIGNING_ACCOUNT_NAME.trim(),
+      certificateProfileName:
+        process.env.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME.trim(),
+    };
+  }
 }
 
 module.exports = config;
