@@ -181,6 +181,29 @@ jobs:
 
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
+      - name: Prepare Apple notary API key file
+        if: matrix.os == 'macos-15' && env.APPLE_API_KEY != '' && env.APPLE_API_KEY_ID != '' && env.APPLE_API_ISSUER != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+
+          if [[ "${APPLE_API_KEY}" == "-----BEGIN PRIVATE KEY-----"* ]]; then
+            # Secret contains raw .p8 contents (multiline PEM).
+            printf '%s' "$APPLE_API_KEY" > "$NOTARY_KEY_PATH"
+          else
+            KEY_B64="$APPLE_API_KEY"
+            if [[ "$KEY_B64" == data:*base64,* ]]; then
+              KEY_B64="${KEY_B64#*,}"
+            fi
+            # Secret contains base64-encoded .p8 content.
+            printf '%s' "$KEY_B64" | base64 -D > "$NOTARY_KEY_PATH"
+          fi
+
+          chmod 600 "$NOTARY_KEY_PATH"
+          echo "APPLE_API_KEY=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
+
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never
 

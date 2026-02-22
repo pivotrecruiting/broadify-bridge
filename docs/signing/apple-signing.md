@@ -30,7 +30,7 @@ In `Settings -> Secrets and variables -> Actions` anlegen:
 - `APPLE_SIGNING_IDENTITY` (z. B. `Developer ID Application: Firma GmbH (TEAMID)`)
 - `CSC_LINK` (Base64 oder URL zur `.p12`)
 - `CSC_KEY_PASSWORD` (Passwort der `.p12`)
-- `APPLE_API_KEY` (Base64-Inhalt der `.p8`)
+- `APPLE_API_KEY` (Secret-Inhalt der `.p8`, z. B. Base64 oder raw PEM; im CI in Datei schreiben)
 - `APPLE_API_KEY_ID`
 - `APPLE_API_ISSUER`
 
@@ -94,6 +94,11 @@ env:
   APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
   APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 ```
+
+Hinweis:
+
+- `@electron/notarize` erwartet für `APPLE_API_KEY` einen **Dateipfad** zur `.p8`.
+- Wenn das GitHub Secret den Key-Inhalt (Base64 oder raw PEM) enthält, muss der Workflow ihn vor dem Build in eine temporäre Datei schreiben und `APPLE_API_KEY` auf diesen Pfad setzen.
 
 ## Schritt 6: Build ausführen
 
