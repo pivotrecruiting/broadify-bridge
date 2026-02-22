@@ -110,6 +110,31 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Validate Windows Trusted Signing configuration
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REQUIRED_VARS=(
+            AZURE_CODE_SIGNING_ENDPOINT
+            AZURE_CODE_SIGNING_ACCOUNT_NAME
+            AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME
+            AZURE_CODE_SIGNING_PUBLISHER_NAME
+          )
+
+          MISSING=()
+          for var_name in "${REQUIRED_VARS[@]}"; do
+            if [[ -z "${!var_name:-}" ]]; then
+              MISSING+=("$var_name")
+            fi
+          done
+
+          if (( ${#MISSING[@]} > 0 )); then
+            echo "Missing Windows Trusted Signing secrets: ${MISSING[*]}" >&2
+            exit 1
+          fi
+
       - name: Import macOS signing certificate for native helper codesign
         if: matrix.os == 'macos-15' && env.CSC_LINK != '' && env.CSC_KEY_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != ''
         shell: bash
