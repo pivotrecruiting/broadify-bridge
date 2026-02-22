@@ -211,13 +211,27 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          $signtool = (Get-Command signtool -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+          if (-not $signtool) {
+            $candidates = @()
+            $candidates += Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
+            $candidates += Get-ChildItem "$env:LOCALAPPDATA\TrustedSigning\Microsoft.Windows.SDK.BuildTools" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
+            $signtool = $candidates |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $signtool) {
+            throw "signtool.exe not found on runner (PATH/Windows SDK/TrustedSigning cache)."
+          }
+          Write-Host "Using signtool:" $signtool
+
           $files = Get-ChildItem -Path dist -Recurse -Include *.exe,*.msi
           if (-not $files) {
             throw "No Windows artifacts found in dist/ for signature verification."
           }
           foreach ($file in $files) {
             Write-Host "Verifying signature:" $file.FullName
-            & signtool verify /pa /v $file.FullName
+            & $signtool verify /pa /v $file.FullName
           }
 
       - name: Upload artifacts
