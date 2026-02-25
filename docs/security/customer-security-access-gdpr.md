@@ -48,6 +48,7 @@ Hinweis: Keine Rechtsberatung. Diese Bewertung ist technisch-organisatorisch.
 ### 3.4 Pairing
 
 - Desktop generiert 8-stelligen Pairing-Code mit 10 Minuten TTL (`src/electron/services/bridge-pairing.ts`).
+- Webapp-Pairing erfolgt manuell (Bridge ID + Pairing Code);
 - Pairing-Validation läuft über Relay-Command `bridge_pair_validate`.
 - Bei Erfolg verknuepft Webapp die Bridge mit Organisation in Supabase (`organization_bridges`).
 
@@ -67,7 +68,7 @@ Hinweis: Keine Rechtsberatung. Diese Bewertung ist technisch-organisatorisch.
 ### 4.3 Lokale Zugriffsschranken
 
 - Route-Guard `local-or-token` vorhanden: `apps/bridge/src/routes/route-guards.ts`.
-- Aktiv auf: `/engine/*`, `/ws`, `/logs`.
+- Aktiv auf: `/engine/*`, `/ws`, `/logs`, `/config*`, `/status`, `/devices`, `/outputs`, `/video/status`, `/relay/status`.
 
 ### 4.4 Pairing-Secret Handling
 

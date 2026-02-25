@@ -59,10 +59,9 @@ Warum:
 
 ### Kritische Gaps
 
-- Relay `POST /relay/command` hat keine starke Caller-Auth (nur Body-Felder + Org-Bridge-Check).
+- Relay `POST /relay/command` braucht produktive Key-Provisionierung/Deployment fuer Caller-Assertion-Keys; Verifikation ist im Codepfad integriert.
 - Relay registriert Bridges via `bridge_hello` nur anhand `bridgeId` (keine Bridge-Auth).
-- WebApp akzeptiert noch Pairing-Link-Flow mit `bridgeId` (Query) und `pair` (Hash).
-- Bridge `/config` und `/config/clear` sind noch nicht `local-or-token` geschuetzt.
+- Bridge Keypair/Enrollment und `bridge_hello` Challenge-Response sind noch offen.
 
 ### Teilweise umgesetzt / bereits gut
 
@@ -71,6 +70,9 @@ Warum:
 - Zod-Validierung fuer non-graphics Relay Commands vorhanden.
 - Payload-Limits / Timeouts vorhanden.
 - Pairing-Secret wird Bridge-seitig per ENV statt argv uebergeben.
+- WebApp Legacy Pairing-URL-Flow entfernt (manuelles Pairing bleibt).
+- Bridge Read- und Write-Endpoints sind nun breiter `local-or-token` geschuetzt (`/config*`, `/status`, `/devices`, `/outputs`, `/video/status`, `/relay/status`).
+- Relay Caller-Assertion (Signatur + TTL + Replay + Payload-Hash) ist implementiert; Rollout ueber Env-Key-Provisionierung erforderlich.
 
 ## 4. Zielbild (dieser Refactor)
 
@@ -177,8 +179,8 @@ Ziel: Relay signiert Commands nur fuer kryptografisch authentisierte WebApp-Serv
 
 #### Design (Phase 1)
 
-- [ ] Assertion-Format festlegen (JWT oder signiertes JSON; empfohlen: Ed25519/JWT)
-- [ ] Claims definieren:
+- [x] Assertion-Format festlegen (JWT oder signiertes JSON; empfohlen: Ed25519/JWT)
+- [x] Claims definieren:
   - `actor_user_id`
   - `org_id`
   - `role`
@@ -188,15 +190,15 @@ Ziel: Relay signiert Commands nur fuer kryptografisch authentisierte WebApp-Serv
   - `iat`, `exp`, `jti`
   - `iss`, `kid`
 - [ ] Key-Management fuer WebApp-Signing-Key definieren (private key nur serverseitig)
-- [ ] Relay-Verifikation (lokale Signaturpruefung + TTL + Replay) implementieren
-- [ ] Relay liest `org_id`/`actor`/`role` nur aus Assertion (nicht aus Request-Body)
-- [ ] WebApp API Routes (`/api/bridges/pair`, `/api/bridges/[bridgeId]/command`) senden Assertion mit
+- [x] Relay-Verifikation (lokale Signaturpruefung + TTL + Replay) implementieren
+- [x] Relay liest `org_id` aus Assertion (Fallback nur wenn Assertion in non-prod deaktiviert ist); `actor` wird aus Assertion geloggt
+- [x] WebApp API Routes (`/api/bridges/pair`, `/api/bridges/[bridgeId]/command`) senden Assertion mit
 
 #### Hardening
 
-- [ ] Replay-Store fuer Assertion `jti` im Relay (TTL-basiert)
-- [ ] `payload_hash` Uebereinstimmung erzwingen
-- [ ] Fehlversuche strukturiert loggen (ohne Payload)
+- [x] Replay-Store fuer Assertion `jti` im Relay (TTL-basiert)
+- [x] `payload_hash` Uebereinstimmung erzwingen
+- [x] Fehlversuche strukturiert loggen (ohne Payload)
 
 Akzeptanz:
 
@@ -358,10 +360,10 @@ Hinweis:
 
 | ID | Thema | Prioritaet | Status | Repo(s) | Latenz-Risiko | Abhaengigkeiten |
 | --- | --- | --- | --- | --- | --- | --- |
-| WS-03 | Relay Caller Auth | P0 | TODO | `broadify`, `relay` | Niedrig (offline verify) | Key mgmt |
+| WS-03 | Relay Caller Auth | P0 | IN_PROGRESS | `broadify`, `relay` | Niedrig (offline verify) | Key mgmt |
 | WS-04 | Bridge Keypair + `bridge_hello` Auth | P0 | TODO | `bridge`, `relay`, `broadify` (Pairing API) | Niedrig (connect only) | Enrollment schema |
-| WS-01 | Pairing URL Removal + manual UX | P1 | TODO | `broadify`, `bridge` | Keins | none |
-| WS-02 | Bridge Endpoint Hardening | P1 | TODO | `bridge` | Sehr niedrig | Token provisioning |
+| WS-01 | Pairing URL Removal + manual UX | P1 | IN_PROGRESS | `broadify`, `bridge` | Keins | none |
+| WS-02 | Bridge Endpoint Hardening | P1 | IN_PROGRESS | `bridge` | Sehr niedrig | Token provisioning |
 | WS-06 | Audit Logging in Supabase | P1 | TODO | `relay`, `broadify`?, Supabase | Niedrig (async) | Audit schema |
 | WS-00 | Doku-Korrektur | P1 | TODO | `bridge` docs | Keins | Ist-Stand review |
 | WS-05 | Rollen -> Scopes | P2 | TODO | `broadify`, `relay`, `bridge` | Niedrig | WS-03 |
