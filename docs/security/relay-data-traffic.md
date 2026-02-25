@@ -104,9 +104,43 @@ sequenceDiagram
 }
 ```
 
-### Relay -> Bridge (WebSocket)
+### Bridge <-> Relay (WebSocket)
 ```json
-{ "type": "bridge_hello", "bridgeId": "string", "version": "string?" }
+{
+  "type": "bridge_hello",
+  "bridgeId": "string",
+  "version": "string?",
+  "bridgeName": "string?",
+  "auth": { "bridgeKeyId": "string", "algorithm": "ed25519" }
+}
+```
+```json
+{
+  "type": "bridge_auth_challenge",
+  "bridgeId": "string",
+  "challengeId": "uuid",
+  "nonce": "uuid",
+  "iat": 1712345678,
+  "exp": 1712345693,
+  "bridgeKeyId": "string",
+  "algorithm": "ed25519"
+}
+```
+```json
+{
+  "type": "bridge_auth_response",
+  "bridgeId": "string",
+  "challengeId": "uuid",
+  "bridgeKeyId": "string",
+  "algorithm": "ed25519",
+  "signature": "base64url"
+}
+```
+```json
+{ "type": "bridge_auth_ok", "bridgeId": "string" }
+```
+```json
+{ "type": "bridge_auth_error", "bridgeId": "string?", "error": "string" }
 ```
 ```json
 {
@@ -243,7 +277,8 @@ Bridge:
 - Relay transportiert weiterhin volle Payloads und Responses (Content bleibt sensitiv).
 - Pairing ist ein separater Command und gate-keine anderen Commands.
 - Relay hat signierte Command-Envelope + Org-Bridge-Mapping; starke Client-Authentisierung am HTTP-Command-Einstieg (`POST /relay/command`) ist nun als Caller-Assertion integriert (Rollout ueber Env-Key-Provisionierung).
-- Relay registriert Bridges aktuell ueber `bridge_hello` ohne zusaetzliche Bridge-Authentisierung (Impersonation/Hijack-Risiko).
+- Relay verifiziert bei enrolled Bridges `bridge_hello` via Challenge-Response (Bridge Keypair / Enrollment Public Key).
+- Fuer ungepairte Bridges gibt es einen `pairing-only` Bootstrap-Modus (nur `bridge_pair_validate`), damit Erst-Pairing auch bei aktiviertem `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true` moeglich bleibt.
 - Payload-Logging wurde reduziert, dennoch bleibt Content-Exposure im Transportpfad bestehen.
 
 

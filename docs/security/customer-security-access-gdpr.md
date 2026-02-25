@@ -50,7 +50,7 @@ Hinweis: Keine Rechtsberatung. Diese Bewertung ist technisch-organisatorisch.
 - Desktop generiert 8-stelligen Pairing-Code mit 10 Minuten TTL (`src/electron/services/bridge-pairing.ts`).
 - Webapp-Pairing erfolgt manuell (Bridge ID + Pairing Code);
 - Pairing-Validation läuft über Relay-Command `bridge_pair_validate`.
-- Bei Erfolg verknuepft Webapp die Bridge mit Organisation in Supabase (`organization_bridges`).
+- Bei Erfolg verknuepft Webapp die Bridge mit Organisation in Supabase (`organization_bridges`) und registriert den Bridge-Enrollment-Public-Key in `bridge_enrollment_keys`.
 
 ## 4. Implementierte Sicherheitsmechanismen
 
@@ -64,6 +64,12 @@ Hinweis: Keine Rechtsberatung. Diese Bewertung ist technisch-organisatorisch.
 
 - HTTP body limits und WS payload limits: 2 MB in Bridge und Relay.
 - Timeouts fuer Command-Flows (Relay + Webapp API).
+
+### 4.2a Bridge -> Relay Auth (Device Enrollment)
+
+- Bridge erzeugt ein lokales Ed25519-Keypair fuer Relay-Authentisierung (`apps/bridge/src/services/relay-bridge-identity.ts`).
+- Relay authentisiert enrolled Bridges beim `bridge_hello` per Challenge-Response (Signatur gegen `bridge_enrollment_keys` in Supabase).
+- Ungepairte Bridges koennen im `pairing-only` Bootstrap-Modus verbinden (nur `bridge_pair_validate`), damit Erst-Pairing auch bei aktiviertem Hard-Enforcement moeglich bleibt.
 
 ### 4.3 Lokale Zugriffsschranken
 

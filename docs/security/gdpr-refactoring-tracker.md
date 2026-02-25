@@ -111,8 +111,8 @@ Status-Legende:
 Ziel: Falsche "umgesetzt"-Claims aus Sicherheits-/DSGVO-Dokus entfernen.
 
 - [x] `docs/security/formale-risikodokumentation-dpia-retention.md` Statusblock auf echten Ist-Stand korrigieren
-- [ ] Widersprueche zwischen `gdpr-implementation-plan.md`, `gdpr-compliance-bewertung-annahme.md`, `customer-security-access-gdpr.md` markieren/auflosen
-- [ ] Dokumente mit klarem Label versehen: `Ist-Stand`, `Annahme`, `Zielbild`
+- [x] Widersprueche zwischen `gdpr-implementation-plan.md`, `gdpr-compliance-bewertung-annahme.md`, `customer-security-access-gdpr.md` markieren/auflosen
+- [x] Dokumente mit klarem Label versehen: `Ist-Stand`, `Annahme`, `Zielbild`
 
 Akzeptanz:
 
@@ -344,12 +344,12 @@ Hinweis:
 
 ### Paket C (Governance + Nachvollziehbarkeit)
 
-- [x] WS-06 Audit Logging (Supabase)
+- [ ] WS-06 Audit Logging (Supabase)
 - [x] WS-00 Dokumentations-Korrektur
 
 ### Paket D (Betrieb / Compliance)
 
-- [x] WS-07 Retention / DSAR / Backup-Restore Operationalisierung
+- [ ] WS-07 Retention / DSAR / Backup-Restore Operationalisierung
 
 ### Paket E (spaeter)
 
@@ -361,10 +361,10 @@ Hinweis:
 | ----- | ------------------------------------------- | ---------- | ----------- | ------------------------------------------- | ------------------------ | ------------------ |
 | WS-03 | Relay Caller Auth                           | P0         | IN_PROGRESS | `broadify`, `relay`                         | Niedrig (offline verify) | Key mgmt           |
 | WS-04 | Bridge Keypair + `bridge_hello` Auth        | P0         | DONE        | `bridge`, `relay`, `broadify` (Pairing API) | Niedrig (connect only)   | Enrollment schema  |
-| WS-01 | Pairing URL Removal + manual UX             | P1         | IN_PROGRESS | `broadify`, `bridge`                        | Keins                    | none               |
-| WS-02 | Bridge Endpoint Hardening                   | P1         | IN_PROGRESS | `bridge`                                    | Sehr niedrig             | Token provisioning |
+| WS-01 | Pairing URL Removal + manual UX             | P1         | DONE        | `broadify`, `bridge`                        | Keins                    | none               |
+| WS-02 | Bridge Endpoint Hardening                   | P1         | DONE        | `bridge`                                    | Sehr niedrig             | Token provisioning |
 | WS-06 | Audit Logging in Supabase                   | P1         | TODO        | `relay`, `broadify`?, Supabase              | Niedrig (async)          | Audit schema       |
-| WS-00 | Doku-Korrektur                              | P1         | TODO        | `bridge` docs                               | Keins                    | Ist-Stand review   |
+| WS-00 | Doku-Korrektur                              | P1         | DONE        | `bridge` docs + `broadify` docs + `relay` README | Keins                | Ist-Stand review   |
 | WS-05 | Rollen -> Scopes                            | P2         | TODO        | `broadify`, `relay`, `bridge`               | Niedrig                  | WS-03              |
 | WS-07 | Retention/DSAR Betrieb                      | P2         | TODO        | `broadify`, ops/docs, Supabase              | Keins im hot path        | Audit + policy     |
 | WS-08 | Enterprise Hardening (mTLS/JIT/Rate limits) | P3         | TODO        | alle                                        | variabel                 | WS-03/WS-04        |
@@ -394,7 +394,8 @@ Hinweis:
 - Pairing speichert aktive Bridge-Enrollment-Keys in `bridge_enrollment_keys`
 - Bridge erzeugt Ed25519-Keypair lokal in `userDataDir/security/relay-bridge-identity.json`
 - Relay fordert bei vorhandenen Enrollment-Keys automatisch `bridge_hello` Challenge-Response an
-- Globales Hard-Enforcement kann spaeter aktiviert werden mit `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true`
+- Bei aktiviertem `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true` duerfen ungepairte Bridges im `pairing-only` Bootstrap-Modus verbinden (nur `bridge_pair_validate`)
+- Nach erfolgreichem Pairing schliesst das Relay die pairing-only WS-Verbindung kurz, damit die Bridge authentifiziert reconnectt
 
 ### Observability / Audit
 

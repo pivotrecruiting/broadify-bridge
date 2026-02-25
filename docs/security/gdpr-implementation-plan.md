@@ -96,7 +96,7 @@ Hinweis (Stand 25. Februar 2026):
   - Bridge erzeugt ein lokales Ed25519-Keypair (userDataDir, lokale Datei)
   - Pairing registriert den Public Key in Supabase (`bridge_enrollment_keys`)
   - Relay verifiziert `bridge_auth_response` vor Bridge-Registrierung (bei enrolled Bridges)
-- Fuer globales Hard-Enforcement aller Bridges kann spaeter `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true` gesetzt werden (Rollout-Phase).
+- Fuer globales Hard-Enforcement aller Bridges kann `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true` gesetzt werden; ungepairte Bridges nutzen dann einen `pairing-only` Bootstrap-Pfad (nur `bridge_pair_validate`), um das Erst-Pairing ohne Security-Bypass zu ermoeglichen.
 
 Organisatorisch:
 

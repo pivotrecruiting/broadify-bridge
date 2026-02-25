@@ -30,11 +30,11 @@ Dieses Dokument kombiniert:
 
 Der aktuelle Umsetzungsstand umfasst:
 
-- Pairing-Code wird in der Bridge lokal angezeigt; WebApp verarbeitet aktuell noch einen Legacy-URL-Flow mit Query/Hash (Refactor offen).
+- Pairing-Code wird in der Bridge lokal angezeigt; WebApp-Pairing erfolgt manuell (Bridge ID + Pairing-Code), kein Legacy-URL-Flow mehr.
 - Log- und Debug-Härtung ist technisch teilweise umgesetzt (Payload-Reduktion), formale interne Policy als separates Artefakt noch offen.
 - Incident-Response-Prozess als belastbares, versioniertes Artefakt ist noch offen.
-- Relay erzwingt Org-Bridge-Bindung fuer Nicht-Pairing-Commands, aber noch keine kryptografische Caller-Authentisierung am `POST /relay/command`-Einstieg.
-- Bridge authentisiert Relay-Commands (Signatur/TTL/Replay), aber die Bridge authentisiert sich am Relay bei `bridge_hello` noch nicht kryptografisch.
+- Relay erzwingt Org-Bridge-Bindung fuer Nicht-Pairing-Commands und verifiziert am `POST /relay/command` eine kryptografische Caller-Assertion (Signatur/TTL/Replay/Payload-Hash); produktiver Key-Rollout bleibt Betriebsaufgabe.
+- Bridge authentisiert Relay-Commands (Signatur/TTL/Replay) und authentisiert sich gegen das Relay bei `bridge_hello` per Keypair + Challenge-Response; fuer ungepairte Bridges existiert ein pairing-only Bootstrap-Pfad.
 - Phase-3-Standards sind in Teilen dokumentiert, aber nicht vollstaendig technisch/operativ nachgewiesen.
 - Phase 2 (Enterprise-Hardening) ist geplant, jedoch noch nicht umgesetzt.
 
