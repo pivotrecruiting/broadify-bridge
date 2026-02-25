@@ -12,12 +12,20 @@ interface OnboardingDialogProps {
   initialName?: string | null;
 }
 
-const URL_AGB = "https://broadify.de/agb";
-const URL_DATENSCHUTZ = "https://broadify.de/datenschutzerklärung";
+const URL_EULA_DESKTOP =
+  "https://broadify.de/recht/software-nutzungsbedingungen-broadify-bridge";
+const URL_PRIVACY_DESKTOP =
+  "https://broadify.de/recht/datenschutzhinweise-broadify-bridge";
+const URL_SECURITY_REMOTE =
+  "https://broadify.de/recht/security-remote-control-broadify-bridge";
+const URL_TECHNICAL_APPENDIX =
+  "https://broadify.de/recht/technischer-anhang-broadify-bridge";
 
-const TERMS_INTRO = `Mit der Nutzung der Broadify Bridge stimmen Sie unseren Nutzungsbedingungen (AGB) und der Verarbeitung Ihrer Daten gemäß unserer Datenschutzerklärung zu.
+const TERMS_INTRO = `Mit der Nutzung der Broadify Bridge Desktop-App stimmen Sie den Software-Nutzungsbedingungen (EULA) sowie den Datenschutzhinweisen fuer Desktop-App, lokale Bridge und Relay zu.
 
-Die Bridge überträgt Steuerungsdaten zwischen Ihren Geräten und optional unseren Cloud-Diensten. Personenbezogene Daten werden nur im erforderlichen Umfang und gemäß DSGVO verarbeitet.`;
+Die App startet eine lokal laufende Bridge-Komponente und kann - je nach Nutzung - ueber die Broadify WebApp remote gesteuert werden. Dabei koennen Steuerungs-, Status- und Inhaltsdaten ueber einen Relay-Dienst verarbeitet werden.
+
+Je nach Funktion verarbeitet die Software ausserdem lokale Netzwerk-, System- und Hardwaremetadaten (z. B. Netzwerkinterfaces, Ports, Displays oder angeschlossene Geraete) fuer Konfiguration, Betrieb und Diagnose.`;
 
 /**
  * Multi-step onboarding dialog: first Terms/AGB (must accept), then Bridge name.
@@ -130,17 +138,35 @@ export function OnboardingDialog({
               <button
                 type="button"
                 className="text-primary underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-primary rounded"
-                onClick={() => window.electron?.openExternal(URL_DATENSCHUTZ)}
+                onClick={() => window.electron?.openExternal(URL_PRIVACY_DESKTOP)}
               >
-                Datenschutzerklärung
+                Datenschutz (App &amp; Relay)
               </button>
               {" · "}
               <button
                 type="button"
                 className="text-primary underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-primary rounded"
-                onClick={() => window.electron?.openExternal(URL_AGB)}
+                onClick={() => window.electron?.openExternal(URL_EULA_DESKTOP)}
               >
-                AGB
+                EULA
+              </button>
+              {" · "}
+              <button
+                type="button"
+                className="text-primary underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-primary rounded"
+                onClick={() => window.electron?.openExternal(URL_SECURITY_REMOTE)}
+              >
+                Security/Remote-Control
+              </button>
+              {" · "}
+              <button
+                type="button"
+                className="text-primary underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-primary rounded"
+                onClick={() =>
+                  window.electron?.openExternal(URL_TECHNICAL_APPENDIX)
+                }
+              >
+                Technischer Anhang
               </button>
             </p>
 
@@ -153,29 +179,40 @@ export function OnboardingDialog({
                 aria-describedby="terms-desc"
               />
               <span id="terms-desc" className="text-sm text-foreground">
-                Mit der Bestätigung stimme ich der{" "}
+                Mit der Bestätigung stimme ich den{" "}
                 <button
                   type="button"
                   className="text-primary underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-primary rounded inline"
                   onClick={(e) => {
                     e.preventDefault();
-                    window.electron?.openExternal(URL_DATENSCHUTZ);
+                    window.electron?.openExternal(URL_PRIVACY_DESKTOP);
                   }}
                 >
-                  Datenschutzerklärung
-                </button>{" "}
-                und den{" "}
+                  Datenschutzhinweisen (App &amp; Relay)
+                </button>
+                {", der "}
                 <button
                   type="button"
                   className="text-primary underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-primary rounded inline"
                   onClick={(e) => {
                     e.preventDefault();
-                    window.electron?.openExternal(URL_AGB);
+                    window.electron?.openExternal(URL_EULA_DESKTOP);
                   }}
                 >
-                  AGB
-                </button>{" "}
-                von broadify.de zu und habe diese gelesen.
+                  EULA
+                </button>
+                {" sowie den "}
+                <button
+                  type="button"
+                  className="text-primary underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-primary rounded inline"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    window.electron?.openExternal(URL_SECURITY_REMOTE);
+                  }}
+                >
+                  Security-/Remote-Control-Hinweisen
+                </button>
+                {" von Broadify Bridge zu und habe diese gelesen."}
               </span>
             </label>
 
