@@ -40,7 +40,7 @@ export function Header({ bridgeStatus, onOpenDiagnostics }: HeaderProps) {
 
 /**
  * Web-App Link Component
- * Renders a button to open the web app with bridgeId query parameter in the default browser
+ * Renders a button to open the web app in the default browser.
  */
 function WebAppLink({ bridgeStatus }: { bridgeStatus: BridgeStatus }) {
   // Show link if bridge is running and webAppUrl is available
