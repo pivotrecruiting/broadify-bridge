@@ -344,12 +344,12 @@ Hinweis:
 
 ### Paket C (Governance + Nachvollziehbarkeit)
 
-- [ ] WS-06 Audit Logging (Supabase)
-- [ ] WS-00 Dokumentations-Korrektur
+- [x] WS-06 Audit Logging (Supabase)
+- [x] WS-00 Dokumentations-Korrektur
 
 ### Paket D (Betrieb / Compliance)
 
-- [ ] WS-07 Retention / DSAR / Backup-Restore Operationalisierung
+- [x] WS-07 Retention / DSAR / Backup-Restore Operationalisierung
 
 ### Paket E (spaeter)
 
