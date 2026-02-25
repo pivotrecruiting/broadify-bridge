@@ -196,7 +196,9 @@ export class GraphicsManager {
       );
     } else {
       try {
-        await validateOutputTargets(config.outputKey, config.targets);
+        await validateOutputTargets(config.outputKey, config.targets, {
+          currentOutputConfig: this.outputConfig,
+        });
         await validateOutputFormat(
           config.outputKey,
           config.targets,

@@ -1,4 +1,8 @@
-import type { GraphicsOutputKeyT, GraphicsTargetsT } from "./graphics-schemas.js";
+import type {
+  GraphicsOutputConfigT,
+  GraphicsOutputKeyT,
+  GraphicsTargetsT,
+} from "./graphics-schemas.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { deviceCache } from "../device-cache.js";
 import { listDecklinkDisplayModes } from "../../modules/decklink/decklink-helper.js";
@@ -9,6 +13,52 @@ import {
 } from "./output-format-policy.js";
 import { findDevicePort } from "./graphics-device-port-resolver.js";
 
+type ValidateOutputTargetsOptionsT = {
+  currentOutputConfig?: GraphicsOutputConfigT | null;
+};
+
+const isCurrentGraphicsPortTarget = (
+  portId: string,
+  currentOutputConfig?: GraphicsOutputConfigT | null
+): boolean => {
+  if (!currentOutputConfig) {
+    return false;
+  }
+  return (
+    currentOutputConfig.targets.output1Id === portId ||
+    currentOutputConfig.targets.output2Id === portId
+  );
+};
+
+const assertOutputPortAvailable = (
+  outputId: string,
+  outputMatch: ReturnType<typeof findDevicePort>,
+  options: ValidateOutputTargetsOptionsT,
+  errorMessage: string
+): void => {
+  if (!outputMatch) {
+    return;
+  }
+  if (outputMatch.port.status.available) {
+    return;
+  }
+
+  // Allow reconfiguration on the currently active DeckLink ports.
+  // They are expected to appear as busy while the existing helper still owns them,
+  // and the transition service will stop that helper before configuring the next one.
+  if (
+    outputMatch.device.type === "decklink" &&
+    isCurrentGraphicsPortTarget(outputId, options.currentOutputConfig)
+  ) {
+    getBridgeContext().logger.warn(
+      `[Graphics] Allowing reconfigure on busy current DeckLink port ${outputId}`
+    );
+    return;
+  }
+
+  throw new Error(errorMessage);
+};
+
 /**
  * Validate that output targets are consistent with the selected output mode.
  *
@@ -17,7 +67,8 @@ import { findDevicePort } from "./graphics-device-port-resolver.js";
  */
 export async function validateOutputTargets(
   outputKey: GraphicsOutputKeyT,
-  targets: GraphicsTargetsT
+  targets: GraphicsTargetsT,
+  options: ValidateOutputTargetsOptionsT = {}
 ): Promise<void> {
   if (outputKey === "key_fill_sdi") {
     if (!targets.output1Id || !targets.output2Id) {
@@ -45,9 +96,18 @@ export async function validateOutputTargets(
     if (output2Match.port.role !== "key") {
       throw new Error("Output 2 must be the SDI Key port");
     }
-    if (!output1Match.port.status.available || !output2Match.port.status.available) {
-      throw new Error("Selected output ports are not available");
-    }
+    assertOutputPortAvailable(
+      targets.output1Id,
+      output1Match,
+      options,
+      "Selected output ports are not available"
+    );
+    assertOutputPortAvailable(
+      targets.output2Id,
+      output2Match,
+      options,
+      "Selected output ports are not available"
+    );
   }
 
   if (outputKey === "video_sdi") {
@@ -65,9 +125,12 @@ export async function validateOutputTargets(
     if (output1Match.port.role === "key") {
       throw new Error("Video SDI cannot use the SDI Key port");
     }
-    if (!output1Match.port.status.available) {
-      throw new Error("Selected output port is not available");
-    }
+    assertOutputPortAvailable(
+      targets.output1Id,
+      output1Match,
+      options,
+      "Selected output port is not available"
+    );
   }
 
   if (outputKey === "video_hdmi") {
@@ -88,9 +151,12 @@ export async function validateOutputTargets(
         "Video HDMI requires an HDMI/DisplayPort/Thunderbolt output port"
       );
     }
-    if (!output1Match.port.status.available) {
-      throw new Error("Selected output port is not available");
-    }
+    assertOutputPortAvailable(
+      targets.output1Id,
+      output1Match,
+      options,
+      "Selected output port is not available"
+    );
   }
 }
 

@@ -19,6 +19,8 @@ const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
 const RELAY_COMMAND_TTL_SECONDS = 30;
 const RELAY_COMMAND_SKEW_SECONDS = 60;
 const MAX_JTI_CACHE_SIZE = 5000;
+const RELAY_WS_IDLE_TIMEOUT_MS =
+  Number(process.env.BRIDGE_RELAY_WS_IDLE_TIMEOUT_MS) || 90000;
 
 const RELAY_PUBLIC_KEY_PEM =
   process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY ||
@@ -379,6 +381,7 @@ export class RelayClient {
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 60000; // Max 60 seconds
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private relayLivenessTimer: NodeJS.Timeout | null = null;
   private isConnecting = false;
   private isShuttingDown = false;
   private lastSeen: Date | null = null;
@@ -453,6 +456,46 @@ export class RelayClient {
     return this.lastSeen;
   }
 
+  private markRelayActivity(source: string): void {
+    this.lastSeen = new Date();
+    this.resetRelayLivenessWatchdog();
+    this.logger.debug?.(`[RelayClient] Relay activity: ${source}`);
+  }
+
+  private resetRelayLivenessWatchdog(): void {
+    if (this.relayLivenessTimer) {
+      clearTimeout(this.relayLivenessTimer);
+      this.relayLivenessTimer = null;
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isShuttingDown) {
+      return;
+    }
+
+    this.relayLivenessTimer = setTimeout(() => {
+      this.relayLivenessTimer = null;
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      this.logger.warn(
+        `Relay connection idle for >${RELAY_WS_IDLE_TIMEOUT_MS}ms, terminating socket`
+      );
+      try {
+        this.ws.terminate();
+      } catch {
+        // Ignore terminate errors; close handler will drive reconnect.
+      }
+    }, RELAY_WS_IDLE_TIMEOUT_MS);
+    this.relayLivenessTimer.unref?.();
+  }
+
+  private clearRelayLivenessWatchdog(): void {
+    if (this.relayLivenessTimer) {
+      clearTimeout(this.relayLivenessTimer);
+      this.relayLivenessTimer = null;
+    }
+  }
+
   /**
    * Connect to relay server.
    *
@@ -480,18 +523,28 @@ export class RelayClient {
         this.isConnecting = false;
         this.reconnectAttempts = 0;
         this.reconnectDelay = 1000;
-        this.lastSeen = new Date();
+        this.markRelayActivity("open");
 
         // Send bridge_hello message
         this.sendHello();
       });
 
       this.ws.on("message", (data: WebSocket.Data) => {
+        this.markRelayActivity("message");
         this.handleMessage(data);
+      });
+
+      this.ws.on("ping", () => {
+        this.markRelayActivity("ping");
+      });
+
+      this.ws.on("pong", () => {
+        this.markRelayActivity("pong");
       });
 
       this.ws.on("close", () => {
         this.logger.warn("Disconnected from relay server");
+        this.clearRelayLivenessWatchdog();
         this.ws = null;
         this.isConnecting = false;
         this.lastSeen = null;
@@ -504,6 +557,7 @@ export class RelayClient {
 
       this.ws.on("error", (error: Error) => {
         this.logger.error(`WebSocket error: ${error.message}`);
+        this.clearRelayLivenessWatchdog();
         this.isConnecting = false;
       });
     } catch (error: unknown) {
@@ -821,6 +875,7 @@ export class RelayClient {
    */
   async disconnect(): Promise<void> {
     this.isShuttingDown = true;
+    this.clearRelayLivenessWatchdog();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

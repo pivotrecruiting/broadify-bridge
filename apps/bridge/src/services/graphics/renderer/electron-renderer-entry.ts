@@ -89,10 +89,29 @@ let rendererBackgroundMode = "transparent";
 let rendererClearColor: { r: number; g: number; b: number; a: number } | null =
   null;
 
+type RendererLayerBindingsT = {
+  cssVariables?: Record<string, string>;
+  textContent?: Record<string, string>;
+  textTypes?: Record<string, string>;
+  animationClass?: string;
+};
+
+type SingleLayerSnapshotT = {
+  layerId: string;
+  html: string;
+  css: string;
+  values: Record<string, unknown>;
+  bindings?: RendererLayerBindingsT;
+  layout: { x: number; y: number; scale: number };
+  backgroundMode: string;
+  zIndex?: number;
+};
+
 let singleWindow: BrowserWindow | null = null;
 let singleWindowReady: Promise<void> | null = null;
 let singleWindowFormat: { width: number; height: number; fps: number } | null =
   null;
+const singleLayerSnapshots = new Map<string, SingleLayerSnapshotT>();
 let frameBusModule: FrameBusModuleT | null = null;
 let frameBusWriter: FrameBusWriterT | null = null;
 let frameBusInitAttempted = false;
@@ -415,6 +434,65 @@ function applyRendererConfig(message: unknown): void {
   maybeSendReady();
 }
 
+async function destroySingleWindow(): Promise<void> {
+  if (!singleWindow) {
+    singleWindowReady = null;
+    singleWindowFormat = null;
+    return;
+  }
+
+  const windowToDestroy = singleWindow;
+  singleWindow = null;
+  singleWindowReady = null;
+  singleWindowFormat = null;
+
+  try {
+    if (!windowToDestroy.isDestroyed()) {
+      try {
+        windowToDestroy.webContents.stopPainting();
+      } catch {
+        // Ignore best-effort shutdown errors.
+      }
+      windowToDestroy.destroy();
+    }
+  } catch {
+    // Ignore teardown errors; the renderer process is ephemeral.
+  }
+}
+
+async function replaySingleWindowLayers(window: BrowserWindow): Promise<void> {
+  if (singleLayerSnapshots.size === 0) {
+    return;
+  }
+
+  const layers = Array.from(singleLayerSnapshots.values()).sort(
+    (a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)
+  );
+
+  for (const layer of layers) {
+    const payload = {
+      layerId: layer.layerId,
+      html: layer.html,
+      css: layer.css,
+      values: layer.values,
+      bindings: layer.bindings,
+      layout: layer.layout,
+      backgroundMode: layer.backgroundMode,
+      zIndex: layer.zIndex,
+    };
+    await window.webContents.executeJavaScript(
+      `window.__createLayer(${JSON.stringify(payload)});`,
+      true
+    );
+  }
+
+  try {
+    window.webContents.invalidate();
+  } catch {
+    // No-op; repaint is best-effort after replay.
+  }
+}
+
 async function ensureSingleWindow(
   width: number,
   height: number,
@@ -434,8 +512,10 @@ async function ensureSingleWindow(
         },
         "[GraphicsRenderer] Single renderer format mismatch",
       );
+      await destroySingleWindow();
+    } else {
+      return singleWindow;
     }
-    return singleWindow;
   }
 
   if (!singleWindow) {
@@ -559,6 +639,8 @@ async function ensureSingleWindow(
     }
   }
 
+  await replaySingleWindowLayers(singleWindow);
+
   return singleWindow;
 }
 
@@ -607,12 +689,7 @@ async function createLayer(message: {
   html: string;
   css: string;
   values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
+  bindings?: RendererLayerBindingsT;
   layout: { x: number; y: number; scale: number };
   backgroundMode: string;
   width: number;
@@ -620,6 +697,17 @@ async function createLayer(message: {
   fps: number;
   zIndex?: number;
 }): Promise<void> {
+  singleLayerSnapshots.set(message.layerId, {
+    layerId: message.layerId,
+    html: message.html,
+    css: message.css,
+    values: message.values,
+    bindings: message.bindings,
+    layout: message.layout,
+    backgroundMode: message.backgroundMode,
+    zIndex: message.zIndex,
+  });
+
   const window = await ensureSingleWindow(
     message.width,
     message.height,
@@ -653,13 +741,16 @@ async function createLayer(message: {
 async function updateValues(message: {
   layerId: string;
   values: Record<string, unknown>;
-  bindings?: {
-    cssVariables?: Record<string, string>;
-    textContent?: Record<string, string>;
-    textTypes?: Record<string, string>;
-    animationClass?: string;
-  };
+  bindings?: RendererLayerBindingsT;
 }): Promise<void> {
+  const existing = singleLayerSnapshots.get(message.layerId);
+  if (existing) {
+    singleLayerSnapshots.set(message.layerId, {
+      ...existing,
+      values: message.values,
+      bindings: message.bindings ?? existing.bindings,
+    });
+  }
   if (!singleWindow) {
     return;
   }
@@ -682,6 +773,14 @@ async function updateLayout(message: {
   layout: { x: number; y: number; scale: number };
   zIndex?: number;
 }): Promise<void> {
+  const existing = singleLayerSnapshots.get(message.layerId);
+  if (existing) {
+    singleLayerSnapshots.set(message.layerId, {
+      ...existing,
+      layout: message.layout,
+      ...(typeof message.zIndex === "number" ? { zIndex: message.zIndex } : {}),
+    });
+  }
   if (!singleWindow) {
     return;
   }
@@ -702,6 +801,7 @@ async function updateLayout(message: {
  * @param message Remove payload.
  */
 async function removeLayer(message: { layerId: string }): Promise<void> {
+  singleLayerSnapshots.delete(message.layerId);
   if (!singleWindow) {
     return;
   }
@@ -801,10 +901,8 @@ async function handleMessage(message: unknown): Promise<void> {
   }
 
   if (msg.type === "shutdown") {
-    if (singleWindow) {
-      singleWindow.destroy();
-      singleWindow = null;
-    }
+    singleLayerSnapshots.clear();
+    await destroySingleWindow();
     if (frameBusWriter) {
       frameBusWriter.close();
       frameBusWriter = null;
