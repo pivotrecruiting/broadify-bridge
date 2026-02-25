@@ -11,7 +11,51 @@ Beschreibt das Relay‑Protokoll (Message‑Typen, Command‑Envelope, Resultate
 ### bridge_hello
 Wird direkt nach Verbindungsaufbau gesendet.
 ```json
-{ "type": "bridge_hello", "bridgeId": "<id>", "version": "<semver>", "bridgeName": "<optional>" }
+{
+  "type": "bridge_hello",
+  "bridgeId": "<id>",
+  "version": "<semver>",
+  "bridgeName": "<optional>",
+  "auth": { "bridgeKeyId": "<key-id>", "algorithm": "ed25519" }
+}
+```
+
+### bridge_auth_challenge / bridge_auth_response
+Relay authentisiert enrolled Bridges nach `bridge_hello` per Challenge‑Response.
+
+Relay -> Bridge:
+```json
+{
+  "type": "bridge_auth_challenge",
+  "bridgeId": "<id>",
+  "challengeId": "<uuid>",
+  "nonce": "<uuid>",
+  "iat": 1712345678,
+  "exp": 1712345693,
+  "bridgeKeyId": "<key-id>",
+  "algorithm": "ed25519"
+}
+```
+
+Bridge -> Relay:
+```json
+{
+  "type": "bridge_auth_response",
+  "bridgeId": "<id>",
+  "challengeId": "<uuid>",
+  "bridgeKeyId": "<key-id>",
+  "algorithm": "ed25519",
+  "signature": "<base64url>"
+}
+```
+
+Relay -> Bridge (Ergebnis):
+```json
+{ "type": "bridge_auth_ok", "bridgeId": "<id>" }
+```
+oder
+```json
+{ "type": "bridge_auth_error", "bridgeId": "<id>", "error": "string" }
 ```
 
 ### command
@@ -58,7 +102,20 @@ Validiert einen Pairing‑Code gegen die Bridge‑Context‑Daten (Code + Ablauf
 
 Antwort (success):
 ```json
-{ "type": "command_result", "requestId": "<uuid>", "success": true, "data": { "bridgeId": "<id>", "bridgeName": "<name|null>" } }
+{
+  "type": "command_result",
+  "requestId": "<uuid>",
+  "success": true,
+  "data": {
+    "bridgeId": "<id>",
+    "bridgeName": "<name|null>",
+    "relayEnrollment": {
+      "keyId": "<key-id>",
+      "algorithm": "ed25519",
+      "publicKeyPem": "-----BEGIN PUBLIC KEY-----..."
+    }
+  }
+}
 ```
 
 ### command_result
@@ -74,6 +131,10 @@ sequenceDiagram
   participant Bridge as RelayClient
   participant Router as CommandRouter
 
+  Bridge->>Relay: bridge_hello
+  Relay->>Bridge: bridge_auth_challenge (enrolled bridge)
+  Bridge->>Relay: bridge_auth_response
+  Relay->>Bridge: bridge_auth_ok
   Relay->>Bridge: command
   Bridge->>Router: handleCommand
   Router-->>Bridge: result
@@ -89,6 +150,8 @@ sequenceDiagram
   (`relay-command-schemas.ts`) und im `GraphicsManager`
 - Commands sind signiert (Ed25519) und enthalten `meta` + `signature`
 - Bridge validiert Signatur, TTL und Replay‑Schutz (jti‑Cache)
+- Bridge authentisiert sich gegen Relay per lokalem Ed25519-Keypair + Challenge‑Response (`bridge_hello`-Pfad)
+- Fuer ungepairte Bridges erlaubt das Relay einen `pairing-only` Bootstrap-Pfad (nur `bridge_pair_validate`)
 
 ## Key Distribution
 - Relay stellt Public Keys via `/.well-known/jwks.json` bereit (`kid` fuer Rotation).

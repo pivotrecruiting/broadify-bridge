@@ -1,6 +1,10 @@
 import { WebSocket } from "ws";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { commandRouter, isRelayCommand } from "./command-router.js";
+import {
+  getRelayBridgeEnrollmentPublicKey,
+  signRelayBridgeAuthChallenge,
+} from "./relay-bridge-identity.js";
 import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
@@ -161,6 +165,10 @@ interface BridgeHelloMessage {
   bridgeId: string;
   version: string;
   bridgeName?: string;
+  auth?: {
+    bridgeKeyId: string;
+    algorithm: "ed25519";
+  };
 }
 
 interface BridgeEventMessage {
@@ -194,7 +202,42 @@ interface CommandResultMessage {
   error?: string;
 }
 
-type RelayMessage = BridgeHelloMessage | RelayCommandMessage;
+interface RelayBridgeAuthChallengeMessage {
+  type: "bridge_auth_challenge";
+  bridgeId: string;
+  challengeId: string;
+  nonce: string;
+  iat: number;
+  exp: number;
+  bridgeKeyId: string;
+  algorithm: "ed25519";
+}
+
+interface RelayBridgeAuthOkMessage {
+  type: "bridge_auth_ok";
+  bridgeId: string;
+}
+
+interface RelayBridgeAuthErrorMessage {
+  type: "bridge_auth_error";
+  bridgeId?: string;
+  error: string;
+}
+
+interface BridgeAuthResponseMessage {
+  type: "bridge_auth_response";
+  bridgeId: string;
+  challengeId: string;
+  bridgeKeyId: string;
+  algorithm: "ed25519";
+  signature: string;
+}
+
+type RelayMessage =
+  | RelayCommandMessage
+  | RelayBridgeAuthChallengeMessage
+  | RelayBridgeAuthOkMessage
+  | RelayBridgeAuthErrorMessage;
 
 type RelayCommandMeta = {
   bridgeId: string;
@@ -493,9 +536,20 @@ export class RelayClient {
     if (this.bridgeName) {
       message.bridgeName = this.bridgeName;
     }
-
-    this.send(message);
-    this.logger.debug?.(`Sent bridge_hello with bridgeId: ${this.bridgeId}`);
+    void getRelayBridgeEnrollmentPublicKey()
+      .then((identity) => {
+        message.auth = {
+          bridgeKeyId: identity.keyId,
+          algorithm: identity.algorithm,
+        };
+      })
+      .catch(() => {
+        // Best-effort capability advertisement; relay can still fall back during rollout.
+      })
+      .finally(() => {
+        this.send(message);
+        this.logger.debug?.(`Sent bridge_hello with bridgeId: ${this.bridgeId}`);
+      });
   }
 
   /**
@@ -520,7 +574,14 @@ export class RelayClient {
       const message: RelayMessage = JSON.parse(messageText);
       this.lastSeen = new Date();
 
-      if (message.type === "command") {
+      if (message.type === "bridge_auth_challenge") {
+        await this.handleBridgeAuthChallenge(message);
+      } else if (message.type === "bridge_auth_ok") {
+        this.logger.info("Relay bridge auth successful");
+      } else if (message.type === "bridge_auth_error") {
+        this.logger.warn(`Relay bridge auth failed: ${message.error}`);
+        this.ws?.close();
+      } else if (message.type === "command") {
         await this.handleCommand(message);
       } else {
         this.logger.warn(
@@ -531,6 +592,44 @@ export class RelayClient {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       this.logger.error(`Error handling message: ${errorMessage}`);
+    }
+  }
+
+  private async handleBridgeAuthChallenge(
+    message: RelayBridgeAuthChallengeMessage,
+  ): Promise<void> {
+    if (message.bridgeId !== this.bridgeId) {
+      this.logger.warn("Ignored bridge auth challenge for different bridgeId");
+      return;
+    }
+
+    try {
+      const { bridgeKeyId, algorithm, signature } =
+        await signRelayBridgeAuthChallenge({
+          bridgeId: message.bridgeId,
+          challengeId: message.challengeId,
+          nonce: message.nonce,
+          iat: message.iat,
+          exp: message.exp,
+          bridgeKeyId: message.bridgeKeyId,
+          algorithm: message.algorithm,
+        });
+
+      const response: BridgeAuthResponseMessage = {
+        type: "bridge_auth_response",
+        bridgeId: message.bridgeId,
+        challengeId: message.challengeId,
+        bridgeKeyId,
+        algorithm,
+        signature,
+      };
+      this.send(response);
+      this.logger.debug?.("Sent bridge_auth_response");
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Bridge auth signing failed";
+      this.logger.warn(`Failed to sign bridge auth challenge: ${errorMessage}`);
+      this.ws?.close();
     }
   }
 

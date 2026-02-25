@@ -3,6 +3,7 @@ import { runtimeConfig } from "../services/runtime-config.js";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { deviceCache } from "../services/device-cache.js";
 import { isDevelopmentMode } from "../services/dev-mode.js";
+import { getAuthFailure } from "./route-guards.js";
 import type { FastifyInstance } from "fastify";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 
@@ -34,6 +35,17 @@ const ConfigRequestSchema = z.object({
 export async function registerConfigRoute(
   fastify: FastifyInstance
 ): Promise<void> {
+  fastify.addHook("preHandler", async (request, reply) => {
+    const authFailure = getAuthFailure(request);
+    if (!authFailure) {
+      return;
+    }
+    return reply.code(authFailure.status).send({
+      success: false,
+      error: authFailure.message,
+    });
+  });
+
   /**
    * Validate and find device by ID or name.
    *

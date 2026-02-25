@@ -49,7 +49,12 @@ export type EventPayloadMapping = {
   statistics: Statistics;
   getStaticData: StaticData;
   appGetVersion: string;
-  bridgeGetProfile: { bridgeId: string; bridgeName: string | null };
+  bridgeGetProfile: {
+    bridgeId: string;
+    bridgeName: string | null;
+    termsAcceptedAt: string | null;
+  };
+  bridgeAcceptTerms: { success: boolean; error?: string };
   bridgeSetName: { success: boolean; error?: string };
   bridgeStart: { success: boolean; error?: string; actualPort?: number };
   bridgeStop: { success: boolean; error?: string };

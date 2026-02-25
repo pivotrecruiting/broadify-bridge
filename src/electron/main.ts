@@ -290,10 +290,9 @@ function getWebAppBaseUrl(): string | null {
   }
 
   // Fallback to defaults (consistent with RELAY_URL pattern)
-  // TODO: Update prod url when going live
   return isDev()
     ? "http://localhost:3000"
-    : "https://studio-control-pi.vercel.app";
+    : "https://app.broadify.de";
 }
 
 /**
@@ -312,16 +311,10 @@ function getInterfaceType(
 }
 
 /**
- * Build Web-App URL with bridgeId query parameter.
+ * Build Web-App URL without bridge-specific query parameters.
  * Consistent with how RELAY_URL is handled: env var with fallback to default
  */
-function buildWebAppUrl(
-  bridgeId: string,
-): string | null {
-  if (!bridgeId) {
-    return null;
-  }
-
+function buildWebAppUrl(): string | null {
   // Get base URL based on environment (consistent with RELAY_URL pattern)
   const baseUrl = getWebAppBaseUrl();
 
@@ -333,9 +326,7 @@ function buildWebAppUrl(
   }
 
   try {
-    const url = new URL(baseUrl);
-    url.searchParams.set("bridgeId", bridgeId);
-    return url.toString();
+    return new URL(baseUrl).toString();
   } catch (error) {
     console.error("[WebApp] Error building web app URL:", error);
     return null;
@@ -399,10 +390,31 @@ if (!isRendererProcess) {
       return {
         bridgeId: profile.bridgeId,
         bridgeName: profile.bridgeName,
+        termsAcceptedAt: profile.termsAcceptedAt,
       };
     });
 
+    ipcMainHandle("bridgeAcceptTerms", () => {
+      try {
+        bridgeProfile.setTermsAccepted();
+        return { success: true };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Unknown error";
+        return { success: false, error: errorMessage };
+      }
+    });
+
     ipcMainHandle("bridgeSetName", async (event, bridgeName: string) => {
+      // Require terms accepted first; cannot be bypassed via devtools
+      const profile = bridgeProfile.getProfile();
+      if (!profile.termsAcceptedAt) {
+        return {
+          success: false,
+          error:
+            "Terms and conditions must be accepted before setting the bridge name.",
+        };
+      }
       const parsedName = BRIDGE_NAME_SCHEMA.safeParse(bridgeName);
       if (!parsedName.success) {
         return {
@@ -429,6 +441,15 @@ if (!isRendererProcess) {
       const bridgeId = bridgeIdentity.getBridgeId();
       const profile = bridgeProfile.getProfile();
       const bridgeName = profile.bridgeName;
+
+      // Enforce terms acceptance in main process; cannot be bypassed via UI/devtools
+      if (!profile.termsAcceptedAt) {
+        return {
+          success: false,
+          error:
+            "Terms and conditions must be accepted before starting the bridge.",
+        };
+      }
 
       if (!bridgeName) {
         return {
@@ -513,7 +534,7 @@ if (!isRendererProcess) {
         }
 
         // Build web app URL immediately so link is available right away
-        const webAppUrl = buildWebAppUrl(bridgeId);
+        const webAppUrl = buildWebAppUrl();
         if (webAppUrl) {
           initialStatus.webAppUrl = webAppUrl;
         }
@@ -545,11 +566,9 @@ if (!isRendererProcess) {
           (status) => {
             // console.log("[Bridge] Health check status update:", status);
 
-            // Build web app URL with bridgeId if available
+            // Build web app URL for the UI link
             // URL will be displayed as a link in the UI instead of auto-opening
             // Must be done BEFORE sending status to UI
-            // Use bridgeId from status (from relay) or fallback to bridgeIdentity
-            const bridgeIdForUrl = status.bridgeId || bridgeId;
             const pairingInfo = bridgePairing.getPairingInfo();
             if (pairingInfo) {
               status.pairingCode = pairingInfo.code;
@@ -560,11 +579,9 @@ if (!isRendererProcess) {
             }
             status.bridgeName = status.bridgeName || bridgeName;
 
-            if (bridgeIdForUrl) {
-              const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
-              if (webAppUrl) {
-                status.webAppUrl = webAppUrl;
-              }
+            const webAppUrl = buildWebAppUrl();
+            if (webAppUrl) {
+              status.webAppUrl = webAppUrl;
             }
 
             if (mainWindow) {
@@ -647,14 +664,10 @@ if (!isRendererProcess) {
         status.pairingExpired = pairingInfo.expired;
       }
 
-      // Build web app URL with bridgeId if available
-      // Use bridgeId from status (from relay) or fallback to bridgeIdentity
-      const bridgeIdForUrl = status.bridgeId || bridgeIdentity.getBridgeId();
-      if (bridgeIdForUrl) {
-        const webAppUrl = buildWebAppUrl(bridgeIdForUrl);
-        if (webAppUrl) {
-          status.webAppUrl = webAppUrl;
-        }
+      // Build web app URL for the UI link
+      const webAppUrl = buildWebAppUrl();
+      if (webAppUrl) {
+        status.webAppUrl = webAppUrl;
       }
 
       // console.log(`[Bridge] GetStatus result:`, status);

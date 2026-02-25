@@ -26,7 +26,7 @@ Diese Seite beschreibt die wichtigsten Schnittstellen zwischen Desktop‑App und
 - `POST /logs/clear`
 
 ## Bridge Internal (Relay)
-- `bridge_hello`, `command`, `command_result`
+- `bridge_hello`, `bridge_auth_challenge`, `bridge_auth_response`, `bridge_auth_ok`, `bridge_auth_error`, `command`, `command_result`
 - Command: `bridge_pair_validate` (Pairing‑Code prüfen)
 
 ## Payloads

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import { moduleRegistry } from "../modules/module-registry.js";
+import { enforceLocalOrToken } from "./route-guards.js";
 
 /**
  * Register devices route
@@ -29,6 +30,9 @@ export async function registerDevicesRoute(
   };
 
   fastify.get("/devices", async (request, reply) => {
+    if (!enforceLocalOrToken(request, reply)) {
+      return;
+    }
     try {
       const refresh = request.query as { refresh?: string };
       const now = Date.now();

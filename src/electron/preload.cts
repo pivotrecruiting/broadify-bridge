@@ -12,6 +12,7 @@ type ElectronApi = {
   getStaticData: () => Promise<EventPayloadMapping["getStaticData"]>;
   appGetVersion: () => Promise<EventPayloadMapping["appGetVersion"]>;
   bridgeGetProfile: () => Promise<EventPayloadMapping["bridgeGetProfile"]>;
+  bridgeAcceptTerms: () => Promise<EventPayloadMapping["bridgeAcceptTerms"]>;
   bridgeSetName: (
     bridgeName: string
   ) => Promise<EventPayloadMapping["bridgeSetName"]>;
@@ -70,6 +71,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
   getStaticData: () => ipcInvoke("getStaticData"),
   appGetVersion: () => ipcInvoke("appGetVersion"),
   bridgeGetProfile: () => ipcInvoke("bridgeGetProfile"),
+  bridgeAcceptTerms: () => ipcInvoke("bridgeAcceptTerms"),
   bridgeSetName: (bridgeName: string) =>
     ipcInvoke("bridgeSetName", bridgeName),
   bridgeStart: (config: BridgeConfig) => ipcInvoke("bridgeStart", config),

@@ -37,8 +37,8 @@ sequenceDiagram
   participant Router as CommandRouter
 
   WebApp->>Api: POST /api/bridges/[bridgeId]/command
-  Api->>Relay: POST /relay/command { bridgeId, command, payload }
-  Relay->>Bridge: WS message { type: "command", requestId, command, payload }
+  Api->>Relay: POST /relay/command { bridgeId, orgId, command, payload }
+  Relay->>Bridge: WS message { type: "command", requestId, command, payload, meta, signature }
   Bridge->>Router: handleCommand(command, payload)
   Router-->>Bridge: result { success, data|error }
   Bridge-->>Relay: WS message { type: "command_result", requestId, success, data|error }
@@ -56,7 +56,7 @@ sequenceDiagram
   participant Router as CommandRouter
 
   WebApp->>Api: POST /api/bridges/pair { bridgeId, pairingCode }
-  Api->>Relay: POST /relay/command { bridgeId, command: "bridge_pair_validate", payload: { pairingCode } }
+  Api->>Relay: POST /relay/command { bridgeId, orgId, command: "bridge_pair_validate", payload: { pairingCode } }
   Relay->>Bridge: WS command bridge_pair_validate
   Bridge->>Router: handleCommand
   Router-->>Bridge: { success, data|error }
@@ -80,12 +80,67 @@ sequenceDiagram
 ### Next.js API -> Relay (HTTP)
 `POST /relay/command`
 ```json
-{ "bridgeId": "string", "orgId": "string", "command": "string", "payload": {} }
+{
+  "bridgeId": "string",
+  "orgId": "string",
+  "command": "string",
+  "payload": {},
+  "callerAuth": {
+    "claims": {
+      "iss": "broadify-webapp",
+      "actor_user_id": "uuid",
+      "org_id": "uuid",
+      "role": "owner|admin|member|viewer",
+      "bridge_id": "uuid",
+      "command": "string",
+      "payload_hash": "base64url",
+      "iat": 1712345678,
+      "exp": 1712345708,
+      "jti": "uuid",
+      "kid": "string"
+    },
+    "signature": "base64url"
+  }
+}
 ```
 
-### Relay -> Bridge (WebSocket)
+### Bridge <-> Relay (WebSocket)
 ```json
-{ "type": "bridge_hello", "bridgeId": "string", "version": "string?" }
+{
+  "type": "bridge_hello",
+  "bridgeId": "string",
+  "version": "string?",
+  "bridgeName": "string?",
+  "auth": { "bridgeKeyId": "string", "algorithm": "ed25519" }
+}
+```
+```json
+{
+  "type": "bridge_auth_challenge",
+  "bridgeId": "string",
+  "challengeId": "uuid",
+  "nonce": "uuid",
+  "iat": 1712345678,
+  "exp": 1712345693,
+  "bridgeKeyId": "string",
+  "algorithm": "ed25519"
+}
+```
+```json
+{
+  "type": "bridge_auth_response",
+  "bridgeId": "string",
+  "challengeId": "uuid",
+  "bridgeKeyId": "string",
+  "algorithm": "ed25519",
+  "signature": "base64url"
+}
+```
+```json
+{ "type": "bridge_auth_ok", "bridgeId": "string" }
+```
+```json
+{ "type": "bridge_auth_error", "bridgeId": "string?", "error": "string" }
 ```
 ```json
 {
@@ -209,7 +264,7 @@ Bridge:
 
 ## Validation and sanitization points
 - WebApp API: validates only that command is a string; does not validate payload structure.
-- Relay: signs commands (Ed25519) and forwards payload as-is.
+- Relay: verifies WebApp caller assertion (signature + TTL + replay + payload hash), then signs Relay->Bridge commands (Ed25519) and forwards payload as-is.
 - Relay: enforces org↔bridge binding (Supabase `organization_bridges`).
 - Bridge:
   - Graphics payloads validated by Zod schemas and template sanitization.
@@ -221,7 +276,9 @@ Bridge:
 ## Security observations relevant to data traffic
 - Relay transportiert weiterhin volle Payloads und Responses (Content bleibt sensitiv).
 - Pairing ist ein separater Command und gate-keine anderen Commands.
-- Relay akzeptiert Command/Payload fuer jede verbundene bridgeId (AuthN/AuthZ ist Phase-1).
+- Relay hat signierte Command-Envelope + Org-Bridge-Mapping; starke Client-Authentisierung am HTTP-Command-Einstieg (`POST /relay/command`) ist nun als Caller-Assertion integriert (Rollout ueber Env-Key-Provisionierung).
+- Relay verifiziert bei enrolled Bridges `bridge_hello` via Challenge-Response (Bridge Keypair / Enrollment Public Key).
+- Fuer ungepairte Bridges gibt es einen `pairing-only` Bootstrap-Modus (nur `bridge_pair_validate`), damit Erst-Pairing auch bei aktiviertem `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true` moeglich bleibt.
 - Payload-Logging wurde reduziert, dennoch bleibt Content-Exposure im Transportpfad bestehen.
 
 

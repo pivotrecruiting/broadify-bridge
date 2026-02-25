@@ -31,6 +31,11 @@ declare global {
       bridgeGetProfile: () => Promise<{
         bridgeId: string;
         bridgeName: string | null;
+        termsAcceptedAt: string | null;
+      }>;
+      bridgeAcceptTerms: () => Promise<{
+        success: boolean;
+        error?: string;
       }>;
       bridgeSetName: (bridgeName: string) => Promise<{
         success: boolean;

@@ -33,6 +33,18 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SKIP_DECKLINK_HELPER_BUILD: "1"
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+      AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+      AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME }}
+      AZURE_CODE_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER_NAME }}
       DECKLINK_HELPER_URL_ARM64: ${{ secrets.DECKLINK_HELPER_URL_ARM64 }}
       DECKLINK_HELPER_SHA256_ARM64: ${{ secrets.DECKLINK_HELPER_SHA256_ARM64 }}
       DECKLINK_HELPER_URL_X64: ${{ secrets.DECKLINK_HELPER_URL_X64 }}
@@ -97,8 +109,130 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Validate Windows Trusted Signing configuration
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REQUIRED_VARS=(
+            AZURE_CODE_SIGNING_ENDPOINT
+            AZURE_CODE_SIGNING_ACCOUNT_NAME
+            AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME
+            AZURE_CODE_SIGNING_PUBLISHER_NAME
+          )
+
+          MISSING=()
+          for var_name in "${REQUIRED_VARS[@]}"; do
+            if [[ -z "${!var_name:-}" ]]; then
+              MISSING+=("$var_name")
+            fi
+          done
+
+          if (( ${#MISSING[@]} > 0 )); then
+            echo "Missing Windows Trusted Signing secrets: ${MISSING[*]}" >&2
+            exit 1
+          fi
+
+      - name: Import macOS signing certificate for native helper codesign
+        if: matrix.os == 'macos-15' && env.CSC_LINK != '' && env.CSC_KEY_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/broadify-signing-cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/broadify-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+          if [[ "${CSC_LINK}" == file://* ]]; then
+            cp "${CSC_LINK#file://}" "$CERT_PATH"
+          elif [[ "${CSC_LINK}" == http://* || "${CSC_LINK}" == https://* ]]; then
+            curl -fsSL "$CSC_LINK" -o "$CERT_PATH"
+          else
+            CERT_B64="$CSC_LINK"
+            if [[ "$CERT_B64" == data:*base64,* ]]; then
+              CERT_B64="${CERT_B64#*,}"
+            fi
+            printf '%s' "$CERT_B64" | base64 -D > "$CERT_PATH"
+          fi
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CSC_KEY_PASSWORD" \
+            -f pkcs12 \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          CURRENT_KEYCHAINS=$(security list-keychains -d user | tr -d '"')
+          # Keep existing keychains in the search list so other tooling still works.
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $CURRENT_KEYCHAINS
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Prepare Apple notary API key file
+        if: matrix.os == 'macos-15' && env.APPLE_API_KEY != '' && env.APPLE_API_KEY_ID != '' && env.APPLE_API_ISSUER != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+
+          if [[ "${APPLE_API_KEY}" == "-----BEGIN PRIVATE KEY-----"* ]]; then
+            # Secret contains raw .p8 contents (multiline PEM).
+            printf '%s' "$APPLE_API_KEY" > "$NOTARY_KEY_PATH"
+          else
+            KEY_B64="$APPLE_API_KEY"
+            if [[ "$KEY_B64" == data:*base64,* ]]; then
+              KEY_B64="${KEY_B64#*,}"
+            fi
+            # Secret contains base64-encoded .p8 content.
+            printf '%s' "$KEY_B64" | base64 -D > "$NOTARY_KEY_PATH"
+          fi
+
+          chmod 600 "$NOTARY_KEY_PATH"
+          echo "APPLE_API_KEY=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
+
       - name: Build Electron App
         run: npm run ${{ matrix.dist_script }} -- --publish=never
+
+      - name: Verify Windows signatures
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $signtool = (Get-Command signtool -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+          if (-not $signtool) {
+            $candidates = @()
+            $candidates += Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
+            $candidates += Get-ChildItem "$env:LOCALAPPDATA\TrustedSigning\Microsoft.Windows.SDK.BuildTools" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
+            $signtool = $candidates |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $signtool) {
+            throw "signtool.exe not found on runner (PATH/Windows SDK/TrustedSigning cache)."
+          }
+          Write-Host "Using signtool:" $signtool
+
+          $files = Get-ChildItem -Path dist -Recurse -Include *.exe,*.msi
+          if (-not $files) {
+            throw "No Windows artifacts found in dist/ for signature verification."
+          }
+          foreach ($file in $files) {
+            Write-Host "Verifying signature:" $file.FullName
+            & $signtool verify /pa /v $file.FullName
+          }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

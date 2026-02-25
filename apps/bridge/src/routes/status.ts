@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeConfig } from "../services/runtime-config.js";
 import { engineAdapter } from "../services/engine-adapter.js";
+import { enforceLocalOrToken } from "./route-guards.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -48,7 +49,10 @@ export async function registerStatusRoute(
 ): Promise<void> {
   const { config } = options;
 
-  fastify.get("/status", async () => {
+  fastify.get("/status", async (request, reply) => {
+    if (!enforceLocalOrToken(request, reply)) {
+      return;
+    }
     const engineState = engineAdapter.getState();
     const runtimeConfigData = runtimeConfig.getConfig();
 

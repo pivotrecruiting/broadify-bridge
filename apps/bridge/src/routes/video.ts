@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import { enforceLocalOrToken } from "./route-guards.js";
 
 /**
  * Video status type
@@ -22,7 +23,10 @@ export async function registerVideoRoute(
    * V1: Returns "not-configured" as placeholder
    * V2: Will return actual video configuration status
    */
-  fastify.get("/video/status", async (_request, reply) => {
+  fastify.get("/video/status", async (request, reply) => {
+    if (!enforceLocalOrToken(request, reply)) {
+      return;
+    }
     try {
       // V1: Always return "not-configured"
       // V2: Check actual video configuration state
@@ -44,4 +48,3 @@ export async function registerVideoRoute(
     }
   });
 }
-

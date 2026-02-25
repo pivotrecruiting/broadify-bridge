@@ -1,7 +1,7 @@
 import type { BridgeConfig, BridgeStatus } from "../types.js";
 
 const HEALTH_CHECK_INTERVAL = 2000; // 2 seconds
-const HEALTH_CHECK_TIMEOUT = 3000; // 3 seconds timeout
+const HEALTH_CHECK_TIMEOUT = 5000; // 5 seconds timeout //TODO: maybe increase or decrease to stabilize bridge connection
 
 /**
  * Check bridge health by calling /status endpoint.
@@ -10,7 +10,7 @@ const HEALTH_CHECK_TIMEOUT = 3000; // 3 seconds timeout
  * @returns BridgeStatus with reachability and metadata.
  */
 export async function checkBridgeHealth(
-  config: BridgeConfig | null
+  config: BridgeConfig | null,
 ): Promise<BridgeStatus> {
   if (!config) {
     // console.log("[HealthCheck] No config provided");
@@ -32,7 +32,7 @@ export async function checkBridgeHealth(
     const controller = new AbortController();
     const timeoutId = setTimeout(
       () => controller.abort(),
-      HEALTH_CHECK_TIMEOUT
+      HEALTH_CHECK_TIMEOUT,
     );
 
     const response = await fetch(url, {
@@ -60,8 +60,8 @@ export async function checkBridgeHealth(
       console.log(
         `[HealthCheck] Got non-JSON response (first 100 chars): ${text.substring(
           0,
-          100
-        )}`
+          100,
+        )}`,
       );
       return {
         running: false,
@@ -80,7 +80,7 @@ export async function checkBridgeHealth(
       const relayController = new AbortController();
       const relayTimeoutId = setTimeout(
         () => relayController.abort(),
-        HEALTH_CHECK_TIMEOUT
+        HEALTH_CHECK_TIMEOUT,
       );
 
       const relayResponse = await fetch(relayUrl, {
@@ -137,7 +137,7 @@ export async function checkBridgeHealth(
 export function startHealthCheckPolling(
   config: BridgeConfig | null,
   onStatusUpdate: (status: BridgeStatus) => void,
-  isProcessRunning?: () => boolean
+  isProcessRunning?: () => boolean,
 ): () => void {
   let intervalId: NodeJS.Timeout | null = null;
 

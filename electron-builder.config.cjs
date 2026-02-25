@@ -1,0 +1,76 @@
+const baseConfig = require("./electron-builder.json");
+
+const config = JSON.parse(JSON.stringify(baseConfig));
+
+const MAC_ONLY_NATIVE_RESOURCES = new Set([
+  "apps/bridge/native/decklink-helper/decklink-helper",
+  "apps/bridge/native/display-helper/display-helper",
+]);
+
+// Keep macOS-only helper binaries out of Windows/Linux packaging to avoid missing-file warnings.
+const macOnlyResources = (config.extraResources || []).filter((entry) =>
+  MAC_ONLY_NATIVE_RESOURCES.has(entry.from),
+);
+
+config.extraResources = (config.extraResources || []).filter(
+  (entry) => !MAC_ONLY_NATIVE_RESOURCES.has(entry.from),
+);
+
+config.mac = config.mac || {};
+config.mac.extraResources = [
+  ...(config.mac.extraResources || []),
+  ...macOnlyResources,
+];
+
+if (config.win) {
+  const productName =
+    typeof config.productName === "string" && config.productName.trim() !== ""
+      ? config.productName.trim()
+      : "App";
+  const windowsArtifactBaseName = productName.replace(/\s+/g, "-");
+  const windowsExecutableBaseName = productName.replace(/\s+/g, "");
+
+  // Work around electron-builder 25.1.8 Azure Trusted Signing command construction,
+  // which does not quote the Files parameter and breaks on paths containing spaces.
+  if (!config.win.executableName) {
+    config.win.executableName = windowsExecutableBaseName;
+  }
+  if (!config.win.artifactName) {
+    config.win.artifactName = `${windowsArtifactBaseName}-\${version}-\${arch}.\${ext}`;
+  }
+}
+
+const azureVars = [
+  "AZURE_CODE_SIGNING_PUBLISHER_NAME",
+  "AZURE_CODE_SIGNING_ENDPOINT",
+  "AZURE_CODE_SIGNING_ACCOUNT_NAME",
+  "AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME",
+];
+
+const hasCompleteAzureTrustedSigningConfig = azureVars.every((name) => {
+  const value = process.env[name];
+  return typeof value === "string" && value.trim() !== "";
+});
+
+if (config.win) {
+  if (!hasCompleteAzureTrustedSigningConfig) {
+    delete config.win.azureSignOptions;
+  } else if (config.win.azureSignOptions) {
+    const { publisherName: _ignoredPublisherName, ...azureSignOptions } =
+      config.win.azureSignOptions;
+
+    // Inject resolved values directly because Azure Trusted Signing options are not
+    // reliably macro-expanded when passed through a JS config object.
+    config.win.publisherName = process.env.AZURE_CODE_SIGNING_PUBLISHER_NAME.trim();
+    config.win.azureSignOptions = {
+      ...azureSignOptions,
+      endpoint: process.env.AZURE_CODE_SIGNING_ENDPOINT.trim(),
+      codeSigningAccountName:
+        process.env.AZURE_CODE_SIGNING_ACCOUNT_NAME.trim(),
+      certificateProfileName:
+        process.env.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME.trim(),
+    };
+  }
+}
+
+module.exports = config;
