@@ -3,13 +3,17 @@
 Hinweis: Diese Datei ist keine Rechtsberatung. Sie beschreibt technische und organisatorische Massnahmen, die typischerweise fuer eine DSGVO-konforme Enterprise-Loesung erwartet werden. Eine finale Bewertung muss durch Rechtsberatung erfolgen.
 
 ## Ziel
+
 Eine DSGVO-konforme Architektur und Betriebsweise fuer:
+
 - Bridge (lokal beim Kunden, Hardware/Netzwerkzugriff)
 - Relay (Cloud-Vermittlung)
 - WebApp (Steuerung, User/Org-Management)
 
 ## Rechtsrahmen (Kurzbezug)
+
 Relevante DSGVO-Artikel fuer diese Architektur:
+
 - Art. 5 (Grundsaetze, Datenminimierung, Zweckbindung, Integritaet)
 - Art. 25 (Privacy by Design/Default)
 - Art. 28 (Auftragsverarbeitung)
@@ -20,6 +24,7 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 - Art. 15-22 (Betroffenenrechte, z.B. Auskunft, Loeschung)
 
 ## Ausgangslage (technisch)
+
 - Relay transportiert volle Payloads (z.B. HTML/CSS/Values) und Response-Daten.
 - Pairing ist ein separater Command und schuetzt keine anderen Commands.
 - AuthN/AuthZ ist teilweise umgesetzt (signierte Commands, Scope/TTL/Replay, Org-Bridge-Mapping), aber unvollstaendig
@@ -28,6 +33,7 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 - Bridge-Endpoints (HTTP/WS) sind breit `local-or-token` abgesichert (u.a. `/engine`, `/ws`, `/logs`, `/config*`, `/status`, `/devices`, `/outputs`, `/video/status`, `/relay/status`).
 
 ## Dateninventar (Kategorien)
+
 - Identifikatoren: bridgeId, orgId, requestId
 - Pairing-Daten: pairingCode (kurzlebig)
 - Content-Payloads: HTML/CSS, Values (potenziell personenbezogen)
@@ -36,19 +42,22 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 - Betriebsdaten: Status, Engine-Makros
 
 ## Zielbild (Enterprise, DSGVO-konform)
-1) Remote Access ist per Default deaktiviert und lokal explizit aktivierbar.
-2) Device Enrollment und starke Authentifizierung fuer Relay <-> Bridge.
-3) Autorisierung auf Command-Ebene (Scopes, Org-Mapping, Rollen).
-4) Datenminimierung und Logging-Redaction.
-5) Auditierbarkeit (tamper-resistente Logs, Request-IDs).
-6) Datenschutzfreundliche Voreinstellungen (keine Token/PII in URLs/Logs).
+
+1. Remote Access ist per Default deaktiviert und lokal explizit aktivierbar.
+2. Device Enrollment und starke Authentifizierung fuer Relay <-> Bridge.
+3. Autorisierung auf Command-Ebene (Scopes, Org-Mapping, Rollen).
+4. Datenminimierung und Logging-Redaction.
+5. Auditierbarkeit (tamper-resistente Logs, Request-IDs).
+6. Datenschutzfreundliche Voreinstellungen (keine Token/PII in URLs/Logs).
 
 ## Implementierungsplan
 
 ### Phase 0 - Sofortmassnahmen (0-2 Wochen)
+
 Status: Technische Kernpunkte weitgehend umgesetzt; organisatorische Punkte weiterhin offen.
 
 Technisch:
+
 - [x] Relay-Verbindung wird beim Bridge-Start (GUI) aktiviert und beim Stop deaktiviert; CLI bleibt default off ohne `--relay-enabled`.
 - [x] Pairing-Code nicht in URLs (kein Hash/Query). Nur lokal anzeigen/QR.
 - [x] Payload-Logging entfernen oder strikt redactionen (WebApp + Bridge).
@@ -58,16 +67,20 @@ Technisch:
 - [x] Command-Allowlist auf Bridge (harte Ablehnung unbekannter Commands).
 
 Organisatorisch:
-- [ ] Interne Security-Policy fuer Logs und Debug-Outputs definieren.
-- [ ] Incident-Response-Prozess entwerfen (Owner, SLA, Eskalation).
+
+- [x] Interne Security-Policy fuer Logs und Debug-Outputs definieren.
+- [x] Incident-Response-Prozess entwerfen (Owner, SLA, Eskalation).
 
 Akzeptanzkriterien:
+
 - [x] Relay ist nur aktiv, wenn die Bridge lokal ueber die Desktop-App gestartet wurde.
 - [x] Pairing-Code taucht in keiner URL, keinem Log auf.
 - [x] Unbekannte Commands werden serverseitig geblockt.
 
 ### Phase 1 - AuthN/AuthZ Basis (2-6 Wochen)
+
 Technisch:
+
 - [x] Device Enrollment: Pairing-Code wird nur fuer initiales Onboarding genutzt.
 - [x] Relay muss Bridge-ID an org_id binden und den aufrufenden Client kryptografisch authentisieren, nur dann Commands.
 - [x] Command-Envelope signieren (exp, jti, scope, org_id, bridge_id).
@@ -76,6 +89,7 @@ Technisch:
 - [x] Bridge-Authentisierung gegen Relay (Keypair-Enrollment + `bridge_hello` Challenge-Response im Codepfad).
 
 Hinweis (Stand 25. Februar 2026):
+
 - Relay-Caller-Authentisierung fuer `POST /relay/command` ist als signierte Caller-Assertion (Signatur + TTL + Replay + Payload-Hash) im Codepfad integriert.
 - Fuer produktive Aktivierung sind passende Env-Keys/Key-Rollout in WebApp und Relay erforderlich.
 - Bridge-Keypair/Enrollment und `bridge_hello` Challenge-Response sind implementiert:
@@ -85,16 +99,20 @@ Hinweis (Stand 25. Februar 2026):
 - Fuer globales Hard-Enforcement aller Bridges kann spaeter `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true` gesetzt werden (Rollout-Phase).
 
 Organisatorisch:
+
 - Rollenmodell definieren (Org-Admin, Operator, Read-only).
 - Data Retention Policy fuer Logs und Audit festlegen.
 
 Akzeptanzkriterien:
+
 - Relay sendet nur signierte Commands.
 - Bridge akzeptiert nur Commands mit gueltigem Scope.
 - Replay-Versuche werden abgelehnt.
 
 ### Phase 2 - Enterprise Security (6-12 Wochen)
+
 Technisch:
+
 - mTLS Bridge <-> Relay, Zertifikatsrotation.
 - Just-in-Time Remote Access mit lokaler Zustimmung.
 - Fine-grained Scopes je Command (z.B. engine_connect nur Admin).
@@ -102,30 +120,37 @@ Technisch:
 - Datenminimierung in Responses (nur notwendige Felder).
 
 Organisatorisch:
+
 - DPIA/DSFA fuer hohe Risiken durchfuehren.
 - Sicherheits-Audit (extern) planen.
 
 Akzeptanzkriterien:
+
 - Jede Remote-Session ist zeitlich begrenzt und auditierbar.
 - Access-Logs enthalten Actor, Org, Command, Request-ID.
 
 ### Phase 3 - Compliance-Betrieb (laufend)
+
 Technisch:
+
 - DSAR-Export und Loeschung (Art. 15/17) implementieren.
 - Datenresidenz-Optionen fuer Enterprise anbieten.
 - Backup/Restore und Verfuegbarkeitstests (Art. 32).
 
 Organisatorisch:
+
 - AV-Vertraege (Art. 28) und Subprozessor-Liste pflegen.
 - Verzeichnis der Verarbeitungstaetigkeiten (Art. 30) erstellen.
 - Breach-Reporting Prozess (Art. 33) operationalisieren.
 - Drittlandtransfer (Art. 44) mit SCCs/Transfer Impact bewerten.
 
 Akzeptanzkriterien:
+
 - DSARs innerhalb definierter SLA.
 - Vollstaendige und aktualisierte Processing-Records.
 
 ## Technische Massnahmen (Katalog)
+
 - Authentifizierung: mTLS + signierte Command-Envelope.
 - Autorisierung: RBAC/ABAC, Org-Bridge-Mapping, Command-Allowlist.
 - Datenminimierung: keine Payloads in Logs, Response-Felder minimieren.
@@ -135,6 +160,7 @@ Akzeptanzkriterien:
 - Secure Defaults: Remote Access default OFF, Pairing zeitlich begrenzt.
 
 ## Artefakte (Dokumente/Policies)
+
 - Threat Model (Assets, Entry Points, Trust Boundaries)
 - Data Flow Diagram (WebApp <-> Relay <-> Bridge)
 - Data Retention Policy
@@ -144,6 +170,7 @@ Akzeptanzkriterien:
 - Security Test Plan (PenTest, SAST/DAST)
 
 ## Offene Punkte (fuer finale Planung)
+
 - Exakte Datenarten in templates/values (PII moeglich?)
 - Datenresidenz-Anforderungen pro Kunde
 - SLA fuer Remote Access und Incident Response
