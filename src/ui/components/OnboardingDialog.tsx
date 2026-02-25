@@ -13,13 +13,13 @@ interface OnboardingDialogProps {
 }
 
 const URL_EULA_DESKTOP =
-  "https://broadify.de/recht/software-nutzungsbedingungen-broadify-bridge";
+  "https://app.broadify.de/recht/software-nutzungsbedingungen-broadify-bridge";
 const URL_PRIVACY_DESKTOP =
-  "https://broadify.de/recht/datenschutzhinweise-broadify-bridge";
+  "https://app.broadify.de/recht/datenschutzhinweise-broadify-bridge";
 const URL_SECURITY_REMOTE =
-  "https://broadify.de/recht/security-remote-control-broadify-bridge";
+  "https://app.broadify.de/recht/security-remote-control-broadify-bridge";
 const URL_TECHNICAL_APPENDIX =
-  "https://broadify.de/recht/technischer-anhang-broadify-bridge";
+  "https://app.broadify.de/recht/technischer-anhang-broadify-bridge";
 
 const TERMS_INTRO = `Mit der Nutzung der Broadify Bridge Desktop-App stimmen Sie den Software-Nutzungsbedingungen (EULA) sowie den Datenschutzhinweisen fuer Desktop-App, lokale Bridge und Relay zu.
 
