@@ -334,12 +334,12 @@ Hinweis:
 
 ### Paket A (kritische Security-Luecken, hoher Reward)
 
-- [ ] WS-03 Relay Caller Authentication
+- [x] WS-03 Relay Caller Authentication
 - [x] WS-04 Bridge Keypair + `bridge_hello` Auth
 
 ### Paket B (Phase 0 Abschluss + UX Klarheit)
 
-- [ ] WS-01 Pairing UX Refactor (manuell, ohne URL-Parameter)
+- [x] WS-01 Pairing UX Refactor (manuell, ohne URL-Parameter)
 - [ ] WS-02 Endpoint Hardening (`/config*` sofort, read-only Endpoints danach)
 
 ### Paket C (Governance + Nachvollziehbarkeit)
@@ -357,17 +357,17 @@ Hinweis:
 
 ## 8. Tracking-Tabelle (Kurzstatus)
 
-| ID | Thema | Prioritaet | Status | Repo(s) | Latenz-Risiko | Abhaengigkeiten |
-| --- | --- | --- | --- | --- | --- | --- |
-| WS-03 | Relay Caller Auth | P0 | IN_PROGRESS | `broadify`, `relay` | Niedrig (offline verify) | Key mgmt |
-| WS-04 | Bridge Keypair + `bridge_hello` Auth | P0 | DONE | `bridge`, `relay`, `broadify` (Pairing API) | Niedrig (connect only) | Enrollment schema |
-| WS-01 | Pairing URL Removal + manual UX | P1 | IN_PROGRESS | `broadify`, `bridge` | Keins | none |
-| WS-02 | Bridge Endpoint Hardening | P1 | IN_PROGRESS | `bridge` | Sehr niedrig | Token provisioning |
-| WS-06 | Audit Logging in Supabase | P1 | TODO | `relay`, `broadify`?, Supabase | Niedrig (async) | Audit schema |
-| WS-00 | Doku-Korrektur | P1 | TODO | `bridge` docs | Keins | Ist-Stand review |
-| WS-05 | Rollen -> Scopes | P2 | TODO | `broadify`, `relay`, `bridge` | Niedrig | WS-03 |
-| WS-07 | Retention/DSAR Betrieb | P2 | TODO | `broadify`, ops/docs, Supabase | Keins im hot path | Audit + policy |
-| WS-08 | Enterprise Hardening (mTLS/JIT/Rate limits) | P3 | TODO | alle | variabel | WS-03/WS-04 |
+| ID    | Thema                                       | Prioritaet | Status      | Repo(s)                                     | Latenz-Risiko            | Abhaengigkeiten    |
+| ----- | ------------------------------------------- | ---------- | ----------- | ------------------------------------------- | ------------------------ | ------------------ |
+| WS-03 | Relay Caller Auth                           | P0         | IN_PROGRESS | `broadify`, `relay`                         | Niedrig (offline verify) | Key mgmt           |
+| WS-04 | Bridge Keypair + `bridge_hello` Auth        | P0         | DONE        | `bridge`, `relay`, `broadify` (Pairing API) | Niedrig (connect only)   | Enrollment schema  |
+| WS-01 | Pairing URL Removal + manual UX             | P1         | IN_PROGRESS | `broadify`, `bridge`                        | Keins                    | none               |
+| WS-02 | Bridge Endpoint Hardening                   | P1         | IN_PROGRESS | `bridge`                                    | Sehr niedrig             | Token provisioning |
+| WS-06 | Audit Logging in Supabase                   | P1         | TODO        | `relay`, `broadify`?, Supabase              | Niedrig (async)          | Audit schema       |
+| WS-00 | Doku-Korrektur                              | P1         | TODO        | `bridge` docs                               | Keins                    | Ist-Stand review   |
+| WS-05 | Rollen -> Scopes                            | P2         | TODO        | `broadify`, `relay`, `bridge`               | Niedrig                  | WS-03              |
+| WS-07 | Retention/DSAR Betrieb                      | P2         | TODO        | `broadify`, ops/docs, Supabase              | Keins im hot path        | Audit + policy     |
+| WS-08 | Enterprise Hardening (mTLS/JIT/Rate limits) | P3         | TODO        | alle                                        | variabel                 | WS-03/WS-04        |
 
 ## 9. Test- und Abnahmeplan (kompakt)
 
