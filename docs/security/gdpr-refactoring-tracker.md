@@ -60,8 +60,7 @@ Warum:
 ### Kritische Gaps
 
 - Relay `POST /relay/command` braucht produktive Key-Provisionierung/Deployment fuer Caller-Assertion-Keys; Verifikation ist im Codepfad integriert.
-- Relay registriert Bridges via `bridge_hello` nur anhand `bridgeId` (keine Bridge-Auth).
-- Bridge Keypair/Enrollment und `bridge_hello` Challenge-Response sind noch offen.
+- `bridge_hello` Auth ist implementiert (Bridge Keypair + Challenge-Response), aber globales Hard-Enforcement im Relay-Rollout noch optional per Env-Flag.
 
 ### Teilweise umgesetzt / bereits gut
 
@@ -212,31 +211,31 @@ Ziel: Bridge identifiziert sich gegen Relay als echtes enrolled Device.
 
 #### Enrollment (Pairing nur initial)
 
-- [ ] Enrollment-Datenmodell definieren (Supabase):
+- [x] Enrollment-Datenmodell definieren (Supabase):
   - Bridge Public Key
   - Key Status (active/revoked/rotating)
   - `enrolled_at`, `rotated_at`
   - optional `last_auth_at`
-- [ ] Pairing-Erfolg erweitert um initiales Enrollment / Key Registration
-- [ ] Pairing-Code bleibt nur Onboarding-Secret, nicht Dauer-Auth
+- [x] Pairing-Erfolg erweitert um initiales Enrollment / Key Registration
+- [x] Pairing-Code bleibt nur Onboarding-Secret, nicht Dauer-Auth
 
 #### Bridge Keypair
 
-- [ ] Bridge erzeugt lokales Keypair (Ed25519 empfohlen)
-- [ ] Private Key sicher lokal speichern (Bridge userDataDir, file permissions)
-- [ ] Public Key bei Enrollment registrieren
+- [x] Bridge erzeugt lokales Keypair (Ed25519 empfohlen)
+- [x] Private Key sicher lokal speichern (Bridge userDataDir, file permissions)
+- [x] Public Key bei Enrollment registrieren
 - [ ] Key Rotation Strategie definieren (spater, aber Datenmodell jetzt vorbereiten)
 
 #### `bridge_hello` Auth Flow
 
-- [ ] WS Challenge-Response Protokoll definieren (nonce/challenge + signierter Proof)
-- [ ] Relay verifiziert Proof gegen gespeicherten Public Key
-- [ ] Relay registriert Bridge erst nach erfolgreichem Verify
-- [ ] Reconnect/Clock-Skew/Replay Regeln definieren
+- [x] WS Challenge-Response Protokoll definieren (nonce/challenge + signierter Proof)
+- [x] Relay verifiziert Proof gegen gespeicherten Public Key
+- [x] Relay registriert Bridge erst nach erfolgreichem Verify
+- [x] Reconnect/Clock-Skew/Replay Regeln definieren
 
 Akzeptanz:
 
-- Nur Bridge mit gueltigem Key kann `bridgeId` registrieren.
+- Nur Bridge mit gueltigem Key kann `bridgeId` registrieren (fuer enrolled Bridges; globales Hard-Enforcement optional per Relay-Flag).
 - Reine `bridgeId`-Impersonation am Relay ist blockiert.
 - Kein Zusatzaufwand im Command-Hot-Path (nur bei Connect/Reconnect).
 
@@ -336,7 +335,7 @@ Hinweis:
 ### Paket A (kritische Security-Luecken, hoher Reward)
 
 - [ ] WS-03 Relay Caller Authentication
-- [ ] WS-04 Bridge Keypair + `bridge_hello` Auth
+- [x] WS-04 Bridge Keypair + `bridge_hello` Auth
 
 ### Paket B (Phase 0 Abschluss + UX Klarheit)
 
@@ -361,7 +360,7 @@ Hinweis:
 | ID | Thema | Prioritaet | Status | Repo(s) | Latenz-Risiko | Abhaengigkeiten |
 | --- | --- | --- | --- | --- | --- | --- |
 | WS-03 | Relay Caller Auth | P0 | IN_PROGRESS | `broadify`, `relay` | Niedrig (offline verify) | Key mgmt |
-| WS-04 | Bridge Keypair + `bridge_hello` Auth | P0 | TODO | `bridge`, `relay`, `broadify` (Pairing API) | Niedrig (connect only) | Enrollment schema |
+| WS-04 | Bridge Keypair + `bridge_hello` Auth | P0 | DONE | `bridge`, `relay`, `broadify` (Pairing API) | Niedrig (connect only) | Enrollment schema |
 | WS-01 | Pairing URL Removal + manual UX | P1 | IN_PROGRESS | `broadify`, `bridge` | Keins | none |
 | WS-02 | Bridge Endpoint Hardening | P1 | IN_PROGRESS | `bridge` | Sehr niedrig | Token provisioning |
 | WS-06 | Audit Logging in Supabase | P1 | TODO | `relay`, `broadify`?, Supabase | Niedrig (async) | Audit schema |
@@ -377,7 +376,7 @@ Hinweis:
 - [ ] Relay lehnt `/relay/command` ohne Assertion ab (`401`)
 - [ ] Relay lehnt Replay-Assertion (`jti`) ab
 - [ ] Relay lehnt `payload_hash`-Mismatch ab
-- [ ] Relay lehnt `bridge_hello` ohne gueltigen Signatur-Proof ab
+- [ ] Relay lehnt `bridge_hello` ohne gueltigen Signatur-Proof ab (nach Aktivierung globales Hard-Enforcement oder fuer enrolled Bridges)
 - [ ] Bridge lehnt unbekannte Commands weiterhin ab
 - [ ] Bridge lehnt ungueltige Scopes weiterhin ab
 - [ ] `/config*` ohne Token (nicht lokal) wird blockiert
@@ -388,6 +387,14 @@ Hinweis:
 - [ ] Keine Pairing-Daten in URL/Hash werden verarbeitet
 - [ ] Lokale Desktop-Nutzung (Loopback) unveraendert
 - [ ] Keine merkbare Verlangsamung im Remote-Command-Flow
+
+### WS-04 Rollout-Hinweise (Stand 25. Februar 2026)
+
+- Neue Supabase-Migration erforderlich: `broadify/supabase/migrations/20260225120000_add_bridge_enrollment_keys.sql`
+- Pairing speichert aktive Bridge-Enrollment-Keys in `bridge_enrollment_keys`
+- Bridge erzeugt Ed25519-Keypair lokal in `userDataDir/security/relay-bridge-identity.json`
+- Relay fordert bei vorhandenen Enrollment-Keys automatisch `bridge_hello` Challenge-Response an
+- Globales Hard-Enforcement kann spaeter aktiviert werden mit `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true`
 
 ### Observability / Audit
 

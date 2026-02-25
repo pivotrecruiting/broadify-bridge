@@ -15,6 +15,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getBridgeContext } from "./bridge-context.js";
 import { GraphicsError } from "./graphics/graphics-errors.js";
+import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import type {
   BridgeOutputsT,
   DeviceDescriptorT,
@@ -233,11 +234,14 @@ export class CommandRouter {
             };
           }
 
+          const relayEnrollment = await getRelayBridgeEnrollmentPublicKey();
+
           return {
             success: true,
             data: {
               bridgeId: context.bridgeId || null,
               bridgeName: context.bridgeName || null,
+              relayEnrollment,
             },
           };
         }

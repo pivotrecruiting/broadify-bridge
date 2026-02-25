@@ -23,7 +23,7 @@ Relevante DSGVO-Artikel fuer diese Architektur:
 - Relay transportiert volle Payloads (z.B. HTML/CSS/Values) und Response-Daten.
 - Pairing ist ein separater Command und schuetzt keine anderen Commands.
 - AuthN/AuthZ ist teilweise umgesetzt (signierte Commands, Scope/TTL/Replay, Org-Bridge-Mapping), aber unvollstaendig
-  (starke Client-Authentisierung am Relay-Command-Endpoint als Caller-Assertion im Codepfad integriert, aber produktive Key-Provisionierung/Rollout offen; keine Bridge-Authentisierung bei `bridge_hello`).
+  (starke Client-Authentisierung am Relay-Command-Endpoint als Caller-Assertion im Codepfad integriert, aber produktive Key-Provisionierung/Rollout offen; Bridge-Authentisierung bei `bridge_hello` als Keypair + Challenge-Response im Codepfad integriert, globales Hard-Enforcement im Relay-Rollout optional per Env-Flag).
 - Logging wurde in WebApp/Bridge reduziert (Summaries statt Full-Payloads), verbleibende Exposition ist transportseitig relevant.
 - Bridge-Endpoints (HTTP/WS) sind breit `local-or-token` abgesichert (u.a. `/engine`, `/ws`, `/logs`, `/config*`, `/status`, `/devices`, `/outputs`, `/video/status`, `/relay/status`).
 
@@ -68,16 +68,21 @@ Akzeptanzkriterien:
 
 ### Phase 1 - AuthN/AuthZ Basis (2-6 Wochen)
 Technisch:
-- [ ] Device Enrollment: Pairing-Code wird nur fuer initiales Onboarding genutzt.
+- [x] Device Enrollment: Pairing-Code wird nur fuer initiales Onboarding genutzt.
 - [x] Relay muss Bridge-ID an org_id binden und den aufrufenden Client kryptografisch authentisieren, nur dann Commands.
 - [x] Command-Envelope signieren (exp, jti, scope, org_id, bridge_id).
 - [x] Bridge verifiziert Signatur, TTL und Replay-Schutz (jti-cache).
 - [x] Zod-Validierung fuer alle Commands (nicht nur graphics).
-- [ ] Bridge-Authentisierung gegen Relay (z.B. Enrollment Secret / mTLS bei `bridge_hello`).
+- [x] Bridge-Authentisierung gegen Relay (Keypair-Enrollment + `bridge_hello` Challenge-Response im Codepfad).
 
 Hinweis (Stand 25. Februar 2026):
 - Relay-Caller-Authentisierung fuer `POST /relay/command` ist als signierte Caller-Assertion (Signatur + TTL + Replay + Payload-Hash) im Codepfad integriert.
 - Fuer produktive Aktivierung sind passende Env-Keys/Key-Rollout in WebApp und Relay erforderlich.
+- Bridge-Keypair/Enrollment und `bridge_hello` Challenge-Response sind implementiert:
+  - Bridge erzeugt ein lokales Ed25519-Keypair (userDataDir, lokale Datei)
+  - Pairing registriert den Public Key in Supabase (`bridge_enrollment_keys`)
+  - Relay verifiziert `bridge_auth_response` vor Bridge-Registrierung (bei enrolled Bridges)
+- Fuer globales Hard-Enforcement aller Bridges kann spaeter `RELAY_REQUIRE_BRIDGE_HELLO_AUTH=true` gesetzt werden (Rollout-Phase).
 
 Organisatorisch:
 - Rollenmodell definieren (Org-Admin, Operator, Read-only).
