@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import type { BridgeConfigT } from "../config.js";
+import { enforceLocalOrToken } from "./route-guards.js";
 
 /**
  * Relay status route
@@ -12,7 +13,10 @@ export async function registerRelayRoute(
 ): Promise<void> {
   const { config, relayClient } = options;
 
-  fastify.get("/relay/status", async () => {
+  fastify.get("/relay/status", async (request, reply) => {
+    if (!enforceLocalOrToken(request, reply)) {
+      return;
+    }
     // Check if relay client is available
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = relayClient as any;
@@ -36,4 +40,3 @@ export async function registerRelayRoute(
     };
   });
 }
-

@@ -5,6 +5,7 @@ import type {
   DeviceDescriptorT,
 } from "@broadify/protocol";
 import { deviceCache } from "../services/device-cache.js";
+import { enforceLocalOrToken } from "./route-guards.js";
 
 /**
  * Transform Device/Port model to UI-compatible output format.
@@ -83,6 +84,9 @@ export async function registerOutputsRoute(
   _options: FastifyPluginOptions
 ): Promise<void> {
   fastify.get("/outputs", async (request, reply) => {
+    if (!enforceLocalOrToken(request, reply)) {
+      return;
+    }
     try {
       const refresh = request.query as { refresh?: string };
       const forceRefresh = refresh?.refresh === "1";

@@ -30,13 +30,15 @@ Dieses Dokument kombiniert:
 
 Der aktuelle Umsetzungsstand umfasst:
 
-- Pairing-Code ist nicht in URL enthalten (kein Hash/Query).
-- Log- und Debug-Security-Policy ist eingeführt.
-- Incident-Response-Prozess mit Owner, SLA und Eskalationsmatrix ist eingeführt.
-- Relay erzwingt kryptografische Client-Authentisierung sowie Org-Bridge-Bindung.
-- Bridge authentisiert sich gegenüber Relay (`bridge_hello`).
-- Phase-3-Standards sind im operativen Betrieb etabliert.
+- Pairing-Code wird in der Bridge lokal angezeigt; WebApp verarbeitet aktuell noch einen Legacy-URL-Flow mit Query/Hash (Refactor offen).
+- Log- und Debug-Härtung ist technisch teilweise umgesetzt (Payload-Reduktion), formale interne Policy als separates Artefakt noch offen.
+- Incident-Response-Prozess als belastbares, versioniertes Artefakt ist noch offen.
+- Relay erzwingt Org-Bridge-Bindung fuer Nicht-Pairing-Commands, aber noch keine kryptografische Caller-Authentisierung am `POST /relay/command`-Einstieg.
+- Bridge authentisiert Relay-Commands (Signatur/TTL/Replay), aber die Bridge authentisiert sich am Relay bei `bridge_hello` noch nicht kryptografisch.
+- Phase-3-Standards sind in Teilen dokumentiert, aber nicht vollstaendig technisch/operativ nachgewiesen.
 - Phase 2 (Enterprise-Hardening) ist geplant, jedoch noch nicht umgesetzt.
+
+Verbindlicher Tracking-Plan fuer die Abarbeitung: `docs/security/gdpr-refactoring-tracker.md`.
 
 ---
 
