@@ -399,10 +399,31 @@ if (!isRendererProcess) {
       return {
         bridgeId: profile.bridgeId,
         bridgeName: profile.bridgeName,
+        termsAcceptedAt: profile.termsAcceptedAt,
       };
     });
 
+    ipcMainHandle("bridgeAcceptTerms", () => {
+      try {
+        bridgeProfile.setTermsAccepted();
+        return { success: true };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Unknown error";
+        return { success: false, error: errorMessage };
+      }
+    });
+
     ipcMainHandle("bridgeSetName", async (event, bridgeName: string) => {
+      // Require terms accepted first; cannot be bypassed via devtools
+      const profile = bridgeProfile.getProfile();
+      if (!profile.termsAcceptedAt) {
+        return {
+          success: false,
+          error:
+            "Terms and conditions must be accepted before setting the bridge name.",
+        };
+      }
       const parsedName = BRIDGE_NAME_SCHEMA.safeParse(bridgeName);
       if (!parsedName.success) {
         return {
@@ -429,6 +450,15 @@ if (!isRendererProcess) {
       const bridgeId = bridgeIdentity.getBridgeId();
       const profile = bridgeProfile.getProfile();
       const bridgeName = profile.bridgeName;
+
+      // Enforce terms acceptance in main process; cannot be bypassed via UI/devtools
+      if (!profile.termsAcceptedAt) {
+        return {
+          success: false,
+          error:
+            "Terms and conditions must be accepted before starting the bridge.",
+        };
+      }
 
       if (!bridgeName) {
         return {

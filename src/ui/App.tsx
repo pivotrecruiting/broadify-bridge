@@ -8,7 +8,10 @@ import { LogsDialog } from "./components/LogsDialog";
 import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { BridgeIdentitySection } from "./components/BridgeIdentitySection";
-import { BridgeNameDialog } from "./components/BridgeNameDialog";
+import {
+  OnboardingDialog,
+  type OnboardingStep,
+} from "./components/OnboardingDialog";
 import { PairingDialog } from "./components/PairingDialog";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
@@ -66,10 +69,12 @@ function App() {
   const [bridgeProfile, setBridgeProfile] = useState<{
     bridgeId: string;
     bridgeName: string | null;
+    termsAcceptedAt: string | null;
   } | null>(null);
-  const [showNameDialog, setShowNameDialog] = useState(false);
+  const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("terms");
 
-  // Load bridge profile (name + id) on startup
+  // Load bridge profile (name, id, terms acceptance) on startup
   useEffect(() => {
     if (!window.electron) return;
     window.electron
@@ -78,11 +83,24 @@ function App() {
       .catch(() => setAppVersion(null));
     window.electron.bridgeGetProfile().then((profile) => {
       setBridgeProfile(profile);
-      if (!profile.bridgeName) {
-        setShowNameDialog(true);
+      if (!profile.termsAcceptedAt) {
+        setShowOnboardingDialog(true);
+        setOnboardingStep("terms");
+      } else if (!profile.bridgeName) {
+        setShowOnboardingDialog(true);
+        setOnboardingStep("name");
       }
     });
   }, []);
+
+  const handleTermsAccept = async () => {
+    if (!window.electron) return;
+    const result = await window.electron.bridgeAcceptTerms();
+    if (!result.success) throw new Error(result.error);
+    const profile = await window.electron.bridgeGetProfile();
+    setBridgeProfile(profile);
+    setOnboardingStep("name");
+  };
 
   const handleSaveBridgeName = async (name: string) => {
     if (!window.electron) {
@@ -92,7 +110,7 @@ function App() {
     if (result.success) {
       const profile = await window.electron.bridgeGetProfile();
       setBridgeProfile(profile);
-      setShowNameDialog(false);
+      setShowOnboardingDialog(false);
     }
     return result;
   };
@@ -100,7 +118,8 @@ function App() {
   const handleLetsGo = async () => {
     if (!window.electron || !networkConfig) return;
     if (!bridgeProfile?.bridgeName) {
-      setShowNameDialog(true);
+      setShowOnboardingDialog(true);
+      setOnboardingStep("name");
       alert("Please set a bridge name first.");
       return;
     }
@@ -276,10 +295,12 @@ function App() {
         pairingExpired={bridgeStatus.pairingExpired}
         isRunning={bridgeStatus.running}
       />
-      <BridgeNameDialog
-        isOpen={showNameDialog}
+      <OnboardingDialog
+        isOpen={showOnboardingDialog}
+        step={onboardingStep}
+        onTermsAccept={handleTermsAccept}
+        onNameSave={handleSaveBridgeName}
         initialName={bridgeName}
-        onSave={handleSaveBridgeName}
       />
     </div>
   );

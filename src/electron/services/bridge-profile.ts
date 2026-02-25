@@ -9,6 +9,7 @@ import { bridgeIdentity } from "./bridge-identity.js";
 export type BridgeProfile = {
   bridgeId: string;
   bridgeName: string | null;
+  termsAcceptedAt: string | null;
   updatedAt: string | null;
 };
 
@@ -49,6 +50,7 @@ export class BridgeProfileService {
 
     const bridgeId = bridgeIdentity.getBridgeId();
     let bridgeName: string | null = null;
+    let termsAcceptedAt: string | null = null;
     let updatedAt: string | null = null;
 
     try {
@@ -56,10 +58,17 @@ export class BridgeProfileService {
         const raw = fs.readFileSync(this.profileFilePath, "utf-8");
         const parsed = JSON.parse(raw) as {
           bridgeName?: string;
+          termsAcceptedAt?: string;
           updatedAt?: string;
         };
         if (parsed.bridgeName && typeof parsed.bridgeName === "string") {
           bridgeName = parsed.bridgeName;
+        }
+        if (
+          parsed.termsAcceptedAt &&
+          typeof parsed.termsAcceptedAt === "string"
+        ) {
+          termsAcceptedAt = parsed.termsAcceptedAt;
         }
         if (parsed.updatedAt && typeof parsed.updatedAt === "string") {
           updatedAt = parsed.updatedAt;
@@ -72,6 +81,7 @@ export class BridgeProfileService {
     this.cachedProfile = {
       bridgeId,
       bridgeName,
+      termsAcceptedAt,
       updatedAt,
     };
 
@@ -95,6 +105,25 @@ export class BridgeProfileService {
     const profile: BridgeProfile = {
       bridgeId: bridgeIdentity.getBridgeId(),
       bridgeName: trimmed,
+      termsAcceptedAt: this.cachedProfile?.termsAcceptedAt ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.writeProfile(profile);
+    this.cachedProfile = profile;
+    return profile;
+  }
+
+  /**
+   * Record that the user accepted Terms and Conditions / AGB.
+   * Persists the acceptance timestamp. Preserves existing bridgeName if set.
+   */
+  setTermsAccepted(): BridgeProfile {
+    const current = this.getProfile();
+    const profile: BridgeProfile = {
+      bridgeId: current.bridgeId,
+      bridgeName: current.bridgeName,
+      termsAcceptedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
@@ -107,6 +136,7 @@ export class BridgeProfileService {
     const payload = JSON.stringify(
       {
         bridgeName: profile.bridgeName,
+        termsAcceptedAt: profile.termsAcceptedAt,
         updatedAt: profile.updatedAt,
       },
       null,
