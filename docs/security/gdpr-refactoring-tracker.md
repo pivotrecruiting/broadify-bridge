@@ -340,7 +340,7 @@ Hinweis:
 ### Paket B (Phase 0 Abschluss + UX Klarheit)
 
 - [x] WS-01 Pairing UX Refactor (manuell, ohne URL-Parameter)
-- [ ] WS-02 Endpoint Hardening (`/config*` sofort, read-only Endpoints danach)
+- [x] WS-02 Endpoint Hardening (`/config*` sofort, read-only Endpoints danach)
 
 ### Paket C (Governance + Nachvollziehbarkeit)
 
