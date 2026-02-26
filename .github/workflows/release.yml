@@ -66,12 +66,65 @@ jobs:
             apps/bridge/package-lock.json
 
       - name: Install root deps
+        if: matrix.os != 'windows-latest'
         run: npm ci
 
+      - name: Install root deps (Windows, retry)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Running npm ci (attempt $attempt/$maxAttempts)..."
+            & npm ci
+
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "npm ci succeeded."
+              exit 0
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Write-Warning "npm ci failed with exit code $LASTEXITCODE. Retrying in 20 seconds..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+          throw "npm ci failed after $maxAttempts attempts."
+
       - name: Install Bridge dependencies
+        if: matrix.os != 'windows-latest'
         run: |
           cd apps/bridge
           npm ci
+
+      - name: Install Bridge dependencies (Windows, retry)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Running apps/bridge npm ci (attempt $attempt/$maxAttempts)..."
+            Push-Location apps/bridge
+            & npm ci
+            $exitCode = $LASTEXITCODE
+            Pop-Location
+
+            if ($exitCode -eq 0) {
+              Write-Host "apps/bridge npm ci succeeded."
+              exit 0
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Write-Warning "apps/bridge npm ci failed with exit code $exitCode. Retrying in 20 seconds..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+          throw "apps/bridge npm ci failed after $maxAttempts attempts."
 
       - name: Install Linux packaging dependencies (AppImage)
         if: startsWith(matrix.os, 'ubuntu-')
