@@ -2,9 +2,9 @@
 
 ## Ziel
 
-Build und Deployment des Display Helper Binaries für macOS (arm64, x64). Der Helper wird vom Display Video Output Adapter gestartet (immer, kein Electron-Fallback mehr).
+Build und Deployment des Display Helper Binaries für macOS und Windows. Der Helper wird vom Display Video Output Adapter gestartet (immer, kein Electron-Fallback mehr).
 
-## Voraussetzungen
+## Voraussetzungen (macOS)
 
 - macOS Build-Maschine
 - clang++
@@ -46,14 +46,9 @@ APPLE_SIGNING_IDENTITY="Developer ID Application: <Team>" ./scripts/sign-display
 
 ### 5) electron-builder Integration
 
-Damit der Helper in der gepackten App enthalten ist, `electron-builder.json` erweitern:
-
-```json
-"extraResources": [
-  {"from": "apps/bridge/native/decklink-helper/decklink-helper", "to": "native/decklink-helper/decklink-helper"},
-  {"from": "apps/bridge/native/display-helper/display-helper", "to": "native/display-helper/display-helper"}
-]
-```
+Die Plattform-spezifische Einbindung erfolgt über `electron-builder.config.cjs`:
+- macOS: `native/display-helper/display-helper`
+- Windows: `native/display-helper/display-helper.exe` (optional zusätzlich `SDL2.dll`)
 
 Die Pfad-Auflösung in `display-helper.ts` nutzt:
 - Dev: `apps/bridge/native/display-helper/display-helper`
@@ -69,6 +64,28 @@ mv display-helper display-helper-x64
 shasum -a 256 display-helper-x64
 ```
 
+## Windows (x64)
+
+### 1) Build (Developer PowerShell / VS Build Tools)
+
+```powershell
+cd apps/bridge/native/display-helper
+./build.ps1
+```
+
+Voraussetzungen:
+- `cl.exe` im PATH (Visual Studio Developer Shell)
+- SDL2 über `SDL2_DIR` oder `VCPKG_ROOT`
+
+Artefakte:
+- `display-helper.exe`
+- optional `SDL2.dll` (wird vom Build-Script neben das EXE kopiert, wenn gefunden)
+
+### 2) Packaging
+
+- `npm run dist:win` baut jetzt den Display Helper vor `electron-builder`.
+- `electron-builder.config.cjs` nimmt `display-helper.exe` (und optional `SDL2.dll`) in `extraResources` auf.
+
 ## Optional: GitHub Release + Download
 
 Analog zum DeckLink Helper können Display Helper Binaries als Release Assets bereitgestellt werden. Dafür wären erforderlich:
@@ -83,5 +100,6 @@ Bis dahin: Lokaler Build und manuelles Kopieren oder Einbinden in die Build-Pipe
 
 - SDL2 ist die einzige externe Abhängigkeit; kein proprietäres SDK.
 - Für Notarization (macOS) muss das Binary signiert sein.
+- Auf Windows muss `SDL2.dll` zur Laufzeit verfügbar sein (neben `display-helper.exe` oder via PATH).
 - Binary-Pfad muss fix bleiben; Override nur via `BRIDGE_DISPLAY_HELPER_PATH`.
-- Build-Artefakte (`display-helper`) sind in `.gitignore`; nicht committen.
+- Build-Artefakte (`display-helper`, `display-helper.exe`, `SDL2.dll`) sind in `.gitignore`; nicht committen.

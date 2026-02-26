@@ -28,7 +28,10 @@ const inspectArtifact = (check: ArtifactCheckT): string => {
   let executable = "n/a";
   if (check.executable) {
     try {
-      fs.accessSync(check.artifactPath, fs.constants.X_OK);
+      fs.accessSync(
+        check.artifactPath,
+        process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK
+      );
       executable = "yes";
     } catch {
       executable = "no";
@@ -89,6 +92,13 @@ export function logRuntimeDiagnostics(logger: LoggerLikeT): void {
       executable: true,
     },
   ];
+
+  if (process.platform === "win32") {
+    checks.push({
+      label: "Display helper SDL2 runtime",
+      artifactPath: path.join(path.dirname(resolveDisplayHelperPath()), "SDL2.dll"),
+    });
+  }
 
   for (const check of checks) {
     logger.info(`[RuntimeDiagnostics] ${inspectArtifact(check)}`);

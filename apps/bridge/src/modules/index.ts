@@ -22,7 +22,7 @@ export function initializeModules(): void {
   }
 
   if (currentPlatform === "darwin" || currentPlatform === "win32") {
-    // External display output detection (Windows currently detection-only).
+    // External display output module (native helper + FrameBus path).
     moduleRegistry.register(new DisplayModule());
   }
 

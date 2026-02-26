@@ -1,20 +1,29 @@
-# Display Helper (macOS)
+# Display Helper (macOS / Windows)
 
-Native C++ helper that reads RGBA frames from FrameBus shared memory and displays fullscreen via SDL2. Used by the Display Video Output Adapter on macOS.
+Native C++ helper that reads RGBA frames from FrameBus shared memory and displays fullscreen via SDL2. Used by the Display Video Output Adapter on macOS and Windows.
 
 ## Prerequisites
 
-- macOS (arm64 or x64)
-- clang++
-- SDL2 (`brew install sdl2`)
+- macOS (arm64 or x64): `clang++` + SDL2 (`brew install sdl2`)
+- Windows (x64): MSVC (`cl.exe`) + SDL2 (`SDL2_DIR` or `VCPKG_ROOT` configured)
 
 ## Build
+
+macOS:
 
 ```bash
 ./build.sh
 ```
 
-The binary is placed at `display-helper` in this directory.
+Windows (Developer PowerShell):
+
+```powershell
+./build.ps1
+```
+
+The binary is placed at:
+- macOS: `display-helper`
+- Windows: `display-helper.exe` (plus optional `SDL2.dll` copied next to it)
 
 ## Usage
 
@@ -61,5 +70,7 @@ BRIDGE_FRAME_FPS=60 \
 
 - Dev: `apps/bridge/native/display-helper/display-helper`
 - Prod: `${process.resourcesPath}/native/display-helper/display-helper`
+- Windows Dev: `apps/bridge/native/display-helper/display-helper.exe`
+- Windows Prod: `${process.resourcesPath}/native/display-helper/display-helper.exe`
 
 Override with `BRIDGE_DISPLAY_HELPER_PATH`.

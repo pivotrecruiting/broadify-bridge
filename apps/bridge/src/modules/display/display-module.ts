@@ -598,8 +598,7 @@ class DisplayController implements DeviceController {
 /**
  * Display detector for external monitor outputs.
  *
- * macOS: production-ready detection.
- * Windows: detection-only (playback helper not implemented yet).
+ * macOS / Windows: detection + native playback helper path.
  */
 export class DisplayModule implements DeviceModule {
   readonly name = "display";
@@ -612,7 +611,7 @@ export class DisplayModule implements DeviceModule {
 
     if (process.platform === "win32") {
       const rawDisplays = await getWindowsDisplays();
-      return mapRawDisplaysToDevices(rawDisplays, { outputRuntimeSupported: false });
+      return mapRawDisplaysToDevices(rawDisplays, { outputRuntimeSupported: true });
     }
 
     return [];

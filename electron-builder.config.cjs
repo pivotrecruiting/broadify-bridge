@@ -1,3 +1,4 @@
+const fs = require("fs");
 const baseConfig = require("./electron-builder.json");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
@@ -21,6 +22,24 @@ config.mac.extraResources = [
   ...(config.mac.extraResources || []),
   ...macOnlyResources,
 ];
+
+if (config.win) {
+  config.win.extraResources = [
+    ...(config.win.extraResources || []),
+    {
+      from: "apps/bridge/native/display-helper/display-helper.exe",
+      to: "native/display-helper/display-helper.exe",
+    },
+  ];
+
+  const sdlRuntimePath = "apps/bridge/native/display-helper/SDL2.dll";
+  if (fs.existsSync(sdlRuntimePath)) {
+    config.win.extraResources.push({
+      from: sdlRuntimePath,
+      to: "native/display-helper/SDL2.dll",
+    });
+  }
+}
 
 if (config.win) {
   const productName =

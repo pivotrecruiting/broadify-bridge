@@ -1,7 +1,7 @@
 # Bridge Subsystem – Output Adapter & Helper
 
 ## Zweck
-Dieses Subsystem nimmt RGBA‑Frames entgegen und liefert sie an die jeweilige Ausgabe. Für DeckLink erfolgt dies über einen nativen Helper‑Prozess (stdin-Streaming), für Display‑Outputs über einen nativen C++/SDL2‑Helper via FrameBus (aktuell nur macOS).
+Dieses Subsystem nimmt RGBA‑Frames entgegen und liefert sie an die jeweilige Ausgabe. Für DeckLink erfolgt dies über einen nativen Helper‑Prozess (stdin-Streaming), für Display‑Outputs über einen nativen C++/SDL2‑Helper via FrameBus (macOS + Windows).
 
 ## Verantwortlichkeiten
 - Auswahl des Output‑Adapters (Key/Fill, Split, Video, Stub)
@@ -20,7 +20,7 @@ Dieses Subsystem nimmt RGBA‑Frames entgegen und liefert sie an die jeweilige A
 - Stub: `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
 - Helper Resolve: `apps/bridge/src/modules/decklink/decklink-helper.ts`
 - Display Helper Resolve: `apps/bridge/src/modules/display/display-helper.ts`
-- Native Display Helper (macOS): `apps/bridge/native/display-helper/src/display-helper.cpp`
+- Native Display Helper (macOS/Windows): `apps/bridge/native/display-helper/src/display-helper.cpp`
 
 ## Ablauf (Mermaid)
 ```mermaid
@@ -28,7 +28,7 @@ sequenceDiagram
   participant GM as GraphicsManager
   participant OA as OutputAdapter
   participant DH as DeckLink Helper
-  participant EH as Display Helper (macOS, native)
+  participant EH as Display Helper (native)
 
   GM->>OA: sendFrame(RGBA)
   alt DeckLink Output
@@ -43,11 +43,11 @@ sequenceDiagram
 
 ## Plattformstatus (Display Output)
 - **macOS:** Unterstützt (nativer `display-helper`, SDL2, FrameBus)
-- **Windows:** Display-Detection vorhanden, Playback noch nicht unterstützt (nativer Display-Helper fehlt im produktiven Pfad)
+- **Windows:** Unterstützt (nativer `display-helper.exe`, SDL2, FrameBus)
 - **Linux:** Nicht implementiert
 
 ## Security‑Hinweise
-- Helper‑Binary wird per Pfad‑Check (`X_OK`) validiert.
+- Helper‑Binary wird per Pfad‑Check validiert (`X_OK` auf POSIX, `F_OK` auf Windows).
 - Keine Shell‑Execution; feste Argumente.
 - Frame‑Payloads sind lokal und nicht extern exponiert.
 - Display‑Helper nutzt festen Binary-Pfad (Override via `BRIDGE_DISPLAY_HELPER_PATH`) und whitelisted Env‑Variablen.
@@ -56,7 +56,7 @@ sequenceDiagram
 - Helper nicht vorhanden/kein Execute‑Bit → configure() Fehler
 - Port‑ID ungültig → parseDecklinkPortId() Fehler
 - Helper exit vor Ready → configure() schlägt fehl
-- Display‑Output auf nicht-macOS → `Display output is only supported on macOS`
+- Display‑Output auf nicht unterstützter Plattform → `Display output is only supported on macOS and Windows`
 - Display‑Helper fehlt/nicht ausführbar → configure() Fehler
 - `BRIDGE_FRAMEBUS_NAME` fehlt → configure() Fehler
 

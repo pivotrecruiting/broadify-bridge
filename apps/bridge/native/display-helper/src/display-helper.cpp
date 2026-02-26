@@ -1,5 +1,5 @@
 /*
-  Display Helper (macOS)
+  Display Helper (macOS / Windows)
 
   Reads RGBA frames from FrameBus shared memory and displays fullscreen via SDL2.
   No Electron, no IPC for frame data.
@@ -7,6 +7,7 @@
 
 #include "framebus.h"
 
+#define SDL_MAIN_HANDLED
 #include <SDL.h>
 
 #include <algorithm>
@@ -21,17 +22,27 @@
 #include <iostream>
 #include <string>
 #include <thread>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#endif
 
 namespace {
 
 std::atomic<bool> gShouldExit{false};
 
 struct FrameBusReader {
+#if defined(_WIN32)
+  HANDLE mapHandle = nullptr;
+#else
   int fd = -1;
+#endif
   uint8_t* base = nullptr;
   size_t size = 0;
   FrameBusHeader* header = nullptr;
@@ -39,7 +50,36 @@ struct FrameBusReader {
 };
 
 uint64_t atomicLoad64(uint64_t* ptr) {
+#if defined(_MSC_VER)
+  return reinterpret_cast<std::atomic<uint64_t>*>(ptr)->load(std::memory_order_acquire);
+#else
   return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
+#endif
+}
+
+std::string normalizeFrameBusObjectName(const std::string& input) {
+  if (input.empty()) {
+    return std::string();
+  }
+#if defined(_WIN32)
+  std::string sanitized;
+  sanitized.reserve(input.size());
+  for (char ch : input) {
+    if (ch == '/' || ch == '\\') {
+      continue;
+    }
+    sanitized.push_back(ch);
+  }
+  if (sanitized.empty()) {
+    return std::string();
+  }
+  return std::string("Local\\") + sanitized;
+#else
+  if (input[0] == '/') {
+    return input;
+  }
+  return std::string("/") + input;
+#endif
 }
 
 bool openFrameBusReader(const std::string& name, FrameBusReader& out, std::string& error) {
@@ -47,11 +87,60 @@ bool openFrameBusReader(const std::string& name, FrameBusReader& out, std::strin
     error = "FrameBus name is empty";
     return false;
   }
-  std::string shmName = name;
-  if (shmName[0] != '/') {
-    shmName = "/" + shmName;
+  const std::string shmName = normalizeFrameBusObjectName(name);
+  if (shmName.empty()) {
+    error = "FrameBus name is invalid";
+    return false;
   }
 
+#if defined(_WIN32)
+  HANDLE mapHandle = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, shmName.c_str());
+  if (!mapHandle) {
+    error = "Failed to open FrameBus shared memory";
+    return false;
+  }
+
+  void* base = MapViewOfFile(mapHandle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+  if (!base) {
+    CloseHandle(mapHandle);
+    error = "Failed to map FrameBus shared memory";
+    return false;
+  }
+
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (VirtualQuery(base, &mbi, sizeof(mbi)) == 0 || mbi.RegionSize < FRAMEBUS_HEADER_SIZE) {
+    UnmapViewOfFile(base);
+    CloseHandle(mapHandle);
+    error = "FrameBus shared memory too small";
+    return false;
+  }
+
+  auto* header = static_cast<FrameBusHeader*>(base);
+  if (header->magic != FRAMEBUS_MAGIC_LE || header->header_size != FRAMEBUS_HEADER_SIZE) {
+    UnmapViewOfFile(base);
+    CloseHandle(mapHandle);
+    error = "FrameBus header invalid";
+    return false;
+  }
+
+  const uint64_t expectedSize64 = static_cast<uint64_t>(FRAMEBUS_HEADER_SIZE) +
+                                  static_cast<uint64_t>(header->slot_stride) *
+                                      static_cast<uint64_t>(header->slot_count);
+  if (expectedSize64 > static_cast<uint64_t>(mbi.RegionSize) ||
+      expectedSize64 < FRAMEBUS_HEADER_SIZE) {
+    UnmapViewOfFile(base);
+    CloseHandle(mapHandle);
+    error = "FrameBus shared memory size mismatch";
+    return false;
+  }
+
+  out.mapHandle = mapHandle;
+  out.base = static_cast<uint8_t*>(base);
+  out.size = static_cast<size_t>(expectedSize64);
+  out.header = header;
+  out.slots = out.base + FRAMEBUS_HEADER_SIZE;
+  return true;
+#else
   const int fd = shm_open(shmName.c_str(), O_RDWR, 0600);
   if (fd < 0) {
     error = "Failed to open FrameBus shared memory";
@@ -93,9 +182,19 @@ bool openFrameBusReader(const std::string& name, FrameBusReader& out, std::strin
   out.header = header;
   out.slots = out.base + FRAMEBUS_HEADER_SIZE;
   return true;
+#endif
 }
 
 void closeFrameBusReader(FrameBusReader& reader) {
+#if defined(_WIN32)
+  if (reader.base) {
+    UnmapViewOfFile(reader.base);
+  }
+  if (reader.mapHandle) {
+    CloseHandle(reader.mapHandle);
+  }
+  reader.mapHandle = nullptr;
+#else
   if (reader.base && reader.size > 0) {
     munmap(reader.base, reader.size);
   }
@@ -103,6 +202,7 @@ void closeFrameBusReader(FrameBusReader& reader) {
     close(reader.fd);
   }
   reader.fd = -1;
+#endif
   reader.base = nullptr;
   reader.size = 0;
   reader.header = nullptr;
@@ -302,8 +402,11 @@ int main(int argc, char* argv[]) {
       while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) gShouldExit.store(true);
         if (e.type == SDL_KEYDOWN) {
+          const bool quitShortcut =
+              e.key.keysym.sym == SDLK_q &&
+              ((e.key.keysym.mod & KMOD_GUI) || (e.key.keysym.mod & KMOD_CTRL));
           if (e.key.keysym.sym == SDLK_ESCAPE ||
-              (e.key.keysym.sym == SDLK_q && (e.key.keysym.mod & KMOD_GUI))) {
+              quitShortcut) {
             gShouldExit.store(true);
           }
         }
@@ -342,8 +445,11 @@ int main(int argc, char* argv[]) {
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_QUIT) gShouldExit.store(true);
       if (e.type == SDL_KEYDOWN) {
+        const bool quitShortcut =
+            e.key.keysym.sym == SDLK_q &&
+            ((e.key.keysym.mod & KMOD_GUI) || (e.key.keysym.mod & KMOD_CTRL));
         if (e.key.keysym.sym == SDLK_ESCAPE ||
-            (e.key.keysym.sym == SDLK_q && (e.key.keysym.mod & KMOD_GUI))) {
+            quitShortcut) {
           gShouldExit.store(true);
         }
       }

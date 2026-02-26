@@ -35,15 +35,24 @@ export class BridgeProcessManager {
       return;
     }
 
+    const displayHelperArtifact =
+      process.platform === "win32"
+        ? "native/display-helper/display-helper.exe"
+        : "native/display-helper/display-helper";
+
     const lines = [
       this.describeArtifact("bridge/dist/index.js"),
       this.describeArtifact(
         "bridge/dist/services/graphics/renderer/electron-renderer-entry.js"
       ),
       this.describeArtifact("bridge/native/framebus/build/Release/framebus.node"),
-      this.describeArtifact("native/display-helper/display-helper"),
+      this.describeArtifact(displayHelperArtifact),
       this.describeArtifact("native/decklink-helper/decklink-helper"),
     ];
+
+    if (process.platform === "win32") {
+      lines.push(this.describeArtifact("native/display-helper/SDL2.dll"));
+    }
 
     lines.forEach((line) => {
       const message = `[BridgeManager] Release artifact check: ${line}\n`;

@@ -26,7 +26,7 @@ function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT
       return "decklink";
     }
     if (deviceType === "display") {
-      // External display outputs (HDMI/DP/Thunderbolt); Windows may be detection-only.
+      // External display outputs (HDMI/DP/Thunderbolt).
       return "display";
     }
     return "capture";
