@@ -73,6 +73,18 @@ jobs:
           cd apps/bridge
           npm ci
 
+      - name: Install Linux packaging dependencies (AppImage)
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          if apt-cache show libfuse2 >/dev/null 2>&1; then
+            sudo apt-get install -y libfuse2 file
+          else
+            sudo apt-get install -y libfuse2t64 file
+          fi
+
       - name: Build Bridge (apps/bridge)
         run: |
           cd apps/bridge
@@ -247,6 +259,24 @@ jobs:
           echo "APPLE_API_KEY=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Build Electron App
+        if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
+        run: npm run ${{ matrix.dist_script }} -- --publish=never
+
+      - name: Linux packaging diagnostics
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_BUILDER="node_modules/app-builder-bin/linux/x64/app-builder"
+          ls -lah "$APP_BUILDER"
+          file "$APP_BUILDER"
+          ldd "$APP_BUILDER" || true
+
+      - name: Build Electron App (Linux, debug)
+        if: startsWith(matrix.os, 'ubuntu-')
+        env:
+          DEBUG: electron-builder,builder-util
+          ELECTRON_BUILDER_LOG_LEVEL: debug
         run: npm run ${{ matrix.dist_script }} -- --publish=never
 
       - name: Verify Windows signatures
