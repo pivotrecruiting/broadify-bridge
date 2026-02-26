@@ -24,7 +24,7 @@ jobs:
           - os: windows-latest
             artifact: win-x64
             dist_script: dist:win
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             artifact: linux-x64
             dist_script: dist:linux
 
