@@ -94,7 +94,7 @@ export type PortDescriptorT = {
 export type DeviceDescriptorT = {
   id: string; // Stable ID (not name!)
   displayName: string;
-  // "display" refers to external monitor outputs detected on macOS.
+  // "display" refers to external monitor outputs (platform support varies).
   type: "usb-capture" | "decklink" | "display" | "other";
   vendor?: string;
   model?: string;

@@ -43,7 +43,7 @@ sequenceDiagram
 
 ## Plattformstatus (Display Output)
 - **macOS:** Unterstützt (nativer `display-helper`, SDL2, FrameBus)
-- **Windows:** Noch nicht implementiert (Display-Detection und nativer Display-Helper fehlen im produktiven Pfad)
+- **Windows:** Display-Detection vorhanden, Playback noch nicht unterstützt (nativer Display-Helper fehlt im produktiven Pfad)
 - **Linux:** Nicht implementiert
 
 ## Security‑Hinweise

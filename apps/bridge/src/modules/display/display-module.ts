@@ -18,6 +18,26 @@ type RawDisplayInfoT = {
   refreshHz?: number;
 };
 
+type WindowsMonitorIdRowT = {
+  instance_name?: string;
+  active?: boolean;
+  name?: string;
+  manufacturer?: string;
+  product_code?: string;
+  serial?: string;
+};
+
+type WindowsMonitorConnectionRowT = {
+  instance_name?: string;
+  active?: boolean;
+  video_output_technology?: number;
+};
+
+type WindowsDisplayDetectorPayloadT = {
+  ids?: WindowsMonitorIdRowT[] | WindowsMonitorIdRowT;
+  connections?: WindowsMonitorConnectionRowT[] | WindowsMonitorConnectionRowT;
+};
+
 // system_profiler output keys vary by macOS version and GPU type.
 // These key lists intentionally include multiple aliases for resilience.
 const MAX_REFRESH_SEARCH_KEYS = [
@@ -88,6 +108,57 @@ const normalizeConnectionType = (
     return "thunderbolt";
   }
   return null;
+};
+
+const normalizeWindowsInstanceKey = (value: string): string =>
+  value.trim().toLowerCase().replace(/_\d+$/, "");
+
+const WINDOWS_INTERNAL_OUTPUT_TECH_VALUES = new Set<number>([
+  -2147483648,
+  2147483648,
+]);
+
+// Windows uses a platform-specific enum for monitor connection technologies.
+// This mapping is intentionally best-effort and falls back to DisplayPort.
+const normalizeWindowsConnectionType = (
+  value?: number
+): PortDescriptorT["type"] | null => {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  if (value === 5 || value === 6) {
+    return "hdmi";
+  }
+
+  if (
+    value === 10 ||
+    value === 11 ||
+    value === 12 ||
+    value === 13 ||
+    value === 14 ||
+    value === 18
+  ) {
+    return "displayport";
+  }
+
+  return null;
+};
+
+const isLikelyWindowsInternalDisplay = (
+  name: string | undefined,
+  videoOutputTechnology?: number
+): boolean => {
+  if (
+    videoOutputTechnology !== undefined &&
+    WINDOWS_INTERNAL_OUTPUT_TECH_VALUES.has(videoOutputTechnology)
+  ) {
+    return true;
+  }
+  if (name && /built-?in|internal|integrated/i.test(name)) {
+    return true;
+  }
+  return false;
 };
 
 // Best-effort resolution parsing ("3840 x 2160").
@@ -214,6 +285,13 @@ const buildDisplayMode = (info: RawDisplayInfoT): OutputDisplayModeT[] => {
   ];
 };
 
+const toObjectArray = <T>(value: T[] | T | undefined): T[] => {
+  if (!value) {
+    return [];
+  }
+  return Array.isArray(value) ? value : [value];
+};
+
 // Security: this spawns a fixed, local system_profiler command with a hard timeout.
 // Mitigation: no user-controlled arguments, bounded runtime, and JSON parsing guards.
 const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
@@ -293,6 +371,203 @@ const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
   });
 };
 
+// Security: fixed PowerShell/CIM queries only, no user-controlled arguments, bounded runtime.
+const getWindowsDisplays = async (): Promise<RawDisplayInfoT[]> => {
+  return new Promise((resolve) => {
+    const psCommand = `
+      $ErrorActionPreference = 'SilentlyContinue'
+      function Convert-WmiChars([object]$Values) {
+        if ($null -eq $Values) { return '' }
+        return (-join ($Values | Where-Object { $_ -ne $null -and [int]$_ -ne 0 } | ForEach-Object { [char][int]$_ }))
+      }
+      $ids = @(
+        Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorID |
+        ForEach-Object {
+          [PSCustomObject]@{
+            instance_name = [string]$_.InstanceName
+            active = [bool]$_.Active
+            name = (Convert-WmiChars $_.UserFriendlyName)
+            manufacturer = (Convert-WmiChars $_.ManufacturerName)
+            product_code = (Convert-WmiChars $_.ProductCodeID)
+            serial = (Convert-WmiChars $_.SerialNumberID)
+          }
+        }
+      )
+      $connections = @(
+        Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorConnectionParams |
+        ForEach-Object {
+          [PSCustomObject]@{
+            instance_name = [string]$_.InstanceName
+            active = [bool]$_.Active
+            video_output_technology = [long]$_.VideoOutputTechnology
+          }
+        }
+      )
+      [PSCustomObject]@{
+        ids = $ids
+        connections = $connections
+      } | ConvertTo-Json -Compress -Depth 4
+    `;
+
+    const process = spawn("powershell", ["-Command", psCommand]);
+    let stdout = "";
+    const timeout = setTimeout(() => {
+      process.kill("SIGTERM");
+      resolve([]);
+    }, 5000);
+
+    process.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    process.on("close", () => {
+      clearTimeout(timeout);
+      try {
+        const json = JSON.parse(stdout) as WindowsDisplayDetectorPayloadT;
+        const idRows = toObjectArray(json.ids);
+        const connectionRows = toObjectArray(json.connections);
+
+        const connectionByInstance = new Map<string, WindowsMonitorConnectionRowT>();
+        for (const row of connectionRows) {
+          if (!row.instance_name || row.active === false) {
+            continue;
+          }
+          connectionByInstance.set(normalizeWindowsInstanceKey(row.instance_name), row);
+        }
+
+        const results: RawDisplayInfoT[] = [];
+        for (const row of idRows) {
+          if (!row.instance_name || row.active === false) {
+            continue;
+          }
+
+          const instanceKey = normalizeWindowsInstanceKey(row.instance_name);
+          const connection = connectionByInstance.get(instanceKey);
+          const videoOutputTechnology =
+            typeof connection?.video_output_technology === "number"
+              ? connection.video_output_technology
+              : undefined;
+
+          const name = row.name?.trim() || "External Display";
+          if (isLikelyWindowsInternalDisplay(name, videoOutputTechnology)) {
+            continue;
+          }
+
+          let connectionType = normalizeWindowsConnectionType(videoOutputTechnology);
+          if (!connectionType) {
+            connectionType = "displayport";
+            getBridgeContext().logger.warn(
+              `[DisplayDetector] Missing/unknown Windows connection type for "${name}", falling back to displayport`
+            );
+          }
+
+          results.push({
+            name,
+            connectionType,
+            vendorId: row.manufacturer?.trim() || undefined,
+            productId: row.product_code?.trim() || undefined,
+            serial: row.serial?.trim() || undefined,
+          });
+        }
+
+        resolve(results);
+      } catch (error) {
+        getBridgeContext().logger.warn(
+          `[DisplayDetector] Failed to parse Windows monitor output: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        resolve([]);
+      }
+    });
+
+    process.on("error", (error) => {
+      clearTimeout(timeout);
+      getBridgeContext().logger.warn(
+        `[DisplayDetector] Failed to run PowerShell for Windows display detection: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      resolve([]);
+    });
+  });
+};
+
+const mapRawDisplaysToDevices = (
+  rawDisplays: RawDisplayInfoT[],
+  options: { outputRuntimeSupported: boolean }
+): DeviceDescriptorT[] => {
+  const now = Date.now();
+  const seenIds = new Set<string>();
+
+  return rawDisplays.map((display, index) => {
+    // Prefer vendor/product/serial for stable IDs; fallback to name + index.
+    const idParts = [
+      display.vendorId ? sanitizeIdPart(display.vendorId) : "",
+      display.productId ? sanitizeIdPart(display.productId) : "",
+      display.serial ? sanitizeIdPart(display.serial) : "",
+    ].filter(Boolean);
+    const baseId =
+      idParts.length > 0
+        ? `display-${idParts.join("-")}`
+        : `display-${sanitizeIdPart(display.name)}-${index}`;
+    let deviceId = baseId;
+    if (seenIds.has(deviceId)) {
+      deviceId = `${baseId}-${index}`;
+    }
+    seenIds.add(deviceId);
+
+    // Capabilities are derived from the current active mode only.
+    const modes = buildDisplayMode(display);
+    const formats = modes.length > 0 ? [modes[0].label.split(" ")[0]] : [];
+
+    const portId = `${deviceId}-${display.connectionType}`;
+    const portLabelMap: Record<PortDescriptorT["type"], string> = {
+      hdmi: "HDMI",
+      displayport: "DisplayPort",
+      thunderbolt: "Thunderbolt",
+      sdi: "SDI",
+      usb: "USB",
+    };
+    const portLabel = portLabelMap[display.connectionType] || "Display";
+
+    const port: PortDescriptorT = {
+      id: portId,
+      displayName: `${portLabel} Output`,
+      type: display.connectionType,
+      direction: "output",
+      role: "video",
+      capabilities: {
+        formats,
+        modes,
+      },
+      status: {
+        available: options.outputRuntimeSupported,
+        signal: "none",
+      },
+    };
+
+    return {
+      id: deviceId,
+      displayName: display.name,
+      type: "display",
+      vendor: display.vendorId,
+      model: display.productId,
+      ports: [port],
+      status: {
+        present: true,
+        inUse: false,
+        ready: options.outputRuntimeSupported,
+        signal: "none",
+        error: options.outputRuntimeSupported
+          ? undefined
+          : "Display output playback helper is not implemented for this platform yet",
+        lastSeen: now,
+      },
+    };
+  });
+};
+
 // Placeholder controller for parity with other device modules.
 class DisplayController implements DeviceController {
   constructor(private readonly deviceId: string) {}
@@ -321,79 +596,26 @@ class DisplayController implements DeviceController {
 }
 
 /**
- * macOS display detector (HDMI/DisplayPort/Thunderbolt outputs).
+ * Display detector for external monitor outputs.
+ *
+ * macOS: production-ready detection.
+ * Windows: detection-only (playback helper not implemented yet).
  */
 export class DisplayModule implements DeviceModule {
   readonly name = "display";
 
   async detect(): Promise<DeviceDescriptorT[]> {
-    const rawDisplays = await getSystemProfilerDisplays();
-    const now = Date.now();
-    const seenIds = new Set<string>();
+    if (process.platform === "darwin") {
+      const rawDisplays = await getSystemProfilerDisplays();
+      return mapRawDisplaysToDevices(rawDisplays, { outputRuntimeSupported: true });
+    }
 
-    return rawDisplays.map((display, index) => {
-      // Prefer vendor/product/serial for stable IDs; fallback to name + index.
-      const idParts = [
-        display.vendorId ? sanitizeIdPart(display.vendorId) : "",
-        display.productId ? sanitizeIdPart(display.productId) : "",
-        display.serial ? sanitizeIdPart(display.serial) : "",
-      ].filter(Boolean);
-      const baseId =
-        idParts.length > 0
-          ? `display-${idParts.join("-")}`
-          : `display-${sanitizeIdPart(display.name)}-${index}`;
-      let deviceId = baseId;
-      if (seenIds.has(deviceId)) {
-        deviceId = `${baseId}-${index}`;
-      }
-      seenIds.add(deviceId);
+    if (process.platform === "win32") {
+      const rawDisplays = await getWindowsDisplays();
+      return mapRawDisplaysToDevices(rawDisplays, { outputRuntimeSupported: false });
+    }
 
-      // Capabilities are derived from the current active mode only.
-      const modes = buildDisplayMode(display);
-      const formats = modes.length > 0 ? [modes[0].label.split(" ")[0]] : [];
-
-      const portId = `${deviceId}-${display.connectionType}`;
-      const portLabelMap: Record<PortDescriptorT["type"], string> = {
-        hdmi: "HDMI",
-        displayport: "DisplayPort",
-        thunderbolt: "Thunderbolt",
-        sdi: "SDI",
-        usb: "USB",
-      };
-      const portLabel = portLabelMap[display.connectionType] || "Display";
-
-      const port: PortDescriptorT = {
-        id: portId,
-        displayName: `${portLabel} Output`,
-        type: display.connectionType,
-        direction: "output",
-        role: "video",
-        capabilities: {
-          formats,
-          modes,
-        },
-        status: {
-          available: true,
-          signal: "none",
-        },
-      };
-
-      return {
-        id: deviceId,
-        displayName: display.name,
-        type: "display",
-        vendor: display.vendorId,
-        model: display.productId,
-        ports: [port],
-        status: {
-          present: true,
-          inUse: false,
-          ready: true,
-          signal: "none",
-          lastSeen: now,
-        },
-      };
-    });
+    return [];
   }
 
   createController(deviceId: string): DeviceController {

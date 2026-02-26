@@ -11,12 +11,18 @@ import { platform } from "node:os";
  * all available device modules.
  */
 export function initializeModules(): void {
+  const currentPlatform = platform();
+
   // Register USB Capture module
   moduleRegistry.register(new USBCaptureModule());
 
-  if (platform() === "darwin") {
-    // macOS-only modules (DeckLink SDK + external display outputs).
+  if (currentPlatform === "darwin") {
+    // macOS-only module (DeckLink SDK).
     moduleRegistry.register(new DecklinkModule());
+  }
+
+  if (currentPlatform === "darwin" || currentPlatform === "win32") {
+    // External display output detection (Windows currently detection-only).
     moduleRegistry.register(new DisplayModule());
   }
 
