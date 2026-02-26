@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import type {
   DeviceDescriptorT,
   OutputDisplayModeT,
@@ -37,6 +38,8 @@ type WindowsDisplayDetectorPayloadT = {
   ids?: WindowsMonitorIdRowT[] | WindowsMonitorIdRowT;
   connections?: WindowsMonitorConnectionRowT[] | WindowsMonitorConnectionRowT;
 };
+
+type CsvRowT = Record<string, string>;
 
 // system_profiler output keys vary by macOS version and GPU type.
 // These key lists intentionally include multiple aliases for resilience.
@@ -113,6 +116,24 @@ const normalizeConnectionType = (
 const normalizeWindowsInstanceKey = (value: string): string =>
   value.trim().toLowerCase().replace(/_\d+$/, "");
 
+const resolveWindowsSystemExe = (
+  ...relativeSegments: string[]
+): string | undefined => {
+  if (process.platform !== "win32") {
+    return undefined;
+  }
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR;
+  if (!systemRoot) {
+    return undefined;
+  }
+  return join(systemRoot, "System32", ...relativeSegments);
+};
+
+const WINDOWS_POWERSHELL_PATH =
+  resolveWindowsSystemExe("WindowsPowerShell", "v1.0", "powershell.exe") ||
+  "powershell.exe";
+const WINDOWS_WMIC_PATH = resolveWindowsSystemExe("wbem", "wmic.exe") || "wmic";
+
 const WINDOWS_INTERNAL_OUTPUT_TECH_VALUES = new Set<number>([
   -2147483648,
   2147483648,
@@ -159,6 +180,86 @@ const isLikelyWindowsInternalDisplay = (
     return true;
   }
   return false;
+};
+
+const parseCsvLine = (line: string): string[] => {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+
+    if (char === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  result.push(current);
+  return result.map((value) => value.trim());
+};
+
+const parseCsvRows = (stdout: string): CsvRowT[] => {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    return [];
+  }
+
+  const headers = parseCsvLine(lines[0]);
+  if (headers.length === 0) {
+    return [];
+  }
+
+  const rows: CsvRowT[] = [];
+  for (const line of lines.slice(1)) {
+    const values = parseCsvLine(line);
+    if (values.length === 0) {
+      continue;
+    }
+    const row: CsvRowT = {};
+    for (let index = 0; index < headers.length; index += 1) {
+      row[headers[index]] = values[index] ?? "";
+    }
+    rows.push(row);
+  }
+
+  return rows;
+};
+
+const parseWindowsMonitorPnpId = (
+  pnpDeviceId?: string
+): { vendorId?: string; productId?: string } => {
+  if (!pnpDeviceId) {
+    return {};
+  }
+
+  const match = pnpDeviceId.match(/^DISPLAY\\([A-Z0-9]{3})([A-Z0-9]{4})\\/i);
+  if (!match) {
+    return {};
+  }
+
+  return {
+    vendorId: match[1],
+    productId: match[2],
+  };
 };
 
 // Best-effort resolution parsing ("3840 x 2160").
@@ -373,6 +474,25 @@ const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
 
 // Security: fixed PowerShell/CIM queries only, no user-controlled arguments, bounded runtime.
 const getWindowsDisplays = async (): Promise<RawDisplayInfoT[]> => {
+  const powerShellResult = await getWindowsDisplaysViaPowerShell();
+  if (powerShellResult.ok) {
+    return powerShellResult.displays;
+  }
+
+  getBridgeContext().logger.warn(
+    `[DisplayDetector] Falling back to WMIC for Windows display detection (reason: ${powerShellResult.reason})`
+  );
+  return getWindowsDisplaysViaWmic();
+};
+
+type WindowsDisplayDetectionResultT = {
+  ok: boolean;
+  displays: RawDisplayInfoT[];
+  reason?: string;
+};
+
+const getWindowsDisplaysViaPowerShell =
+  async (): Promise<WindowsDisplayDetectionResultT> => {
   return new Promise((resolve) => {
     const psCommand = `
       $ErrorActionPreference = 'SilentlyContinue'
@@ -409,20 +529,52 @@ const getWindowsDisplays = async (): Promise<RawDisplayInfoT[]> => {
       } | ConvertTo-Json -Compress -Depth 4
     `;
 
-    const process = spawn("powershell", ["-Command", psCommand]);
+    const process = spawn(
+      WINDOWS_POWERSHELL_PATH,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        psCommand,
+      ],
+      { windowsHide: true }
+    );
     let stdout = "";
+    let stderr = "";
     const timeout = setTimeout(() => {
       process.kill("SIGTERM");
-      resolve([]);
+      resolve({ ok: false, displays: [], reason: "timeout" });
     }, 5000);
 
     process.stdout.on("data", (data) => {
       stdout += data.toString();
     });
 
-    process.on("close", () => {
+    process.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    process.on("close", (code) => {
       clearTimeout(timeout);
       try {
+        if (code !== 0 && !stdout.trim()) {
+          const stderrPreview = stderr.trim().slice(0, 300);
+          getBridgeContext().logger.warn(
+            `[DisplayDetector] PowerShell exited with code ${code}${
+              stderrPreview ? `: ${stderrPreview}` : ""
+            }`
+          );
+          resolve({
+            ok: false,
+            displays: [],
+            reason: `powershell_exit_${code ?? "unknown"}`,
+          });
+          return;
+        }
+
         const json = JSON.parse(stdout) as WindowsDisplayDetectorPayloadT;
         const idRows = toObjectArray(json.ids);
         const connectionRows = toObjectArray(json.connections);
@@ -470,10 +622,124 @@ const getWindowsDisplays = async (): Promise<RawDisplayInfoT[]> => {
           });
         }
 
-        resolve(results);
+        resolve({ ok: true, displays: results });
       } catch (error) {
         getBridgeContext().logger.warn(
           `[DisplayDetector] Failed to parse Windows monitor output: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        resolve({ ok: false, displays: [], reason: "parse_error" });
+      }
+    });
+
+    process.on("error", (error) => {
+      clearTimeout(timeout);
+      getBridgeContext().logger.warn(
+        `[DisplayDetector] Failed to run PowerShell for Windows display detection (${WINDOWS_POWERSHELL_PATH}): ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      resolve({
+        ok: false,
+        displays: [],
+        reason:
+          error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+};
+
+// Security: fixed WMIC query only, no user-controlled arguments, bounded runtime.
+const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
+  return new Promise((resolve) => {
+    const process = spawn(
+      WINDOWS_WMIC_PATH,
+      [
+        "path",
+        "Win32_DesktopMonitor",
+        "get",
+        "Name,PNPDeviceID,Status",
+        "/format:csv",
+      ],
+      { windowsHide: true }
+    );
+
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      process.kill("SIGTERM");
+      resolve([]);
+    }, 5000);
+
+    process.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    process.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    process.on("close", (code) => {
+      clearTimeout(timeout);
+
+      if (code !== 0 && !stdout.trim()) {
+        const stderrPreview = stderr.trim().slice(0, 300);
+        getBridgeContext().logger.warn(
+          `[DisplayDetector] WMIC exited with code ${code}${
+            stderrPreview ? `: ${stderrPreview}` : ""
+          }`
+        );
+        resolve([]);
+        return;
+      }
+
+      try {
+        const rows = parseCsvRows(stdout);
+        const seen = new Set<string>();
+        const results: RawDisplayInfoT[] = [];
+
+        for (const row of rows) {
+          const pnpDeviceId = row.PNPDeviceID?.trim();
+          if (!pnpDeviceId || !pnpDeviceId.toUpperCase().startsWith("DISPLAY\\")) {
+            continue;
+          }
+
+          const status = row.Status?.trim();
+          if (status && status.toUpperCase() !== "OK") {
+            continue;
+          }
+
+          const name = row.Name?.trim() || "External Display";
+          if (isLikelyWindowsInternalDisplay(name)) {
+            continue;
+          }
+
+          const uniqueKey = `${name}|${pnpDeviceId}`;
+          if (seen.has(uniqueKey)) {
+            continue;
+          }
+          seen.add(uniqueKey);
+
+          const { vendorId, productId } = parseWindowsMonitorPnpId(pnpDeviceId);
+          results.push({
+            name,
+            connectionType: "displayport",
+            vendorId,
+            productId,
+          });
+        }
+
+        if (results.length > 0) {
+          getBridgeContext().logger.warn(
+            `[DisplayDetector] Windows display detection used WMIC fallback (${results.length} display(s), connection type defaults to displayport)`
+          );
+        }
+
+        resolve(results);
+      } catch (error) {
+        getBridgeContext().logger.warn(
+          `[DisplayDetector] Failed to parse WMIC Windows monitor output: ${
             error instanceof Error ? error.message : String(error)
           }`
         );
@@ -484,7 +750,7 @@ const getWindowsDisplays = async (): Promise<RawDisplayInfoT[]> => {
     process.on("error", (error) => {
       clearTimeout(timeout);
       getBridgeContext().logger.warn(
-        `[DisplayDetector] Failed to run PowerShell for Windows display detection: ${
+        `[DisplayDetector] Failed to run WMIC for Windows display detection (${WINDOWS_WMIC_PATH}): ${
           error instanceof Error ? error.message : String(error)
         }`
       );
