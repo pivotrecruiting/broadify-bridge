@@ -65,9 +65,21 @@ function Resolve-Sdl2Paths {
 
     $dllPath = $dllCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
+    $headerIncludeCandidates = @(
+      $includeDir,
+      (Join-Path $includeDir "SDL2")
+    )
+    $headerIncludeDir = $headerIncludeCandidates |
+      Where-Object { Test-Path (Join-Path $_ "SDL.h") } |
+      Select-Object -First 1
+    if (-not $headerIncludeDir) {
+      continue
+    }
+
     return [PSCustomObject]@{
       BaseDir = $base
       IncludeDir = $includeDir
+      HeaderIncludeDir = $headerIncludeDir
       LibDir = $libDir
       Sdl2Lib = $sdlLib
       Sdl2Dll = $dllPath
@@ -94,7 +106,7 @@ $compileArgs = @(
   "/O2",
   "/MD",
   "/I$framebusInclude",
-  "/I$($sdl.IncludeDir)",
+  "/I$($sdl.HeaderIncludeDir)",
   $sourceFile,
   "/link",
   "/OUT:$outFile",
