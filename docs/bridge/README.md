@@ -2,6 +2,7 @@
 
 ## Einstieg
 - Architektur & Struktur: `docs/bridge/architecture-overview.md`
+- Globale Dataflows: `docs/bridge/dataflows.md`
 - Subsystem Graphics: `docs/bridge/subsystems/graphics.md`
 - Subsystem Relay & Command Router: `docs/bridge/subsystems/relay-command-router.md`
 - Subsystem Device Discovery: `docs/bridge/subsystems/device-discovery.md`

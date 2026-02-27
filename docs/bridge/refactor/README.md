@@ -7,6 +7,7 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 - Dieser Ordner enthält Planungs-, Migrations- und Implementierungsprotokolle des Refactors.
 - Einzelne Dokumente beschreiben bewusst historische Zwischenstände und entfernte Legacy-Pfade.
 - Aktueller Implementierungsstand (produktiver SSOT) liegt unter:
+  - `docs/bridge/dataflows.md`
   - `docs/bridge/subsystems/*`
   - `docs/bridge/features/*`
   - `docs/bridge/reference/*`
@@ -21,7 +22,6 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 ## Dokumente
 - Ziele & Constraints: `docs/bridge/refactor/graphics-realtime-goals.md`
 - Architektur: `docs/bridge/refactor/graphics-realtime-architecture.md`
-- Dataflow: `docs/bridge/refactor/graphics-realtime-dataflow.md`
 - FrameBus (Shared Memory): `docs/bridge/refactor/graphics-realtime-framebus.md`
 - FrameBus API Spec: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
 - FrameBus C/C++ Header: `docs/bridge/refactor/graphics-realtime-framebus-c-header.md`
