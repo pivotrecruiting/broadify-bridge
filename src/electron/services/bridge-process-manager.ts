@@ -5,6 +5,12 @@ import fs from "fs";
 import { isDev } from "../util.js";
 import type { BridgeConfig } from "../types.js";
 import { isPortAvailable, findAvailablePort } from "./port-checker.js";
+import {
+  buildBridgeProcessArgs,
+  buildBridgeSpawnEnv,
+  resolveBridgeStartConfig,
+} from "./bridge-process-contract.js";
+import { stopChildProcessGracefully } from "./bridge-process-stop.js";
 
 /**
  * Bridge process manager
@@ -83,42 +89,36 @@ export class BridgeProcessManager {
     }
 
     try {
-      let actualConfig = { ...config };
-
       // Check if port is available, if not and autoFindPort is enabled, find next available
       const portAvailable = await isPortAvailable(config.port, config.host);
-
+      let availablePort: number | null = null;
       if (!portAvailable && autoFindPort) {
         console.log(
           `[BridgeManager] Port ${config.port} is not available, searching for alternative...`
         );
-        const availablePort = await findAvailablePort(
+        availablePort = await findAvailablePort(
           config.port,
           config.port + 10, // Check next 10 ports
           config.host
         );
-
-        if (availablePort) {
-          console.log(
-            `[BridgeManager] Found available port: ${availablePort} (requested: ${config.port})`
-          );
-          actualConfig = { ...config, port: availablePort };
-        } else {
-          return {
-            success: false,
-            error: `Port ${
-              config.port
-            } is not available and no alternative port found in range ${
-              config.port
-            }-${config.port + 10}`,
-          };
-        }
-      } else if (!portAvailable) {
-        return {
-          success: false,
-          error: `Port ${config.port} is already in use. Please choose a different port.`,
-        };
       }
+
+      const resolvedConfig = resolveBridgeStartConfig({
+        config,
+        portAvailable,
+        autoFindPort,
+        availablePort,
+      });
+
+      if (!resolvedConfig.success) {
+        return resolvedConfig;
+      }
+      if (resolvedConfig.actualPort) {
+        console.log(
+          `[BridgeManager] Found available port: ${resolvedConfig.actualPort} (requested: ${config.port})`
+        );
+      }
+      const actualConfig = resolvedConfig.config;
 
       this.config = actualConfig;
 
@@ -140,26 +140,13 @@ export class BridgeProcessManager {
 
       // In production, use ELECTRON_RUN_AS_NODE=1 environment variable
       // This makes Electron run as Node.js without starting a new Electron instance
-      const env: Record<string, string> = {
-        ...process.env,
-        NODE_ENV: isDev() ? "development" : "production",
-      };
-
-      if (relayEnabled) {
-        env.BRIDGE_RELAY_ENABLED = "true";
-      }
-
-      // Avoid leaking pairing secrets via argv by passing them through env vars.
-      if (pairingCode) {
-        env.PAIRING_CODE = pairingCode;
-      }
-      if (typeof pairingExpiresAt === "number") {
-        env.PAIRING_EXPIRES_AT = pairingExpiresAt.toString();
-      }
-
-      if (!isDev()) {
-        env.ELECTRON_RUN_AS_NODE = "1";
-      }
+      const env = buildBridgeSpawnEnv({
+        processEnv: process.env,
+        isDev: isDev(),
+        relayEnabled,
+        pairingCode,
+        pairingExpiresAt,
+      });
 
       // Setup logging for production
       if (!isDev()) {
@@ -273,8 +260,7 @@ export class BridgeProcessManager {
       );
       return {
         success: true,
-        actualPort:
-          actualConfig.port !== config.port ? actualConfig.port : undefined,
+        actualPort: resolvedConfig.actualPort,
       };
     } catch (error) {
       const errorMessage =
@@ -292,29 +278,7 @@ export class BridgeProcessManager {
     }
 
     try {
-      // Send SIGTERM for graceful shutdown
-      this.bridgeProcess.kill("SIGTERM");
-
-      // Wait for process to exit (max 5 seconds)
-      await new Promise<void>((resolve, reject) => {
-        if (!this.bridgeProcess) {
-          resolve();
-          return;
-        }
-
-        const timeout = setTimeout(() => {
-          // Force kill if still running
-          if (this.bridgeProcess) {
-            this.bridgeProcess.kill("SIGKILL");
-          }
-          reject(new Error("Bridge process did not exit in time"));
-        }, 5000);
-
-        this.bridgeProcess.once("exit", () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
+      await stopChildProcessGracefully(this.bridgeProcess);
 
       // Close log stream if open
       if (this.logStream) {
@@ -374,51 +338,16 @@ export class BridgeProcessManager {
     bridgeName?: string,
     relayEnabled: boolean = false
   ): string[] {
-    const args: string[] = [];
-
-    if (isDev()) {
-      // Development: npx tsx src/index.ts --host ... --port ...
-      args.push("tsx");
-      args.push(path.join(app.getAppPath(), "apps/bridge/src/index.ts"));
-    } else {
-      // Production: Bridge is packaged in extraResources at resources/bridge/dist/index.js
-      // ELECTRON_RUN_AS_NODE=1 is set as environment variable in spawn()
-      const bridgeEntry = path.join(
-        process.resourcesPath,
-        "bridge",
-        "dist",
-        "index.js"
-      );
-      args.push(bridgeEntry);
-    }
-
-    // Add standard config args
-    args.push("--host", config.host);
-    args.push("--port", config.port.toString());
-
-    if (config.userDataDir) {
-      args.push("--user-data-dir", config.userDataDir);
-    }
-
-    // Add bridge ID if provided
-    if (bridgeId) {
-      args.push("--bridge-id", bridgeId);
-    }
-
-    if (bridgeName) {
-      args.push("--bridge-name", bridgeName);
-    }
-
-    if (relayEnabled) {
-      args.push("--relay-enabled");
-    }
-
-    // Add relay URL if provided
-    if (relayUrl) {
-      args.push("--relay-url", relayUrl);
-    }
-
-    return args;
+    return buildBridgeProcessArgs({
+      isDev: isDev(),
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      config,
+      bridgeId,
+      relayUrl,
+      bridgeName,
+      relayEnabled,
+    });
   }
 }
 
