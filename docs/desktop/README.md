@@ -2,6 +2,7 @@
 
 ## Einstieg
 - Architektur & Struktur: `docs/desktop/architecture-overview.md`
+- Globale Dataflows: `docs/desktop/dataflows.md`
 - Subsystem Main Process: `docs/desktop/subsystems/main-process.md`
 - Subsystem Preload & IPC: `docs/desktop/subsystems/preload-ipc.md`
 - Subsystem Renderer UI: `docs/desktop/subsystems/renderer-ui.md`
@@ -22,5 +23,5 @@
 5. Betrieb & Entwicklung
 
 ## Status
-- Stufe 1: begonnen
-- Stufe 2–5: geplant
+- Architektur/Subsysteme: laufend gepflegt
+- Referenzen und Betriebsdetails: selektiv vertieft

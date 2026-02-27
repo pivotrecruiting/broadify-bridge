@@ -8,6 +8,7 @@ Die Renderer‑UI ist die React‑basierte Oberfläche zur Konfiguration und Ste
 - Start/Stop‑Flows
 - Darstellung von Logs/Status/Fehlern
 - Anzeigen von Bridge‑Identität und Pairing‑Code
+- Updater-Status anzeigen und Aktionen ausloesen
 
 ## Hauptkomponenten
 - `src/ui/App.tsx`
