@@ -6,16 +6,10 @@ import {
   EngineErrorCode,
 } from "../services/engine/engine-errors.js";
 import { getAuthFailure } from "./route-guards.js";
-
-/**
- * Connect request schema.
- * All fields are required - no fallback to runtimeConfig.
- */
-const ConnectRequestSchema = z.object({
-  type: z.enum(["atem", "tricaster", "vmix"]),
-  ip: z.string().ip({ version: "v4" }),
-  port: z.number().int().min(1).max(65535),
-});
+import {
+  ConnectRequestSchema,
+  mapEngineErrorToStatusCode,
+} from "./engine-contract.js";
 
 /**
  * Register engine routes.
@@ -96,29 +90,7 @@ export async function registerEngineRoute(
 
       // Handle EngineError
       if (error instanceof EngineError) {
-        // Map error codes to HTTP status codes
-        let statusCode = 500;
-        if (
-          error.code === EngineErrorCode.ALREADY_CONNECTED ||
-          error.code === EngineErrorCode.ALREADY_CONNECTING
-        ) {
-          statusCode = 409; // Conflict
-        } else if (
-          error.code === EngineErrorCode.CONNECTION_TIMEOUT ||
-          error.code === EngineErrorCode.DEVICE_UNREACHABLE
-        ) {
-          statusCode = 504; // Gateway Timeout
-        } else if (
-          error.code === EngineErrorCode.CONNECTION_REFUSED ||
-          error.code === EngineErrorCode.NETWORK_ERROR
-        ) {
-          statusCode = 503; // Service Unavailable
-        } else if (
-          error.code === EngineErrorCode.INVALID_IP ||
-          error.code === EngineErrorCode.INVALID_PORT
-        ) {
-          statusCode = 400; // Bad Request
-        }
+        const statusCode = mapEngineErrorToStatusCode(error.code);
 
         return reply.code(statusCode).send({
           success: false,

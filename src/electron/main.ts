@@ -19,6 +19,8 @@ import {
   isPortAvailable,
   checkPortsAvailability,
 } from "./services/port-checker.js";
+import { validateEngineConnectInput } from "./services/engine-connect-contract.js";
+import { isAllowedExternalUrl } from "./services/external-url.js";
 import {
   detectNetworkInterfaces,
   resolveBindAddress,
@@ -804,30 +806,14 @@ if (!isRendererProcess) {
         "engineConnect",
         async (_event, ip?: string, port?: number) => {
           try {
-            // Validate required fields
-            if (!ip) {
-              return {
-                success: false,
-                error: "IP address is required",
-              };
+            const validation = validateEngineConnectInput(ip, port);
+            if (!validation.success) {
+              return validation;
             }
-
-            if (!port) {
-              return {
-                success: false,
-                error: "Port is required",
-              };
-            }
-
-            const body = {
-              type: "atem" as const,
-              ip,
-              port,
-            };
 
             const result = (await bridgeApiRequest("/engine/connect", {
               method: "POST",
-              body: JSON.stringify(body),
+              body: JSON.stringify(validation.body),
             })) as { state?: unknown };
 
             return {
@@ -1074,7 +1060,7 @@ if (!isRendererProcess) {
 
       // Open external URL handler
       ipcMainHandle("openExternal", async (event, url: string) => {
-        if (typeof url === "string" && url.startsWith("http")) {
+        if (isAllowedExternalUrl(url)) {
           shell.openExternal(url);
         }
       });

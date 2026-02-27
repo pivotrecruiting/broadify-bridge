@@ -11,5 +11,6 @@
       "@broadify/protocol": ["../../packages/protocol/dist/index.d.ts"]
     }
   },
-  "include": ["**/*.ts", "**/*.cts"]
+  "include": ["**/*.ts", "**/*.cts"],
+  "exclude": ["**/*.test.ts"]
 }

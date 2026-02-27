@@ -1,6 +1,10 @@
 import { WebSocket } from "ws";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
-import { commandRouter, isRelayCommand } from "./command-router.js";
+import { commandRouter } from "./command-router.js";
+import {
+  isRelayCommand,
+  type RelayCommand,
+} from "./relay-command-allowlist.js";
 import {
   getRelayBridgeEnrollmentPublicKey,
   signRelayBridgeAuthChallenge,
@@ -10,7 +14,6 @@ import { lookup } from "node:dns/promises";
 import net from "node:net";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RelayCommand } from "./command-router.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
