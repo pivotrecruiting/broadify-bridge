@@ -9,6 +9,8 @@
 - Subsystem Bridge Integration: `docs/desktop/subsystems/bridge-integration.md`
 - Subsystem Logging & Diagnostics: `docs/desktop/subsystems/logging.md`
 - To-do Tracking: `docs/desktop/TODO.md`
+- Auto-Update Plan: `docs/desktop/auto-update-pipeline-plan.md`
+- Auto-Update Externe To-dos: `docs/desktop/auto-update-external-todos.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 - Datei-Referenzen: `docs/desktop/reference/README.md`
 

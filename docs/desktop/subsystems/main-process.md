@@ -10,6 +10,7 @@ Der Main‑Process steuert App‑Lifecycle, Fenster, IPC‑Handlers sowie Start/
 - IPC‑Handlers für UI‑Actions
 - Netzwerk‑Konfiguration laden
 - Bridge‑Profil (Name) und Pairing‑Code verwalten
+- App-Updater steuern (Check, Download, Install)
 
 ## Hauptkomponenten
 - `src/electron/main.ts`
@@ -23,6 +24,7 @@ Der Main‑Process steuert App‑Lifecycle, Fenster, IPC‑Handlers sowie Start/
 - `src/electron/services/network-interface-detector.ts`
 - `src/electron/services/bridge-profile.ts`
 - `src/electron/services/bridge-pairing.ts`
+- `src/electron/services/app-updater.ts`
 
 ## Ablauf (Mermaid)
 ```mermaid

@@ -14,6 +14,7 @@ import { bridgeProfile } from "./services/bridge-profile.js";
 import { bridgePairing } from "./services/bridge-pairing.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
 import { logAppError } from "./services/app-logger.js";
+import { appUpdaterService } from "./services/app-updater.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -378,6 +379,12 @@ if (!isRendererProcess) {
       else mainWindow.loadFile(getUIPath());
 
       pollResources(mainWindow);
+
+      appUpdaterService.initialize((status) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          ipcWebContentsSend("updaterStatus", mainWindow.webContents, status);
+        }
+      });
 
       // Existing IPC handlers
       ipcMainHandle("getStaticData", () => {
@@ -879,7 +886,7 @@ if (!isRendererProcess) {
             success: false,
             error: error instanceof Error ? error.message : "Unknown error",
             state: {
-              status: "error",
+              status: "error" as const,
               macros: [],
               error: error instanceof Error ? error.message : "Unknown error",
             },
@@ -1045,6 +1052,16 @@ if (!isRendererProcess) {
       );
 
       ipcMainHandle("appGetVersion", async () => app.getVersion());
+      ipcMainHandle("updaterGetStatus", async () => appUpdaterService.getStatus());
+      ipcMainHandle("updaterCheckForUpdates", async () =>
+        appUpdaterService.checkForUpdates(),
+      );
+      ipcMainHandle("updaterDownloadUpdate", async () =>
+        appUpdaterService.downloadUpdate(),
+      );
+      ipcMainHandle("updaterQuitAndInstall", async () =>
+        appUpdaterService.quitAndInstall(),
+      );
 
       ipcMainHandle("bridgeClearLogs", async () => {
         const config = bridgeProcessManager.getConfig();
@@ -1081,6 +1098,7 @@ if (!isRendererProcess) {
 
       // Cleanup on app quit
       app.on("before-quit", async () => {
+        appUpdaterService.shutdown();
         if (healthCheckCleanup) {
           healthCheckCleanup();
           healthCheckCleanup = null;

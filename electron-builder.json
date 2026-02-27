@@ -33,8 +33,19 @@
     }
   ],
   "icon": "./icon.png",
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "pivotrecruiting",
+      "repo": "broadify-bridge",
+      "releaseType": "release"
+    }
+  ],
   "mac": {
-    "target": "dmg",
+    "target": [
+      "dmg",
+      "zip"
+    ],
     "icon": "./icon.png",
     "category": "public.app-category.utilities",
     "hardenedRuntime": true,
@@ -50,7 +61,7 @@
   },
   "win": {
     "target": [
-      "portable",
+      "nsis",
       "msi"
     ],
     "icon": "./icon.png",

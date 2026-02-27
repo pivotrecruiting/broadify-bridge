@@ -18,6 +18,9 @@ Das Preload‑Subsystem definiert die sichere API‑Oberfläche (`window.electro
 - `bridgeGetStatus()` / `subscribeBridgeStatus(cb)`
 - `bridgeGetOutputs()`
 - `bridgeGetLogs()` / `bridgeClearLogs()`
+- `updaterGetStatus()` / `updaterCheckForUpdates()`
+- `updaterDownloadUpdate()` / `updaterQuitAndInstall()`
+- `subscribeUpdaterStatus(cb)`
 - `engineConnect()` / `engineGetStatus()` / `engineRunMacro()`
 - `openExternal(url)`
 

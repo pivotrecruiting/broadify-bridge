@@ -201,6 +201,7 @@ jobs:
           name: test-${{ matrix.artifact }}
           path: |
             dist/*.dmg
+            dist/*.zip
             dist/*.exe
             dist/*.msi
             dist/*.AppImage

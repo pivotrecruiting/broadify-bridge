@@ -1,4 +1,6 @@
 import type {
+  AppUpdaterActionResultT,
+  AppUpdaterStatusT,
   AppLogClearResponseT,
   AppLogResponseT,
   BridgeLogClearResponseT,
@@ -15,6 +17,9 @@ import type {
 } from "@broadify/protocol";
 
 export type {
+  AppUpdaterActionResultT,
+  AppUpdaterStateT,
+  AppUpdaterStatusT,
   AppLogClearResponseT,
   AppLogResponseT,
   BridgeConfig,
@@ -70,6 +75,11 @@ export type EventPayloadMapping = {
   appGetLogs: AppLogResponseT;
   bridgeClearLogs: BridgeLogClearResponseT;
   appClearLogs: AppLogClearResponseT;
+  updaterGetStatus: AppUpdaterStatusT;
+  updaterCheckForUpdates: AppUpdaterActionResultT;
+  updaterDownloadUpdate: AppUpdaterActionResultT;
+  updaterQuitAndInstall: AppUpdaterActionResultT;
+  updaterStatus: AppUpdaterStatusT;
   engineConnect: { success: boolean; error?: string; state?: EngineStateT };
   engineDisconnect: { success: boolean; error?: string; state?: EngineStateT };
   engineGetStatus: { success: boolean; error?: string; state?: EngineStateT };

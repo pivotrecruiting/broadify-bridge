@@ -62,7 +62,7 @@ git push origin v0.1.0
 
 Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 
-- Build für alle Plattformen (macOS ARM64/x64, Windows x64, Linux x64)
+- Build für alle Plattformen (macOS ARM64, Windows x64, Linux x64)
 - Upload der Artefakte zu GitHub Releases
 - Erstellung eines GitHub Releases mit allen Download-Links
 
@@ -77,13 +77,13 @@ Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 ### macOS
 
 - **ARM64 (Apple Silicon)**: `broadify-bridge-{version}-arm64.dmg`
-- **x64 (Intel)**: `broadify-bridge-{version}-x64.dmg`
+- **Updater-Paket**: `broadify-bridge-{version}-{arch}-mac.zip`
 - **Update-Metadaten**: `latest-mac.yml`
 
 ### Windows
 
-- **Portable**: `broadify-bridge-{version}-win-x64.exe`
-- **Installer**: `broadify-bridge-{version}-win-x64.msi`
+- **NSIS Installer (Updater-Pfad)**: `Broadify-Bridge-Setup-{version}.exe` (Name kann je nach Artifact-Template variieren)
+- **MSI**: `broadify-bridge-{version}-win-x64.msi`
 - **Update-Metadaten**: `latest.yml`
 
 ### Linux

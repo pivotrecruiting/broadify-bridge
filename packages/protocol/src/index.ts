@@ -172,6 +172,47 @@ export type AppLogClearResponseT = {
 
 export type UnsubscribeFunction = () => void;
 
+/**
+ * Desktop app updater state.
+ */
+export type AppUpdaterStateT =
+  | "disabled"
+  | "idle"
+  | "checking"
+  | "available"
+  | "not_available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+/**
+ * Desktop app updater status payload.
+ */
+export type AppUpdaterStatusT = {
+  enabled: boolean;
+  state: AppUpdaterStateT;
+  currentVersion: string;
+  availableVersion: string | null;
+  downloadedVersion: string | null;
+  channel: string;
+  progressPercent: number | null;
+  bytesPerSecond: number | null;
+  transferredBytes: number | null;
+  totalBytes: number | null;
+  lastCheckedAt: string | null;
+  errorCode: string | null;
+  message: string | null;
+};
+
+/**
+ * Generic updater command result payload.
+ */
+export type AppUpdaterActionResultT = {
+  success: boolean;
+  status: AppUpdaterStatusT;
+  error?: string;
+};
+
 export type PortAvailability = {
   port: number;
   available: boolean;

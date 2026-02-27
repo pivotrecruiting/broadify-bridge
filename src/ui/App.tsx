@@ -8,11 +8,13 @@ import { LogsDialog } from "./components/LogsDialog";
 import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { BridgeIdentitySection } from "./components/BridgeIdentitySection";
+import { UpdaterSection } from "./components/UpdaterSection";
 import {
   OnboardingDialog,
   type OnboardingStep,
 } from "./components/OnboardingDialog";
 import { PairingDialog } from "./components/PairingDialog";
+import { useAppUpdater } from "./hooks/use-app-updater";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
 
@@ -33,6 +35,13 @@ function App() {
 
   // Bridge status hook
   const bridgeStatus = useBridgeStatus();
+  const {
+    status: updaterStatus,
+    actionError: updaterActionError,
+    checkForUpdates,
+    downloadUpdate,
+    quitAndInstall,
+  } = useAppUpdater();
 
   // Port availability hook
   const { portAvailability, checkingPorts } = usePortAvailability({
@@ -257,6 +266,14 @@ function App() {
             pairingExpired={bridgeStatus.pairingExpired}
             isRunning={bridgeStatus.running}
             onOpenPairing={() => setShowPairing(true)}
+          />
+
+          <UpdaterSection
+            status={updaterStatus}
+            actionError={updaterActionError}
+            onCheckForUpdates={checkForUpdates}
+            onDownloadUpdate={downloadUpdate}
+            onQuitAndInstall={quitAndInstall}
           />
 
           <NetworkSection
