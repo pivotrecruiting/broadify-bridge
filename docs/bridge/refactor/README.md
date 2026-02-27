@@ -3,9 +3,17 @@
 ## Zweck
 Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeline mit Fokus auf flüssige 50 fps und minimale Latenz. Der Plan trennt strikt Control-Plane (Bridge) und Data-Plane (Frame-Transport).
 
+## Hinweis zum Geltungsbereich
+- Dieser Ordner enthält Planungs-, Migrations- und Implementierungsprotokolle des Refactors.
+- Einzelne Dokumente beschreiben bewusst historische Zwischenstände und entfernte Legacy-Pfade.
+- Aktueller Implementierungsstand (produktiver SSOT) liegt unter:
+  - `docs/bridge/subsystems/*`
+  - `docs/bridge/features/*`
+  - `docs/bridge/reference/*`
+
 ## SSOT (Single Source of Truth)
 - Output-Format Payload: `apps/bridge/src/services/graphics/graphics-schemas.ts`
-- Output-Validierung (DeckLink): `apps/bridge/src/services/graphics/graphics-manager.ts`
+- Output-Validierung: `apps/bridge/src/services/graphics/graphics-output-validation-service.ts`
 - Output-Policy (Pixel-Formate): `apps/bridge/src/services/graphics/output-format-policy.ts`
 - Device/Port-Modell: `packages/protocol/src/index.ts`
 - Display-Output Helper: `apps/bridge/src/services/graphics/display/display-output-entry.ts`

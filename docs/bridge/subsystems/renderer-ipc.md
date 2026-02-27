@@ -1,18 +1,19 @@
 # Bridge Subsystem – Renderer & IPC
 
 ## Zweck
-Dieses Subsystem rendert HTML/CSS‑Templates in einem separaten Electron‑Offscreen‑Prozess und liefert RGBA‑Frames zurück an die Bridge. Die Kommunikation erfolgt über lokale TCP‑IPC mit Token‑Handshake.
+Dieses Subsystem steuert das Rendering von HTML/CSS‑Templates in einem separaten Electron‑Offscreen‑Prozess. Die Kommunikation erfolgt über lokale TCP‑IPC mit Token‑Handshake (Control-Plane). Der Frame-Transport läuft über FrameBus (Data-Plane).
 
 ## Verantwortlichkeiten
 - Start/Shutdown des Renderer‑Prozesses
 - IPC‑Handshake und Nachrichten‑Protokoll
-- Offscreen‑Rendering pro Layer (BrowserWindow)
-- Frame‑Capture und Rückgabe an die Bridge
+- Renderer-Session-Konfiguration (`renderer_configure`)
+- Offscreen‑Rendering im Single-Window-Modell
 
 ## Hauptkomponenten
 - Renderer Client (Bridge): `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`
 - Renderer Entry (Electron): `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`
 - Renderer Interface: `apps/bridge/src/services/graphics/renderer/graphics-renderer.ts`
+- IPC Framing: `apps/bridge/src/services/graphics/renderer/renderer-ipc-framing.ts`
 - Animation CSS: `apps/bridge/src/services/graphics/renderer/animation-css.ts`
 
 ## IPC‑Protokoll (High‑Level)
@@ -21,6 +22,7 @@ Dieses Subsystem rendert HTML/CSS‑Templates in einem separaten Electron‑Offs
 - Nachrichten: JSON‑Header + optionaler Binary‑Payload
 
 ### Commands (Bridge → Renderer)
+- `renderer_configure`
 - `set_assets`
 - `create_layer`
 - `update_values`
@@ -29,8 +31,8 @@ Dieses Subsystem rendert HTML/CSS‑Templates in einem separaten Electron‑Offs
 - `shutdown`
 
 ### Events (Renderer → Bridge)
+- `hello`
 - `ready`
-- `frame` (RGBA‑Buffer)
 - `error`
 
 ## Ablauf (Mermaid)
@@ -45,10 +47,10 @@ sequenceDiagram
   ER-->>RC: hello (token)
   ER-->>RC: ready
 
-  GM->>RC: renderLayer/updateValues
-  RC->>ER: create_layer/update_values
-  ER-->>RC: frame (RGBA)
-  RC-->>GM: onFrame
+  GM->>RC: configureSession/renderLayer/updateValues
+  RC->>ER: renderer_configure/create_layer/update_values
+  ER->>ER: paint -> BGRA->RGBA
+  ER->>FrameBus: writeFrame
 ```
 
 ## Security‑Hinweise
@@ -59,7 +61,7 @@ sequenceDiagram
 ## Fehlerbilder
 - Renderer Entry nicht gefunden → Initialisierung schlägt fehl, Stub‑Renderer fallback.
 - Token‑Mismatch → IPC wird verworfen.
-- Buffer‑Mismatch → Frame wird verworfen.
+- Unerwartete Frame-Payload via IPC → wird verworfen (Frames sind FrameBus-only).
 
 ## IPC‑Framing (Detail)
 - 4‑Byte Big‑Endian Header‑Length\n
@@ -70,6 +72,7 @@ sequenceDiagram
 ## Startparameter (Renderer‑Process)
 - CLI: `--graphics-renderer --renderer-entry <path>`\n
 - Env: `BRIDGE_GRAPHICS_IPC_PORT`, `BRIDGE_GRAPHICS_IPC_TOKEN`
+- Session-Setup: `renderer_configure` enthält `framebusName`, `framebusSlotCount`, `framebusSize`, `pixelFormat`
 
 ## Relevante Dateien
 - `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`

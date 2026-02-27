@@ -60,11 +60,10 @@ Schema: `GraphicsConfigureOutputsSchema`
 **Validierung / Regeln**
 - `outputKey` bestimmt Pflicht‑Targets und Port‑Rollen.
 - `key_fill_sdi`: Output1=Fill, Output2=Key, beide SDI, gleiche Device.
-- `key_fill_split_sdi`: zwei SDI‑Ports, aber **keine** Key‑Port‑Rolle.
 - `video_sdi`: ein SDI‑Port, **nicht** Key.
-- `video_hdmi`: ein HDMI‑Port.
+- `video_hdmi`: ein HDMI/DisplayPort/Thunderbolt‑Port.
 - `key_fill_ndi` & `stub`: keine zusätzliche Port‑Validierung.
-- `format` wird gegen unterstützte Display‑Modes geprüft (DeckLink Helper).
+- `format` wird gegen unterstützte Modes geprüft (DeckLink und Display-Ports).
 
 ## 2) graphics_send
 Schema: `GraphicsSendSchema`
@@ -159,7 +158,8 @@ Schema: `GraphicsRemovePresetSchema`
 {
   "outputConfig": { ... },
   "layers": [ { "layerId": "...", "category": "...", "layout": { ... }, "zIndex": 30 } ],
-  "activePreset": { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] }
+  "activePreset": { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] },
+  "activePresets": [ { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] } ]
 }
 ```
 

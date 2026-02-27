@@ -29,7 +29,7 @@ flowchart LR
 
 ## Security‑Hinweise
 - Logs können sensitive Informationen enthalten → keine Tokens/Secrets loggen.
-- `/logs` hat derzeit keine Auth‑Schicht.
+- `/logs` und `/logs/clear` sind lokal oder token-geschützt (`BRIDGE_API_TOKEN`).
 - Pairing‑Code bleibt im Memory/Context und wird nicht geloggt.
 
 ## Log‑Level & Debug‑Flags

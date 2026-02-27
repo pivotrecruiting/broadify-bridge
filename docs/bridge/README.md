@@ -30,5 +30,5 @@
 5. Betrieb & Entwicklung
 
 ## Status
-- Stufe 1: begonnen
-- Stufe 2–5: geplant
+- Architektur/Subsysteme/Features: laufend gepflegt
+- Datei-Referenzen: teilweise historisch, auf aktive Implementierung ausgerichtet

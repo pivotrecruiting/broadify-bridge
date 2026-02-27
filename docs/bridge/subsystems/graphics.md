@@ -1,14 +1,14 @@
 # Bridge Subsystem – Graphics Pipeline
 
 ## Zweck
-Dieses Subsystem rendert Graphics‑Layer (HTML/CSS) zu RGBA‑Frames und liefert sie an Hardware‑Outputs (z. B. DeckLink SDI/HDMI). Es orchestriert Assets, Layouts, Presets und Output‑Konfiguration.
+Dieses Subsystem rendert Graphics‑Layer (HTML/CSS) zu RGBA‑Frames und liefert sie an Hardware‑Outputs (z. B. DeckLink SDI/HDMI oder Display-Output). Es orchestriert Assets, Layouts, Presets und Output‑Konfiguration.
 
 ## Verantwortlichkeiten
 - Validierung und Sanitizing von Graphics‑Payloads
-- Rendering über separaten Electron‑Offscreen‑Prozess
-- Layer‑Compositing, Background‑Handling
-- Output‑Konfiguration und Format‑Validierung
-- Streaming von Frames an Output‑Adapter/Helper
+- Rendering über separaten Electron‑Offscreen‑Prozess (Single-Window)
+- Session-Konfiguration über FrameBus
+- Output‑Konfiguration und Format‑/Target‑Validierung
+- Steuerung von Output-Transitions (atomare Re-Konfiguration)
 
 ## Entry Points (Commands)
 Graphics‑Commands kommen über den Relay‑Client in die Bridge:
@@ -35,20 +35,19 @@ sequenceDiagram
   participant GM as GraphicsManager
   participant R as RendererClient
   participant ER as ElectronRenderer
+  participant FB as FrameBus
   participant OA as OutputAdapter
-  participant DH as DeckLink Helper
+  participant H as Native Helper
 
   Relay->>RC: command (graphics_*)
   RC->>CR: handleCommand(command, payload)
   CR->>GM: graphics_*()
   GM->>GM: validate + sanitize
-  GM->>R: renderLayer/updateValues/updateLayout
-  R->>ER: IPC create/update/remove
-  ER-->>R: frame (RGBA)
-  R-->>GM: onFrame(layerId, buffer)
-  GM->>GM: composite layers
-  GM->>OA: sendFrame(RGBA)
-  OA->>DH: stdin stream (frames)
+  GM->>R: configure/render/update/remove
+  R->>ER: IPC renderer_configure/create/update/remove
+  ER->>FB: write RGBA frames
+  OA->>FB: read frames
+  OA->>H: output via helper
 ```
 
 ## Validierung & Sicherheit
@@ -66,43 +65,47 @@ sequenceDiagram
 - Output‑Targets (Port‑Typ, Port‑Rolle, Verfügbarkeit)
 - Format‑Support (Width/Height/FPS + Pixel‑Formats)
 
-Dabei werden Device‑Infos aus `device-cache` und Display‑Modes aus dem DeckLink‑Helper verwendet:
+Dabei werden Device‑Infos aus `device-cache` und Display‑Modes aus Device-Modulen/Helpern verwendet:
 - `apps/bridge/src/services/device-cache.ts`
 - `apps/bridge/src/modules/decklink/decklink-detector.ts`
+- `apps/bridge/src/modules/display/display-module.ts`
 - `apps/bridge/src/modules/decklink/decklink-helper.ts`
 
 ## Renderer‑IPC (Offscreen)
 Renderer‑Client: `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`
 - Startet Electron‑Rendererprozess mit IPC‑Port + Token
-- Befehle: `set_assets`, `create_layer`, `update_values`, `update_layout`, `remove_layer`
+- Befehle: `renderer_configure`, `set_assets`, `create_layer`, `update_values`, `update_layout`, `remove_layer`
 
 Renderer‑Entry: `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`
-- Offscreen BrowserWindow pro Layer
+- Ein Offscreen BrowserWindow (Single-Window) mit Layern via Shadow DOM
 - `paint`‑Event liefert BGRA → RGBA
-- Sendet `frame`‑Messages via IPC zurück
+- Schreibt Frames in FrameBus; keine Frame-Payload über IPC
 
 ## Output‑Adapter
 - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
-- `apps/bridge/src/services/graphics/output-adapters/decklink-split-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/display-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/stub-output-adapter.ts`
 
-Frames werden mit Header‑Protokoll an den nativen Helper (DeckLink) oder an den Display‑Helper (Electron Fullscreen) gestreamt.
+DeckLink und Display-Output nutzen FrameBus als Data-Plane. IPC bleibt Control-Plane.
 
 ## Fehlerbilder (typisch)
 - Output nicht konfiguriert → `Outputs not configured`
 - Format/Port ungültig → Validation Fehler
 - Renderer nicht verfügbar → Fallback auf Stub Renderer
 - DeckLink Helper fehlt/keine Rechte → configure() Fehler
+- FrameBus nicht konfiguriert/verfügbar → `renderer_configure` schlägt fehl
 
 ## Relevante Dateien
 - `apps/bridge/src/services/relay-client.ts`
 - `apps/bridge/src/services/command-router.ts`
 - `apps/bridge/src/services/graphics/graphics-manager.ts`
+- `apps/bridge/src/services/graphics/graphics-output-transition-service.ts`
 - `apps/bridge/src/services/graphics/graphics-schemas.ts`
 - `apps/bridge/src/services/graphics/template-sanitizer.ts`
 - `apps/bridge/src/services/graphics/asset-registry.ts`
 - `apps/bridge/src/services/graphics/renderer/*`
+- `apps/bridge/src/services/graphics/framebus/*`
 - `apps/bridge/src/services/graphics/output-adapters/*`
 - `apps/bridge/src/modules/decklink/*`
+- `apps/bridge/src/modules/display/*`
