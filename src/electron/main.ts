@@ -799,19 +799,11 @@ if (!isRendererProcess) {
       }
 
       // Engine IPC handlers
+
       ipcMainHandle(
         "engineConnect",
-        async (event, type: string, ip?: string, port?: number) => {
+        async (_event, ip?: string, port?: number) => {
           try {
-            // Validate type
-            if (!type || !["atem", "tricaster", "vmix"].includes(type)) {
-              return {
-                success: false,
-                error:
-                  "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
-              };
-            }
-
             // Validate required fields
             if (!ip) {
               return {
@@ -828,7 +820,7 @@ if (!isRendererProcess) {
             }
 
             const body = {
-              type: type as "atem" | "tricaster" | "vmix",
+              type: "atem" as const,
               ip,
               port,
             };
