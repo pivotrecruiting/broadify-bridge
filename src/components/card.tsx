@@ -104,7 +104,7 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
       <BaseCard
         ref={ref}
         className={cn(
-          "relative overflow-hidden",
+          "relative overflow-hidden rounded-xl",
           variantClass,
           gradient &&
             "bg-gradient-to-tr from-purple-500/10 via-blue-500/10 to-pink-500/10",

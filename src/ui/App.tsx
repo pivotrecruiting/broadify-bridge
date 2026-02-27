@@ -8,7 +8,7 @@ import { LogsDialog } from "./components/LogsDialog";
 import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { BridgeIdentitySection } from "./components/BridgeIdentitySection";
-import { UpdaterSection } from "./components/UpdaterSection";
+import { UpdaterDialog } from "./components/UpdaterDialog";
 import {
   OnboardingDialog,
   type OnboardingStep,
@@ -73,6 +73,7 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [showUpdaterDialog, setShowUpdaterDialog] = useState(false);
   const [showPairing, setShowPairing] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [bridgeProfile, setBridgeProfile] = useState<{
@@ -255,6 +256,7 @@ function App() {
           <Header
             bridgeStatus={bridgeStatus}
             onOpenDiagnostics={() => setShowLogs(true)}
+            onOpenUpdates={() => setShowUpdaterDialog(true)}
           />
 
           <BridgeIdentitySection
@@ -266,14 +268,6 @@ function App() {
             pairingExpired={bridgeStatus.pairingExpired}
             isRunning={bridgeStatus.running}
             onOpenPairing={() => setShowPairing(true)}
-          />
-
-          <UpdaterSection
-            status={updaterStatus}
-            actionError={updaterActionError}
-            onCheckForUpdates={checkForUpdates}
-            onDownloadUpdate={downloadUpdate}
-            onQuitAndInstall={quitAndInstall}
           />
 
           <NetworkSection
@@ -304,6 +298,15 @@ function App() {
         </div>
       </div>
       <LogsDialog isOpen={showLogs} onClose={() => setShowLogs(false)} />
+      <UpdaterDialog
+        isOpen={showUpdaterDialog}
+        onClose={() => setShowUpdaterDialog(false)}
+        status={updaterStatus}
+        actionError={updaterActionError}
+        onCheckForUpdates={checkForUpdates}
+        onDownloadUpdate={downloadUpdate}
+        onQuitAndInstall={quitAndInstall}
+      />
       <PairingDialog
         isOpen={showPairing}
         onClose={() => setShowPairing(false)}
