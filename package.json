@@ -19,7 +19,7 @@
     "sign:display-helper": "bash scripts/sign-display-helper.sh",
     "download:decklink-helper": "bash scripts/download-decklink-helper.sh",
     "check:decklink-helper": "bash scripts/check-decklink-helper.sh",
-    "build": "npm-run-all build:protocol build:bridge build:graphics-renderer build:app",
+    "build": "npm run test && npm-run-all build:protocol build:bridge build:graphics-renderer build:app",
     "lint": "eslint .",
     "preview": "vite preview",
     "transpile:electron": "tsc --project src/electron/tsconfig.json",
