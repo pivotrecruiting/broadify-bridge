@@ -11,6 +11,24 @@ import {
   mapEngineErrorToStatusCode,
 } from "./engine-contract.js";
 
+type EngineRouteDepsT = {
+  engineAdapter: Pick<
+    typeof engineAdapter,
+    | "connect"
+    | "disconnect"
+    | "getState"
+    | "getConnectedSince"
+    | "getLastError"
+    | "getMacros"
+    | "getStatus"
+    | "runMacro"
+    | "stopMacro"
+  >;
+  getAuthFailure: typeof getAuthFailure;
+};
+
+type EngineRouteOptionsT = FastifyPluginOptions & Partial<EngineRouteDepsT>;
+
 /**
  * Register engine routes.
  *
@@ -24,10 +42,16 @@ import {
  */
 export async function registerEngineRoute(
   fastify: FastifyInstance,
-  _options: FastifyPluginOptions
+  options: EngineRouteOptionsT
 ): Promise<void> {
+  const deps: EngineRouteDepsT = {
+    engineAdapter,
+    getAuthFailure,
+    ...options,
+  };
+
   fastify.addHook("preHandler", async (request, reply) => {
-    const authFailure = getAuthFailure(request);
+    const authFailure = deps.getAuthFailure(request);
     if (authFailure) {
       return reply.code(authFailure.status).send({
         success: false,
@@ -48,7 +72,7 @@ export async function registerEngineRoute(
       const body = ConnectRequestSchema.parse(request.body || {});
 
       // Connect directly with provided config (no fallback to runtimeConfig)
-      await engineAdapter.connect({
+      await deps.engineAdapter.connect({
         type: body.type,
         ip: body.ip,
         port: body.port,
@@ -60,7 +84,7 @@ export async function registerEngineRoute(
 
       return {
         success: true,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -117,12 +141,12 @@ export async function registerEngineRoute(
    */
   fastify.post("/engine/disconnect", async (_request, reply) => {
     try {
-      await engineAdapter.disconnect();
+      await deps.engineAdapter.disconnect();
       fastify.log.info("[Engine] Disconnected");
 
       return {
         success: true,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -142,9 +166,9 @@ export async function registerEngineRoute(
    */
   fastify.get("/engine/status", async (_request, reply) => {
     try {
-      const state = engineAdapter.getState();
-      const connectedSince = engineAdapter.getConnectedSince();
-      const lastError = engineAdapter.getLastError();
+      const state = deps.engineAdapter.getState();
+      const connectedSince = deps.engineAdapter.getConnectedSince();
+      const lastError = deps.engineAdapter.getLastError();
 
       return {
         success: true,
@@ -172,8 +196,8 @@ export async function registerEngineRoute(
    */
   fastify.get("/engine/macros", async (_request, reply) => {
     try {
-      const macros = engineAdapter.getMacros();
-      const status = engineAdapter.getStatus();
+      const macros = deps.engineAdapter.getMacros();
+      const status = deps.engineAdapter.getStatus();
 
       if (status !== "connected") {
         return reply.code(503).send({
@@ -219,13 +243,13 @@ export async function registerEngineRoute(
         });
       }
 
-      await engineAdapter.runMacro(macroId);
+      await deps.engineAdapter.runMacro(macroId);
       fastify.log.info(`[Engine] Running macro ${macroId}`);
 
       return {
         success: true,
         macroId,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -265,13 +289,13 @@ export async function registerEngineRoute(
         });
       }
 
-      await engineAdapter.stopMacro(macroId);
+      await deps.engineAdapter.stopMacro(macroId);
       fastify.log.info(`[Engine] Stopping macro ${macroId}`);
 
       return {
         success: true,
         macroId,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
