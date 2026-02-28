@@ -23,9 +23,12 @@ import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
 import { logRuntimeDiagnostics } from "./services/runtime-diagnostics.js";
 import type { BridgeConfigT } from "./config.js";
+import {
+  registerServerPlugins,
+  registerServerRoutes,
+} from "./server-registration.js";
 
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
-const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /**
@@ -117,19 +120,12 @@ export async function createServer(config: BridgeConfigT) {
 
   await graphicsManager.initialize();
 
-  // Register CORS plugin (dev-friendly; tighten in production).
-  await server.register(cors, {
-    origin: true, // Allow all origins (for development)
-    // For production: origin: ["http://localhost:3000", "https://yourdomain.com"]
+  // Register CORS + WebSocket plugins.
+  await registerServerPlugins(server.register.bind(server), {
+    corsPlugin: cors,
+    websocketPlugin: websocket,
   });
   server.log.info("[Server] CORS plugin registered");
-
-  // Register WebSocket plugin.
-  await server.register(websocket, {
-    options: {
-      maxPayload: MAX_WS_PAYLOAD_BYTES,
-    },
-  });
   server.log.info("[Server] WebSocket plugin registered");
 
   // Initialize device modules and device watchers.
@@ -171,15 +167,21 @@ export async function createServer(config: BridgeConfigT) {
   });
 
   // Register routes.
-  await server.register(registerStatusRoute, { config });
-  await server.register(registerDevicesRoute);
-  await server.register(registerOutputsRoute);
-  await server.register(registerConfigRoute);
-  await server.register(registerEngineRoute);
-  await server.register(registerVideoRoute);
-  await server.register(registerWebSocketRoute);
-  await server.register(registerRelayRoute, { config, relayClient });
-  await server.register(registerLogsRoute);
+  await registerServerRoutes(server.register.bind(server), {
+    config,
+    relayClient,
+    routes: {
+      registerStatusRoute,
+      registerDevicesRoute,
+      registerOutputsRoute,
+      registerConfigRoute,
+      registerEngineRoute,
+      registerVideoRoute,
+      registerWebSocketRoute,
+      registerRelayRoute,
+      registerLogsRoute,
+    },
+  });
   server.log.info("[Server] All routes registered");
 
   // Note: Engine connection is now controlled by the Web-App
