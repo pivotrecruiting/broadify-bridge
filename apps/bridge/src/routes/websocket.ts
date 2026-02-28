@@ -2,6 +2,11 @@ import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { websocketManager } from "../services/websocket-manager.js";
 import { engineAdapter } from "../services/engine-adapter.js";
 import { getAuthFailure } from "./route-guards.js";
+import {
+  buildWebSocketSnapshot,
+  normalizeWebSocketTopics,
+  type WebSocketTopicT,
+} from "./websocket-contract.js";
 
 /**
  * WebSocket message types
@@ -9,8 +14,6 @@ import { getAuthFailure } from "./route-guards.js";
 type ClientMessage =
   | { type: "subscribe"; topics: string[] }
   | { type: "unsubscribe"; topics: string[] };
-
-type Topic = "engine" | "video";
 
 /**
  * Register WebSocket route
@@ -47,37 +50,9 @@ export async function registerWebSocketRoute(
 
     // Send snapshot for subscribed topics on connect
     const sendSnapshot = () => {
-      websocketManager.sendSnapshot(client, (topic: Topic) => {
-        if (topic === "engine") {
-          const state = engineAdapter.getState();
-          // Send appropriate event based on actual status
-          if (state.status === "connected") {
-            return {
-              type: "engine.connected",
-              state,
-            };
-          } else if (state.status === "error") {
-            return {
-              type: "engine.error",
-              error: state.error || "Unknown error",
-            };
-          } else {
-            // disconnected or connecting
-            return {
-              type: "engine.status",
-              status: state.status,
-              error: state.error,
-            };
-          }
-        } else if (topic === "video") {
-          // V1: Placeholder
-          return {
-            type: "video.status",
-            status: "not-configured",
-          };
-        }
-        return null;
-      });
+      websocketManager.sendSnapshot(client, (topic: WebSocketTopicT) =>
+        buildWebSocketSnapshot(topic, engineAdapter.getState()),
+      );
     };
 
     // Handle incoming messages
@@ -86,10 +61,7 @@ export async function registerWebSocketRoute(
         const data: ClientMessage = JSON.parse(message.toString());
 
         if (data.type === "subscribe") {
-          // Validate topics
-          const validTopics = data.topics.filter(
-            (t): t is Topic => t === "engine" || t === "video"
-          );
+          const validTopics = normalizeWebSocketTopics(data.topics);
 
           if (validTopics.length > 0) {
             websocketManager.subscribe(client, validTopics);
@@ -103,9 +75,7 @@ export async function registerWebSocketRoute(
             sendSnapshot();
           }
         } else if (data.type === "unsubscribe") {
-          const validTopics = data.topics.filter(
-            (t): t is Topic => t === "engine" || t === "video"
-          );
+          const validTopics = normalizeWebSocketTopics(data.topics);
 
           if (validTopics.length > 0) {
             websocketManager.unsubscribe(client, validTopics);
