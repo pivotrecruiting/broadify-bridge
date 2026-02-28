@@ -6,6 +6,13 @@ import { enforceLocalOrToken } from "./route-guards.js";
  */
 type VideoStatusT = "not-configured" | "configured" | "unavailable" | "error";
 
+type VideoRouteDepsT = {
+  enforceLocalOrToken: typeof enforceLocalOrToken;
+  getStatus: () => { status: VideoStatusT; message: string };
+};
+
+type VideoRouteOptionsT = FastifyPluginOptions & Partial<VideoRouteDepsT>;
+
 /**
  * Register video routes
  *
@@ -14,8 +21,17 @@ type VideoStatusT = "not-configured" | "configured" | "unavailable" | "error";
  */
 export async function registerVideoRoute(
   fastify: FastifyInstance,
-  _options: FastifyPluginOptions
+  options: VideoRouteOptionsT
 ): Promise<void> {
+  const deps: VideoRouteDepsT = {
+    enforceLocalOrToken,
+    getStatus: () => ({
+      status: "not-configured",
+      message: "Video I/O not yet configured",
+    }),
+    ...options,
+  };
+
   /**
    * GET /video/status
    * Get video I/O status
@@ -24,18 +40,11 @@ export async function registerVideoRoute(
    * V2: Will return actual video configuration status
    */
   fastify.get("/video/status", async (request, reply) => {
-    if (!enforceLocalOrToken(request, reply)) {
+    if (!deps.enforceLocalOrToken(request, reply)) {
       return;
     }
     try {
-      // V1: Always return "not-configured"
-      // V2: Check actual video configuration state
-      const status: VideoStatusT = "not-configured";
-
-      return {
-        status,
-        message: "Video I/O not yet configured",
-      };
+      return deps.getStatus();
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
