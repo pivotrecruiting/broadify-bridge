@@ -1,6 +1,5 @@
 import { WebSocket } from "ws";
 import { createPublicKey } from "node:crypto";
-import { commandRouter } from "./command-router.js";
 import {
   isRelayCommand,
   type RelayCommand,
@@ -16,11 +15,7 @@ import {
 import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { join } from "node:path";
 
 const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
 const RELAY_COMMAND_TTL_SECONDS = 30;
@@ -122,13 +117,25 @@ const validateJwksUrl = async (): Promise<URL> => {
  * Get version from package.json
  */
 function getVersion(): string {
+  const candidates = [
+    join(process.cwd(), "apps/bridge/package.json"),
+    join(process.cwd(), "package.json"),
+  ];
   try {
-    const packagePath = join(__dirname, "../../package.json");
-    const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
-    return packageJson.version || "0.1.0";
+    for (const packagePath of candidates) {
+      try {
+        const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
+        if (typeof packageJson.version === "string" && packageJson.version) {
+          return packageJson.version;
+        }
+      } catch {
+        // Try next candidate path.
+      }
+    }
   } catch {
-    return "0.1.0";
+    // Fall through to default version.
   }
+  return "0.1.0";
 }
 
 const getRelayMessageByteLength = (data: WebSocket.Data): number => {
@@ -253,6 +260,35 @@ type PublicKeyCacheEntry = {
   key: ReturnType<typeof createPublicKey>;
 };
 
+type RelaySocketLikeT = {
+  readyState: number;
+  on: (event: string, listener: (...args: any[]) => void) => void;
+  send: (data: string) => void;
+  close: () => void;
+  terminate: () => void;
+};
+
+type RelayClientDepsT = {
+  createWebSocket?: (url: string) => RelaySocketLikeT;
+  getVersion?: () => string;
+  getEnrollmentPublicKey?: typeof getRelayBridgeEnrollmentPublicKey;
+  signAuthChallenge?: typeof signRelayBridgeAuthChallenge;
+  verifySignedCommand?: (message: RelayCommandMessage) => Promise<void>;
+  isRelayCommand?: (command: string) => boolean;
+  handleCommand?: (
+    command: RelayCommand,
+    payload?: Record<string, unknown>,
+  ) => Promise<{
+    success: boolean;
+    data?: unknown;
+    error?: string;
+  }>;
+  now?: () => Date;
+  relayIdleTimeoutMs?: number;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
+};
+
 const publicKeyCache = new Map<string, PublicKeyCacheEntry>();
 let jwksRefreshInFlight: Promise<void> | null = null;
 const seenJti = new Map<string, number>();
@@ -326,6 +362,14 @@ const getPublicKey = async (kid: string) => {
   return undefined;
 };
 
+const defaultHandleCommand = async (
+  command: RelayCommand,
+  payload?: Record<string, unknown>,
+) => {
+  const { commandRouter } = await import("./command-router.js");
+  return commandRouter.handleCommand(command, payload);
+};
+
 /**
  * Relay Client Service
  *
@@ -333,7 +377,7 @@ const getPublicKey = async (kid: string) => {
  * Handles bridge registration, command reception, and result sending.
  */
 export class RelayClient {
-  private ws: WebSocket | null = null;
+  private ws: RelaySocketLikeT | null = null;
   private bridgeId: string;
   private relayUrl: string;
   private bridgeName?: string;
@@ -351,6 +395,7 @@ export class RelayClient {
     warn: (msg: string) => void;
     debug?: (msg: string) => void;
   };
+  private readonly deps: RelayClientDepsT;
 
   /**
    * Create a relay client instance.
@@ -370,10 +415,12 @@ export class RelayClient {
       debug?: (msg: string) => void;
     },
     bridgeName?: string,
+    deps: RelayClientDepsT = {},
   ) {
     this.bridgeId = bridgeId;
     this.relayUrl = relayUrl;
     this.bridgeName = bridgeName;
+    this.deps = deps;
     this.logger = logger || {
       info: (msg: string) => console.log(`[RelayClient] ${msg}`),
       error: (msg: string) => console.error(`[RelayClient] ${msg}`),
@@ -417,7 +464,7 @@ export class RelayClient {
   }
 
   private markRelayActivity(source: string): void {
-    this.lastSeen = new Date();
+    this.lastSeen = (this.deps.now ?? (() => new Date()))();
     this.resetRelayLivenessWatchdog();
     this.logger.debug?.(`[RelayClient] Relay activity: ${source}`);
   }
@@ -432,26 +479,30 @@ export class RelayClient {
       return;
     }
 
-    this.relayLivenessTimer = setTimeout(() => {
+    const relayIdleTimeoutMs =
+      this.deps.relayIdleTimeoutMs ?? RELAY_WS_IDLE_TIMEOUT_MS;
+    const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
+    this.relayLivenessTimer = setTimeoutFn(() => {
       this.relayLivenessTimer = null;
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         return;
       }
       this.logger.warn(
-        `Relay connection idle for >${RELAY_WS_IDLE_TIMEOUT_MS}ms, terminating socket`
+        `Relay connection idle for >${relayIdleTimeoutMs}ms, terminating socket`
       );
       try {
         this.ws.terminate();
       } catch {
         // Ignore terminate errors; close handler will drive reconnect.
       }
-    }, RELAY_WS_IDLE_TIMEOUT_MS);
+    }, relayIdleTimeoutMs);
     this.relayLivenessTimer.unref?.();
   }
 
   private clearRelayLivenessWatchdog(): void {
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
     if (this.relayLivenessTimer) {
-      clearTimeout(this.relayLivenessTimer);
+      clearTimeoutFn(this.relayLivenessTimer);
       this.relayLivenessTimer = null;
     }
   }
@@ -476,7 +527,9 @@ export class RelayClient {
     try {
       this.logger.info(`Connecting to relay at ${this.relayUrl}...`);
 
-      this.ws = new WebSocket(this.relayUrl);
+      this.ws = (this.deps.createWebSocket ?? ((url) => new WebSocket(url)))(
+        this.relayUrl,
+      );
 
       this.ws.on("open", () => {
         this.logger.info("Connected to relay server");
@@ -550,7 +603,11 @@ export class RelayClient {
     if (this.bridgeName) {
       message.bridgeName = this.bridgeName;
     }
-    void getRelayBridgeEnrollmentPublicKey()
+    const getEnrollmentPublicKey =
+      this.deps.getEnrollmentPublicKey ?? getRelayBridgeEnrollmentPublicKey;
+    const getVersionValue = this.deps.getVersion ?? getVersion;
+    message.version = getVersionValue();
+    void getEnrollmentPublicKey()
       .then((identity) => {
         message.auth = {
           bridgeKeyId: identity.keyId,
@@ -586,7 +643,7 @@ export class RelayClient {
         return;
       }
       const message: RelayMessage = JSON.parse(messageText);
-      this.lastSeen = new Date();
+      this.lastSeen = (this.deps.now ?? (() => new Date()))();
 
       if (message.type === "bridge_auth_challenge") {
         await this.handleBridgeAuthChallenge(message);
@@ -618,8 +675,10 @@ export class RelayClient {
     }
 
     try {
+      const signAuthChallenge =
+        this.deps.signAuthChallenge ?? signRelayBridgeAuthChallenge;
       const { bridgeKeyId, algorithm, signature } =
-        await signRelayBridgeAuthChallenge({
+        await signAuthChallenge({
           bridgeId: message.bridgeId,
           challengeId: message.challengeId,
           nonce: message.nonce,
@@ -670,7 +729,8 @@ export class RelayClient {
       return;
     }
 
-    if (!isRelayCommand(message.command)) {
+    const isKnownRelayCommand = this.deps.isRelayCommand ?? isRelayCommand;
+    if (!isKnownRelayCommand(message.command)) {
       this.logger.warn(`Rejected unknown command: ${String(message.command)}`);
       this.send({
         type: "command_result",
@@ -687,10 +747,8 @@ export class RelayClient {
     );
 
     try {
-      const result = await commandRouter.handleCommand(
-        command,
-        message.payload,
-      );
+      const handleCommand = this.deps.handleCommand ?? defaultHandleCommand;
+      const result = await handleCommand(command, message.payload);
 
       // Send result back to relay
       const resultMessage: CommandResultMessage = {
@@ -739,6 +797,10 @@ export class RelayClient {
   private async verifySignedCommand(
     message: RelayCommandMessage,
   ): Promise<void> {
+    if (this.deps.verifySignedCommand) {
+      await this.deps.verifySignedCommand(message);
+      return;
+    }
     await verifySignedRelayCommand({
       message,
       bridgeId: this.bridgeId,
@@ -754,8 +816,10 @@ export class RelayClient {
    * Schedule reconnect with exponential backoff
    */
   private scheduleReconnect(): void {
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
+    const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      clearTimeoutFn(this.reconnectTimer);
     }
 
     if (this.isShuttingDown) {
@@ -774,7 +838,7 @@ export class RelayClient {
       `Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`,
     );
 
-    this.reconnectTimer = setTimeout(() => {
+    this.reconnectTimer = setTimeoutFn(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
@@ -787,8 +851,9 @@ export class RelayClient {
     this.isShuttingDown = true;
     this.clearRelayLivenessWatchdog();
 
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      clearTimeoutFn(this.reconnectTimer);
       this.reconnectTimer = null;
     }
 
