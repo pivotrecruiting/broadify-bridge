@@ -1,3 +1,4 @@
+import * as path from "path";
 import {
   buildBridgeProcessArgs,
   buildBridgeSpawnEnv,
@@ -72,7 +73,7 @@ describe("buildBridgeProcessArgs", () => {
       }),
     ).toEqual([
       "tsx",
-      "/repo/apps/bridge/src/index.ts",
+      path.join("/repo", "apps/bridge/src/index.ts"),
       "--host",
       "0.0.0.0",
       "--port",
@@ -98,7 +99,7 @@ describe("buildBridgeProcessArgs", () => {
         config,
       }),
     ).toEqual([
-      "/Applications/App/resources/bridge/dist/index.js",
+      path.join("/Applications/App/resources", "bridge", "dist", "index.js"),
       "--host",
       "0.0.0.0",
       "--port",
