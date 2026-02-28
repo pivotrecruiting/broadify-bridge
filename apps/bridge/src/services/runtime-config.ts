@@ -19,7 +19,7 @@ export interface RuntimeConfig {
 /**
  * Runtime config state.
  */
-class RuntimeConfigService {
+export class RuntimeConfigService {
   private config: RuntimeConfig | null = null;
   private state: "idle" | "configured" | "active" = "idle";
 

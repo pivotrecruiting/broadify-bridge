@@ -7,6 +7,21 @@ import { getAuthFailure } from "./route-guards.js";
 import type { FastifyInstance } from "fastify";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 
+type ConfigRouteDepsT = {
+  runtimeConfig: Pick<
+    typeof runtimeConfig,
+    | "setConfig"
+    | "setActive"
+    | "getState"
+    | "hasOutputs"
+    | "clear"
+  >;
+  moduleRegistry: Pick<typeof moduleRegistry, "getController">;
+  deviceCache: Pick<typeof deviceCache, "getDevices">;
+  isDevelopmentMode: typeof isDevelopmentMode;
+  getAuthFailure: typeof getAuthFailure;
+};
+
 /**
  * Config request schema.
  */
@@ -33,10 +48,20 @@ const ConfigRequestSchema = z.object({
  * POST /config/clear - Clear configuration
  */
 export async function registerConfigRoute(
-  fastify: FastifyInstance
+  fastify: FastifyInstance,
+  options: Partial<ConfigRouteDepsT> = {}
 ): Promise<void> {
+  const deps: ConfigRouteDepsT = {
+    runtimeConfig,
+    moduleRegistry,
+    deviceCache,
+    isDevelopmentMode,
+    getAuthFailure,
+    ...options,
+  };
+
   fastify.addHook("preHandler", async (request, reply) => {
-    const authFailure = getAuthFailure(request);
+    const authFailure = deps.getAuthFailure(request);
     if (!authFailure) {
       return;
     }
@@ -79,7 +104,7 @@ export async function registerConfigRoute(
     output1: string,
     output2: string
   ): Promise<{ valid: boolean; error?: string }> {
-    const devices = await deviceCache.getDevices();
+    const devices = await deps.deviceCache.getDevices();
 
     // Find output1 device
     const device1 = await findDevice(output1, devices);
@@ -156,12 +181,12 @@ export async function registerConfigRoute(
     output2: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      const devices = await deviceCache.getDevices();
+      const devices = await deps.deviceCache.getDevices();
 
       // Find and open output1 controller
       const device1 = await findDevice(output1, devices);
       if (device1) {
-        const controller1 = await moduleRegistry.getController(device1.id);
+        const controller1 = await deps.moduleRegistry.getController(device1.id);
         await controller1.open();
         fastify.log.info(
           `[Config] Opened controller for output1: ${device1.id}`
@@ -179,7 +204,7 @@ export async function registerConfigRoute(
       if (!connectionTypes.includes(output2.toLowerCase())) {
         const device2 = await findDevice(output2, devices);
         if (device2) {
-          const controller2 = await moduleRegistry.getController(device2.id);
+          const controller2 = await deps.moduleRegistry.getController(device2.id);
           await controller2.open();
           fastify.log.info(
             `[Config] Opened controller for output2: ${device2.id}`
@@ -203,7 +228,7 @@ export async function registerConfigRoute(
     try {
       // Validate request body
       const body = ConfigRequestSchema.parse(request.body);
-      const devMode = isDevelopmentMode();
+      const devMode = deps.isDevelopmentMode();
 
       // If outputs are provided, validate them
       if (body.outputs) {
@@ -240,24 +265,24 @@ export async function registerConfigRoute(
       }
 
       // Set runtime config (in-memory state only).
-      runtimeConfig.setConfig({
+      deps.runtimeConfig.setConfig({
         outputs: body.outputs,
         engine: body.engine,
       });
 
       // Set state to active if controllers were opened.
       if (body.outputs) {
-        runtimeConfig.setActive();
+        deps.runtimeConfig.setActive();
       }
 
       fastify.log.info(
-        `[Config] Configuration updated - State: ${runtimeConfig.getState()}`
+        `[Config] Configuration updated - State: ${deps.runtimeConfig.getState()}`
       );
 
       return {
         success: true,
-        state: runtimeConfig.getState(),
-        outputsConfigured: runtimeConfig.hasOutputs(),
+        state: deps.runtimeConfig.getState(),
+        outputsConfigured: deps.runtimeConfig.hasOutputs(),
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -290,12 +315,12 @@ export async function registerConfigRoute(
 
   fastify.post("/config/clear", async (_, reply) => {
     try {
-      runtimeConfig.clear();
+      deps.runtimeConfig.clear();
       fastify.log.info("[Config] Configuration cleared");
 
       return {
         success: true,
-        state: runtimeConfig.getState(),
+        state: deps.runtimeConfig.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
