@@ -11,20 +11,15 @@ import {
   parseRelayPayload,
 } from "./relay-command-schemas.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getBridgeContext } from "./bridge-context.js";
 import { GraphicsError } from "./graphics/graphics-errors.js";
 import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
+import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import type {
   BridgeOutputsT,
   DeviceDescriptorT,
   OutputDeviceT,
 } from "@broadify/protocol";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 /**
  * Relay command payload.
@@ -42,19 +37,6 @@ export interface RelayCommandResult {
   data?: unknown;
   error?: string;
   errorCode?: string;
-}
-
-/**
- * Get version from package.json
- */
-function getVersion(): string {
-  try {
-    const packagePath = join(__dirname, "../../package.json");
-    const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
-    return packageJson.version || "0.1.0";
-  } catch {
-    return "0.1.0";
-  }
 }
 
 /**
@@ -151,7 +133,7 @@ export class CommandRouter {
             success: true,
             data: {
               running: true,
-              version: getVersion(),
+              version: getRuntimeAppVersion(),
               bridgeName: context.bridgeName || null,
               state: runtimeConfig.getState(),
               outputsConfigured: runtimeConfig.hasOutputs(),
@@ -205,6 +187,7 @@ export class CommandRouter {
             data: {
               bridgeId: context.bridgeId || null,
               bridgeName: context.bridgeName || null,
+              version: getRuntimeAppVersion(),
               relayEnrollment,
             },
           };

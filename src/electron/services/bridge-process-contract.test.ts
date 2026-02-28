@@ -115,11 +115,13 @@ describe("buildBridgeSpawnEnv", () => {
       processEnv: { PATH: "/usr/bin" },
       isDev: true,
       relayEnabled: true,
+      appVersion: "0.11.0",
       pairingCode: "1234",
       pairingExpiresAt: 1710000000000,
     });
 
     expect(env.NODE_ENV).toBe("development");
+    expect(env.BROADIFY_DESKTOP_APP_VERSION).toBe("0.11.0");
     expect(env.BRIDGE_RELAY_ENABLED).toBe("true");
     expect(env.PAIRING_CODE).toBe("1234");
     expect(env.PAIRING_EXPIRES_AT).toBe("1710000000000");
@@ -131,8 +133,10 @@ describe("buildBridgeSpawnEnv", () => {
       processEnv: {},
       isDev: false,
       relayEnabled: false,
+      appVersion: "0.11.0",
     });
     expect(env.NODE_ENV).toBe("production");
+    expect(env.BROADIFY_DESKTOP_APP_VERSION).toBe("0.11.0");
     expect(env.ELECTRON_RUN_AS_NODE).toBe("1");
   });
 });

@@ -1,28 +1,12 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import type { BridgeConfigT } from "../config.js";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { runtimeConfig } from "../services/runtime-config.js";
 import { engineAdapter } from "../services/engine-adapter.js";
+import { getRuntimeAppVersion } from "../services/runtime-app-version.js";
 import { enforceLocalOrToken } from "./route-guards.js";
 
 // Track server start time for uptime calculation
 const serverStartTime = Date.now();
-
-/**
- * Get version from package.json.
- *
- * @returns Version string or default.
- */
-function getVersion(): string {
-  try {
-    const packagePath = join(process.cwd(), "package.json");
-    const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
-    return packageJson.version || "0.1.0";
-  } catch {
-    return "0.1.0";
-  }
-}
 
 /**
  * Calculate uptime in seconds.
@@ -60,7 +44,7 @@ export async function registerStatusRoute(
     runtimeConfig,
     engineAdapter,
     enforceLocalOrToken,
-    getVersion,
+    getVersion: getRuntimeAppVersion,
     getUptime,
     ...options,
   };

@@ -112,15 +112,24 @@ export function buildBridgeSpawnEnv(params: {
   processEnv: NodeJS.ProcessEnv;
   isDev: boolean;
   relayEnabled: boolean;
+  appVersion: string;
   pairingCode?: string;
   pairingExpiresAt?: number;
 }): Record<string, string> {
-  const { processEnv, isDev, relayEnabled, pairingCode, pairingExpiresAt } =
+  const {
+    processEnv,
+    isDev,
+    relayEnabled,
+    appVersion,
+    pairingCode,
+    pairingExpiresAt,
+  } =
     params;
 
   const env: Record<string, string> = {
     ...processEnv,
     NODE_ENV: isDev ? "development" : "production",
+    BROADIFY_DESKTOP_APP_VERSION: appVersion,
   } as Record<string, string>;
 
   if (relayEnabled) {

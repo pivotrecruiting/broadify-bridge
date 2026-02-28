@@ -12,10 +12,9 @@ import {
   getRelayBridgeEnrollmentPublicKey,
   signRelayBridgeAuthChallenge,
 } from "./relay-bridge-identity.js";
-import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
-import { join } from "node:path";
+import { getRuntimeAppVersion } from "./runtime-app-version.js";
 
 const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
 const RELAY_COMMAND_TTL_SECONDS = 30;
@@ -112,31 +111,6 @@ const validateJwksUrl = async (): Promise<URL> => {
   }
   return url;
 };
-
-/**
- * Get version from package.json
- */
-function getVersion(): string {
-  const candidates = [
-    join(process.cwd(), "apps/bridge/package.json"),
-    join(process.cwd(), "package.json"),
-  ];
-  try {
-    for (const packagePath of candidates) {
-      try {
-        const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
-        if (typeof packageJson.version === "string" && packageJson.version) {
-          return packageJson.version;
-        }
-      } catch {
-        // Try next candidate path.
-      }
-    }
-  } catch {
-    // Fall through to default version.
-  }
-  return "0.1.0";
-}
 
 const getRelayMessageByteLength = (data: WebSocket.Data): number => {
   if (typeof data === "string") {
@@ -598,14 +572,14 @@ export class RelayClient {
     const message: BridgeHelloMessage = {
       type: "bridge_hello",
       bridgeId: this.bridgeId,
-      version: getVersion(),
+      version: getRuntimeAppVersion(),
     };
     if (this.bridgeName) {
       message.bridgeName = this.bridgeName;
     }
     const getEnrollmentPublicKey =
       this.deps.getEnrollmentPublicKey ?? getRelayBridgeEnrollmentPublicKey;
-    const getVersionValue = this.deps.getVersion ?? getVersion;
+    const getVersionValue = this.deps.getVersion ?? getRuntimeAppVersion;
     message.version = getVersionValue();
     void getEnrollmentPublicKey()
       .then((identity) => {

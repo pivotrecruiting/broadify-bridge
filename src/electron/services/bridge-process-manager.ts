@@ -144,6 +144,7 @@ export class BridgeProcessManager {
         processEnv: process.env,
         isDev: isDev(),
         relayEnabled,
+        appVersion: app.getVersion(),
         pairingCode,
         pairingExpiresAt,
       });
