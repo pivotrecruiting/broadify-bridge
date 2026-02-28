@@ -1,10 +1,14 @@
 import { WebSocket } from "ws";
-import { createPublicKey, verify as verifySignature } from "node:crypto";
+import { createPublicKey } from "node:crypto";
 import { commandRouter } from "./command-router.js";
 import {
   isRelayCommand,
   type RelayCommand,
 } from "./relay-command-allowlist.js";
+import {
+  type RelayCommandMetaT,
+  verifySignedRelayCommand,
+} from "./relay-command-security.js";
 import {
   getRelayBridgeEnrollmentPublicKey,
   signRelayBridgeAuthChallenge,
@@ -192,7 +196,7 @@ interface RelayCommandMessage {
   requestId: string;
   command: string;
   payload?: Record<string, unknown>;
-  meta?: RelayCommandMeta;
+  meta?: RelayCommandMetaT;
   signature?: string;
 }
 
@@ -244,16 +248,6 @@ type RelayMessage =
   | RelayBridgeAuthOkMessage
   | RelayBridgeAuthErrorMessage;
 
-type RelayCommandMeta = {
-  bridgeId: string;
-  orgId: string;
-  scope: string[];
-  iat: number;
-  exp: number;
-  jti: string;
-  kid: string;
-};
-
 type PublicKeyCacheEntry = {
   kid: string;
   key: ReturnType<typeof createPublicKey>;
@@ -262,28 +256,6 @@ type PublicKeyCacheEntry = {
 const publicKeyCache = new Map<string, PublicKeyCacheEntry>();
 let jwksRefreshInFlight: Promise<void> | null = null;
 const seenJti = new Map<string, number>();
-
-const base64UrlDecode = (value: string): Buffer => {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padLength = (4 - (padded.length % 4)) % 4;
-  const normalized = padded + "=".repeat(padLength);
-  return Buffer.from(normalized, "base64");
-};
-
-const stableStringify = (value: unknown): string => {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  const entries = keys.map(
-    (key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`,
-  );
-  return `{${entries.join(",")}}`;
-};
 
 const registerPublicKey = (
   kid: string,
@@ -352,21 +324,6 @@ const getPublicKey = async (kid: string) => {
     return publicKeyCache.get(kid)?.key;
   }
   return undefined;
-};
-
-const pruneJtiCache = (nowSec: number) => {
-  for (const [jti, exp] of seenJti.entries()) {
-    if (exp <= nowSec) {
-      seenJti.delete(jti);
-    }
-  }
-  while (seenJti.size > MAX_JTI_CACHE_SIZE) {
-    const oldest = seenJti.keys().next().value as string | undefined;
-    if (!oldest) {
-      break;
-    }
-    seenJti.delete(oldest);
-  }
 };
 
 /**
@@ -782,65 +739,15 @@ export class RelayClient {
   private async verifySignedCommand(
     message: RelayCommandMessage,
   ): Promise<void> {
-    if (!message.meta || !message.signature) {
-      throw new Error("Missing command signature");
-    }
-
-    const meta = message.meta;
-    if (
-      typeof meta.bridgeId !== "string" ||
-      typeof meta.orgId !== "string" ||
-      !Array.isArray(meta.scope) ||
-      typeof meta.iat !== "number" ||
-      typeof meta.exp !== "number" ||
-      typeof meta.jti !== "string" ||
-      typeof meta.kid !== "string"
-    ) {
-      throw new Error("Invalid command metadata");
-    }
-
-    if (meta.bridgeId !== this.bridgeId) {
-      throw new Error("Bridge ID mismatch");
-    }
-
-    const scopeToken = `command:${message.command}`;
-    if (!meta.scope.includes(scopeToken) && !meta.scope.includes("*")) {
-      throw new Error("Scope mismatch");
-    }
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (meta.exp + RELAY_COMMAND_SKEW_SECONDS < nowSec) {
-      throw new Error("Command expired");
-    }
-    if (meta.iat - RELAY_COMMAND_SKEW_SECONDS > nowSec) {
-      throw new Error("Command timestamp invalid");
-    }
-
-    pruneJtiCache(nowSec);
-    const existing = seenJti.get(meta.jti);
-    if (existing && existing > nowSec) {
-      throw new Error("Replay detected");
-    }
-
-    const publicKey = await getPublicKey(meta.kid);
-    if (!publicKey) {
-      throw new Error("Signing key not found");
-    }
-
-    const signingPayload = {
-      requestId: message.requestId,
-      command: message.command,
-      payload: message.payload ?? null,
-      meta,
-    };
-    const data = Buffer.from(stableStringify(signingPayload));
-    const signature = base64UrlDecode(message.signature);
-    const valid = verifySignature(null, data, publicKey, signature);
-    if (!valid) {
-      throw new Error("Invalid signature");
-    }
-
-    seenJti.set(meta.jti, meta.exp || nowSec + RELAY_COMMAND_TTL_SECONDS);
+    await verifySignedRelayCommand({
+      message,
+      bridgeId: this.bridgeId,
+      getPublicKey,
+      seenJti,
+      relayCommandSkewSeconds: RELAY_COMMAND_SKEW_SECONDS,
+      relayCommandTtlSeconds: RELAY_COMMAND_TTL_SECONDS,
+      maxJtiCacheSize: MAX_JTI_CACHE_SIZE,
+    });
   }
 
   /**
