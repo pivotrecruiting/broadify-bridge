@@ -1,7 +1,10 @@
 import type {
   GraphicsCategoryT,
+  GraphicsFormatT,
   GraphicsOutputConfigT,
+  GraphicsOutputKeyT,
   GraphicsSendPayloadT,
+  GraphicsTargetsT,
 } from "./graphics-schemas.js";
 import {
   GraphicsConfigureOutputsSchema,
@@ -26,11 +29,6 @@ import type {
 import { deriveTemplateBindings } from "./template-bindings.js";
 import { createTestPatternPayload } from "./test-pattern.js";
 import { type FrameBusConfigT } from "./framebus/framebus-config.js";
-import { selectOutputAdapter } from "./graphics-output-adapter-factory.js";
-import {
-  validateOutputFormat,
-  validateOutputTargets,
-} from "./graphics-output-validation-service.js";
 import {
   GraphicsError,
   type GraphicsErrorCodeT,
@@ -66,11 +64,72 @@ import {
   resolveFrameBusConfig,
 } from "./graphics-framebus-session-service.js";
 
+type GraphicsRuntimeInitServiceLikeT = Pick<GraphicsRuntimeInitService, "initialize">;
+type GraphicsOutputTransitionServiceLikeT = Pick<
+  GraphicsOutputTransitionService,
+  "runAtomicTransition" | "waitForTransition"
+>;
+type ValidateOutputTargetsT = (
+  outputKey: GraphicsOutputKeyT,
+  targets: GraphicsTargetsT,
+  options: { currentOutputConfig: GraphicsOutputConfigT | null }
+) => Promise<void>;
+type ValidateOutputFormatT = (
+  outputKey: GraphicsOutputKeyT,
+  targets: GraphicsTargetsT,
+  format: GraphicsFormatT
+) => Promise<void>;
+
+type GraphicsManagerDepsT = {
+  createRenderer?: () => GraphicsRenderer;
+  runtimeInitService?: GraphicsRuntimeInitServiceLikeT;
+  outputTransitionService?: GraphicsOutputTransitionServiceLikeT;
+  selectOutputAdapter?: (
+    config: GraphicsOutputConfigT
+  ) => Promise<GraphicsOutputAdapter>;
+  isDevelopmentMode?: () => boolean;
+  validateOutputTargets?: ValidateOutputTargetsT;
+  validateOutputFormat?: ValidateOutputFormatT;
+  publishGraphicsError?: (code: GraphicsErrorCodeT, message: string) => void;
+};
+
+async function defaultSelectOutputAdapter(
+  config: GraphicsOutputConfigT
+): Promise<GraphicsOutputAdapter> {
+  const { selectOutputAdapter } = await import(
+    "./graphics-output-adapter-factory.js"
+  );
+  return selectOutputAdapter(config);
+}
+
+async function defaultValidateOutputTargets(
+  outputKey: GraphicsOutputKeyT,
+  targets: GraphicsTargetsT,
+  options: { currentOutputConfig: GraphicsOutputConfigT | null }
+): Promise<void> {
+  const { validateOutputTargets } = await import(
+    "./graphics-output-validation-service.js"
+  );
+  return validateOutputTargets(outputKey, targets, options);
+}
+
+async function defaultValidateOutputFormat(
+  outputKey: GraphicsOutputKeyT,
+  targets: GraphicsTargetsT,
+  format: GraphicsFormatT
+): Promise<void> {
+  const { validateOutputFormat } = await import(
+    "./graphics-output-validation-service.js"
+  );
+  return validateOutputFormat(outputKey, targets, format);
+}
+
 /**
  * Graphics manager orchestrates layers, rendering, and output.
  * Legacy frame compositing/ticker paths were removed; renderer + helpers operate on FrameBus.
  */
 export class GraphicsManager {
+  private readonly deps: GraphicsManagerDepsT;
   private renderer: GraphicsRenderer;
   private outputAdapter: GraphicsOutputAdapter;
   private initialized = false;
@@ -80,12 +139,15 @@ export class GraphicsManager {
   private activePreset: GraphicsActivePresetT | null = null;
   private frameBusConfig: FrameBusConfigT | null = null;
   private presetService: GraphicsPresetService;
-  private outputTransitionService: GraphicsOutputTransitionService;
-  private runtimeInitService: GraphicsRuntimeInitService;
+  private outputTransitionService: GraphicsOutputTransitionServiceLikeT;
+  private runtimeInitService: GraphicsRuntimeInitServiceLikeT;
 
-  constructor() {
-    this.renderer = this.selectRenderer();
+  constructor(deps: GraphicsManagerDepsT = {}) {
+    this.deps = deps;
+    this.renderer = this.deps.createRenderer?.() ?? this.selectRenderer();
     this.outputAdapter = new StubOutputAdapter();
+    const selectOutputAdapter =
+      this.deps.selectOutputAdapter ?? defaultSelectOutputAdapter;
     this.presetService = new GraphicsPresetService({
       getRenderer: () => this.renderer,
       layers: this.layers,
@@ -98,50 +160,54 @@ export class GraphicsManager {
         publishGraphicsStatusEvent(reason, this.getStatusSnapshot());
       },
     });
-    this.outputTransitionService = new GraphicsOutputTransitionService({
-      getRenderer: () => this.renderer,
-      getRuntime: () => ({
-        outputConfig: this.outputConfig,
-        frameBusConfig: this.frameBusConfig,
-        outputAdapter: this.outputAdapter,
-      }),
-      setRuntime: (runtime) => {
-        this.outputConfig = runtime.outputConfig;
-        this.frameBusConfig = runtime.frameBusConfig;
-        this.outputAdapter = runtime.outputAdapter;
-      },
-      selectOutputAdapter,
-      persistConfig: (config) => outputConfigStore.setConfig(config),
-      clearPersistedConfig: () => outputConfigStore.clear(),
-      resolveFrameBusConfig,
-      buildRendererConfig: (config, frameBusConfig) =>
-        this.buildRendererConfig(config, frameBusConfig),
-      logFrameBusConfigChange,
-    });
-    this.runtimeInitService = new GraphicsRuntimeInitService({
-      getRenderer: () => this.renderer,
-      setRenderer: (renderer) => {
-        this.renderer = renderer;
-      },
-      setOutputAdapter: (adapter) => {
-        this.outputAdapter = adapter;
-      },
-      setOutputConfig: (config) => {
-        this.outputConfig = config;
-      },
-      createStubRenderer: () => new StubRenderer(),
-      createStubOutputAdapter: () => new StubOutputAdapter(),
-      selectOutputAdapter,
-      applyFrameBusConfig: (config) => {
-        this.frameBusConfig = applyFrameBusSessionConfig(
-          config,
-          this.frameBusConfig
-        );
-      },
-      buildRendererConfig: (config) => this.buildRendererConfig(config),
-      publishGraphicsError: (code, message) =>
-        publishGraphicsErrorEvent(code, message),
-    });
+    this.outputTransitionService =
+      this.deps.outputTransitionService ??
+      new GraphicsOutputTransitionService({
+        getRenderer: () => this.renderer,
+        getRuntime: () => ({
+          outputConfig: this.outputConfig,
+          frameBusConfig: this.frameBusConfig,
+          outputAdapter: this.outputAdapter,
+        }),
+        setRuntime: (runtime) => {
+          this.outputConfig = runtime.outputConfig;
+          this.frameBusConfig = runtime.frameBusConfig;
+          this.outputAdapter = runtime.outputAdapter;
+        },
+        selectOutputAdapter,
+        persistConfig: (config) => outputConfigStore.setConfig(config),
+        clearPersistedConfig: () => outputConfigStore.clear(),
+        resolveFrameBusConfig,
+        buildRendererConfig: (config, frameBusConfig) =>
+          this.buildRendererConfig(config, frameBusConfig),
+        logFrameBusConfigChange,
+      });
+    this.runtimeInitService =
+      this.deps.runtimeInitService ??
+      new GraphicsRuntimeInitService({
+        getRenderer: () => this.renderer,
+        setRenderer: (renderer) => {
+          this.renderer = renderer;
+        },
+        setOutputAdapter: (adapter) => {
+          this.outputAdapter = adapter;
+        },
+        setOutputConfig: (config) => {
+          this.outputConfig = config;
+        },
+        createStubRenderer: () => new StubRenderer(),
+        createStubOutputAdapter: () => new StubOutputAdapter(),
+        selectOutputAdapter,
+        applyFrameBusConfig: (config) => {
+          this.frameBusConfig = applyFrameBusSessionConfig(
+            config,
+            this.frameBusConfig
+          );
+        },
+        buildRendererConfig: (config) => this.buildRendererConfig(config),
+        publishGraphicsError: (code, message) =>
+          publishGraphicsErrorEvent(code, message),
+      });
   }
 
   /**
@@ -189,21 +255,21 @@ export class GraphicsManager {
         `Unsupported graphics output config version: ${config.version}`
       );
     }
-    const devMode = isDevelopmentMode();
+    const devMode = this.deps.isDevelopmentMode?.() ?? isDevelopmentMode();
     if (devMode) {
       getBridgeContext().logger.warn(
         "[Graphics] DEVELOPMENT mode enabled: skipping output validation and using stub output adapter"
       );
     } else {
+      const validateTargets =
+        this.deps.validateOutputTargets ?? defaultValidateOutputTargets;
+      const validateFormat =
+        this.deps.validateOutputFormat ?? defaultValidateOutputFormat;
       try {
-        await validateOutputTargets(config.outputKey, config.targets, {
+        await validateTargets(config.outputKey, config.targets, {
           currentOutputConfig: this.outputConfig,
         });
-        await validateOutputFormat(
-          config.outputKey,
-          config.targets,
-          config.format
-        );
+        await validateFormat(config.outputKey, config.targets, config.format);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.failGraphics("output_config_error", message);
@@ -589,7 +655,9 @@ export class GraphicsManager {
   }
 
   private failGraphics(code: GraphicsErrorCodeT, message: string): never {
-    publishGraphicsErrorEvent(code, message);
+    const publishGraphicsError =
+      this.deps.publishGraphicsError ?? publishGraphicsErrorEvent;
+    publishGraphicsError(code, message);
     throw new GraphicsError(code, message);
   }
 }
