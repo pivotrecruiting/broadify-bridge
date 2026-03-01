@@ -23,6 +23,12 @@ config.mac.extraResources = [
   ...macOnlyResources,
 ];
 
+// Keep artifact names deterministic so the published release assets match
+// the filenames referenced inside the generated updater metadata.
+if (!config.artifactName) {
+  config.artifactName = "Broadify-Bridge-${version}-${arch}.${ext}";
+}
+
 if (config.win) {
   config.win.extraResources = [
     ...(config.win.extraResources || []),
@@ -46,16 +52,12 @@ if (config.win) {
     typeof config.productName === "string" && config.productName.trim() !== ""
       ? config.productName.trim()
       : "App";
-  const windowsArtifactBaseName = productName.replace(/\s+/g, "-");
   const windowsExecutableBaseName = productName.replace(/\s+/g, "");
 
   // Work around electron-builder 25.1.8 Azure Trusted Signing command construction,
   // which does not quote the Files parameter and breaks on paths containing spaces.
   if (!config.win.executableName) {
     config.win.executableName = windowsExecutableBaseName;
-  }
-  if (!config.win.artifactName) {
-    config.win.artifactName = `${windowsArtifactBaseName}-\${version}-\${arch}.\${ext}`;
   }
 }
 

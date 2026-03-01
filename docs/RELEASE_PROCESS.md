@@ -161,7 +161,7 @@ Nach Abschluss der Builds (ca. 10-20 Minuten):
 2. Es sollte ein Release **"v0.1.0"** mit allen Download-Links geben
 3. Prüfe, ob alle Plattformen erfolgreich gebaut wurden:
    - `broadify-bridge-0.1.0-arm64.dmg` (macOS Apple Silicon)
-   - `broadify-bridge-0.1.0-arm64-mac.zip` (macOS Updater-Paket)
+   - `Broadify-Bridge-0.1.0-arm64.zip` (macOS Updater-Paket)
    - `Broadify-Bridge-Setup-0.1.0.exe` (Windows NSIS Installer, primär für Auto-Update)
    - `broadify-bridge-0.1.0-win-x64.msi` (Windows MSI)
    - `broadify-bridge-0.1.0-x64.AppImage` (Linux)

@@ -77,7 +77,7 @@ Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 ### macOS
 
 - **ARM64 (Apple Silicon)**: `broadify-bridge-{version}-arm64.dmg`
-- **Updater-Paket**: `broadify-bridge-{version}-{arch}-mac.zip`
+- **Updater-Paket**: `Broadify-Bridge-{version}-{arch}.zip`
 - **Update-Metadaten**: `latest-mac.yml`
 
 ### Windows
