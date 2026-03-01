@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNetworkConfig } from "./hooks/use-network-config";
 import { useBridgeStatus } from "./hooks/use-bridge-status";
 import { usePortAvailability } from "./hooks/use-port-availability";
@@ -83,6 +83,8 @@ function App() {
   } | null>(null);
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("terms");
+  const previousUpdaterStateRef = useRef(updaterStatus.state);
+  const previousAvailableVersionRef = useRef<string | null>(updaterStatus.availableVersion);
 
   // Load bridge profile (name, id, terms acceptance) on startup
   useEffect(() => {
@@ -102,6 +104,21 @@ function App() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    const previousState = previousUpdaterStateRef.current;
+    const previousAvailableVersion = previousAvailableVersionRef.current;
+    const hasFreshlyDetectedUpdate =
+      updaterStatus.state === "available" &&
+      (previousState !== "available" || previousAvailableVersion !== updaterStatus.availableVersion);
+
+    if (hasFreshlyDetectedUpdate) {
+      setShowUpdaterDialog(true);
+    }
+
+    previousUpdaterStateRef.current = updaterStatus.state;
+    previousAvailableVersionRef.current = updaterStatus.availableVersion;
+  }, [updaterStatus.availableVersion, updaterStatus.state]);
 
   const handleTermsAccept = async () => {
     if (!window.electron) return;

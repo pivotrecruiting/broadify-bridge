@@ -48,6 +48,7 @@ export function UpdaterDialog({
   const canCheck = status.enabled && !isBusy;
   const canDownload = status.enabled && status.state === "available";
   const canInstall = status.enabled && status.state === "downloaded";
+  const isUpdateAvailable = status.state === "available";
 
   return (
     <div
@@ -62,7 +63,9 @@ export function UpdaterDialog({
 
       <div className="relative w-full max-w-lg rounded-xl glass-frosted border border-white/20 shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-white/10">
-          <h2 className="text-xl font-bold text-foreground">App Updates</h2>
+          <h2 className="text-xl font-bold text-foreground">
+            {isUpdateAvailable ? "Software update available" : "App Updates"}
+          </h2>
           <button
             onClick={onClose}
             className="p-2 rounded-md hover:bg-white/10 transition-colors text-foreground hover:text-foreground/80"
@@ -73,6 +76,19 @@ export function UpdaterDialog({
         </div>
 
         <div className="p-5 space-y-4">
+          {isUpdateAvailable ? (
+            <div className="rounded-lg border border-primary/20 bg-primary/10 p-4">
+              <div className="space-y-1">
+                <p className="text-base font-semibold text-foreground">
+                  Version {status.availableVersion || "unknown"} is ready to download.
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Download the latest release now, or keep using the current version and install it later.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid grid-cols-2 gap-2 text-sm">
             <span className="text-muted-foreground">Current version</span>
             <span className="text-foreground text-right">{status.currentVersion || "-"}</span>
@@ -111,37 +127,60 @@ export function UpdaterDialog({
 
           {actionError ? <div className="text-sm text-destructive">{actionError}</div> : null}
 
-          <div className="flex flex-wrap gap-2 pt-1">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                void onCheckForUpdates();
-              }}
-              disabled={!canCheck}
-            >
-              Check
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                void onDownloadUpdate();
-              }}
-              disabled={!canDownload}
-            >
-              Download
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                void onQuitAndInstall();
-              }}
-              disabled={!canInstall}
-            >
-              Restart and install
-            </Button>
-          </div>
+          {isUpdateAvailable ? (
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onClose}
+              >
+                Install later
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  void onDownloadUpdate();
+                }}
+                disabled={!canDownload}
+              >
+                Update now
+              </Button>
+            </div>
+          ) : null}
+
+          {!isUpdateAvailable ? (
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  void onCheckForUpdates();
+                }}
+                disabled={!canCheck}
+              >
+                Check
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  void onDownloadUpdate();
+                }}
+                disabled={!canDownload}
+              >
+                Download
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  void onQuitAndInstall();
+                }}
+                disabled={!canInstall}
+              >
+                Restart and install
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
