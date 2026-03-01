@@ -272,6 +272,7 @@ function App() {
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6 w-full">
           <Header
             bridgeStatus={bridgeStatus}
+            hasUpdateAvailable={updaterStatus.state === "available"}
             onOpenDiagnostics={() => setShowLogs(true)}
             onOpenUpdates={() => setShowUpdaterDialog(true)}
           />

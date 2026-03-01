@@ -5,6 +5,7 @@ import logo from "../assets/logo.svg";
 
 interface HeaderProps {
   bridgeStatus: BridgeStatus;
+  hasUpdateAvailable: boolean;
   onOpenDiagnostics: () => void;
   onOpenUpdates: () => void;
 }
@@ -14,6 +15,7 @@ interface HeaderProps {
  */
 export function Header({
   bridgeStatus,
+  hasUpdateAvailable,
   onOpenDiagnostics,
   onOpenUpdates,
 }: HeaderProps) {
@@ -29,11 +31,24 @@ export function Header({
             <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
           <button
-            className="text-card-foreground hover:text-card-foreground/80 transition-colors"
+            className={`relative transition-colors ${
+              hasUpdateAvailable
+                ? "update-attention-button text-primary"
+                : "text-card-foreground hover:text-card-foreground/80"
+            }`}
             onClick={onOpenUpdates}
-            aria-label="Open updates"
+            aria-label={hasUpdateAvailable ? "Open updates, new version available" : "Open updates"}
+            title={hasUpdateAvailable ? "Software update available" : "Open updates"}
           >
-            <CloudDownload className="w-5 h-5 sm:w-6 sm:h-6" />
+            <CloudDownload
+              className={`w-5 h-5 sm:w-6 sm:h-6 ${hasUpdateAvailable ? "update-attention-icon" : ""}`}
+            />
+            {hasUpdateAvailable ? (
+              <span
+                className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-primary"
+                aria-hidden="true"
+              />
+            ) : null}
           </button>
         </div>
         <div className="flex-1 flex justify-center">
