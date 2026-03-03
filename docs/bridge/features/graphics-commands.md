@@ -130,7 +130,8 @@ Schema: `GraphicsRemoveSchema`
 ```
 
 **Verhalten**
-- Entfernt Layer aus Renderer und State.
+- Entfernt den Layer aus Renderer und State.
+- Der Renderer setzt den Root-State auf `state-exit` mit der vorhandenen Animation und entfernt den Layer nach Ablauf der Exit-Animation.
 
 ## 6) graphics_remove_preset
 Schema: `GraphicsRemovePresetSchema`

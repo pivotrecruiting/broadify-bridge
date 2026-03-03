@@ -796,7 +796,7 @@ async function updateLayout(message: {
 }
 
 /**
- * Remove a layer and destroy its offscreen window.
+ * Remove a layer from the single offscreen renderer window.
  *
  * @param message Remove payload.
  */
