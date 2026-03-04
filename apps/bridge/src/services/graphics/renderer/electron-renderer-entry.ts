@@ -15,6 +15,7 @@ import {
   type IpcBufferT,
   isIpcBufferWithinLimit,
 } from "./renderer-ipc-framing.js";
+import { AsyncSerialQueue } from "./async-serial-queue.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -63,6 +64,7 @@ const ipcToken = process.env.BRIDGE_GRAPHICS_IPC_TOKEN || "";
 let isAppReady = false;
 let isIpcConnected = false;
 let readySent = false;
+const inboundCommandQueue = new AsyncSerialQueue();
 const debugEmptyLogged = new Set<string>();
 const debugFrameBusLogged = new Set<string>();
 let perfLastLogAt = Date.now();
@@ -993,7 +995,9 @@ function connectIpcSocket(): void {
         ipcSocket?.destroy();
         return;
       }
-      void handleMessage(header).catch((error: unknown) => {
+      void inboundCommandQueue.enqueue(async () => {
+        await handleMessage(header);
+      }).catch((error: unknown) => {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         sendIpcMessage({ type: "error", message: errorMessage });
