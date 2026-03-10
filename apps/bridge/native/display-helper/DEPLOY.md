@@ -51,6 +51,8 @@ codesign --force --sign "Developer ID Application: <Team>" display-helper
 APPLE_SIGNING_IDENTITY="Developer ID Application: <Team>" ./scripts/sign-display-helper.sh
 ```
 
+Ohne konfigurierte Identity verwendet das Script lokal automatisch Ad-hoc-Signing, damit der nach `install_name_tool` umgeschriebene SDL2-Bundle-Pfad auf macOS weiterhin ladbar bleibt.
+
 ### 5) electron-builder Integration
 
 Die Plattform-spezifische Einbindung erfolgt über `electron-builder.config.cjs`:

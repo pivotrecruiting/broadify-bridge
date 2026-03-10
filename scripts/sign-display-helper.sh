@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Sign the display-helper binary and bundled macOS SDL2 runtime for release/notarization.
-# Requires: APPLE_SIGNING_IDENTITY or CSC_NAME (Developer ID Application: <Team>)
-# No-op when identity is not set (local dev builds).
+# Sign the display-helper binary and bundled macOS SDL2 runtime.
+# Uses a Developer ID identity when configured; otherwise falls back to ad-hoc
+# signing so local dev builds remain loadable after install_name_tool rewrites.
 
 set -euo pipefail
 
@@ -14,9 +14,10 @@ BINARY="${1:-$ROOT_DIR/apps/bridge/native/display-helper/display-helper}"
 RUNTIME="${2:-$(dirname "$BINARY")/libSDL2-2.0.0.dylib}"
 
 IDENTITY="${APPLE_SIGNING_IDENTITY:-${CSC_NAME:-}}"
+SIGN_LABEL="$IDENTITY"
 if [[ -z "$IDENTITY" ]]; then
-  echo "Skipping display-helper signing (no APPLE_SIGNING_IDENTITY/CSC_NAME)."
-  exit 0
+  IDENTITY="-"
+  SIGN_LABEL="adhoc"
 fi
 
 targets=()
@@ -32,7 +33,7 @@ if [[ ${#targets[@]} -eq 0 ]]; then
   exit 0
 fi
 
-echo "Signing display-helper artifacts with identity: $IDENTITY"
+echo "Signing display-helper artifacts with identity: $SIGN_LABEL"
 for target in "${targets[@]}"; do
   codesign --force --sign "$IDENTITY" "$target"
   echo "Signed: $target"

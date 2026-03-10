@@ -43,6 +43,7 @@ The binary is placed at:
 - Windows: `display-helper.exe` (plus optional `SDL2.dll` copied next to it)
 
 On macOS the bundled runtime is rewritten to `@loader_path/libSDL2-2.0.0.dylib`, so the packaged app does not depend on Homebrew paths on the target machine.
+After the rewrite, the build re-signs both the dylib and helper binary. Local builds use ad-hoc signing automatically; release builds use `APPLE_SIGNING_IDENTITY` / `CSC_NAME` when present.
 
 ## Usage
 
