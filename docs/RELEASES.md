@@ -53,6 +53,7 @@ Regel:
 - Tags mit `-rc.N` wie `v0.11.8-rc.1` erzeugen ein GitHub Pre-Release auf Kanal `rc`.
 - Bestehende produktive Installationen bleiben auf `latest` und sehen `rc`-Builds nicht.
 - RC-Builds sind manuell über GitHub Pre-Releases downloadbar.
+- RC-Builds verwenden eine separate App-ID und einen separaten App-Namen (`Broadify Bridge RC`) und ersetzen daher die Live-App bei der Installation nicht.
 
 ## NPM-Kommandos
 

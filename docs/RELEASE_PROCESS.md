@@ -34,6 +34,7 @@ Wirkung:
 - aktive Nutzer auf `latest` bekommen dadurch kein Auto-Update
 - erst das spätere finale Tag ohne `-rc` triggert den echten Produktions-Rollout
 - RC-Builds werden mit dem RC/Test-Relay verpackt, Live-Builds mit dem Production-Relay
+- RC-Builds verwenden eine eigene App-ID und einen eigenen App-Namen (`Broadify Bridge RC`), damit sie die Live-App bei der Installation nicht ersetzen
 
 ## NPM-Release-Skript
 

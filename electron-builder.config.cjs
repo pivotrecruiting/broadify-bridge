@@ -7,12 +7,18 @@ const updaterChannel =
   process.env.BROADIFY_UPDATER_CHANNEL.trim() !== ""
     ? process.env.BROADIFY_UPDATER_CHANNEL.trim()
     : "latest";
+const isRcChannel = updaterChannel === "rc";
 
 const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
   "apps/bridge/native/display-helper/display-helper",
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
 ]);
+
+if (isRcChannel) {
+  config.appId = "com.broadify.bridge.rc";
+  config.productName = "Broadify Bridge RC";
+}
 
 // Keep macOS-only helper binaries out of Windows/Linux packaging to avoid missing-file warnings.
 const macOnlyResources = (config.extraResources || []).filter((entry) =>
@@ -32,7 +38,9 @@ config.mac.extraResources = [
 // Keep artifact names deterministic so the published release assets match
 // the filenames referenced inside the generated updater metadata.
 if (!config.artifactName) {
-  config.artifactName = "Broadify-Bridge-${version}-${arch}.${ext}";
+  config.artifactName = isRcChannel
+    ? "Broadify-Bridge-RC-${version}-${arch}.${ext}"
+    : "Broadify-Bridge-${version}-${arch}.${ext}";
 }
 
 config.generateUpdatesFilesForAllChannels = true;
