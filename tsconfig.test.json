@@ -5,6 +5,7 @@
     "moduleResolution": "Node",
     "types": ["node", "jest"],
     "noEmit": true,
+    "esModuleInterop": true,
     "isolatedModules": true
   }
 }
