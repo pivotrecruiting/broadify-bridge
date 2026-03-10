@@ -88,6 +88,18 @@ Security-Hinweis: Die CI lädt die Helper-Binaries von einer URL. Die Integritä
    - `apps/bridge/native/decklink-helper/decklink-helper`
 4. Datei umbenennen zu `decklink-helper-arm64`.
 
+Kurzweg vom Repo-Root:
+
+```bash
+npm run prepare:decklink-helper-release
+```
+
+Der Befehl:
+
+- baut den Helper fuer die aktuelle macOS-Architektur
+- erzeugt standardmaessig `decklink-helper-arm64` bzw. `decklink-helper-x64`
+- gibt `minOS` und `SHA256` direkt aus
+
 ### Schritt B: Release-Assets hochladen (GitHub UI)
 
 1. Öffne GitHub → Repo für den Helper (z. B. `broadify-decklink-helper`).

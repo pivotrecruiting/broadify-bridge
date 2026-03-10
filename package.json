@@ -15,6 +15,7 @@
     "build:bridge": "npm --prefix apps/bridge run build",
     "build:graphics-renderer": "npm --prefix apps/bridge run build:graphics-renderer",
     "build:decklink-helper": "bash scripts/build-decklink-helper.sh",
+    "prepare:decklink-helper-release": "bash scripts/prepare-decklink-helper-release.sh",
     "build:display-helper": "bash scripts/build-display-helper.sh",
     "sign:display-helper": "bash scripts/sign-display-helper.sh",
     "download:decklink-helper": "bash scripts/download-decklink-helper.sh",
