@@ -6,6 +6,7 @@ const config = JSON.parse(JSON.stringify(baseConfig));
 const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
   "apps/bridge/native/display-helper/display-helper",
+  "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
 ]);
 
 // Keep macOS-only helper binaries out of Windows/Linux packaging to avoid missing-file warnings.

@@ -56,6 +56,12 @@ export class BridgeProcessManager {
       this.describeArtifact("native/decklink-helper/decklink-helper"),
     ];
 
+    if (process.platform === "darwin") {
+      lines.push(
+        this.describeArtifact("native/display-helper/libSDL2-2.0.0.dylib")
+      );
+    }
+
     if (process.platform === "win32") {
       lines.push(this.describeArtifact("native/display-helper/SDL2.dll"));
     }

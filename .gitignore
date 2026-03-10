@@ -43,6 +43,7 @@ apps/bridge/native/framebus/build/
 
 # Native display helper binary (built via build.sh)
 apps/bridge/native/display-helper/display-helper
+apps/bridge/native/display-helper/libSDL2-2.0.0.dylib
 apps/bridge/native/display-helper/display-helper.exe
 apps/bridge/native/display-helper/SDL2.dll
 

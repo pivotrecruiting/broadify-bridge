@@ -100,6 +100,16 @@ export function logRuntimeDiagnostics(logger: LoggerLikeT): void {
     });
   }
 
+  if (process.platform === "darwin") {
+    checks.push({
+      label: "Display helper SDL2 runtime",
+      artifactPath: path.join(
+        path.dirname(resolveDisplayHelperPath()),
+        "libSDL2-2.0.0.dylib"
+      ),
+    });
+  }
+
   for (const check of checks) {
     logger.info(`[RuntimeDiagnostics] ${inspectArtifact(check)}`);
   }

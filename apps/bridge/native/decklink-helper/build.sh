@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${ROOT_DIR}/src"
 OUT_DIR="${ROOT_DIR}"
+DEPLOYMENT_TARGET="${DECKLINK_HELPER_MACOSX_DEPLOYMENT_TARGET:-${MACOSX_DEPLOYMENT_TARGET:-13.0}}"
 
 SDK_ROOT="${DECKLINK_SDK_ROOT:-/Users/dennisschaible/SDKs/Blackmagic}"
 INCLUDE_DIR="${SDK_ROOT}/Mac/include"
@@ -26,6 +27,7 @@ clang++ \
   -Wall \
   -Wextra \
   -O2 \
+  -mmacosx-version-min="${DEPLOYMENT_TARGET}" \
   -I "${INCLUDE_DIR}" \
   -F "${FRAMEWORK_PATH}" \
   -framework CoreFoundation \
@@ -35,3 +37,4 @@ clang++ \
   -o "${OUT_DIR}/decklink-helper"
 
 echo "Built ${OUT_DIR}/decklink-helper"
+echo "Using deployment target ${DEPLOYMENT_TARGET}"

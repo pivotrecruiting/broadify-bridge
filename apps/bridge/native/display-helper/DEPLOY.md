@@ -8,7 +8,7 @@ Build und Deployment des Display Helper Binaries für macOS und Windows. Der Hel
 
 - macOS Build-Maschine
 - clang++
-- SDL2 (`brew install sdl2`)
+- SDL2 (`brew install sdl2`) oder ein eigener SDL2-Runtime-Pfad via `SDL2_DYLIB_PATH`
 - Kein proprietäres SDK (im Gegensatz zum DeckLink Helper)
 
 ## Ablauf (arm64)
@@ -17,7 +17,13 @@ Build und Deployment des Display Helper Binaries für macOS und Windows. Der Hel
 
 ```bash
 cd apps/bridge/native/display-helper
-./build.sh
+DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0 ./build.sh
+```
+
+Wenn die lokale SDL2-Runtime bereits auf ein neueres `minos` gebaut ist, fuer Release-Builds zusaetzlich strikt pruefen:
+
+```bash
+SDL2_STRICT_MINOS=1 DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0 ./build.sh
 ```
 
 ### 2) Binary für Architektur kennzeichnen (optional)
@@ -38,6 +44,7 @@ Für Notarization muss das Binary signiert sein. Manuell oder via Script:
 
 ```bash
 # Manuell
+codesign --force --sign "Developer ID Application: <Team>" libSDL2-2.0.0.dylib
 codesign --force --sign "Developer ID Application: <Team>" display-helper
 
 # Oder: Script (wird von build-display-helper.sh automatisch aufgerufen)
@@ -47,7 +54,7 @@ APPLE_SIGNING_IDENTITY="Developer ID Application: <Team>" ./scripts/sign-display
 ### 5) electron-builder Integration
 
 Die Plattform-spezifische Einbindung erfolgt über `electron-builder.config.cjs`:
-- macOS: `native/display-helper/display-helper`
+- macOS: `native/display-helper/display-helper` + `native/display-helper/libSDL2-2.0.0.dylib`
 - Windows: `native/display-helper/display-helper.exe` (optional zusätzlich `SDL2.dll`)
 
 Die Pfad-Auflösung in `display-helper.ts` nutzt:
@@ -99,7 +106,8 @@ Bis dahin: Lokaler Build und manuelles Kopieren oder Einbinden in die Build-Pipe
 ## Hinweise
 
 - SDL2 ist die einzige externe Abhängigkeit; kein proprietäres SDK.
-- Für Notarization (macOS) muss das Binary signiert sein.
+- Für Notarization (macOS) muessen Runtime-Dylib und Binary signiert sein.
+- Homebrew-SDL2 von neueren macOS-Versionen kann selbst Ventura-inkompatibel sein. In dem Fall muss eine kompatible Runtime via `SDL2_DYLIB_PATH` bereitgestellt werden.
 - Auf Windows muss `SDL2.dll` zur Laufzeit verfügbar sein (neben `display-helper.exe` oder via PATH).
 - Binary-Pfad muss fix bleiben; Override nur via `BRIDGE_DISPLAY_HELPER_PATH`.
-- Build-Artefakte (`display-helper`, `display-helper.exe`, `SDL2.dll`) sind in `.gitignore`; nicht committen.
+- Build-Artefakte (`display-helper`, `libSDL2-2.0.0.dylib`, `display-helper.exe`, `SDL2.dll`) sind in `.gitignore`; nicht committen.

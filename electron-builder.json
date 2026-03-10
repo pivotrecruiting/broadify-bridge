@@ -24,6 +24,10 @@
       "to": "native/display-helper/display-helper"
     },
     {
+      "from": "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
+      "to": "native/display-helper/libSDL2-2.0.0.dylib"
+    },
+    {
       "from": "config/default.json",
       "to": "bridge/config/default.json"
     },

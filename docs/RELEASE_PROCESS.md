@@ -74,10 +74,11 @@ Das native FrameBus Node-Addon wird automatisch beim `dist:*` Build erstellt:
 Der Display Helper wird **nicht** separat gehostet wie der DeckLink Helper. Er wird direkt in der CI gebaut:
 
 - **macOS Runners:** SDL2 wird per `brew install sdl2` installiert, danach `build:display-helper`.
-- **Ventura-Kompatibilität:** `MACOSX_DEPLOYMENT_TARGET` ist auf `13.0` zu setzen (oder niedriger, falls Produkt-Matrix das verlangt).
+- **Ventura-Kompatibilität:** `DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0`, `DECKLINK_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0` und `MACOS_FLOOR_VERSION=13.0` sind fuer Release-Builds gesetzt.
 - **Portable Runtime:** `build:display-helper` bundelt `libSDL2-2.0.0.dylib` neben dem Binary, der Helper linkt auf `@loader_path/libSDL2-2.0.0.dylib`.
-- **Fail-Fast Check:** `scripts/verify-release-artifacts.sh` muss fehlschlagen, wenn `display-helper` noch absolute SDL2-Pfade (`/opt/homebrew`, `/usr/local/opt/sdl2`, `SDL2.framework`) enthält.
-- **Signing:** Bei gesetztem `APPLE_SIGNING_IDENTITY` wird das Binary automatisch mit `codesign` signiert (für Notarization).
+- **Fail-Fast Check:** `scripts/verify-release-artifacts.sh` muss fehlschlagen, wenn `display-helper` noch absolute SDL2-Pfade (`/opt/homebrew`, `/usr/local`, `SDL2.framework`) enthält oder `minos > 13.0` ist.
+- **SDL2-Runtime-Floor:** `SDL2_STRICT_MINOS=1` blockiert Release-Builds, wenn die verwendete SDL2-Runtime selbst nicht Ventura-kompatibel ist. In diesem Fall muss eine kompatible Runtime via `SDL2_DYLIB_PATH` bereitgestellt oder auf einem passenden Builder gebaut werden.
+- **Signing:** Bei gesetztem `APPLE_SIGNING_IDENTITY` werden Runtime-Dylib und Binary automatisch mit `codesign` signiert (für Notarization).
 - **Kein separater Release nötig** – das Binary landet in der gepackten App.
 
 ## Release-Prozess
