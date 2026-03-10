@@ -20,6 +20,12 @@ cd apps/bridge/native/display-helper
 DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0 ./build.sh
 ```
 
+Alternativ als gepinntes Release-Bundle vom Repo-Root:
+
+```bash
+npm run prepare:sdl2-macos-release
+```
+
 Wenn die lokale SDL2-Runtime bereits auf ein neueres `minos` gebaut ist, fuer Release-Builds zusaetzlich strikt pruefen:
 
 ```bash
@@ -109,7 +115,7 @@ Bis dahin: Lokaler Build und manuelles Kopieren oder Einbinden in die Build-Pipe
 
 - SDL2 ist die einzige externe Abhängigkeit; kein proprietäres SDK.
 - Für Notarization (macOS) muessen Runtime-Dylib und Binary signiert sein.
-- Homebrew-SDL2 von neueren macOS-Versionen kann selbst Ventura-inkompatibel sein. In dem Fall muss eine kompatible Runtime via `SDL2_DYLIB_PATH` bereitgestellt werden.
+- Homebrew-SDL2 von neueren macOS-Versionen kann selbst Ventura-inkompatibel sein. Fuer Release-Builds sollte deshalb ein gepinntes SDL2-Bundle via `SDL2_BUNDLE_DIR` bzw. CI-Download verwendet werden.
 - Auf Windows muss `SDL2.dll` zur Laufzeit verfügbar sein (neben `display-helper.exe` oder via PATH).
 - Binary-Pfad muss fix bleiben; Override nur via `BRIDGE_DISPLAY_HELPER_PATH`.
 - Build-Artefakte (`display-helper`, `libSDL2-2.0.0.dylib`, `display-helper.exe`, `SDL2.dll`) sind in `.gitignore`; nicht committen.

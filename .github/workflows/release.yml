@@ -49,6 +49,10 @@ jobs:
       DECKLINK_HELPER_SHA256_ARM64: ${{ secrets.DECKLINK_HELPER_SHA256_ARM64 }}
       DECKLINK_HELPER_URL_X64: ${{ secrets.DECKLINK_HELPER_URL_X64 }}
       DECKLINK_HELPER_SHA256_X64: ${{ secrets.DECKLINK_HELPER_SHA256_X64 }}
+      SDL2_MACOS_URL_ARM64: ${{ secrets.SDL2_MACOS_URL_ARM64 }}
+      SDL2_MACOS_SHA256_ARM64: ${{ secrets.SDL2_MACOS_SHA256_ARM64 }}
+      SDL2_MACOS_URL_X64: ${{ secrets.SDL2_MACOS_URL_X64 }}
+      SDL2_MACOS_SHA256_X64: ${{ secrets.SDL2_MACOS_SHA256_X64 }}
       BRIDGE_RELAY_JWKS_URL: ${{ secrets.BRIDGE_RELAY_JWKS_URL }}
       RELAY_URL: ${{ secrets.RELAY_URL }}
       DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -193,9 +197,9 @@ jobs:
           fi
           echo "Bridge config prepared"
 
-      - name: Install SDL2 (macOS, for display-helper)
+      - name: Resolve SDL2 bundle (macOS, for display-helper)
         if: matrix.os == 'macos-15'
-        run: brew install sdl2
+        run: npm run ensure:sdl2-macos
 
       # node-gyp (used by build:framebus) requires distutils, removed in Python 3.12+
       - name: Setup Python for node-gyp

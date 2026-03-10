@@ -110,6 +110,56 @@ Der Befehl:
    - `decklink-helper-arm64`
 6. **Publish release**.
 
+## SDL2 macOS Runtime Bundle (einmalig pro Runtime-Version)
+
+Kurzweg vom Repo-Root:
+
+```bash
+npm run prepare:sdl2-macos-release
+```
+
+Der Befehl:
+
+- erstellt ein macOS-SDL2-Bundle fuer die aktuelle Architektur
+- erzeugt standardmaessig `sdl2-macos-arm64.tar.gz` bzw. `sdl2-macos-x64.tar.gz`
+- prueft, dass die gebuendelte SDL2-Runtime `minOS <= 13.0` hat
+- gibt `SHA256` direkt aus
+
+Bevorzugter Weg fuer reproduzierbare Release-Assets:
+
+1. GitHub Actions → **Build SDL2 macOS Asset**
+2. `sdl_version` setzen, z. B. `2.30.12`
+3. `deployment_target` auf `13.0` lassen
+4. `runner_label` standardmaessig auf `macos-15` lassen
+5. `publish_release=true` lassen
+6. Workflow starten
+
+Der Workflow:
+
+- baut SDL2 aus dem offiziellen Source-Tarball auf einem macOS-Runner
+- erzeugt `sdl2-macos-arm64.tar.gz` oder `sdl2-macos-x64.tar.gz`
+- lädt das Bundle als Actions-Artefakt hoch
+- veröffentlicht es optional zusätzlich als GitHub-Release-Asset mit stabiler Download-URL
+- schreibt `SHA256` und Ziel-URL in die Workflow-Zusammenfassung
+
+Workflow-Datei:
+
+- `.github/workflows/build-sdl2-macos-asset.yml`
+
+GitHub-Secrets fuer den Release-Workflow:
+
+- `SDL2_MACOS_URL_ARM64`
+- `SDL2_MACOS_SHA256_ARM64`
+- `SDL2_MACOS_URL_X64`
+- `SDL2_MACOS_SHA256_X64`
+
+Hinweis:
+
+- Diese Secrets sind jetzt optional.
+- Wenn sie gesetzt sind, verwenden die Release-Workflows das gepinnte SDL2-Bundle.
+- Wenn sie nicht gesetzt sind, bauen `release.yml` und `test-release.yml` SDL2 automatisch direkt aus dem offiziellen Source-Tarball.
+- Der dedizierte Workflow `Build SDL2 macOS Asset` bleibt trotzdem sinnvoll, wenn du reproduzierbare und wiederverwendbare SDL2-Artefakte haben willst.
+
 ### Schritt C: SHA256 berechnen (lokal)
 
 ```bash
@@ -123,6 +173,13 @@ shasum -a 256 apps/bridge/native/decklink-helper/decklink-helper-arm64
 3. **New repository secret** anlegen:
    - `DECKLINK_HELPER_URL_ARM64` = `https://github.com/<owner>/<helper-repo>/releases/download/<tag>/decklink-helper-arm64`
    - `DECKLINK_HELPER_SHA256_ARM64` = Hash aus Schritt C
+   - `SDL2_MACOS_URL_ARM64` = URL aus dem Workflow **Build SDL2 macOS Asset**
+   - `SDL2_MACOS_SHA256_ARM64` = SHA256 aus der Workflow-Zusammenfassung
+
+Falls spaeter ein Intel-macOS-Build dazukommt:
+
+- `SDL2_MACOS_URL_X64`
+- `SDL2_MACOS_SHA256_X64`
 
 ### Schritt E: Test-Run (optional, manuell)
 
@@ -143,11 +200,12 @@ Das native FrameBus Node-Addon wird automatisch beim `dist:*` Build erstellt:
 
 Der Display Helper wird **nicht** separat gehostet wie der DeckLink Helper. Er wird direkt in der CI gebaut:
 
-- **macOS Runners:** SDL2 wird per `brew install sdl2` installiert, danach `build:display-helper`.
+- **macOS Runners:** SDL2 wird fuer Release-Builds als gepinntes Bundle geladen (`npm run download:sdl2-macos`), danach `build:display-helper`.
+- **Fallback:** Falls kein SDL2-Bundle per Secret konfiguriert ist, baut `npm run ensure:sdl2-macos` SDL2 direkt aus Source mit `minOS 13.0`.
 - **Ventura-Kompatibilität:** `DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0`, `DECKLINK_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0` und `MACOS_FLOOR_VERSION=13.0` sind fuer Release-Builds gesetzt.
 - **Portable Runtime:** `build:display-helper` bundelt `libSDL2-2.0.0.dylib` neben dem Binary, der Helper linkt auf `@loader_path/libSDL2-2.0.0.dylib`.
 - **Fail-Fast Check:** `scripts/verify-release-artifacts.sh` muss fehlschlagen, wenn `display-helper` noch absolute SDL2-Pfade (`/opt/homebrew`, `/usr/local`, `SDL2.framework`) enthält oder `minos > 13.0` ist.
-- **SDL2-Runtime-Floor:** `SDL2_STRICT_MINOS=1` blockiert Release-Builds, wenn die verwendete SDL2-Runtime selbst nicht Ventura-kompatibel ist. In diesem Fall muss eine kompatible Runtime via `SDL2_DYLIB_PATH` bereitgestellt oder auf einem passenden Builder gebaut werden.
+- **SDL2-Runtime-Floor:** `SDL2_STRICT_MINOS=1` blockiert Release-Builds, wenn die verwendete SDL2-Runtime selbst nicht Ventura-kompatibel ist. In diesem Fall muss ein kompatibles SDL2-Bundle per GitHub-Release-Asset bereitgestellt werden.
 - **Signing:** Bei gesetztem `APPLE_SIGNING_IDENTITY` werden Runtime-Dylib und Binary automatisch mit `codesign` signiert (für Notarization).
 - **Kein separater Release nötig** – das Binary landet in der gepackten App.
 

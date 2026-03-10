@@ -31,8 +31,11 @@ Ziel: macOS-Release-Artefakte so absichern, dass der native `display-helper` auf
 
 ## Phase 5: Operative Release-Voraussetzungen
 
-- [ ] Eine Ventura-kompatible SDL2-Runtime fuer CI bereitstellen.
-- [ ] Entweder auf einem macOS-13-Build-Host bauen oder `SDL2_DYLIB_PATH` auf eine SDL2-Runtime mit `minos <= 13.0` setzen.
+- [x] Ventura-kompatibles SDL2-Bundle fuer CI eingefuehrt.
+- [x] Release-Workflows laden SDL2 als gepinntes Bundle statt per Homebrew.
+- [x] `display-helper` akzeptiert `SDL2_BUNDLE_DIR` fuer reproduzierbare Release-Builds.
+- [x] Manueller Workflow `.github/workflows/build-sdl2-macos-asset.yml` baut neue SDL2-Bundles reproduzierbar aus Source.
+- [ ] Einmalig kompatible SDL2-Release-Assets hochladen und GitHub-Secrets setzen.
 - [ ] Nach Bereitstellung der kompatiblen SDL2-Runtime einen kompletten `dist:mac:*` Build durchlaufen lassen.
 - [ ] Final auf einem sauberen Ventura-System ohne Homebrew-SDL2 testen.
 

@@ -30,6 +30,15 @@ SDL2_LIBS="-L/path/to/lib -lSDL2" \
 DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0 ./build.sh
 ```
 
+Release/CI builds can also use a pinned SDL2 bundle directory:
+
+```bash
+SDL2_BUNDLE_DIR=/path/to/sdl2-bundle \
+DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET=13.0 \
+SDL2_STRICT_MINOS=1 \
+./build.sh
+```
+
 By default, if the SDL2 runtime `minOS` exceeds the requested deployment target, the build auto-upgrades the target so local builds keep working on newer macOS versions. Set `SDL2_STRICT_MINOS=1` to fail instead and enforce a Ventura-compatible SDL2 runtime for release builds.
 
 Windows (Developer PowerShell):

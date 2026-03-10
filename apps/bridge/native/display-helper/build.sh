@@ -9,6 +9,7 @@ OUTPUT_BINARY="${OUT_DIR}/display-helper"
 OUTPUT_RUNTIME="${OUT_DIR}/libSDL2-2.0.0.dylib"
 REQUESTED_DEPLOYMENT_TARGET="${DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET:-${MACOSX_DEPLOYMENT_TARGET:-13.0}}"
 STRICT_MINOS="${SDL2_STRICT_MINOS:-0}"
+SDL2_BUNDLE_DIR="${SDL2_BUNDLE_DIR:-}"
 
 if [[ ! -d "${FRAMEBUS_INCLUDE}" ]]; then
   echo "FrameBus include not found at ${FRAMEBUS_INCLUDE}" >&2
@@ -85,9 +86,45 @@ find_sdl_dylib_in_dir() {
   return 1
 }
 
+find_sdl_headers_dir() {
+  local search_dir="$1"
+  if [[ -z "$search_dir" || ! -d "$search_dir" ]]; then
+    return 1
+  fi
+
+  if [[ -f "${search_dir}/SDL2/SDL.h" ]]; then
+    printf '%s\n' "${search_dir}/SDL2"
+    return 0
+  fi
+
+  if [[ -f "${search_dir}/SDL.h" ]]; then
+    printf '%s\n' "$search_dir"
+    return 0
+  fi
+
+  return 1
+}
+
 SDL_CFLAGS="${SDL2_CFLAGS:-}"
 SDL_LIBS="${SDL2_LIBS:-}"
 SDL_RUNTIME_SOURCE="${SDL2_DYLIB_PATH:-}"
+
+if [[ -n "$SDL2_BUNDLE_DIR" ]]; then
+  if [[ -z "$SDL_RUNTIME_SOURCE" ]]; then
+    SDL_RUNTIME_SOURCE="$(find_sdl_dylib_in_dir "${SDL2_BUNDLE_DIR}/lib" || true)"
+  fi
+
+  if [[ -z "$SDL_CFLAGS" ]]; then
+    bundle_headers_dir="$(find_sdl_headers_dir "${SDL2_BUNDLE_DIR}/include" || true)"
+    if [[ -n "$bundle_headers_dir" ]]; then
+      SDL_CFLAGS="-I${SDL2_BUNDLE_DIR}/include -I${bundle_headers_dir}"
+    fi
+  fi
+
+  if [[ -z "$SDL_LIBS" && -n "$SDL_RUNTIME_SOURCE" ]]; then
+    SDL_LIBS="${SDL_RUNTIME_SOURCE}"
+  fi
+fi
 
 if [[ -n "$SDL_CFLAGS" && -z "$SDL_LIBS" ]]; then
   echo "SDL2_CFLAGS is set but SDL2_LIBS is missing." >&2
