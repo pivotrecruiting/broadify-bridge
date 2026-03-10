@@ -2,6 +2,11 @@ const fs = require("fs");
 const baseConfig = require("./electron-builder.json");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
+const updaterChannel =
+  typeof process.env.BROADIFY_UPDATER_CHANNEL === "string" &&
+  process.env.BROADIFY_UPDATER_CHANNEL.trim() !== ""
+    ? process.env.BROADIFY_UPDATER_CHANNEL.trim()
+    : "latest";
 
 const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
@@ -28,6 +33,15 @@ config.mac.extraResources = [
 // the filenames referenced inside the generated updater metadata.
 if (!config.artifactName) {
   config.artifactName = "Broadify-Bridge-${version}-${arch}.${ext}";
+}
+
+config.generateUpdatesFilesForAllChannels = true;
+
+if (Array.isArray(config.publish)) {
+  config.publish = config.publish.map((entry) => ({
+    ...entry,
+    channel: updaterChannel,
+  }));
 }
 
 if (config.win) {

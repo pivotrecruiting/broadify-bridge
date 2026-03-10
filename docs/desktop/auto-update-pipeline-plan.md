@@ -13,7 +13,7 @@ Die Desktop-App soll Updates direkt in der App erkennen, herunterladen und insta
 - Update-Quelle: GitHub Releases (provider `github`) mit signierten Artefakten.
 - Client: `electron-updater` im Main Process.
 - UI: Update-Status, Fortschritt, Fehler, Install-Button.
-- Rollout: zunächst stabiler Kanal (`latest`), optional später `beta`/`alpha`.
+- Rollout: stabiler Kanal (`latest`) plus produktiver Testkanal (`rc`).
 
 ## Kritische Entscheidungen (vor Umsetzung final bestätigen)
 - Windows-Target: Für sauberes In-App Auto-Update auf Windows auf `nsis` wechseln (statt `portable`/`msi` als primärem Updater-Pfad).
@@ -25,7 +25,7 @@ Die Desktop-App soll Updates direkt in der App erkennen, herunterladen und insta
 ## Phase 1 - Produktentscheidung und Scope
 - [x] Zielplattformen für Auto-Update festlegen (`macOS`, `Windows`, optional `Linux`).
 - [x] Windows-Installer-Strategie entscheiden (`nsis` als Update-Pfad, `msi` optional zusätzlicher Download).
-- [x] Release-Kanal-Strategie festlegen (`latest` jetzt, `beta` später).
+- [x] Release-Kanal-Strategie festlegen (`latest` + `rc`).
 - [x] UX-Policy definieren: stilles Downloaden vs. expliziter User-Trigger.
 
 ## Phase 2 - Build/Publishing vorbereiten
@@ -78,6 +78,7 @@ Die Desktop-App soll Updates direkt in der App erkennen, herunterladen und insta
 - [ ] Nutzer kann Update in der App herunterladen und installieren.
 - [ ] UI zeigt nachvollziehbare Status- und Fehlermeldungen.
 - [x] Release-Workflow publiziert korrekte `latest*.yml` Metadaten ohne Umbenennung.
+- [x] RC-Tags (`vX.Y.Z-rc.N`) erzeugen downloadbare GitHub Pre-Releases auf separatem Update-Kanal ohne Rollout an `latest`.
 - [ ] E2E-Tests für mindestens macOS + Windows erfolgreich.
 
 ## Externe Aufgaben

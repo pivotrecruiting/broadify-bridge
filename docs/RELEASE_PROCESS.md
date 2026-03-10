@@ -16,6 +16,22 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
   - `APPLE_SIGNING_IDENTITY` (für macOS Code-Signing / Notarization, z.B. `Developer ID Application: Your Team (XXXXX)`)
   - `BRIDGE_RELAY_JWKS_URL` (für Production Relay)
 
+## Release-Kanäle
+
+- `latest`: Normales produktives Release für alle Nutzer
+- `rc`: Downloadbarer Produktions-Testbuild vor dem finalen Rollout
+
+Tag-Regel:
+
+- `v0.11.8` => normales Release auf Kanal `latest`
+- `v0.11.8-rc.1` => GitHub Pre-Release auf Kanal `rc`
+
+Wirkung:
+
+- RC-Builds sind installierbar und live testbar
+- aktive Nutzer auf `latest` bekommen dadurch kein Auto-Update
+- erst das spätere finale Tag ohne `-rc` triggert den echten Produktions-Rollout
+
 ## DeckLink Helper Hosting (ohne SDK) - Einmalig vorbereiten
 
 Best Practice: Eigener GitHub Release (separates Repo) mit nur dem fertigen Helper-Binary. Keine SDK-Dateien hochladen.
@@ -146,6 +162,24 @@ git tag -a v0.7.0 -m "Release version 0.7.0"
 git push origin v0.7.0
 ```
 
+### Schritt 4a: Optionaler Produktions-Test per RC-Tag
+
+Wenn du einen echten, signierten und downloadbaren Testbuild brauchst, aber noch kein Update für aktive Nutzer auslösen willst:
+
+```bash
+git checkout main
+git pull origin main
+git tag -a v0.7.0-rc.1 -m "RC version 0.7.0-rc.1"
+git push origin v0.7.0-rc.1
+```
+
+Ergebnis:
+
+- GitHub erstellt ein `prerelease`
+- die App läuft auf dem Updater-Kanal `rc`
+- produktive Installationen auf `latest` bleiben unberührt
+- nach erfolgreichem Live-Test veröffentlichst du separat `v0.7.0`
+
 ### Schritt 5: GitHub Actions Workflow prüfen
 
 1. Gehe zu deinem GitHub Repository
@@ -169,6 +203,12 @@ Nach Abschluss der Builds (ca. 10-20 Minuten):
    - `Broadify-Bridge-Setup-0.1.0.exe` (Windows NSIS Installer, primär für Auto-Update)
    - `broadify-bridge-0.1.0-win-x64.msi` (Windows MSI)
    - `broadify-bridge-0.1.0-x64.AppImage` (Linux)
+
+Für RC-Releases zusätzlich prüfen:
+
+- Release ist in GitHub als `Pre-release` markiert
+- die installierte App zeigt im Updater-Dialog den Kanal `rc`
+- produktive Geräte auf `latest` sehen kein neues Update
 
 ## Häufige Probleme und Lösungen
 

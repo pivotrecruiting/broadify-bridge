@@ -93,7 +93,7 @@ class AppUpdaterService {
     this.updateStatus({
       enabled: true,
       state: "idle",
-      message: "Auto-update is ready.",
+      message: `Auto-update is ready on channel ${this.status.channel}.`,
     });
 
     this.scheduleChecks();
@@ -241,7 +241,9 @@ class AppUpdaterService {
   private configureAutoUpdater(): void {
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.channel = this.status.channel;
     autoUpdater.allowPrerelease = this.status.channel !== "latest";
+    autoUpdater.allowDowngrade = false;
 
     const githubToken = process.env.BROADIFY_UPDATER_GITHUB_TOKEN?.trim();
     if (githubToken) {
