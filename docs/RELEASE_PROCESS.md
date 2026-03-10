@@ -32,6 +32,48 @@ Wirkung:
 - aktive Nutzer auf `latest` bekommen dadurch kein Auto-Update
 - erst das spätere finale Tag ohne `-rc` triggert den echten Produktions-Rollout
 
+## NPM-Release-Skript
+
+Für den Standardfall gibt es jetzt ein automatisches Release-Skript:
+
+```bash
+# RC/Test-Release mit Patch-Bump
+npm run release:test -- --bugfix
+
+# RC/Test-Release mit Minor-Bump
+npm run release:test -- --feature
+
+# Echtes Release mit Patch-Bump
+npm run release:live -- --bugfix
+
+# Echtes Release mit Minor-Bump
+npm run release:live -- --feature
+```
+
+Verhalten:
+
+- `--bugfix` erhöht die Patch-Version
+- `--feature` erhöht die Minor-Version und setzt Patch auf `0`
+- `release:test` erzeugt Tags wie `v0.12.0-rc.1`
+- `release:live` erzeugt Tags wie `v0.12.0`
+- das Skript commitet den Versionssprung, erstellt den Tag und pusht Branch plus Tag nach `origin`
+
+RC-Folgeschritte:
+
+```bash
+# Aus 0.12.0-rc.1 wird 0.12.0-rc.2
+npm run release:test
+
+# Aus 0.12.0-rc.2 wird 0.12.0
+npm run release:live
+```
+
+Sicherheitsnetz:
+
+- nur auf sauberem Working Tree
+- nur auf Branch `main`
+- optional prüfbar mit `--dry-run`
+
 ## DeckLink Helper Hosting (ohne SDK) - Einmalig vorbereiten
 
 Best Practice: Eigener GitHub Release (separates Repo) mit nur dem fertigen Helper-Binary. Keine SDK-Dateien hochladen.

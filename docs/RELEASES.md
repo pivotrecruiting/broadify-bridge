@@ -54,6 +54,22 @@ Regel:
 - Bestehende produktive Installationen bleiben auf `latest` und sehen `rc`-Builds nicht.
 - RC-Builds sind manuell über GitHub Pre-Releases downloadbar.
 
+## NPM-Kommandos
+
+```bash
+# Test / RC
+npm run release:test -- --bugfix
+npm run release:test -- --feature
+
+# Live
+npm run release:live -- --bugfix
+npm run release:live -- --feature
+
+# RC fortsetzen oder zu stable promoten
+npm run release:test
+npm run release:live
+```
+
 ## Release-Prozess
 
 ### 1. Version aktualisieren
