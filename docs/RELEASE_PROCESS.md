@@ -13,8 +13,10 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
 - GitHub Secrets gesetzt:
   - `DECKLINK_HELPER_URL_ARM64`, `DECKLINK_HELPER_SHA256_ARM64`
   - `DECKLINK_HELPER_URL_X64`, `DECKLINK_HELPER_SHA256_X64` (falls x64-Builds)
-  - `APPLE_SIGNING_IDENTITY` (für macOS Code-Signing / Notarization, z.B. `Developer ID Application: Your Team (XXXXX)`)
-  - `BRIDGE_RELAY_JWKS_URL` (für Production Relay)
+- `APPLE_SIGNING_IDENTITY` (für macOS Code-Signing / Notarization, z.B. `Developer ID Application: Your Team (XXXXX)`)
+- `BRIDGE_RELAY_JWKS_URL` (für Production Relay)
+- `RELAY_URL_RC` (für RC/Test-Relay)
+- `BRIDGE_RELAY_JWKS_URL_RC` (für RC/Test-Relay)
 
 ## Release-Kanäle
 
@@ -31,6 +33,7 @@ Wirkung:
 - RC-Builds sind installierbar und live testbar
 - aktive Nutzer auf `latest` bekommen dadurch kein Auto-Update
 - erst das spätere finale Tag ohne `-rc` triggert den echten Produktions-Rollout
+- RC-Builds werden mit dem RC/Test-Relay verpackt, Live-Builds mit dem Production-Relay
 
 ## NPM-Release-Skript
 
@@ -73,6 +76,12 @@ Sicherheitsnetz:
 - nur auf sauberem Working Tree
 - nur auf Branch `main`
 - optional prüfbar mit `--dry-run`
+
+Relay-Routing:
+
+- `release:test` bzw. `vX.Y.Z-rc.N` nutzt `RELAY_URL_RC` und `BRIDGE_RELAY_JWKS_URL_RC`
+- `release:live` bzw. `vX.Y.Z` nutzt `RELAY_URL` und `BRIDGE_RELAY_JWKS_URL`
+- die gepackte App überschreibt diese releaseverwalteten Werte bewusst gegen alte `userData/.env`-Werte, damit ein installierter Live-Build einen RC-Build nicht auf Production zurückzieht
 
 ## DeckLink Helper Hosting (ohne SDK) - Einmalig vorbereiten
 

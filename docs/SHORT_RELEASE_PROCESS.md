@@ -23,6 +23,11 @@ Nicht zwingend:
 
 ## RC / Test Release
 
+Benötigte GitHub-Secrets:
+
+- `RELAY_URL_RC`
+- `BRIDGE_RELAY_JWKS_URL_RC`
+
 ### Bugfix
 
 ```bash
@@ -36,6 +41,11 @@ npm run release:test -- --feature
 ```
 
 ## Live Release
+
+Benötigte GitHub-Secrets:
+
+- `RELAY_URL`
+- `BRIDGE_RELAY_JWKS_URL`
 
 ### Bugfix
 
