@@ -2,10 +2,13 @@
 
 ## Zweck
 Maintained eine ausgehende WebSocket‑Verbindung zum Relay‑Server, empfängt Commands und sendet Results zurück.
+Der Client hält die Verbindung zusätzlich per aktivem WebSocket‑Heartbeat stabil und erkennt halb-offene Sockets schneller.
 
 ## Ein-/Ausgänge
 - Input: `bridgeId`, `relayUrl`, Logger
-- Input (WS): `{ type: "command", command, payload, meta, signature }`
+- Input (WS): `{ type: "command", requestId, sequence, command, payload, meta, signature }`
+- Output (WS): `bridge_hello` mit `protocolVersion`, `sessionId`, `lastProcessedSequence`
+- Output (WS): `{ type: "command_received", requestId, bridgeId, sequence? }`
 - Output (WS): `{ type: "command_result", success, data|error }`
 
 ## Abhängigkeiten
@@ -14,7 +17,11 @@ Maintained eine ausgehende WebSocket‑Verbindung zum Relay‑Server, empfängt 
 
 ## Side‑Effects
 - Reconnect‑Backoff
+- Active heartbeat ping / pong liveness tracking
+- Idle watchdog fallback for silent connections
+- Command result dedupe cache for replayed `requestId`
 - Logging (nur Command‑Name + requestId)
+- Disconnect diagnostics with close code + reason
 - Replay‑Schutz (jti‑Cache)
 
 ## Security
