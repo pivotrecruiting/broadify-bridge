@@ -15,7 +15,8 @@ sequenceDiagram
   Relay->>Bridge: bridge_auth_challenge (enrolled bridges)
   Bridge->>Relay: bridge_auth_response
   Relay->>Bridge: bridge_auth_ok
-  Relay->>Bridge: command (signed, meta + signature)
+  Relay->>Bridge: command (signed, sequence, meta + signature)
+  Bridge-->>Relay: command_received (ack)
   Bridge->>Router: handleCommand
   Router-->>Bridge: result
   Bridge-->>Relay: command_result
@@ -27,6 +28,9 @@ sequenceDiagram
 
 ## Reconnect
 - Exponentieller Backoff (1s → 60s)
+- Resumable Session via `sessionId` + `lastProcessedSequence`
+- Pending-Command Replay nur nach Policy und Replay-Limits
+- Nach Reconnect/Auth Resync-Trigger (`bridge_resync_required`) + Snapshot-Republish
 
 ## Sicherheit
 - Payloads sind untrusted → Validierung downstream (Zod)
@@ -39,3 +43,4 @@ sequenceDiagram
 ## Relevante Dateien
 - `apps/bridge/src/services/relay-client.ts`
 - `apps/bridge/src/services/command-router.ts`
+- `docs/bridge/architecture/relay-enterprise-architecture.md`

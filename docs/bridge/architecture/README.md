@@ -20,6 +20,7 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 - Display-Output Helper: `apps/bridge/src/services/graphics/display/display-output-entry.ts`
 
 ## Dokumente
+- Relay Enterprise Architektur (aktuell): `docs/bridge/architecture/relay-enterprise-architecture.md`
 - Ziele & Constraints: `docs/bridge/refactor/graphics-realtime-goals.md`
 - Architektur: `docs/bridge/refactor/graphics-realtime-architecture.md`
 - FrameBus (Shared Memory): `docs/bridge/refactor/graphics-realtime-framebus.md`

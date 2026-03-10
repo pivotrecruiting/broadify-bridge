@@ -15,6 +15,23 @@ macOS:
 ./build.sh
 ```
 
+Optional (recommended for compatibility floor):
+
+```bash
+MACOSX_DEPLOYMENT_TARGET=13.0 ./build.sh
+```
+
+Optional SDL2 overrides (for portable/older runtime builds):
+
+```bash
+SDL2_DYLIB_PATH=/path/to/libSDL2-2.0.0.dylib \
+SDL2_CFLAGS="-I/path/to/include -I/path/to/include/SDL2" \
+SDL2_LIBS="-L/path/to/lib -lSDL2" \
+MACOSX_DEPLOYMENT_TARGET=13.0 ./build.sh
+```
+
+By default, if SDL2 runtime `minOS` exceeds `MACOSX_DEPLOYMENT_TARGET`, the build auto-upgrades the deployment target to match SDL2 (so builds succeed on current macOS, e.g. Homebrew on macOS 15+). Set `SDL2_STRICT_MINOS=1` to fail instead and enforce a Ventura-compatible SDL2.
+
 Windows (Developer PowerShell):
 
 ```powershell
@@ -22,7 +39,7 @@ Windows (Developer PowerShell):
 ```
 
 The binary is placed at:
-- macOS: `display-helper`
+- macOS: `display-helper` + bundled runtime `libSDL2-2.0.0.dylib`
 - Windows: `display-helper.exe` (plus optional `SDL2.dll` copied next to it)
 
 ## Usage
