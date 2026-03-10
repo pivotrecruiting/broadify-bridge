@@ -12,6 +12,8 @@ const originalCwd = process.cwd();
 const originalNodeEnv = process.env.NODE_ENV;
 const originalHelperPath = process.env.BRIDGE_DISPLAY_HELPER_PATH;
 const originalResourcesPath = processWithResourcesPath.resourcesPath;
+const expectedHelperName =
+  process.platform === "win32" ? "display-helper.exe" : "display-helper";
 
 const setResourcesPath = (value: string | undefined): void => {
   Object.defineProperty(processWithResourcesPath, "resourcesPath", {
@@ -58,7 +60,7 @@ describe("resolveDisplayHelperPath", () => {
         "/Applications/Broadify Bridge.app/Contents/Resources",
         "native",
         "display-helper",
-        "display-helper"
+        expectedHelperName
       )
     );
   });
@@ -68,7 +70,7 @@ describe("resolveDisplayHelperPath", () => {
     process.env.NODE_ENV = "development";
 
     expect(resolveDisplayHelperPath()).toBe(
-      path.join(process.cwd(), "native", "display-helper", "display-helper")
+      path.join(process.cwd(), "native", "display-helper", expectedHelperName)
     );
   });
 });
