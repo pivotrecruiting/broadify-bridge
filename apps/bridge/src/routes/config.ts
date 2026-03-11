@@ -3,6 +3,8 @@ import { runtimeConfig } from "../services/runtime-config.js";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { deviceCache } from "../services/device-cache.js";
 import { isDevelopmentMode } from "../services/dev-mode.js";
+import { graphicsManager } from "../services/graphics/graphics-manager.js";
+import { outputConfigStore } from "../services/graphics/output-config-store.js";
 import { getAuthFailure } from "./route-guards.js";
 import type { FastifyInstance } from "fastify";
 import type { DeviceDescriptorT } from "@broadify/protocol";
@@ -18,6 +20,8 @@ type ConfigRouteDepsT = {
   >;
   moduleRegistry: Pick<typeof moduleRegistry, "getController">;
   deviceCache: Pick<typeof deviceCache, "getDevices">;
+  graphicsManager: Pick<typeof graphicsManager, "shutdown">;
+  outputConfigStore: Pick<typeof outputConfigStore, "clear">;
   isDevelopmentMode: typeof isDevelopmentMode;
   getAuthFailure: typeof getAuthFailure;
 };
@@ -55,6 +59,8 @@ export async function registerConfigRoute(
     runtimeConfig,
     moduleRegistry,
     deviceCache,
+    graphicsManager,
+    outputConfigStore,
     isDevelopmentMode,
     getAuthFailure,
     ...options,
@@ -315,6 +321,8 @@ export async function registerConfigRoute(
 
   fastify.post("/config/clear", async (_, reply) => {
     try {
+      await deps.graphicsManager.shutdown();
+      await deps.outputConfigStore.clear();
       deps.runtimeConfig.clear();
       fastify.log.info("[Config] Configuration cleared");
 

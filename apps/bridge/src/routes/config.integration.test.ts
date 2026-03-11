@@ -222,6 +222,8 @@ describe("registerConfigRoute integration", () => {
   it("clears config via POST /config/clear", async () => {
     const app = Fastify();
     const runtimeConfig = new RuntimeConfigService();
+    const shutdown = jest.fn(async () => undefined);
+    const clearOutputConfig = jest.fn(async () => undefined);
     runtimeConfig.setConfig({
       outputs: {
         output1: "deck-1",
@@ -238,6 +240,12 @@ describe("registerConfigRoute integration", () => {
       deviceCache: {
         getDevices: jest.fn(async () => []),
       },
+      graphicsManager: {
+        shutdown,
+      },
+      outputConfigStore: {
+        clear: clearOutputConfig,
+      },
       isDevelopmentMode: () => false,
       getAuthFailure: () => null,
     } as any);
@@ -252,6 +260,8 @@ describe("registerConfigRoute integration", () => {
       success: true,
       state: "idle",
     });
+    expect(shutdown).toHaveBeenCalledTimes(1);
+    expect(clearOutputConfig).toHaveBeenCalledTimes(1);
     expect(runtimeConfig.getConfig()).toBeNull();
 
     await app.close();
