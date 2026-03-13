@@ -8,6 +8,15 @@ type LogsQuery = {
   filter?: string;
 };
 
+type LogsRouteDepsT = {
+  readFile: typeof readFile;
+  writeFile: typeof writeFile;
+  getLogPath: () => string;
+  enforceLocalOrToken: typeof enforceLocalOrToken;
+};
+
+type LogsRouteOptionsT = FastifyPluginOptions & Partial<LogsRouteDepsT>;
+
 /**
  * Return the last N lines from a log file.
  *
@@ -43,14 +52,22 @@ function applyFilter(lines: string[], filter?: string): string[] {
 
 export async function registerLogsRoute(
   fastify: FastifyInstance,
-  _options: FastifyPluginOptions
+  options: LogsRouteOptionsT
 ): Promise<void> {
+  const deps: LogsRouteDepsT = {
+    readFile,
+    writeFile,
+    getLogPath: () => getBridgeContext().logPath,
+    enforceLocalOrToken,
+    ...options,
+  };
+
   // Security: log access is restricted to local requests or a shared token.
   fastify.get("/logs", async (request, reply) => {
-    if (!enforceLocalOrToken(request, reply)) {
+    if (!deps.enforceLocalOrToken(request, reply)) {
       return;
     }
-    const { logPath } = getBridgeContext();
+    const logPath = deps.getLogPath();
     const query = request.query as LogsQuery;
     const maxLines = Math.min(
       Math.max(parseInt(query.lines || "500", 10) || 500, 1),
@@ -58,7 +75,7 @@ export async function registerLogsRoute(
     );
 
     try {
-      const logContent = await readFile(logPath, "utf-8");
+      const logContent = await deps.readFile(logPath, "utf-8");
       const rawLines = tailLines(logContent, maxLines);
       const filteredLines = applyFilter(rawLines, query.filter);
 
@@ -80,13 +97,13 @@ export async function registerLogsRoute(
   });
 
   fastify.post("/logs/clear", async (_request, reply) => {
-    if (!enforceLocalOrToken(_request, reply)) {
+    if (!deps.enforceLocalOrToken(_request, reply)) {
       return;
     }
-    const { logPath } = getBridgeContext();
+    const logPath = deps.getLogPath();
     try {
-      await readFile(logPath, "utf-8");
-      await writeFile(logPath, "");
+      await deps.readFile(logPath, "utf-8");
+      await deps.writeFile(logPath, "");
       return { scope: "bridge", cleared: true };
     } catch (error) {
       if (error && typeof error === "object" && "code" in error) {

@@ -7,6 +7,7 @@ Diese Doku beschreibt, wie Outputs konfiguriert, validiert und für Hardware‑A
 - Command: `graphics_configure_outputs`
 - Validierung/Orchestrierung: `apps/bridge/src/services/graphics/graphics-manager.ts`
 - Schemas: `apps/bridge/src/services/graphics/graphics-schemas.ts`
+- Target-/Format-Validierung: `apps/bridge/src/services/graphics/graphics-output-validation-service.ts`
 - Output‑Policy: `apps/bridge/src/services/graphics/output-format-policy.ts`
 - Port‑Parsing: `apps/bridge/src/services/graphics/output-adapters/decklink-port.ts`
 - Device‑Detection: `apps/bridge/src/services/device-cache.ts`, `apps/bridge/src/modules/decklink/*`
@@ -31,15 +32,12 @@ Diese Doku beschreibt, wie Outputs konfiguriert, validiert und für Hardware‑A
   - Output1/Output2 erforderlich
   - Beide SDI, gleicher Device
   - Output1 = Fill, Output2 = Key
-- `key_fill_split_sdi`
-  - Output1/Output2 erforderlich
-  - Beide SDI, **kein** Key‑Port
 - `video_sdi`
   - Output1 erforderlich
   - SDI‑Port, **kein** Key‑Port
 - `video_hdmi`
   - Output1 erforderlich
-  - HDMI‑Port
+  - HDMI/DisplayPort/Thunderbolt‑Port
 - `key_fill_ndi`
   - NDI Streamname optional (derzeit nicht validiert)
   - Output‑Adapter ist aktuell Stub (NDI nicht implementiert)
@@ -47,8 +45,9 @@ Diese Doku beschreibt, wie Outputs konfiguriert, validiert und für Hardware‑A
   - Keine Targets erforderlich
 
 ## Format‑Validierung
-Validierung erfolgt in `GraphicsManager.validateOutputFormat`:
+Validierung erfolgt über `validateOutputFormat` in `graphics-output-validation-service.ts`:
 - Für DeckLink‑Outputs wird der Helper nach Display‑Modes abgefragt
+- Für Display‑Outputs werden Port‑Modes aus der Device-Detection geprüft
 - `requireKeying` wird gesetzt, wenn Key/Fill genutzt wird
 - Pixel‑Formate werden gegen die Policy geprüft
 - In Development‑Mode wird Validierung übersprungen (Stub‑Output)

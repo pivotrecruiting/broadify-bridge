@@ -1,0 +1,182 @@
+name: Build SDL2 macOS Asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdl_version:
+        description: "SDL2 source version"
+        required: true
+        default: "2.30.12"
+        type: string
+      deployment_target:
+        description: "Minimum supported macOS version"
+        required: true
+        default: "13.0"
+        type: string
+      runner_label:
+        description: "GitHub runner label for the SDL2 build"
+        required: true
+        default: "macos-15"
+        type: string
+      publish_release:
+        description: "Publish the bundle to a dedicated GitHub release"
+        required: true
+        default: true
+        type: boolean
+      release_tag:
+        description: "Optional override for the SDL2 asset release tag"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner_label }}
+    env:
+      SDL2_VERSION: ${{ inputs.sdl_version }}
+      SDL2_DEPLOYMENT_TARGET: ${{ inputs.deployment_target }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Show runner details
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -a
+          xcodebuild -version
+          cmake --version
+
+      - name: Build SDL2 from source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_path="${RUNNER_TEMP}/SDL2-${SDL2_VERSION}.tar.gz"
+          source_dir="${RUNNER_TEMP}/sdl2-src"
+          build_dir="${RUNNER_TEMP}/sdl2-build"
+          install_dir="${RUNNER_TEMP}/sdl2-install"
+
+          rm -rf "$source_dir" "$build_dir" "$install_dir"
+          mkdir -p "$source_dir" "$build_dir" "$install_dir"
+
+          curl -fsSL "https://www.libsdl.org/release/SDL2-${SDL2_VERSION}.tar.gz" -o "$archive_path"
+          tar -xzf "$archive_path" -C "$source_dir"
+
+          src_root="$(find "$source_dir" -mindepth 1 -maxdepth 1 -type d -name 'SDL2-*' | head -n 1)"
+          if [[ -z "$src_root" ]]; then
+            echo "Extracted SDL2 source directory not found." >&2
+            exit 1
+          fi
+
+          host_arch="$(uname -m)"
+          case "$host_arch" in
+            arm64|x86_64)
+              ;;
+            *)
+              echo "Unsupported macOS architecture: ${host_arch}" >&2
+              exit 1
+              ;;
+          esac
+
+          cmake -S "$src_root" -B "$build_dir" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$install_dir" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${SDL2_DEPLOYMENT_TARGET}" \
+            -DCMAKE_OSX_ARCHITECTURES="${host_arch}"
+
+          cmake --build "$build_dir" --config Release --parallel
+          cmake --install "$build_dir" --config Release
+
+          dylib_path="${install_dir}/lib/libSDL2-2.0.0.dylib"
+          headers_dir="${install_dir}/include/SDL2"
+
+          if [[ ! -f "$dylib_path" ]]; then
+            echo "Expected SDL2 dylib missing: $dylib_path" >&2
+            exit 1
+          fi
+
+          if [[ ! -f "${headers_dir}/SDL.h" ]]; then
+            echo "Expected SDL2 headers missing: ${headers_dir}/SDL.h" >&2
+            exit 1
+          fi
+
+          DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET="${SDL2_DEPLOYMENT_TARGET}" \
+          SDL2_DYLIB_PATH="$dylib_path" \
+          SDL2_HEADERS_DIR="$headers_dir" \
+          bash scripts/prepare-sdl2-macos-release.sh
+
+      - name: Resolve artifact metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_path="$(find apps/bridge/native/display-helper -maxdepth 1 -type f -name 'sdl2-macos-*.tar.gz' | head -n 1)"
+          if [[ -z "$artifact_path" ]]; then
+            echo "SDL2 release bundle was not created." >&2
+            exit 1
+          fi
+
+          artifact_name="$(basename "$artifact_path")"
+          artifact_sha="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"
+          host_arch="$(uname -m)"
+          normalized_target="${SDL2_DEPLOYMENT_TARGET//./-}"
+          release_tag="${{ inputs.release_tag }}"
+
+          if [[ -z "$release_tag" ]]; then
+            release_tag="deps-sdl2-${SDL2_VERSION}-macos-${host_arch}-min${normalized_target}"
+          fi
+
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/${artifact_name}"
+
+          {
+            echo "artifact_path=${artifact_path}"
+            echo "artifact_name=${artifact_name}"
+            echo "artifact_sha=${artifact_sha}"
+            echo "release_tag=${release_tag}"
+            echo "release_url=${release_url}"
+            echo "host_arch=${host_arch}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### SDL2 macOS asset"
+            echo ""
+            echo "- SDL2 version: \`${SDL2_VERSION}\`"
+            echo "- Runner arch: \`${host_arch}\`"
+            echo "- Deployment target: \`${SDL2_DEPLOYMENT_TARGET}\`"
+            echo "- Artifact: \`${artifact_name}\`"
+            echo "- SHA256: \`${artifact_sha}\`"
+            echo "- Release tag: \`${release_tag}\`"
+            echo "- Release URL: \`${release_url}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SDL2 bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ steps.meta.outputs.artifact_path }}
+          if-no-files-found: error
+
+      - name: Publish SDL2 bundle to GitHub release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          ARTIFACT_PATH: ${{ steps.meta.outputs.artifact_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$ARTIFACT_PATH" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$ARTIFACT_PATH" \
+              --title "SDL2 macOS Bundle $RELEASE_TAG" \
+              --notes "Pinned SDL2 bundle for Broadify Bridge macOS release builds."
+          fi

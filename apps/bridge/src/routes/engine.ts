@@ -6,16 +6,28 @@ import {
   EngineErrorCode,
 } from "../services/engine/engine-errors.js";
 import { getAuthFailure } from "./route-guards.js";
+import {
+  ConnectRequestSchema,
+  mapEngineErrorToStatusCode,
+} from "./engine-contract.js";
 
-/**
- * Connect request schema.
- * All fields are required - no fallback to runtimeConfig.
- */
-const ConnectRequestSchema = z.object({
-  type: z.enum(["atem", "tricaster", "vmix"]),
-  ip: z.string().ip({ version: "v4" }),
-  port: z.number().int().min(1).max(65535),
-});
+type EngineRouteDepsT = {
+  engineAdapter: Pick<
+    typeof engineAdapter,
+    | "connect"
+    | "disconnect"
+    | "getState"
+    | "getConnectedSince"
+    | "getLastError"
+    | "getMacros"
+    | "getStatus"
+    | "runMacro"
+    | "stopMacro"
+  >;
+  getAuthFailure: typeof getAuthFailure;
+};
+
+type EngineRouteOptionsT = FastifyPluginOptions & Partial<EngineRouteDepsT>;
 
 /**
  * Register engine routes.
@@ -30,10 +42,16 @@ const ConnectRequestSchema = z.object({
  */
 export async function registerEngineRoute(
   fastify: FastifyInstance,
-  _options: FastifyPluginOptions
+  options: EngineRouteOptionsT
 ): Promise<void> {
+  const deps: EngineRouteDepsT = {
+    engineAdapter,
+    getAuthFailure,
+    ...options,
+  };
+
   fastify.addHook("preHandler", async (request, reply) => {
-    const authFailure = getAuthFailure(request);
+    const authFailure = deps.getAuthFailure(request);
     if (authFailure) {
       return reply.code(authFailure.status).send({
         success: false,
@@ -54,7 +72,7 @@ export async function registerEngineRoute(
       const body = ConnectRequestSchema.parse(request.body || {});
 
       // Connect directly with provided config (no fallback to runtimeConfig)
-      await engineAdapter.connect({
+      await deps.engineAdapter.connect({
         type: body.type,
         ip: body.ip,
         port: body.port,
@@ -66,7 +84,7 @@ export async function registerEngineRoute(
 
       return {
         success: true,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -96,29 +114,7 @@ export async function registerEngineRoute(
 
       // Handle EngineError
       if (error instanceof EngineError) {
-        // Map error codes to HTTP status codes
-        let statusCode = 500;
-        if (
-          error.code === EngineErrorCode.ALREADY_CONNECTED ||
-          error.code === EngineErrorCode.ALREADY_CONNECTING
-        ) {
-          statusCode = 409; // Conflict
-        } else if (
-          error.code === EngineErrorCode.CONNECTION_TIMEOUT ||
-          error.code === EngineErrorCode.DEVICE_UNREACHABLE
-        ) {
-          statusCode = 504; // Gateway Timeout
-        } else if (
-          error.code === EngineErrorCode.CONNECTION_REFUSED ||
-          error.code === EngineErrorCode.NETWORK_ERROR
-        ) {
-          statusCode = 503; // Service Unavailable
-        } else if (
-          error.code === EngineErrorCode.INVALID_IP ||
-          error.code === EngineErrorCode.INVALID_PORT
-        ) {
-          statusCode = 400; // Bad Request
-        }
+        const statusCode = mapEngineErrorToStatusCode(error.code);
 
         return reply.code(statusCode).send({
           success: false,
@@ -145,12 +141,12 @@ export async function registerEngineRoute(
    */
   fastify.post("/engine/disconnect", async (_request, reply) => {
     try {
-      await engineAdapter.disconnect();
+      await deps.engineAdapter.disconnect();
       fastify.log.info("[Engine] Disconnected");
 
       return {
         success: true,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -170,9 +166,9 @@ export async function registerEngineRoute(
    */
   fastify.get("/engine/status", async (_request, reply) => {
     try {
-      const state = engineAdapter.getState();
-      const connectedSince = engineAdapter.getConnectedSince();
-      const lastError = engineAdapter.getLastError();
+      const state = deps.engineAdapter.getState();
+      const connectedSince = deps.engineAdapter.getConnectedSince();
+      const lastError = deps.engineAdapter.getLastError();
 
       return {
         success: true,
@@ -200,8 +196,8 @@ export async function registerEngineRoute(
    */
   fastify.get("/engine/macros", async (_request, reply) => {
     try {
-      const macros = engineAdapter.getMacros();
-      const status = engineAdapter.getStatus();
+      const macros = deps.engineAdapter.getMacros();
+      const status = deps.engineAdapter.getStatus();
 
       if (status !== "connected") {
         return reply.code(503).send({
@@ -247,13 +243,13 @@ export async function registerEngineRoute(
         });
       }
 
-      await engineAdapter.runMacro(macroId);
+      await deps.engineAdapter.runMacro(macroId);
       fastify.log.info(`[Engine] Running macro ${macroId}`);
 
       return {
         success: true,
         macroId,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -293,13 +289,13 @@ export async function registerEngineRoute(
         });
       }
 
-      await engineAdapter.stopMacro(macroId);
+      await deps.engineAdapter.stopMacro(macroId);
       fastify.log.info(`[Engine] Stopping macro ${macroId}`);
 
       return {
         success: true,
         macroId,
-        state: engineAdapter.getState(),
+        state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
       const errorMessage =

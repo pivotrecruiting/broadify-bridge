@@ -13,7 +13,7 @@ Kurze Referenzen für zentrale Dateien. Jede Seite beschreibt Zweck, Ein-/Ausgä
 - `docs/bridge/reference/files/output-adapter.md`
 - `docs/bridge/reference/files/output-adapter-decklink-video.md`
 - `docs/bridge/reference/files/output-adapter-decklink-key-fill.md`
-- `docs/bridge/reference/files/output-adapter-decklink-split.md`
+- `docs/bridge/reference/files/output-adapter-display-video.md`
 - `docs/bridge/reference/files/output-adapter-stub.md`
 - `docs/bridge/reference/files/decklink-helper.md`
 - `docs/bridge/reference/files/decklink-helper-cpp.md`

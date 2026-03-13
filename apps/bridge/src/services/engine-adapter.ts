@@ -14,6 +14,19 @@ import {
   createNotConnectedError,
 } from "./engine/engine-errors.js";
 
+type EngineBroadcastTopicT = Parameters<typeof websocketManager.broadcast>[0];
+type EngineBroadcastMessageT = Parameters<typeof websocketManager.broadcast>[1];
+
+type EngineAdapterServiceDepsT = {
+  createAdapter: (type: EngineConnectConfig["type"]) => EngineAdapter;
+  broadcast: (topic: EngineBroadcastTopicT, message: EngineBroadcastMessageT) => void;
+};
+
+const defaultDeps: EngineAdapterServiceDepsT = {
+  createAdapter: (type) => createEngineAdapter(type),
+  broadcast: (topic, message) => websocketManager.broadcast(topic, message),
+};
+
 /**
  * Engine adapter service
  *
@@ -21,13 +34,15 @@ import {
  * Delegates actual engine communication to specific adapters (ATEM, Tricaster, etc.).
  * Handles WebSocket broadcasting for real-time state updates.
  */
-class EngineAdapterService {
+export class EngineAdapterService {
   private adapter: EngineAdapter | null = null;
   private stateStore: EngineStateStore;
   private previousState: EngineStateT | null = null;
   private unsubscribeAdapterState: (() => void) | null = null;
+  private deps: EngineAdapterServiceDepsT;
 
-  constructor() {
+  constructor(deps: EngineAdapterServiceDepsT = defaultDeps) {
+    this.deps = deps;
     this.stateStore = new EngineStateStore();
   }
 
@@ -81,7 +96,7 @@ class EngineAdapterService {
       }
 
       // Create adapter using factory
-      this.adapter = createEngineAdapter(config.type);
+      this.adapter = this.deps.createAdapter(config.type);
 
       // Subscribe to adapter state changes and store unsubscribe function
       this.unsubscribeAdapterState = this.adapter.onStateChange(
@@ -222,7 +237,7 @@ class EngineAdapterService {
       this.previousState.status !== state.status ||
       this.previousState.error !== state.error
     ) {
-      websocketManager.broadcast("engine", {
+      this.deps.broadcast("engine", {
         type: "engine.status",
         status: state.status,
         error: state.error,
@@ -235,7 +250,7 @@ class EngineAdapterService {
         this.previousState.status !== "connected" &&
         state.status === "connected"
       ) {
-        websocketManager.broadcast("engine", {
+        this.deps.broadcast("engine", {
           type: "engine.connected",
           state,
         });
@@ -243,7 +258,7 @@ class EngineAdapterService {
         this.previousState.status === "connected" &&
         state.status !== "connected"
       ) {
-        websocketManager.broadcast("engine", {
+        this.deps.broadcast("engine", {
           type: "engine.disconnected",
         });
       }
@@ -257,7 +272,7 @@ class EngineAdapterService {
         this.previousState.status !== "error" ||
         this.previousState.error !== state.error)
     ) {
-      websocketManager.broadcast("engine", {
+      this.deps.broadcast("engine", {
         type: "engine.error",
         error: {
           message: state.error,
@@ -270,7 +285,7 @@ class EngineAdapterService {
       !this.previousState ||
       JSON.stringify(this.previousState.macros) !== JSON.stringify(state.macros)
     ) {
-      websocketManager.broadcast("engine", {
+      this.deps.broadcast("engine", {
         type: "engine.macros",
         macros: state.macros,
       });
@@ -283,7 +298,7 @@ class EngineAdapterService {
           (m) => m.id === macro.id
         );
         if (!previousMacro || previousMacro.status !== macro.status) {
-          websocketManager.broadcast("engine", {
+          this.deps.broadcast("engine", {
             type: "engine.macroStatus",
             macroId: macro.id,
             status: macro.status,

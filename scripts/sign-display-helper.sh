@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Sign the display-helper binary for macOS release/notarization.
-# Requires: APPLE_SIGNING_IDENTITY or CSC_NAME (Developer ID Application: <Team>)
-# No-op when identity is not set (local dev builds).
+# Sign the display-helper binary and bundled macOS SDL2 runtime.
+# Uses a Developer ID identity when configured; otherwise falls back to ad-hoc
+# signing so local dev builds remain loadable after install_name_tool rewrites.
 
 set -euo pipefail
 
@@ -9,23 +9,32 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 0
 fi
 
-BINARY="${1:-}"
-if [[ -z "$BINARY" ]]; then
-  ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  BINARY="$ROOT_DIR/apps/bridge/native/display-helper/display-helper"
-fi
-
-if [[ ! -f "$BINARY" ]]; then
-  echo "Display helper binary not found at $BINARY" >&2
-  exit 0
-fi
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BINARY="${1:-$ROOT_DIR/apps/bridge/native/display-helper/display-helper}"
+RUNTIME="${2:-$(dirname "$BINARY")/libSDL2-2.0.0.dylib}"
 
 IDENTITY="${APPLE_SIGNING_IDENTITY:-${CSC_NAME:-}}"
+SIGN_LABEL="$IDENTITY"
 if [[ -z "$IDENTITY" ]]; then
-  echo "Skipping display-helper signing (no APPLE_SIGNING_IDENTITY/CSC_NAME)."
+  IDENTITY="-"
+  SIGN_LABEL="adhoc"
+fi
+
+targets=()
+if [[ -f "$RUNTIME" ]]; then
+  targets+=("$RUNTIME")
+fi
+if [[ -f "$BINARY" ]]; then
+  targets+=("$BINARY")
+fi
+
+if [[ ${#targets[@]} -eq 0 ]]; then
+  echo "Display helper artifacts not found at $BINARY / $RUNTIME" >&2
   exit 0
 fi
 
-echo "Signing display-helper with identity: $IDENTITY"
-codesign --force --sign "$IDENTITY" "$BINARY"
-echo "Signed: $BINARY"
+echo "Signing display-helper artifacts with identity: $SIGN_LABEL"
+for target in "${targets[@]}"; do
+  codesign --force --sign "$IDENTITY" "$target"
+  echo "Signed: $target"
+done

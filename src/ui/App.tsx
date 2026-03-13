@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNetworkConfig } from "./hooks/use-network-config";
 import { useBridgeStatus } from "./hooks/use-bridge-status";
 import { usePortAvailability } from "./hooks/use-port-availability";
@@ -8,11 +8,13 @@ import { LogsDialog } from "./components/LogsDialog";
 import { NetworkSection } from "./components/NetworkSection";
 import { BridgeControlButton } from "./components/BridgeControlButton";
 import { BridgeIdentitySection } from "./components/BridgeIdentitySection";
+import { UpdaterDialog } from "./components/UpdaterDialog";
 import {
   OnboardingDialog,
   type OnboardingStep,
 } from "./components/OnboardingDialog";
 import { PairingDialog } from "./components/PairingDialog";
+import { useAppUpdater } from "./hooks/use-app-updater";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
 
@@ -33,6 +35,13 @@ function App() {
 
   // Bridge status hook
   const bridgeStatus = useBridgeStatus();
+  const {
+    status: updaterStatus,
+    actionError: updaterActionError,
+    checkForUpdates,
+    downloadUpdate,
+    quitAndInstall,
+  } = useAppUpdater();
 
   // Port availability hook
   const { portAvailability, checkingPorts } = usePortAvailability({
@@ -64,6 +73,7 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [showUpdaterDialog, setShowUpdaterDialog] = useState(false);
   const [showPairing, setShowPairing] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [bridgeProfile, setBridgeProfile] = useState<{
@@ -73,6 +83,8 @@ function App() {
   } | null>(null);
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("terms");
+  const previousUpdaterStateRef = useRef(updaterStatus.state);
+  const previousAvailableVersionRef = useRef<string | null>(updaterStatus.availableVersion);
 
   // Load bridge profile (name, id, terms acceptance) on startup
   useEffect(() => {
@@ -92,6 +104,21 @@ function App() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    const previousState = previousUpdaterStateRef.current;
+    const previousAvailableVersion = previousAvailableVersionRef.current;
+    const hasFreshlyDetectedUpdate =
+      updaterStatus.state === "available" &&
+      (previousState !== "available" || previousAvailableVersion !== updaterStatus.availableVersion);
+
+    if (hasFreshlyDetectedUpdate) {
+      setShowUpdaterDialog(true);
+    }
+
+    previousUpdaterStateRef.current = updaterStatus.state;
+    previousAvailableVersionRef.current = updaterStatus.availableVersion;
+  }, [updaterStatus.availableVersion, updaterStatus.state]);
 
   const handleTermsAccept = async () => {
     if (!window.electron) return;
@@ -245,7 +272,9 @@ function App() {
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6 w-full">
           <Header
             bridgeStatus={bridgeStatus}
+            hasUpdateAvailable={updaterStatus.state === "available"}
             onOpenDiagnostics={() => setShowLogs(true)}
+            onOpenUpdates={() => setShowUpdaterDialog(true)}
           />
 
           <BridgeIdentitySection
@@ -287,6 +316,15 @@ function App() {
         </div>
       </div>
       <LogsDialog isOpen={showLogs} onClose={() => setShowLogs(false)} />
+      <UpdaterDialog
+        isOpen={showUpdaterDialog}
+        onClose={() => setShowUpdaterDialog(false)}
+        status={updaterStatus}
+        actionError={updaterActionError}
+        onCheckForUpdates={checkForUpdates}
+        onDownloadUpdate={downloadUpdate}
+        onQuitAndInstall={quitAndInstall}
+      />
       <PairingDialog
         isOpen={showPairing}
         onClose={() => setShowPairing(false)}

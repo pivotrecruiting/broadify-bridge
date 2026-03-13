@@ -12,12 +12,16 @@ import { clearBridgeLogs, fetchBridgeLogs } from "./services/bridge-logs.js";
 import { bridgeIdentity } from "./services/bridge-identity.js";
 import { bridgeProfile } from "./services/bridge-profile.js";
 import { bridgePairing } from "./services/bridge-pairing.js";
+import { createBridgeApiRequest } from "./services/bridge-api-request.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
 import { logAppError } from "./services/app-logger.js";
+import { appUpdaterService } from "./services/app-updater.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
 } from "./services/port-checker.js";
+import { validateEngineConnectInput } from "./services/engine-connect-contract.js";
+import { isAllowedExternalUrl } from "./services/external-url.js";
 import {
   detectNetworkInterfaces,
   resolveBindAddress,
@@ -111,7 +115,9 @@ if (isRendererProcess) {
     console.error("[GraphicsRenderer] Missing --renderer-entry argument");
     app.exit(1);
   } else {
-    console.log(`[GraphicsRenderer] Aux mode enabled (entry: ${rendererEntry})`);
+    console.log(
+      `[GraphicsRenderer] Aux mode enabled (entry: ${rendererEntry})`,
+    );
     const entryUrl = pathToFileURL(rendererEntry).toString();
     import(entryUrl).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -221,7 +227,7 @@ function loadNetworkConfig(): NetworkConfigT {
   // Electron's userData directory (e.g. ~/Library/Application Support/electron-vite-template on macOS)
   const userDataConfigPath = path.join(
     app.getPath("userData"),
-    "network-config.json"
+    "network-config.json",
   );
 
   // Try to load from user data directory (user's saved config)
@@ -241,7 +247,7 @@ function loadNetworkConfig(): NetworkConfigT {
     const templateConfigPath = path.join(
       process.cwd(),
       "config",
-      "network-config.json"
+      "network-config.json",
     );
 
     if (fs.existsSync(templateConfigPath)) {
@@ -254,12 +260,12 @@ function loadNetworkConfig(): NetworkConfigT {
         fs.writeFileSync(
           userDataConfigPath,
           JSON.stringify(templateConfig, null, 2),
-          "utf-8"
+          "utf-8",
         );
       } catch (writeError) {
         console.warn(
           "[NetworkConfig] Could not write user config, using template in memory:",
-          writeError
+          writeError,
         );
       }
 
@@ -275,7 +281,7 @@ function loadNetworkConfig(): NetworkConfigT {
 
 /**
  * Get Web App URL based on environment.
- * Consistent with how RELAY_URL is handled: env var with fallback to default
+ * Consistent with how  is handled: env var with fallback to default
  * Must be evaluated at runtime, not build time, to work in production
  */
 function getWebAppBaseUrl(): string | null {
@@ -289,10 +295,8 @@ function getWebAppBaseUrl(): string | null {
     return envUrl;
   }
 
-  // Fallback to defaults (consistent with RELAY_URL pattern)
-  return isDev()
-    ? "http://localhost:3000"
-    : "https://app.broadify.de";
+  // Fallback to defaults (consistent with  pattern)
+  return isDev() ? "http://localhost:3000" : "https://app.broadify.de";
 }
 
 /**
@@ -304,7 +308,7 @@ function getWebAppBaseUrl(): string | null {
  */
 function getInterfaceType(
   bindingId: string,
-  options: NetworkBindingOptionT[]
+  options: NetworkBindingOptionT[],
 ): string {
   const option = options.find((opt) => opt.id === bindingId);
   return option?.interface || "localhost";
@@ -312,15 +316,15 @@ function getInterfaceType(
 
 /**
  * Build Web-App URL without bridge-specific query parameters.
- * Consistent with how RELAY_URL is handled: env var with fallback to default
+ * Consistent with how  is handled: env var with fallback to default
  */
 function buildWebAppUrl(): string | null {
-  // Get base URL based on environment (consistent with RELAY_URL pattern)
+  // Get base URL based on environment (consistent with  pattern)
   const baseUrl = getWebAppBaseUrl();
 
   if (!baseUrl) {
     console.warn(
-      "[WebApp] Web app URL not configured, skipping URL generation"
+      "[WebApp] Web app URL not configured, skipping URL generation",
     );
     return null;
   }
@@ -342,489 +346,436 @@ if (!isRendererProcess) {
     // Another instance is already running, quit this one
     app.quit();
   } else {
-  // Handle second instance: focus existing window
-  app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
-  });
-
-  // macOS: Handle open-url event (for protocol handlers)
-  app.on("open-url", (event, _url) => {
-    event.preventDefault();
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-      // Handle URL if needed (e.g., pass to renderer via IPC)
-    }
-  });
-
-  app.on("ready", () => {
-    mainWindow = new BrowserWindow({
-      // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
-      webPreferences: {
-        preload: getPreloadPath(),
-      },
-      icon: getIconPath(),
-      width: 800, // sm breakpoint width (640px) + padding
-      height: 700, // Fixed height to prevent scrolling
-      minWidth: 640, // Minimum width (sm breakpoint)
-      minHeight: 600,
-      resizable: true,
-    });
-
-    if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`);
-    else mainWindow.loadFile(getUIPath());
-
-    pollResources(mainWindow);
-
-    // Existing IPC handlers
-    ipcMainHandle("getStaticData", () => {
-      return getStaticData();
-    });
-
-    // Bridge IPC handlers
-    ipcMainHandle("bridgeGetProfile", () => {
-      const profile = bridgeProfile.getProfile();
-      return {
-        bridgeId: profile.bridgeId,
-        bridgeName: profile.bridgeName,
-        termsAcceptedAt: profile.termsAcceptedAt,
-      };
-    });
-
-    ipcMainHandle("bridgeAcceptTerms", () => {
-      try {
-        bridgeProfile.setTermsAccepted();
-        return { success: true };
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : "Unknown error";
-        return { success: false, error: errorMessage };
+    // Handle second instance: focus existing window
+    app.on("second-instance", () => {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
       }
     });
 
-    ipcMainHandle("bridgeSetName", async (event, bridgeName: string) => {
-      // Require terms accepted first; cannot be bypassed via devtools
-      const profile = bridgeProfile.getProfile();
-      if (!profile.termsAcceptedAt) {
+    // macOS: Handle open-url event (for protocol handlers)
+    app.on("open-url", (event, _url) => {
+      event.preventDefault();
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+        // Handle URL if needed (e.g., pass to renderer via IPC)
+      }
+    });
+
+    app.on("ready", () => {
+      mainWindow = new BrowserWindow({
+        // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
+        webPreferences: {
+          preload: getPreloadPath(),
+        },
+        icon: getIconPath(),
+        width: 800, // sm breakpoint width (640px) + padding
+        height: 700, // Fixed height to prevent scrolling
+        minWidth: 640, // Minimum width (sm breakpoint)
+        minHeight: 600,
+        resizable: true,
+      });
+
+      if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`);
+      else mainWindow.loadFile(getUIPath());
+
+      pollResources(mainWindow);
+
+      appUpdaterService.initialize((status) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          ipcWebContentsSend("updaterStatus", mainWindow.webContents, status);
+        }
+      });
+
+      // Existing IPC handlers
+      ipcMainHandle("getStaticData", () => {
+        return getStaticData();
+      });
+
+      // Bridge IPC handlers
+      ipcMainHandle("bridgeGetProfile", () => {
+        const profile = bridgeProfile.getProfile();
         return {
-          success: false,
-          error:
-            "Terms and conditions must be accepted before setting the bridge name.",
+          bridgeId: profile.bridgeId,
+          bridgeName: profile.bridgeName,
+          termsAcceptedAt: profile.termsAcceptedAt,
         };
-      }
-      const parsedName = BRIDGE_NAME_SCHEMA.safeParse(bridgeName);
-      if (!parsedName.success) {
-        return {
-          success: false,
-          error: "Bridge name must be between 1 and 64 characters.",
-        };
-      }
-      try {
-        bridgeProfile.setBridgeName(parsedName.data);
-        return { success: true };
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : "Unknown error";
-        return { success: false, error: errorMessage };
-      }
-    });
+      });
 
-    ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
-      // console.log("[Bridge] Starting bridge with config:", config);
+      ipcMainHandle("bridgeAcceptTerms", () => {
+        try {
+          bridgeProfile.setTermsAccepted();
+          return { success: true };
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "Unknown error";
+          return { success: false, error: errorMessage };
+        }
+      });
 
-      // Outputs are now configured in the web app via POST /config endpoint
+      ipcMainHandle("bridgeSetName", async (event, bridgeName: string) => {
+        // Require terms accepted first; cannot be bypassed via devtools
+        const profile = bridgeProfile.getProfile();
+        if (!profile.termsAcceptedAt) {
+          return {
+            success: false,
+            error:
+              "Terms and conditions must be accepted before setting the bridge name.",
+          };
+        }
+        const parsedName = BRIDGE_NAME_SCHEMA.safeParse(bridgeName);
+        if (!parsedName.success) {
+          return {
+            success: false,
+            error: "Bridge name must be between 1 and 64 characters.",
+          };
+        }
+        try {
+          bridgeProfile.setBridgeName(parsedName.data);
+          return { success: true };
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "Unknown error";
+          return { success: false, error: errorMessage };
+        }
+      });
 
-      // Get bridge ID
-      const bridgeId = bridgeIdentity.getBridgeId();
-      const profile = bridgeProfile.getProfile();
-      const bridgeName = profile.bridgeName;
+      ipcMainHandle("bridgeStart", async (event, config: BridgeConfig) => {
+        // console.log("[Bridge] Starting bridge with config:", config);
 
-      // Enforce terms acceptance in main process; cannot be bypassed via UI/devtools
-      if (!profile.termsAcceptedAt) {
-        return {
-          success: false,
-          error:
-            "Terms and conditions must be accepted before starting the bridge.",
-        };
-      }
+        // Outputs are now configured in the web app via POST /config endpoint
 
-      if (!bridgeName) {
-        return {
-          success: false,
-          error: "Bridge name is required before starting.",
-        };
-      }
+        // Get bridge ID
+        const bridgeId = bridgeIdentity.getBridgeId();
+        const profile = bridgeProfile.getProfile();
+        const bridgeName = profile.bridgeName;
 
-      const relayEnabled = true;
-      const pairingInfo = bridgePairing.startPairing();
+        // Enforce terms acceptance in main process; cannot be bypassed via UI/devtools
+        if (!profile.termsAcceptedAt) {
+          return {
+            success: false,
+            error:
+              "Terms and conditions must be accepted before starting the bridge.",
+          };
+        }
 
-      // Store network binding ID
-      currentNetworkBindingId = config.networkBindingId || "localhost";
+        if (!bridgeName) {
+          return {
+            success: false,
+            error: "Bridge name is required before starting.",
+          };
+        }
 
-      // Resolve bind address to actual IP address
-      const networkConfig = loadNetworkConfig();
-      const networkBindingOptions = detectNetworkInterfaces(
-        networkConfig.networkBinding.options,
-        networkConfig.networkBinding.filters
-      );
+        const relayEnabled = true;
+        const pairingInfo = bridgePairing.startPairing();
 
-      const interfaceType = getInterfaceType(
-        currentNetworkBindingId,
-        networkBindingOptions
-      );
-      const matchingOption = networkBindingOptions.find(
-        (opt) => opt.id === currentNetworkBindingId
-      );
+        // Store network binding ID
+        currentNetworkBindingId = config.networkBindingId || "localhost";
 
-      let resolvedHost = config.host;
-      if (matchingOption) {
-        // Resolve IP address (handles AUTO_IPV4, 0.0.0.0, etc.)
-        resolvedHost = resolveBindAddress(
-          matchingOption.bindAddress,
-          interfaceType,
-          networkConfig.networkBinding.filters
+        // Resolve bind address to actual IP address
+        const networkConfig = loadNetworkConfig();
+        const networkBindingOptions = detectNetworkInterfaces(
+          networkConfig.networkBinding.options,
+          networkConfig.networkBinding.filters,
         );
-      }
 
-      // Create resolved config for bridge
-      const resolvedConfig: BridgeConfig = {
-        ...config,
-        host: resolvedHost,
-        userDataDir: app.getPath("userData"),
-      };
+        const interfaceType = getInterfaceType(
+          currentNetworkBindingId,
+          networkBindingOptions,
+        );
+        const matchingOption = networkBindingOptions.find(
+          (opt) => opt.id === currentNetworkBindingId,
+        );
 
-      // Get relay URL from environment or use default
-      const relayUrl = process.env.RELAY_URL || "wss://broadify-relay.fly.dev";
-      const relayBridgeId = bridgeId;
-
-      // Start bridge without requiring outputs
-      // Pass bridgeId and relayUrl as CLI args
-      const result = await bridgeProcessManager.start(
-        resolvedConfig,
-        true, // autoFindPort = true
-        relayBridgeId,
-        relayUrl,
-        bridgeName,
-        pairingInfo?.code,
-        pairingInfo?.expiresAt,
-        relayEnabled
-      );
-
-      // Start health check polling if bridge started successfully
-      if (result.success) {
-        // console.log(
-        //   "[Bridge] Bridge started successfully, sending initial status update"
-        // );
-        // Immediately send status update that bridge is starting
-        const initialStatus: BridgeStatus = {
-          running: true,
-          reachable: false,
-          bridgeId,
-          bridgeName,
-        };
-        if (pairingInfo) {
-          initialStatus.pairingCode = pairingInfo.code;
-          initialStatus.pairingExpiresAt = new Date(
-            pairingInfo.expiresAt
-          ).toISOString();
-          initialStatus.pairingExpired = false;
-        }
-
-        // Build web app URL immediately so link is available right away
-        const webAppUrl = buildWebAppUrl();
-        if (webAppUrl) {
-          initialStatus.webAppUrl = webAppUrl;
-        }
-
-        // console.log("[Bridge] Sending initial status:", initialStatus);
-        if (mainWindow) {
-          ipcWebContentsSend(
-            "bridgeStatus",
-            mainWindow.webContents,
-            initialStatus
+        let resolvedHost = config.host;
+        if (matchingOption) {
+          // Resolve IP address (handles AUTO_IPV4, 0.0.0.0, etc.)
+          resolvedHost = resolveBindAddress(
+            matchingOption.bindAddress,
+            interfaceType,
+            networkConfig.networkBinding.filters,
           );
         }
 
-        // Stop existing health check if any
-        if (healthCheckCleanup) {
-          // console.log("[Bridge] Stopping existing health check");
-          healthCheckCleanup();
-        }
-
-        const bridgeConfig = bridgeProcessManager.getConfig();
-        // console.log(
-        //   "[Bridge] Starting health check polling with config:",
-        //   bridgeConfig
-        // );
-
-        // Start new health check
-        healthCheckCleanup = startHealthCheckPolling(
-          bridgeConfig,
-          (status) => {
-            // console.log("[Bridge] Health check status update:", status);
-
-            // Build web app URL for the UI link
-            // URL will be displayed as a link in the UI instead of auto-opening
-            // Must be done BEFORE sending status to UI
-            const pairingInfo = bridgePairing.getPairingInfo();
-            if (pairingInfo) {
-              status.pairingCode = pairingInfo.code;
-              status.pairingExpiresAt = new Date(
-                pairingInfo.expiresAt
-              ).toISOString();
-              status.pairingExpired = pairingInfo.expired;
-            }
-            status.bridgeName = status.bridgeName || bridgeName;
-
-            const webAppUrl = buildWebAppUrl();
-            if (webAppUrl) {
-              status.webAppUrl = webAppUrl;
-            }
-
-            if (mainWindow) {
-              ipcWebContentsSend(
-                "bridgeStatus",
-                mainWindow.webContents,
-                status
-              );
-            }
-          },
-          () => bridgeProcessManager.isRunning() // Pass function to check if process is running
-        );
-      } else {
-        // console.log("[Bridge] Bridge start failed:", result.error);
-        bridgePairing.clear();
-      }
-
-      return result;
-    });
-
-    ipcMainHandle("bridgeStop", async () => {
-      // Stop health check
-      if (healthCheckCleanup) {
-        healthCheckCleanup();
-        healthCheckCleanup = null;
-      }
-
-      const config = bridgeProcessManager.getConfig();
-      if (config) {
-        const clearResponse = await clearBridgeLogs(config);
-        if (clearResponse.error) {
-          logAppError(`bridgeClearLogs on stop failed: ${clearResponse.error}`);
-        }
-      }
-
-      const result = await bridgeProcessManager.stop();
-      bridgePairing.clear();
-
-      // Reset web app flag and outputs
-      // Outputs are managed in the web app
-      currentNetworkBindingId = null;
-
-      // Send final status update
-      if (mainWindow) {
-        ipcWebContentsSend("bridgeStatus", mainWindow.webContents, {
-          running: false,
-          reachable: false,
-        });
-      }
-
-      return result;
-    });
-
-    ipcMainHandle("bridgeGetStatus", async () => {
-      const config = bridgeProcessManager.getConfig();
-      const isRunning = bridgeProcessManager.isRunning();
-      const profile = bridgeProfile.getProfile();
-      const pairingInfo = bridgePairing.getPairingInfo();
-
-      if (!isRunning || !config) {
-        // console.log(`[Bridge] GetStatus - Process not running or no config`);
-        return {
-          running: false,
-          reachable: false,
+        // Create resolved config for bridge
+        const resolvedConfig: BridgeConfig = {
+          ...config,
+          host: resolvedHost,
+          userDataDir: app.getPath("userData"),
         };
-      }
 
-      const healthStatus = await checkBridgeHealth(config);
-      // Ensure running is true if process is running, even if not reachable yet
-      const status: BridgeStatus = {
-        ...healthStatus,
-        running: isRunning, // Always use actual process state
-      };
-      status.bridgeName = status.bridgeName || profile.bridgeName || undefined;
-      if (pairingInfo) {
-        status.pairingCode = pairingInfo.code;
-        status.pairingExpiresAt = new Date(
-          pairingInfo.expiresAt
-        ).toISOString();
-        status.pairingExpired = pairingInfo.expired;
-      }
+        // Get relay URL from environment or use default
+        const relayUrl =
+          process.env.RELAY_URL || "wss://broadify-relay.fly.dev";
+        const relayBridgeId = bridgeId;
 
-      // Build web app URL for the UI link
-      const webAppUrl = buildWebAppUrl();
-      if (webAppUrl) {
-        status.webAppUrl = webAppUrl;
-      }
-
-      // console.log(`[Bridge] GetStatus result:`, status);
-      return status;
-    });
-
-    // Port checking IPC handlers
-    ipcMainHandle(
-      "checkPortAvailability",
-      async (event, port: number, host?: string) => {
-        const available = await isPortAvailable(port, host || "0.0.0.0");
-        return { port, available };
-      }
-    );
-
-    ipcMainHandle(
-      "checkPortsAvailability",
-      async (event, ports: number[], host?: string) => {
-        const checkHost = host || "0.0.0.0";
-        const results = await checkPortsAvailability(ports, checkHost);
-        const resultArray = Array.from(results.entries()).map(
-          ([port, available]) => ({
-            port,
-            available,
-          })
+        // Start bridge without requiring outputs
+        // Pass bridgeId and relayUrl as CLI args
+        const result = await bridgeProcessManager.start(
+          resolvedConfig,
+          true, // autoFindPort = true
+          relayBridgeId,
+          relayUrl,
+          bridgeName,
+          pairingInfo?.code,
+          pairingInfo?.expiresAt,
+          relayEnabled,
         );
-        return resultArray;
-      }
-    );
 
-    // Network configuration IPC handlers
-    ipcMainHandle("getNetworkConfig", async () => {
-      const config = loadNetworkConfig();
-      return config;
-    });
+        // Start health check polling if bridge started successfully
+        if (result.success) {
+          // console.log(
+          //   "[Bridge] Bridge started successfully, sending initial status update"
+          // );
+          // Immediately send status update that bridge is starting
+          const initialStatus: BridgeStatus = {
+            running: true,
+            reachable: false,
+            bridgeId,
+            bridgeName,
+          };
+          if (pairingInfo) {
+            initialStatus.pairingCode = pairingInfo.code;
+            initialStatus.pairingExpiresAt = new Date(
+              pairingInfo.expiresAt,
+            ).toISOString();
+            initialStatus.pairingExpired = false;
+          }
 
-    ipcMainHandle("detectNetworkInterfaces", async () => {
-      const config = loadNetworkConfig();
-      const options = detectNetworkInterfaces(
-        config.networkBinding.options,
-        config.networkBinding.filters
-      );
+          // Build web app URL immediately so link is available right away
+          const webAppUrl = buildWebAppUrl();
+          if (webAppUrl) {
+            initialStatus.webAppUrl = webAppUrl;
+          }
 
-      return options;
-    });
+          // console.log("[Bridge] Sending initial status:", initialStatus);
+          if (mainWindow) {
+            ipcWebContentsSend(
+              "bridgeStatus",
+              mainWindow.webContents,
+              initialStatus,
+            );
+          }
 
-    ipcMainHandle("getNetworkBindingOptions", async () => {
-      const config = loadNetworkConfig();
-      const options = detectNetworkInterfaces(
-        config.networkBinding.options,
-        config.networkBinding.filters
-      );
+          // Stop existing health check if any
+          if (healthCheckCleanup) {
+            // console.log("[Bridge] Stopping existing health check");
+            healthCheckCleanup();
+          }
 
-      return options;
-    });
+          const bridgeConfig = bridgeProcessManager.getConfig();
+          // console.log(
+          //   "[Bridge] Starting health check polling with config:",
+          //   bridgeConfig
+          // );
 
-    /**
-     * Helper function to make requests to Bridge API.
-     *
-     * @param endpoint Bridge API endpoint (path only).
-     * @param options Fetch options.
-     * @returns Parsed JSON response.
-     */
-    async function bridgeApiRequest(
-      endpoint: string,
-      options: RequestInit = {}
-    ): Promise<unknown> {
-      const config = bridgeProcessManager.getConfig();
-      if (!config) {
-        throw new Error("Bridge is not running");
-      }
+          // Start new health check
+          healthCheckCleanup = startHealthCheckPolling(
+            bridgeConfig,
+            (status) => {
+              // console.log("[Bridge] Health check status update:", status);
 
-      const host = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
-      const url = `http://${host}:${config.port}${endpoint}`;
+              // Build web app URL for the UI link
+              // URL will be displayed as a link in the UI instead of auto-opening
+              // Must be done BEFORE sending status to UI
+              const pairingInfo = bridgePairing.getPairingInfo();
+              if (pairingInfo) {
+                status.pairingCode = pairingInfo.code;
+                status.pairingExpiresAt = new Date(
+                  pairingInfo.expiresAt,
+                ).toISOString();
+                status.pairingExpired = pairingInfo.expired;
+              }
+              status.bridgeName = status.bridgeName || bridgeName;
 
-      const controller = new AbortController();
-      // Use longer timeout for engine/connect (15s) to allow for device connection timeout (10s)
-      const timeoutMs = endpoint === "/engine/connect" ? 15000 : 10000; // 15s for connect, 10s for others
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+              const webAppUrl = buildWebAppUrl();
+              if (webAppUrl) {
+                status.webAppUrl = webAppUrl;
+              }
 
-      try {
-        // Build headers: only set Content-Type if body exists
-        const headers: Record<string, string> = {};
-        if (options.headers) {
-          Object.entries(options.headers).forEach(([key, value]) => {
-            if (typeof value === "string") {
-              headers[key] = value;
-            }
+              if (mainWindow) {
+                ipcWebContentsSend(
+                  "bridgeStatus",
+                  mainWindow.webContents,
+                  status,
+                );
+              }
+            },
+            () => bridgeProcessManager.isRunning(), // Pass function to check if process is running
+          );
+        } else {
+          // console.log("[Bridge] Bridge start failed:", result.error);
+          bridgePairing.clear();
+        }
+
+        return result;
+      });
+
+      ipcMainHandle("bridgeStop", async () => {
+        // Stop health check
+        if (healthCheckCleanup) {
+          healthCheckCleanup();
+          healthCheckCleanup = null;
+        }
+
+        const config = bridgeProcessManager.getConfig();
+        if (config) {
+          const clearResponse = await clearBridgeLogs(config);
+          if (clearResponse.error) {
+            logAppError(
+              `bridgeClearLogs on stop failed: ${clearResponse.error}`,
+            );
+          }
+        }
+
+        const result = await bridgeProcessManager.stop();
+        bridgePairing.clear();
+
+        // Reset web app flag and outputs
+        // Outputs are managed in the web app
+        currentNetworkBindingId = null;
+
+        // Send final status update
+        if (mainWindow) {
+          ipcWebContentsSend("bridgeStatus", mainWindow.webContents, {
+            running: false,
+            reachable: false,
           });
         }
-        if (options.body && !headers["Content-Type"]) {
-          headers["Content-Type"] = "application/json";
-        }
 
-        const response = await fetch(url, {
-          ...options,
-          signal: controller.signal,
-          headers,
-        });
+        return result;
+      });
 
-        clearTimeout(timeoutId);
+      ipcMainHandle("bridgeGetStatus", async () => {
+        const config = bridgeProcessManager.getConfig();
+        const isRunning = bridgeProcessManager.isRunning();
+        const profile = bridgeProfile.getProfile();
+        const pairingInfo = bridgePairing.getPairingInfo();
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(
-            errorData.message || errorData.error || `HTTP ${response.status}`
-          );
-        }
-
-        return await response.json();
-      } catch (error) {
-        clearTimeout(timeoutId);
-        if (error instanceof Error) {
-          throw error;
-        }
-        throw new Error("Unknown error");
-      }
-    }
-
-    // Engine IPC handlers
-    ipcMainHandle(
-      "engineConnect",
-      async (event, type: string, ip?: string, port?: number) => {
-        try {
-          // Validate type
-          if (!type || !["atem", "tricaster", "vmix"].includes(type)) {
-            return {
-              success: false,
-              error:
-                "Invalid engine type. Must be 'atem', 'tricaster', or 'vmix'",
-            };
-          }
-
-          // Validate required fields
-          if (!ip) {
-            return {
-              success: false,
-              error: "IP address is required",
-            };
-          }
-
-          if (!port) {
-            return {
-              success: false,
-              error: "Port is required",
-            };
-          }
-
-          const body = {
-            type: type as "atem" | "tricaster" | "vmix",
-            ip,
-            port,
+        if (!isRunning || !config) {
+          // console.log(`[Bridge] GetStatus - Process not running or no config`);
+          return {
+            running: false,
+            reachable: false,
           };
+        }
 
-          const result = (await bridgeApiRequest("/engine/connect", {
+        const healthStatus = await checkBridgeHealth(config);
+        // Ensure running is true if process is running, even if not reachable yet
+        const status: BridgeStatus = {
+          ...healthStatus,
+          running: isRunning, // Always use actual process state
+        };
+        status.bridgeName =
+          status.bridgeName || profile.bridgeName || undefined;
+        if (pairingInfo) {
+          status.pairingCode = pairingInfo.code;
+          status.pairingExpiresAt = new Date(
+            pairingInfo.expiresAt,
+          ).toISOString();
+          status.pairingExpired = pairingInfo.expired;
+        }
+
+        // Build web app URL for the UI link
+        const webAppUrl = buildWebAppUrl();
+        if (webAppUrl) {
+          status.webAppUrl = webAppUrl;
+        }
+
+        // console.log(`[Bridge] GetStatus result:`, status);
+        return status;
+      });
+
+      // Port checking IPC handlers
+      ipcMainHandle(
+        "checkPortAvailability",
+        async (event, port: number, host?: string) => {
+          const available = await isPortAvailable(port, host || "0.0.0.0");
+          return { port, available };
+        },
+      );
+
+      ipcMainHandle(
+        "checkPortsAvailability",
+        async (event, ports: number[], host?: string) => {
+          const checkHost = host || "0.0.0.0";
+          const results = await checkPortsAvailability(ports, checkHost);
+          const resultArray = Array.from(results.entries()).map(
+            ([port, available]) => ({
+              port,
+              available,
+            }),
+          );
+          return resultArray;
+        },
+      );
+
+      // Network configuration IPC handlers
+      ipcMainHandle("getNetworkConfig", async () => {
+        const config = loadNetworkConfig();
+        return config;
+      });
+
+      ipcMainHandle("detectNetworkInterfaces", async () => {
+        const config = loadNetworkConfig();
+        const options = detectNetworkInterfaces(
+          config.networkBinding.options,
+          config.networkBinding.filters,
+        );
+
+        return options;
+      });
+
+      ipcMainHandle("getNetworkBindingOptions", async () => {
+        const config = loadNetworkConfig();
+        const options = detectNetworkInterfaces(
+          config.networkBinding.options,
+          config.networkBinding.filters,
+        );
+
+        return options;
+      });
+
+      const bridgeApiRequest = createBridgeApiRequest(() =>
+        bridgeProcessManager.getConfig(),
+      );
+
+      // Engine IPC handlers
+
+      ipcMainHandle(
+        "engineConnect",
+        async (_event, ip?: string, port?: number) => {
+          try {
+            const validation = validateEngineConnectInput(ip, port);
+            if (!validation.success) {
+              return validation;
+            }
+
+            const result = (await bridgeApiRequest("/engine/connect", {
+              method: "POST",
+              body: JSON.stringify(validation.body),
+            })) as { state?: unknown };
+
+            return {
+              success: true,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              state: result.state as any,
+            };
+          } catch (error) {
+            return {
+              success: false,
+              error: error instanceof Error ? error.message : "Unknown error",
+            };
+          }
+        },
+      );
+
+      ipcMainHandle("engineDisconnect", async () => {
+        try {
+          const result = (await bridgeApiRequest("/engine/disconnect", {
             method: "POST",
-            body: JSON.stringify(body),
           })) as { state?: unknown };
 
           return {
@@ -838,249 +789,242 @@ if (!isRendererProcess) {
             error: error instanceof Error ? error.message : "Unknown error",
           };
         }
-      }
-    );
+      });
 
-    ipcMainHandle("engineDisconnect", async () => {
-      try {
-        const result = (await bridgeApiRequest("/engine/disconnect", {
-          method: "POST",
-        })) as { state?: unknown };
-
-        return {
-          success: true,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          state: result.state as any,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        };
-      }
-    });
-
-    ipcMainHandle("engineGetStatus", async () => {
-      try {
-        const result = (await bridgeApiRequest("/engine/status")) as {
-          state?: unknown;
-        };
-        return {
-          success: true,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          state: result.state as any,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-          state: {
-            status: "error",
-            macros: [],
-            error: error instanceof Error ? error.message : "Unknown error",
-          },
-        };
-      }
-    });
-
-    ipcMainHandle("engineGetMacros", async () => {
-      try {
-        const result = (await bridgeApiRequest("/engine/macros")) as {
-          success?: boolean;
-          macros?: unknown[];
-          error?: string;
-          message?: string;
-        };
-
-        // Check if response indicates failure
-        if (result.success === false) {
+      ipcMainHandle("engineGetStatus", async () => {
+        try {
+          const result = (await bridgeApiRequest("/engine/status")) as {
+            state?: unknown;
+          };
+          return {
+            success: true,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            state: result.state as any,
+          };
+        } catch (error) {
           return {
             success: false,
-            error: result.error || result.message || "Failed to get macros",
+            error: error instanceof Error ? error.message : "Unknown error",
+            state: {
+              status: "error" as const,
+              macros: [],
+              error: error instanceof Error ? error.message : "Unknown error",
+            },
+          };
+        }
+      });
+
+      ipcMainHandle("engineGetMacros", async () => {
+        try {
+          const result = (await bridgeApiRequest("/engine/macros")) as {
+            success?: boolean;
+            macros?: unknown[];
+            error?: string;
+            message?: string;
+          };
+
+          // Check if response indicates failure
+          if (result.success === false) {
+            return {
+              success: false,
+              error: result.error || result.message || "Failed to get macros",
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              macros: (result.macros || []) as any,
+            };
+          }
+
+          return {
+            success: true,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             macros: (result.macros || []) as any,
           };
-        }
-
-        return {
-          success: true,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          macros: (result.macros || []) as any,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-          macros: [],
-        };
-      }
-    });
-
-    ipcMainHandle("engineRunMacro", async (event, macroId: number) => {
-      try {
-        const result = (await bridgeApiRequest(
-          `/engine/macros/${macroId}/run`,
-          {
-            method: "POST",
-          }
-        )) as {
-          success?: boolean;
-          state?: unknown;
-          error?: string;
-          message?: string;
-        };
-
-        // Check if response indicates failure
-        if (result.success === false) {
+        } catch (error) {
           return {
             success: false,
-            error: result.error || result.message || "Failed to run macro",
+            error: error instanceof Error ? error.message : "Unknown error",
+            macros: [],
           };
         }
+      });
 
-        return {
-          success: true,
-          macroId,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          state: result.state as any,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        };
-      }
-    });
+      ipcMainHandle("engineRunMacro", async (event, macroId: number) => {
+        try {
+          const result = (await bridgeApiRequest(
+            `/engine/macros/${macroId}/run`,
+            {
+              method: "POST",
+            },
+          )) as {
+            success?: boolean;
+            state?: unknown;
+            error?: string;
+            message?: string;
+          };
 
-    ipcMainHandle("engineStopMacro", async (event, macroId: number) => {
-      try {
-        const result = (await bridgeApiRequest(
-          `/engine/macros/${macroId}/stop`,
-          {
-            method: "POST",
+          // Check if response indicates failure
+          if (result.success === false) {
+            return {
+              success: false,
+              error: result.error || result.message || "Failed to run macro",
+            };
           }
-        )) as {
-          success?: boolean;
-          state?: unknown;
-          error?: string;
-          message?: string;
-        };
 
-        // Check if response indicates failure
-        if (result.success === false) {
+          return {
+            success: true,
+            macroId,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            state: result.state as any,
+          };
+        } catch (error) {
           return {
             success: false,
-            error: result.error || result.message || "Failed to stop macro",
+            error: error instanceof Error ? error.message : "Unknown error",
           };
         }
+      });
 
-        return {
-          success: true,
-          macroId,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          state: result.state as any,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        };
-      }
-    });
+      ipcMainHandle("engineStopMacro", async (event, macroId: number) => {
+        try {
+          const result = (await bridgeApiRequest(
+            `/engine/macros/${macroId}/stop`,
+            {
+              method: "POST",
+            },
+          )) as {
+            success?: boolean;
+            state?: unknown;
+            error?: string;
+            message?: string;
+          };
 
-    // Bridge outputs IPC handler
-    ipcMainHandle("bridgeGetOutputs", async () => {
-      const config = bridgeProcessManager.getConfig();
+          // Check if response indicates failure
+          if (result.success === false) {
+            return {
+              success: false,
+              error: result.error || result.message || "Failed to stop macro",
+            };
+          }
 
-      // If bridge is running, try to get outputs from bridge (for updates)
-      if (config) {
-        const bridgeOutputs = await fetchBridgeOutputs(config);
-        if (bridgeOutputs) {
-          const output1Count = bridgeOutputs.output1?.length || 0;
-          const output2Count = bridgeOutputs.output2?.length || 0;
-          const availableOutput1Count =
-            bridgeOutputs.output1?.filter((opt) => opt.available).length || 0;
-          const availableOutput2Count =
-            bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
-
-          return bridgeOutputs;
+          return {
+            success: true,
+            macroId,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            state: result.state as any,
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error",
+          };
         }
-        logAppError("bridgeGetOutputs failed: bridge running but outputs null");
-      }
+      });
 
-      // Bridge is Single Source of Truth - no fallback detection in Main Process
-      return {
-        output1: [],
-        output2: [],
-      };
-    });
-
-    ipcMainHandle(
-      "bridgeGetLogs",
-      async (_event, options?: { lines?: number; filter?: string }) => {
+      // Bridge outputs IPC handler
+      ipcMainHandle("bridgeGetOutputs", async () => {
         const config = bridgeProcessManager.getConfig();
-        const response = await fetchBridgeLogs(config, options);
+
+        // If bridge is running, try to get outputs from bridge (for updates)
+        if (config) {
+          const bridgeOutputs = await fetchBridgeOutputs(config);
+          if (bridgeOutputs) {
+            const output1Count = bridgeOutputs.output1?.length || 0;
+            const output2Count = bridgeOutputs.output2?.length || 0;
+            const availableOutput1Count =
+              bridgeOutputs.output1?.filter((opt) => opt.available).length || 0;
+            const availableOutput2Count =
+              bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
+
+            return bridgeOutputs;
+          }
+          logAppError(
+            "bridgeGetOutputs failed: bridge running but outputs null",
+          );
+        }
+
+        // Bridge is Single Source of Truth - no fallback detection in Main Process
+        return {
+          output1: [],
+          output2: [],
+        };
+      });
+
+      ipcMainHandle(
+        "bridgeGetLogs",
+        async (_event, options?: { lines?: number; filter?: string }) => {
+          const config = bridgeProcessManager.getConfig();
+          const response = await fetchBridgeLogs(config, options);
+          if (response.error) {
+            logAppError(`bridgeGetLogs failed: ${response.error}`);
+          }
+          return response;
+        },
+      );
+
+      ipcMainHandle(
+        "appGetLogs",
+        async (_event, options?: { lines?: number; filter?: string }) => {
+          const response = await readAppLogs(options);
+          if (response.error) {
+            logAppError(`appGetLogs failed: ${response.error}`);
+          }
+          return response;
+        },
+      );
+
+      ipcMainHandle("appGetVersion", async () => app.getVersion());
+      ipcMainHandle("updaterGetStatus", async () => appUpdaterService.getStatus());
+      ipcMainHandle("updaterCheckForUpdates", async () =>
+        appUpdaterService.checkForUpdates(),
+      );
+      ipcMainHandle("updaterDownloadUpdate", async () =>
+        appUpdaterService.downloadUpdate(),
+      );
+      ipcMainHandle("updaterQuitAndInstall", async () =>
+        appUpdaterService.quitAndInstall(),
+      );
+
+      ipcMainHandle("bridgeClearLogs", async () => {
+        const config = bridgeProcessManager.getConfig();
+        const response = await clearBridgeLogs(config);
         if (response.error) {
-          logAppError(`bridgeGetLogs failed: ${response.error}`);
+          logAppError(`bridgeClearLogs failed: ${response.error}`);
         }
         return response;
-      }
-    );
+      });
 
-    ipcMainHandle(
-      "appGetLogs",
-      async (_event, options?: { lines?: number; filter?: string }) => {
-        const response = await readAppLogs(options);
+      ipcMainHandle("appClearLogs", async () => {
+        const response = await clearAppLogs();
         if (response.error) {
-          logAppError(`appGetLogs failed: ${response.error}`);
+          logAppError(`appClearLogs failed: ${response.error}`);
         }
         return response;
-      }
-    );
+      });
 
-    ipcMainHandle("appGetVersion", async () => app.getVersion());
+      // Open external URL handler
+      ipcMainHandle("openExternal", async (event, url: string) => {
+        if (isAllowedExternalUrl(url)) {
+          shell.openExternal(url);
+        }
+      });
 
-    ipcMainHandle("bridgeClearLogs", async () => {
-      const config = bridgeProcessManager.getConfig();
-      const response = await clearBridgeLogs(config);
-      if (response.error) {
-        logAppError(`bridgeClearLogs failed: ${response.error}`);
-      }
-      return response;
+      // Cleanup on window close
+      mainWindow.on("close", async () => {
+        if (healthCheckCleanup) {
+          healthCheckCleanup();
+          healthCheckCleanup = null;
+        }
+        await bridgeProcessManager.stop();
+      });
+
+      // Cleanup on app quit
+      app.on("before-quit", async () => {
+        appUpdaterService.shutdown();
+        if (healthCheckCleanup) {
+          healthCheckCleanup();
+          healthCheckCleanup = null;
+        }
+        await bridgeProcessManager.stop();
+      });
     });
-
-    ipcMainHandle("appClearLogs", async () => {
-      const response = await clearAppLogs();
-      if (response.error) {
-        logAppError(`appClearLogs failed: ${response.error}`);
-      }
-      return response;
-    });
-
-    // Open external URL handler
-    ipcMainHandle("openExternal", async (event, url: string) => {
-      if (typeof url === "string" && url.startsWith("http")) {
-        shell.openExternal(url);
-      }
-    });
-
-    // Cleanup on window close
-    mainWindow.on("close", async () => {
-      if (healthCheckCleanup) {
-        healthCheckCleanup();
-        healthCheckCleanup = null;
-      }
-      await bridgeProcessManager.stop();
-    });
-
-    // Cleanup on app quit
-    app.on("before-quit", async () => {
-      if (healthCheckCleanup) {
-        healthCheckCleanup();
-        healthCheckCleanup = null;
-      }
-      await bridgeProcessManager.stop();
-    });
-  });
   }
 }

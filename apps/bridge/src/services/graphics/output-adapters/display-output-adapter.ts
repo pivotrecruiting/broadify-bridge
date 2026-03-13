@@ -32,8 +32,8 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
 
-    if (process.platform !== "darwin") {
-      throw new Error("Display output is only supported on macOS");
+    if (process.platform !== "darwin" && process.platform !== "win32") {
+      throw new Error("Display output is only supported on macOS and Windows");
     }
 
     const output1Id = config.targets.output1Id;
@@ -64,11 +64,13 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     match: OutputPortMatchT
   ): Promise<void> {
     const helperPath = resolveDisplayHelperPath();
+    const helperAccessMode =
+      process.platform === "win32" ? constants.F_OK : constants.X_OK;
     try {
-      await access(helperPath, constants.X_OK);
+      await access(helperPath, helperAccessMode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Display helper binary not found or not executable: ${message}`);
+      throw new Error(`Display helper binary not found or inaccessible: ${message}`);
     }
 
     const frameBusName = process.env.BRIDGE_FRAMEBUS_NAME;

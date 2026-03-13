@@ -1,24 +1,36 @@
 import { WebSocket } from "ws";
-import { createPublicKey, verify as verifySignature } from "node:crypto";
-import { commandRouter, isRelayCommand } from "./command-router.js";
+import { createPublicKey, randomUUID } from "node:crypto";
+import {
+  isRelayCommand,
+  type RelayCommand,
+} from "./relay-command-allowlist.js";
+import {
+  type RelayCommandMetaT,
+  verifySignedRelayCommand,
+} from "./relay-command-security.js";
 import {
   getRelayBridgeEnrollmentPublicKey,
   signRelayBridgeAuthChallenge,
 } from "./relay-bridge-identity.js";
-import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { RelayCommand } from "./command-router.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { getRuntimeAppVersion } from "./runtime-app-version.js";
 
 const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
 const RELAY_COMMAND_TTL_SECONDS = 30;
 const RELAY_COMMAND_SKEW_SECONDS = 60;
 const MAX_JTI_CACHE_SIZE = 5000;
+const RELAY_PROTOCOL_VERSION = 2;
+const RELAY_COMMAND_DEDUPE_TTL_MS =
+  Number(process.env.BRIDGE_RELAY_COMMAND_DEDUPE_TTL_MS) || 5 * 60_000;
+const RELAY_COMMAND_DEDUPE_MAX_ENTRIES =
+  Number(process.env.BRIDGE_RELAY_COMMAND_DEDUPE_MAX_ENTRIES) || 5000;
+const RELAY_WS_HEARTBEAT_INTERVAL_MS =
+  Number(process.env.BRIDGE_RELAY_WS_HEARTBEAT_INTERVAL_MS) || 15000;
+const RELAY_WS_HEARTBEAT_MAX_MISSES =
+  Number(process.env.BRIDGE_RELAY_WS_HEARTBEAT_MAX_MISSES) || 2;
+const RELAY_WS_IDLE_TIMEOUT_MS =
+  Number(process.env.BRIDGE_RELAY_WS_IDLE_TIMEOUT_MS) || 90000;
 
 const RELAY_PUBLIC_KEY_PEM =
   process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY ||
@@ -109,19 +121,6 @@ const validateJwksUrl = async (): Promise<URL> => {
   return url;
 };
 
-/**
- * Get version from package.json
- */
-function getVersion(): string {
-  try {
-    const packagePath = join(__dirname, "../../package.json");
-    const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
-    return packageJson.version || "0.1.0";
-  } catch {
-    return "0.1.0";
-  }
-}
-
 const getRelayMessageByteLength = (data: WebSocket.Data): number => {
   if (typeof data === "string") {
     return Buffer.byteLength(data, "utf-8");
@@ -163,6 +162,9 @@ const relayMessageToString = (data: WebSocket.Data): string => {
 interface BridgeHelloMessage {
   type: "bridge_hello";
   bridgeId: string;
+  protocolVersion: number;
+  sessionId: string;
+  lastProcessedSequence: number;
   version: string;
   bridgeName?: string;
   auth?: {
@@ -185,10 +187,18 @@ interface BridgeEventMessage {
 interface RelayCommandMessage {
   type: "command";
   requestId: string;
+  sequence?: number;
   command: string;
   payload?: Record<string, unknown>;
-  meta?: RelayCommandMeta;
+  meta?: RelayCommandMetaT;
   signature?: string;
+}
+
+interface CommandReceivedMessage {
+  type: "command_received";
+  requestId: string;
+  bridgeId: string;
+  sequence?: number;
 }
 
 /**
@@ -239,46 +249,56 @@ type RelayMessage =
   | RelayBridgeAuthOkMessage
   | RelayBridgeAuthErrorMessage;
 
-type RelayCommandMeta = {
-  bridgeId: string;
-  orgId: string;
-  scope: string[];
-  iat: number;
-  exp: number;
-  jti: string;
-  kid: string;
-};
-
 type PublicKeyCacheEntry = {
   kid: string;
   key: ReturnType<typeof createPublicKey>;
 };
 
+type RelaySocketLikeT = {
+  readyState: number;
+  on: (event: string, listener: (...args: any[]) => void) => void;
+  ping?: () => void;
+  send: (data: string) => void;
+  close: () => void;
+  terminate: () => void;
+};
+
+type RelayClientDepsT = {
+  createWebSocket?: (url: string) => RelaySocketLikeT;
+  getVersion?: () => string;
+  getEnrollmentPublicKey?: typeof getRelayBridgeEnrollmentPublicKey;
+  signAuthChallenge?: typeof signRelayBridgeAuthChallenge;
+  verifySignedCommand?: (message: RelayCommandMessage) => Promise<void>;
+  isRelayCommand?: (command: string) => boolean;
+  handleCommand?: (
+    command: RelayCommand,
+    payload?: Record<string, unknown>,
+  ) => Promise<{
+    success: boolean;
+    data?: unknown;
+    error?: string;
+  }>;
+  now?: () => Date;
+  relayHeartbeatIntervalMs?: number;
+  relayHeartbeatMaxMisses?: number;
+  relayIdleTimeoutMs?: number;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
+  setIntervalFn?: typeof setInterval;
+  clearIntervalFn?: typeof clearInterval;
+  commandDedupeTtlMs?: number;
+  commandDedupeMaxEntries?: number;
+};
+
+type CommandResultCacheEntry = {
+  expiresAt: number;
+  sequence?: number;
+  result: CommandResultMessage;
+};
+
 const publicKeyCache = new Map<string, PublicKeyCacheEntry>();
 let jwksRefreshInFlight: Promise<void> | null = null;
 const seenJti = new Map<string, number>();
-
-const base64UrlDecode = (value: string): Buffer => {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padLength = (4 - (padded.length % 4)) % 4;
-  const normalized = padded + "=".repeat(padLength);
-  return Buffer.from(normalized, "base64");
-};
-
-const stableStringify = (value: unknown): string => {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  const entries = keys.map(
-    (key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`,
-  );
-  return `{${entries.join(",")}}`;
-};
 
 const registerPublicKey = (
   kid: string,
@@ -349,19 +369,12 @@ const getPublicKey = async (kid: string) => {
   return undefined;
 };
 
-const pruneJtiCache = (nowSec: number) => {
-  for (const [jti, exp] of seenJti.entries()) {
-    if (exp <= nowSec) {
-      seenJti.delete(jti);
-    }
-  }
-  while (seenJti.size > MAX_JTI_CACHE_SIZE) {
-    const oldest = seenJti.keys().next().value as string | undefined;
-    if (!oldest) {
-      break;
-    }
-    seenJti.delete(oldest);
-  }
+const defaultHandleCommand = async (
+  command: RelayCommand,
+  payload?: Record<string, unknown>,
+) => {
+  const { commandRouter } = await import("./command-router.js");
+  return commandRouter.handleCommand(command, payload);
 };
 
 /**
@@ -371,14 +384,20 @@ const pruneJtiCache = (nowSec: number) => {
  * Handles bridge registration, command reception, and result sending.
  */
 export class RelayClient {
-  private ws: WebSocket | null = null;
+  private ws: RelaySocketLikeT | null = null;
   private bridgeId: string;
   private relayUrl: string;
   private bridgeName?: string;
+  private readonly relaySessionId: string;
+  private lastProcessedSequence = 0;
+  private readonly commandResultCache = new Map<string, CommandResultCacheEntry>();
   private reconnectAttempts = 0;
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 60000; // Max 60 seconds
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private relayHeartbeatTimer: NodeJS.Timeout | null = null;
+  private relayLivenessTimer: NodeJS.Timeout | null = null;
+  private relayMissedHeartbeats = 0;
   private isConnecting = false;
   private isShuttingDown = false;
   private lastSeen: Date | null = null;
@@ -388,6 +407,7 @@ export class RelayClient {
     warn: (msg: string) => void;
     debug?: (msg: string) => void;
   };
+  private readonly deps: RelayClientDepsT;
 
   /**
    * Create a relay client instance.
@@ -407,10 +427,13 @@ export class RelayClient {
       debug?: (msg: string) => void;
     },
     bridgeName?: string,
+    deps: RelayClientDepsT = {},
   ) {
     this.bridgeId = bridgeId;
     this.relayUrl = relayUrl;
     this.bridgeName = bridgeName;
+    this.relaySessionId = randomUUID();
+    this.deps = deps;
     this.logger = logger || {
       info: (msg: string) => console.log(`[RelayClient] ${msg}`),
       error: (msg: string) => console.error(`[RelayClient] ${msg}`),
@@ -453,6 +476,207 @@ export class RelayClient {
     return this.lastSeen;
   }
 
+  private markRelayActivity(source: string): void {
+    this.lastSeen = (this.deps.now ?? (() => new Date()))();
+    this.relayMissedHeartbeats = 0;
+    this.resetRelayLivenessWatchdog();
+    this.logger.debug?.(`[RelayClient] Relay activity: ${source}`);
+  }
+
+  private pruneCommandResultCache(now = Date.now()): void {
+    const maxEntries =
+      this.deps.commandDedupeMaxEntries ?? RELAY_COMMAND_DEDUPE_MAX_ENTRIES;
+    for (const [requestId, entry] of this.commandResultCache.entries()) {
+      if (entry.expiresAt <= now) {
+        this.commandResultCache.delete(requestId);
+      }
+    }
+    while (this.commandResultCache.size > maxEntries) {
+      const oldest = this.commandResultCache.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) {
+        break;
+      }
+      this.commandResultCache.delete(oldest);
+    }
+  }
+
+  private getCachedCommandResult(requestId: string): CommandResultCacheEntry | null {
+    this.pruneCommandResultCache();
+    const cached = this.commandResultCache.get(requestId);
+    if (!cached) {
+      return null;
+    }
+    if (cached.expiresAt <= Date.now()) {
+      this.commandResultCache.delete(requestId);
+      return null;
+    }
+    return cached;
+  }
+
+  private cacheCommandResult(
+    requestId: string,
+    sequence: number | undefined,
+    result: CommandResultMessage,
+  ): void {
+    const dedupeTtlMs = this.deps.commandDedupeTtlMs ?? RELAY_COMMAND_DEDUPE_TTL_MS;
+    this.pruneCommandResultCache();
+    this.commandResultCache.set(requestId, {
+      expiresAt: Date.now() + dedupeTtlMs,
+      sequence,
+      result,
+    });
+    this.pruneCommandResultCache();
+  }
+
+  private async publishResyncSnapshots(reason: string): Promise<void> {
+    const handleCommand = this.deps.handleCommand ?? defaultHandleCommand;
+    this.sendBridgeEvent({
+      event: "bridge_resync_required",
+      data: { reason, at: Date.now() },
+    });
+
+    const snapshotCommands: Array<{
+      command: RelayCommand;
+      payload?: Record<string, unknown>;
+      event: string;
+    }> = [
+      { command: "get_status", event: "bridge_status_snapshot" },
+      { command: "engine_get_status", event: "engine_status_snapshot" },
+      { command: "list_outputs", payload: { refresh: true }, event: "outputs_snapshot" },
+      { command: "graphics_list", event: "graphics_snapshot" },
+    ];
+
+    for (const snapshot of snapshotCommands) {
+      try {
+        const result = await handleCommand(snapshot.command, snapshot.payload);
+        if (!result.success) {
+          this.logger.warn(
+            `Failed to publish ${snapshot.event}: ${result.error ?? "command failed"}`,
+          );
+          continue;
+        }
+        this.sendBridgeEvent({
+          event: snapshot.event,
+          data: {
+            reason,
+            snapshot: result.data,
+            at: Date.now(),
+          },
+        });
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to publish ${snapshot.event}: ${errorMessage}`);
+      }
+    }
+  }
+
+  private startRelayHeartbeat(): void {
+    this.clearRelayHeartbeat();
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isShuttingDown) {
+      return;
+    }
+
+    if (!this.ws.ping) {
+      this.logger.debug?.("[RelayClient] Relay heartbeat disabled: socket has no ping()");
+      return;
+    }
+
+    const relayHeartbeatIntervalMs =
+      this.deps.relayHeartbeatIntervalMs ?? RELAY_WS_HEARTBEAT_INTERVAL_MS;
+    const relayHeartbeatMaxMisses =
+      this.deps.relayHeartbeatMaxMisses ?? RELAY_WS_HEARTBEAT_MAX_MISSES;
+    const setIntervalFn = this.deps.setIntervalFn ?? setInterval;
+
+    this.relayMissedHeartbeats = 0;
+    this.relayHeartbeatTimer = setIntervalFn(() => {
+      const ws = this.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      const ping = ws.ping;
+      if (!ping) {
+        return;
+      }
+
+      if (this.relayMissedHeartbeats >= relayHeartbeatMaxMisses) {
+        this.logger.warn(
+          `Relay heartbeat missed ${this.relayMissedHeartbeats} time(s), terminating socket`
+        );
+        try {
+          ws.terminate();
+        } catch {
+          // Ignore terminate errors; close handler will drive reconnect.
+        }
+        return;
+      }
+
+      this.relayMissedHeartbeats += 1;
+      try {
+        ping.call(ws);
+        this.logger.debug?.(
+          `[RelayClient] Sent relay heartbeat ping #${this.relayMissedHeartbeats}`
+        );
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to send relay heartbeat ping: ${errorMessage}`);
+      }
+    }, relayHeartbeatIntervalMs);
+    this.relayHeartbeatTimer.unref?.();
+  }
+
+  private clearRelayHeartbeat(): void {
+    const clearIntervalFn = this.deps.clearIntervalFn ?? clearInterval;
+    if (this.relayHeartbeatTimer) {
+      clearIntervalFn(this.relayHeartbeatTimer);
+      this.relayHeartbeatTimer = null;
+    }
+    this.relayMissedHeartbeats = 0;
+  }
+
+  private resetRelayLivenessWatchdog(): void {
+    if (this.relayLivenessTimer) {
+      clearTimeout(this.relayLivenessTimer);
+      this.relayLivenessTimer = null;
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isShuttingDown) {
+      return;
+    }
+
+    const relayIdleTimeoutMs =
+      this.deps.relayIdleTimeoutMs ?? RELAY_WS_IDLE_TIMEOUT_MS;
+    const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
+    this.relayLivenessTimer = setTimeoutFn(() => {
+      this.relayLivenessTimer = null;
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      this.logger.warn(
+        `Relay connection idle for >${relayIdleTimeoutMs}ms, terminating socket`
+      );
+      try {
+        this.ws.terminate();
+      } catch {
+        // Ignore terminate errors; close handler will drive reconnect.
+      }
+    }, relayIdleTimeoutMs);
+    this.relayLivenessTimer.unref?.();
+  }
+
+  private clearRelayLivenessWatchdog(): void {
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
+    if (this.relayLivenessTimer) {
+      clearTimeoutFn(this.relayLivenessTimer);
+      this.relayLivenessTimer = null;
+    }
+  }
+
   /**
    * Connect to relay server.
    *
@@ -473,25 +697,51 @@ export class RelayClient {
     try {
       this.logger.info(`Connecting to relay at ${this.relayUrl}...`);
 
-      this.ws = new WebSocket(this.relayUrl);
+      this.ws = (this.deps.createWebSocket ?? ((url) => new WebSocket(url)))(
+        this.relayUrl,
+      );
 
       this.ws.on("open", () => {
         this.logger.info("Connected to relay server");
         this.isConnecting = false;
         this.reconnectAttempts = 0;
         this.reconnectDelay = 1000;
-        this.lastSeen = new Date();
+        this.markRelayActivity("open");
+        this.startRelayHeartbeat();
 
         // Send bridge_hello message
         this.sendHello();
       });
 
       this.ws.on("message", (data: WebSocket.Data) => {
+        this.markRelayActivity("message");
         this.handleMessage(data);
       });
 
-      this.ws.on("close", () => {
-        this.logger.warn("Disconnected from relay server");
+      this.ws.on("ping", () => {
+        this.markRelayActivity("ping");
+      });
+
+      this.ws.on("pong", () => {
+        this.markRelayActivity("pong");
+      });
+
+      this.ws.on("close", (code?: number, reason?: Buffer | string) => {
+        const closeReason =
+          typeof reason === "string"
+            ? reason
+            : Buffer.isBuffer(reason)
+              ? reason.toString("utf-8")
+              : "";
+        if (code || closeReason) {
+          this.logger.warn(
+            `Disconnected from relay server (code: ${code ?? "unknown"}, reason: ${closeReason || "n/a"})`
+          );
+        } else {
+          this.logger.warn("Disconnected from relay server");
+        }
+        this.clearRelayHeartbeat();
+        this.clearRelayLivenessWatchdog();
         this.ws = null;
         this.isConnecting = false;
         this.lastSeen = null;
@@ -504,6 +754,8 @@ export class RelayClient {
 
       this.ws.on("error", (error: Error) => {
         this.logger.error(`WebSocket error: ${error.message}`);
+        this.clearRelayHeartbeat();
+        this.clearRelayLivenessWatchdog();
         this.isConnecting = false;
       });
     } catch (error: unknown) {
@@ -531,12 +783,19 @@ export class RelayClient {
     const message: BridgeHelloMessage = {
       type: "bridge_hello",
       bridgeId: this.bridgeId,
-      version: getVersion(),
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      sessionId: this.relaySessionId,
+      lastProcessedSequence: this.lastProcessedSequence,
+      version: getRuntimeAppVersion(),
     };
     if (this.bridgeName) {
       message.bridgeName = this.bridgeName;
     }
-    void getRelayBridgeEnrollmentPublicKey()
+    const getEnrollmentPublicKey =
+      this.deps.getEnrollmentPublicKey ?? getRelayBridgeEnrollmentPublicKey;
+    const getVersionValue = this.deps.getVersion ?? getRuntimeAppVersion;
+    message.version = getVersionValue();
+    void getEnrollmentPublicKey()
       .then((identity) => {
         message.auth = {
           bridgeKeyId: identity.keyId,
@@ -572,12 +831,13 @@ export class RelayClient {
         return;
       }
       const message: RelayMessage = JSON.parse(messageText);
-      this.lastSeen = new Date();
+      this.lastSeen = (this.deps.now ?? (() => new Date()))();
 
       if (message.type === "bridge_auth_challenge") {
         await this.handleBridgeAuthChallenge(message);
       } else if (message.type === "bridge_auth_ok") {
         this.logger.info("Relay bridge auth successful");
+        void this.publishResyncSnapshots("bridge_auth_ok");
       } else if (message.type === "bridge_auth_error") {
         this.logger.warn(`Relay bridge auth failed: ${message.error}`);
         this.ws?.close();
@@ -604,8 +864,10 @@ export class RelayClient {
     }
 
     try {
+      const signAuthChallenge =
+        this.deps.signAuthChallenge ?? signRelayBridgeAuthChallenge;
       const { bridgeKeyId, algorithm, signature } =
-        await signRelayBridgeAuthChallenge({
+        await signAuthChallenge({
           bridgeId: message.bridgeId,
           challengeId: message.challengeId,
           nonce: message.nonce,
@@ -656,7 +918,8 @@ export class RelayClient {
       return;
     }
 
-    if (!isRelayCommand(message.command)) {
+    const isKnownRelayCommand = this.deps.isRelayCommand ?? isRelayCommand;
+    if (!isKnownRelayCommand(message.command)) {
       this.logger.warn(`Rejected unknown command: ${String(message.command)}`);
       this.send({
         type: "command_result",
@@ -672,11 +935,38 @@ export class RelayClient {
       `Received relay command: ${command} (requestId: ${message.requestId})`,
     );
 
-    try {
-      const result = await commandRouter.handleCommand(
-        command,
-        message.payload,
+    const sequence =
+      Number.isInteger(message.sequence) && (message.sequence as number) > 0
+        ? (message.sequence as number)
+        : undefined;
+    if (sequence) {
+      this.lastProcessedSequence = Math.max(this.lastProcessedSequence, sequence);
+    }
+
+    const cachedResult = this.getCachedCommandResult(message.requestId);
+
+    const receivedMessage: CommandReceivedMessage = {
+      type: "command_received",
+      requestId: message.requestId,
+      bridgeId: this.bridgeId,
+      sequence,
+    };
+    this.send(receivedMessage);
+    if (cachedResult) {
+      this.lastProcessedSequence = Math.max(
+        this.lastProcessedSequence,
+        cachedResult.sequence ?? 0,
       );
+      this.send(cachedResult.result);
+      this.logger.debug?.(
+        `Replayed cached command_result for duplicate requestId: ${message.requestId}`,
+      );
+      return;
+    }
+
+    try {
+      const handleCommand = this.deps.handleCommand ?? defaultHandleCommand;
+      const result = await handleCommand(command, message.payload);
 
       // Send result back to relay
       const resultMessage: CommandResultMessage = {
@@ -688,6 +978,7 @@ export class RelayClient {
       };
 
       this.send(resultMessage);
+      this.cacheCommandResult(message.requestId, sequence, resultMessage);
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -701,6 +992,7 @@ export class RelayClient {
       };
 
       this.send(resultMessage);
+      this.cacheCommandResult(message.requestId, sequence, resultMessage);
     }
   }
 
@@ -725,73 +1017,29 @@ export class RelayClient {
   private async verifySignedCommand(
     message: RelayCommandMessage,
   ): Promise<void> {
-    if (!message.meta || !message.signature) {
-      throw new Error("Missing command signature");
+    if (this.deps.verifySignedCommand) {
+      await this.deps.verifySignedCommand(message);
+      return;
     }
-
-    const meta = message.meta;
-    if (
-      typeof meta.bridgeId !== "string" ||
-      typeof meta.orgId !== "string" ||
-      !Array.isArray(meta.scope) ||
-      typeof meta.iat !== "number" ||
-      typeof meta.exp !== "number" ||
-      typeof meta.jti !== "string" ||
-      typeof meta.kid !== "string"
-    ) {
-      throw new Error("Invalid command metadata");
-    }
-
-    if (meta.bridgeId !== this.bridgeId) {
-      throw new Error("Bridge ID mismatch");
-    }
-
-    const scopeToken = `command:${message.command}`;
-    if (!meta.scope.includes(scopeToken) && !meta.scope.includes("*")) {
-      throw new Error("Scope mismatch");
-    }
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (meta.exp + RELAY_COMMAND_SKEW_SECONDS < nowSec) {
-      throw new Error("Command expired");
-    }
-    if (meta.iat - RELAY_COMMAND_SKEW_SECONDS > nowSec) {
-      throw new Error("Command timestamp invalid");
-    }
-
-    pruneJtiCache(nowSec);
-    const existing = seenJti.get(meta.jti);
-    if (existing && existing > nowSec) {
-      throw new Error("Replay detected");
-    }
-
-    const publicKey = await getPublicKey(meta.kid);
-    if (!publicKey) {
-      throw new Error("Signing key not found");
-    }
-
-    const signingPayload = {
-      requestId: message.requestId,
-      command: message.command,
-      payload: message.payload ?? null,
-      meta,
-    };
-    const data = Buffer.from(stableStringify(signingPayload));
-    const signature = base64UrlDecode(message.signature);
-    const valid = verifySignature(null, data, publicKey, signature);
-    if (!valid) {
-      throw new Error("Invalid signature");
-    }
-
-    seenJti.set(meta.jti, meta.exp || nowSec + RELAY_COMMAND_TTL_SECONDS);
+    await verifySignedRelayCommand({
+      message,
+      bridgeId: this.bridgeId,
+      getPublicKey,
+      seenJti,
+      relayCommandSkewSeconds: RELAY_COMMAND_SKEW_SECONDS,
+      relayCommandTtlSeconds: RELAY_COMMAND_TTL_SECONDS,
+      maxJtiCacheSize: MAX_JTI_CACHE_SIZE,
+    });
   }
 
   /**
    * Schedule reconnect with exponential backoff
    */
   private scheduleReconnect(): void {
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
+    const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      clearTimeoutFn(this.reconnectTimer);
     }
 
     if (this.isShuttingDown) {
@@ -810,7 +1058,7 @@ export class RelayClient {
       `Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`,
     );
 
-    this.reconnectTimer = setTimeout(() => {
+    this.reconnectTimer = setTimeoutFn(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
@@ -821,9 +1069,12 @@ export class RelayClient {
    */
   async disconnect(): Promise<void> {
     this.isShuttingDown = true;
+    this.clearRelayHeartbeat();
+    this.clearRelayLivenessWatchdog();
 
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      clearTimeoutFn(this.reconnectTimer);
       this.reconnectTimer = null;
     }
 

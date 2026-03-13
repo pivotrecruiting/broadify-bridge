@@ -24,7 +24,7 @@ jobs:
           - os: windows-latest
             artifact: win-x64
             dist_script: dist:win
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             artifact: linux-x64
             dist_script: dist:linux
 
@@ -49,11 +49,53 @@ jobs:
       DECKLINK_HELPER_SHA256_ARM64: ${{ secrets.DECKLINK_HELPER_SHA256_ARM64 }}
       DECKLINK_HELPER_URL_X64: ${{ secrets.DECKLINK_HELPER_URL_X64 }}
       DECKLINK_HELPER_SHA256_X64: ${{ secrets.DECKLINK_HELPER_SHA256_X64 }}
+      SDL2_MACOS_URL_ARM64: ${{ secrets.SDL2_MACOS_URL_ARM64 }}
+      SDL2_MACOS_SHA256_ARM64: ${{ secrets.SDL2_MACOS_SHA256_ARM64 }}
+      SDL2_MACOS_URL_X64: ${{ secrets.SDL2_MACOS_URL_X64 }}
+      SDL2_MACOS_SHA256_X64: ${{ secrets.SDL2_MACOS_SHA256_X64 }}
       BRIDGE_RELAY_JWKS_URL: ${{ secrets.BRIDGE_RELAY_JWKS_URL }}
+      RELAY_URL: ${{ secrets.RELAY_URL }}
+      BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
+      RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
+      DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
+      DECKLINK_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
+      MACOS_FLOOR_VERSION: "13.0"
+      SDL2_STRICT_MINOS: "1"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Resolve release channel and relay config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${GITHUB_REF_NAME:-}"
+          CHANNEL="latest"
+          RESOLVED_RELAY_URL="${RELAY_URL:-}"
+          RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL:-}"
+
+          if [[ "$TAG_NAME" == *"-rc."* ]]; then
+            CHANNEL="rc"
+            RESOLVED_RELAY_URL="${RELAY_URL_RC:-}"
+            RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL_RC:-}"
+          fi
+
+          if [[ "$CHANNEL" == "rc" ]]; then
+            if [[ -z "$RESOLVED_RELAY_URL" || -z "$RESOLVED_RELAY_JWKS_URL" ]]; then
+              echo "RC releases require RELAY_URL_RC and BRIDGE_RELAY_JWKS_URL_RC secrets." >&2
+              exit 1
+            fi
+          fi
+
+          echo "BROADIFY_UPDATER_CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
+          echo "RESOLVED_RELAY_URL=$RESOLVED_RELAY_URL" >> "$GITHUB_ENV"
+          echo "RESOLVED_BRIDGE_RELAY_JWKS_URL=$RESOLVED_RELAY_JWKS_URL" >> "$GITHUB_ENV"
+          echo "Resolved updater channel: $CHANNEL"
+          if [[ -n "$RESOLVED_RELAY_URL" ]]; then
+            echo "Resolved relay URL for channel $CHANNEL."
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -65,12 +107,77 @@ jobs:
             apps/bridge/package-lock.json
 
       - name: Install root deps
+        if: matrix.os != 'windows-latest'
         run: npm ci
 
+      - name: Install root deps (Windows, retry)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Running npm ci (attempt $attempt/$maxAttempts)..."
+            & npm ci
+
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "npm ci succeeded."
+              exit 0
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Write-Warning "npm ci failed with exit code $LASTEXITCODE. Retrying in 20 seconds..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+          throw "npm ci failed after $maxAttempts attempts."
+
       - name: Install Bridge dependencies
+        if: matrix.os != 'windows-latest'
         run: |
           cd apps/bridge
           npm ci
+
+      - name: Install Bridge dependencies (Windows, retry)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Running apps/bridge npm ci (attempt $attempt/$maxAttempts)..."
+            Push-Location apps/bridge
+            & npm ci
+            $exitCode = $LASTEXITCODE
+            Pop-Location
+
+            if ($exitCode -eq 0) {
+              Write-Host "apps/bridge npm ci succeeded."
+              exit 0
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Write-Warning "apps/bridge npm ci failed with exit code $exitCode. Retrying in 20 seconds..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+          throw "apps/bridge npm ci failed after $maxAttempts attempts."
+
+      - name: Install Linux packaging dependencies (AppImage)
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          if apt-cache show libfuse2 >/dev/null 2>&1; then
+            sudo apt-get install -y libfuse2 file
+          else
+            sudo apt-get install -y libfuse2t64 file
+          fi
 
       - name: Build Bridge (apps/bridge)
         run: |
@@ -86,28 +193,75 @@ jobs:
       - name: Prepare Bridge config for packaging
         shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p apps/bridge/dist
-          if [ -n "${BRIDGE_RELAY_JWKS_URL:-}" ]; then
+          {
+            echo "# Generated by release workflow"
+            echo "BROADIFY_UPDATER_CHANNEL=${BROADIFY_UPDATER_CHANNEL:-latest}"
+            if [ -n "${RESOLVED_RELAY_URL:-}" ]; then
+              echo "RELAY_URL=${RESOLVED_RELAY_URL}"
+            fi
+            if [ -n "${RESOLVED_BRIDGE_RELAY_JWKS_URL:-}" ]; then
+              echo "BRIDGE_RELAY_JWKS_URL=${RESOLVED_BRIDGE_RELAY_JWKS_URL}"
+            fi
+          } > apps/bridge/dist/.env
+          if [ -n "${RESOLVED_BRIDGE_RELAY_JWKS_URL:-}" ]; then
             node -e "
               const fs = require('fs');
               const p = 'config/default.json';
               const c = JSON.parse(fs.readFileSync(p, 'utf8'));
               c.relay = c.relay || {};
-              c.relay.jwksUrl = process.env.BRIDGE_RELAY_JWKS_URL;
+              c.relay.jwksUrl = process.env.RESOLVED_BRIDGE_RELAY_JWKS_URL;
               fs.writeFileSync(p, JSON.stringify(c, null, 2));
             "
           fi
           echo "Bridge config prepared"
 
-      - name: Install SDL2 (macOS, for display-helper)
+      - name: Resolve SDL2 bundle (macOS, for display-helper)
         if: matrix.os == 'macos-15'
-        run: brew install sdl2
+        run: npm run ensure:sdl2-macos
 
       # node-gyp (used by build:framebus) requires distutils, removed in Python 3.12+
       - name: Setup Python for node-gyp
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Setup MSVC Developer Command Prompt (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install SDL2 (Windows, for display-helper)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) {
+            if (Test-Path 'C:\vcpkg') {
+              $vcpkgRoot = 'C:\vcpkg'
+            } else {
+              $vcpkgRoot = Join-Path $env:RUNNER_TEMP 'vcpkg'
+            }
+          }
+
+          if (-not (Test-Path $vcpkgRoot)) {
+            git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          }
+
+          $vcpkgExe = Join-Path $vcpkgRoot 'vcpkg.exe'
+          if (-not (Test-Path $vcpkgExe)) {
+            & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
+          }
+
+          & $vcpkgExe install sdl2:x64-windows
+
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SDL2_DIR=$(Join-Path $vcpkgRoot 'installed\x64-windows')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Validate Windows Trusted Signing configuration
         if: matrix.os == 'windows-latest'
@@ -205,6 +359,24 @@ jobs:
           echo "APPLE_API_KEY=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Build Electron App
+        if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
+        run: npm run ${{ matrix.dist_script }} -- --publish=never
+
+      - name: Linux packaging diagnostics
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_BUILDER="node_modules/app-builder-bin/linux/x64/app-builder"
+          ls -lah "$APP_BUILDER"
+          file "$APP_BUILDER"
+          ldd "$APP_BUILDER" || true
+
+      - name: Build Electron App (Linux, debug)
+        if: startsWith(matrix.os, 'ubuntu-')
+        env:
+          DEBUG: electron-builder,builder-util
+          ELECTRON_BUILDER_LOG_LEVEL: debug
         run: npm run ${{ matrix.dist_script }} -- --publish=never
 
       - name: Verify Windows signatures
@@ -240,6 +412,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             dist/*.dmg
+            dist/*.zip
             dist/*.exe
             dist/*.msi
             dist/*.AppImage
@@ -265,17 +438,10 @@ jobs:
           echo "Artifacts structure:"
           find artifacts -type f -name "*" | sort || true
 
-      - name: Rename duplicate files to avoid conflicts
+      - name: Prepare release artifacts
         run: |
           # Remove builder-debug.yml files (not needed for releases)
           find artifacts -name "builder-debug.yml" -delete 2>/dev/null || true
-          # Rename latest-mac.yml files to be unique per macOS architecture
-          if [ -f "artifacts/mac-arm64/latest-mac.yml" ]; then
-            mv "artifacts/mac-arm64/latest-mac.yml" "artifacts/mac-arm64/latest-mac-arm64.yml" 2>/dev/null || true
-          fi
-          if [ -f "artifacts/mac-x64/latest-mac.yml" ]; then
-            mv "artifacts/mac-x64/latest-mac.yml" "artifacts/mac-x64/latest-mac-x64.yml" 2>/dev/null || true
-          fi
           echo "Final artifacts structure:"
           find artifacts -type f | sort || true
 
@@ -286,7 +452,7 @@ jobs:
           name: Release ${{ github.ref_name }}
           files: artifacts/**/*
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-rc.') }}
           generate_release_notes: false
           fail_on_unmatched_files: false
         env:

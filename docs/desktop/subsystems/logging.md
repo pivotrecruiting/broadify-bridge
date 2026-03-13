@@ -8,9 +8,12 @@ Beschreibt Logging‑Pfad und Log‑Abruf für App und Bridge.
 sequenceDiagram
   participant UI as Renderer UI
   participant Main as Main Process
+  participant AppLogs as app-logs.ts
   participant Bridge as Bridge HTTP
 
   UI->>Main: appGetLogs()
+  Main->>AppLogs: read app.log
+  AppLogs-->>Main: app logs
   Main-->>UI: app logs
 
   UI->>Main: bridgeGetLogs()
@@ -23,6 +26,7 @@ sequenceDiagram
 - `src/electron/services/app-logger.ts`
 - `src/electron/services/app-logs.ts`
 - `src/electron/services/bridge-logs.ts`
+- `src/electron/services/bridge-process-manager.ts` (Production Spawn-Log)
 
 ## Debug‑Flags
 - Bridge‑Stdout im Main Process nur bei `BRIDGE_LOG_BRIDGE_STDOUT=1`.
@@ -33,3 +37,4 @@ sequenceDiagram
 - `src/electron/services/app-logger.ts`
 - `src/electron/services/app-logs.ts`
 - `src/electron/services/bridge-logs.ts`
+- `src/electron/services/bridge-process-manager.ts`

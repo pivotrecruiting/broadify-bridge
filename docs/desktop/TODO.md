@@ -40,7 +40,7 @@ Ziel: Vollständige interne Dokumentation der Desktop-App inkl. Main/Preload/Ren
 - [ ] Build/Run (Vite, electron-vite), Dev vs Prod
 - [ ] Environment-Variablen & Flags
 - [ ] Troubleshooting & Debug-Checkliste (IPC/Bridge/Renderer)
-- [ ] Packaging/Updater-Readiness (electron-builder, electron-updater)
+- [x] Packaging/Updater-Readiness (electron-builder, electron-updater)
 
 ## Abnahmekriterien (Definition of Done)
 - [x] Jede Stufe hat eigene `.md` Dateien in `docs/desktop/`

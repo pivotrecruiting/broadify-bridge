@@ -1,11 +1,24 @@
+const fs = require("fs");
 const baseConfig = require("./electron-builder.json");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
+const updaterChannel =
+  typeof process.env.BROADIFY_UPDATER_CHANNEL === "string" &&
+  process.env.BROADIFY_UPDATER_CHANNEL.trim() !== ""
+    ? process.env.BROADIFY_UPDATER_CHANNEL.trim()
+    : "latest";
+const isRcChannel = updaterChannel === "rc";
 
 const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
   "apps/bridge/native/display-helper/display-helper",
+  "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
 ]);
+
+if (isRcChannel) {
+  config.appId = "com.broadify.bridge.rc";
+  config.productName = "Broadify Bridge RC";
+}
 
 // Keep macOS-only helper binaries out of Windows/Linux packaging to avoid missing-file warnings.
 const macOnlyResources = (config.extraResources || []).filter((entry) =>
@@ -22,21 +35,52 @@ config.mac.extraResources = [
   ...macOnlyResources,
 ];
 
+// Keep artifact names deterministic so the published release assets match
+// the filenames referenced inside the generated updater metadata.
+if (!config.artifactName) {
+  config.artifactName = isRcChannel
+    ? "Broadify-Bridge-RC-${version}-${arch}.${ext}"
+    : "Broadify-Bridge-${version}-${arch}.${ext}";
+}
+
+config.generateUpdatesFilesForAllChannels = true;
+
+if (Array.isArray(config.publish)) {
+  config.publish = config.publish.map((entry) => ({
+    ...entry,
+    channel: updaterChannel,
+  }));
+}
+
+if (config.win) {
+  config.win.extraResources = [
+    ...(config.win.extraResources || []),
+    {
+      from: "apps/bridge/native/display-helper/display-helper.exe",
+      to: "native/display-helper/display-helper.exe",
+    },
+  ];
+
+  const sdlRuntimePath = "apps/bridge/native/display-helper/SDL2.dll";
+  if (fs.existsSync(sdlRuntimePath)) {
+    config.win.extraResources.push({
+      from: sdlRuntimePath,
+      to: "native/display-helper/SDL2.dll",
+    });
+  }
+}
+
 if (config.win) {
   const productName =
     typeof config.productName === "string" && config.productName.trim() !== ""
       ? config.productName.trim()
       : "App";
-  const windowsArtifactBaseName = productName.replace(/\s+/g, "-");
   const windowsExecutableBaseName = productName.replace(/\s+/g, "");
 
   // Work around electron-builder 25.1.8 Azure Trusted Signing command construction,
   // which does not quote the Files parameter and breaks on paths containing spaces.
   if (!config.win.executableName) {
     config.win.executableName = windowsExecutableBaseName;
-  }
-  if (!config.win.artifactName) {
-    config.win.artifactName = `${windowsArtifactBaseName}-\${version}-\${arch}.\${ext}`;
   }
 }
 

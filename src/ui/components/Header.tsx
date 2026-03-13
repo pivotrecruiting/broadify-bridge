@@ -1,21 +1,28 @@
-import { Settings } from "lucide-react";
+import { CloudDownload, Settings } from "lucide-react";
 import type { BridgeStatus } from "@broadify/protocol";
 import { StatusIndicator } from "./StatusIndicator";
 import logo from "../assets/logo.svg";
 
 interface HeaderProps {
   bridgeStatus: BridgeStatus;
+  hasUpdateAvailable: boolean;
   onOpenDiagnostics: () => void;
+  onOpenUpdates: () => void;
 }
 
 /**
  * Header component with logo, settings button, and status indicator
  */
-export function Header({ bridgeStatus, onOpenDiagnostics }: HeaderProps) {
+export function Header({
+  bridgeStatus,
+  hasUpdateAvailable,
+  onOpenDiagnostics,
+  onOpenUpdates,
+}: HeaderProps) {
   return (
     <>
       <div className="flex items-center justify-between mb-2 sm:mb-2 md:mb-3">
-        <div className="flex items-center justify-start w-[100px] sm:w-[120px]">
+        <div className="flex items-center justify-start gap-4 w-[120px] sm:w-[140px]">
           <button
             className="text-card-foreground hover:text-card-foreground/80 transition-colors"
             onClick={onOpenDiagnostics}
@@ -23,11 +30,31 @@ export function Header({ bridgeStatus, onOpenDiagnostics }: HeaderProps) {
           >
             <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
+          <button
+            className={`relative transition-colors ${
+              hasUpdateAvailable
+                ? "update-attention-button text-primary"
+                : "text-card-foreground hover:text-card-foreground/80"
+            }`}
+            onClick={onOpenUpdates}
+            aria-label={hasUpdateAvailable ? "Open updates, new version available" : "Open updates"}
+            title={hasUpdateAvailable ? "Software update available" : "Open updates"}
+          >
+            <CloudDownload
+              className={`w-5 h-5 sm:w-6 sm:h-6 ${hasUpdateAvailable ? "update-attention-icon" : ""}`}
+            />
+            {hasUpdateAvailable ? (
+              <span
+                className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-primary"
+                aria-hidden="true"
+              />
+            ) : null}
+          </button>
         </div>
         <div className="flex-1 flex justify-center">
           <img src={logo} alt="broadify" className="h-14 sm:h-16 md:h-20" />
         </div>
-        <div className="flex items-center justify-end gap-2 w-[100px] sm:w-[120px]">
+        <div className="flex items-center justify-end gap-2 w-[120px] sm:w-[140px]">
           <StatusIndicator status={bridgeStatus} />
         </div>
       </div>

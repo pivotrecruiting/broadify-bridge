@@ -1,4 +1,6 @@
 import type {
+  AppUpdaterActionResultT,
+  AppUpdaterStatusT,
   AppLogClearResponseT,
   AppLogResponseT,
   BridgeConfig,
@@ -65,6 +67,13 @@ declare global {
       appGetLogs: (options?: LogFetchOptionsT) => Promise<AppLogResponseT>;
       bridgeClearLogs: () => Promise<BridgeLogClearResponseT>;
       appClearLogs: () => Promise<AppLogClearResponseT>;
+      updaterGetStatus: () => Promise<AppUpdaterStatusT>;
+      updaterCheckForUpdates: () => Promise<AppUpdaterActionResultT>;
+      updaterDownloadUpdate: () => Promise<AppUpdaterActionResultT>;
+      updaterQuitAndInstall: () => Promise<AppUpdaterActionResultT>;
+      subscribeUpdaterStatus: (
+        callback: (status: AppUpdaterStatusT) => void
+      ) => UnsubscribeFunction;
       engineConnect: (
         ip?: string,
         port?: number

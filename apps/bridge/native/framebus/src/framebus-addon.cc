@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <atomic>
+#include <limits>
 #include <string>
 
 #include "framebus.h"
@@ -23,7 +24,7 @@ struct FrameBusHandle {
   std::string name;
   size_t size;
 #if defined(_WIN32)
-  HANDLE map_handle;
+  HANDLE map_handle = nullptr;
 #else
   int fd;
 #endif
@@ -31,6 +32,31 @@ struct FrameBusHandle {
   FrameBusHeader* header;
   uint8_t* slots;
 };
+
+std::string NormalizeFrameBusName(const std::string& input) {
+#if defined(_WIN32)
+  std::string sanitized;
+  sanitized.reserve(input.size());
+  for (char ch : input) {
+    if (ch == '/' || ch == '\\') {
+      continue;
+    }
+    sanitized.push_back(ch);
+  }
+  if (sanitized.empty()) {
+    return std::string();
+  }
+  return std::string("Local\\") + sanitized;
+#else
+  if (input.empty()) {
+    return std::string();
+  }
+  if (input[0] == '/') {
+    return input;
+  }
+  return std::string("/") + input;
+#endif
+}
 
 napi_value ThrowError(napi_env env, const char* message) {
   napi_throw_error(env, nullptr, message);
@@ -285,9 +311,6 @@ napi_value ReaderReadLatest(napi_env env, napi_callback_info info) {
 }
 
 napi_value CreateWriter(napi_env env, napi_callback_info info) {
-#if defined(_WIN32)
-  return ThrowError(env, "FrameBus createWriter not implemented on Windows yet");
-#else
   size_t argc = 1;
   napi_value argv[1];
   napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
@@ -303,11 +326,10 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
   if (!GetString(env, name_value, &name)) {
     return ThrowError(env, "Invalid name");
   }
+  const std::string original_name = name;
+  name = NormalizeFrameBusName(name);
   if (name.empty()) {
     return ThrowError(env, "FrameBus name is required");
-  }
-  if (name[0] != '/') {
-    name = "/" + name;
   }
 
   bool force_recreate = false;
@@ -370,6 +392,29 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
 
   const size_t total_size = static_cast<size_t>(total_size_64);
 
+#if defined(_WIN32)
+  DWORD size_high = static_cast<DWORD>((total_size_64 >> 32) & 0xFFFFFFFFu);
+  DWORD size_low = static_cast<DWORD>(total_size_64 & 0xFFFFFFFFu);
+  HANDLE map_handle = CreateFileMappingA(INVALID_HANDLE_VALUE,
+                                         nullptr,
+                                         PAGE_READWRITE,
+                                         size_high,
+                                         size_low,
+                                         name.c_str());
+  if (!map_handle) {
+    return ThrowError(env, "Failed to create shared memory");
+  }
+
+  // Windows named file mappings cannot be force-unlinked while opened by another process.
+  // We always reinitialize the header to ensure deterministic writer state.
+  (void)force_recreate;
+
+  void* base = MapViewOfFile(map_handle, FILE_MAP_ALL_ACCESS, 0, 0, total_size);
+  if (!base) {
+    CloseHandle(map_handle);
+    return ThrowError(env, "Failed to map shared memory");
+  }
+#else
   if (force_recreate) {
     shm_unlink(name.c_str());
   }
@@ -389,6 +434,7 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
     close(fd);
     return ThrowError(env, "Failed to map shared memory");
   }
+#endif
 
   auto* header = static_cast<FrameBusHeader*>(base);
   header->magic = FRAMEBUS_MAGIC_LE;
@@ -408,9 +454,13 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
 
   FrameBusHandle* handle = new FrameBusHandle();
   handle->is_writer = true;
-  handle->name = name;
+  handle->name = original_name;
   handle->size = total_size;
+#if defined(_WIN32)
+  handle->map_handle = map_handle;
+#else
   handle->fd = fd;
+#endif
   handle->base = static_cast<uint8_t*>(base);
   handle->header = header;
   handle->slots = handle->base + FRAMEBUS_HEADER_SIZE;
@@ -439,13 +489,9 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, writer, "name", name_value_out);
 
   return writer;
-#endif
 }
 
 napi_value OpenReader(napi_env env, napi_callback_info info) {
-#if defined(_WIN32)
-  return ThrowError(env, "FrameBus openReader not implemented on Windows yet");
-#else
   size_t argc = 1;
   napi_value argv[1];
   napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
@@ -461,13 +507,23 @@ napi_value OpenReader(napi_env env, napi_callback_info info) {
   if (!GetString(env, name_value, &name)) {
     return ThrowError(env, "Invalid name");
   }
+  const std::string original_name = name;
+  name = NormalizeFrameBusName(name);
   if (name.empty()) {
     return ThrowError(env, "FrameBus name is required");
   }
-  if (name[0] != '/') {
-    name = "/" + name;
+#if defined(_WIN32)
+  HANDLE map_handle = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name.c_str());
+  if (!map_handle) {
+    return ThrowError(env, "Failed to open shared memory");
   }
 
+  void* base = MapViewOfFile(map_handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+  if (!base) {
+    CloseHandle(map_handle);
+    return ThrowError(env, "Failed to map shared memory");
+  }
+#else
   int fd = shm_open(name.c_str(), O_RDWR, 0600);
   if (fd < 0) {
     return ThrowError(env, "Failed to open shared memory");
@@ -479,30 +535,65 @@ napi_value OpenReader(napi_env env, napi_callback_info info) {
     return ThrowError(env, "Failed to stat shared memory");
   }
 
-  size_t total_size = static_cast<size_t>(st.st_size);
-  if (total_size < FRAMEBUS_HEADER_SIZE) {
+  size_t mapped_size = static_cast<size_t>(st.st_size);
+  if (mapped_size < FRAMEBUS_HEADER_SIZE) {
     close(fd);
     return ThrowError(env, "Shared memory size too small");
   }
 
-  void* base = mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  void* base = mmap(nullptr, mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (base == MAP_FAILED) {
     close(fd);
     return ThrowError(env, "Failed to map shared memory");
   }
+#endif
 
   auto* header = static_cast<FrameBusHeader*>(base);
   if (header->magic != FRAMEBUS_MAGIC_LE || header->header_size != FRAMEBUS_HEADER_SIZE) {
-    munmap(base, total_size);
+#if defined(_WIN32)
+    UnmapViewOfFile(base);
+    CloseHandle(map_handle);
+#else
+    munmap(base, mapped_size);
     close(fd);
+#endif
     return ThrowError(env, "Invalid FrameBus header");
+  }
+
+  uint64_t computed_total_size_64 = static_cast<uint64_t>(FRAMEBUS_HEADER_SIZE) +
+                                    static_cast<uint64_t>(header->slot_stride) *
+                                        static_cast<uint64_t>(header->slot_count);
+  if (computed_total_size_64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+#if defined(_WIN32)
+    UnmapViewOfFile(base);
+    CloseHandle(map_handle);
+#else
+    munmap(base, mapped_size);
+    close(fd);
+#endif
+    return ThrowError(env, "Shared memory size too large");
+  }
+  size_t total_size = static_cast<size_t>(computed_total_size_64);
+  if (total_size < FRAMEBUS_HEADER_SIZE) {
+#if defined(_WIN32)
+    UnmapViewOfFile(base);
+    CloseHandle(map_handle);
+#else
+    munmap(base, mapped_size);
+    close(fd);
+#endif
+    return ThrowError(env, "Shared memory size too small");
   }
 
   FrameBusHandle* handle = new FrameBusHandle();
   handle->is_writer = false;
-  handle->name = name;
+  handle->name = original_name;
   handle->size = total_size;
+#if defined(_WIN32)
+  handle->map_handle = map_handle;
+#else
   handle->fd = fd;
+#endif
   handle->base = static_cast<uint8_t*>(base);
   handle->header = header;
   handle->slots = handle->base + FRAMEBUS_HEADER_SIZE;
@@ -527,7 +618,6 @@ napi_value OpenReader(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, reader, "name", name_value_out);
 
   return reader;
-#endif
 }
 
 napi_value Init(napi_env env, napi_value exports) {

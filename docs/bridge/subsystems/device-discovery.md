@@ -1,7 +1,7 @@
 # Bridge Subsystem – Device Discovery
 
 ## Zweck
-Dieses Subsystem erkennt verfügbare Geräte (DeckLink, USB Capture), cached Ergebnisse und stellt sie der UI als Output‑Liste zur Verfügung.
+Dieses Subsystem erkennt verfügbare Geräte (DeckLink, Display, USB Capture), cached Ergebnisse und stellt sie der UI als Output‑Liste zur Verfügung.
 
 ## Verantwortlichkeiten
 - Registrierung von Device‑Modulen
@@ -15,6 +15,7 @@ Dieses Subsystem erkennt verfügbare Geräte (DeckLink, USB Capture), cached Erg
 - `apps/bridge/src/modules/module-registry.ts`
 - `apps/bridge/src/services/device-cache.ts`
 - `apps/bridge/src/modules/decklink/*`
+- `apps/bridge/src/modules/display/*`
 - `apps/bridge/src/modules/usb-capture/*`
 - `apps/bridge/src/routes/outputs.ts`
 
@@ -26,6 +27,7 @@ sequenceDiagram
   participant Cache as DeviceCache
   participant Registry as ModuleRegistry
   participant Decklink as DecklinkModule
+  participant Display as DisplayModule
   participant USB as USBCaptureModule
   participant Helper as Decklink Helper
 
@@ -33,9 +35,11 @@ sequenceDiagram
   Outputs->>Cache: getDevices(forceRefresh?)
   Cache->>Registry: detectAll()
   Registry->>Decklink: detect()
+  Registry->>Display: detect()
   Registry->>USB: detect()
   Decklink->>Helper: list devices + modes
   Decklink-->>Registry: DeckLink devices
+  Display-->>Registry: Display devices
   USB-->>Registry: USB devices
   Registry-->>Cache: combined devices
   Cache-->>Outputs: devices
@@ -49,7 +53,7 @@ sequenceDiagram
 
 ## Security & Risiken
 - **Native Helper:** DeckLink‑Helper wird per Child‑Process ausgeführt.
-- **Platform Abhängigkeit:** DeckLink nur macOS.
+- **Platform Abhängigkeit:** DeckLink nur macOS, Display-Module auf macOS/Windows.
 - **Untrusted Data:** Helper‑Output wird per Zod geparst und validiert.
 
 ## Relevante Dateien
@@ -57,5 +61,7 @@ sequenceDiagram
 - `apps/bridge/src/modules/module-registry.ts`
 - `apps/bridge/src/modules/decklink/decklink-detector.ts`
 - `apps/bridge/src/modules/decklink/decklink-helper.ts`
+- `apps/bridge/src/modules/display/display-module.ts`
+- `apps/bridge/src/modules/display/display-helper.ts`
 - `apps/bridge/src/modules/usb-capture/usb-capture-detector.ts`
 - `apps/bridge/src/routes/outputs.ts`

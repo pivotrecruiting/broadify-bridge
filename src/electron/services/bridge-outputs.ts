@@ -56,25 +56,22 @@ export async function fetchBridgeOutputs(
     return null;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    OUTPUTS_FETCH_TIMEOUT
+  );
+
   try {
     // Use localhost if host is 0.0.0.0 (0.0.0.0 is not a valid target for HTTP requests)
     const fetchHost = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
     const url = `http://${fetchHost}:${config.port}/outputs`;
     logDebug(`[OutputChecker] Fetching outputs from ${url}`);
 
-    // Use fetch with timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      OUTPUTS_FETCH_TIMEOUT
-    );
-
     const response = await fetch(url, {
       signal: controller.signal,
       method: "GET",
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       logDebug(
@@ -96,5 +93,7 @@ export async function fetchBridgeOutputs(
       error instanceof Error ? error.message : "Unknown error";
     logDebug(`[OutputChecker] Failed to fetch outputs: ${errorMessage}`);
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

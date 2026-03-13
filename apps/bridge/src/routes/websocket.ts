@@ -2,6 +2,11 @@ import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { websocketManager } from "../services/websocket-manager.js";
 import { engineAdapter } from "../services/engine-adapter.js";
 import { getAuthFailure } from "./route-guards.js";
+import {
+  buildWebSocketSnapshot,
+  normalizeWebSocketTopics,
+  type WebSocketTopicT,
+} from "./websocket-contract.js";
 
 /**
  * WebSocket message types
@@ -10,7 +15,16 @@ type ClientMessage =
   | { type: "subscribe"; topics: string[] }
   | { type: "unsubscribe"; topics: string[] };
 
-type Topic = "engine" | "video";
+type WebSocketRouteDepsT = {
+  websocketManager: Pick<
+    typeof websocketManager,
+    "registerClient" | "unregisterClient" | "subscribe" | "unsubscribe" | "sendSnapshot"
+  >;
+  engineAdapter: Pick<typeof engineAdapter, "getState">;
+  getAuthFailure: typeof getAuthFailure;
+};
+
+type WebSocketRouteOptionsT = FastifyPluginOptions & Partial<WebSocketRouteDepsT>;
 
 /**
  * Register WebSocket route
@@ -25,13 +39,20 @@ type Topic = "engine" | "video";
  */
 export async function registerWebSocketRoute(
   fastify: FastifyInstance,
-  _options: FastifyPluginOptions
+  options: WebSocketRouteOptionsT
 ): Promise<void> {
+  const deps: WebSocketRouteDepsT = {
+    websocketManager,
+    engineAdapter,
+    getAuthFailure,
+    ...options,
+  };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fastify.get("/ws", { websocket: true } as any, (connection, request) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = connection.socket as any;
-    const authFailure = getAuthFailure(request);
+    const authFailure = deps.getAuthFailure(request);
     if (authFailure) {
       fastify.log.warn(
         { reason: authFailure.message, ip: request.ip },
@@ -43,41 +64,13 @@ export async function registerWebSocketRoute(
     fastify.log.debug("[WebSocket] Client connected");
 
     // Register client
-    websocketManager.registerClient(client);
+    deps.websocketManager.registerClient(client);
 
     // Send snapshot for subscribed topics on connect
     const sendSnapshot = () => {
-      websocketManager.sendSnapshot(client, (topic: Topic) => {
-        if (topic === "engine") {
-          const state = engineAdapter.getState();
-          // Send appropriate event based on actual status
-          if (state.status === "connected") {
-            return {
-              type: "engine.connected",
-              state,
-            };
-          } else if (state.status === "error") {
-            return {
-              type: "engine.error",
-              error: state.error || "Unknown error",
-            };
-          } else {
-            // disconnected or connecting
-            return {
-              type: "engine.status",
-              status: state.status,
-              error: state.error,
-            };
-          }
-        } else if (topic === "video") {
-          // V1: Placeholder
-          return {
-            type: "video.status",
-            status: "not-configured",
-          };
-        }
-        return null;
-      });
+      deps.websocketManager.sendSnapshot(client, (topic: WebSocketTopicT) =>
+        buildWebSocketSnapshot(topic, deps.engineAdapter.getState()),
+      );
     };
 
     // Handle incoming messages
@@ -86,13 +79,10 @@ export async function registerWebSocketRoute(
         const data: ClientMessage = JSON.parse(message.toString());
 
         if (data.type === "subscribe") {
-          // Validate topics
-          const validTopics = data.topics.filter(
-            (t): t is Topic => t === "engine" || t === "video"
-          );
+          const validTopics = normalizeWebSocketTopics(data.topics);
 
           if (validTopics.length > 0) {
-            websocketManager.subscribe(client, validTopics);
+            deps.websocketManager.subscribe(client, validTopics);
             fastify.log.debug(
               `[WebSocket] Client subscribed to topics: ${validTopics.join(
                 ", "
@@ -103,12 +93,10 @@ export async function registerWebSocketRoute(
             sendSnapshot();
           }
         } else if (data.type === "unsubscribe") {
-          const validTopics = data.topics.filter(
-            (t): t is Topic => t === "engine" || t === "video"
-          );
+          const validTopics = normalizeWebSocketTopics(data.topics);
 
           if (validTopics.length > 0) {
-            websocketManager.unsubscribe(client, validTopics);
+            deps.websocketManager.unsubscribe(client, validTopics);
             fastify.log.debug(
               `[WebSocket] Client unsubscribed from topics: ${validTopics.join(
                 ", "
@@ -126,13 +114,13 @@ export async function registerWebSocketRoute(
     // Handle disconnect
     client.on("close", () => {
       fastify.log.debug("[WebSocket] Client disconnected");
-      websocketManager.unregisterClient(client);
+      deps.websocketManager.unregisterClient(client);
     });
 
     // Handle errors
     client.on("error", (error: Error) => {
       fastify.log.error({ err: error }, "[WebSocket] Error");
-      websocketManager.unregisterClient(client);
+      deps.websocketManager.unregisterClient(client);
     });
   });
 }

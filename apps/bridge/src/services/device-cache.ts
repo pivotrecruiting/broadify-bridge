@@ -2,6 +2,35 @@ import type { DeviceDescriptorT } from "@broadify/protocol";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { getBridgeContext } from "./bridge-context.js";
 
+type DeviceCacheLoggerT = {
+  debug?: (message: string) => void;
+  warn: (message: string) => void;
+};
+
+type DeviceCacheDepsT = {
+  moduleRegistry: Pick<typeof moduleRegistry, "getModuleNames" | "detectAll" | "watchAll">;
+  getLogger: () => DeviceCacheLoggerT;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  setTimeoutFn: typeof setTimeout;
+  clearTimeoutFn: typeof clearTimeout;
+};
+
+type DeviceCacheOptionsT = Partial<DeviceCacheDepsT> & {
+  cacheTtlMs?: number;
+  refreshRateLimitMs?: number;
+  watchDebounceMs?: number;
+};
+
+const defaultDeps: DeviceCacheDepsT = {
+  moduleRegistry,
+  getLogger: () => getBridgeContext().logger,
+  now: () => Date.now(),
+  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  setTimeoutFn: setTimeout,
+  clearTimeoutFn: clearTimeout,
+};
+
 /**
  * Device cache service.
  *
@@ -14,16 +43,28 @@ export class DeviceCache {
   private watchInitialized = false;
   private watchUnsubscribe: (() => void) | undefined;
   private watchRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private deps: DeviceCacheDepsT;
 
   /**
    * Cache TTL in milliseconds
    */
-  private readonly CACHE_TTL = 1000; // 1 second
+  private readonly cacheTtlMs: number;
 
   /**
    * Rate limit for manual refreshes in milliseconds
    */
-  private readonly REFRESH_RATE_LIMIT = 2000; // 2 seconds
+  private readonly refreshRateLimitMs: number;
+  private readonly watchDebounceMs: number;
+
+  constructor(options: DeviceCacheOptionsT = {}) {
+    this.deps = {
+      ...defaultDeps,
+      ...options,
+    };
+    this.cacheTtlMs = options.cacheTtlMs ?? 1000;
+    this.refreshRateLimitMs = options.refreshRateLimitMs ?? 2000;
+    this.watchDebounceMs = options.watchDebounceMs ?? 250;
+  }
 
   /**
    * Get cached devices or perform detection if cache expired.
@@ -32,16 +73,16 @@ export class DeviceCache {
    * @returns Array of detected devices.
    */
   async getDevices(forceRefresh = false): Promise<DeviceDescriptorT[]> {
-    const logger = getBridgeContext().logger;
+    const logger = this.deps.getLogger();
     const logDebug = logger.debug?.bind(logger);
-    const now = Date.now();
+    const now = this.deps.now();
     const timeSinceLastDetection = now - this.lastDetectionTime;
 
     // Check if refresh is needed
     const needsRefresh =
       forceRefresh ||
       this.cachedDevices.length === 0 ||
-      timeSinceLastDetection >= this.CACHE_TTL;
+      timeSinceLastDetection >= this.cacheTtlMs;
 
     if (!needsRefresh) {
       logDebug?.(
@@ -53,10 +94,10 @@ export class DeviceCache {
     // Check rate limit for manual refresh
     if (forceRefresh) {
       const timeSinceLastRefresh = now - this.lastDetectionTime;
-      if (timeSinceLastRefresh < this.REFRESH_RATE_LIMIT) {
+      if (timeSinceLastRefresh < this.refreshRateLimitMs) {
         throw new Error(
           `Rate limit exceeded. Please wait ${Math.ceil(
-            (this.REFRESH_RATE_LIMIT - timeSinceLastRefresh) / 1000
+            (this.refreshRateLimitMs - timeSinceLastRefresh) / 1000
           )} seconds`
         );
       }
@@ -67,7 +108,7 @@ export class DeviceCache {
       // Wait for ongoing detection
       logDebug?.("[Devices] Detection already in progress, waiting...");
       while (this.detectionInProgress) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await this.deps.wait(50);
       }
       return this.cachedDevices;
     }
@@ -75,12 +116,12 @@ export class DeviceCache {
     // Perform detection
     this.detectionInProgress = true;
     try {
-      const moduleNames = moduleRegistry.getModuleNames().join(", ");
+      const moduleNames = this.deps.moduleRegistry.getModuleNames().join(", ");
       logDebug?.(
         `[Devices] Detecting devices (forceRefresh=${forceRefresh}) [modules: ${moduleNames || "none"}]`
       );
-      this.cachedDevices = await moduleRegistry.detectAll();
-      this.lastDetectionTime = Date.now();
+      this.cachedDevices = await this.deps.moduleRegistry.detectAll();
+      this.lastDetectionTime = this.deps.now();
 
       const typeCounts = this.cachedDevices.reduce<Record<string, number>>(
         (acc, device) => {
@@ -123,9 +164,9 @@ export class DeviceCache {
     }
 
     this.watchInitialized = true;
-    const logger = getBridgeContext().logger;
+    const logger = this.deps.getLogger();
     const logDebug = logger.debug?.bind(logger);
-    this.watchUnsubscribe = moduleRegistry.watchAll((moduleName) => {
+    this.watchUnsubscribe = this.deps.moduleRegistry.watchAll((moduleName) => {
       logDebug?.(`[Devices] Watch update from ${moduleName}`);
       this.scheduleWatchRefresh();
     });
@@ -139,9 +180,9 @@ export class DeviceCache {
       return;
     }
 
-    this.watchRefreshTimer = setTimeout(async () => {
+    this.watchRefreshTimer = this.deps.setTimeoutFn(async () => {
       this.watchRefreshTimer = undefined;
-      const logger = getBridgeContext().logger;
+      const logger = this.deps.getLogger();
       const logDebug = logger.debug?.bind(logger);
       if (this.detectionInProgress) {
         logDebug?.("[Devices] Detection in progress, skipping watch refresh");
@@ -151,15 +192,15 @@ export class DeviceCache {
       this.detectionInProgress = true;
       try {
         logDebug?.("[Devices] Refreshing cache from watch event");
-        this.cachedDevices = await moduleRegistry.detectAll();
-        this.lastDetectionTime = Date.now();
+        this.cachedDevices = await this.deps.moduleRegistry.detectAll();
+        this.lastDetectionTime = this.deps.now();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(`[Devices] Watch refresh failed: ${message}`);
       } finally {
         this.detectionInProgress = false;
       }
-    }, 250);
+    }, this.watchDebounceMs);
   }
 
   /**
@@ -177,6 +218,10 @@ export class DeviceCache {
   clear(): void {
     this.cachedDevices = [];
     this.lastDetectionTime = 0;
+    if (this.watchRefreshTimer) {
+      this.deps.clearTimeoutFn(this.watchRefreshTimer);
+      this.watchRefreshTimer = undefined;
+    }
     if (this.watchUnsubscribe) {
       this.watchUnsubscribe();
       this.watchUnsubscribe = undefined;
@@ -190,10 +235,10 @@ export class DeviceCache {
    * @returns True when cache is recent and non-empty.
    */
   isFresh(): boolean {
-    const now = Date.now();
+    const now = this.deps.now();
     const timeSinceLastDetection = now - this.lastDetectionTime;
     return (
-      this.cachedDevices.length > 0 && timeSinceLastDetection < this.CACHE_TTL
+      this.cachedDevices.length > 0 && timeSinceLastDetection < this.cacheTtlMs
     );
   }
 }

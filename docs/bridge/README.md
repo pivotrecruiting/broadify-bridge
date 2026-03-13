@@ -2,6 +2,7 @@
 
 ## Einstieg
 - Architektur & Struktur: `docs/bridge/architecture-overview.md`
+- Globale Dataflows: `docs/bridge/dataflows.md`
 - Subsystem Graphics: `docs/bridge/subsystems/graphics.md`
 - Subsystem Relay & Command Router: `docs/bridge/subsystems/relay-command-router.md`
 - Subsystem Device Discovery: `docs/bridge/subsystems/device-discovery.md`
@@ -30,5 +31,5 @@
 5. Betrieb & Entwicklung
 
 ## Status
-- Stufe 1: begonnen
-- Stufe 2–5: geplant
+- Architektur/Subsysteme/Features: laufend gepflegt
+- Datei-Referenzen: teilweise historisch, auf aktive Implementierung ausgerichtet

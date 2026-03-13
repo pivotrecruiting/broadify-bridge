@@ -72,7 +72,7 @@ export function buildSingleWindowDocument(): string {
         return (root && root.querySelector('[data-root="graphic"]')) || root;
       };
 
-      const applyAnimationClass = (element, animationClass) => {
+      const applyAnimationState = (element, animationClass, isExit) => {
         if (!element) return;
         if (!element.classList.contains("root")) {
           element.classList.add("root");
@@ -80,17 +80,104 @@ export function buildSingleWindowDocument(): string {
         const classes = String(element.className || "")
           .split(/\\s+/)
           .filter((entry) => entry.length > 0);
+        const currentAnimationClass = classes.find((entry) =>
+          entry.startsWith("anim-"),
+        );
         const nextClasses = classes.filter(
           (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
         );
-        if (animationClass) {
-          nextClasses.push(animationClass);
+        const nextAnimationClass =
+          animationClass || currentAnimationClass || "anim-ease-out";
+        if (nextAnimationClass) {
+          nextClasses.push(nextAnimationClass);
         }
-        if (!nextClasses.includes("state-enter")) {
+        if (isExit) {
+          if (!nextClasses.includes("state-exit")) {
+            nextClasses.push("state-exit");
+          }
+        } else if (!nextClasses.includes("state-enter")) {
           nextClasses.push("state-enter");
         }
         element.className = nextClasses.join(" ");
       };
+
+      const parseAnimationTimeValues = (value) => {
+        return String(value || "")
+          .split(",")
+          .map((entry) => String(entry || "").trim())
+          .map((entry) => {
+            if (!entry) {
+              return 0;
+            }
+            if (entry.endsWith("ms")) {
+              return Number.parseFloat(entry);
+            }
+            if (entry.endsWith("s")) {
+              return Number.parseFloat(entry) * 1000;
+            }
+            const numericValue = Number.parseFloat(entry);
+            return Number.isFinite(numericValue) ? numericValue : 0;
+          })
+          .map((valueInMs) => Number.isFinite(valueInMs) ? valueInMs : 0);
+      };
+
+      const getAnimatedElements = (rootElement) => {
+        if (!rootElement) {
+          return [];
+        }
+        const result = [];
+        if (rootElement.matches && rootElement.matches("[data-animate]")) {
+          result.push(rootElement);
+        }
+        if (rootElement.querySelectorAll) {
+          rootElement.querySelectorAll("[data-animate]").forEach((node) => {
+            result.push(node);
+          });
+        }
+        return result;
+      };
+
+      const getExitDurationMs = (rootElement) => {
+        const animatedElements = getAnimatedElements(rootElement);
+        if (!animatedElements.length) {
+          return 0;
+        }
+        let maxDuration = 0;
+        animatedElements.forEach((element) => {
+          const computedStyle = getComputedStyle(element);
+          if (!computedStyle || computedStyle.animationName === "none") {
+            return;
+          }
+          const names = String(computedStyle.animationName || "")
+            .split(",")
+            .map((entry) => String(entry || "").trim())
+            .filter((entry) => entry && entry !== "none");
+          if (!names.length) {
+            return;
+          }
+          const durations = parseAnimationTimeValues(
+            computedStyle.animationDuration,
+          );
+          const delays = parseAnimationTimeValues(
+            computedStyle.animationDelay,
+          );
+
+          for (let index = 0; index < names.length; index += 1) {
+            const duration = durations[index] ?? 0;
+            const delay = delays[index] ?? 0;
+            const totalMs = duration + delay;
+            if (Number.isFinite(totalMs)) {
+              maxDuration = Math.max(maxDuration, totalMs);
+            }
+          }
+        });
+        return maxDuration;
+      };
+
+      const waitForNextFrame = () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => resolve(undefined));
+        });
 
       const applyCssVariables = (host, vars) => {
         if (!host || !vars) return;
@@ -236,7 +323,7 @@ export function buildSingleWindowDocument(): string {
         }
 
         const rootElement = getRootElement(container);
-        applyAnimationClass(rootElement, nextBindings.animationClass);
+        applyAnimationState(rootElement, nextBindings.animationClass, false);
         applyTextContent(rootElement, nextBindings.textContent, nextBindings.textTypes);
         applyCssVariables(layer.host, nextBindings.cssVariables);
       };
@@ -250,10 +337,38 @@ export function buildSingleWindowDocument(): string {
         applyLayout(layer.host, layout);
       };
 
-      window.__removeLayer = (layerId) => {
+      window.__removeLayer = async (layerId) => {
         const layer = layers.get(layerId);
-        if (!layer) return;
-        layer.host.remove();
+        const host =
+          layer?.host || document.querySelector('[data-layer-id="' + layerId + '"]');
+        if (!host) {
+          if (layer) {
+            layers.delete(layerId);
+          }
+          return;
+        }
+
+        const container =
+          layer?.container ||
+          (host.shadowRoot ? host.shadowRoot.querySelector("#graphic-root") : null);
+        const rootElement = getRootElement(container);
+        const shouldAnimate = getAnimatedElements(rootElement).length > 0;
+        if (rootElement) {
+          applyAnimationState(rootElement, layer?.bindings?.animationClass, true);
+        }
+
+        if (shouldAnimate) {
+          const exitMs = getExitDurationMs(rootElement);
+          if (exitMs > 0) {
+            await new Promise((resolve) => {
+              setTimeout(resolve, exitMs);
+            });
+          } else {
+            await waitForNextFrame();
+          }
+        }
+
+        host.remove();
         layers.delete(layerId);
       };
     </script>

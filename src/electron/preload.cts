@@ -46,6 +46,19 @@ type ElectronApi = {
   }) => Promise<EventPayloadMapping["appGetLogs"]>;
   bridgeClearLogs: () => Promise<EventPayloadMapping["bridgeClearLogs"]>;
   appClearLogs: () => Promise<EventPayloadMapping["appClearLogs"]>;
+  updaterGetStatus: () => Promise<EventPayloadMapping["updaterGetStatus"]>;
+  updaterCheckForUpdates: () => Promise<
+    EventPayloadMapping["updaterCheckForUpdates"]
+  >;
+  updaterDownloadUpdate: () => Promise<
+    EventPayloadMapping["updaterDownloadUpdate"]
+  >;
+  updaterQuitAndInstall: () => Promise<
+    EventPayloadMapping["updaterQuitAndInstall"]
+  >;
+  subscribeUpdaterStatus: (
+    callback: (status: EventPayloadMapping["updaterStatus"]) => void
+  ) => UnsubscribeFunction;
   engineConnect: (
     ip?: string,
     port?: number
@@ -97,6 +110,16 @@ electron.contextBridge.exposeInMainWorld("electron", {
     ipcInvoke("appGetLogs", options),
   bridgeClearLogs: () => ipcInvoke("bridgeClearLogs"),
   appClearLogs: () => ipcInvoke("appClearLogs"),
+  updaterGetStatus: () => ipcInvoke("updaterGetStatus"),
+  updaterCheckForUpdates: () => ipcInvoke("updaterCheckForUpdates"),
+  updaterDownloadUpdate: () => ipcInvoke("updaterDownloadUpdate"),
+  updaterQuitAndInstall: () => ipcInvoke("updaterQuitAndInstall"),
+  subscribeUpdaterStatus: (
+    callback: (status: EventPayloadMapping["updaterStatus"]) => void
+  ) =>
+    ipcOn("updaterStatus", (status) => {
+      callback(status);
+    }),
   engineConnect: (ip?: string, port?: number) =>
     ipcInvoke("engineConnect", ip, port),
   engineDisconnect: () => ipcInvoke("engineDisconnect"),

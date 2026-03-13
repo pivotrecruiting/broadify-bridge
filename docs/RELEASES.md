@@ -21,6 +21,7 @@ Die Versionierung folgt dem [Semantic Versioning](https://semver.org/) Format:
 - **Major** (z.B. `1.0.0`): Breaking Changes
 - **Minor** (z.B. `0.1.0`): Neue Features, rückwärtskompatibel
 - **Patch** (z.B. `0.0.1`): Bugfixes, rückwärtskompatibel
+- **RC / Test-Release** (z.B. `0.1.0-rc.1`): Downloadbarer Produktions-Testbuild auf separatem Update-Kanal
 
 ### Version in package.json
 
@@ -39,6 +40,36 @@ Git Tags müssen dem Format `v{VERSION}` entsprechen:
 - `v1.0.0` für Major Release
 - `v0.1.0` für Minor Release
 - `v0.0.1` für Patch Release
+- `v0.1.0-rc.1` für einen downloadbaren RC-/Test-Release
+
+## Release-Kanäle
+
+- `latest`: Standardkanal für produktive Nutzer
+- `rc`: Downloadbarer Produktions-Testkanal für Live-Prüfung vor dem echten Rollout
+
+Regel:
+
+- Tags ohne Suffix wie `v0.11.8` erzeugen ein normales GitHub Release auf Kanal `latest`.
+- Tags mit `-rc.N` wie `v0.11.8-rc.1` erzeugen ein GitHub Pre-Release auf Kanal `rc`.
+- Bestehende produktive Installationen bleiben auf `latest` und sehen `rc`-Builds nicht.
+- RC-Builds sind manuell über GitHub Pre-Releases downloadbar.
+- RC-Builds verwenden eine separate App-ID und einen separaten App-Namen (`Broadify Bridge RC`) und ersetzen daher die Live-App bei der Installation nicht.
+
+## NPM-Kommandos
+
+```bash
+# Test / RC
+npm run release:test -- --bugfix
+npm run release:test -- --feature
+
+# Live
+npm run release:live -- --bugfix
+npm run release:live -- --feature
+
+# RC fortsetzen oder zu stable promoten
+npm run release:test
+npm run release:live
+```
 
 ## Release-Prozess
 
@@ -58,11 +89,25 @@ git tag -a v0.1.0 -m "Release version 0.1.0"
 git push origin v0.1.0
 ```
 
+### RC / Produktions-Testrelease
+
+```bash
+git tag -a v0.1.0-rc.1 -m "RC version 0.1.0-rc.1"
+git push origin v0.1.0-rc.1
+```
+
+Ergebnis:
+
+- GitHub erstellt ein `prerelease`
+- die gepackte App verwendet den Update-Kanal `rc`
+- aktive Nutzer auf `latest` erhalten dadurch kein Software-Update
+- nach bestandenem Live-Test veröffentlichst du separat `v0.1.0`
+
 ### 3. Automatischer Build
 
 Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 
-- Build für alle Plattformen (macOS ARM64/x64, Windows x64, Linux x64)
+- Build für alle Plattformen (macOS ARM64, Windows x64, Linux x64)
 - Upload der Artefakte zu GitHub Releases
 - Erstellung eines GitHub Releases mit allen Download-Links
 
@@ -77,13 +122,13 @@ Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 ### macOS
 
 - **ARM64 (Apple Silicon)**: `broadify-bridge-{version}-arm64.dmg`
-- **x64 (Intel)**: `broadify-bridge-{version}-x64.dmg`
+- **Updater-Paket**: `Broadify-Bridge-{version}-{arch}.zip`
 - **Update-Metadaten**: `latest-mac.yml`
 
 ### Windows
 
-- **Portable**: `broadify-bridge-{version}-win-x64.exe`
-- **Installer**: `broadify-bridge-{version}-win-x64.msi`
+- **NSIS Installer (Updater-Pfad)**: `Broadify-Bridge-Setup-{version}.exe` (Name kann je nach Artifact-Template variieren)
+- **MSI**: `broadify-bridge-{version}-win-x64.msi`
 - **Update-Metadaten**: `latest.yml`
 
 ### Linux
@@ -115,6 +160,12 @@ Die Web-App kann die Download-Links über die GitHub Releases API abrufen:
 ```bash
 GET https://api.github.com/repos/{owner}/{repo}/releases/latest
 ```
+
+Hinweis:
+
+- Dieser Endpoint liefert keine GitHub Pre-Releases.
+- RC-/Test-Builds sind deshalb nicht automatisch in bestehenden Web-App-Downloads sichtbar.
+- Wenn die Web-App RC-Builds anbieten soll, braucht sie zusätzlich einen separaten Pre-Release-/RC-Feed.
 
 ### Response Beispiel
 

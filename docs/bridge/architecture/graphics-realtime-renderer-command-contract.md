@@ -52,6 +52,8 @@ Definiert die Control-Plane Nachrichten zwischen Bridge und Renderer für das Si
 - Payload:
   - `layerId`
 
+Der Renderer setzt bei `remove_layer` den Root-State auf `state-exit`, spielt die Exit-Animation gemäß CSS aus und entfernt den Layer danach.
+
 ### `shutdown`
 - Payload: none
 

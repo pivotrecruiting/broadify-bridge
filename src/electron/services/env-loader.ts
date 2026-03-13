@@ -4,6 +4,11 @@ import path from "path";
 import dotenv from "dotenv";
 
 let envLoaded = false;
+const RELEASE_MANAGED_ENV_KEYS = [
+  "BROADIFY_UPDATER_CHANNEL",
+  "RELAY_URL",
+  "BRIDGE_RELAY_JWKS_URL",
+];
 
 const loadEnvFile = (envPath: string): boolean => {
   if (!envPath || !fs.existsSync(envPath)) {
@@ -11,6 +16,24 @@ const loadEnvFile = (envPath: string): boolean => {
   }
   const result = dotenv.config({ path: envPath, override: false });
   return !result.error;
+};
+
+const applyReleaseManagedEnvOverrides = (envPath: string): void => {
+  if (!envPath || !fs.existsSync(envPath)) {
+    return;
+  }
+
+  try {
+    const parsed = dotenv.parse(fs.readFileSync(envPath));
+    for (const key of RELEASE_MANAGED_ENV_KEYS) {
+      const value = parsed[key];
+      if (typeof value === "string" && value.trim() !== "") {
+        process.env[key] = value;
+      }
+    }
+  } catch {
+    // Ignore malformed resource env files.
+  }
 };
 
 /**
@@ -76,5 +99,11 @@ export const loadAppEnv = (): void => {
   // Dev: project first wins; others fill in. Never break – load all to merge.
   for (const candidate of candidates) {
     loadEnvFile(candidate);
+  }
+
+  // Always let packaged release-managed values win over persisted userData/.env.
+  // This keeps RC/test builds pinned to their intended relay and update channel.
+  for (const envPath of resourceEnvPaths) {
+    applyReleaseManagedEnvOverrides(envPath);
   }
 };

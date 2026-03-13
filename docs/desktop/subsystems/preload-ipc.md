@@ -7,18 +7,26 @@ Das Preload‑Subsystem definiert die sichere API‑Oberfläche (`window.electro
 - Whitelist der erlaubten IPC‑Calls
 - Typed IPC‑Invoke und Event‑Subscriptions
 - Isolierung des Renderer vom Main Process
+- Keine direkten Node/Electron APIs im UI-Code ausserhalb von `window.electron`
 
 ## Hauptkomponenten
 - `src/electron/preload.cts`
 - `src/electron/types.ts`
 
 ## IPC‑API (Auszug)
-- `bridgeGetProfile()` / `bridgeSetName(name)`
+- `appGetVersion()`
+- `bridgeGetProfile()` / `bridgeAcceptTerms()` / `bridgeSetName(name)`
 - `bridgeStart(config)` / `bridgeStop()`
 - `bridgeGetStatus()` / `subscribeBridgeStatus(cb)`
+- `getNetworkConfig()` / `detectNetworkInterfaces()` / `getNetworkBindingOptions()`
+- `checkPortAvailability()` / `checkPortsAvailability()`
 - `bridgeGetOutputs()`
 - `bridgeGetLogs()` / `bridgeClearLogs()`
-- `engineConnect()` / `engineGetStatus()` / `engineRunMacro()`
+- `appGetLogs()` / `appClearLogs()`
+- `updaterGetStatus()` / `updaterCheckForUpdates()`
+- `updaterDownloadUpdate()` / `updaterQuitAndInstall()`
+- `subscribeUpdaterStatus(cb)`
+- `engineConnect()` / `engineDisconnect()` / `engineGetStatus()` / `engineGetMacros()` / `engineRunMacro()` / `engineStopMacro()`
 - `openExternal(url)`
 
 ## Security‑Hinweise

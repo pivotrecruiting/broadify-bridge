@@ -9,3 +9,4 @@ Polling von `/status` (und optional `/relay/status`) zur Bridge‑Erreichbarkeit
 
 ## Side‑Effects
 - Periodischer Timer (2s)
+- Lokale Host-Normalisierung (`0.0.0.0` -> `127.0.0.1`) fuer HTTP-Checks

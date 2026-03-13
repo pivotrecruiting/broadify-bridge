@@ -1,32 +1,12 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import type { BridgeConfigT } from "../config.js";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { runtimeConfig } from "../services/runtime-config.js";
 import { engineAdapter } from "../services/engine-adapter.js";
+import { getRuntimeAppVersion } from "../services/runtime-app-version.js";
 import { enforceLocalOrToken } from "./route-guards.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // Track server start time for uptime calculation
 const serverStartTime = Date.now();
-
-/**
- * Get version from package.json.
- *
- * @returns Version string or default.
- */
-function getVersion(): string {
-  try {
-    const packagePath = join(__dirname, "../../package.json");
-    const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
-    return packageJson.version || "0.1.0";
-  } catch {
-    return "0.1.0";
-  }
-}
 
 /**
  * Calculate uptime in seconds.
@@ -37,6 +17,18 @@ function getUptime(): number {
   return Math.floor((Date.now() - serverStartTime) / 1000);
 }
 
+type StatusRouteDepsT = {
+  runtimeConfig: Pick<typeof runtimeConfig, "getConfig" | "getState" | "hasOutputs">;
+  engineAdapter: Pick<typeof engineAdapter, "getState">;
+  enforceLocalOrToken: typeof enforceLocalOrToken;
+  getVersion: () => string;
+  getUptime: () => number;
+};
+
+type StatusRouteOptionsT = FastifyPluginOptions &
+  { config: BridgeConfigT } &
+  Partial<StatusRouteDepsT>;
+
 /**
  * Register status route.
  *
@@ -45,27 +37,35 @@ function getUptime(): number {
  */
 export async function registerStatusRoute(
   fastify: FastifyInstance,
-  options: FastifyPluginOptions & { config: BridgeConfigT }
+  options: StatusRouteOptionsT
 ): Promise<void> {
   const { config } = options;
+  const deps: StatusRouteDepsT = {
+    runtimeConfig,
+    engineAdapter,
+    enforceLocalOrToken,
+    getVersion: getRuntimeAppVersion,
+    getUptime,
+    ...options,
+  };
 
   fastify.get("/status", async (request, reply) => {
-    if (!enforceLocalOrToken(request, reply)) {
+    if (!deps.enforceLocalOrToken(request, reply)) {
       return;
     }
-    const engineState = engineAdapter.getState();
-    const runtimeConfigData = runtimeConfig.getConfig();
+    const engineState = deps.engineAdapter.getState();
+    const runtimeConfigData = deps.runtimeConfig.getConfig();
 
     return {
       running: true,
-      version: getVersion(),
-      uptime: getUptime(),
+      version: deps.getVersion(),
+      uptime: deps.getUptime(),
       mode: config.mode,
       port: config.port,
       host: config.host,
       bridgeName: config.bridgeName || null,
-      state: runtimeConfig.getState(),
-      outputsConfigured: runtimeConfig.hasOutputs(),
+      state: deps.runtimeConfig.getState(),
+      outputsConfigured: deps.runtimeConfig.hasOutputs(),
       engine: {
         configured: !!runtimeConfigData?.engine,
         status: engineState.status,
