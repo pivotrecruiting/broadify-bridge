@@ -63,6 +63,8 @@ describe("useBridgeOutputs", () => {
   });
 
   it("sets error when bridgeGetOutputs rejects", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
     (globalThis.window.electron.bridgeGetOutputs as jest.Mock).mockRejectedValueOnce(
       new Error("Network error")
     );
@@ -77,6 +79,8 @@ describe("useBridgeOutputs", () => {
 
     expect(result.current.error).toBe("Network error");
     expect(result.current.outputs).toBeNull();
+
+    consoleErrorSpy.mockRestore();
   });
 
   it("refetch calls bridgeGetOutputs again", async () => {
