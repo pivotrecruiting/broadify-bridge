@@ -4,6 +4,12 @@ module.exports = {
   testEnvironment: "node",
   roots: ["<rootDir>/src", "<rootDir>/apps/bridge/src"],
   testMatch: ["**/*.test.ts"],
+  collectCoverageFrom: [
+    "src/**/*.ts",
+    "apps/bridge/src/**/*.ts",
+    "!**/*.test.ts",
+    "!**/*.d.ts",
+  ],
   extensionsToTreatAsEsm: [".ts"],
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",
