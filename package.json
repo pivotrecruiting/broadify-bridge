@@ -39,6 +39,7 @@
     "release:live": "node scripts/push-release.mjs --live",
     "test": "npm run test:jest",
     "test:jest": "jest --runInBand",
+    "test:coverage": "jest --runInBand --coverage",
     "test:workflow": "bash scripts/test-workflow.sh",
     "build:framebus": "bash scripts/build-framebus.sh",
     "verify:release-artifacts": "bash scripts/verify-release-artifacts.sh"
