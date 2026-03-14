@@ -173,4 +173,62 @@ describe("GraphicsManager", () => {
     await expect(manager.sendLayer({})).rejects.toThrow("Outputs not configured");
     expect(waitForTransition).toHaveBeenCalledTimes(1);
   });
+
+  it("calls validateOutputTargets and validateOutputFormat when not in development mode", async () => {
+    const validateOutputTargets = jest.fn(async () => undefined);
+    const validateOutputFormat = jest.fn(async () => undefined);
+    const runAtomicTransition = jest.fn(async () => undefined);
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => undefined),
+      },
+      outputTransitionService: {
+        waitForTransition: jest.fn(async () => undefined),
+        runAtomicTransition,
+      },
+      isDevelopmentMode: () => false,
+      validateOutputTargets,
+      validateOutputFormat,
+    });
+
+    await manager.configureOutputs(createValidConfig());
+
+    expect(validateOutputTargets).toHaveBeenCalledWith(
+      "stub",
+      {},
+      expect.objectContaining({ currentOutputConfig: null })
+    );
+    expect(validateOutputFormat).toHaveBeenCalledWith(
+      "stub",
+      {},
+      expect.objectContaining({ width: 1920, height: 1080, fps: 50 })
+    );
+    expect(runAtomicTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ outputKey: "stub" })
+    );
+  });
+
+  it("getStatus returns outputConfig null and activePreset null when not configured", async () => {
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => undefined),
+      },
+      outputTransitionService: {
+        waitForTransition: jest.fn(async () => undefined),
+        runAtomicTransition: jest.fn(async () => undefined),
+      },
+    });
+    await manager.initialize();
+
+    const status = manager.getStatus();
+
+    expect(status).toHaveProperty("outputConfig", null);
+    expect(status).toHaveProperty("layers");
+    expect(Array.isArray(status.layers)).toBe(true);
+    expect(status).toHaveProperty("activePreset", null);
+    expect(status).toHaveProperty("activePresets");
+    expect(Array.isArray(status.activePresets)).toBe(true);
+  });
 });
