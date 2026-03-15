@@ -95,6 +95,50 @@ describe("relay-bridge-identity", () => {
       expect(mockReadFile).toHaveBeenCalled();
     });
 
+    it("returns cached identity on second call without reading file", async () => {
+      const identityFile = createValidIdentityFile(defaultContext.bridgeId!);
+      mockReadFile.mockResolvedValue(JSON.stringify(identityFile));
+
+      const { getRelayBridgeEnrollmentPublicKey: getKey } = require("./relay-bridge-identity.js");
+      const result1 = await getKey();
+      const result2 = await getKey();
+
+      expect(result1).toEqual(result2);
+      expect(mockReadFile).toHaveBeenCalledTimes(1);
+    });
+
+    it("rotates identity and logs warn when stored identity bridgeId does not match context", async () => {
+      const identityFile = createValidIdentityFile("other-bridge-id-xxxx");
+      mockReadFile.mockResolvedValue(JSON.stringify(identityFile));
+      mockWriteFile.mockResolvedValue(undefined);
+      mockMkdir.mockResolvedValue(undefined);
+
+      const { getRelayBridgeEnrollmentPublicKey: getKey } = require("./relay-bridge-identity.js");
+      const result = await getKey();
+
+      expect(defaultContext.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Stored bridge identity does not match bridgeId")
+      );
+      expect(result.keyId).toMatch(new RegExp(`^bridge-${defaultContext.bridgeId!.slice(0, 8)}-1$`));
+      expect(mockWriteFile).toHaveBeenCalled();
+    });
+
+    it("generates new identity and logs warn when file parse fails", async () => {
+      mockReadFile.mockResolvedValue("invalid json {{{");
+      mockWriteFile.mockResolvedValue(undefined);
+      mockMkdir.mockResolvedValue(undefined);
+
+      const { getRelayBridgeEnrollmentPublicKey: getKey } = require("./relay-bridge-identity.js");
+      const result = await getKey();
+
+      expect(result.keyId).toMatch(/^bridge-.+-1$/);
+      expect(result.algorithm).toBe("ed25519");
+      expect(defaultContext.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to load identity, generating new one")
+      );
+      expect(mockWriteFile).toHaveBeenCalled();
+    });
+
     it("generates and persists new identity when file is invalid", async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ version: 99, invalid: true }));
       mockWriteFile.mockResolvedValue(undefined);
@@ -109,6 +153,32 @@ describe("relay-bridge-identity", () => {
       expect(result.publicKeyPem).toContain("-----BEGIN PUBLIC KEY-----");
       expect(mockWriteFile).toHaveBeenCalled();
       expect(mockMkdir).toHaveBeenCalled();
+    });
+
+    it("generates new identity when file does not exist (ENOENT) without logging warn", async () => {
+      mockReadFile.mockRejectedValue(new Error("ENOENT: no such file"));
+      mockWriteFile.mockResolvedValue(undefined);
+      mockMkdir.mockResolvedValue(undefined);
+
+      const { getRelayBridgeEnrollmentPublicKey: getKey } = require("./relay-bridge-identity.js");
+      const result = await getKey();
+
+      expect(result.keyId).toMatch(/^bridge-.+-1$/);
+      expect(defaultContext.logger.warn).not.toHaveBeenCalled();
+    });
+
+    it("handles non-Error rejection and logs warn with string message", async () => {
+      mockReadFile.mockRejectedValue("unknown rejection");
+      mockWriteFile.mockResolvedValue(undefined);
+      mockMkdir.mockResolvedValue(undefined);
+
+      const { getRelayBridgeEnrollmentPublicKey: getKey } = require("./relay-bridge-identity.js");
+      const result = await getKey();
+
+      expect(result.keyId).toMatch(/^bridge-.+-1$/);
+      expect(defaultContext.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("unknown rejection")
+      );
     });
   });
 

@@ -381,8 +381,10 @@ describe("ElectronRendererClient", () => {
           message: "FrameBus init failed",
         })
       );
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setImmediate(r));
+        if (onError.mock.calls.length > 0) break;
+      }
       expect(onError).toHaveBeenCalledWith(expect.any(Error));
       expect((onError.mock.calls[0]?.[0] as Error).message).toBe("FrameBus init failed");
       clientSocket?.destroy();
