@@ -46,4 +46,18 @@ describe("getAuthFailure", () => {
       message: "Unauthorized",
     });
   });
+
+  it("allows valid x-bridge-auth token for non-local request", () => {
+    process.env.BRIDGE_API_TOKEN = "secret";
+    const failure = getAuthFailure(
+      makeRequest("192.168.1.20", { "x-bridge-auth": "secret" }),
+    );
+    expect(failure).toBeNull();
+  });
+
+  it("normalizes IPv4-mapped IPv6 loopback", () => {
+    delete process.env.BRIDGE_API_TOKEN;
+    const failure = getAuthFailure(makeRequest("::ffff:127.0.0.1"));
+    expect(failure).toBeNull();
+  });
 });
