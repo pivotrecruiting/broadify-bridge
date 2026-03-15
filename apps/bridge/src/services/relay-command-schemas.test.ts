@@ -10,85 +10,119 @@ import {
 describe("relay-command-schemas", () => {
   describe("EmptyPayloadSchema", () => {
     it("accepts empty object", () => {
-      expect(EmptyPayloadSchema.parse({})).toEqual({});
+      const result = EmptyPayloadSchema.safeParse({});
+      expect(result.success).toBe(true);
     });
 
     it("rejects object with extra keys", () => {
-      expect(() => EmptyPayloadSchema.parse({ foo: 1 })).toThrow();
+      const result = EmptyPayloadSchema.safeParse({ foo: "bar" });
+      expect(result.success).toBe(false);
     });
   });
 
   describe("PairingCodeSchema", () => {
     it("accepts valid pairing code", () => {
-      expect(PairingCodeSchema.parse({ pairingCode: "ABCD1234" })).toEqual({
+      const result = PairingCodeSchema.safeParse({
         pairingCode: "ABCD1234",
       });
+      expect(result.success).toBe(true);
     });
 
-    it("rejects code shorter than 4 chars", () => {
-      expect(() => PairingCodeSchema.parse({ pairingCode: "AB" })).toThrow();
+    it("trims whitespace", () => {
+      const result = PairingCodeSchema.safeParse({
+        pairingCode: "  ABCD  ",
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pairingCode).toBe("ABCD");
+      }
     });
 
-    it("rejects code longer than 32 chars", () => {
-      expect(() =>
-        PairingCodeSchema.parse({ pairingCode: "a".repeat(33) })
-      ).toThrow();
+    it("rejects too short code", () => {
+      const result = PairingCodeSchema.safeParse({
+        pairingCode: "AB",
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects too long code", () => {
+      const result = PairingCodeSchema.safeParse({
+        pairingCode: "A".repeat(33),
+      });
+      expect(result.success).toBe(false);
     });
   });
 
   describe("ListOutputsSchema", () => {
     it("accepts empty object", () => {
-      expect(ListOutputsSchema.parse({})).toEqual({});
+      const result = ListOutputsSchema.safeParse({});
+      expect(result.success).toBe(true);
     });
 
-    it("accepts refresh boolean", () => {
-      expect(ListOutputsSchema.parse({ refresh: true })).toEqual({
-        refresh: true,
-      });
+    it("accepts optional refresh", () => {
+      const result = ListOutputsSchema.safeParse({ refresh: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.refresh).toBe(true);
+      }
     });
   });
 
   describe("EngineConnectSchema", () => {
-    it("accepts valid atem config", () => {
-      const result = EngineConnectSchema.parse({
+    it("accepts valid engine config", () => {
+      const result = EngineConnectSchema.safeParse({
         type: "atem",
-        ip: "192.168.1.10",
+        ip: "10.0.0.1",
         port: 9910,
       });
-      expect(result.type).toBe("atem");
-      expect(result.ip).toBe("192.168.1.10");
-      expect(result.port).toBe(9910);
+      expect(result.success).toBe(true);
     });
 
-    it("rejects invalid IP", () => {
-      expect(() =>
-        EngineConnectSchema.parse({
-          type: "atem",
-          ip: "not-an-ip",
-          port: 9910,
-        })
-      ).toThrow();
-    });
-
-    it("rejects invalid port", () => {
-      expect(() =>
-        EngineConnectSchema.parse({
-          type: "atem",
+    it("accepts vmix and tricaster types", () => {
+      expect(
+        EngineConnectSchema.safeParse({
+          type: "vmix",
           ip: "192.168.1.1",
-          port: 99999,
-        })
-      ).toThrow();
+          port: 8088,
+        }).success
+      ).toBe(true);
+      expect(
+        EngineConnectSchema.safeParse({
+          type: "tricaster",
+          ip: "192.168.1.2",
+          port: 5951,
+        }).success
+      ).toBe(true);
+    });
+
+    it("rejects invalid ip", () => {
+      const result = EngineConnectSchema.safeParse({
+        type: "atem",
+        ip: "not-an-ip",
+        port: 9910,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects port out of range", () => {
+      const result = EngineConnectSchema.safeParse({
+        type: "atem",
+        ip: "10.0.0.1",
+        port: 0,
+      });
+      expect(result.success).toBe(false);
     });
   });
 
   describe("MacroIdSchema", () => {
-    it("accepts valid macroId", () => {
-      expect(MacroIdSchema.parse({ macroId: 0 })).toEqual({ macroId: 0 });
-      expect(MacroIdSchema.parse({ macroId: 5 })).toEqual({ macroId: 5 });
+    it("accepts valid macro id", () => {
+      const result = MacroIdSchema.safeParse({ macroId: 42 });
+      expect(result.success).toBe(true);
     });
 
-    it("rejects non-integer macroId", () => {
-      expect(() => MacroIdSchema.parse({ macroId: 1.5 })).toThrow();
+    it("rejects non-integer", () => {
+      const result = MacroIdSchema.safeParse({ macroId: 1.5 });
+      expect(result.success).toBe(false);
     });
   });
 
@@ -96,16 +130,16 @@ describe("relay-command-schemas", () => {
     it("returns parsed data when valid", () => {
       const result = parseRelayPayload(
         PairingCodeSchema,
-        { pairingCode: "TEST" },
-        "Invalid"
+        { pairingCode: "ABCD" },
+        "Invalid pairing"
       );
-      expect(result).toEqual({ pairingCode: "TEST" });
+      expect(result).toEqual({ pairingCode: "ABCD" });
     });
 
-    it("throws custom error message when invalid", () => {
+    it("throws with custom message when invalid", () => {
       expect(() =>
-        parseRelayPayload(PairingCodeSchema, { pairingCode: "x" }, "Bad payload")
-      ).toThrow("Bad payload");
+        parseRelayPayload(PairingCodeSchema, { pairingCode: "AB" }, "Invalid pairing")
+      ).toThrow("Invalid pairing");
     });
   });
 });

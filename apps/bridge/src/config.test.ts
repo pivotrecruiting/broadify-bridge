@@ -93,4 +93,36 @@ describe("parseConfig", () => {
     expect(config.bridgeId).toBeUndefined();
     expect(config.relayUrl).toBeUndefined();
   });
+
+  it("loads relayEnabled from RELAY_ENABLED env when BRIDGE_RELAY_ENABLED not set", () => {
+    delete process.env.BRIDGE_RELAY_ENABLED;
+    delete process.env.RELAY_ENABLED;
+    process.env.RELAY_ENABLED = "1";
+    process.env.BRIDGE_ID = "550e8400-e29b-41d4-a716-446655440000";
+    process.env.RELAY_URL = "wss://relay.example.com";
+    const config = parseConfig([]);
+    expect(config.relayEnabled).toBe(true);
+  });
+
+  it("uses default relay URL when relay enabled but no URL provided", () => {
+    process.env.BRIDGE_RELAY_ENABLED = "true";
+    process.env.BRIDGE_ID = "550e8400-e29b-41d4-a716-446655440000";
+    delete process.env.RELAY_URL;
+    const config = parseConfig([]);
+    expect(config.relayUrl).toBe("wss://broadify-relay.fly.dev");
+  });
+
+  it("parses --pairing-expires-at", () => {
+    const ts = Math.floor(Date.now() / 1000) + 3600;
+    const config = parseConfig([
+      "--relay-enabled",
+      "--bridge-id",
+      "550e8400-e29b-41d4-a716-446655440000",
+      "--pairing-code",
+      "ABCD",
+      "--pairing-expires-at",
+      String(ts),
+    ]);
+    expect(config.pairingExpiresAt).toBe(ts);
+  });
 });

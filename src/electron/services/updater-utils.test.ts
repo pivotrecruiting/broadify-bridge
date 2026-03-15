@@ -1,9 +1,78 @@
 import {
   sanitizeUpdaterErrorMessage,
   parseIntervalMs,
+  getUpdaterDisableReason,
 } from "./updater-utils.js";
 
 describe("updater-utils", () => {
+  describe("getUpdaterDisableReason", () => {
+    it("returns null when enabled (darwin, packaged)", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: undefined,
+          platform: "darwin",
+          isPackaged: true,
+          appImage: undefined,
+        })
+      ).toBeNull();
+    });
+
+    it("returns reason when BROADIFY_DISABLE_AUTO_UPDATE=1", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: "1",
+          platform: "darwin",
+          isPackaged: true,
+          appImage: undefined,
+        })
+      ).toContain("BROADIFY_DISABLE_AUTO_UPDATE");
+    });
+
+    it("returns reason when not packaged (dev build)", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: undefined,
+          platform: "darwin",
+          isPackaged: false,
+          appImage: undefined,
+        })
+      ).toContain("development builds");
+    });
+
+    it("returns reason for unsupported platform", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: undefined,
+          platform: "freebsd",
+          isPackaged: true,
+          appImage: undefined,
+        })
+      ).toContain("Unsupported platform");
+    });
+
+    it("returns reason for Linux without AppImage", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: undefined,
+          platform: "linux",
+          isPackaged: true,
+          appImage: undefined,
+        })
+      ).toContain("AppImage");
+    });
+
+    it("returns null for Linux with AppImage", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: undefined,
+          platform: "linux",
+          isPackaged: true,
+          appImage: "/path/to/app",
+        })
+      ).toBeNull();
+    });
+  });
+
   describe("sanitizeUpdaterErrorMessage", () => {
     it("redacts bearer tokens", () => {
       expect(

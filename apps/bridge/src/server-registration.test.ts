@@ -82,4 +82,33 @@ describe("registerServerRoutes", () => {
       { plugin: routes.registerLogsRoute, options: undefined },
     ]);
   });
+
+  it("registers relay route with undefined relayClient when not provided", async () => {
+    const calls: Array<{ plugin: unknown; options?: unknown }> = [];
+    const register = jest.fn(async (plugin: unknown, options?: unknown) => {
+      calls.push({ plugin, options });
+    });
+
+    const routes = {
+      registerStatusRoute: Symbol("status"),
+      registerDevicesRoute: Symbol("devices"),
+      registerOutputsRoute: Symbol("outputs"),
+      registerConfigRoute: Symbol("config"),
+      registerEngineRoute: Symbol("engine"),
+      registerVideoRoute: Symbol("video"),
+      registerWebSocketRoute: Symbol("ws"),
+      registerRelayRoute: Symbol("relay"),
+      registerLogsRoute: Symbol("logs"),
+    };
+
+    const config = { host: "127.0.0.1", port: 8000, relayEnabled: false };
+
+    await registerServerRoutes(register, {
+      config: config as any,
+      routes: routes as any,
+    });
+
+    const relayCall = calls.find((c) => c.plugin === routes.registerRelayRoute);
+    expect(relayCall?.options).toEqual({ config, relayClient: undefined });
+  });
 });

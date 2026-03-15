@@ -6,6 +6,7 @@ import { logAppError, logAppInfo, logAppWarn } from "./app-logger.js";
 import {
   sanitizeUpdaterErrorMessage,
   parseIntervalMs,
+  getUpdaterDisableReason,
 } from "./updater-utils.js";
 
 const require = createRequire(import.meta.url);
@@ -197,23 +198,12 @@ class AppUpdaterService {
    * Resolve why auto-update should be disabled in this runtime.
    */
   private getDisableReason(): string | null {
-    if (process.env.BROADIFY_DISABLE_AUTO_UPDATE === "1") {
-      return "Disabled by BROADIFY_DISABLE_AUTO_UPDATE=1.";
-    }
-
-    if (!app.isPackaged) {
-      return "Disabled in development builds.";
-    }
-
-    if (!["darwin", "win32", "linux"].includes(process.platform)) {
-      return `Unsupported platform: ${process.platform}.`;
-    }
-
-    if (process.platform === "linux" && !process.env.APPIMAGE) {
-      return "Linux auto-update requires AppImage runtime.";
-    }
-
-    return null;
+    return getUpdaterDisableReason({
+      disableEnv: process.env.BROADIFY_DISABLE_AUTO_UPDATE,
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      appImage: process.env.APPIMAGE,
+    });
   }
 
   /**
