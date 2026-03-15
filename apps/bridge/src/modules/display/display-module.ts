@@ -2,22 +2,25 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type {
   DeviceDescriptorT,
-  OutputDisplayModeT,
   PortDescriptorT,
 } from "@broadify/protocol";
 import type { DeviceController, DeviceModule } from "../device-module.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
-
-// Normalized subset of system_profiler display fields for device mapping.
-type RawDisplayInfoT = {
-  name: string;
-  connectionType: PortDescriptorT["type"];
-  vendorId?: string;
-  productId?: string;
-  serial?: string;
-  resolution?: { width: number; height: number };
-  refreshHz?: number;
-};
+import {
+  sanitizeIdPart,
+  normalizeConnectionType,
+  normalizeWindowsInstanceKey,
+  normalizeWindowsConnectionType,
+  parseCsvLine,
+  parseCsvRows,
+  parseResolution,
+  parseRefreshHz,
+  parseWindowsMonitorPnpId,
+} from "./display-parse-utils.js";
+import {
+  mapRawDisplaysToDevices,
+  type RawDisplayInfoT,
+} from "./display-module-utils.js";
 
 type WindowsMonitorIdRowT = {
   instance_name?: string;
@@ -38,8 +41,6 @@ type WindowsDisplayDetectorPayloadT = {
   ids?: WindowsMonitorIdRowT[] | WindowsMonitorIdRowT;
   connections?: WindowsMonitorConnectionRowT[] | WindowsMonitorConnectionRowT;
 };
-
-type CsvRowT = Record<string, string>;
 
 // system_profiler output keys vary by macOS version and GPU type.
 // These key lists intentionally include multiple aliases for resilience.
@@ -83,39 +84,6 @@ const MAX_SERIAL_SEARCH_KEYS = [
   "spdisplays_display_serial_number",
 ];
 
-// Stabilize IDs by stripping punctuation and normalizing to lowercase.
-const sanitizeIdPart = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-// Convert system_profiler connection labels into protocol port types.
-const normalizeConnectionType = (
-  value?: string
-): PortDescriptorT["type"] | null => {
-  if (!value) {
-    return null;
-  }
-  const lower = value.toLowerCase();
-  if (lower.includes("hdmi")) {
-    return "hdmi";
-  }
-  if (lower.includes("displayport")) {
-    return "displayport";
-  }
-  if (lower.includes("thunderbolt")) {
-    return "thunderbolt";
-  }
-  if (lower.includes("usb-c") || lower.includes("usb c")) {
-    return "thunderbolt";
-  }
-  return null;
-};
-
-const normalizeWindowsInstanceKey = (value: string): string =>
-  value.trim().toLowerCase().replace(/_\d+$/, "");
-
 const resolveWindowsSystemExe = (
   ...relativeSegments: string[]
 ): string | undefined => {
@@ -139,33 +107,6 @@ const WINDOWS_INTERNAL_OUTPUT_TECH_VALUES = new Set<number>([
   2147483648,
 ]);
 
-// Windows uses a platform-specific enum for monitor connection technologies.
-// This mapping is intentionally best-effort and falls back to DisplayPort.
-const normalizeWindowsConnectionType = (
-  value?: number
-): PortDescriptorT["type"] | null => {
-  if (!Number.isFinite(value)) {
-    return null;
-  }
-
-  if (value === 5 || value === 6) {
-    return "hdmi";
-  }
-
-  if (
-    value === 10 ||
-    value === 11 ||
-    value === 12 ||
-    value === 13 ||
-    value === 14 ||
-    value === 18
-  ) {
-    return "displayport";
-  }
-
-  return null;
-};
-
 const isLikelyWindowsInternalDisplay = (
   name: string | undefined,
   videoOutputTechnology?: number
@@ -180,121 +121,6 @@ const isLikelyWindowsInternalDisplay = (
     return true;
   }
   return false;
-};
-
-const parseCsvLine = (line: string): string[] => {
-  const result: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-
-    if (char === '"') {
-      if (inQuotes && line[index + 1] === '"') {
-        current += '"';
-        index += 1;
-        continue;
-      }
-      inQuotes = !inQuotes;
-      continue;
-    }
-
-    if (char === "," && !inQuotes) {
-      result.push(current);
-      current = "";
-      continue;
-    }
-
-    current += char;
-  }
-
-  result.push(current);
-  return result.map((value) => value.trim());
-};
-
-const parseCsvRows = (stdout: string): CsvRowT[] => {
-  const lines = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) {
-    return [];
-  }
-
-  const headers = parseCsvLine(lines[0]);
-  if (headers.length === 0) {
-    return [];
-  }
-
-  const rows: CsvRowT[] = [];
-  for (const line of lines.slice(1)) {
-    const values = parseCsvLine(line);
-    if (values.length === 0) {
-      continue;
-    }
-    const row: CsvRowT = {};
-    for (let index = 0; index < headers.length; index += 1) {
-      row[headers[index]] = values[index] ?? "";
-    }
-    rows.push(row);
-  }
-
-  return rows;
-};
-
-const parseWindowsMonitorPnpId = (
-  pnpDeviceId?: string
-): { vendorId?: string; productId?: string } => {
-  if (!pnpDeviceId) {
-    return {};
-  }
-
-  const match = pnpDeviceId.match(/^DISPLAY\\([A-Z0-9]{3})([A-Z0-9]{4})\\/i);
-  if (!match) {
-    return {};
-  }
-
-  return {
-    vendorId: match[1],
-    productId: match[2],
-  };
-};
-
-// Best-effort resolution parsing ("3840 x 2160").
-const parseResolution = (
-  value?: string
-): { width: number; height: number } | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  const match = value.match(/(\d+)\s*x\s*(\d+)/i);
-  if (!match) {
-    return undefined;
-  }
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  if (!Number.isFinite(width) || !Number.isFinite(height)) {
-    return undefined;
-  }
-  return { width, height };
-};
-
-// Best-effort refresh parsing ("59.94 Hz").
-const parseRefreshHz = (value?: string): number | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  const match = value.match(/(\d+(?:\.\d+)?)\s*hz/i);
-  if (!match) {
-    return undefined;
-  }
-  const hz = Number(match[1]);
-  if (!Number.isFinite(hz)) {
-    return undefined;
-  }
-  return hz;
 };
 
 // Prefer known keys over scanning all values to avoid false positives.
@@ -362,28 +188,6 @@ const collectDisplays = (items: unknown[]): Record<string, unknown>[] => {
   };
   walk(items);
   return results;
-};
-
-// Provide a single mode representing the active output.
-const buildDisplayMode = (info: RawDisplayInfoT): OutputDisplayModeT[] => {
-  if (!info.resolution || !info.refreshHz) {
-    return [];
-  }
-  const { width, height } = info.resolution;
-  const fps = info.refreshHz;
-  const fpsLabel =
-    Math.abs(fps - Math.round(fps)) < 0.01 ? String(Math.round(fps)) : fps.toFixed(2);
-  return [
-    {
-      id: 0,
-      label: `${height}p${fpsLabel} (${width}x${height})`,
-      width,
-      height,
-      fps,
-      fieldDominance: "progressive",
-      pixelFormats: [],
-    },
-  ];
 };
 
 const toObjectArray = <T>(value: T[] | T | undefined): T[] => {
@@ -756,81 +560,6 @@ const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
       );
       resolve([]);
     });
-  });
-};
-
-const mapRawDisplaysToDevices = (
-  rawDisplays: RawDisplayInfoT[],
-  options: { outputRuntimeSupported: boolean }
-): DeviceDescriptorT[] => {
-  const now = Date.now();
-  const seenIds = new Set<string>();
-
-  return rawDisplays.map((display, index) => {
-    // Prefer vendor/product/serial for stable IDs; fallback to name + index.
-    const idParts = [
-      display.vendorId ? sanitizeIdPart(display.vendorId) : "",
-      display.productId ? sanitizeIdPart(display.productId) : "",
-      display.serial ? sanitizeIdPart(display.serial) : "",
-    ].filter(Boolean);
-    const baseId =
-      idParts.length > 0
-        ? `display-${idParts.join("-")}`
-        : `display-${sanitizeIdPart(display.name)}-${index}`;
-    let deviceId = baseId;
-    if (seenIds.has(deviceId)) {
-      deviceId = `${baseId}-${index}`;
-    }
-    seenIds.add(deviceId);
-
-    // Capabilities are derived from the current active mode only.
-    const modes = buildDisplayMode(display);
-    const formats = modes.length > 0 ? [modes[0].label.split(" ")[0]] : [];
-
-    const portId = `${deviceId}-${display.connectionType}`;
-    const portLabelMap: Record<PortDescriptorT["type"], string> = {
-      hdmi: "HDMI",
-      displayport: "DisplayPort",
-      thunderbolt: "Thunderbolt",
-      sdi: "SDI",
-      usb: "USB",
-    };
-    const portLabel = portLabelMap[display.connectionType] || "Display";
-
-    const port: PortDescriptorT = {
-      id: portId,
-      displayName: `${portLabel} Output`,
-      type: display.connectionType,
-      direction: "output",
-      role: "video",
-      capabilities: {
-        formats,
-        modes,
-      },
-      status: {
-        available: options.outputRuntimeSupported,
-        signal: "none",
-      },
-    };
-
-    return {
-      id: deviceId,
-      displayName: display.name,
-      type: "display",
-      vendor: display.vendorId,
-      model: display.productId,
-      ports: [port],
-      status: {
-        present: true,
-        inUse: false,
-        ready: options.outputRuntimeSupported,
-        signal: "none",
-        error: options.outputRuntimeSupported
-          ? undefined
-          : "Display output playback helper is not implemented for this platform yet",
-        lastSeen: now,
-      },
-    };
   });
 };
 

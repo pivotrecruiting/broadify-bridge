@@ -36,26 +36,13 @@ export type FrameBusReaderT = {
   close(): void;
 };
 
-export class InvalidHeaderError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvalidHeaderError";
-  }
-}
+import {
+  InvalidHeaderError,
+  FrameSizeError,
+  OpenError,
+} from "./framebus-errors.js";
 
-export class FrameSizeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "FrameSizeError";
-  }
-}
-
-export class OpenError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "OpenError";
-  }
-}
+export { InvalidHeaderError, FrameSizeError, OpenError };
 
 export type FrameBusModuleT = {
   createWriter(options: {
