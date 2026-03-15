@@ -68,6 +68,14 @@ function emitExit(
   child.emit("exit", code, signal);
 }
 
+/** Use instead of mockReturnValue so afterEach can emit exit on the correct child. */
+function setSpawnChild(
+  child: EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; exitCode: number | null; signalCode: string | null; kill: jest.Mock }
+): void {
+  lastSpawnedChild = child;
+  mockSpawn.mockReturnValue(child);
+}
+
 const baseConfig = {
   version: 1,
   outputKey: "video_hdmi" as const,
@@ -202,6 +210,74 @@ describe("DisplayVideoOutputAdapter", () => {
       ).rejects.toThrow("Display output requires HDMI/DisplayPort/Thunderbolt");
     });
 
+    it("accepts DisplayPort port type", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([
+        {
+          id: "display-1",
+          type: "display",
+          displayName: "DP Monitor",
+          ports: [
+            {
+              id: "display-1-displayport",
+              displayName: "DisplayPort",
+              type: "displayport",
+              direction: "output",
+              role: "video",
+              capabilities: { formats: [], modes: [{ id: 1, label: "1920x1080", width: 1920, height: 1080, fps: 60, fieldDominance: "progressive", pixelFormats: [] }] },
+              status: { available: true },
+            },
+          ],
+          status: { present: true, ready: true, inUse: false, lastSeen: Date.now() },
+        },
+      ]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-displayport" },
+      });
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await expect(configurePromise).resolves.toBeUndefined();
+    });
+
+    it("accepts Thunderbolt port type", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([
+        {
+          id: "display-1",
+          type: "display",
+          displayName: "TB Monitor",
+          ports: [
+            {
+              id: "display-1-thunderbolt",
+              displayName: "Thunderbolt",
+              type: "thunderbolt",
+              direction: "output",
+              role: "video",
+              capabilities: { formats: [], modes: [{ id: 1, label: "1920x1080", width: 1920, height: 1080, fps: 60, fieldDominance: "progressive", pixelFormats: [] }] },
+              status: { available: true },
+            },
+          ],
+          status: { present: true, ready: true, inUse: false, lastSeen: Date.now() },
+        },
+      ]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-thunderbolt" },
+      });
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await expect(configurePromise).resolves.toBeUndefined();
+    });
+
     it("throws when display helper binary is not accessible", async () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
@@ -233,7 +309,7 @@ describe("DisplayVideoOutputAdapter", () => {
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
       lastSpawnedChild = child;
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -249,7 +325,7 @@ describe("DisplayVideoOutputAdapter", () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -268,7 +344,7 @@ describe("DisplayVideoOutputAdapter", () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -314,7 +390,7 @@ describe("DisplayVideoOutputAdapter", () => {
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       process.env.BRIDGE_FRAMEBUS_SIZE = "4M";
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -335,7 +411,7 @@ describe("DisplayVideoOutputAdapter", () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -356,7 +432,7 @@ describe("DisplayVideoOutputAdapter", () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -384,7 +460,7 @@ describe("DisplayVideoOutputAdapter", () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -416,7 +492,7 @@ describe("DisplayVideoOutputAdapter", () => {
         validDisplayDevice,
       ]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -447,7 +523,7 @@ describe("DisplayVideoOutputAdapter", () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -471,7 +547,7 @@ describe("DisplayVideoOutputAdapter", () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -486,6 +562,147 @@ describe("DisplayVideoOutputAdapter", () => {
 
       expect(mockAccess).toHaveBeenCalledWith("/tmp/display-helper", 0);
     });
+
+    it("handles ready message split across data chunks", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"'));
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('ready"}\n'));
+        });
+      });
+
+      await expect(configurePromise).resolves.toBeUndefined();
+    });
+
+    it("passes format dimensions and fps in env", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      const deviceWith4k = {
+        ...validDisplayDevice,
+        ports: [
+          {
+            ...validDisplayDevice.ports[0],
+            capabilities: {
+              formats: [],
+              modes: [
+                {
+                  id: 2,
+                  label: "3840x2160",
+                  width: 3840,
+                  height: 2160,
+                  fps: 60,
+                  fieldDominance: "progressive",
+                  pixelFormats: [],
+                },
+              ],
+            },
+          },
+        ],
+      };
+      deviceCache.getDevices.mockResolvedValue([deviceWith4k]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        format: { width: 3840, height: 2160, fps: 60 },
+        targets: { output1Id: "display-1-hdmi" },
+      });
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+
+      await configurePromise;
+
+      const spawnEnv = mockSpawn.mock.calls[0][2].env;
+      expect(spawnEnv.BRIDGE_FRAME_WIDTH).toBe("3840");
+      expect(spawnEnv.BRIDGE_FRAME_HEIGHT).toBe("2160");
+      expect(spawnEnv.BRIDGE_FRAME_FPS).toBe("60");
+      expect(spawnEnv.BRIDGE_DISPLAY_MATCH_WIDTH).toBe("3840");
+      expect(spawnEnv.BRIDGE_DISPLAY_MATCH_HEIGHT).toBe("2160");
+    });
+
+    it("calls stop before reconfiguring when already configured", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child1 = createMockChild();
+      setSpawnChild(child1);
+
+      const configurePromise1 = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+      setImmediate(() => {
+        (child1.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configurePromise1;
+
+      emitExit(child1, 0, null);
+
+      const device2 = {
+        id: "display-2",
+        type: "display",
+        displayName: "External",
+        ports: [{ id: "display-2-hdmi", displayName: "HDMI", type: "hdmi", direction: "output", role: "video", capabilities: { formats: [], modes: [{ id: 1, label: "1920x1080", width: 1920, height: 1080, fps: 60, fieldDominance: "progressive", pixelFormats: [] }] }, status: { available: true } }],
+        status: { present: true, ready: true, inUse: false, lastSeen: Date.now() },
+      };
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice, device2]);
+      const child2 = createMockChild();
+      setSpawnChild(child2);
+
+      const configurePromise2 = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-2-hdmi" },
+      });
+      setImmediate(() => {
+        (child2.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configurePromise2;
+
+      expect(mockSpawn).toHaveBeenCalledTimes(2);
+      expect(mockSpawn.mock.calls[1][2].env.BRIDGE_DISPLAY_MATCH_NAME).toBe("External");
+    });
+
+    it("finds port in first device when multiple devices exist", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([
+        validDisplayDevice,
+        {
+          id: "display-2",
+          type: "display",
+          displayName: "External",
+          ports: [{ id: "display-2-hdmi", displayName: "HDMI", type: "hdmi", direction: "output", role: "video", capabilities: { formats: [] }, status: { available: true } }],
+          status: { present: true, ready: true, inUse: false, lastSeen: Date.now() },
+        },
+      ]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+
+      await configurePromise;
+
+      expect(mockSpawn.mock.calls[0][2].env.BRIDGE_DISPLAY_MATCH_NAME).toBe(
+        "Built-in Retina Display"
+      );
+    });
   });
 
   describe("stop", () => {
@@ -494,11 +711,34 @@ describe("DisplayVideoOutputAdapter", () => {
       expect(mockSpawn).not.toHaveBeenCalled();
     });
 
+    it("is idempotent when called twice after configure", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configurePromise;
+
+      const stopPromise1 = adapter.stop();
+      setImmediate(() => emitExit(child, 0, null));
+      await stopPromise1;
+
+      await adapter.stop();
+      expect(child.kill).not.toHaveBeenCalled();
+    });
+
     it("waits for child to exit and cleans up", async () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -528,7 +768,7 @@ describe("DisplayVideoOutputAdapter", () => {
         }
       });
       lastSpawnedChild = child;
-      mockSpawn.mockReturnValue(child);
+      setSpawnChild(child);
 
       const configurePromise = adapter.configure({
         ...baseConfig,
@@ -552,11 +792,34 @@ describe("DisplayVideoOutputAdapter", () => {
   });
 
   describe("sendFrame", () => {
-    it("is a no-op", async () => {
+    it("is a no-op when never configured", async () => {
       await adapter.sendFrame(
         { rgba: Buffer.alloc(0), width: 0, height: 0, timestamp: 0 },
         baseConfig
       );
+    });
+
+    it("is a no-op when configured (FrameBus)", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configurePromise;
+
+      await expect(
+        adapter.sendFrame(
+          { rgba: Buffer.alloc(1920 * 1080 * 4), width: 1920, height: 1080, timestamp: 0 },
+          baseConfig
+        )
+      ).resolves.toBeUndefined();
     });
   });
 });
