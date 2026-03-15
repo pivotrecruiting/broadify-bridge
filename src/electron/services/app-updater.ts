@@ -1,16 +1,13 @@
 import { app } from "electron";
-import { createRequire } from "node:module";
 import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 import type { AppUpdaterActionResultT, AppUpdaterStatusT } from "../types.js";
+import { autoUpdater } from "./electron-updater-loader.js";
 import { logAppError, logAppInfo, logAppWarn } from "./app-logger.js";
 import {
   sanitizeUpdaterErrorMessage,
   parseIntervalMs,
   getUpdaterDisableReason,
 } from "./updater-utils.js";
-
-const require = createRequire(import.meta.url);
-const { autoUpdater } = require("electron-updater") as typeof import("electron-updater");
 
 type UpdaterStatusListenerT = (status: AppUpdaterStatusT) => void;
 

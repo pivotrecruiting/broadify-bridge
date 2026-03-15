@@ -4,6 +4,7 @@ module.exports = {
   testEnvironment: "node",
   roots: ["<rootDir>/src", "<rootDir>/apps/bridge/src"],
   testMatch: ["**/*.test.ts"],
+  setupFilesAfterEnv: ["<rootDir>/jest.setup.cjs"],
   collectCoverageFrom: [
     "src/**/*.ts",
     "apps/bridge/src/**/*.ts",
@@ -23,6 +24,7 @@ module.exports = {
       },
     ],
   },
-  // Exit after tests even if async handles (timers, sockets) remain open.
+  // Some tests (e.g. main.test.ts) load modules that register app/process listeners.
+  // Those keep the event loop alive; forceExit ensures Jest exits after the run.
   forceExit: true,
 };
