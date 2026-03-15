@@ -21,6 +21,7 @@ jest.mock("../../bridge-context.js", () => ({
 }));
 
 const baseConfig = {
+  version: 1,
   outputKey: "video_sdi" as const,
   targets: {},
   format: { width: 1920, height: 1080, fps: 30 },
@@ -28,7 +29,7 @@ const baseConfig = {
   colorspace: "auto" as const,
 };
 
-function createMockChild(): EventEmitter & {
+function createMockChild(opts?: { autoExitOnEnd?: boolean }): EventEmitter & {
   stdin: EventEmitter & { write: jest.Mock; end: jest.Mock };
   stdout: EventEmitter;
   stderr: EventEmitter;
@@ -36,6 +37,7 @@ function createMockChild(): EventEmitter & {
   exitCode: number | null;
   signalCode: NodeJS.Signals | null;
 } {
+  const autoExit = opts?.autoExitOnEnd !== false;
   const child = new EventEmitter() as EventEmitter & {
     stdin: EventEmitter & { write: jest.Mock; end: jest.Mock };
     stdout: EventEmitter;
@@ -47,16 +49,22 @@ function createMockChild(): EventEmitter & {
   child.stdin = Object.assign(new EventEmitter(), {
     write: jest.fn().mockReturnValue(true),
     end: jest.fn(function (this: typeof child) {
-      setImmediate(() => {
-        (child as { exitCode: number | null }).exitCode = 0;
-        (child as { signalCode: NodeJS.Signals | null }).signalCode = null;
-        child.emit("exit", 0, null);
-      });
+      if (autoExit) {
+        setImmediate(() => {
+          (child as { exitCode: number | null }).exitCode = 0;
+          (child as { signalCode: NodeJS.Signals | null }).signalCode = null;
+          child.emit("exit", 0, null);
+        });
+      }
     }),
   });
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.kill = jest.fn();
+  child.kill = jest.fn().mockImplementation((signal?: NodeJS.Signals) => {
+    (child as { exitCode: number | null }).exitCode = 0;
+    (child as { signalCode: NodeJS.Signals | null }).signalCode = signal ?? null;
+    child.emit("exit", 0, signal ?? null);
+  });
   child.exitCode = null;
   child.signalCode = null;
   return child;
@@ -117,6 +125,16 @@ describe("DecklinkVideoOutputAdapter", () => {
       ).rejects.toThrow("DeckLink helper not executable");
     });
 
+    it("throws with string message when access rejects with non-Error", async () => {
+      mockAccess.mockRejectedValue("unknown error");
+      await expect(
+        adapter.configure({
+          ...baseConfig,
+          targets: { output1Id: "decklink-1-sdi" },
+        })
+      ).rejects.toThrow("DeckLink helper not executable");
+    });
+
     it("configures and resolves when helper emits ready", async () => {
       mockSpawn.mockImplementation(() => {
         const child = createMockChild();
@@ -165,6 +183,74 @@ describe("DecklinkVideoOutputAdapter", () => {
       expect(mockSpawn.mock.calls[0]?.[2]?.env?.BRIDGE_FRAMEBUS_NAME).toBe("test-shm");
       process.env.BRIDGE_FRAMEBUS_NAME = originalEnv;
     });
+
+    it("passes all BRIDGE_FRAME env vars when set", async () => {
+      const orig = {
+        BRIDGE_FRAMEBUS_NAME: process.env.BRIDGE_FRAMEBUS_NAME,
+        BRIDGE_FRAMEBUS_SIZE: process.env.BRIDGE_FRAMEBUS_SIZE,
+        BRIDGE_FRAME_WIDTH: process.env.BRIDGE_FRAME_WIDTH,
+        BRIDGE_FRAME_HEIGHT: process.env.BRIDGE_FRAME_HEIGHT,
+        BRIDGE_FRAME_FPS: process.env.BRIDGE_FRAME_FPS,
+        BRIDGE_FRAME_PIXEL_FORMAT: process.env.BRIDGE_FRAME_PIXEL_FORMAT,
+      };
+      process.env.BRIDGE_FRAMEBUS_NAME = "shm";
+      process.env.BRIDGE_FRAMEBUS_SIZE = "4096";
+      process.env.BRIDGE_FRAME_WIDTH = "1920";
+      process.env.BRIDGE_FRAME_HEIGHT = "1080";
+      process.env.BRIDGE_FRAME_FPS = "30";
+      process.env.BRIDGE_FRAME_PIXEL_FORMAT = "argb";
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const env = mockSpawn.mock.calls[0]?.[2]?.env as Record<string, string>;
+      expect(env.BRIDGE_FRAMEBUS_NAME).toBe("shm");
+      expect(env.BRIDGE_FRAMEBUS_SIZE).toBe("4096");
+      expect(env.BRIDGE_FRAME_WIDTH).toBe("1920");
+      expect(env.BRIDGE_FRAME_HEIGHT).toBe("1080");
+      expect(env.BRIDGE_FRAME_FPS).toBe("30");
+      expect(env.BRIDGE_FRAME_PIXEL_FORMAT).toBe("argb");
+      Object.assign(process.env, orig);
+    });
+
+    it("rejects when child emits error before ready", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          child.emit("error", new Error("spawn failed"));
+        });
+        return child;
+      });
+      await expect(
+        adapter.configure({
+          ...baseConfig,
+          targets: { output1Id: "decklink-1-sdi" },
+        })
+      ).rejects.toThrow("spawn failed");
+    });
+
+    it("rejects when child exits before ready", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          child.emit("exit", 1, "SIGKILL");
+        });
+        return child;
+      });
+      await expect(
+        adapter.configure({
+          ...baseConfig,
+          targets: { output1Id: "decklink-1-sdi" },
+        })
+      ).rejects.toThrow("exited before ready");
+    });
   });
 
   describe("stop", () => {
@@ -189,13 +275,63 @@ describe("DecklinkVideoOutputAdapter", () => {
       expect(mockChild?.stdin.write).toHaveBeenCalled();
       expect(mockChild?.stdin.end).toHaveBeenCalled();
     });
+
+    it("sends SIGTERM when child does not exit on shutdown", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild({ autoExitOnEnd: false });
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      jest.useFakeTimers();
+      const stopPromise = adapter.stop();
+      await jest.advanceTimersByTimeAsync(4100);
+      await stopPromise;
+      expect(mockChild?.kill).toHaveBeenCalledWith("SIGTERM");
+      jest.useRealTimers();
+    });
+
+    it("sends SIGKILL when child ignores SIGTERM", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild({ autoExitOnEnd: false });
+        (child as { kill: jest.Mock }).kill = jest.fn((signal?: NodeJS.Signals) => {
+          if (signal === "SIGKILL") {
+            (child as { exitCode: number | null }).exitCode = 0;
+            (child as { signalCode: NodeJS.Signals | null }).signalCode = "SIGKILL";
+            child.emit("exit", 0, "SIGKILL");
+          }
+        });
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      jest.useFakeTimers();
+      const stopPromise = adapter.stop();
+      await jest.advanceTimersByTimeAsync(6500);
+      await stopPromise;
+      expect(mockChild?.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(mockChild?.kill).toHaveBeenCalledWith("SIGKILL");
+      jest.useRealTimers();
+    });
   });
 
   describe("sendFrame", () => {
     it("resolves without throwing (FrameBus no-op)", async () => {
       await expect(
         adapter.sendFrame(
-          { buffer: Buffer.alloc(0), width: 1920, height: 1080 },
+          { rgba: Buffer.alloc(0), width: 1920, height: 1080, timestamp: 0 },
           baseConfig
         )
       ).resolves.toBeUndefined();
@@ -222,6 +358,26 @@ describe("DecklinkVideoOutputAdapter", () => {
       expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining("metrics"));
     });
 
+    it("ignores message with unknown type", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      const logger = mockGetBridgeContext().logger as { debug: jest.Mock; warn: jest.Mock };
+      (mockChild?.stdout as EventEmitter).emit("data", Buffer.from('{"type":"other"}\n'));
+      await new Promise((r) => setImmediate(r));
+      expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining("other"));
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
     it("logs warn on non-JSON output", async () => {
       mockSpawn.mockImplementation(() => {
         const child = createMockChild();
@@ -240,9 +396,105 @@ describe("DecklinkVideoOutputAdapter", () => {
       await new Promise((r) => setImmediate(r));
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Non-JSON"));
     });
+
+    it("skips empty lines", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit(
+            "data",
+            Buffer.from('  \n{"type":"ready"}\n')
+          );
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+    });
+
+    it("logs warn on malformed JSON", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
+      (mockChild?.stdout as EventEmitter).emit("data", Buffer.from("{invalid}\n"));
+      await new Promise((r) => setImmediate(r));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Non-JSON"));
+    });
+  });
+
+  describe("stderr", () => {
+    it("logs error when stderr has content", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      const logger = mockGetBridgeContext().logger as { error: jest.Mock };
+      (mockChild?.stderr as EventEmitter).emit("data", Buffer.from("helper error\n"));
+      await new Promise((r) => setImmediate(r));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("helper error"));
+    });
+
+    it("does not log when stderr is empty/whitespace", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      const logger = mockGetBridgeContext().logger as { error: jest.Mock };
+      (mockChild?.stderr as EventEmitter).emit("data", Buffer.from("   \n"));
+      await new Promise((r) => setImmediate(r));
+      expect(logger.error).not.toHaveBeenCalled();
+    });
   });
 
   describe("getLogger", () => {
+    it("handles logger without debug method", async () => {
+      mockGetBridgeContext.mockReturnValue({
+        logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      });
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      (mockChild?.stdout as EventEmitter).emit("data", Buffer.from('{"type":"metrics"}\n'));
+      await new Promise((r) => setImmediate(r));
+    });
+
     it("uses console when getBridgeContext throws", async () => {
       mockGetBridgeContext.mockImplementation(() => {
         throw new Error("no context");

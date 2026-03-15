@@ -69,6 +69,7 @@ function emitExit(
 }
 
 const baseConfig = {
+  version: 1,
   outputKey: "video_hdmi" as const,
   targets: {},
   format: { width: 1920, height: 1080, fps: 30 },
@@ -159,6 +160,25 @@ describe("DisplayVideoOutputAdapter", () => {
         adapter.configure({
           ...baseConfig,
           targets: { output1Id: "decklink-1-sdi" },
+        })
+      ).rejects.toThrow("Selected output is not a display device");
+    });
+
+    it("throws when port ID does not exist in any device", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([
+        {
+          id: "display-1",
+          type: "display",
+          displayName: "Monitor",
+          ports: [{ id: "display-1-hdmi", displayName: "HDMI", type: "hdmi", direction: "output", role: "video", capabilities: { formats: [] }, status: { available: true } }],
+          status: { present: true, ready: true, inUse: false, lastSeen: Date.now() },
+        },
+      ]);
+      await expect(
+        adapter.configure({
+          ...baseConfig,
+          targets: { output1Id: "nonexistent-port-id" },
         })
       ).rejects.toThrow("Selected output is not a display device");
     });
@@ -383,6 +403,69 @@ describe("DisplayVideoOutputAdapter", () => {
       );
     });
 
+    it("skips empty lines in stdout and finds port in second device", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([
+        {
+          id: "display-0",
+          type: "display",
+          displayName: "Other",
+          ports: [{ id: "display-0-hdmi", displayName: "HDMI", type: "hdmi", direction: "output", role: "video", capabilities: { formats: [] }, status: { available: true } }],
+          status: { present: true, ready: true, inUse: false, lastSeen: Date.now() },
+        },
+        validDisplayDevice,
+      ]);
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit(
+          "data",
+          Buffer.from("\n\n  \n{\"type\":\"ready\"}\n")
+        );
+      });
+
+      await configurePromise;
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        expect.objectContaining({
+          env: expect.objectContaining({
+            BRIDGE_DISPLAY_MATCH_NAME: "Built-in Retina Display",
+          }),
+        })
+      );
+    });
+
+    it("does not log when stderr is empty or whitespace only", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+
+      setImmediate(() => {
+        (child.stderr as EventEmitter).emit("data", Buffer.from("   \n"));
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+
+      await configurePromise;
+
+      expect(mockLogger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("[DisplayOutput]")
+      );
+    });
+
     it("uses F_OK for helper access on win32", async () => {
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
       const { deviceCache } = require("../../device-cache.js");
@@ -433,12 +516,45 @@ describe("DisplayVideoOutputAdapter", () => {
       expect(child.kill).not.toHaveBeenCalled();
     });
 
+    it("sends SIGTERM then SIGKILL when child does not exit", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      child.kill = jest.fn((signal?: string) => {
+        if (signal === "SIGKILL") {
+          child.exitCode = 137;
+          child.signalCode = "SIGKILL";
+          setImmediate(() => child.emit("exit", 137, "SIGKILL"));
+        }
+      });
+      lastSpawnedChild = child;
+      mockSpawn.mockReturnValue(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configurePromise;
+
+      jest.useFakeTimers();
+      const stopPromise = adapter.stop();
+      await jest.advanceTimersByTimeAsync(4100);
+      await jest.advanceTimersByTimeAsync(2100);
+      await stopPromise;
+      jest.useRealTimers();
+
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    });
   });
 
   describe("sendFrame", () => {
     it("is a no-op", async () => {
       await adapter.sendFrame(
-        { data: new Uint8Array(0), width: 0, height: 0 },
+        { rgba: Buffer.alloc(0), width: 0, height: 0, timestamp: 0 },
         baseConfig
       );
     });
