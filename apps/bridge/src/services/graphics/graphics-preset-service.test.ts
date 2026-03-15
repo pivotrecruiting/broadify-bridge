@@ -122,6 +122,37 @@ describe("GraphicsPresetService", () => {
 
       expect(mockRemoveLayerWithRenderer).toHaveBeenCalled();
     });
+
+    it("removes and resends when same preset resends layer in same category", async () => {
+      activePreset = {
+        presetId: "p1",
+        durationMs: null,
+        layerIds: new Set(["layer-1"]),
+        pendingStart: false,
+        startedAt: null,
+        expiresAt: null,
+        timer: null,
+      };
+      layers.set(
+        "layer-1",
+        createLayerState({
+          layerId: "layer-1",
+          category: "lower_third",
+          presetId: "p1",
+        })
+      );
+      categoryToLayer.set("lower_third", "layer-1");
+      const service = createService();
+
+      await service.prepareBeforeRender("p1", "lower_third");
+
+      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledWith(
+        expect.anything(),
+        "layer-1",
+        "preset_resend"
+      );
+      expect(activePreset!.layerIds.has("layer-1")).toBe(false);
+    });
   });
 
   describe("syncAfterRender", () => {
@@ -183,6 +214,34 @@ describe("GraphicsPresetService", () => {
       expect(activePreset!.layerIds.has("layer-2")).toBe(true);
       expect(publishStatus).toHaveBeenCalledWith("preset_update");
     });
+
+    it("clears preset duration when durationMs is 0 and preset had timer state", () => {
+      activePreset = {
+        presetId: "preset-a",
+        durationMs: 5000,
+        layerIds: new Set(["layer-1"]),
+        pendingStart: true,
+        startedAt: null,
+        expiresAt: null,
+        timer: null,
+      };
+      const publishStatus = jest.fn();
+      const service = new GraphicsPresetService({
+        getRenderer: () => createMockRenderer() as never,
+        layers,
+        categoryToLayer,
+        getActivePreset: () => activePreset,
+        setActivePreset: (p) => {
+          activePreset = p;
+        },
+        publishStatus,
+      });
+
+      service.syncAfterRender("layer-1", "preset-a", 0);
+
+      expect(mockClearPresetDuration).toHaveBeenCalledWith(activePreset);
+      expect(publishStatus).toHaveBeenCalledWith("preset_update");
+    });
   });
 
   describe("maybeStartPresetTimers", () => {
@@ -228,6 +287,33 @@ describe("GraphicsPresetService", () => {
 
       expect(mockMaybeStartPresetTimer).toHaveBeenCalled();
       expect(publishStatus).toHaveBeenCalledWith("preset_started");
+    });
+
+    it("logs warn when preset timer pending but not started", () => {
+      activePreset = {
+        presetId: "p1",
+        durationMs: 1000,
+        layerIds: new Set(["layer-1"]),
+        pendingStart: true,
+        startedAt: null,
+        expiresAt: null,
+        timer: null,
+      };
+      mockMaybeStartPresetTimer.mockReturnValueOnce(false);
+      const service = new GraphicsPresetService({
+        getRenderer: () => createMockRenderer() as never,
+        layers,
+        categoryToLayer,
+        getActivePreset: () => activePreset,
+        setActivePreset: jest.fn(),
+        publishStatus: jest.fn(),
+      });
+
+      service.maybeStartPresetTimers(["other-layer"]);
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Preset timer pending")
+      );
     });
   });
 

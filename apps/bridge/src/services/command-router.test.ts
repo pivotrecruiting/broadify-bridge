@@ -283,6 +283,128 @@ describe("command-router", () => {
       expect(result.error).toContain("Invalid pairing code");
     });
 
+    it("bridge_pair_validate returns error when pairing code expired", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      getBridgeContext.mockReturnValue({
+        pairingCode: "CORRECT",
+        pairingExpiresAt: Date.now() - 1000,
+        bridgeId: "bridge-1",
+        bridgeName: "test",
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      const result = await commandRouter.handleCommand("bridge_pair_validate", {
+        pairingCode: "CORRECT",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Pairing code has expired");
+    });
+
+    it("bridge_pair_validate succeeds with valid pairing code", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      getBridgeContext.mockReturnValue({
+        pairingCode: "CORRECT",
+        pairingExpiresAt: Date.now() + 3600000,
+        bridgeId: "bridge-1",
+        bridgeName: "test",
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      const result = await commandRouter.handleCommand("bridge_pair_validate", {
+        pairingCode: "CORRECT",
+      });
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        bridgeId: "bridge-1",
+        bridgeName: "test",
+        version: "0.1.0",
+        relayEnrollment: "mock-key",
+      });
+    });
+
+    it("list_outputs triggers logger.debug when refresh requested", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      const mockDebug = jest.fn();
+      getBridgeContext.mockReturnValue({
+        ...defaultBridgeContext,
+        logger: { ...defaultBridgeContext.logger, debug: mockDebug },
+      });
+
+      await commandRouter.handleCommand("list_outputs", { refresh: true });
+      expect(mockDebug).toHaveBeenCalledWith(
+        "[CommandRouter] list_outputs refresh requested"
+      );
+    });
+
+    it("graphics_send returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_send");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_send");
+    });
+
+    it("graphics_send succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_send", {
+        layerId: "l1",
+        category: "lower-thirds",
+        bundle: { html: "<div/>", manifest: {} },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_update_values returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_values");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_update_values");
+    });
+
+    it("graphics_update_layout returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_layout");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_update_layout");
+    });
+
+    it("graphics_remove returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_remove");
+    });
+
+    it("graphics_remove_preset returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove_preset");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_remove_preset");
+    });
+
+    it("graphics_update_values succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_values", {
+        layerId: "l1",
+        values: {},
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_update_layout succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_layout", {
+        layerId: "l1",
+        layout: { x: 0, y: 0, scale: 1 },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_remove succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove", {
+        layerId: "l1",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_remove_preset succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove_preset", {
+        presetId: "p1",
+      });
+      expect(result.success).toBe(true);
+    });
+
     it("returns validation error for invalid engine_connect payload", async () => {
       const result = await commandRouter.handleCommand("engine_connect", {
         type: "atem",

@@ -111,6 +111,32 @@ describe("BridgeProcessManager", () => {
       expect(result.error).toContain("already in use");
       expect(mockSpawn).not.toHaveBeenCalled();
     });
+
+    it("returns error when port unavailable and no alternative found", async () => {
+      mockIsPortAvailable.mockResolvedValue(false);
+      mockFindAvailablePort.mockResolvedValue(null);
+
+      const result = await bridgeProcessManager.start(baseConfig, true);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("no alternative port found");
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
+    it("returns error when process exits before health check", async () => {
+      jest.useFakeTimers();
+      const fakeProcess = createFakeChildProcess(500);
+      mockSpawn.mockReturnValue(fakeProcess);
+
+      const startPromise = bridgeProcessManager.start(baseConfig);
+      await Promise.resolve();
+      jest.advanceTimersByTime(2500);
+
+      const result = await startPromise;
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("exited");
+    });
   });
 
   describe("stop", () => {
