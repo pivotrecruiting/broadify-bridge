@@ -24,11 +24,15 @@ jest.mock("electron", () => ({
   protocol: mockProtocol,
 }));
 
+const mockPinoInfo = jest.fn();
+const mockPinoWarn = jest.fn();
+const mockPinoError = jest.fn();
+const mockPinoDebug = jest.fn();
 jest.mock("pino", () => () => ({
-  info: jest.fn(),
-  warn: jest.fn(),
-  error: jest.fn(),
-  debug: jest.fn(),
+  info: (...args: unknown[]) => mockPinoInfo(...args),
+  warn: (...args: unknown[]) => mockPinoWarn(...args),
+  error: (...args: unknown[]) => mockPinoError(...args),
+  debug: (...args: unknown[]) => mockPinoDebug(...args),
 }));
 
 const mockCreateConnection = jest.fn();
@@ -82,7 +86,7 @@ describe("electron-renderer-entry", () => {
   const originalEnv = process.env;
 
   beforeAll(() => {
-    process.setMaxListeners(20);
+    process.setMaxListeners(40);
   });
 
   beforeEach(() => {
@@ -524,5 +528,789 @@ describe("electron-renderer-entry", () => {
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "invalid";
     await import("./electron-renderer-entry.js");
     expect(mockCreateConnection).not.toHaveBeenCalled();
+  });
+
+  it("logs warn when encodeIpcPacket throws ipc_header_exceeds_limit", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const mockSocket = {
+      on: jest.fn(),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockEncodeIpcPacket.mockImplementationOnce(() => {
+      throw new Error("ipc_header_exceeds_limit");
+    });
+    const validConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...validConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    const dataHandlers = (mockSocket.on as jest.Mock).mock.calls
+      .filter((c: unknown[]) => c[0] === "data")
+      .map((c: unknown[]) => c[1]);
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] IPC header exceeds limit"
+    );
+  });
+
+  it("logs warn when encodeIpcPacket throws ipc_payload_exceeds_limit", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const mockSocket = {
+      on: jest.fn(),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockEncodeIpcPacket.mockImplementationOnce(() => {
+      throw new Error("ipc_payload_exceeds_limit");
+    });
+    const validConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...validConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    const dataHandlers = (mockSocket.on as jest.Mock).mock.calls
+      .filter((c: unknown[]) => c[0] === "data")
+      .map((c: unknown[]) => c[1]);
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] IPC payload exceeds limit"
+    );
+  });
+
+  it("logs warn when encodeIpcPacket throws generic error", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const mockSocket = {
+      on: jest.fn(),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockEncodeIpcPacket.mockImplementationOnce(() => {
+      throw new Error("encode_failed");
+    });
+    const validConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...validConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    const dataHandlers = (mockSocket.on as jest.Mock).mock.calls
+      .filter((c: unknown[]) => c[0] === "data")
+      .map((c: unknown[]) => c[1]);
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "encode_failed" }),
+      "[GraphicsRenderer] IPC encode failed"
+    );
+  });
+
+  it("sets backpressure when socket.write returns false and resets on drain", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const drainHandlers: Array<() => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: () => void) => {
+        if (ev === "drain") drainHandlers.push(fn);
+      }),
+      write: jest.fn().mockReturnValue(false),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    expect(drainHandlers.length).toBeGreaterThanOrEqual(1);
+    expect(() => drainHandlers[0]()).not.toThrow();
+  });
+
+  it("calls app.dock.hide when platform is darwin and ready fires", async () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", {
+      value: "darwin",
+      configurable: true,
+    });
+    await import("./electron-renderer-entry.js");
+    const readyHandler = mockApp.on.mock.calls.find(
+      (c: unknown[]) => c[0] === "ready"
+    )?.[1];
+    expect(readyHandler).toBeDefined();
+    readyHandler!();
+    expect(mockApp.dock.hide).toHaveBeenCalled();
+    Object.defineProperty(process, "platform", {
+      value: origPlatform,
+      configurable: true,
+    });
+  });
+
+  it("applyRendererConfig logs warn when schema invalid", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockSafeParse.mockReturnValue({
+      success: false,
+      error: { issues: [{ path: ["width"] }] },
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          width: "invalid",
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ issues: expect.any(Array) }),
+      "[GraphicsRenderer] Invalid renderer_configure payload"
+    );
+  });
+
+  it("sends error IPC when FrameBus writer not ready after config", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    delete process.env.BRIDGE_FRAMEBUS_NAME;
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const configNoFramebus = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "",
+      framebusSlotCount: 0,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: configNoFramebus });
+    mockLoadFrameBusModule.mockReturnValue(null);
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...configNoFramebus,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockEncodeIpcPacket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        message: "FrameBus writer not ready",
+      }),
+      undefined
+    );
+  });
+
+  it("shutdown message closes frameBusWriter when set", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    let connectionCallback: (() => void) | null = null;
+    const mockClose = jest.fn();
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const validConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: mockClose,
+      }),
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...validConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "shutdown", token: "test-token" },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockClose).toHaveBeenCalled();
+    expect(mockApp.quit).toHaveBeenCalled();
+  });
+
+  it("asset protocol callback returns error when asset not found", async () => {
+    await import("./electron-renderer-entry.js");
+    const readyHandler = mockApp.on.mock.calls.find(
+      (c: unknown[]) => c[0] === "ready"
+    )?.[1];
+    readyHandler!();
+    const registerCalls = mockProtocol.registerFileProtocol.mock.calls;
+    expect(registerCalls.length).toBeGreaterThanOrEqual(1);
+    const assetHandler = registerCalls.find(
+      (c: unknown[]) => (c as [string])[0] === "asset"
+    )?.[1] as (request: { url: string }, callback: (arg: unknown) => void) => void;
+    expect(assetHandler).toBeDefined();
+    const cb = jest.fn();
+    assetHandler({ url: "asset://missing-id" }, cb);
+    expect(cb).toHaveBeenCalledWith({ error: -6 });
+  });
+
+  it("asset protocol callback returns error -2 when handler throws", async () => {
+    await import("./electron-renderer-entry.js");
+    const readyHandler = mockApp.on.mock.calls.find(
+      (c: unknown[]) => c[0] === "ready"
+    )?.[1];
+    readyHandler!();
+    const assetHandler = mockProtocol.registerFileProtocol.mock.calls.find(
+      (c: unknown[]) => (c as [string])[0] === "asset"
+    )?.[1] as (request: { url: string }, callback: (arg: unknown) => void) => void;
+    const cb = jest.fn();
+    assetHandler({ url: null } as unknown as { url: string }, cb);
+    expect(cb).toHaveBeenCalledWith({ error: -2 });
+  });
+
+  it("logs warn when IPC token is missing and port is set", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_GRAPHICS_IPC_TOKEN = "";
+    const mockSocket = {
+      on: jest.fn(),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) (cb as () => void)();
+        return mockSocket;
+      }
+    );
+    await import("./electron-renderer-entry.js");
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] IPC token missing (BRIDGE_GRAPHICS_IPC_TOKEN)"
+    );
+  });
+
+  it("logs warn and destroys socket on invalid decode header_length_exceeds_limit", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket.mockReturnValueOnce({
+      kind: "invalid" as const,
+      reason: "header_length_exceeds_limit",
+    });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] IPC header length exceeds limit"
+    );
+    expect(mockSocket.destroy).toHaveBeenCalled();
+  });
+
+  it("logs warn and destroys socket on invalid decode invalid_buffer_length_type", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket.mockReturnValueOnce({
+      kind: "invalid" as const,
+      reason: "invalid_buffer_length_type",
+    });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] IPC buffer length type invalid"
+    );
+    expect(mockSocket.destroy).toHaveBeenCalled();
+  });
+
+  it("logs warn and destroys socket on invalid decode payload_length_exceeds_limit", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket.mockReturnValueOnce({
+      kind: "invalid" as const,
+      reason: "payload_length_exceeds_limit",
+    });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] IPC payload exceeds limit"
+    );
+    expect(mockSocket.destroy).toHaveBeenCalled();
+  });
+
+  it("logs warn and destroys socket on invalid decode unknown reason", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket.mockReturnValueOnce({
+      kind: "invalid" as const,
+      reason: "unknown",
+    });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] IPC invalid message framing"
+    );
+    expect(mockSocket.destroy).toHaveBeenCalled();
+  });
+
+  it("logs warn on unexpected IPC payload and continues processing", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "ping", token: "test-token" },
+        payload: Buffer.from("x"),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] Unexpected IPC payload"
+    );
+  });
+
+  it("applyRendererConfig derives slotCount from framebusSize when framebusSlotCount is 0", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const configWithFramebusSize = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 0,
+      framebusSize: 1920 * 1080 * 4 * 2 + 128,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: configWithFramebusSize });
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...configWithFramebusSize,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockLoadFrameBusModule).toHaveBeenCalled();
+  });
+
+  it("applyRendererConfig logs slotcount-padding when framebusSize has remainder", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const frameSize = 1920 * 1080 * 4;
+    const slotBytes = frameSize * 2 + 100;
+    const configWithPadding = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 0,
+      framebusSize: slotBytes + 128,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: configWithPadding });
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...configWithPadding,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      "[GraphicsRenderer] FrameBus size includes padding; slot count derived from floor()"
+    );
   });
 });

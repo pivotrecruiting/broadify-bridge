@@ -2,19 +2,13 @@ import { generateKeyPairSync, sign as signMessage } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import {
   base64UrlDecode,
+  base64UrlEncode,
   stableStringify,
   pruneJtiCache,
   verifySignedRelayCommand,
   type RelayCommandMetaT,
   type SignedRelayCommandMessageT,
 } from "./relay-command-security.js";
-
-const toBase64Url = (value: Buffer): string =>
-  value
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
 
 const buildSignedMessage = (params: {
   privateKey: KeyObject;
@@ -43,7 +37,7 @@ const buildSignedMessage = (params: {
     command,
     payload,
     meta: params.meta,
-    signature: toBase64Url(signature),
+    signature: base64UrlEncode(signature),
   };
 };
 
@@ -58,6 +52,22 @@ describe("base64UrlDecode", () => {
     const encoded = "aGVsbG8"; // "hello" in base64
     const result = base64UrlDecode(encoded);
     expect(result.toString()).toBe("hello");
+  });
+});
+
+describe("base64UrlEncode", () => {
+  it("encodes buffer to URL-safe base64 without padding", () => {
+    const buf = Buffer.from("hello");
+    const encoded = base64UrlEncode(buf);
+    expect(encoded).not.toContain("+");
+    expect(encoded).not.toContain("/");
+    expect(encoded).not.toMatch(/=+$/);
+    expect(base64UrlDecode(encoded).toString()).toBe("hello");
+  });
+
+  it("round-trips with base64UrlDecode", () => {
+    const buf = Buffer.from([0x00, 0xff, 0x0a]);
+    expect(base64UrlDecode(base64UrlEncode(buf))).toEqual(buf);
   });
 });
 
