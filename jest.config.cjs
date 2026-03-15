@@ -23,4 +23,6 @@ module.exports = {
       },
     ],
   },
+  // Exit after tests even if async handles (timers, sockets) remain open.
+  forceExit: true,
 };
