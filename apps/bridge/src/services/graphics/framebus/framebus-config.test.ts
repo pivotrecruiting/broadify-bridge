@@ -79,6 +79,48 @@ describe("framebus-config", () => {
       expect(config.slotStride).toBe(config.frameSize);
       expect(config.headerSize).toBe(128);
     });
+
+    it("uses BRIDGE_FRAMEBUS_SLOT_COUNT when valid", () => {
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+      const config = buildFrameBusConfig(createOutputConfig(), null);
+      expect(config.slotCount).toBe(4);
+    });
+
+    it("falls back to default when BRIDGE_FRAMEBUS_SLOT_COUNT is invalid", () => {
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "1";
+      const config = buildFrameBusConfig(createOutputConfig(), null);
+      expect(config.slotCount).toBe(2);
+    });
+
+    it("uses BRIDGE_FRAME_PIXEL_FORMAT when 1", () => {
+      process.env.BRIDGE_FRAME_PIXEL_FORMAT = "1";
+      const config = buildFrameBusConfig(createOutputConfig(), null);
+      expect(config.pixelFormat).toBe(1);
+    });
+
+    it("falls back to default when BRIDGE_FRAME_PIXEL_FORMAT is not 1", () => {
+      process.env.BRIDGE_FRAME_PIXEL_FORMAT = "2";
+      const config = buildFrameBusConfig(createOutputConfig(), null);
+      expect(config.pixelFormat).toBe(1);
+    });
+
+    it("uses previous slotCount when env invalid", () => {
+      const previous: FrameBusConfigT = {
+        name: "prev",
+        slotCount: 3,
+        pixelFormat: 1,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        frameSize: 0,
+        slotStride: 0,
+        headerSize: 128,
+        size: 0,
+      };
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "x";
+      const config = buildFrameBusConfig(createOutputConfig(), previous);
+      expect(config.slotCount).toBe(3);
+    });
   });
 
   describe("applyFrameBusEnv and clearFrameBusEnv", () => {
