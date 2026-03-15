@@ -20,6 +20,10 @@ const optionsWithAll = [
 const optionsWithCustomOnly = [
   { id: "localhost", label: "Localhost", bindAddress: "127.0.0.1", interface: "lo", recommended: true, advanced: false, portConfig: { customOnly: true, defaultPort: 9000 } },
 ];
+const optionsWithPortConfigNoCustomOnly = [
+  { id: "localhost", label: "Localhost", bindAddress: "127.0.0.1", interface: "lo", recommended: true, advanced: false },
+  { id: "fixed", label: "Fixed Port", bindAddress: "0.0.0.0", interface: "eth0", recommended: false, advanced: false, portConfig: { customOnly: false, defaultPort: 9999 } },
+];
 
 describe("useNetworkBinding", () => {
   it("returns handleBindingChange, getCurrentBindAddress, getCurrentPortConfig", () => {
@@ -182,5 +186,67 @@ describe("useNetworkBinding", () => {
     );
 
     expect(result.current.getCurrentPortConfig()).toEqual({ customOnly: true, defaultPort: 9000 });
+  });
+
+  it("handleBindingChange sets customPort and showAdvanced when option has portConfig with customOnly true", () => {
+    const setNetworkBindingId = jest.fn();
+    const setNetworkPort = jest.fn();
+    const setCustomPort = jest.fn();
+    const setShowAdvanced = jest.fn();
+
+    const { result } = renderHook(() =>
+      useNetworkBinding({
+        networkConfig: defaultNetworkConfig,
+        networkBindingOptions: optionsWithCustomOnly,
+        networkBindingId: "other",
+        setNetworkBindingId,
+        networkPort: "8787",
+        setNetworkPort,
+        customPort: "",
+        setCustomPort,
+        showAdvanced: false,
+        setShowAdvanced,
+      })
+    );
+
+    act(() => {
+      result.current.handleBindingChange("localhost");
+    });
+
+    expect(setNetworkBindingId).toHaveBeenCalledWith("localhost");
+    expect(setCustomPort).toHaveBeenCalledWith("9000");
+    expect(setShowAdvanced).toHaveBeenCalledWith(true);
+    expect(setNetworkPort).not.toHaveBeenCalled();
+  });
+
+  it("handleBindingChange sets networkPort and hides advanced when option has portConfig with customOnly false", () => {
+    const setNetworkBindingId = jest.fn();
+    const setNetworkPort = jest.fn();
+    const setCustomPort = jest.fn();
+    const setShowAdvanced = jest.fn();
+
+    const { result } = renderHook(() =>
+      useNetworkBinding({
+        networkConfig: defaultNetworkConfig,
+        networkBindingOptions: optionsWithPortConfigNoCustomOnly,
+        networkBindingId: "localhost",
+        setNetworkBindingId,
+        networkPort: "8787",
+        setNetworkPort,
+        customPort: "",
+        setCustomPort,
+        showAdvanced: false,
+        setShowAdvanced,
+      })
+    );
+
+    act(() => {
+      result.current.handleBindingChange("fixed");
+    });
+
+    expect(setNetworkBindingId).toHaveBeenCalledWith("fixed");
+    expect(setNetworkPort).toHaveBeenCalledWith("9999");
+    expect(setShowAdvanced).toHaveBeenCalledWith(false);
+    expect(setCustomPort).not.toHaveBeenCalled();
   });
 });

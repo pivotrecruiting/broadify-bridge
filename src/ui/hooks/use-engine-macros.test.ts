@@ -99,4 +99,105 @@ describe("useEngineMacros", () => {
       expect(globalThis.window.electron.engineGetMacros).toHaveBeenCalledTimes(2);
     });
   });
+
+  it("sets error and empty macros when fetchMacros throws", async () => {
+    (globalThis.window.electron.engineGetMacros as jest.Mock).mockRejectedValueOnce(
+      new Error("Network error")
+    );
+
+    const { result } = renderHook(() => useEngineMacros());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe("Network error");
+    expect(result.current.macros).toEqual([]);
+  });
+
+  it("runMacro sets error when result.success is false", async () => {
+    const { result } = renderHook(() => useEngineMacros());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    (globalThis.window.electron.engineRunMacro as jest.Mock).mockResolvedValueOnce({
+      success: false,
+      error: "Macro not found",
+    });
+
+    await act(async () => {
+      result.current.runMacro(99);
+    });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe("Macro not found");
+  });
+
+  it("runMacro sets error when engineRunMacro throws", async () => {
+    const { result } = renderHook(() => useEngineMacros());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    (globalThis.window.electron.engineRunMacro as jest.Mock).mockRejectedValueOnce(
+      new Error("IPC failed")
+    );
+
+    await act(async () => {
+      result.current.runMacro(1);
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).toBe("IPC failed");
+    });
+  });
+
+  it("stopMacro sets error when result.success is false", async () => {
+    const { result } = renderHook(() => useEngineMacros());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    (globalThis.window.electron.engineStopMacro as jest.Mock).mockResolvedValueOnce({
+      success: false,
+      error: "Macro not running",
+    });
+
+    await act(async () => {
+      result.current.stopMacro(1);
+    });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe("Macro not running");
+  });
+
+  it("stopMacro sets error when engineStopMacro throws", async () => {
+    const { result } = renderHook(() => useEngineMacros());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    (globalThis.window.electron.engineStopMacro as jest.Mock).mockRejectedValueOnce(
+      new Error("Bridge unreachable")
+    );
+
+    await act(async () => {
+      result.current.stopMacro(1);
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).toBe("Bridge unreachable");
+    });
+  });
 });

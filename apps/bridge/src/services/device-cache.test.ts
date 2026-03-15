@@ -83,6 +83,25 @@ describe("DeviceCache", () => {
     expect(cache.isFresh()).toBe(true);
   });
 
+  it("logs debug when using cached results within TTL", async () => {
+    const deps = createDeps();
+    const cache = new DeviceCache({
+      moduleRegistry: deps.moduleRegistry as any,
+      getLogger: () => deps.logger,
+      now: () => deps.getNow(),
+      wait: async () => undefined,
+      cacheTtlMs: 1000,
+    });
+
+    await cache.getDevices();
+    deps.setNow(1_100);
+    await cache.getDevices();
+
+    expect(deps.logger.debug).toHaveBeenCalledWith(
+      "[Devices] Using cached results (1 devices)"
+    );
+  });
+
   it("enforces force-refresh rate limit", async () => {
     const deps = createDeps();
     const cache = new DeviceCache({

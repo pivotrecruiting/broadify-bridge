@@ -83,4 +83,152 @@ describe("checkBridgeHealth", () => {
     expect(status.reachable).toBe(false);
     expect(status.error).toContain("already in use");
   });
+
+  it("returns error on HTTP non-2xx response", async () => {
+    const fetchMock = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >();
+
+    fetchMock.mockResolvedValueOnce(
+      new Response("Not Found", {
+        status: 404,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const status = await checkBridgeHealth({
+      host: "127.0.0.1",
+      port: 8000,
+    });
+
+    expect(status.running).toBe(false);
+    expect(status.reachable).toBe(false);
+    expect(status.error).toBe("HTTP 404");
+  });
+
+  it("returns port-in-use error when fetch throws with JSON in message", async () => {
+    const fetchMock = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >();
+
+    fetchMock.mockRejectedValueOnce(new Error("Failed to parse JSON"));
+
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const status = await checkBridgeHealth({
+      host: "127.0.0.1",
+      port: 8000,
+    });
+
+    expect(status.running).toBe(false);
+    expect(status.reachable).toBe(false);
+    expect(status.error).toContain("already in use");
+  });
+
+  it("returns error when relay status check fails but main status succeeds", async () => {
+    const fetchMock = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >();
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: "1.0", uptime: 10 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockRejectedValueOnce(new Error("Network error"));
+
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const status = await checkBridgeHealth({
+      host: "127.0.0.1",
+      port: 8000,
+    });
+
+    expect(status.running).toBe(true);
+    expect(status.reachable).toBe(true);
+    expect(status.version).toBe("1.0");
+    expect(status.relayConnected).toBe(false);
+  });
+});
+
+describe("startHealthCheckPolling", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("calls onStatusUpdate and stop clears interval", async () => {
+    const fetchMock = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >();
+
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ version: "1.0" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { startHealthCheckPolling } = await import(
+      "./bridge-health-check.js"
+    );
+    const onStatusUpdate = jest.fn();
+
+    const stop = startHealthCheckPolling(
+      { host: "127.0.0.1", port: 8000 },
+      onStatusUpdate,
+    );
+
+    await new Promise((r) => setImmediate(r));
+
+    expect(onStatusUpdate).toHaveBeenCalled();
+    stop();
+  });
+
+  it("uses isProcessRunning to override running flag", async () => {
+    const fetchMock = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >();
+
+    fetchMock.mockResolvedValue(
+      new Response("error", {
+        status: 500,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { startHealthCheckPolling } = await import(
+      "./bridge-health-check.js"
+    );
+    const onStatusUpdate = jest.fn();
+    const isProcessRunning = jest.fn().mockReturnValue(true);
+
+    const stop = startHealthCheckPolling(
+      { host: "127.0.0.1", port: 8000 },
+      onStatusUpdate,
+      isProcessRunning,
+    );
+
+    await new Promise((r) => setImmediate(r));
+
+    expect(onStatusUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ running: true, reachable: false }),
+    );
+
+    stop();
+  });
 });
