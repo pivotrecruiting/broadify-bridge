@@ -455,4 +455,576 @@ describe("display-output-entry", () => {
       "Boolean(window.displayOutput && window.displayOutput.onFrame)"
     );
   });
+
+  it("returns primary display when match name matches no display", async () => {
+    mockScreen.getAllDisplays.mockReturnValue([
+      {
+        id: 0,
+        label: "Built-in",
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        size: { width: 1920, height: 1080 },
+        internal: true,
+      },
+    ]);
+    mockScreen.getPrimaryDisplay.mockReturnValue({
+      id: 0,
+      bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+      size: { width: 1920, height: 1080 },
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_DISPLAY_MATCH_NAME = "hdmi-nonexistent";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+
+    expect(mockScreen.getPrimaryDisplay).toHaveBeenCalled();
+    expect(mockBrowserWindow).toHaveBeenCalled();
+  });
+
+  it("buffers frame when window is destroyed and sends on next did-finish-load", async () => {
+    jest.useFakeTimers();
+    let callCount = 0;
+    const mockReadLatest = jest.fn().mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          buffer: Buffer.alloc(1920 * 1080 * 4),
+          timestampNs: BigInt(Date.now()) * 1_000_000n,
+          seq: 1n,
+        };
+      }
+      return null;
+    });
+    const mockWin = createMockWindow();
+    mockWin.isDestroyed.mockReturnValue(false).mockReturnValueOnce(false).mockReturnValueOnce(true);
+    mockBrowserWindow.mockReturnValue(mockWin);
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: mockReadLatest,
+        close: jest.fn(),
+      }),
+    });
+
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const didFinishLoadHandler = mockWin.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    jest.advanceTimersByTime(50);
+    expect(mockWin.webContents.send).toHaveBeenCalledWith(
+      "display-frame",
+      expect.any(Object)
+    );
+    mockWin.webContents.send.mockClear();
+    jest.advanceTimersByTime(50);
+    expect(mockWin.webContents.send).not.toHaveBeenCalled();
+
+    jest.useRealTimers();
+  });
+
+  it("logs perf when BRIDGE_LOG_PERF is set and interval elapsed", async () => {
+    jest.useFakeTimers();
+    const mockReadLatest = jest.fn().mockReturnValue({
+      buffer: Buffer.alloc(1920 * 1080 * 4),
+      timestampNs: BigInt(Date.now()) * 1_000_000n,
+      seq: 1n,
+    });
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: mockReadLatest,
+        close: jest.fn(),
+      }),
+    });
+
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    process.env.BRIDGE_LOG_PERF = "1";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    jest.advanceTimersByTime(1100);
+    expect(mockPino.info).toHaveBeenCalledWith(
+      expect.objectContaining({ fps: expect.any(Number), drops: expect.any(Number) }),
+      "[DisplayOutput] Perf"
+    );
+
+    jest.useRealTimers();
+  });
+
+  it("fails FrameBus when height mismatch", async () => {
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 720,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 720 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    process.env.BRIDGE_FRAME_HEIGHT = "1080";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    expect(mockPino.error).toHaveBeenCalledWith(
+      expect.stringContaining("FrameBus height mismatch")
+    );
+  });
+
+  it("fails FrameBus when fps mismatch", async () => {
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    process.env.BRIDGE_FRAME_FPS = "50";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    expect(mockPino.error).toHaveBeenCalledWith(
+      expect.stringContaining("FrameBus fps mismatch")
+    );
+  });
+
+  it("fails FrameBus when pixelFormat is not RGBA8", async () => {
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 2,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    expect(mockPino.error).toHaveBeenCalledWith(
+      expect.stringContaining("FrameBus pixel format mismatch")
+    );
+  });
+
+  it("fails FrameBus when frameBusPixelFormat env does not match header", async () => {
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    process.env.BRIDGE_FRAME_PIXEL_FORMAT = "2";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    expect(mockPino.error).toHaveBeenCalledWith(
+      expect.stringContaining("FrameBus pixel format mismatch")
+    );
+  });
+
+  it("fails FrameBus when size mismatch", async () => {
+    mockGetExpectedFrameBusSizeFromHeader.mockReturnValue(2048);
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    process.env.BRIDGE_FRAMEBUS_SIZE = "1024";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    expect(mockPino.error).toHaveBeenCalledWith(
+      expect.stringContaining("FrameBus size mismatch")
+    );
+  });
+
+  it("interval skips when readLatest returns null", async () => {
+    jest.useFakeTimers();
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    jest.advanceTimersByTime(50);
+    expect(win?.webContents.send).not.toHaveBeenCalled();
+
+    jest.useRealTimers();
+  });
+
+  it("counts repeat frames when readLatest returns same seq", async () => {
+    jest.useFakeTimers();
+    const mockReadLatest = jest
+      .fn()
+      .mockReturnValueOnce({
+        buffer: Buffer.alloc(1920 * 1080 * 4),
+        timestampNs: BigInt(Date.now()) * 1_000_000n,
+        seq: 1n,
+      })
+      .mockReturnValueOnce({
+        buffer: Buffer.alloc(1920 * 1080 * 4),
+        timestampNs: BigInt(Date.now()) * 1_000_000n,
+        seq: 1n,
+      })
+      .mockReturnValueOnce({
+        buffer: Buffer.alloc(1920 * 1080 * 4),
+        timestampNs: BigInt(Date.now()) * 1_000_000n,
+        seq: 2n,
+      })
+      .mockReturnValue(null);
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: mockReadLatest,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    process.env.BRIDGE_LOG_PERF = "1";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    jest.advanceTimersByTime(1000);
+    didFinishLoadHandler();
+    jest.advanceTimersByTime(25);
+    jest.advanceTimersByTime(25);
+    jest.advanceTimersByTime(1000);
+    jest.advanceTimersByTime(25);
+    expect(mockPino.info).toHaveBeenCalledWith(
+      expect.objectContaining({ repeats: expect.any(Number) }),
+      "[DisplayOutput] Perf"
+    );
+
+    jest.useRealTimers();
+  });
+
+  it("counts dropped frames when seq has gap", async () => {
+    jest.useFakeTimers();
+    const mockReadLatest = jest
+      .fn()
+      .mockReturnValueOnce({
+        buffer: Buffer.alloc(1920 * 1080 * 4),
+        timestampNs: BigInt(Date.now()) * 1_000_000n,
+        seq: 1n,
+      })
+      .mockReturnValueOnce({
+        buffer: Buffer.alloc(1920 * 1080 * 4),
+        timestampNs: BigInt(Date.now()) * 1_000_000n,
+        seq: 5n,
+      })
+      .mockReturnValueOnce({
+        buffer: Buffer.alloc(1920 * 1080 * 4),
+        timestampNs: BigInt(Date.now()) * 1_000_000n,
+        seq: 6n,
+      })
+      .mockReturnValue(null);
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: mockReadLatest,
+        close: jest.fn(),
+      }),
+    });
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    process.env.BRIDGE_LOG_PERF = "1";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const didFinishLoadHandler = win?.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    jest.advanceTimersByTime(1000);
+    didFinishLoadHandler();
+    jest.advanceTimersByTime(25);
+    jest.advanceTimersByTime(25);
+    jest.advanceTimersByTime(1000);
+    jest.advanceTimersByTime(25);
+    expect(mockPino.info).toHaveBeenCalledWith(
+      expect.objectContaining({ drops: expect.any(Number) }),
+      "[DisplayOutput] Perf"
+    );
+
+    jest.useRealTimers();
+  });
+
+  it("logs preload API check failure when executeJavaScript rejects", async () => {
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_DISPLAY_DEBUG = "1";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    const mockWin = createMockWindow();
+    mockWin.webContents.executeJavaScript.mockRejectedValue(
+      new Error("script failed")
+    );
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    mockBrowserWindow.mockReturnValue(mockWin);
+
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const didFinishLoadHandler = mockWin.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockPino.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: "script failed" }),
+      "[DisplayOutput] Failed to check preload API"
+    );
+  });
+
+  it("logs preload API availability when executeJavaScript resolves", async () => {
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    process.env.BRIDGE_DISPLAY_DEBUG = "1";
+    process.env.BRIDGE_FRAMEBUS_NAME = "test-framebus";
+    const mockWin = createMockWindow();
+    mockWin.webContents.executeJavaScript.mockResolvedValue(true);
+    mockLoadFrameBusModule.mockReturnValue({
+      openReader: () => ({
+        name: "test",
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 50,
+          pixelFormat: 1,
+          headerSize: 128,
+          slotCount: 1,
+          slotStride: 1920 * 1080 * 4,
+        },
+        readLatest: () => null,
+        close: jest.fn(),
+      }),
+    });
+    mockBrowserWindow.mockReturnValue(mockWin);
+
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const didFinishLoadHandler = mockWin.webContents.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "did-finish-load"
+    )?.[1];
+    didFinishLoadHandler();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockPino.info).toHaveBeenCalledWith(
+      expect.objectContaining({ hasApi: true }),
+      "[DisplayOutput] Preload API availability"
+    );
+  });
 });
