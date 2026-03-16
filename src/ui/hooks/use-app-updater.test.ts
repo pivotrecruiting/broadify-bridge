@@ -2,10 +2,11 @@
  * @jest-environment jsdom
  */
 import { renderHook, act, waitFor } from "@testing-library/react";
+import type { AppUpdaterActionResultT, AppUpdaterStatusT } from "@broadify/protocol";
 
 const mockGetUpdaterEnv = jest.fn(() => ({ DEV: false, VITE_FAKE_UPDATE_AVAILABLE: "" }));
 jest.mock("./updater-env.js", () => ({
-  getUpdaterEnv: (...args: unknown[]) => mockGetUpdaterEnv(...args),
+  getUpdaterEnv: () => mockGetUpdaterEnv(),
 }));
 
 import { useAppUpdater } from "./use-app-updater.js";
@@ -48,7 +49,7 @@ describe("useAppUpdater", () => {
     mockGetUpdaterEnv.mockReturnValue({ DEV: false, VITE_FAKE_UPDATE_AVAILABLE: "" });
     (globalThis.window as unknown as { electron?: unknown }).electron = {
       updaterGetStatus: jest.fn().mockResolvedValue(initialStatus),
-      subscribeUpdaterStatus: jest.fn().mockImplementation((cb: (s: unknown) => void) => {
+      subscribeUpdaterStatus: jest.fn().mockImplementation((_cb: (s: unknown) => void) => {
         return () => {};
       }),
       updaterCheckForUpdates: jest.fn().mockResolvedValue({ success: true, status: availableStatus }),
@@ -188,7 +189,7 @@ describe("useAppUpdater", () => {
       expect(result.current.status.state).toBe("idle");
     });
 
-    let installResult: { success: boolean; status: { message: string } } | undefined;
+    let installResult: AppUpdaterActionResultT | undefined;
     await act(async () => {
       installResult = await result.current.quitAndInstall();
     });
@@ -199,9 +200,9 @@ describe("useAppUpdater", () => {
   });
 
   it("subscribeUpdaterStatus callback updates status", async () => {
-    let subscriptionCb: ((s: typeof initialStatus) => void) | null = null;
+    let subscriptionCb: ((s: AppUpdaterStatusT) => void) | null = null;
     (globalThis.window.electron.subscribeUpdaterStatus as jest.Mock).mockImplementation(
-      (cb: (s: typeof initialStatus) => void) => {
+      (cb: (s: AppUpdaterStatusT) => void) => {
         subscriptionCb = cb;
         return () => {};
       }
@@ -485,7 +486,7 @@ describe("useAppUpdater", () => {
         expect(result.current.status.state).toBe("downloaded");
       });
 
-      let installResult: { success: boolean; status: { message: string } } | undefined;
+      let installResult: AppUpdaterActionResultT | undefined;
       await act(async () => {
         installResult = await result.current.quitAndInstall();
       });

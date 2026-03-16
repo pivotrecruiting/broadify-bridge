@@ -4,6 +4,7 @@ import {
   shouldUseCustomPort,
   calculatePortToUse,
 } from "./port-utils.js";
+import type { NetworkConfigT } from "@broadify/protocol";
 
 describe("validatePort", () => {
   it("returns true for valid ports", () => {
@@ -70,10 +71,22 @@ describe("shouldUseCustomPort", () => {
 });
 
 describe("calculatePortToUse", () => {
-  const networkConfig = {
-    port: { default: 8787 },
-    host: { default: "127.0.0.1" },
-  } as Parameters<typeof calculatePortToUse>[3];
+  const networkConfig: NetworkConfigT = {
+    networkBinding: {
+      default: {
+        id: "localhost",
+        label: "Localhost",
+        bindAddress: "127.0.0.1",
+        recommended: true,
+        advanced: false,
+        description: "Loopback binding",
+      },
+      options: [],
+      filters: { excludeInterfaces: [], excludeIpRanges: [], ipv6: false },
+    },
+    port: { default: 8787, autoFallback: [8788, 8789], allowCustom: true, customAdvancedOnly: false },
+    security: { lanMode: { enabled: false, requireAuth: false, readOnlyWithoutAuth: false } },
+  };
 
   it("returns custom port when useCustomPort is true", () => {
     expect(

@@ -3,15 +3,19 @@ import {
   getPortConfig,
   getDefaultPortForBinding,
 } from "./network-utils.js";
+import type { InterfacePortConfigT, NetworkBindingOptionT } from "@broadify/protocol";
 
 const createOption = (
   id: string,
   bindAddress: string,
-  portConfig?: { customOnly: boolean; defaultPort?: number }
-) => ({
+  portConfig?: InterfacePortConfigT
+): NetworkBindingOptionT => ({
   id,
   label: `Option ${id}`,
   bindAddress,
+  interface: id,
+  recommended: false,
+  advanced: false,
   portConfig,
 });
 

@@ -78,7 +78,7 @@ describe("usePortAvailability", () => {
   });
 
   it("does not check ports when networkConfig is null", async () => {
-    const { result } = renderHook(() =>
+    renderHook(() =>
       usePortAvailability({
         networkBindingId: "localhost",
         networkPort: "8787",
@@ -97,7 +97,7 @@ describe("usePortAvailability", () => {
   });
 
   it("does not check ports when bridge is running", async () => {
-    const { result } = renderHook(() =>
+    renderHook(() =>
       usePortAvailability({
         networkBindingId: "localhost",
         networkPort: "8787",
