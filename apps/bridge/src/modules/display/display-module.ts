@@ -1,17 +1,12 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import type {
-  DeviceDescriptorT,
-  PortDescriptorT,
-} from "@broadify/protocol";
+import type { DeviceDescriptorT } from "@broadify/protocol";
 import type { DeviceController, DeviceModule } from "../device-module.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
 import {
-  sanitizeIdPart,
   normalizeConnectionType,
   normalizeWindowsInstanceKey,
   normalizeWindowsConnectionType,
-  parseCsvLine,
   parseCsvRows,
   parseResolution,
   parseRefreshHz,
@@ -103,13 +98,12 @@ const WINDOWS_POWERSHELL_PATH =
 const WINDOWS_WMIC_PATH = resolveWindowsSystemExe("wbem", "wmic.exe") || "wmic";
 
 const WINDOWS_INTERNAL_OUTPUT_TECH_VALUES = new Set<number>([
-  -2147483648,
-  2147483648,
+  -2147483648, 2147483648,
 ]);
 
 const isLikelyWindowsInternalDisplay = (
   name: string | undefined,
-  videoOutputTechnology?: number
+  videoOutputTechnology?: number,
 ): boolean => {
   if (
     videoOutputTechnology !== undefined &&
@@ -126,7 +120,7 @@ const isLikelyWindowsInternalDisplay = (
 // Prefer known keys over scanning all values to avoid false positives.
 const getStringField = (
   obj: Record<string, unknown>,
-  keys: string[]
+  keys: string[],
 ): string | undefined => {
   for (const key of keys) {
     const value = obj[key];
@@ -140,7 +134,7 @@ const getStringField = (
 // Fallback matcher when platform-specific keys are missing.
 const findStringMatch = (
   obj: Record<string, unknown>,
-  matcher: (value: string) => boolean
+  matcher: (value: string) => boolean,
 ): string | undefined => {
   for (const value of Object.values(obj)) {
     if (typeof value === "string" && matcher(value)) {
@@ -231,13 +225,13 @@ const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
           const connectionRaw =
             getStringField(display, MAX_CONNECTION_SEARCH_KEYS) ||
             findStringMatch(display, (value) =>
-              /(hdmi|displayport|thunderbolt|usb-c)/i.test(value)
+              /(hdmi|displayport|thunderbolt|usb-c)/i.test(value),
             );
           let connectionType = normalizeConnectionType(connectionRaw);
           if (!connectionType) {
             connectionType = "displayport";
             getBridgeContext().logger.warn(
-              `[DisplayDetector] Missing connection type for "${name}", falling back to displayport`
+              `[DisplayDetector] Missing connection type for "${name}", falling back to displayport`,
             );
           }
           const vendorId = getStringField(display, MAX_VENDOR_SEARCH_KEYS);
@@ -249,7 +243,9 @@ const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
           const resolution = parseResolution(resolutionRaw);
           const refreshRaw =
             getStringField(display, MAX_REFRESH_SEARCH_KEYS) ||
-            findStringMatch(display, (value) => /\d+(?:\.\d+)?\s*hz/i.test(value));
+            findStringMatch(display, (value) =>
+              /\d+(?:\.\d+)?\s*hz/i.test(value),
+            );
           const refreshHz = parseRefreshHz(refreshRaw);
 
           results.push({
@@ -268,7 +264,7 @@ const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
         getBridgeContext().logger.warn(
           `[DisplayDetector] Failed to parse system_profiler output: ${
             error instanceof Error ? error.message : String(error)
-          }`
+          }`,
         );
         resolve([]);
       }
@@ -284,7 +280,7 @@ const getWindowsDisplays = async (): Promise<RawDisplayInfoT[]> => {
   }
 
   getBridgeContext().logger.warn(
-    `[DisplayDetector] Falling back to WMIC for Windows display detection (reason: ${powerShellResult.reason})`
+    `[DisplayDetector] Falling back to WMIC for Windows display detection (reason: ${powerShellResult.reason})`,
   );
   return getWindowsDisplaysViaWmic();
 };
@@ -297,8 +293,8 @@ type WindowsDisplayDetectionResultT = {
 
 const getWindowsDisplaysViaPowerShell =
   async (): Promise<WindowsDisplayDetectionResultT> => {
-  return new Promise((resolve) => {
-    const psCommand = `
+    return new Promise((resolve) => {
+      const psCommand = `
       $ErrorActionPreference = 'SilentlyContinue'
       function Convert-WmiChars([object]$Values) {
         if ($null -eq $Values) { return '' }
@@ -333,126 +329,133 @@ const getWindowsDisplaysViaPowerShell =
       } | ConvertTo-Json -Compress -Depth 4
     `;
 
-    const process = spawn(
-      WINDOWS_POWERSHELL_PATH,
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        psCommand,
-      ],
-      { windowsHide: true }
-    );
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      process.kill("SIGTERM");
-      resolve({ ok: false, displays: [], reason: "timeout" });
-    }, 5000);
+      const process = spawn(
+        WINDOWS_POWERSHELL_PATH,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          psCommand,
+        ],
+        { windowsHide: true },
+      );
+      let stdout = "";
+      let stderr = "";
+      const timeout = setTimeout(() => {
+        process.kill("SIGTERM");
+        resolve({ ok: false, displays: [], reason: "timeout" });
+      }, 5000);
 
-    process.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
+      process.stdout.on("data", (data) => {
+        stdout += data.toString();
+      });
 
-    process.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
+      process.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
 
-    process.on("close", (code) => {
-      clearTimeout(timeout);
-      try {
-        if (code !== 0 && !stdout.trim()) {
-          const stderrPreview = stderr.trim().slice(0, 300);
-          getBridgeContext().logger.warn(
-            `[DisplayDetector] PowerShell exited with code ${code}${
-              stderrPreview ? `: ${stderrPreview}` : ""
-            }`
-          );
-          resolve({
-            ok: false,
-            displays: [],
-            reason: `powershell_exit_${code ?? "unknown"}`,
-          });
-          return;
-        }
-
-        const json = JSON.parse(stdout) as WindowsDisplayDetectorPayloadT;
-        const idRows = toObjectArray(json.ids);
-        const connectionRows = toObjectArray(json.connections);
-
-        const connectionByInstance = new Map<string, WindowsMonitorConnectionRowT>();
-        for (const row of connectionRows) {
-          if (!row.instance_name || row.active === false) {
-            continue;
-          }
-          connectionByInstance.set(normalizeWindowsInstanceKey(row.instance_name), row);
-        }
-
-        const results: RawDisplayInfoT[] = [];
-        for (const row of idRows) {
-          if (!row.instance_name || row.active === false) {
-            continue;
-          }
-
-          const instanceKey = normalizeWindowsInstanceKey(row.instance_name);
-          const connection = connectionByInstance.get(instanceKey);
-          const videoOutputTechnology =
-            typeof connection?.video_output_technology === "number"
-              ? connection.video_output_technology
-              : undefined;
-
-          const name = row.name?.trim() || "External Display";
-          if (isLikelyWindowsInternalDisplay(name, videoOutputTechnology)) {
-            continue;
-          }
-
-          let connectionType = normalizeWindowsConnectionType(videoOutputTechnology);
-          if (!connectionType) {
-            connectionType = "displayport";
+      process.on("close", (code) => {
+        clearTimeout(timeout);
+        try {
+          if (code !== 0 && !stdout.trim()) {
+            const stderrPreview = stderr.trim().slice(0, 300);
             getBridgeContext().logger.warn(
-              `[DisplayDetector] Missing/unknown Windows connection type for "${name}", falling back to displayport`
+              `[DisplayDetector] PowerShell exited with code ${code}${
+                stderrPreview ? `: ${stderrPreview}` : ""
+              }`,
+            );
+            resolve({
+              ok: false,
+              displays: [],
+              reason: `powershell_exit_${code ?? "unknown"}`,
+            });
+            return;
+          }
+
+          const json = JSON.parse(stdout) as WindowsDisplayDetectorPayloadT;
+          const idRows = toObjectArray(json.ids);
+          const connectionRows = toObjectArray(json.connections);
+
+          const connectionByInstance = new Map<
+            string,
+            WindowsMonitorConnectionRowT
+          >();
+          for (const row of connectionRows) {
+            if (!row.instance_name || row.active === false) {
+              continue;
+            }
+            connectionByInstance.set(
+              normalizeWindowsInstanceKey(row.instance_name),
+              row,
             );
           }
 
-          results.push({
-            name,
-            connectionType,
-            vendorId: row.manufacturer?.trim() || undefined,
-            productId: row.product_code?.trim() || undefined,
-            serial: row.serial?.trim() || undefined,
-          });
+          const results: RawDisplayInfoT[] = [];
+          for (const row of idRows) {
+            if (!row.instance_name || row.active === false) {
+              continue;
+            }
+
+            const instanceKey = normalizeWindowsInstanceKey(row.instance_name);
+            const connection = connectionByInstance.get(instanceKey);
+            const videoOutputTechnology =
+              typeof connection?.video_output_technology === "number"
+                ? connection.video_output_technology
+                : undefined;
+
+            const name = row.name?.trim() || "External Display";
+            if (isLikelyWindowsInternalDisplay(name, videoOutputTechnology)) {
+              continue;
+            }
+
+            let connectionType = normalizeWindowsConnectionType(
+              videoOutputTechnology,
+            );
+            if (!connectionType) {
+              connectionType = "displayport";
+              getBridgeContext().logger.warn(
+                `[DisplayDetector] Missing/unknown Windows connection type for "${name}", falling back to displayport`,
+              );
+            }
+
+            results.push({
+              name,
+              connectionType,
+              vendorId: row.manufacturer?.trim() || undefined,
+              productId: row.product_code?.trim() || undefined,
+              serial: row.serial?.trim() || undefined,
+            });
+          }
+
+          resolve({ ok: true, displays: results });
+        } catch (error) {
+          getBridgeContext().logger.warn(
+            `[DisplayDetector] Failed to parse Windows monitor output: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          resolve({ ok: false, displays: [], reason: "parse_error" });
         }
+      });
 
-        resolve({ ok: true, displays: results });
-      } catch (error) {
+      process.on("error", (error) => {
+        clearTimeout(timeout);
         getBridgeContext().logger.warn(
-          `[DisplayDetector] Failed to parse Windows monitor output: ${
+          `[DisplayDetector] Failed to run PowerShell for Windows display detection (${WINDOWS_POWERSHELL_PATH}): ${
             error instanceof Error ? error.message : String(error)
-          }`
+          }`,
         );
-        resolve({ ok: false, displays: [], reason: "parse_error" });
-      }
-    });
-
-    process.on("error", (error) => {
-      clearTimeout(timeout);
-      getBridgeContext().logger.warn(
-        `[DisplayDetector] Failed to run PowerShell for Windows display detection (${WINDOWS_POWERSHELL_PATH}): ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-      resolve({
-        ok: false,
-        displays: [],
-        reason:
-          error instanceof Error ? error.message : String(error),
+        resolve({
+          ok: false,
+          displays: [],
+          reason: error instanceof Error ? error.message : String(error),
+        });
       });
     });
-  });
-};
+  };
 
 // Security: fixed WMIC query only, no user-controlled arguments, bounded runtime.
 const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
@@ -466,7 +469,7 @@ const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
         "Name,PNPDeviceID,Status",
         "/format:csv",
       ],
-      { windowsHide: true }
+      { windowsHide: true },
     );
 
     let stdout = "";
@@ -492,7 +495,7 @@ const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
         getBridgeContext().logger.warn(
           `[DisplayDetector] WMIC exited with code ${code}${
             stderrPreview ? `: ${stderrPreview}` : ""
-          }`
+          }`,
         );
         resolve([]);
         return;
@@ -505,7 +508,10 @@ const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
 
         for (const row of rows) {
           const pnpDeviceId = row.PNPDeviceID?.trim();
-          if (!pnpDeviceId || !pnpDeviceId.toUpperCase().startsWith("DISPLAY\\")) {
+          if (
+            !pnpDeviceId ||
+            !pnpDeviceId.toUpperCase().startsWith("DISPLAY\\")
+          ) {
             continue;
           }
 
@@ -536,7 +542,7 @@ const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
 
         if (results.length > 0) {
           getBridgeContext().logger.warn(
-            `[DisplayDetector] Windows display detection used WMIC fallback (${results.length} display(s), connection type defaults to displayport)`
+            `[DisplayDetector] Windows display detection used WMIC fallback (${results.length} display(s), connection type defaults to displayport)`,
           );
         }
 
@@ -545,7 +551,7 @@ const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
         getBridgeContext().logger.warn(
           `[DisplayDetector] Failed to parse WMIC Windows monitor output: ${
             error instanceof Error ? error.message : String(error)
-          }`
+          }`,
         );
         resolve([]);
       }
@@ -556,7 +562,7 @@ const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
       getBridgeContext().logger.warn(
         `[DisplayDetector] Failed to run WMIC for Windows display detection (${WINDOWS_WMIC_PATH}): ${
           error instanceof Error ? error.message : String(error)
-        }`
+        }`,
       );
       resolve([]);
     });
@@ -569,13 +575,13 @@ class DisplayController implements DeviceController {
 
   async open(): Promise<void> {
     getBridgeContext().logger.info(
-      `[DisplayController] Open requested for ${this.deviceId}`
+      `[DisplayController] Open requested for ${this.deviceId}`,
     );
   }
 
   async close(): Promise<void> {
     getBridgeContext().logger.info(
-      `[DisplayController] Close requested for ${this.deviceId}`
+      `[DisplayController] Close requested for ${this.deviceId}`,
     );
   }
 
@@ -601,12 +607,16 @@ export class DisplayModule implements DeviceModule {
   async detect(): Promise<DeviceDescriptorT[]> {
     if (process.platform === "darwin") {
       const rawDisplays = await getSystemProfilerDisplays();
-      return mapRawDisplaysToDevices(rawDisplays, { outputRuntimeSupported: true });
+      return mapRawDisplaysToDevices(rawDisplays, {
+        outputRuntimeSupported: true,
+      });
     }
 
     if (process.platform === "win32") {
       const rawDisplays = await getWindowsDisplays();
-      return mapRawDisplaysToDevices(rawDisplays, { outputRuntimeSupported: true });
+      return mapRawDisplaysToDevices(rawDisplays, {
+        outputRuntimeSupported: true,
+      });
     }
 
     return [];

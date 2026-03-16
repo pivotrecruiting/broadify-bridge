@@ -25,7 +25,7 @@ describe("USBCaptureDevice", () => {
       await device.open();
 
       await expect(device.open()).rejects.toThrow(
-        `Device ${deviceId} is already open`
+        `Device ${deviceId} is already open`,
       );
 
       await device.close();
@@ -60,7 +60,7 @@ describe("USBCaptureDevice", () => {
       const device = new USBCaptureDevice(deviceId);
 
       await expect(device.open()).rejects.toThrow(
-        /Failed to open device|not found or not accessible/
+        /Failed to open device|not found or not accessible/,
       );
     });
 
@@ -70,18 +70,21 @@ describe("USBCaptureDevice", () => {
       const device = new USBCaptureDevice(deviceId);
 
       await expect(device.open()).rejects.toThrow(
-        `Failed to open device ${deviceId}:`
+        `Failed to open device ${deviceId}:`,
       );
-      await expect(device.open()).rejects.toThrow("not found or not accessible");
+      await expect(device.open()).rejects.toThrow(
+        "not found or not accessible",
+      );
     });
 
     it("open uses String(error) when thrown value is not Error", async () => {
       (platform as jest.Mock).mockReturnValue("darwin");
       const device = new USBCaptureDevice(deviceId);
-      (device as unknown as { openMacOSDevice: () => Promise<void> }).openMacOSDevice =
-        jest.fn().mockRejectedValue("non-Error value");
+      (
+        device as unknown as { openMacOSDevice: () => Promise<void> }
+      ).openMacOSDevice = jest.fn().mockRejectedValue("non-Error value");
       await expect(device.open()).rejects.toThrow(
-        `Failed to open device ${deviceId}: non-Error value`
+        `Failed to open device ${deviceId}: non-Error value`,
       );
     });
   });
@@ -124,12 +127,15 @@ describe("USBCaptureDevice", () => {
       (platform as jest.Mock).mockReturnValue("darwin");
       const device = new USBCaptureDevice(deviceId);
       await device.open();
-      (device as unknown as { closeMacOSDevice: () => Promise<void> }).closeMacOSDevice =
-        jest.fn().mockRejectedValue(new Error("close failed"));
+      (
+        device as unknown as { closeMacOSDevice: () => Promise<void> }
+      ).closeMacOSDevice = jest
+        .fn()
+        .mockRejectedValue(new Error("close failed"));
       await device.close();
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining("Error closing device"),
-        "close failed"
+        "close failed",
       );
       const status = await device.getStatus();
       expect(status.ready).toBe(false);
@@ -142,12 +148,13 @@ describe("USBCaptureDevice", () => {
       (platform as jest.Mock).mockReturnValue("darwin");
       const device = new USBCaptureDevice(deviceId);
       await device.open();
-      (device as unknown as { closeMacOSDevice: () => Promise<void> }).closeMacOSDevice =
-        jest.fn().mockRejectedValue("string error");
+      (
+        device as unknown as { closeMacOSDevice: () => Promise<void> }
+      ).closeMacOSDevice = jest.fn().mockRejectedValue("string error");
       await device.close();
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining("Error closing device"),
-        "string error"
+        "string error",
       );
       consoleWarnSpy.mockRestore();
     });
@@ -220,14 +227,17 @@ describe("USBCaptureDevice", () => {
       const consoleDebugSpy = jest.spyOn(console, "debug").mockImplementation();
       (platform as jest.Mock).mockReturnValue("darwin");
       const device = new USBCaptureDevice(deviceId);
-      (device as unknown as { getMacOSStatus: () => Promise<DeviceStatusT> }).getMacOSStatus =
-        jest.fn().mockRejectedValue(new Error("status failed"));
+      (
+        device as unknown as { getMacOSStatus: () => Promise<DeviceStatusT> }
+      ).getMacOSStatus = jest
+        .fn()
+        .mockRejectedValue(new Error("status failed"));
       const status = await device.getStatus();
       expect(status.present).toBe(false);
       expect(status.ready).toBe(false);
       expect(consoleDebugSpy).toHaveBeenCalledWith(
         expect.stringContaining("Error getting status"),
-        "status failed"
+        "status failed",
       );
       consoleDebugSpy.mockRestore();
     });
@@ -236,13 +246,14 @@ describe("USBCaptureDevice", () => {
       const consoleDebugSpy = jest.spyOn(console, "debug").mockImplementation();
       (platform as jest.Mock).mockReturnValue("darwin");
       const device = new USBCaptureDevice(deviceId);
-      (device as unknown as { getMacOSStatus: () => Promise<DeviceStatusT> }).getMacOSStatus =
-        jest.fn().mockRejectedValue(12345);
+      (
+        device as unknown as { getMacOSStatus: () => Promise<DeviceStatusT> }
+      ).getMacOSStatus = jest.fn().mockRejectedValue(12345);
       const status = await device.getStatus();
       expect(status.present).toBe(false);
       expect(consoleDebugSpy).toHaveBeenCalledWith(
         expect.stringContaining("Error getting status"),
-        "12345"
+        "12345",
       );
       consoleDebugSpy.mockRestore();
     });
@@ -253,7 +264,9 @@ describe("USBCaptureDevice", () => {
       (platform as jest.Mock).mockReturnValue("aix");
       const device = new USBCaptureDevice(deviceId);
 
-      await expect(device.open()).rejects.toThrow(/Unsupported platform|Failed to open/);
+      await expect(device.open()).rejects.toThrow(
+        /Unsupported platform|Failed to open/,
+      );
     });
 
     it("getStatus returns base status for unsupported platform", async () => {
