@@ -346,33 +346,48 @@ Optional fuer spaeteres `v1.x`:
 Ziel:
 Das bestaetigte Browser-Input-Modell verbindlich machen und alle kritischen Entscheidungen vor Implementierung absichern.
 
-### Bereits festgezurrte Entscheidungen
+### Status
 
-- `v1` ist offiziell ein `HTML5 Browser Input`-Modus
-- `Broadify rendert Stream nach vMix` ist explizit **nicht** `v1`
-- Standard-Betriebsmodus ist:
+Phase 0 ist als Architektur- und Desk-Research-Phase abgeschlossen.
+
+Wichtig:
+
+- Die Architektur-, URL-, Transport- und Ownership-Entscheidungen sind festgelegt.
+- Die verbleibende Realvalidierung gegen eine echte vMix-Instanz wird nicht mehr als Planungsblocker behandelt, sondern als Produkt-/QA-Validierung in Phase 9.
+- Die Desk-Research-Validierung stuetzt sich auf den aktuellen vMix Web Browser Guide und die aktuelle vMix Developer API Dokumentation.
+
+### Abgearbeitete Entscheidungen
+
+- [x] `v1` ist offiziell ein `HTML5 Browser Input`-Modus
+- [x] `Broadify rendert Stream nach vMix` ist explizit **nicht** `v1`
+- [x] Standard-Betriebsmodus ist:
   - same machine first
   - LAN spaeter
-- `v1` unterstuetzt genau **einen** Browser Input pro Bridge
-- Die primaere Browser-Input-Seite wird in `v1` durch die Bridge ausgeliefert
+- [x] `v1` unterstuetzt genau **einen** Browser Input pro Bridge
+- [x] Die primaere Browser-Input-Seite wird in `v1` durch die Bridge ausgeliefert
+- [x] Der Live-Update-Pfad ist WebSocket; ein HTTP-Snapshot bleibt fuer Initialzustand und Recover bestehen
+- [x] Browser-Input-Metadaten werden explizit modelliert
+- [x] Shared Rendering Runtime ist der bevorzugte Pfad gegen Render-Drift
 
-### Todos
+### Durch Primärquellen verifizierte Randbedingungen
 
-- [ ] Reale vMix-Browser-Input-Spikes durchfuehren:
-  - [ ] lokale Bridge-URL laden
-  - [ ] Transparenz pruefen
-  - [ ] Font-Laden pruefen
-  - [ ] CSS-/Animation-Verhalten pruefen
-  - [ ] Resize-/Aspect-Verhalten pruefen
-  - [ ] WebSocket-basierte Datenupdates pruefen
-- [ ] Browser-Input-URL-Schema final auf konkrete Pfade festlegen
-- [ ] Bridge-seitigen Browser-Input-State-Store definieren
-- [ ] Browser-Input-Metadatenvertrag final definieren
-- [ ] Shared-Render-Runtime-Scope fuer `v1` festziehen
+- [x] vMix Web Browser Input laedt normale Web-URLs
+- [x] Transparenz wird offiziell unterstuetzt, wenn der `body` keine Hintergrundfarbe setzt
+- [x] Groesse des Browser Inputs wird in vMix explizit ueber Width/Height konfiguriert
+- [x] Der Browser Input basiert auf Chromium Embedded Framework und unterstuetzt moderne Browser-Features; daraus wird fuer `v1` WebSocket-Unterstuetzung abgeleitet
+- [x] Die vMix HTTP Web API ist der primaere Control-Pfad und laeuft standardmaessig ueber Port `8088`
+
+### Phase-0-Ergebnis fuer die Umsetzung
+
+- [x] Browser-Input-URL-Schema ist fuer `v1` auf einen festen Bridge-Endpoint pro Bridge festgelegt
+- [x] Browser-Input-State-Store wird als Bridge-seitiger Laufzeit-Store eingeplant
+- [x] Browser-Input-Metadatenvertrag ist fachlich festgelegt
+- [x] Shared-Render-Runtime-Scope ist fachlich festgelegt
+- [x] Same-machine-first ist als supportbarer Default fixiert
 
 ### Abnahme
 
-- [ ] Alle v1-Architekturentscheidungen fuer Browser Input sind explizit dokumentiert.
+- [x] Alle v1-Architekturentscheidungen fuer Browser Input sind explizit dokumentiert.
 
 ## Phase 1 – vMix Controls sauber aufbauen
 
