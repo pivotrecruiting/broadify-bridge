@@ -10,11 +10,9 @@ import type {
 import { EventEmitter } from "events";
 import {
   EngineError,
-  createConnectionTimeoutError,
-  createConnectionRefusedError,
-  createNetworkError,
-  createDeviceUnreachableError,
+  EngineErrorCode,
 } from "../engine-errors.js";
+import { VmixHttpClient } from "./vmix-http-client.js";
 
 /**
  * vMix adapter implementation
@@ -30,11 +28,12 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     status: "disconnected",
     macros: [],
   };
-  private readonly connectTimeoutMs = 10000; // 10 seconds timeout
   private readonly requestTimeoutMs = 5000; // 5 seconds for individual requests
   private pollingInterval: NodeJS.Timeout | null = null;
   private readonly pollingIntervalMs = 2000; // Poll every 2 seconds
-  private baseUrl: string = "";
+  private readonly maxPollingFailures = 2;
+  private consecutivePollingFailures = 0;
+  private client: VmixHttpClient | null = null;
 
   /**
    * Connect to vMix instance
@@ -59,68 +58,43 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       port: config.port,
       type: config.type,
     });
-
-    this.baseUrl = `http://${config.ip}:${config.port}`;
+    this.consecutivePollingFailures = 0;
+    this.client = new VmixHttpClient({
+      ip: config.ip,
+      port: config.port,
+      requestTimeoutMs: this.requestTimeoutMs,
+    });
 
     try {
-      // Test connection by checking version
-      const versionResponse = await this.makeRequest("GetVersion");
-      if (!versionResponse.ok) {
-        throw new Error(
-          `vMix API returned status ${versionResponse.status}: ${versionResponse.statusText}`
-        );
-      }
+      await this.client.getVersion();
 
       // Connection successful
-      this.setState({ status: "connected" });
+      this.setState({
+        status: "connected",
+        error: undefined,
+      });
 
       // Load initial macros
-      await this.updateMacrosFromApi();
+      await this.updateMacrosFromApi({ failOnError: true });
 
       // Start polling for status updates
       this.startPolling();
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-
-      // Determine error type
-      let engineError: EngineError;
-      if (
-        errorMessage.includes("ECONNREFUSED") ||
-        errorMessage.includes("refused") ||
-        errorMessage.includes("ECONNRESET")
-      ) {
-        engineError = createConnectionRefusedError(config.ip, config.port);
-      } else if (
-        errorMessage.includes("ENOTFOUND") ||
-        errorMessage.includes("EHOSTUNREACH") ||
-        errorMessage.includes("getaddrinfo")
-      ) {
-        engineError = createDeviceUnreachableError(config.ip, config.port);
-      } else if (
-        errorMessage.includes("ETIMEDOUT") ||
-        errorMessage.includes("timeout") ||
-        errorMessage.includes("aborted")
-      ) {
-        engineError = createConnectionTimeoutError(
-          config.ip,
-          config.port,
-          this.connectTimeoutMs
-        );
-      } else if (error instanceof EngineError) {
-        engineError = error;
-      } else {
-        engineError = createNetworkError(
-          config.ip,
-          config.port,
-          error instanceof Error ? error : undefined
-        );
-      }
+      const engineError =
+        error instanceof EngineError
+          ? error
+          : new EngineError(
+              EngineErrorCode.UNKNOWN_ERROR,
+              error instanceof Error ? error.message : String(error),
+              { ip: config.ip, port: config.port },
+            );
 
       this.setState({
         status: "error",
         error: engineError.message,
       });
+      this.stopPolling();
+      this.client = null;
       throw engineError;
     }
   }
@@ -140,8 +114,8 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       type: undefined,
       error: undefined,
     });
-
-    this.baseUrl = "";
+    this.consecutivePollingFailures = 0;
+    this.client = null;
   }
 
   /**
@@ -175,17 +149,13 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     }
 
     try {
-      const response = await this.makeRequest("MacroStart", { Input: id });
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(
-          `vMix API returned status ${response.status}: ${text || response.statusText}`
-        );
+      if (!this.client) {
+        throw new Error("vMix client is not initialized");
       }
-
-      // Update macros after running (to reflect status change)
+      await this.client.startMacro(id);
       await this.updateMacrosFromApi();
     } catch (error: unknown) {
+      this.handleActionFailure(error);
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       throw new Error(
@@ -209,17 +179,13 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     }
 
     try {
-      const response = await this.makeRequest("MacroStop", { Input: id });
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(
-          `vMix API returned status ${response.status}: ${text || response.statusText}`
-        );
+      if (!this.client) {
+        throw new Error("vMix client is not initialized");
       }
-
-      // Update macros after stopping
+      await this.client.stopMacro(id);
       await this.updateMacrosFromApi();
     } catch (error: unknown) {
+      this.handleActionFailure(error);
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       throw new Error(
@@ -239,126 +205,39 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   }
 
   /**
-   * Make HTTP request to vMix API
-   */
-  private async makeRequest(
-    functionName: string,
-    params?: Record<string, string | number>
-  ): Promise<Response> {
-    const url = new URL(`${this.baseUrl}/api`);
-    url.searchParams.set("Function", functionName);
-
-    if (params) {
-      for (const [key, value] of Object.entries(params)) {
-        url.searchParams.set(key, String(value));
-      }
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      this.requestTimeoutMs
-    );
-
-    try {
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        signal: controller.signal,
-        headers: {
-          "Accept": "application/xml, application/json, text/xml, */*",
-        },
-      });
-
-      clearTimeout(timeoutId);
-      return response;
-    } catch (error: unknown) {
-      clearTimeout(timeoutId);
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`Request timeout after ${this.requestTimeoutMs}ms`);
-      }
-      throw error;
-    }
-  }
-
-  /**
    * Update macros from vMix API
    */
-  private async updateMacrosFromApi(): Promise<void> {
-    if (this.state.status !== "connected") {
+  private async updateMacrosFromApi(
+    options?: {
+      failOnError?: boolean;
+    }
+  ): Promise<void> {
+    if (this.state.status !== "connected" || !this.client) {
       return;
     }
 
     try {
-      const response = await this.makeRequest("GetMacros");
-      if (!response.ok) {
-        // If request fails, don't update macros but don't throw
+      const macros = await this.client.getMacros();
+      this.consecutivePollingFailures = 0;
+      this.setState({
+        macros,
+        error: undefined,
+      });
+    } catch (error: unknown) {
+      if (options?.failOnError) {
+        throw error;
+      }
+
+      this.consecutivePollingFailures += 1;
+      if (this.consecutivePollingFailures >= this.maxPollingFailures) {
+        this.stopPolling();
+        this.setState({
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
         return;
       }
-
-      const text = await response.text();
-      const macros = this.parseMacrosFromResponse(text);
-
-      this.setState({ macros });
-    } catch (error: unknown) {
-      // Log error but don't throw - polling will retry
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      console.error(`[VmixAdapter] Failed to update macros: ${errorMessage}`);
     }
-  }
-
-  /**
-   * Parse macros from vMix API response
-   *
-   * vMix API returns XML or JSON depending on format parameter.
-   * We try to parse as XML first, then fall back to JSON.
-   */
-  private parseMacrosFromResponse(responseText: string): MacroT[] {
-    const macros: MacroT[] = [];
-
-    try {
-      // Try to parse as XML
-      // vMix XML format: <vmix><macros><macro number="1" name="Macro 1" running="False"/></macros></vmix>
-      if (responseText.includes("<vmix>") || responseText.includes("<macros>")) {
-        // Simple XML parsing (for MVP - could use fast-xml-parser later if needed)
-        const macroMatches = responseText.matchAll(
-          /<macro\s+number="(\d+)"\s+name="([^"]*)"\s+running="([^"]*)"/g
-        );
-
-        for (const match of macroMatches) {
-          const id = parseInt(match[1], 10);
-          const name = match[2] || `Macro ${id}`;
-          const running = match[3]?.toLowerCase() === "true";
-
-          macros.push({
-            id,
-            name,
-            status: running ? "running" : "idle",
-          });
-        }
-      } else {
-        // Try to parse as JSON
-        const json = JSON.parse(responseText);
-        if (json.macros && Array.isArray(json.macros)) {
-          for (const macro of json.macros) {
-            if (macro.number && macro.name) {
-              macros.push({
-                id: parseInt(String(macro.number), 10),
-                name: String(macro.name),
-                status: macro.running === true ? "running" : "idle",
-              });
-            }
-          }
-        }
-      }
-    } catch (error: unknown) {
-      // If parsing fails, return empty array
-      console.error(
-        `[VmixAdapter] Failed to parse macros response: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    return macros;
   }
 
   /**
@@ -389,6 +268,18 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;
     }
+  }
+
+  private handleActionFailure(error: unknown): void {
+    if (!(error instanceof EngineError)) {
+      return;
+    }
+
+    this.stopPolling();
+    this.setState({
+      status: "error",
+      error: error.message,
+    });
   }
 
   /**

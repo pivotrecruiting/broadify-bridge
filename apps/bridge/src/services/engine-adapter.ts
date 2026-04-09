@@ -122,6 +122,9 @@ export class EngineAdapterService {
       if (error instanceof EngineError) {
         const errorState: EngineStateT = {
           status: "error",
+          type: config.type,
+          ip: config.ip,
+          port: config.port,
           error: error.message,
           macros: [],
         };
@@ -141,6 +144,9 @@ export class EngineAdapterService {
       );
       const errorState: EngineStateT = {
         status: "error",
+        type: config.type,
+        ip: config.ip,
+        port: config.port,
         error: engineError.message,
         macros: [],
       };

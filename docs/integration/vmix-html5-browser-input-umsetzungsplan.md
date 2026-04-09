@@ -394,18 +394,30 @@ Wichtig:
 Ziel:
 Die Bridge soll vMix fuer Controls robust anbinden.
 
+### Status
+
+Phase 1 ist fuer den `v1`-Controls-Pfad im Bridge-Repo umgesetzt.
+
+Wichtig:
+
+- Der vMix-HTTP-Zugriff ist in einen eigenen Client verschoben.
+- Verbindungs- und Request-Fehler werden in `EngineError` normalisiert.
+- Der Adapter propagiert Fehlerzustaende jetzt sauber in den Bridge-State zurueck.
+- Polling-Ausfaelle fuehren nicht mehr still zu veralteten Makroinformationen.
+- `Preview`/`Program`/`Input-Liste`/`Overlay-State` bleiben bewusst ausserhalb von `v1` und sind `v1.x`.
+
 ### Todos
 
-- [ ] vMix-Adapter auf produktiven Stand fuer `v1` bringen.
-- [ ] HTTP-Client fuer vMix API sauber kapseln.
-- [ ] Verbindungsfehler normalisieren.
+- [x] vMix-Adapter auf produktiven Stand fuer `v1` bringen.
+- [x] HTTP-Client fuer vMix API sauber kapseln.
+- [x] Verbindungsfehler normalisieren.
 - [ ] vMix-Statusmodell erweitern fuer:
-  - [ ] connected/disconnected/error
-  - [ ] IP/Port
-  - [ ] Makros
+  - [x] connected/disconnected/error
+  - [x] IP/Port
+  - [x] Makros
   - [ ] optional Preview/Program/Input-Liste
-- [ ] Makro-Handling fuer vMix robust absichern.
-- [ ] Bestehende WebApp-Fehler- und Polling-Erwartungen gegen den finalen vMix-Adapter pruefen
+- [x] Makro-Handling fuer vMix robust absichern.
+- [x] Bestehende WebApp-Fehler- und Polling-Erwartungen gegen den finalen vMix-Adapter pruefen
 - [ ] Optional fuer `v1.x`:
   - [ ] Input-Liste lesen
   - [ ] Preview/Program lesen
@@ -413,7 +425,7 @@ Die Bridge soll vMix fuer Controls robust anbinden.
 
 ### Abnahme
 
-- [ ] Bridge kann vMix verbinden, Makros laden und Makros ausloesen.
+- [x] Bridge kann vMix verbinden, Makros laden und Makros ausloesen.
 
 ## Phase 2 – Browser-Input Grafikmodus definieren
 

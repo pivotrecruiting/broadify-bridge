@@ -20,6 +20,7 @@ describe("VmixAdapter", () => {
   let adapter: VmixAdapter;
 
   beforeEach(() => {
+    jest.useRealTimers();
     adapter = new VmixAdapter();
     mockFetch.mockReset();
     (globalThis as unknown as { fetch: typeof fetch }).fetch = mockFetch;
@@ -109,6 +110,28 @@ describe("VmixAdapter", () => {
         adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 })
       ).rejects.toThrow("Network error");
     });
+
+    it("transitions to error after consecutive polling failures", async () => {
+      jest.useFakeTimers();
+      mockFetch
+        .mockResolvedValueOnce(okResponse("29.0.0.0"))
+        .mockResolvedValueOnce(
+          okResponse(
+            '<vmix><macros><macro number="1" name="Macro 1" running="False"/></macros></vmix>'
+          )
+        )
+        .mockRejectedValue(new Error("ECONNREFUSED Connection refused"));
+
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+      expect(adapter.getStatus()).toBe("connected");
+
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(adapter.getStatus()).toBe("connected");
+
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(adapter.getStatus()).toBe("error");
+      expect(adapter.getState().error).toContain("Connection refused");
+    });
   });
 
   describe("disconnect", () => {
@@ -155,6 +178,17 @@ describe("VmixAdapter", () => {
         .mockResolvedValueOnce(notOkResponse(500));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await expect(adapter.runMacro(1)).rejects.toThrow("Failed to run macro 1");
+    });
+
+    it("marks adapter as error when MacroStart fails with connection error", async () => {
+      mockFetch
+        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
+        .mockRejectedValueOnce(new Error("ECONNREFUSED Connection refused"));
+
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+      await expect(adapter.runMacro(1)).rejects.toThrow("Failed to run macro 1");
+      expect(adapter.getStatus()).toBe("error");
     });
   });
 

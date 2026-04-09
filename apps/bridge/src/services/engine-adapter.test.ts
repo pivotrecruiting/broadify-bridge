@@ -10,7 +10,7 @@ import type {
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
 
 type BroadcastCallT = {
-  topic: "engine";
+  topic: "engine" | "video";
   message: Record<string, unknown>;
 };
 
@@ -210,6 +210,14 @@ describe("EngineAdapterService", () => {
       code: EngineErrorCode.CONNECTION_TIMEOUT,
       message: "timed out",
     });
+
+    expect(service.getState()).toMatchObject({
+      status: "error",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      error: "timed out",
+    });
   });
 
   it("rejects connect when already connecting", async () => {
@@ -325,5 +333,23 @@ describe("EngineAdapterService", () => {
       .catch(() => {});
 
     expect(service.getLastError()).toContain("connection failed");
+  });
+
+  it("preserves connection metadata when unknown connect error is wrapped", async () => {
+    const { service, adapter } = createService();
+    adapter.connectImpl = async () => {
+      throw new Error("dial failed");
+    };
+
+    await service
+      .connect({ type: "vmix", ip: "10.0.0.20", port: 8088 })
+      .catch(() => {});
+
+    expect(service.getState()).toMatchObject({
+      status: "error",
+      type: "vmix",
+      ip: "10.0.0.20",
+      port: 8088,
+    });
   });
 });
