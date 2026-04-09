@@ -27,6 +27,7 @@ describe("graphics-event-publisher", () => {
     it("publishes graphics_status event with reason and status snapshot", () => {
       const status = {
         outputConfig: { version: 1, outputKey: "stub" as const, targets: {}, format: { width: 1920, height: 1080, fps: 50 }, range: "legal" as const, colorspace: "auto" as const },
+        browserInput: null,
         activePreset: null,
         activePresets: [],
       };
@@ -39,6 +40,7 @@ describe("graphics-event-publisher", () => {
         data: {
           reason: "output_changed",
           outputConfig: status.outputConfig,
+          browserInput: null,
           activePreset: status.activePreset,
           activePresets: status.activePresets,
         },
@@ -56,6 +58,7 @@ describe("graphics-event-publisher", () => {
 
       publishGraphicsStatusEvent("test", {
         outputConfig: null,
+        browserInput: null,
         activePreset: null,
         activePresets: [],
       });

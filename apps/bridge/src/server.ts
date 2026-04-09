@@ -8,6 +8,7 @@ import { registerDevicesRoute } from "./routes/devices.js";
 import { registerConfigRoute } from "./routes/config.js";
 import { registerEngineRoute } from "./routes/engine.js";
 import { registerVideoRoute } from "./routes/video.js";
+import { registerGraphicsBrowserInputRoute } from "./routes/graphics-browser-input.js";
 import { registerWebSocketRoute } from "./routes/websocket.js";
 import { registerRelayRoute } from "./routes/relay.js";
 import { registerLogsRoute } from "./routes/logs.js";
@@ -89,6 +90,9 @@ export async function createServer(config: BridgeConfigT) {
       warn: (msg: string) => server.log.warn(msg),
       error: (msg: string) => server.log.error(msg),
     },
+    serverHost: config.host,
+    serverPort: config.port,
+    serverMode: config.mode,
     bridgeId: config.bridgeId,
     bridgeName: config.bridgeName,
     pairingCode: config.pairingCode,
@@ -156,6 +160,7 @@ export async function createServer(config: BridgeConfigT) {
       registerConfigRoute,
       registerEngineRoute,
       registerVideoRoute,
+      registerGraphicsBrowserInputRoute,
       registerWebSocketRoute,
       registerRelayRoute,
       registerLogsRoute,

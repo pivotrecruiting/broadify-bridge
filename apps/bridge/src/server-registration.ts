@@ -12,6 +12,7 @@ type RouteRegistrarsT = {
   registerConfigRoute: any;
   registerEngineRoute: any;
   registerVideoRoute: any;
+  registerGraphicsBrowserInputRoute: any;
   registerWebSocketRoute: any;
   registerRelayRoute: any;
   registerLogsRoute: any;
@@ -59,6 +60,7 @@ export async function registerServerRoutes(
   await register(routes.registerConfigRoute);
   await register(routes.registerEngineRoute);
   await register(routes.registerVideoRoute);
+  await register(routes.registerGraphicsBrowserInputRoute);
   await register(routes.registerWebSocketRoute);
   await register(routes.registerRelayRoute, {
     config: params.config,

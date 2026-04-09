@@ -432,18 +432,31 @@ Wichtig:
 Ziel:
 Die Broadify-Graphics muessen als HTML5-Seite fuer vMix Browser Input konsumierbar werden.
 
+### Status
+
+Phase 2 ist fuer den Bridge-seitigen `v1`-Pfad umgesetzt.
+
+Wichtig:
+
+- `browser_input` ist in den Bridge-Graphics-Vertraegen und im Runtime-Pfad eingefuehrt.
+- Die Bridge liefert jetzt feste Browser-Input-Endpunkte fuer Seite, State, Assets und WebSocket aus.
+- Die Browser-Input-Seite rendert Bundles lokal im Browser mit transparentem Hintergrund, `asset://`-Rewrite, Snapshot-Bootstrap und WebSocket-Reconnect.
+- Teile aus Phase 3 und Phase 5 sind technisch bereits vorbereitet, weil der Browser-Input-State jetzt in der Bridge mitgefuehrt wird.
+- Die reale Validierung gegen eine echte vMix-Instanz bleibt bewusst in Phase 9.
+- Die Extraktion eines wirklich gemeinsam genutzten Render-Kerns zwischen WebApp und Bridge bleibt ein repo-uebergreifender Nachzug und ist in diesem Repo nicht abgeschlossen.
+
 ### Todos
 
 - [ ] `browser_input` als neuen Graphics-Output-Modus in Bridge- und WebApp-Typen einfuehren.
-- [ ] URL-Konzept finalisieren.
-- [ ] Standard-Routen fuer Browser-Input-Grafiken definieren.
-- [ ] Eine stabile HTML-Seite fuer vMix Browser Input in der Bridge bereitstellen.
-- [ ] Die Seite muss Broadify-Graphics rendern koennen.
-- [ ] Einen lokalen Browser-Input-WebSocket-Endpunkt in der Bridge bereitstellen.
-- [ ] Transparenter Hintergrund muss sauber unterstuetzt werden.
-- [ ] Asset-Ladeverhalten fuer Fonts/Bilder/CSS stabilisieren.
-- [ ] Caching-Verhalten definieren.
-- [ ] Reload-/Recover-Verhalten definieren.
+- [x] URL-Konzept finalisieren.
+- [x] Standard-Routen fuer Browser-Input-Grafiken definieren.
+- [x] Eine stabile HTML-Seite fuer vMix Browser Input in der Bridge bereitstellen.
+- [x] Die Seite muss Broadify-Graphics rendern koennen.
+- [x] Einen lokalen Browser-Input-WebSocket-Endpunkt in der Bridge bereitstellen.
+- [x] Transparenter Hintergrund muss sauber unterstuetzt werden.
+- [x] Asset-Ladeverhalten fuer Fonts/Bilder/CSS stabilisieren.
+- [x] Caching-Verhalten definieren.
+- [x] Reload-/Recover-Verhalten definieren.
 - [ ] Minimalen renderrelevanten WebApp-Kern in ein gemeinsam nutzbares Modul verschieben.
 
 ### Konkretisierung fuer v1
@@ -454,6 +467,7 @@ Die Broadify-Graphics muessen als HTML5-Seite fuer vMix Browser Input konsumierb
 
 ### Abnahme
 
+- [x] Die Bridge stellt lokal eine browser-input-faehige Grafikseite inklusive State-, Asset- und WebSocket-Endpunkten bereit.
 - [ ] vMix kann die Broadify-Grafikseite als Browser Input laden und sichtbar rendern.
 
 ## Phase 3 – Daten- und Zustandsmodell fuer Browser-Input-Grafiken
@@ -461,30 +475,45 @@ Die Broadify-Graphics muessen als HTML5-Seite fuer vMix Browser Input konsumierb
 Ziel:
 Die Graphics Section muss der Browser-Input-Seite Daten und Zustand liefern koennen.
 
+### Status
+
+Phase 3 ist fuer den Bridge-seitigen `v1`-Pfad umgesetzt.
+
+Wichtig:
+
+- Die Browser-Input-Seite bezieht ihren Initialzustand per Snapshot-Endpoint und Live-Updates per lokalem WebSocket.
+- Der Browser-Input-State wird in der Bridge als eigener Laufzeit-Store gehalten und bei `graphics_send`, `graphics_update_values`, `graphics_update_layout`, `graphics_remove` und Preset-Removals fortgeschrieben.
+- Der State ist jetzt nicht nur renderorientiert, sondern enthaelt auch Betriebsmetadaten wie `browserClientCount`, `lastBrowserClientSeenAt`, `stateVersion`, `stateStatus`, `stateValid` und `lastError`.
+- Fehlerfaelle werden fuer `browser_input` explizit modelliert, soweit sie Bridge-seitig belastbar beobachtbar sind:
+  - fehlende Assets
+  - ungueltige Grafikdaten beim Render-Aufbau
+  - inkonsistente State-Updates gegen unbekannte Layer
+- `Seite nicht erreichbar` bleibt weiterhin nur indirekt beobachtbar; dafuer werden Browser-Client-Zaehler und letzter Browser-Kontakt gefuehrt, statt eine technisch nicht belastbare Reichweitenbehauptung zu senden.
+
 ### Todos
 
-- [ ] Definieren, wie die Browser-Input-Seite ihren Zustand erhaelt:
-  - [ ] initial snapshot endpoint
-  - [ ] websocket/realtime als Standardpfad
-  - [ ] optional polling-/snapshot-fallback fuer Recover und Debugging
-- [ ] Ein dediziertes Browser-Input-State-Modell in der Bridge definieren.
-- [ ] Bestehende `graphics_*`-Commands an diesen Modus anbinden.
+- [x] Definieren, wie die Browser-Input-Seite ihren Zustand erhaelt:
+  - [x] initial snapshot endpoint
+  - [x] websocket/realtime als Standardpfad
+  - [x] optional polling-/snapshot-fallback fuer Recover und Debugging
+- [x] Ein dediziertes Browser-Input-State-Modell in der Bridge definieren.
+- [x] Bestehende `graphics_*`-Commands an diesen Modus anbinden.
 - [ ] Update-Flows fuer:
-  - [ ] initial render
-  - [ ] text/value updates
-  - [ ] layout updates
-  - [ ] remove/reset
-  - [ ] preset activation/deactivation
-- [ ] Fehlerfall modellieren:
-  - [ ] Seite nicht erreichbar
-  - [ ] Assets fehlen
-  - [ ] Grafikdaten ungueltig
-  - [ ] State-Store leer oder inkonsistent
-- [ ] Sichtbar machen, ob die Browser-Input-Seite einen gueltigen Zustand hat.
+  - [x] initial render
+  - [x] text/value updates
+  - [x] layout updates
+  - [x] remove/reset
+  - [x] preset activation/deactivation
+- [x] Fehlerfall modellieren:
+  - [~] Seite nicht erreichbar
+  - [x] Assets fehlen
+  - [x] Grafikdaten ungueltig
+  - [x] State-Store leer oder inkonsistent
+- [x] Sichtbar machen, ob die Browser-Input-Seite einen gueltigen Zustand hat.
 
 ### Abnahme
 
-- [ ] Broadify kann Grafikdaten an eine Browser-Input-Seite uebergeben und diese aktualisieren.
+- [x] Broadify kann Grafikdaten an eine Browser-Input-Seite uebergeben und diese aktualisieren.
 
 ## Phase 4 – WebApp UX fuer vMix Browser Input
 

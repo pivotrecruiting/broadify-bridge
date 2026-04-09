@@ -1,4 +1,5 @@
 import type {
+  GraphicsFormatT,
   GraphicsBackgroundModeT,
   GraphicsCategoryT,
   GraphicsLayoutT,
@@ -38,6 +39,25 @@ export type PreparedLayerT = GraphicsSendPayloadT & {
 
 export type GraphicsStatusSnapshotT = {
   outputConfig: GraphicsOutputConfigT | null;
+  browserInput: {
+    mode: "browser_input";
+    ready: boolean;
+    stateStatus: "empty" | "ready" | "error";
+    stateValid: boolean;
+    browserInputUrl: string | null;
+    browserInputWsUrl: string | null;
+    recommendedInputName: string | null;
+    transport: "websocket";
+    browserClientCount: number;
+    lastBrowserClientSeenAt: number | null;
+    stateVersion: number;
+    format: GraphicsFormatT | null;
+    lastError: {
+      code: "asset_missing" | "invalid_graphics_data" | "state_inconsistent";
+      message: string;
+      at: number;
+    } | null;
+  } | null;
   activePreset: {
     presetId: string;
     durationMs: number | null;

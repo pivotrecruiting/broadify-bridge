@@ -70,6 +70,10 @@ export async function validateOutputTargets(
   targets: GraphicsTargetsT,
   options: ValidateOutputTargetsOptionsT = {}
 ): Promise<void> {
+  if (outputKey === "stub" || outputKey === "browser_input" || outputKey === "key_fill_ndi") {
+    return;
+  }
+
   if (outputKey === "key_fill_sdi") {
     if (!targets.output1Id || !targets.output2Id) {
       throw new Error("Output 1 and Output 2 are required for Key & Fill SDI");
@@ -172,7 +176,11 @@ export async function validateOutputFormat(
   targets: GraphicsTargetsT,
   format: { width: number; height: number; fps: number }
 ): Promise<void> {
-  if (outputKey === "stub" || outputKey === "key_fill_ndi") {
+  if (
+    outputKey === "stub" ||
+    outputKey === "browser_input" ||
+    outputKey === "key_fill_ndi"
+  ) {
     return;
   }
 

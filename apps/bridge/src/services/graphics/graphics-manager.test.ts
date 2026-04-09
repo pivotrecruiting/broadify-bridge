@@ -477,6 +477,96 @@ describe("GraphicsManager with configured outputs", () => {
     });
   });
 
+  it("projects browser_input layers into browser runtime without renderer frames", async () => {
+    const renderer = createRenderer();
+    const browserInputRuntime = {
+      configure: jest.fn(),
+      clearLayers: jest.fn(),
+      upsertLayer: jest.fn(),
+      updateValues: jest.fn(),
+      updateLayout: jest.fn(),
+      removeLayer: jest.fn(),
+      removePreset: jest.fn(),
+      reportError: jest.fn(),
+      subscribe: jest.fn(() => () => undefined),
+      getStatus: jest.fn(() => ({
+        mode: "browser_input" as const,
+        ready: true,
+        stateStatus: "ready" as const,
+        stateValid: true,
+        browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+        browserInputWsUrl: "ws://127.0.0.1:8787/graphics/browser-input/ws",
+        recommendedInputName: "Broadify Browser Input",
+        transport: "websocket" as const,
+        browserClientCount: 0,
+        lastBrowserClientSeenAt: null,
+        stateVersion: 1,
+        format: { width: 1920, height: 1080, fps: 50 },
+        lastError: null,
+      })),
+    };
+    const manager = new GraphicsManager({
+      createRenderer: () => renderer,
+      selectOutputAdapter: async () => stubAdapter as never,
+      isDevelopmentMode: () => true,
+      browserInputRuntime,
+    });
+    await manager.initialize();
+    await manager.configureOutputs({
+      ...createValidConfig(),
+      outputKey: "browser_input",
+    });
+
+    await manager.sendLayer(createTestPatternPayload());
+
+    expect(browserInputRuntime.configure).toHaveBeenCalled();
+    expect(browserInputRuntime.subscribe).toHaveBeenCalled();
+    expect(browserInputRuntime.upsertLayer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        layerId: "test-pattern",
+      })
+    );
+    expect(renderer.renderLayer).not.toHaveBeenCalled();
+  });
+
+  it("reports state inconsistency for browser_input value updates on missing layers", async () => {
+    const browserInputRuntime = {
+      configure: jest.fn(),
+      clearLayers: jest.fn(),
+      upsertLayer: jest.fn(),
+      updateValues: jest.fn(),
+      updateLayout: jest.fn(),
+      removeLayer: jest.fn(),
+      removePreset: jest.fn(),
+      reportError: jest.fn(),
+      subscribe: jest.fn(() => () => undefined),
+      getStatus: jest.fn(() => null),
+    };
+    const manager = new GraphicsManager({
+      createRenderer,
+      selectOutputAdapter: async () => stubAdapter as never,
+      isDevelopmentMode: () => true,
+      browserInputRuntime,
+    });
+    await manager.initialize();
+    await manager.configureOutputs({
+      ...createValidConfig(),
+      outputKey: "browser_input",
+    });
+
+    await expect(
+      manager.updateValues({
+        layerId: "missing-layer",
+        values: { title: "x" },
+      })
+    ).rejects.toThrow("Layer not found");
+
+    expect(browserInputRuntime.reportError).toHaveBeenCalledWith(
+      "state_inconsistent",
+      expect.stringContaining("missing-layer")
+    );
+  });
+
   it("sendLayer rejects when durationMs is set without presetId", async () => {
     const manager = createManagerWithRealTransition();
     await manager.initialize();
