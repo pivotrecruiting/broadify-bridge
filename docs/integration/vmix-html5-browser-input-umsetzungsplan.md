@@ -39,6 +39,7 @@ Die gewuenschte `v1`-Topologie ist:
 5. Stattdessen stellt Broadify eine HTML5-Grafik-URL bereit.
 6. vMix laedt diese URL in einem `Web Browser Input`.
 7. vMix rendert diese Seite lokal im Browser Input und mischt sie aus.
+8. Auf Basis des aktuellen Code-Stands sollte diese URL in `v1` primaer von der **Bridge** lokal ausgeliefert werden, nicht von einer authentifizierten Dashboard-Seite der WebApp.
 
 ## Wichtige technische Klarstellung
 
@@ -52,6 +53,8 @@ Im bestaetigten `v1`-Modell gilt:
   - Assets
   - Daten
   - Zustandsupdates
+- Die WebApp bleibt primaer fuer Authoring, Controls und Command-Ingress zustaendig.
+- Die Bridge ist fuer `v1` der naheliegende Auslieferungsort fuer die Browser-Input-Seite und deren Laufzeit-Zustand.
 
 Das ist fuer `v1` einfacher und passt zum gewuenschten Flow.
 
@@ -81,10 +84,11 @@ Vorteile:
 
 Beispiel:
 
-- WebApp: `http://127.0.0.1:<webapp-port>`
-- Bridge: lokal
+- Bridge HTTP: `http://127.0.0.1:<bridge-port>`
+- Bridge Browser-Input-Page: `http://127.0.0.1:<bridge-port>/graphics/browser-input`
+- Bridge Browser-Input-State: `http://127.0.0.1:<bridge-port>/graphics/browser-input/state`
 - vMix API: `http://127.0.0.1:8088`
-- vMix Browser Input: `http://127.0.0.1:<webapp-port>/...`
+- WebApp: Controls, Authoring und Relay-Commands
 
 ## Variante B – Moeglich, aber komplexer
 
@@ -98,7 +102,8 @@ Dann gilt:
 Das bedeutet:
 
 - `localhost` auf dem Laptop reicht dann fuer den Browser Input nicht
-- die Grafikseite muss ueber LAN oder oeffentliche URL erreichbar sein
+- die Grafikseite muss vom vMix-Rechner aus ueber LAN erreichbar sein
+- bei Bridge-hosted Auslieferung muss die Bridge bewusst an eine LAN-Adresse gebunden werden
 
 Fuer `v1` sollte deshalb zuerst Variante A priorisiert werden.
 
@@ -120,14 +125,98 @@ Fuer `v1` sollte deshalb zuerst Variante A priorisiert werden.
   - `engine_run_macro`
   - `engine_stop_macro`
 - vMix ist als Engine-Typ bereits im Command-Schema und in der WebApp angelegt
+- Die WebApp-Engine-UI unterstuetzt `vmix` bereits explizit inklusive Default-Port `8088`
+- Die WebApp-Engine-Store- und Command-Helfer unterstuetzen `vmix` bereits produktiv
+- Die WebApp besitzt bereits einen produktiven Relay-WebSocket fuer `graphics_status`
+- Die WebApp besitzt bereits eine HTML/CSS-Template-Runtime:
+  - `renderTemplateHtml(...)`
+  - iframe-basierte Preview-Komponenten
+  - vorhandenes `graphics_send`-Bundle mit `manifest/html/css/schema/defaults`
 
 ### Noch nicht ausreichend vorhanden
 
 - Die Bridge modelliert vMix aktuell nur sehr schmal
 - Die Desktop-App ist lokal noch ATEM-fixiert
-- Es gibt noch keinen dedizierten Browser-Input-Grafikpfad fuer vMix
+- Der bestehende Graphics-Contract ist weiterhin output-/frame-orientiert
+- `GraphicsOutputKey` kennt noch keinen `browser_input`-Modus
+- `graphics_status` kennt noch keine Browser-Input-Metadaten
+- Es gibt in der WebApp aktuell **keine** dedizierte oeffentliche oder tokenisierte Browser-Input-Route
+- Die bestehenden Dashboard-/Graphics-Seiten der WebApp sind authentifiziert und damit nicht direkt als vMix-Browser-Input geeignet
+- Der bestehende Relay-WebSocket fuer Graphics setzt einen eingeloggten WebApp-User mit Access Token voraus und ist damit kein direkter Feed fuer eine anonyme vMix-Browser-Seite
 - Es gibt noch kein Broadify-vMix-HTML5-Handshakemodell
 - Es gibt noch keine produktive Verwaltung von vMix Browser Input URLs / Sessions / Input-Referenzen
+
+## Erkenntnisse aus dem aktuellen WebApp- und Relay-Stand
+
+Diese Punkte sind durch den aktuellen Code-Stand bereits belastbar belegt und muessen fuer den Plan nicht mehr als reine Hypothesen behandelt werden:
+
+- Die WebApp kann `vmix` bereits verbinden:
+  - Engine UI mit `ATEM`, `Tricaster`, `vMix`
+  - Default-Port `8088`
+  - persistierte Connection Preferences
+- Der Command-Ingress ist bereits produktiv:
+  - WebApp -> `app/api/bridges/[bridgeId]/command/route.ts`
+  - Next.js API -> Relay `/relay/command`
+  - Relay -> Bridge `command`
+- Graphics-Statusupdates sind bereits produktiv:
+  - Bridge -> Relay `bridge_event`
+  - Relay -> WebApp `webapp_subscribe`
+  - WebApp konsumiert `graphics_status`
+- Der bestehende Graphics-Datenvertrag ist bereits stark ausgepraegt:
+  - `graphics_send` transportiert HTML/CSS/Schema/Defaults/Values
+  - die WebApp baut Bundle-Payloads bereits deterministisch
+  - die Template-Runtime rendert aus Template-Config + Values fertiges HTML
+- Die vorhandene WebApp-Preview belegt, dass Broadify-Templates grundsaetzlich in Browser-/iframe-Kontexten laufen koennen
+- Die aktuelle WebApp besitzt jedoch keine anonyme, stabile Browser-Input-Seite fuer vMix
+- Die aktuelle Relay-Subscription ist fuer authentifizierte WebApp-Clients gedacht, nicht fuer einen anonymen lokalen Browser Input
+
+## Abgeleitete Architekturentscheidung fuer einen implementation-ready v1
+
+Auf Basis des vorhandenen Code-Stands wird fuer `v1` folgende Architekturentscheidung empfohlen und in diesem Plan als Zielbild verwendet:
+
+### 1. Browser-Input-Seite wird primaer von der Bridge ausgeliefert
+
+- Nicht von einer authentifizierten Dashboard-Route der WebApp
+- Grund:
+  - Dashboard-Seiten sind login-geschuetzt
+  - der bestehende Relay-WebSocket verlangt einen User-Access-Token
+  - die Bridge hat bereits einen lokalen Fastify-HTTP-Server und ist im same-machine-Setup die einfachste, supportbarste URL-Quelle
+
+### 2. Der bestehende Graphics-Commandpfad bleibt erhalten
+
+- WebApp sendet weiter `graphics_send`, `graphics_update_values`, `graphics_update_layout`, `graphics_remove`, `graphics_remove_preset`
+- Die Bridge fuehrt fuer `browser_input` **kein** Video-Frame-Rendering aus
+- Stattdessen schreibt die Bridge den Grafikzustand in einen browser-input-faehigen Laufzeit-Store
+
+### 3. `browser_input` wird als eigener Graphics-Output-Modus modelliert
+
+- Nicht als Sonderfall ausserhalb des bestehenden Graphics-Stores
+- Empfohlene Erweiterung:
+  - `GraphicsOutputKey = "browser_input"`
+- Grund:
+  - die WebApp ist heute bereits output-key-zentriert modelliert
+  - so bleiben bestehende Flows fuer `graphics_configure_outputs` und `graphics_status` wiederverwendbar
+
+### 4. v1 unterstuetzt genau einen Browser Input pro Bridge
+
+- Eine feste URL pro Bridge
+- Ein compositeter Broadify-Scene-State pro Bridge
+- Die bestehenden Kategorien `lower-thirds`, `overlays`, `slides` werden in dieser einen Browser-Input-Seite zusammengesetzt
+- Mehrere dedizierte Browser-Inputs sind `v1.x`
+
+### 5. Zustand fuer die Browser-Seite kommt primaer aus der Bridge selbst
+
+- Initialzustand ueber Bridge-HTTP-Endpoint
+- Laufende Updates ueber Bridge-lokalen Polling- oder WebSocket-Pfad
+- Wegen Embedded-Browser-Risiko wird Polling als belastbare Baseline fuer `v1` eingeplant; WebSocket kann nach positivem Spike als Optimierung dazukommen
+
+### 6. Remote-vMix im LAN ist nicht Kern von v1
+
+- `v1` wird auf same-machine optimiert
+- Remote-vMix wird erst dann aktiv aufgenommen, wenn:
+  - die Bridge-URL absichtlich im LAN freigegeben wird
+  - das Sicherheitsmodell fuer diesen Pfad definiert ist
+  - das Verhalten in realem vMix-LAN-Betrieb validiert wurde
 
 ## Zielbild der Funktionen in v1
 
@@ -148,10 +237,11 @@ Die Controls Section soll in `v1` koennen:
 
 Die Graphics Section soll in `v1` koennen:
 
-- eine Broadify-HTML5-Grafikseite fuer vMix bereitstellen
+- einen `browser_input`-Modus konfigurieren
+- eine feste Bridge-URL fuer einen vMix Browser Input bereitstellen
+- den bestehenden Broadify-Grafikzustand in eine browser-input-faehige Laufzeit schreiben
 - diese Seite mit Daten versorgen
-- eine feste URL fuer einen vMix Browser Input erzeugen oder bereitstellen
-- die Grafikupdates an diese Seite senden
+- Grafikupdates auf dieser Seite sichtbar machen
 - vMix mischt den Browser Input dann wie jeden anderen Input
 
 Optional fuer spaeteres `v1.x`:
@@ -187,13 +277,9 @@ Optional fuer spaeteres `v1.x`:
 ## Restfragen, die als fruehe Spikes behandelt werden muessen
 
 - Wie robust verhaelt sich der vMix Browser Input mit Broadify-HTML/CSS/Fonts/Assets im Produktionsbetrieb?
-- Welche URL-Topologie wird fuer `v1` festgelegt:
-  - lokale URL
-  - LAN-URL
-  - Relay-/Cloud-URL
-- Wie wird die Grafikseite authentisiert oder abgesichert, ohne den Browser-Input unnoetig zu komplizieren?
-- Soll `v1` nur einen festen Browser Input pro Bridge/vMix verwenden oder mehrere?
-- Soll die Bridge den Browser-Input nur dokumentiert referenzieren oder aktiv per API helfen, ihn zu konfigurieren?
+- Reicht fuer `v1` ein lokaler Polling-Endpoint fuer Updates aus, oder ist WebSocket im vMix-Browser stabil genug fuer den Produktbetrieb?
+- Soll die Bridge fuer `v1` nur eine feste Browser-Input-URL dokumentieren oder zusaetzlich Konfigurationsmetadaten wie "empfohlener Input-Name" und "letzter Handshake" fuehren?
+- Soll die vorhandene WebApp-Renderlogik spaeter in ein Shared Package extrahiert werden, oder darf `v1` zunaechst eine Bridge-seitige, eng am bestehenden Render-Contract orientierte Runtime besitzen?
 
 ## Architekturregeln fuer v1
 
@@ -206,6 +292,7 @@ Optional fuer spaeteres `v1.x`:
 
 - HTML5-Rendering ueber Browser Input ist der definierte `v1`-Modus
 - Der Browser Input ist kein Workaround, sondern bewusstes Produktverhalten fuer `v1`
+- Technisch wird dieser Modus in `v1` als eigener Graphics-Output-Modus `browser_input` modelliert
 
 ### 3. Controls und Graphics sind getrennte Integrationspfade
 
@@ -217,6 +304,7 @@ Optional fuer spaeteres `v1.x`:
 
 - `v1` soll zuerst fuer `WebApp + Bridge + vMix auf einem Laptop` sauber funktionieren
 - LAN-Remote-vMix ist nachrangig
+- Die primaere Browser-Input-URL kommt in `v1` von der lokal laufenden Bridge
 
 ### 5. Kein stiller Mischbetrieb
 
@@ -233,25 +321,28 @@ Optional fuer spaeteres `v1.x`:
 Ziel:
 Das bestaetigte Browser-Input-Modell verbindlich machen und alle kritischen Entscheidungen vor Implementierung absichern.
 
+### Bereits festgezurrte Entscheidungen
+
+- `v1` ist offiziell ein `HTML5 Browser Input`-Modus
+- `Broadify rendert Stream nach vMix` ist explizit **nicht** `v1`
+- Standard-Betriebsmodus ist:
+  - same machine first
+  - LAN spaeter
+- `v1` unterstuetzt genau **einen** Browser Input pro Bridge
+- Die primaere Browser-Input-Seite wird in `v1` durch die Bridge ausgeliefert
+
 ### Todos
 
-- [ ] `v1` offiziell als `HTML5 Browser Input`-Modus festlegen.
-- [ ] Das alte Zielbild `Broadify rendert Stream nach vMix` explizit aus dem `v1`-Scope ausschliessen.
-- [ ] Standard-Betriebsmodus definieren:
-  - [ ] same machine first
-  - [ ] LAN second
 - [ ] Reale vMix-Browser-Input-Spikes durchfuehren:
-  - [ ] lokale URL laden
+  - [ ] lokale Bridge-URL laden
   - [ ] Transparenz pruefen
   - [ ] Font-Laden pruefen
   - [ ] CSS-/Animation-Verhalten pruefen
   - [ ] Resize-/Aspect-Verhalten pruefen
-  - [ ] Datenupdates pruefen
-- [ ] Entscheiden, ob Browser-Input-Seiten oeffentlich, lokal oder tokenisiert ausgeliefert werden.
-- [ ] Dokumentieren, wie viele Browser Inputs `v1` unterstuetzt:
-  - [ ] genau 1
-  - [ ] 1 pro Grafikslot
-  - [ ] frei konfigurierbar
+  - [ ] Polling-basierte Datenupdates pruefen
+  - [ ] optional WebSocket-Verhalten pruefen
+- [ ] Browser-Input-URL-Schema final auf konkrete Pfade festlegen
+- [ ] Bridge-seitigen Browser-Input-State-Store definieren
 
 ### Abnahme
 
@@ -273,6 +364,7 @@ Die Bridge soll vMix fuer Controls robust anbinden.
   - [ ] Makros
   - [ ] optional Preview/Program/Input-Liste
 - [ ] Makro-Handling fuer vMix robust absichern.
+- [ ] Bestehende WebApp-Fehler- und Polling-Erwartungen gegen den finalen vMix-Adapter pruefen
 - [ ] Optional fuer `v1.x`:
   - [ ] Input-Liste lesen
   - [ ] Preview/Program lesen
@@ -289,21 +381,21 @@ Die Broadify-Graphics muessen als HTML5-Seite fuer vMix Browser Input konsumierb
 
 ### Todos
 
-- [ ] Einen dedizierten `vMix Browser Input Graphics Mode` definieren.
-- [ ] URL-Konzept festlegen.
+- [ ] `browser_input` als neuen Graphics-Output-Modus in Bridge- und WebApp-Typen einfuehren.
+- [ ] URL-Konzept finalisieren.
 - [ ] Standard-Routen fuer Browser-Input-Grafiken definieren.
-- [ ] Eine stabile HTML-Seite fuer vMix Browser Input bereitstellen.
+- [ ] Eine stabile HTML-Seite fuer vMix Browser Input in der Bridge bereitstellen.
 - [ ] Die Seite muss Broadify-Graphics rendern koennen.
 - [ ] Transparenter Hintergrund muss sauber unterstuetzt werden.
 - [ ] Asset-Ladeverhalten fuer Fonts/Bilder/CSS stabilisieren.
 - [ ] Caching-Verhalten definieren.
 - [ ] Reload-/Recover-Verhalten definieren.
 
-### Offene Designentscheidung innerhalb dieser Phase
+### Konkretisierung fuer v1
 
-- [ ] Eine feste URL pro Bridge
-- [ ] Eine URL pro Grafikslot
-- [ ] Eine URL mit Zustand/Session-Parametern
+- Eine feste URL pro Bridge
+- Kein URL-Modell pro Grafikslot
+- Keine Session-Parameter als Pflichtbestandteil fuer den Normalfall
 
 ### Abnahme
 
@@ -317,21 +409,22 @@ Die Graphics Section muss der Browser-Input-Seite Daten und Zustand liefern koen
 ### Todos
 
 - [ ] Definieren, wie die Browser-Input-Seite ihren Zustand erhaelt:
-  - [ ] Query params
-  - [ ] initial payload
-  - [ ] polling endpoint
-  - [ ] websocket/realtime
-- [ ] Ein dediziertes Datenmodell fuer Browser-Input-Grafiken definieren.
-- [ ] Graphics Section an diesen Modus anbinden.
+  - [ ] initial snapshot endpoint
+  - [ ] polling endpoint als Mindestpfad
+  - [ ] optional websocket/realtime nach Spike
+- [ ] Ein dediziertes Browser-Input-State-Modell in der Bridge definieren.
+- [ ] Bestehende `graphics_*`-Commands an diesen Modus anbinden.
 - [ ] Update-Flows fuer:
   - [ ] initial render
   - [ ] text/value updates
   - [ ] layout updates
   - [ ] remove/reset
+  - [ ] preset activation/deactivation
 - [ ] Fehlerfall modellieren:
   - [ ] Seite nicht erreichbar
   - [ ] Assets fehlen
   - [ ] Grafikdaten ungueltig
+  - [ ] State-Store leer oder inkonsistent
 - [ ] Sichtbar machen, ob die Browser-Input-Seite einen gueltigen Zustand hat.
 
 ### Abnahme
@@ -345,15 +438,16 @@ Die WebApp soll klar und produktiv mit dem Browser-Input-Modell umgehen koennen.
 
 ### Todos
 
-- [ ] Engine-UI fuer `vmix` finalisieren.
+- [ ] Bestehende Engine-UI fuer `vmix` nur noch gegen den finalen Bridge-Vertrag verifizieren.
 - [ ] In der Graphics Section einen `vMix Browser Input`-Modus sichtbar machen.
 - [ ] Dem Nutzer die benoetigte Browser-Input-URL anzeigen.
 - [ ] Optional Copy/Launch-Helfer fuer die URL anbieten.
 - [ ] Klare Statusanzeigen einfuehren:
   - [ ] vMix verbunden
+  - [ ] Browser-Input-Mode aktiv
   - [ ] Grafikseite bereit
   - [ ] Browser-Input-URL vorhanden
-  - [ ] Browser-Input vermutlich aktiv / nicht aktiv
+  - [ ] letzter Browser-Input-Handshake / letzte Aktivitaet
 - [ ] UX-Texte fuer same-machine und remote-vMix unterscheiden.
 - [ ] Dokumentieren, was der Operator in vMix tun muss:
   - [ ] Browser Input anlegen
@@ -371,11 +465,14 @@ Graphics muessen innerhalb der bestehenden Broadify-Architektur sauber transport
 
 ### Todos
 
-- [ ] Bestehenden Graphics-Commandpfad weiterverwenden, wo moeglich.
-- [ ] Browser-Input-spezifische Graphics-Commands oder Modusfelder definieren.
-- [ ] Sicherstellen, dass Relay/Bridge fuer diesen Modus keine unnötigen Video-Output-Annahmen treffen.
-- [ ] Falls noetig Status-Snapshots fuer Browser-Input-Grafiken ueber Relay publizieren.
-- [ ] Falls sinnvoll `graphics_status` fuer Browser-Input-Modus erweitern.
+- [ ] Bestehenden Graphics-Commandpfad weiterverwenden.
+- [ ] `graphics_configure_outputs` und Status-Typen um `browser_input` erweitern.
+- [ ] Sicherstellen, dass Relay/Bridge fuer diesen Modus keine Video-Output-Annahmen treffen.
+- [ ] `graphics_status` fuer Browser-Input-Metadaten erweitern:
+  - [ ] browserInputUrl
+  - [ ] mode
+  - [ ] lastBrowserClientSeenAt
+  - [ ] stateVersion oder vergleichbares Sync-Signal
 - [ ] Das Zusammenspiel mit bestehendem GraphicsStore sauber dokumentieren.
 
 ### Abnahme
@@ -414,6 +511,10 @@ Die Desktop-App soll den gleichen lokalen vMix-Flow verstehen.
 - [ ] Lokale Hinweise fuer Browser-Input-URL im Desktop-Kontext bereitstellen, falls gewuenscht.
 - [ ] Sicherstellen, dass die lokale Desktop-App den same-machine Browser-Input-Flow unterstuetzt.
 
+Hinweis:
+
+- Die **WebApp** ist an dieser Stelle bereits weiter als die Desktop-App; der offene Paritaetsbedarf betrifft vor allem Electron/Desktop, nicht mehr die WebApp.
+
 ### Abnahme
 
 - [ ] Der lokale Laptop-Flow funktioniert sowohl aus der WebApp als auch aus der Desktop-App nachvollziehbar.
@@ -426,17 +527,14 @@ Der Browser-Input-Ansatz muss supportbar und sicher genug fuer den Zielbetrieb s
 ### Todos
 
 - [ ] URL-Sicherheitsmodell definieren.
-- [ ] Entscheiden, ob `v1`:
-  - [ ] nur lokal
-  - [ ] lokal + LAN
-  - [ ] optional cloud-erreichbar
-  unterstuetzt.
-- [ ] Falls Browser-Input-URL nicht oeffentlich sein soll:
-  - [ ] lokalen Zugriff sauber spezifizieren
-  - [ ] Remote-vMix fuer `v1` einschränken oder ausschliessen
+- [ ] `v1` explizit als same-machine first dokumentieren.
+- [ ] Falls Browser-Input-URL im LAN erreichbar sein soll:
+  - [ ] lokalen vs. LAN-Bind sauber spezifizieren
+  - [ ] Remote-vMix fuer `v1` nur bei bewusst aktivierter LAN-Exposition erlauben
 - [ ] Logging-Regeln definieren:
   - [ ] keine sensiblen Payloads
   - [ ] keine Secrets in Browser-Input-URLs
+  - [ ] Browser-Input-Handshake nur als Meta-Info loggen
 - [ ] Security-Doku fuer diesen Modus aktualisieren.
 
 ### Abnahme
@@ -460,6 +558,7 @@ Der Browser-Input-Flow muss auf realer Maschine reproduzierbar funktionieren.
   - [ ] Grafik sichtbar
   - [ ] Grafikupdate sichtbar
   - [ ] Makro aus Controls ausloesbar
+  - [ ] Browser-Input-Neuladen ohne Zustandverlust oder mit definiertem Recover-Verhalten
 - [ ] Optional Remote-vMix-LAN-Runbook erstellen.
 
 ### Abnahme
@@ -536,9 +635,13 @@ Die Integration gilt fuer `v1` als erfolgreich, wenn:
 - Bridge Relay-Architektur: `docs/bridge/architecture/relay-enterprise-architecture.md`
 - Bridge vMix Adapter: `apps/bridge/src/services/engine/adapters/vmix-adapter.ts`
 - Bridge Command Router: `apps/bridge/src/services/command-router.ts`
+- Bridge Server: `apps/bridge/src/server.ts`
 - WebApp Bridge Command API: `broadify/app/api/bridges/[bridgeId]/command/route.ts`
-- WebApp Pairing API: `broadify/app/api/bridges/pair/route.ts`
 - WebApp Engine UI: `broadify/app/(pages)/(with-nav)/dashboard/components/engine-section.tsx`
+- WebApp Engine Store: `broadify/lib/stores/engine-store.ts`
+- WebApp Graphics Bridge Slice: `broadify/stores/graphics-store.bridge.ts`
+- WebApp Relay Graphics Updates: `broadify/hooks/use-relay-graphics-updates.ts`
+- WebApp Template Runtime: `broadify/lib/template-builder/domain/render.ts`
 - Relay Server: `broadify-relay/src/index.ts`
 
 ## Oeffentliche vMix-Quellen
