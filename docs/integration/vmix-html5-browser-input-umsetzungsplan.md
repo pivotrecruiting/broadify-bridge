@@ -207,10 +207,36 @@ Auf Basis des vorhandenen Code-Stands wird fuer `v1` folgende Architekturentsche
 ### 5. Zustand fuer die Browser-Seite kommt primaer aus der Bridge selbst
 
 - Initialzustand ueber Bridge-HTTP-Endpoint
-- Laufende Updates ueber Bridge-lokalen Polling- oder WebSocket-Pfad
-- Wegen Embedded-Browser-Risiko wird Polling als belastbare Baseline fuer `v1` eingeplant; WebSocket kann nach positivem Spike als Optimierung dazukommen
+- Laufende Updates ueber Bridge-lokalen **WebSocket-Pfad**
+- Zusaetzlich bleibt ein HTTP-Snapshot-Endpoint fuer Initialzustand, Reconnect und Diagnose bestehen
 
-### 6. Remote-vMix im LAN ist nicht Kern von v1
+### 6. Browser-Input-Metadaten werden nach Best Practice modelliert
+
+- Die Bridge liefert nicht nur eine URL, sondern einen kleinen dedizierten Metadatenblock
+- Empfohlene Felder fuer `v1`:
+  - `mode`
+  - `browserInputUrl`
+  - `recommendedInputName`
+  - `transport: "websocket"`
+  - `lastBrowserClientSeenAt`
+  - `stateVersion`
+- Nicht Teil von `v1`:
+  - harte Aussage "Input in vMix wirklich on air"
+  - fragile Deep-Inspection des vMix-UI-Zustands ohne belastbare API
+
+### 7. Shared Rendering Runtime ist der Best-Practice-Pfad
+
+- Keine dauerhafte Duplikation der Renderlogik zwischen WebApp und Bridge
+- Die bestehende WebApp-Renderlogik wird in ein gemeinsam nutzbares Modul oder Package extrahiert
+- `v1` darf dabei pragmatisch vorgehen:
+  - zuerst den renderrelevanten Kern extrahieren
+  - UI-spezifische Preview-Komponenten in der WebApp belassen
+- Ziel:
+  - ein gemeinsamer Render-Contract
+  - eine gemeinsame HTML-Erzeugung
+  - kein Drift zwischen Preview und Browser-Input-Ausgabe
+
+### 8. Remote-vMix im LAN ist nicht Kern von v1
 
 - `v1` wird auf same-machine optimiert
 - Remote-vMix wird erst dann aktiv aufgenommen, wenn:
@@ -277,9 +303,8 @@ Optional fuer spaeteres `v1.x`:
 ## Restfragen, die als fruehe Spikes behandelt werden muessen
 
 - Wie robust verhaelt sich der vMix Browser Input mit Broadify-HTML/CSS/Fonts/Assets im Produktionsbetrieb?
-- Reicht fuer `v1` ein lokaler Polling-Endpoint fuer Updates aus, oder ist WebSocket im vMix-Browser stabil genug fuer den Produktbetrieb?
-- Soll die Bridge fuer `v1` nur eine feste Browser-Input-URL dokumentieren oder zusaetzlich Konfigurationsmetadaten wie "empfohlener Input-Name" und "letzter Handshake" fuehren?
-- Soll die vorhandene WebApp-Renderlogik spaeter in ein Shared Package extrahiert werden, oder darf `v1` zunaechst eine Bridge-seitige, eng am bestehenden Render-Contract orientierte Runtime besitzen?
+- Der konkrete WebSocket-Betrieb im realen vMix Browser Input muss auf echter Zielmaschine validiert werden.
+- Font-/Asset-Verhalten mit echter Bridge-hosted Browser-Input-Seite muss praktisch bestaetigt werden.
 
 ## Architekturregeln fuer v1
 
@@ -339,10 +364,11 @@ Das bestaetigte Browser-Input-Modell verbindlich machen und alle kritischen Ents
   - [ ] Font-Laden pruefen
   - [ ] CSS-/Animation-Verhalten pruefen
   - [ ] Resize-/Aspect-Verhalten pruefen
-  - [ ] Polling-basierte Datenupdates pruefen
-  - [ ] optional WebSocket-Verhalten pruefen
+  - [ ] WebSocket-basierte Datenupdates pruefen
 - [ ] Browser-Input-URL-Schema final auf konkrete Pfade festlegen
 - [ ] Bridge-seitigen Browser-Input-State-Store definieren
+- [ ] Browser-Input-Metadatenvertrag final definieren
+- [ ] Shared-Render-Runtime-Scope fuer `v1` festziehen
 
 ### Abnahme
 
@@ -386,10 +412,12 @@ Die Broadify-Graphics muessen als HTML5-Seite fuer vMix Browser Input konsumierb
 - [ ] Standard-Routen fuer Browser-Input-Grafiken definieren.
 - [ ] Eine stabile HTML-Seite fuer vMix Browser Input in der Bridge bereitstellen.
 - [ ] Die Seite muss Broadify-Graphics rendern koennen.
+- [ ] Einen lokalen Browser-Input-WebSocket-Endpunkt in der Bridge bereitstellen.
 - [ ] Transparenter Hintergrund muss sauber unterstuetzt werden.
 - [ ] Asset-Ladeverhalten fuer Fonts/Bilder/CSS stabilisieren.
 - [ ] Caching-Verhalten definieren.
 - [ ] Reload-/Recover-Verhalten definieren.
+- [ ] Minimalen renderrelevanten WebApp-Kern in ein gemeinsam nutzbares Modul verschieben.
 
 ### Konkretisierung fuer v1
 
@@ -410,8 +438,8 @@ Die Graphics Section muss der Browser-Input-Seite Daten und Zustand liefern koen
 
 - [ ] Definieren, wie die Browser-Input-Seite ihren Zustand erhaelt:
   - [ ] initial snapshot endpoint
-  - [ ] polling endpoint als Mindestpfad
-  - [ ] optional websocket/realtime nach Spike
+  - [ ] websocket/realtime als Standardpfad
+  - [ ] optional polling-/snapshot-fallback fuer Recover und Debugging
 - [ ] Ein dediziertes Browser-Input-State-Modell in der Bridge definieren.
 - [ ] Bestehende `graphics_*`-Commands an diesen Modus anbinden.
 - [ ] Update-Flows fuer:
@@ -471,6 +499,8 @@ Graphics muessen innerhalb der bestehenden Broadify-Architektur sauber transport
 - [ ] `graphics_status` fuer Browser-Input-Metadaten erweitern:
   - [ ] browserInputUrl
   - [ ] mode
+  - [ ] recommendedInputName
+  - [ ] transport
   - [ ] lastBrowserClientSeenAt
   - [ ] stateVersion oder vergleichbares Sync-Signal
 - [ ] Das Zusammenspiel mit bestehendem GraphicsStore sauber dokumentieren.
