@@ -520,27 +520,48 @@ Wichtig:
 Ziel:
 Die WebApp soll klar und produktiv mit dem Browser-Input-Modell umgehen koennen.
 
+### Status
+
+Phase 4 ist fuer den WebApp-seitigen `v1`-Pfad umgesetzt.
+
+Wichtig:
+
+- Die WebApp-Typen und der Graphics-Store verstehen jetzt `browser_input` sowie die Bridge-seitigen `browserInput`-Statusmetadaten.
+- Die bestehende Graphics-Output-Config zeigt fuer den vMix-Pfad jetzt einen expliziten `vMix Browser Input`-Modus an.
+- Die benoetigte Browser-Input-URL wird sichtbar angezeigt und kann kopiert werden.
+- Die UI zeigt die fuer `v1` belastbar verfuegbaren Statussignale an:
+  - vMix verbunden
+  - Browser-Input-Modus aktiv
+  - Grafikseite bereit
+  - Browser-Input-URL vorhanden
+  - letzte Browser-Aktivitaet
+- Same-machine und remote-vMix werden ueber unterschiedliche Hilfetexte unterschieden.
+- Die Operator-Schritte fuer das Anlegen des Browser Inputs in vMix sind direkt in der UI dokumentiert.
+- Bestehende Hardware-Output-Pfade fuer ATEM/DeckLink/Display wurden dafuer nicht umgebaut.
+- Ein expliziter Launch-Helfer ist fuer `v1` nicht erforderlich; der Copy-Helfer deckt den operativen Bedarf ab.
+- Reale Praxisvalidierung gegen eine echte vMix-Instanz bleibt weiterhin in Phase 9.
+
 ### Todos
 
-- [ ] Bestehende Engine-UI fuer `vmix` nur noch gegen den finalen Bridge-Vertrag verifizieren.
-- [ ] In der Graphics Section einen `vMix Browser Input`-Modus sichtbar machen.
-- [ ] Dem Nutzer die benoetigte Browser-Input-URL anzeigen.
-- [ ] Optional Copy/Launch-Helfer fuer die URL anbieten.
-- [ ] Klare Statusanzeigen einfuehren:
-  - [ ] vMix verbunden
-  - [ ] Browser-Input-Mode aktiv
-  - [ ] Grafikseite bereit
-  - [ ] Browser-Input-URL vorhanden
-  - [ ] letzter Browser-Input-Handshake / letzte Aktivitaet
-- [ ] UX-Texte fuer same-machine und remote-vMix unterscheiden.
-- [ ] Dokumentieren, was der Operator in vMix tun muss:
-  - [ ] Browser Input anlegen
-  - [ ] URL eintragen
-  - [ ] Transparenz / Layering korrekt konfigurieren
+- [x] Bestehende Engine-UI fuer `vmix` nur noch gegen den finalen Bridge-Vertrag verifizieren.
+- [x] In der Graphics Section einen `vMix Browser Input`-Modus sichtbar machen.
+- [x] Dem Nutzer die benoetigte Browser-Input-URL anzeigen.
+- [x] Optional Copy/Launch-Helfer fuer die URL anbieten.
+- [x] Klare Statusanzeigen einfuehren:
+  - [x] vMix verbunden
+  - [x] Browser-Input-Mode aktiv
+  - [x] Grafikseite bereit
+  - [x] Browser-Input-URL vorhanden
+  - [x] letzter Browser-Input-Handshake / letzte Aktivitaet
+- [x] UX-Texte fuer same-machine und remote-vMix unterscheiden.
+- [x] Dokumentieren, was der Operator in vMix tun muss:
+  - [x] Browser Input anlegen
+  - [x] URL eintragen
+  - [x] Transparenz / Layering korrekt konfigurieren
 
 ### Abnahme
 
-- [ ] Ein Operator kann ohne Rateversuche den Browser-Input-Flow einrichten.
+- [x] Die WebApp stellt alle benoetigten Informationen bereit, damit ein Operator den Browser-Input-Flow ohne Rateversuche einrichten kann.
 
 ## Phase 5 – Bridge-/Relay-/WebApp-Zusammenspiel fuer Graphics
 
