@@ -17,6 +17,9 @@ export type BridgeContextT = {
   userDataDir: string;
   logger: LoggerLikeT;
   logPath: string;
+  serverHost?: string;
+  serverPort?: number;
+  serverMode?: BridgeConfigT["mode"];
   bridgeId?: string;
   bridgeName?: string;
   pairingCode?: string;

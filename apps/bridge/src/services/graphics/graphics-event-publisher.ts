@@ -21,6 +21,7 @@ export function publishGraphicsStatusEvent(
     data: {
       reason,
       outputConfig: status.outputConfig,
+      browserInput: status.browserInput,
       activePreset: status.activePreset,
       activePresets: status.activePresets,
     },

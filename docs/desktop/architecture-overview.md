@@ -46,9 +46,9 @@ flowchart LR
 3. Logs werden via `bridgeGetLogs`/`appGetLogs` geladen und optional geloescht.
 
 ### 3) Engine-Commands
-1. UI ruft `engineConnect/RunMacro` etc.
-2. Main führt HTTP Requests an Bridge `/engine/*` aus.
-3. Ergebnis wird an UI zurückgegeben.
+1. Der Desktop-Main-/Preload-Slice kann Engine-Calls an die Bridge weiterreichen.
+2. Die produktive Engine-Steuerung liegt jedoch in der WebApp; die Tray-UI ist bewusst **nicht** die zweite Engine-Konfigurationsoberflaeche.
+3. Main führt die entsprechenden HTTP Requests an Bridge `/engine/*` aus, wenn dieser Pfad genutzt wird.
 
 ## Security-Boundaries
 - Renderer ↔ Main: nur via Preload-API; Renderer nutzt keine Node-APIs.

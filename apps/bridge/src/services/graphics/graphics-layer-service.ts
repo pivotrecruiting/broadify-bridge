@@ -11,6 +11,27 @@ type RemoveLayerDepsT = {
   categoryToLayer: Map<GraphicsCategoryT, string>;
 };
 
+type LayerStateDepsT = Pick<RemoveLayerDepsT, "layers" | "categoryToLayer">;
+
+/**
+ * Remove a layer from in-memory state only.
+ *
+ * @param deps Runtime dependencies.
+ * @param layerId Layer identifier.
+ * @returns Removed layer state or null if missing.
+ */
+export function removeLayerState(
+  deps: LayerStateDepsT,
+  layerId: string
+): GraphicsLayerStateT | null {
+  const layer = deps.layers.get(layerId) ?? null;
+  deps.layers.delete(layerId);
+  if (layer && deps.categoryToLayer.get(layer.category) === layerId) {
+    deps.categoryToLayer.delete(layer.category);
+  }
+  return layer;
+}
+
 /**
  * Remove a layer from renderer and in-memory state.
  *
@@ -32,11 +53,7 @@ export async function removeLayerWithRenderer(
     );
   }
 
-  const layer = deps.layers.get(layerId);
-  deps.layers.delete(layerId);
-  if (layer && deps.categoryToLayer.get(layer.category) === layerId) {
-    deps.categoryToLayer.delete(layer.category);
-  }
+  removeLayerState(deps, layerId);
 }
 
 /**
@@ -73,12 +90,19 @@ type RenderPreparedLayerParamsT = {
   onRendered: (layerIds: string[]) => void;
 };
 
+type StorePreparedLayerStateParamsT = Omit<
+  RenderPreparedLayerParamsT,
+  "renderer" | "outputFormat" | "onRendered"
+>;
+
 /**
- * Store and render a prepared layer.
+ * Store a prepared layer in the in-memory state without touching a renderer.
  *
- * @param params Render parameters and runtime dependencies.
+ * @param params Layer state parameters.
  */
-export async function renderPreparedLayer(params: RenderPreparedLayerParamsT): Promise<void> {
+export function storePreparedLayerState(
+  params: StorePreparedLayerStateParamsT
+): void {
   validateLayerLimits(
     params.layers,
     params.categoryToLayer,
@@ -105,6 +129,19 @@ export async function renderPreparedLayer(params: RenderPreparedLayerParamsT): P
   });
 
   params.categoryToLayer.set(params.data.category, params.data.layerId);
+}
+
+/**
+ * Store and render a prepared layer.
+ *
+ * @param params Render parameters and runtime dependencies.
+ */
+export async function renderPreparedLayer(params: RenderPreparedLayerParamsT): Promise<void> {
+  storePreparedLayerState({
+    layers: params.layers,
+    categoryToLayer: params.categoryToLayer,
+    data: params.data,
+  });
 
   try {
     await params.renderer.renderLayer({
@@ -122,10 +159,13 @@ export async function renderPreparedLayer(params: RenderPreparedLayerParamsT): P
     });
     params.onRendered([params.data.layerId]);
   } catch (error) {
-    params.layers.delete(params.data.layerId);
-    if (params.categoryToLayer.get(params.data.category) === params.data.layerId) {
-      params.categoryToLayer.delete(params.data.category);
-    }
+    removeLayerState(
+      {
+        layers: params.layers,
+        categoryToLayer: params.categoryToLayer,
+      },
+      params.data.layerId
+    );
     throw error;
   }
 }

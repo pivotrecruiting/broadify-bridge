@@ -7,6 +7,7 @@ import {
   sign as signData,
 } from "node:crypto";
 import { getBridgeContext } from "./bridge-context.js";
+import { base64UrlEncode, stableStringify } from "./relay-command-security.js";
 
 const RELAY_BRIDGE_IDENTITY_DIR = "security";
 const RELAY_BRIDGE_IDENTITY_FILE = "relay-bridge-identity.json";
@@ -46,29 +47,6 @@ type RelayBridgeIdentityT = RelayBridgeEnrollmentPublicKeyT & {
 };
 
 let identityCache: RelayBridgeIdentityT | null = null;
-
-const stableStringify = (value: unknown): string => {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  const entries = keys.map(
-    (key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`,
-  );
-  return `{${entries.join(",")}}`;
-};
-
-const base64UrlEncode = (value: Buffer): string => {
-  return value
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-};
 
 const getIdentityFilePath = (): string => {
   const { userDataDir } = getBridgeContext();

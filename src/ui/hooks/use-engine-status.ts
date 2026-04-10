@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { EngineStateT } from "@broadify/protocol";
+import type { DesktopEngineTypeT } from "../constants/engine-constants";
 
 /**
  * Hook to manage engine connection status
@@ -43,13 +44,13 @@ export function useEngineStatus() {
    * Connect to engine
    */
   const connect = useCallback(
-    async (ip?: string, port?: number) => {
+    async (type: DesktopEngineTypeT, ip?: string, port?: number) => {
       if (!window.electron) return;
 
       try {
         setLoading(true);
         setError(null);
-        const result = await window.electron.engineConnect(ip, port);
+        const result = await window.electron.engineConnect(type, ip, port);
         if (result.success && result.state) {
           setEngineState(result.state);
         } else {
@@ -127,4 +128,3 @@ export function useEngineStatus() {
     refetch: fetchStatus,
   };
 }
-

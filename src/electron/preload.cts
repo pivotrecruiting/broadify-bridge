@@ -1,6 +1,7 @@
 import electron from "electron";
 import type {
   BridgeConfig,
+  DesktopEngineTypeT,
   EventPayloadMapping,
   UnsubscribeFunction,
 } from "./types.js" with { "resolution-mode": "import" };
@@ -60,6 +61,7 @@ type ElectronApi = {
     callback: (status: EventPayloadMapping["updaterStatus"]) => void
   ) => UnsubscribeFunction;
   engineConnect: (
+    type?: DesktopEngineTypeT,
     ip?: string,
     port?: number
   ) => Promise<EventPayloadMapping["engineConnect"]>;
@@ -120,8 +122,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
     ipcOn("updaterStatus", (status) => {
       callback(status);
     }),
-  engineConnect: (ip?: string, port?: number) =>
-    ipcInvoke("engineConnect", ip, port),
+  engineConnect: (type?: DesktopEngineTypeT, ip?: string, port?: number) =>
+    ipcInvoke("engineConnect", type, ip, port),
   engineDisconnect: () => ipcInvoke("engineDisconnect"),
   engineGetStatus: () => ipcInvoke("engineGetStatus"),
   engineGetMacros: () => ipcInvoke("engineGetMacros"),

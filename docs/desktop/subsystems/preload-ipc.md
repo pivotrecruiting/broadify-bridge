@@ -29,6 +29,10 @@ Das Preload‑Subsystem definiert die sichere API‑Oberfläche (`window.electro
 - `engineConnect()` / `engineDisconnect()` / `engineGetStatus()` / `engineGetMacros()` / `engineRunMacro()` / `engineStopMacro()`
 - `openExternal(url)`
 
+Hinweis:
+
+- Diese Engine-IPC-Methoden bleiben im Desktop-Contract verfuegbar, die produktive Bedienung erfolgt jedoch bewusst ueber die WebApp als Single Source of Truth.
+
 ## Security‑Hinweise
 - Renderer hat keinen Node‑Zugriff; Preload ist die einzige Brücke.
 - API ist minimal und whitelisted.

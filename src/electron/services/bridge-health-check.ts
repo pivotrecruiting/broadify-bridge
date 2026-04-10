@@ -35,12 +35,15 @@ export async function checkBridgeHealth(
       HEALTH_CHECK_TIMEOUT,
     );
 
-    const response = await fetch(url, {
-      signal: controller.signal,
-      method: "GET",
-    });
-
-    clearTimeout(timeoutId);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        signal: controller.signal,
+        method: "GET",
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     if (!response.ok) {
       //   console.log(`[HealthCheck] HTTP error: ${response.status}`);
@@ -83,12 +86,15 @@ export async function checkBridgeHealth(
         HEALTH_CHECK_TIMEOUT,
       );
 
-      const relayResponse = await fetch(relayUrl, {
-        signal: relayController.signal,
-        method: "GET",
-      });
-
-      clearTimeout(relayTimeoutId);
+      let relayResponse: Response;
+      try {
+        relayResponse = await fetch(relayUrl, {
+          signal: relayController.signal,
+          method: "GET",
+        });
+      } finally {
+        clearTimeout(relayTimeoutId);
+      }
 
       if (relayResponse.ok) {
         relayStatus = await relayResponse.json();

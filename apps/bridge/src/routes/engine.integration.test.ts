@@ -180,4 +180,158 @@ describe("registerEngineRoute integration", () => {
 
     await app.close();
   });
+
+  it("POST /engine/disconnect returns success and state", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/disconnect",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(engineAdapter.disconnect).toHaveBeenCalled();
+    expect(response.json()).toEqual({
+      success: true,
+      state: expect.objectContaining({ status: "disconnected" }),
+    });
+    await app.close();
+  });
+
+  it("GET /engine/status returns state and connectedSince", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "connected" });
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/engine/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      state: expect.objectContaining({ status: "connected" }),
+    });
+    await app.close();
+  });
+
+  it("POST /engine/macros/:id/run returns 400 for invalid macro ID", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "connected" });
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/macros/not-a-number/run",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: "Invalid macro ID",
+      message: "Macro ID must be a number",
+    });
+    await app.close();
+  });
+
+  it("POST /engine/macros/:id/run returns success when connected", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "connected" });
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/macros/1/run",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(engineAdapter.runMacro).toHaveBeenCalledWith(1);
+    expect(response.json()).toMatchObject({
+      success: true,
+      macroId: 1,
+    });
+    await app.close();
+  });
+
+  it("POST /engine/macros/:id/run returns 503 when not connected", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "disconnected" });
+    engineAdapter.runMacro.mockRejectedValueOnce(new Error("Engine not connected"));
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/macros/1/run",
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: "Engine not connected",
+    });
+    await app.close();
+  });
+
+  it("POST /engine/macros/:id/stop returns 400 for invalid macro ID", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "connected" });
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/macros/abc/stop",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("POST /engine/macros/:id/stop returns success when connected", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "connected" });
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/macros/2/stop",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(engineAdapter.stopMacro).toHaveBeenCalledWith(2);
+    expect(response.json()).toMatchObject({
+      success: true,
+      macroId: 2,
+    });
+    await app.close();
+  });
 });

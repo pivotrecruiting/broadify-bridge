@@ -9,6 +9,7 @@ import type { GraphicsRenderer } from "./renderer/graphics-renderer.js";
 import type { PreparedLayerT } from "./graphics-manager-types.js";
 
 const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
+  "browser_input",
   "key_fill_sdi",
   "key_fill_ndi",
 ];

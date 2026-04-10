@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppUpdaterActionResultT, AppUpdaterStatusT } from "@broadify/protocol";
+import { getUpdaterEnv } from "./updater-env.js";
 
 const INITIAL_STATUS: AppUpdaterStatusT = {
   enabled: false,
@@ -23,7 +24,8 @@ const FAKE_UPDATE_DOWNLOAD_DELAY_MS = 1200;
  * Return true when the renderer should simulate the update flow in development.
  */
 function isFakeUpdateEnabled(): boolean {
-  return import.meta.env.DEV && import.meta.env.VITE_FAKE_UPDATE_AVAILABLE === "1";
+  const env = getUpdaterEnv();
+  return Boolean(env.DEV && env.VITE_FAKE_UPDATE_AVAILABLE === "1");
 }
 
 /**

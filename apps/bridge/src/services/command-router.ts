@@ -10,16 +10,12 @@ import {
   PairingCodeSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
-import { type RelayCommand } from "./relay-command-allowlist.js";
 import { getBridgeContext } from "./bridge-context.js";
 import { GraphicsError } from "./graphics/graphics-errors.js";
 import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
-import type {
-  BridgeOutputsT,
-  DeviceDescriptorT,
-  OutputDeviceT,
-} from "@broadify/protocol";
+import { transformDevicesToOutputs } from "./device-to-output-transform.js";
+import { type RelayCommand } from "./relay-command-allowlist.js";
 
 /**
  * Relay command payload.
@@ -40,66 +36,6 @@ export interface RelayCommandResult {
 }
 
 /**
- * Transform Device/Port model to UI-compatible output format
- */
-function transformDevicesToOutputs(
-  devices: DeviceDescriptorT[]
-): BridgeOutputsT {
-  const output1Devices: OutputDeviceT[] = [];
-  const output2Devices: OutputDeviceT[] = [];
-  const mapDeviceTypeToOutputType = (
-    deviceType: DeviceDescriptorT["type"]
-  ): OutputDeviceT["type"] => {
-    if (deviceType === "decklink") {
-      return "decklink";
-    }
-    if (deviceType === "display") {
-      // External display outputs (HDMI/DP/Thunderbolt).
-      return "display";
-    }
-    return "capture";
-  };
-
-  for (const device of devices) {
-    for (const port of device.ports) {
-      const outputCapable =
-        port.direction === "output" || port.direction === "bidirectional";
-      if (!outputCapable) {
-        continue;
-      }
-
-      const available =
-        device.status.present &&
-        device.status.ready &&
-        !device.status.inUse &&
-        port.status.available;
-      const outputEntry: OutputDeviceT = {
-        id: port.id,
-        name: `${device.displayName} - ${port.displayName}`,
-        type: mapDeviceTypeToOutputType(device.type),
-        available,
-        deviceId: device.id,
-        portType: port.type,
-        portRole: port.role,
-        formats: port.capabilities.formats,
-        modes: port.capabilities.modes,
-      };
-
-      if (port.role === "key") {
-        output2Devices.push(outputEntry);
-      } else {
-        output1Devices.push(outputEntry);
-      }
-    }
-  }
-
-  return {
-    output1: output1Devices,
-    output2: output2Devices,
-  };
-}
-
-/**
  * Command Router Service.
  *
  * Central command processing logic used by both HTTP routes and Relay Client.
@@ -115,7 +51,7 @@ export class CommandRouter {
    */
   async handleCommand(
     command: RelayCommand,
-    payload?: Record<string, unknown>
+    payload?: Record<string, unknown>,
   ): Promise<RelayCommandResult> {
     try {
       switch (command) {
@@ -123,7 +59,7 @@ export class CommandRouter {
           parseRelayPayload(
             EmptyPayloadSchema,
             payload ?? {},
-            "Invalid payload for get_status"
+            "Invalid payload for get_status",
           );
           const engineState = engineAdapter.getState();
           const runtimeConfigData = runtimeConfig.getConfig();
@@ -163,7 +99,7 @@ export class CommandRouter {
           const { pairingCode: providedCode } = parseRelayPayload(
             PairingCodeSchema,
             payload ?? {},
-            "Invalid pairing code format"
+            "Invalid pairing code format",
           );
 
           if (pairingExpiresAt && Date.now() > pairingExpiresAt) {
@@ -197,11 +133,11 @@ export class CommandRouter {
           const { refresh = false } = parseRelayPayload(
             ListOutputsSchema,
             payload ?? {},
-            "Invalid payload for list_outputs"
+            "Invalid payload for list_outputs",
           );
           if (refresh) {
             getBridgeContext().logger.debug?.(
-              "[CommandRouter] list_outputs refresh requested"
+              "[CommandRouter] list_outputs refresh requested",
             );
           }
           const devices = await deviceCache.getDevices(refresh);
@@ -217,7 +153,7 @@ export class CommandRouter {
           const { type, ip, port } = parseRelayPayload(
             EngineConnectSchema,
             payload ?? {},
-            "Invalid payload for engine_connect"
+            "Invalid payload for engine_connect",
           );
 
           await engineAdapter.connect({
@@ -238,7 +174,7 @@ export class CommandRouter {
           parseRelayPayload(
             EmptyPayloadSchema,
             payload ?? {},
-            "Invalid payload for engine_disconnect"
+            "Invalid payload for engine_disconnect",
           );
           await engineAdapter.disconnect();
 
@@ -254,7 +190,7 @@ export class CommandRouter {
           parseRelayPayload(
             EmptyPayloadSchema,
             payload ?? {},
-            "Invalid payload for engine_get_status"
+            "Invalid payload for engine_get_status",
           );
           const state = engineAdapter.getState();
           const connectedSince = engineAdapter.getConnectedSince();
@@ -276,7 +212,7 @@ export class CommandRouter {
           parseRelayPayload(
             EmptyPayloadSchema,
             payload ?? {},
-            "Invalid payload for engine_get_macros"
+            "Invalid payload for engine_get_macros",
           );
           const macros = engineAdapter.getMacros();
           const status = engineAdapter.getStatus();
@@ -303,7 +239,7 @@ export class CommandRouter {
           const { macroId } = parseRelayPayload(
             MacroIdSchema,
             payload ?? {},
-            "Macro ID is required and must be a number"
+            "Macro ID is required and must be a number",
           );
           await engineAdapter.runMacro(macroId);
 
@@ -320,7 +256,7 @@ export class CommandRouter {
           const { macroId } = parseRelayPayload(
             MacroIdSchema,
             payload ?? {},
-            "Macro ID is required and must be a number"
+            "Macro ID is required and must be a number",
           );
           await engineAdapter.stopMacro(macroId);
 
@@ -330,6 +266,48 @@ export class CommandRouter {
               macroId,
               state: engineAdapter.getState(),
             },
+          };
+        }
+
+        case "engine_vmix_ensure_browser_input": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_vmix_ensure_browser_input",
+          );
+
+          await graphicsManager.initialize();
+          const graphicsStatus = graphicsManager.getStatus();
+          const browserInputStatus = graphicsStatus.browserInput;
+
+          if (graphicsStatus.outputConfig?.outputKey !== "browser_input") {
+            return {
+              success: false,
+              error:
+                "Graphics output mode browser_input is not configured on this bridge",
+            };
+          }
+
+          const browserInputUrl = browserInputStatus?.browserInputUrl?.trim();
+          const recommendedInputName =
+            browserInputStatus?.recommendedInputName?.trim();
+
+          if (!browserInputUrl || !recommendedInputName) {
+            return {
+              success: false,
+              error:
+                "Bridge browser-input metadata is incomplete. Save the browser_input output config first.",
+            };
+          }
+
+          const result = await engineAdapter.ensureVmixBrowserInput({
+            url: browserInputUrl,
+            inputName: recommendedInputName,
+          });
+
+          return {
+            success: true,
+            data: result,
           };
         }
 
@@ -454,8 +432,7 @@ export class CommandRouter {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      const errorCode =
-        error instanceof GraphicsError ? error.code : undefined;
+      const errorCode = error instanceof GraphicsError ? error.code : undefined;
       return {
         success: false,
         error: errorMessage,

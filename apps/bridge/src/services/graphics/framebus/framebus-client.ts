@@ -1,7 +1,11 @@
-import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import {
+  resolveFrameBusNativeCandidates as resolveCandidatesInternal,
+  findNativeAddonPath,
+  wrapModule,
+} from "./framebus-client-internal.js";
 
 export type FrameBusPixelFormatT = 1 | 2 | 3;
 
@@ -36,26 +40,13 @@ export type FrameBusReaderT = {
   close(): void;
 };
 
-export class InvalidHeaderError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvalidHeaderError";
-  }
-}
+import {
+  InvalidHeaderError,
+  FrameSizeError,
+  OpenError,
+} from "./framebus-errors.js";
 
-export class FrameSizeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "FrameSizeError";
-  }
-}
-
-export class OpenError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "OpenError";
-  }
-}
+export { InvalidHeaderError, FrameSizeError, OpenError };
 
 export type FrameBusModuleT = {
   createWriter(options: {
@@ -70,8 +61,6 @@ export type FrameBusModuleT = {
   openReader(options: { name: string }): FrameBusReaderT;
 };
 
-const FRAMEBUS_NATIVE_PATH_ENV = "BRIDGE_FRAMEBUS_NATIVE_PATH";
-
 const resolveBridgeRoot = (): string => {
   const currentFile = fileURLToPath(import.meta.url);
   const baseDir = path.dirname(currentFile);
@@ -84,128 +73,15 @@ const resolveBridgeRoot = (): string => {
  * @returns Candidate paths for framebus.node.
  */
 export const resolveFrameBusNativeCandidates = (): string[] => {
-  const candidates: string[] = [];
-  const envPath = process.env[FRAMEBUS_NATIVE_PATH_ENV];
-  if (envPath) {
-    candidates.push(envPath);
-  }
-
-  const bridgeRoot = resolveBridgeRoot();
-  candidates.push(
-    path.join(bridgeRoot, "native", "framebus", "build", "Release", "framebus.node")
-  );
-  candidates.push(
-    path.join(bridgeRoot, "native", "framebus", "build", "Debug", "framebus.node")
-  );
-
-  // Production: extraResources puts addon at resources/bridge/native/framebus/build/Release/framebus.node
-  if (process.resourcesPath) {
-    candidates.push(
-      path.join(
-        process.resourcesPath,
-        "bridge",
-        "native",
-        "framebus",
-        "build",
-        "Release",
-        "framebus.node"
-      )
-    );
-  }
-
-  return candidates;
-};
-
-const findNativeAddonPath = (): string | null => {
-  for (const candidate of resolveFrameBusNativeCandidates()) {
-    if (candidate && fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-};
-
-const mapFrameBusError = (error: unknown): Error => {
-  if (!(error instanceof Error)) {
-    return new Error(String(error));
-  }
-  const message = error.message || "FrameBus error";
-  if (
-    message.includes("Invalid FrameBus header") ||
-    message.includes("Invalid header")
-  ) {
-    return new InvalidHeaderError(message);
-  }
-  if (message.includes("Frame size mismatch") || message.includes("size too large")) {
-    return new FrameSizeError(message);
-  }
-  if (
-    message.includes("openReader") ||
-    message.includes("createWriter") ||
-    message.includes("FrameBus name is required") ||
-    message.includes("not implemented")
-  ) {
-    return new OpenError(message);
-  }
-  return error;
-};
-
-const wrapWriter = (writer: FrameBusWriterT): FrameBusWriterT => {
-  return {
-    ...writer,
-    writeFrame(buffer: Buffer, timestampNs?: bigint): void {
-      try {
-        writer.writeFrame(buffer, timestampNs);
-      } catch (error) {
-        throw mapFrameBusError(error);
-      }
-    },
-    close(): void {
-      writer.close();
-    },
-  };
-};
-
-const wrapReader = (reader: FrameBusReaderT): FrameBusReaderT => {
-  return {
-    ...reader,
-    readLatest(): { buffer: Buffer; timestampNs: bigint; seq: bigint } | null {
-      try {
-        return reader.readLatest();
-      } catch (error) {
-        throw mapFrameBusError(error);
-      }
-    },
-    close(): void {
-      reader.close();
-    },
-  };
-};
-
-const wrapModule = (module: FrameBusModuleT): FrameBusModuleT => {
-  return {
-    createWriter(options) {
-      try {
-        return wrapWriter(module.createWriter(options));
-      } catch (error) {
-        throw mapFrameBusError(error);
-      }
-    },
-    openReader(options) {
-      try {
-        return wrapReader(module.openReader(options));
-      } catch (error) {
-        throw mapFrameBusError(error);
-      }
-    },
-  };
+  return resolveCandidatesInternal(resolveBridgeRoot());
 };
 
 /**
  * Load the native FrameBus addon. FrameBus is always used for graphics output.
  */
 export const loadFrameBusModule = (): FrameBusModuleT | null => {
-  const addonPath = findNativeAddonPath();
+  const candidates = resolveFrameBusNativeCandidates();
+  const addonPath = findNativeAddonPath(candidates);
   if (!addonPath) {
     throw new Error("FrameBus addon not found (BRIDGE_FRAMEBUS_NATIVE_PATH)");
   }

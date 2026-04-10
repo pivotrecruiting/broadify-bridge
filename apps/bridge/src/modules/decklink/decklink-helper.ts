@@ -46,19 +46,33 @@ const getLogger = () => {
   }
 };
 
+/** Test-only override; set to non-null in tests to bypass import.meta. */
+let testHelperPathOverride: string | null = null;
+
+function getModuleDirname(): string {
+  try {
+    const url = (0, eval)("import.meta.url") as string;
+    return dirname(fileURLToPath(url));
+  } catch {
+    return "/tmp";
+  }
+}
+
 /**
  * Resolve the DeckLink helper binary path.
  *
  * @returns Absolute path to the helper binary.
  */
 export function resolveDecklinkHelperPath(): string {
+  if (testHelperPathOverride !== null) {
+    return testHelperPathOverride;
+  }
   const envPath = process.env[HELPER_PATH_ENV];
   if (envPath) {
     return envPath;
   }
 
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
+  const __dirname = getModuleDirname();
 
   // Dev path: repo-local helper binary
   const devPath = join(
@@ -77,6 +91,14 @@ export function resolveDecklinkHelperPath(): string {
   }
 
   return devPath;
+}
+
+/**
+ * Test-only: override helper path for resolveDecklinkHelperPath. Call with null to reset.
+ * @internal
+ */
+export function __setDecklinkHelperPathForTesting(path: string | null): void {
+  testHelperPathOverride = path;
 }
 
 /**

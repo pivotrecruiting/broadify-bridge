@@ -19,6 +19,9 @@ export async function selectOutputAdapter(
   if (isDevelopmentMode()) {
     return new StubOutputAdapter();
   }
+  if (config.outputKey === "browser_input") {
+    return new StubOutputAdapter();
+  }
   if (config.outputKey === "key_fill_sdi") {
     return new DecklinkKeyFillOutputAdapter();
   }

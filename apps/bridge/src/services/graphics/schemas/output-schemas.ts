@@ -10,6 +10,7 @@ export const GRAPHICS_OUTPUT_CONFIG_VERSION = 1;
  */
 export const GraphicsOutputKeySchema = z.enum([
   "stub",
+  "browser_input",
   "key_fill_sdi",
   "key_fill_ndi",
   "video_sdi",

@@ -449,6 +449,8 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.configReadyResolver = null;
     this.configReadyRejecter = null;
     this.configReadyPromise = null;
+
+    void this.stopIpcServer();
   }
 
   private async recoverWithGpuFallback(): Promise<void> {

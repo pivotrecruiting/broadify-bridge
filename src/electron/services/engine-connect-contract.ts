@@ -1,3 +1,5 @@
+export type DesktopEngineTypeT = "atem" | "vmix";
+
 export type EngineConnectValidationResultT =
   | {
       success: false;
@@ -6,7 +8,7 @@ export type EngineConnectValidationResultT =
   | {
       success: true;
       body: {
-        type: "atem";
+        type: DesktopEngineTypeT;
         ip: string;
         port: number;
       };
@@ -15,12 +17,15 @@ export type EngineConnectValidationResultT =
 /**
  * Validate desktop IPC input for engine connect and build bridge request body.
  *
- * Desktop UI currently supports ATEM only, so the engine type is fixed.
+ * Desktop UI currently supports ATEM and vMix.
  */
 export function validateEngineConnectInput(
+  type?: DesktopEngineTypeT,
   ip?: string,
   port?: number,
 ): EngineConnectValidationResultT {
+  const engineType = type ?? "atem";
+
   if (!ip) {
     return {
       success: false,
@@ -38,7 +43,7 @@ export function validateEngineConnectInput(
   return {
     success: true,
     body: {
-      type: "atem",
+      type: engineType,
       ip,
       port,
     },

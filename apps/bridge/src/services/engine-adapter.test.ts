@@ -6,11 +6,13 @@ import {
 import type {
   EngineAdapter,
   EngineConnectConfig,
+  EnsureVmixBrowserInputConfigT,
+  EnsureVmixBrowserInputResultT,
 } from "./engine/engine-adapter-interface.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
 
 type BroadcastCallT = {
-  topic: "engine";
+  topic: "engine" | "video";
   message: Record<string, unknown>;
 };
 
@@ -19,6 +21,7 @@ class FakeAdapter implements EngineAdapter {
   public disconnectCalls = 0;
   public runMacroCalls: number[] = [];
   public stopMacroCalls: number[] = [];
+  public ensureVmixBrowserInputCalls: EnsureVmixBrowserInputConfigT[] = [];
   public unsubscribeCalls = 0;
 
   private stateChangeCallback: (state: EngineStateT) => void = () => {};
@@ -29,6 +32,9 @@ class FakeAdapter implements EngineAdapter {
   disconnectImpl?: () => Promise<void>;
   runMacroImpl?: (id: number) => Promise<void>;
   stopMacroImpl?: (id: number) => Promise<void>;
+  ensureVmixBrowserInputImpl?: (
+    config: EnsureVmixBrowserInputConfigT
+  ) => Promise<EnsureVmixBrowserInputResultT>;
 
   async connect(config: EngineConnectConfig): Promise<void> {
     this.connectCalls.push(config);
@@ -74,6 +80,23 @@ class FakeAdapter implements EngineAdapter {
     if (this.stopMacroImpl) {
       await this.stopMacroImpl(id);
     }
+  }
+
+  async ensureVmixBrowserInput(
+    config: EnsureVmixBrowserInputConfigT
+  ): Promise<EnsureVmixBrowserInputResultT> {
+    this.ensureVmixBrowserInputCalls.push(config);
+    if (this.ensureVmixBrowserInputImpl) {
+      return this.ensureVmixBrowserInputImpl(config);
+    }
+
+    return {
+      action: "created",
+      inputNumber: 7,
+      inputKey: "input-7",
+      inputName: config.inputName,
+      browserInputUrl: config.url,
+    };
   }
 
   onStateChange(callback: (state: EngineStateT) => void): () => void {
@@ -210,5 +233,179 @@ describe("EngineAdapterService", () => {
       code: EngineErrorCode.CONNECTION_TIMEOUT,
       message: "timed out",
     });
+
+    expect(service.getState()).toMatchObject({
+      status: "error",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      error: "timed out",
+    });
+  });
+
+  it("rejects connect when already connecting", async () => {
+    const { service, adapter } = createService();
+    let resolveConnect: () => void;
+    adapter.connectImpl = () =>
+      new Promise<void>((resolve) => {
+        resolveConnect = resolve;
+      });
+
+    const connectPromise = service.connect({
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+    });
+
+    await expect(
+      service.connect({ type: "atem", ip: "10.0.0.11", port: 9910 }),
+    ).rejects.toMatchObject({
+      code: EngineErrorCode.ALREADY_CONNECTING,
+    });
+
+    resolveConnect!();
+    await connectPromise;
+  });
+
+  it("stopMacro throws when not connected", async () => {
+    const { service } = createService();
+    await expect(service.stopMacro(1)).rejects.toMatchObject({
+      code: EngineErrorCode.NOT_CONNECTED,
+    });
+  });
+
+  it("stopMacro propagates adapter error", async () => {
+    const { service, adapter } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+    adapter.stopMacroImpl = async () => {
+      throw new Error("stop failed");
+    };
+
+    await expect(service.stopMacro(1)).rejects.toThrow(
+      "Failed to stop macro 1: stop failed",
+    );
+  });
+
+  it("runMacro propagates adapter error", async () => {
+    const { service, adapter } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+    adapter.runMacroImpl = async () => {
+      throw new Error("run failed");
+    };
+
+    await expect(service.runMacro(1)).rejects.toThrow(
+      "Failed to run macro 1: run failed",
+    );
+  });
+
+  it("disconnect swallows adapter disconnect error", async () => {
+    const { service, adapter } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+    adapter.disconnectImpl = async () => {
+      throw new Error("disconnect failed");
+    };
+
+    await service.disconnect();
+
+    expect(service.getStatus()).toBe("disconnected");
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "[EngineAdapterService] Error during disconnect:",
+      "disconnect failed",
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it("broadcasts engine.macros when macros change", async () => {
+    const { service, adapter, broadcasts } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    adapter.emitState({
+      status: "connected",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      macros: [{ id: 1, name: "Macro 1", status: "idle" }],
+    });
+
+    expect(
+      broadcasts.some(
+        (b) =>
+          b.message.type === "engine.macros" &&
+          (b.message as { macros?: unknown[] }).macros?.length === 1,
+      ),
+    ).toBe(true);
+  });
+
+  it("getConnectedSince returns timestamp when connected", async () => {
+    const { service } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    expect(service.getConnectedSince()).toBeGreaterThan(0);
+    expect(service.getLastError()).toBeNull();
+  });
+
+  it("getLastError returns message when connect failed", async () => {
+    const { service, adapter } = createService();
+    adapter.connectImpl = async () => {
+      throw new Error("connection failed");
+    };
+
+    await service
+      .connect({ type: "atem", ip: "10.0.0.10", port: 9910 })
+      .catch(() => {});
+
+    expect(service.getLastError()).toContain("connection failed");
+  });
+
+  it("preserves connection metadata when unknown connect error is wrapped", async () => {
+    const { service, adapter } = createService();
+    adapter.connectImpl = async () => {
+      throw new Error("dial failed");
+    };
+
+    await service
+      .connect({ type: "vmix", ip: "10.0.0.20", port: 8088 })
+      .catch(() => {});
+
+    expect(service.getState()).toMatchObject({
+      status: "error",
+      type: "vmix",
+      ip: "10.0.0.20",
+      port: 8088,
+    });
+  });
+
+  it("ensures a vmix browser input through the connected adapter", async () => {
+    const { service, adapter } = createService();
+    await service.connect({ type: "vmix", ip: "10.0.0.20", port: 8088 });
+
+    const result = await service.ensureVmixBrowserInput({
+      url: "http://127.0.0.1:8787/graphics/browser-input",
+      inputName: "Broadify Browser Input",
+    });
+
+    expect(adapter.ensureVmixBrowserInputCalls).toEqual([
+      {
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      },
+    ]);
+    expect(result).toMatchObject({
+      action: "created",
+      inputName: "Broadify Browser Input",
+    });
+  });
+
+  it("rejects vmix browser input setup when a non-vmix engine is connected", async () => {
+    const { service } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    await expect(
+      service.ensureVmixBrowserInput({
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      }),
+    ).rejects.toThrow("vMix engine is not connected");
   });
 });

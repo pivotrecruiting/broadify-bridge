@@ -16,6 +16,7 @@ import {
   isIpcBufferWithinLimit,
 } from "./renderer-ipc-framing.js";
 import { AsyncSerialQueue } from "./async-serial-queue.js";
+import { bgraToRgba } from "./graphics-pixel-utils.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -235,15 +236,6 @@ function maybeSendReady(): void {
     pixelFormat: rendererConfig?.pixelFormat,
     framebusName: rendererConfig?.framebusName,
   });
-}
-
-function bgraToRgba(buffer: Buffer): Buffer {
-  for (let i = 0; i < buffer.length; i += 4) {
-    const blue = buffer[i];
-    buffer[i] = buffer[i + 2];
-    buffer[i + 2] = blue;
-  }
-  return buffer;
 }
 
 function logFrameBusOnce(key: string, message: string): void {

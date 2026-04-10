@@ -52,24 +52,25 @@ export async function fetchBridgeLogs(
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), LOGS_FETCH_TIMEOUT);
+    try {
+      const response = await fetch(url.toString(), {
+        signal: controller.signal,
+        method: "GET",
+      });
 
-    const response = await fetch(url.toString(), {
-      signal: controller.signal,
-      method: "GET",
-    });
+      if (!response.ok) {
+        return {
+          scope: "bridge",
+          lines: 0,
+          content: "",
+          error: `HTTP ${response.status}`,
+        };
+      }
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      return {
-        scope: "bridge",
-        lines: 0,
-        content: "",
-        error: `HTTP ${response.status}`,
-      };
+      return (await response.json()) as LogResponse;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return (await response.json()) as LogResponse;
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
@@ -104,23 +105,24 @@ export async function clearBridgeLogs(
     const url = `http://${fetchHost}:${config.port}/logs/clear`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), LOGS_FETCH_TIMEOUT);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        method: "POST",
+      });
 
-    const response = await fetch(url, {
-      signal: controller.signal,
-      method: "POST",
-    });
+      if (!response.ok) {
+        return {
+          scope: "bridge",
+          cleared: false,
+          error: `HTTP ${response.status}`,
+        };
+      }
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      return {
-        scope: "bridge",
-        cleared: false,
-        error: `HTTP ${response.status}`,
-      };
+      return (await response.json()) as LogClearResponse;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return (await response.json()) as LogClearResponse;
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";

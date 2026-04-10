@@ -20,12 +20,13 @@ type RemovePresetReasonT =
   | "send_non_preset";
 
 type GraphicsPresetServiceDepsT = {
-  getRenderer: () => GraphicsRenderer;
   layers: Map<string, GraphicsLayerStateT>;
   categoryToLayer: Map<GraphicsCategoryT, string>;
   getActivePreset: () => GraphicsActivePresetT | null;
   setActivePreset: (preset: GraphicsActivePresetT | null) => void;
   publishStatus: (reason: string) => void;
+  removeLayer?: (layerId: string, reason: string) => Promise<void>;
+  getRenderer?: () => GraphicsRenderer;
 };
 
 /**
@@ -35,6 +36,27 @@ type GraphicsPresetServiceDepsT = {
  */
 export class GraphicsPresetService {
   constructor(private readonly deps: GraphicsPresetServiceDepsT) {}
+
+  private async removeLayer(layerId: string, reason: string): Promise<void> {
+    if (this.deps.removeLayer) {
+      await this.deps.removeLayer(layerId, reason);
+      return;
+    }
+
+    if (!this.deps.getRenderer) {
+      throw new Error("GraphicsPresetService requires removeLayer or getRenderer");
+    }
+
+    await removeLayerWithRenderer(
+      {
+        renderer: this.deps.getRenderer(),
+        layers: this.deps.layers,
+        categoryToLayer: this.deps.categoryToLayer,
+      },
+      layerId,
+      reason
+    );
+  }
 
   /**
    * Handle preset compatibility before rendering an incoming layer.
@@ -57,15 +79,7 @@ export class GraphicsPresetService {
       if (existingLayer?.presetId !== presetId) {
         return;
       }
-      await removeLayerWithRenderer(
-        {
-          renderer: this.deps.getRenderer(),
-          layers: this.deps.layers,
-          categoryToLayer: this.deps.categoryToLayer,
-        },
-        existingLayerId,
-        "preset_resend"
-      );
+      await this.removeLayer(existingLayerId, "preset_resend");
       if (activePreset?.presetId === presetId) {
         activePreset.layerIds.delete(existingLayerId);
       }
@@ -243,15 +257,7 @@ export class GraphicsPresetService {
     const wasActive = activePreset?.presetId === presetId;
 
     for (const layer of layersToRemove) {
-      await removeLayerWithRenderer(
-        {
-          renderer: this.deps.getRenderer(),
-          layers: this.deps.layers,
-          categoryToLayer: this.deps.categoryToLayer,
-        },
-        layer.layerId,
-        "preset_remove"
-      );
+      await this.removeLayer(layer.layerId, "preset_remove");
     }
 
     if (wasActive) {
@@ -310,15 +316,7 @@ export class GraphicsPresetService {
     }
 
     for (const layer of layersToRemove) {
-      await removeLayerWithRenderer(
-        {
-          renderer: this.deps.getRenderer(),
-          layers: this.deps.layers,
-          categoryToLayer: this.deps.categoryToLayer,
-        },
-        layer.layerId,
-        "preset_replace"
-      );
+      await this.removeLayer(layer.layerId, "preset_replace");
     }
 
     const activePreset = this.deps.getActivePreset();

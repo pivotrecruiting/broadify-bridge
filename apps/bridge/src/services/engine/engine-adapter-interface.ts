@@ -9,6 +9,19 @@ export interface EngineConnectConfig {
   port: number;
 }
 
+export type EnsureVmixBrowserInputConfigT = {
+  url: string;
+  inputName: string;
+};
+
+export type EnsureVmixBrowserInputResultT = {
+  action: "created" | "updated_existing";
+  inputNumber: number;
+  inputKey: string | null;
+  inputName: string;
+  browserInputUrl: string;
+};
+
 /**
  * Engine adapter interface
  *
@@ -53,10 +66,18 @@ export interface EngineAdapter {
   stopMacro(id: number): Promise<void>;
 
   /**
+   * Optionally ensure a vMix browser input exists and points at the requested URL.
+   *
+   * Adapters that do not support this capability should leave it undefined.
+   */
+  ensureVmixBrowserInput?(
+    config: EnsureVmixBrowserInputConfigT
+  ): Promise<EnsureVmixBrowserInputResultT>;
+
+  /**
    * Subscribe to state changes
    * @param callback Function called when state changes
    * @returns Unsubscribe function
    */
   onStateChange(callback: (state: EngineStateT) => void): () => void;
 }
-

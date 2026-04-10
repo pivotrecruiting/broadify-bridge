@@ -114,4 +114,78 @@ describe("OutputConfigStore", () => {
     await expect(fs.access(filePath)).rejects.toThrow();
     expect(store.getConfig()).toBeNull();
   });
+
+  it("deletes config when file contains non-object", async () => {
+    const store = new OutputConfigStore();
+    const filePath = path.join(tempDir, "graphics", "graphics-output.json");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, "null", "utf-8");
+
+    await store.initialize();
+
+    expect(store.getConfig()).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "[Graphics] Output config invalid (not an object); deleting"
+    );
+  });
+
+  it("deletes config when version is wrong", async () => {
+    const store = new OutputConfigStore();
+    const filePath = path.join(tempDir, "graphics", "graphics-output.json");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(
+      filePath,
+      JSON.stringify({ ...createValidConfig(), version: 99 }),
+      "utf-8"
+    );
+
+    await store.initialize();
+
+    expect(store.getConfig()).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Output config version 99")
+    );
+  });
+
+  it("deletes config when schema invalid", async () => {
+    const store = new OutputConfigStore();
+    const filePath = path.join(tempDir, "graphics", "graphics-output.json");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        outputKey: "invalid_key",
+        targets: {},
+        format: { width: 1920, height: 1080, fps: 30 },
+      }),
+      "utf-8"
+    );
+
+    await store.initialize();
+
+    expect(store.getConfig()).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "[Graphics] Output config schema invalid; deleting"
+    );
+  });
+
+  it("handles missing file on load", async () => {
+    const store = new OutputConfigStore();
+
+    await store.initialize();
+
+    expect(store.getConfig()).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to load output config")
+    );
+  });
+
+  it("setConfig calls initialize when filePath not set", async () => {
+    const store = new OutputConfigStore();
+
+    await store.setConfig(createValidConfig());
+
+    expect(store.getConfig()).toEqual(createValidConfig());
+  });
 });
