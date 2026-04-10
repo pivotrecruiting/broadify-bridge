@@ -49,6 +49,9 @@ const mockLogAppError = jest.fn();
 const mockLogAppInfo = jest.fn();
 const mockLogAppWarn = jest.fn();
 
+const originalUpdaterChannel = process.env.BROADIFY_UPDATER_CHANNEL;
+const originalUpdaterGithubToken = process.env.BROADIFY_UPDATER_GITHUB_TOKEN;
+
 jest.mock("./app-logger.js", () => ({
   logAppError: (...args: unknown[]) => mockLogAppError(...args),
   logAppInfo: (...args: unknown[]) => mockLogAppInfo(...args),
@@ -63,16 +66,38 @@ describe("AppUpdaterService", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    delete process.env.BROADIFY_UPDATER_CHANNEL;
+    delete process.env.BROADIFY_UPDATER_GITHUB_TOKEN;
     mockGetUpdaterDisableReason.mockReturnValue(null);
     mockParseIntervalMs.mockImplementation((_v: string | undefined, fallback: number) => fallback);
     mockSanitizeUpdaterErrorMessage.mockImplementation((msg: string) => msg);
     mockCheckForUpdates.mockResolvedValue(undefined);
     mockDownloadUpdate.mockResolvedValue(undefined);
+    mockAutoUpdater.autoDownload = false;
+    mockAutoUpdater.autoInstallOnAppQuit = false;
+    mockAutoUpdater.channel = "latest";
+    mockAutoUpdater.allowPrerelease = false;
+    mockAutoUpdater.allowDowngrade = false;
+    mockAutoUpdater.requestHeaders = undefined;
     Object.keys(mockListeners).forEach((k) => delete mockListeners[k]);
   });
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  afterAll(() => {
+    if (typeof originalUpdaterChannel === "string") {
+      process.env.BROADIFY_UPDATER_CHANNEL = originalUpdaterChannel;
+    } else {
+      delete process.env.BROADIFY_UPDATER_CHANNEL;
+    }
+
+    if (typeof originalUpdaterGithubToken === "string") {
+      process.env.BROADIFY_UPDATER_GITHUB_TOKEN = originalUpdaterGithubToken;
+    } else {
+      delete process.env.BROADIFY_UPDATER_GITHUB_TOKEN;
+    }
   });
 
   describe("initialize", () => {
