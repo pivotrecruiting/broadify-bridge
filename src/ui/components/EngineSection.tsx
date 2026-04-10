@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { Check, Copy, Loader2 } from "lucide-react";
 import { Card } from "@/components/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,18 +10,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2 } from "lucide-react";
-import { ENGINE_ATEM_OPTIONS, ENGINE_PORT_OPTIONS } from "../constants/engine-constants";
 import type { EngineStateT } from "@broadify/protocol";
+import {
+  ENGINE_IP_PLACEHOLDERS,
+  ENGINE_PORT_OPTIONS,
+  ENGINE_TYPE_OPTIONS,
+  type DesktopEngineTypeT,
+} from "../constants/engine-constants";
 
 interface EngineSectionProps {
-  engineAtem: string;
+  engineType: DesktopEngineTypeT;
   enginePort: string;
   engineIp: string;
   engineState: EngineStateT;
   loading: boolean;
   error: string | null;
-  onAtemChange: (value: string) => void;
+  browserInputUrl?: string | null;
+  recommendedInputName?: string | null;
+  onTypeChange: (value: DesktopEngineTypeT) => void;
   onPortChange: (value: string) => void;
   onIpChange: (value: string) => void;
   onConnect: () => void;
@@ -27,24 +35,39 @@ interface EngineSectionProps {
 }
 
 /**
- * Engine section component with ATEM, IP, port selection, and connection controls
+ * Engine section component with engine type, IP, port selection, and connection controls.
  */
 export function EngineSection({
-  engineAtem,
+  engineType,
   enginePort,
   engineIp,
   engineState,
   loading,
   error,
-  onAtemChange,
+  browserInputUrl,
+  recommendedInputName,
+  onTypeChange,
   onPortChange,
   onIpChange,
   onConnect,
   onDisconnect,
 }: EngineSectionProps) {
+  const [copiedField, setCopiedField] = useState<string | null>(null);
   const isConnected = engineState.status === "connected";
   const isConnecting = engineState.status === "connecting";
   const isDisconnected = engineState.status === "disconnected";
+  const showBrowserInputHint =
+    engineType === "vmix" && typeof browserInputUrl === "string";
+
+  const copyToClipboard = async (value: string, field: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 1500);
+    } catch {
+      setCopiedField(null);
+    }
+  };
 
   const getStatusColor = () => {
     switch (engineState.status) {
@@ -86,14 +109,18 @@ export function EngineSection({
               <label className="text-card-foreground text-xs sm:text-sm font-semibold whitespace-nowrap min-w-[40px] sm:min-w-[50px]">
                 Type
               </label>
-              <Select value={engineAtem} onValueChange={onAtemChange} disabled={isConnected}>
+              <Select
+                value={engineType}
+                onValueChange={(value) => onTypeChange(value as DesktopEngineTypeT)}
+                disabled={isConnected}
+              >
                 <SelectTrigger className="w-full sm:w-48">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {ENGINE_ATEM_OPTIONS.map((atem) => (
-                    <SelectItem key={atem} value={atem}>
-                      {atem}
+                  {ENGINE_TYPE_OPTIONS.map((engineOption) => (
+                    <SelectItem key={engineOption.value} value={engineOption.value}>
+                      {engineOption.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -105,7 +132,7 @@ export function EngineSection({
               </label>
               <Input
                 type="text"
-                placeholder="127.0.0.1"
+                placeholder={ENGINE_IP_PLACEHOLDERS[engineType]}
                 value={engineIp}
                 onChange={(e) => onIpChange(e.target.value)}
                 disabled={isConnected}
@@ -174,9 +201,56 @@ export function EngineSection({
               {error}
             </div>
           )}
+
+          {showBrowserInputHint ? (
+            <div className="rounded-xl border border-card-foreground/10 bg-white/10 p-3 space-y-3">
+              <div className="space-y-1">
+                <div className="text-sm font-semibold text-card-foreground">
+                  vMix Browser Input
+                </div>
+                <p className="text-xs text-card-foreground/70 leading-relaxed">
+                  Same-machine flow: create a vMix Browser Input and use the local
+                  bridge URL below. This desktop hint does not change the bridge
+                  graphics mode by itself.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.16em] text-card-foreground/60">
+                  Browser Input URL
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 break-all rounded-md bg-black/15 px-3 py-2 font-mono text-xs text-card-foreground/85">
+                    {browserInputUrl}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => copyToClipboard(browserInputUrl, "browser-input-url")}
+                    aria-label="Copy browser input URL"
+                    className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/10"
+                  >
+                    {copiedField === "browser-input-url" ? (
+                      <Check className="copy-check-animate" />
+                    ) : (
+                      <Copy />
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.16em] text-card-foreground/60">
+                  Recommended Input Name
+                </span>
+                <div className="text-xs text-card-foreground/85">
+                  {recommendedInputName || "Broadify Browser Input"}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </Card>
   );
 }
-

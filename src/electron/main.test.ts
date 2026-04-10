@@ -667,7 +667,7 @@ describe("main", () => {
         (c: unknown[]) => c[0] === "engineConnect",
       );
       const handler = mockIpcMainHandle.mock.calls[idx][1];
-      const result = await handler(undefined, "invalid", 9999);
+      const result = await handler(undefined, "vmix", "invalid", 9999);
       expect(result.success).toBe(false);
       expect(result.error).toBe("Invalid IP");
     });
@@ -679,9 +679,25 @@ describe("main", () => {
         (c: unknown[]) => c[0] === "engineConnect",
       );
       const handler = mockIpcMainHandle.mock.calls[idx][1];
-      const result = await handler(undefined, "127.0.0.1", 8080);
+      const result = await handler(undefined, "vmix", "127.0.0.1", 8080);
       expect(result.success).toBe(false);
       expect(result.error).toBe("network error");
+    });
+
+    it("engineConnect forwards the selected engine type into validation", async () => {
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "engineConnect",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+
+      await handler(undefined, "vmix", "127.0.0.1", 8088);
+
+      expect(mockValidateEngineConnectInput).toHaveBeenCalledWith(
+        "vmix",
+        "127.0.0.1",
+        8088,
+      );
     });
 
     it("engineDisconnect returns error on API throw", async () => {

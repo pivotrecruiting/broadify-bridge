@@ -685,9 +685,14 @@ if (!isRendererProcess) {
 
       ipcMainHandle(
         "engineConnect",
-        async (_event, ip?: string, port?: number) => {
+        async (
+          _event,
+          type?: "atem" | "vmix",
+          ip?: string,
+          port?: number,
+        ) => {
           try {
-            const validation = validateEngineConnectInput(ip, port);
+            const validation = validateEngineConnectInput(type, ip, port);
             if (!validation.success) {
               return validation;
             }

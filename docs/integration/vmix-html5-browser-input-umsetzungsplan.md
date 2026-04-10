@@ -135,15 +135,10 @@ Fuer `v1` sollte deshalb zuerst Variante A priorisiert werden.
 
 ### Noch nicht ausreichend vorhanden
 
-- Die Bridge modelliert vMix aktuell nur sehr schmal
-- Die Desktop-App ist lokal noch ATEM-fixiert
-- Der bestehende Graphics-Contract ist weiterhin output-/frame-orientiert
-- `GraphicsOutputKey` kennt noch keinen `browser_input`-Modus
-- `graphics_status` kennt noch keine Browser-Input-Metadaten
-- Es gibt in der WebApp aktuell **keine** dedizierte oeffentliche oder tokenisierte Browser-Input-Route
-- Die bestehenden Dashboard-/Graphics-Seiten der WebApp sind authentifiziert und damit nicht direkt als vMix-Browser-Input geeignet
-- Der bestehende Relay-WebSocket fuer Graphics setzt einen eingeloggten WebApp-User mit Access Token voraus und ist damit kein direkter Feed fuer eine anonyme vMix-Browser-Seite
-- Es gibt noch kein Broadify-vMix-HTML5-Handshakemodell
+- Reale Maschinenvalidierung fuer vMix Browser Input fehlt noch
+- Der bestehende Graphics-Contract bleibt trotz `browser_input` weiterhin teilweise output-/frame-orientiert
+- Desktop/Electron hatte zu Beginn keinen expliziten `vmix`-Connect-Slice; dieser Paritaetsbedarf wird in Phase 7 adressiert
+- Security-/Betriebsmodell und QA-Runbooks fuer den Browser-Input-Modus fehlen noch
 - Es gibt noch keine produktive Verwaltung von vMix Browser Input URLs / Sessions / Input-Referenzen
 
 ## Erkenntnisse aus dem aktuellen WebApp- und Relay-Stand
@@ -639,13 +634,22 @@ Stand:
 Ziel:
 Die Desktop-App soll den gleichen lokalen vMix-Flow verstehen.
 
+Stand:
+
+- Die Desktop-App unterstuetzt jetzt im Connect-Slice sowohl `atem` als auch `vmix`.
+- Der Electron-IPC- und Main-Prozess-Pfad fuer `engineConnect` ist nicht mehr ATEM-fixiert.
+- Fuer `vmix` ist im Desktop-UI der Default-Port `8088` hinterlegt.
+- Die Desktop-App zeigt im Engine-Bereich fuer den lokalen `vmix`-Flow jetzt eine same-machine Browser-Input-URL und einen empfohlenen Input-Namen an.
+- Bestehendes ATEM-Verhalten bleibt erhalten; es wurde kein bestehender Hardware- oder Bridge-Startpfad entfernt oder ersetzt.
+- Die Desktop-App nutzt weiterhin denselben bestehenden Bridge-Engine-Pfad `/engine/connect`; es gibt keinen Desktop-Sonderpfad ausserhalb des bisherigen Contracts.
+
 ### Todos
 
-- [ ] Engine-Typ in der Desktop-App fuer `vmix` freigeben.
-- [ ] Desktop-Connect-Contract von ATEM-Fixierung loesen.
-- [ ] Standardport `8088` fuer vMix hinterlegen.
-- [ ] Lokale Hinweise fuer Browser-Input-URL im Desktop-Kontext bereitstellen, falls gewuenscht.
-- [ ] Sicherstellen, dass die lokale Desktop-App den same-machine Browser-Input-Flow unterstuetzt.
+- [x] Engine-Typ in der Desktop-App fuer `vmix` freigeben.
+- [x] Desktop-Connect-Contract von ATEM-Fixierung loesen.
+- [x] Standardport `8088` fuer vMix hinterlegen.
+- [x] Lokale Hinweise fuer Browser-Input-URL im Desktop-Kontext bereitstellen, falls gewuenscht.
+- [x] Sicherstellen, dass die lokale Desktop-App den same-machine Browser-Input-Flow unterstuetzt.
 
 Hinweis:
 
@@ -653,7 +657,8 @@ Hinweis:
 
 ### Abnahme
 
-- [ ] Der lokale Laptop-Flow funktioniert sowohl aus der WebApp als auch aus der Desktop-App nachvollziehbar.
+- [x] Der lokale Laptop-Flow ist im Codepfad sowohl aus der WebApp als auch aus der Desktop-App nachvollziehbar modelliert.
+- [ ] Echte Desktop-validierte Maschinenprobe mit laufendem vMix bleibt Teil von Phase 9.
 
 ## Phase 8 – Security und Betriebsmodell
 

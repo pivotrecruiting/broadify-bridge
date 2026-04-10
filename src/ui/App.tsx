@@ -15,6 +15,12 @@ import {
 } from "./components/OnboardingDialog";
 import { PairingDialog } from "./components/PairingDialog";
 import { useAppUpdater } from "./hooks/use-app-updater";
+import { useEngineStatus } from "./hooks/use-engine-status";
+import { EngineSection } from "./components/EngineSection";
+import {
+  ENGINE_DEFAULT_PORTS,
+  type DesktopEngineTypeT,
+} from "./constants/engine-constants";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
 import "./styles/App.css";
 
@@ -42,6 +48,13 @@ function App() {
     downloadUpdate,
     quitAndInstall,
   } = useAppUpdater();
+  const {
+    engineState,
+    loading: engineLoading,
+    error: engineError,
+    connect: connectEngine,
+    disconnect: disconnectEngine,
+  } = useEngineStatus();
 
   // Port availability hook
   const { portAvailability, checkingPorts } = usePortAvailability({
@@ -83,6 +96,9 @@ function App() {
   } | null>(null);
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("terms");
+  const [engineType, setEngineType] = useState<DesktopEngineTypeT>("atem");
+  const [engineIp, setEngineIp] = useState("192.168.1.1");
+  const [enginePort, setEnginePort] = useState(ENGINE_DEFAULT_PORTS.atem);
   const previousUpdaterStateRef = useRef(updaterStatus.state);
   const previousAvailableVersionRef = useRef<string | null>(updaterStatus.availableVersion);
 
@@ -265,6 +281,38 @@ function App() {
 
   const bridgeName = bridgeProfile?.bridgeName || bridgeStatus.bridgeName || null;
   const bridgeId = bridgeProfile?.bridgeId || bridgeStatus.bridgeId;
+  const browserInputUrl =
+    bridgeStatus.running && bridgeStatus.port
+      ? `http://127.0.0.1:${bridgeStatus.port}/graphics/browser-input`
+      : null;
+  const recommendedBrowserInputName = bridgeName
+    ? `Broadify ${bridgeName}`
+    : "Broadify Browser Input";
+
+  useEffect(() => {
+    if (engineState.type === "atem" || engineState.type === "vmix") {
+      setEngineType(engineState.type);
+    }
+
+    if (typeof engineState.ip === "string" && engineState.ip.length > 0) {
+      setEngineIp(engineState.ip);
+    }
+
+    if (typeof engineState.port === "number" && Number.isFinite(engineState.port)) {
+      setEnginePort(String(engineState.port));
+    }
+  }, [engineState.ip, engineState.port, engineState.type]);
+
+  const handleEngineTypeChange = (nextType: DesktopEngineTypeT) => {
+    setEngineType(nextType);
+    setEnginePort(ENGINE_DEFAULT_PORTS[nextType]);
+    setEngineIp(nextType === "vmix" ? "127.0.0.1" : "192.168.1.1");
+  };
+
+  const handleEngineConnect = async () => {
+    const parsedPort = Number.parseInt(enginePort, 10);
+    await connectEngine(engineType, engineIp, parsedPort);
+  };
 
   return (
     <div className="min-h-screen md:h-screen md:overflow-hidden w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
@@ -303,6 +351,24 @@ function App() {
             onCustomPortChange={setCustomPort}
             onToggleAdvanced={() => setShowAdvanced(!showAdvanced)}
             getCurrentPortConfig={getCurrentPortConfig}
+          />
+
+          <EngineSection
+            engineType={engineType}
+            enginePort={enginePort}
+            engineIp={engineIp}
+            engineState={engineState}
+            loading={engineLoading}
+            error={engineError}
+            browserInputUrl={engineType === "vmix" ? browserInputUrl : null}
+            recommendedInputName={
+              engineType === "vmix" ? recommendedBrowserInputName : null
+            }
+            onTypeChange={handleEngineTypeChange}
+            onPortChange={setEnginePort}
+            onIpChange={setEngineIp}
+            onConnect={() => void handleEngineConnect()}
+            onDisconnect={() => void disconnectEngine()}
           />
 
           <BridgeControlButton

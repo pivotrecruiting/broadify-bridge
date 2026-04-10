@@ -66,7 +66,7 @@ describe("useEngineStatus", () => {
     });
 
     await act(async () => {
-      await result.current.connect("192.168.1.1", 8080);
+      await result.current.connect("vmix", "192.168.1.1", 8080);
     });
 
     await waitFor(() => {
@@ -75,7 +75,11 @@ describe("useEngineStatus", () => {
 
     expect(result.current.engineState.ip).toBe("192.168.1.1");
     expect(result.current.engineState.port).toBe(8080);
-    expect(globalThis.window.electron.engineConnect).toHaveBeenCalledWith("192.168.1.1", 8080);
+    expect(globalThis.window.electron.engineConnect).toHaveBeenCalledWith(
+      "vmix",
+      "192.168.1.1",
+      8080
+    );
   });
 
   it("disconnect calls engineDisconnect and updates state", async () => {
@@ -164,7 +168,7 @@ describe("useEngineStatus", () => {
     });
 
     await act(async () => {
-      await result.current.connect("192.168.1.1", 8080);
+      await result.current.connect("atem", "192.168.1.1", 8080);
     });
 
     await waitFor(() => {
@@ -192,7 +196,7 @@ describe("useEngineStatus", () => {
     });
 
     await act(async () => {
-      await result.current.connect("192.168.1.1", 8080);
+      await result.current.connect("atem", "192.168.1.1", 8080);
     });
 
     await waitFor(() => {
@@ -218,7 +222,7 @@ describe("useEngineStatus", () => {
     });
 
     await act(async () => {
-      await result.current.connect("192.168.1.1", 8080);
+      await result.current.connect("atem", "192.168.1.1", 8080);
     });
 
     await waitFor(() => {
@@ -290,7 +294,7 @@ describe("useEngineStatus", () => {
     });
 
     await act(async () => {
-      await result.current.connect("192.168.1.1", 8080);
+      await result.current.connect("atem", "192.168.1.1", 8080);
     });
 
     await waitFor(() => {
