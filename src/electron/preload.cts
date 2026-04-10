@@ -1,7 +1,7 @@
 import electron from "electron";
 import type {
   BridgeConfig,
-  type DesktopEngineTypeT,
+  DesktopEngineTypeT,
   EventPayloadMapping,
   UnsubscribeFunction,
 } from "./types.js" with { "resolution-mode": "import" };
