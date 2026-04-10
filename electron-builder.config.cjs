@@ -15,6 +15,7 @@ const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
 ]);
 const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
+  "!**/.bin{,/**}",
   "!**/@esbuild{,/**}",
   "!**/esbuild{,/**}",
   "!**/tsx{,/**}",
