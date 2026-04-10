@@ -27,7 +27,21 @@ describe("graphics-event-publisher", () => {
     it("publishes graphics_status event with reason and status snapshot", () => {
       const status = {
         outputConfig: { version: 1, outputKey: "stub" as const, targets: {}, format: { width: 1920, height: 1080, fps: 50 }, range: "legal" as const, colorspace: "auto" as const },
-        browserInput: null,
+        browserInput: {
+          mode: "browser_input" as const,
+          ready: true,
+          stateStatus: "ready" as const,
+          stateValid: true,
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          browserInputWsUrl: "ws://127.0.0.1:8787/graphics/browser-input/ws",
+          recommendedInputName: "Broadify Browser Input",
+          transport: "websocket" as const,
+          browserClientCount: 1,
+          lastBrowserClientSeenAt: 1712345678,
+          stateVersion: 4,
+          format: { width: 1920, height: 1080, fps: 50 },
+          lastError: null,
+        },
         activePreset: null,
         activePresets: [],
       };
@@ -40,7 +54,7 @@ describe("graphics-event-publisher", () => {
         data: {
           reason: "output_changed",
           outputConfig: status.outputConfig,
-          browserInput: null,
+          browserInput: status.browserInput,
           activePreset: status.activePreset,
           activePresets: status.activePresets,
         },

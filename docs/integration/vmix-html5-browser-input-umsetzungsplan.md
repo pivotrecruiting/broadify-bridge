@@ -699,24 +699,37 @@ Stand:
 Ziel:
 Der Browser-Input-Flow muss auf realer Maschine reproduzierbar funktionieren.
 
+Stand:
+
+- Die relevanten `vmix`-Control-Pfade sind jetzt unit-getestet:
+  - Adapter-Connect/Macro-Pfad
+  - Browser-Input-Komfortpfad
+  - XML-Input-Parsing fuer Browser Inputs
+- Das XML-Parsing fuer vMix-Inputs ist gegen unvollstaendige oder kaputte Browser-Input-Eintraege gehaertet, damit fehlerhafte XML-Knoten keine falschen Browser-Input-Treffer erzeugen.
+- Browser-Input-URL-Generierung ist mit Loopback-/LAN-Abgrenzung testseitig abgesichert.
+- Das Graphics-Datenmodell fuer `browser_input` ist in Runtime-, Manager-, Route- und Event-Tests abgedeckt.
+- Ein manuelles QA-Runbook fuer den realen Demo-Flow liegt jetzt vor.
+- Die eigentliche reale Maschinenvalidierung bleibt bewusst ein manueller Schritt und kann hier nicht in diesem Workspace automatisiert abgeschlossen werden.
+
 ### Todos
 
-- [ ] Unit-Tests fuer vMix-Control-Pfade erweitern.
-- [ ] Integrationstests fuer Browser-Input-URL-Generierung schreiben.
-- [ ] Tests fuer Graphics-Datenmodell im Browser-Input-Modus schreiben.
-- [ ] Manuelles QA-Runbook erstellen:
-  - [ ] vMix lokal auf Laptop
-  - [ ] Browser Input anlegen
-  - [ ] URL laden
-  - [ ] Grafik sichtbar
-  - [ ] Grafikupdate sichtbar
-  - [ ] Makro aus Controls ausloesbar
-  - [ ] Browser-Input-Neuladen ohne Zustandverlust oder mit definiertem Recover-Verhalten
-- [ ] Optional Remote-vMix-LAN-Runbook erstellen.
+- [x] Unit-Tests fuer vMix-Control-Pfade erweitern.
+- [x] Integrationstests fuer Browser-Input-URL-Generierung schreiben.
+- [x] Tests fuer Graphics-Datenmodell im Browser-Input-Modus schreiben.
+- [x] Manuelles QA-Runbook erstellen:
+  - [x] vMix lokal auf Laptop
+  - [x] Browser Input anlegen
+  - [x] URL laden
+  - [x] Grafik sichtbar
+  - [x] Grafikupdate sichtbar
+  - [x] Makro aus Controls ausloesbar
+  - [x] Browser-Input-Neuladen ohne Zustandverlust oder mit definiertem Recover-Verhalten
+- [x] Optional Remote-vMix-LAN-Runbook erstellen.
 
 ### Abnahme
 
-- [ ] Ein kompletter Demo-Flow ist ohne Ad-hoc-Bastelei reproduzierbar.
+- [x] Ein kompletter Demo-Flow ist als dokumentierter Ablauf ohne Ad-hoc-Bastelei reproduzierbar.
+- [ ] Die reale Maschinenabnahme selbst bleibt manuell auszufuehren.
 
 ## Priorisierte Umsetzung
 

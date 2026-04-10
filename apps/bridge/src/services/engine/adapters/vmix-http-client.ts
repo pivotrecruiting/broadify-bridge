@@ -176,6 +176,9 @@ export function parseVmixInputsResponse(
     for (const match of inputMatches) {
       const attributes = match[1] ?? "";
       const numberValue = getXmlAttribute(attributes, "number");
+      if (!numberValue || numberValue.trim().length === 0) {
+        continue;
+      }
       const number = Number(numberValue);
       if (!Number.isFinite(number)) {
         continue;

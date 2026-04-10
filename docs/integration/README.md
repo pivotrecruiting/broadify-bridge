@@ -13,6 +13,7 @@
 - Fehlerkatalog: `docs/integration/error-catalog.md`
 - Konfig-Schemas: `docs/integration/config-schemas.md`
 - QA Checklist: `docs/integration/qa-checklist.md`
+- vMix Browser Input QA Runbook: `docs/integration/vmix-browser-input-qa-runbook.md`
 - To-do Tracking: `docs/integration/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
 
