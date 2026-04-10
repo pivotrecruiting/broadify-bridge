@@ -9,6 +9,7 @@ describe("relay-command-allowlist", () => {
     it("contains expected commands", () => {
       expect(RELAY_COMMAND_ALLOWLIST).toContain("get_status");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("engine_connect");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("engine_vmix_ensure_browser_input");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("graphics_send");
     });
 
@@ -22,6 +23,7 @@ describe("relay-command-allowlist", () => {
     it("returns true for known commands", () => {
       expect(isRelayCommand("get_status")).toBe(true);
       expect(isRelayCommand("engine_connect")).toBe(true);
+      expect(isRelayCommand("engine_vmix_ensure_browser_input")).toBe(true);
       expect(isRelayCommand("graphics_configure_outputs")).toBe(true);
     });
 
@@ -39,7 +41,8 @@ describe("relay-command-allowlist", () => {
     it("narrows type when true", () => {
       const cmd: unknown = "engine_connect";
       if (isRelayCommand(cmd)) {
-        const _: RelayCommand = cmd;
+        const relayCommand: RelayCommand = cmd;
+        expect(relayCommand).toBe("engine_connect");
         expect(cmd).toBe("engine_connect");
       }
     });

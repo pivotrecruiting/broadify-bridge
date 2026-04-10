@@ -11,6 +11,7 @@ jest.mock("./engine-adapter.js", () => ({
     disconnect: jest.fn(),
     runMacro: jest.fn(),
     stopMacro: jest.fn(),
+    ensureVmixBrowserInput: jest.fn(),
   },
 }));
 
@@ -212,6 +213,82 @@ describe("command-router", () => {
       });
       expect(result.success).toBe(true);
       expect(require("./engine-adapter.js").engineAdapter.stopMacro).toHaveBeenCalledWith(3);
+    });
+
+    it("engine_vmix_ensure_browser_input reuses bridge browser-input metadata", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: {
+          version: 1,
+          outputKey: "browser_input",
+          targets: {},
+          format: { width: 1920, height: 1080, fps: 50 },
+        },
+        browserInput: {
+          mode: "browser_input",
+          ready: true,
+          stateStatus: "ready",
+          stateValid: true,
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          browserInputWsUrl: "ws://127.0.0.1:8787/graphics/browser-input/ws",
+          recommendedInputName: "Broadify Browser Input",
+          transport: "websocket",
+          browserClientCount: 0,
+          lastBrowserClientSeenAt: null,
+          stateVersion: 3,
+          format: { width: 1920, height: 1080, fps: 50 },
+          lastError: null,
+        },
+        activePreset: null,
+        activePresets: [],
+      });
+      engineAdapter.ensureVmixBrowserInput.mockResolvedValue({
+        action: "created",
+        inputNumber: 7,
+        inputKey: "c7f",
+        inputName: "Broadify Browser Input",
+        browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+      });
+
+      const result = await commandRouter.handleCommand(
+        "engine_vmix_ensure_browser_input",
+        {},
+      );
+
+      expect(result.success).toBe(true);
+      expect(graphicsManager.initialize).toHaveBeenCalled();
+      expect(engineAdapter.ensureVmixBrowserInput).toHaveBeenCalledWith({
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      });
+      expect(result.data).toMatchObject({
+        action: "created",
+        inputNumber: 7,
+      });
+    });
+
+    it("engine_vmix_ensure_browser_input returns a validation error when browser_input mode is not active", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: {
+          version: 1,
+          outputKey: "video_sdi",
+          targets: { output1Id: "o1" },
+          format: { width: 1920, height: 1080, fps: 50 },
+        },
+        browserInput: null,
+        activePreset: null,
+        activePresets: [],
+      });
+
+      const result = await commandRouter.handleCommand(
+        "engine_vmix_ensure_browser_input",
+        {},
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("browser_input is not configured");
     });
 
     it("graphics_configure_outputs returns error when payload missing", async () => {

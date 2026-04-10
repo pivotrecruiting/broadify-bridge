@@ -1,6 +1,8 @@
 import type {
   EngineAdapter,
   EngineConnectConfig,
+  EnsureVmixBrowserInputConfigT,
+  EnsureVmixBrowserInputResultT,
 } from "./engine/engine-adapter-interface.js";
 import { createEngineAdapter } from "./engine/adapter-factory.js";
 import { EngineStateStore } from "./engine/engine-state-store.js";
@@ -25,6 +27,18 @@ type EngineAdapterServiceDepsT = {
 const defaultDeps: EngineAdapterServiceDepsT = {
   createAdapter: (type) => createEngineAdapter(type),
   broadcast: (topic, message) => websocketManager.broadcast(topic, message),
+};
+
+type VmixBrowserInputCapableAdapterT = EngineAdapter & {
+  ensureVmixBrowserInput: (
+    config: EnsureVmixBrowserInputConfigT
+  ) => Promise<EnsureVmixBrowserInputResultT>;
+};
+
+const isVmixBrowserInputCapableAdapter = (
+  adapter: EngineAdapter | null
+): adapter is VmixBrowserInputCapableAdapterT => {
+  return typeof adapter?.ensureVmixBrowserInput === "function";
 };
 
 /**
@@ -231,6 +245,28 @@ export class EngineAdapterService {
         error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to stop macro ${macroId}: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Ensure a vMix browser input exists for the current browser-input graphics URL.
+   */
+  async ensureVmixBrowserInput(
+    config: EnsureVmixBrowserInputConfigT
+  ): Promise<EnsureVmixBrowserInputResultT> {
+    if (!this.adapter) {
+      throw createNotConnectedError("ensure browser input");
+    }
+
+    const currentState = this.stateStore.getState();
+    if (currentState.status !== "connected" || currentState.type !== "vmix") {
+      throw new Error("vMix engine is not connected");
+    }
+
+    if (!isVmixBrowserInputCapableAdapter(this.adapter)) {
+      throw new Error("Connected engine does not support browser-input setup");
+    }
+
+    return this.adapter.ensureVmixBrowserInput(config);
   }
 
   /**

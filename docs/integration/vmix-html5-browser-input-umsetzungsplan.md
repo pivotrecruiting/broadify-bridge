@@ -606,19 +606,33 @@ Wichtig:
 Ziel:
 Den manuellen Aufwand in vMix reduzieren, ohne `v1` zu blockieren.
 
+Stand:
+
+- Ein optionaler Relay-Command `engine_vmix_ensure_browser_input` ist jetzt implementiert.
+- Die Bridge verwendet dafuer bewusst **keine** vom Client mitgeschickte URL, sondern die bereits vorhandenen Bridge-Metadaten aus `graphics_status` / `graphics_list`:
+  - `browserInputUrl`
+  - `recommendedInputName`
+- Der vMix-spezifische Helper bleibt strikt optional und wird nur bei explizitem Aufruf verwendet; bestehende ATEM-, DeckLink-, Display- und Graphics-Pfade bleiben unveraendert.
+- Die WebApp bietet dafuer in der bestehenden Browser-Input-Section einen optionalen CTA an.
+- Technisch nutzt der Helper fuer `v1` den pragmatischen API-Pfad:
+  - vorhandenen Browser Input per konfiguriertem Namen finden
+  - Ziel-URL per `BrowserNavigate` setzen
+  - falls nichts passt: Browser Input per `AddInput` anlegen und anschliessend per `SetInputName` benennen
+- Der Helper liest die Browser-Input-URL nicht aus vMix zurueck; fuer `v1` wird die Ziel-URL stattdessen aktiv in den Input geschrieben. Das vermeidet fragiles Verhalten und laesst das manuelle Setup weiterhin als Fallback bestehen.
+
 ### Todos
 
-- [ ] Pruefen, ob vMix Browser Inputs per API sinnvoll referenziert oder automatisiert konfiguriert werden koennen.
-- [ ] Falls praktikabel:
-  - [ ] Input-Pruefung gegen URL/Name
-  - [ ] Input-Findung anhand konfigurierter Namen
-  - [ ] Hilfsfunktionen fuer Operator-Setup
-- [ ] Wenn API-seitig zu fragil:
-  - [ ] klar dokumentieren, dass Browser Input in `v1` manuell angelegt wird
+- [x] Pruefen, ob vMix Browser Inputs per API sinnvoll referenziert oder automatisiert konfiguriert werden koennen.
+- [x] Falls praktikabel:
+  - [x] Name-basiertes Matching fuer bestehende Browser Inputs
+  - [x] Ziel-URL aktiv per API in den Browser Input schreiben
+  - [x] Hilfsfunktionen fuer Operator-Setup
+- [x] Wenn API-seitig zu fragil:
+  - [x] klar dokumentieren, dass Browser Input in `v1` weiterhin manuell angelegt werden kann
 
 ### Abnahme
 
-- [ ] Es ist klar entschieden, ob Browser Input Setup manuell oder teilautomatisiert erfolgt.
+- [x] Es ist klar entschieden, dass Browser Input Setup in `v1` standardmaessig manuell moeglich bleibt und optional teilautomatisiert per API erfolgen kann.
 
 ## Phase 7 – Desktop-App-Paritaet
 

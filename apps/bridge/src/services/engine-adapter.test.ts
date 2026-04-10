@@ -6,6 +6,8 @@ import {
 import type {
   EngineAdapter,
   EngineConnectConfig,
+  EnsureVmixBrowserInputConfigT,
+  EnsureVmixBrowserInputResultT,
 } from "./engine/engine-adapter-interface.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
 
@@ -19,6 +21,7 @@ class FakeAdapter implements EngineAdapter {
   public disconnectCalls = 0;
   public runMacroCalls: number[] = [];
   public stopMacroCalls: number[] = [];
+  public ensureVmixBrowserInputCalls: EnsureVmixBrowserInputConfigT[] = [];
   public unsubscribeCalls = 0;
 
   private stateChangeCallback: (state: EngineStateT) => void = () => {};
@@ -29,6 +32,9 @@ class FakeAdapter implements EngineAdapter {
   disconnectImpl?: () => Promise<void>;
   runMacroImpl?: (id: number) => Promise<void>;
   stopMacroImpl?: (id: number) => Promise<void>;
+  ensureVmixBrowserInputImpl?: (
+    config: EnsureVmixBrowserInputConfigT
+  ) => Promise<EnsureVmixBrowserInputResultT>;
 
   async connect(config: EngineConnectConfig): Promise<void> {
     this.connectCalls.push(config);
@@ -74,6 +80,23 @@ class FakeAdapter implements EngineAdapter {
     if (this.stopMacroImpl) {
       await this.stopMacroImpl(id);
     }
+  }
+
+  async ensureVmixBrowserInput(
+    config: EnsureVmixBrowserInputConfigT
+  ): Promise<EnsureVmixBrowserInputResultT> {
+    this.ensureVmixBrowserInputCalls.push(config);
+    if (this.ensureVmixBrowserInputImpl) {
+      return this.ensureVmixBrowserInputImpl(config);
+    }
+
+    return {
+      action: "created",
+      inputNumber: 7,
+      inputKey: "input-7",
+      inputName: config.inputName,
+      browserInputUrl: config.url,
+    };
   }
 
   onStateChange(callback: (state: EngineStateT) => void): () => void {
@@ -351,5 +374,38 @@ describe("EngineAdapterService", () => {
       ip: "10.0.0.20",
       port: 8088,
     });
+  });
+
+  it("ensures a vmix browser input through the connected adapter", async () => {
+    const { service, adapter } = createService();
+    await service.connect({ type: "vmix", ip: "10.0.0.20", port: 8088 });
+
+    const result = await service.ensureVmixBrowserInput({
+      url: "http://127.0.0.1:8787/graphics/browser-input",
+      inputName: "Broadify Browser Input",
+    });
+
+    expect(adapter.ensureVmixBrowserInputCalls).toEqual([
+      {
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      },
+    ]);
+    expect(result).toMatchObject({
+      action: "created",
+      inputName: "Broadify Browser Input",
+    });
+  });
+
+  it("rejects vmix browser input setup when a non-vmix engine is connected", async () => {
+    const { service } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    await expect(
+      service.ensureVmixBrowserInput({
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      }),
+    ).rejects.toThrow("vMix engine is not connected");
   });
 });

@@ -1,6 +1,8 @@
 import type {
   EngineAdapter,
   EngineConnectConfig,
+  EnsureVmixBrowserInputConfigT,
+  EnsureVmixBrowserInputResultT,
 } from "../engine-adapter-interface.js";
 import type {
   EngineStatusT,
@@ -12,7 +14,7 @@ import {
   EngineError,
   EngineErrorCode,
 } from "../engine-errors.js";
-import { VmixHttpClient } from "./vmix-http-client.js";
+import { VmixHttpClient, type VmixInputSummaryT } from "./vmix-http-client.js";
 
 /**
  * vMix adapter implementation
@@ -195,6 +197,86 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   }
 
   /**
+   * Ensure a named browser input exists in vMix and points to the requested URL.
+   */
+  async ensureVmixBrowserInput(
+    config: EnsureVmixBrowserInputConfigT
+  ): Promise<EnsureVmixBrowserInputResultT> {
+    if (this.state.status !== "connected") {
+      throw new Error("Engine is not connected");
+    }
+
+    const url = config.url.trim();
+    const inputName = config.inputName.trim();
+
+    if (!url) {
+      throw new Error("Browser input URL is required");
+    }
+
+    if (!inputName) {
+      throw new Error("Browser input name is required");
+    }
+
+    try {
+      if (!this.client) {
+        throw new Error("vMix client is not initialized");
+      }
+
+      const existingInputs = await this.client.getInputs();
+      const matchingInput = findBrowserInputByName(existingInputs, inputName);
+
+      if (matchingInput) {
+        await this.client.setInputName(matchingInput.number, inputName);
+        await this.client.navigateBrowserInput(matchingInput.number, url);
+
+        return {
+          action: "updated_existing",
+          inputNumber: matchingInput.number,
+          inputKey: matchingInput.key,
+          inputName,
+          browserInputUrl: url,
+        };
+      }
+
+      const existingInputIds = new Set(
+        existingInputs.map((input) => getStableInputId(input)),
+      );
+
+      await this.client.addBrowserInput(url);
+
+      const inputsAfterCreate = await this.client.getInputs();
+      const createdInput =
+        findNewBrowserInput(inputsAfterCreate, existingInputIds) ??
+        findBrowserInputByName(inputsAfterCreate, inputName) ??
+        findLatestBrowserInput(inputsAfterCreate);
+
+      if (!createdInput) {
+        throw new Error(
+          "vMix created a browser input, but the bridge could not identify it via API",
+        );
+      }
+
+      await this.client.setInputName(createdInput.number, inputName);
+      await this.client.navigateBrowserInput(createdInput.number, url);
+
+      return {
+        action: "created",
+        inputNumber: createdInput.number,
+        inputKey: createdInput.key,
+        inputName,
+        browserInputUrl: url,
+      };
+    } catch (error: unknown) {
+      this.handleActionFailure(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Failed to ensure vMix browser input: ${errorMessage}`
+      );
+    }
+  }
+
+  /**
    * Subscribe to state changes
    */
   onStateChange(callback: (state: EngineStateT) => void): () => void {
@@ -301,3 +383,51 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     return { ...this.state };
   }
 }
+
+const isBrowserInputType = (type: string | null): boolean => {
+  return typeof type === "string" && type.toLowerCase().includes("browser");
+};
+
+const findBrowserInputByName = (
+  inputs: VmixInputSummaryT[],
+  inputName: string
+): VmixInputSummaryT | null => {
+  const normalizedName = inputName.trim().toLowerCase();
+  return (
+    inputs.find((input) => {
+      if (!isBrowserInputType(input.type)) {
+        return false;
+      }
+
+      const title = input.title.trim().toLowerCase();
+      const shortTitle = input.shortTitle?.trim().toLowerCase() ?? "";
+      return title === normalizedName || shortTitle === normalizedName;
+    }) ?? null
+  );
+};
+
+const findNewBrowserInput = (
+  inputs: VmixInputSummaryT[],
+  existingInputIds: Set<string>
+): VmixInputSummaryT | null => {
+  const candidates = inputs.filter(
+    (input) =>
+      isBrowserInputType(input.type) &&
+      !existingInputIds.has(getStableInputId(input)),
+  );
+  return candidates.sort((left, right) => right.number - left.number)[0] ?? null;
+};
+
+const findLatestBrowserInput = (
+  inputs: VmixInputSummaryT[]
+): VmixInputSummaryT | null => {
+  return (
+    inputs
+      .filter((input) => isBrowserInputType(input.type))
+      .sort((left, right) => right.number - left.number)[0] ?? null
+  );
+};
+
+const getStableInputId = (input: VmixInputSummaryT): string => {
+  return input.key ? `key:${input.key}` : `number:${input.number}`;
+};

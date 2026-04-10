@@ -16,6 +16,8 @@ const notOkResponse = (status: number) => ({
   text: () => Promise.resolve(""),
 });
 
+const browserInputsXml = (inputs: string) => `<vmix><inputs>${inputs}</inputs></vmix>`;
+
 describe("VmixAdapter", () => {
   let adapter: VmixAdapter;
 
@@ -225,6 +227,99 @@ describe("VmixAdapter", () => {
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await expect(adapter.stopMacro(1)).rejects.toThrow(
         "Failed to stop macro 1"
+      );
+    });
+  });
+
+  describe("ensureVmixBrowserInput", () => {
+    it("throws when not connected", async () => {
+      await expect(
+        adapter.ensureVmixBrowserInput({
+          url: "http://127.0.0.1:8787/graphics/browser-input",
+          inputName: "Broadify Browser Input",
+        }),
+      ).rejects.toThrow("not connected");
+    });
+
+    it("updates an existing browser input matched by name", async () => {
+      mockFetch
+        .mockResolvedValueOnce(okResponse("29.0.0.0"))
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
+        .mockResolvedValueOnce(
+          okResponse(
+            browserInputsXml(
+              '<input key="123" number="7" title="Broadify Browser Input" shortTitle="Broadify Browser Input" type="Browser" />',
+            ),
+          ),
+        )
+        .mockResolvedValueOnce(okResponse("OK"))
+        .mockResolvedValueOnce(okResponse("OK"));
+
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+
+      const result = await adapter.ensureVmixBrowserInput({
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      });
+
+      expect(result).toEqual({
+        action: "updated_existing",
+        inputNumber: 7,
+        inputKey: "123",
+        inputName: "Broadify Browser Input",
+        browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Function=SetInputName"),
+        expect.any(Object),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Function=BrowserNavigate"),
+        expect.any(Object),
+      );
+    });
+
+    it("creates and names a new browser input when none exists yet", async () => {
+      mockFetch
+        .mockResolvedValueOnce(okResponse("29.0.0.0"))
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
+        .mockResolvedValueOnce(okResponse(browserInputsXml("")))
+        .mockResolvedValueOnce(okResponse("OK"))
+        .mockResolvedValueOnce(
+          okResponse(
+            browserInputsXml(
+              '<input key="broadify-9" number="9" title="Input 9" shortTitle="Input 9" type="Browser" />',
+            ),
+          ),
+        )
+        .mockResolvedValueOnce(okResponse("OK"))
+        .mockResolvedValueOnce(okResponse("OK"));
+
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+
+      const result = await adapter.ensureVmixBrowserInput({
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      });
+
+      expect(result).toEqual({
+        action: "created",
+        inputNumber: 9,
+        inputKey: "broadify-9",
+        inputName: "Broadify Browser Input",
+        browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Function=AddInput"),
+        expect.any(Object),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Function=SetInputName"),
+        expect.any(Object),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Function=BrowserNavigate"),
+        expect.any(Object),
       );
     });
   });

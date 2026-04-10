@@ -10,6 +10,14 @@ import {
 
 type RequestParamsT = Record<string, string | number>;
 
+export type VmixInputSummaryT = {
+  number: number;
+  key: string | null;
+  title: string;
+  shortTitle: string | null;
+  type: string | null;
+};
+
 type VmixHttpClientOptionsT = {
   ip: string;
   port: number;
@@ -44,12 +52,57 @@ export class VmixHttpClient {
     return parseVmixMacrosResponse(responseText);
   }
 
+  async getInputs(): Promise<VmixInputSummaryT[]> {
+    const responseText = await this.requestStateText();
+    return parseVmixInputsResponse(responseText);
+  }
+
   async startMacro(id: number): Promise<void> {
     await this.requestText("MacroStart", { Input: id });
   }
 
   async stopMacro(id: number): Promise<void> {
     await this.requestText("MacroStop", { Input: id });
+  }
+
+  async addBrowserInput(url: string): Promise<void> {
+    await this.requestText("AddInput", {
+      Value: `Browser|${url}`,
+    });
+  }
+
+  async setInputName(input: string | number, name: string): Promise<void> {
+    await this.requestText("SetInputName", {
+      Input: input,
+      Value: name,
+    });
+  }
+
+  async navigateBrowserInput(
+    input: string | number,
+    url: string
+  ): Promise<void> {
+    await this.requestText("BrowserNavigate", {
+      Input: input,
+      Value: url,
+    });
+  }
+
+  private async requestStateText(): Promise<string> {
+    const response = await this.request();
+    if (!response.ok) {
+      const responseBody = await response.text().catch(() => "");
+      throw new EngineError(
+        EngineErrorCode.PROTOCOL_ERROR,
+        `vMix API request failed for state snapshot: ${response.status} ${responseBody || response.statusText}`,
+        {
+          ip: this.ip,
+          port: this.port,
+          status: response.status,
+        },
+      );
+    }
+    return response.text();
   }
 
   private async requestText(
@@ -74,11 +127,13 @@ export class VmixHttpClient {
   }
 
   private async request(
-    functionName: string,
+    functionName?: string,
     params?: RequestParamsT,
   ): Promise<Response> {
     const url = new URL(`${this.baseUrl}/api`);
-    url.searchParams.set("Function", functionName);
+    if (functionName) {
+      url.searchParams.set("Function", functionName);
+    }
 
     if (params) {
       for (const [key, value] of Object.entries(params)) {
@@ -108,6 +163,39 @@ export class VmixHttpClient {
       clearTimeout(timeoutId);
     }
   }
+}
+
+export function parseVmixInputsResponse(
+  responseText: string
+): VmixInputSummaryT[] {
+  const inputs: VmixInputSummaryT[] = [];
+
+  try {
+    const inputMatches = responseText.matchAll(/<input\b([^>]*)>/gi);
+
+    for (const match of inputMatches) {
+      const attributes = match[1] ?? "";
+      const numberValue = getXmlAttribute(attributes, "number");
+      const number = Number(numberValue);
+      if (!Number.isFinite(number)) {
+        continue;
+      }
+
+      inputs.push({
+        number,
+        key: getXmlAttribute(attributes, "key"),
+        title: decodeXmlEntities(getXmlAttribute(attributes, "title")) ?? "",
+        shortTitle: decodeXmlEntities(
+          getXmlAttribute(attributes, "shortTitle"),
+        ),
+        type: getXmlAttribute(attributes, "type"),
+      });
+    }
+  } catch {
+    return [];
+  }
+
+  return inputs;
 }
 
 export function parseVmixMacrosResponse(responseText: string): MacroT[] {
@@ -215,4 +303,28 @@ function normalizeVmixRequestError(
     port,
     error instanceof Error ? error : undefined,
   );
+}
+
+function getXmlAttribute(
+  attributes: string,
+  attributeName: string
+): string | null {
+  const escapedName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`\\b${escapedName}="([^"]*)"`, "i").exec(
+    attributes,
+  );
+  return match?.[1] ?? null;
+}
+
+function decodeXmlEntities(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 }

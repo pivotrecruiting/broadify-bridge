@@ -269,6 +269,48 @@ export class CommandRouter {
           };
         }
 
+        case "engine_vmix_ensure_browser_input": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for engine_vmix_ensure_browser_input",
+          );
+
+          await graphicsManager.initialize();
+          const graphicsStatus = graphicsManager.getStatus();
+          const browserInputStatus = graphicsStatus.browserInput;
+
+          if (graphicsStatus.outputConfig?.outputKey !== "browser_input") {
+            return {
+              success: false,
+              error:
+                "Graphics output mode browser_input is not configured on this bridge",
+            };
+          }
+
+          const browserInputUrl = browserInputStatus?.browserInputUrl?.trim();
+          const recommendedInputName =
+            browserInputStatus?.recommendedInputName?.trim();
+
+          if (!browserInputUrl || !recommendedInputName) {
+            return {
+              success: false,
+              error:
+                "Bridge browser-input metadata is incomplete. Save the browser_input output config first.",
+            };
+          }
+
+          const result = await engineAdapter.ensureVmixBrowserInput({
+            url: browserInputUrl,
+            inputName: recommendedInputName,
+          });
+
+          return {
+            success: true,
+            data: result,
+          };
+        }
+
         case "graphics_configure_outputs": {
           if (!payload) {
             return {
