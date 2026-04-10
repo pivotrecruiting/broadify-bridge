@@ -56,22 +56,21 @@ export class ModuleRegistry {
 
     // Current implementation: Direct async with timeout
     const detectionPromises = this.modules.map(async (module) => {
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<DeviceDescriptorT[]>((_, reject) => {
+        timeoutId = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Timeout: ${module.name} detection exceeded ${timeoutMs}ms`
+              )
+            ),
+          timeoutMs
+        );
+      });
+
       try {
-        // Wrap detection in timeout
-        const timeoutPromise = new Promise<DeviceDescriptorT[]>((_, reject) => {
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `Timeout: ${module.name} detection exceeded ${timeoutMs}ms`
-                )
-              ),
-            timeoutMs
-          );
-        });
-
         const detectionPromise = module.detect();
-
         const devices = await Promise.race([detectionPromise, timeoutPromise]);
         return devices;
       } catch (error) {
@@ -81,6 +80,8 @@ export class ModuleRegistry {
           error
         );
         return [];
+      } finally {
+        clearTimeout(timeoutId!);
       }
     });
 

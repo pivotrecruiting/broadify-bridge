@@ -18,6 +18,7 @@ import type {
   Statistics,
   UnsubscribeFunction,
 } from "@broadify/protocol";
+import type { DesktopEngineTypeT } from "../electron/types";
 
 declare global {
   interface Window {
@@ -75,6 +76,7 @@ declare global {
         callback: (status: AppUpdaterStatusT) => void
       ) => UnsubscribeFunction;
       engineConnect: (
+        type?: DesktopEngineTypeT,
         ip?: string,
         port?: number
       ) => Promise<{ success: boolean; error?: string; state?: EngineStateT }>;

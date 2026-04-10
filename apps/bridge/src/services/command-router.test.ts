@@ -1,0 +1,586 @@
+import { commandRouter } from "./command-router.js";
+
+jest.mock("./engine-adapter.js", () => ({
+  engineAdapter: {
+    getState: jest.fn(() => ({ status: "disconnected", macros: [] })),
+    getConnectedSince: jest.fn(() => null),
+    getLastError: jest.fn(() => null),
+    getMacros: jest.fn(() => []),
+    getStatus: jest.fn(() => "disconnected"),
+    connect: jest.fn(),
+    disconnect: jest.fn(),
+    runMacro: jest.fn(),
+    stopMacro: jest.fn(),
+    ensureVmixBrowserInput: jest.fn(),
+  },
+}));
+
+jest.mock("./device-cache.js", () => ({
+  deviceCache: {
+    getDevices: jest.fn().mockResolvedValue([]),
+  },
+}));
+
+jest.mock("./bridge-context.js", () => ({
+  getBridgeContext: jest.fn(() => ({
+    bridgeName: "test-bridge",
+    bridgeId: "bridge-1",
+    pairingCode: null,
+    pairingExpiresAt: null,
+    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+  })),
+}));
+
+jest.mock("./runtime-config.js", () => ({
+  runtimeConfig: {
+    getConfig: jest.fn(() => null),
+    getState: jest.fn(() => "idle"),
+    hasOutputs: jest.fn(() => false),
+  },
+}));
+
+jest.mock("./graphics/graphics-manager.js", () => ({
+  graphicsManager: {
+    configureOutputs: jest.fn().mockResolvedValue(undefined),
+    sendLayer: jest.fn().mockResolvedValue(undefined),
+    sendTestPattern: jest.fn().mockResolvedValue(undefined),
+    updateValues: jest.fn().mockResolvedValue(undefined),
+    updateLayout: jest.fn().mockResolvedValue(undefined),
+    removeLayer: jest.fn().mockResolvedValue(undefined),
+    removePreset: jest.fn().mockResolvedValue(undefined),
+    initialize: jest.fn().mockResolvedValue(undefined),
+    getStatus: jest.fn(() => ({
+      outputConfig: null,
+      browserInput: null,
+      activePreset: null,
+      activePresets: [],
+    })),
+  },
+}));
+
+jest.mock("./relay-bridge-identity.js", () => ({
+  getRelayBridgeEnrollmentPublicKey: jest.fn().mockResolvedValue("mock-key"),
+}));
+
+jest.mock("./runtime-app-version.js", () => ({
+  getRuntimeAppVersion: jest.fn(() => "0.1.0"),
+}));
+
+const defaultBridgeContext = {
+  bridgeName: "test-bridge",
+  bridgeId: "bridge-1",
+  pairingCode: null,
+  pairingExpiresAt: null,
+  logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+};
+
+describe("command-router", () => {
+  beforeEach(() => {
+    const { getBridgeContext } = require("./bridge-context.js");
+    getBridgeContext.mockReturnValue(defaultBridgeContext);
+  });
+
+  describe("handleCommand", () => {
+    it("get_status returns running status", async () => {
+      const result = await commandRouter.handleCommand("get_status", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        running: true,
+        version: "0.1.0",
+        bridgeName: "test-bridge",
+      });
+    });
+
+    it("list_outputs returns output lists from device cache", async () => {
+      const { deviceCache } = require("./device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([]);
+
+      const result = await commandRouter.handleCommand("list_outputs", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ output1: [], output2: [] });
+      expect(deviceCache.getDevices).toHaveBeenCalledWith(false);
+    });
+
+    it("list_outputs passes refresh to device cache when requested", async () => {
+      const { deviceCache } = require("./device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([]);
+
+      await commandRouter.handleCommand("list_outputs", { refresh: true });
+      expect(deviceCache.getDevices).toHaveBeenCalledWith(true);
+    });
+
+    it("returns error for unknown command", async () => {
+      const result = await commandRouter.handleCommand(
+        "unknown_command" as "get_status",
+        {}
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Unknown command");
+    });
+
+    it("engine_get_status returns state with connectedSince and lastError", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getState.mockReturnValue({
+        status: "connected",
+        type: "atem",
+        macros: [],
+      });
+      engineAdapter.getConnectedSince.mockReturnValue(1234567890);
+      engineAdapter.getLastError.mockReturnValue(null);
+
+      const result = await commandRouter.handleCommand("engine_get_status", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        state: expect.objectContaining({
+          status: "connected",
+          type: "atem",
+          connectedSince: 1234567890,
+        }),
+      });
+    });
+
+    it("engine_get_macros returns error when not connected", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getStatus.mockReturnValue("disconnected");
+      engineAdapter.getMacros.mockReturnValue([]);
+
+      const result = await commandRouter.handleCommand("engine_get_macros", {});
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Engine not connected");
+      expect(result.data).toMatchObject({ macros: [] });
+    });
+
+    it("engine_get_macros returns macros when connected", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getStatus.mockReturnValue("connected");
+      engineAdapter.getMacros.mockReturnValue([
+        { id: 1, name: "Macro 1", status: "idle" },
+      ]);
+
+      const result = await commandRouter.handleCommand("engine_get_macros", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({
+        macros: [{ id: 1, name: "Macro 1", status: "idle" }],
+      });
+    });
+
+    it("engine_connect returns state after connect", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getState.mockReturnValue({
+        status: "connected",
+        type: "atem",
+        macros: [],
+      });
+
+      const result = await commandRouter.handleCommand("engine_connect", {
+        type: "atem",
+        ip: "192.168.1.10",
+        port: 9910,
+      });
+      expect(result.success).toBe(true);
+      expect(engineAdapter.connect).toHaveBeenCalledWith({
+        type: "atem",
+        ip: "192.168.1.10",
+        port: 9910,
+      });
+    });
+
+    it("engine_disconnect returns state after disconnect", async () => {
+      const result = await commandRouter.handleCommand("engine_disconnect", {});
+      expect(result.success).toBe(true);
+      expect(require("./engine-adapter.js").engineAdapter.disconnect).toHaveBeenCalled();
+    });
+
+    it("engine_run_macro returns macroId and state", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getState.mockReturnValue({
+        status: "connected",
+        type: "atem",
+        macros: [],
+      });
+
+      const result = await commandRouter.handleCommand("engine_run_macro", {
+        macroId: 5,
+      });
+      expect(result.success).toBe(true);
+      expect(engineAdapter.runMacro).toHaveBeenCalledWith(5);
+      expect(result.data).toMatchObject({ macroId: 5 });
+    });
+
+    it("engine_stop_macro returns macroId and state", async () => {
+      const result = await commandRouter.handleCommand("engine_stop_macro", {
+        macroId: 3,
+      });
+      expect(result.success).toBe(true);
+      expect(require("./engine-adapter.js").engineAdapter.stopMacro).toHaveBeenCalledWith(3);
+    });
+
+    it("engine_vmix_ensure_browser_input reuses bridge browser-input metadata", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: {
+          version: 1,
+          outputKey: "browser_input",
+          targets: {},
+          format: { width: 1920, height: 1080, fps: 50 },
+        },
+        browserInput: {
+          mode: "browser_input",
+          ready: true,
+          stateStatus: "ready",
+          stateValid: true,
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          browserInputWsUrl: "ws://127.0.0.1:8787/graphics/browser-input/ws",
+          recommendedInputName: "Broadify Browser Input",
+          transport: "websocket",
+          browserClientCount: 0,
+          lastBrowserClientSeenAt: null,
+          stateVersion: 3,
+          format: { width: 1920, height: 1080, fps: 50 },
+          lastError: null,
+        },
+        activePreset: null,
+        activePresets: [],
+      });
+      engineAdapter.ensureVmixBrowserInput.mockResolvedValue({
+        action: "created",
+        inputNumber: 7,
+        inputKey: "c7f",
+        inputName: "Broadify Browser Input",
+        browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+      });
+
+      const result = await commandRouter.handleCommand(
+        "engine_vmix_ensure_browser_input",
+        {},
+      );
+
+      expect(result.success).toBe(true);
+      expect(graphicsManager.initialize).toHaveBeenCalled();
+      expect(engineAdapter.ensureVmixBrowserInput).toHaveBeenCalledWith({
+        url: "http://127.0.0.1:8787/graphics/browser-input",
+        inputName: "Broadify Browser Input",
+      });
+      expect(result.data).toMatchObject({
+        action: "created",
+        inputNumber: 7,
+      });
+    });
+
+    it("engine_vmix_ensure_browser_input returns a validation error when browser_input mode is not active", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: {
+          version: 1,
+          outputKey: "video_sdi",
+          targets: { output1Id: "o1" },
+          format: { width: 1920, height: 1080, fps: 50 },
+        },
+        browserInput: null,
+        activePreset: null,
+        activePresets: [],
+      });
+
+      const result = await commandRouter.handleCommand(
+        "engine_vmix_ensure_browser_input",
+        {},
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("browser_input is not configured");
+    });
+
+    it("graphics_configure_outputs returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand(
+        "graphics_configure_outputs",
+        undefined
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload");
+    });
+
+    it("graphics_configure_outputs succeeds with payload", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const result = await commandRouter.handleCommand(
+        "graphics_configure_outputs",
+        { version: 1, outputKey: "video_hdmi", targets: {}, format: {} }
+      );
+      expect(result.success).toBe(true);
+      expect(graphicsManager.configureOutputs).toHaveBeenCalled();
+    });
+
+    it("graphics_configure_outputs accepts browser_input without hardware targets", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const payload = {
+        version: 1,
+        outputKey: "browser_input",
+        targets: {},
+        format: { width: 1920, height: 1080, fps: 50 },
+      };
+
+      const result = await commandRouter.handleCommand(
+        "graphics_configure_outputs",
+        payload
+      );
+
+      expect(result.success).toBe(true);
+      expect(graphicsManager.configureOutputs).toHaveBeenCalledWith(payload);
+    });
+
+    it("graphics_test_pattern succeeds without payload", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const result = await commandRouter.handleCommand("graphics_test_pattern");
+      expect(result.success).toBe(true);
+      expect(graphicsManager.sendTestPattern).toHaveBeenCalled();
+    });
+
+    it("graphics_list returns graphics status", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: null,
+        browserInput: null,
+        activePreset: null,
+        activePresets: [],
+      });
+
+      const result = await commandRouter.handleCommand("graphics_list");
+      expect(result.success).toBe(true);
+      expect(graphicsManager.initialize).toHaveBeenCalled();
+      expect(result.data).toMatchObject({ outputConfig: null });
+    });
+
+    it("graphics_list returns browser_input metadata inside the existing graphics status payload", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: {
+          version: 1,
+          outputKey: "browser_input",
+          targets: {},
+          format: { width: 1920, height: 1080, fps: 50 },
+        },
+        browserInput: {
+          mode: "browser_input",
+          ready: true,
+          stateStatus: "ready",
+          stateValid: true,
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          browserInputWsUrl: "ws://127.0.0.1:8787/graphics/browser-input/ws",
+          recommendedInputName: "Broadify Graphics",
+          transport: "websocket",
+          browserClientCount: 1,
+          lastBrowserClientSeenAt: 1712345678,
+          stateVersion: 4,
+          format: { width: 1920, height: 1080, fps: 50 },
+          lastError: null,
+        },
+        activePreset: null,
+        activePresets: [],
+      });
+
+      const result = await commandRouter.handleCommand("graphics_list");
+
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        outputConfig: {
+          outputKey: "browser_input",
+        },
+        browserInput: {
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          transport: "websocket",
+          stateVersion: 4,
+        },
+      });
+    });
+
+    it("bridge_pair_validate returns error when pairing not enabled", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      getBridgeContext.mockReturnValue({
+        pairingCode: null,
+        pairingExpiresAt: null,
+        bridgeId: null,
+        bridgeName: null,
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      const result = await commandRouter.handleCommand("bridge_pair_validate", {
+        pairingCode: "ABCD",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Pairing is not enabled");
+    });
+
+    it("bridge_pair_validate returns error for invalid pairing code", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      getBridgeContext.mockReturnValue({
+        pairingCode: "CORRECT",
+        pairingExpiresAt: Date.now() + 3600000,
+        bridgeId: "bridge-1",
+        bridgeName: "test",
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      const result = await commandRouter.handleCommand("bridge_pair_validate", {
+        pairingCode: "WRONG",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid pairing code");
+    });
+
+    it("bridge_pair_validate returns error when pairing code expired", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      getBridgeContext.mockReturnValue({
+        pairingCode: "CORRECT",
+        pairingExpiresAt: Date.now() - 1000,
+        bridgeId: "bridge-1",
+        bridgeName: "test",
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      const result = await commandRouter.handleCommand("bridge_pair_validate", {
+        pairingCode: "CORRECT",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Pairing code has expired");
+    });
+
+    it("bridge_pair_validate succeeds with valid pairing code", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      getBridgeContext.mockReturnValue({
+        pairingCode: "CORRECT",
+        pairingExpiresAt: Date.now() + 3600000,
+        bridgeId: "bridge-1",
+        bridgeName: "test",
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      const result = await commandRouter.handleCommand("bridge_pair_validate", {
+        pairingCode: "CORRECT",
+      });
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        bridgeId: "bridge-1",
+        bridgeName: "test",
+        version: "0.1.0",
+        relayEnrollment: "mock-key",
+      });
+    });
+
+    it("list_outputs triggers logger.debug when refresh requested", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      const mockDebug = jest.fn();
+      getBridgeContext.mockReturnValue({
+        ...defaultBridgeContext,
+        logger: { ...defaultBridgeContext.logger, debug: mockDebug },
+      });
+
+      await commandRouter.handleCommand("list_outputs", { refresh: true });
+      expect(mockDebug).toHaveBeenCalledWith(
+        "[CommandRouter] list_outputs refresh requested"
+      );
+    });
+
+    it("graphics_send returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_send");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_send");
+    });
+
+    it("graphics_send succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_send", {
+        layerId: "l1",
+        category: "lower-thirds",
+        bundle: { html: "<div/>", manifest: {} },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_update_values returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_values");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_update_values");
+    });
+
+    it("graphics_update_layout returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_layout");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_update_layout");
+    });
+
+    it("graphics_remove returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_remove");
+    });
+
+    it("graphics_remove_preset returns error when payload missing", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove_preset");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Missing payload for graphics_remove_preset");
+    });
+
+    it("graphics_update_values succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_values", {
+        layerId: "l1",
+        values: {},
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_update_layout succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_update_layout", {
+        layerId: "l1",
+        layout: { x: 0, y: 0, scale: 1 },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_remove succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove", {
+        layerId: "l1",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("graphics_remove_preset succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand("graphics_remove_preset", {
+        presetId: "p1",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("returns validation error for invalid engine_connect payload", async () => {
+      const result = await commandRouter.handleCommand("engine_connect", {
+        type: "atem",
+        ip: "not-an-ip",
+        port: 9910,
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid payload");
+    });
+
+    it("returns validation error for invalid engine_run_macro payload", async () => {
+      const result = await commandRouter.handleCommand("engine_run_macro", {
+        macroId: "not-a-number",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Macro ID");
+    });
+
+    it("propagates GraphicsError with errorCode", async () => {
+      const { GraphicsError } = require("./graphics/graphics-errors.js");
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.configureOutputs.mockRejectedValue(
+        new GraphicsError("output_config_error", "Invalid output config")
+      );
+
+      const result = await commandRouter.handleCommand(
+        "graphics_configure_outputs",
+        { version: 1 }
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid output config");
+      expect(result.errorCode).toBe("output_config_error");
+    });
+  });
+});

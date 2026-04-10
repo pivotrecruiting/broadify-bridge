@@ -41,6 +41,17 @@ export const base64UrlDecode = (value: string): Buffer => {
 };
 
 /**
+ * Encode buffer to URL-safe base64 (no padding).
+ */
+export const base64UrlEncode = (value: Buffer): string => {
+  return value
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+};
+
+/**
  * Create canonical JSON output with stable key ordering.
  */
 export const stableStringify = (value: unknown): string => {

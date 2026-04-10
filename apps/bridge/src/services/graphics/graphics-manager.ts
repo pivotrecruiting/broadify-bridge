@@ -36,12 +36,15 @@ import {
 import type {
   GraphicsActivePresetT,
   GraphicsLayerStateT,
+  PreparedLayerT,
   GraphicsStatusSnapshotT,
 } from "./graphics-manager-types.js";
 import {
   clearAllLayers,
+  removeLayerState,
   removeLayerWithRenderer,
   renderPreparedLayer,
+  storePreparedLayerState,
 } from "./graphics-layer-service.js";
 import {
   publishGraphicsErrorEvent,
@@ -63,6 +66,7 @@ import {
   logFrameBusConfigChange,
   resolveFrameBusConfig,
 } from "./graphics-framebus-session-service.js";
+import { browserInputRuntime } from "./browser-input-runtime.js";
 
 type GraphicsRuntimeInitServiceLikeT = Pick<GraphicsRuntimeInitService, "initialize">;
 type GraphicsOutputTransitionServiceLikeT = Pick<
@@ -91,6 +95,19 @@ type GraphicsManagerDepsT = {
   validateOutputTargets?: ValidateOutputTargetsT;
   validateOutputFormat?: ValidateOutputFormatT;
   publishGraphicsError?: (code: GraphicsErrorCodeT, message: string) => void;
+  browserInputRuntime?: Pick<
+    typeof browserInputRuntime,
+    | "configure"
+    | "clearLayers"
+    | "upsertLayer"
+    | "updateValues"
+    | "updateLayout"
+    | "removeLayer"
+    | "removePreset"
+    | "reportError"
+    | "subscribe"
+    | "getStatus"
+  >;
 };
 
 async function defaultSelectOutputAdapter(
@@ -141,15 +158,16 @@ export class GraphicsManager {
   private presetService: GraphicsPresetService;
   private outputTransitionService: GraphicsOutputTransitionServiceLikeT;
   private runtimeInitService: GraphicsRuntimeInitServiceLikeT;
+  private browserInputRuntime: NonNullable<GraphicsManagerDepsT["browserInputRuntime"]>;
 
   constructor(deps: GraphicsManagerDepsT = {}) {
     this.deps = deps;
+    this.browserInputRuntime = this.deps.browserInputRuntime ?? browserInputRuntime;
     this.renderer = this.deps.createRenderer?.() ?? this.selectRenderer();
     this.outputAdapter = new StubOutputAdapter();
     const selectOutputAdapter =
       this.deps.selectOutputAdapter ?? defaultSelectOutputAdapter;
     this.presetService = new GraphicsPresetService({
-      getRenderer: () => this.renderer,
       layers: this.layers,
       categoryToLayer: this.categoryToLayer,
       getActivePreset: () => this.activePreset,
@@ -159,6 +177,7 @@ export class GraphicsManager {
       publishStatus: (reason) => {
         publishGraphicsStatusEvent(reason, this.getStatusSnapshot());
       },
+      removeLayer: (layerId, reason) => this.removeLayerById(layerId, reason),
     });
     this.outputTransitionService =
       this.deps.outputTransitionService ??
@@ -208,6 +227,13 @@ export class GraphicsManager {
         publishGraphicsError: (code, message) =>
           publishGraphicsErrorEvent(code, message),
       });
+
+    this.browserInputRuntime.subscribe(() => {
+      if (!this.initialized) {
+        return;
+      }
+      publishGraphicsStatusEvent("browser_input_state", this.getStatusSnapshot());
+    });
   }
 
   /**
@@ -277,6 +303,8 @@ export class GraphicsManager {
     }
     try {
       await this.outputTransitionService.runAtomicTransition(config);
+      this.browserInputRuntime.configure(this.outputConfig);
+      publishGraphicsStatusEvent("outputs_configured", this.getStatusSnapshot());
     } catch (error) {
       if (error instanceof GraphicsOutputTransitionError) {
         const code =
@@ -302,6 +330,7 @@ export class GraphicsManager {
     this.layers.clear();
     this.categoryToLayer.clear();
     this.outputConfig = null;
+    this.browserInputRuntime.configure(null);
 
     try {
       await this.outputAdapter.stop();
@@ -408,11 +437,20 @@ export class GraphicsManager {
       },
     };
 
-    const prepared = await prepareLayerForRender(
-      normalizedData,
-      this.outputConfig.outputKey,
-      this.renderer
-    );
+    let prepared: PreparedLayerT;
+    try {
+      prepared = await prepareLayerForRender(
+        normalizedData,
+        this.outputConfig.outputKey,
+        this.renderer
+      );
+    } catch (error) {
+      if (this.outputConfig.outputKey === "browser_input") {
+        const message = error instanceof Error ? error.message : String(error);
+        this.browserInputRuntime.reportError("invalid_graphics_data", message);
+      }
+      throw error;
+    }
     const durationMs = typeof data.durationMs === "number" ? data.durationMs : null;
     await this.presetService.prepareBeforeRender(
       prepared.presetId,
@@ -420,16 +458,26 @@ export class GraphicsManager {
     );
 
     let renderedLayerIds: string[] = [];
-    await renderPreparedLayer({
-      renderer: this.renderer,
-      layers: this.layers,
-      categoryToLayer: this.categoryToLayer,
-      outputFormat: this.outputConfig?.format ?? null,
-      data: prepared,
-      onRendered: (layerIds) => {
-        renderedLayerIds = layerIds;
-      },
-    });
+    if (this.outputConfig.outputKey === "browser_input") {
+      storePreparedLayerState({
+        layers: this.layers,
+        categoryToLayer: this.categoryToLayer,
+        data: prepared,
+      });
+      renderedLayerIds = [prepared.layerId];
+      this.browserInputRuntime.upsertLayer(prepared);
+    } else {
+      await renderPreparedLayer({
+        renderer: this.renderer,
+        layers: this.layers,
+        categoryToLayer: this.categoryToLayer,
+        outputFormat: this.outputConfig?.format ?? null,
+        data: prepared,
+        onRendered: (layerIds) => {
+          renderedLayerIds = layerIds;
+        },
+      });
+    }
 
     this.presetService.syncAfterRender(
       prepared.layerId,
@@ -454,6 +502,12 @@ export class GraphicsManager {
     const data = GraphicsUpdateValuesSchema.parse(payload);
     const layer = this.layers.get(data.layerId);
     if (!layer) {
+      if (this.outputConfig?.outputKey === "browser_input") {
+        this.browserInputRuntime.reportError(
+          "state_inconsistent",
+          `Browser-input layer not found for updateValues: ${data.layerId}`
+        );
+      }
       throw new Error("Layer not found");
     }
 
@@ -465,6 +519,16 @@ export class GraphicsManager {
       },
       layer.values
     );
+
+    if (this.outputConfig?.outputKey === "browser_input") {
+      this.browserInputRuntime.updateValues(
+        data.layerId,
+        layer.values,
+        layer.bindings
+      );
+      return;
+    }
+
     await this.renderer.updateValues(data.layerId, layer.values, layer.bindings);
   }
 
@@ -481,12 +545,23 @@ export class GraphicsManager {
     const data = GraphicsUpdateLayoutSchema.parse(payload);
     const layer = this.layers.get(data.layerId);
     if (!layer) {
+      if (this.outputConfig?.outputKey === "browser_input") {
+        this.browserInputRuntime.reportError(
+          "state_inconsistent",
+          `Browser-input layer not found for updateLayout: ${data.layerId}`
+        );
+      }
       throw new Error("Layer not found");
     }
 
     layer.layout = data.layout;
     if (typeof data.zIndex === "number") {
       layer.zIndex = data.zIndex;
+    }
+
+    if (this.outputConfig?.outputKey === "browser_input") {
+      this.browserInputRuntime.updateLayout(data.layerId, data.layout, data.zIndex);
+      return;
     }
 
     await this.renderer.updateLayout(data.layerId, data.layout, data.zIndex);
@@ -508,15 +583,7 @@ export class GraphicsManager {
       return;
     }
 
-    await removeLayerWithRenderer(
-      {
-        renderer: this.renderer,
-        layers: this.layers,
-        categoryToLayer: this.categoryToLayer,
-      },
-      data.layerId,
-      "remove_layer"
-    );
+    await this.removeLayerById(data.layerId, "remove_layer");
     this.presetService.handleLayerRemoved(layer);
   }
 
@@ -542,14 +609,23 @@ export class GraphicsManager {
   async sendTestPattern(): Promise<void> {
     await this.initialize();
     await this.waitForOutputTransition();
-    await clearAllLayers({
-      renderer: this.renderer,
-      layers: this.layers,
-      categoryToLayer: this.categoryToLayer,
-      clearActivePreset: () => this.presetService.clearActivePreset(),
-      publishStatus: (reason) =>
-        publishGraphicsStatusEvent(reason, this.getStatusSnapshot()),
-    });
+    if (this.outputConfig?.outputKey === "browser_input") {
+      const activeLayers = Array.from(this.layers.keys());
+      for (const layerId of activeLayers) {
+        await this.removeLayerById(layerId, "clear_all_layers");
+      }
+      this.presetService.clearActivePreset();
+      publishGraphicsStatusEvent("clear_all_layers", this.getStatusSnapshot());
+    } else {
+      await clearAllLayers({
+        renderer: this.renderer,
+        layers: this.layers,
+        categoryToLayer: this.categoryToLayer,
+        clearActivePreset: () => this.presetService.clearActivePreset(),
+        publishStatus: (reason) =>
+          publishGraphicsStatusEvent(reason, this.getStatusSnapshot()),
+      });
+    }
     await this.sendLayer(createTestPatternPayload());
   }
 
@@ -560,6 +636,7 @@ export class GraphicsManager {
    */
   getStatus(): {
     outputConfig: GraphicsOutputConfigT | null;
+    browserInput: GraphicsStatusSnapshotT["browserInput"];
     layers: unknown[];
     activePreset: {
       presetId: string;
@@ -591,6 +668,7 @@ export class GraphicsManager {
 
     return {
       outputConfig: this.outputConfig,
+      browserInput: status.browserInput,
       layers,
       activePreset: status.activePreset,
       activePresets: status.activePresets,
@@ -621,6 +699,7 @@ export class GraphicsManager {
 
     return {
       outputConfig: this.outputConfig,
+      browserInput: this.browserInputRuntime.getStatus(),
       activePreset,
       activePresets: activePreset ? [activePreset] : [],
     };
@@ -659,6 +738,30 @@ export class GraphicsManager {
       this.deps.publishGraphicsError ?? publishGraphicsErrorEvent;
     publishGraphicsError(code, message);
     throw new GraphicsError(code, message);
+  }
+
+  private async removeLayerById(layerId: string, reason: string): Promise<void> {
+    if (this.outputConfig?.outputKey === "browser_input") {
+      removeLayerState(
+        {
+          layers: this.layers,
+          categoryToLayer: this.categoryToLayer,
+        },
+        layerId
+      );
+      this.browserInputRuntime.removeLayer(layerId);
+      return;
+    }
+
+    await removeLayerWithRenderer(
+      {
+        renderer: this.renderer,
+        layers: this.layers,
+        categoryToLayer: this.categoryToLayer,
+      },
+      layerId,
+      reason
+    );
   }
 }
 

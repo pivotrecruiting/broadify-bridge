@@ -6,6 +6,10 @@
     "types": ["node", "jest"],
     "noEmit": true,
     "esModuleInterop": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "@broadify/protocol": ["packages/protocol/dist/index.d.ts"]
+    }
   }
 }

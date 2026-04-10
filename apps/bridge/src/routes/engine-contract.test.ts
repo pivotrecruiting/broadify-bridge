@@ -48,8 +48,17 @@ describe("mapEngineErrorToStatusCode", () => {
     );
   });
 
+  it("maps service unavailable errors to 503", () => {
+    expect(mapEngineErrorToStatusCode(EngineErrorCode.CONNECTION_REFUSED)).toBe(503);
+    expect(mapEngineErrorToStatusCode(EngineErrorCode.NETWORK_ERROR)).toBe(503);
+  });
+
   it("maps validation errors to 400", () => {
     expect(mapEngineErrorToStatusCode(EngineErrorCode.INVALID_IP)).toBe(400);
     expect(mapEngineErrorToStatusCode(EngineErrorCode.INVALID_PORT)).toBe(400);
+  });
+
+  it("returns 500 for unknown error codes", () => {
+    expect(mapEngineErrorToStatusCode("UNKNOWN" as EngineErrorCode)).toBe(500);
   });
 });

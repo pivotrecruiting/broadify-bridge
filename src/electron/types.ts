@@ -15,6 +15,7 @@ import type {
   StaticData,
   Statistics,
 } from "@broadify/protocol";
+import type { DesktopEngineTypeT } from "./services/engine-connect-contract.js";
 
 export type {
   AppUpdaterActionResultT,
@@ -98,3 +99,5 @@ export type EventPayloadMapping = {
   };
   openExternal: void;
 };
+
+export type { DesktopEngineTypeT };

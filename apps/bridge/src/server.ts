@@ -8,6 +8,7 @@ import { registerDevicesRoute } from "./routes/devices.js";
 import { registerConfigRoute } from "./routes/config.js";
 import { registerEngineRoute } from "./routes/engine.js";
 import { registerVideoRoute } from "./routes/video.js";
+import { registerGraphicsBrowserInputRoute } from "./routes/graphics-browser-input.js";
 import { registerWebSocketRoute } from "./routes/websocket.js";
 import { registerRelayRoute } from "./routes/relay.js";
 import { registerLogsRoute } from "./routes/logs.js";
@@ -27,6 +28,7 @@ import {
   registerServerPlugins,
   registerServerRoutes,
 } from "./server-registration.js";
+import { normalizeLevel, clampMaxLevel } from "./services/log-level-utils.js";
 
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -40,28 +42,6 @@ const REQUEST_TIMEOUT_MS = 15_000;
 export async function createServer(config: BridgeConfigT) {
   const userDataDir = resolveUserDataDir(config);
   const logPath = await ensureBridgeLogFile(userDataDir);
-
-  const LOG_LEVELS: Record<string, number> = {
-    trace: 10,
-    debug: 20,
-    info: 30,
-    warn: 40,
-    error: 50,
-    fatal: 60,
-    silent: 70,
-  };
-  const normalizeLevel = (value: string | undefined, fallback: string): string => {
-    if (!value) {
-      return fallback;
-    }
-    const key = value.toLowerCase();
-    return LOG_LEVELS[key] ? key : fallback;
-  };
-  const clampMaxLevel = (value: string, maxLevel: string): string => {
-    const current = LOG_LEVELS[value] ?? LOG_LEVELS.info;
-    const max = LOG_LEVELS[maxLevel] ?? LOG_LEVELS.info;
-    return current > max ? maxLevel : value;
-  };
 
   const requestedLevel = normalizeLevel(
     process.env.BRIDGE_LOG_LEVEL,
@@ -110,6 +90,9 @@ export async function createServer(config: BridgeConfigT) {
       warn: (msg: string) => server.log.warn(msg),
       error: (msg: string) => server.log.error(msg),
     },
+    serverHost: config.host,
+    serverPort: config.port,
+    serverMode: config.mode,
     bridgeId: config.bridgeId,
     bridgeName: config.bridgeName,
     pairingCode: config.pairingCode,
@@ -177,6 +160,7 @@ export async function createServer(config: BridgeConfigT) {
       registerConfigRoute,
       registerEngineRoute,
       registerVideoRoute,
+      registerGraphicsBrowserInputRoute,
       registerWebSocketRoute,
       registerRelayRoute,
       registerLogsRoute,

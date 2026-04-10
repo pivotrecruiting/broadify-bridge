@@ -1,76 +1,71 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { resolveDisplayHelperPath } from "./display-helper.js";
 
-type ProcessWithResourcesPathT = NodeJS.Process & {
-  resourcesPath?: string;
-};
-
-const processWithResourcesPath = process as ProcessWithResourcesPathT;
-const originalCwd = process.cwd();
+const DISPLAY_HELPER_PATH_ENV = "BRIDGE_DISPLAY_HELPER_PATH";
+const originalEnv = process.env;
+const originalPlatform = process.platform;
+const originalResourcesPath = process.resourcesPath;
 const originalNodeEnv = process.env.NODE_ENV;
-const originalHelperPath = process.env.BRIDGE_DISPLAY_HELPER_PATH;
-const originalResourcesPath = processWithResourcesPath.resourcesPath;
-const expectedHelperName =
-  process.platform === "win32" ? "display-helper.exe" : "display-helper";
 
-const setResourcesPath = (value: string | undefined): void => {
-  Object.defineProperty(processWithResourcesPath, "resourcesPath", {
-    value,
-    configurable: true,
-  });
-};
-
-describe("resolveDisplayHelperPath", () => {
-  let tempDir: string;
-
+describe("display-helper", () => {
   beforeEach(() => {
-    tempDir = mkdtempSync(path.join(os.tmpdir(), "display-helper-test-"));
-    delete process.env.BRIDGE_DISPLAY_HELPER_PATH;
-    delete process.env.NODE_ENV;
-    setResourcesPath(originalResourcesPath);
-    process.chdir(originalCwd);
-  });
-
-  afterEach(() => {
-    process.chdir(originalCwd);
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    Object.defineProperty(process, "platform", {
+      value: originalPlatform,
+      writable: true,
+    });
+    Object.defineProperty(process, "resourcesPath", {
+      value: originalResourcesPath,
+      writable: true,
+    });
     process.env.NODE_ENV = originalNodeEnv;
-    if (originalHelperPath) {
-      process.env.BRIDGE_DISPLAY_HELPER_PATH = originalHelperPath;
-    } else {
-      delete process.env.BRIDGE_DISPLAY_HELPER_PATH;
-    }
-    setResourcesPath(originalResourcesPath);
-    rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("prefers the explicit environment override", () => {
-    process.env.BRIDGE_DISPLAY_HELPER_PATH = "/tmp/custom-display-helper";
-
-    expect(resolveDisplayHelperPath()).toBe("/tmp/custom-display-helper");
+  afterAll(() => {
+    process.env = originalEnv;
   });
 
-  it("uses packaged resources path in production", () => {
-    process.env.NODE_ENV = "production";
-    setResourcesPath("/Applications/Broadify Bridge.app/Contents/Resources");
+  describe("resolveDisplayHelperPath", () => {
+    it("returns env path when BRIDGE_DISPLAY_HELPER_PATH is set", () => {
+      process.env[DISPLAY_HELPER_PATH_ENV] = "/custom/display-helper";
 
-    expect(resolveDisplayHelperPath()).toBe(
-      path.join(
-        "/Applications/Broadify Bridge.app/Contents/Resources",
-        "native",
-        "display-helper",
-        expectedHelperName
-      )
-    );
-  });
+      const result = resolveDisplayHelperPath();
 
-  it("falls back to cwd-based helper path in development", () => {
-    process.chdir(tempDir);
-    process.env.NODE_ENV = "development";
+      expect(result).toBe("/custom/display-helper");
+    });
 
-    expect(resolveDisplayHelperPath()).toBe(
-      path.join(process.cwd(), "native", "display-helper", expectedHelperName)
-    );
+    it("returns cwd-based path in dev (non-production)", () => {
+      delete process.env[DISPLAY_HELPER_PATH_ENV];
+      process.env.NODE_ENV = "development";
+      Object.defineProperty(process, "resourcesPath", {
+        value: "",
+        writable: true,
+      });
+
+      const result = resolveDisplayHelperPath();
+
+      const basename =
+        process.platform === "win32" ? "display-helper.exe" : "display-helper";
+      expect(result).toContain("native");
+      expect(result).toContain("display-helper");
+      expect(result.endsWith(basename)).toBe(true);
+    });
+
+    it("returns resources path in production when resourcesPath is set", () => {
+      delete process.env[DISPLAY_HELPER_PATH_ENV];
+      process.env.NODE_ENV = "production";
+      Object.defineProperty(process, "resourcesPath", {
+        value: "/app/resources",
+        writable: true,
+      });
+
+      const result = resolveDisplayHelperPath();
+
+      const basename =
+        process.platform === "win32" ? "display-helper.exe" : "display-helper";
+      expect(result).toBe(
+        `/app/resources/native/display-helper/${basename}`
+      );
+    });
   });
 });

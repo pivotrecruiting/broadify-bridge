@@ -17,8 +17,13 @@ class FakeWebSocket {
   }
 
   send(data: string): void {
+    if (this.sendThrows) {
+      throw new Error("send failed");
+    }
     this.sent.push(data);
   }
+
+  sendThrows = false;
 
   ping(): void {
     this.pingCalls += 1;
@@ -512,5 +517,546 @@ describe("RelayClient", () => {
       "outputs_snapshot",
       "graphics_snapshot",
     ]);
+  });
+
+  it("does not connect when already connecting", async () => {
+    const socket = new FakeWebSocket();
+    const createWebSocket = jest.fn(() => socket);
+    const client = new RelayClient("bridge-1", "ws://relay.test", createLogger(), undefined, {
+      createWebSocket: (url) => createWebSocket(url),
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    void client.connect();
+    await flushAsync();
+    void client.connect();
+    await flushAsync();
+    expect(createWebSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not connect when already connected and logs debug", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    expect(client.isConnected()).toBe(true);
+
+    await client.connect();
+    expect(logger.debug).toHaveBeenCalledWith("Already connected to relay");
+  });
+
+  it("does not connect when shutting down", async () => {
+    const socket = new FakeWebSocket();
+    const createWebSocket = jest.fn(() => socket);
+    const client = new RelayClient("bridge-1", "ws://relay.test", createLogger(), undefined, {
+      createWebSocket: (url) => createWebSocket(url),
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.disconnect();
+    await client.connect();
+    expect(createWebSocket).not.toHaveBeenCalled();
+  });
+
+  it("logs generic disconnect when close has no code or reason", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.emit("close");
+    expect(logger.warn).toHaveBeenCalledWith("Disconnected from relay server");
+  });
+
+  it("sends bridge_hello without auth when getEnrollmentPublicKey rejects", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no enrollment key");
+      },
+      getVersion: () => "1.0.0",
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+
+    expect(socket.sent.length).toBeGreaterThanOrEqual(1);
+    const hello = JSON.parse(socket.sent[0]);
+    expect(hello.type).toBe("bridge_hello");
+    expect(hello.bridgeId).toBe("bridge-1");
+    expect(hello.version).toBe("1.0.0");
+    expect(hello.auth).toBeUndefined();
+  });
+
+  it("drops message exceeding size limit and logs warning", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    const huge = JSON.stringify({
+      type: "command",
+      requestId: "req-1",
+      command: "engine_get_status",
+      payload: {},
+    }) + "x".repeat(3 * 1024 * 1024);
+    socket.emit("message", huge);
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Dropped relay message exceeding size limit/)
+    );
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("drops empty message and logs warning", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.emit("message", Buffer.alloc(0));
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith("Dropped relay message: empty payload");
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("logs error when message is invalid JSON", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.emit("message", "not valid json {");
+    await flushAsync();
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringMatching(/Error handling message/)
+    );
+  });
+
+  it("handles bridge_auth_error and closes socket", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+
+    socket.receiveJson({
+      type: "bridge_auth_error",
+      bridgeId: "bridge-1",
+      error: "Invalid signature",
+    });
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Relay bridge auth failed: Invalid signature"
+    );
+    expect(socket.closeCalls).toBe(1);
+  });
+
+  it("ignores bridge_auth_challenge for different bridgeId", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const signAuthChallenge = jest.fn();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      signAuthChallenge,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "bridge_auth_challenge",
+      bridgeId: "other-bridge",
+      challengeId: "challenge-1",
+      nonce: "nonce-1",
+      iat: 1000,
+      exp: 1030,
+      bridgeKeyId: "bridge-key-1",
+      algorithm: "ed25519",
+    });
+    await flushAsync();
+
+    expect(signAuthChallenge).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Ignored bridge auth challenge for different bridgeId"
+    );
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("closes socket when signAuthChallenge throws", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      signAuthChallenge: async () => {
+        throw new Error("signing failed");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "bridge_auth_challenge",
+      bridgeId: "bridge-1",
+      challengeId: "challenge-1",
+      nonce: "nonce-1",
+      iat: 1000,
+      exp: 1030,
+      bridgeKeyId: "bridge-key-1",
+      algorithm: "ed25519",
+    });
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to sign bridge auth challenge/)
+    );
+    expect(socket.closeCalls).toBe(1);
+  });
+
+  it("rejects command when verifySignedCommand throws and sends error result", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => {
+        throw new Error("Invalid signature");
+      },
+      isRelayCommand: () => true,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-sig-fail",
+      sequence: 1,
+      command: "engine_connect",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Rejected relay command/)
+    );
+    expect(socket.sent).toHaveLength(1);
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "command_result",
+      requestId: "req-sig-fail",
+      success: false,
+      error: "Invalid signature",
+    });
+  });
+
+  it("rejects unknown command and sends error result", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => false,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-unknown",
+      command: "unknown_command",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Rejected unknown command: unknown_command"
+    );
+    expect(socket.sent).toHaveLength(1);
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "command_result",
+      requestId: "req-unknown",
+      success: false,
+      error: "Unknown command",
+    });
+  });
+
+  it("sends error result when handleCommand throws", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand: async () => {
+        throw new Error("handler crashed");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-crash",
+      sequence: 2,
+      command: "engine_get_status",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(socket.sent).toHaveLength(2);
+    expect(JSON.parse(socket.sent[0]).type).toBe("command_received");
+    expect(JSON.parse(socket.sent[1])).toEqual({
+      type: "command_result",
+      requestId: "req-crash",
+      success: false,
+      error: "handler crashed",
+    });
+  });
+
+  it("warns when sendBridgeEvent called while disconnected", async () => {
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => new FakeWebSocket(),
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    client.sendBridgeEvent({ event: "test_event", data: {} });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Cannot send bridge event: not connected to relay"
+    );
+  });
+
+  it("logs WebSocket error and clears timers", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.emit("error", new Error("network error"));
+    await flushAsync();
+
+    expect(logger.error).toHaveBeenCalledWith("WebSocket error: network error");
+  });
+
+  it("schedules reconnect after createWebSocket throws", async () => {
+    const logger = createLogger();
+    const sockets: FakeWebSocket[] = [];
+    let callCount = 0;
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => {
+        callCount += 1;
+        if (callCount === 1) {
+          throw new Error("WebSocket constructor failed");
+        }
+        const s = new FakeWebSocket();
+        sockets.push(s);
+        return s;
+      },
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to create WebSocket connection/)
+    );
+
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(callCount).toBeGreaterThanOrEqual(2);
+    expect(sockets.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("getLastSeen returns null when never connected", async () => {
+    const client = new RelayClient("bridge-1", "ws://relay.test", createLogger(), undefined, {
+      createWebSocket: () => new FakeWebSocket(),
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+    expect(client.getLastSeen()).toBeNull();
+  });
+
+  it("getLastSeen returns date after message activity", async () => {
+    const socket = new FakeWebSocket();
+    const client = new RelayClient("bridge-1", "ws://relay.test", createLogger(), undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    expect(client.getLastSeen()).not.toBeNull();
+  });
+
+  it("logs disconnect with Buffer reason", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.emit("close", 1001, Buffer.from("Going away", "utf-8"));
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Disconnected from relay server (code: 1001, reason: Going away)"
+    );
+  });
+
+  it("logs error when ws.send throws", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand: async () => ({ success: true, data: {} }),
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+    socket.sendThrows = true;
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-1",
+      command: "engine_get_status",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(logger.error).toHaveBeenCalledWith("Error sending message: send failed");
+  });
+
+  it("logs unknown message type", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({ type: "unknown_type", foo: "bar" });
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Unknown message type: unknown_type"
+    );
   });
 });

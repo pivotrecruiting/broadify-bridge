@@ -32,6 +32,10 @@ sequenceDiagram
 - `openExternal`
 - Events: `bridgeStatus`, `updaterStatus`
 
+Hinweis:
+
+- Die Tray-UI nutzt diese Engine-Channels nicht als eigene konkurrierende Steuerebene; die Engine-Bedienung bleibt in der WebApp zentralisiert.
+
 ## Security
 - Nur whitelisted Channels werden exposed.
 - Renderer hat keinen Node‑Zugriff.
