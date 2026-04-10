@@ -107,6 +107,10 @@ Das bedeutet:
 
 Fuer `v1` sollte deshalb zuerst Variante A priorisiert werden.
 
+Hinweis:
+
+- Der Remote-LAN-Fall wird separat beschrieben in `docs/integration/vmix-browser-input-remote-umsetzungsplan.md`.
+
 ## Ist-Stand im Broadify-System
 
 ### Bereits vorhanden
