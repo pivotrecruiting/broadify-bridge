@@ -14,6 +14,13 @@ const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/display-helper/display-helper",
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
 ]);
+const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
+  "!**/@esbuild{,/**}",
+  "!**/esbuild{,/**}",
+  "!**/tsx{,/**}",
+  "!**/typescript{,/**}",
+  "!**/@types{,/**}",
+];
 
 if (isRcChannel) {
   config.appId = "com.broadify.bridge.rc";
@@ -28,6 +35,17 @@ const macOnlyResources = (config.extraResources || []).filter((entry) =>
 config.extraResources = (config.extraResources || []).filter(
   (entry) => !MAC_ONLY_NATIVE_RESOURCES.has(entry.from),
 );
+
+config.extraResources = (config.extraResources || []).map((entry) => {
+  if (entry.from !== "apps/bridge/node_modules") {
+    return entry;
+  }
+
+  return {
+    ...entry,
+    filter: ["**/*", ...BRIDGE_NODE_MODULES_DEV_EXCLUDES],
+  };
+});
 
 config.mac = config.mac || {};
 config.mac.extraResources = [
