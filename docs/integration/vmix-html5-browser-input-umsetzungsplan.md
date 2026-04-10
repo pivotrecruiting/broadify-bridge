@@ -568,23 +568,38 @@ Wichtig:
 Ziel:
 Graphics muessen innerhalb der bestehenden Broadify-Architektur sauber transportiert werden.
 
+### Status
+
+Phase 5 ist fuer den `v1`-Pfad umgesetzt.
+
+Wichtig:
+
+- Der bestehende Graphics-Commandpfad wurde weiterverwendet; `browser_input` laeuft weiterhin ueber dieselbe Broadify-Kette:
+  - WebApp -> Next.js API -> Relay -> Bridge
+- `graphics_configure_outputs` akzeptiert jetzt im bestehenden Vertrag auch `outputKey: browser_input`.
+- Relay und Bridge fuehren fuer diesen Modus keinen Sonder- oder Video-Output-Transportpfad ein.
+- `graphics_status` und `graphics_list` liefern den bestehenden Graphics-Status, erweitert um `browserInput`-Metadaten.
+- Die WebApp mappt diese Metadaten ueber den bestehenden GraphicsStore ein, statt einen separaten Store oder Polling-Sonderpfad einzufuehren.
+- Die Architektur- und Vertragsdoku im WebApp-Repo ist auf den tatsaechlichen `browser_input`-Pfad nachgezogen.
+- Bestehende Hardware-Output-Pfade fuer SDI/HDMI/NDI wurden dabei nicht umgebaut.
+
 ### Todos
 
-- [ ] Bestehenden Graphics-Commandpfad weiterverwenden.
-- [ ] `graphics_configure_outputs` und Status-Typen um `browser_input` erweitern.
-- [ ] Sicherstellen, dass Relay/Bridge fuer diesen Modus keine Video-Output-Annahmen treffen.
-- [ ] `graphics_status` fuer Browser-Input-Metadaten erweitern:
-  - [ ] browserInputUrl
-  - [ ] mode
-  - [ ] recommendedInputName
-  - [ ] transport
-  - [ ] lastBrowserClientSeenAt
-  - [ ] stateVersion oder vergleichbares Sync-Signal
-- [ ] Das Zusammenspiel mit bestehendem GraphicsStore sauber dokumentieren.
+- [x] Bestehenden Graphics-Commandpfad weiterverwenden.
+- [x] `graphics_configure_outputs` und Status-Typen um `browser_input` erweitern.
+- [x] Sicherstellen, dass Relay/Bridge fuer diesen Modus keine Video-Output-Annahmen treffen.
+- [x] `graphics_status` fuer Browser-Input-Metadaten erweitern:
+  - [x] browserInputUrl
+  - [x] mode
+  - [x] recommendedInputName
+  - [x] transport
+  - [x] lastBrowserClientSeenAt
+  - [x] stateVersion oder vergleichbares Sync-Signal
+- [x] Das Zusammenspiel mit bestehendem GraphicsStore sauber dokumentieren.
 
 ### Abnahme
 
-- [ ] Graphics Commands der WebApp koennen Browser-Input-Grafiken ueber die bestehende Broadify-Kette verwalten.
+- [x] Graphics Commands der WebApp koennen Browser-Input-Grafiken ueber die bestehende Broadify-Kette verwalten.
 
 ## Phase 6 – Optionaler API-Komfort fuer Browser Input
 

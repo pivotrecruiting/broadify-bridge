@@ -48,7 +48,12 @@ jest.mock("./graphics/graphics-manager.js", () => ({
     removeLayer: jest.fn().mockResolvedValue(undefined),
     removePreset: jest.fn().mockResolvedValue(undefined),
     initialize: jest.fn().mockResolvedValue(undefined),
-    getStatus: jest.fn(() => ({ outputConfig: null, activePreset: null, activePresets: [] })),
+    getStatus: jest.fn(() => ({
+      outputConfig: null,
+      browserInput: null,
+      activePreset: null,
+      activePresets: [],
+    })),
   },
 }));
 
@@ -228,6 +233,24 @@ describe("command-router", () => {
       expect(graphicsManager.configureOutputs).toHaveBeenCalled();
     });
 
+    it("graphics_configure_outputs accepts browser_input without hardware targets", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const payload = {
+        version: 1,
+        outputKey: "browser_input",
+        targets: {},
+        format: { width: 1920, height: 1080, fps: 50 },
+      };
+
+      const result = await commandRouter.handleCommand(
+        "graphics_configure_outputs",
+        payload
+      );
+
+      expect(result.success).toBe(true);
+      expect(graphicsManager.configureOutputs).toHaveBeenCalledWith(payload);
+    });
+
     it("graphics_test_pattern succeeds without payload", async () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const result = await commandRouter.handleCommand("graphics_test_pattern");
@@ -239,6 +262,7 @@ describe("command-router", () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       graphicsManager.getStatus.mockReturnValue({
         outputConfig: null,
+        browserInput: null,
         activePreset: null,
         activePresets: [],
       });
@@ -247,6 +271,49 @@ describe("command-router", () => {
       expect(result.success).toBe(true);
       expect(graphicsManager.initialize).toHaveBeenCalled();
       expect(result.data).toMatchObject({ outputConfig: null });
+    });
+
+    it("graphics_list returns browser_input metadata inside the existing graphics status payload", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: {
+          version: 1,
+          outputKey: "browser_input",
+          targets: {},
+          format: { width: 1920, height: 1080, fps: 50 },
+        },
+        browserInput: {
+          mode: "browser_input",
+          ready: true,
+          stateStatus: "ready",
+          stateValid: true,
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          browserInputWsUrl: "ws://127.0.0.1:8787/graphics/browser-input/ws",
+          recommendedInputName: "Broadify Graphics",
+          transport: "websocket",
+          browserClientCount: 1,
+          lastBrowserClientSeenAt: 1712345678,
+          stateVersion: 4,
+          format: { width: 1920, height: 1080, fps: 50 },
+          lastError: null,
+        },
+        activePreset: null,
+        activePresets: [],
+      });
+
+      const result = await commandRouter.handleCommand("graphics_list");
+
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        outputConfig: {
+          outputKey: "browser_input",
+        },
+        browserInput: {
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          transport: "websocket",
+          stateVersion: 4,
+        },
+      });
     });
 
     it("bridge_pair_validate returns error when pairing not enabled", async () => {
