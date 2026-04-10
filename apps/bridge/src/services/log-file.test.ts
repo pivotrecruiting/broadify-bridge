@@ -57,7 +57,7 @@ describe("log-file", () => {
       expect(result).toBe(expectedLogPath);
       expect(mockRename).toHaveBeenCalledWith(
         expectedLogPath,
-        expect.stringMatching(/\/tmp\/bridge-data\/logs\/bridge-\d+\.log$/)
+        expect.stringMatching(/[\\/]tmp[\\/]bridge-data[\\/]logs[\\/]bridge-\d+\.log$/)
       );
     });
 

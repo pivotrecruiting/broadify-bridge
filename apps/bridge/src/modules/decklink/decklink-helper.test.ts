@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 
 const mockSpawn = jest.fn();
 const mockAccess = jest.fn();
@@ -102,7 +103,9 @@ describe("decklink-helper", () => {
       process.env.NODE_ENV = "production";
 
       const result = resolveDecklinkHelperPath();
-      expect(result).toBe("/app/resources/native/decklink-helper/decklink-helper");
+      expect(result).toBe(
+        path.join("/app/resources", "native", "decklink-helper", "decklink-helper")
+      );
 
       process.env.NODE_ENV = origEnv;
       (process as { resourcesPath?: string }).resourcesPath = origResources;
