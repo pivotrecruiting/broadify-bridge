@@ -640,28 +640,26 @@ Die Desktop-App soll den gleichen lokalen vMix-Flow verstehen.
 
 Stand:
 
-- Die Desktop-App unterstuetzt jetzt im Connect-Slice sowohl `atem` als auch `vmix`.
-- Der Electron-IPC- und Main-Prozess-Pfad fuer `engineConnect` ist nicht mehr ATEM-fixiert.
-- Fuer `vmix` ist im Desktop-UI der Default-Port `8088` hinterlegt.
-- Die Desktop-App zeigt im Engine-Bereich fuer den lokalen `vmix`-Flow jetzt eine same-machine Browser-Input-URL und einen empfohlenen Input-Namen an.
+- Der Electron-IPC- und Main-Prozess-Pfad fuer `engineConnect` ist nicht mehr ATEM-fixiert und versteht sowohl `atem` als auch `vmix`.
+- Die Tray-/Desktop-App stellt dafuer **keine eigene Engine-Auswahl oder Connect-Oberflaeche** mehr bereit.
+- Die WebApp bleibt fuer Engine-Konfiguration und -Steuerung die **Single Source of Truth**, insbesondere ueber die bestehende `/connections`-Route.
 - Bestehendes ATEM-Verhalten bleibt erhalten; es wurde kein bestehender Hardware- oder Bridge-Startpfad entfernt oder ersetzt.
-- Die Desktop-App nutzt weiterhin denselben bestehenden Bridge-Engine-Pfad `/engine/connect`; es gibt keinen Desktop-Sonderpfad ausserhalb des bisherigen Contracts.
+- Die Desktop-App bleibt fuer lokale Bridge-Lifecycle-, Netzwerk-, Pairing-, Logging- und Update-Aufgaben zustaendig, nicht fuer eine zweite produktive Engine-Steueroberflaeche.
 
 ### Todos
 
-- [x] Engine-Typ in der Desktop-App fuer `vmix` freigeben.
 - [x] Desktop-Connect-Contract von ATEM-Fixierung loesen.
-- [x] Standardport `8088` fuer vMix hinterlegen.
-- [x] Lokale Hinweise fuer Browser-Input-URL im Desktop-Kontext bereitstellen, falls gewuenscht.
-- [x] Sicherstellen, dass die lokale Desktop-App den same-machine Browser-Input-Flow unterstuetzt.
+- [x] `vmix` im Electron-/Bridge-Connect-Slice unterstuetzen.
+- [x] Sicherstellen, dass die WebApp die einzige produktive Engine-Steueroberflaeche bleibt.
+- [x] Verhindern, dass die Tray-App eine zweite Engine-UI als konkurrierende Konfigurationsquelle aufbaut.
 
 Hinweis:
 
-- Die **WebApp** ist an dieser Stelle bereits weiter als die Desktop-App; der offene Paritaetsbedarf betrifft vor allem Electron/Desktop, nicht mehr die WebApp.
+- Die **WebApp** ist hier bewusst die produktive Steuerebene; Desktop-Paritaet bedeutet in diesem Kontext Contract-/Runtime-Kompatibilitaet, nicht doppelte UI.
 
 ### Abnahme
 
-- [x] Der lokale Laptop-Flow ist im Codepfad sowohl aus der WebApp als auch aus der Desktop-App nachvollziehbar modelliert.
+- [x] Der lokale Laptop-Flow ist im gemeinsamen Bridge-/Electron-Contract modelliert, waehrend die Bedienung weiter zentral ueber die WebApp erfolgt.
 - [ ] Echte Desktop-validierte Maschinenprobe mit laufendem vMix bleibt Teil von Phase 9.
 
 ## Phase 8 – Security und Betriebsmodell
