@@ -103,4 +103,40 @@ describe("BrowserInputRuntime", () => {
     runtime.unregisterBrowserClient();
     expect(runtime.getSnapshot().browserClientCount).toBe(0);
   });
+
+  it("keeps browser-input urls on loopback even when the bridge listens on lan interfaces", () => {
+    setBridgeContext({
+      userDataDir: "/tmp",
+      logPath: "/tmp/bridge.log",
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      },
+      serverHost: "0.0.0.0",
+      serverPort: 8787,
+      serverMode: "lan",
+      bridgeName: "Studio A",
+    });
+
+    const runtime = new BrowserInputRuntime();
+    runtime.configure({
+      version: 1,
+      outputKey: "browser_input",
+      targets: {},
+      format: { width: 1920, height: 1080, fps: 50 },
+      range: "legal",
+      colorspace: "auto",
+    });
+
+    const snapshot = runtime.getSnapshot();
+
+    expect(snapshot.browserInputUrl).toBe(
+      "http://127.0.0.1:8787/graphics/browser-input"
+    );
+    expect(snapshot.browserInputWsUrl).toBe(
+      "ws://127.0.0.1:8787/graphics/browser-input/ws"
+    );
+  });
 });

@@ -665,22 +665,34 @@ Hinweis:
 Ziel:
 Der Browser-Input-Ansatz muss supportbar und sicher genug fuer den Zielbetrieb sein.
 
+Stand:
+
+- Das `v1`-Betriebsmodell ist jetzt explizit als **same-machine first** festgezogen.
+- Die Bridge liefert fuer `browser_input` in ihren Status-Metadaten bewusst Loopback-URLs (`127.0.0.1`) aus, auch wenn die HTTP-Bindung der Bridge breiter konfiguriert ist.
+- Dadurch wird vermieden, dass ein LAN-Bind der Bridge automatisch den Browser-Input-Pfad nach aussen exponiert oder implizit zu einem Remote-vMix-Setup wird.
+- Browser-Input-Routen bleiben lokal oder token-geschuetzt ueber den bestehenden `local-or-token`-Guard.
+- Logging-Regeln sind fuer diesen Modus nachgezogen:
+  - keine Layer-Payloads, HTML-/CSS-Inhalte oder Secrets in Betriebslogs
+  - Browser-Input-Handshake nur als Meta-Information
+  - Browser-Input-URL nicht unnötig breit in Debug-Logs replizieren
+- Remote-vMix ueber LAN ist fuer `v1` damit **nicht** der implizite Standardpfad; dafuer waere ein bewusst anderes URL-/Expositionsmodell noetig.
+
 ### Todos
 
-- [ ] URL-Sicherheitsmodell definieren.
-- [ ] `v1` explizit als same-machine first dokumentieren.
-- [ ] Falls Browser-Input-URL im LAN erreichbar sein soll:
-  - [ ] lokalen vs. LAN-Bind sauber spezifizieren
-  - [ ] Remote-vMix fuer `v1` nur bei bewusst aktivierter LAN-Exposition erlauben
-- [ ] Logging-Regeln definieren:
-  - [ ] keine sensiblen Payloads
-  - [ ] keine Secrets in Browser-Input-URLs
-  - [ ] Browser-Input-Handshake nur als Meta-Info loggen
-- [ ] Security-Doku fuer diesen Modus aktualisieren.
+- [x] URL-Sicherheitsmodell definieren.
+- [x] `v1` explizit als same-machine first dokumentieren.
+- [x] Falls Browser-Input-URL im LAN erreichbar sein soll:
+  - [x] lokalen vs. LAN-Bind sauber spezifizieren
+  - [x] Remote-vMix fuer `v1` nur bei bewusst aktivierter LAN-Exposition erlauben
+- [x] Logging-Regeln definieren:
+  - [x] keine sensiblen Payloads
+  - [x] keine Secrets in Browser-Input-URLs
+  - [x] Browser-Input-Handshake nur als Meta-Info loggen
+- [x] Security-Doku fuer diesen Modus aktualisieren.
 
 ### Abnahme
 
-- [ ] Das Betriebsmodell fuer Browser-Input-Grafiken ist klar dokumentiert.
+- [x] Das Betriebsmodell fuer Browser-Input-Grafiken ist klar dokumentiert.
 
 ## Phase 9 – Teststrategie
 

@@ -31,6 +31,8 @@ flowchart LR
 - Logs können sensitive Informationen enthalten → keine Tokens/Secrets loggen.
 - `/logs` und `/logs/clear` sind lokal oder token-geschützt (`BRIDGE_API_TOKEN`).
 - Pairing‑Code bleibt im Memory/Context und wird nicht geloggt.
+- Browser-Input-Handshake und Browser-Client-Aktivität werden nur als Meta-Information behandelt; keine Layer-Payloads oder HTML/CSS-Inhalte in Betriebslogs schreiben.
+- Browser-Input-URLs bleiben fuer `v1` same-machine-first auf Loopback (`127.0.0.1`) ausgelegt; sie sollen nicht als Secret behandelt, aber auch nicht unnötig breit in Debug-Logs repliziert werden.
 
 ## Log‑Level & Debug‑Flags
 - Default‑Level: `info` (konfigurierbar über `BRIDGE_LOG_LEVEL`).

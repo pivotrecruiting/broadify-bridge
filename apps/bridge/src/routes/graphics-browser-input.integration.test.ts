@@ -169,4 +169,78 @@ describe("registerGraphicsBrowserInputRoute integration", () => {
     socket.emit("close");
     expect(unregisterBrowserClient).toHaveBeenCalled();
   });
+
+  it("closes unauthorized websocket clients before runtime registration", async () => {
+    const captured: {
+      handler?: (
+        connection: { socket: FakeSocket },
+        request: { ip: string }
+      ) => void;
+    } = {};
+    const fastify = {
+      get: jest.fn(
+        (
+          path: string,
+          optionsOrHandler: unknown,
+          maybeHandler?: (
+            connection: { socket: FakeSocket },
+            request: { ip: string }
+          ) => void
+        ) => {
+          if (path === "/graphics/browser-input/ws") {
+            captured.handler =
+              typeof maybeHandler === "function"
+                ? maybeHandler
+                : (optionsOrHandler as typeof maybeHandler);
+          }
+        }
+      ),
+      log: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      },
+    };
+    const registerBrowserClient = jest.fn();
+
+    await registerGraphicsBrowserInputRoute(fastify as any, {
+      enforceLocalOrToken: () => true,
+      getAuthFailure: () => ({ status: 401, message: "Unauthorized" }),
+      buildBrowserInputPageHtml: () => "<html></html>",
+      browserInputRuntime: {
+        getSnapshot: () => ({
+          mode: "browser_input" as const,
+          ready: true,
+          stateStatus: "empty" as const,
+          stateValid: true,
+          browserInputUrl: "http://127.0.0.1:8787/graphics/browser-input",
+          browserInputWsUrl: "ws://127.0.0.1:8787/graphics/browser-input/ws",
+          recommendedInputName: "Broadify Browser Input",
+          transport: "websocket" as const,
+          browserClientCount: 0,
+          lastBrowserClientSeenAt: null,
+          stateVersion: 1,
+          format: { width: 1920, height: 1080, fps: 50 },
+          lastError: null,
+          layers: [],
+        }),
+        subscribe: () => () => undefined,
+        markBrowserClientSeen: jest.fn(),
+        registerBrowserClient,
+        unregisterBrowserClient: jest.fn(),
+        reportError: jest.fn(),
+      },
+      assetRegistry: {
+        getAsset: () => null,
+      },
+      readFile: async () => Buffer.from(""),
+    } as any);
+
+    const socket = new FakeSocket();
+    captured.handler?.({ socket }, { ip: "192.168.1.20" });
+
+    expect(socket.close).toHaveBeenCalledWith(1008, "Forbidden");
+    expect(registerBrowserClient).not.toHaveBeenCalled();
+  });
 });
