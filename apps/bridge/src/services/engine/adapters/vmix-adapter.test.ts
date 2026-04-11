@@ -174,42 +174,42 @@ describe("VmixAdapter", () => {
       await expect(adapter.runMacro(0)).rejects.toThrow("Invalid macro ID");
     });
 
-    it("calls MacroStart API when connected", async () => {
+    it("rejects macro execution because the HTTP API does not document MacroStart", async () => {
       mockFetch
         .mockResolvedValueOnce(
           okResponse("<vmix><version>29.0.0.47</version></vmix>")
         )
         .mockResolvedValue(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
-      await adapter.runMacro(1);
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining("MacroStart"),
-        expect.any(Object)
+      await expect(adapter.runMacro(1)).rejects.toThrow(
+        "vMix macro execution by ID is not documented in the current HTTP API"
       );
     });
 
-    it("throws when MacroStart API returns error", async () => {
+    it("surfaces the documented-api error when running a macro", async () => {
       mockFetch
         .mockResolvedValueOnce(
           okResponse("<vmix><version>29.0.0.47</version></vmix>")
         )
-        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
-        .mockResolvedValueOnce(notOkResponse(500));
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
-      await expect(adapter.runMacro(1)).rejects.toThrow("Failed to run macro 1");
+      await expect(adapter.runMacro(1)).rejects.toThrow(
+        "Failed to run macro 1: vMix macro execution by ID is not documented in the current HTTP API"
+      );
     });
 
-    it("marks adapter as error when MacroStart fails with connection error", async () => {
+    it("keeps the adapter connected when macro execution is unsupported", async () => {
       mockFetch
         .mockResolvedValueOnce(
           okResponse("<vmix><version>29.0.0.47</version></vmix>")
         )
-        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
-        .mockRejectedValueOnce(new Error("ECONNREFUSED Connection refused"));
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"));
 
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
-      await expect(adapter.runMacro(1)).rejects.toThrow("Failed to run macro 1");
-      expect(adapter.getStatus()).toBe("error");
+      await expect(adapter.runMacro(1)).rejects.toThrow(
+        "Failed to run macro 1"
+      );
+      expect(adapter.getStatus()).toBe("connected");
     });
   });
 
@@ -228,30 +228,27 @@ describe("VmixAdapter", () => {
       await expect(adapter.stopMacro(0)).rejects.toThrow("Invalid macro ID");
     });
 
-    it("calls MacroStop API when connected", async () => {
+    it("rejects macro stop because the HTTP API does not document MacroStop", async () => {
       mockFetch
         .mockResolvedValueOnce(
           okResponse("<vmix><version>29.0.0.47</version></vmix>")
         )
         .mockResolvedValue(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
-      await adapter.stopMacro(1);
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining("MacroStop"),
-        expect.any(Object)
+      await expect(adapter.stopMacro(1)).rejects.toThrow(
+        "vMix macro stop by ID is not documented in the current HTTP API"
       );
     });
 
-    it("throws when MacroStop API returns error", async () => {
+    it("surfaces the documented-api error when stopping a macro", async () => {
       mockFetch
         .mockResolvedValueOnce(
           okResponse("<vmix><version>29.0.0.47</version></vmix>")
         )
-        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
-        .mockResolvedValueOnce(notOkResponse(500));
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await expect(adapter.stopMacro(1)).rejects.toThrow(
-        "Failed to stop macro 1"
+        "Failed to stop macro 1: vMix macro stop by ID is not documented in the current HTTP API"
       );
     });
   });
