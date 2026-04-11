@@ -44,7 +44,8 @@ export class VmixHttpClient {
   }
 
   async getVersion(): Promise<string> {
-    return this.requestText("GetVersion");
+    const responseText = await this.requestStateText();
+    return parseVmixVersionResponse(responseText);
   }
 
   async getMacros(): Promise<MacroT[]> {
@@ -199,6 +200,11 @@ export function parseVmixInputsResponse(
   }
 
   return inputs;
+}
+
+export function parseVmixVersionResponse(responseText: string): string {
+  const match = responseText.match(/<version>([^<]+)<\/version>/i);
+  return match?.[1]?.trim() || "";
 }
 
 export function parseVmixMacrosResponse(responseText: string): MacroT[] {

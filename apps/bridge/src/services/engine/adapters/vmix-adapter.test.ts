@@ -51,18 +51,25 @@ describe("VmixAdapter", () => {
       ).rejects.toThrow("already connected");
     });
 
-    it("connects successfully when GetVersion returns ok", async () => {
+    it("connects successfully when the state endpoint returns ok", async () => {
       const macroXml =
         '<vmix><macros><macro number="1" name="Macro 1" running="False"/></macros></vmix>';
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValue(okResponse(macroXml));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       expect(adapter.getStatus()).toBe("connected");
       expect(adapter.getMacros()).toHaveLength(1);
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        "http://10.0.0.1:8088/api",
+        expect.any(Object)
+      );
     });
 
-    it("throws when GetVersion fails", async () => {
+    it("throws when the state endpoint fails", async () => {
       mockFetch.mockResolvedValue(notOkResponse(404));
       await expect(
         adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 })
@@ -116,7 +123,9 @@ describe("VmixAdapter", () => {
     it("transitions to error after consecutive polling failures", async () => {
       jest.useFakeTimers();
       mockFetch
-        .mockResolvedValueOnce(okResponse("29.0.0.0"))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.0</version></vmix>")
+        )
         .mockResolvedValueOnce(
           okResponse(
             '<vmix><macros><macro number="1" name="Macro 1" running="False"/></macros></vmix>'
@@ -139,7 +148,9 @@ describe("VmixAdapter", () => {
   describe("disconnect", () => {
     it("resets state", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValue(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await adapter.disconnect();
@@ -155,7 +166,9 @@ describe("VmixAdapter", () => {
 
     it("throws for invalid macro ID", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValue(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await expect(adapter.runMacro(0)).rejects.toThrow("Invalid macro ID");
@@ -163,7 +176,9 @@ describe("VmixAdapter", () => {
 
     it("calls MacroStart API when connected", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValue(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await adapter.runMacro(1);
@@ -175,7 +190,9 @@ describe("VmixAdapter", () => {
 
     it("throws when MacroStart API returns error", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
         .mockResolvedValueOnce(notOkResponse(500));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
@@ -184,7 +201,9 @@ describe("VmixAdapter", () => {
 
     it("marks adapter as error when MacroStart fails with connection error", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
         .mockRejectedValueOnce(new Error("ECONNREFUSED Connection refused"));
 
@@ -201,7 +220,9 @@ describe("VmixAdapter", () => {
 
     it("throws for invalid macro ID", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValue(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await expect(adapter.stopMacro(0)).rejects.toThrow("Invalid macro ID");
@@ -209,7 +230,9 @@ describe("VmixAdapter", () => {
 
     it("calls MacroStop API when connected", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValue(okResponse("<vmix></vmix>"));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
       await adapter.stopMacro(1);
@@ -221,7 +244,9 @@ describe("VmixAdapter", () => {
 
     it("throws when MacroStop API returns error", async () => {
       mockFetch
-        .mockResolvedValueOnce(okResponse(""))
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
         .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
         .mockResolvedValueOnce(notOkResponse(500));
       await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
