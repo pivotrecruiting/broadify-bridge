@@ -3,6 +3,8 @@ import type {
   EngineConnectConfig,
   EnsureVmixBrowserInputConfigT,
   EnsureVmixBrowserInputResultT,
+  VmixActionConfigT,
+  VmixActionResultT,
 } from "./engine/engine-adapter-interface.js";
 import { createEngineAdapter } from "./engine/adapter-factory.js";
 import { EngineStateStore } from "./engine/engine-state-store.js";
@@ -35,10 +37,20 @@ type VmixBrowserInputCapableAdapterT = EngineAdapter & {
   ) => Promise<EnsureVmixBrowserInputResultT>;
 };
 
+type VmixActionCapableAdapterT = EngineAdapter & {
+  runVmixAction: (config: VmixActionConfigT) => Promise<VmixActionResultT>;
+};
+
 const isVmixBrowserInputCapableAdapter = (
   adapter: EngineAdapter | null
 ): adapter is VmixBrowserInputCapableAdapterT => {
   return typeof adapter?.ensureVmixBrowserInput === "function";
+};
+
+const isVmixActionCapableAdapter = (
+  adapter: EngineAdapter | null
+): adapter is VmixActionCapableAdapterT => {
+  return typeof adapter?.runVmixAction === "function";
 };
 
 /**
@@ -267,6 +279,26 @@ export class EngineAdapterService {
     }
 
     return this.adapter.ensureVmixBrowserInput(config);
+  }
+
+  /**
+   * Execute a documented vMix action for the connected engine.
+   */
+  async runVmixAction(config: VmixActionConfigT): Promise<VmixActionResultT> {
+    if (!this.adapter) {
+      throw createNotConnectedError("run vMix action");
+    }
+
+    const currentState = this.stateStore.getState();
+    if (currentState.status !== "connected" || currentState.type !== "vmix") {
+      throw new Error("vMix engine is not connected");
+    }
+
+    if (!isVmixActionCapableAdapter(this.adapter)) {
+      throw new Error("Connected engine does not support vMix actions");
+    }
+
+    return this.adapter.runVmixAction(config);
   }
 
   /**

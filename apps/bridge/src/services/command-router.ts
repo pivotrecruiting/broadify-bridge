@@ -8,6 +8,7 @@ import {
   ListOutputsSchema,
   MacroIdSchema,
   PairingCodeSchema,
+  VmixActionSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
 import { getBridgeContext } from "./bridge-context.js";
@@ -264,6 +265,23 @@ export class CommandRouter {
             success: true,
             data: {
               macroId,
+              state: engineAdapter.getState(),
+            },
+          };
+        }
+
+        case "engine_vmix_run_action": {
+          const action = parseRelayPayload(
+            VmixActionSchema,
+            payload ?? {},
+            "Invalid payload for engine_vmix_run_action",
+          );
+          const result = await engineAdapter.runVmixAction(action);
+
+          return {
+            success: true,
+            data: {
+              ...result,
               state: engineAdapter.getState(),
             },
           };

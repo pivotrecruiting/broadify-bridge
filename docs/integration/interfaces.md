@@ -11,6 +11,7 @@ Diese Seite beschreibt die wichtigsten Schnittstellen zwischen Desktop‑App und
 - `bridgeGetLogs()` / `bridgeClearLogs()`
 - `appGetLogs()` / `appClearLogs()`
 - `engineConnect()` / `engineDisconnect()` / `engineGetStatus()` / `engineGetMacros()` / `engineRunMacro()` / `engineStopMacro()`
+- fuer dokumentierte vMix-Script-Aktionen zusaetzlich: `engine_vmix_run_action`
 
 ## Main → Bridge HTTP
 - `GET /status` (inkl. optional `bridgeName`)
@@ -22,6 +23,7 @@ Diese Seite beschreibt die wichtigsten Schnittstellen zwischen Desktop‑App und
 - `GET /engine/macros`
 - `POST /engine/macros/:id/run`
 - `POST /engine/macros/:id/stop`
+- `POST /engine/vmix/actions/run`
 - `GET /logs`
 - `POST /logs/clear`
 

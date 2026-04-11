@@ -8,6 +8,8 @@ import type {
   EngineConnectConfig,
   EnsureVmixBrowserInputConfigT,
   EnsureVmixBrowserInputResultT,
+  VmixActionConfigT,
+  VmixActionResultT,
 } from "./engine/engine-adapter-interface.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
 
@@ -22,6 +24,7 @@ class FakeAdapter implements EngineAdapter {
   public runMacroCalls: number[] = [];
   public stopMacroCalls: number[] = [];
   public ensureVmixBrowserInputCalls: EnsureVmixBrowserInputConfigT[] = [];
+  public runVmixActionCalls: VmixActionConfigT[] = [];
   public unsubscribeCalls = 0;
 
   private stateChangeCallback: (state: EngineStateT) => void = () => {};
@@ -35,6 +38,9 @@ class FakeAdapter implements EngineAdapter {
   ensureVmixBrowserInputImpl?: (
     config: EnsureVmixBrowserInputConfigT
   ) => Promise<EnsureVmixBrowserInputResultT>;
+  runVmixActionImpl?: (
+    config: VmixActionConfigT
+  ) => Promise<VmixActionResultT>;
 
   async connect(config: EngineConnectConfig): Promise<void> {
     this.connectCalls.push(config);
@@ -96,6 +102,20 @@ class FakeAdapter implements EngineAdapter {
       inputKey: "input-7",
       inputName: config.inputName,
       browserInputUrl: config.url,
+    };
+  }
+
+  async runVmixAction(config: VmixActionConfigT): Promise<VmixActionResultT> {
+    this.runVmixActionCalls.push(config);
+    if (this.runVmixActionImpl) {
+      return this.runVmixActionImpl(config);
+    }
+
+    return {
+      actionType: config.actionType,
+      scriptName: config.scriptName,
+      executedFunction:
+        config.actionType === "script_start" ? "ScriptStart" : "ScriptStop",
     };
   }
 
@@ -405,6 +425,40 @@ describe("EngineAdapterService", () => {
       service.ensureVmixBrowserInput({
         url: "http://127.0.0.1:8787/graphics/browser-input",
         inputName: "Broadify Browser Input",
+      }),
+    ).rejects.toThrow("vMix engine is not connected");
+  });
+
+  it("runs a vmix action through the connected adapter", async () => {
+    const { service, adapter } = createService();
+    await service.connect({ type: "vmix", ip: "10.0.0.20", port: 8088 });
+
+    const result = await service.runVmixAction({
+      actionType: "script_start",
+      scriptName: "Broadify_Button_1",
+    });
+
+    expect(adapter.runVmixActionCalls).toEqual([
+      {
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      },
+    ]);
+    expect(result).toEqual({
+      actionType: "script_start",
+      scriptName: "Broadify_Button_1",
+      executedFunction: "ScriptStart",
+    });
+  });
+
+  it("rejects vmix action execution when a non-vmix engine is connected", async () => {
+    const { service } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    await expect(
+      service.runVmixAction({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
       }),
     ).rejects.toThrow("vMix engine is not connected");
   });

@@ -11,6 +11,17 @@ export const ConnectRequestSchema = z.object({
   port: z.number().int().min(1).max(65535),
 });
 
+export const VmixActionRequestSchema = z.discriminatedUnion("actionType", [
+  z.object({
+    actionType: z.literal("script_start"),
+    scriptName: z.string().trim().min(1).max(256),
+  }),
+  z.object({
+    actionType: z.literal("script_stop"),
+    scriptName: z.string().trim().min(1).max(256),
+  }),
+]);
+
 /**
  * Map domain engine errors to HTTP status codes.
  */

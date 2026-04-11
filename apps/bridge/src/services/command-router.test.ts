@@ -11,6 +11,7 @@ jest.mock("./engine-adapter.js", () => ({
     disconnect: jest.fn(),
     runMacro: jest.fn(),
     stopMacro: jest.fn(),
+    runVmixAction: jest.fn(),
     ensureVmixBrowserInput: jest.fn(),
   },
 }));
@@ -213,6 +214,36 @@ describe("command-router", () => {
       });
       expect(result.success).toBe(true);
       expect(require("./engine-adapter.js").engineAdapter.stopMacro).toHaveBeenCalledWith(3);
+    });
+
+    it("engine_vmix_run_action returns action result and state", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getState.mockReturnValue({
+        status: "connected",
+        type: "vmix",
+        macros: [],
+      });
+      engineAdapter.runVmixAction.mockResolvedValue({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+        executedFunction: "ScriptStart",
+      });
+
+      const result = await commandRouter.handleCommand("engine_vmix_run_action", {
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      });
+
+      expect(result.success).toBe(true);
+      expect(engineAdapter.runVmixAction).toHaveBeenCalledWith({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      });
+      expect(result.data).toMatchObject({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+        executedFunction: "ScriptStart",
+      });
     });
 
     it("engine_vmix_ensure_browser_input reuses bridge browser-input metadata", async () => {

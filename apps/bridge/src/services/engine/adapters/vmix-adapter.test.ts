@@ -253,6 +253,71 @@ describe("VmixAdapter", () => {
     });
   });
 
+  describe("runVmixAction", () => {
+    it("throws when not connected", async () => {
+      await expect(
+        adapter.runVmixAction({
+          actionType: "script_start",
+          scriptName: "Broadify_Button_1",
+        }),
+      ).rejects.toThrow("not connected");
+    });
+
+    it("calls ScriptStart when requested", async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
+        .mockResolvedValueOnce(okResponse("OK"));
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+
+      const result = await adapter.runVmixAction({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Function=ScriptStart"),
+        expect.any(Object)
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Value=Broadify_Button_1"),
+        expect.any(Object)
+      );
+      expect(result).toEqual({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+        executedFunction: "ScriptStart",
+      });
+    });
+
+    it("calls ScriptStop when requested", async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
+        .mockResolvedValueOnce(okResponse("OK"));
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+
+      const result = await adapter.runVmixAction({
+        actionType: "script_stop",
+        scriptName: "Broadify_Button_1",
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("Function=ScriptStop"),
+        expect.any(Object)
+      );
+      expect(result).toEqual({
+        actionType: "script_stop",
+        scriptName: "Broadify_Button_1",
+        executedFunction: "ScriptStop",
+      });
+    });
+  });
+
   describe("ensureVmixBrowserInput", () => {
     it("throws when not connected", async () => {
       await expect(

@@ -11,6 +11,7 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "engine_get_macros",
   "engine_run_macro",
   "engine_stop_macro",
+  "engine_vmix_run_action",
   "engine_vmix_ensure_browser_input",
   "graphics_configure_outputs",
   "graphics_send",

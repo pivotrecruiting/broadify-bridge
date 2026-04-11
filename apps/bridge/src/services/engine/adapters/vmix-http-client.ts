@@ -58,16 +58,28 @@ export class VmixHttpClient {
     return parseVmixInputsResponse(responseText);
   }
 
-  async startMacro(id: number): Promise<void> {
+  async startMacro(_id: number): Promise<void> {
     throw new Error(
       "vMix macro execution by ID is not documented in the current HTTP API"
     );
   }
 
-  async stopMacro(id: number): Promise<void> {
+  async stopMacro(_id: number): Promise<void> {
     throw new Error(
       "vMix macro stop by ID is not documented in the current HTTP API"
     );
+  }
+
+  async runScriptStart(scriptName: string): Promise<void> {
+    await this.requestText("ScriptStart", {
+      Value: scriptName,
+    });
+  }
+
+  async runScriptStop(scriptName: string): Promise<void> {
+    await this.requestText("ScriptStop", {
+      Value: scriptName,
+    });
   }
 
   async addBrowserInput(url: string): Promise<void> {

@@ -9,6 +9,7 @@ import { getAuthFailure } from "./route-guards.js";
 import {
   ConnectRequestSchema,
   mapEngineErrorToStatusCode,
+  VmixActionRequestSchema,
 } from "./engine-contract.js";
 
 type EngineRouteDepsT = {
@@ -23,6 +24,7 @@ type EngineRouteDepsT = {
     | "getStatus"
     | "runMacro"
     | "stopMacro"
+    | "runVmixAction"
   >;
   getAuthFailure: typeof getAuthFailure;
 };
@@ -38,6 +40,7 @@ type EngineRouteOptionsT = FastifyPluginOptions & Partial<EngineRouteDepsT>;
  * GET /engine/macros - Get all macros
  * POST /engine/macros/:id/run - Run macro
  * POST /engine/macros/:id/stop - Stop macro
+ * POST /engine/vmix/actions/run - Execute documented vMix action
  * WS /engine/stream - WebSocket stream for real-time updates
  */
 export async function registerEngineRoute(
@@ -313,6 +316,54 @@ export async function registerEngineRoute(
       return reply.code(500).send({
         success: false,
         error: "Failed to stop macro",
+        message: errorMessage || "Unknown error",
+      });
+    }
+  });
+
+  /**
+   * POST /engine/vmix/actions/run
+   * Execute a documented vMix action (script start/stop).
+   */
+  fastify.post("/engine/vmix/actions/run", async (request, reply) => {
+    try {
+      const body = VmixActionRequestSchema.parse(request.body || {});
+      const result = await deps.engineAdapter.runVmixAction(body);
+
+      return {
+        success: true,
+        action: result,
+        state: deps.engineAdapter.getState(),
+      };
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      fastify.log.error({ err: error }, "[Engine] vMix action error");
+
+      if (
+        error &&
+        typeof error === "object" &&
+        "name" in error &&
+        error.name === "ZodError"
+      ) {
+        return reply.code(400).send({
+          success: false,
+          error: "Invalid vMix action payload",
+          message: errorMessage,
+        });
+      }
+
+      if (errorMessage.includes("not connected")) {
+        return reply.code(503).send({
+          success: false,
+          error: "Engine not connected",
+          message: errorMessage,
+        });
+      }
+
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to execute vMix action",
         message: errorMessage || "Unknown error",
       });
     }
