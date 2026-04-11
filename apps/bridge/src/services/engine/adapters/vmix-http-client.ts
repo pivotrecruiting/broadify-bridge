@@ -49,7 +49,7 @@ export class VmixHttpClient {
   }
 
   async getMacros(): Promise<MacroT[]> {
-    const responseText = await this.requestText("GetMacros");
+    const responseText = await this.requestStateText();
     return parseVmixMacrosResponse(responseText);
   }
 
