@@ -316,6 +316,27 @@ describe("VmixAdapter", () => {
         executedFunction: "ScriptStop",
       });
     });
+
+    it("keeps the adapter connected when ScriptStart returns an API error", async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          okResponse("<vmix><version>29.0.0.47</version></vmix>")
+        )
+        .mockResolvedValueOnce(okResponse("<vmix></vmix>"))
+        .mockResolvedValueOnce(notOkResponse(500));
+
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+
+      await expect(
+        adapter.runVmixAction({
+          actionType: "script_start",
+          scriptName: "MissingScript",
+        }),
+      ).rejects.toThrow("Failed to execute vMix action");
+
+      expect(adapter.getStatus()).toBe("connected");
+      expect(adapter.getState().error).toContain("vMix API request failed");
+    });
   });
 
   describe("ensureVmixBrowserInput", () => {

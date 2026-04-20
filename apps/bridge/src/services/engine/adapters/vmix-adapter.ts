@@ -400,6 +400,16 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       return;
     }
 
+    if (
+      error.code === EngineErrorCode.PROTOCOL_ERROR ||
+      error.code === EngineErrorCode.UNKNOWN_ERROR
+    ) {
+      this.setState({
+        error: error.message,
+      });
+      return;
+    }
+
     this.stopPolling();
     this.setState({
       status: "error",

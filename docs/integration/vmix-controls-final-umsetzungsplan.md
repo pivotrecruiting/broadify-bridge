@@ -18,6 +18,17 @@ Der aktuelle Stand ist ein bewusst pragmatischer Kompatibilitaetspfad:
 
 Das reicht fuer kontrollierte Kunden-Setups, ist aber noch kein final sauberes Produktmodell.
 
+## Umsetzungsstand
+
+Stand `2026-04-13`:
+
+- Phase 1 ist umgesetzt
+- Phase 2 ist umgesetzt
+- Phase 3 ist umgesetzt
+- Phase 4 ist umgesetzt
+
+Offen sind damit noch die produktionssaubere Migrations- und Alt-Daten-Strategie aus Phase 5.
+
 ## Zielbild
 
 Die finale Version soll `vMix` nicht mehr als Sonderfall eines generischen Makro-Systems behandeln.
