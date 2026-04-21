@@ -4,6 +4,7 @@ import { AtemAdapter } from "./atem-adapter.js";
 const mockAtemConnect = jest.fn();
 const mockAtemDisconnect = jest.fn();
 const mockMacroRun = jest.fn().mockResolvedValue(undefined);
+const mockMacroStop = jest.fn().mockResolvedValue(undefined);
 
 type MockAtemBehavior = "connect" | "error" | "timeout";
 let mockAtemBehavior: MockAtemBehavior = "connect";
@@ -12,7 +13,12 @@ let mockAtemError: Error | string = new Error("ECONNREFUSED");
 const createMockState = (overrides?: {
   macroProperties?: Array<{ name?: string }>;
   macroRecorder?: { isRecording?: boolean; macroIndex?: number };
-  macroPlayer?: { isPlaying?: boolean; isRunning?: boolean; macroIndex?: number };
+  macroPlayer?: {
+    isRunning?: boolean;
+    isWaiting?: boolean;
+    loop?: boolean;
+    macroIndex?: number;
+  };
 }) => ({
   macro: {
     macroProperties: overrides?.macroProperties ?? [
@@ -43,6 +49,7 @@ jest.mock("atem-connection", () => {
         },
         disconnect: mockAtemDisconnect,
         macroRun: mockMacroRun,
+        macroStop: mockMacroStop,
         state,
         on: emitter.on.bind(emitter),
         once: emitter.once.bind(emitter),
@@ -62,6 +69,7 @@ describe("AtemAdapter", () => {
     mockAtemConnect.mockClear();
     mockAtemDisconnect.mockClear();
     mockMacroRun.mockClear();
+    mockMacroStop.mockClear();
     mockAtemBehavior = "connect";
     mockAtemError = new Error("ECONNREFUSED");
   });
@@ -174,6 +182,16 @@ describe("AtemAdapter", () => {
       expect(macros.length).toBeGreaterThanOrEqual(0);
       expect(Array.isArray(macros)).toBe(true);
     });
+
+    it("marks pending macro before device state confirmation", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const runPromise = adapter.runMacro(1);
+      expect(adapter.getMacros()).toEqual([
+        { id: 0, name: "Macro 1", status: "idle" },
+        { id: 1, name: "Macro 2", status: "pending" },
+      ]);
+      await runPromise;
+    });
   });
 
   describe("runMacro", () => {
@@ -201,11 +219,10 @@ describe("AtemAdapter", () => {
       await expect(adapter.stopMacro(0)).rejects.toThrow("Engine is not connected");
     });
 
-    it("throws when macroStop is not available", async () => {
+    it("calls macroStop when connected", async () => {
       await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
-      await expect(adapter.stopMacro(0)).rejects.toThrow(
-        "macroStop method not available"
-      );
+      await adapter.stopMacro(0);
+      expect(mockMacroStop).toHaveBeenCalledWith();
     });
   });
 
@@ -231,6 +248,102 @@ describe("AtemAdapter", () => {
       expect(state.port).toBe(9910);
       expect(state.type).toBe("atem");
       expect(typeof state.lastUpdate).toBe("number");
+    });
+  });
+
+  describe("macro status mapping", () => {
+    it("maps recorder state to recording", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as { atemConnection: ReturnType<typeof createMockState> & EventEmitter }
+      ).atemConnection as unknown as {
+        state: ReturnType<typeof createMockState>;
+      };
+      atemConnection.state.macro.macroRecorder = {
+        isRecording: true,
+        macroIndex: 1,
+      };
+
+      (
+        adapter as unknown as { updateMacrosFromState: () => void }
+      ).updateMacrosFromState();
+
+      expect(adapter.getMacros()).toEqual([
+        { id: 0, name: "Macro 1", status: "idle" },
+        { id: 1, name: "Macro 2", status: "recording" },
+      ]);
+    });
+
+    it("maps player waiting state to waiting", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as { atemConnection: ReturnType<typeof createMockState> }
+      ).atemConnection as unknown as {
+        state: ReturnType<typeof createMockState>;
+      };
+      atemConnection.state.macro.macroPlayer = {
+        isRunning: false,
+        isWaiting: true,
+        loop: false,
+        macroIndex: 0,
+      };
+
+      (
+        adapter as unknown as { updateMacrosFromState: () => void }
+      ).updateMacrosFromState();
+
+      expect(adapter.getMacros()).toEqual([
+        { id: 0, name: "Macro 1", status: "waiting" },
+        { id: 1, name: "Macro 2", status: "idle" },
+      ]);
+    });
+
+    it("maps player running state to running", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as { atemConnection: ReturnType<typeof createMockState> }
+      ).atemConnection as unknown as {
+        state: ReturnType<typeof createMockState>;
+      };
+      atemConnection.state.macro.macroPlayer = {
+        isRunning: true,
+        isWaiting: false,
+        loop: true,
+        macroIndex: 1,
+      };
+
+      (
+        adapter as unknown as { updateMacrosFromState: () => void }
+      ).updateMacrosFromState();
+
+      expect(adapter.getMacros()).toEqual([
+        { id: 0, name: "Macro 1", status: "idle" },
+        { id: 1, name: "Macro 2", status: "running" },
+      ]);
+    });
+
+    it("does not infer running from macroIndex alone", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as { atemConnection: ReturnType<typeof createMockState> }
+      ).atemConnection as unknown as {
+        state: ReturnType<typeof createMockState>;
+      };
+      atemConnection.state.macro.macroPlayer = {
+        isRunning: false,
+        isWaiting: false,
+        loop: false,
+        macroIndex: 1,
+      };
+
+      (
+        adapter as unknown as { updateMacrosFromState: () => void }
+      ).updateMacrosFromState();
+
+      expect(adapter.getMacros()).toEqual([
+        { id: 0, name: "Macro 1", status: "idle" },
+        { id: 1, name: "Macro 2", status: "idle" },
+      ]);
     });
   });
 });

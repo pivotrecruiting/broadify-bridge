@@ -264,7 +264,7 @@ export type EngineStatusT = "disconnected" | "connecting" | "connected" | "error
 /**
  * Macro execution status
  */
-export type MacroStatusT = "idle" | "running" | "recording";
+export type MacroStatusT = "idle" | "pending" | "running" | "waiting" | "recording";
 /**
  * Macro definition
  */

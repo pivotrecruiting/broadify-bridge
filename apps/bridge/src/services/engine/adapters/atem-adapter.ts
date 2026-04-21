@@ -34,6 +34,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     macros: [],
   };
   private readonly connectTimeoutMs = 10000; // 10 seconds timeout
+  private pendingMacroId: number | null = null;
 
   /**
    * Connect to ATEM switcher
@@ -238,6 +239,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       type: undefined,
       error: undefined,
     });
+    this.pendingMacroId = null;
   }
 
   /**
@@ -271,9 +273,13 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     }
 
     try {
+      this.pendingMacroId = id;
+      this.updateMacrosFromState();
       await this.atemConnection.macroRun(id);
       // State update will come via stateChanged event
     } catch (error: unknown) {
+      this.pendingMacroId = null;
+      this.updateMacrosFromState();
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       throw new Error(
@@ -297,17 +303,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     }
 
     try {
-      // Note: atem-connection might not have macroStop method
-      // Check if method exists
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const atemConn = this.atemConnection as any;
-      if (typeof atemConn.macroStop === "function") {
-        await atemConn.macroStop(id);
-      } else {
-        // Fallback: Try to stop by running macro 0 or using stop command
-        // This is a workaround if macroStop doesn't exist
-        throw new Error("macroStop method not available in atem-connection");
-      }
+      await this.atemConnection.macroStop();
       // State update will come via stateChanged event
     } catch (error: unknown) {
       const errorMessage =
@@ -357,43 +353,30 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
 
     const macros: MacroT[] = [];
     const macroPool = this.atemConnection.state.macro;
+    const activeRunningMacroId = macroPool?.macroPlayer?.isRunning
+      ? macroPool.macroPlayer.macroIndex
+      : null;
+    const activeWaitingMacroId = macroPool?.macroPlayer?.isWaiting
+      ? macroPool.macroPlayer.macroIndex
+      : null;
+    const activeRecordingMacroId = macroPool?.macroRecorder?.isRecording
+      ? macroPool.macroRecorder.macroIndex
+      : null;
 
     if (macroPool && macroPool.macroProperties) {
       for (let i = 0; i < macroPool.macroProperties.length; i++) {
         const macroProp = macroPool.macroProperties[i];
         if (macroProp && macroProp.name) {
           // Determine macro status
-          let status: "idle" | "running" | "recording" = "idle";
-          if (macroPool.macroRecorder) {
-            const recorder = macroPool.macroRecorder;
-            if (recorder.isRecording && recorder.macroIndex === i) {
-              status = "recording";
-            }
-          }
-          if (macroPool.macroPlayer) {
-            const player = macroPool.macroPlayer;
-            // Check if macro is playing - API might use different property names
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const playerAny = player as any;
-            if (
-              playerAny.isPlaying !== undefined &&
-              playerAny.isPlaying &&
-              playerAny.macroIndex === i
-            ) {
-              status = "running";
-            } else if (
-              playerAny.isRunning !== undefined &&
-              playerAny.isRunning &&
-              playerAny.macroIndex === i
-            ) {
-              status = "running";
-            } else if (
-              typeof playerAny.macroIndex === "number" &&
-              playerAny.macroIndex === i
-            ) {
-              // If macroIndex matches, assume it's running
-              status = "running";
-            }
+          let status: MacroT["status"] = "idle";
+          if (activeRecordingMacroId === i) {
+            status = "recording";
+          } else if (activeWaitingMacroId === i) {
+            status = "waiting";
+          } else if (activeRunningMacroId === i) {
+            status = "running";
+          } else if (this.pendingMacroId === i) {
+            status = "pending";
           }
 
           macros.push({
@@ -403,6 +386,18 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
           });
         }
       }
+    }
+
+    if (
+      this.pendingMacroId !== null &&
+      (activeRunningMacroId === this.pendingMacroId ||
+        activeWaitingMacroId === this.pendingMacroId ||
+        activeRecordingMacroId === this.pendingMacroId ||
+        !macros.some(
+          (macro) => macro.id === this.pendingMacroId && macro.status === "pending"
+        ))
+    ) {
+      this.pendingMacroId = null;
     }
 
     this.setState({ macros });
