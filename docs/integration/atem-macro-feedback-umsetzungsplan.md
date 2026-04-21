@@ -765,22 +765,22 @@ Ziel:
 
 Todos:
 
-- [ ] `broadify/types/engine-types.ts` erweitern:
-  - [ ] `MacroStatusT`
-  - [ ] `MacroExecutionStatusT`
-  - [ ] `MacroExecutionT`
-  - [ ] `EngineStateT`
-  - [ ] WebSocket-/Event-Typen
-- [ ] `broadify/lib/bridge-commands.ts` Response-Typen fuer `engineRunMacro`/`engineStopMacro` schaerfen.
-- [ ] `broadify/lib/stores/engine-store.ts` um `macroExecution` und `lastCompletedMacroExecution` erweitern.
-- [ ] Merge-Logik fuer Execution-State in `engine-store.ts` ergänzen.
-- [ ] Polling als Resync-/Fallbackpfad beibehalten.
-- [ ] Tests fuer `engine-store.ts` erweitern.
+- [x] `broadify/types/engine-types.ts` erweitern:
+  - [x] `MacroStatusT`
+  - [x] `MacroExecutionStatusT`
+  - [x] `MacroExecutionT`
+  - [x] `EngineStateT`
+  - [x] WebSocket-/Event-Typen
+- [x] `broadify/lib/bridge-commands.ts` Response-Typen fuer `engineRunMacro`/`engineStopMacro` schaerfen.
+- [x] `broadify/lib/stores/engine-store.ts` um `macroExecution` und `lastCompletedMacroExecution` erweitern.
+- [x] Merge-Logik fuer Execution-State in `engine-store.ts` ergänzen.
+- [x] Polling als Resync-/Fallbackpfad beibehalten.
+- [x] Tests fuer `engine-store.ts` erweitern.
 
 Abnahmekriterien:
 
-- [ ] Die Webapp kennt den Runtime-State typsicher.
-- [ ] Polling zerstoert keine Live-Events.
+- [x] Die Webapp kennt den Runtime-State typsicher.
+- [x] Polling zerstoert keine Live-Events.
 
 ### Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
 
@@ -891,7 +891,7 @@ Abnahmekriterien:
 - [ ] Phase 2 – Execution-Store in der Bridge einfuehren
 - [ ] Phase 3 – Engine-State, HTTP und interne WS-Events erweitern
 - [x] Phase 4 – Relay-/Bridge-Events fuer die Webapp bereitstellen
-- [ ] Phase 5 – Webapp-Typen und Engine-Store erweitern
+- [x] Phase 5 – Webapp-Typen und Engine-Store erweitern
 - [ ] Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
 - [ ] Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
 - [ ] Phase 8 – Notifications und UX-Semantik korrigieren
