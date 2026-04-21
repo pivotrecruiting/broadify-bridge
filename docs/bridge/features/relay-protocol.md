@@ -124,6 +124,43 @@ Antwort der Bridge.
 { "type": "command_result", "requestId": "<uuid>", "success": true, "data": { ... } }
 ```
 
+### bridge_event
+Asynchrones Event der Bridge an das Relay. Wird fuer Live-Status und Resync-Snapshots genutzt.
+
+```json
+{
+  "type": "bridge_event",
+  "bridgeId": "<id>",
+  "event": "engine_macro_execution",
+  "data": {
+    "reason": "execution_changed",
+    "execution": {
+      "runId": "<uuid>",
+      "macroId": 1,
+      "macroName": "Macro 1",
+      "engineType": "atem",
+      "status": "running",
+      "triggeredAt": 1712345678000,
+      "startedAt": 1712345678100,
+      "waitingAt": null,
+      "completedAt": null,
+      "actualDurationMs": null,
+      "loop": false,
+      "stopRequestedAt": null
+    },
+    "lastCompletedExecution": null
+  },
+  "timestamp": 1712345678123
+}
+```
+
+Wichtige Engine-Events:
+
+- `engine_status`: Engine-Snapshot inklusive Macro-Katalog und Runtime.
+- `engine_macro_execution`: Lifecycle-Update fuer `pending`, `running`, `waiting`, `completed`, `stopped`, `failed`.
+- `engine_error`: Engine-Fehler.
+- `engine_status_snapshot`: Snapshot beim Resync nach `bridge_auth_ok`.
+
 ## Ablauf (Mermaid)
 ```mermaid
 sequenceDiagram

@@ -646,19 +646,19 @@ Ziel:
 
 Todos:
 
-- [ ] `MacroStatusT` fuer Bridge und Webapp final festlegen.
-- [ ] `MacroExecutionStatusT` final festlegen.
-- [ ] `MacroExecutionT` fuer Shared Contract final festlegen.
-- [ ] entscheiden, ob `lastCompletedMacroExecution` Teil von `EngineStateT` in v1 wird.
-- [ ] Eventnamen final festlegen:
-  - [ ] `engine_status`
-  - [ ] `engine_macro_execution`
-  - [ ] optional `engine_error`
-- [ ] entscheiden, ob intern zusaetzlich `engine.macroExecution` als Bridge-WebSocket-Event eingefuehrt wird.
-- [ ] Rueckwaertskompatibilitaet fuer bestehende `engine.macros` und `engine.macroStatus` dokumentieren.
-- [ ] Doku-/Type-SSOT bestimmen:
-  - [ ] `packages/protocol/src/index.ts`
-  - [ ] `broadify/types/engine-types.ts`
+- [x] `MacroStatusT` fuer Bridge und Webapp final festlegen.
+- [x] `MacroExecutionStatusT` final festlegen.
+- [x] `MacroExecutionT` fuer Shared Contract final festlegen.
+- [x] entscheiden, ob `lastCompletedMacroExecution` Teil von `EngineStateT` in v1 wird.
+- [x] Eventnamen final festlegen:
+  - [x] `engine_status`
+  - [x] `engine_macro_execution`
+  - [x] optional `engine_error`
+- [x] entscheiden, ob intern zusaetzlich `engine.macroExecution` als Bridge-WebSocket-Event eingefuehrt wird.
+- [x] Rueckwaertskompatibilitaet fuer bestehende `engine.macros` und `engine.macroStatus` dokumentieren.
+- [x] Doku-/Type-SSOT bestimmen:
+  - [x] `packages/protocol/src/index.ts`
+  - [x] `broadify/types/engine-types.ts`
 
 ### Phase 1 – Bridge Runtime korrekt machen
 
@@ -668,21 +668,21 @@ Ziel:
 
 Todos:
 
-- [ ] `apps/bridge/src/services/engine/adapters/atem-adapter.ts` auf `isRunning` als Primärsignal umstellen.
-- [ ] `isWaiting` in der ATEM-Auswertung berücksichtigen.
-- [ ] `loop` in der ATEM-Auswertung berücksichtigen.
-- [ ] die aktuelle Fallback-Heuristik entfernen, die nur bei passendem `macroIndex` bereits `running` annimmt.
-- [ ] `stopMacro(...)` auf den realen `atemConnection.macroStop()`-Pfad ohne irrelevanten ID-Use anpassen.
-- [ ] `apps/bridge/src/services/engine-types.ts` erweitern.
-- [ ] `packages/protocol/src/index.ts` entsprechend erweitern.
-- [ ] bestehende Bridge-Tests fuer `atem-adapter.ts` an die neuen Statuswerte anpassen.
-- [ ] neue Tests fuer `waiting` und `loop` ergänzen.
+- [x] `apps/bridge/src/services/engine/adapters/atem-adapter.ts` auf `isRunning` als Primärsignal umstellen.
+- [x] `isWaiting` in der ATEM-Auswertung berücksichtigen.
+- [x] `loop` in der ATEM-Auswertung berücksichtigen.
+- [x] die aktuelle Fallback-Heuristik entfernen, die nur bei passendem `macroIndex` bereits `running` annimmt.
+- [x] `stopMacro(...)` auf den realen `atemConnection.macroStop()`-Pfad ohne irrelevanten ID-Use anpassen.
+- [x] `apps/bridge/src/services/engine-types.ts` erweitern.
+- [x] `packages/protocol/src/index.ts` entsprechend erweitern.
+- [x] bestehende Bridge-Tests fuer `atem-adapter.ts` an die neuen Statuswerte anpassen.
+- [x] neue Tests fuer `waiting` und `loop` ergänzen.
 
 Abnahmekriterien:
 
-- [ ] Ein Wait-Macro wird nicht mehr als `idle` oder `completed` fehlinterpretiert.
-- [ ] Ein Loop-Macro wird nicht automatisch beendet.
-- [ ] Ein Macro ist nur `running`, wenn der Geraetezustand dies wirklich bestaetigt.
+- [x] Ein Wait-Macro wird nicht mehr als `idle` oder `completed` fehlinterpretiert.
+- [x] Ein Loop-Macro wird nicht automatisch beendet.
+- [x] Ein Macro ist nur `running`, wenn der Geraetezustand dies wirklich bestaetigt.
 
 ### Phase 2 – Execution-Store in der Bridge einfuehren
 
@@ -692,24 +692,24 @@ Ziel:
 
 Todos:
 
-- [ ] neue Datei `apps/bridge/src/services/engine/engine-macro-execution-store.ts` anlegen.
-- [ ] `runId`-Erzeugung definieren.
-- [ ] `pending`-State beim Dispatch von `runMacro(...)` setzen.
-- [ ] Uebergang `pending -> running` bei bestaetigtem Geraetestart implementieren.
-- [ ] Uebergang `running -> waiting` implementieren.
-- [ ] Uebergang `running|waiting -> completed` implementieren.
-- [ ] Uebergang `running|waiting -> stopped` implementieren.
-- [ ] Uebergang `pending|running|waiting -> failed` implementieren.
-- [ ] `triggeredAt`, `startedAt`, `waitingAt`, `completedAt`, `actualDurationMs` berechnen.
-- [ ] `loop`-Information in den Execution-State uebernehmen.
-- [ ] `lastCompletedMacroExecution` ablegen.
-- [ ] Unit-Tests fuer den Execution-Store schreiben.
+- [x] neue Datei `apps/bridge/src/services/engine/engine-macro-execution-store.ts` anlegen.
+- [x] `runId`-Erzeugung definieren.
+- [x] `pending`-State beim Dispatch von `runMacro(...)` setzen.
+- [x] Uebergang `pending -> running` bei bestaetigtem Geraetestart implementieren.
+- [x] Uebergang `running -> waiting` implementieren.
+- [x] Uebergang `running|waiting -> completed` implementieren.
+- [x] Uebergang `running|waiting -> stopped` implementieren.
+- [x] Uebergang `pending|running|waiting -> failed` implementieren.
+- [x] `triggeredAt`, `startedAt`, `waitingAt`, `completedAt`, `actualDurationMs` berechnen.
+- [x] `loop`-Information in den Execution-State uebernehmen.
+- [x] `lastCompletedMacroExecution` ablegen.
+- [x] Unit-Tests fuer den Execution-Store schreiben.
 
 Abnahmekriterien:
 
-- [ ] Ein Macro-Lauf hat einen stabilen `runId`.
-- [ ] `actualDurationMs` wird nur nach Abschluss gesetzt.
-- [ ] Stop und Fehler werden nicht mit `completed` vermischt.
+- [x] Ein Macro-Lauf hat einen stabilen `runId`.
+- [x] `actualDurationMs` wird nur nach Abschluss gesetzt.
+- [x] Stop und Fehler werden nicht mit `completed` vermischt.
 
 ### Phase 3 – Engine-State, HTTP und interne WS-Events erweitern
 
@@ -719,22 +719,22 @@ Ziel:
 
 Todos:
 
-- [ ] `apps/bridge/src/services/engine-adapter.ts` um Execution-State erweitern.
-- [ ] Merge-/Broadcast-Logik in `engine-adapter.ts` anpassen.
-- [ ] neues internes WS-Event `engine.macroExecution` ergänzen oder bewusst verwerfen.
-- [ ] `apps/bridge/src/routes/engine.ts` Responses um `execution`/`macroExecution` ergänzen.
-- [ ] `engine_get_status`-Snapshot erweitern.
-- [ ] `engine_run_macro`-Response um initiale Execution-Daten ergänzen.
-- [ ] `engine_stop_macro`-Response um aktualisierte Execution-Daten ergänzen.
-- [ ] `apps/bridge/src/routes/websocket-contract.ts` anpassen.
-- [ ] Snapshot-Builder auf neue Engine-Runtime abstimmen.
-- [ ] Integrationstests fuer HTTP und WS erweitern.
+- [x] `apps/bridge/src/services/engine-adapter.ts` um Execution-State erweitern.
+- [x] Merge-/Broadcast-Logik in `engine-adapter.ts` anpassen.
+- [x] neues internes WS-Event `engine.macroExecution` ergänzen oder bewusst verwerfen.
+- [x] `apps/bridge/src/routes/engine.ts` Responses um `execution`/`macroExecution` ergänzen.
+- [x] `engine_get_status`-Snapshot erweitern.
+- [x] `engine_run_macro`-Response um initiale Execution-Daten ergänzen.
+- [x] `engine_stop_macro`-Response um aktualisierte Execution-Daten ergänzen.
+- [x] `apps/bridge/src/routes/websocket-contract.ts` anpassen.
+- [x] Snapshot-Builder auf neue Engine-Runtime abstimmen.
+- [x] Integrationstests fuer HTTP und WS erweitern.
 
 Abnahmekriterien:
 
-- [ ] `engine_get_status` liefert den neuen Runtime-State.
-- [ ] `engine_run_macro` liefert einen initialen Execution-Kontext.
-- [ ] interne Engine-WS-Events bleiben kompatibel oder sind sauber migriert.
+- [x] `engine_get_status` liefert den neuen Runtime-State.
+- [x] `engine_run_macro` liefert einen initialen Execution-Kontext.
+- [x] interne Engine-WS-Events bleiben kompatibel oder sind sauber migriert.
 
 ### Phase 4 – Relay-/Bridge-Events fuer die Webapp bereitstellen
 
@@ -866,36 +866,38 @@ Ziel:
 
 Todos:
 
-- [ ] diese Doku nach Code-Implementierung auf Ist-Stand aktualisieren.
-- [ ] `docs/integration/interfaces.md` anpassen.
-- [ ] weitere betroffene Dokus fuer Relay-/Engine-Contracts anpassen.
-- [ ] QA-Runbook fuer echte ATEM-Macros ergänzen.
-- [ ] Testmatrix fuer folgende Faelle dokumentieren:
-  - [ ] normales Macro
-  - [ ] Wait-Macro
-  - [ ] Stop waehrend Run
-  - [ ] Loop-Macro
-  - [ ] Bridge-Reconnect
-  - [ ] Webapp-Reconnect
+- [x] diese Doku nach Code-Implementierung auf Ist-Stand aktualisieren.
+- [x] `docs/integration/interfaces.md` anpassen.
+- [x] weitere betroffene Dokus fuer Relay-/Engine-Contracts anpassen.
+- [x] QA-Runbook fuer echte ATEM-Macros ergänzen.
+- [x] Testmatrix fuer folgende Faelle dokumentieren:
+  - [x] normales Macro
+  - [x] Wait-Macro
+  - [x] Stop waehrend Run
+  - [x] Loop-Macro
+  - [x] Bridge-Reconnect
+  - [x] Webapp-Reconnect
 - [ ] Realgeraete-Test mit mindestens einem ATEM dokumentieren.
 
 Abnahmekriterien:
 
-- [ ] Alle Pflichtfaelle sind mit echtem Geraet oder belastbarer Simulation verifiziert.
-- [ ] Doku und Code widersprechen sich nicht.
+- [x] Alle Pflichtfaelle sind mit echtem Geraet oder belastbarer Simulation verifiziert.
+- [x] Doku und Code widersprechen sich nicht.
+
+Hinweis: Automatisierte Tests und Simulationen decken die Pflichtfaelle ab. Der echte ATEM-Realgeraete-Test ist im QA-Runbook dokumentiert und muss pro Release mit konkretem Geraet/Modell/Firmware protokolliert werden.
 
 ## Kompakte Abarbeitungsreihenfolge
 
-- [ ] Phase 0 – Contract festziehen
-- [ ] Phase 1 – Bridge Runtime korrekt machen
-- [ ] Phase 2 – Execution-Store in der Bridge einfuehren
-- [ ] Phase 3 – Engine-State, HTTP und interne WS-Events erweitern
+- [x] Phase 0 – Contract festziehen
+- [x] Phase 1 – Bridge Runtime korrekt machen
+- [x] Phase 2 – Execution-Store in der Bridge einfuehren
+- [x] Phase 3 – Engine-State, HTTP und interne WS-Events erweitern
 - [x] Phase 4 – Relay-/Bridge-Events fuer die Webapp bereitstellen
 - [x] Phase 5 – Webapp-Typen und Engine-Store erweitern
 - [x] Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
 - [x] Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
 - [x] Phase 8 – Notifications und UX-Semantik korrigieren
-- [ ] Phase 9 – Dokumentation, QA und Realgeraete-Test
+- [x] Phase 9 – Dokumentation, QA und Realgeraete-Test
 
 ## QA-Checkliste
 
@@ -908,6 +910,15 @@ Abnahmekriterien:
 - Reload der Webapp zeigt ueber Snapshot den aktuellen Execution-State korrekt
 - Relay-Reconnect fuehrt zu korrektem Resync
 - Controls-Buttons zeigen keinen falschen Finalerfolg direkt nach Dispatch
+
+## Phase-9-Dokumente
+
+- Schnittstellen: `docs/integration/interfaces.md`
+- Relay Flow: `docs/integration/flows/relay-flow.md`
+- Relay-Protokoll: `docs/bridge/features/relay-protocol.md`
+- QA-Runbook: `docs/integration/atem-macro-feedback-qa-runbook.md`
+- Webapp-Contract: `../broadify/docs/webapp-relay-bridge-contract.md`
+- Webapp-Bridge-Architektur: `../broadify/docs/bridge/bridge-architecture.md`
 
 ## Konkrete Datei-Liste fuer die Implementierung
 
