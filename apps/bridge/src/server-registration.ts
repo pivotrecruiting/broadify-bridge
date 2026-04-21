@@ -3,39 +3,42 @@ import type { BridgeConfigT } from "./config.js";
 
 const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024;
 
-type RegisterOptionsT = Record<string, unknown> | undefined;
-type RegisterFnT = (plugin: unknown, options?: RegisterOptionsT) => Promise<unknown>;
+// Fastify's concrete register type becomes overly specific once the server is
+// instantiated with a custom logger. This narrow escape hatch keeps the helper
+// callable with the real server instance while route/plugin values stay typed.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RegisterServerT = { register: (...args: any[]) => unknown };
 
 type RouteRegistrarsT = {
-  registerStatusRoute: unknown;
-  registerDevicesRoute: unknown;
-  registerOutputsRoute: unknown;
-  registerConfigRoute: unknown;
-  registerEngineRoute: unknown;
-  registerVideoRoute: unknown;
-  registerGraphicsBrowserInputRoute: unknown;
-  registerWebSocketRoute: unknown;
-  registerRelayRoute: unknown;
-  registerLogsRoute: unknown;
+  registerStatusRoute: typeof import("./routes/status.js").registerStatusRoute;
+  registerDevicesRoute: typeof import("./routes/devices.js").registerDevicesRoute;
+  registerOutputsRoute: typeof import("./routes/outputs.js").registerOutputsRoute;
+  registerConfigRoute: typeof import("./routes/config.js").registerConfigRoute;
+  registerEngineRoute: typeof import("./routes/engine.js").registerEngineRoute;
+  registerVideoRoute: typeof import("./routes/video.js").registerVideoRoute;
+  registerGraphicsBrowserInputRoute: typeof import("./routes/graphics-browser-input.js").registerGraphicsBrowserInputRoute;
+  registerWebSocketRoute: typeof import("./routes/websocket.js").registerWebSocketRoute;
+  registerRelayRoute: typeof import("./routes/relay.js").registerRelayRoute;
+  registerLogsRoute: typeof import("./routes/logs.js").registerLogsRoute;
 };
 
 type PluginDepsT = {
-  corsPlugin: unknown;
-  websocketPlugin: unknown;
+  corsPlugin: typeof import("@fastify/cors").default;
+  websocketPlugin: typeof import("@fastify/websocket").default;
 };
 
 /**
  * Register Fastify plugins used by the bridge server.
  */
 export async function registerServerPlugins(
-  register: RegisterFnT,
+  server: RegisterServerT,
   deps: PluginDepsT,
 ): Promise<void> {
-  await register(deps.corsPlugin, {
+  await server.register(deps.corsPlugin, {
     origin: true,
   });
 
-  await register(deps.websocketPlugin, {
+  await server.register(deps.websocketPlugin, {
     options: {
       maxPayload: MAX_WS_PAYLOAD_BYTES,
     },
@@ -46,7 +49,7 @@ export async function registerServerPlugins(
  * Register all bridge routes in the canonical order.
  */
 export async function registerServerRoutes(
-  register: RegisterFnT,
+  server: RegisterServerT,
   params: {
     config: BridgeConfigT;
     relayClient?: RelayClient;
@@ -55,17 +58,17 @@ export async function registerServerRoutes(
 ): Promise<void> {
   const { routes } = params;
 
-  await register(routes.registerStatusRoute, { config: params.config });
-  await register(routes.registerDevicesRoute);
-  await register(routes.registerOutputsRoute);
-  await register(routes.registerConfigRoute);
-  await register(routes.registerEngineRoute);
-  await register(routes.registerVideoRoute);
-  await register(routes.registerGraphicsBrowserInputRoute);
-  await register(routes.registerWebSocketRoute);
-  await register(routes.registerRelayRoute, {
+  await server.register(routes.registerStatusRoute, { config: params.config });
+  await server.register(routes.registerDevicesRoute);
+  await server.register(routes.registerOutputsRoute);
+  await server.register(routes.registerConfigRoute);
+  await server.register(routes.registerEngineRoute);
+  await server.register(routes.registerVideoRoute);
+  await server.register(routes.registerGraphicsBrowserInputRoute);
+  await server.register(routes.registerWebSocketRoute);
+  await server.register(routes.registerRelayRoute, {
     config: params.config,
     relayClient: params.relayClient,
   });
-  await register(routes.registerLogsRoute);
+  await server.register(routes.registerLogsRoute);
 }

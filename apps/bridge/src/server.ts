@@ -104,7 +104,7 @@ export async function createServer(config: BridgeConfigT) {
   await graphicsManager.initialize();
 
   // Register CORS + WebSocket plugins.
-  await registerServerPlugins(server.register.bind(server), {
+  await registerServerPlugins(server, {
     corsPlugin: cors,
     websocketPlugin: websocket,
   });
@@ -150,7 +150,7 @@ export async function createServer(config: BridgeConfigT) {
   });
 
   // Register routes.
-  await registerServerRoutes(server.register.bind(server), {
+  await registerServerRoutes(server, {
     config,
     relayClient,
     routes: {
