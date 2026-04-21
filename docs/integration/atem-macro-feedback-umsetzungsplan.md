@@ -812,26 +812,26 @@ Ziel:
 
 Todos:
 
-- [ ] `broadify/stores/controls-macros-store.ts` so anpassen, dass Runtime nicht die SSOT dieses Stores wird.
-- [ ] die Makroliste weiterhin fuer Auswahl/Persistenz nutzbar halten.
-- [ ] laufende Macro-Aktionen aus dem `engine-store` in die Controls-UI spiegeln.
-- [ ] `broadify/app/(pages)/(with-nav)/dashboard/controls/page.tsx` anpassen:
-  - [ ] Dispatch-Loading und Runtime-Status trennen
-  - [ ] `pending`
-  - [ ] `running`
-  - [ ] `waiting`
-  - [ ] `completed`
-  - [ ] `stopped`
-  - [ ] `failed`
-- [ ] `runningCameraActionIds`-Logik ueberarbeiten.
-- [ ] `broadify/hooks/use-controls-data.ts` optional um Statuslabels fuer Auswahloptionen erweitern.
-- [ ] Controls-Tests anpassen.
+- [x] `broadify/stores/controls-macros-store.ts` so anpassen, dass Runtime nicht die SSOT dieses Stores wird.
+- [x] die Makroliste weiterhin fuer Auswahl/Persistenz nutzbar halten.
+- [x] laufende Macro-Aktionen aus dem `engine-store` in die Controls-UI spiegeln.
+- [x] `broadify/app/(pages)/(with-nav)/dashboard/controls/page.tsx` anpassen:
+  - [x] Dispatch-Loading und Runtime-Status trennen
+  - [x] `pending`
+  - [x] `running`
+  - [x] `waiting`
+  - [x] `completed`
+  - [x] `stopped`
+  - [x] `failed`
+- [x] `runningCameraActionIds`-Logik ueberarbeiten.
+- [x] `broadify/hooks/use-controls-data.ts` optional um Statuslabels fuer Auswahloptionen erweitern.
+- [x] Controls-Tests anpassen.
 
 Abnahmekriterien:
 
-- [ ] Ein Button zeigt nicht nur "Request laeuft", sondern den realen Runtime-Status.
-- [ ] Ein Wait-Macro bleibt sichtbar aktiv.
-- [ ] Finaler Erfolg erscheint erst bei echtem Abschluss.
+- [x] Ein Button zeigt nicht nur "Request laeuft", sondern den realen Runtime-Status.
+- [x] Ein Wait-Macro bleibt sichtbar aktiv.
+- [x] Finaler Erfolg erscheint erst bei echtem Abschluss.
 
 ### Phase 8 – Notifications und UX-Semantik korrigieren
 
@@ -893,7 +893,7 @@ Abnahmekriterien:
 - [x] Phase 4 – Relay-/Bridge-Events fuer die Webapp bereitstellen
 - [x] Phase 5 – Webapp-Typen und Engine-Store erweitern
 - [x] Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
-- [ ] Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
+- [x] Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
 - [ ] Phase 8 – Notifications und UX-Semantik korrigieren
 - [ ] Phase 9 – Dokumentation, QA und Realgeraete-Test
 
