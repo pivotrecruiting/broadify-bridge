@@ -43,6 +43,8 @@ constexpr uint8_t kLegalMin = 16;
 constexpr uint8_t kLegalMax = 235;
 constexpr int kFullRange = 255;
 constexpr int kLegalRange = kLegalMax - kLegalMin;
+constexpr int kEnableVideoOutputRetryCount = 3;
+constexpr auto kEnableVideoOutputRetryDelay = std::chrono::milliseconds(250);
 
 struct DeviceInfo {
   std::string id;
@@ -121,6 +123,25 @@ std::string fieldDominanceLabel(BMDFieldDominance dominance) {
     case bmdUnknownFieldDominance:
     default:
       return "unknown";
+  }
+}
+
+const char* hresultLabel(HRESULT result) {
+  switch (result) {
+    case S_OK:
+      return "S_OK";
+    case E_FAIL:
+      return "E_FAIL";
+    case E_INVALIDARG:
+      return "E_INVALIDARG";
+    case E_ACCESSDENIED:
+      return "E_ACCESSDENIED";
+    case E_OUTOFMEMORY:
+      return "E_OUTOFMEMORY";
+    case E_NOTIMPL:
+      return "E_NOTIMPL";
+    default:
+      return "UNKNOWN";
   }
 }
 
@@ -1881,11 +1902,35 @@ int runPlayback(const PlaybackConfig& config) {
     return 1;
   }
 
-  const HRESULT enableResult =
-      output->EnableVideoOutput(displayMode, bmdVideoOutputFlagDefault);
+  HRESULT enableResult = E_FAIL;
+  for (int attempt = 1; attempt <= kEnableVideoOutputRetryCount; ++attempt) {
+    enableResult = output->EnableVideoOutput(displayMode, bmdVideoOutputFlagDefault);
+    if (enableResult == S_OK) {
+      break;
+    }
+
+    std::cerr << "EnableVideoOutput attempt " << attempt
+              << " failed. HRESULT=0x" << std::hex
+              << static_cast<uint32_t>(enableResult) << std::dec << " ("
+              << hresultLabel(enableResult) << ")" << std::endl;
+
+    const bool shouldRetry =
+        enableResult == E_ACCESSDENIED &&
+        attempt < kEnableVideoOutputRetryCount;
+    if (!shouldRetry) {
+      break;
+    }
+
+    std::cerr
+        << "Retrying EnableVideoOutput after transient access denial."
+        << std::endl;
+    std::this_thread::sleep_for(kEnableVideoOutputRetryDelay);
+  }
+
   if (enableResult != S_OK) {
     std::cerr << "EnableVideoOutput failed. HRESULT=0x" << std::hex
-              << static_cast<uint32_t>(enableResult) << std::dec << std::endl;
+              << static_cast<uint32_t>(enableResult) << std::dec << " ("
+              << hresultLabel(enableResult) << ")" << std::endl;
     if (keyer) {
       keyer->Release();
     }
