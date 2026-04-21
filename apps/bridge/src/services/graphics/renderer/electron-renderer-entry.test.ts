@@ -78,22 +78,20 @@ const mockPinoWarn = jest.fn();
 const mockPinoError = jest.fn();
 const mockPinoDebug = jest.fn();
 jest.mock("pino", () => () => ({
-  info: (...args: unknown[]) => mockPinoInfo.apply(null, args),
-  warn: (...args: unknown[]) => mockPinoWarn.apply(null, args),
-  error: (...args: unknown[]) => mockPinoError.apply(null, args),
-  debug: (...args: unknown[]) => mockPinoDebug.apply(null, args),
+  info: (...args: unknown[]) => mockPinoInfo(...args),
+  warn: (...args: unknown[]) => mockPinoWarn(...args),
+  error: (...args: unknown[]) => mockPinoError(...args),
+  debug: (...args: unknown[]) => mockPinoDebug(...args),
 }));
 
 const mockCreateConnection = jest.fn();
 jest.mock("node:net", () => ({
-  createConnection: (...args: unknown[]) =>
-    (mockCreateConnection as jest.Mock).apply(null, args),
+  createConnection: (...args: unknown[]) => (mockCreateConnection as jest.Mock)(...args),
 }));
 
 const mockLoadFrameBusModule = jest.fn<FrameBusModuleMock, []>(() => null);
 jest.mock("../framebus/framebus-client.js", () => ({
-  loadFrameBusModule: (...args: unknown[]) =>
-    (mockLoadFrameBusModule as jest.Mock).apply(null, args),
+  loadFrameBusModule: (...args: unknown[]) => (mockLoadFrameBusModule as jest.Mock)(...args),
   type: {},
 }));
 
@@ -104,7 +102,7 @@ jest.mock("./electron-renderer-dom-runtime.js", () => ({
 const mockSafeParse = jest.fn<SafeParseResult, [unknown]>(() => ({ success: false }));
 jest.mock("./renderer-config-schema.js", () => ({
   RendererConfigureSchema: {
-    safeParse: (...args: unknown[]) => (mockSafeParse as jest.Mock).apply(null, args),
+    safeParse: (...args: unknown[]) => (mockSafeParse as jest.Mock)(...args),
   },
 }));
 
@@ -115,12 +113,11 @@ const mockAppendIpcBuffer = jest.fn((a: Buffer, b: Buffer) => Buffer.concat([a, 
 const mockEncodeIpcPacket = jest.fn((h: object) => Buffer.from(JSON.stringify(h)));
 const mockIsIpcBufferWithinLimit = jest.fn(() => true);
 jest.mock("./renderer-ipc-framing.js", () => ({
-  appendIpcBuffer: (...args: unknown[]) => (mockAppendIpcBuffer as jest.Mock).apply(null, args),
-  decodeNextIpcPacket: (...args: unknown[]) =>
-    (mockDecodeNextIpcPacket as jest.Mock).apply(null, args),
-  encodeIpcPacket: (...args: unknown[]) => (mockEncodeIpcPacket as jest.Mock).apply(null, args),
+  appendIpcBuffer: (...args: unknown[]) => (mockAppendIpcBuffer as jest.Mock)(...args),
+  decodeNextIpcPacket: (...args: unknown[]) => (mockDecodeNextIpcPacket as jest.Mock)(...args),
+  encodeIpcPacket: (...args: unknown[]) => (mockEncodeIpcPacket as jest.Mock)(...args),
   isIpcBufferWithinLimit: (...args: unknown[]) =>
-    (mockIsIpcBufferWithinLimit as jest.Mock).apply(null, args),
+    (mockIsIpcBufferWithinLimit as jest.Mock)(...args),
 }));
 
 let enqueueSerialPending: Promise<unknown> = Promise.resolve();
@@ -130,7 +127,7 @@ const mockEnqueue = jest.fn().mockImplementation((fn: () => Promise<unknown>) =>
 });
 jest.mock("./async-serial-queue.js", () => ({
   AsyncSerialQueue: jest.fn().mockImplementation(() => ({
-    enqueue: (...args: unknown[]) => (mockEnqueue as jest.Mock).apply(null, args),
+    enqueue: (...args: unknown[]) => (mockEnqueue as jest.Mock)(...args),
   })),
 }));
 

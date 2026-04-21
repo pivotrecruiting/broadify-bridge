@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { logRuntimeDiagnostics } from "./runtime-diagnostics.js";
 
 jest.mock("node:fs", () => ({

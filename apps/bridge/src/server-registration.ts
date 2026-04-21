@@ -3,24 +3,25 @@ import type { BridgeConfigT } from "./config.js";
 
 const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024;
 
-type RegisterFnT = (plugin: any, options?: any) => any;
+type RegisterOptionsT = Record<string, unknown> | undefined;
+type RegisterFnT = (plugin: unknown, options?: RegisterOptionsT) => Promise<unknown>;
 
 type RouteRegistrarsT = {
-  registerStatusRoute: any;
-  registerDevicesRoute: any;
-  registerOutputsRoute: any;
-  registerConfigRoute: any;
-  registerEngineRoute: any;
-  registerVideoRoute: any;
-  registerGraphicsBrowserInputRoute: any;
-  registerWebSocketRoute: any;
-  registerRelayRoute: any;
-  registerLogsRoute: any;
+  registerStatusRoute: unknown;
+  registerDevicesRoute: unknown;
+  registerOutputsRoute: unknown;
+  registerConfigRoute: unknown;
+  registerEngineRoute: unknown;
+  registerVideoRoute: unknown;
+  registerGraphicsBrowserInputRoute: unknown;
+  registerWebSocketRoute: unknown;
+  registerRelayRoute: unknown;
+  registerLogsRoute: unknown;
 };
 
 type PluginDepsT = {
-  corsPlugin: any;
-  websocketPlugin: any;
+  corsPlugin: unknown;
+  websocketPlugin: unknown;
 };
 
 /**

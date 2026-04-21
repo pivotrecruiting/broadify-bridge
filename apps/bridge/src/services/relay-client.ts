@@ -256,7 +256,7 @@ type PublicKeyCacheEntry = {
 
 type RelaySocketLikeT = {
   readyState: number;
-  on: (event: string, listener: (...args: any[]) => void) => void;
+  on: (event: string, listener: (...args: unknown[]) => void) => void;
   ping?: () => void;
   send: (data: string) => void;
   close: () => void;

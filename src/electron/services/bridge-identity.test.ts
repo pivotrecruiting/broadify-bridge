@@ -1,4 +1,3 @@
-import fs from "fs";
 import { randomUUID } from "crypto";
 import { BridgeIdentityService } from "./bridge-identity.js";
 
