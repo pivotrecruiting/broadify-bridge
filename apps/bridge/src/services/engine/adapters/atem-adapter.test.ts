@@ -249,6 +249,69 @@ describe("AtemAdapter", () => {
       expect(state.type).toBe("atem");
       expect(typeof state.lastUpdate).toBe("number");
     });
+
+    it("tracks macro execution lifecycle", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as { atemConnection: ReturnType<typeof createMockState> }
+      ).atemConnection as unknown as {
+        state: ReturnType<typeof createMockState>;
+      };
+
+      await adapter.runMacro(1);
+      expect(adapter.getState().macroExecution).toMatchObject({
+        macroId: 1,
+        macroName: "Macro 2",
+        engineType: "atem",
+        status: "pending",
+      });
+
+      atemConnection.state.macro.macroPlayer = {
+        isRunning: true,
+        isWaiting: false,
+        loop: false,
+        macroIndex: 1,
+      };
+      (
+        adapter as unknown as { updateMacrosFromState: () => void }
+      ).updateMacrosFromState();
+      expect(adapter.getState().macroExecution).toMatchObject({
+        macroId: 1,
+        status: "running",
+        startedAt: expect.any(Number),
+      });
+
+      atemConnection.state.macro.macroPlayer = {
+        isRunning: false,
+        isWaiting: true,
+        loop: false,
+        macroIndex: 1,
+      };
+      (
+        adapter as unknown as { updateMacrosFromState: () => void }
+      ).updateMacrosFromState();
+      expect(adapter.getState().macroExecution).toMatchObject({
+        macroId: 1,
+        status: "waiting",
+        waitingAt: expect.any(Number),
+      });
+
+      atemConnection.state.macro.macroPlayer = {
+        isRunning: false,
+        isWaiting: false,
+        loop: false,
+        macroIndex: 1,
+      };
+      (
+        adapter as unknown as { updateMacrosFromState: () => void }
+      ).updateMacrosFromState();
+      expect(adapter.getState().macroExecution).toBeNull();
+      expect(adapter.getState().lastCompletedMacroExecution).toMatchObject({
+        macroId: 1,
+        status: "completed",
+        actualDurationMs: expect.any(Number),
+      });
+    });
   });
 
   describe("macro status mapping", () => {

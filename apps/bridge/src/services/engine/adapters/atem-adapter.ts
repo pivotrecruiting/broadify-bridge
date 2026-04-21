@@ -5,10 +5,12 @@ import type {
 } from "../engine-adapter-interface.js";
 import type {
   EngineStatusT,
+  MacroExecutionT,
   MacroT,
   EngineStateT,
 } from "../../engine-types.js";
 import { EventEmitter } from "events";
+import { EngineMacroExecutionStore } from "../engine-macro-execution-store.js";
 import {
   EngineError,
   EngineErrorCode,
@@ -32,9 +34,11 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
   private state: EngineStateT = {
     status: "disconnected",
     macros: [],
+    macroExecution: null,
+    lastCompletedMacroExecution: null,
   };
   private readonly connectTimeoutMs = 10000; // 10 seconds timeout
-  private pendingMacroId: number | null = null;
+  private readonly macroExecutionStore = new EngineMacroExecutionStore();
 
   /**
    * Connect to ATEM switcher
@@ -58,6 +62,8 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       ip: config.ip,
       port: config.port,
       type: config.type,
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
     });
 
     // Create new ATEM connection
@@ -238,8 +244,10 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       port: undefined,
       type: undefined,
       error: undefined,
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
     });
-    this.pendingMacroId = null;
+    this.macroExecutionStore.reset();
   }
 
   /**
@@ -273,15 +281,19 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     }
 
     try {
-      this.pendingMacroId = id;
+      this.macroExecutionStore.startPending({
+        macroId: id,
+        macroName: this.resolveMacroName(id),
+        engineType: "atem",
+      });
       this.updateMacrosFromState();
       await this.atemConnection.macroRun(id);
       // State update will come via stateChanged event
     } catch (error: unknown) {
-      this.pendingMacroId = null;
-      this.updateMacrosFromState();
       const errorMessage =
         error instanceof Error ? error.message : String(error);
+      this.macroExecutionStore.fail(errorMessage);
+      this.updateMacrosFromState();
       throw new Error(
         `Failed to run macro ${id} (slot ${id + 1}): ${errorMessage}`
       );
@@ -303,9 +315,16 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     }
 
     try {
+      this.macroExecutionStore.requestStop();
+      this.setState({
+        macroExecution: this.macroExecutionStore.getActiveExecution(),
+        lastCompletedMacroExecution:
+          this.macroExecutionStore.getLastCompletedExecution(),
+      });
       await this.atemConnection.macroStop();
       // State update will come via stateChanged event
     } catch (error: unknown) {
+      this.macroExecutionStore.clearStopRequest();
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       throw new Error(
@@ -362,6 +381,12 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     const activeRecordingMacroId = macroPool?.macroRecorder?.isRecording
       ? macroPool.macroRecorder.macroIndex
       : null;
+    const activeExecution = this.syncMacroExecutionFromState(
+      macroPool?.macroProperties,
+      activeRunningMacroId,
+      activeWaitingMacroId,
+      macroPool?.macroPlayer?.loop ?? false
+    );
 
     if (macroPool && macroPool.macroProperties) {
       for (let i = 0; i < macroPool.macroProperties.length; i++) {
@@ -375,7 +400,10 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
             status = "waiting";
           } else if (activeRunningMacroId === i) {
             status = "running";
-          } else if (this.pendingMacroId === i) {
+          } else if (
+            activeExecution?.status === "pending" &&
+            activeExecution.macroId === i
+          ) {
             status = "pending";
           }
 
@@ -388,18 +416,44 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       }
     }
 
-    if (
-      this.pendingMacroId !== null &&
-      (activeRunningMacroId === this.pendingMacroId ||
-        activeWaitingMacroId === this.pendingMacroId ||
-        activeRecordingMacroId === this.pendingMacroId ||
-        !macros.some(
-          (macro) => macro.id === this.pendingMacroId && macro.status === "pending"
-        ))
-    ) {
-      this.pendingMacroId = null;
+    this.setState({
+      macros,
+      macroExecution: this.macroExecutionStore.getActiveExecution(),
+      lastCompletedMacroExecution:
+        this.macroExecutionStore.getLastCompletedExecution(),
+    });
+  }
+
+  private resolveMacroName(id: number): string | undefined {
+    return this.atemConnection?.state?.macro?.macroProperties?.[id]?.name;
+  }
+
+  private syncMacroExecutionFromState(
+    macroProperties: Array<{ name?: string } | undefined> | undefined,
+    activeRunningMacroId: number | null,
+    activeWaitingMacroId: number | null,
+    loop: boolean
+  ): MacroExecutionT | null {
+    if (activeWaitingMacroId !== null) {
+      return this.macroExecutionStore.markDeviceState({
+        macroId: activeWaitingMacroId,
+        macroName: macroProperties?.[activeWaitingMacroId]?.name,
+        engineType: "atem",
+        status: "waiting",
+        loop,
+      });
     }
 
-    this.setState({ macros });
+    if (activeRunningMacroId !== null) {
+      return this.macroExecutionStore.markDeviceState({
+        macroId: activeRunningMacroId,
+        macroName: macroProperties?.[activeRunningMacroId]?.name,
+        engineType: "atem",
+        status: "running",
+        loop,
+      });
+    }
+
+    return this.macroExecutionStore.markInactive();
   }
 }

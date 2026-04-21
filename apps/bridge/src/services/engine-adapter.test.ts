@@ -235,6 +235,8 @@ describe("EngineAdapterService", () => {
     expect(service.getState()).toEqual({
       status: "disconnected",
       macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
     });
     expect(
       broadcasts.some((entry) => entry.message.type === "engine.disconnected"),
