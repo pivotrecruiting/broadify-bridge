@@ -17,6 +17,11 @@ import {
   createAlreadyConnectingError,
   createNotConnectedError,
 } from "./engine/engine-errors.js";
+import {
+  publishEngineErrorEvent,
+  publishEngineMacroExecutionEvent,
+  publishEngineStatusEvent,
+} from "./engine/engine-event-publisher.js";
 
 type EngineBroadcastTopicT = Parameters<typeof websocketManager.broadcast>[0];
 type EngineBroadcastMessageT = Parameters<typeof websocketManager.broadcast>[1];
@@ -305,12 +310,22 @@ export class EngineAdapterService {
    * Broadcast state changes via WebSocket Manager
    */
   private broadcastStateChanges(state: EngineStateT): void {
-    // Broadcast status change only if status or error changed
-    if (
+    const didStatusChange =
       !this.previousState ||
       this.previousState.status !== state.status ||
-      this.previousState.error !== state.error
-    ) {
+      this.previousState.error !== state.error;
+    const didMacrosChange =
+      !this.previousState ||
+      JSON.stringify(this.previousState.macros) !== JSON.stringify(state.macros);
+    const didMacroExecutionChange =
+      !this.previousState ||
+      JSON.stringify(this.previousState.macroExecution) !==
+        JSON.stringify(state.macroExecution) ||
+      JSON.stringify(this.previousState.lastCompletedMacroExecution) !==
+        JSON.stringify(state.lastCompletedMacroExecution);
+
+    // Broadcast status change only if status or error changed
+    if (didStatusChange) {
       this.deps.broadcast("engine", {
         type: "engine.status",
         status: state.status,
@@ -355,10 +370,7 @@ export class EngineAdapterService {
     }
 
     // Broadcast macros if changed
-    if (
-      !this.previousState ||
-      JSON.stringify(this.previousState.macros) !== JSON.stringify(state.macros)
-    ) {
+    if (didMacrosChange) {
       this.deps.broadcast("engine", {
         type: "engine.macros",
         macros: state.macros,
@@ -381,18 +393,41 @@ export class EngineAdapterService {
       });
     }
 
-    if (
-      !this.previousState ||
-      JSON.stringify(this.previousState.macroExecution) !==
-        JSON.stringify(state.macroExecution) ||
-      JSON.stringify(this.previousState.lastCompletedMacroExecution) !==
-        JSON.stringify(state.lastCompletedMacroExecution)
-    ) {
+    if (didMacroExecutionChange) {
       this.deps.broadcast("engine", {
         type: "engine.macroExecution",
         execution: state.macroExecution ?? null,
         lastCompletedExecution: state.lastCompletedMacroExecution ?? null,
       });
+    }
+
+    if (didStatusChange || didMacrosChange || didMacroExecutionChange) {
+      const reason = didMacroExecutionChange
+        ? "macro_execution_changed"
+        : didMacrosChange
+          ? "macros_changed"
+          : state.status === "disconnected"
+            ? "disconnected"
+            : state.status === "connected" && this.previousState?.status !== "connected"
+              ? "connected"
+              : state.status === "error"
+                ? "error"
+                : "status_changed";
+      publishEngineStatusEvent(reason, state);
+    }
+
+    if (didMacroExecutionChange) {
+      publishEngineMacroExecutionEvent("execution_changed", state);
+    }
+
+    if (
+      state.status === "error" &&
+      state.error &&
+      (!this.previousState ||
+        this.previousState.status !== "error" ||
+        this.previousState.error !== state.error)
+    ) {
+      publishEngineErrorEvent("engine_error", state.error);
     }
 
     this.previousState = { ...state };

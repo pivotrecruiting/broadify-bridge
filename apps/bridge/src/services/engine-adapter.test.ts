@@ -1,4 +1,5 @@
 import { EngineAdapterService } from "./engine-adapter.js";
+import { setBridgeContext } from "./bridge-context.js";
 import {
   EngineError,
   EngineErrorCode,
@@ -147,6 +148,24 @@ const createService = () => {
 };
 
 describe("EngineAdapterService", () => {
+  const mockPublishBridgeEvent = jest.fn();
+  const mockLogger = {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setBridgeContext({
+      userDataDir: "/tmp",
+      logPath: "/tmp/bridge.log",
+      logger: mockLogger,
+      publishBridgeEvent: mockPublishBridgeEvent,
+    });
+  });
+
   it("connects successfully and updates state", async () => {
     const { service, adapter, broadcasts } = createService();
 
@@ -394,6 +413,68 @@ describe("EngineAdapterService", () => {
             "run-1",
       ),
     ).toBe(true);
+  });
+
+  it("publishes engine relay bridge events for status, execution and errors", async () => {
+    const { service, adapter } = createService();
+
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    adapter.emitState({
+      status: "connected",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      macros: [{ id: 1, name: "Macro 1", status: "running" }],
+      macroExecution: {
+        runId: "run-1",
+        macroId: 1,
+        macroName: "Macro 1",
+        engineType: "atem",
+        status: "running",
+        triggeredAt: 100,
+        startedAt: 110,
+        waitingAt: null,
+        completedAt: null,
+        actualDurationMs: null,
+        loop: false,
+        stopRequestedAt: null,
+      },
+      lastCompletedMacroExecution: null,
+    });
+
+    adapter.emitState({
+      status: "error",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      error: "dial failed",
+      macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
+    });
+
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_status",
+      data: expect.objectContaining({
+        reason: expect.any(String),
+        status: "connected",
+      }),
+    });
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_macro_execution",
+      data: expect.objectContaining({
+        reason: "execution_changed",
+        execution: expect.objectContaining({ runId: "run-1" }),
+      }),
+    });
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_error",
+      data: {
+        code: "engine_error",
+        message: "dial failed",
+      },
+    });
   });
 
   it("getConnectedSince returns timestamp when connected", async () => {

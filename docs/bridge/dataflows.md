@@ -107,3 +107,21 @@ sequenceDiagram
 Wesentliche Punkte:
 - `graphics_status` und `graphics_error` werden ueber Relay als Bridge-Events publiziert.
 - Fehlercodes: `output_config_error`, `renderer_error`, `output_helper_error`, `graphics_error`.
+
+## 6) Engine- und Macro-Runtime-Events
+```mermaid
+sequenceDiagram
+  participant EA as EngineAdapterService
+  participant EP as EngineEventPublisher
+  participant RC as RelayClient
+  participant Relay as Relay Server
+
+  EA->>EP: publishEngineStatusEvent / publishEngineMacroExecutionEvent / publishEngineErrorEvent
+  EP->>RC: publishBridgeEvent
+  RC-->>Relay: bridge_event(engine_status|engine_macro_execution|engine_error)
+```
+
+Wesentliche Punkte:
+- `engine_status` transportiert den resync-faehigen Engine-Snapshot inklusive `macros`, `macroExecution` und `lastCompletedMacroExecution`.
+- `engine_macro_execution` liefert feingranulare Lifecycle-Updates fuer `pending`, `running`, `waiting`, `completed`, `stopped` und `failed`.
+- `engine_error` bildet den separaten Fehlerpfad fuer Relay/Webapp analog zu Graphics ab.

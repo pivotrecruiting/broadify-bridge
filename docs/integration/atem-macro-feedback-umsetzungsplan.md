@@ -744,18 +744,18 @@ Ziel:
 
 Todos:
 
-- [ ] neue Datei `apps/bridge/src/services/engine/engine-event-publisher.ts` anlegen.
-- [ ] `engine_status` als Bridge-Event modellieren.
-- [ ] `engine_macro_execution` als Bridge-Event modellieren.
-- [ ] Publishing-Punkte in `engine-adapter.ts` integrieren.
-- [ ] Snapshot-/Resync-Verhalten mit Relay abgleichen.
-- [ ] bestehende Relay-Doku anpassen.
-- [ ] Tests fuer Bridge-Event-Publishing ergänzen.
+- [x] neue Datei `apps/bridge/src/services/engine/engine-event-publisher.ts` anlegen.
+- [x] `engine_status` als Bridge-Event modellieren.
+- [x] `engine_macro_execution` als Bridge-Event modellieren.
+- [x] Publishing-Punkte in `engine-adapter.ts` integrieren.
+- [x] Snapshot-/Resync-Verhalten mit Relay abgleichen.
+- [x] bestehende Relay-Doku anpassen.
+- [x] Tests fuer Bridge-Event-Publishing ergänzen.
 
 Abnahmekriterien:
 
-- [ ] Relay bekommt bei Macro-Statuswechseln Live-Events.
-- [ ] Nach Webapp-Reconnect ist ein Resync ohne manuelle Sonderlogik moeglich.
+- [x] Relay bekommt bei Macro-Statuswechseln Live-Events.
+- [x] Nach Webapp-Reconnect ist ein Resync ohne manuelle Sonderlogik moeglich.
 
 ### Phase 5 – Webapp-Typen und Engine-Store erweitern
 
@@ -890,7 +890,7 @@ Abnahmekriterien:
 - [ ] Phase 1 – Bridge Runtime korrekt machen
 - [ ] Phase 2 – Execution-Store in der Bridge einfuehren
 - [ ] Phase 3 – Engine-State, HTTP und interne WS-Events erweitern
-- [ ] Phase 4 – Relay-/Bridge-Events fuer die Webapp bereitstellen
+- [x] Phase 4 – Relay-/Bridge-Events fuer die Webapp bereitstellen
 - [ ] Phase 5 – Webapp-Typen und Engine-Store erweitern
 - [ ] Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
 - [ ] Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
