@@ -381,6 +381,20 @@ export class EngineAdapterService {
       });
     }
 
+    if (
+      !this.previousState ||
+      JSON.stringify(this.previousState.macroExecution) !==
+        JSON.stringify(state.macroExecution) ||
+      JSON.stringify(this.previousState.lastCompletedMacroExecution) !==
+        JSON.stringify(state.lastCompletedMacroExecution)
+    ) {
+      this.deps.broadcast("engine", {
+        type: "engine.macroExecution",
+        execution: state.macroExecution ?? null,
+        lastCompletedExecution: state.lastCompletedMacroExecution ?? null,
+      });
+    }
+
     this.previousState = { ...state };
   }
 

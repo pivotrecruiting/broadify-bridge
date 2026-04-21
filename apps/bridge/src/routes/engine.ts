@@ -252,6 +252,7 @@ export async function registerEngineRoute(
       return {
         success: true,
         macroId,
+        execution: deps.engineAdapter.getState().macroExecution,
         state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {
@@ -298,6 +299,7 @@ export async function registerEngineRoute(
       return {
         success: true,
         macroId,
+        execution: deps.engineAdapter.getState().macroExecution,
         state: deps.engineAdapter.getState(),
       };
     } catch (error: unknown) {

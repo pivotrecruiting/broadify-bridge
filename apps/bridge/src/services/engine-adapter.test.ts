@@ -359,6 +359,43 @@ describe("EngineAdapterService", () => {
     ).toBe(true);
   });
 
+  it("broadcasts engine.macroExecution when execution changes", async () => {
+    const { service, adapter, broadcasts } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    adapter.emitState({
+      status: "connected",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      macros: [{ id: 1, name: "Macro 1", status: "running" }],
+      macroExecution: {
+        runId: "run-1",
+        macroId: 1,
+        macroName: "Macro 1",
+        engineType: "atem",
+        status: "running",
+        triggeredAt: 100,
+        startedAt: 110,
+        waitingAt: null,
+        completedAt: null,
+        actualDurationMs: null,
+        loop: false,
+        stopRequestedAt: null,
+      },
+      lastCompletedMacroExecution: null,
+    });
+
+    expect(
+      broadcasts.some(
+        (b) =>
+          b.message.type === "engine.macroExecution" &&
+          (b.message as { execution?: { runId?: string } }).execution?.runId ===
+            "run-1",
+      ),
+    ).toBe(true);
+  });
+
   it("getConnectedSince returns timestamp when connected", async () => {
     const { service } = createService();
     await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });

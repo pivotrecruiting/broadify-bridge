@@ -4,6 +4,11 @@ export type WebSocketTopicT = "engine" | "video";
 
 export type WebSocketServerMessageT =
   | { type: "engine.status"; status: EngineStateT["status"]; error?: string }
+  | {
+      type: "engine.macroExecution";
+      execution: EngineStateT["macroExecution"];
+      lastCompletedExecution?: EngineStateT["lastCompletedMacroExecution"];
+    }
   | { type: "engine.connected"; state: EngineStateT }
   | { type: "engine.error"; error: string }
   | { type: "video.status"; status: "not-configured" };

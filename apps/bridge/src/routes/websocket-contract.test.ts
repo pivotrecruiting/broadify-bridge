@@ -20,6 +20,8 @@ describe("buildWebSocketSnapshot", () => {
     const state = {
       status: "connected" as const,
       macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
       ip: "10.0.0.10",
       port: 9910,
       type: "atem" as const,
@@ -36,6 +38,8 @@ describe("buildWebSocketSnapshot", () => {
       buildWebSocketSnapshot("engine", {
         status: "error",
         macros: [],
+        macroExecution: null,
+        lastCompletedMacroExecution: null,
         error: "dial failed",
       }),
     ).toEqual({
@@ -49,6 +53,8 @@ describe("buildWebSocketSnapshot", () => {
       buildWebSocketSnapshot("engine", {
         status: "connecting",
         macros: [],
+        macroExecution: null,
+        lastCompletedMacroExecution: null,
       }),
     ).toEqual({
       type: "engine.status",
@@ -62,6 +68,8 @@ describe("buildWebSocketSnapshot", () => {
       buildWebSocketSnapshot("video", {
         status: "disconnected",
         macros: [],
+        macroExecution: null,
+        lastCompletedMacroExecution: null,
       }),
     ).toEqual({
       type: "video.status",

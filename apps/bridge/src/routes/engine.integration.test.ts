@@ -7,6 +7,8 @@ const createEngineAdapterFake = () => {
   const state = {
     status: "disconnected" as EngineStatusT,
     macros: [] as { id: number; name: string; status: "idle" }[],
+    macroExecution: null as null | Record<string, unknown>,
+    lastCompletedMacroExecution: null as null | Record<string, unknown>,
   };
 
   return {
@@ -309,6 +311,7 @@ describe("registerEngineRoute integration", () => {
     expect(response.json()).toMatchObject({
       success: true,
       macroId: 1,
+      execution: null,
     });
     await app.close();
   });
@@ -373,6 +376,7 @@ describe("registerEngineRoute integration", () => {
     expect(response.json()).toMatchObject({
       success: true,
       macroId: 2,
+      execution: null,
     });
     await app.close();
   });
