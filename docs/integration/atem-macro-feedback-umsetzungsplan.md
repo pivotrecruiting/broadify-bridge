@@ -790,19 +790,19 @@ Ziel:
 
 Todos:
 
-- [ ] neue Datei `broadify/hooks/use-relay-engine-updates.ts` anlegen.
-- [ ] WebSocket-Subscription analog zu `use-relay-graphics-updates.ts` umsetzen.
-- [ ] `bridge_event` fuer `engine_status` verarbeiten.
-- [ ] `bridge_event` fuer `engine_macro_execution` verarbeiten.
-- [ ] Updates in `engine-store` schreiben.
-- [ ] Reconnect-/Backoff-Logik von Graphics uebernehmen oder abstrahieren.
-- [ ] entscheiden, ob Graphics- und Engine-Relay-Hooks spaeter vereinheitlicht werden sollen.
-- [ ] Tests fuer den neuen Hook ergänzen.
+- [x] neue Datei `broadify/hooks/use-relay-engine-updates.ts` anlegen.
+- [x] WebSocket-Subscription analog zu `use-relay-graphics-updates.ts` umsetzen.
+- [x] `bridge_event` fuer `engine_status` verarbeiten.
+- [x] `bridge_event` fuer `engine_macro_execution` verarbeiten.
+- [x] Updates in `engine-store` schreiben.
+- [x] Reconnect-/Backoff-Logik von Graphics uebernehmen oder abstrahieren.
+- [x] entscheiden, ob Graphics- und Engine-Relay-Hooks spaeter vereinheitlicht werden sollen.
+- [x] Tests fuer den neuen Hook ergänzen.
 
 Abnahmekriterien:
 
-- [ ] Macro-Live-Updates kommen ohne Polling-Verzoegerung in der Webapp an.
-- [ ] Reconnect fuehrt nicht zu doppelten oder verlorenen States.
+- [x] Macro-Live-Updates kommen ohne Polling-Verzoegerung in der Webapp an.
+- [x] Reconnect fuehrt nicht zu doppelten oder verlorenen States.
 
 ### Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
 
@@ -892,7 +892,7 @@ Abnahmekriterien:
 - [ ] Phase 3 – Engine-State, HTTP und interne WS-Events erweitern
 - [x] Phase 4 – Relay-/Bridge-Events fuer die Webapp bereitstellen
 - [x] Phase 5 – Webapp-Typen und Engine-Store erweitern
-- [ ] Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
+- [x] Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
 - [ ] Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
 - [ ] Phase 8 – Notifications und UX-Semantik korrigieren
 - [ ] Phase 9 – Dokumentation, QA und Realgeraete-Test
