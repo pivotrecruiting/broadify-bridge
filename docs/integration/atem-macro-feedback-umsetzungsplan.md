@@ -841,22 +841,22 @@ Ziel:
 
 Todos:
 
-- [ ] `broadify/lib/bridge-notifications.ts` um Completion-aware Notifications erweitern.
-- [ ] Soforterfolg nach `engine_run_macro` entfernen oder in "gestartet" umbenennen.
-- [ ] neue Meldungstypen einführen:
-  - [ ] `showMacroRunAccepted(...)`
-  - [ ] `showMacroRunning(...)`
-  - [ ] `showMacroWaiting(...)`
-  - [ ] `showMacroCompleted(...)`
-  - [ ] `showMacroStopped(...)`
-  - [ ] `showMacroFailed(...)`
-- [ ] deutsche und englische Texte fachlich angleichen.
-- [ ] Doppelte Toasts bei Store- und View-Logik vermeiden.
+- [x] `broadify/lib/bridge-notifications.ts` um Completion-aware Notifications erweitern.
+- [x] Soforterfolg nach `engine_run_macro` entfernen oder in "gestartet" umbenennen.
+- [x] neue Meldungstypen einführen:
+  - [x] `showMacroRunAccepted(...)`
+  - [x] `showMacroRunning(...)`
+  - [x] `showMacroWaiting(...)`
+  - [x] `showMacroCompleted(...)`
+  - [x] `showMacroStopped(...)`
+  - [x] `showMacroFailed(...)`
+- [x] deutsche und englische Texte fachlich angleichen.
+- [x] Doppelte Toasts bei Store- und View-Logik vermeiden.
 
 Abnahmekriterien:
 
-- [ ] Nutzer sehen keinen falschen Abschluss-Toast direkt nach Dispatch.
-- [ ] `waiting` wird als Zwischenzustand und nicht als Fehler dargestellt.
+- [x] Nutzer sehen keinen falschen Abschluss-Toast direkt nach Dispatch.
+- [x] `waiting` wird als Zwischenzustand und nicht als Fehler dargestellt.
 
 ### Phase 9 – Dokumentation, QA und Realgeraete-Test
 
@@ -894,7 +894,7 @@ Abnahmekriterien:
 - [x] Phase 5 – Webapp-Typen und Engine-Store erweitern
 - [x] Phase 6 – Relay-Live-Updates fuer Engine in der Webapp einbauen
 - [x] Phase 7 – Controls-Macro-Flow in der Webapp auf Runtime umstellen
-- [ ] Phase 8 – Notifications und UX-Semantik korrigieren
+- [x] Phase 8 – Notifications und UX-Semantik korrigieren
 - [ ] Phase 9 – Dokumentation, QA und Realgeraete-Test
 
 ## QA-Checkliste
