@@ -281,6 +281,7 @@ export type MacroExecutionT = {
     engineType: "atem" | "tricaster" | "vmix";
     status: MacroExecutionStatusT;
     triggeredAt: number;
+    acceptedAt?: number | null;
     startedAt: number | null;
     waitingAt: number | null;
     completedAt: number | null;

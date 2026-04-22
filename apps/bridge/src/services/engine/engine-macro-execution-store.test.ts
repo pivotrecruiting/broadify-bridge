@@ -23,6 +23,7 @@ describe("EngineMacroExecutionStore", () => {
       engineType: "atem",
       status: "pending",
       triggeredAt: 100,
+      acceptedAt: null,
       startedAt: null,
       waitingAt: null,
       completedAt: null,
@@ -165,6 +166,38 @@ describe("EngineMacroExecutionStore", () => {
       status: "pending",
     });
     expect(store.getLastCompletedExecution()).toBeNull();
+  });
+
+  it("completes an accepted pending execution without a device running state", () => {
+    store.startPending({
+      macroId: 9,
+      engineType: "atem",
+      now: () => 10,
+      runIdFactory: () => "run-fast",
+    });
+
+    const accepted = store.markAccepted(() => 20);
+    const completed = store.markInactive(() => 50);
+
+    expect(accepted).toMatchObject({
+      runId: "run-fast",
+      status: "pending",
+      acceptedAt: 20,
+    });
+    expect(completed).toMatchObject({
+      runId: "run-fast",
+      status: "completed",
+      triggeredAt: 10,
+      acceptedAt: 20,
+      startedAt: null,
+      completedAt: 50,
+      actualDurationMs: null,
+    });
+    expect(store.getActiveExecution()).toBeNull();
+    expect(store.getLastCompletedExecution()).toMatchObject({
+      runId: "run-fast",
+      status: "completed",
+    });
   });
 
   it("marks an active execution as failed", () => {

@@ -31,6 +31,9 @@ import {
  */
 export class AtemAdapter extends EventEmitter implements EngineAdapter {
   private atemConnection: Atem | null = null;
+  private atemErrorListener: ((error: Error | string) => void) | null = null;
+  private atemStateChangedListener: (() => void) | null = null;
+  private atemDisconnectedListener: (() => void) | null = null;
   private state: EngineStateT = {
     status: "disconnected",
     macros: [],
@@ -39,6 +42,8 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
   };
   private readonly connectTimeoutMs = 10000; // 10 seconds timeout
   private readonly macroExecutionStore = new EngineMacroExecutionStore();
+  private readonly pendingCompletionGraceMs = 750;
+  private pendingCompletionTimeout: NodeJS.Timeout | null = null;
 
   /**
    * Connect to ATEM switcher
@@ -87,6 +92,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         clearTimeout(timeoutId);
         timeoutId = null;
       }
+      atem.removeListener("error", onError);
       this.setState({ status: "connected" });
       this.updateMacrosFromState();
       if (connectionResolve) {
@@ -148,12 +154,27 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       }
     };
 
+    const onRuntimeError = (error: Error | string) => {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      if (this.state.status === "connected") {
+        this.setState({ error: errorMessage });
+      }
+    };
+
+    const onStateChanged = () => {
+      this.updateMacrosFromState();
+    };
+
     atem.once("connected", onConnected);
     atem.once("error", onError);
     atem.on("disconnected", onDisconnected);
-    atem.on("stateChanged", () => {
-      this.updateMacrosFromState();
-    });
+    atem.on("stateChanged", onStateChanged);
+    atem.on("error", onRuntimeError);
+    this.atemErrorListener = onRuntimeError;
+    this.atemDisconnectedListener = onDisconnected;
+    this.atemStateChangedListener = onStateChanged;
 
     try {
       // Start connection
@@ -172,7 +193,12 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         // Remove event listeners
         atem.removeListener("connected", onConnected);
         atem.removeListener("error", onError);
+        atem.removeListener("error", onRuntimeError);
         atem.removeListener("disconnected", onDisconnected);
+        atem.removeListener("stateChanged", onStateChanged);
+        this.atemErrorListener = null;
+        this.atemDisconnectedListener = null;
+        this.atemStateChangedListener = null;
 
         const timeoutError = createConnectionTimeoutError(
           config.ip,
@@ -200,11 +226,16 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         try {
           atem.removeListener("connected", onConnected);
           atem.removeListener("error", onError);
+          atem.removeListener("error", onRuntimeError);
           atem.removeListener("disconnected", onDisconnected);
+          atem.removeListener("stateChanged", onStateChanged);
           atem.disconnect();
         } catch {
           // Ignore cleanup errors
         }
+        this.atemErrorListener = null;
+        this.atemDisconnectedListener = null;
+        this.atemStateChangedListener = null;
       }
       this.atemConnection = null;
 
@@ -228,8 +259,28 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
    * Disconnect from ATEM
    */
   async disconnect(): Promise<void> {
+    this.clearPendingCompletionTimer();
+
     if (this.atemConnection) {
       try {
+        if (this.atemErrorListener) {
+          this.atemConnection.removeListener("error", this.atemErrorListener);
+          this.atemErrorListener = null;
+        }
+        if (this.atemDisconnectedListener) {
+          this.atemConnection.removeListener(
+            "disconnected",
+            this.atemDisconnectedListener
+          );
+          this.atemDisconnectedListener = null;
+        }
+        if (this.atemStateChangedListener) {
+          this.atemConnection.removeListener(
+            "stateChanged",
+            this.atemStateChangedListener
+          );
+          this.atemStateChangedListener = null;
+        }
         await this.atemConnection.disconnect();
       } catch {
         // Ignore disconnect errors
@@ -281,17 +332,34 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     }
 
     try {
-      this.macroExecutionStore.startPending({
+      const pendingExecution = this.macroExecutionStore.startPending({
         macroId: id,
         macroName: this.resolveMacroName(id),
         engineType: "atem",
       });
       this.updateMacrosFromState();
       await this.atemConnection.macroRun(id);
-      // State update will come via stateChanged event
+      const acceptedExecution = this.macroExecutionStore.markAccepted();
+      this.setState({
+        macroExecution: acceptedExecution,
+        lastCompletedMacroExecution:
+          this.macroExecutionStore.getLastCompletedExecution(),
+      });
+
+      if (
+        acceptedExecution?.status === "pending" &&
+        acceptedExecution.runId === pendingExecution.runId
+      ) {
+        this.schedulePendingCompletion(acceptedExecution.runId);
+      }
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      let errorMessage = "Unknown macro command failure";
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else if (error) {
+        errorMessage = String(error);
+      }
+
       this.macroExecutionStore.fail(errorMessage);
       this.updateMacrosFromState();
       throw new Error(
@@ -360,6 +428,37 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
    */
   getState(): EngineStateT {
     return { ...this.state };
+  }
+
+  private clearPendingCompletionTimer(): void {
+    if (!this.pendingCompletionTimeout) {
+      return;
+    }
+
+    clearTimeout(this.pendingCompletionTimeout);
+    this.pendingCompletionTimeout = null;
+  }
+
+  private schedulePendingCompletion(runId: string): void {
+    this.clearPendingCompletionTimer();
+
+    this.pendingCompletionTimeout = setTimeout(() => {
+      this.pendingCompletionTimeout = null;
+
+      const activeExecution = this.macroExecutionStore.getActiveExecution();
+      if (
+        activeExecution?.runId !== runId ||
+        activeExecution.status !== "pending" ||
+        activeExecution.acceptedAt === null ||
+        activeExecution.acceptedAt === undefined
+      ) {
+        return;
+      }
+
+      this.macroExecutionStore.markInactive();
+      this.updateMacrosFromState();
+    }, this.pendingCompletionGraceMs);
+    this.pendingCompletionTimeout.unref?.();
   }
 
   /**
@@ -435,6 +534,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     loop: boolean
   ): MacroExecutionT | null {
     if (activeWaitingMacroId !== null) {
+      this.clearPendingCompletionTimer();
       return this.macroExecutionStore.markDeviceState({
         macroId: activeWaitingMacroId,
         macroName: macroProperties?.[activeWaitingMacroId]?.name,
@@ -445,6 +545,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     }
 
     if (activeRunningMacroId !== null) {
+      this.clearPendingCompletionTimer();
       return this.macroExecutionStore.markDeviceState({
         macroId: activeRunningMacroId,
         macroName: macroProperties?.[activeRunningMacroId]?.name,
@@ -454,6 +555,11 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       });
     }
 
-    return this.macroExecutionStore.markInactive();
+    const execution = this.macroExecutionStore.markInactive();
+    if (execution?.status !== "pending") {
+      this.clearPendingCompletionTimer();
+    }
+
+    return execution;
   }
 }

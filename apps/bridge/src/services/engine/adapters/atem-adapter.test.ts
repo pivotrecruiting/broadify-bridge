@@ -51,6 +51,7 @@ jest.mock("atem-connection", () => {
         macroRun: mockMacroRun,
         macroStop: mockMacroStop,
         state,
+        emit: emitter.emit.bind(emitter),
         on: emitter.on.bind(emitter),
         once: emitter.once.bind(emitter),
         removeListener: emitter.removeListener.bind(emitter),
@@ -212,6 +213,24 @@ describe("AtemAdapter", () => {
         "Failed to run macro 1 (slot 2): Macro error"
       );
     });
+
+    it("keeps the engine connected when a runtime error event arrives", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as {
+          atemConnection: {
+            emit: (event: string, payload?: unknown) => void;
+          };
+        }
+      ).atemConnection;
+
+      atemConnection.emit("error", new Error("Macro runtime warning"));
+
+      expect(adapter.getState()).toMatchObject({
+        status: "connected",
+        error: "Macro runtime warning",
+      });
+    });
   });
 
   describe("stopMacro", () => {
@@ -311,6 +330,31 @@ describe("AtemAdapter", () => {
         status: "completed",
         actualDurationMs: expect.any(Number),
       });
+    });
+
+    it("completes an accepted fast macro when ATEM never reports running", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+
+      jest.useFakeTimers();
+      await adapter.runMacro(1);
+
+      expect(adapter.getState().macroExecution).toMatchObject({
+        macroId: 1,
+        status: "pending",
+        acceptedAt: expect.any(Number),
+      });
+
+      await jest.advanceTimersByTimeAsync(750);
+
+      expect(adapter.getState().macroExecution).toBeNull();
+      expect(adapter.getState().lastCompletedMacroExecution).toMatchObject({
+        macroId: 1,
+        status: "completed",
+        startedAt: null,
+        actualDurationMs: null,
+      });
+
+      jest.useRealTimers();
     });
   });
 

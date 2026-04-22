@@ -57,6 +57,7 @@ export class EngineMacroExecutionStore {
       engineType: params.engineType,
       status: "pending",
       triggeredAt: now,
+      acceptedAt: null,
       startedAt: null,
       waitingAt: null,
       completedAt: null,
@@ -71,7 +72,10 @@ export class EngineMacroExecutionStore {
   markDeviceState(params: MarkDeviceStateParamsT): MacroExecutionT {
     const now = params.now ? params.now() : defaultNow();
 
-    if (!this.activeExecution || this.activeExecution.macroId !== params.macroId) {
+    if (
+      !this.activeExecution ||
+      this.activeExecution.macroId !== params.macroId
+    ) {
       const runId = params.runIdFactory
         ? params.runIdFactory()
         : defaultRunIdFactory();
@@ -83,6 +87,7 @@ export class EngineMacroExecutionStore {
         engineType: params.engineType,
         status: params.status,
         triggeredAt: now,
+        acceptedAt: null,
         startedAt: now,
         waitingAt: params.status === "waiting" ? now : null,
         completedAt: null,
@@ -94,7 +99,8 @@ export class EngineMacroExecutionStore {
       return this.getActiveExecution() as MacroExecutionT;
     }
 
-    this.activeExecution.macroName = params.macroName ?? this.activeExecution.macroName;
+    this.activeExecution.macroName =
+      params.macroName ?? this.activeExecution.macroName;
     this.activeExecution.loop = params.loop;
 
     if (this.activeExecution.startedAt === null) {
@@ -108,6 +114,19 @@ export class EngineMacroExecutionStore {
     this.activeExecution.status = params.status;
 
     return this.getActiveExecution() as MacroExecutionT;
+  }
+
+  markAccepted(now: () => number = defaultNow): MacroExecutionT | null {
+    if (!this.activeExecution) {
+      return null;
+    }
+
+    if (this.activeExecution.status !== "pending") {
+      return this.getActiveExecution();
+    }
+
+    this.activeExecution.acceptedAt = now();
+    return this.getActiveExecution();
   }
 
   requestStop(now: () => number = defaultNow): MacroExecutionT | null {
@@ -134,7 +153,25 @@ export class EngineMacroExecutionStore {
     }
 
     if (this.activeExecution.status === "pending") {
-      return this.getActiveExecution();
+      if (
+        this.activeExecution.acceptedAt === null ||
+        this.activeExecution.acceptedAt === undefined
+      ) {
+        return this.getActiveExecution();
+      }
+
+      const completedAt = now();
+      const finished: MacroExecutionT = {
+        ...this.activeExecution,
+        status: "completed",
+        completedAt,
+        actualDurationMs: null,
+      };
+
+      this.activeExecution = null;
+      this.lastCompletedExecution = finished;
+
+      return { ...finished };
     }
 
     const completedAt = now();
