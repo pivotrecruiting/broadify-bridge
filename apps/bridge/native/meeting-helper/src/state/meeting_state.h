@@ -53,7 +53,10 @@ struct MeetingState {
   std::string requestedKeyerModel = "modnet";
   std::string fallbackReason = "native_keyers_not_configured";
   std::string keyerBackend = "passthrough";
-  std::string qualityMode = "realtime";
+  std::string qualityMode = "balanced";
+  uint32_t maskDilatePx = 1;
+  uint32_t maskFeatherPx = 1;
+  bool dynamicDilation = true;
   std::string provider;
   std::string modelPath;
   double inferenceMs = -1.0;

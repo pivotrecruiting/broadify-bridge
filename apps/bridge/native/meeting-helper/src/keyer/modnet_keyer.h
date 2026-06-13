@@ -16,7 +16,7 @@ class ModnetKeyer : public Keyer {
   explicit ModnetKeyer(ModnetKeyerOptions options);
   ~ModnetKeyer() override;
 
-  KeyerResult apply(const VideoFrame &input) override;
+  KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override;
   KeyerStatus status() const;
 
  private:

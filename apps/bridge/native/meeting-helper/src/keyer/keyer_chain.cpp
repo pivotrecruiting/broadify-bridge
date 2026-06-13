@@ -18,10 +18,15 @@ KeyerChain::KeyerChain(const Options &options)
 KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &state) {
   bool enabled = false;
   std::string requestedModel;
+  KeyerSettings settings;
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     enabled = state.keyerEnabled;
     requestedModel = state.requestedKeyerModel;
+    settings.qualityMode = state.qualityMode;
+    settings.maskDilatePx = state.maskDilatePx;
+    settings.maskFeatherPx = state.maskFeatherPx;
+    settings.dynamicDilation = state.dynamicDilation;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
@@ -39,13 +44,13 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
   }
 
   if (requestedModel == "modnet") {
-    KeyerResult result = modnet_->apply(input);
+    KeyerResult result = modnet_->apply(input, settings);
     status_ = result.status;
     return result;
   }
 
   if (requestedModel == "vision_person_segmentation") {
-    KeyerResult result = vision_->apply(input);
+    KeyerResult result = vision_->apply(input, settings);
     status_ = result.status;
     return result;
   }
@@ -80,7 +85,12 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;
   state.modelHashOk = status.modelHashOk;
-  state.keyerMetrics = status.metrics;
+  KeyerMetrics mergedMetrics = status.metrics;
+  mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;
+  mergedMetrics.maskAgeMs = state.keyerMetrics.maskAgeMs;
+  mergedMetrics.programFrameMs = state.keyerMetrics.programFrameMs;
+  mergedMetrics.mjpegEncodeMs = state.keyerMetrics.mjpegEncodeMs;
+  state.keyerMetrics = mergedMetrics;
 }
 
 }  // namespace broadify::meeting

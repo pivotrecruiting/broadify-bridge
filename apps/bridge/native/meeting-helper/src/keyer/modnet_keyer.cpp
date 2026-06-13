@@ -70,7 +70,7 @@ class ModnetKeyer::Impl {
     status_.fallbackReason = "not_loaded";
   }
 
-  KeyerResult apply(const VideoFrame &input) {
+  KeyerResult apply(const VideoFrame &input, const KeyerSettings &) {
     KeyerResult result;
     result.frame = copyPassthroughFrame(input);
     if (!ensureLoaded()) {
@@ -287,8 +287,8 @@ ModnetKeyer::ModnetKeyer(ModnetKeyerOptions options) : impl_(std::make_unique<Im
 
 ModnetKeyer::~ModnetKeyer() = default;
 
-KeyerResult ModnetKeyer::apply(const VideoFrame &input) {
-  return impl_->apply(input);
+KeyerResult ModnetKeyer::apply(const VideoFrame &input, const KeyerSettings &settings) {
+  return impl_->apply(input, settings);
 }
 
 KeyerStatus ModnetKeyer::status() const {

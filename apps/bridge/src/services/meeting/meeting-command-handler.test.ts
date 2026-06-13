@@ -159,12 +159,20 @@ describe("meeting-command-handler", () => {
 
       const result = await handleMeetingCommand("meeting_keyer_configure", {
         enabled: true,
-        model: "modnet",
+        model: "vision_person_segmentation",
+        quality_mode: "accurate",
+        mask_dilate_px: 4,
+        mask_feather_px: 1,
+        dynamic_dilation: true,
       });
 
       expect(mockClient.keyerConfigure).toHaveBeenCalledWith({
         enabled: true,
-        model: "modnet",
+        model: "vision_person_segmentation",
+        quality_mode: "accurate",
+        mask_dilate_px: 4,
+        mask_feather_px: 1,
+        dynamic_dilation: true,
       });
       expect(result.success).toBe(true);
     });

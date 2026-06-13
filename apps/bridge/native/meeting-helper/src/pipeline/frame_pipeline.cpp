@@ -20,7 +20,10 @@ namespace broadify::meeting {
 namespace {
 
 constexpr uint32_t kSlotCount = 3;
-constexpr uint32_t kAlphaDilateRadiusPx = 12;
+constexpr uint32_t kMaxAlphaDilateRadiusPx = 8;
+constexpr uint32_t kMaxAlphaFeatherRadiusPx = 3;
+constexpr uint8_t kTemporalAlphaDecay = 64;
+constexpr uint64_t kTemporalAlphaMaxAgeNs = 250000000u;
 constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
@@ -69,6 +72,108 @@ void dilateAlpha(VideoFrame &frame, uint32_t radius) {
   for (size_t index = 0; index < pixelCount; ++index) {
     frame.rgba[index * 4u + 3u] = dilatedAlpha[index];
   }
+}
+
+void featherAlpha(VideoFrame &frame, uint32_t radius) {
+  if (frame.rgba.empty() || frame.width == 0u || frame.height == 0u || radius == 0u) {
+    return;
+  }
+
+  const size_t pixelCount = static_cast<size_t>(frame.width) * frame.height;
+  std::vector<uint8_t> sourceAlpha(pixelCount);
+  std::vector<uint8_t> horizontalAlpha(pixelCount);
+  std::vector<uint8_t> featheredAlpha(pixelCount);
+
+  for (size_t index = 0; index < pixelCount; ++index) {
+    sourceAlpha[index] = frame.rgba[index * 4u + 3u];
+  }
+
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      uint32_t sumAlpha = 0u;
+      uint32_t sampleCount = 0u;
+      const uint32_t minX = x > radius ? x - radius : 0u;
+      const uint32_t maxX = std::min(frame.width - 1u, x + radius);
+      for (uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
+        sumAlpha += sourceAlpha[static_cast<size_t>(y) * frame.width + sampleX];
+        ++sampleCount;
+      }
+      horizontalAlpha[static_cast<size_t>(y) * frame.width + x] =
+          static_cast<uint8_t>(sumAlpha / std::max(1u, sampleCount));
+    }
+  }
+
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    const uint32_t minY = y > radius ? y - radius : 0u;
+    const uint32_t maxY = std::min(frame.height - 1u, y + radius);
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      uint32_t sumAlpha = 0u;
+      uint32_t sampleCount = 0u;
+      for (uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
+        sumAlpha += horizontalAlpha[static_cast<size_t>(sampleY) * frame.width + x];
+        ++sampleCount;
+      }
+      featheredAlpha[static_cast<size_t>(y) * frame.width + x] =
+          static_cast<uint8_t>(sumAlpha / std::max(1u, sampleCount));
+    }
+  }
+
+  for (size_t index = 0; index < pixelCount; ++index) {
+    frame.rgba[index * 4u + 3u] = featheredAlpha[index];
+  }
+}
+
+void stabilizeAlpha(VideoFrame &frame, const VideoFrame &previousFrame) {
+  if (frame.rgba.empty() ||
+      previousFrame.rgba.empty() ||
+      frame.width == 0u ||
+      frame.height == 0u ||
+      frame.width != previousFrame.width ||
+      frame.height != previousFrame.height ||
+      frame.timestampNs <= previousFrame.timestampNs ||
+      frame.timestampNs - previousFrame.timestampNs > kTemporalAlphaMaxAgeNs) {
+    return;
+  }
+
+  const size_t pixelCount = static_cast<size_t>(frame.width) * frame.height;
+  for (size_t index = 0; index < pixelCount; ++index) {
+    const size_t offset = index * 4u + 3u;
+    const uint8_t currentAlpha = frame.rgba[offset];
+    const uint8_t previousAlpha = previousFrame.rgba[offset];
+    if (previousAlpha <= currentAlpha || previousAlpha <= kTemporalAlphaDecay) {
+      continue;
+    }
+    frame.rgba[offset] = std::max(currentAlpha, static_cast<uint8_t>(previousAlpha - kTemporalAlphaDecay));
+  }
+}
+
+uint32_t dynamicDilationRadius(const KeyerSettings &settings, double maskAgeMs) {
+  uint32_t radius = std::min(settings.maskDilatePx, kMaxAlphaDilateRadiusPx);
+  if (!settings.dynamicDilation || maskAgeMs < 0.0) {
+    return radius;
+  }
+  if (maskAgeMs >= 200.0) {
+    radius += 4u;
+  } else if (maskAgeMs >= 132.0) {
+    radius += 3u;
+  } else if (maskAgeMs >= 66.0) {
+    radius += 2u;
+  }
+  return std::min(radius, kMaxAlphaDilateRadiusPx);
+}
+
+void postprocessAlpha(VideoFrame &frame,
+                      const KeyerSettings &settings,
+                      double maskAgeMs,
+                      KeyerMetrics &metrics) {
+  const auto start = std::chrono::steady_clock::now();
+  const auto dilateStart = std::chrono::steady_clock::now();
+  dilateAlpha(frame, dynamicDilationRadius(settings, maskAgeMs));
+  const auto dilateEnd = std::chrono::steady_clock::now();
+  featherAlpha(frame, std::min(settings.maskFeatherPx, kMaxAlphaFeatherRadiusPx));
+  const auto end = std::chrono::steady_clock::now();
+  metrics.maskDilateMs = elapsedMs(dilateStart, dilateEnd);
+  metrics.maskPostprocessMs = elapsedMs(start, end);
 }
 
 void applyLatestAlphaToCurrentFrame(const VideoFrame &currentFrame,
@@ -170,15 +275,30 @@ class AsyncKeyerWorker {
       }
 
       KeyerResult keyed = keyerChain_.process(frame, state_);
-      const auto dilateStart = std::chrono::steady_clock::now();
-      dilateAlpha(keyed.frame, kAlphaDilateRadiusPx);
-      const auto dilateEnd = std::chrono::steady_clock::now();
+      VideoFrame previousKeyedFrame;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (hasLatestFrame_) {
+          previousKeyedFrame = latestFrame_;
+        }
+      }
+      KeyerSettings settings;
+      double maskAgeMs = -1.0;
+      {
+        std::lock_guard<std::mutex> stateLock(state_.mutex);
+        settings.qualityMode = state_.qualityMode;
+        settings.maskDilatePx = state_.maskDilatePx;
+        settings.maskFeatherPx = state_.maskFeatherPx;
+        settings.dynamicDilation = state_.dynamicDilation;
+        maskAgeMs = state_.keyerMetrics.maskAgeMs;
+      }
+      stabilizeAlpha(keyed.frame, previousKeyedFrame);
+      postprocessAlpha(keyed.frame, settings, maskAgeMs, keyed.status.metrics);
       bool shouldPublish = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         shouldPublish = !stopping_ && running_.load() && generation == generation_;
         if (shouldPublish) {
-          keyed.status.metrics.maskDilateMs = elapsedMs(dilateStart, dilateEnd);
           keyed.status.metrics.droppedFrames = droppedFrames_;
           latestFrame_ = std::move(keyed.frame);
           hasLatestFrame_ = !latestFrame_.rgba.empty();

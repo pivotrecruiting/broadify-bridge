@@ -11,7 +11,7 @@ class VisionKeyer final : public Keyer {
   VisionKeyer();
   ~VisionKeyer() override;
 
-  KeyerResult apply(const VideoFrame &input) override;
+  KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override;
 
  private:
   class Impl;

@@ -2,6 +2,7 @@
 
 #include "util/json_utils.h"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 
@@ -40,6 +41,17 @@ std::string metricNumber(double value) {
   return value >= 0.0 ? std::to_string(value) : "null";
 }
 
+std::string normalizedQualityMode(const std::string &qualityMode) {
+  if (qualityMode == "fast" || qualityMode == "accurate") {
+    return qualityMode;
+  }
+  return "balanced";
+}
+
+uint32_t clampedPixelRadius(int value, uint32_t maxValue) {
+  return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int>(maxValue)));
+}
+
 std::string keyerMetricsJson(const KeyerMetrics &metrics) {
   std::ostringstream result;
   result << "{\"camera_copy_ms\":" << metricNumber(metrics.cameraCopyMs)
@@ -47,9 +59,12 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"session_run_ms\":" << metricNumber(metrics.sessionRunMs)
          << ",\"mask_apply_ms\":" << metricNumber(metrics.maskApplyMs)
          << ",\"mask_dilate_ms\":" << metricNumber(metrics.maskDilateMs)
+         << ",\"mask_postprocess_ms\":" << metricNumber(metrics.maskPostprocessMs)
          << ",\"mask_age_ms\":" << metricNumber(metrics.maskAgeMs)
          << ",\"program_frame_ms\":" << metricNumber(metrics.programFrameMs)
          << ",\"mjpeg_encode_ms\":" << metricNumber(metrics.mjpegEncodeMs)
+         << ",\"mask_width\":" << metrics.maskWidth
+         << ",\"mask_height\":" << metrics.maskHeight
          << ",\"dropped_frames\":" << metrics.droppedFrames << "}";
   return result.str();
 }
@@ -161,7 +176,11 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     std::ostringstream result;
     result << "{\"settings\":{\"enabled\":" << (state.keyerEnabled ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel) << "\",\"background_type\":\"mode\",\"background_mode\":\""
-           << jsonEscape(state.backgroundMode) << "\"},"
+           << jsonEscape(state.backgroundMode)
+           << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
+           << "\",\"mask_dilate_px\":" << state.maskDilatePx
+           << ",\"mask_feather_px\":" << state.maskFeatherPx
+           << ",\"dynamic_dilation\":" << (state.dynamicDilation ? "true" : "false") << "},"
            << "\"status\":{\"active_keyer\":\"" << jsonEscape(state.activeKeyer)
            << "\",\"fallback_active\":" << (state.fallbackActive ? "true" : "false")
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
@@ -188,11 +207,19 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
       if (!backgroundMode.empty()) {
         state.backgroundMode = backgroundMode;
       }
+      const std::string qualityMode = extractStringField(line, "quality_mode");
+      if (!qualityMode.empty()) {
+        state.qualityMode = normalizedQualityMode(qualityMode);
+      }
+      state.maskDilatePx = clampedPixelRadius(
+          extractIntField(line, "mask_dilate_px", static_cast<int>(state.maskDilatePx)), 8u);
+      state.maskFeatherPx = clampedPixelRadius(
+          extractIntField(line, "mask_feather_px", static_cast<int>(state.maskFeatherPx)), 3u);
+      state.dynamicDilation = extractBoolField(line, "dynamic_dilation", state.dynamicDilation);
       state.activeKeyer = "passthrough";
       state.fallbackActive = true;
       state.fallbackReason = state.keyerEnabled ? state.requestedKeyerModel + "_pending" : "keyer_disabled";
       state.keyerBackend = "passthrough";
-      state.qualityMode = "realtime";
       state.provider.clear();
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
@@ -207,7 +234,10 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     state.fallbackActive = true;
     state.fallbackReason = "keyer_disabled";
     state.keyerBackend = "passthrough";
-    state.qualityMode = "realtime";
+    state.qualityMode = "balanced";
+    state.maskDilatePx = 1u;
+    state.maskFeatherPx = 1u;
+    state.dynamicDilation = true;
     state.provider.clear();
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};
