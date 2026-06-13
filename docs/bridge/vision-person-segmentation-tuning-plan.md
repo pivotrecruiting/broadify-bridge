@@ -26,6 +26,8 @@ visible matte quality without changing the FrameBus or compositor contracts.
 
 - `quality_mode` is configurable through `keyer.configure` with `fast`,
   `balanced`, and `accurate`; invalid values fall back to `balanced`.
+- The Vision request and `VNSequenceRequestHandler` are reused across frames so
+  the keyer runs on a sequence-oriented Vision path.
 - Vision mask upscaling now uses bilinear alpha sampling instead of
   nearest-neighbor sampling.
 - Alpha postprocessing is configurable, but the default live mode keeps the raw

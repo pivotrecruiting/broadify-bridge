@@ -150,7 +150,7 @@ class VisionKeyer::Impl {
     result.status.activeKeyer = "passthrough";
     result.status.backend = "vision_person_segmentation";
     result.status.qualityMode = normalizedQualityMode(settings.qualityMode);
-    result.status.provider = "vision";
+    result.status.provider = "vision_sequence";
     result.status.fallbackActive = true;
     result.status.fallbackReason = "vision_unavailable";
 
@@ -165,12 +165,12 @@ class VisionKeyer::Impl {
         }
 
         VNGeneratePersonSegmentationRequest *request = requestForCurrentThread();
+        VNSequenceRequestHandler *handler = sequenceHandlerForCurrentThread();
         request.qualityLevel = visionQualityLevel(result.status.qualityMode);
 
         NSError *error = nil;
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:image options:@{}];
         const auto runStart = std::chrono::steady_clock::now();
-        const BOOL ok = [handler performRequests:@[ request ] error:&error];
+        const BOOL ok = [handler performRequests:@[ request ] onCGImage:image error:&error];
         const auto runEnd = std::chrono::steady_clock::now();
         CGImageRelease(image);
 
@@ -213,6 +213,14 @@ class VisionKeyer::Impl {
     return request_;
   }
 
+  VNSequenceRequestHandler *sequenceHandlerForCurrentThread() {
+    if (sequenceHandler_ == nil) {
+      sequenceHandler_ = [[VNSequenceRequestHandler alloc] init];
+    }
+    return sequenceHandler_;
+  }
+
+  VNSequenceRequestHandler *sequenceHandler_ = nil;
   VNGeneratePersonSegmentationRequest *request_ = nil;
 #endif
 };
