@@ -419,12 +419,33 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
     shm_unlink(name.c_str());
   }
 
-  int fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0600);
+  bool initialize_header = true;
+  int fd = -1;
+  if (!force_recreate) {
+    fd = shm_open(name.c_str(), O_RDWR, 0600);
+    if (fd >= 0) {
+      struct stat stat_buffer;
+      if (fstat(fd, &stat_buffer) != 0) {
+        close(fd);
+        return ThrowError(env, "Failed to stat shared memory");
+      }
+      if (stat_buffer.st_size < 0 ||
+          static_cast<size_t>(stat_buffer.st_size) < total_size) {
+        close(fd);
+        return ThrowError(env, "Existing shared memory has incompatible size");
+      }
+      initialize_header = false;
+    }
+  }
+
+  if (fd < 0) {
+    fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+  }
   if (fd < 0) {
     return ThrowError(env, "Failed to create shared memory");
   }
 
-  if (ftruncate(fd, static_cast<off_t>(total_size)) != 0) {
+  if (initialize_header && ftruncate(fd, static_cast<off_t>(total_size)) != 0) {
     close(fd);
     return ThrowError(env, "Failed to resize shared memory");
   }
@@ -437,20 +458,44 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
 #endif
 
   auto* header = static_cast<FrameBusHeader*>(base);
-  header->magic = FRAMEBUS_MAGIC_LE;
-  header->version = FRAMEBUS_VERSION;
-  header->flags = 0;
-  header->header_size = FRAMEBUS_HEADER_SIZE;
-  header->width = width;
-  header->height = height;
-  header->fps = fps;
-  header->pixel_format = pixel_format;
-  header->frame_size = frame_size;
-  header->slot_count = slot_count;
-  header->slot_stride = slot_stride;
-  AtomicStore64(&header->seq, 0);
-  AtomicStore64(&header->last_write_ns, 0);
-  memset(header->reserved, 0, sizeof(header->reserved));
+  if (!initialize_header) {
+    const bool compatible =
+        header->magic == FRAMEBUS_MAGIC_LE &&
+        header->version == FRAMEBUS_VERSION &&
+        header->header_size == FRAMEBUS_HEADER_SIZE &&
+        header->width == width &&
+        header->height == height &&
+        header->fps == fps &&
+        header->pixel_format == pixel_format &&
+        header->frame_size == frame_size &&
+        header->slot_count == slot_count &&
+        header->slot_stride == slot_stride;
+    if (!compatible) {
+#if defined(_WIN32)
+      UnmapViewOfFile(base);
+      CloseHandle(map_handle);
+#else
+      munmap(base, total_size);
+      close(fd);
+#endif
+      return ThrowError(env, "Existing shared memory has incompatible header");
+    }
+  } else {
+    header->magic = FRAMEBUS_MAGIC_LE;
+    header->version = FRAMEBUS_VERSION;
+    header->flags = 0;
+    header->header_size = FRAMEBUS_HEADER_SIZE;
+    header->width = width;
+    header->height = height;
+    header->fps = fps;
+    header->pixel_format = pixel_format;
+    header->frame_size = frame_size;
+    header->slot_count = slot_count;
+    header->slot_stride = slot_stride;
+    AtomicStore64(&header->seq, 0);
+    AtomicStore64(&header->last_write_ns, 0);
+    memset(header->reserved, 0, sizeof(header->reserved));
+  }
 
   FrameBusHandle* handle = new FrameBusHandle();
   handle->is_writer = true;

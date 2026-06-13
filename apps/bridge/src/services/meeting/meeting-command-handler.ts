@@ -1,4 +1,7 @@
-import { parseRelayPayload, EmptyPayloadSchema } from "../relay-command-schemas.js";
+import {
+  parseRelayPayload,
+  EmptyPayloadSchema,
+} from "../relay-command-schemas.js";
 import {
   MeetingButtonModeSchema,
   MeetingButtonTriggerSchema,
@@ -10,7 +13,8 @@ import {
 } from "./meeting-command-schemas.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
 import type { MeetingHelperClient } from "./meeting-helper-client.js";
-import { GraphicsManager } from "../graphics/graphics-manager.js";
+import { meetingGraphicsManager } from "./meeting-graphics-manager.js";
+import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
 
 export type MeetingCommandResultT = {
   success: boolean;
@@ -20,8 +24,10 @@ export type MeetingCommandResultT = {
 
 const ENGINE_NOT_RUNNING_ERROR =
   "Meeting engine is not running. Start it with meeting_engine_start first.";
-const MEETING_GRAPHICS_FRAMEBUS_NAME = "broadify-meeting-graphics-framebus";
-const meetingGraphicsManager = new GraphicsManager();
+const MEETING_GRAPHICS_FRAMEBUS_NAME = "bfy-meet-gfx";
+const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1280, height: 720, fps: 30 };
+const MEETING_GRAPHICS_SLOT_COUNT = 3;
+const MEETING_GRAPHICS_PIXEL_FORMAT = 1;
 
 function requireClient(): MeetingHelperClient {
   const client = meetingHelperManager.getClient();
@@ -29,6 +35,37 @@ function requireClient(): MeetingHelperClient {
     throw new Error(ENGINE_NOT_RUNNING_ERROR);
   }
   return client;
+}
+
+function clearMeetingGraphicsFrameBus(
+  format: { width?: number; height?: number; fps?: number },
+  reason: string,
+): void {
+  try {
+    const width = format.width ?? DEFAULT_MEETING_GRAPHICS_FORMAT.width;
+    const height = format.height ?? DEFAULT_MEETING_GRAPHICS_FORMAT.height;
+    const fps = format.fps ?? DEFAULT_MEETING_GRAPHICS_FORMAT.fps;
+    const module = loadFrameBusModule();
+    if (!module) {
+      throw new Error("FrameBus module not loaded");
+    }
+    const writer = module.createWriter({
+      name: MEETING_GRAPHICS_FRAMEBUS_NAME,
+      width,
+      height,
+      fps,
+      pixelFormat: MEETING_GRAPHICS_PIXEL_FORMAT,
+      slotCount: MEETING_GRAPHICS_SLOT_COUNT,
+      forceRecreate: true,
+    });
+    writer.writeFrame(Buffer.alloc(width * height * 4, 0));
+    writer.close();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[Meeting] Could not clear meeting graphics FrameBus (${reason}): ${message}`,
+    );
+  }
 }
 
 /**
@@ -69,6 +106,7 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_engine_start",
       );
+      clearMeetingGraphicsFrameBus(options, "engine_start");
       const status = await meetingHelperManager.start(options);
       if (status.state !== "running") {
         return {
@@ -99,7 +137,10 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_select",
       );
-      return { success: true, data: await requireClient().cameraSelect(options) };
+      return {
+        success: true,
+        data: await requireClient().cameraSelect(options),
+      };
     }
 
     case "meeting_camera_start": {
@@ -108,7 +149,10 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_start",
       );
-      return { success: true, data: await requireClient().cameraStart(options) };
+      return {
+        success: true,
+        data: await requireClient().cameraStart(options),
+      };
     }
 
     case "meeting_camera_stop": {
@@ -209,7 +253,11 @@ export async function handleMeetingCommand(
     }
 
     case "meeting_graphics_configure_outputs": {
-      const { width = 1280, height = 720, fps = 30 } = parseRelayPayload(
+      const {
+        width = 1280,
+        height = 720,
+        fps = 30,
+      } = parseRelayPayload(
         MeetingGraphicsConfigureOutputsSchema,
         payload ?? {},
         "Invalid payload for meeting_graphics_configure_outputs",
@@ -218,7 +266,7 @@ export async function handleMeetingCommand(
       process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
       process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
       await meetingGraphicsManager.configureOutputs({
-        outputKey: "browser_input",
+        outputKey: "framebus",
         targets: {},
         format: { width, height, fps },
         range: "full",

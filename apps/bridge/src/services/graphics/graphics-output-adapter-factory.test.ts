@@ -20,13 +20,19 @@ jest.mock("./output-adapters/stub-output-adapter.js", () => ({
   StubOutputAdapter: jest.fn().mockImplementation(() => stubInstance),
 }));
 jest.mock("./output-adapters/decklink-key-fill-output-adapter.js", () => ({
-  DecklinkKeyFillOutputAdapter: jest.fn().mockImplementation(() => keyFillInstance),
+  DecklinkKeyFillOutputAdapter: jest
+    .fn()
+    .mockImplementation(() => keyFillInstance),
 }));
 jest.mock("./output-adapters/decklink-video-output-adapter.js", () => ({
-  DecklinkVideoOutputAdapter: jest.fn().mockImplementation(() => videoSdiInstance),
+  DecklinkVideoOutputAdapter: jest
+    .fn()
+    .mockImplementation(() => videoSdiInstance),
 }));
 jest.mock("./output-adapters/display-output-adapter.js", () => ({
-  DisplayVideoOutputAdapter: jest.fn().mockImplementation(() => displayInstance),
+  DisplayVideoOutputAdapter: jest
+    .fn()
+    .mockImplementation(() => displayInstance),
 }));
 
 describe("selectOutputAdapter", () => {
@@ -151,6 +157,19 @@ describe("selectOutputAdapter", () => {
       format: { width: 1920, height: 1080, fps: 50 },
       range: "legal",
       colorspace: "auto",
+    });
+
+    expect(adapter).toBe(stubInstance);
+  });
+
+  it("returns StubOutputAdapter for internal framebus outputKey", async () => {
+    const adapter = await selectOutputAdapter({
+      version: 1,
+      outputKey: "framebus",
+      targets: {},
+      format: { width: 1280, height: 720, fps: 30 },
+      range: "full",
+      colorspace: "rec709",
     });
 
     expect(adapter).toBe(stubInstance);

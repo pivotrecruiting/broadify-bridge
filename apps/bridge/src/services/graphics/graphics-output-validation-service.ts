@@ -19,7 +19,7 @@ type ValidateOutputTargetsOptionsT = {
 
 const isCurrentGraphicsPortTarget = (
   portId: string,
-  currentOutputConfig?: GraphicsOutputConfigT | null
+  currentOutputConfig?: GraphicsOutputConfigT | null,
 ): boolean => {
   if (!currentOutputConfig) {
     return false;
@@ -34,7 +34,7 @@ const assertOutputPortAvailable = (
   outputId: string,
   outputMatch: ReturnType<typeof findDevicePort>,
   options: ValidateOutputTargetsOptionsT,
-  errorMessage: string
+  errorMessage: string,
 ): void => {
   if (!outputMatch) {
     return;
@@ -51,7 +51,7 @@ const assertOutputPortAvailable = (
     isCurrentGraphicsPortTarget(outputId, options.currentOutputConfig)
   ) {
     getBridgeContext().logger.warn(
-      `[Graphics] Allowing reconfigure on busy current DeckLink port ${outputId}`
+      `[Graphics] Allowing reconfigure on busy current DeckLink port ${outputId}`,
     );
     return;
   }
@@ -68,9 +68,14 @@ const assertOutputPortAvailable = (
 export async function validateOutputTargets(
   outputKey: GraphicsOutputKeyT,
   targets: GraphicsTargetsT,
-  options: ValidateOutputTargetsOptionsT = {}
+  options: ValidateOutputTargetsOptionsT = {},
 ): Promise<void> {
-  if (outputKey === "stub" || outputKey === "browser_input" || outputKey === "key_fill_ndi") {
+  if (
+    outputKey === "stub" ||
+    outputKey === "framebus" ||
+    outputKey === "browser_input" ||
+    outputKey === "key_fill_ndi"
+  ) {
     return;
   }
 
@@ -104,13 +109,13 @@ export async function validateOutputTargets(
       targets.output1Id,
       output1Match,
       options,
-      "Selected output ports are not available"
+      "Selected output ports are not available",
     );
     assertOutputPortAvailable(
       targets.output2Id,
       output2Match,
       options,
-      "Selected output ports are not available"
+      "Selected output ports are not available",
     );
   }
 
@@ -133,7 +138,7 @@ export async function validateOutputTargets(
       targets.output1Id,
       output1Match,
       options,
-      "Selected output port is not available"
+      "Selected output port is not available",
     );
   }
 
@@ -152,14 +157,14 @@ export async function validateOutputTargets(
       output1Match.port.type !== "thunderbolt"
     ) {
       throw new Error(
-        "Video HDMI requires an HDMI/DisplayPort/Thunderbolt output port"
+        "Video HDMI requires an HDMI/DisplayPort/Thunderbolt output port",
       );
     }
     assertOutputPortAvailable(
       targets.output1Id,
       output1Match,
       options,
-      "Selected output port is not available"
+      "Selected output port is not available",
     );
   }
 }
@@ -174,10 +179,11 @@ export async function validateOutputTargets(
 export async function validateOutputFormat(
   outputKey: GraphicsOutputKeyT,
   targets: GraphicsTargetsT,
-  format: { width: number; height: number; fps: number }
+  format: { width: number; height: number; fps: number },
 ): Promise<void> {
   if (
     outputKey === "stub" ||
+    outputKey === "framebus" ||
     outputKey === "browser_input" ||
     outputKey === "key_fill_ndi"
   ) {
@@ -205,7 +211,7 @@ export async function validateOutputFormat(
       const modes = outputMatch.port.capabilities.modes ?? [];
       if (modes.length === 0) {
         getBridgeContext().logger.warn(
-          `[Graphics] Display output has no mode list; skipping format validation for ${outputId}`
+          `[Graphics] Display output has no mode list; skipping format validation for ${outputId}`,
         );
         continue;
       }
@@ -213,7 +219,7 @@ export async function validateOutputFormat(
         (mode) =>
           mode.width === format.width &&
           mode.height === format.height &&
-          Math.abs(mode.fps - format.fps) < 0.01
+          Math.abs(mode.fps - format.fps) < 0.01,
       );
       if (!hasMatch) {
         throw new Error("Output format not supported by selected display");
@@ -225,19 +231,23 @@ export async function validateOutputFormat(
       continue;
     }
 
-    const modes = await listDecklinkDisplayModes(outputMatch.device.id, outputId, {
-      width: format.width,
-      height: format.height,
-      fps: format.fps,
-      requireKeying,
-    });
+    const modes = await listDecklinkDisplayModes(
+      outputMatch.device.id,
+      outputId,
+      {
+        width: format.width,
+        height: format.height,
+        fps: format.fps,
+        requireKeying,
+      },
+    );
 
     if (modes.length === 0) {
       throw new Error("Output format not supported by selected device");
     }
 
     const hasSupportedFormat = modes.some((mode) =>
-      supportsAnyPixelFormat(mode.pixelFormats, preferredFormats)
+      supportsAnyPixelFormat(mode.pixelFormats, preferredFormats),
     );
 
     if (!hasSupportedFormat) {

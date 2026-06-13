@@ -3,6 +3,16 @@ const mockIsRunning = jest.fn();
 const mockStart = jest.fn();
 const mockStop = jest.fn();
 const mockGetFullStatus = jest.fn();
+const mockMeetingGraphicsConfigureOutputs = jest.fn();
+const mockFrameBusWriteFrame = jest.fn();
+const mockFrameBusClose = jest.fn();
+const mockFrameBusCreateWriter = jest.fn(() => ({
+  writeFrame: mockFrameBusWriteFrame,
+  close: mockFrameBusClose,
+}));
+const mockLoadFrameBusModule = jest.fn(() => ({
+  createWriter: mockFrameBusCreateWriter,
+}));
 
 jest.mock("./meeting-helper-manager.js", () => ({
   meetingHelperManager: {
@@ -12,6 +22,17 @@ jest.mock("./meeting-helper-manager.js", () => ({
     stop: (...args: unknown[]) => mockStop(...args),
     getFullStatus: (...args: unknown[]) => mockGetFullStatus(...args),
   },
+}));
+
+jest.mock("./meeting-graphics-manager.js", () => ({
+  meetingGraphicsManager: {
+    configureOutputs: (...args: unknown[]) =>
+      mockMeetingGraphicsConfigureOutputs(...args),
+  },
+}));
+
+jest.mock("../graphics/framebus/framebus-client.js", () => ({
+  loadFrameBusModule: (...args: unknown[]) => mockLoadFrameBusModule(...args),
 }));
 
 import {
@@ -44,6 +65,14 @@ describe("meeting-command-handler", () => {
     jest.clearAllMocks();
     mockGetClient.mockReturnValue(mockClient);
     mockIsRunning.mockReturnValue(true);
+    mockMeetingGraphicsConfigureOutputs.mockResolvedValue(undefined);
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: mockFrameBusCreateWriter,
+    });
+    mockFrameBusCreateWriter.mockReturnValue({
+      writeFrame: mockFrameBusWriteFrame,
+      close: mockFrameBusClose,
+    });
   });
 
   describe("isMeetingCommand", () => {
@@ -202,6 +231,34 @@ describe("meeting-command-handler", () => {
         fps: 30,
       });
       expect(result.success).toBe(true);
+    });
+  });
+
+  describe("meeting_graphics_configure_outputs", () => {
+    it("configures the meeting graphics manager for renderer FrameBus output", async () => {
+      const result = await handleMeetingCommand(
+        "meeting_graphics_configure_outputs",
+        {
+          width: 1280,
+          height: 720,
+          fps: 30,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockMeetingGraphicsConfigureOutputs).toHaveBeenCalledWith({
+        outputKey: "framebus",
+        targets: {},
+        format: { width: 1280, height: 720, fps: 30 },
+        range: "full",
+        colorspace: "rec709",
+      });
+      expect(result.data).toMatchObject({
+        framebusName: "bfy-meet-gfx",
+        width: 1280,
+        height: 720,
+        fps: 30,
+      });
     });
   });
 

@@ -176,6 +176,22 @@ describe("graphics-layer-service", () => {
         validateLayerLimits(layers, categoryToLayer, "layer-2", "lower_third")
       ).not.toThrow();
     });
+
+    it("allows meeting-scoped layers to share a template category", () => {
+      const layers = new Map<string, GraphicsLayerStateT>();
+      const categoryToLayer = new Map<string, string>();
+      categoryToLayer.set("overlay", "meeting-background-template");
+      layers.set("meeting-background-template", {} as GraphicsLayerStateT);
+
+      expect(() =>
+        validateLayerLimits(
+          layers,
+          categoryToLayer,
+          "meeting-content-template",
+          "overlay"
+        )
+      ).not.toThrow();
+    });
   });
 
   describe("renderPreparedLayer", () => {
@@ -212,6 +228,41 @@ describe("graphics-layer-service", () => {
         })
       );
       expect(onRendered).toHaveBeenCalledWith(["l1"]);
+    });
+
+    it("renders multiple meeting-scoped layers in the same template category", async () => {
+      const renderer = createMockRenderer();
+      const layers = new Map<string, GraphicsLayerStateT>();
+      const categoryToLayer = new Map<string, string>();
+      const onRendered = jest.fn();
+
+      await renderPreparedLayer({
+        renderer,
+        layers,
+        categoryToLayer,
+        outputFormat: { width: 1280, height: 720, fps: 30 },
+        data: createPreparedLayer({
+          layerId: "meeting-background-template",
+          category: "overlay",
+        }),
+        onRendered,
+      });
+      await renderPreparedLayer({
+        renderer,
+        layers,
+        categoryToLayer,
+        outputFormat: { width: 1280, height: 720, fps: 30 },
+        data: createPreparedLayer({
+          layerId: "meeting-content-template",
+          category: "overlay",
+        }),
+        onRendered,
+      });
+
+      expect(layers.has("meeting-background-template")).toBe(true);
+      expect(layers.has("meeting-content-template")).toBe(true);
+      expect(categoryToLayer.has("overlay")).toBe(false);
+      expect(renderer.renderLayer).toHaveBeenCalledTimes(2);
     });
 
     it("uses default format when outputFormat is null", async () => {

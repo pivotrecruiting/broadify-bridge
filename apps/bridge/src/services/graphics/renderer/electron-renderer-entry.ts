@@ -3,6 +3,7 @@ import net from "node:net";
 import pino from "pino";
 import {
   loadFrameBusModule,
+  resolveFrameBusNativeCandidates,
   type FrameBusModuleT,
   type FrameBusWriterT,
 } from "../framebus/framebus-client.js";
@@ -34,7 +35,7 @@ let frameBusPixelFormat = Number(
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT ||
     1,
 );
-const frameBusForceRecreate = true; // IMMER TRUE LASSEN!
+const MEETING_GRAPHICS_FRAMEBUS_NAME = "bfy-meet-gfx";
 
 logger.info(
   {
@@ -74,6 +75,7 @@ let perfSentCount = 0;
 let perfDroppedCount = 0;
 let perfLatencyTotalMs = 0;
 let perfLatencyMaxMs = 0;
+let firstFrameBusWriteLogged = false;
 let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
 let rendererConfigReady = false;
@@ -238,12 +240,35 @@ function maybeSendReady(): void {
   });
 }
 
-function logFrameBusOnce(key: string, message: string): void {
+function logFrameBusOnce(
+  key: string,
+  message: string,
+  context: Record<string, unknown> = {},
+  detailsMessage?: string,
+): void {
   if (debugFrameBusLogged.has(key)) {
     return;
   }
   debugFrameBusLogged.add(key);
   logger.warn(message);
+  if (Object.keys(context).length > 0) {
+    logger.warn(context, detailsMessage ?? `${message} details`);
+  }
+}
+
+function resolveFrameBusCandidatesForLog(): string[] {
+  if (typeof resolveFrameBusNativeCandidates !== "function") {
+    return [];
+  }
+  try {
+    return resolveFrameBusNativeCandidates();
+  } catch {
+    return [];
+  }
+}
+
+function shouldForceRecreateFrameBus(): boolean {
+  return frameBusName !== MEETING_GRAPHICS_FRAMEBUS_NAME;
 }
 
 function ensureFrameBusWriter(
@@ -274,6 +299,18 @@ function ensureFrameBusWriter(
     frameBusInitAttempted = false;
   }
   if (frameBusInitAttempted) {
+    logFrameBusOnce(
+      "init-already-attempted",
+      "[GraphicsRenderer] FrameBus init skipped after previous failed attempt",
+      {
+        frameBusName,
+        frameBusSlotCount,
+        frameBusPixelFormat,
+        width,
+        height,
+        fps,
+      },
+    );
     return false;
   }
 
@@ -281,6 +318,10 @@ function ensureFrameBusWriter(
     logFrameBusOnce(
       "missing-name",
       "[GraphicsRenderer] FrameBus name missing (BRIDGE_FRAMEBUS_NAME)",
+      {
+        envFrameBusName: process.env.BRIDGE_FRAMEBUS_NAME || "",
+        rendererConfigFrameBusName: rendererConfig?.framebusName || "",
+      },
     );
     return false;
   }
@@ -288,6 +329,14 @@ function ensureFrameBusWriter(
     logFrameBusOnce(
       "invalid-slot",
       "[GraphicsRenderer] FrameBus slotCount missing or invalid",
+      {
+        frameBusName,
+        frameBusSlotCount,
+        rendererConfigFrameBusSlotCount: rendererConfig?.framebusSlotCount ?? 0,
+        rendererConfigFramebusSize: rendererConfig?.framebusSize ?? 0,
+        width,
+        height,
+      },
     );
     return false;
   }
@@ -299,6 +348,9 @@ function ensureFrameBusWriter(
       logFrameBusOnce(
         "module-null",
         "[GraphicsRenderer] FrameBus module not loaded",
+        {
+          candidates: resolveFrameBusCandidatesForLog(),
+        },
       );
       return false;
     }
@@ -311,7 +363,7 @@ function ensureFrameBusWriter(
         ? (frameBusPixelFormat as 1 | 2 | 3)
         : 1,
       slotCount: frameBusSlotCount,
-      forceRecreate: frameBusForceRecreate,
+      forceRecreate: shouldForceRecreateFrameBus(),
     });
     logger.info(
       {
@@ -327,6 +379,18 @@ function ensureFrameBusWriter(
     logFrameBusOnce(
       "init-failed",
       `[GraphicsRenderer] FrameBus init failed: ${message}`,
+      {
+        message,
+        frameBusName,
+        width,
+        height,
+        fps,
+        frameBusPixelFormat,
+        frameBusSlotCount,
+        frameBusForceRecreate: shouldForceRecreateFrameBus(),
+        candidates: resolveFrameBusCandidatesForLog(),
+      },
+      "[GraphicsRenderer] FrameBus init failed details",
     );
     return false;
   }
@@ -395,6 +459,26 @@ function applyRendererConfig(message: unknown): void {
   if (config.pixelFormat > 0) {
     frameBusPixelFormat = config.pixelFormat;
   }
+
+  frameBusInitAttempted = false;
+  logger.info(
+    {
+      width: config.width,
+      height: config.height,
+      fps: config.fps,
+      pixelFormat: config.pixelFormat,
+      framebusName: config.framebusName,
+      framebusSlotCount: config.framebusSlotCount,
+      framebusSize: config.framebusSize,
+      derivedFrameBusName: frameBusName,
+      derivedFrameBusSlotCount: frameBusSlotCount,
+      derivedFrameBusPixelFormat: frameBusPixelFormat,
+      backgroundMode: config.backgroundMode,
+      clearColor: config.clearColor,
+      candidates: resolveFrameBusCandidatesForLog(),
+    },
+    "[GraphicsRenderer] renderer_configure received",
+  );
 
   const frameBusReady = ensureFrameBusWriter(
     config.width,
@@ -572,6 +656,19 @@ async function ensureSingleWindow(
 
       try {
         frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
+        if (!firstFrameBusWriteLogged) {
+          firstFrameBusWriteLogged = true;
+          logger.info(
+            {
+              frameBusName,
+              width,
+              height,
+              fps,
+              layerIds: Array.from(singleLayerSnapshots.keys()),
+            },
+            "[GraphicsRenderer] First FrameBus frame written",
+          );
+        }
         perfSentCount += 1;
         const latencyMs = Date.now() - frameStartAt;
         perfLatencyTotalMs += latencyMs;
@@ -655,6 +752,117 @@ function requestSingleWindowRepaint(): void {
   }
 }
 
+function writeTransparentFrame(reason: string): void {
+  if (!rendererConfig) {
+    return;
+  }
+  const { width, height, fps } = rendererConfig;
+  if (!ensureFrameBusWriter(width, height, fps) || !frameBusWriter) {
+    return;
+  }
+  const buffer = Buffer.alloc(width * height * 4, 0);
+  try {
+    frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
+    logger.info(
+      {
+        reason,
+        frameBusName,
+        width,
+        height,
+        fps,
+      },
+      "[GraphicsRenderer] Transparent FrameBus frame written",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      { reason, message },
+      "[GraphicsRenderer] Transparent FrameBus write failed",
+    );
+  }
+}
+
+async function writeCapturedWindowFrame(reason: string): Promise<void> {
+  if (!rendererConfig || !singleWindow || singleWindow.isDestroyed()) {
+    return;
+  }
+  const { width, height, fps } = rendererConfig;
+  if (!ensureFrameBusWriter(width, height, fps) || !frameBusWriter) {
+    return;
+  }
+
+  try {
+    const image = await singleWindow.webContents.capturePage();
+    const imageSize = image.getSize();
+    if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {
+      logger.warn(
+        { reason, imageWidth: imageSize.width, imageHeight: imageSize.height },
+        "[GraphicsRenderer] Captured frame empty",
+      );
+      return;
+    }
+
+    const buffer = bgraToRgba(image.toBitmap());
+    if (buffer.length !== width * height * 4) {
+      logger.warn(
+        {
+          reason,
+          bufferLength: buffer.length,
+          expectedLength: width * height * 4,
+          imageWidth: imageSize.width,
+          imageHeight: imageSize.height,
+        },
+        "[GraphicsRenderer] Captured frame buffer length mismatch",
+      );
+      return;
+    }
+
+    let nonTransparentPixels = 0;
+    let maxAlpha = 0;
+    for (let index = 3; index < buffer.length; index += 4) {
+      const alpha = buffer[index];
+      if (alpha > 0) {
+        nonTransparentPixels += 1;
+        if (alpha > maxAlpha) {
+          maxAlpha = alpha;
+        }
+      }
+    }
+
+    frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
+    logger.info(
+      {
+        reason,
+        frameBusName,
+        width,
+        height,
+        fps,
+        imageWidth: imageSize.width,
+        imageHeight: imageSize.height,
+        nonTransparentPixels,
+        maxAlpha,
+        layerIds: Array.from(singleLayerSnapshots.keys()),
+      },
+      "[GraphicsRenderer] Captured FrameBus frame written",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      { reason, message },
+      "[GraphicsRenderer] Captured FrameBus write failed",
+    );
+  }
+}
+
+function scheduleCapturedWindowFrames(reason: string): void {
+  const delaysMs = [120, 300, 700];
+  for (const delayMs of delaysMs) {
+    setTimeout(() => {
+      void writeCapturedWindowFrame(`${reason}_${delayMs}ms`);
+    }, delayMs);
+  }
+}
+
 function registerAssetProtocol(): void {
   protocol.registerFileProtocol("asset", (request, callback) => {
     try {
@@ -724,7 +932,20 @@ async function createLayer(message: {
     `window.__createLayer(${JSON.stringify(payload)});`,
     true,
   );
+  logger.info(
+    {
+      layerId: message.layerId,
+      htmlLength: message.html.length,
+      cssLength: message.css.length,
+      layout: message.layout,
+      zIndex: message.zIndex,
+      activeLayerIds: Array.from(singleLayerSnapshots.keys()),
+    },
+    "[GraphicsRenderer] create_layer rendered",
+  );
   requestSingleWindowRepaint();
+  await writeCapturedWindowFrame("create_layer");
+  scheduleCapturedWindowFrames("create_layer");
 }
 
 /**
@@ -755,6 +976,8 @@ async function updateValues(message: {
     true,
   );
   requestSingleWindowRepaint();
+  await writeCapturedWindowFrame("update_values");
+  scheduleCapturedWindowFrames("update_values");
 }
 
 /**
@@ -787,6 +1010,8 @@ async function updateLayout(message: {
     true,
   );
   requestSingleWindowRepaint();
+  await writeCapturedWindowFrame("update_layout");
+  scheduleCapturedWindowFrames("update_layout");
 }
 
 /**
@@ -797,12 +1022,21 @@ async function updateLayout(message: {
 async function removeLayer(message: { layerId: string }): Promise<void> {
   singleLayerSnapshots.delete(message.layerId);
   if (!singleWindow) {
+    if (singleLayerSnapshots.size === 0) {
+      writeTransparentFrame("remove_layer_no_window");
+    }
     return;
   }
   await singleWindow.webContents.executeJavaScript(
     `window.__removeLayer(${JSON.stringify(message.layerId)});`,
     true,
   );
+  if (singleLayerSnapshots.size === 0) {
+    writeTransparentFrame("remove_last_layer");
+  } else {
+    await writeCapturedWindowFrame("remove_layer");
+    scheduleCapturedWindowFrames("remove_layer");
+  }
   requestSingleWindowRepaint();
 }
 

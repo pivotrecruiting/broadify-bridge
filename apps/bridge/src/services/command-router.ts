@@ -17,6 +17,10 @@ import {
   handleMeetingCommand,
   isMeetingCommand,
 } from "./meeting/meeting-command-handler.js";
+import {
+  isMeetingGraphicsLayerPayload,
+  meetingGraphicsManager,
+} from "./meeting/meeting-graphics-manager.js";
 import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { transformDevicesToOutputs } from "./device-to-output-transform.js";
@@ -362,7 +366,10 @@ export class CommandRouter {
           }
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
-          await graphicsManager.sendLayer(payload);
+          const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
+            ? meetingGraphicsManager
+            : graphicsManager;
+          await targetGraphicsManager.sendLayer(payload);
           return {
             success: true,
             data: {},
@@ -386,7 +393,10 @@ export class CommandRouter {
           }
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
-          await graphicsManager.updateValues(payload);
+          const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
+            ? meetingGraphicsManager
+            : graphicsManager;
+          await targetGraphicsManager.updateValues(payload);
           return {
             success: true,
             data: {},
@@ -402,7 +412,10 @@ export class CommandRouter {
           }
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
-          await graphicsManager.updateLayout(payload);
+          const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
+            ? meetingGraphicsManager
+            : graphicsManager;
+          await targetGraphicsManager.updateLayout(payload);
           return {
             success: true,
             data: {},
@@ -418,7 +431,10 @@ export class CommandRouter {
           }
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
-          await graphicsManager.removeLayer(payload);
+          const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
+            ? meetingGraphicsManager
+            : graphicsManager;
+          await targetGraphicsManager.removeLayer(payload);
           return {
             success: true,
             data: {},

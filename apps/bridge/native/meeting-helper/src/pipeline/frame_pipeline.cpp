@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <iostream>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -20,7 +21,7 @@ namespace {
 
 constexpr uint32_t kSlotCount = 3;
 constexpr uint32_t kAlphaDilateRadiusPx = 12;
-constexpr const char *kMeetingGraphicsFrameBusName = "broadify-meeting-graphics-framebus";
+constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
@@ -221,6 +222,7 @@ class GraphicsFrameBusReader {
     uint32_t height = 0;
     uint32_t fps = 0;
     if (framebus_reader_get_info(reader_, &width, &height, &fps) != 0 || width == 0u || height == 0u) {
+      logReaderEvent("info_failed", width, height, fps, 0, 0);
       close();
       return hasLatestFrame_;
     }
@@ -228,15 +230,26 @@ class GraphicsFrameBusReader {
     scratch_.assign(static_cast<size_t>(width) * height * 4u, 0u);
     const int result = framebus_reader_copy_latest_rgba(reader_, scratch_.data(), static_cast<size_t>(width) * 4u, &lastSeq_);
     if (result == -1) {
+      logReaderEvent("copy_failed", width, height, fps, 0, 0);
       close();
       return hasLatestFrame_;
     }
     if (result == 1) {
+      uint64_t nonTransparentPixels = 0;
+      uint32_t maxAlpha = 0;
+      for (size_t index = 3; index < scratch_.size(); index += 4u) {
+        const uint32_t alpha = scratch_[index];
+        if (alpha > 0u) {
+          ++nonTransparentPixels;
+          maxAlpha = std::max(maxAlpha, alpha);
+        }
+      }
       latestFrame_.width = width;
       latestFrame_.height = height;
       latestFrame_.timestampNs = nowNs();
       latestFrame_.rgba = scratch_;
       hasLatestFrame_ = true;
+      logReaderEvent("frame_read", width, height, fps, nonTransparentPixels, maxAlpha);
     }
 
     if (hasLatestFrame_) {
@@ -252,18 +265,48 @@ class GraphicsFrameBusReader {
     }
     reader_ = framebus_reader_open(kMeetingGraphicsFrameBusName);
     lastSeq_ = 0;
+    if (reader_ == nullptr) {
+      logReaderEvent("open_failed", 0, 0, 0, 0, 0);
+    } else {
+      logReaderEvent("opened", 0, 0, 0, 0, 0);
+    }
   }
 
   void close() {
     if (reader_ != nullptr) {
       framebus_reader_close(reader_);
       reader_ = nullptr;
+      logReaderEvent("closed", 0, 0, 0, 0, 0);
     }
     lastSeq_ = 0;
   }
 
+  void logReaderEvent(const char *event,
+                      uint32_t width,
+                      uint32_t height,
+                      uint32_t fps,
+                      uint64_t nonTransparentPixels,
+                      uint32_t maxAlpha) {
+    if (lastLoggedSeq_ == lastSeq_ && std::string(event) == lastLoggedEvent_) {
+      return;
+    }
+    lastLoggedSeq_ = lastSeq_;
+    lastLoggedEvent_ = event;
+    std::cout << "{\"type\":\"meeting_graphics_framebus\",\"event\":\"" << event
+              << "\",\"name\":\"" << kMeetingGraphicsFrameBusName
+              << "\",\"seq\":" << lastSeq_
+              << ",\"width\":" << width
+              << ",\"height\":" << height
+              << ",\"fps\":" << fps
+              << ",\"non_transparent_pixels\":" << nonTransparentPixels
+              << ",\"max_alpha\":" << maxAlpha
+              << "}" << std::endl;
+  }
+
   framebus_reader_t *reader_ = nullptr;
   uint64_t lastSeq_ = 0;
+  uint64_t lastLoggedSeq_ = 0;
+  std::string lastLoggedEvent_;
   bool hasLatestFrame_ = false;
   VideoFrame latestFrame_;
   std::vector<uint8_t> scratch_;

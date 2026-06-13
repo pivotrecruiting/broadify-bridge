@@ -396,6 +396,9 @@ export class MeetingHelperManager {
     logger.debug?.(`[MeetingHelper] ${line}`);
     try {
       const parsed = JSON.parse(line) as { type?: string; code?: string; message?: string };
+      if (parsed.type === "meeting_graphics_framebus") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
       if (parsed.type === "ready") {
         this.readyResolver?.(parsed as ReadyEventT);
       }
