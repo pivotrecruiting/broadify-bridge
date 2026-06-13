@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -28,12 +27,6 @@ std::string normalizedQualityMode(const std::string &qualityMode) {
 }
 
 #if defined(__APPLE__)
-struct MaskSample {
-  size_t lower = 0u;
-  size_t upper = 0u;
-  uint32_t upperWeight = 0u;
-};
-
 void releaseFrameData(void *, const void *, size_t) {}
 
 CGImageRef createImageFromFrame(const VideoFrame &frame) {
@@ -75,8 +68,24 @@ VNGeneratePersonSegmentationRequestQualityLevel visionQualityLevel(const std::st
   return VNGeneratePersonSegmentationRequestQualityLevelBalanced;
 }
 
-void applyMask(CVPixelBufferRef maskBuffer, VideoFrame &frame, KeyerMetrics &metrics) {
-  if (maskBuffer == nullptr || frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
+void applyMaskToFrame(const AlphaMask &mask, VideoFrame &frame) {
+  if (mask.alpha.empty() || frame.rgba.empty() || mask.width == 0u || mask.height == 0u || frame.width == 0u || frame.height == 0u) {
+    return;
+  }
+
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    const uint32_t maskY = static_cast<uint32_t>((static_cast<uint64_t>(y) * mask.height) / frame.height);
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      const uint32_t maskX = static_cast<uint32_t>((static_cast<uint64_t>(x) * mask.width) / frame.width);
+      const size_t frameOffset = (static_cast<size_t>(y) * frame.width + x) * 4u;
+      const size_t maskOffset = static_cast<size_t>(maskY) * mask.width + maskX;
+      frame.rgba[frameOffset + 3u] = mask.alpha[maskOffset];
+    }
+  }
+}
+
+void copyMask(CVPixelBufferRef maskBuffer, uint64_t timestampNs, AlphaMask &outputMask, KeyerMetrics &metrics) {
+  if (maskBuffer == nullptr) {
     return;
   }
 
@@ -91,48 +100,14 @@ void applyMask(CVPixelBufferRef maskBuffer, VideoFrame &frame, KeyerMetrics &met
   }
   metrics.maskWidth = static_cast<uint32_t>(std::min<size_t>(maskWidth, UINT32_MAX));
   metrics.maskHeight = static_cast<uint32_t>(std::min<size_t>(maskHeight, UINT32_MAX));
-
-  std::vector<MaskSample> xSamples(frame.width);
-  std::vector<MaskSample> ySamples(frame.height);
-  for (uint32_t x = 0; x < frame.width; ++x) {
-    const double sourceX = frame.width > 1u
-        ? (static_cast<double>(x) * static_cast<double>(maskWidth - 1u)) / static_cast<double>(frame.width - 1u)
-        : 0.0;
-    const size_t lower = static_cast<size_t>(std::floor(sourceX));
-    xSamples[x].lower = lower;
-    xSamples[x].upper = std::min(maskWidth - 1u, lower + 1u);
-    xSamples[x].upperWeight = static_cast<uint32_t>(std::round((sourceX - static_cast<double>(lower)) * 256.0));
-  }
-  for (uint32_t y = 0; y < frame.height; ++y) {
-    const double sourceY = frame.height > 1u
-        ? (static_cast<double>(y) * static_cast<double>(maskHeight - 1u)) / static_cast<double>(frame.height - 1u)
-        : 0.0;
-    const size_t lower = static_cast<size_t>(std::floor(sourceY));
-    ySamples[y].lower = lower;
-    ySamples[y].upper = std::min(maskHeight - 1u, lower + 1u);
-    ySamples[y].upperWeight = static_cast<uint32_t>(std::round((sourceY - static_cast<double>(lower)) * 256.0));
-  }
-
-  for (uint32_t y = 0; y < frame.height; ++y) {
-    const MaskSample &sampleY = ySamples[y];
-    const uint32_t yWeight = sampleY.upperWeight;
-    const uint32_t inverseYWeight = 256u - yWeight;
-    const uint8_t *row0 = mask + sampleY.lower * maskStride;
-    const uint8_t *row1 = mask + sampleY.upper * maskStride;
-    for (uint32_t x = 0; x < frame.width; ++x) {
-      const MaskSample &sampleX = xSamples[x];
-      const uint32_t xWeight = sampleX.upperWeight;
-      const uint32_t inverseXWeight = 256u - xWeight;
-      const uint32_t top =
-          static_cast<uint32_t>(row0[sampleX.lower]) * inverseXWeight +
-          static_cast<uint32_t>(row0[sampleX.upper]) * xWeight;
-      const uint32_t bottom =
-          static_cast<uint32_t>(row1[sampleX.lower]) * inverseXWeight +
-          static_cast<uint32_t>(row1[sampleX.upper]) * xWeight;
-      const uint32_t alpha = (top * inverseYWeight + bottom * yWeight + 32768u) >> 16u;
-      const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
-      frame.rgba[offset + 3u] = static_cast<uint8_t>(std::min(alpha, 255u));
-    }
+  outputMask.width = metrics.maskWidth;
+  outputMask.height = metrics.maskHeight;
+  outputMask.timestampNs = timestampNs;
+  outputMask.alpha.assign(static_cast<size_t>(outputMask.width) * outputMask.height, 0u);
+  for (uint32_t y = 0; y < outputMask.height; ++y) {
+    const uint8_t *row = mask + static_cast<size_t>(y) * maskStride;
+    const size_t outputOffset = static_cast<size_t>(y) * outputMask.width;
+    std::copy(row, row + outputMask.width, outputMask.alpha.data() + outputOffset);
   }
   CVPixelBufferUnlockBaseAddress(maskBuffer, kCVPixelBufferLock_ReadOnly);
 }
@@ -182,7 +157,8 @@ class VisionKeyer::Impl {
 
         VNPixelBufferObservation *observation = (VNPixelBufferObservation *)request.results.firstObject;
         const auto maskStart = std::chrono::steady_clock::now();
-        applyMask(observation.pixelBuffer, result.frame, result.status.metrics);
+        copyMask(observation.pixelBuffer, input.timestampNs, result.mask, result.status.metrics);
+        applyMaskToFrame(result.mask, result.frame);
         const auto end = std::chrono::steady_clock::now();
 
         result.status.activeKeyer = "vision_person_segmentation";

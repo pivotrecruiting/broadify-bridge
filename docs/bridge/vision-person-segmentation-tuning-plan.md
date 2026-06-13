@@ -13,8 +13,8 @@ visible matte quality without changing the FrameBus or compositor contracts.
 ## Current State
 
 - The Vision keyer receives an RGBA camera frame, wraps it as a `CGImage`, runs
-  `VNGeneratePersonSegmentationRequest`, and copies the returned one-channel
-  mask into the frame alpha channel.
+  `VNGeneratePersonSegmentationRequest`, and stores the returned one-channel
+  mask as a separate `AlphaMask`.
 - The keyer previously used a fixed Vision quality level and nearest-neighbor
   mask sampling.
 - The pipeline previously applied a fixed 12px alpha dilation to every keyed
@@ -28,8 +28,11 @@ visible matte quality without changing the FrameBus or compositor contracts.
   `balanced`, and `accurate`; invalid values fall back to `balanced`.
 - The Vision request and `VNSequenceRequestHandler` are reused across frames so
   the keyer runs on a sequence-oriented Vision path.
-- Vision mask upscaling now uses bilinear alpha sampling instead of
-  nearest-neighbor sampling.
+- The keyer now carries a separate `AlphaMask` through the async worker. Mask
+  postprocessing runs on that matte, and RGBA alpha is applied only at the
+  compositor boundary.
+- Final mask upscaling to the current camera frame uses bilinear alpha sampling
+  instead of nearest-neighbor sampling.
 - Alpha postprocessing is configurable, but the default live mode keeps the raw
   Vision matte without added dilation or feathering.
 - Dilation is configurable through `mask_dilate_px`; a value of `0` means no

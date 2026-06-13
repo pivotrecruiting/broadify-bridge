@@ -115,6 +115,7 @@ class ModnetKeyer::Impl {
         maskWidth = dimensionOrFallback(outputShape[outputShape.size() - 1u]);
       }
       const auto maskStart = std::chrono::steady_clock::now();
+      copyAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
       applyAlphaMask(mask, maskWidth, maskHeight, result.frame);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
@@ -125,6 +126,8 @@ class ModnetKeyer::Impl {
       status_.metrics.tensorMs = elapsedMs(tensorStart, tensorEnd);
       status_.metrics.sessionRunMs = elapsedMs(runStart, runEnd);
       status_.metrics.maskApplyMs = elapsedMs(maskStart, maskEnd);
+      status_.metrics.maskWidth = maskWidth;
+      status_.metrics.maskHeight = maskHeight;
       result.status = status_;
       return result;
     } catch (...) {
@@ -254,6 +257,23 @@ class ModnetKeyer::Impl {
         const float alpha = std::clamp(mask[my * maskWidth + mx], 0.0f, 1.0f);
         const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
         frame.rgba[offset + 3u] = static_cast<uint8_t>(std::round(alpha * 255.0f));
+      }
+    }
+  }
+
+  void copyAlphaMask(const float *mask, uint32_t maskWidth, uint32_t maskHeight, uint64_t timestampNs, AlphaMask &outputMask) const {
+    if (mask == nullptr || maskWidth == 0u || maskHeight == 0u) {
+      return;
+    }
+    outputMask.width = maskWidth;
+    outputMask.height = maskHeight;
+    outputMask.timestampNs = timestampNs;
+    outputMask.alpha.assign(static_cast<size_t>(maskWidth) * maskHeight, 0u);
+    for (uint32_t y = 0; y < maskHeight; ++y) {
+      for (uint32_t x = 0; x < maskWidth; ++x) {
+        const size_t offset = static_cast<size_t>(y) * maskWidth + x;
+        const float alpha = std::clamp(mask[offset], 0.0f, 1.0f);
+        outputMask.alpha[offset] = static_cast<uint8_t>(std::round(alpha * 255.0f));
       }
     }
   }
