@@ -62,8 +62,9 @@ pixels already included in the camera image.
 
 Temporal stabilization uses a 250ms reuse window and blends only inside a small
 protection zone around the current mask. The previous-mask weight adapts from
-high in quiet areas to low in moving areas. When `mask_age_ms` is above 140ms,
-the previous-mask contribution is reduced aggressively to suppress trails.
+high in quiet areas to moderate in moving areas so fast movement keeps more
+foreground coverage. When `mask_age_ms` is above 140ms, the previous-mask
+contribution is reduced to suppress trails.
 
 ## Measurement Criteria
 

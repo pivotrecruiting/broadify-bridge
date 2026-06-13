@@ -23,15 +23,15 @@ namespace {
 constexpr uint32_t kSlotCount = 3;
 constexpr uint32_t kMaxAlphaDilateRadiusPx = 8;
 constexpr uint32_t kMaxAlphaFeatherRadiusPx = 3;
-constexpr uint32_t kTemporalProtectionRadiusPx = 6;
+constexpr uint32_t kTemporalProtectionRadiusPx = 10;
 constexpr uint8_t kTemporalProtectionAlphaThreshold = 32;
 constexpr uint64_t kTemporalAlphaMaxAgeNs = 250000000u;
 constexpr double kStaleMaskAgeMs = 140.0;
 constexpr float kSmoothstepLow = 0.12f;
 constexpr float kSmoothstepHigh = 0.88f;
 constexpr float kQuietPreviousWeight = 0.85f;
-constexpr float kMotionPreviousWeight = 0.15f;
-constexpr float kStalePreviousWeight = 0.05f;
+constexpr float kMotionPreviousWeight = 0.35f;
+constexpr float kStalePreviousWeight = 0.12f;
 constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
 
 struct MaskSample {
