@@ -24,11 +24,14 @@ constexpr uint32_t kSlotCount = 3;
 constexpr uint32_t kMaxAlphaDilateRadiusPx = 8;
 constexpr uint32_t kMaxAlphaFeatherRadiusPx = 3;
 constexpr uint32_t kTemporalProtectionRadiusPx = 6;
-constexpr uint8_t kTemporalAlphaDecay = 64;
 constexpr uint8_t kTemporalProtectionAlphaThreshold = 32;
-constexpr uint8_t kStaleMaskAlphaDecay = 160;
 constexpr uint64_t kTemporalAlphaMaxAgeNs = 250000000u;
 constexpr double kStaleMaskAgeMs = 140.0;
+constexpr float kSmoothstepLow = 0.12f;
+constexpr float kSmoothstepHigh = 0.88f;
+constexpr float kQuietPreviousWeight = 0.85f;
+constexpr float kMotionPreviousWeight = 0.15f;
+constexpr float kStalePreviousWeight = 0.05f;
 constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
 
 struct MaskSample {
@@ -40,6 +43,30 @@ struct MaskSample {
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
   return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+float clamp01(float value) {
+  return std::clamp(value, 0.0f, 1.0f);
+}
+
+float lerp(float start, float end, float amount) {
+  return start + (end - start) * amount;
+}
+
+float smoothstep(float edge0, float edge1, float value) {
+  const float t = clamp01((value - edge0) / (edge1 - edge0));
+  return t * t * (3.0f - 2.0f * t);
+}
+
+void remapAlphaSmoothstep(AlphaMask &mask) {
+  if (mask.alpha.empty()) {
+    return;
+  }
+
+  for (uint8_t &alpha : mask.alpha) {
+    const float normalizedAlpha = static_cast<float>(alpha) / 255.0f;
+    alpha = static_cast<uint8_t>(std::round(smoothstep(kSmoothstepLow, kSmoothstepHigh, normalizedAlpha) * 255.0f));
+  }
 }
 
 void dilateAlpha(AlphaMask &mask, uint32_t radius) {
@@ -159,7 +186,7 @@ std::vector<uint8_t> alphaProtectionMask(const AlphaMask &mask, uint32_t radius)
   return protectionMask;
 }
 
-void stabilizeAlpha(AlphaMask &mask, const AlphaMask &previousMask, double maskAgeMs) {
+void blendAlphaTemporal(AlphaMask &mask, const AlphaMask &previousMask, double maskAgeMs) {
   if (mask.alpha.empty() ||
       previousMask.alpha.empty() ||
       mask.width == 0u ||
@@ -172,15 +199,21 @@ void stabilizeAlpha(AlphaMask &mask, const AlphaMask &previousMask, double maskA
   }
 
   const std::vector<uint8_t> protectionMask = alphaProtectionMask(mask, kTemporalProtectionRadiusPx);
-  const uint8_t decay = maskAgeMs >= kStaleMaskAgeMs ? kStaleMaskAlphaDecay : kTemporalAlphaDecay;
+  const float maxPreviousWeight = maskAgeMs >= kStaleMaskAgeMs ? kStalePreviousWeight : kQuietPreviousWeight;
   const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
   for (size_t index = 0; index < pixelCount; ++index) {
     const uint8_t currentAlpha = mask.alpha[index];
     const uint8_t previousAlpha = previousMask.alpha[index];
-    if (protectionMask[index] == 0u || previousAlpha <= currentAlpha || previousAlpha <= decay) {
+    if (protectionMask[index] == 0u) {
       continue;
     }
-    mask.alpha[index] = std::max(currentAlpha, static_cast<uint8_t>(previousAlpha - decay));
+    const float motion = static_cast<float>(std::abs(static_cast<int>(currentAlpha) - static_cast<int>(previousAlpha))) / 255.0f;
+    const float previousWeight = lerp(maxPreviousWeight, kMotionPreviousWeight, motion);
+    const float currentWeight = 1.0f - previousWeight;
+    const float blendedAlpha =
+        static_cast<float>(currentAlpha) * currentWeight +
+        static_cast<float>(previousAlpha) * previousWeight;
+    mask.alpha[index] = static_cast<uint8_t>(std::round(std::clamp(blendedAlpha, 0.0f, 255.0f)));
   }
 }
 
@@ -204,6 +237,7 @@ void postprocessAlpha(AlphaMask &mask,
                       double maskAgeMs,
                       KeyerMetrics &metrics) {
   const auto start = std::chrono::steady_clock::now();
+  remapAlphaSmoothstep(mask);
   const auto dilateStart = std::chrono::steady_clock::now();
   dilateAlpha(mask, dynamicDilationRadius(settings, maskAgeMs));
   const auto dilateEnd = std::chrono::steady_clock::now();
@@ -360,7 +394,7 @@ class AsyncKeyerWorker {
         settings.dynamicDilation = state_.dynamicDilation;
         maskAgeMs = state_.keyerMetrics.maskAgeMs;
       }
-      stabilizeAlpha(keyed.mask, previousMask, maskAgeMs);
+      blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
       postprocessAlpha(keyed.mask, settings, maskAgeMs, keyed.status.metrics);
       bool shouldPublish = false;
       {

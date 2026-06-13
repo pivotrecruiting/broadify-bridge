@@ -33,6 +33,11 @@ visible matte quality without changing the FrameBus or compositor contracts.
   compositor boundary.
 - Final mask upscaling to the current camera frame uses bilinear alpha sampling
   instead of nearest-neighbor sampling.
+- Alpha matte refinement uses `smoothstep(0.12, 0.88, alpha)` to reduce weak
+  halo/background contributions while preserving strong foreground.
+- Temporal blending is motion-adaptive on the `AlphaMask`: quiet pixels retain
+  more previous alpha, moving pixels favor current alpha, and stale masks reduce
+  previous alpha aggressively.
 - Alpha postprocessing is configurable, but the default live mode keeps the raw
   Vision matte without added dilation or feathering.
 - Dilation is configurable through `mask_dilate_px`; a value of `0` means no
@@ -55,9 +60,10 @@ The defaults now prefer a raw matte with no artificial edge expansion. Any
 remaining bright edge comes from the Vision matte itself or from background
 pixels already included in the camera image.
 
-Temporal stabilization uses a 250ms reuse window and a 64 alpha decay step, but
-only inside a small protection zone around the current mask. When `mask_age_ms`
-is above 140ms, retained alpha decays more aggressively to suppress trails.
+Temporal stabilization uses a 250ms reuse window and blends only inside a small
+protection zone around the current mask. The previous-mask weight adapts from
+high in quiet areas to low in moving areas. When `mask_age_ms` is above 140ms,
+the previous-mask contribution is reduced aggressively to suppress trails.
 
 ## Measurement Criteria
 
