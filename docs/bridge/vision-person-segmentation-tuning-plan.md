@@ -28,12 +28,12 @@ visible matte quality without changing the FrameBus or compositor contracts.
   `balanced`, and `accurate`; invalid values fall back to `balanced`.
 - Vision mask upscaling now uses bilinear alpha sampling instead of
   nearest-neighbor sampling.
-- Alpha postprocessing adds configurable feathering after dilation to soften
-  hard mask edges.
-- Dilation is configurable through `mask_dilate_px` and can increase
-  conservatively when the last visible mask age is high.
-- Temporal alpha decay reduces one-frame foreground dropouts while dropping old
-  foreground pixels quickly enough to avoid visible motion trails.
+- Alpha postprocessing is configurable, but the default live mode keeps the raw
+  Vision matte without added dilation or feathering.
+- Dilation is configurable through `mask_dilate_px`; a value of `0` means no
+  dilation even when dynamic dilation is enabled.
+- Temporal alpha stabilization is gated by a protection zone around the current
+  mask, so old foreground is retained only near plausible current person pixels.
 - `keyer.get` exposes the active tuning settings and additional metrics:
   `mask_width`, `mask_height`, and `mask_postprocess_ms`.
 
@@ -42,15 +42,17 @@ visible matte quality without changing the FrameBus or compositor contracts.
 `keyer.configure` accepts the following optional fields:
 
 - `quality_mode`: `"fast" | "balanced" | "accurate"`; default is `balanced`.
-- `mask_dilate_px`: integer clamped to `0..8`; default is `1`.
-- `mask_feather_px`: integer clamped to `0..3`; default is `1`.
-- `dynamic_dilation`: boolean; default is `true`.
+- `mask_dilate_px`: integer clamped to `0..8`; default is `0`.
+- `mask_feather_px`: integer clamped to `0..3`; default is `0`.
+- `dynamic_dilation`: boolean; default is `false`.
 
-The defaults now prefer a thinner live edge. Dynamic dilation adds only a small
-temporary safety margin when mask age is high.
+The defaults now prefer a raw matte with no artificial edge expansion. Any
+remaining bright edge comes from the Vision matte itself or from background
+pixels already included in the camera image.
 
-Temporal stabilization uses a 250ms reuse window and a 64 alpha decay step, so
-brief mask dropouts are softened without changing the current frame cadence.
+Temporal stabilization uses a 250ms reuse window and a 64 alpha decay step, but
+only inside a small protection zone around the current mask. When `mask_age_ms`
+is above 140ms, retained alpha decays more aggressively to suppress trails.
 
 ## Measurement Criteria
 

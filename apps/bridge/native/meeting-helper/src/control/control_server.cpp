@@ -235,9 +235,9 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     state.fallbackReason = "keyer_disabled";
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
-    state.maskDilatePx = 1u;
-    state.maskFeatherPx = 1u;
-    state.dynamicDilation = true;
+    state.maskDilatePx = 0u;
+    state.maskFeatherPx = 0u;
+    state.dynamicDilation = false;
     state.provider.clear();
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};

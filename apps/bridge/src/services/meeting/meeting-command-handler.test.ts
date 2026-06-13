@@ -161,18 +161,18 @@ describe("meeting-command-handler", () => {
         enabled: true,
         model: "vision_person_segmentation",
         quality_mode: "accurate",
-        mask_dilate_px: 4,
-        mask_feather_px: 1,
-        dynamic_dilation: true,
+        mask_dilate_px: 0,
+        mask_feather_px: 0,
+        dynamic_dilation: false,
       });
 
       expect(mockClient.keyerConfigure).toHaveBeenCalledWith({
         enabled: true,
         model: "vision_person_segmentation",
         quality_mode: "accurate",
-        mask_dilate_px: 4,
-        mask_feather_px: 1,
-        dynamic_dilation: true,
+        mask_dilate_px: 0,
+        mask_feather_px: 0,
+        dynamic_dilation: false,
       });
       expect(result.success).toBe(true);
     });

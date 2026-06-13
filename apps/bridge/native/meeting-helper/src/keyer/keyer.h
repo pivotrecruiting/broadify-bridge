@@ -43,9 +43,9 @@ struct KeyerResult {
 
 struct KeyerSettings {
   std::string qualityMode = "balanced";
-  uint32_t maskDilatePx = 1;
-  uint32_t maskFeatherPx = 1;
-  bool dynamicDilation = true;
+  uint32_t maskDilatePx = 0;
+  uint32_t maskFeatherPx = 0;
+  bool dynamicDilation = false;
 };
 
 class Keyer {

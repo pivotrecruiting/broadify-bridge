@@ -22,8 +22,12 @@ namespace {
 constexpr uint32_t kSlotCount = 3;
 constexpr uint32_t kMaxAlphaDilateRadiusPx = 8;
 constexpr uint32_t kMaxAlphaFeatherRadiusPx = 3;
+constexpr uint32_t kTemporalProtectionRadiusPx = 6;
 constexpr uint8_t kTemporalAlphaDecay = 64;
+constexpr uint8_t kTemporalProtectionAlphaThreshold = 32;
+constexpr uint8_t kStaleMaskAlphaDecay = 160;
 constexpr uint64_t kTemporalAlphaMaxAgeNs = 250000000u;
+constexpr double kStaleMaskAgeMs = 140.0;
 constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
@@ -123,7 +127,46 @@ void featherAlpha(VideoFrame &frame, uint32_t radius) {
   }
 }
 
-void stabilizeAlpha(VideoFrame &frame, const VideoFrame &previousFrame) {
+std::vector<uint8_t> alphaProtectionMask(const VideoFrame &frame, uint32_t radius) {
+  const size_t pixelCount = static_cast<size_t>(frame.width) * frame.height;
+  std::vector<uint8_t> sourceMask(pixelCount);
+  std::vector<uint8_t> horizontalMask(pixelCount);
+  std::vector<uint8_t> protectionMask(pixelCount);
+
+  for (size_t index = 0; index < pixelCount; ++index) {
+    sourceMask[index] = frame.rgba[index * 4u + 3u] >= kTemporalProtectionAlphaThreshold ? 1u : 0u;
+  }
+
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      const uint32_t minX = x > radius ? x - radius : 0u;
+      const uint32_t maxX = std::min(frame.width - 1u, x + radius);
+      for (uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
+        if (sourceMask[static_cast<size_t>(y) * frame.width + sampleX] != 0u) {
+          horizontalMask[static_cast<size_t>(y) * frame.width + x] = 1u;
+          break;
+        }
+      }
+    }
+  }
+
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    const uint32_t minY = y > radius ? y - radius : 0u;
+    const uint32_t maxY = std::min(frame.height - 1u, y + radius);
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      for (uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
+        if (horizontalMask[static_cast<size_t>(sampleY) * frame.width + x] != 0u) {
+          protectionMask[static_cast<size_t>(y) * frame.width + x] = 1u;
+          break;
+        }
+      }
+    }
+  }
+
+  return protectionMask;
+}
+
+void stabilizeAlpha(VideoFrame &frame, const VideoFrame &previousFrame, double maskAgeMs) {
   if (frame.rgba.empty() ||
       previousFrame.rgba.empty() ||
       frame.width == 0u ||
@@ -135,21 +178,23 @@ void stabilizeAlpha(VideoFrame &frame, const VideoFrame &previousFrame) {
     return;
   }
 
+  const std::vector<uint8_t> protectionMask = alphaProtectionMask(frame, kTemporalProtectionRadiusPx);
+  const uint8_t decay = maskAgeMs >= kStaleMaskAgeMs ? kStaleMaskAlphaDecay : kTemporalAlphaDecay;
   const size_t pixelCount = static_cast<size_t>(frame.width) * frame.height;
   for (size_t index = 0; index < pixelCount; ++index) {
     const size_t offset = index * 4u + 3u;
     const uint8_t currentAlpha = frame.rgba[offset];
     const uint8_t previousAlpha = previousFrame.rgba[offset];
-    if (previousAlpha <= currentAlpha || previousAlpha <= kTemporalAlphaDecay) {
+    if (protectionMask[index] == 0u || previousAlpha <= currentAlpha || previousAlpha <= decay) {
       continue;
     }
-    frame.rgba[offset] = std::max(currentAlpha, static_cast<uint8_t>(previousAlpha - kTemporalAlphaDecay));
+    frame.rgba[offset] = std::max(currentAlpha, static_cast<uint8_t>(previousAlpha - decay));
   }
 }
 
 uint32_t dynamicDilationRadius(const KeyerSettings &settings, double maskAgeMs) {
   uint32_t radius = std::min(settings.maskDilatePx, kMaxAlphaDilateRadiusPx);
-  if (!settings.dynamicDilation || maskAgeMs < 0.0) {
+  if (radius == 0u || !settings.dynamicDilation || maskAgeMs < 0.0) {
     return radius;
   }
   if (maskAgeMs >= 200.0) {
@@ -292,7 +337,7 @@ class AsyncKeyerWorker {
         settings.dynamicDilation = state_.dynamicDilation;
         maskAgeMs = state_.keyerMetrics.maskAgeMs;
       }
-      stabilizeAlpha(keyed.frame, previousKeyedFrame);
+      stabilizeAlpha(keyed.frame, previousKeyedFrame, maskAgeMs);
       postprocessAlpha(keyed.frame, settings, maskAgeMs, keyed.status.metrics);
       bool shouldPublish = false;
       {
