@@ -13,6 +13,10 @@ import {
 } from "./relay-command-schemas.js";
 import { getBridgeContext } from "./bridge-context.js";
 import { GraphicsError } from "./graphics/graphics-errors.js";
+import {
+  handleMeetingCommand,
+  isMeetingCommand,
+} from "./meeting/meeting-command-handler.js";
 import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { transformDevicesToOutputs } from "./device-to-output-transform.js";
@@ -55,6 +59,10 @@ export class CommandRouter {
     payload?: Record<string, unknown>,
   ): Promise<RelayCommandResult> {
     try {
+      if (isMeetingCommand(command)) {
+        return await handleMeetingCommand(command, payload);
+      }
+
       switch (command) {
         case "get_status": {
           parseRelayPayload(

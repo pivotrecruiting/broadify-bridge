@@ -13,6 +13,9 @@ const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
   "apps/bridge/native/display-helper/display-helper",
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
+  "apps/bridge/native/meeting-helper/meeting-helper",
+  "apps/bridge/native/meeting-helper/libonnxruntime.dylib",
+  "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib",
 ]);
 const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
   "!**/.bin{,/**}",
@@ -77,6 +80,14 @@ if (config.win) {
     {
       from: "apps/bridge/native/display-helper/display-helper.exe",
       to: "native/display-helper/display-helper.exe",
+    },
+    {
+      from: "apps/bridge/native/meeting-helper/meeting-helper.exe",
+      to: "native/meeting-helper/meeting-helper.exe",
+    },
+    {
+      from: "apps/bridge/native/meeting-helper/onnxruntime.dll",
+      to: "native/meeting-helper/onnxruntime.dll",
     },
   ];
 

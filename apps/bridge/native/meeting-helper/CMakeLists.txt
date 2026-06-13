@@ -1,0 +1,122 @@
+cmake_minimum_required(VERSION 3.22)
+
+project(broadify_meeting_helper LANGUAGES C CXX)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(DEFINED ENV{MEETING_HELPER_ENABLE_MODNET})
+  set(MEETING_HELPER_ENABLE_MODNET "$ENV{MEETING_HELPER_ENABLE_MODNET}")
+else()
+  set(MEETING_HELPER_ENABLE_MODNET "1")
+endif()
+
+if(APPLE)
+  set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/macos-arm64")
+elseif(WIN32)
+  set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/windows-x64")
+else()
+  set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/linux-x64")
+endif()
+
+set(BROADIFY_ONNXRUNTIME_ROOT "$ENV{BROADIFY_ONNXRUNTIME_ROOT}" CACHE PATH "Path to vendored ONNX Runtime C/C++ distribution")
+if(BROADIFY_ONNXRUNTIME_ROOT STREQUAL "")
+  set(BROADIFY_ONNXRUNTIME_ROOT "${DEFAULT_ONNXRUNTIME_ROOT}")
+endif()
+
+set(MEETING_HELPER_SOURCES
+  ../vcam-helper/Shared/src/framebus_reader.c
+  Shared/src/framebus_writer.c
+  src/capture/camera_source.cpp
+  src/compose/compositor.cpp
+  src/common/options.cpp
+  src/control/control_server.cpp
+  src/keyer/keyer_chain.cpp
+  src/keyer/model_manifest.cpp
+  src/keyer/modnet_keyer.cpp
+  src/keyer/passthrough_keyer.cpp
+  src/main.cpp
+  src/pipeline/frame_pipeline.cpp
+  src/preview/preview_frame_store.cpp
+  src/preview/mjpeg_server.cpp
+  src/util/sha256.cpp
+  src/util/json_utils.cpp
+)
+
+if(APPLE)
+  enable_language(OBJCXX)
+  list(APPEND MEETING_HELPER_SOURCES
+    src/capture/camera_avfoundation.mm
+    src/keyer/vision_keyer.mm
+  )
+  set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/keyer/vision_keyer.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+else()
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
+endif()
+
+add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+
+target_include_directories(meeting-helper PRIVATE
+  src
+  Shared/include
+  ../vcam-helper/Shared/include
+  ../framebus/include
+)
+
+if(MEETING_HELPER_ENABLE_MODNET STREQUAL "1")
+  find_path(ONNXRUNTIME_INCLUDE_DIR
+    NAMES onnxruntime_cxx_api.h
+    PATHS "${BROADIFY_ONNXRUNTIME_ROOT}/include"
+    NO_DEFAULT_PATH
+  )
+  find_library(ONNXRUNTIME_LIBRARY
+    NAMES onnxruntime libonnxruntime
+    PATHS "${BROADIFY_ONNXRUNTIME_ROOT}/lib" "${BROADIFY_ONNXRUNTIME_ROOT}/lib64" "${BROADIFY_ONNXRUNTIME_ROOT}"
+    NO_DEFAULT_PATH
+  )
+  if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+    message(FATAL_ERROR
+      "MODNet is enabled but ONNX Runtime was not found. "
+      "Expected vendored deps at ${BROADIFY_ONNXRUNTIME_ROOT} with include/ and lib/. "
+      "Set BROADIFY_ONNXRUNTIME_ROOT or build with MEETING_HELPER_ENABLE_MODNET=0."
+    )
+  endif()
+  target_compile_definitions(meeting-helper PRIVATE BROADIFY_ENABLE_MODNET=1)
+  target_include_directories(meeting-helper PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+  target_link_libraries(meeting-helper PRIVATE "${ONNXRUNTIME_LIBRARY}")
+else()
+  target_compile_definitions(meeting-helper PRIVATE BROADIFY_ENABLE_MODNET=0)
+endif()
+
+if(WIN32)
+  target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_link_libraries(meeting-helper PRIVATE ws2_32)
+else()
+  target_link_libraries(meeting-helper PRIVATE pthread)
+  if(NOT APPLE)
+    target_link_libraries(meeting-helper PRIVATE dl)
+  endif()
+endif()
+
+if(APPLE)
+  target_link_libraries(meeting-helper PRIVATE
+    "-framework AVFoundation"
+    "-framework CoreGraphics"
+    "-framework CoreMedia"
+    "-framework CoreVideo"
+    "-framework Foundation"
+    "-framework ImageIO"
+    "-framework Vision"
+  )
+  set_target_properties(meeting-helper PROPERTIES
+    MACOSX_RPATH ON
+    BUILD_RPATH "@loader_path"
+  )
+endif()

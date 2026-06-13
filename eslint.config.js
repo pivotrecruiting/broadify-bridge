@@ -11,6 +11,7 @@ export default tseslint.config(
 			'**/dist/**',
 			'**/dist-electron/**',
 			'**/dist-react/**',
+			'**/native/**/build/**',
 			'**/node_modules/**',
 		],
 	},

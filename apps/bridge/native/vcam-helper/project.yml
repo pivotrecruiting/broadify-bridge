@@ -1,0 +1,52 @@
+# XcodeGen project definition for the broadify virtual camera helper.
+# Generate the Xcode project with:  xcodegen generate
+name: BroadifyVCam
+options:
+  bundleIdPrefix: com.broadify
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    # Set your Apple Developer Team ID before building:
+    DEVELOPMENT_TEAM: "PG38DC5RG9"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "Apple Development"
+
+targets:
+  BroadifyVCam:
+    type: application
+    platform: macOS
+    sources:
+      - path: BroadifyVCam
+    info:
+      path: BroadifyVCam/Info.plist
+    entitlements:
+      path: BroadifyVCam/BroadifyVCam.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.broadify.vcam
+        PRODUCT_NAME: BroadifyVCam
+    dependencies:
+      - target: BroadifyVCamExtension
+        embed: true
+
+  BroadifyVCamExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: BroadifyVCamExtension
+      - path: Shared/src/framebus_reader.c
+      - path: Shared/include/framebus_reader.h
+    info:
+      path: BroadifyVCamExtension/Info.plist
+    entitlements:
+      path: BroadifyVCamExtension/BroadifyVCamExtension.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.broadify.vcam.extension
+        PRODUCT_NAME: BroadifyVCamExtension
+        SWIFT_OBJC_BRIDGING_HEADER: BroadifyVCamExtension/BridgingHeader.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Shared/include

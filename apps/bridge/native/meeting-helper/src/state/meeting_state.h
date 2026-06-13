@@ -1,0 +1,69 @@
+#pragma once
+
+#include "keyer/keyer.h"
+
+#include <mutex>
+#include <string>
+
+namespace broadify::meeting {
+
+struct SpeakerLayoutState {
+  bool enabled = false;
+  std::string layout = "right";
+  double scale = 1.0;
+  std::string rawJson = "{\"enabled\":false,\"layout\":\"right\",\"scale\":1}";
+};
+
+struct CornerbugState {
+  bool enabled = false;
+  double x = 0.84;
+  double y = 0.08;
+  double size = 0.12;
+  std::string rawJson = "{\"enabled\":false,\"x\":0.84,\"y\":0.08,\"size\":0.12}";
+};
+
+struct MediaLayerState {
+  bool enabled = false;
+  std::string mode = "pip";
+  double x = 0.58;
+  double y = 0.12;
+  double width = 0.34;
+  double height = 0.28;
+  double rotation = 0.0;
+  std::string rawJson = "{\"enabled\":false,\"mode\":\"pip\",\"x\":0.58,\"y\":0.12,\"width\":0.34,\"height\":0.28,\"rotation\":0}";
+};
+
+struct GraphicsState {
+  bool enabled = false;
+  std::string graphicId;
+  std::string templateName;
+  std::string source;
+  std::string handoffTarget;
+  std::string rawJson = "{\"enabled\":false}";
+};
+
+struct MeetingState {
+  mutable std::mutex mutex;
+  bool cameraRunning = false;
+  int activeCameraIndex = -1;
+  bool keyerEnabled = false;
+  bool framebusRunning = true;
+  std::string backgroundMode = "transparent";
+  std::string activeKeyer = "passthrough";
+  std::string requestedKeyerModel = "modnet";
+  std::string fallbackReason = "native_keyers_not_configured";
+  std::string keyerBackend = "passthrough";
+  std::string qualityMode = "realtime";
+  std::string provider;
+  std::string modelPath;
+  double inferenceMs = -1.0;
+  bool fallbackActive = true;
+  bool modelHashOk = false;
+  KeyerMetrics keyerMetrics;
+  SpeakerLayoutState speakerLayout;
+  CornerbugState cornerbug;
+  MediaLayerState mediaLayer;
+  GraphicsState graphics;
+};
+
+}  // namespace broadify::meeting

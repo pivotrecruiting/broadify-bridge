@@ -1,0 +1,261 @@
+import net from "node:net";
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+
+export type MeetingProgramSectionT =
+  | "cornerbug"
+  | "graphics"
+  | "speaker_layout"
+  | "media_layer";
+
+type JsonRpcResponseT<T> =
+  | {
+      id: string;
+      ok: true;
+      result: T;
+    }
+  | {
+      id: string;
+      ok: false;
+      error?: {
+        code?: string;
+        message?: string;
+      };
+    };
+
+export class MeetingHelperRequestError extends Error {
+  readonly code: string;
+
+  constructor(code: string, detail: string) {
+    super(detail);
+    this.name = "MeetingHelperRequestError";
+    this.code = code;
+  }
+}
+
+/**
+ * JSON-RPC client for the native meeting-helper control socket.
+ */
+export class MeetingHelperClient {
+  private readonly socketPath: string;
+  private readonly timeoutMs: number;
+  private requestSeq = 0;
+
+  constructor(socketPath: string, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS) {
+    this.socketPath = socketPath;
+    this.timeoutMs = timeoutMs;
+  }
+
+  async ping(): Promise<boolean> {
+    try {
+      const result = await this.rpc<{ pong?: boolean }>("control.ping");
+      return result.pong === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getState(): Promise<Record<string, unknown>> {
+    return this.rpc("state.get");
+  }
+
+  async getPipelineState(): Promise<Record<string, unknown>> {
+    return this.getState();
+  }
+
+  async getPerformance(): Promise<Record<string, unknown>> {
+    return { available: true, source: "meeting-helper" };
+  }
+
+  async listCameras(): Promise<unknown> {
+    return this.rpc("camera.list");
+  }
+
+  async cameraStart(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.start", options);
+  }
+
+  async cameraStop(): Promise<Record<string, unknown>> {
+    return this.rpc("camera.stop");
+  }
+
+  async cameraSelect(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.select", options);
+  }
+
+  async keyerGet(): Promise<Record<string, unknown>> {
+    return this.rpc("keyer.get");
+  }
+
+  async keyerConfigure(
+    patch: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("keyer.configure", patch);
+  }
+
+  async keyerReset(): Promise<Record<string, unknown>> {
+    return this.rpc("keyer.reset");
+  }
+
+  async programGet(
+    section: MeetingProgramSectionT,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("program.get", { section });
+  }
+
+  async programUpdate(
+    section: MeetingProgramSectionT,
+    values: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("program.update", { section, values });
+  }
+
+  async buttonsList(mode: string): Promise<Record<string, unknown>> {
+    return this.rpc("button.list", { mode });
+  }
+
+  async buttonTrigger(
+    mode: string,
+    buttonId: string,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("button.trigger", { mode, button_id: buttonId });
+  }
+
+  async framebusStatus(): Promise<Record<string, unknown>> {
+    return this.rpc("output.framebus.status");
+  }
+
+  async framebusConfigure(
+    settings: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("output.framebus.configure", settings);
+  }
+
+  async framebusStart(): Promise<Record<string, unknown>> {
+    return this.rpc("output.framebus.start");
+  }
+
+  async framebusStop(): Promise<Record<string, unknown>> {
+    return this.rpc("output.framebus.stop");
+  }
+
+  async virtualCameraStatus(): Promise<Record<string, unknown>> {
+    return {
+      available: false,
+      running: false,
+      backend: "framebus_vcam_helper",
+      code: "not_managed_by_meeting_helper",
+      message: "Virtual camera is provided by the separate vcam-helper FrameBus consumer.",
+    };
+  }
+
+  async virtualCameraConfigure(
+    settings: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return {
+      ...(await this.virtualCameraStatus()),
+      requested_settings: settings,
+    };
+  }
+
+  async virtualCameraStart(): Promise<Record<string, unknown>> {
+    return this.virtualCameraStatus();
+  }
+
+  async virtualCameraStop(): Promise<Record<string, unknown>> {
+    return this.virtualCameraStatus();
+  }
+
+  private rpc<T = Record<string, unknown>>(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<T> {
+    const id = `req-${++this.requestSeq}`;
+    const payload = JSON.stringify({ id, method, params: params ?? {} }) + "\n";
+
+    return new Promise<T>((resolve, reject) => {
+      const socket = net.createConnection(this.socketPath);
+      let buffer = "";
+      let settled = false;
+
+      const cleanup = () => {
+        socket.removeAllListeners();
+        socket.destroy();
+      };
+
+      const settleReject = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        cleanup();
+        reject(error);
+      };
+
+      const timeout = setTimeout(() => {
+        settleReject(
+          new MeetingHelperRequestError(
+            "timeout",
+            `Meeting helper request timed out after ${this.timeoutMs}ms`,
+          ),
+        );
+      }, this.timeoutMs);
+
+      socket.on("connect", () => {
+        socket.write(payload);
+      });
+
+      socket.on("data", (chunk: Buffer) => {
+        buffer += chunk.toString("utf8");
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex === -1) {
+          return;
+        }
+        const line = buffer.slice(0, newlineIndex);
+        try {
+          const parsed = JSON.parse(line) as JsonRpcResponseT<T>;
+          if (parsed.id !== id) {
+            throw new MeetingHelperRequestError(
+              "id_mismatch",
+              "Meeting helper returned a response for a different request.",
+            );
+          }
+          if (!parsed.ok) {
+            throw new MeetingHelperRequestError(
+              parsed.error?.code || "request_failed",
+              parsed.error?.message || "Meeting helper request failed.",
+            );
+          }
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            cleanup();
+            resolve(parsed.result);
+          }
+        } catch (error: unknown) {
+          settleReject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+
+      socket.on("error", (error) => {
+        settleReject(error);
+      });
+
+      socket.on("close", () => {
+        if (!settled) {
+          settleReject(
+            new MeetingHelperRequestError(
+              "connection_closed",
+              "Meeting helper control socket closed before a response was received.",
+            ),
+          );
+        }
+      });
+    });
+  }
+}

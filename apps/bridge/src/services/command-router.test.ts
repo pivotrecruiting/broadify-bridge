@@ -41,6 +41,18 @@ jest.mock("./runtime-config.js", () => ({
 }));
 
 jest.mock("./graphics/graphics-manager.js", () => ({
+  GraphicsManager: jest.fn().mockImplementation(() => ({
+    configureOutputs: jest.fn().mockResolvedValue(undefined),
+    sendLayer: jest.fn().mockResolvedValue(undefined),
+    removeLayer: jest.fn().mockResolvedValue(undefined),
+    initialize: jest.fn().mockResolvedValue(undefined),
+    getStatus: jest.fn(() => ({
+      outputConfig: null,
+      browserInput: null,
+      activePreset: null,
+      activePresets: [],
+    })),
+  })),
   graphicsManager: {
     configureOutputs: jest.fn().mockResolvedValue(undefined),
     sendLayer: jest.fn().mockResolvedValue(undefined),

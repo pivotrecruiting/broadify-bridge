@@ -34,6 +34,23 @@
     {
       "from": "apps/bridge/native/framebus/build/Release/framebus.node",
       "to": "bridge/native/framebus/build/Release/framebus.node"
+    },
+    {
+      "from": "apps/bridge/native/meeting-helper/meeting-helper",
+      "to": "native/meeting-helper/meeting-helper"
+    },
+    {
+      "from": "apps/bridge/native/meeting-helper/libonnxruntime.dylib",
+      "to": "native/meeting-helper/libonnxruntime.dylib"
+    },
+    {
+      "from": "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib",
+      "to": "native/meeting-helper/libonnxruntime.1.dylib"
+    },
+    {
+      "from": "apps/bridge/native/meeting-helper/models",
+      "to": "native/meeting-helper/models",
+      "filter": ["**/*"]
     }
   ],
   "icon": "./icon.png",

@@ -21,6 +21,22 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "graphics_remove",
   "graphics_remove_preset",
   "graphics_list",
+  "meeting_get_state",
+  "meeting_engine_start",
+  "meeting_engine_stop",
+  "meeting_camera_list",
+  "meeting_camera_select",
+  "meeting_camera_start",
+  "meeting_camera_stop",
+  "meeting_keyer_get",
+  "meeting_keyer_configure",
+  "meeting_keyer_reset",
+  "meeting_program_get",
+  "meeting_program_update",
+  "meeting_button_list",
+  "meeting_button_trigger",
+  "meeting_output_configure",
+  "meeting_graphics_configure_outputs",
 ] as const;
 
 const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);
