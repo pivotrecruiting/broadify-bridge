@@ -19,43 +19,58 @@ Wichtige Dateien:
 
 ## Executive Summary
 
-Die aktuelle Meeting-Keyer-Pipeline ist fuer einen ersten End-to-End-Pfad sauber genug entkoppelt: Inferenz laeuft in einem Worker, der Program-Loop blockiert nicht direkt auf Vision/MODNet, FrameBus bleibt die Data-Plane. Das ist die richtige Grundrichtung.
+Die wichtigste P0-Korrektur ist erledigt: Die Pipeline nutzt Frame-Pairing.
+Der async Keyer publiziert RGB-Frame und Alpha-Maske als Paar aus demselben
+Capture-Frame. Der Program-Loop wendet die Maske nicht mehr auf den aktuellen
+Kamera-RGB-Frame an, sondern auf das gepaarte RGB-Frame. Dadurch ist der
+sichtbare Transparenz-Nachlaeufer entfernt.
 
-Fuer Meeting-Qualitaet bei Bewegung reicht der aktuelle Stand aber noch nicht. Das Kernproblem ist nicht die statische Maskenqualitaet, sondern Sync: Der sichtbare RGB-Frame kommt aus dem aktuellen Kamera-Snapshot, die Alpha-Maske aus dem zuletzt fertig berechneten Keyer-Frame. Bei Bewegung fuehrt das zu sichtbarem Nachziehen, abgeschnittenen Haenden/Schultern oder Halo-Kanten. Temporal Blending stabilisiert Flackern, kann dieses Nachziehen aber verstaerken.
+Der neue Tradeoff ist die erwartbare Latenz des gesamten keyed Kameralayers:
+Das freigestellte Kamerabild kann um `mask_age_ms` hinter der aktuellen Kamera
+liegen. Apple Vision `balanced` bleibt aktuell die beste Qualitaetsbasis;
+`fast` senkt zwar Latenz, verschlechtert aber die sichtbare Kante zu stark.
 
-Zusaetzlich ist `background_mode: "transparent"` im finalen Program-Output faktisch ein opaker schwarzer Hintergrund. Das ist kein Bug, wenn die Virtual Camera ein fertig composited Program-Bild erwartet. Es ist aber irrefuehrend und wird problematisch, falls ein Downstream-Pfad echten Alpha-Output erwartet.
+Das fehlgeschlagene Edge-Softening/Background-Blur-Degradation-Experiment ist
+nicht Teil der aktuellen Richtung. Behalten werden Statusfelder,
+`temporal_blend_enabled`, `max_mask_age_ms` Safety-Fallback, strikte
+Bridge-Validation und die WebApp-Statusbar-Metriken fuer reproduzierbare Tests.
 
 ## Bewertung Nach Prioritaet
 
 | Bereich | Bewertung | Launch-Relevanz |
 | --- | --- | --- |
-| Korrektheit bei Bewegung | Kritisch | Muss vor Launch fuer Keyer-Qualitaet adressiert werden |
-| Latenz und Sync | Kritisch | Muss gemessen und durch Age-Gating/Tracking entschaerft werden |
+| Korrektheit bei Bewegung | Deutlich verbessert | Frame-Pairing erledigt; Motion-Lag jetzt als ganze Kamera-Layer-Latenz |
+| Latenz und Sync | Hoch | Sync geloest, Latenz muss ueber Keyer-/Capture-Kosten reduziert werden |
 | Alpha-/Compositing-Semantik | Hoch | Muss dokumentiert oder korrigiert werden |
 | Performance | Mittel bis hoch | CPU-Kopien koennen Sync verschlechtern |
 | Kantenqualitaet | Mittel | Nach Sync-Fix optimieren |
-| Bridge-Validation/Controls | Mittel | Wichtig fuer Tuning und sichere Remote-Steuerung |
+| Bridge-Validation/Controls | Erledigt fuer P0 | Schema ist strikt und WebApp-kompatibel |
+| Beobachtbarkeit | Erledigt fuer P1-Messung | Statusbar zeigt native Keyer-Metriken live an |
 
 ## Identifizierte Probleme Und Loesungen
 
 ### 1. Maske und RGB-Frame sind nicht synchron
 
-**Symptom fuer Nutzer:** Bei Kopf-, Hand- oder Schulterbewegungen hinkt die Silhouette hinterher. Je nach Bewegung werden Koerperteile kurz abgeschnitten oder der alte Umriss bleibt als Halo sichtbar.
+**Status:** Erledigt fuer P0.
 
-**Technische Ursache:** Im Program-Loop wird der aktuelle Kamera-Frame an den Worker uebergeben und sofort die zuletzt publizierte Maske auf denselben aktuellen Frame angewandt. Das passiert in `runFramePipeline` bei `keyerWorker.submit(frame)`, `copyLatest(latestMask)` und `applyLatestAlphaToCurrentFrame(frame, latestMask, keyedFrame)` (`apps/bridge/native/meeting-helper/src/pipeline/frame_pipeline.cpp:575`). Die Maske traegt den Timestamp des Keyer-Input-Frames, nicht des sichtbaren RGB-Frames (`apps/bridge/native/meeting-helper/src/keyer/vision_keyer.mm:160` und `apps/bridge/native/meeting-helper/src/keyer/modnet_keyer.cpp:270`).
+**Vorheriges Symptom:** Bei Kopf-, Hand- oder Schulterbewegungen hinkte die
+Silhouette hinterher. Koerperteile wurden kurz abgeschnitten oder der alte
+Umriss blieb als Halo sichtbar.
 
-**Fix-Richtung:**
+**Aktueller Stand:** `AsyncKeyerWorker` publiziert ein gepaartes Kamera-Frame
+mit Maske. Der Program-Loop nutzt dieses Paar fuer Hard-Keying und faellt bei
+`mask_age_ms > max_mask_age_ms` auf Passthrough zurueck.
 
-- Kurzfristig: Mask-Age-Gating einfuehren. Ab einem harten Grenzwert, z. B. 80-100 ms bei 30 fps, nicht mehr hart freistellen. Stattdessen konservativ degradieren: passthrough, Blur/soft background oder mehr Vordergrund statt aggressives Replacement.
-- Kurzfristig: `mask_age_ms` fuer jeden Program-Frame in Status/Logs sichtbar machen und Grenzwerte als native Settings steuerbar machen.
-- Mittelfristig: Frame-Pairing einfuehren: zu jeder publizierten Maske den zugehoerigen RGB-Frame oder zumindest Bewegungsmetadata behalten und entweder den passenden RGB-Frame compositen oder die Maske per Motion-Tracking auf den aktuellen Frame warpen.
-- Langfristig: Optical Flow / Vision tracking / Metal-basierte Motion Compensation fuer Maske zwischen Inferenzen.
+**Verbleibender Tradeoff:** Alpha-Kante und RGB sind synchron, aber das gesamte
+keyed Kameralayer kann um `mask_age_ms` verzoegert sein. Die naechste Arbeit
+muss diese Latenz messbar reduzieren.
 
 **Verifikation:**
 
 - Testsequenz mit schneller Handbewegung und Schulterdrehung aufnehmen.
 - `mask_age_ms`, `session_run_ms`, `dropped_frames`, `program_frame_ms` parallel loggen.
-- Akzeptanz: Bei 30 fps sollte sichtbares Hard-Keying nur mit Masken unter definierter Age-Schwelle stattfinden. Bei Ueberschreitung muss die Degradation sichtbar ruhiger sein als ein alter Key.
+- Akzeptanz: Keine Alpha-Nachlaeufer; verbleibender Lag ist als ganzes
+  Kameralayer sichtbar und anhand der Metriken quantifizierbar.
 
 ### 2. Temporal Alpha Blending kann Motion-Trails verstaerken
 
@@ -78,21 +93,22 @@ Zusaetzlich ist `background_mode: "transparent"` im finalen Program-Output fakti
 
 ### 3. Stale Masks werden ohne harte Altersgrenze verwendet
 
-**Symptom fuer Nutzer:** Bei hoher Inferenzzeit oder CPU-Last bleibt die Person scheinbar mit einer alten Kontur freigestellt. Das sieht schlimmer aus als ein kurzzeitiger Fallback.
+**Status:** Erledigt fuer P0.
 
-**Technische Ursache:** `applyLatestAlphaToCurrentFrame` hat keine Age-Pruefung (`apps/bridge/native/meeting-helper/src/pipeline/frame_pipeline.cpp:250`). Der Program-Loop berechnet `mask_age_ms`, nachdem die Maske bereits angewandt wurde (`apps/bridge/native/meeting-helper/src/pipeline/frame_pipeline.cpp:579`). `kTemporalAlphaMaxAgeNs = 250 ms` begrenzt nur Temporal Blending zwischen Masken, nicht die Nutzung der Maske im Output (`apps/bridge/native/meeting-helper/src/pipeline/frame_pipeline.cpp:28`).
+**Aktueller Stand:** `max_mask_age_ms` ist als native Setting und
+Bridge-Payload verfuegbar. Wenn das gepaarte Keyer-Frame zu alt ist, nutzt der
+Program-Loop Passthrough statt Hard-Keying. `stale_mask_active` und
+`degradation_stage` melden den Zustand.
 
-**Fix-Richtung:**
-
-- Vor `applyLatestAlphaToCurrentFrame` `frame.timestampNs - latestMask.timestampNs` berechnen.
-- Konfigurierbare Grenzwerte einfuehren: `warn_mask_age_ms`, `max_hard_key_mask_age_ms`, `max_mask_age_ms`.
-- Bei Ueberschreitung Fallback-Strategie ausloesen: passthrough, conservative-alpha expansion oder background blur.
-- Statusfeld `stale_mask_active` und `degradation_mode` ausgeben.
+**Wichtig:** Edge-Softening/Background-Blur wurde nicht weiter verfolgt, weil
+dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
 
 **Verifikation:**
 
-- Inferenz kuenstlich verzoegern und pruefen, dass keine > Grenzwert alte Maske fuer Hard-Keying genutzt wird.
-- Unit-/Integrationstest fuer Age-Gating mit synthetischen Timestamps.
+- Inferenz kuenstlich verzoegern und pruefen, dass `degradation_stage` auf
+  `passthrough` geht.
+- In Motion-Tests sicherstellen, dass keine alte Maske auf aktuelles RGB gelegt
+  wird.
 
 ### 4. `transparent` Background ist im Program-Output opak schwarz
 
@@ -220,33 +236,66 @@ Zusaetzlich ist `background_mode: "transparent"` im finalen Program-Output fakti
 - Status muss bei aktiver Preview plausible `mjpeg_encode_ms` oder explizit `null` mit Grund liefern.
 - Lasttest mit Preview an/aus.
 
-## Priorisierte Roadmap
+## Umsetzungsplan
 
-### P0: Vor Launch Des Keyer-Erlebnisses
+### Phase 0: Stabiler Motion-Keyer
 
-1. Mask-Age-Gating vor Alpha-Anwendung einbauen.
-2. Degradation Mode fuer alte Masken definieren und sichtbar machen.
-3. Temporal Blend per Config toggelbar machen und Default-Weights reduzieren, falls Testclips Trails zeigen.
-4. `transparent` Program-Semantik entscheiden: opak dokumentieren oder Alpha korrekt erhalten.
-5. Bridge-Schema fuer `meeting_keyer_configure` streng typisieren.
+- [x] Frame-Pairing einfuehren, damit Maske und RGB aus demselben
+  Capture-Frame stammen.
+- [x] `max_mask_age_ms` als harten Safety-Fallback zu Passthrough nutzen.
+- [x] `degradation_stage` und `stale_mask_active` im Keyer-Status melden.
+- [x] Temporal Blend per Config toggelbar machen.
+- [x] `transparent` Program-Semantik als opaken Program-Output dokumentieren.
+- [x] Bridge-Schema fuer `meeting_keyer_configure` streng typisieren und
+  WebApp-kompatibel halten.
+- [x] Fehlgeschlagene Blur-/Edge-Degradation nicht weiter verfolgen.
 
-### P1: Qualitaets- Und Performance-Haertung
+### Phase 1: Messbarkeit Und Debug-Statusbar
 
-1. Reale Capture-Aufloesung/FPS und Sample-Timestamp erfassen.
-2. Camera BGRA -> RGBA Copy reduzieren oder GPU/Metal-Pfad planen.
-3. Gemeinsame Mask-Sampling-Utility fuer Vision, MODNet und Program-Pfad.
-4. Zwei Graphics-Layer-Pfade fuer Behind/Front definieren, falls Meeting Builder beide Ebenen semantisch braucht.
-5. Straight-Alpha-Kontrakt per Tests absichern.
+- [x] Native Keyer-Metriken ueber `keyer.get` ausgeben:
+  `camera_copy_ms`, `tensor_ms`, `session_run_ms`, `mask_apply_ms`,
+  `mask_dilate_ms`, `mask_postprocess_ms`, `mask_age_ms`,
+  `program_frame_ms`, `mjpeg_encode_ms`, `mask_width`, `mask_height`,
+  `dropped_frames`.
+- [x] WebApp-Statusbar um alle vorhandenen Keyer-Metriken erweitern.
+- [x] WebApp-Preview-Panel pollt `meeting_keyer_get` waehrend der laufenden
+  Preview, damit die Werte live lesbar sind.
+- [ ] Motion-Test-Notizen mit typischen `balanced`-Werten dokumentieren:
+  ruhige Pose, schnelle Handbewegung, Kopfbewegung, Schulterdrehung.
 
-### P2: Enterprise-Qualitaet
+### Phase 2: Latenz Reduzieren Ohne Qualitaetsverlust
 
-1. Motion Compensation / Optical Flow fuer Maske zwischen Inferenzframes.
-2. ROI-Keying und adaptive Quality Mode Selection.
-3. GPU-Compositing statt CPU-Pixel-Loops.
-4. Automatisierte Video-Golden-Tests fuer Handbewegung, Haare, Brille, Schulterbewegung.
+- [ ] `balanced` als Default beibehalten; `fast` nur als A/B-Diagnose nutzen,
+  weil die sichtbare Kante schlechter ist.
+- [ ] `camera_copy_ms` gegen Aufloesung/FPS messen und unnoetige Kopien oder
+  Reallocations entfernen.
+- [ ] Vision-Input-Erzeugung analysieren: RGBA/CGImage-CPU-Pfad gegen
+  CVPixelBuffer/CoreVideo/Metal-Optionen bewerten.
+- [ ] `session_run_ms` und `tensor_ms` getrennt auswerten, damit Vision-Kosten
+  nicht mit Vor-/Nachverarbeitung verwechselt werden.
+- [ ] Temporal Blend A/B testen: `balanced + on` gegen `balanced + off`.
+
+### Phase 3: Kantenqualitaet Und Alpha-Kontrakt
+
+- [ ] Minimalistische Mask-Postprocessing-Tests: kleine Dilate-/Feather-Werte,
+  keine altersabhaengige Blur-/Edge-Degradation.
+- [ ] Gemeinsame Mask-Sampling-Utility fuer Vision, MODNet und Program-Pfad.
+- [ ] Straight-Alpha-Kontrakt per Tests absichern.
+- [ ] Produktentscheidung fuer echten Alpha-Output vs. immer opaker
+  Program-Output treffen.
+
+### Phase 4: Architekturhaertung
+
+- [ ] Zwei Graphics-Layer-Pfade fuer Behind/Front definieren, falls Meeting
+  Builder beide Ebenen semantisch braucht.
+- [ ] GPU-Compositing statt CPU-Pixel-Loops evaluieren.
+- [ ] Motion Compensation / Optical Flow fuer Maske zwischen Inferenzframes nur
+  dann einplanen, wenn Phase 2 den sichtbaren Lag nicht ausreichend senkt.
+- [ ] Automatisierte Video-Golden-Tests fuer Handbewegung, Haare, Brille und
+  Schulterbewegung aufbauen.
 
 ## Fazit
 
-Die bestehende Architektur ist nicht "falsch" gebaut: Worker-Entkopplung, Single Program-Loop und FrameBus-Output sind die richtigen Leitplanken. Der aktuelle Keyer ist aber noch kein meeting-tauglicher Motion-Keyer, weil er alte Masken auf aktuelle RGB-Frames legt und diese Nutzung nicht hart begrenzt. Solange dieses Sync-Problem offen ist, bringen reine Kanten-Optimierungen nur begrenzt etwas.
+Die bestehende Architektur ist nicht "falsch" gebaut: Worker-Entkopplung, Single Program-Loop und FrameBus-Output sind die richtigen Leitplanken. Der groesste Motion-Fehler war das Anwenden alter Masken auf aktuelle RGB-Frames; dieser Fehler ist durch Frame-Pairing behoben.
 
-Der pragmatische naechste Schritt ist kein grosser Architekturumbau, sondern ein kontrollierter Safety-Layer: Mask-Age vor Anwendung pruefen, klare Degradation statt altem Hard-Key, Temporal Blend schaltbar machen und Metriken fuer reproduzierbare Motion-Tests nutzen. Danach lohnt sich die Arbeit an Motion Compensation, GPU-Pfad und feiner Kantenqualitaet.
+Der neue limitierende Faktor ist Latenz des gesamten keyed Kameralayers. Der pragmatische naechste Schritt ist kein neuer Degradation-Modus, sondern Latenzreduktion auf der bestehenden `balanced`-Basis: Metriken live auslesen, Capture-/Copy-Kosten senken, Vision-Input-Pfad optimieren und erst danach feines Mask-Postprocessing bewerten.

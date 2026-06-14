@@ -58,6 +58,12 @@ The native defaults in `MeetingState` are:
 - `maxMaskAgeMs = 220`
 - `backgroundMode = "transparent"`
 
+Practical consequence: when the WebApp selects
+`vision_person_segmentation` and does not send an explicit `quality_mode`, Apple
+Vision runs in `balanced` mode. This is the current quality-first baseline.
+`fast` remains useful only as an A/B diagnostic mode because it reduced edge
+quality in real preview tests.
+
 ## Native Runtime Topology
 
 `MeetingHelperManager` starts the native `meeting-helper` process with:
@@ -280,6 +286,38 @@ Behavior:
 
 The output of this function is the paired keyed camera frame used by the
 compositor.
+
+## Live Statusbar Metrics
+
+The native `keyer.get` response exposes the current keyer status and metrics.
+The Meeting Builder preview statusbar polls `meeting_keyer_get` while the
+preview is running and the keyer feature is enabled.
+
+Displayed values:
+
+- `active_keyer`: selected/active keyer, for example `vision_person_segmentation`
+- `quality_mode`: current Vision quality mode; `balanced` is the current
+  baseline
+- `backend`: native backend reported by the helper
+- `inference_ms`: total keyer apply time
+- `metrics.camera_copy_ms`: camera frame copy cost in the program loop
+- `metrics.tensor_ms`: model input/tensor preparation cost
+- `metrics.session_run_ms`: model/Vision run cost
+- `metrics.mask_apply_ms`: mask application cost
+- `metrics.mask_dilate_ms`: dilation cost
+- `metrics.mask_postprocess_ms`: mask postprocess cost
+- `metrics.mask_age_ms`: age of the paired keyer frame relative to the current
+  program frame
+- `metrics.program_frame_ms`: full program-frame render/write cost
+- `metrics.mjpeg_encode_ms`: preview MJPEG encode cost when available
+- `metrics.mask_width` and `metrics.mask_height`: produced mask resolution
+- `metrics.dropped_frames`: async keyer worker drops
+- `degradation_stage`: `fresh`, `paired`, or `passthrough`
+
+These values are the main decision surface for Phase 2 latency work. If
+`session_run_ms` dominates, the next target is the Vision path. If
+`camera_copy_ms` or `program_frame_ms` dominates, the next target is capture,
+copy, or compositing.
 
 ## Program Composition And Layering
 
