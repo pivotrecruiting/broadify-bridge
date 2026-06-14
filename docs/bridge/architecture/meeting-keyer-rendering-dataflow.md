@@ -44,6 +44,8 @@ The web app currently sends keyer configuration with:
 - `model`: `modnet` or `vision_person_segmentation`
 - `background_mode`: always `transparent` from the builder sync
 - `mask_erode_px`: `0.5` for `vision_person_segmentation`, `0` for other keyers
+- `edge_stabilization_enabled`: `true` for `vision_person_segmentation`
+- `edge_stabilization_strength`: `0.35` for `vision_person_segmentation`
 - no explicit `quality_mode`, `mask_dilate_px`, `mask_feather_px`, or
   `dynamic_dilation` in the builder sync path
 
@@ -56,6 +58,8 @@ The native defaults in `MeetingState` are:
 - `maskFeatherPx = 0`
 - `dynamicDilation = false`
 - `temporalBlendEnabled = true`
+- `edgeStabilizationEnabled = true`
+- `edgeStabilizationStrength = 0.35`
 - `freshMaskAgeMs = 60`
 - `maxMaskAgeMs = 220`
 - `backgroundMode = "transparent"`
@@ -230,14 +234,20 @@ Current steps:
 2. `blendAlphaTemporal`
    - blends current mask with previous mask when dimensions and timestamps are
      compatible
-3. `erodeAlpha`
+3. `stabilizeAlphaEdges`
+   - blends only uncertain alpha-edge pixels with the previous mask
+   - motion-gated so large alpha changes keep the current mask and do not
+     recreate transparency trails
+   - age-gated: full strength below `40 ms` mask age, fades down until
+     `75 ms` so moving paired frames do not retain old edge alpha strongly
+4. `erodeAlpha`
    - fractional min-filter radius; subpixel values interpolate between the
      original mask and integer-radius erosion
    - used conservatively by the WebApp with `mask_erode_px = 0.5` for Vision to
      remove visible background rim without the hard 1px cut
-4. `dilateAlpha`
+5. `dilateAlpha`
    - max filter with configured or dynamic radius
-5. `featherAlpha`
+6. `featherAlpha`
    - box blur with configured radius
 
 Important constants:
@@ -334,6 +344,10 @@ Displayed values:
 - `metrics.dropped_frames`: total async keyer worker drops since reset/clear
 - `settings.mask_erode_px`: configured mask erosion radius shown as `Erode` in
   the WebApp statusbar
+- `settings.edge_stabilization_enabled`: shown as `Edge stab` in the WebApp
+  statusbar
+- `settings.edge_stabilization_strength`: shown as `Edge strength` in the
+  WebApp statusbar
 - `degradation_stage`: `fresh`, `paired`, or `passthrough`
 
 These values are the main decision surface for Phase 2 latency work. If

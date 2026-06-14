@@ -69,6 +69,8 @@ struct KeyerSettings {
   uint32_t maskFeatherPx = 0;
   bool dynamicDilation = false;
   bool temporalBlendEnabled = true;
+  bool edgeStabilizationEnabled = true;
+  double edgeStabilizationStrength = 0.35;
   KeyerDegradationSettings degradation;
 };
 

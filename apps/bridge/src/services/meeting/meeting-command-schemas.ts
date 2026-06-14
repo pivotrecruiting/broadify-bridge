@@ -33,6 +33,8 @@ export const MeetingKeyerConfigureSchema = z
     mask_feather_px: z.number().int().min(0).max(3).optional(),
     dynamic_dilation: z.boolean().optional(),
     temporal_blend_enabled: z.boolean().optional(),
+    edge_stabilization_enabled: z.boolean().optional(),
+    edge_stabilization_strength: z.number().min(0).max(1).optional(),
     fresh_mask_age_ms: z.number().min(0).max(500).optional(),
     max_mask_age_ms: z.number().min(0).max(2000).optional(),
   })

@@ -201,6 +201,8 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
            << ",\"mask_feather_px\":" << state.maskFeatherPx
            << ",\"dynamic_dilation\":" << (state.dynamicDilation ? "true" : "false")
            << ",\"temporal_blend_enabled\":" << (state.temporalBlendEnabled ? "true" : "false")
+           << ",\"edge_stabilization_enabled\":" << (state.edgeStabilizationEnabled ? "true" : "false")
+           << ",\"edge_stabilization_strength\":" << state.edgeStabilizationStrength
            << ",\"fresh_mask_age_ms\":" << state.degradationSettings.freshMaskAgeMs
            << ",\"max_mask_age_ms\":" << state.degradationSettings.maxMaskAgeMs << "},"
            << "\"status\":{\"active_keyer\":\"" << jsonEscape(state.activeKeyer)
@@ -242,6 +244,10 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
           extractIntField(line, "mask_feather_px", static_cast<int>(state.maskFeatherPx)), 3u);
       state.dynamicDilation = extractBoolField(line, "dynamic_dilation", state.dynamicDilation);
       state.temporalBlendEnabled = extractBoolField(line, "temporal_blend_enabled", state.temporalBlendEnabled);
+      state.edgeStabilizationEnabled =
+          extractBoolField(line, "edge_stabilization_enabled", state.edgeStabilizationEnabled);
+      state.edgeStabilizationStrength =
+          clampedDouble(extractDoubleField(line, "edge_stabilization_strength", state.edgeStabilizationStrength), 0.0, 1.0);
       KeyerDegradationSettings degradation = state.degradationSettings;
       degradation.freshMaskAgeMs = extractDoubleField(line, "fresh_mask_age_ms", degradation.freshMaskAgeMs);
       degradation.maxMaskAgeMs = extractDoubleField(line, "max_mask_age_ms", degradation.maxMaskAgeMs);
@@ -272,6 +278,8 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     state.maskFeatherPx = 0u;
     state.dynamicDilation = false;
     state.temporalBlendEnabled = true;
+    state.edgeStabilizationEnabled = true;
+    state.edgeStabilizationStrength = 0.35;
     state.degradationSettings = KeyerDegradationSettings{};
     state.degradationStage = "fresh";
     state.staleMaskActive = false;

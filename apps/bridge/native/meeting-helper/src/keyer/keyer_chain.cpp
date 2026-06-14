@@ -24,10 +24,13 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
     enabled = state.keyerEnabled;
     requestedModel = state.requestedKeyerModel;
     settings.qualityMode = state.qualityMode;
+    settings.maskErodePx = state.maskErodePx;
     settings.maskDilatePx = state.maskDilatePx;
     settings.maskFeatherPx = state.maskFeatherPx;
     settings.dynamicDilation = state.dynamicDilation;
     settings.temporalBlendEnabled = state.temporalBlendEnabled;
+    settings.edgeStabilizationEnabled = state.edgeStabilizationEnabled;
+    settings.edgeStabilizationStrength = state.edgeStabilizationStrength;
     settings.degradation = state.degradationSettings;
   }
 

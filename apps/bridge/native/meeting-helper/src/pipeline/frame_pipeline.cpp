@@ -33,6 +33,12 @@ constexpr float kSmoothstepHigh = 0.88f;
 constexpr float kQuietPreviousWeight = 0.85f;
 constexpr float kMotionPreviousWeight = 0.35f;
 constexpr float kStalePreviousWeight = 0.12f;
+constexpr uint8_t kEdgeStabilizationAlphaLow = 24u;
+constexpr uint8_t kEdgeStabilizationAlphaHigh = 220u;
+constexpr float kEdgeStabilizationMaxMotion = 0.55f;
+constexpr double kEdgeStabilizationFreshAgeMs = 40.0;
+constexpr double kEdgeStabilizationFadeOutAgeMs = 75.0;
+constexpr float kEdgeStabilizationMinAgeFactor = 0.12f;
 constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
 constexpr double kMetricsWindowMs = 1000.0;
 constexpr size_t kMaskAgeWindowSize = 30u;
@@ -359,6 +365,57 @@ void blendAlphaTemporal(AlphaMask &mask, const AlphaMask &previousMask, double m
   }
 }
 
+void stabilizeAlphaEdges(AlphaMask &mask, const AlphaMask &previousMask, const KeyerSettings &settings, double maskAgeMs) {
+  if (!settings.edgeStabilizationEnabled ||
+      settings.edgeStabilizationStrength <= 0.0 ||
+      mask.alpha.empty() ||
+      previousMask.alpha.empty() ||
+      mask.width == 0u ||
+      mask.height == 0u ||
+      mask.width != previousMask.width ||
+      mask.height != previousMask.height ||
+      mask.timestampNs <= previousMask.timestampNs ||
+      mask.timestampNs - previousMask.timestampNs > kTemporalAlphaMaxAgeNs) {
+    return;
+  }
+
+  AlphaMask previous = previousMask;
+  remapAlphaSmoothstep(previous);
+
+  const float strength = static_cast<float>(std::clamp(settings.edgeStabilizationStrength, 0.0, 1.0));
+  float ageFactor = 1.0f;
+  if (maskAgeMs >= kEdgeStabilizationFadeOutAgeMs) {
+    ageFactor = kEdgeStabilizationMinAgeFactor;
+  } else if (maskAgeMs > kEdgeStabilizationFreshAgeMs) {
+    const double fadeProgress =
+        (maskAgeMs - kEdgeStabilizationFreshAgeMs) /
+        (kEdgeStabilizationFadeOutAgeMs - kEdgeStabilizationFreshAgeMs);
+    ageFactor = lerp(1.0f, kEdgeStabilizationMinAgeFactor, static_cast<float>(fadeProgress));
+  }
+  const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
+  for (size_t index = 0; index < pixelCount; ++index) {
+    const uint8_t currentAlpha = mask.alpha[index];
+    if (currentAlpha <= kEdgeStabilizationAlphaLow || currentAlpha >= kEdgeStabilizationAlphaHigh) {
+      continue;
+    }
+
+    const uint8_t previousAlpha = previous.alpha[index];
+    const float motion = static_cast<float>(std::abs(static_cast<int>(currentAlpha) - static_cast<int>(previousAlpha))) / 255.0f;
+    if (motion >= kEdgeStabilizationMaxMotion) {
+      continue;
+    }
+
+    const float normalizedAlpha = static_cast<float>(currentAlpha) / 255.0f;
+    const float edgeFactor = 1.0f - std::abs((normalizedAlpha - 0.5f) * 2.0f);
+    const float motionFactor = 1.0f - (motion / kEdgeStabilizationMaxMotion);
+    const float previousWeight = std::clamp(strength * edgeFactor * motionFactor * ageFactor, 0.0f, 0.65f);
+    const float currentWeight = 1.0f - previousWeight;
+    const float blendedAlpha =
+        static_cast<float>(currentAlpha) * currentWeight + static_cast<float>(previousAlpha) * previousWeight;
+    mask.alpha[index] = static_cast<uint8_t>(std::round(std::clamp(blendedAlpha, 0.0f, 255.0f)));
+  }
+}
+
 uint32_t dynamicDilationRadius(const KeyerSettings &settings, double maskAgeMs) {
   uint32_t radius = std::min(settings.maskDilatePx, kMaxAlphaDilateRadiusPx);
   if (radius == 0u || !settings.dynamicDilation || maskAgeMs < 0.0) {
@@ -375,11 +432,13 @@ uint32_t dynamicDilationRadius(const KeyerSettings &settings, double maskAgeMs) 
 }
 
 void postprocessAlpha(AlphaMask &mask,
+                      const AlphaMask &previousMask,
                       const KeyerSettings &settings,
                       double maskAgeMs,
                       KeyerMetrics &metrics) {
   const auto start = std::chrono::steady_clock::now();
   remapAlphaSmoothstep(mask);
+  stabilizeAlphaEdges(mask, previousMask, settings, maskAgeMs);
   const auto dilateStart = std::chrono::steady_clock::now();
   erodeAlpha(mask, settings.maskErodePx);
   dilateAlpha(mask, dynamicDilationRadius(settings, maskAgeMs));
@@ -567,13 +626,15 @@ class AsyncKeyerWorker {
         settings.maskFeatherPx = state_.maskFeatherPx;
         settings.dynamicDilation = state_.dynamicDilation;
         settings.temporalBlendEnabled = state_.temporalBlendEnabled;
+        settings.edgeStabilizationEnabled = state_.edgeStabilizationEnabled;
+        settings.edgeStabilizationStrength = state_.edgeStabilizationStrength;
         settings.degradation = state_.degradationSettings;
         maskAgeMs = state_.keyerMetrics.maskAgeMs;
       }
       if (settings.temporalBlendEnabled) {
         blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
       }
-      postprocessAlpha(keyed.mask, settings, maskAgeMs, keyed.status.metrics);
+      postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs, keyed.status.metrics);
       bool shouldPublish = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -806,6 +867,8 @@ void runFramePipeline(const Options &options,
         keyerSettings.maskFeatherPx = state.maskFeatherPx;
         keyerSettings.dynamicDilation = state.dynamicDilation;
         keyerSettings.temporalBlendEnabled = state.temporalBlendEnabled;
+        keyerSettings.edgeStabilizationEnabled = state.edgeStabilizationEnabled;
+        keyerSettings.edgeStabilizationStrength = state.edgeStabilizationStrength;
         keyerSettings.degradation = state.degradationSettings;
       }
       if (hasCameraFrame && keyerEnabled) {

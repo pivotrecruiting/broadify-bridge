@@ -170,6 +170,8 @@ describe("meeting-command-handler", () => {
         mask_feather_px: 0,
         dynamic_dilation: false,
         temporal_blend_enabled: false,
+        edge_stabilization_enabled: true,
+        edge_stabilization_strength: 0.35,
         fresh_mask_age_ms: 60,
         max_mask_age_ms: 220,
       });
@@ -187,6 +189,8 @@ describe("meeting-command-handler", () => {
         mask_feather_px: 0,
         dynamic_dilation: false,
         temporal_blend_enabled: false,
+        edge_stabilization_enabled: true,
+        edge_stabilization_strength: 0.35,
         fresh_mask_age_ms: 60,
         max_mask_age_ms: 220,
       });
@@ -204,6 +208,12 @@ describe("meeting-command-handler", () => {
       await expect(
         handleMeetingCommand("meeting_keyer_configure", {
           mask_erode_px: 3.5,
+        }),
+      ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
+
+      await expect(
+        handleMeetingCommand("meeting_keyer_configure", {
+          edge_stabilization_strength: 1.5,
         }),
       ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
 

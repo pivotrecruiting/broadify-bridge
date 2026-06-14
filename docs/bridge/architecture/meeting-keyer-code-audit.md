@@ -299,6 +299,13 @@ dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
   konservativ mit `0.5 px` setzen, um sichtbaren Hintergrundsaum zu reduzieren.
 - [ ] `mask_erode_px` real testen: `0`, `0.25`, `0.5`, `0.75` bei
   Kopfbewegung, Schulterbewegung, Haaren und Ohr/Kopf-Kante vergleichen.
+- [x] Edge-Stabilization fuer unsichere Alpha-Kanten einfuehren:
+  `edge_stabilization_enabled=true`, `edge_stabilization_strength=0.35`.
+- [x] Edge-Stabilization nach Maskenalter abschwaechen: volle Wirkung unter
+  `40 ms`, Fade-out bis `75 ms`, damit `paired` Bewegung weniger alte Kante
+  behaelt.
+- [ ] Edge-Stabilization real testen: Ruheposition, Kopfbewegung,
+  Schulterbewegung, Haare/Ohr-Kante, keine neuen Transparenz-Nachlaeufer.
 - [ ] Minimalistische Mask-Postprocessing-Tests: kleine Dilate-/Feather-Werte,
   keine altersabhaengige Blur-/Edge-Degradation.
 - [ ] Gemeinsame Mask-Sampling-Utility fuer Vision, MODNet und Program-Pfad.
