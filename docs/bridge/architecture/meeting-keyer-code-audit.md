@@ -257,7 +257,12 @@ dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
   `mask_dilate_ms`, `mask_postprocess_ms`, `mask_age_ms`,
   `program_frame_ms`, `mjpeg_encode_ms`, `mask_width`, `mask_height`,
   `dropped_frames`.
+- [x] Native Rate-/Stabilitaetsmetriken ausgeben:
+  `mask_age_avg_ms`, `keyer_fps`, `program_fps`,
+  `dropped_frames_per_sec`.
 - [x] WebApp-Statusbar um alle vorhandenen Keyer-Metriken erweitern.
+- [x] WebApp-Statusbar um `Keyer FPS`, `Program FPS`, `Drop/s` und
+  `Maske avg` erweitern.
 - [x] WebApp-Preview-Panel pollt `meeting_keyer_get` waehrend der laufenden
   Preview, damit die Werte live lesbar sind.
 - [ ] Motion-Test-Notizen mit typischen `balanced`-Werten dokumentieren:
@@ -267,6 +272,8 @@ dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
 
 - [ ] `balanced` als Default beibehalten; `fast` nur als A/B-Diagnose nutzen,
   weil die sichtbare Kante schlechter ist.
+- [x] Program-Loop Frame-Pacing korrigieren: Renderzeit wird von der
+  Ziel-Frame-Zeit abgezogen statt zusaetzlich zu einem festen Sleep addiert.
 - [ ] `camera_copy_ms` gegen Aufloesung/FPS messen und unnoetige Kopien oder
   Reallocations entfernen.
 - [ ] Vision-Input-Erzeugung analysieren: RGBA/CGImage-CPU-Pfad gegen

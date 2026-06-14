@@ -16,8 +16,12 @@ struct KeyerMetrics {
   double maskDilateMs = -1.0;
   double maskPostprocessMs = -1.0;
   double maskAgeMs = -1.0;
+  double maskAgeAvgMs = -1.0;
   double programFrameMs = -1.0;
   double mjpegEncodeMs = -1.0;
+  double keyerFps = -1.0;
+  double programFps = -1.0;
+  double droppedFramesPerSec = -1.0;
   uint32_t maskWidth = 0;
   uint32_t maskHeight = 0;
   uint64_t droppedFrames = 0;

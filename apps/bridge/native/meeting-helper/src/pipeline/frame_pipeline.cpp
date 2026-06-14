@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <deque>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -33,6 +34,8 @@ constexpr float kQuietPreviousWeight = 0.85f;
 constexpr float kMotionPreviousWeight = 0.35f;
 constexpr float kStalePreviousWeight = 0.12f;
 constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
+constexpr double kMetricsWindowMs = 1000.0;
+constexpr size_t kMaskAgeWindowSize = 30u;
 
 struct MaskSample {
   size_t lower = 0u;
@@ -43,6 +46,77 @@ struct MaskSample {
 struct PairedKeyerFrame {
   VideoFrame frame;
   AlphaMask mask;
+};
+
+struct KeyerRuntimeStats {
+  double keyerFps = -1.0;
+  double droppedFramesPerSec = -1.0;
+  uint64_t droppedFramesTotal = 0;
+};
+
+class RateMeter {
+ public:
+  void tick(const std::chrono::steady_clock::time_point now) {
+    if (windowStart_ == std::chrono::steady_clock::time_point{}) {
+      windowStart_ = now;
+    }
+    ++currentCount_;
+    update(now);
+  }
+
+  double value(const std::chrono::steady_clock::time_point now) {
+    update(now);
+    return currentValue_;
+  }
+
+ private:
+  void update(const std::chrono::steady_clock::time_point now) {
+    if (windowStart_ == std::chrono::steady_clock::time_point{}) {
+      return;
+    }
+    const double elapsedMs = std::chrono::duration<double, std::milli>(now - windowStart_).count();
+    if (elapsedMs < kMetricsWindowMs) {
+      return;
+    }
+    currentValue_ = static_cast<double>(currentCount_) * 1000.0 / std::max(1.0, elapsedMs);
+    currentCount_ = 0u;
+    windowStart_ = now;
+  }
+
+  std::chrono::steady_clock::time_point windowStart_{};
+  uint64_t currentCount_ = 0u;
+  double currentValue_ = -1.0;
+};
+
+class RollingAverage {
+ public:
+  void add(double value) {
+    if (value < 0.0) {
+      return;
+    }
+    samples_.push_back(value);
+    sum_ += value;
+    while (samples_.size() > kMaskAgeWindowSize) {
+      sum_ -= samples_.front();
+      samples_.pop_front();
+    }
+  }
+
+  double value() const {
+    if (samples_.empty()) {
+      return -1.0;
+    }
+    return sum_ / static_cast<double>(samples_.size());
+  }
+
+  void clear() {
+    samples_.clear();
+    sum_ = 0.0;
+  }
+
+ private:
+  std::deque<double> samples_;
+  double sum_ = 0.0;
 };
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
@@ -362,11 +436,22 @@ class AsyncKeyerWorker {
     hasPendingFrame_ = false;
     hasLatestPair_ = false;
     droppedFrames_ = 0;
+    keyerRate_ = RateMeter{};
+    lastDropRateSample_ = std::chrono::steady_clock::now();
+    lastDropRateTotal_ = 0u;
+    droppedFramesPerSec_ = -1.0;
   }
 
   uint64_t droppedFrames() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return droppedFrames_;
+  }
+
+  KeyerRuntimeStats stats() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    updateDropRateLocked(now);
+    return KeyerRuntimeStats{keyerRate_.value(now), droppedFramesPerSec_, droppedFrames_};
   }
 
   void stop() {
@@ -428,7 +513,12 @@ class AsyncKeyerWorker {
         std::lock_guard<std::mutex> lock(mutex_);
         shouldPublish = !stopping_ && running_.load() && generation == generation_;
         if (shouldPublish) {
+          const auto now = std::chrono::steady_clock::now();
+          keyerRate_.tick(now);
+          updateDropRateLocked(now);
           keyed.status.metrics.droppedFrames = droppedFrames_;
+          keyed.status.metrics.keyerFps = keyerRate_.value(now);
+          keyed.status.metrics.droppedFramesPerSec = droppedFramesPerSec_;
           latestPair_.frame = std::move(frame);
           latestPair_.mask = std::move(keyed.mask);
           hasLatestPair_ = !latestPair_.mask.alpha.empty();
@@ -438,6 +528,22 @@ class AsyncKeyerWorker {
         updateMeetingKeyerStatus(state_, keyed.status);
       }
     }
+  }
+
+  void updateDropRateLocked(const std::chrono::steady_clock::time_point now) {
+    if (lastDropRateSample_ == std::chrono::steady_clock::time_point{}) {
+      lastDropRateSample_ = now;
+      lastDropRateTotal_ = droppedFrames_;
+      return;
+    }
+    const double elapsedMs = std::chrono::duration<double, std::milli>(now - lastDropRateSample_).count();
+    if (elapsedMs < kMetricsWindowMs) {
+      return;
+    }
+    const uint64_t droppedDelta = droppedFrames_ >= lastDropRateTotal_ ? droppedFrames_ - lastDropRateTotal_ : 0u;
+    droppedFramesPerSec_ = static_cast<double>(droppedDelta) * 1000.0 / std::max(1.0, elapsedMs);
+    lastDropRateTotal_ = droppedFrames_;
+    lastDropRateSample_ = now;
   }
 
   KeyerChain keyerChain_;
@@ -451,6 +557,10 @@ class AsyncKeyerWorker {
   uint64_t generation_ = 0;
   uint64_t pendingGeneration_ = 0;
   uint64_t droppedFrames_ = 0;
+  RateMeter keyerRate_;
+  std::chrono::steady_clock::time_point lastDropRateSample_{};
+  uint64_t lastDropRateTotal_ = 0u;
+  double droppedFramesPerSec_ = -1.0;
   bool hasPendingFrame_ = false;
   bool hasLatestPair_ = false;
   bool stopping_ = false;
@@ -576,11 +686,16 @@ void runFramePipeline(const Options &options,
     return;
   }
 
-  const auto sleepFor = std::chrono::milliseconds(1000 / (options.fps == 0 ? 30 : options.fps));
+  const uint32_t targetFps = options.fps == 0 ? 30u : options.fps;
+  const auto frameInterval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / static_cast<double>(targetFps)));
+  auto nextFrameAt = std::chrono::steady_clock::now();
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
   AsyncKeyerWorker keyerWorker(options, state, running);
   GraphicsFrameBusReader graphicsReader;
+  RateMeter programRate;
+  RollingAverage maskAgeAverage;
   while (running.load()) {
     bool framebusRunning = true;
     {
@@ -618,6 +733,7 @@ void runFramePipeline(const Options &options,
             if (frame.timestampNs >= latestPair.frame.timestampNs) {
               maskAgeMs = static_cast<double>(frame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
             }
+            maskAgeAverage.add(maskAgeMs);
             const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
             if (pairIsUsable) {
               applyLatestAlphaToCurrentFrame(latestPair.frame, latestPair.mask, keyedFrame);
@@ -625,10 +741,14 @@ void runFramePipeline(const Options &options,
             } else {
               frameForCompositor = &frame;
             }
+            const KeyerRuntimeStats keyerStats = keyerWorker.stats();
             {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.keyerMetrics.maskAgeMs = maskAgeMs;
-              state.keyerMetrics.droppedFrames = keyerWorker.droppedFrames();
+              state.keyerMetrics.maskAgeAvgMs = maskAgeAverage.value();
+              state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+              state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
+              state.keyerMetrics.keyerFps = keyerStats.keyerFps;
               if (pairIsUsable) {
                 state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
                 state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
@@ -639,28 +759,35 @@ void runFramePipeline(const Options &options,
             }
           } else {
             frameForCompositor = &frame;
+            const KeyerRuntimeStats keyerStats = keyerWorker.stats();
             {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.degradationStage = "passthrough";
               state.staleMaskActive = false;
-              state.keyerMetrics.droppedFrames = keyerWorker.droppedFrames();
+              state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+              state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
+              state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             }
           }
         } else {
           keyerWorker.clear();
+          maskAgeAverage.clear();
           frameForCompositor = &frame;
           {
             std::lock_guard<std::mutex> lock(state.mutex);
             state.degradationStage = "fresh";
             state.staleMaskActive = false;
+            state.keyerMetrics.maskAgeAvgMs = -1.0;
           }
         }
       } else {
         keyerWorker.clear();
+        maskAgeAverage.clear();
         {
           std::lock_guard<std::mutex> lock(state.mutex);
           state.degradationStage = "passthrough";
           state.staleMaskActive = false;
+          state.keyerMetrics.maskAgeAvgMs = -1.0;
         }
       }
       VideoFrame graphicsFrame;
@@ -669,15 +796,25 @@ void runFramePipeline(const Options &options,
       framebus_writer_write_rgba(writer, programFrame.data(), programFrame.size(), hasCameraFrame ? frame.timestampNs : nowNs());
       previewFrames.publish(options.width, options.height, programFrame.data(), programFrame.size());
       const auto programEnd = std::chrono::steady_clock::now();
+      programRate.tick(programEnd);
+      nextFrameAt += frameInterval;
       {
         std::lock_guard<std::mutex> lock(state.mutex);
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
+        state.keyerMetrics.programFps = programRate.value(programEnd);
       }
     } else {
       keyerWorker.clear();
+      maskAgeAverage.clear();
+      nextFrameAt = std::chrono::steady_clock::now() + frameInterval;
     }
-    std::this_thread::sleep_for(sleepFor);
+    const auto now = std::chrono::steady_clock::now();
+    if (nextFrameAt > now) {
+      std::this_thread::sleep_until(nextFrameAt);
+    } else {
+      nextFrameAt = now;
+    }
   }
   framebus_writer_close(writer);
 }

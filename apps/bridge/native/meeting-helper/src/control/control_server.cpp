@@ -71,8 +71,12 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"mask_dilate_ms\":" << metricNumber(metrics.maskDilateMs)
          << ",\"mask_postprocess_ms\":" << metricNumber(metrics.maskPostprocessMs)
          << ",\"mask_age_ms\":" << metricNumber(metrics.maskAgeMs)
+         << ",\"mask_age_avg_ms\":" << metricNumber(metrics.maskAgeAvgMs)
          << ",\"program_frame_ms\":" << metricNumber(metrics.programFrameMs)
          << ",\"mjpeg_encode_ms\":" << metricNumber(metrics.mjpegEncodeMs)
+         << ",\"keyer_fps\":" << metricNumber(metrics.keyerFps)
+         << ",\"program_fps\":" << metricNumber(metrics.programFps)
+         << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
          << ",\"dropped_frames\":" << metrics.droppedFrames << "}";

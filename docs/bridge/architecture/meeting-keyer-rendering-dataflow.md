@@ -308,16 +308,26 @@ Displayed values:
 - `metrics.mask_postprocess_ms`: mask postprocess cost
 - `metrics.mask_age_ms`: age of the paired keyer frame relative to the current
   program frame
+- `metrics.mask_age_avg_ms`: rolling average mask age over the latest program
+  frames
 - `metrics.program_frame_ms`: full program-frame render/write cost
 - `metrics.mjpeg_encode_ms`: preview MJPEG encode cost when available
+- `metrics.keyer_fps`: rolling published keyer-result rate
+- `metrics.program_fps`: rolling program-frame rate
+- `metrics.dropped_frames_per_sec`: rolling async keyer drop rate
 - `metrics.mask_width` and `metrics.mask_height`: produced mask resolution
-- `metrics.dropped_frames`: async keyer worker drops
+- `metrics.dropped_frames`: total async keyer worker drops since reset/clear
 - `degradation_stage`: `fresh`, `paired`, or `passthrough`
 
 These values are the main decision surface for Phase 2 latency work. If
 `session_run_ms` dominates, the next target is the Vision path. If
 `camera_copy_ms` or `program_frame_ms` dominates, the next target is capture,
 copy, or compositing.
+
+The program loop uses deadline-based frame pacing. Render/write time is part of
+the target frame interval; it is not followed by a full fixed-frame sleep. This
+keeps `program_fps` close to the configured output FPS when rendering completes
+within budget.
 
 ## Program Composition And Layering
 
