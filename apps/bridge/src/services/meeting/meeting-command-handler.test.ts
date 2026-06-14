@@ -160,21 +160,53 @@ describe("meeting-command-handler", () => {
       const result = await handleMeetingCommand("meeting_keyer_configure", {
         enabled: true,
         model: "vision_person_segmentation",
+        background_type: "mode",
+        background_mode: "transparent",
+        background_template_id: null,
+        background_template_name: "Default background",
         quality_mode: "accurate",
         mask_dilate_px: 0,
         mask_feather_px: 0,
         dynamic_dilation: false,
+        temporal_blend_enabled: false,
+        fresh_mask_age_ms: 60,
+        max_mask_age_ms: 220,
       });
 
       expect(mockClient.keyerConfigure).toHaveBeenCalledWith({
         enabled: true,
         model: "vision_person_segmentation",
+        background_type: "mode",
+        background_mode: "transparent",
+        background_template_id: null,
+        background_template_name: "Default background",
         quality_mode: "accurate",
         mask_dilate_px: 0,
         mask_feather_px: 0,
         dynamic_dilation: false,
+        temporal_blend_enabled: false,
+        fresh_mask_age_ms: 60,
+        max_mask_age_ms: 220,
       });
       expect(result.success).toBe(true);
+    });
+
+    it("rejects invalid keyer configuration", async () => {
+      await expect(
+        handleMeetingCommand("meeting_keyer_configure", {
+          enabled: true,
+          model: "unknown",
+        }),
+      ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
+
+      await expect(
+        handleMeetingCommand("meeting_keyer_configure", {
+          fresh_mask_age_ms: 240,
+          max_mask_age_ms: 220,
+        }),
+      ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
+
+      expect(mockClient.keyerConfigure).not.toHaveBeenCalled();
     });
 
     it("updates program sections", async () => {

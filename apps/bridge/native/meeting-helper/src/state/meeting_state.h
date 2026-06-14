@@ -57,6 +57,10 @@ struct MeetingState {
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;
   bool dynamicDilation = false;
+  bool temporalBlendEnabled = true;
+  KeyerDegradationSettings degradationSettings;
+  std::string degradationStage = "fresh";
+  bool staleMaskActive = false;
   std::string provider;
   std::string modelPath;
   double inferenceMs = -1.0;

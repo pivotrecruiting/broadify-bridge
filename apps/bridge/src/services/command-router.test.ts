@@ -76,6 +76,15 @@ jest.mock("./graphics/graphics-manager.js", () => ({
   },
 }));
 
+jest.mock("./graphics/framebus/framebus-client.js", () => ({
+  loadFrameBusModule: jest.fn(() => ({
+    createWriter: jest.fn(() => ({
+      writeFrame: jest.fn(),
+      close: jest.fn(),
+    })),
+  })),
+}));
+
 jest.mock("./meeting/meeting-graphics-manager.js", () => ({
   isMeetingGraphicsLayerPayload: (
     payload: Record<string, unknown> | undefined,

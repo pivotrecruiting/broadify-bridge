@@ -27,6 +27,8 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
     settings.maskDilatePx = state.maskDilatePx;
     settings.maskFeatherPx = state.maskFeatherPx;
     settings.dynamicDilation = state.dynamicDilation;
+    settings.temporalBlendEnabled = state.temporalBlendEnabled;
+    settings.degradation = state.degradationSettings;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);

@@ -40,6 +40,11 @@ struct MaskSample {
   uint32_t upperWeight = 0u;
 };
 
+struct PairedKeyerFrame {
+  VideoFrame frame;
+  AlphaMask mask;
+};
+
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
   return std::chrono::duration<double, std::milli>(end - start).count();
@@ -247,6 +252,56 @@ void postprocessAlpha(AlphaMask &mask,
   metrics.maskPostprocessMs = elapsedMs(start, end);
 }
 
+uint8_t sampleMaskBilinear(const AlphaMask &mask,
+                           const std::vector<MaskSample> &xSamples,
+                           const std::vector<MaskSample> &ySamples,
+                           uint32_t x,
+                           uint32_t y) {
+  const MaskSample &sampleY = ySamples[y];
+  const uint32_t yWeight = sampleY.upperWeight;
+  const uint32_t inverseYWeight = 256u - yWeight;
+  const uint8_t *row0 = mask.alpha.data() + sampleY.lower * mask.width;
+  const uint8_t *row1 = mask.alpha.data() + sampleY.upper * mask.width;
+  const MaskSample &sampleX = xSamples[x];
+  const uint32_t xWeight = sampleX.upperWeight;
+  const uint32_t inverseXWeight = 256u - xWeight;
+  const uint32_t top =
+      static_cast<uint32_t>(row0[sampleX.lower]) * inverseXWeight +
+      static_cast<uint32_t>(row0[sampleX.upper]) * xWeight;
+  const uint32_t bottom =
+      static_cast<uint32_t>(row1[sampleX.lower]) * inverseXWeight +
+      static_cast<uint32_t>(row1[sampleX.upper]) * xWeight;
+  const uint32_t alpha = (top * inverseYWeight + bottom * yWeight + 32768u) >> 16u;
+  return static_cast<uint8_t>(std::min(alpha, 255u));
+}
+
+void buildMaskSamples(uint32_t frameWidth,
+                      uint32_t frameHeight,
+                      const AlphaMask &mask,
+                      std::vector<MaskSample> &xSamples,
+                      std::vector<MaskSample> &ySamples) {
+  xSamples.assign(frameWidth, MaskSample{});
+  ySamples.assign(frameHeight, MaskSample{});
+  for (uint32_t x = 0; x < frameWidth; ++x) {
+    const double sourceX = frameWidth > 1u
+        ? (static_cast<double>(x) * static_cast<double>(mask.width - 1u)) / static_cast<double>(frameWidth - 1u)
+        : 0.0;
+    const size_t lower = static_cast<size_t>(std::floor(sourceX));
+    xSamples[x].lower = lower;
+    xSamples[x].upper = std::min<size_t>(mask.width - 1u, lower + 1u);
+    xSamples[x].upperWeight = static_cast<uint32_t>(std::round((sourceX - static_cast<double>(lower)) * 256.0));
+  }
+  for (uint32_t y = 0; y < frameHeight; ++y) {
+    const double sourceY = frameHeight > 1u
+        ? (static_cast<double>(y) * static_cast<double>(mask.height - 1u)) / static_cast<double>(frameHeight - 1u)
+        : 0.0;
+    const size_t lower = static_cast<size_t>(std::floor(sourceY));
+    ySamples[y].lower = lower;
+    ySamples[y].upper = std::min<size_t>(mask.height - 1u, lower + 1u);
+    ySamples[y].upperWeight = static_cast<uint32_t>(std::round((sourceY - static_cast<double>(lower)) * 256.0));
+  }
+}
+
 void applyLatestAlphaToCurrentFrame(const VideoFrame &currentFrame,
                                     const AlphaMask &latestMask,
                                     VideoFrame &outputFrame) {
@@ -262,44 +317,12 @@ void applyLatestAlphaToCurrentFrame(const VideoFrame &currentFrame,
 
   std::vector<MaskSample> xSamples(currentFrame.width);
   std::vector<MaskSample> ySamples(currentFrame.height);
-  for (uint32_t x = 0; x < currentFrame.width; ++x) {
-    const double sourceX = currentFrame.width > 1u
-        ? (static_cast<double>(x) * static_cast<double>(latestMask.width - 1u)) / static_cast<double>(currentFrame.width - 1u)
-        : 0.0;
-    const size_t lower = static_cast<size_t>(std::floor(sourceX));
-    xSamples[x].lower = lower;
-    xSamples[x].upper = std::min<size_t>(latestMask.width - 1u, lower + 1u);
-    xSamples[x].upperWeight = static_cast<uint32_t>(std::round((sourceX - static_cast<double>(lower)) * 256.0));
-  }
-  for (uint32_t y = 0; y < currentFrame.height; ++y) {
-    const double sourceY = currentFrame.height > 1u
-        ? (static_cast<double>(y) * static_cast<double>(latestMask.height - 1u)) / static_cast<double>(currentFrame.height - 1u)
-        : 0.0;
-    const size_t lower = static_cast<size_t>(std::floor(sourceY));
-    ySamples[y].lower = lower;
-    ySamples[y].upper = std::min<size_t>(latestMask.height - 1u, lower + 1u);
-    ySamples[y].upperWeight = static_cast<uint32_t>(std::round((sourceY - static_cast<double>(lower)) * 256.0));
-  }
+  buildMaskSamples(currentFrame.width, currentFrame.height, latestMask, xSamples, ySamples);
 
   for (uint32_t y = 0; y < currentFrame.height; ++y) {
-    const MaskSample &sampleY = ySamples[y];
-    const uint32_t yWeight = sampleY.upperWeight;
-    const uint32_t inverseYWeight = 256u - yWeight;
-    const uint8_t *row0 = latestMask.alpha.data() + sampleY.lower * latestMask.width;
-    const uint8_t *row1 = latestMask.alpha.data() + sampleY.upper * latestMask.width;
     for (uint32_t x = 0; x < currentFrame.width; ++x) {
-      const MaskSample &sampleX = xSamples[x];
-      const uint32_t xWeight = sampleX.upperWeight;
-      const uint32_t inverseXWeight = 256u - xWeight;
-      const uint32_t top =
-          static_cast<uint32_t>(row0[sampleX.lower]) * inverseXWeight +
-          static_cast<uint32_t>(row0[sampleX.upper]) * xWeight;
-      const uint32_t bottom =
-          static_cast<uint32_t>(row1[sampleX.lower]) * inverseXWeight +
-          static_cast<uint32_t>(row1[sampleX.upper]) * xWeight;
-      const uint32_t alpha = (top * inverseYWeight + bottom * yWeight + 32768u) >> 16u;
       const size_t frameOffset = (static_cast<size_t>(y) * currentFrame.width + x) * 4u;
-      outputFrame.rgba[frameOffset + 3u] = static_cast<uint8_t>(std::min(alpha, 255u));
+      outputFrame.rgba[frameOffset + 3u] = sampleMaskBilinear(latestMask, xSamples, ySamples, x, y);
     }
   }
 }
@@ -324,12 +347,12 @@ class AsyncKeyerWorker {
     cv_.notify_one();
   }
 
-  bool copyLatest(AlphaMask &mask) const {
+  bool copyLatest(PairedKeyerFrame &pair) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!hasLatestMask_) {
+    if (!hasLatestPair_) {
       return false;
     }
-    mask = latestMask_;
+    pair = latestPair_;
     return true;
   }
 
@@ -337,7 +360,7 @@ class AsyncKeyerWorker {
     std::lock_guard<std::mutex> lock(mutex_);
     ++generation_;
     hasPendingFrame_ = false;
-    hasLatestMask_ = false;
+    hasLatestPair_ = false;
     droppedFrames_ = 0;
   }
 
@@ -380,8 +403,8 @@ class AsyncKeyerWorker {
       AlphaMask previousMask;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (hasLatestMask_) {
-          previousMask = latestMask_;
+        if (hasLatestPair_) {
+          previousMask = latestPair_.mask;
         }
       }
       KeyerSettings settings;
@@ -392,9 +415,13 @@ class AsyncKeyerWorker {
         settings.maskDilatePx = state_.maskDilatePx;
         settings.maskFeatherPx = state_.maskFeatherPx;
         settings.dynamicDilation = state_.dynamicDilation;
+        settings.temporalBlendEnabled = state_.temporalBlendEnabled;
+        settings.degradation = state_.degradationSettings;
         maskAgeMs = state_.keyerMetrics.maskAgeMs;
       }
-      blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
+      if (settings.temporalBlendEnabled) {
+        blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
+      }
       postprocessAlpha(keyed.mask, settings, maskAgeMs, keyed.status.metrics);
       bool shouldPublish = false;
       {
@@ -402,8 +429,9 @@ class AsyncKeyerWorker {
         shouldPublish = !stopping_ && running_.load() && generation == generation_;
         if (shouldPublish) {
           keyed.status.metrics.droppedFrames = droppedFrames_;
-          latestMask_ = std::move(keyed.mask);
-          hasLatestMask_ = !latestMask_.alpha.empty();
+          latestPair_.frame = std::move(frame);
+          latestPair_.mask = std::move(keyed.mask);
+          hasLatestPair_ = !latestPair_.mask.alpha.empty();
         }
       }
       if (shouldPublish) {
@@ -419,12 +447,12 @@ class AsyncKeyerWorker {
   std::condition_variable cv_;
   std::thread thread_;
   VideoFrame pendingFrame_;
-  AlphaMask latestMask_;
+  PairedKeyerFrame latestPair_;
   uint64_t generation_ = 0;
   uint64_t pendingGeneration_ = 0;
   uint64_t droppedFrames_ = 0;
   bool hasPendingFrame_ = false;
-  bool hasLatestMask_ = false;
+  bool hasLatestPair_ = false;
   bool stopping_ = false;
 };
 
@@ -571,32 +599,69 @@ void runFramePipeline(const Options &options,
       const CompositorSnapshot snapshot = copyCompositorSnapshot(state);
       VideoFrame keyedFrame;
       const VideoFrame *frameForCompositor = nullptr;
+      KeyerSettings keyerSettings;
+      {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        keyerSettings.qualityMode = state.qualityMode;
+        keyerSettings.maskDilatePx = state.maskDilatePx;
+        keyerSettings.maskFeatherPx = state.maskFeatherPx;
+        keyerSettings.dynamicDilation = state.dynamicDilation;
+        keyerSettings.temporalBlendEnabled = state.temporalBlendEnabled;
+        keyerSettings.degradation = state.degradationSettings;
+      }
       if (hasCameraFrame) {
         if (snapshot.keyerEnabled) {
           keyerWorker.submit(frame);
-          AlphaMask latestMask;
-          if (keyerWorker.copyLatest(latestMask)) {
-            applyLatestAlphaToCurrentFrame(frame, latestMask, keyedFrame);
-            frameForCompositor = &keyedFrame;
+          PairedKeyerFrame latestPair;
+          if (keyerWorker.copyLatest(latestPair)) {
+            double maskAgeMs = 0.0;
+            if (frame.timestampNs >= latestPair.frame.timestampNs) {
+              maskAgeMs = static_cast<double>(frame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
+            }
+            const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
+            if (pairIsUsable) {
+              applyLatestAlphaToCurrentFrame(latestPair.frame, latestPair.mask, keyedFrame);
+              frameForCompositor = &keyedFrame;
+            } else {
+              frameForCompositor = &frame;
+            }
             {
               std::lock_guard<std::mutex> lock(state.mutex);
-              if (frame.timestampNs >= latestMask.timestampNs) {
-                state.keyerMetrics.maskAgeMs =
-                    static_cast<double>(frame.timestampNs - latestMask.timestampNs) / 1000000.0;
-              } else {
-                state.keyerMetrics.maskAgeMs = 0.0;
-              }
+              state.keyerMetrics.maskAgeMs = maskAgeMs;
               state.keyerMetrics.droppedFrames = keyerWorker.droppedFrames();
+              if (pairIsUsable) {
+                state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
+              } else {
+                state.degradationStage = "passthrough";
+                state.staleMaskActive = true;
+              }
             }
           } else {
             frameForCompositor = &frame;
+            {
+              std::lock_guard<std::mutex> lock(state.mutex);
+              state.degradationStage = "passthrough";
+              state.staleMaskActive = false;
+              state.keyerMetrics.droppedFrames = keyerWorker.droppedFrames();
+            }
           }
         } else {
           keyerWorker.clear();
           frameForCompositor = &frame;
+          {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.degradationStage = "fresh";
+            state.staleMaskActive = false;
+          }
         }
       } else {
         keyerWorker.clear();
+        {
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.degradationStage = "passthrough";
+          state.staleMaskActive = false;
+        }
       }
       VideoFrame graphicsFrame;
       const VideoFrame *graphicsFrameForCompositor = graphicsReader.copyLatest(graphicsFrame) ? &graphicsFrame : nullptr;

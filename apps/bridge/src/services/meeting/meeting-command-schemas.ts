@@ -17,6 +17,33 @@ export const MeetingEngineStartSchema = z
 
 export const MeetingPassthroughSchema = z.record(z.unknown());
 
+export const MeetingKeyerConfigureSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    model: z.enum(["modnet", "vision_person_segmentation"]).optional(),
+    background_mode: z
+      .enum(["transparent", "gradient", "solid_light", "checkerboard"])
+      .optional(),
+    background_type: z.enum(["mode"]).optional(),
+    background_template_id: z.string().nullable().optional(),
+    background_template_name: z.string().nullable().optional(),
+    quality_mode: z.enum(["fast", "balanced", "accurate"]).optional(),
+    mask_dilate_px: z.number().int().min(0).max(8).optional(),
+    mask_feather_px: z.number().int().min(0).max(3).optional(),
+    dynamic_dilation: z.boolean().optional(),
+    temporal_blend_enabled: z.boolean().optional(),
+    fresh_mask_age_ms: z.number().min(0).max(500).optional(),
+    max_mask_age_ms: z.number().min(0).max(2000).optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.fresh_mask_age_ms === undefined ||
+      value.max_mask_age_ms === undefined ||
+      value.fresh_mask_age_ms <= value.max_mask_age_ms,
+    "fresh_mask_age_ms must be less than or equal to max_mask_age_ms",
+  );
+
 export const MeetingProgramUpdateSchema = z.object({
   section: z.enum(["cornerbug", "graphics", "speaker_layout", "media_layer"]),
   values: z.record(z.unknown()),

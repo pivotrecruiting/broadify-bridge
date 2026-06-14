@@ -7,6 +7,7 @@ import {
   MeetingButtonTriggerSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
+  MeetingKeyerConfigureSchema,
   MeetingOutputConfigureSchema,
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
@@ -165,7 +166,7 @@ export async function handleMeetingCommand(
 
     case "meeting_keyer_configure": {
       const patch = parseRelayPayload(
-        MeetingPassthroughSchema,
+        MeetingKeyerConfigureSchema,
         payload ?? {},
         "Invalid payload for meeting_keyer_configure",
       );

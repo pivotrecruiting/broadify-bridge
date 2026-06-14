@@ -23,6 +23,11 @@ struct KeyerMetrics {
   uint64_t droppedFrames = 0;
 };
 
+struct KeyerDegradationSettings {
+  double freshMaskAgeMs = 60.0;
+  double maxMaskAgeMs = 220.0;
+};
+
 struct KeyerStatus {
   std::string activeKeyer = "passthrough";
   bool fallbackActive = true;
@@ -54,6 +59,8 @@ struct KeyerSettings {
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;
   bool dynamicDilation = false;
+  bool temporalBlendEnabled = true;
+  KeyerDegradationSettings degradation;
 };
 
 class Keyer {

@@ -52,6 +52,16 @@ uint32_t clampedPixelRadius(int value, uint32_t maxValue) {
   return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int>(maxValue)));
 }
 
+double clampedDouble(double value, double minValue, double maxValue) {
+  return std::clamp(value, minValue, maxValue);
+}
+
+KeyerDegradationSettings normalizedDegradationSettings(KeyerDegradationSettings settings) {
+  settings.freshMaskAgeMs = clampedDouble(settings.freshMaskAgeMs, 0.0, 500.0);
+  settings.maxMaskAgeMs = clampedDouble(settings.maxMaskAgeMs, settings.freshMaskAgeMs, 2000.0);
+  return settings;
+}
+
 std::string keyerMetricsJson(const KeyerMetrics &metrics) {
   std::ostringstream result;
   result << "{\"camera_copy_ms\":" << metricNumber(metrics.cameraCopyMs)
@@ -180,10 +190,15 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
            << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
            << "\",\"mask_dilate_px\":" << state.maskDilatePx
            << ",\"mask_feather_px\":" << state.maskFeatherPx
-           << ",\"dynamic_dilation\":" << (state.dynamicDilation ? "true" : "false") << "},"
+           << ",\"dynamic_dilation\":" << (state.dynamicDilation ? "true" : "false")
+           << ",\"temporal_blend_enabled\":" << (state.temporalBlendEnabled ? "true" : "false")
+           << ",\"fresh_mask_age_ms\":" << state.degradationSettings.freshMaskAgeMs
+           << ",\"max_mask_age_ms\":" << state.degradationSettings.maxMaskAgeMs << "},"
            << "\"status\":{\"active_keyer\":\"" << jsonEscape(state.activeKeyer)
            << "\",\"fallback_active\":" << (state.fallbackActive ? "true" : "false")
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
+           << ",\"degradation_stage\":\"" << jsonEscape(state.degradationStage)
+           << "\",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel)
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
            << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
@@ -216,10 +231,17 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
       state.maskFeatherPx = clampedPixelRadius(
           extractIntField(line, "mask_feather_px", static_cast<int>(state.maskFeatherPx)), 3u);
       state.dynamicDilation = extractBoolField(line, "dynamic_dilation", state.dynamicDilation);
+      state.temporalBlendEnabled = extractBoolField(line, "temporal_blend_enabled", state.temporalBlendEnabled);
+      KeyerDegradationSettings degradation = state.degradationSettings;
+      degradation.freshMaskAgeMs = extractDoubleField(line, "fresh_mask_age_ms", degradation.freshMaskAgeMs);
+      degradation.maxMaskAgeMs = extractDoubleField(line, "max_mask_age_ms", degradation.maxMaskAgeMs);
+      state.degradationSettings = normalizedDegradationSettings(degradation);
       state.activeKeyer = "passthrough";
       state.fallbackActive = true;
       state.fallbackReason = state.keyerEnabled ? state.requestedKeyerModel + "_pending" : "keyer_disabled";
       state.keyerBackend = "passthrough";
+      state.degradationStage = "fresh";
+      state.staleMaskActive = false;
       state.provider.clear();
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
@@ -238,6 +260,10 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     state.maskDilatePx = 0u;
     state.maskFeatherPx = 0u;
     state.dynamicDilation = false;
+    state.temporalBlendEnabled = true;
+    state.degradationSettings = KeyerDegradationSettings{};
+    state.degradationStage = "fresh";
+    state.staleMaskActive = false;
     state.provider.clear();
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};

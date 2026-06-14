@@ -6,12 +6,13 @@ This document describes the current meeting keyer and rendering pipeline as it
 exists in code. It focuses on the Apple Vision keyer path, alpha mask handling,
 frame composition, graphics layering, preview, and FrameBus output.
 
-The current architecture is not a synchronized camera-frame plus mask pipeline.
-The keyer runs asynchronously and publishes the latest available alpha mask.
-The compositor then applies that mask to the current camera frame. During motion
-this can expose mask age as visible alpha trailing. The current compositor also
-renders a fully opaque program frame, even when the configured background mode is
-named `transparent`.
+The current architecture now keeps the camera RGB frame and alpha mask paired at
+the async keyer boundary. The keyer still runs asynchronously, but the compositor
+does not apply an old mask to the current camera frame. It applies each mask only
+to the RGB frame that produced it, then uses `max_mask_age_ms` as a safety cutoff
+before falling back to passthrough. The current compositor also renders a fully
+opaque program frame, even when the configured background mode is named
+`transparent`.
 
 ## Control Plane Dataflow
 
@@ -52,6 +53,9 @@ The native defaults in `MeetingState` are:
 - `maskDilatePx = 0`
 - `maskFeatherPx = 0`
 - `dynamicDilation = false`
+- `temporalBlendEnabled = true`
+- `freshMaskAgeMs = 60`
+- `maxMaskAgeMs = 220`
 - `backgroundMode = "transparent"`
 
 ## Native Runtime Topology
@@ -179,9 +183,9 @@ Main-thread behavior per output frame:
 
 1. Copy latest camera frame.
 2. If keyer is enabled, submit that camera frame to `AsyncKeyerWorker`.
-3. Ask the worker for `latestMask`.
-4. If a mask exists, apply it to the current camera frame.
-5. If no mask exists, pass the camera frame through unchanged.
+3. Ask the worker for the latest paired camera frame and mask.
+4. If a usable pair exists, apply the mask to the paired camera frame.
+5. If no usable pair exists, pass the current camera frame through unchanged.
 
 Worker-thread behavior:
 
@@ -194,11 +198,13 @@ Worker-thread behavior:
 7. Publish the new mask if generation still matches.
 8. Update keyer status in `MeetingState`.
 
-This is the core motion-risk area: the current RGB frame and the alpha mask can
-come from different camera frames. `mask_age_ms` is computed as:
+This is the core sync boundary: RGB and alpha in the keyed camera layer come from
+the same submitted camera frame. `mask_age_ms` is still computed against the
+current camera frame so the system can report how delayed the visible keyed pair
+is:
 
 ```text
-current_frame.timestampNs - latest_mask.timestampNs
+current_frame.timestampNs - paired_frame.timestampNs
 ```
 
 If the person moves between those timestamps, alpha can visibly lag behind the
@@ -243,20 +249,37 @@ motion because old alpha is intentionally retained near the current mask.
 
 ## Applying The Latest Mask
 
-`applyLatestAlphaToCurrentFrame` copies the current camera frame and replaces
-only the alpha channel using the latest published mask.
+The async keyer publishes a paired camera frame and alpha mask from the same
+submitted capture frame. The program loop applies the mask only to that paired
+camera frame. This removes the previous RGB/mask mismatch where a stale mask was
+applied to the current camera RGB frame.
+
+Current stages:
+
+- `fresh`: paired frame age below `fresh_mask_age_ms`; paired hard keying.
+- `paired`: paired frame age between `fresh_mask_age_ms` and
+  `max_mask_age_ms`; still uses the synchronized RGB/mask pair and marks
+  `stale_mask_active`.
+- `passthrough`: paired frame age above `max_mask_age_ms` or no usable pair;
+  renders the current camera without keying.
+
+`applyLatestAlphaToCurrentFrame` copies the paired camera frame and replaces
+only the alpha channel using the paired mask.
 
 Behavior:
 
-- RGB stays from the current camera frame.
-- Alpha comes from the latest mask.
+- RGB comes from the paired camera frame that produced the mask.
+- Alpha comes from the paired mask.
 - Mask-to-frame scaling uses bilinear sampling.
-- No motion compensation is performed.
-- No confidence-based rejection is performed when `mask_age_ms` is high.
-- No hard cutoff prevents using masks younger than 250ms but still visually
-  stale.
+- No motion compensation is performed; the entire keyed camera layer is delayed
+  as one synchronized pair.
+- When `mask_age_ms` is above `max_mask_age_ms`, the program loop stops using
+  the paired keyer output and passes the current camera frame through.
+- Hard mask-age cutoffs prevent very old masks from being used for hard keying.
+  Very old masks degrade to passthrough.
 
-The output of this function is the keyed camera frame used by the compositor.
+The output of this function is the paired keyed camera frame used by the
+compositor.
 
 ## Program Composition And Layering
 
@@ -302,7 +325,9 @@ frame.assign(width * height * 4, 255)
 Then each pixel is written through `setPixel`, whose default alpha is `255`.
 
 When `backgroundMode == "transparent"`, the RGB values are set to black, but
-alpha remains `255`.
+alpha remains `255`. In the meeting program path this is intentional P0
+semantics: the output is a finished opaque program frame, not an alpha-preserved
+key/fill layer.
 
 Current reality:
 
@@ -362,6 +387,7 @@ Therefore:
 
 - active keyer
 - fallback state and reason
+- degradation stage and stale-mask state
 - backend/provider/model path
 - quality mode
 - inference time
@@ -382,6 +408,8 @@ Metrics currently include:
 - `mask_width`
 - `mask_height`
 - `dropped_frames`
+- `degradation_stage`
+- `stale_mask_active`
 
 The most relevant motion diagnostics are:
 
@@ -396,10 +424,10 @@ The most relevant motion diagnostics are:
 
 These are code-derived candidates, not proven runtime root causes.
 
-1. Mask/frame desynchronization
-   - The compositor applies the latest completed mask to the current camera RGB
-     frame.
-   - Fast motion can reveal the age difference as trailing or offset alpha.
+1. Keyed layer delay
+   - The compositor applies each mask to its paired camera RGB frame.
+   - Fast motion should no longer reveal offset alpha, but the whole keyed
+     camera layer can lag by `mask_age_ms`.
 
 2. Temporal alpha retention
    - Previous alpha can contribute up to `0.85` in quiet areas.
