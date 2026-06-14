@@ -46,6 +46,7 @@ struct MaskSample {
 struct PairedKeyerFrame {
   VideoFrame frame;
   AlphaMask mask;
+  uint64_t publishedAtNs = 0u;
 };
 
 struct KeyerRuntimeStats {
@@ -184,6 +185,68 @@ void dilateAlpha(AlphaMask &mask, uint32_t radius) {
   mask.alpha = std::move(dilatedAlpha);
 }
 
+std::vector<uint8_t> erodedAlphaForRadius(const AlphaMask &mask, uint32_t radius) {
+  const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
+  std::vector<uint8_t> horizontalAlpha(pixelCount);
+  std::vector<uint8_t> erodedAlpha(pixelCount);
+
+  for (uint32_t y = 0; y < mask.height; ++y) {
+    for (uint32_t x = 0; x < mask.width; ++x) {
+      uint8_t minAlpha = 255u;
+      const uint32_t minX = x > radius ? x - radius : 0u;
+      const uint32_t maxX = std::min(mask.width - 1u, x + radius);
+      for (uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
+        minAlpha = std::min(minAlpha, mask.alpha[static_cast<size_t>(y) * mask.width + sampleX]);
+      }
+      horizontalAlpha[static_cast<size_t>(y) * mask.width + x] = minAlpha;
+    }
+  }
+
+  for (uint32_t y = 0; y < mask.height; ++y) {
+    const uint32_t minY = y > radius ? y - radius : 0u;
+    const uint32_t maxY = std::min(mask.height - 1u, y + radius);
+    for (uint32_t x = 0; x < mask.width; ++x) {
+      uint8_t minAlpha = 255u;
+      for (uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
+        minAlpha = std::min(minAlpha, horizontalAlpha[static_cast<size_t>(sampleY) * mask.width + x]);
+      }
+      erodedAlpha[static_cast<size_t>(y) * mask.width + x] = minAlpha;
+    }
+  }
+
+  return erodedAlpha;
+}
+
+void erodeAlpha(AlphaMask &mask, double radius) {
+  if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u || radius <= 0.0) {
+    return;
+  }
+
+  const double clampedRadius = std::clamp(radius, 0.0, 3.0);
+  const uint32_t lowerRadius = static_cast<uint32_t>(std::floor(clampedRadius));
+  const uint32_t upperRadius = static_cast<uint32_t>(std::ceil(clampedRadius));
+  const double upperWeight = clampedRadius - static_cast<double>(lowerRadius);
+
+  if (upperRadius == 0u) {
+    return;
+  }
+
+  const std::vector<uint8_t> originalAlpha = mask.alpha;
+  std::vector<uint8_t> lowerAlpha = lowerRadius == 0u ? originalAlpha : erodedAlphaForRadius(mask, lowerRadius);
+  if (upperWeight <= 0.0 || lowerRadius == upperRadius) {
+    mask.alpha = std::move(lowerAlpha);
+    return;
+  }
+
+  const std::vector<uint8_t> upperAlpha = erodedAlphaForRadius(mask, upperRadius);
+  const double lowerWeight = 1.0 - upperWeight;
+  for (size_t index = 0; index < mask.alpha.size(); ++index) {
+    const double blendedAlpha =
+        static_cast<double>(lowerAlpha[index]) * lowerWeight + static_cast<double>(upperAlpha[index]) * upperWeight;
+    mask.alpha[index] = static_cast<uint8_t>(std::round(std::clamp(blendedAlpha, 0.0, 255.0)));
+  }
+}
+
 void featherAlpha(AlphaMask &mask, uint32_t radius) {
   if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u || radius == 0u) {
     return;
@@ -318,6 +381,7 @@ void postprocessAlpha(AlphaMask &mask,
   const auto start = std::chrono::steady_clock::now();
   remapAlphaSmoothstep(mask);
   const auto dilateStart = std::chrono::steady_clock::now();
+  erodeAlpha(mask, settings.maskErodePx);
   dilateAlpha(mask, dynamicDilationRadius(settings, maskAgeMs));
   const auto dilateEnd = std::chrono::steady_clock::now();
   featherAlpha(mask, std::min(settings.maskFeatherPx, kMaxAlphaFeatherRadiusPx));
@@ -484,6 +548,7 @@ class AsyncKeyerWorker {
         hasPendingFrame_ = false;
       }
 
+      const uint64_t keyerStartNs = nowNs();
       KeyerResult keyed = keyerChain_.process(frame, state_);
       AlphaMask previousMask;
       {
@@ -497,6 +562,7 @@ class AsyncKeyerWorker {
       {
         std::lock_guard<std::mutex> stateLock(state_.mutex);
         settings.qualityMode = state_.qualityMode;
+        settings.maskErodePx = state_.maskErodePx;
         settings.maskDilatePx = state_.maskDilatePx;
         settings.maskFeatherPx = state_.maskFeatherPx;
         settings.dynamicDilation = state_.dynamicDilation;
@@ -514,13 +580,21 @@ class AsyncKeyerWorker {
         shouldPublish = !stopping_ && running_.load() && generation == generation_;
         if (shouldPublish) {
           const auto now = std::chrono::steady_clock::now();
+          const uint64_t publishNs = nowNs();
           keyerRate_.tick(now);
           updateDropRateLocked(now);
           keyed.status.metrics.droppedFrames = droppedFrames_;
           keyed.status.metrics.keyerFps = keyerRate_.value(now);
           keyed.status.metrics.droppedFramesPerSec = droppedFramesPerSec_;
+          keyed.status.metrics.keyerInputAgeMs = frame.timestampNs > 0u && keyerStartNs >= frame.timestampNs
+              ? static_cast<double>(keyerStartNs - frame.timestampNs) / 1000000.0
+              : -1.0;
+          keyed.status.metrics.keyerProcessingMs = publishNs >= keyerStartNs
+              ? static_cast<double>(publishNs - keyerStartNs) / 1000000.0
+              : -1.0;
           latestPair_.frame = std::move(frame);
           latestPair_.mask = std::move(keyed.mask);
+          latestPair_.publishedAtNs = publishNs;
           hasLatestPair_ = !latestPair_.mask.alpha.empty();
         }
       }
@@ -696,6 +770,7 @@ void runFramePipeline(const Options &options,
   GraphicsFrameBusReader graphicsReader;
   RateMeter programRate;
   RollingAverage maskAgeAverage;
+  uint64_t previousProgramStartNs = 0u;
   while (running.load()) {
     bool framebusRunning = true;
     {
@@ -707,26 +782,38 @@ void runFramePipeline(const Options &options,
 
     if (framebusRunning) {
       const auto programStart = std::chrono::steady_clock::now();
+      const uint64_t programStartNs = nowNs();
+      const double programFrameIntervalMs = previousProgramStartNs > 0u && programStartNs >= previousProgramStartNs
+          ? static_cast<double>(programStartNs - previousProgramStartNs) / 1000000.0
+          : -1.0;
+      previousProgramStartNs = programStartNs;
       VideoFrame frame;
       const auto cameraCopyStart = std::chrono::steady_clock::now();
       const bool hasCameraFrame = camera.copyLatestFrame(frame) && !frame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
-      const CompositorSnapshot snapshot = copyCompositorSnapshot(state);
       VideoFrame keyedFrame;
       const VideoFrame *frameForCompositor = nullptr;
+      PairedKeyerFrame selectedPair;
+      bool hasSelectedPair = false;
       KeyerSettings keyerSettings;
+      bool keyerEnabled = false;
       {
         std::lock_guard<std::mutex> lock(state.mutex);
+        keyerEnabled = state.keyerEnabled;
         keyerSettings.qualityMode = state.qualityMode;
+        keyerSettings.maskErodePx = state.maskErodePx;
         keyerSettings.maskDilatePx = state.maskDilatePx;
         keyerSettings.maskFeatherPx = state.maskFeatherPx;
         keyerSettings.dynamicDilation = state.dynamicDilation;
         keyerSettings.temporalBlendEnabled = state.temporalBlendEnabled;
         keyerSettings.degradation = state.degradationSettings;
       }
+      if (hasCameraFrame && keyerEnabled) {
+        keyerWorker.submit(frame);
+      }
+      const CompositorSnapshot snapshot = copyCompositorSnapshot(state);
       if (hasCameraFrame) {
         if (snapshot.keyerEnabled) {
-          keyerWorker.submit(frame);
           PairedKeyerFrame latestPair;
           if (keyerWorker.copyLatest(latestPair)) {
             double maskAgeMs = 0.0;
@@ -738,6 +825,8 @@ void runFramePipeline(const Options &options,
             if (pairIsUsable) {
               applyLatestAlphaToCurrentFrame(latestPair.frame, latestPair.mask, keyedFrame);
               frameForCompositor = &keyedFrame;
+              selectedPair = latestPair;
+              hasSelectedPair = true;
             } else {
               frameForCompositor = &frame;
             }
@@ -746,6 +835,10 @@ void runFramePipeline(const Options &options,
               std::lock_guard<std::mutex> lock(state.mutex);
               state.keyerMetrics.maskAgeMs = maskAgeMs;
               state.keyerMetrics.maskAgeAvgMs = maskAgeAverage.value();
+              state.keyerMetrics.keyerPublishToProgramMs = latestPair.publishedAtNs > 0u && programStartNs >= latestPair.publishedAtNs
+                  ? static_cast<double>(programStartNs - latestPair.publishedAtNs) / 1000000.0
+                  : -1.0;
+              state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
               state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
               state.keyerMetrics.keyerFps = keyerStats.keyerFps;
@@ -792,6 +885,48 @@ void runFramePipeline(const Options &options,
       }
       VideoFrame graphicsFrame;
       const VideoFrame *graphicsFrameForCompositor = graphicsReader.copyLatest(graphicsFrame) ? &graphicsFrame : nullptr;
+      if (hasCameraFrame && snapshot.keyerEnabled) {
+        PairedKeyerFrame latestPair;
+        if (keyerWorker.copyLatest(latestPair) &&
+            (!hasSelectedPair || latestPair.publishedAtNs > selectedPair.publishedAtNs)) {
+          double maskAgeMs = 0.0;
+          if (frame.timestampNs >= latestPair.frame.timestampNs) {
+            maskAgeMs = static_cast<double>(frame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
+          }
+          maskAgeAverage.add(maskAgeMs);
+          const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
+          if (pairIsUsable) {
+            applyLatestAlphaToCurrentFrame(latestPair.frame, latestPair.mask, keyedFrame);
+            frameForCompositor = &keyedFrame;
+            selectedPair = latestPair;
+            hasSelectedPair = true;
+          } else {
+            frameForCompositor = &frame;
+            hasSelectedPair = false;
+          }
+          const KeyerRuntimeStats keyerStats = keyerWorker.stats();
+          const uint64_t programUseNs = nowNs();
+          {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.keyerMetrics.maskAgeMs = maskAgeMs;
+            state.keyerMetrics.maskAgeAvgMs = maskAgeAverage.value();
+            state.keyerMetrics.keyerPublishToProgramMs = latestPair.publishedAtNs > 0u && programUseNs >= latestPair.publishedAtNs
+                ? static_cast<double>(programUseNs - latestPair.publishedAtNs) / 1000000.0
+                : -1.0;
+            state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
+            state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+            state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
+            state.keyerMetrics.keyerFps = keyerStats.keyerFps;
+            if (pairIsUsable) {
+              state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+              state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
+            } else {
+              state.degradationStage = "passthrough";
+              state.staleMaskActive = true;
+            }
+          }
+        }
+      }
       renderProgramFrame(options, snapshot, frameForCompositor, graphicsFrameForCompositor, frameIndex++, programFrame);
       framebus_writer_write_rgba(writer, programFrame.data(), programFrame.size(), hasCameraFrame ? frame.timestampNs : nowNs());
       previewFrames.publish(options.width, options.height, programFrame.data(), programFrame.size());
@@ -803,10 +938,12 @@ void runFramePipeline(const Options &options,
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);
+        state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
       }
     } else {
       keyerWorker.clear();
       maskAgeAverage.clear();
+      previousProgramStartNs = 0u;
       nextFrameAt = std::chrono::steady_clock::now() + frameInterval;
     }
     const auto now = std::chrono::steady_clock::now();

@@ -43,6 +43,7 @@ The web app currently sends keyer configuration with:
 - `enabled`: Meeting Builder keyer feature state
 - `model`: `modnet` or `vision_person_segmentation`
 - `background_mode`: always `transparent` from the builder sync
+- `mask_erode_px`: `0.5` for `vision_person_segmentation`, `0` for other keyers
 - no explicit `quality_mode`, `mask_dilate_px`, `mask_feather_px`, or
   `dynamic_dilation` in the builder sync path
 
@@ -50,6 +51,7 @@ The native defaults in `MeetingState` are:
 
 - `requestedKeyerModel = "modnet"`
 - `qualityMode = "balanced"`
+- `maskErodePx = 0`
 - `maskDilatePx = 0`
 - `maskFeatherPx = 0`
 - `dynamicDilation = false`
@@ -228,9 +230,14 @@ Current steps:
 2. `blendAlphaTemporal`
    - blends current mask with previous mask when dimensions and timestamps are
      compatible
-3. `dilateAlpha`
+3. `erodeAlpha`
+   - fractional min-filter radius; subpixel values interpolate between the
+     original mask and integer-radius erosion
+   - used conservatively by the WebApp with `mask_erode_px = 0.5` for Vision to
+     remove visible background rim without the hard 1px cut
+4. `dilateAlpha`
    - max filter with configured or dynamic radius
-4. `featherAlpha`
+5. `featherAlpha`
    - box blur with configured radius
 
 Important constants:
@@ -304,12 +311,20 @@ Displayed values:
 - `metrics.tensor_ms`: model input/tensor preparation cost
 - `metrics.session_run_ms`: model/Vision run cost
 - `metrics.mask_apply_ms`: mask application cost
-- `metrics.mask_dilate_ms`: dilation cost
+- `metrics.mask_dilate_ms`: erode/dilate phase cost
 - `metrics.mask_postprocess_ms`: mask postprocess cost
 - `metrics.mask_age_ms`: age of the paired keyer frame relative to the current
   program frame
 - `metrics.mask_age_avg_ms`: rolling average mask age over the latest program
   frames
+- `metrics.keyer_input_age_ms`: age of the submitted camera frame when the
+  async keyer starts processing it
+- `metrics.keyer_processing_ms`: worker processing time from keyer start to
+  pair publish
+- `metrics.keyer_publish_to_program_ms`: time between publishing a paired
+  keyer frame and using it in the program loop
+- `metrics.program_frame_interval_ms`: measured interval between program-frame
+  starts
 - `metrics.program_frame_ms`: full program-frame render/write cost
 - `metrics.mjpeg_encode_ms`: preview MJPEG encode cost when available
 - `metrics.keyer_fps`: rolling published keyer-result rate
@@ -317,6 +332,8 @@ Displayed values:
 - `metrics.dropped_frames_per_sec`: rolling async keyer drop rate
 - `metrics.mask_width` and `metrics.mask_height`: produced mask resolution
 - `metrics.dropped_frames`: total async keyer worker drops since reset/clear
+- `settings.mask_erode_px`: configured mask erosion radius shown as `Erode` in
+  the WebApp statusbar
 - `degradation_stage`: `fresh`, `paired`, or `passthrough`
 
 These values are the main decision surface for Phase 2 latency work. If
@@ -328,6 +345,11 @@ The program loop uses deadline-based frame pacing. Render/write time is part of
 the target frame interval; it is not followed by a full fixed-frame sleep. This
 keeps `program_fps` close to the configured output FPS when rendering completes
 within budget.
+
+Before rendering, the program loop performs a final non-blocking check for a
+newer paired keyer frame. If the async keyer published a fresher pair during
+program-loop preparation, that pair is used immediately without blocking the
+program frame.
 
 ## Program Composition And Layering
 
@@ -529,6 +551,8 @@ For pixelated or dirty edges:
 
 - Check `mask_width` and `mask_height` from `keyer.get`.
 - Compare Vision quality modes.
+- Test `mask_erode_px = 0.25..1.0` for background rim removal; keep the lowest
+  value that removes the rim without eating hair, ears, or fingers.
 - Inspect whether artifacts appear before or after final bilinear upscale.
 - Verify upstream graphics are straight-alpha compatible.
 - Confirm the selected camera resolution; AVFoundation currently uses

@@ -165,6 +165,7 @@ describe("meeting-command-handler", () => {
         background_template_id: null,
         background_template_name: "Default background",
         quality_mode: "accurate",
+        mask_erode_px: 0.5,
         mask_dilate_px: 0,
         mask_feather_px: 0,
         dynamic_dilation: false,
@@ -181,6 +182,7 @@ describe("meeting-command-handler", () => {
         background_template_id: null,
         background_template_name: "Default background",
         quality_mode: "accurate",
+        mask_erode_px: 0.5,
         mask_dilate_px: 0,
         mask_feather_px: 0,
         dynamic_dilation: false,
@@ -196,6 +198,12 @@ describe("meeting-command-handler", () => {
         handleMeetingCommand("meeting_keyer_configure", {
           enabled: true,
           model: "unknown",
+        }),
+      ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
+
+      await expect(
+        handleMeetingCommand("meeting_keyer_configure", {
+          mask_erode_px: 3.5,
         }),
       ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
 

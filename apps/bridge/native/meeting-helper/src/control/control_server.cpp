@@ -72,6 +72,10 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"mask_postprocess_ms\":" << metricNumber(metrics.maskPostprocessMs)
          << ",\"mask_age_ms\":" << metricNumber(metrics.maskAgeMs)
          << ",\"mask_age_avg_ms\":" << metricNumber(metrics.maskAgeAvgMs)
+         << ",\"keyer_input_age_ms\":" << metricNumber(metrics.keyerInputAgeMs)
+         << ",\"keyer_processing_ms\":" << metricNumber(metrics.keyerProcessingMs)
+         << ",\"keyer_publish_to_program_ms\":" << metricNumber(metrics.keyerPublishToProgramMs)
+         << ",\"program_frame_interval_ms\":" << metricNumber(metrics.programFrameIntervalMs)
          << ",\"program_frame_ms\":" << metricNumber(metrics.programFrameMs)
          << ",\"mjpeg_encode_ms\":" << metricNumber(metrics.mjpegEncodeMs)
          << ",\"keyer_fps\":" << metricNumber(metrics.keyerFps)
@@ -192,7 +196,8 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel) << "\",\"background_type\":\"mode\",\"background_mode\":\""
            << jsonEscape(state.backgroundMode)
            << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
-           << "\",\"mask_dilate_px\":" << state.maskDilatePx
+           << "\",\"mask_erode_px\":" << state.maskErodePx
+           << ",\"mask_dilate_px\":" << state.maskDilatePx
            << ",\"mask_feather_px\":" << state.maskFeatherPx
            << ",\"dynamic_dilation\":" << (state.dynamicDilation ? "true" : "false")
            << ",\"temporal_blend_enabled\":" << (state.temporalBlendEnabled ? "true" : "false")
@@ -230,6 +235,7 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);
       }
+      state.maskErodePx = clampedDouble(extractDoubleField(line, "mask_erode_px", state.maskErodePx), 0.0, 3.0);
       state.maskDilatePx = clampedPixelRadius(
           extractIntField(line, "mask_dilate_px", static_cast<int>(state.maskDilatePx)), 8u);
       state.maskFeatherPx = clampedPixelRadius(
@@ -261,6 +267,7 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     state.fallbackReason = "keyer_disabled";
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
+    state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
     state.maskFeatherPx = 0u;
     state.dynamicDilation = false;

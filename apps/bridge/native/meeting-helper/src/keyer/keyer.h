@@ -17,6 +17,10 @@ struct KeyerMetrics {
   double maskPostprocessMs = -1.0;
   double maskAgeMs = -1.0;
   double maskAgeAvgMs = -1.0;
+  double keyerInputAgeMs = -1.0;
+  double keyerProcessingMs = -1.0;
+  double keyerPublishToProgramMs = -1.0;
+  double programFrameIntervalMs = -1.0;
   double programFrameMs = -1.0;
   double mjpegEncodeMs = -1.0;
   double keyerFps = -1.0;
@@ -60,6 +64,7 @@ struct KeyerResult {
 
 struct KeyerSettings {
   std::string qualityMode = "balanced";
+  double maskErodePx = 0.0;
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;
   bool dynamicDilation = false;

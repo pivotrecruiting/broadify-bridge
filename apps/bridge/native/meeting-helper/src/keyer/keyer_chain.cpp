@@ -90,8 +90,12 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;
   mergedMetrics.maskAgeMs = state.keyerMetrics.maskAgeMs;
+  mergedMetrics.maskAgeAvgMs = state.keyerMetrics.maskAgeAvgMs;
+  mergedMetrics.keyerPublishToProgramMs = state.keyerMetrics.keyerPublishToProgramMs;
+  mergedMetrics.programFrameIntervalMs = state.keyerMetrics.programFrameIntervalMs;
   mergedMetrics.programFrameMs = state.keyerMetrics.programFrameMs;
   mergedMetrics.mjpegEncodeMs = state.keyerMetrics.mjpegEncodeMs;
+  mergedMetrics.programFps = state.keyerMetrics.programFps;
   state.keyerMetrics = mergedMetrics;
 }
 

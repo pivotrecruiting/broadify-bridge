@@ -54,6 +54,7 @@ struct MeetingState {
   std::string fallbackReason = "native_keyers_not_configured";
   std::string keyerBackend = "passthrough";
   std::string qualityMode = "balanced";
+  double maskErodePx = 0.0;
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;
   bool dynamicDilation = false;

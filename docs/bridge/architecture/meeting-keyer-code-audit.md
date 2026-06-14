@@ -29,6 +29,9 @@ Der neue Tradeoff ist die erwartbare Latenz des gesamten keyed Kameralayers:
 Das freigestellte Kamerabild kann um `mask_age_ms` hinter der aktuellen Kamera
 liegen. Apple Vision `balanced` bleibt aktuell die beste Qualitaetsbasis;
 `fast` senkt zwar Latenz, verschlechtert aber die sichtbare Kante zu stark.
+Die WebApp setzt fuer Vision jetzt konservativ `mask_erode_px = 0.5`, damit der
+sichtbare Kamera-Hintergrundsaum an der Personenkante reduziert wird, ohne den
+harten 1px-Erode-Schritt zu erzwingen.
 
 Das fehlgeschlagene Edge-Softening/Background-Blur-Degradation-Experiment ist
 nicht Teil der aktuellen Richtung. Behalten werden Statusfelder,
@@ -209,6 +212,7 @@ dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
   - `model?: "modnet" | "vision_person_segmentation"`
   - `background_mode?: "transparent" | "gradient" | "solid_light" | "checkerboard"` oder Produkt-Enum
   - `quality_mode?: "fast" | "balanced" | "accurate"`
+  - `mask_erode_px?: number 0..3`
   - `mask_dilate_px?: int 0..8`
   - `mask_feather_px?: int 0..3`
   - `dynamic_dilation?: boolean`
@@ -260,6 +264,9 @@ dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
 - [x] Native Rate-/Stabilitaetsmetriken ausgeben:
   `mask_age_avg_ms`, `keyer_fps`, `program_fps`,
   `dropped_frames_per_sec`.
+- [x] Native Pairing-Timing-Metriken ausgeben:
+  `keyer_input_age_ms`, `keyer_processing_ms`,
+  `keyer_publish_to_program_ms`, `program_frame_interval_ms`.
 - [x] WebApp-Statusbar um alle vorhandenen Keyer-Metriken erweitern.
 - [x] WebApp-Statusbar um `Keyer FPS`, `Program FPS`, `Drop/s` und
   `Maske avg` erweitern.
@@ -274,6 +281,10 @@ dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
   weil die sichtbare Kante schlechter ist.
 - [x] Program-Loop Frame-Pacing korrigieren: Renderzeit wird von der
   Ziel-Frame-Zeit abgezogen statt zusaetzlich zu einem festen Sleep addiert.
+- [x] Vor dem Rendern ein letztes non-blocking `copyLatest` ausfuehren, damit
+  frisch publizierte Keyer-Paare im selben Program-Tick genutzt werden koennen.
+- [x] Keyer-Submit im Program-Loop frueher ausloesen, direkt nach dem
+  Kamera-Copy und vor weiteren Snapshot-/Compositor-Arbeiten.
 - [ ] `camera_copy_ms` gegen Aufloesung/FPS messen und unnoetige Kopien oder
   Reallocations entfernen.
 - [ ] Vision-Input-Erzeugung analysieren: RGBA/CGImage-CPU-Pfad gegen
@@ -284,6 +295,10 @@ dieser Ansatz Flimmern und Gesamtbild-Pumpen erzeugt hat.
 
 ### Phase 3: Kantenqualitaet Und Alpha-Kontrakt
 
+- [x] Fractional `mask_erode_px` einfuehren und fuer Vision in der WebApp
+  konservativ mit `0.5 px` setzen, um sichtbaren Hintergrundsaum zu reduzieren.
+- [ ] `mask_erode_px` real testen: `0`, `0.25`, `0.5`, `0.75` bei
+  Kopfbewegung, Schulterbewegung, Haaren und Ohr/Kopf-Kante vergleichen.
 - [ ] Minimalistische Mask-Postprocessing-Tests: kleine Dilate-/Feather-Werte,
   keine altersabhaengige Blur-/Edge-Degradation.
 - [ ] Gemeinsame Mask-Sampling-Utility fuer Vision, MODNet und Program-Pfad.
