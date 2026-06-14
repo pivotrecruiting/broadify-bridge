@@ -24,10 +24,11 @@ meeting-helper (C++)             vcam-helper (dieses Verzeichnis)
   Liest pro Frame-Tick den neuesten FrameBus-Frame; ohne aktive FrameBus-Session
   wird ein "No Signal"-Frame gesendet, damit die Kamera auswählbar bleibt.
 - `BroadifyVCam/` — Container-App (SwiftUI-Stub), aktiviert/deaktiviert die
-  System Extension über `OSSystemExtensionManager`.
+  System Extension über `OSSystemExtensionManager` und fordert die Aktivierung
+  beim Start automatisch an.
 - `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen)-Definition.
 
-Der FrameBus-Segmentname ist `broadify-meeting` (`kFrameBusName` in
+Der FrameBus-Segmentname ist `broadify-meeting-framebus` (`kFrameBusName` in
 `VCamDeviceSource.swift`) und muss mit `BRIDGE_MEETING_FRAMEBUS_NAME` der Bridge
 bzw. `MEETING_FRAMEBUS_NAME` des nativen `meeting-helper` übereinstimmen.
 
@@ -36,12 +37,12 @@ bzw. `MEETING_FRAMEBUS_NAME` des nativen `meeting-helper` übereinstimmen.
 Voraussetzungen: Xcode 15+, XcodeGen (`brew install xcodegen`), Apple Developer Team.
 
 ```bash
-cd apps/bridge/native/vcam-helper
-# 1. Team ID in project.yml eintragen (DEVELOPMENT_TEAM)
-xcodegen generate
-open BroadifyVCam.xcodeproj
-# 2. In Xcode: Scheme "BroadifyVCam" → Build (⌘B)
+# Team ID in project.yml pruefen/anpassen (DEVELOPMENT_TEAM)
+npm run build:vcam-helper
 ```
+
+Das Script erzeugt `apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app`.
+Alternativ kann das Projekt mit `xcodegen generate` erzeugt und in Xcode gebaut werden.
 
 ## Signierung
 
@@ -49,12 +50,20 @@ Camera Extensions laufen nur signiert. Beide Targets benötigen:
 
 1. **Team & Bundle-IDs:** `com.broadify.vcam` (App) und
    `com.broadify.vcam.extension` (Extension) im Developer-Portal registrieren.
+   Die eingebettete Extension muss im App-Bundle als
+   `Contents/Library/SystemExtensions/com.broadify.vcam.extension.systemextension`
+   liegen (Dateiname = Bundle-ID).
 2. **Capabilities:**
-   - App: `System Extension` (Entitlement `com.apple.developer.system-extension.install`)
-   - Beide: App Sandbox + App Group `$(TeamIdentifierPrefix)com.broadify.vcam`
+   - App: `System Extension` + App Sandbox + App Group `$(TeamIdentifierPrefix)com.broadify.vcam`
+   - Extension: App Sandbox + App Group (gleicher Wert wie App)
+   - Extension Info.plist: `CMIOExtension` mit `CMIOExtensionMachServiceName`
+     `$(TeamIdentifierPrefix)com.broadify.vcam.service` (Kind der App Group)
 3. **Provisioning:** Automatic Signing mit dem Team reicht für Entwicklung.
    Für Distribution außerhalb des App Store: Developer-ID-Zertifikat + Notarisierung
    (`xcrun notarytool submit … --wait`, danach `xcrun stapler staple`).
+4. **Install-Flow:** Die installierte App nicht nachträglich mit einem anderen
+   Team re-signieren. Das Install-Script kopiert den bereits korrekt signierten
+   Xcode-Build unverändert nach `/Applications`.
 
 Hinweis Entwicklung ohne Notarisierung: SIP-geschützte Systeme verlangen für
 unsignierte/ad-hoc Extensions den Entwicklermodus:
@@ -67,11 +76,14 @@ systemextensionsctl developer on   # erfordert Neustart von SIP-Einstellungen gg
 
 1. Gebaute `BroadifyVCam.app` nach `/Applications` kopieren (System Extensions
    werden nur aus `/Applications` aktiviert).
-2. App starten → "Activate extension" klicken.
-3. macOS-Dialog bestätigen: System Settings → Privacy & Security → "Allow".
-4. Prüfen: `systemextensionsctl list` zeigt `com.broadify.vcam.extension` als
+2. App starten. Der Aktivierungsdialog sollte automatisch erscheinen.
+3. macOS-Dialog bestätigen, dann in **System Settings → General → Login Items & Extensions → Camera Extensions** `broadify Virtual Camera` aktivieren.
+   Die Container-App kann diese Seite per Button **Open System Settings** direkt öffnen.
+   Eine reine In-App-Freigabe ist von Apple für System Extensions nicht erlaubt.
+4. Falls kein Dialog erscheint, auf "Activate extension" klicken.
+5. Prüfen: `systemextensionsctl list` zeigt `com.broadify.vcam.extension` als
    `[activated enabled]`.
-5. In Teams/Zoom/Meet als Kamera "broadify Camera" auswählen.
+6. In Teams/Zoom/Meet als Kamera "broadify Camera" auswählen.
 
 Deaktivieren: App → "Deactivate extension" oder
 `systemextensionsctl uninstall <TeamID> com.broadify.vcam.extension`.
@@ -80,9 +92,13 @@ Deaktivieren: App → "Deactivate extension" oder
 
 1. Bridge starten; über die WebApp `meeting_engine_start` auslösen
    (Connections-Page → "Engine starten").
-2. FrameBus-Output aktivieren (Builder-Page → "Virtuelle Kamera" → Output starten,
-   oder Relay-Command `meeting_output_configure` mit `target: "framebus"`.
-3. Kamera in einer Meeting-App auswählen — das komponierte Programmbild erscheint.
+2. FrameBus-Output aktivieren: Relay-Command
+   `meeting_output_configure` mit `target: "framebus"` und `action: "start"`.
+3. Virtuelle Kamera starten: Relay-Command
+   `meeting_output_configure` mit `target: "virtual_camera"` und `action: "start"`.
+   Die Bridge oeffnet `BroadifyVCam.app`; die App fordert die Aktivierung beim
+   Start automatisch an.
+4. Kamera in einer Meeting-App auswählen — das komponierte Programmbild erscheint.
    Ohne laufende Engine zeigt die Kamera das "No Signal"-Muster.
 
 ## Offene Punkte (bewusst nicht Teil des Scaffolds)

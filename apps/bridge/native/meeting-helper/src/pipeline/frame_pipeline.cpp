@@ -841,7 +841,7 @@ void runFramePipeline(const Options &options,
       state.activeCameraIndex = camera.activeCameraIndex();
     }
 
-    if (framebusRunning) {
+    {
       const auto programStart = std::chrono::steady_clock::now();
       const uint64_t programStartNs = nowNs();
       const double programFrameIntervalMs = previousProgramStartNs > 0u && programStartNs >= previousProgramStartNs
@@ -991,7 +991,9 @@ void runFramePipeline(const Options &options,
         }
       }
       renderProgramFrame(options, snapshot, frameForCompositor, graphicsFrameForCompositor, frameIndex++, programFrame);
-      framebus_writer_write_rgba(writer, programFrame.data(), programFrame.size(), hasCameraFrame ? frame.timestampNs : nowNs());
+      if (framebusRunning) {
+        framebus_writer_write_rgba(writer, programFrame.data(), programFrame.size(), hasCameraFrame ? frame.timestampNs : nowNs());
+      }
       previewFrames.publish(options.width, options.height, programFrame.data(), programFrame.size());
       const auto programEnd = std::chrono::steady_clock::now();
       programRate.tick(programEnd);
@@ -1003,11 +1005,6 @@ void runFramePipeline(const Options &options,
         state.keyerMetrics.programFps = programRate.value(programEnd);
         state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
       }
-    } else {
-      keyerWorker.clear();
-      maskAgeAverage.clear();
-      previousProgramStartNs = 0u;
-      nextFrameAt = std::chrono::steady_clock::now() + frameInterval;
     }
     const auto now = std::chrono::steady_clock::now();
     if (nextFrameAt > now) {

@@ -1,6 +1,13 @@
 import net from "node:net";
 
+import {
+  DEFAULT_MEETING_FRAMEBUS_NAME,
+  getVcamHelperStatus,
+  openVcamHelperApp,
+} from "../../modules/vcam/vcam-helper.js";
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 
 export type MeetingProgramSectionT =
   | "cornerbug"
@@ -144,13 +151,9 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStatus(): Promise<Record<string, unknown>> {
-    return {
-      available: false,
-      running: false,
-      backend: "framebus_vcam_helper",
-      code: "not_managed_by_meeting_helper",
-      message: "Virtual camera is provided by the separate vcam-helper FrameBus consumer.",
-    };
+    return getVcamHelperStatus({
+      framebusName: process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME,
+    });
   }
 
   async virtualCameraConfigure(
@@ -163,11 +166,24 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStart(): Promise<Record<string, unknown>> {
-    return this.virtualCameraStatus();
+    const framebusOutput = await this.framebusStart();
+    const status = await openVcamHelperApp({
+      framebusName: process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME,
+    });
+    return {
+      ...status,
+      framebus_output: framebusOutput,
+    };
   }
 
   async virtualCameraStop(): Promise<Record<string, unknown>> {
-    return this.virtualCameraStatus();
+    const framebusOutput = await this.framebusStop();
+    return {
+      ...(await this.virtualCameraStatus()),
+      framebus_output: framebusOutput,
+      message:
+        "Virtual camera output was stopped. Meeting preview and program rendering remain active.",
+    };
   }
 
   private rpc<T = Record<string, unknown>>(

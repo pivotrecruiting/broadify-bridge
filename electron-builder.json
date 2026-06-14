@@ -51,6 +51,10 @@
       "from": "apps/bridge/native/meeting-helper/models",
       "to": "native/meeting-helper/models",
       "filter": ["**/*"]
+    },
+    {
+      "from": "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
+      "to": "native/vcam-helper/BroadifyVCam.app"
     }
   ],
   "icon": "./icon.png",

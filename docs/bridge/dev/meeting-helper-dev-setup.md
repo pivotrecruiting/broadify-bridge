@@ -50,6 +50,41 @@ Wichtige Env-Fallbacks:
 | `BRIDGE_MEETING_MODELS_DIR` | Bridge-Override für das Modellverzeichnis |
 | `MEETING_MODELS_DIR` | Modellverzeichnis im Helper |
 
+Der macOS-VCam-Reader verwendet denselben Standardnamen:
+`broadify-meeting-framebus`. Wenn `BRIDGE_MEETING_FRAMEBUS_NAME` gesetzt wird,
+muss die Camera Extension entsprechend gebaut bzw. angepasst werden.
+
+## Virtuelle Kamera macOS
+
+Die virtuelle Kamera ist eine CoreMediaIO Camera Extension unter
+`apps/bridge/native/vcam-helper`. Sie liest den Meeting-FrameBus und stellt
+`broadify Camera` fuer Zoom, Meet und Teams bereit.
+
+```bash
+npm run build:vcam-helper
+```
+
+Danach:
+
+1. `apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app` nach
+   `/Applications` kopieren.
+2. `meeting_engine_start` ausloesen.
+3. `meeting_output_configure` mit `target: "framebus"`, `action: "start"` senden.
+4. `meeting_output_configure` mit `target: "virtual_camera"`, `action: "start"`
+   senden. Die Bridge oeffnet die App.
+5. macOS-Freigabe in System Settings bestaetigen und in der Meeting-App
+   `broadify Camera` auswaehlen.
+
+Wenn `BroadifyVCam.app` zwar startet, aber kein Kamera-Device erscheint, pruefe
+zuerst:
+
+- `systemextensionsctl list | grep broadify`
+- `log show --last 2h --predicate 'eventMessage CONTAINS[c] "com.apple.developer.system-extension.install" OR eventMessage CONTAINS[c] "com.broadify.vcam"'`
+
+Ein typischer Fehlfall ist ein Provisioning-/Signing-Problem der Container-App.
+Dann erscheint im Log `Unsatisfied entitlements: com.apple.developer.system-extension.install`
+und die Extension wird von macOS nicht aktiviert.
+
 ## IPC
 
 JSON-RPC Requests sind newline-delimited:

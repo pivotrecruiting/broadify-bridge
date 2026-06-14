@@ -16,6 +16,7 @@ const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/meeting-helper/meeting-helper",
   "apps/bridge/native/meeting-helper/libonnxruntime.dylib",
   "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib",
+  "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
 ]);
 const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
   "!**/.bin{,/**}",

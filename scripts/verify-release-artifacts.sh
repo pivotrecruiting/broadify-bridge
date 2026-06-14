@@ -142,6 +142,8 @@ check_modnet_manifest_hash() {
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/libSDL2-2.0.0.dylib")
+  REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app")
+  REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app/Contents/Library/SystemExtensions/com.broadify.vcam.extension.systemextension")
 fi
 
 check_exists() {

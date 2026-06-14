@@ -6,7 +6,7 @@ import os.log
 
 /// FrameBus shm segment name; must match BRIDGE_MEETING_FRAMEBUS_NAME /
 /// MEETING_FRAMEBUS_NAME used by the bridge and the meeting engine sidecar.
-private let kFrameBusName = "broadify-meeting"
+private let kFrameBusName = "broadify-meeting-framebus"
 
 /// Output format used until the FrameBus session reports its own geometry.
 private let kDefaultWidth = 1280

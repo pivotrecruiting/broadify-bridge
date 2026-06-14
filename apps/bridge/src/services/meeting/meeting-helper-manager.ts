@@ -5,7 +5,12 @@ import { platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isVcamExtensionAvailable } from "../../modules/vcam/vcam-helper.js";
+import {
+  DEFAULT_MEETING_FRAMEBUS_NAME,
+  getVcamHelperStatus,
+  isVcamExtensionAvailable,
+  type VcamHelperStatusT,
+} from "../../modules/vcam/vcam-helper.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { MeetingHelperClient } from "./meeting-helper-client.js";
 import {
@@ -17,7 +22,6 @@ const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 const MODELS_DIR_ENV = "BRIDGE_MEETING_MODELS_DIR";
-const DEFAULT_FRAMEBUS_NAME = "broadify-meeting-framebus";
 const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
 
@@ -39,6 +43,7 @@ export type MeetingHelperManagerStatusT = {
   pid: number | null;
   framebusName: string;
   previewPath: string;
+  virtualCamera: VcamHelperStatusT;
   lastError: string | null;
 };
 
@@ -189,7 +194,7 @@ export class MeetingHelperManager {
   }
 
   getFramebusName(): string {
-    return process.env[FRAMEBUS_NAME_ENV] || DEFAULT_FRAMEBUS_NAME;
+    return process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME;
   }
 
   getStatus(): MeetingHelperManagerStatusT {
@@ -199,6 +204,7 @@ export class MeetingHelperManager {
       pid: this.process?.pid ?? null,
       framebusName: this.getFramebusName(),
       previewPath: "/preview.mjpg",
+      virtualCamera: getVcamHelperStatus({ framebusName: this.getFramebusName() }),
       lastError: this.lastError,
     };
   }
