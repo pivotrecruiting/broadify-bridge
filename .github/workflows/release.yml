@@ -401,6 +401,26 @@ jobs:
           chmod 600 "$NOTARY_KEY_PATH"
           echo "APPLE_API_KEY=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
 
+      - name: Install Azure Trusted Signing module (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # electron-builder 25.x signs Windows artifacts by invoking
+          # `Invoke-TrustedSigning` from the TrustedSigning PowerShell module.
+          # The module is not preinstalled on windows-latest and electron-builder's
+          # implicit install is unreliable (results in "cmdlet not recognized"),
+          # so install and verify it explicitly before packaging.
+          if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          if (-not (Get-Module -ListAvailable -Name TrustedSigning)) {
+            Install-Module -Name TrustedSigning -Force -Scope CurrentUser -Repository PSGallery
+          }
+          Import-Module TrustedSigning
+          Get-Command Invoke-TrustedSigning | Format-List Name, Version, Source
+
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }} -- --publish=never
