@@ -182,6 +182,7 @@ Engine:
 - engine_get_macros -> {}
 - engine_run_macro -> { macroId: number }
 - engine_stop_macro -> { macroId: number }
+- engine_vmix_run_action -> { actionType: "script_start"|"script_stop", scriptName: string }
 
 Graphics:
 - graphics_configure_outputs -> { outputKey, targets, format }

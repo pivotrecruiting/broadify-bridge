@@ -128,9 +128,14 @@ Hinweis:
   - `engine_get_macros`
   - `engine_run_macro`
   - `engine_stop_macro`
+  - `engine_vmix_run_action`
 - vMix ist als Engine-Typ bereits im Command-Schema und in der WebApp angelegt
 - Die WebApp-Engine-UI unterstuetzt `vmix` bereits explizit inklusive Default-Port `8088`
 - Die WebApp-Engine-Store- und Command-Helfer unterstuetzen `vmix` bereits produktiv
+- Fuer dokumentierte vMix-Ausfuehrung steht jetzt ein separater Action-Pfad bereit:
+  - State lesen weiter ueber `GET /api`
+  - Script-Ausfuehrung ueber `ScriptStart` / `ScriptStop`
+  - keine undokumentierten `MacroStart` / `MacroStop`-Functions
 - Die WebApp besitzt bereits einen produktiven Relay-WebSocket fuer `graphics_status`
 - Die WebApp besitzt bereits eine HTML/CSS-Template-Runtime:
   - `renderTemplateHtml(...)`

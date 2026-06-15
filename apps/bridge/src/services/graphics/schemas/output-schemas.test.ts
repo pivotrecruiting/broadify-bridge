@@ -15,8 +15,11 @@ describe("output-schemas", () => {
   describe("GraphicsOutputKeySchema", () => {
     it("accepts valid output keys", () => {
       expect(GraphicsOutputKeySchema.parse("stub")).toBe("stub");
+      expect(GraphicsOutputKeySchema.parse("framebus")).toBe("framebus");
       expect(GraphicsOutputKeySchema.parse("video_hdmi")).toBe("video_hdmi");
-      expect(GraphicsOutputKeySchema.parse("key_fill_sdi")).toBe("key_fill_sdi");
+      expect(GraphicsOutputKeySchema.parse("key_fill_sdi")).toBe(
+        "key_fill_sdi",
+      );
     });
 
     it("rejects invalid output key", () => {
@@ -36,7 +39,7 @@ describe("output-schemas", () => {
 
     it("rejects invalid dimensions", () => {
       expect(() =>
-        GraphicsFormatSchema.parse({ width: 0, height: 1080, fps: 30 })
+        GraphicsFormatSchema.parse({ width: 0, height: 1080, fps: 30 }),
       ).toThrow();
     });
   });
@@ -69,7 +72,7 @@ describe("output-schemas", () => {
           outputKey: "invalid",
           targets: {},
           format: { width: 1920, height: 1080, fps: 30 },
-        })
+        }),
       ).toThrow();
     });
   });

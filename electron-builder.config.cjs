@@ -13,7 +13,19 @@ const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
   "apps/bridge/native/display-helper/display-helper",
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
+  "apps/bridge/native/meeting-helper/meeting-helper",
+  "apps/bridge/native/meeting-helper/libonnxruntime.dylib",
+  "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib",
+  "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
 ]);
+const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
+  "!**/.bin{,/**}",
+  "!**/@esbuild{,/**}",
+  "!**/esbuild{,/**}",
+  "!**/tsx{,/**}",
+  "!**/typescript{,/**}",
+  "!**/@types{,/**}",
+];
 
 if (isRcChannel) {
   config.appId = "com.broadify.bridge.rc";
@@ -28,6 +40,17 @@ const macOnlyResources = (config.extraResources || []).filter((entry) =>
 config.extraResources = (config.extraResources || []).filter(
   (entry) => !MAC_ONLY_NATIVE_RESOURCES.has(entry.from),
 );
+
+config.extraResources = (config.extraResources || []).map((entry) => {
+  if (entry.from !== "apps/bridge/node_modules") {
+    return entry;
+  }
+
+  return {
+    ...entry,
+    filter: ["**/*", ...BRIDGE_NODE_MODULES_DEV_EXCLUDES],
+  };
+});
 
 config.mac = config.mac || {};
 config.mac.extraResources = [
@@ -58,6 +81,14 @@ if (config.win) {
     {
       from: "apps/bridge/native/display-helper/display-helper.exe",
       to: "native/display-helper/display-helper.exe",
+    },
+    {
+      from: "apps/bridge/native/meeting-helper/meeting-helper.exe",
+      to: "native/meeting-helper/meeting-helper.exe",
+    },
+    {
+      from: "apps/bridge/native/meeting-helper/onnxruntime.dll",
+      to: "native/meeting-helper/onnxruntime.dll",
     },
   ];
 

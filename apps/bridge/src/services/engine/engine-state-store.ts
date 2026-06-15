@@ -10,6 +10,8 @@ export class EngineStateStore {
   private state: EngineStateT = {
     status: "disconnected",
     macros: [],
+    macroExecution: null,
+    lastCompletedMacroExecution: null,
   };
   private connectedSince: number | null = null;
   private lastError: string | null = null;
@@ -71,9 +73,10 @@ export class EngineStateStore {
     this.state = {
       status: "disconnected",
       macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
     };
     this.connectedSince = null;
     this.lastError = null;
   }
 }
-

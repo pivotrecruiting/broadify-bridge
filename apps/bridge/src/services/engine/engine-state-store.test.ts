@@ -12,6 +12,8 @@ describe("EngineStateStore", () => {
       expect(store.getState()).toEqual({
         status: "disconnected",
         macros: [],
+        macroExecution: null,
+        lastCompletedMacroExecution: null,
       });
     });
 
@@ -77,7 +79,12 @@ describe("EngineStateStore", () => {
     it("resets to disconnected state", () => {
       store.setState({ status: "connected", macros: [{ id: "m1", name: "M1" }] });
       store.reset();
-      expect(store.getState()).toEqual({ status: "disconnected", macros: [] });
+      expect(store.getState()).toEqual({
+        status: "disconnected",
+        macros: [],
+        macroExecution: null,
+        lastCompletedMacroExecution: null,
+      });
     });
 
     it("clears connectedSince and lastError", () => {

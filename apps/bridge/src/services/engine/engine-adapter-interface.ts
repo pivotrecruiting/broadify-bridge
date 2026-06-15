@@ -22,6 +22,22 @@ export type EnsureVmixBrowserInputResultT = {
   browserInputUrl: string;
 };
 
+export type VmixActionConfigT =
+  | {
+      actionType: "script_start";
+      scriptName: string;
+    }
+  | {
+      actionType: "script_stop";
+      scriptName: string;
+    };
+
+export type VmixActionResultT = {
+  actionType: VmixActionConfigT["actionType"];
+  scriptName: string;
+  executedFunction: "ScriptStart" | "ScriptStop";
+};
+
 /**
  * Engine adapter interface
  *
@@ -73,6 +89,13 @@ export interface EngineAdapter {
   ensureVmixBrowserInput?(
     config: EnsureVmixBrowserInputConfigT
   ): Promise<EnsureVmixBrowserInputResultT>;
+
+  /**
+   * Optionally execute a documented vMix action through the HTTP API.
+   *
+   * Adapters that do not support this capability should leave it undefined.
+   */
+  runVmixAction?(config: VmixActionConfigT): Promise<VmixActionResultT>;
 
   /**
    * Subscribe to state changes

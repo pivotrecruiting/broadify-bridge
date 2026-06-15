@@ -10,6 +10,7 @@ export const GRAPHICS_OUTPUT_CONFIG_VERSION = 1;
  */
 export const GraphicsOutputKeySchema = z.enum([
   "stub",
+  "framebus",
   "browser_input",
   "key_fill_sdi",
   "key_fill_ndi",
@@ -77,4 +78,6 @@ export type GraphicsFormatT = z.infer<typeof GraphicsFormatSchema>;
 export type GraphicsRangeT = z.infer<typeof GraphicsRangeSchema>;
 export type GraphicsColorspaceT = z.infer<typeof GraphicsColorspaceSchema>;
 export type GraphicsTargetsT = z.infer<typeof GraphicsTargetsSchema>;
-export type GraphicsOutputConfigT = z.infer<typeof GraphicsConfigureOutputsSchema>;
+export type GraphicsOutputConfigT = z.infer<
+  typeof GraphicsConfigureOutputsSchema
+>;

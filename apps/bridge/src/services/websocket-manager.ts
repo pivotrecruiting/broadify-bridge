@@ -20,6 +20,7 @@ type WebSocketMessage =
   | { type: "engine.status"; [key: string]: unknown }
   | { type: "engine.macros"; [key: string]: unknown }
   | { type: "engine.macroStatus"; [key: string]: unknown }
+  | { type: "engine.macroExecution"; [key: string]: unknown }
   | { type: "engine.connected"; [key: string]: unknown }
   | { type: "engine.disconnected" }
   | { type: "engine.error"; [key: string]: unknown }

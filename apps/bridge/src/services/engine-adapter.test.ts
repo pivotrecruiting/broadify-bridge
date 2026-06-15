@@ -1,4 +1,5 @@
 import { EngineAdapterService } from "./engine-adapter.js";
+import { setBridgeContext } from "./bridge-context.js";
 import {
   EngineError,
   EngineErrorCode,
@@ -8,6 +9,8 @@ import type {
   EngineConnectConfig,
   EnsureVmixBrowserInputConfigT,
   EnsureVmixBrowserInputResultT,
+  VmixActionConfigT,
+  VmixActionResultT,
 } from "./engine/engine-adapter-interface.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
 
@@ -22,6 +25,7 @@ class FakeAdapter implements EngineAdapter {
   public runMacroCalls: number[] = [];
   public stopMacroCalls: number[] = [];
   public ensureVmixBrowserInputCalls: EnsureVmixBrowserInputConfigT[] = [];
+  public runVmixActionCalls: VmixActionConfigT[] = [];
   public unsubscribeCalls = 0;
 
   private stateChangeCallback: (state: EngineStateT) => void = () => {};
@@ -35,6 +39,9 @@ class FakeAdapter implements EngineAdapter {
   ensureVmixBrowserInputImpl?: (
     config: EnsureVmixBrowserInputConfigT
   ) => Promise<EnsureVmixBrowserInputResultT>;
+  runVmixActionImpl?: (
+    config: VmixActionConfigT
+  ) => Promise<VmixActionResultT>;
 
   async connect(config: EngineConnectConfig): Promise<void> {
     this.connectCalls.push(config);
@@ -99,6 +106,20 @@ class FakeAdapter implements EngineAdapter {
     };
   }
 
+  async runVmixAction(config: VmixActionConfigT): Promise<VmixActionResultT> {
+    this.runVmixActionCalls.push(config);
+    if (this.runVmixActionImpl) {
+      return this.runVmixActionImpl(config);
+    }
+
+    return {
+      actionType: config.actionType,
+      scriptName: config.scriptName,
+      executedFunction:
+        config.actionType === "script_start" ? "ScriptStart" : "ScriptStop",
+    };
+  }
+
   onStateChange(callback: (state: EngineStateT) => void): () => void {
     this.stateChangeCallback = callback;
     return () => {
@@ -127,6 +148,24 @@ const createService = () => {
 };
 
 describe("EngineAdapterService", () => {
+  const mockPublishBridgeEvent = jest.fn();
+  const mockLogger = {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setBridgeContext({
+      userDataDir: "/tmp",
+      logPath: "/tmp/bridge.log",
+      logger: mockLogger,
+      publishBridgeEvent: mockPublishBridgeEvent,
+    });
+  });
+
   it("connects successfully and updates state", async () => {
     const { service, adapter, broadcasts } = createService();
 
@@ -215,6 +254,8 @@ describe("EngineAdapterService", () => {
     expect(service.getState()).toEqual({
       status: "disconnected",
       macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
     });
     expect(
       broadcasts.some((entry) => entry.message.type === "engine.disconnected"),
@@ -337,6 +378,105 @@ describe("EngineAdapterService", () => {
     ).toBe(true);
   });
 
+  it("broadcasts engine.macroExecution when execution changes", async () => {
+    const { service, adapter, broadcasts } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    adapter.emitState({
+      status: "connected",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      macros: [{ id: 1, name: "Macro 1", status: "running" }],
+      macroExecution: {
+        runId: "run-1",
+        macroId: 1,
+        macroName: "Macro 1",
+        engineType: "atem",
+        status: "running",
+        triggeredAt: 100,
+        startedAt: 110,
+        waitingAt: null,
+        completedAt: null,
+        actualDurationMs: null,
+        loop: false,
+        stopRequestedAt: null,
+      },
+      lastCompletedMacroExecution: null,
+    });
+
+    expect(
+      broadcasts.some(
+        (b) =>
+          b.message.type === "engine.macroExecution" &&
+          (b.message as { execution?: { runId?: string } }).execution?.runId ===
+            "run-1",
+      ),
+    ).toBe(true);
+  });
+
+  it("publishes engine relay bridge events for status, execution and errors", async () => {
+    const { service, adapter } = createService();
+
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    adapter.emitState({
+      status: "connected",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      macros: [{ id: 1, name: "Macro 1", status: "running" }],
+      macroExecution: {
+        runId: "run-1",
+        macroId: 1,
+        macroName: "Macro 1",
+        engineType: "atem",
+        status: "running",
+        triggeredAt: 100,
+        startedAt: 110,
+        waitingAt: null,
+        completedAt: null,
+        actualDurationMs: null,
+        loop: false,
+        stopRequestedAt: null,
+      },
+      lastCompletedMacroExecution: null,
+    });
+
+    adapter.emitState({
+      status: "error",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      error: "dial failed",
+      macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
+    });
+
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_status",
+      data: expect.objectContaining({
+        reason: expect.any(String),
+        status: "connected",
+      }),
+    });
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_macro_execution",
+      data: expect.objectContaining({
+        reason: "execution_changed",
+        execution: expect.objectContaining({ runId: "run-1" }),
+      }),
+    });
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_error",
+      data: {
+        code: "engine_error",
+        message: "dial failed",
+      },
+    });
+  });
+
   it("getConnectedSince returns timestamp when connected", async () => {
     const { service } = createService();
     await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
@@ -405,6 +545,40 @@ describe("EngineAdapterService", () => {
       service.ensureVmixBrowserInput({
         url: "http://127.0.0.1:8787/graphics/browser-input",
         inputName: "Broadify Browser Input",
+      }),
+    ).rejects.toThrow("vMix engine is not connected");
+  });
+
+  it("runs a vmix action through the connected adapter", async () => {
+    const { service, adapter } = createService();
+    await service.connect({ type: "vmix", ip: "10.0.0.20", port: 8088 });
+
+    const result = await service.runVmixAction({
+      actionType: "script_start",
+      scriptName: "Broadify_Button_1",
+    });
+
+    expect(adapter.runVmixActionCalls).toEqual([
+      {
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      },
+    ]);
+    expect(result).toEqual({
+      actionType: "script_start",
+      scriptName: "Broadify_Button_1",
+      executedFunction: "ScriptStart",
+    });
+  });
+
+  it("rejects vmix action execution when a non-vmix engine is connected", async () => {
+    const { service } = createService();
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    await expect(
+      service.runVmixAction({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
       }),
     ).rejects.toThrow("vMix engine is not connected");
   });

@@ -11,6 +11,7 @@ jest.mock("./engine-adapter.js", () => ({
     disconnect: jest.fn(),
     runMacro: jest.fn(),
     stopMacro: jest.fn(),
+    runVmixAction: jest.fn(),
     ensureVmixBrowserInput: jest.fn(),
   },
 }));
@@ -27,7 +28,12 @@ jest.mock("./bridge-context.js", () => ({
     bridgeId: "bridge-1",
     pairingCode: null,
     pairingExpiresAt: null,
-    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
   })),
 }));
 
@@ -40,6 +46,18 @@ jest.mock("./runtime-config.js", () => ({
 }));
 
 jest.mock("./graphics/graphics-manager.js", () => ({
+  GraphicsManager: jest.fn().mockImplementation(() => ({
+    configureOutputs: jest.fn().mockResolvedValue(undefined),
+    sendLayer: jest.fn().mockResolvedValue(undefined),
+    removeLayer: jest.fn().mockResolvedValue(undefined),
+    initialize: jest.fn().mockResolvedValue(undefined),
+    getStatus: jest.fn(() => ({
+      outputConfig: null,
+      browserInput: null,
+      activePreset: null,
+      activePresets: [],
+    })),
+  })),
   graphicsManager: {
     configureOutputs: jest.fn().mockResolvedValue(undefined),
     sendLayer: jest.fn().mockResolvedValue(undefined),
@@ -55,6 +73,30 @@ jest.mock("./graphics/graphics-manager.js", () => ({
       activePreset: null,
       activePresets: [],
     })),
+  },
+}));
+
+jest.mock("./graphics/framebus/framebus-client.js", () => ({
+  loadFrameBusModule: jest.fn(() => ({
+    createWriter: jest.fn(() => ({
+      writeFrame: jest.fn(),
+      close: jest.fn(),
+    })),
+  })),
+}));
+
+jest.mock("./meeting/meeting-graphics-manager.js", () => ({
+  isMeetingGraphicsLayerPayload: (
+    payload: Record<string, unknown> | undefined,
+  ) =>
+    typeof payload?.layerId === "string" &&
+    payload.layerId.startsWith("meeting-"),
+  meetingGraphicsManager: {
+    configureOutputs: jest.fn().mockResolvedValue(undefined),
+    sendLayer: jest.fn().mockResolvedValue(undefined),
+    updateValues: jest.fn().mockResolvedValue(undefined),
+    updateLayout: jest.fn().mockResolvedValue(undefined),
+    removeLayer: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -76,6 +118,7 @@ const defaultBridgeContext = {
 
 describe("command-router", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     const { getBridgeContext } = require("./bridge-context.js");
     getBridgeContext.mockReturnValue(defaultBridgeContext);
   });
@@ -112,7 +155,7 @@ describe("command-router", () => {
     it("returns error for unknown command", async () => {
       const result = await commandRouter.handleCommand(
         "unknown_command" as "get_status",
-        {}
+        {},
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain("Unknown command");
@@ -188,7 +231,9 @@ describe("command-router", () => {
     it("engine_disconnect returns state after disconnect", async () => {
       const result = await commandRouter.handleCommand("engine_disconnect", {});
       expect(result.success).toBe(true);
-      expect(require("./engine-adapter.js").engineAdapter.disconnect).toHaveBeenCalled();
+      expect(
+        require("./engine-adapter.js").engineAdapter.disconnect,
+      ).toHaveBeenCalled();
     });
 
     it("engine_run_macro returns macroId and state", async () => {
@@ -212,7 +257,42 @@ describe("command-router", () => {
         macroId: 3,
       });
       expect(result.success).toBe(true);
-      expect(require("./engine-adapter.js").engineAdapter.stopMacro).toHaveBeenCalledWith(3);
+      expect(
+        require("./engine-adapter.js").engineAdapter.stopMacro,
+      ).toHaveBeenCalledWith(3);
+    });
+
+    it("engine_vmix_run_action returns action result and state", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getState.mockReturnValue({
+        status: "connected",
+        type: "vmix",
+        macros: [],
+      });
+      engineAdapter.runVmixAction.mockResolvedValue({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+        executedFunction: "ScriptStart",
+      });
+
+      const result = await commandRouter.handleCommand(
+        "engine_vmix_run_action",
+        {
+          actionType: "script_start",
+          scriptName: "Broadify_Button_1",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(engineAdapter.runVmixAction).toHaveBeenCalledWith({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      });
+      expect(result.data).toMatchObject({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+        executedFunction: "ScriptStart",
+      });
     });
 
     it("engine_vmix_ensure_browser_input reuses bridge browser-input metadata", async () => {
@@ -294,7 +374,7 @@ describe("command-router", () => {
     it("graphics_configure_outputs returns error when payload missing", async () => {
       const result = await commandRouter.handleCommand(
         "graphics_configure_outputs",
-        undefined
+        undefined,
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain("Missing payload");
@@ -304,7 +384,7 @@ describe("command-router", () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const result = await commandRouter.handleCommand(
         "graphics_configure_outputs",
-        { version: 1, outputKey: "video_hdmi", targets: {}, format: {} }
+        { version: 1, outputKey: "video_hdmi", targets: {}, format: {} },
       );
       expect(result.success).toBe(true);
       expect(graphicsManager.configureOutputs).toHaveBeenCalled();
@@ -321,7 +401,7 @@ describe("command-router", () => {
 
       const result = await commandRouter.handleCommand(
         "graphics_configure_outputs",
-        payload
+        payload,
       );
 
       expect(result.success).toBe(true);
@@ -400,7 +480,12 @@ describe("command-router", () => {
         pairingExpiresAt: null,
         bridgeId: null,
         bridgeName: null,
-        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+        logger: {
+          debug: () => {},
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+        },
       });
 
       const result = await commandRouter.handleCommand("bridge_pair_validate", {
@@ -417,7 +502,12 @@ describe("command-router", () => {
         pairingExpiresAt: Date.now() + 3600000,
         bridgeId: "bridge-1",
         bridgeName: "test",
-        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+        logger: {
+          debug: () => {},
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+        },
       });
 
       const result = await commandRouter.handleCommand("bridge_pair_validate", {
@@ -434,7 +524,12 @@ describe("command-router", () => {
         pairingExpiresAt: Date.now() - 1000,
         bridgeId: "bridge-1",
         bridgeName: "test",
-        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+        logger: {
+          debug: () => {},
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+        },
       });
 
       const result = await commandRouter.handleCommand("bridge_pair_validate", {
@@ -451,7 +546,12 @@ describe("command-router", () => {
         pairingExpiresAt: Date.now() + 3600000,
         bridgeId: "bridge-1",
         bridgeName: "test",
-        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+        logger: {
+          debug: () => {},
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+        },
       });
 
       const result = await commandRouter.handleCommand("bridge_pair_validate", {
@@ -476,7 +576,7 @@ describe("command-router", () => {
 
       await commandRouter.handleCommand("list_outputs", { refresh: true });
       expect(mockDebug).toHaveBeenCalledWith(
-        "[CommandRouter] list_outputs refresh requested"
+        "[CommandRouter] list_outputs refresh requested",
       );
     });
 
@@ -487,24 +587,62 @@ describe("command-router", () => {
     });
 
     it("graphics_send succeeds with payload", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const {
+        meetingGraphicsManager,
+      } = require("./meeting/meeting-graphics-manager.js");
+
       const result = await commandRouter.handleCommand("graphics_send", {
         layerId: "l1",
         category: "lower-thirds",
         bundle: { html: "<div/>", manifest: {} },
       });
       expect(result.success).toBe(true);
+      expect(graphicsManager.sendLayer).toHaveBeenCalledWith(
+        expect.objectContaining({ layerId: "l1" }),
+      );
+      expect(meetingGraphicsManager.sendLayer).not.toHaveBeenCalled();
+    });
+
+    it("routes meeting graphics_send payloads to the meeting graphics manager", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const {
+        meetingGraphicsManager,
+      } = require("./meeting/meeting-graphics-manager.js");
+      const payload = {
+        layerId: "meeting-content-template",
+        category: "overlays",
+        bundle: { html: "<div/>", manifest: {} },
+      };
+
+      const result = await commandRouter.handleCommand(
+        "graphics_send",
+        payload,
+      );
+
+      expect(result.success).toBe(true);
+      expect(meetingGraphicsManager.sendLayer).toHaveBeenCalledWith(payload);
+      expect(graphicsManager.sendLayer).not.toHaveBeenCalled();
     });
 
     it("graphics_update_values returns error when payload missing", async () => {
-      const result = await commandRouter.handleCommand("graphics_update_values");
+      const result = await commandRouter.handleCommand(
+        "graphics_update_values",
+      );
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Missing payload for graphics_update_values");
+      expect(result.error).toContain(
+        "Missing payload for graphics_update_values",
+      );
     });
 
     it("graphics_update_layout returns error when payload missing", async () => {
-      const result = await commandRouter.handleCommand("graphics_update_layout");
+      const result = await commandRouter.handleCommand(
+        "graphics_update_layout",
+      );
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Missing payload for graphics_update_layout");
+      expect(result.error).toContain(
+        "Missing payload for graphics_update_layout",
+      );
     });
 
     it("graphics_remove returns error when payload missing", async () => {
@@ -514,24 +652,66 @@ describe("command-router", () => {
     });
 
     it("graphics_remove_preset returns error when payload missing", async () => {
-      const result = await commandRouter.handleCommand("graphics_remove_preset");
+      const result = await commandRouter.handleCommand(
+        "graphics_remove_preset",
+      );
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Missing payload for graphics_remove_preset");
+      expect(result.error).toContain(
+        "Missing payload for graphics_remove_preset",
+      );
     });
 
     it("graphics_update_values succeeds with payload", async () => {
-      const result = await commandRouter.handleCommand("graphics_update_values", {
-        layerId: "l1",
-        values: {},
-      });
+      const result = await commandRouter.handleCommand(
+        "graphics_update_values",
+        {
+          layerId: "l1",
+          values: {},
+        },
+      );
       expect(result.success).toBe(true);
     });
 
-    it("graphics_update_layout succeeds with payload", async () => {
-      const result = await commandRouter.handleCommand("graphics_update_layout", {
-        layerId: "l1",
+    it("routes meeting graphics updates and removes to the meeting graphics manager", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const {
+        meetingGraphicsManager,
+      } = require("./meeting/meeting-graphics-manager.js");
+
+      await commandRouter.handleCommand("graphics_update_values", {
+        layerId: "meeting-content-template",
+        values: {},
+      });
+      await commandRouter.handleCommand("graphics_update_layout", {
+        layerId: "meeting-content-template",
         layout: { x: 0, y: 0, scale: 1 },
       });
+      await commandRouter.handleCommand("graphics_remove", {
+        layerId: "meeting-content-template",
+      });
+
+      expect(meetingGraphicsManager.updateValues).toHaveBeenCalledWith(
+        expect.objectContaining({ layerId: "meeting-content-template" }),
+      );
+      expect(meetingGraphicsManager.updateLayout).toHaveBeenCalledWith(
+        expect.objectContaining({ layerId: "meeting-content-template" }),
+      );
+      expect(meetingGraphicsManager.removeLayer).toHaveBeenCalledWith(
+        expect.objectContaining({ layerId: "meeting-content-template" }),
+      );
+      expect(graphicsManager.updateValues).not.toHaveBeenCalled();
+      expect(graphicsManager.updateLayout).not.toHaveBeenCalled();
+      expect(graphicsManager.removeLayer).not.toHaveBeenCalled();
+    });
+
+    it("graphics_update_layout succeeds with payload", async () => {
+      const result = await commandRouter.handleCommand(
+        "graphics_update_layout",
+        {
+          layerId: "l1",
+          layout: { x: 0, y: 0, scale: 1 },
+        },
+      );
       expect(result.success).toBe(true);
     });
 
@@ -543,9 +723,12 @@ describe("command-router", () => {
     });
 
     it("graphics_remove_preset succeeds with payload", async () => {
-      const result = await commandRouter.handleCommand("graphics_remove_preset", {
-        presetId: "p1",
-      });
+      const result = await commandRouter.handleCommand(
+        "graphics_remove_preset",
+        {
+          presetId: "p1",
+        },
+      );
       expect(result.success).toBe(true);
     });
 
@@ -571,12 +754,12 @@ describe("command-router", () => {
       const { GraphicsError } = require("./graphics/graphics-errors.js");
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       graphicsManager.configureOutputs.mockRejectedValue(
-        new GraphicsError("output_config_error", "Invalid output config")
+        new GraphicsError("output_config_error", "Invalid output config"),
       );
 
       const result = await commandRouter.handleCommand(
         "graphics_configure_outputs",
-        { version: 1 }
+        { version: 1 },
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain("Invalid output config");

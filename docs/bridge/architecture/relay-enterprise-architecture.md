@@ -108,6 +108,7 @@ flowchart LR
 - Bridge reconnectet automatisch.
 - `bridge_auth_ok` erscheint erneut.
 - Bridge sendet Resync-Snapshots (`bridge_status_snapshot`, `engine_status_snapshot`, `outputs_snapshot`, `graphics_snapshot`).
+- Danach laufen Engine-Live-Events wieder ueber `bridge_event(engine_status|engine_macro_execution|engine_error)` weiter.
 
 ### Test 3: Heartbeat/Timeout
 1. WS-Verkehr kurz unterbrechen (Netz kurz aus / Firewall-Regel / Prozess-Suspend).

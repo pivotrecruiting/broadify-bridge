@@ -32,6 +32,19 @@ sequenceDiagram
 - Pending-Command Replay nur nach Policy und Replay-Limits
 - Nach Reconnect/Auth Resync-Trigger (`bridge_resync_required`) + Snapshot-Republish
 
+## Bridge-Events
+
+Die Bridge sendet ueber denselben Relay-WebSocket neben Command-Results auch `bridge_event`-Nachrichten.
+
+Relevante Engine-/Macro-Events:
+
+- `engine_status`: Snapshot-artige Engine-Runtime inklusive `macros`, `macroExecution` und `lastCompletedMacroExecution`.
+- `engine_macro_execution`: feingranulare Runtime-Aenderung fuer einen Macro-Lauf.
+- `engine_error`: Engine-Fehlerpfad.
+- `engine_status_snapshot`: Resync-Snapshot nach `bridge_auth_ok` bzw. Relay-Reconnect.
+
+Die Webapp konsumiert `engine_status` und `engine_macro_execution` als Live-Pfad. Polling bleibt nur Resync-/Fallback-Pfad.
+
 ## Sicherheit
 - Payloads sind untrusted → Validierung downstream (Zod)
 - Commands sind signiert (Ed25519) und enthalten `meta` + `signature`

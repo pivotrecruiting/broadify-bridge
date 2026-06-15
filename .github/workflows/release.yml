@@ -270,6 +270,9 @@ jobs:
           set -euo pipefail
 
           REQUIRED_VARS=(
+            AZURE_TENANT_ID
+            AZURE_CLIENT_ID
+            AZURE_CLIENT_SECRET
             AZURE_CODE_SIGNING_ENDPOINT
             AZURE_CODE_SIGNING_ACCOUNT_NAME
             AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME
@@ -287,6 +290,46 @@ jobs:
             echo "Missing Windows Trusted Signing secrets: ${MISSING[*]}" >&2
             exit 1
           fi
+
+      - name: Diagnose Windows Trusted Signing context
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Resolved updater channel: ${BROADIFY_UPDATER_CHANNEL:-unset}"
+          echo "Windows signing endpoint configured: ${AZURE_CODE_SIGNING_ENDPOINT:+yes}"
+          echo "Windows signing account configured: ${AZURE_CODE_SIGNING_ACCOUNT_NAME:+yes}"
+          echo "Windows signing certificate profile configured: ${AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME:+yes}"
+          echo "Windows signing publisher configured: ${AZURE_CODE_SIGNING_PUBLISHER_NAME:+yes}"
+          echo "Azure tenant configured: ${AZURE_TENANT_ID:+yes}"
+          echo "Azure client configured: ${AZURE_CLIENT_ID:+yes}"
+          echo "Azure client secret configured: ${AZURE_CLIENT_SECRET:+yes}"
+
+          node - <<'NODE'
+          const config = require("./electron-builder.config.cjs");
+          const win = config.win || {};
+          const summary = {
+            appId: config.appId,
+            productName: config.productName,
+            artifactName: config.artifactName,
+            executableName: win.executableName ?? null,
+            publisherNameConfigured:
+              typeof win.publisherName === "string" && win.publisherName.trim() !== "",
+            azureSignConfigured: Boolean(win.azureSignOptions),
+            azureEndpointConfigured:
+              typeof win.azureSignOptions?.endpoint === "string" &&
+              win.azureSignOptions.endpoint.trim() !== "",
+            azureAccountConfigured:
+              typeof win.azureSignOptions?.codeSigningAccountName === "string" &&
+              win.azureSignOptions.codeSigningAccountName.trim() !== "",
+            azureCertificateProfileConfigured:
+              typeof win.azureSignOptions?.certificateProfileName === "string" &&
+              win.azureSignOptions.certificateProfileName.trim() !== "",
+          };
+          console.log("Resolved Windows builder config:");
+          console.log(JSON.stringify(summary, null, 2));
+          NODE
 
       - name: Import macOS signing certificate for native helper codesign
         if: matrix.os == 'macos-15' && env.CSC_LINK != '' && env.CSC_KEY_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != ''

@@ -7,6 +7,8 @@ const createEngineAdapterFake = () => {
   const state = {
     status: "disconnected" as EngineStatusT,
     macros: [] as { id: number; name: string; status: "idle" }[],
+    macroExecution: null as null | Record<string, unknown>,
+    lastCompletedMacroExecution: null as null | Record<string, unknown>,
   };
 
   return {
@@ -25,6 +27,13 @@ const createEngineAdapterFake = () => {
     getStatus: jest.fn(() => state.status),
     runMacro: jest.fn(async (_macroId: number) => undefined),
     stopMacro: jest.fn(async (_macroId: number) => undefined),
+    runVmixAction: jest.fn(
+      async (action: { actionType: "script_start" | "script_stop"; scriptName: string }) => ({
+        ...action,
+        executedFunction:
+          action.actionType === "script_start" ? "ScriptStart" : "ScriptStop",
+      })
+    ),
     __setState: (next: Partial<typeof state>) => {
       Object.assign(state, next);
     },
@@ -248,6 +257,41 @@ describe("registerEngineRoute integration", () => {
     await app.close();
   });
 
+  it("POST /engine/vmix/actions/run executes a documented vMix action", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "connected", type: "vmix" as any });
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/vmix/actions/run",
+      payload: {
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(engineAdapter.runVmixAction).toHaveBeenCalledWith({
+      actionType: "script_start",
+      scriptName: "Broadify_Button_1",
+    });
+    expect(response.json()).toMatchObject({
+      success: true,
+      action: {
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+        executedFunction: "ScriptStart",
+      },
+    });
+
+    await app.close();
+  });
+
   it("POST /engine/macros/:id/run returns success when connected", async () => {
     const app = Fastify();
     const engineAdapter = createEngineAdapterFake();
@@ -267,6 +311,7 @@ describe("registerEngineRoute integration", () => {
     expect(response.json()).toMatchObject({
       success: true,
       macroId: 1,
+      execution: null,
     });
     await app.close();
   });
@@ -331,6 +376,7 @@ describe("registerEngineRoute integration", () => {
     expect(response.json()).toMatchObject({
       success: true,
       macroId: 2,
+      execution: null,
     });
     await app.close();
   });

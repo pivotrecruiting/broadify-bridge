@@ -278,7 +278,9 @@ describe("server", () => {
 
       expect(mockGraphicsInitialize).toHaveBeenCalled();
       expect(mockRegisterServerPlugins).toHaveBeenCalledWith(
-        expect.any(Function),
+        expect.objectContaining({
+          register: expect.any(Function),
+        }),
         expect.objectContaining({
           corsPlugin: expect.anything(),
           websocketPlugin: expect.anything(),
@@ -287,7 +289,9 @@ describe("server", () => {
       expect(mockInitializeModules).toHaveBeenCalled();
       expect(mockDeviceCacheInitializeWatchers).toHaveBeenCalled();
       expect(mockRegisterServerRoutes).toHaveBeenCalledWith(
-        expect.any(Function),
+        expect.objectContaining({
+          register: expect.any(Function),
+        }),
         expect.objectContaining({
           config: expect.any(Object),
           routes: expect.objectContaining({

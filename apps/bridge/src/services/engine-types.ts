@@ -10,7 +10,12 @@ export type EngineStatusT =
 /**
  * Macro execution status
  */
-export type MacroStatusT = "idle" | "running" | "recording";
+export type MacroStatusT =
+  | "idle"
+  | "pending"
+  | "running"
+  | "waiting"
+  | "recording";
 
 /**
  * Macro definition
@@ -19,6 +24,31 @@ export type MacroT = {
   id: number;
   name: string;
   status: MacroStatusT;
+};
+
+export type MacroExecutionStatusT =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "stopped"
+  | "failed";
+
+export type MacroExecutionT = {
+  runId: string;
+  macroId: number;
+  macroName?: string;
+  engineType: "atem" | "tricaster" | "vmix";
+  status: MacroExecutionStatusT;
+  triggeredAt: number;
+  acceptedAt?: number | null;
+  startedAt: number | null;
+  waitingAt: number | null;
+  completedAt: number | null;
+  actualDurationMs: number | null;
+  loop: boolean;
+  stopRequestedAt?: number | null;
+  error?: string;
 };
 
 /**
@@ -30,6 +60,8 @@ export type EngineStateT = {
   ip?: string;
   port?: number;
   macros: MacroT[];
+  macroExecution?: MacroExecutionT | null;
+  lastCompletedMacroExecution?: MacroExecutionT | null;
   lastUpdate?: number;
   error?: string;
 };
@@ -42,4 +74,3 @@ export type EngineConfigT = {
   ip: string;
   port: number;
 };
-

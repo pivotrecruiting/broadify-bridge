@@ -31,6 +31,18 @@ export const MacroIdSchema = z
   })
   .strict();
 
+export const VmixActionSchema = z
+  .discriminatedUnion("actionType", [
+    z.object({
+      actionType: z.literal("script_start"),
+      scriptName: z.string().trim().min(1).max(256),
+    }).strict(),
+    z.object({
+      actionType: z.literal("script_stop"),
+      scriptName: z.string().trim().min(1).max(256),
+    }).strict(),
+  ]);
+
 /**
  * Parse a relay payload with a schema and normalize errors.
  */

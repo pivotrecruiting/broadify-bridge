@@ -10,6 +10,7 @@ Der Client hält die Verbindung zusätzlich per aktivem WebSocket‑Heartbeat st
 - Output (WS): `bridge_hello` mit `protocolVersion`, `sessionId`, `lastProcessedSequence`
 - Output (WS): `{ type: "command_received", requestId, bridgeId, sequence? }`
 - Output (WS): `{ type: "command_result", success, data|error }`
+- Output (WS): `{ type: "bridge_event", bridgeId, event, data?, timestamp }`
 
 ## Abhängigkeiten
 - `command-router.ts`
@@ -23,6 +24,7 @@ Der Client hält die Verbindung zusätzlich per aktivem WebSocket‑Heartbeat st
 - Logging (nur Command‑Name + requestId)
 - Disconnect diagnostics with close code + reason
 - Replay‑Schutz (jti‑Cache)
+- Resync-Snapshots nach `bridge_auth_ok` (`bridge_status_snapshot`, `engine_status_snapshot`, `outputs_snapshot`, `graphics_snapshot`)
 
 ## Security
 - Signatur‑Verifikation (Ed25519) + TTL + Replay‑Schutz

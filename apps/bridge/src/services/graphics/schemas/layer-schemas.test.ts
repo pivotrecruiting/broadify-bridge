@@ -6,7 +6,6 @@ import {
   GraphicsCategorySchema,
   GraphicsSendSchema,
   GraphicsUpdateValuesSchema,
-  GraphicsUpdateLayoutSchema,
   GraphicsRemoveSchema,
   GraphicsRemovePresetSchema,
 } from "./layer-schemas.js";

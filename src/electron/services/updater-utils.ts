@@ -36,7 +36,7 @@ export function getUpdaterDisableReason(ctx: UpdaterDisableContextT): string | n
  */
 export function sanitizeUpdaterErrorMessage(message: string): string {
   return message
-    .replace(/(bearer|token|authorization)\s+[A-Za-z0-9._\-]+/gi, "$1 [REDACTED]")
+    .replace(/(bearer|token|authorization)\s+[A-Za-z0-9._-]+/gi, "$1 [REDACTED]")
     .replace(/gh[pousr]_[A-Za-z0-9_]+/g, "[REDACTED_GITHUB_TOKEN]");
 }
 

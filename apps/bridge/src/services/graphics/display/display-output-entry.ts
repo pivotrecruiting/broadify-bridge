@@ -71,7 +71,7 @@ const html = `<!doctype html>
         padding: 8px 10px;
         background: rgba(0, 0, 0, 0.6);
         color: #00ff6a;
-        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         z-index: 9999;
         white-space: pre;
         pointer-events: none;

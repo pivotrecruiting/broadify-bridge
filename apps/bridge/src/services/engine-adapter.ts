@@ -3,6 +3,8 @@ import type {
   EngineConnectConfig,
   EnsureVmixBrowserInputConfigT,
   EnsureVmixBrowserInputResultT,
+  VmixActionConfigT,
+  VmixActionResultT,
 } from "./engine/engine-adapter-interface.js";
 import { createEngineAdapter } from "./engine/adapter-factory.js";
 import { EngineStateStore } from "./engine/engine-state-store.js";
@@ -15,6 +17,11 @@ import {
   createAlreadyConnectingError,
   createNotConnectedError,
 } from "./engine/engine-errors.js";
+import {
+  publishEngineErrorEvent,
+  publishEngineMacroExecutionEvent,
+  publishEngineStatusEvent,
+} from "./engine/engine-event-publisher.js";
 
 type EngineBroadcastTopicT = Parameters<typeof websocketManager.broadcast>[0];
 type EngineBroadcastMessageT = Parameters<typeof websocketManager.broadcast>[1];
@@ -35,10 +42,20 @@ type VmixBrowserInputCapableAdapterT = EngineAdapter & {
   ) => Promise<EnsureVmixBrowserInputResultT>;
 };
 
+type VmixActionCapableAdapterT = EngineAdapter & {
+  runVmixAction: (config: VmixActionConfigT) => Promise<VmixActionResultT>;
+};
+
 const isVmixBrowserInputCapableAdapter = (
   adapter: EngineAdapter | null
 ): adapter is VmixBrowserInputCapableAdapterT => {
   return typeof adapter?.ensureVmixBrowserInput === "function";
+};
+
+const isVmixActionCapableAdapter = (
+  adapter: EngineAdapter | null
+): adapter is VmixActionCapableAdapterT => {
+  return typeof adapter?.runVmixAction === "function";
 };
 
 /**
@@ -270,15 +287,45 @@ export class EngineAdapterService {
   }
 
   /**
+   * Execute a documented vMix action for the connected engine.
+   */
+  async runVmixAction(config: VmixActionConfigT): Promise<VmixActionResultT> {
+    if (!this.adapter) {
+      throw createNotConnectedError("run vMix action");
+    }
+
+    const currentState = this.stateStore.getState();
+    if (currentState.status !== "connected" || currentState.type !== "vmix") {
+      throw new Error("vMix engine is not connected");
+    }
+
+    if (!isVmixActionCapableAdapter(this.adapter)) {
+      throw new Error("Connected engine does not support vMix actions");
+    }
+
+    return this.adapter.runVmixAction(config);
+  }
+
+  /**
    * Broadcast state changes via WebSocket Manager
    */
   private broadcastStateChanges(state: EngineStateT): void {
-    // Broadcast status change only if status or error changed
-    if (
+    const didStatusChange =
       !this.previousState ||
       this.previousState.status !== state.status ||
-      this.previousState.error !== state.error
-    ) {
+      this.previousState.error !== state.error;
+    const didMacrosChange =
+      !this.previousState ||
+      JSON.stringify(this.previousState.macros) !== JSON.stringify(state.macros);
+    const didMacroExecutionChange =
+      !this.previousState ||
+      JSON.stringify(this.previousState.macroExecution) !==
+        JSON.stringify(state.macroExecution) ||
+      JSON.stringify(this.previousState.lastCompletedMacroExecution) !==
+        JSON.stringify(state.lastCompletedMacroExecution);
+
+    // Broadcast status change only if status or error changed
+    if (didStatusChange) {
       this.deps.broadcast("engine", {
         type: "engine.status",
         status: state.status,
@@ -323,10 +370,7 @@ export class EngineAdapterService {
     }
 
     // Broadcast macros if changed
-    if (
-      !this.previousState ||
-      JSON.stringify(this.previousState.macros) !== JSON.stringify(state.macros)
-    ) {
+    if (didMacrosChange) {
       this.deps.broadcast("engine", {
         type: "engine.macros",
         macros: state.macros,
@@ -347,6 +391,43 @@ export class EngineAdapterService {
           });
         }
       });
+    }
+
+    if (didMacroExecutionChange) {
+      this.deps.broadcast("engine", {
+        type: "engine.macroExecution",
+        execution: state.macroExecution ?? null,
+        lastCompletedExecution: state.lastCompletedMacroExecution ?? null,
+      });
+    }
+
+    if (didStatusChange || didMacrosChange || didMacroExecutionChange) {
+      const reason = didMacroExecutionChange
+        ? "macro_execution_changed"
+        : didMacrosChange
+          ? "macros_changed"
+          : state.status === "disconnected"
+            ? "disconnected"
+            : state.status === "connected" && this.previousState?.status !== "connected"
+              ? "connected"
+              : state.status === "error"
+                ? "error"
+                : "status_changed";
+      publishEngineStatusEvent(reason, state);
+    }
+
+    if (didMacroExecutionChange) {
+      publishEngineMacroExecutionEvent("execution_changed", state);
+    }
+
+    if (
+      state.status === "error" &&
+      state.error &&
+      (!this.previousState ||
+        this.previousState.status !== "error" ||
+        this.previousState.error !== state.error)
+    ) {
+      publishEngineErrorEvent("engine_error", state.error);
     }
 
     this.previousState = { ...state };

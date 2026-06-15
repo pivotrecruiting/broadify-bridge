@@ -14,6 +14,7 @@ describe("graphics-schemas", () => {
 
   it("GraphicsOutputKeySchema accepts valid output keys", () => {
     expect(GraphicsOutputKeySchema.parse("stub")).toBe("stub");
+    expect(GraphicsOutputKeySchema.parse("framebus")).toBe("framebus");
     expect(GraphicsOutputKeySchema.parse("key_fill_sdi")).toBe("key_fill_sdi");
     expect(GraphicsOutputKeySchema.parse("video_hdmi")).toBe("video_hdmi");
   });

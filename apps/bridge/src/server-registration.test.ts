@@ -13,7 +13,7 @@ describe("registerServerPlugins", () => {
     const corsPlugin = Symbol("cors");
     const websocketPlugin = Symbol("websocket");
 
-    await registerServerPlugins(register, {
+    await registerServerPlugins({ register } as never, {
       corsPlugin: corsPlugin as any,
       websocketPlugin: websocketPlugin as any,
     });
@@ -62,7 +62,7 @@ describe("registerServerRoutes", () => {
     };
     const relayClient = { id: "relay-client" } as any;
 
-    await registerServerRoutes(register, {
+    await registerServerRoutes({ register } as never, {
       config: config as any,
       relayClient,
       routes: routes as any,
@@ -106,7 +106,7 @@ describe("registerServerRoutes", () => {
 
     const config = { host: "127.0.0.1", port: 8000, relayEnabled: false };
 
-    await registerServerRoutes(register, {
+    await registerServerRoutes({ register } as never, {
       config: config as any,
       routes: routes as any,
     });

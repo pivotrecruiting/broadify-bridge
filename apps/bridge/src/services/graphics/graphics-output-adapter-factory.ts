@@ -14,9 +14,12 @@ import { findCachedDevicePortById } from "./graphics-device-port-resolver.js";
  * @returns Adapter implementation for the selected output path.
  */
 export async function selectOutputAdapter(
-  config: GraphicsOutputConfigT
+  config: GraphicsOutputConfigT,
 ): Promise<GraphicsOutputAdapter> {
   if (isDevelopmentMode()) {
+    return new StubOutputAdapter();
+  }
+  if (config.outputKey === "framebus") {
     return new StubOutputAdapter();
   }
   if (config.outputKey === "browser_input") {
@@ -30,7 +33,9 @@ export async function selectOutputAdapter(
   }
   if (config.outputKey === "video_hdmi") {
     const outputId = config.targets.output1Id;
-    const portMatch = outputId ? await findCachedDevicePortById(outputId) : null;
+    const portMatch = outputId
+      ? await findCachedDevicePortById(outputId)
+      : null;
     if (portMatch?.device.type === "display") {
       return new DisplayVideoOutputAdapter();
     }

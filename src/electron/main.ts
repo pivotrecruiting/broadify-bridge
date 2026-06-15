@@ -871,13 +871,6 @@ if (!isRendererProcess) {
         if (config) {
           const bridgeOutputs = await fetchBridgeOutputs(config);
           if (bridgeOutputs) {
-            const output1Count = bridgeOutputs.output1?.length || 0;
-            const output2Count = bridgeOutputs.output2?.length || 0;
-            const availableOutput1Count =
-              bridgeOutputs.output1?.filter((opt) => opt.available).length || 0;
-            const availableOutput2Count =
-              bridgeOutputs.output2?.filter((opt) => opt.available).length || 0;
-
             return bridgeOutputs;
           }
           logAppError(

@@ -3,6 +3,8 @@ import type {
   EngineConnectConfig,
   EnsureVmixBrowserInputConfigT,
   EnsureVmixBrowserInputResultT,
+  VmixActionConfigT,
+  VmixActionResultT,
 } from "../engine-adapter-interface.js";
 import type {
   EngineStatusT,
@@ -277,6 +279,47 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   }
 
   /**
+   * Execute a documented vMix action through the HTTP API.
+   */
+  async runVmixAction(config: VmixActionConfigT): Promise<VmixActionResultT> {
+    if (this.state.status !== "connected") {
+      throw new Error("Engine is not connected");
+    }
+
+    const scriptName = config.scriptName.trim();
+    if (!scriptName) {
+      throw new Error("vMix script name is required");
+    }
+
+    try {
+      if (!this.client) {
+        throw new Error("vMix client is not initialized");
+      }
+
+      if (config.actionType === "script_start") {
+        await this.client.runScriptStart(scriptName);
+        return {
+          actionType: "script_start",
+          scriptName,
+          executedFunction: "ScriptStart",
+        };
+      }
+
+      await this.client.runScriptStop(scriptName);
+      return {
+        actionType: "script_stop",
+        scriptName,
+        executedFunction: "ScriptStop",
+      };
+    } catch (error: unknown) {
+      this.handleActionFailure(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to execute vMix action: ${errorMessage}`);
+    }
+  }
+
+  /**
    * Subscribe to state changes
    */
   onStateChange(callback: (state: EngineStateT) => void): () => void {
@@ -354,6 +397,16 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
 
   private handleActionFailure(error: unknown): void {
     if (!(error instanceof EngineError)) {
+      return;
+    }
+
+    if (
+      error.code === EngineErrorCode.PROTOCOL_ERROR ||
+      error.code === EngineErrorCode.UNKNOWN_ERROR
+    ) {
+      this.setState({
+        error: error.message,
+      });
       return;
     }
 

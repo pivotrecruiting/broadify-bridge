@@ -5,7 +5,16 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-	{ ignores: ['**/dist/**', '**/dist-electron/**', '**/dist-react/**', '**/node_modules/**'] },
+	{
+		ignores: [
+			'**/coverage/**',
+			'**/dist/**',
+			'**/dist-electron/**',
+			'**/dist-react/**',
+			'**/native/**/build/**',
+			'**/node_modules/**',
+		],
+	},
 	{
 		extends: [js.configs.recommended, ...tseslint.configs.recommended],
 		files: ['**/*.{ts,tsx}'],
@@ -36,5 +45,19 @@ export default tseslint.config(
 				"typescript": {}
 			}
 		}
+	},
+	{
+		files: ['**/*.test.{ts,tsx}', '**/*.spec.{ts,tsx}'],
+		languageOptions: {
+			globals: {
+				...globals.browser,
+				...globals.jest,
+				...globals.node,
+			},
+		},
+		rules: {
+			'@typescript-eslint/no-explicit-any': 'off',
+			'@typescript-eslint/no-require-imports': 'off',
+		},
 	},
 )

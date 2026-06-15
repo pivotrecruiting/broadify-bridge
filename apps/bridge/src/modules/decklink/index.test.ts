@@ -9,7 +9,7 @@ jest.mock("./decklink-detector.js", () => ({
 }));
 
 jest.mock("./decklink-helper.js", () => ({
-  watchDecklinkDevices: jest.fn((callback: (event: unknown) => void) => {
+  watchDecklinkDevices: jest.fn((_callback: (event: unknown) => void) => {
     return () => {};
   }),
 }));

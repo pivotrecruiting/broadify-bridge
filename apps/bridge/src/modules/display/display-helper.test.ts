@@ -1,3 +1,4 @@
+import path from "node:path";
 import { resolveDisplayHelperPath } from "./display-helper.js";
 
 const DISPLAY_HELPER_PATH_ENV = "BRIDGE_DISPLAY_HELPER_PATH";
@@ -64,7 +65,7 @@ describe("display-helper", () => {
       const basename =
         process.platform === "win32" ? "display-helper.exe" : "display-helper";
       expect(result).toBe(
-        `/app/resources/native/display-helper/${basename}`
+        path.join("/app/resources", "native", "display-helper", basename)
       );
     });
   });

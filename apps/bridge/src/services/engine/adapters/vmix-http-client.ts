@@ -44,11 +44,12 @@ export class VmixHttpClient {
   }
 
   async getVersion(): Promise<string> {
-    return this.requestText("GetVersion");
+    const responseText = await this.requestStateText();
+    return parseVmixVersionResponse(responseText);
   }
 
   async getMacros(): Promise<MacroT[]> {
-    const responseText = await this.requestText("GetMacros");
+    const responseText = await this.requestStateText();
     return parseVmixMacrosResponse(responseText);
   }
 
@@ -57,12 +58,28 @@ export class VmixHttpClient {
     return parseVmixInputsResponse(responseText);
   }
 
-  async startMacro(id: number): Promise<void> {
-    await this.requestText("MacroStart", { Input: id });
+  async startMacro(_id: number): Promise<void> {
+    throw new Error(
+      "vMix macro execution by ID is not documented in the current HTTP API"
+    );
   }
 
-  async stopMacro(id: number): Promise<void> {
-    await this.requestText("MacroStop", { Input: id });
+  async stopMacro(_id: number): Promise<void> {
+    throw new Error(
+      "vMix macro stop by ID is not documented in the current HTTP API"
+    );
+  }
+
+  async runScriptStart(scriptName: string): Promise<void> {
+    await this.requestText("ScriptStart", {
+      Value: scriptName,
+    });
+  }
+
+  async runScriptStop(scriptName: string): Promise<void> {
+    await this.requestText("ScriptStop", {
+      Value: scriptName,
+    });
   }
 
   async addBrowserInput(url: string): Promise<void> {
@@ -199,6 +216,11 @@ export function parseVmixInputsResponse(
   }
 
   return inputs;
+}
+
+export function parseVmixVersionResponse(responseText: string): string {
+  const match = responseText.match(/<version>([^<]+)<\/version>/i);
+  return match?.[1]?.trim() || "";
 }
 
 export function parseVmixMacrosResponse(responseText: string): MacroT[] {

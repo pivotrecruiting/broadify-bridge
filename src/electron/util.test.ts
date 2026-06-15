@@ -1,3 +1,5 @@
+import { pathToFileURL } from "node:url";
+
 jest.mock("./pathResolver.js", () => ({
   getUIPath: jest.fn(() => "/app/dist-react/index.html"),
 }));
@@ -54,7 +56,7 @@ describe("util", () => {
       const { getUIPath } = require("./pathResolver.js");
       getUIPath.mockReturnValue("/app/dist-react/index.html");
       const frame = {
-        url: "file:///app/dist-react/index.html",
+        url: pathToFileURL(getUIPath()).toString(),
       } as Electron.WebFrameMain;
       expect(() => validateEventFrame(frame)).not.toThrow();
     });
@@ -89,10 +91,11 @@ describe("util", () => {
 
       expect(mockIpcMainHandle).toHaveBeenCalledWith("appGetVersion", expect.any(Function));
       const registeredHandler = mockIpcMainHandle.mock.calls[0][1];
+      const { getUIPath } = require("./pathResolver.js");
 
       const mockEvent = {
         senderFrame: {
-          url: "file:///app/dist-react/index.html",
+          url: pathToFileURL(getUIPath()).toString(),
         },
       } as unknown as Electron.IpcMainInvokeEvent;
 

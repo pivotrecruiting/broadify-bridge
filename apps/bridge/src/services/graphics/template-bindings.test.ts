@@ -1,7 +1,6 @@
 import {
   getAnimationClassFromValue,
   deriveTemplateBindings,
-  type TemplateBindingsT,
 } from "./template-bindings.js";
 
 describe("getAnimationClassFromValue", () => {

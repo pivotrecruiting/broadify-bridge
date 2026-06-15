@@ -4,6 +4,7 @@ import {
   ListOutputsSchema,
   EngineConnectSchema,
   MacroIdSchema,
+  VmixActionSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
 
@@ -122,6 +123,32 @@ describe("relay-command-schemas", () => {
 
     it("rejects non-integer", () => {
       const result = MacroIdSchema.safeParse({ macroId: 1.5 });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("VmixActionSchema", () => {
+    it("accepts a script_start action", () => {
+      const result = VmixActionSchema.safeParse({
+        actionType: "script_start",
+        scriptName: "Broadify_Button_1",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts a script_stop action", () => {
+      const result = VmixActionSchema.safeParse({
+        actionType: "script_stop",
+        scriptName: "Broadify_Button_1",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects empty script names", () => {
+      const result = VmixActionSchema.safeParse({
+        actionType: "script_start",
+        scriptName: "   ",
+      });
       expect(result.success).toBe(false);
     });
   });

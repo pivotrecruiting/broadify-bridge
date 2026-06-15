@@ -1,4 +1,7 @@
-import { parseVmixInputsResponse } from "./vmix-http-client.js";
+import {
+  parseVmixInputsResponse,
+  parseVmixVersionResponse,
+} from "./vmix-http-client.js";
 
 describe("parseVmixInputsResponse", () => {
   it("parses browser inputs from the vmix xml state response", () => {
@@ -48,5 +51,21 @@ describe("parseVmixInputsResponse", () => {
         type: "Browser",
       },
     ]);
+  });
+});
+
+describe("parseVmixVersionResponse", () => {
+  it("extracts the version from the vmix xml state response", () => {
+    const response = `
+      <vmix>
+        <version>29.0.0.47</version>
+      </vmix>
+    `;
+
+    expect(parseVmixVersionResponse(response)).toBe("29.0.0.47");
+  });
+
+  it("returns an empty string when the version tag is missing", () => {
+    expect(parseVmixVersionResponse("<vmix></vmix>")).toBe("");
   });
 });

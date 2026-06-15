@@ -508,15 +508,27 @@ describe("RelayClient", () => {
     const events = socket.sent
       .map((entry) => JSON.parse(entry))
       .filter((entry) => entry.type === "bridge_event")
-      .map((entry) => entry.event);
+      .map((entry) => ({
+        event: entry.event,
+        data: entry.data,
+      }));
 
-    expect(events).toEqual([
+    expect(events.map((entry) => entry.event)).toEqual([
       "bridge_resync_required",
       "bridge_status_snapshot",
       "engine_status_snapshot",
       "outputs_snapshot",
       "graphics_snapshot",
     ]);
+    expect(
+      events.find((entry) => entry.event === "engine_status_snapshot")?.data
+    ).toEqual(
+      expect.objectContaining({
+        reason: "bridge_auth_ok",
+        at: expect.any(Number),
+        snapshot: { engine: "ok" },
+      })
+    );
   });
 
   it("does not connect when already connecting", async () => {

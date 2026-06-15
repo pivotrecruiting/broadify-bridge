@@ -11,6 +11,7 @@ import {
   resolveBridgeStartConfig,
 } from "./bridge-process-contract.js";
 import { stopChildProcessGracefully } from "./bridge-process-stop.js";
+import { quitVcamHelperApp } from "./vcam-helper-app.js";
 
 /**
  * Bridge process manager
@@ -194,6 +195,7 @@ export class BridgeProcessManager {
       this.bridgeProcess.on("exit", (code, signal) => {
         const exitMsg = `Bridge process exited with code ${code} and signal ${signal}\n`;
         console.log(exitMsg);
+        quitVcamHelperApp();
         if (this.logStream) {
           this.logStream.write(`[EXIT] ${exitMsg}`);
           this.logStream.end();
@@ -286,6 +288,7 @@ export class BridgeProcessManager {
 
     try {
       await stopChildProcessGracefully(this.bridgeProcess);
+      quitVcamHelperApp();
 
       // Close log stream if open
       if (this.logStream) {

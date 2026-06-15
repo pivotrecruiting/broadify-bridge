@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 import { loadDefaultConfig } from "./default-config-loader.js";
 
 jest.mock("node:fs", () => ({
@@ -32,9 +31,10 @@ describe("loadDefaultConfig", () => {
   });
 
   it("loads packaged config when it exists", () => {
-    mockExistsSync.mockImplementation((p: string) =>
-      p.includes("config/default.json") && !p.includes("..")
-    );
+    mockExistsSync.mockImplementation((p: string) => {
+      const normalized = p.replace(/\\/g, "/");
+      return normalized.endsWith("/config/default.json") && !normalized.includes("../");
+    });
     mockReadFileSync.mockReturnValue(
       JSON.stringify({
         graphics: { renderer: "electron", framebusName: "main" },
@@ -46,9 +46,7 @@ describe("loadDefaultConfig", () => {
   });
 
   it("loads dev config when packaged path does not exist", () => {
-    mockExistsSync
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
+    mockExistsSync.mockReturnValueOnce(false).mockReturnValueOnce(true);
     mockReadFileSync.mockReturnValue(
       JSON.stringify({
         graphics: { framebusName: "dev-bus" },
