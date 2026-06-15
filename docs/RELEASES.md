@@ -71,6 +71,11 @@ npm run release:test
 npm run release:live
 ```
 
+Branch-Regeln:
+
+- `release:test` auf `main`, `dev` oder Feature-Branches (baut den getaggten Branch-Stand)
+- `release:live` nur auf `main`
+
 ## Release-Prozess
 
 ### 1. Version aktualisieren

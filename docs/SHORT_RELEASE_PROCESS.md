@@ -28,6 +28,11 @@ Benötigte GitHub-Secrets:
 - `RELAY_URL_RC`
 - `BRIDGE_RELAY_JWKS_URL_RC`
 
+Branch-Regel:
+
+- `release:test` auf `main`, `dev` oder Feature-Branches
+- `release:live` nur auf `main`
+
 ### Bugfix
 
 ```bash

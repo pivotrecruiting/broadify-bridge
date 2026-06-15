@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 const ROOT_DIR = process.cwd();
 const PACKAGE_JSON_PATH = path.join(ROOT_DIR, "package.json");
 const MAIN_BRANCH = "main";
+const DEV_BRANCH = "dev";
 
 /**
  * Print usage and exit.
@@ -30,6 +31,10 @@ Convenience:
 RC continuation / promotion:
   npm run release:test
   npm run release:live
+
+Branch rules:
+  release:test  -> main, dev, or any feature branch
+  release:live  -> main only
 
 Flags:
   --test       Create an RC tag like v0.12.0-rc.1
@@ -178,6 +183,31 @@ function computeNextVersion(currentVersion, mode, bumpType) {
     : formatVersion(bumpedBase);
 }
 
+/**
+ * Resolve the branch that is allowed to run the requested release mode.
+ *
+ * @param {"test" | "live"} mode Target release mode.
+ * @param {string} branchName Current git branch name.
+ * @returns {string} Branch that will receive the version bump commit and push.
+ */
+function resolveReleaseBranch(mode, branchName) {
+  if (!branchName) {
+    throw new Error("Could not detect current git branch.");
+  }
+
+  if (mode === "live" && branchName !== MAIN_BRANCH) {
+    throw new Error(
+      `Live releases must run on "${MAIN_BRANCH}". Current branch: "${branchName}".`,
+    );
+  }
+
+  if (mode === "test") {
+    return branchName;
+  }
+
+  return MAIN_BRANCH;
+}
+
 const rawArgs = new Set(process.argv.slice(2));
 
 if (rawArgs.has("--help")) {
@@ -210,13 +240,8 @@ const nextVersion = computeNextVersion(parsedCurrentVersion, mode, bumpType);
 const nextTag = `v${nextVersion}`;
 const commitMessage = `chore(release): cut ${nextTag}`;
 const branchName = capture("git", ["branch", "--show-current"]);
+const releaseBranch = resolveReleaseBranch(mode, branchName);
 const workingTreeStatus = capture("git", ["status", "--porcelain"]);
-
-if (branchName !== MAIN_BRANCH) {
-  throw new Error(
-    `Release script must run on "${MAIN_BRANCH}". Current branch: "${branchName || "unknown"}".`,
-  );
-}
 
 if (workingTreeStatus.length > 0) {
   if (dryRun) {
@@ -242,14 +267,25 @@ if (existingTag === nextTag) {
 console.log(`Current version: ${currentVersion}`);
 console.log(`Next version:    ${nextVersion}`);
 console.log(`Release mode:    ${mode}`);
+console.log(`Release branch:  ${releaseBranch}`);
 console.log(`Bump type:       ${bumpType ?? "none (rc continuation/promotion)"}`);
 console.log(`Git tag:         ${nextTag}`);
+
+if (
+  mode === "test" &&
+  releaseBranch !== MAIN_BRANCH &&
+  releaseBranch !== DEV_BRANCH
+) {
+  console.warn(
+    `RC release from feature branch "${releaseBranch}". Merge the version bump into ${DEV_BRANCH} or ${MAIN_BRANCH} before promoting to live.`,
+  );
+}
 
 run("npm", ["version", "--no-git-tag-version", nextVersion], dryRun);
 run("git", ["add", "package.json", "package-lock.json"], dryRun);
 run("git", ["commit", "-m", commitMessage], dryRun);
 run("git", ["tag", "-a", nextTag, "-m", commitMessage], dryRun);
-run("git", ["push", "origin", MAIN_BRANCH], dryRun);
+run("git", ["push", "origin", releaseBranch], dryRun);
 run("git", ["push", "origin", nextTag], dryRun);
 
 console.log(
