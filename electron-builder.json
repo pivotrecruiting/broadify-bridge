@@ -56,7 +56,10 @@
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
     "entitlementsInherit": "build/entitlements.mac.plist",
-    "notarize": true
+    "notarize": true,
+    "extendInfo": {
+      "NSLocalNetworkUsageDescription": "Broadify Bridge benötigt Zugriff auf das lokale Netzwerk, um Video-Mischer (z. B. ATEM) und Ausgabegeräte in deinem Netzwerk zu finden und zu steuern."
+    }
   },
   "linux": {
     "target": "AppImage",
