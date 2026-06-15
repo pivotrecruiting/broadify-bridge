@@ -79,6 +79,21 @@ Command‑Envelope vom Relay an die Bridge.
 }
 ```
 
+### command_received
+Die Bridge sendet `command_received` erst, nachdem Signatur, TTL/JTI und
+Allowlist-Pruefung bestanden sind und der Command zur Ausfuehrung angenommen
+wurde. Unbekannte oder nicht signierte Commands erhalten kein Ack, sondern ein
+fachliches `command_result` mit Fehler.
+
+```json
+{
+  "type": "command_received",
+  "requestId": "<uuid>",
+  "bridgeId": "<id>",
+  "sequence": 42
+}
+```
+
 #### bridge_pair_validate
 Validiert einen Pairing‑Code gegen die Bridge‑Context‑Daten (Code + Ablaufzeit).
 ```json
@@ -123,6 +138,31 @@ Antwort der Bridge.
 ```json
 { "type": "command_result", "requestId": "<uuid>", "success": true, "data": { ... } }
 ```
+
+## Timeout- und Ausfuehrungsmodell
+
+Transport-Liveness und fachliche Command-SLAs sind getrennt:
+
+- WebSocket Heartbeat/Idle-Watchdog erkennt tote Relay-Verbindungen.
+- Command-Timeouts werden vom Relay/WebApp-Layer entschieden.
+- Die Bridge bricht lokale Commands nicht pauschal ab, sondern loggt
+  `command_sla_exceeded` und spaeter `command_completed_after_sla`, falls die
+  darunterliegende Library nicht abortbar ist.
+
+Timeout-Policy der Bridge-SSOT: `apps/bridge/src/services/relay-command-policy.ts`.
+
+| Command-Klasse | Relay-Timeout | Bridge lokale SLA |
+| --- | ---: | ---: |
+| Fast commands | 12s | 8s |
+| `engine_connect` | 18s | 11s |
+| `list_outputs` | 15s | 11s |
+| Graphics configure/send/update/remove | 20s | 16s |
+| Helper-start Commands | 35s | 30s |
+
+Side-effecting Commands laufen pro Bridge seriell. Read-only Commands laufen
+parallel, aber begrenzt (`BRIDGE_RELAY_READ_ONLY_COMMAND_CONCURRENCY`, Default
+`4`). Doppelte `requestId`s werden auch waehrend laufender Ausfuehrung auf das
+in-flight Result dedupliziert und nicht erneut ausgefuehrt.
 
 ### bridge_event
 Asynchrones Event der Bridge an das Relay. Wird fuer Live-Status und Resync-Snapshots genutzt.
@@ -173,6 +213,7 @@ sequenceDiagram
   Bridge->>Relay: bridge_auth_response
   Relay->>Bridge: bridge_auth_ok
   Relay->>Bridge: command
+  Bridge-->>Relay: command_received
   Bridge->>Router: handleCommand
   Router-->>Bridge: result
   Bridge-->>Relay: command_result

@@ -64,8 +64,19 @@ const createLogger = () => ({
 });
 
 const flushAsync = async (): Promise<void> => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve();
+  }
+};
+
+const createDeferred = <T>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 };
 
 describe("RelayClient", () => {
@@ -347,7 +358,7 @@ describe("RelayClient", () => {
     });
     await flushAsync();
 
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(4);
     expect(JSON.parse(socket.sent[0])).toEqual({
       type: "command_received",
       requestId: "req-1",
@@ -355,10 +366,104 @@ describe("RelayClient", () => {
       sequence: 7,
     });
     expect(JSON.parse(socket.sent[1])).toEqual({
+      type: "command_queued",
+      requestId: "req-1",
+      bridgeId: "bridge-1",
+      sequence: 7,
+      concurrencyKey: "engine",
+      queuePosition: 0,
+      invalidates: ["engine.status"],
+    });
+    expect(JSON.parse(socket.sent[2])).toEqual({
+      type: "command_started",
+      requestId: "req-1",
+      bridgeId: "bridge-1",
+      sequence: 7,
+      concurrencyKey: "engine",
+      invalidates: ["engine.status"],
+    });
+    expect(JSON.parse(socket.sent[3])).toEqual({
       type: "command_result",
       requestId: "req-1",
       success: true,
       data: { ok: true },
+    });
+  });
+
+  it("accepts async relay commands as operations and emits a later operation_result", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const deferred = createDeferred<{ success: true; data: { configured: true } }>();
+    const handleCommand = jest.fn(() => deferred.promise);
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-async",
+      sequence: 8,
+      command: "engine_vmix_ensure_browser_input",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(1);
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      "command_received",
+      "command_queued",
+      "command_started",
+      "operation_accepted",
+    ]);
+    expect(JSON.parse(socket.sent[2])).toEqual(
+      expect.objectContaining({
+        type: "command_started",
+        requestId: "req-async",
+        operationId: "req-async",
+      }),
+    );
+    expect(JSON.parse(socket.sent[3])).toEqual({
+      type: "operation_accepted",
+      requestId: "req-async",
+      operationId: "req-async",
+      bridgeId: "bridge-1",
+      command: "engine_vmix_ensure_browser_input",
+      status: "running",
+      concurrencyKey: "engine",
+      invalidates: ["engine.status", "graphics"],
+    });
+
+    deferred.resolve({ success: true, data: { configured: true } });
+    await flushAsync();
+    await flushAsync();
+
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      "command_received",
+      "command_queued",
+      "command_started",
+      "operation_accepted",
+      "operation_result",
+    ]);
+    expect(JSON.parse(socket.sent[4])).toEqual({
+      type: "operation_result",
+      operationId: "req-async",
+      requestId: "req-async",
+      bridgeId: "bridge-1",
+      command: "engine_vmix_ensure_browser_input",
+      success: true,
+      data: { configured: true },
+      invalidates: ["engine.status", "graphics"],
     });
   });
 
@@ -403,7 +508,7 @@ describe("RelayClient", () => {
     await flushAsync();
 
     expect(handleCommand).toHaveBeenCalledTimes(1);
-    expect(socket.sent).toHaveLength(4);
+    expect(socket.sent).toHaveLength(6);
     expect(JSON.parse(socket.sent[0])).toEqual({
       type: "command_received",
       requestId: "req-dup",
@@ -411,16 +516,21 @@ describe("RelayClient", () => {
       sequence: 11,
     });
     expect(JSON.parse(socket.sent[1])).toEqual({
-      type: "command_result",
-      requestId: "req-dup",
-      success: true,
-      data: { executed: true },
-    });
-    expect(JSON.parse(socket.sent[2])).toEqual({
-      type: "command_received",
+      type: "command_queued",
       requestId: "req-dup",
       bridgeId: "bridge-1",
       sequence: 11,
+      concurrencyKey: "read_only",
+      queuePosition: 0,
+      invalidates: ["engine.status"],
+    });
+    expect(JSON.parse(socket.sent[2])).toEqual({
+      type: "command_started",
+      requestId: "req-dup",
+      bridgeId: "bridge-1",
+      sequence: 11,
+      concurrencyKey: "read_only",
+      invalidates: ["engine.status"],
     });
     expect(JSON.parse(socket.sent[3])).toEqual({
       type: "command_result",
@@ -428,6 +538,343 @@ describe("RelayClient", () => {
       success: true,
       data: { executed: true },
     });
+    expect(JSON.parse(socket.sent[4])).toEqual({
+      type: "command_received",
+      requestId: "req-dup",
+      bridgeId: "bridge-1",
+      sequence: 11,
+    });
+    expect(JSON.parse(socket.sent[5])).toEqual({
+      type: "command_result",
+      requestId: "req-dup",
+      success: true,
+      data: { executed: true },
+    });
+  });
+
+  it("deduplicates duplicate requestIds while the first execution is still running", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const deferred = createDeferred<{ success: true; data: { executed: true } }>();
+    const handleCommand = jest.fn(() => deferred.promise);
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-inflight",
+      sequence: 12,
+      command: "engine_run_macro",
+      payload: { macroId: 1 },
+    });
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-inflight",
+      sequence: 12,
+      command: "engine_run_macro",
+      payload: { macroId: 1 },
+    });
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(1);
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      "command_received",
+      "command_received",
+      "command_queued",
+      "command_started",
+    ]);
+
+    deferred.resolve({ success: true, data: { executed: true } });
+    await flushAsync();
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(1);
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      "command_received",
+      "command_received",
+      "command_queued",
+      "command_started",
+      "command_result",
+      "command_result",
+    ]);
+  });
+
+  it("rejects duplicate requestIds with a different payload", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const deferred = createDeferred<{ success: true; data: { executed: true } }>();
+    const handleCommand = jest.fn(() => deferred.promise);
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-conflict",
+      command: "engine_run_macro",
+      payload: { macroId: 1 },
+    });
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-conflict",
+      command: "engine_run_macro",
+      payload: { macroId: 2 },
+    });
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(socket.sent[1])).toEqual({
+      type: "command_result",
+      requestId: "req-conflict",
+      success: false,
+      error: "requestId already exists for a different command or payload",
+      code: "request_id_conflict",
+    });
+
+    deferred.resolve({ success: true, data: { executed: true } });
+    await flushAsync();
+  });
+
+  it("runs side-effecting relay commands serially", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const first = createDeferred<{ success: true; data: { macroId: number } }>();
+    const second = createDeferred<{ success: true; data: { macroId: number } }>();
+    const handleCommand = jest
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-side-1",
+      command: "engine_run_macro",
+      payload: { macroId: 1 },
+    });
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-side-2",
+      command: "engine_run_macro",
+      payload: { macroId: 2 },
+    });
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(1);
+    expect(handleCommand).toHaveBeenNthCalledWith(1, "engine_run_macro", {
+      macroId: 1,
+    });
+
+    first.resolve({ success: true, data: { macroId: 1 } });
+    await flushAsync();
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(2);
+    expect(handleCommand).toHaveBeenNthCalledWith(2, "engine_run_macro", {
+      macroId: 2,
+    });
+
+    second.resolve({ success: true, data: { macroId: 2 } });
+    await flushAsync();
+  });
+
+  it("allows read-only commands to run while a side-effecting command is pending", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const sideEffect = createDeferred<{ success: true; data: { macroId: number } }>();
+    const handleCommand = jest.fn((command) => {
+      if (command === "engine_run_macro") {
+        return sideEffect.promise;
+      }
+      return Promise.resolve({ success: true, data: { status: "ok" } });
+    });
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-side-pending",
+      command: "engine_run_macro",
+      payload: { macroId: 1 },
+    });
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-read-only",
+      command: "engine_get_status",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(2);
+    expect(handleCommand).toHaveBeenNthCalledWith(1, "engine_run_macro", {
+      macroId: 1,
+    });
+    expect(handleCommand).toHaveBeenNthCalledWith(2, "engine_get_status", {});
+    expect(
+      socket.sent.some((entry) => {
+        const message = JSON.parse(entry);
+        return (
+          message.type === "command_result" &&
+          message.requestId === "req-read-only" &&
+          message.success === true
+        );
+      }),
+    ).toBe(true);
+
+    sideEffect.resolve({ success: true, data: { macroId: 1 } });
+    await flushAsync();
+  });
+
+  it("bounds concurrent read-only relay commands", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const first = createDeferred<{ success: true; data: { index: number } }>();
+    const second = createDeferred<{ success: true; data: { index: number } }>();
+    const handleCommand = jest
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+      readOnlyCommandConcurrency: 1,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-read-1",
+      command: "engine_get_status",
+      payload: {},
+    });
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-read-2",
+      command: "graphics_list",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(1);
+
+    first.resolve({ success: true, data: { index: 1 } });
+    await flushAsync();
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(2);
+
+    second.resolve({ success: true, data: { index: 2 } });
+    await flushAsync();
+  });
+
+  it("logs command SLA overruns without aborting the command", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const deferred = createDeferred<{ success: true; data: { connected: true } }>();
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand: () => deferred.promise,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-sla",
+      command: "engine_connect",
+      payload: { type: "atem", ip: "192.168.1.20", port: 9910 },
+    });
+    await flushAsync();
+
+    await jest.advanceTimersByTimeAsync(11_000);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("command_sla_exceeded"),
+    );
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      "command_received",
+      "command_queued",
+      "command_started",
+    ]);
+
+    deferred.resolve({ success: true, data: { connected: true } });
+    await flushAsync();
+    await flushAsync();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("command_completed_after_sla"),
+    );
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      "command_received",
+      "command_queued",
+      "command_started",
+      "command_result",
+    ]);
   });
 
   it("expires dedupe cache entries after configured TTL", async () => {
@@ -520,6 +967,7 @@ describe("RelayClient", () => {
       "outputs_snapshot",
       "graphics_snapshot",
     ]);
+    expect(handleCommand).toHaveBeenNthCalledWith(3, "list_outputs", undefined);
     expect(
       events.find((entry) => entry.event === "engine_status_snapshot")?.data
     ).toEqual(
@@ -902,9 +1350,11 @@ describe("RelayClient", () => {
     });
     await flushAsync();
 
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(4);
     expect(JSON.parse(socket.sent[0]).type).toBe("command_received");
-    expect(JSON.parse(socket.sent[1])).toEqual({
+    expect(JSON.parse(socket.sent[1]).type).toBe("command_queued");
+    expect(JSON.parse(socket.sent[2]).type).toBe("command_started");
+    expect(JSON.parse(socket.sent[3])).toEqual({
       type: "command_result",
       requestId: "req-crash",
       success: false,

@@ -1,13 +1,15 @@
 import { WebSocket } from "ws";
-import { createPublicKey, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import {
   isRelayCommand,
   type RelayCommand,
 } from "./relay-command-allowlist.js";
 import {
+  stableStringify,
   type RelayCommandMetaT,
   verifySignedRelayCommand,
 } from "./relay-command-security.js";
+import { getRelayCommandPolicy } from "./relay-command-policy.js";
 import {
   getRelayBridgeEnrollmentPublicKey,
   signRelayBridgeAuthChallenge,
@@ -31,6 +33,8 @@ const RELAY_WS_HEARTBEAT_MAX_MISSES =
   Number(process.env.BRIDGE_RELAY_WS_HEARTBEAT_MAX_MISSES) || 2;
 const RELAY_WS_IDLE_TIMEOUT_MS =
   Number(process.env.BRIDGE_RELAY_WS_IDLE_TIMEOUT_MS) || 90000;
+const RELAY_READ_ONLY_COMMAND_CONCURRENCY =
+  Number(process.env.BRIDGE_RELAY_READ_ONLY_COMMAND_CONCURRENCY) || 4;
 
 const RELAY_PUBLIC_KEY_PEM =
   process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY ||
@@ -201,6 +205,50 @@ interface CommandReceivedMessage {
   sequence?: number;
 }
 
+interface CommandQueuedMessage {
+  type: "command_queued";
+  requestId: string;
+  bridgeId: string;
+  sequence?: number;
+  concurrencyKey: string;
+  queuePosition: number;
+  invalidates: string[];
+}
+
+interface CommandStartedMessage {
+  type: "command_started";
+  requestId: string;
+  bridgeId: string;
+  sequence?: number;
+  concurrencyKey: string;
+  invalidates: string[];
+  operationId?: string;
+}
+
+interface OperationAcceptedMessage {
+  type: "operation_accepted";
+  requestId: string;
+  operationId: string;
+  bridgeId: string;
+  command: string;
+  status: "queued" | "running";
+  concurrencyKey: string;
+  invalidates: string[];
+}
+
+interface OperationResultMessage {
+  type: "operation_result";
+  operationId: string;
+  requestId: string;
+  bridgeId: string;
+  command: string;
+  success: boolean;
+  data?: unknown;
+  error?: string;
+  code?: string;
+  invalidates: string[];
+}
+
 /**
  * Command result response sent back to relay.
  */
@@ -210,6 +258,7 @@ interface CommandResultMessage {
   success: boolean;
   data?: unknown;
   error?: string;
+  code?: string;
 }
 
 interface RelayBridgeAuthChallengeMessage {
@@ -293,12 +342,32 @@ type RelayClientDepsT = {
   clearIntervalFn?: typeof clearInterval;
   commandDedupeTtlMs?: number;
   commandDedupeMaxEntries?: number;
+  readOnlyCommandConcurrency?: number;
 };
 
 type CommandResultCacheEntry = {
   expiresAt: number;
   sequence?: number;
-  result: CommandResultMessage;
+  command: RelayCommand;
+  payloadHash: string;
+  result: CommandResultMessage | OperationAcceptedMessage;
+};
+
+type InFlightCommandResultEntry = {
+  command: RelayCommand;
+  payloadHash: string;
+  sequence?: number;
+  resultPromise: Promise<CommandResultMessage | OperationAcceptedMessage>;
+};
+
+type ActiveOperationEntry = {
+  operationId: string;
+  requestId: string;
+  command: RelayCommand;
+  payloadHash: string;
+  concurrencyKey: string;
+  invalidates: string[];
+  status: "queued" | "running";
 };
 
 const publicKeyCache = new Map<string, PublicKeyCacheEntry>();
@@ -382,6 +451,22 @@ const defaultHandleCommand = async (
   return commandRouter.handleCommand(command, payload);
 };
 
+const getCommandPayloadHash = (payload?: Record<string, unknown>): string => {
+  return createHash("sha256")
+    .update(stableStringify(payload ?? null))
+    .digest("hex");
+};
+
+const buildRequestIdConflictResult = (
+  requestId: string,
+): CommandResultMessage => ({
+  type: "command_result",
+  requestId,
+  success: false,
+  error: "requestId already exists for a different command or payload",
+  code: "request_id_conflict",
+});
+
 /**
  * Relay Client Service
  *
@@ -396,6 +481,18 @@ export class RelayClient {
   private readonly relaySessionId: string;
   private lastProcessedSequence = 0;
   private readonly commandResultCache = new Map<string, CommandResultCacheEntry>();
+  private readonly inFlightCommandResults = new Map<
+    string,
+    InFlightCommandResultEntry
+  >();
+  private readonly readOnlyCommandQueue: Array<() => void> = [];
+  private activeReadOnlyCommands = 0;
+  private readonly sideEffectCommandQueue: Array<() => void> = [];
+  private sideEffectCommandActive = false;
+  private readonly activeOperationsByConcurrencyKey = new Map<
+    string,
+    ActiveOperationEntry
+  >();
   private reconnectAttempts = 0;
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 60000; // Max 60 seconds
@@ -523,16 +620,348 @@ export class RelayClient {
   private cacheCommandResult(
     requestId: string,
     sequence: number | undefined,
-    result: CommandResultMessage,
+    command: RelayCommand,
+    payloadHash: string,
+    result: CommandResultMessage | OperationAcceptedMessage,
   ): void {
     const dedupeTtlMs = this.deps.commandDedupeTtlMs ?? RELAY_COMMAND_DEDUPE_TTL_MS;
     this.pruneCommandResultCache();
     this.commandResultCache.set(requestId, {
       expiresAt: Date.now() + dedupeTtlMs,
       sequence,
+      command,
+      payloadHash,
       result,
     });
     this.pruneCommandResultCache();
+  }
+
+  private getReadOnlyCommandConcurrency(): number {
+    const configured =
+      this.deps.readOnlyCommandConcurrency ?? RELAY_READ_ONLY_COMMAND_CONCURRENCY;
+    return Number.isFinite(configured) && configured > 0
+      ? Math.floor(configured)
+      : RELAY_READ_ONLY_COMMAND_CONCURRENCY;
+  }
+
+  private enqueueReadOnlyCommand<T>(
+    operation: () => Promise<T>,
+    onStart: () => void,
+  ): Promise<T> {
+    const maxConcurrent = this.getReadOnlyCommandConcurrency();
+
+    return new Promise<T>((resolve, reject) => {
+      const run = () => {
+        this.activeReadOnlyCommands += 1;
+        onStart();
+        operation()
+          .then(resolve, reject)
+          .finally(() => {
+            this.activeReadOnlyCommands -= 1;
+            const next = this.readOnlyCommandQueue.shift();
+            next?.();
+          });
+      };
+
+      if (this.activeReadOnlyCommands < maxConcurrent) {
+        run();
+        return;
+      }
+
+      this.readOnlyCommandQueue.push(run);
+    });
+  }
+
+  private enqueueSideEffectCommand<T>(
+    operation: () => Promise<T>,
+    onStart: () => void,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const run = () => {
+        this.sideEffectCommandActive = true;
+        onStart();
+        operation()
+          .then(resolve, reject)
+          .finally(() => {
+            this.sideEffectCommandActive = false;
+            const next = this.sideEffectCommandQueue.shift();
+            next?.();
+          });
+      };
+
+      if (!this.sideEffectCommandActive) {
+        run();
+        return;
+      }
+
+      this.sideEffectCommandQueue.push(run);
+    });
+  }
+
+  private async executeCommandWithSlaLogging(
+    command: RelayCommand,
+    requestId: string,
+    payload?: Record<string, unknown>,
+  ): Promise<{
+    success: boolean;
+    data?: unknown;
+    error?: string;
+  }> {
+    const policy = getRelayCommandPolicy(command);
+    const handleCommand = this.deps.handleCommand ?? defaultHandleCommand;
+    const startedAt = Date.now();
+    let exceededSla = false;
+    const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
+    const timeoutId = setTimeoutFn(() => {
+      exceededSla = true;
+      this.logger.warn(
+        `[RelayClient] command_sla_exceeded ${JSON.stringify({
+          command,
+          requestId,
+          timeoutClass: policy.timeoutClass,
+          bridgeLocalSlaMs: policy.bridgeLocalSlaMs,
+        })}`,
+      );
+    }, policy.bridgeLocalSlaMs);
+    timeoutId.unref?.();
+
+    try {
+      return await handleCommand(command, payload);
+    } finally {
+      clearTimeoutFn(timeoutId);
+      const durationMs = Date.now() - startedAt;
+      const logPayload = JSON.stringify({
+        command,
+        requestId,
+        executionMode: policy.executionMode,
+        timeoutClass: policy.timeoutClass,
+        durationMs,
+        bridgeLocalSlaMs: policy.bridgeLocalSlaMs,
+      });
+      if (exceededSla) {
+        this.logger.warn(`[RelayClient] command_completed_after_sla ${logPayload}`);
+      } else {
+        this.logger.debug?.(`[RelayClient] command_completed ${logPayload}`);
+      }
+    }
+  }
+
+  private scheduleCommandExecution(
+    command: RelayCommand,
+    requestId: string,
+    sequence: number | undefined,
+    payload?: Record<string, unknown>,
+    operationId?: string,
+  ): Promise<{
+    success: boolean;
+    data?: unknown;
+    error?: string;
+  }> {
+    const policy = getRelayCommandPolicy(command);
+    const operation = () =>
+      this.executeCommandWithSlaLogging(command, requestId, payload);
+    const queuePosition =
+      policy.executionMode === "side_effect"
+        ? this.sideEffectCommandQueue.length + (this.sideEffectCommandActive ? 1 : 0)
+        : Math.max(
+            0,
+            this.activeReadOnlyCommands -
+              this.getReadOnlyCommandConcurrency() +
+              1,
+          ) + this.readOnlyCommandQueue.length;
+    const queuedMessage: CommandQueuedMessage = {
+      type: "command_queued",
+      requestId,
+      bridgeId: this.bridgeId,
+      sequence,
+      concurrencyKey: policy.concurrencyKey,
+      queuePosition,
+      invalidates: policy.invalidates,
+    };
+    this.send(queuedMessage);
+    const onStart = () => {
+      const startedMessage: CommandStartedMessage = {
+        type: "command_started",
+        requestId,
+        bridgeId: this.bridgeId,
+        sequence,
+        concurrencyKey: policy.concurrencyKey,
+        invalidates: policy.invalidates,
+        operationId,
+      };
+      this.send(startedMessage);
+    };
+
+    if (policy.executionMode === "side_effect") {
+      return this.enqueueSideEffectCommand(operation, onStart);
+    }
+
+    return this.enqueueReadOnlyCommand(operation, onStart);
+  }
+
+  private async executeCommandToResultMessage(
+    command: RelayCommand,
+    requestId: string,
+    sequence: number | undefined,
+    payloadHash: string,
+    payload?: Record<string, unknown>,
+  ): Promise<CommandResultMessage> {
+    await Promise.resolve();
+    let resultMessage: CommandResultMessage;
+    try {
+      const result = await this.scheduleCommandExecution(
+        command,
+        requestId,
+        sequence,
+        payload,
+      );
+      resultMessage = {
+        type: "command_result",
+        requestId,
+        success: result.success,
+        data: result.data,
+        error: result.error,
+      };
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      resultMessage = {
+        type: "command_result",
+        requestId,
+        success: false,
+        error: errorMessage,
+      };
+    }
+
+    this.cacheCommandResult(requestId, sequence, command, payloadHash, resultMessage);
+    return resultMessage;
+  }
+
+  private async executeCommandToOutboundMessage(
+    command: RelayCommand,
+    requestId: string,
+    sequence: number | undefined,
+    payloadHash: string,
+    payload?: Record<string, unknown>,
+  ): Promise<CommandResultMessage | OperationAcceptedMessage> {
+    const policy = getRelayCommandPolicy(command);
+    if (policy.responseMode !== "async") {
+      return this.executeCommandToResultMessage(
+        command,
+        requestId,
+        sequence,
+        payloadHash,
+        payload,
+      );
+    }
+
+    await Promise.resolve();
+    const active = this.activeOperationsByConcurrencyKey.get(
+      policy.concurrencyKey,
+    );
+    if (active) {
+      if (
+        policy.resourceConflictPolicy === "join_existing" &&
+        active.command === command &&
+        active.payloadHash === payloadHash
+      ) {
+        return {
+          type: "operation_accepted",
+          requestId,
+          operationId: active.operationId,
+          bridgeId: this.bridgeId,
+          command,
+          status: active.status,
+          concurrencyKey: active.concurrencyKey,
+          invalidates: active.invalidates,
+        };
+      }
+
+      return {
+        type: "command_result",
+        requestId,
+        success: false,
+        error: "Resource is busy with another operation",
+        code: "resource_busy",
+      };
+    }
+
+    const operationId = requestId;
+    const activeOperation: ActiveOperationEntry = {
+      operationId,
+      requestId,
+      command,
+      payloadHash,
+      concurrencyKey: policy.concurrencyKey,
+      invalidates: policy.invalidates,
+      status: "queued",
+    };
+    this.activeOperationsByConcurrencyKey.set(
+      policy.concurrencyKey,
+      activeOperation,
+    );
+
+    const executionPromise = this.scheduleCommandExecution(
+      command,
+      requestId,
+      sequence,
+      payload,
+      operationId,
+    );
+    activeOperation.status = "running";
+
+    void executionPromise
+      .then((result) => {
+        const message: OperationResultMessage = {
+          type: "operation_result",
+          operationId,
+          requestId,
+          bridgeId: this.bridgeId,
+          command,
+          success: result.success,
+          data: result.data,
+          error: result.error,
+          invalidates: policy.invalidates,
+        };
+        this.send(message);
+      })
+      .catch((error: unknown) => {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        const message: OperationResultMessage = {
+          type: "operation_result",
+          operationId,
+          requestId,
+          bridgeId: this.bridgeId,
+          command,
+          success: false,
+          error: errorMessage,
+          invalidates: policy.invalidates,
+        };
+        this.send(message);
+      })
+      .finally(() => {
+        const current = this.activeOperationsByConcurrencyKey.get(
+          policy.concurrencyKey,
+        );
+        if (current?.operationId === operationId) {
+          this.activeOperationsByConcurrencyKey.delete(policy.concurrencyKey);
+        }
+      });
+
+    const accepted: OperationAcceptedMessage = {
+      type: "operation_accepted",
+      requestId,
+      operationId,
+      bridgeId: this.bridgeId,
+      command,
+      status: activeOperation.status,
+      concurrencyKey: policy.concurrencyKey,
+      invalidates: policy.invalidates,
+    };
+    this.cacheCommandResult(requestId, sequence, command, payloadHash, accepted);
+    return accepted;
   }
 
   private async publishResyncSnapshots(reason: string): Promise<void> {
@@ -549,7 +978,7 @@ export class RelayClient {
     }> = [
       { command: "get_status", event: "bridge_status_snapshot" },
       { command: "engine_get_status", event: "engine_status_snapshot" },
-      { command: "list_outputs", payload: { refresh: true }, event: "outputs_snapshot" },
+      { command: "list_outputs", event: "outputs_snapshot" },
       { command: "graphics_list", event: "graphics_snapshot" },
     ];
 
@@ -944,11 +1373,75 @@ export class RelayClient {
       Number.isInteger(message.sequence) && (message.sequence as number) > 0
         ? (message.sequence as number)
         : undefined;
+    const payloadHash = getCommandPayloadHash(message.payload);
     if (sequence) {
       this.lastProcessedSequence = Math.max(this.lastProcessedSequence, sequence);
     }
 
     const cachedResult = this.getCachedCommandResult(message.requestId);
+    if (cachedResult) {
+      if (
+        cachedResult.command !== command ||
+        cachedResult.payloadHash !== payloadHash
+      ) {
+        this.logger.warn(
+          `Rejected duplicate requestId with conflicting command payload: ${message.requestId}`,
+        );
+        this.send(buildRequestIdConflictResult(message.requestId));
+        return;
+      }
+      this.lastProcessedSequence = Math.max(
+        this.lastProcessedSequence,
+        cachedResult.sequence ?? 0,
+      );
+      this.send({
+        type: "command_received",
+        requestId: message.requestId,
+        bridgeId: this.bridgeId,
+        sequence,
+      });
+      this.send(cachedResult.result);
+      this.logger.debug?.(
+        `Replayed cached command_result for duplicate requestId: ${message.requestId}`,
+      );
+      return;
+    }
+
+    const inFlight = this.inFlightCommandResults.get(message.requestId);
+    if (inFlight) {
+      if (inFlight.command !== command || inFlight.payloadHash !== payloadHash) {
+        this.logger.warn(
+          `Rejected duplicate requestId with conflicting in-flight command payload: ${message.requestId}`,
+        );
+        this.send(buildRequestIdConflictResult(message.requestId));
+        return;
+      }
+      this.send({
+        type: "command_received",
+        requestId: message.requestId,
+        bridgeId: this.bridgeId,
+        sequence,
+      });
+      this.send(await inFlight.resultPromise);
+      return;
+    }
+
+    const resultPromise = this.executeCommandToOutboundMessage(
+      command,
+      message.requestId,
+      sequence,
+      payloadHash,
+      message.payload,
+    );
+    this.inFlightCommandResults.set(message.requestId, {
+      command,
+      payloadHash,
+      sequence,
+      resultPromise,
+    });
+    void resultPromise.finally(() => {
+      this.inFlightCommandResults.delete(message.requestId);
+    });
 
     const receivedMessage: CommandReceivedMessage = {
       type: "command_received",
@@ -957,48 +1450,7 @@ export class RelayClient {
       sequence,
     };
     this.send(receivedMessage);
-    if (cachedResult) {
-      this.lastProcessedSequence = Math.max(
-        this.lastProcessedSequence,
-        cachedResult.sequence ?? 0,
-      );
-      this.send(cachedResult.result);
-      this.logger.debug?.(
-        `Replayed cached command_result for duplicate requestId: ${message.requestId}`,
-      );
-      return;
-    }
-
-    try {
-      const handleCommand = this.deps.handleCommand ?? defaultHandleCommand;
-      const result = await handleCommand(command, message.payload);
-
-      // Send result back to relay
-      const resultMessage: CommandResultMessage = {
-        type: "command_result",
-        requestId: message.requestId,
-        success: result.success,
-        data: result.data,
-        error: result.error,
-      };
-
-      this.send(resultMessage);
-      this.cacheCommandResult(message.requestId, sequence, resultMessage);
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-
-      // Send error result
-      const resultMessage: CommandResultMessage = {
-        type: "command_result",
-        requestId: message.requestId,
-        success: false,
-        error: errorMessage,
-      };
-
-      this.send(resultMessage);
-      this.cacheCommandResult(message.requestId, sequence, resultMessage);
-    }
+    this.send(await resultPromise);
   }
 
   /**
