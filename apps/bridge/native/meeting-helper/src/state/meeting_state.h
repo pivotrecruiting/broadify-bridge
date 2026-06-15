@@ -42,6 +42,11 @@ struct GraphicsState {
   std::string rawJson = "{\"enabled\":false}";
 };
 
+struct CameraRenderState {
+  bool mirror = true;
+  std::string rawJson = "{\"mirror\":true}";
+};
+
 struct MeetingState {
   mutable std::mutex mutex;
   bool cameraRunning = false;
@@ -74,6 +79,7 @@ struct MeetingState {
   CornerbugState cornerbug;
   MediaLayerState mediaLayer;
   GraphicsState graphics;
+  CameraRenderState cameraRender;
 };
 
 }  // namespace broadify::meeting

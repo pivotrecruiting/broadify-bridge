@@ -48,7 +48,7 @@ export const MeetingKeyerConfigureSchema = z
   );
 
 export const MeetingProgramUpdateSchema = z.object({
-  section: z.enum(["cornerbug", "graphics", "speaker_layout", "media_layer"]),
+  section: z.enum(["camera", "cornerbug", "graphics", "speaker_layout", "media_layer"]),
   values: z.record(z.unknown()),
 });
 

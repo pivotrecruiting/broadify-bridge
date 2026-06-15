@@ -31,11 +31,14 @@ std::string programSectionJson(const MeetingState &state, const std::string &sec
   if (section == "graphics") {
     return state.graphics.rawJson;
   }
+  if (section == "camera") {
+    return state.cameraRender.rawJson;
+  }
   return "{\"enabled\":false}";
 }
 
 bool isProgramSection(const std::string &section) {
-  return section == "speaker_layout" || section == "cornerbug" || section == "media_layer" || section == "graphics";
+  return section == "speaker_layout" || section == "cornerbug" || section == "media_layer" || section == "graphics" || section == "camera";
 }
 
 std::string metricNumber(double value) {
@@ -129,6 +132,11 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.graphics.source = extractStringField(safeValues, "source");
     state.graphics.handoffTarget = extractStringField(safeValues, "handoff_target");
     state.graphics.rawJson = safeValues;
+    return;
+  }
+  if (section == "camera") {
+    state.cameraRender.mirror = extractBoolField(safeValues, "mirror", state.cameraRender.mirror);
+    state.cameraRender.rawJson = std::string("{\"mirror\":") + (state.cameraRender.mirror ? "true" : "false") + "}";
   }
 }
 

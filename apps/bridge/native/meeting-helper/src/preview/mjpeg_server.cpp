@@ -43,31 +43,13 @@ const unsigned char kTinyJpeg[] = {
 #if defined(__APPLE__)
 void releaseData(void *, const void *, size_t) {}
 
-std::vector<uint8_t> mirroredRgba(const PreviewFrame &frame) {
-  std::vector<uint8_t> mirrored(frame.rgba.size());
-  const size_t rowStride = static_cast<size_t>(frame.width) * 4u;
-  for (uint32_t y = 0; y < frame.height; ++y) {
-    const size_t rowOffset = static_cast<size_t>(y) * rowStride;
-    for (uint32_t x = 0; x < frame.width; ++x) {
-      const size_t srcOffset = rowOffset + static_cast<size_t>(x) * 4u;
-      const size_t dstOffset = rowOffset + static_cast<size_t>(frame.width - 1u - x) * 4u;
-      mirrored[dstOffset + 0u] = frame.rgba[srcOffset + 0u];
-      mirrored[dstOffset + 1u] = frame.rgba[srcOffset + 1u];
-      mirrored[dstOffset + 2u] = frame.rgba[srcOffset + 2u];
-      mirrored[dstOffset + 3u] = frame.rgba[srcOffset + 3u];
-    }
-  }
-  return mirrored;
-}
-
 std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
   if (frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
     return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
   }
 
-  const std::vector<uint8_t> previewRgba = mirroredRgba(frame);
   CGDataProviderRef provider = CGDataProviderCreateWithData(
-      nullptr, previewRgba.data(), previewRgba.size(), releaseData);
+      nullptr, frame.rgba.data(), frame.rgba.size(), releaseData);
   if (provider == nullptr) {
     return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
   }

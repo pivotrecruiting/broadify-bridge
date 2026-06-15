@@ -241,6 +241,20 @@ describe("meeting-command-handler", () => {
       expect(result.success).toBe(true);
     });
 
+    it("updates camera render settings", async () => {
+      mockClient.programUpdate.mockResolvedValue({ mirror: false });
+
+      const result = await handleMeetingCommand("meeting_program_update", {
+        section: "camera",
+        values: { mirror: false },
+      });
+
+      expect(mockClient.programUpdate).toHaveBeenCalledWith("camera", {
+        mirror: false,
+      });
+      expect(result.success).toBe(true);
+    });
+
     it("rejects unknown program sections", async () => {
       await expect(
         handleMeetingCommand("meeting_program_update", {

@@ -10,6 +10,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 
 export type MeetingProgramSectionT =
+  | "camera"
   | "cornerbug"
   | "graphics"
   | "speaker_layout"

@@ -389,6 +389,12 @@ Actual layering:
 is disabled, the camera rect is full-frame. If speaker layout is enabled, the
 camera is placed as a portrait-style rectangle.
 
+The compositor mirrors only the camera layer by default. This mirror is applied
+inside `drawCamera` while sampling the camera source X coordinate, so
+backgrounds, rendered graphics, lower thirds, and text remain unmirrored in the
+program frame. The runtime setting is the `camera` program section:
+`{"mirror": true | false}`.
+
 `blendPixel` uses straight alpha blending:
 
 ```text

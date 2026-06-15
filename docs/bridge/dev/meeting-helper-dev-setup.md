@@ -107,6 +107,26 @@ Der Helper schreibt Async-Events auf stdout:
 {"type":"error","code":"model_missing","message":"modnet.onnx not found"}
 ```
 
+## Kamera-Spiegelung
+
+Die Kamera wird im Compositor standardmaessig horizontal gespiegelt, damit die
+Person im virtuellen Kamera-Output wie in einer Self-View wirkt. Das Spiegeln
+passiert nur in `drawCamera`; Backgrounds, Graphics, Lower Thirds und Schriften
+bleiben ungespiegelt.
+
+Zur Laufzeit kann das Verhalten ueber die Program-Section `camera` gesetzt
+werden:
+
+```json
+{"section":"camera","values":{"mirror":true}}
+```
+
+Fuer Debugging oder einen bewusst ungespiegelten Kameralayer:
+
+```json
+{"section":"camera","values":{"mirror":false}}
+```
+
 ## Modelle
 
 Modelle liegen unter:

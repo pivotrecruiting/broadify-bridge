@@ -16,6 +16,7 @@ struct CompositorSnapshot {
   CornerbugState cornerbug;
   MediaLayerState mediaLayer;
   GraphicsState graphics;
+  CameraRenderState cameraRender;
 };
 
 CompositorSnapshot copyCompositorSnapshot(const MeetingState &state);

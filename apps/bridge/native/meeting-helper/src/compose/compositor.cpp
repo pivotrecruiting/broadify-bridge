@@ -141,7 +141,12 @@ SourceRect coverSourceRect(uint32_t sourceWidth, uint32_t sourceHeight, int targ
   return {0, (sourceHeight - std::min(sourceHeight, cropHeight)) / 2u, sourceWidth, std::min(sourceHeight, cropHeight)};
 }
 
-void drawCamera(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &rect, const VideoFrame *cameraFrame) {
+void drawCamera(std::vector<uint8_t> &frame,
+                uint32_t width,
+                uint32_t height,
+                const Rect &rect,
+                const VideoFrame *cameraFrame,
+                bool mirror) {
   if (rect.width <= 0 || rect.height <= 0) {
     return;
   }
@@ -162,9 +167,12 @@ void drawCamera(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, co
         cameraFrame->height - 1u,
         source.y + static_cast<uint32_t>((static_cast<uint64_t>(y - rect.y) * source.height) / static_cast<uint32_t>(rect.height)));
     for (int x = minX; x < maxX; ++x) {
-      const uint32_t sx = std::min(
+      const uint32_t sampledX = std::min(
           cameraFrame->width - 1u,
           source.x + static_cast<uint32_t>((static_cast<uint64_t>(x - rect.x) * source.width) / static_cast<uint32_t>(rect.width)));
+      const uint32_t sx = mirror
+          ? source.x + source.width - 1u - (sampledX - source.x)
+          : sampledX;
       const size_t srcOffset = (static_cast<size_t>(sy) * cameraFrame->width + sx) * 4u;
       blendPixel(frame, width, height, x, y,
                  cameraFrame->rgba[srcOffset + 0],
@@ -254,6 +262,7 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
   snapshot.cornerbug = state.cornerbug;
   snapshot.mediaLayer = state.mediaLayer;
   snapshot.graphics = state.graphics;
+  snapshot.cameraRender = state.cameraRender;
   return snapshot;
 }
 
@@ -266,7 +275,13 @@ void renderProgramFrame(const Options &options,
   fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
   drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
   drawGraphicsFrame(output, options.width, options.height, graphicsFrame);
-  drawCamera(output, options.width, options.height, cameraRect(options.width, options.height, snapshot.speakerLayout), cameraFrame);
+  drawCamera(
+      output,
+      options.width,
+      options.height,
+      cameraRect(options.width, options.height, snapshot.speakerLayout),
+      cameraFrame,
+      snapshot.cameraRender.mirror);
   drawGraphics(output, options.width, options.height, snapshot.graphics);
   drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
 }
