@@ -9,6 +9,8 @@
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 
+#include <algorithm>
+#include <cctype>
 #include <mutex>
 
 namespace broadify::meeting {
@@ -38,6 +40,24 @@ static NSArray<AVCaptureDevice *> *BroadifyDiscoverVideoDevices() {
 
 namespace broadify::meeting {
 
+namespace {
+
+std::string lowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+bool isBroadifyVirtualCamera(const std::string &label, const std::string &uniqueId) {
+  const std::string haystack = lowerAscii(label + " " + uniqueId);
+  return haystack.find("com.broadify.vcam") != std::string::npos ||
+         haystack.find("broadify camera") != std::string::npos ||
+         haystack.find("broadify virtual camera") != std::string::npos;
+}
+
+}  // namespace
+
 class AvFoundationCameraSource final : public CameraSource {
  public:
   AvFoundationCameraSource() = default;
@@ -53,10 +73,16 @@ class AvFoundationCameraSource final : public CameraSource {
       std::vector<CameraInfo> cameras;
       int index = 0;
       for (AVCaptureDevice *device in devices) {
+        const std::string label = [[device localizedName] UTF8String] ?: "";
+        const std::string cameraId = [[device uniqueID] UTF8String] ?: label;
+        if (isBroadifyVirtualCamera(label, cameraId)) {
+          continue;
+        }
+
         CameraInfo info;
         info.cameraIndex = index++;
-        info.label = [[device localizedName] UTF8String] ?: "";
-        info.cameraId = [[device uniqueID] UTF8String] ?: info.label;
+        info.label = label;
+        info.cameraId = cameraId;
         info.displayName = info.label;
         info.stableKey = info.cameraId;
         info.backend = "avfoundation";
@@ -75,8 +101,18 @@ class AvFoundationCameraSource final : public CameraSource {
   }
 
   bool selectCamera(int cameraIndex) override {
+    const std::vector<CameraInfo> cameras = listCameras();
+    const auto camera = std::find_if(cameras.begin(), cameras.end(), [cameraIndex](const CameraInfo &info) {
+      return info.cameraIndex == cameraIndex;
+    });
+    if (camera == cameras.end()) {
+      setError("Requested camera index is not available.");
+      return false;
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
-    selectedIndex_ = cameraIndex;
+    selectedIndex_ = camera->cameraIndex;
+    lastError_.clear();
     return true;
   }
 
@@ -90,12 +126,15 @@ class AvFoundationCameraSource final : public CameraSource {
 
       const std::vector<CameraInfo> cameras = listCameras();
       const int resolvedIndex = cameraIndex >= 0 ? cameraIndex : selectedIndex_;
-      if (resolvedIndex < 0 || resolvedIndex >= static_cast<int>(cameras.size())) {
+      const auto camera = std::find_if(cameras.begin(), cameras.end(), [resolvedIndex](const CameraInfo &info) {
+        return info.cameraIndex == resolvedIndex;
+      });
+      if (camera == cameras.end()) {
         setError("Requested camera index is not available.");
         return false;
       }
 
-      AVCaptureDevice *device = findDeviceByUniqueId(cameras[resolvedIndex].cameraId);
+      AVCaptureDevice *device = findDeviceByUniqueId(camera->cameraId);
       if (device == nil) {
         setError("Requested camera device was not found.");
         return false;
@@ -138,7 +177,7 @@ class AvFoundationCameraSource final : public CameraSource {
         output_ = output;
         delegate_ = delegate;
         queue_ = queue;
-        selectedIndex_ = resolvedIndex;
+        selectedIndex_ = camera->cameraIndex;
         targetWidth_ = width;
         targetHeight_ = height;
         targetFps_ = fps;
