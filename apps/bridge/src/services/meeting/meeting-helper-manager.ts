@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_MEETING_FRAMEBUS_NAME,
+  DEFAULT_MEETING_VCAM_FRAME_PORT,
   getVcamHelperStatus,
   isVcamExtensionAvailable,
   type VcamHelperStatusT,
@@ -24,6 +25,8 @@ const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 const MODELS_DIR_ENV = "BRIDGE_MEETING_MODELS_DIR";
 const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
+const HELPER_PING_ATTEMPTS = 15;
+const HELPER_PING_DELAY_MS = 100;
 
 export type MeetingHelperLifecycleStateT =
   | "stopped"
@@ -158,6 +161,25 @@ export function findFreePort(): Promise<number> {
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Retry control.ping because helper startup can briefly race with socket accept.
+ */
+async function waitForHelperPing(client: MeetingHelperClient): Promise<boolean> {
+  for (let attempt = 0; attempt < HELPER_PING_ATTEMPTS; attempt += 1) {
+    if (await client.ping()) {
+      return true;
+    }
+    if (attempt + 1 < HELPER_PING_ATTEMPTS) {
+      await sleep(HELPER_PING_DELAY_MS);
+    }
+  }
+  return false;
+}
+
 function resolveControlSocketPath(): string {
   const envPath = process.env[CONTROL_SOCKET_ENV];
   if (envPath) {
@@ -288,6 +310,8 @@ export class MeetingHelperManager {
         controlSocketPath,
         "--framebus-name",
         this.getFramebusName(),
+        "--vcam-frame-port",
+        String(DEFAULT_MEETING_VCAM_FRAME_PORT),
         "--width",
         String(width),
         "--height",
@@ -301,6 +325,7 @@ export class MeetingHelperManager {
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         MEETING_FRAMEBUS_NAME: this.getFramebusName(),
+        MEETING_VCAM_FRAME_PORT: String(DEFAULT_MEETING_VCAM_FRAME_PORT),
         MEETING_CONTROL_SOCKET: controlSocketPath,
         MEETING_PREVIEW_PORT: String(port),
         MEETING_FRAME_WIDTH: String(width),
@@ -338,11 +363,14 @@ export class MeetingHelperManager {
 
       await this.waitForReady();
       const client = new MeetingHelperClient(controlSocketPath);
-      const healthy = await client.ping();
+      const healthy = await waitForHelperPing(client);
       if (!healthy) {
         this.lastError = "Meeting helper did not respond to control.ping";
         this.state = "error";
         publishMeetingErrorEvent("helper_ping_failed", this.lastError);
+        logger.warn(
+          `[Meeting] ${this.lastError} after ${HELPER_PING_ATTEMPTS} attempts`,
+        );
         this.killProcess();
         return this.getStatus();
       }

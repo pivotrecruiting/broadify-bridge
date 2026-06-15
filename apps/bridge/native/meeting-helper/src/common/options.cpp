@@ -51,6 +51,7 @@ Options parseOptions(int argc, char **argv) {
   options.height = parseU32(getenvOrNull("MEETING_FRAME_HEIGHT"), options.height);
   options.fps = parseU32(getenvOrNull("MEETING_FRAME_FPS"), options.fps);
   options.previewPort = parseU16(getenvOrNull("MEETING_PREVIEW_PORT"), options.previewPort);
+  options.vcamFramePort = parseU16(getenvOrNull("MEETING_VCAM_FRAME_PORT"), options.vcamFramePort);
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -76,6 +77,8 @@ Options parseOptions(int argc, char **argv) {
       options.fps = parseU32(next(), options.fps);
     } else if (arg == "--preview-port") {
       options.previewPort = parseU16(next(), options.previewPort);
+    } else if (arg == "--vcam-frame-port") {
+      options.vcamFramePort = parseU16(next(), options.vcamFramePort);
     }
   }
   return options;

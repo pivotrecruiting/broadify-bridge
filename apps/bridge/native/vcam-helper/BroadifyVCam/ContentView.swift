@@ -110,7 +110,10 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         actionForReplacingExtension existing: OSSystemExtensionProperties,
         withExtension ext: OSSystemExtensionProperties
     ) -> OSSystemExtensionRequest.ReplacementAction {
-        .replace
+        statusText =
+            "Replacing extension v\(existing.bundleShortVersion)/\(existing.bundleVersion) "
+            + "with v\(ext.bundleShortVersion)/\(ext.bundleVersion)…"
+        return .replace
     }
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {

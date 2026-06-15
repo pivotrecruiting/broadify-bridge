@@ -3,6 +3,7 @@
 #include "util/json_utils.h"
 
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <sstream>
 
@@ -359,7 +360,11 @@ void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
                       const Options &options,
-                      std::atomic<bool> &running) {
+                      std::atomic<bool> &running,
+                      const std::function<void()> &onListening) {
+  if (onListening) {
+    onListening();
+  }
   while (running.load()) {
     HANDLE pipe = CreateNamedPipeA(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
                                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -394,7 +399,8 @@ void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
                       const Options &options,
-                      std::atomic<bool> &running) {
+                      std::atomic<bool> &running,
+                      const std::function<void()> &onListening) {
   unlink(socketPath.c_str());
   int serverFd = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
   if (serverFd < 0) {
@@ -409,6 +415,10 @@ void runControlServer(const std::string &socketPath,
     close(serverFd);
     unlink(socketPath.c_str());
     return;
+  }
+
+  if (onListening) {
+    onListening();
   }
 
   while (running.load()) {

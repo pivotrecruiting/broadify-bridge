@@ -100,3 +100,64 @@ cp -R "$VCAM_APP" "/Applications/BroadifyVCam.app"
 ```bash
 open "/Applications/BroadifyVCam.app"
 ```
+
+## 9. Raw-Frame-Stream pruefen (wenn nur Splash/no signal)
+
+CMIO-Extensions sind sandboxed und lesen den MeetingHelper-Output ueber einen
+lokalen Raw-Frame-Stream. Der MeetingHelper muss auf `127.0.0.1:18787`
+lauschen:
+
+```bash
+lsof -nP -iTCP:18787 -sTCP:LISTEN
+```
+
+Die Bridge-Logs muessen `meeting_vcam_raw` mit `event:"listening"` zeigen.
+Ohne laufenden MeetingHelper zeigt die Kamera den „No Signal“-Splash (graues
+Bild mit hellem Rechteck).
+
+Aktive Extension-Logs pruefen:
+
+```bash
+/usr/bin/log show --last 5m --style compact --predicate 'subsystem == "com.broadify.vcam.extension"'
+```
+
+Erwartet sind `Connected to raw VCam frame stream` und steigende
+`Buffered raw VCam frame seq=...`-Meldungen. Wenn die WebApp-Preview korrekt ist,
+aber die Kamera grau bleibt, ist der Program/Preview-Pfad meist nicht das
+Problem. Dann laeuft sehr wahrscheinlich noch eine alte Extension-Version oder
+die aktive Extension erreicht den lokalen Stream nicht.
+
+## 10. Extension nach Rebuild ersetzen (wichtig)
+
+macOS startet die Extension aus `/Library/SystemExtensions/`, nicht direkt aus
+der `.app`. Nach jedem `install:vcam-helper` die neue Version aktivieren:
+
+```bash
+open "/Applications/BroadifyVCam.app"
+```
+
+In der App **Activate extension** klicken und ggf. die Ersetzung bestaetigen.
+macOS ersetzt nur bei **neuer CFBundleVersion**. Vor einem Rebuild die Version
+in diesen Dateien erhoehen, wenn bereits eine lokale Version installiert ist:
+
+- `apps/bridge/native/vcam-helper/project.yml`
+- `apps/bridge/native/vcam-helper/BroadifyVCam/Info.plist`
+- `apps/bridge/native/vcam-helper/BroadifyVCamExtension/Info.plist`
+
+Alternativ komplett deinstallieren und neu aktivieren:
+
+```bash
+systemextensionsctl uninstall PG38DC5RG9 com.broadify.vcam.extension
+open "/Applications/BroadifyVCam.app"
+```
+
+Pruefen, ob die laufende Extension die Raw-Stream-Version enthaelt:
+
+```bash
+strings /Library/SystemExtensions/*/com.broadify.vcam.extension.systemextension/Contents/MacOS/BroadifyVCamExtension | grep raw-frame-stream
+```
+
+Wenn diese Zeile fehlt, laeuft noch die alte Extension.
+Wenn mehrere Treffer aus unterschiedlichen `/Library/SystemExtensions/<UUID>/...`
+kommen, in der App erneut **Activate extension** ausloesen und alte Versionen
+ueber den offiziellen `systemextensionsctl uninstall`-Flow entfernen.

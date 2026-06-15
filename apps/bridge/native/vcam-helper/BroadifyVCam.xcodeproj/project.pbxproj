@@ -10,13 +10,12 @@
 		02256F061AF6979B100F8780 /* BroadifyVCamExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 36BA3CA3785118990A147ECF /* BroadifyVCamExtension.systemextension */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		3FE99AE95CFF1DD414B115FA /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7973FE4D6874F16B71437255 /* ServiceManagement.framework */; };
 		6234E6F8A565B94FCA44B422 /* VCamDeviceSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0264AD3D36832CB6521F57 /* VCamDeviceSource.swift */; };
-		706F18B14BF088295CDA1C45 /* framebus_reader.c in Sources */ = {isa = PBXBuildFile; fileRef = B266F9E25349982662231EB6 /* framebus_reader.c */; };
 		74C51FADBEA0DB9766E466CC /* VCamProviderSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0765C3AC89391386CA36A0DC /* VCamProviderSource.swift */; };
 		77DFBEE2A9DB29EE73D4A466 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67416A2B2524DABF3A5F955F /* ContentView.swift */; };
 		8536EB750591052B8742F1A4 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 981A36CFFEC7560BE78BAEC5 /* main.swift */; };
+		8E73BB7F3AA9FD96D6675EED /* RawFrameStreamReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 170A930A59955F21C04CEE5E /* RawFrameStreamReader.swift */; };
 		A4D6721AD35E47A4ED85E160 /* BroadifyVCamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */; };
 		C88BB60D507B42A2FD70E8FE /* SystemExtensionSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B239BA6F7191884BD305682 /* SystemExtensionSettings.swift */; };
-		F95461DFE29BB821CFA2029D /* FrameBusReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC66B1866B8DEA3DC19FBEFE /* FrameBusReader.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,21 +44,18 @@
 
 /* Begin PBXFileReference section */
 		0765C3AC89391386CA36A0DC /* VCamProviderSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VCamProviderSource.swift; sourceTree = "<group>"; };
+		170A930A59955F21C04CEE5E /* RawFrameStreamReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawFrameStreamReader.swift; sourceTree = "<group>"; };
 		3522F41C8E818B526DB84144 /* BroadifyVCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BroadifyVCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		36BA3CA3785118990A147ECF /* BroadifyVCamExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = BroadifyVCamExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 		4B239BA6F7191884BD305682 /* SystemExtensionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemExtensionSettings.swift; sourceTree = "<group>"; };
-		5966C67D47A32BC1AA6B1518 /* framebus_reader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = framebus_reader.h; sourceTree = "<group>"; };
 		5D0264AD3D36832CB6521F57 /* VCamDeviceSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VCamDeviceSource.swift; sourceTree = "<group>"; };
 		67416A2B2524DABF3A5F955F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7973FE4D6874F16B71437255 /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
 		981A36CFFEC7560BE78BAEC5 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		9E2598C2C8DFFE0CC3D4E3B8 /* BridgingHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BridgingHeader.h; sourceTree = "<group>"; };
 		A5061AF9F24929E5B4D66F23 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadifyVCamApp.swift; sourceTree = "<group>"; };
-		B266F9E25349982662231EB6 /* framebus_reader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = framebus_reader.c; sourceTree = "<group>"; };
 		CB5C825A1E5CFCEC28077981 /* BroadifyVCamExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BroadifyVCamExtension.entitlements; sourceTree = "<group>"; };
 		CB9AB8D70808A609C073D44A /* BroadifyVCam.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BroadifyVCam.entitlements; sourceTree = "<group>"; };
-		DC66B1866B8DEA3DC19FBEFE /* FrameBusReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameBusReader.swift; sourceTree = "<group>"; };
 		F05482DF0CB6AA6ABC345EEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -104,54 +100,27 @@
 			path = BroadifyVCam;
 			sourceTree = "<group>";
 		};
-		510A7A7D026D6C7D3117B613 /* src */ = {
-			isa = PBXGroup;
-			children = (
-				B266F9E25349982662231EB6 /* framebus_reader.c */,
-			);
-			path = src;
-			sourceTree = "<group>";
-		};
 		6B5154DBD3F5F14BD8A67710 = {
 			isa = PBXGroup;
 			children = (
 				496A8F61222B20706083F176 /* BroadifyVCam */,
 				A6E4FC9322FAF1C2BE955445 /* BroadifyVCamExtension */,
-				F01965E9F1F7BD827200A88F /* Shared */,
 				0CB800CAE323EB28B987DF34 /* Frameworks */,
 				05A4285BD0FAB6148632FDA0 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		923952A9DF2351C262229C6F /* include */ = {
-			isa = PBXGroup;
-			children = (
-				5966C67D47A32BC1AA6B1518 /* framebus_reader.h */,
-			);
-			path = include;
-			sourceTree = "<group>";
-		};
 		A6E4FC9322FAF1C2BE955445 /* BroadifyVCamExtension */ = {
 			isa = PBXGroup;
 			children = (
-				9E2598C2C8DFFE0CC3D4E3B8 /* BridgingHeader.h */,
 				CB5C825A1E5CFCEC28077981 /* BroadifyVCamExtension.entitlements */,
-				DC66B1866B8DEA3DC19FBEFE /* FrameBusReader.swift */,
 				F05482DF0CB6AA6ABC345EEB /* Info.plist */,
 				981A36CFFEC7560BE78BAEC5 /* main.swift */,
+				170A930A59955F21C04CEE5E /* RawFrameStreamReader.swift */,
 				5D0264AD3D36832CB6521F57 /* VCamDeviceSource.swift */,
 				0765C3AC89391386CA36A0DC /* VCamProviderSource.swift */,
 			);
 			path = BroadifyVCamExtension;
-			sourceTree = "<group>";
-		};
-		F01965E9F1F7BD827200A88F /* Shared */ = {
-			isa = PBXGroup;
-			children = (
-				923952A9DF2351C262229C6F /* include */,
-				510A7A7D026D6C7D3117B613 /* src */,
-			);
-			path = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -238,10 +207,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F95461DFE29BB821CFA2029D /* FrameBusReader.swift in Sources */,
+				8E73BB7F3AA9FD96D6675EED /* RawFrameStreamReader.swift in Sources */,
 				6234E6F8A565B94FCA44B422 /* VCamDeviceSource.swift in Sources */,
 				74C51FADBEA0DB9766E466CC /* VCamProviderSource.swift in Sources */,
-				706F18B14BF088295CDA1C45 /* framebus_reader.c in Sources */,
 				8536EB750591052B8742F1A4 /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -292,7 +260,6 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = PG38DC5RG9;
 				EXECUTABLE_NAME = BroadifyVCamExtension;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Shared/include";
 				INFOPLIST_FILE = BroadifyVCamExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -301,7 +268,6 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam.extension;
 				PRODUCT_NAME = com.broadify.vcam.extension;
 				SDKROOT = macosx;
-				SWIFT_OBJC_BRIDGING_HEADER = BroadifyVCamExtension/BridgingHeader.h;
 			};
 			name = Debug;
 		};
@@ -389,7 +355,6 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = PG38DC5RG9;
 				EXECUTABLE_NAME = BroadifyVCamExtension;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Shared/include";
 				INFOPLIST_FILE = BroadifyVCamExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -398,7 +363,6 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam.extension;
 				PRODUCT_NAME = com.broadify.vcam.extension;
 				SDKROOT = macosx;
-				SWIFT_OBJC_BRIDGING_HEADER = BroadifyVCamExtension/BridgingHeader.h;
 			};
 			name = Release;
 		};

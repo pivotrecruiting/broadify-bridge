@@ -96,6 +96,7 @@ codesign --verify --strict --deep --verbose=2 "${SOURCE_APP}"
 codesign --verify --strict --deep --verbose=2 "${EXT_BUNDLE}"
 
 DEST_EXT="${DEST_APP}/Contents/Library/SystemExtensions/${VCAM_EXTENSION_BUNDLE_NAME}"
+DEST_EXT_INFO="${DEST_EXT}/Contents/Info.plist"
 
 echo "Installing BroadifyVCam.app to ${DEST_APP}"
 rm -rf "$DEST_APP"
@@ -106,6 +107,8 @@ if [[ ! -d "$DEST_EXT" ]]; then
   echo "install-vcam-helper-macos: installed app is missing embedded system extension at ${DEST_EXT}" >&2
   exit 1
 fi
+
+INSTALLED_EXT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$DEST_EXT_INFO" 2>/dev/null || true)"
 
 echo "install-vcam-helper-macos: canonical helper app is ${DEST_APP}"
 echo "install-vcam-helper-macos: always launch this copy (not Xcode DerivedData builds)."
@@ -119,3 +122,47 @@ if command -v systemextensionsctl >/dev/null 2>&1; then
 fi
 
 echo "Installed ${DEST_APP}"
+
+active_vcam_extension_version() {
+  systemextensionsctl list 2>/dev/null \
+    | grep 'com.broadify.vcam.extension' \
+    | grep '\[activated enabled\]' \
+    | sed -n 's/.*com\.broadify\.vcam\.extension ([^/]*\/\([^)]*\)).*/\1/p' \
+    | head -n 1
+}
+
+if [[ "${BRIDGE_VCAM_REINITIALIZE_ON_INSTALL:-1}" == "1" ]]; then
+  echo "install-vcam-helper-macos: reinitializing BroadifyVCam.app for development"
+  /usr/bin/osascript -e 'tell application id "com.broadify.vcam" to quit' >/dev/null 2>&1 || true
+  /usr/bin/pkill -x BroadifyVCam >/dev/null 2>&1 || true
+  /usr/bin/open -n "$DEST_APP"
+
+  if command -v systemextensionsctl >/dev/null 2>&1 && [[ -n "$INSTALLED_EXT_VERSION" ]]; then
+    for _ in {1..20}; do
+      ACTIVE_EXT_VERSION="$(active_vcam_extension_version)"
+      if [[ "$ACTIVE_EXT_VERSION" == "$INSTALLED_EXT_VERSION" ]]; then
+        echo "install-vcam-helper-macos: active BroadifyVCamExtension version is ${ACTIVE_EXT_VERSION}"
+        break
+      fi
+      sleep 1
+    done
+
+    ACTIVE_EXT_VERSION="$(active_vcam_extension_version)"
+    if [[ "$ACTIVE_EXT_VERSION" != "$INSTALLED_EXT_VERSION" ]]; then
+      echo "install-vcam-helper-macos: BroadifyVCamExtension installed version is ${INSTALLED_EXT_VERSION}, active version is ${ACTIVE_EXT_VERSION:-none}" >&2
+      echo "install-vcam-helper-macos: click Activate extension in ${DEST_APP} and approve the replacement in System Settings." >&2
+    fi
+  fi
+fi
+
+if command -v systemextensionsctl >/dev/null 2>&1; then
+  RUNNING_EXT="$(systemextensionsctl list 2>/dev/null | grep 'com.broadify.vcam.extension' || true)"
+  if [[ -n "$RUNNING_EXT" ]]; then
+    echo ""
+    echo "IMPORTANT: macOS keeps the previously activated system extension running from"
+    echo "/Library/SystemExtensions/ until you replace it. After each VCam rebuild:"
+    echo "  1. open \"${DEST_APP}\""
+    echo "  2. Click \"Activate extension\" and approve the replacement if macOS asks"
+    echo "  3. Verify: strings /Library/SystemExtensions/*/com.broadify.vcam.extension.systemextension/Contents/MacOS/BroadifyVCamExtension | grep raw-frame-stream"
+  fi
+fi

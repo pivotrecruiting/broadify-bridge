@@ -14,6 +14,7 @@ struct Options {
   uint32_t height = 720;
   uint32_t fps = 30;
   uint16_t previewPort = 9123;
+  uint16_t vcamFramePort = 18787;
 };
 
 Options parseOptions(int argc, char **argv);

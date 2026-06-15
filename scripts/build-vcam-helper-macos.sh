@@ -6,8 +6,7 @@ VCAM_DIR="${ROOT_DIR}/apps/bridge/native/vcam-helper"
 VCAM_DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM:-PG38DC5RG9}"
 VCAM_EXTENSION_BUNDLE_ID="${VCAM_EXTENSION_BUNDLE_ID:-com.broadify.vcam.extension}"
 VCAM_EXTENSION_BUNDLE_NAME="${VCAM_EXTENSION_BUNDLE_ID}.systemextension"
-VCAM_APP_GROUP="${VCAM_DEVELOPMENT_TEAM}.com.broadify.vcam"
-VCAM_CMIO_MACH_SERVICE="${VCAM_APP_GROUP}.service"
+VCAM_CMIO_MACH_SERVICE="${VCAM_DEVELOPMENT_TEAM}.com.broadify.vcam.service"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "build-vcam-helper-macos: macOS is required" >&2
@@ -96,6 +95,7 @@ xcodebuild \
   -derivedDataPath build \
   SYMROOT=build \
   DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM}" \
+  CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
   -allowProvisioningUpdates \
   build
 
@@ -122,15 +122,6 @@ fi
 APP_TEAM_ID="$(codesign -dv --verbose=4 "${APP_PATH}" 2>&1 | awk -F= '/TeamIdentifier=/ { print $2; exit }')"
 if [[ "${APP_TEAM_ID}" != "${VCAM_DEVELOPMENT_TEAM}" ]]; then
   echo "build-vcam-helper-macos: expected team ${VCAM_DEVELOPMENT_TEAM}, got ${APP_TEAM_ID}" >&2
-  exit 1
-fi
-
-EXT_APP_GROUP="$(
-  codesign -d --entitlements - "${EXT_PATH}" 2>&1 \
-    | awk '/\[String\] PG/ { print $2; exit }'
-)"
-if [[ "${EXT_APP_GROUP}" != "${VCAM_APP_GROUP}" ]]; then
-  echo "build-vcam-helper-macos: expected app group ${VCAM_APP_GROUP}, got ${EXT_APP_GROUP:-<missing>}" >&2
   exit 1
 fi
 

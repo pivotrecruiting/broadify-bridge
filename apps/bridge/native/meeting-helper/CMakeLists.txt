@@ -41,6 +41,7 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/frame_pipeline.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
+  src/preview/raw_frame_server.cpp
   src/util/sha256.cpp
   src/util/json_utils.cpp
 )

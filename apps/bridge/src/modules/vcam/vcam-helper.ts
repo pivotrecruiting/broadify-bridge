@@ -16,6 +16,7 @@ export const VCAM_EMBEDDED_EXTENSION_REL_PATH = join(
   VCAM_EMBEDDED_EXTENSION_BUNDLE_NAME,
 );
 export const DEFAULT_MEETING_FRAMEBUS_NAME = "broadify-meeting-framebus";
+export const DEFAULT_MEETING_VCAM_FRAME_PORT = 18787;
 
 export type VcamHelperStatusT = {
   platform: NodeJS.Platform;

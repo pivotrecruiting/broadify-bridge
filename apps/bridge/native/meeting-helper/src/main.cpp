@@ -4,12 +4,15 @@
 #include "pipeline/frame_pipeline.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
+#include "preview/raw_frame_server.h"
 #include "state/meeting_state.h"
 #include "util/json_utils.h"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -47,18 +50,33 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  // stdout is piped to the bridge; ensure lifecycle events flush promptly.
+  setvbuf(stdout, nullptr, _IOLBF, 0);
+
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
 
+  std::promise<void> controlListening;
+  std::future<void> controlListeningFuture = controlListening.get_future();
   std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(g_running));
+  std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(g_running));
   std::thread control(
-      runControlServer, options.controlSocket, std::ref(state), std::ref(*camera), std::cref(options), std::ref(g_running));
+      runControlServer,
+      options.controlSocket,
+      std::ref(state),
+      std::ref(*camera),
+      std::cref(options),
+      std::ref(g_running),
+      [&controlListening]() { controlListening.set_value(); });
+
+  controlListeningFuture.wait();
 
   std::ostringstream ready;
   ready << "{\"type\":\"ready\",\"framebus\":\"" << jsonEscape(options.framebusName)
         << "\",\"preview_port\":" << options.previewPort
+        << ",\"vcam_frame_port\":" << options.vcamFramePort
         << ",\"control_socket\":\"" << jsonEscape(options.controlSocket) << "\"}";
   printEvent(ready.str());
 
@@ -77,6 +95,9 @@ int main(int argc, char **argv) {
   }
   if (preview.joinable()) {
     preview.detach();
+  }
+  if (vcamRaw.joinable()) {
+    vcamRaw.detach();
   }
   if (control.joinable()) {
     control.detach();

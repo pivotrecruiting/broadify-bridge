@@ -4,11 +4,7 @@ import Foundation
 import IOKit.audio
 import os.log
 
-/// FrameBus shm segment name; must match BRIDGE_MEETING_FRAMEBUS_NAME /
-/// MEETING_FRAMEBUS_NAME used by the bridge and the meeting engine sidecar.
-private let kFrameBusName = "broadify-meeting-framebus"
-
-/// Output format used until the FrameBus session reports its own geometry.
+/// Output format used until the raw frame stream reports its own geometry.
 private let kDefaultWidth = 1280
 private let kDefaultHeight = 720
 private let kDefaultFps = 30
@@ -18,8 +14,8 @@ private let log = OSLog(subsystem: "com.broadify.vcam.extension", category: "dev
 /**
  * Virtual camera device with a single streaming output.
  *
- * A dispatch timer pulls the latest FrameBus frame on every tick and
- * forwards it as a CMSampleBuffer. When no FrameBus session exists (engine
+ * A dispatch timer copies the latest raw stream frame on every tick and
+ * forwards it as a CMSampleBuffer. When no frame stream exists (engine
  * stopped or output disabled) a generated splash frame is sent instead so
  * the camera stays selectable in meeting apps.
  */
@@ -33,7 +29,7 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         qos: .userInteractive
     )
 
-    private let frameBusReader = FrameBusReader(name: kFrameBusName)
+    private let rawFrameStreamReader = RawFrameStreamReader()
     private var bufferPool: CVPixelBufferPool?
     private var formatDescription: CMFormatDescription?
     private var currentWidth = kDefaultWidth
@@ -120,21 +116,12 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         }
         timer?.cancel()
         timer = nil
-        frameBusReader.close()
         os_log(.info, log: log, "Streaming stopped")
     }
 
     // MARK: - Frame production
 
     private func emitFrame() {
-        if frameBusReader.openIfNeeded() {
-            let width = Int(frameBusReader.width)
-            let height = Int(frameBusReader.height)
-            if width > 0, height > 0, width != currentWidth || height != currentHeight {
-                rebuildVideoFormat(width: width, height: height)
-            }
-        }
-
         guard let pool = bufferPool, let formatDescription else {
             return
         }
@@ -154,10 +141,16 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
         let dst = baseAddress.assumingMemoryBound(to: UInt8.self)
 
-        let gotFrame = frameBusReader.copyLatestFrame(into: dst, stride: stride)
-        if !gotFrame {
-            // Keep the previous content (pool buffers are reused) or draw the
-            // splash pattern when the engine is not publishing frames.
+        let hasFrame = rawFrameStreamReader.copyLatestFrame(into: dst, stride: stride)
+        if hasFrame {
+            let streamWidth = Int(rawFrameStreamReader.width)
+            let streamHeight = Int(rawFrameStreamReader.height)
+            if streamWidth > 0, streamHeight > 0, streamWidth != currentWidth || streamHeight != currentHeight {
+                rebuildVideoFormat(width: streamWidth, height: streamHeight)
+            }
+        } else {
+            os_log(.debug, log: log, "No VCam raw frame (seq=%{public}llu)",
+                   rawFrameStreamReader.publishedSeq)
             drawSplashFrame(dst: dst, stride: stride)
         }
 

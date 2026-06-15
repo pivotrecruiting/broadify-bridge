@@ -23,12 +23,13 @@ targets:
       - path: BroadifyVCam
     info:
       path: BroadifyVCam/Info.plist
+      properties:
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "9"
     entitlements:
       path: BroadifyVCam/BroadifyVCam.entitlements
       properties:
         com.apple.security.app-sandbox: true
-        com.apple.security.application-groups:
-          - $(TeamIdentifierPrefix)com.broadify.vcam
         com.apple.developer.system-extension.install: true
     settings:
       base:
@@ -45,12 +46,12 @@ targets:
     platform: macOS
     sources:
       - path: BroadifyVCamExtension
-      - path: Shared/src/framebus_reader.c
-      - path: Shared/include/framebus_reader.h
     info:
       path: BroadifyVCamExtension/Info.plist
       properties:
         CFBundlePackageType: SYSX
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "9"
         NSSystemExtensionUsageDescription: "broadify Virtual Camera exposes meeting program output as a system camera device."
         CMIOExtension:
           CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)com.broadify.vcam.service
@@ -58,8 +59,7 @@ targets:
       path: BroadifyVCamExtension/BroadifyVCamExtension.entitlements
       properties:
         com.apple.security.app-sandbox: true
-        com.apple.security.application-groups:
-          - $(TeamIdentifierPrefix)com.broadify.vcam
+        com.apple.security.network.client: true
     settings:
       base:
         DEVELOPMENT_TEAM: "PG38DC5RG9"
@@ -67,5 +67,3 @@ targets:
         # Apple requires the embedded bundle filename to match the bundle ID.
         PRODUCT_NAME: com.broadify.vcam.extension
         EXECUTABLE_NAME: BroadifyVCamExtension
-        SWIFT_OBJC_BRIDGING_HEADER: BroadifyVCamExtension/BridgingHeader.h
-        HEADER_SEARCH_PATHS: $(SRCROOT)/Shared/include
