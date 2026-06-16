@@ -563,11 +563,21 @@ jobs:
             }
           }
 
-          # Ensure the Windows Installer service can start for ICE validation.
+          # The dominant ICE failure is "The Windows Installer Service could not
+          # be accessed". Re-register the Windows Installer service (the
+          # documented fix) and make sure it is enabled and running, so WiX ICE
+          # validation can open a real MSI session.
+          $msiexec = "$env:SystemRoot\System32\msiexec.exe"
+          Write-Host "Re-registering Windows Installer service"
+          Start-Process $msiexec -ArgumentList '/unregister' -Wait -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Process $msiexec -ArgumentList '/regserver'  -Wait -NoNewWindow -ErrorAction SilentlyContinue
+
           try {
             Set-Service -Name msiserver -StartupType Manual -ErrorAction Stop
+            Start-Service -Name msiserver -ErrorAction Stop
+            (Get-Service msiserver | Format-List Name, Status, StartType | Out-String) | Write-Host
           } catch {
-            Write-Warning "Could not configure msiserver service: $_"
+            Write-Warning "Could not start msiserver service: $_"
           }
 
       - name: Build Electron App
