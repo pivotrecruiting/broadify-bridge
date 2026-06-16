@@ -220,6 +220,10 @@ jobs:
           fi
           echo "Bridge config prepared"
 
+      - name: Install xcodegen (macOS, for vcam-helper)
+        if: matrix.os == 'macos-15'
+        run: brew install xcodegen
+
       - name: Resolve SDL2 bundle (macOS, for display-helper)
         if: matrix.os == 'macos-15'
         run: npm run ensure:sdl2-macos
@@ -265,6 +269,36 @@ jobs:
 
           "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "SDL2_DIR=$(Join-Path $vcpkgRoot 'installed\x64-windows')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install ONNX Runtime (Windows, for meeting-helper MODNet)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Must match the vendored macOS ONNX Runtime version
+          # (apps/bridge/native/meeting-helper/deps/onnxruntime/macos-arm64/VERSION_NUMBER).
+          $version = '1.26.0'
+          $pkg = "onnxruntime-win-x64-$version"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$version/$pkg.zip"
+          $tmp = Join-Path $env:RUNNER_TEMP 'onnxruntime'
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $zip = Join-Path $tmp "$pkg.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'apps\bridge\native\meeting-helper\deps\onnxruntime\windows-x64'
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $tmp "$pkg\*") $dest
+
+          if (-not (Test-Path (Join-Path $dest 'include\onnxruntime_cxx_api.h'))) {
+            throw "ONNX Runtime headers missing after extraction under $dest"
+          }
+          if (-not (Test-Path (Join-Path $dest 'lib\onnxruntime.dll'))) {
+            throw "ONNX Runtime DLL missing after extraction under $dest"
+          }
+          Write-Host "ONNX Runtime $version installed to $dest"
 
       - name: Validate Windows Trusted Signing configuration
         if: matrix.os == 'windows-2022'
