@@ -99,11 +99,9 @@ REQUIRED_FILES=(
   "apps/bridge/native/display-helper/display-helper"
   "apps/bridge/native/decklink-helper/decklink-helper"
   "apps/bridge/native/meeting-helper/meeting-helper"
-  "apps/bridge/native/meeting-helper/libonnxruntime.dylib"
-  "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib"
-  "apps/bridge/native/meeting-helper/models/manifest.json"
-  "apps/bridge/native/meeting-helper/models/modnet.onnx"
 )
+# macOS uses the Apple Vision keyer only; MODNet/ONNX Runtime and the model
+# ship on Windows, so they are intentionally absent from the macOS bundle.
 EXECUTABLE_FILES=(
   "apps/bridge/native/display-helper/display-helper"
   "apps/bridge/native/decklink-helper/decklink-helper"
@@ -267,9 +265,6 @@ check_architecture "apps/bridge/native/framebus/build/Release/framebus.node"
 check_architecture "apps/bridge/native/display-helper/display-helper"
 check_architecture "apps/bridge/native/decklink-helper/decklink-helper"
 check_architecture "apps/bridge/native/meeting-helper/meeting-helper"
-check_architecture "apps/bridge/native/meeting-helper/libonnxruntime.dylib"
-check_architecture "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib"
-check_modnet_manifest_hash
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   check_architecture "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib"
@@ -283,8 +278,6 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   check_macos_max_minos "apps/bridge/native/display-helper/display-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/decklink-helper/decklink-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/meeting-helper/meeting-helper" "$MACOS_FLOOR_VERSION"
-  check_macos_max_minos "apps/bridge/native/meeting-helper/libonnxruntime.dylib" "$MACOS_FLOOR_VERSION"
-  check_macos_max_minos "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib" "$MACOS_FLOOR_VERSION"
 fi
 
 echo "[Verify] Release artifact verification completed successfully."

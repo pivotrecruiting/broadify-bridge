@@ -500,8 +500,8 @@ jobs:
           echo "VCAM_SIGNING_MODE=developer-id" >> "$GITHUB_ENV"
           echo "Installed vcam Developer ID provisioning profile."
 
-      - name: Fetch MODNet model (meeting-helper)
-        if: matrix.os == 'macos-15' || matrix.os == 'windows-2022'
+      - name: Fetch MODNet model (meeting-helper, Windows only)
+        if: matrix.os == 'windows-2022'
         shell: bash
         env:
           MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}

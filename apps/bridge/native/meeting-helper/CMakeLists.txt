@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.22)
 
+# Pin the macOS deployment target so the helper runs on the supported floor
+# (13.0). Without this it inherits the build host's SDK default (e.g. 15.0 on
+# macos-15 runners), which fails release artifact verification. Must be set
+# before project(). Overridable via MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET.
+if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+  if(DEFINED ENV{MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET} AND NOT "$ENV{MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET}" STREQUAL "")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "$ENV{MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET}" CACHE STRING "Minimum macOS deployment version")
+  else()
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment version")
+  endif()
+endif()
+
 project(broadify_meeting_helper LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
