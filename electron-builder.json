@@ -70,7 +70,7 @@
     "icon": "./icon.png"
   },
   "win": {
-    "target": ["nsis", "msi"],
+    "target": ["nsis"],
     "icon": "./icon.png",
     "azureSignOptions": {
       "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",
