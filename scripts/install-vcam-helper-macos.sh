@@ -128,7 +128,8 @@ active_vcam_extension_version() {
     | grep 'com.broadify.vcam.extension' \
     | grep '\[activated enabled\]' \
     | sed -n 's/.*com\.broadify\.vcam\.extension ([^/]*\/\([^)]*\)).*/\1/p' \
-    | head -n 1
+    | head -n 1 \
+    || true
 }
 
 if [[ "${BRIDGE_VCAM_REINITIALIZE_ON_INSTALL:-1}" == "1" ]]; then
