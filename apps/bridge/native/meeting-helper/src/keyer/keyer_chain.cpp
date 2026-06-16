@@ -1,14 +1,20 @@
 #include "keyer/keyer_chain.h"
 
 #include "keyer/modnet_keyer.h"
+#if defined(__APPLE__)
 #include "keyer/vision_keyer.h"
+#endif
 
 namespace broadify::meeting {
 
 KeyerChain::KeyerChain(const Options &options)
     : options_{options.modelsDir},
-      modnet_(std::make_unique<ModnetKeyer>(options_)),
-      vision_(std::make_unique<VisionKeyer>()) {
+      modnet_(std::make_unique<ModnetKeyer>(options_))
+#if defined(__APPLE__)
+      ,
+      vision_(std::make_unique<VisionKeyer>())
+#endif
+{
   status_.activeKeyer = "passthrough";
   status_.backend = "passthrough";
   status_.fallbackActive = true;
@@ -54,11 +60,13 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
     return result;
   }
 
+#if defined(__APPLE__)
   if (requestedModel == "vision_person_segmentation") {
     KeyerResult result = vision_->apply(input, settings);
     status_ = result.status;
     return result;
   }
+#endif
 
   {
     KeyerResult result;
