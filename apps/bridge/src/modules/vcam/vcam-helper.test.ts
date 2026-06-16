@@ -59,15 +59,15 @@ describe("vcam-helper", () => {
   });
 
   it("ignores helper app paths without an embedded system extension", () => {
-    process.env.BRIDGE_VCAM_HELPER_PATH = process.cwd();
-    const installed = "/Applications/BroadifyVCam.app";
+    // process.cwd() is a real directory but not a valid vcam app bundle, so the
+    // override must never be selected. Assert exactly that (rather than null),
+    // since other valid fallbacks — e.g. an installed /Applications copy or a
+    // local dev build at build/Release/BroadifyVCam.app — may legitimately
+    // resolve instead.
+    const invalidOverride = process.cwd();
+    process.env.BRIDGE_VCAM_HELPER_PATH = invalidOverride;
 
-    if (hasEmbeddedVcamSystemExtension(installed)) {
-      expect(resolveVcamHelperAppPath()).toBe(installed);
-      return;
-    }
-
-    expect(resolveVcamHelperAppPath()).toBeNull();
+    expect(resolveVcamHelperAppPath()).not.toBe(invalidOverride);
   });
 
   it("returns status with the meeting FrameBus name", () => {
