@@ -32,6 +32,10 @@ jest.mock("./bridge-process-stop.js", () => ({
     mockStopChildProcessGracefully(...args),
 }));
 
+const mockQuitVcamHelperApp = jest.fn();
+jest.mock("./vcam-helper-app.js", () => ({
+  quitVcamHelperApp: () => mockQuitVcamHelperApp(),
+}));
 
 function createFakeChildProcess(exitAfterMs?: number): NodeJS.EventEmitter & {
   killed: boolean;
@@ -252,6 +256,23 @@ describe("BridgeProcessManager", () => {
 
       expect(result.success).toBe(true);
       expect(mockStopChildProcessGracefully).toHaveBeenCalled();
+      expect(mockQuitVcamHelperApp).toHaveBeenCalled();
+    });
+
+    it("quits the VCam helper app when the process exits", async () => {
+      jest.useFakeTimers();
+      const fakeProcess = createFakeChildProcess();
+      mockSpawn.mockReturnValue(fakeProcess);
+
+      const startPromise = bridgeProcessManager.start(baseConfig);
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(2000);
+      await startPromise;
+
+      mockQuitVcamHelperApp.mockClear();
+      fakeProcess.emit("exit", 0, null);
+
+      expect(mockQuitVcamHelperApp).toHaveBeenCalled();
     });
 
     it("returns error when stopChildProcessGracefully throws", async () => {

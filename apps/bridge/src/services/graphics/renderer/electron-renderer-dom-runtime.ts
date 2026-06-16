@@ -268,7 +268,8 @@ export function buildSingleWindowDocument(): string {
           host.style.zIndex = String(payload.zIndex);
         }
 
-        let shadow = host.shadowRoot;
+        const existingLayer = layers.get(payload.layerId);
+        let shadow = existingLayer?.shadow || host.shadowRoot;
         if (!shadow) {
           shadow = host.attachShadow({ mode: "closed" });
         }

@@ -538,6 +538,23 @@ export class ElectronRendererClient implements GraphicsRenderer {
       this.configReadyRejecter = reject;
     });
 
+    this.logStructured(
+      "info",
+      {
+        component: "graphics-renderer",
+        width: config.width,
+        height: config.height,
+        fps: config.fps,
+        pixelFormat: config.pixelFormat,
+        framebusName: config.framebusName,
+        framebusSlotCount: config.framebusSlotCount,
+        framebusSize: config.framebusSize,
+        backgroundMode: config.backgroundMode,
+        clearColor: config.clearColor,
+      },
+      "[GraphicsRenderer] Sending renderer_configure",
+    );
+
     this.sendCommand({
       type: "renderer_configure",
       width: config.width,

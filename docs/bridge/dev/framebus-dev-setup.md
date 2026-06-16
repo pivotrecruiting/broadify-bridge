@@ -6,7 +6,13 @@ FrameBus im Development zuverlässig starten, ohne Production-Builds.
 **Voraussetzungen**
 - Node >= 22
 - Xcode Command Line Tools
-- `python3`
+- Python 3 (das Projekt nutzt `node-gyp` >= 10; `scripts/build-framebus.sh` wählt
+  automatisch eine kompatible Python-Version, analog zu CI mit Python 3.11)
+
+**Hinweis zu Homebrew/Python**
+- Ein `brew upgrade` kann `python3` auf 3.12+ setzen. Das Build-Skript umgeht das
+  lokal per Fallback (`/usr/bin/python3` oder `python@3.11`).
+- Override nur bei Bedarf: `PYTHON=/pfad/zu/python3 npm run dev`
 
 **Einmalig**
 - Native Addon bauen (für aktuelle Electron-Version):

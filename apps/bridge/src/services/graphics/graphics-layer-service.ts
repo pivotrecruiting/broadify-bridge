@@ -4,6 +4,7 @@ import type { GraphicsRenderer } from "./renderer/graphics-renderer.js";
 import type { GraphicsLayerStateT, PreparedLayerT } from "./graphics-manager-types.js";
 
 const MAX_ACTIVE_LAYERS = 3;
+const MEETING_LAYER_ID_PREFIX = "meeting-";
 
 type RemoveLayerDepsT = {
   renderer: GraphicsRenderer;
@@ -12,6 +13,10 @@ type RemoveLayerDepsT = {
 };
 
 type LayerStateDepsT = Pick<RemoveLayerDepsT, "layers" | "categoryToLayer">;
+
+function isMeetingScopedLayer(layerId: string): boolean {
+  return layerId.startsWith(MEETING_LAYER_ID_PREFIX);
+}
 
 /**
  * Remove a layer from in-memory state only.
@@ -72,7 +77,11 @@ export function validateLayerLimits(
 ): void {
   const existingLayer = layers.get(layerId);
   const layerInCategory = categoryToLayer.get(category);
-  if (layerInCategory && layerInCategory !== layerId) {
+  if (
+    !isMeetingScopedLayer(layerId) &&
+    layerInCategory &&
+    layerInCategory !== layerId
+  ) {
     throw new Error(`Layer already active for category ${category}`);
   }
 
@@ -128,7 +137,9 @@ export function storePreparedLayerState(
     presetId: params.data.presetId,
   });
 
-  params.categoryToLayer.set(params.data.category, params.data.layerId);
+  if (!isMeetingScopedLayer(params.data.layerId)) {
+    params.categoryToLayer.set(params.data.category, params.data.layerId);
+  }
 }
 
 /**

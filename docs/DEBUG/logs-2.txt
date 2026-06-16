@@ -1,0 +1,6 @@
+{"level":30,"time":1781175770686,"pid":994,"hostname":"Minivonellgardt.lan","msg":"[DecklinkDetector] Found 1 DeckLink device(s)"}
+{"level":30,"time":1781175777982,"pid":994,"hostname":"Minivonellgardt.lan","msg":"[Graphics] Configure outputs {\"outputKey\":\"stub\",\"targets\":{},\"format\":{\"width\":1920,\"height\":1080,\"fps\":25},\"range\":\"legal\",\"colorspace\":\"auto\",\"version\":1}"}
+{"level":30,"time":1781175780985,"pid":994,"hostname":"Minivonellgardt.lan","msg":"[DecklinkDetector] Found 1 DeckLink device(s)"}
+{"level":50,"time":1781175782054,"pid":994,"hostname":"Minivonellgardt.lan","msg":"[Engine] Error reported: engine_error Connection timeout: Device at 192.168.1.171:9910 did not respond within 10000ms. Check if the device is powered on and reachable."}
+{"level":30,"time":1781175794105,"pid":994,"hostname":"Minivonellgardt.lan","msg":"[DecklinkDetector] Found 1 DeckLink device(s)"}
+{"level":50,"time":1781175816822,"pid":994,"hostname":"Minivonellgardt.lan","msg":"[Engine] Error reported: engine_error Connection timeout: Device at 192.168.1.171:9910 did not respond within 10000ms. Check if the device is powered on and reachable."}

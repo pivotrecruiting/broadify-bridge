@@ -75,8 +75,29 @@ npm run release:live
 Sicherheitsnetz:
 
 - nur auf sauberem Working Tree
-- nur auf Branch `main`
+- `release:test` auf `main`, `dev` oder Feature-Branches
+- `release:live` nur auf Branch `main`
 - optional prüfbar mit `--dry-run`
+
+Empfohlener RC-Workflow ohne vorzeitigen `main`-Merge:
+
+```bash
+# Option A: direkt vom Feature-Branch
+git checkout bellgardtbugs
+npm run release:test -- --bugfix
+
+# Option B: erst nach dev mergen, dann RC von dev
+git checkout dev
+git merge bellgardtbugs
+git push origin dev
+npm run release:test -- --bugfix
+```
+
+Hinweis:
+
+- der RC-Tag zeigt auf den Commit des aktuellen Branches; GitHub Actions baut genau diesen Stand
+- der Version-Bump-Commit bleibt auf dem RC-Branch und muss später mit nach `dev`/`main` gemerged werden
+- Live-Promotion (`release:live`) bleibt bewusst nur auf `main`
 
 Relay-Routing:
 
@@ -452,7 +473,8 @@ Tags müssen dem Format `v{VERSION}` entsprechen:
 - [ ] CHANGELOG.md ist aktualisiert (optional)
 - [ ] Workflow-File (`.github/workflows/release.yml`) ist auf `main`
 - [ ] `main` Branch ist aktuell (`git pull origin main`)
-- [ ] Tag wird auf `main` erstellt (nicht auf Feature-Branch)
+- [ ] RC-Tags können von `dev` oder Feature-Branches erstellt werden
+- [ ] Live-Tags werden nur auf `main` erstellt
 - [ ] GitHub Secrets gesetzt: DeckLink URLs/Hashes, ggf. `APPLE_SIGNING_IDENTITY`, `BRIDGE_RELAY_JWKS_URL`
 
 ## Nach dem Release

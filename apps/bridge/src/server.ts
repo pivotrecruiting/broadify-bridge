@@ -20,6 +20,7 @@ import {
   setBridgeContext,
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
+import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
 import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
 import { logRuntimeDiagnostics } from "./services/runtime-diagnostics.js";
@@ -263,6 +264,16 @@ export async function startServer(
         const message = error instanceof Error ? error.message : String(error);
         server.log.warn(
           `[Graphics] Shutdown encountered an error: ${message}`
+        );
+      }
+
+      server.log.info("[Meeting] Shutting down meeting engine...");
+      try {
+        await meetingHelperManager.stop();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(
+          `[Meeting] Shutdown encountered an error: ${message}`
         );
       }
 

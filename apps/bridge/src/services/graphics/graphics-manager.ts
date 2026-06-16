@@ -29,10 +29,7 @@ import type {
 import { deriveTemplateBindings } from "./template-bindings.js";
 import { createTestPatternPayload } from "./test-pattern.js";
 import { type FrameBusConfigT } from "./framebus/framebus-config.js";
-import {
-  GraphicsError,
-  type GraphicsErrorCodeT,
-} from "./graphics-errors.js";
+import { GraphicsError, type GraphicsErrorCodeT } from "./graphics-errors.js";
 import type {
   GraphicsActivePresetT,
   GraphicsLayerStateT,
@@ -68,7 +65,10 @@ import {
 } from "./graphics-framebus-session-service.js";
 import { browserInputRuntime } from "./browser-input-runtime.js";
 
-type GraphicsRuntimeInitServiceLikeT = Pick<GraphicsRuntimeInitService, "initialize">;
+type GraphicsRuntimeInitServiceLikeT = Pick<
+  GraphicsRuntimeInitService,
+  "initialize"
+>;
 type GraphicsOutputTransitionServiceLikeT = Pick<
   GraphicsOutputTransitionService,
   "runAtomicTransition" | "waitForTransition"
@@ -76,12 +76,12 @@ type GraphicsOutputTransitionServiceLikeT = Pick<
 type ValidateOutputTargetsT = (
   outputKey: GraphicsOutputKeyT,
   targets: GraphicsTargetsT,
-  options: { currentOutputConfig: GraphicsOutputConfigT | null }
+  options: { currentOutputConfig: GraphicsOutputConfigT | null },
 ) => Promise<void>;
 type ValidateOutputFormatT = (
   outputKey: GraphicsOutputKeyT,
   targets: GraphicsTargetsT,
-  format: GraphicsFormatT
+  format: GraphicsFormatT,
 ) => Promise<void>;
 
 type GraphicsManagerDepsT = {
@@ -89,7 +89,7 @@ type GraphicsManagerDepsT = {
   runtimeInitService?: GraphicsRuntimeInitServiceLikeT;
   outputTransitionService?: GraphicsOutputTransitionServiceLikeT;
   selectOutputAdapter?: (
-    config: GraphicsOutputConfigT
+    config: GraphicsOutputConfigT,
   ) => Promise<GraphicsOutputAdapter>;
   isDevelopmentMode?: () => boolean;
   validateOutputTargets?: ValidateOutputTargetsT;
@@ -111,33 +111,30 @@ type GraphicsManagerDepsT = {
 };
 
 async function defaultSelectOutputAdapter(
-  config: GraphicsOutputConfigT
+  config: GraphicsOutputConfigT,
 ): Promise<GraphicsOutputAdapter> {
-  const { selectOutputAdapter } = await import(
-    "./graphics-output-adapter-factory.js"
-  );
+  const { selectOutputAdapter } =
+    await import("./graphics-output-adapter-factory.js");
   return selectOutputAdapter(config);
 }
 
 async function defaultValidateOutputTargets(
   outputKey: GraphicsOutputKeyT,
   targets: GraphicsTargetsT,
-  options: { currentOutputConfig: GraphicsOutputConfigT | null }
+  options: { currentOutputConfig: GraphicsOutputConfigT | null },
 ): Promise<void> {
-  const { validateOutputTargets } = await import(
-    "./graphics-output-validation-service.js"
-  );
+  const { validateOutputTargets } =
+    await import("./graphics-output-validation-service.js");
   return validateOutputTargets(outputKey, targets, options);
 }
 
 async function defaultValidateOutputFormat(
   outputKey: GraphicsOutputKeyT,
   targets: GraphicsTargetsT,
-  format: GraphicsFormatT
+  format: GraphicsFormatT,
 ): Promise<void> {
-  const { validateOutputFormat } = await import(
-    "./graphics-output-validation-service.js"
-  );
+  const { validateOutputFormat } =
+    await import("./graphics-output-validation-service.js");
   return validateOutputFormat(outputKey, targets, format);
 }
 
@@ -158,11 +155,14 @@ export class GraphicsManager {
   private presetService: GraphicsPresetService;
   private outputTransitionService: GraphicsOutputTransitionServiceLikeT;
   private runtimeInitService: GraphicsRuntimeInitServiceLikeT;
-  private browserInputRuntime: NonNullable<GraphicsManagerDepsT["browserInputRuntime"]>;
+  private browserInputRuntime: NonNullable<
+    GraphicsManagerDepsT["browserInputRuntime"]
+  >;
 
   constructor(deps: GraphicsManagerDepsT = {}) {
     this.deps = deps;
-    this.browserInputRuntime = this.deps.browserInputRuntime ?? browserInputRuntime;
+    this.browserInputRuntime =
+      this.deps.browserInputRuntime ?? browserInputRuntime;
     this.renderer = this.deps.createRenderer?.() ?? this.selectRenderer();
     this.outputAdapter = new StubOutputAdapter();
     const selectOutputAdapter =
@@ -220,7 +220,7 @@ export class GraphicsManager {
         applyFrameBusConfig: (config) => {
           this.frameBusConfig = applyFrameBusSessionConfig(
             config,
-            this.frameBusConfig
+            this.frameBusConfig,
           );
         },
         buildRendererConfig: (config) => this.buildRendererConfig(config),
@@ -232,7 +232,10 @@ export class GraphicsManager {
       if (!this.initialized) {
         return;
       }
-      publishGraphicsStatusEvent("browser_input_state", this.getStatusSnapshot());
+      publishGraphicsStatusEvent(
+        "browser_input_state",
+        this.getStatusSnapshot(),
+      );
     });
   }
 
@@ -273,18 +276,18 @@ export class GraphicsManager {
         range: config.range,
         colorspace: config.colorspace,
         version: config.version,
-      })}`
+      })}`,
     );
     if (config.version > GRAPHICS_OUTPUT_CONFIG_VERSION) {
       this.failGraphics(
         "output_config_error",
-        `Unsupported graphics output config version: ${config.version}`
+        `Unsupported graphics output config version: ${config.version}`,
       );
     }
     const devMode = this.deps.isDevelopmentMode?.() ?? isDevelopmentMode();
     if (devMode) {
       getBridgeContext().logger.warn(
-        "[Graphics] DEVELOPMENT mode enabled: skipping output validation and using stub output adapter"
+        "[Graphics] DEVELOPMENT mode enabled: skipping output validation and using stub output adapter",
       );
     } else {
       const validateTargets =
@@ -304,7 +307,10 @@ export class GraphicsManager {
     try {
       await this.outputTransitionService.runAtomicTransition(config);
       this.browserInputRuntime.configure(this.outputConfig);
-      publishGraphicsStatusEvent("outputs_configured", this.getStatusSnapshot());
+      publishGraphicsStatusEvent(
+        "outputs_configured",
+        this.getStatusSnapshot(),
+      );
     } catch (error) {
       if (error instanceof GraphicsOutputTransitionError) {
         const code =
@@ -337,7 +343,7 @@ export class GraphicsManager {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       getBridgeContext().logger.warn(
-        `[Graphics] Output adapter stop failed during shutdown: ${message}`
+        `[Graphics] Output adapter stop failed during shutdown: ${message}`,
       );
     }
 
@@ -346,7 +352,7 @@ export class GraphicsManager {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       getBridgeContext().logger.warn(
-        `[Graphics] Renderer shutdown failed: ${message}`
+        `[Graphics] Renderer shutdown failed: ${message}`,
       );
     }
 
@@ -373,20 +379,22 @@ export class GraphicsManager {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       getBridgeContext().logger.error(
-        `[Graphics] graphics_send payload rejected (schema): ${message} ${JSON.stringify({
-          error: message,
-          payload: summarizeRawPayload(payload),
-          outputConfig: this.outputConfig,
-        })}`
+        `[Graphics] graphics_send payload rejected (schema): ${message} ${JSON.stringify(
+          {
+            error: message,
+            payload: summarizeRawPayload(payload),
+            outputConfig: this.outputConfig,
+          },
+        )}`,
       );
       throw error;
     }
 
-    getBridgeContext().logger.info(
+    getBridgeContext().logger.debug?.(
       `[Graphics] graphics_send payload ${JSON.stringify({
         payload: summarizeSendPayload(data),
         outputConfig: this.outputConfig,
-      })}`
+      })}`,
     );
 
     if (typeof data.durationMs === "number" && !data.presetId) {
@@ -413,7 +421,7 @@ export class GraphicsManager {
             layerId: data.layerId,
             category: data.category,
             presetId: data.presetId ?? null,
-          })}`
+          })}`,
         );
       }
     }
@@ -442,7 +450,7 @@ export class GraphicsManager {
       prepared = await prepareLayerForRender(
         normalizedData,
         this.outputConfig.outputKey,
-        this.renderer
+        this.renderer,
       );
     } catch (error) {
       if (this.outputConfig.outputKey === "browser_input") {
@@ -451,10 +459,11 @@ export class GraphicsManager {
       }
       throw error;
     }
-    const durationMs = typeof data.durationMs === "number" ? data.durationMs : null;
+    const durationMs =
+      typeof data.durationMs === "number" ? data.durationMs : null;
     await this.presetService.prepareBeforeRender(
       prepared.presetId,
-      prepared.category
+      prepared.category,
     );
 
     let renderedLayerIds: string[] = [];
@@ -482,10 +491,10 @@ export class GraphicsManager {
     this.presetService.syncAfterRender(
       prepared.layerId,
       prepared.presetId,
-      durationMs
+      durationMs,
     );
     this.presetService.maybeStartPresetTimers(
-      renderedLayerIds.length > 0 ? renderedLayerIds : [prepared.layerId]
+      renderedLayerIds.length > 0 ? renderedLayerIds : [prepared.layerId],
     );
   }
 
@@ -505,7 +514,7 @@ export class GraphicsManager {
       if (this.outputConfig?.outputKey === "browser_input") {
         this.browserInputRuntime.reportError(
           "state_inconsistent",
-          `Browser-input layer not found for updateValues: ${data.layerId}`
+          `Browser-input layer not found for updateValues: ${data.layerId}`,
         );
       }
       throw new Error("Layer not found");
@@ -517,19 +526,23 @@ export class GraphicsManager {
         schema: layer.schema,
         defaults: layer.defaults,
       },
-      layer.values
+      layer.values,
     );
 
     if (this.outputConfig?.outputKey === "browser_input") {
       this.browserInputRuntime.updateValues(
         data.layerId,
         layer.values,
-        layer.bindings
+        layer.bindings,
       );
       return;
     }
 
-    await this.renderer.updateValues(data.layerId, layer.values, layer.bindings);
+    await this.renderer.updateValues(
+      data.layerId,
+      layer.values,
+      layer.bindings,
+    );
   }
 
   /**
@@ -548,7 +561,7 @@ export class GraphicsManager {
       if (this.outputConfig?.outputKey === "browser_input") {
         this.browserInputRuntime.reportError(
           "state_inconsistent",
-          `Browser-input layer not found for updateLayout: ${data.layerId}`
+          `Browser-input layer not found for updateLayout: ${data.layerId}`,
         );
       }
       throw new Error("Layer not found");
@@ -560,7 +573,11 @@ export class GraphicsManager {
     }
 
     if (this.outputConfig?.outputKey === "browser_input") {
-      this.browserInputRuntime.updateLayout(data.layerId, data.layout, data.zIndex);
+      this.browserInputRuntime.updateLayout(
+        data.layerId,
+        data.layout,
+        data.zIndex,
+      );
       return;
     }
 
@@ -719,7 +736,7 @@ export class GraphicsManager {
 
   private buildRendererConfig(
     config: GraphicsOutputConfigT,
-    frameBusConfig: FrameBusConfigT | null = this.frameBusConfig
+    frameBusConfig: FrameBusConfigT | null = this.frameBusConfig,
   ): GraphicsRendererConfigT {
     return {
       width: config.format.width,
@@ -740,14 +757,17 @@ export class GraphicsManager {
     throw new GraphicsError(code, message);
   }
 
-  private async removeLayerById(layerId: string, reason: string): Promise<void> {
+  private async removeLayerById(
+    layerId: string,
+    reason: string,
+  ): Promise<void> {
     if (this.outputConfig?.outputKey === "browser_input") {
       removeLayerState(
         {
           layers: this.layers,
           categoryToLayer: this.categoryToLayer,
         },
-        layerId
+        layerId,
       );
       this.browserInputRuntime.removeLayer(layerId);
       return;
@@ -760,7 +780,7 @@ export class GraphicsManager {
         categoryToLayer: this.categoryToLayer,
       },
       layerId,
-      reason
+      reason,
     );
   }
 }

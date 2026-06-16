@@ -1,0 +1,468 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		02256F061AF6979B100F8780 /* BroadifyVCamExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 36BA3CA3785118990A147ECF /* BroadifyVCamExtension.systemextension */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		3FE99AE95CFF1DD414B115FA /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7973FE4D6874F16B71437255 /* ServiceManagement.framework */; };
+		6234E6F8A565B94FCA44B422 /* VCamDeviceSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0264AD3D36832CB6521F57 /* VCamDeviceSource.swift */; };
+		74C51FADBEA0DB9766E466CC /* VCamProviderSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0765C3AC89391386CA36A0DC /* VCamProviderSource.swift */; };
+		77DFBEE2A9DB29EE73D4A466 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67416A2B2524DABF3A5F955F /* ContentView.swift */; };
+		8536EB750591052B8742F1A4 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 981A36CFFEC7560BE78BAEC5 /* main.swift */; };
+		8E73BB7F3AA9FD96D6675EED /* RawFrameStreamReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 170A930A59955F21C04CEE5E /* RawFrameStreamReader.swift */; };
+		A4D6721AD35E47A4ED85E160 /* BroadifyVCamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */; };
+		C88BB60D507B42A2FD70E8FE /* SystemExtensionSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B239BA6F7191884BD305682 /* SystemExtensionSettings.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C71D1D3DD5CEF96AE48F09CA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D98CF2473704A011FD59489F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5E43F9A0365BC1E724FB252B;
+			remoteInfo = BroadifyVCamExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E27E5A61998F1F75014AF257 /* Embed System Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(SYSTEM_EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				02256F061AF6979B100F8780 /* BroadifyVCamExtension.systemextension in Embed System Extensions */,
+			);
+			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0765C3AC89391386CA36A0DC /* VCamProviderSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VCamProviderSource.swift; sourceTree = "<group>"; };
+		170A930A59955F21C04CEE5E /* RawFrameStreamReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawFrameStreamReader.swift; sourceTree = "<group>"; };
+		3522F41C8E818B526DB84144 /* BroadifyVCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BroadifyVCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		36BA3CA3785118990A147ECF /* BroadifyVCamExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = BroadifyVCamExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
+		4B239BA6F7191884BD305682 /* SystemExtensionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemExtensionSettings.swift; sourceTree = "<group>"; };
+		5D0264AD3D36832CB6521F57 /* VCamDeviceSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VCamDeviceSource.swift; sourceTree = "<group>"; };
+		67416A2B2524DABF3A5F955F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		7973FE4D6874F16B71437255 /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
+		981A36CFFEC7560BE78BAEC5 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		A5061AF9F24929E5B4D66F23 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadifyVCamApp.swift; sourceTree = "<group>"; };
+		CB5C825A1E5CFCEC28077981 /* BroadifyVCamExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BroadifyVCamExtension.entitlements; sourceTree = "<group>"; };
+		CB9AB8D70808A609C073D44A /* BroadifyVCam.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BroadifyVCam.entitlements; sourceTree = "<group>"; };
+		F05482DF0CB6AA6ABC345EEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		8C79FE757258C2DB4CEE88B0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3FE99AE95CFF1DD414B115FA /* ServiceManagement.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		05A4285BD0FAB6148632FDA0 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3522F41C8E818B526DB84144 /* BroadifyVCam.app */,
+				36BA3CA3785118990A147ECF /* BroadifyVCamExtension.systemextension */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		0CB800CAE323EB28B987DF34 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				7973FE4D6874F16B71437255 /* ServiceManagement.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		496A8F61222B20706083F176 /* BroadifyVCam */ = {
+			isa = PBXGroup;
+			children = (
+				CB9AB8D70808A609C073D44A /* BroadifyVCam.entitlements */,
+				ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */,
+				67416A2B2524DABF3A5F955F /* ContentView.swift */,
+				A5061AF9F24929E5B4D66F23 /* Info.plist */,
+				4B239BA6F7191884BD305682 /* SystemExtensionSettings.swift */,
+			);
+			path = BroadifyVCam;
+			sourceTree = "<group>";
+		};
+		6B5154DBD3F5F14BD8A67710 = {
+			isa = PBXGroup;
+			children = (
+				496A8F61222B20706083F176 /* BroadifyVCam */,
+				A6E4FC9322FAF1C2BE955445 /* BroadifyVCamExtension */,
+				0CB800CAE323EB28B987DF34 /* Frameworks */,
+				05A4285BD0FAB6148632FDA0 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A6E4FC9322FAF1C2BE955445 /* BroadifyVCamExtension */ = {
+			isa = PBXGroup;
+			children = (
+				CB5C825A1E5CFCEC28077981 /* BroadifyVCamExtension.entitlements */,
+				F05482DF0CB6AA6ABC345EEB /* Info.plist */,
+				981A36CFFEC7560BE78BAEC5 /* main.swift */,
+				170A930A59955F21C04CEE5E /* RawFrameStreamReader.swift */,
+				5D0264AD3D36832CB6521F57 /* VCamDeviceSource.swift */,
+				0765C3AC89391386CA36A0DC /* VCamProviderSource.swift */,
+			);
+			path = BroadifyVCamExtension;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5E43F9A0365BC1E724FB252B /* BroadifyVCamExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 23DB43E9A7E6FB3F7CF2C144 /* Build configuration list for PBXNativeTarget "BroadifyVCamExtension" */;
+			buildPhases = (
+				5B6D7A295B92BE5B54B7151F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BroadifyVCamExtension;
+			packageProductDependencies = (
+			);
+			productName = BroadifyVCamExtension;
+			productReference = 36BA3CA3785118990A147ECF /* BroadifyVCamExtension.systemextension */;
+			productType = "com.apple.product-type.system-extension";
+		};
+		8A474C619137BCF8DDDE552A /* BroadifyVCam */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 53FF075F98D67B5F6623480D /* Build configuration list for PBXNativeTarget "BroadifyVCam" */;
+			buildPhases = (
+				F8D68844531B4F01CE1F753E /* Sources */,
+				8C79FE757258C2DB4CEE88B0 /* Frameworks */,
+				E27E5A61998F1F75014AF257 /* Embed System Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0474C9A4E9AB1FE0104B9860 /* PBXTargetDependency */,
+			);
+			name = BroadifyVCam;
+			packageProductDependencies = (
+			);
+			productName = BroadifyVCam;
+			productReference = 3522F41C8E818B526DB84144 /* BroadifyVCam.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D98CF2473704A011FD59489F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					5E43F9A0365BC1E724FB252B = {
+						DevelopmentTeam = PG38DC5RG9;
+						ProvisioningStyle = Automatic;
+					};
+					8A474C619137BCF8DDDE552A = {
+						DevelopmentTeam = PG38DC5RG9;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 01E033D4B95A6243BE955B50 /* Build configuration list for PBXProject "BroadifyVCam" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 6B5154DBD3F5F14BD8A67710;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 05A4285BD0FAB6148632FDA0 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8A474C619137BCF8DDDE552A /* BroadifyVCam */,
+				5E43F9A0365BC1E724FB252B /* BroadifyVCamExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5B6D7A295B92BE5B54B7151F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8E73BB7F3AA9FD96D6675EED /* RawFrameStreamReader.swift in Sources */,
+				6234E6F8A565B94FCA44B422 /* VCamDeviceSource.swift in Sources */,
+				74C51FADBEA0DB9766E466CC /* VCamProviderSource.swift in Sources */,
+				8536EB750591052B8742F1A4 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F8D68844531B4F01CE1F753E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A4D6721AD35E47A4ED85E160 /* BroadifyVCamApp.swift in Sources */,
+				77DFBEE2A9DB29EE73D4A466 /* ContentView.swift in Sources */,
+				C88BB60D507B42A2FD70E8FE /* SystemExtensionSettings.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0474C9A4E9AB1FE0104B9860 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5E43F9A0365BC1E724FB252B /* BroadifyVCamExtension */;
+			targetProxy = C71D1D3DD5CEF96AE48F09CA /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		08173CDEC8D3CF874AD71FB2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BroadifyVCam/BroadifyVCam.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = PG38DC5RG9;
+				INFOPLIST_FILE = BroadifyVCam/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam;
+				PRODUCT_NAME = BroadifyVCam;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		4C20923598D63172EB2EAF6B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = BroadifyVCamExtension/BroadifyVCamExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = PG38DC5RG9;
+				EXECUTABLE_NAME = BroadifyVCamExtension;
+				INFOPLIST_FILE = BroadifyVCamExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam.extension;
+				PRODUCT_NAME = com.broadify.vcam.extension;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		4D46F9758873A81B0992BEC5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BroadifyVCam/BroadifyVCam.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = PG38DC5RG9;
+				INFOPLIST_FILE = BroadifyVCam/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam;
+				PRODUCT_NAME = BroadifyVCam;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		50F4A0FC8A13688C605DD4A1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = PG38DC5RG9;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		6E135F38F79A93CE42ADBE9F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = BroadifyVCamExtension/BroadifyVCamExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = PG38DC5RG9;
+				EXECUTABLE_NAME = BroadifyVCamExtension;
+				INFOPLIST_FILE = BroadifyVCamExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam.extension;
+				PRODUCT_NAME = com.broadify.vcam.extension;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		B6DA479A2E4C98E89637D970 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = PG38DC5RG9;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		01E033D4B95A6243BE955B50 /* Build configuration list for PBXProject "BroadifyVCam" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B6DA479A2E4C98E89637D970 /* Debug */,
+				50F4A0FC8A13688C605DD4A1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		23DB43E9A7E6FB3F7CF2C144 /* Build configuration list for PBXNativeTarget "BroadifyVCamExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4C20923598D63172EB2EAF6B /* Debug */,
+				6E135F38F79A93CE42ADBE9F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		53FF075F98D67B5F6623480D /* Build configuration list for PBXNativeTarget "BroadifyVCam" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				08173CDEC8D3CF874AD71FB2 /* Debug */,
+				4D46F9758873A81B0992BEC5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = D98CF2473704A011FD59489F /* Project object */;
+}

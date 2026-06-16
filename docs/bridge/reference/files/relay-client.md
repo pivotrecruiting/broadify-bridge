@@ -14,17 +14,22 @@ Der Client hält die Verbindung zusätzlich per aktivem WebSocket‑Heartbeat st
 
 ## Abhängigkeiten
 - `command-router.ts`
+- `relay-command-policy.ts`
 - `ws` (WebSocket)
 
 ## Side‑Effects
 - Reconnect‑Backoff
 - Active heartbeat ping / pong liveness tracking
 - Idle watchdog fallback for silent connections
-- Command result dedupe cache for replayed `requestId`
+- In-flight dedupe + Command result dedupe cache for replayed `requestId`
+- Serial queue for side-effecting commands
+- Bounded parallel queue for read-only commands
+- Local command SLA logging without generic Promise cancellation
 - Logging (nur Command‑Name + requestId)
 - Disconnect diagnostics with close code + reason
 - Replay‑Schutz (jti‑Cache)
 - Resync-Snapshots nach `bridge_auth_ok` (`bridge_status_snapshot`, `engine_status_snapshot`, `outputs_snapshot`, `graphics_snapshot`)
+- `outputs_snapshot` uses cached output discovery and does not force a manual refresh.
 
 ## Security
 - Signatur‑Verifikation (Ed25519) + TTL + Replay‑Schutz

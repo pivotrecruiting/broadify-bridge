@@ -98,14 +98,52 @@ REQUIRED_FILES=(
   "apps/bridge/native/framebus/build/Release/framebus.node"
   "apps/bridge/native/display-helper/display-helper"
   "apps/bridge/native/decklink-helper/decklink-helper"
+  "apps/bridge/native/meeting-helper/meeting-helper"
+  "apps/bridge/native/meeting-helper/libonnxruntime.dylib"
+  "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib"
+  "apps/bridge/native/meeting-helper/models/manifest.json"
+  "apps/bridge/native/meeting-helper/models/modnet.onnx"
 )
 EXECUTABLE_FILES=(
   "apps/bridge/native/display-helper/display-helper"
   "apps/bridge/native/decklink-helper/decklink-helper"
+  "apps/bridge/native/meeting-helper/meeting-helper"
 )
+
+check_modnet_manifest_hash() {
+  local manifest="$ROOT_DIR/apps/bridge/native/meeting-helper/models/manifest.json"
+  local model="$ROOT_DIR/apps/bridge/native/meeting-helper/models/modnet.onnx"
+  local expected_hash=""
+  local actual_hash=""
+
+  expected_hash="$(node -e 'const fs=require("fs"); const manifest=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const entry=manifest.models.find((model)=>model.name==="modnet"); process.stdout.write(entry?.sha256 || "");' "$manifest")"
+  if [[ -z "$expected_hash" || "$expected_hash" == "release-artifact-required" ]]; then
+    echo "[Verify] Missing concrete MODNet sha256 in models/manifest.json" >&2
+    exit 1
+  fi
+
+  if command -v shasum >/dev/null 2>&1; then
+    actual_hash="$(shasum -a 256 "$model" | awk '{ print $1 }')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    actual_hash="$(sha256sum "$model" | awk '{ print $1 }')"
+  else
+    echo "[Verify] No sha256 tool available for MODNet verification" >&2
+    exit 1
+  fi
+
+  if [[ "$actual_hash" != "$expected_hash" ]]; then
+    echo "[Verify] MODNet model hash mismatch." >&2
+    echo "[Verify] Expected: $expected_hash" >&2
+    echo "[Verify] Actual:   $actual_hash" >&2
+    exit 1
+  fi
+  echo "[Verify] MODNet model hash verified -> $actual_hash"
+}
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/libSDL2-2.0.0.dylib")
+  REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app")
+  REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app/Contents/Library/SystemExtensions/com.broadify.vcam.extension.systemextension")
 fi
 
 check_exists() {
@@ -228,6 +266,10 @@ done
 check_architecture "apps/bridge/native/framebus/build/Release/framebus.node"
 check_architecture "apps/bridge/native/display-helper/display-helper"
 check_architecture "apps/bridge/native/decklink-helper/decklink-helper"
+check_architecture "apps/bridge/native/meeting-helper/meeting-helper"
+check_architecture "apps/bridge/native/meeting-helper/libonnxruntime.dylib"
+check_architecture "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib"
+check_modnet_manifest_hash
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   check_architecture "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib"
@@ -240,6 +282,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   check_macos_max_minos "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/display-helper/display-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/decklink-helper/decklink-helper" "$MACOS_FLOOR_VERSION"
+  check_macos_max_minos "apps/bridge/native/meeting-helper/meeting-helper" "$MACOS_FLOOR_VERSION"
+  check_macos_max_minos "apps/bridge/native/meeting-helper/libonnxruntime.dylib" "$MACOS_FLOOR_VERSION"
+  check_macos_max_minos "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib" "$MACOS_FLOOR_VERSION"
 fi
 
 echo "[Verify] Release artifact verification completed successfully."
