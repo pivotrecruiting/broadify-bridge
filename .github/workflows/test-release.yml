@@ -16,7 +16,7 @@ jobs:
           - os: macos-15
             artifact: mac-arm64
             dist_script: dist:mac:arm64
-          - os: windows-latest
+          - os: windows-2022
             artifact: win-x64
             dist_script: dist:win
           - os: ubuntu-22.04
@@ -40,6 +40,8 @@ jobs:
       DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       MACOS_FLOOR_VERSION: "13.0"
       SDL2_STRICT_MINOS: "1"
+      GYP_MSVS_VERSION: "2022"
+      npm_config_msvs_version: "2022"
 
     steps:
       - name: Checkout code
@@ -69,11 +71,11 @@ jobs:
             apps/bridge/package-lock.json
 
       - name: Install root deps
-        if: matrix.os != 'windows-latest'
+        if: matrix.os != 'windows-2022'
         run: npm ci
 
       - name: Install root deps (Windows, retry)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -97,13 +99,13 @@ jobs:
           throw "npm ci failed after $maxAttempts attempts."
 
       - name: Install Bridge dependencies
-        if: matrix.os != 'windows-latest'
+        if: matrix.os != 'windows-2022'
         run: |
           cd apps/bridge
           npm ci
 
       - name: Install Bridge dependencies (Windows, retry)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -180,13 +182,14 @@ jobs:
           python-version: "3.11"
 
       - name: Setup MSVC Developer Command Prompt (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+          vsversion: 2022
 
       - name: Install SDL2 (Windows, for display-helper)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -219,6 +222,26 @@ jobs:
 
       - name: Build React
         run: npm run build
+
+      - name: Install Azure Trusted Signing module (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # electron-builder 25.x signs Windows artifacts by invoking
+          # `Invoke-TrustedSigning` from the TrustedSigning PowerShell module.
+          # The module is not preinstalled on the Windows runner and
+          # electron-builder's implicit install is unreliable (results in
+          # "cmdlet not recognized"), so install and verify it explicitly.
+          if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          if (-not (Get-Module -ListAvailable -Name TrustedSigning)) {
+            Install-Module -Name TrustedSigning -Force -Scope CurrentUser -Repository PSGallery
+          }
+          Import-Module TrustedSigning
+          Get-Command Invoke-TrustedSigning | Format-List Name, Version, Source
 
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}

@@ -40,14 +40,38 @@ flowchart LR
 
 3. Command-Delivery:
 - Relay sendet signierten `command` mit `sequence` + `requestId`.
-- Bridge sendet zuerst `command_received` (Ack), danach `command_result`.
-- Bei Duplikaten (`requestId`) nutzt Bridge einen Dedupe-Cache und sendet das gecachte Result erneut (keine doppelte Ausführung).
+- Bridge sendet `command_received` erst nach erfolgreicher Signatur-/TTL-/JTI-
+  und Allowlist-Pruefung sowie Annahme in die Ausfuehrungsqueue.
+- Danach folgt `command_result`.
+- Bei Duplikaten (`requestId`) nutzt Bridge In-flight-Dedupe oder den Result-
+  Cache und fuehrt den Command nicht doppelt aus.
 
 4. Reconnect/Resume:
 - Beide Seiten nutzen aktive WS-Heartbeats.
 - Bei Disconnect hält Relay Pending Requests in einem Resume-Fenster.
 - Nach Reconnect replayt Relay nur replay-fähige Commands innerhalb der Grenzen.
 - Nach Auth/Reconnect wird ein Resync getriggert (`bridge_resync_required`), Bridge publiziert Status-Snapshots.
+- `outputs_snapshot` nutzt dabei den Device-Cache und erzwingt keinen teuren manuellen Refresh.
+
+## Timeout-Kette
+
+Transport-Liveness ist von Command-SLAs getrennt. WebSocket Heartbeats duerfen
+nur tote Verbindungen erkennen; sie bewerten kein fachliches Command-Ergebnis.
+
+Die Timeout-Policy fuer Bridge-Commands liegt in
+`apps/bridge/src/services/relay-command-policy.ts`:
+
+| Klasse | Relay-Timeout | Bridge lokale SLA |
+| --- | ---: | ---: |
+| Fast commands | 12s | 8s |
+| `engine_connect` | 18s | 11s |
+| `list_outputs` | 15s | 11s |
+| Graphics configure/send/update/remove | 20s | 16s |
+| Helper-start Commands | 35s | 30s |
+
+Die Bridge loggt lokale SLA-Ueberschreitungen strukturiert, bricht nicht
+pauschal nicht-abortbare Library-Calls ab. Side-effecting Commands laufen pro
+Bridge seriell, Read-only Commands parallel mit begrenzter Concurrency.
 
 ## Reliability-Bausteine
 

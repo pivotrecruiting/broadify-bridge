@@ -16,7 +16,7 @@ sequenceDiagram
   Bridge->>Relay: bridge_auth_response
   Relay->>Bridge: bridge_auth_ok
   Relay->>Bridge: command (signed, sequence, meta + signature)
-  Bridge-->>Relay: command_received (ack)
+  Bridge-->>Relay: command_received (ack after validation + acceptance)
   Bridge->>Router: handleCommand
   Router-->>Bridge: result
   Bridge-->>Relay: command_result
@@ -31,6 +31,19 @@ sequenceDiagram
 - Resumable Session via `sessionId` + `lastProcessedSequence`
 - Pending-Command Replay nur nach Policy und Replay-Limits
 - Nach Reconnect/Auth Resync-Trigger (`bridge_resync_required`) + Snapshot-Republish
+- Resync-`outputs_snapshot` nutzt den Device-Cache und erzwingt keinen manuellen Refresh.
+- Doppelte `requestId`s werden auch waehrend laufender Ausfuehrung dedupliziert.
+
+## Timeout- und Queue-Modell
+
+- WebSocket Heartbeats pruefen nur Transport-Liveness.
+- Fachliche Command-SLAs werden ueber die Timeout-Policy bestimmt
+  (`apps/bridge/src/services/relay-command-policy.ts`).
+- Side-effecting Commands laufen pro Bridge seriell.
+- Read-only Commands laufen parallel, aber begrenzt
+  (`BRIDGE_RELAY_READ_ONLY_COMMAND_CONCURRENCY`, Default `4`).
+- Lokale Bridge-SLA-Ueberschreitungen werden geloggt, nicht pauschal per
+  `Promise` abgebrochen.
 
 ## Bridge-Events
 
