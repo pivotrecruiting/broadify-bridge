@@ -166,40 +166,33 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     const child = this.child;
     const hasExited = () =>
       child.exitCode !== null || child.signalCode !== null;
-    const awaitExit = () =>
+    const awaitExit = (timeoutMs: number) =>
       new Promise<void>((resolve) => {
         if (hasExited()) {
           resolve();
           return;
         }
-        child.once("exit", () => resolve());
+        const timeoutId = setTimeout(() => resolve(), timeoutMs);
+        child.once("exit", () => {
+          clearTimeout(timeoutId);
+          resolve();
+        });
       });
 
-    const gracefulTimeoutMs = 4000;
+    const gracefulTimeoutMs = 2000;
     const forceTimeoutMs = 2000;
 
-    await Promise.race([
-      awaitExit(),
-      new Promise<void>((resolve) => {
-        const timeoutId = setTimeout(() => resolve(), gracefulTimeoutMs);
-        void awaitExit().then(() => clearTimeout(timeoutId));
-      }),
-    ]);
-
+    // Signal the helper to exit immediately; waiting for a self-exit without
+    // sending a signal only delays shutdown and risks the helper being orphaned
+    // (window stays open) if the bridge is force-killed before stop() finishes.
     if (!hasExited()) {
       child.kill("SIGTERM");
-      await Promise.race([
-        awaitExit(),
-        new Promise<void>((resolve) => {
-          const timeoutId = setTimeout(() => resolve(), forceTimeoutMs);
-          void awaitExit().then(() => clearTimeout(timeoutId));
-        }),
-      ]);
+      await awaitExit(gracefulTimeoutMs);
     }
 
     if (!hasExited()) {
       child.kill("SIGKILL");
-      await awaitExit();
+      await awaitExit(forceTimeoutMs);
     }
 
     this.child = null;

@@ -731,10 +731,13 @@ describe("DisplayVideoOutputAdapter", () => {
       await stopPromise1;
 
       await adapter.stop();
-      expect(child.kill).not.toHaveBeenCalled();
+      // stop() signals the helper to exit on the first call; the second call is
+      // a no-op because the child reference has already been cleared.
+      expect(child.kill).toHaveBeenCalledTimes(1);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     });
 
-    it("waits for child to exit and cleans up", async () => {
+    it("sends SIGTERM and cleans up when the child exits", async () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
       const child = createMockChild();
@@ -753,7 +756,10 @@ describe("DisplayVideoOutputAdapter", () => {
       setImmediate(() => emitExit(child, 0, null));
       await stopPromise;
 
-      expect(child.kill).not.toHaveBeenCalled();
+      // stop() sends SIGTERM immediately; the child exits gracefully so SIGKILL
+      // is not needed.
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(child.kill).not.toHaveBeenCalledWith("SIGKILL");
     });
 
     it("sends SIGTERM then SIGKILL when child does not exit", async () => {
