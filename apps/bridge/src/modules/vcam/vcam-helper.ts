@@ -128,13 +128,13 @@ export function resolveVcamHelperAppPath(): string | null {
     candidates.push(envPath);
   }
 
-  if (platform() === "darwin") {
-    candidates.push(DEFAULT_MACOS_VCAM_APP_PATH);
-  }
-
   const resourcesPath = process.resourcesPath;
   if (process.env.NODE_ENV === "production" && resourcesPath) {
     candidates.push(join(resourcesPath, "native", "vcam-helper", "BroadifyVCam.app"));
+  }
+
+  if (platform() === "darwin") {
+    candidates.push(DEFAULT_MACOS_VCAM_APP_PATH);
   }
 
   candidates.push(...getDevVcamHelperCandidates());
