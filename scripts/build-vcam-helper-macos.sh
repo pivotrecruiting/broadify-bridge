@@ -96,6 +96,12 @@ verify_cmio_extension_metadata() {
   return 0
 }
 
+signed_binary_has_get_task_allow() {
+  local target="$1"
+  codesign -d --entitlements :- "$target" 2>/dev/null \
+    | grep -q "<key>com.apple.security.get-task-allow</key>"
+}
+
 # development (default): automatic signing with an Apple Development cert, used
 #   for local builds and `npm run install:vcam-helper`.
 # developer-id: manual signing with the Developer ID Application cert + the
@@ -122,6 +128,7 @@ if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
     DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM}" \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="Developer ID Application" \
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
     build
 else
@@ -163,6 +170,18 @@ APP_TEAM_ID="$(codesign -dv --verbose=4 "${APP_PATH}" 2>&1 | awk -F= '/TeamIdent
 if [[ "${APP_TEAM_ID}" != "${VCAM_DEVELOPMENT_TEAM}" ]]; then
   echo "build-vcam-helper-macos: expected team ${VCAM_DEVELOPMENT_TEAM}, got ${APP_TEAM_ID}" >&2
   exit 1
+fi
+
+if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
+  if signed_binary_has_get_task_allow "${APP_PATH}"; then
+    echo "build-vcam-helper-macos: BroadifyVCam.app still contains com.apple.security.get-task-allow after Developer ID signing" >&2
+    exit 1
+  fi
+
+  if signed_binary_has_get_task_allow "${EXT_PATH}"; then
+    echo "build-vcam-helper-macos: BroadifyVCamExtension still contains com.apple.security.get-task-allow after Developer ID signing" >&2
+    exit 1
+  fi
 fi
 
 echo "BroadifyVCam.app built at ${APP_PATH} (CMIO extension configured)"

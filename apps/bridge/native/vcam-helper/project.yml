@@ -18,6 +18,10 @@ settings:
     # line to CODE_SIGN_STYLE=Manual + "Developer ID Application".
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "Apple Development"
+    # Prevent Xcode from injecting default debug entitlements into signed
+    # release artifacts. The helper app and system extension must ship only
+    # with the explicit entitlements declared below to remain notarizable.
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: "NO"
     # Required for notarized Developer ID distribution; harmless for dev builds.
     ENABLE_HARDENED_RUNTIME: "YES"
     OTHER_CODE_SIGN_FLAGS: "--timestamp"
