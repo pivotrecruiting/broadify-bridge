@@ -1,10 +1,7 @@
 {
   "appId": "com.broadify.bridge",
   "productName": "Broadify Bridge",
-  "files": [
-    "dist-electron/**",
-    "dist-react/**"
-  ],
+  "files": ["dist-electron/**", "dist-react/**"],
   "asar": true,
   "extraResources": [
     {
@@ -67,16 +64,14 @@
     }
   ],
   "mac": {
-    "target": [
-      "dmg",
-      "zip"
-    ],
+    "target": ["dmg", "zip"],
     "icon": "./icon.png",
     "category": "public.app-category.utilities",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
     "entitlementsInherit": "build/entitlements.mac.plist",
+    "signIgnore": ["BroadifyVCam.app"],
     "notarize": true,
     "extendInfo": {
       "NSLocalNetworkUsageDescription": "Broadify Bridge benötigt Zugriff auf das lokale Netzwerk, um Video-Mischer (z. B. ATEM) und Ausgabegeräte in deinem Netzwerk zu finden und zu steuern."
@@ -88,10 +83,7 @@
     "icon": "./icon.png"
   },
   "win": {
-    "target": [
-      "nsis",
-      "msi"
-    ],
+    "target": ["nsis", "msi"],
     "icon": "./icon.png",
     "azureSignOptions": {
       "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",

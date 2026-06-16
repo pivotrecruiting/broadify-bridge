@@ -38,6 +38,7 @@ jobs:
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      VCAM_APP_PROVISION_PROFILE: ${{ secrets.VCAM_APP_PROVISION_PROFILE }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -457,6 +458,47 @@ jobs:
           }
           Import-Module TrustedSigning
           Get-Command Invoke-TrustedSigning | Format-List Name, Version, Source
+
+      - name: Install vcam provisioning profile (macOS)
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${VCAM_APP_PROVISION_PROFILE:-}" ]]; then
+            echo "VCAM_APP_PROVISION_PROFILE secret is required for Developer ID vcam signing." >&2
+            exit 1
+          fi
+
+          # Different Xcode versions read profiles from different locations, so
+          # install into both the legacy and the modern UserData directory.
+          LEGACY_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          USERDATA_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$LEGACY_DIR" "$USERDATA_DIR"
+
+          decode_profile() {
+            local value="$1"
+            local filename="$2"
+            if [[ "$value" == data:*base64,* ]]; then
+              value="${value#*,}"
+            fi
+            local tmp
+            tmp="$(mktemp)"
+            printf '%s' "$value" | base64 -D > "$tmp"
+            # Validate it is a real provisioning profile (CMS-wrapped plist).
+            if ! security cms -D -i "$tmp" >/dev/null 2>&1; then
+              echo "Decoded file is not a valid provisioning profile: $filename" >&2
+              exit 1
+            fi
+            cp "$tmp" "$LEGACY_DIR/$filename"
+            cp "$tmp" "$USERDATA_DIR/$filename"
+            rm -f "$tmp"
+          }
+
+          decode_profile "$VCAM_APP_PROVISION_PROFILE" "broadify-vcam-app.provisionprofile"
+
+          echo "VCAM_SIGNING_MODE=developer-id" >> "$GITHUB_ENV"
+          echo "Installed vcam Developer ID provisioning profile."
 
       - name: Fetch MODNet model (meeting-helper)
         if: matrix.os == 'macos-15' || matrix.os == 'windows-2022'

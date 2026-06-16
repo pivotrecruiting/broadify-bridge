@@ -23,14 +23,15 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 1
 fi
 
-# Pick the Apple Development identity that belongs to the expected team.
-# Generic "Apple Development" can resolve to a personal team when multiple certs exist.
-resolve_apple_development_identity_for_team() {
+# Pick the signing identity (by prefix) that belongs to the expected team.
+# Generic identity names can resolve to a personal team when multiple certs exist.
+resolve_signing_identity_for_team() {
   local team_id="$1"
+  local identity_prefix="$2"
   local identity=""
 
   while IFS= read -r line; do
-    [[ "$line" =~ \"Apple\ Development: ]] || continue
+    [[ "$line" == *"\"${identity_prefix}:"* ]] || continue
 
     local hash=""
     local name=""
@@ -57,8 +58,8 @@ resolve_apple_development_identity_for_team() {
   done < <(security find-identity -v -p codesigning 2>/dev/null)
 
   if [[ -z "$identity" ]]; then
-    echo "build-vcam-helper-macos: no Apple Development identity found for team ${team_id}" >&2
-    echo "build-vcam-helper-macos: install the development certificate for team ${team_id} in Keychain Access." >&2
+    echo "build-vcam-helper-macos: no \"${identity_prefix}\" identity found for team ${team_id}" >&2
+    echo "build-vcam-helper-macos: install the matching certificate for team ${team_id} in Keychain Access." >&2
     exit 1
   fi
 
@@ -83,21 +84,48 @@ verify_cmio_extension_metadata() {
   return 0
 }
 
-CODE_SIGN_IDENTITY="$(resolve_apple_development_identity_for_team "${VCAM_DEVELOPMENT_TEAM}")"
-echo "build-vcam-helper-macos: signing with team ${VCAM_DEVELOPMENT_TEAM} (${CODE_SIGN_IDENTITY})"
+# development (default): automatic signing with an Apple Development cert, used
+#   for local builds and `npm run install:vcam-helper`.
+# developer-id: manual signing with the Developer ID Application cert + the
+#   Developer ID provisioning profiles named in project.yml. Used by the release
+#   CI to produce a notarizable, distributable system extension. The profiles
+#   must be installed under ~/Library/MobileDevice/Provisioning Profiles/.
+VCAM_SIGNING_MODE="${VCAM_SIGNING_MODE:-development}"
 
 cd "${VCAM_DIR}"
 xcodegen generate
-xcodebuild \
-  -project BroadifyVCam.xcodeproj \
-  -scheme BroadifyVCam \
-  -configuration Release \
-  -derivedDataPath build \
-  SYMROOT=build \
-  DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM}" \
-  CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
-  -allowProvisioningUpdates \
-  build
+
+if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
+  # Validate the Developer ID cert is present for the expected team (the actual
+  # per-target profile selection comes from PROVISIONING_PROFILE_SPECIFIER in
+  # project.yml).
+  CODE_SIGN_IDENTITY="$(resolve_signing_identity_for_team "${VCAM_DEVELOPMENT_TEAM}" "Developer ID Application")"
+  echo "build-vcam-helper-macos: Developer ID signing with team ${VCAM_DEVELOPMENT_TEAM} (${CODE_SIGN_IDENTITY})"
+  xcodebuild \
+    -project BroadifyVCam.xcodeproj \
+    -scheme BroadifyVCam \
+    -configuration Release \
+    -derivedDataPath build \
+    SYMROOT=build \
+    DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM}" \
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_IDENTITY="Developer ID Application" \
+    CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
+    build
+else
+  CODE_SIGN_IDENTITY="$(resolve_signing_identity_for_team "${VCAM_DEVELOPMENT_TEAM}" "Apple Development")"
+  echo "build-vcam-helper-macos: development signing with team ${VCAM_DEVELOPMENT_TEAM} (${CODE_SIGN_IDENTITY})"
+  xcodebuild \
+    -project BroadifyVCam.xcodeproj \
+    -scheme BroadifyVCam \
+    -configuration Release \
+    -derivedDataPath build \
+    SYMROOT=build \
+    DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM}" \
+    CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
+    -allowProvisioningUpdates \
+    build
+fi
 
 APP_PATH="${VCAM_DIR}/build/Release/BroadifyVCam.app"
 EXT_PATH="${APP_PATH}/Contents/Library/SystemExtensions/${VCAM_EXTENSION_BUNDLE_NAME}"
