@@ -1,5 +1,6 @@
 import SwiftUI
 import SystemExtensions
+import Foundation
 
 /**
  * Single-view UI with activate/deactivate controls for the camera
@@ -76,6 +77,12 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         "com.broadify.vcam.extension"
     }
 
+    private var expectedEmbeddedExtensionPath: String {
+        Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Library/SystemExtensions/\(extensionIdentifier).systemextension")
+            .path
+    }
+
     func activate() {
         guard !isRequestingActivation else {
             return
@@ -142,6 +149,19 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         isRequestingActivation = false
         awaitingUserApproval = false
+
+        if let nsError = error as NSError?,
+           nsError.domain == OSSystemExtensionErrorDomain,
+           nsError.code == OSSystemExtensionError.extensionNotFound.rawValue {
+            let extensionExists = FileManager.default.fileExists(atPath: expectedEmbeddedExtensionPath)
+            statusText =
+                "Extension request failed: embedded system extension was not found by macOS. "
+                + "App bundle: \(Bundle.main.bundlePath). "
+                + "Expected embedded extension: \(expectedEmbeddedExtensionPath). "
+                + "Exists on disk: \(extensionExists ? "yes" : "no")."
+            return
+        }
+
         statusText = "Extension request failed: \(error.localizedDescription)"
     }
 }

@@ -161,6 +161,30 @@ describe("vcam-helper", () => {
     expect(status.message).toContain("could not be opened automatically");
   });
 
+  it("does not reopen the helper app when the extension is already active", async () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (!hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    mockExecFileSync.mockReturnValueOnce(
+      [
+        "1 extension(s)",
+        "--- com.apple.system_extension.cmio",
+        "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]",
+        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated enabled]",
+      ].join("\n"),
+    );
+
+    const status = await openVcamHelperApp();
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(status.launchRequested).toBe(false);
+    expect(status.code).toBe("already_active");
+    expect(status.message).toContain("already active");
+  });
+
   it("resolves dev build path when present and valid", () => {
     const candidate = join(
       process.cwd(),

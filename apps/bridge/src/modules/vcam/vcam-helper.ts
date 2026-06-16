@@ -323,6 +323,15 @@ export async function openVcamHelperApp(
     return status;
   }
 
+  if (status.available && !status.requiresUserApproval) {
+    return {
+      ...status,
+      launchRequested: false,
+      code: "already_active",
+      message: "Virtual camera extension is already active.",
+    };
+  }
+
   try {
     // macOS reuses an already running parent app. Quit stale copies first so
     // activation always uses the embedded extension from the resolved bundle.

@@ -68,7 +68,10 @@ class AvFoundationCameraSource final : public CameraSource {
 
   std::vector<CameraInfo> listCameras() override {
     @autoreleasepool {
-      ensureAuthorization();
+      if (!ensureAuthorization()) {
+        setError("Camera permission was not granted.");
+        return {};
+      }
       NSArray<AVCaptureDevice *> *devices = BroadifyDiscoverVideoDevices();
       std::vector<CameraInfo> cameras;
       int index = 0;

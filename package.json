@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "npm-run-all --parallel dev:react dev:electron",
     "dev:react": "vite",
-    "dev:electron": "npm run build:display-helper && npm run build:meeting-helper && npm run install:vcam-helper && npm run build:framebus && npm run build:graphics-renderer && npm run transpile:electron && cross-env NODE_ENV=development BRIDGE_VCAM_HELPER_PATH=/Applications/BroadifyVCam.app electron .",
+    "dev:electron": "npm run build:display-helper && npm run build:meeting-helper && cross-env BRIDGE_VCAM_REINITIALIZE_ON_INSTALL=0 npm run install:vcam-helper && npm run build:framebus && npm run build:graphics-renderer && npm run transpile:electron && cross-env NODE_ENV=development BRIDGE_VCAM_HELPER_PATH=/Applications/BroadifyVCam.app electron .",
     "build:app": "tsc -b && vite build",
     "build:protocol": "npm --prefix packages/protocol run build",
     "build:bridge": "npm --prefix apps/bridge run build",
