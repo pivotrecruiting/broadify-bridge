@@ -458,6 +458,44 @@ jobs:
           Import-Module TrustedSigning
           Get-Command Invoke-TrustedSigning | Format-List Name, Version, Source
 
+      - name: Fetch MODNet model (meeting-helper)
+        if: matrix.os == 'macos-15' || matrix.os == 'windows-2022'
+        shell: bash
+        env:
+          MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${MODNET_MODEL_URL:-}" ]]; then
+            echo "MODNET_MODEL_URL secret is not set; cannot fetch modnet.onnx" >&2
+            exit 1
+          fi
+
+          MODELS_DIR="apps/bridge/native/meeting-helper/models"
+          MODEL_PATH="$MODELS_DIR/modnet.onnx"
+          mkdir -p "$MODELS_DIR"
+
+          echo "Downloading MODNet model..."
+          curl -fsSL "$MODNET_MODEL_URL" -o "$MODEL_PATH"
+
+          EXPECTED_HASH="$(node -e 'const fs=require("fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const e=m.models.find((x)=>x.name==="modnet");process.stdout.write(e?.sha256||"")' "$MODELS_DIR/manifest.json")"
+          if [[ -z "$EXPECTED_HASH" ]]; then
+            echo "No expected SHA-256 for modnet in manifest.json" >&2
+            exit 1
+          fi
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            ACTUAL_HASH="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
+          else
+            ACTUAL_HASH="$(shasum -a 256 "$MODEL_PATH" | awk '{print $1}')"
+          fi
+
+          if [[ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]]; then
+            echo "MODNet model hash mismatch: expected $EXPECTED_HASH, got $ACTUAL_HASH" >&2
+            exit 1
+          fi
+          echo "MODNet model verified ($ACTUAL_HASH)"
+
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }} -- --publish=never
