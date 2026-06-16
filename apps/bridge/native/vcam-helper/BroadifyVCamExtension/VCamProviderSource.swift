@@ -1,5 +1,8 @@
 import CoreMediaIO
 import Foundation
+import os.log
+
+private let providerLog = OSLog(subsystem: "com.broadify.vcam.extension", category: "provider")
 
 /**
  * CMIOExtension provider that exposes a single virtual camera device
@@ -12,11 +15,14 @@ final class VCamProviderSource: NSObject, CMIOExtensionProviderSource {
 
     init(clientQueue: DispatchQueue?) {
         super.init()
+        os_log(.info, log: providerLog, "Initializing CMIO provider")
         provider = CMIOExtensionProvider(source: self, clientQueue: clientQueue)
         deviceSource = VCamDeviceSource(localizedName: "broadify Camera")
         do {
             try provider.addDevice(deviceSource.device)
+            os_log(.info, log: providerLog, "CMIO provider device registration succeeded")
         } catch {
+            os_log(.fault, log: providerLog, "Failed to add virtual camera device: %{public}@", error.localizedDescription)
             fatalError("Failed to add virtual camera device: \(error.localizedDescription)")
         }
     }

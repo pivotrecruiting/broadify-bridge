@@ -6,7 +6,7 @@ VCAM_DIR="${ROOT_DIR}/apps/bridge/native/vcam-helper"
 VCAM_DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM:-PG38DC5RG9}"
 VCAM_EXTENSION_BUNDLE_ID="${VCAM_EXTENSION_BUNDLE_ID:-com.broadify.vcam.extension}"
 VCAM_EXTENSION_BUNDLE_NAME="${VCAM_EXTENSION_BUNDLE_ID}.systemextension"
-VCAM_CMIO_MACH_SERVICE="${VCAM_DEVELOPMENT_TEAM}.com.broadify.vcam.service"
+VCAM_CMIO_MACH_SERVICE="${VCAM_DEVELOPMENT_TEAM}.com.broadify.vcam.extension"
 VCAM_APP_PROVISIONING_PROFILE_SPECIFIER="${VCAM_APP_PROVISIONING_PROFILE_SPECIFIER:-Broadify VCam Developer ID}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -97,6 +97,31 @@ verify_cmio_extension_metadata() {
   return 0
 }
 
+resign_bundle() {
+  local target="$1"
+  local entitlements_path="$2"
+  local identity="$3"
+  local timestamp_flag="$4"
+
+  local -a cmd=(
+    codesign
+    --force
+    --sign
+    "$identity"
+    --entitlements
+    "$entitlements_path"
+    --options
+    runtime
+  )
+
+  if [[ -n "$timestamp_flag" ]]; then
+    cmd+=("$timestamp_flag")
+  fi
+
+  cmd+=("$target")
+  "${cmd[@]}"
+}
+
 signed_binary_has_get_task_allow() {
   local target="$1"
   codesign -d --entitlements :- "$target" 2>/dev/null \
@@ -110,6 +135,8 @@ signed_binary_has_get_task_allow() {
 #   CI to produce a notarizable, distributable system extension. The profiles
 #   must be installed under ~/Library/MobileDevice/Provisioning Profiles/.
 VCAM_SIGNING_MODE="${VCAM_SIGNING_MODE:-development}"
+RESOLVED_CODE_SIGN_IDENTITY=""
+TIMESTAMP_FLAG=""
 
 cd "${VCAM_DIR}"
 xcodegen generate
@@ -118,8 +145,9 @@ if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
   # Validate the Developer ID cert is present for the expected team (the actual
   # per-target profile selection comes from PROVISIONING_PROFILE_SPECIFIER in
   # project.yml).
-  CODE_SIGN_IDENTITY="$(resolve_signing_identity_for_team "${VCAM_DEVELOPMENT_TEAM}" "Developer ID Application")"
-  echo "build-vcam-helper-macos: Developer ID signing with team ${VCAM_DEVELOPMENT_TEAM} (${CODE_SIGN_IDENTITY})"
+  RESOLVED_CODE_SIGN_IDENTITY="$(resolve_signing_identity_for_team "${VCAM_DEVELOPMENT_TEAM}" "Developer ID Application")"
+  TIMESTAMP_FLAG="--timestamp"
+  echo "build-vcam-helper-macos: Developer ID signing with team ${VCAM_DEVELOPMENT_TEAM} (${RESOLVED_CODE_SIGN_IDENTITY})"
   xcodebuild \
     -project BroadifyVCam.xcodeproj \
     -scheme BroadifyVCam \
@@ -134,8 +162,8 @@ if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
     CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
     build
 else
-  CODE_SIGN_IDENTITY="$(resolve_signing_identity_for_team "${VCAM_DEVELOPMENT_TEAM}" "Apple Development")"
-  echo "build-vcam-helper-macos: development signing with team ${VCAM_DEVELOPMENT_TEAM} (${CODE_SIGN_IDENTITY})"
+  RESOLVED_CODE_SIGN_IDENTITY="$(resolve_signing_identity_for_team "${VCAM_DEVELOPMENT_TEAM}" "Apple Development")"
+  echo "build-vcam-helper-macos: development signing with team ${VCAM_DEVELOPMENT_TEAM} (${RESOLVED_CODE_SIGN_IDENTITY})"
   xcodebuild \
     -project BroadifyVCam.xcodeproj \
     -scheme BroadifyVCam \
@@ -154,10 +182,12 @@ APP_PATH="${VCAM_DIR}/build/Release/BroadifyVCam.app"
 EXT_PATH="${APP_PATH}/Contents/Library/SystemExtensions/${VCAM_EXTENSION_BUNDLE_NAME}"
 LEGACY_EXT_PATH="${APP_PATH}/Contents/Library/SystemExtensions/BroadifyVCamExtension.systemextension"
 EXT_INFO_PLIST="${EXT_PATH}/Contents/Info.plist"
+renamed_extension_bundle=0
 
 if [[ -d "${LEGACY_EXT_PATH}" && ! -d "${EXT_PATH}" ]]; then
   echo "build-vcam-helper-macos: renaming legacy embedded extension bundle to ${VCAM_EXTENSION_BUNDLE_NAME}"
   mv "${LEGACY_EXT_PATH}" "${EXT_PATH}"
+  renamed_extension_bundle=1
 fi
 
 if [[ ! -d "${EXT_PATH}" ]]; then
@@ -170,11 +200,20 @@ if ! verify_cmio_extension_metadata "${EXT_INFO_PLIST}"; then
   exit 1
 fi
 
+if [[ "${renamed_extension_bundle}" == "1" ]]; then
+  echo "build-vcam-helper-macos: re-signing renamed system extension bundle"
+  resign_bundle "${EXT_PATH}" "${VCAM_DIR}/BroadifyVCamExtension/BroadifyVCamExtension.entitlements" "${RESOLVED_CODE_SIGN_IDENTITY}" "${TIMESTAMP_FLAG}"
+  resign_bundle "${APP_PATH}" "${VCAM_DIR}/BroadifyVCam/BroadifyVCam.entitlements" "${RESOLVED_CODE_SIGN_IDENTITY}" "${TIMESTAMP_FLAG}"
+fi
+
 APP_TEAM_ID="$(codesign -dv --verbose=4 "${APP_PATH}" 2>&1 | awk -F= '/TeamIdentifier=/ { print $2; exit }')"
 if [[ "${APP_TEAM_ID}" != "${VCAM_DEVELOPMENT_TEAM}" ]]; then
   echo "build-vcam-helper-macos: expected team ${VCAM_DEVELOPMENT_TEAM}, got ${APP_TEAM_ID}" >&2
   exit 1
 fi
+
+codesign --verify --strict --deep --verbose=2 "${APP_PATH}"
+codesign --verify --strict --verbose=2 "${EXT_PATH}"
 
 if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
   if signed_binary_has_get_task_allow "${APP_PATH}"; then

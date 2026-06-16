@@ -17,11 +17,11 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>9</string>
+	<string>10</string>
 	<key>CMIOExtension</key>
 	<dict>
 		<key>CMIOExtensionMachServiceName</key>
-		<string>$(TeamIdentifierPrefix)com.broadify.vcam.service</string>
+		<string>$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	</dict>
 	<key>NSSystemExtensionUsageDescription</key>
 	<string>broadify Virtual Camera exposes meeting program output as a system camera device.</string>

@@ -36,12 +36,14 @@ targets:
       path: BroadifyVCam/Info.plist
       properties:
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "9"
+        CFBundleVersion: "10"
     entitlements:
       path: BroadifyVCam/BroadifyVCam.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.developer.system-extension.install: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.broadify.vcam
     settings:
       base:
         DEVELOPMENT_TEAM: "PG38DC5RG9"
@@ -62,15 +64,17 @@ targets:
       properties:
         CFBundlePackageType: SYSX
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "9"
+        CFBundleVersion: "10"
         NSSystemExtensionUsageDescription: "broadify Virtual Camera exposes meeting program output as a system camera device."
         CMIOExtension:
-          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)com.broadify.vcam.service
+          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)
     entitlements:
       path: BroadifyVCamExtension/BroadifyVCamExtension.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.broadify.vcam
     settings:
       base:
         DEVELOPMENT_TEAM: "PG38DC5RG9"

@@ -95,7 +95,11 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         )
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
-        statusText = "Activation requested…"
+        let extensionExists = FileManager.default.fileExists(atPath: expectedEmbeddedExtensionPath)
+        statusText =
+            "Activation requested… App bundle: \(Bundle.main.bundlePath). "
+            + "Expected embedded extension: \(expectedEmbeddedExtensionPath). "
+            + "Exists on disk: \(extensionExists ? "yes" : "no")."
     }
 
     func deactivate() {
@@ -162,6 +166,28 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
             return
         }
 
-        statusText = "Extension request failed: \(error.localizedDescription)"
+        statusText =
+            "Extension request failed: \(error.localizedDescription). "
+            + formatNSError(error as NSError)
+    }
+
+    private func formatNSError(_ error: NSError) -> String {
+        var parts: [String] = [
+            "domain=\(error.domain)",
+            "code=\(error.code)",
+        ]
+
+        if !error.userInfo.isEmpty {
+            let serialized = error.userInfo.map { key, value in
+                "\(key)=\(String(describing: value))"
+            }.sorted().joined(separator: ", ")
+            parts.append("userInfo={\(serialized)}")
+        }
+
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("underlying=[\(formatNSError(underlying))]")
+        }
+
+        return parts.joined(separator: " ")
     }
 }

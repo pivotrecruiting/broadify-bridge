@@ -34,12 +34,11 @@ if [[ ! -f "$APP_ENTITLEMENTS" ]]; then
   exit 1
 fi
 
-if [[ ! -d "$EXT_BUNDLE" && -d "$LEGACY_EXT_BUNDLE" ]]; then
-  echo "install-vcam-helper-macos: renaming legacy embedded extension bundle to ${VCAM_EXTENSION_BUNDLE_NAME}"
-  mv "$LEGACY_EXT_BUNDLE" "$EXT_BUNDLE"
-fi
-
 if [[ ! -d "$EXT_BUNDLE" ]]; then
+  if [[ -d "$LEGACY_EXT_BUNDLE" ]]; then
+    echo "install-vcam-helper-macos: build artifact still contains legacy embedded extension path ${LEGACY_EXT_BUNDLE}" >&2
+    echo "install-vcam-helper-macos: rebuild the VCam helper so the extension bundle is renamed and re-signed before installation." >&2
+  fi
   echo "install-vcam-helper-macos: missing embedded extension at $EXT_BUNDLE" >&2
   exit 1
 fi
@@ -107,6 +106,9 @@ if [[ ! -d "$DEST_EXT" ]]; then
   echo "install-vcam-helper-macos: installed app is missing embedded system extension at ${DEST_EXT}" >&2
   exit 1
 fi
+
+codesign --verify --strict --deep --verbose=2 "${DEST_APP}"
+codesign --verify --strict --verbose=2 "${DEST_EXT}"
 
 INSTALLED_EXT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$DEST_EXT_INFO" 2>/dev/null || true)"
 
