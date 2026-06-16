@@ -47,10 +47,6 @@ targets:
         DEVELOPMENT_TEAM: "PG38DC5RG9"
         PRODUCT_BUNDLE_IDENTIFIER: com.broadify.vcam
         PRODUCT_NAME: BroadifyVCam
-        # Used only with manual Developer ID signing (release CI). Ignored under
-        # automatic signing for local development. Create a Developer ID profile
-        # with exactly this name in the Apple Developer portal.
-        PROVISIONING_PROFILE_SPECIFIER: "Broadify VCam Developer ID"
     dependencies:
       - sdk: ServiceManagement.framework
       - target: BroadifyVCamExtension

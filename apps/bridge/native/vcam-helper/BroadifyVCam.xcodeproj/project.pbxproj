@@ -249,7 +249,6 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam;
 				PRODUCT_NAME = BroadifyVCam;
-				PROVISIONING_PROFILE_SPECIFIER = "Broadify VCam Developer ID";
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -286,7 +285,6 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.broadify.vcam;
 				PRODUCT_NAME = BroadifyVCam;
-				PROVISIONING_PROFILE_SPECIFIER = "Broadify VCam Developer ID";
 				SDKROOT = macosx;
 			};
 			name = Release;
