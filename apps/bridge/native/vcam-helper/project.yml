@@ -49,6 +49,12 @@ targets:
         DEVELOPMENT_TEAM: "PG38DC5RG9"
         PRODUCT_BUNDLE_IDENTIFIER: com.broadify.vcam
         PRODUCT_NAME: BroadifyVCam
+        # Per-target so the Developer ID profile is applied ONLY to the
+        # container app. Setting this on the xcodebuild command line would leak
+        # it to the extension target (bundle ID com.broadify.vcam.extension),
+        # which the profile's app ID (com.broadify.vcam) does not match. Dev
+        # builds override this to empty on the command line (automatic signing).
+        PROVISIONING_PROFILE_SPECIFIER: "Broadify VCam Developer ID"
     dependencies:
       - sdk: ServiceManagement.framework
       - target: BroadifyVCamExtension

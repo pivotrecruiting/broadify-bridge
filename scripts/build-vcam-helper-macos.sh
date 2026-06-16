@@ -7,7 +7,6 @@ VCAM_DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM:-PG38DC5RG9}"
 VCAM_EXTENSION_BUNDLE_ID="${VCAM_EXTENSION_BUNDLE_ID:-com.broadify.vcam.extension}"
 VCAM_EXTENSION_BUNDLE_NAME="${VCAM_EXTENSION_BUNDLE_ID}.systemextension"
 VCAM_CMIO_MACH_SERVICE="${VCAM_DEVELOPMENT_TEAM}.com.broadify.vcam.extension"
-VCAM_APP_PROVISIONING_PROFILE_SPECIFIER="${VCAM_APP_PROVISIONING_PROFILE_SPECIFIER:-Broadify VCam Developer ID}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "build-vcam-helper-macos: macOS is required" >&2
@@ -142,9 +141,10 @@ cd "${VCAM_DIR}"
 xcodegen generate
 
 if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
-  # Validate the Developer ID cert is present for the expected team (the actual
+  # Validate the Developer ID cert is present for the expected team. The
   # per-target profile selection comes from PROVISIONING_PROFILE_SPECIFIER in
-  # project.yml).
+  # project.yml (container app only) — do NOT pass it on the command line here,
+  # or it leaks to the extension target and fails with an app-ID mismatch.
   RESOLVED_CODE_SIGN_IDENTITY="$(resolve_signing_identity_for_team "${VCAM_DEVELOPMENT_TEAM}" "Developer ID Application")"
   TIMESTAMP_FLAG="--timestamp"
   echo "build-vcam-helper-macos: Developer ID signing with team ${VCAM_DEVELOPMENT_TEAM} (${RESOLVED_CODE_SIGN_IDENTITY})"
@@ -157,7 +157,6 @@ if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
     DEVELOPMENT_TEAM="${VCAM_DEVELOPMENT_TEAM}" \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="Developer ID Application" \
-    PROVISIONING_PROFILE_SPECIFIER="${VCAM_APP_PROVISIONING_PROFILE_SPECIFIER}" \
     CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
     build
