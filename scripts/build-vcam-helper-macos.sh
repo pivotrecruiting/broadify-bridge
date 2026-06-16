@@ -45,6 +45,16 @@ resolve_signing_identity_for_team() {
     fi
     [[ -n "$hash" && -n "$name" ]] || continue
 
+    # Fast path: the team ID is embedded in the identity name for distribution
+    # certs, e.g. "Developer ID Application: broadify GmbH (PG38DC5RG9)".
+    if [[ "$name" == *"(${team_id})"* ]]; then
+      identity="$name"
+      break
+    fi
+
+    # Fallback: read the team from the certificate OU. Needed for
+    # "Apple Development" identities whose name parens hold the personal ID,
+    # not the team. Best-effort only (can be flaky on CI keychains).
     local cert_team_id=""
     cert_team_id="$(
       security find-certificate -c "$name" -p 2>/dev/null \
@@ -60,6 +70,8 @@ resolve_signing_identity_for_team() {
   if [[ -z "$identity" ]]; then
     echo "build-vcam-helper-macos: no \"${identity_prefix}\" identity found for team ${team_id}" >&2
     echo "build-vcam-helper-macos: install the matching certificate for team ${team_id} in Keychain Access." >&2
+    echo "build-vcam-helper-macos: available code-signing identities:" >&2
+    security find-identity -v -p codesigning >&2 || true
     exit 1
   fi
 
