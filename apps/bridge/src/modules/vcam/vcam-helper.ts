@@ -41,6 +41,7 @@ type SystemExtensionActivationStateT = {
   installed: boolean;
   activated: boolean;
   requiresUserApproval: boolean;
+  waitingForUninstallAfterReboot: boolean;
 };
 
 /**
@@ -100,6 +101,7 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
       installed: false,
       activated: false,
       requiresUserApproval: false,
+      waitingForUninstallAfterReboot: false,
     };
   }
 
@@ -109,11 +111,16 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
     normalized.includes("waiting for user") ||
     normalized.includes("awaiting user approval") ||
     normalized.includes("needs user approval");
+  const waitingForUninstallAfterReboot = normalized.includes(
+    "waiting to uninstall on reboot",
+  );
 
   return {
     installed: true,
     activated,
-    requiresUserApproval: waitingForUser || !activated,
+    requiresUserApproval:
+      (waitingForUser || !activated) && !waitingForUninstallAfterReboot,
+    waitingForUninstallAfterReboot,
   };
 }
 
@@ -267,6 +274,23 @@ export function getVcamHelperStatus(
       message: markerInstalled
         ? "Virtual camera extension is marked as installed."
         : "Virtual camera extension is active.",
+    };
+  }
+
+  if (activationState.waitingForUninstallAfterReboot) {
+    return {
+      platform: currentPlatform,
+      platformSupported,
+      available: false,
+      installed,
+      running: false,
+      backend: "coremediaio_camera_extension",
+      framebusName,
+      helperAppPath,
+      requiresUserApproval: false,
+      code: "reboot_required",
+      message:
+        "A previous broadify Virtual Camera extension uninstall is still pending in macOS. Reboot the Mac, then open BroadifyVCam.app again and activate the extension.",
     };
   }
 
