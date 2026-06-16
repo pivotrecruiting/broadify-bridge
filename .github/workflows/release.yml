@@ -538,6 +538,38 @@ jobs:
           fi
           echo "MODNet model verified ($ACTUAL_HASH)"
 
+      - name: Repair WiX ICE prerequisites (Windows, for MSI build)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # WiX light.exe runs ICE validation through the Windows Installer
+          # scripting engine (VBScript/JScript). On hosted windows-2022 runners
+          # these COM DLLs are frequently unregistered, which surfaces as
+          # "incorrectly registered scripting engine" / "Windows Installer
+          # Service could not be accessed" ICE93-ICE105 errors. light.exe is
+          # 32-bit, so the SysWOW64 engines matter most; register both.
+          $targets = @(
+            @{ RegSvr = "$env:SystemRoot\System32\regsvr32.exe";  Dir = "$env:SystemRoot\System32"  },
+            @{ RegSvr = "$env:SystemRoot\SysWOW64\regsvr32.exe"; Dir = "$env:SystemRoot\SysWOW64" }
+          )
+          foreach ($t in $targets) {
+            foreach ($dll in @('vbscript.dll', 'jscript.dll')) {
+              $dllPath = Join-Path $t.Dir $dll
+              if ((Test-Path $t.RegSvr) -and (Test-Path $dllPath)) {
+                Write-Host "Registering $dllPath"
+                & $t.RegSvr /s $dllPath
+              }
+            }
+          }
+
+          # Ensure the Windows Installer service can start for ICE validation.
+          try {
+            Set-Service -Name msiserver -StartupType Manual -ErrorAction Stop
+          } catch {
+            Write-Warning "Could not configure msiserver service: $_"
+          }
+
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }} -- --publish=never
