@@ -38,6 +38,7 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
 
     init(localizedName: String) {
         super.init()
+        os_log(.info, log: log, "Initializing CMIO device source")
         let deviceID = UUID()
         device = CMIOExtensionDevice(
             localizedName: localizedName,
@@ -63,7 +64,9 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
 
         do {
             try device.addStream(streamSource.stream)
+            os_log(.info, log: log, "CMIO stream registration succeeded")
         } catch {
+            os_log(.fault, log: log, "Failed to add stream: %{public}@", error.localizedDescription)
             fatalError("Failed to add stream: \(error.localizedDescription)")
         }
     }

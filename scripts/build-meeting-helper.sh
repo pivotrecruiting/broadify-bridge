@@ -10,6 +10,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNAME_S="$(uname -s)"
 
 if [[ "$UNAME_S" == "Darwin" ]]; then
+  # macOS uses the native Apple Vision keyer. MODNet (and thus ONNX Runtime,
+  # which requires macOS 14+) ships on Windows only. Disabling MODNet here keeps
+  # the helper free of the onnxruntime dependency so it runs on the macOS 13
+  # floor and stays smaller. Overridable for local experimentation.
+  export MEETING_HELPER_ENABLE_MODNET="${MEETING_HELPER_ENABLE_MODNET:-0}"
   bash "$ROOT_DIR/apps/bridge/native/meeting-helper/build.sh"
   exit 0
 fi

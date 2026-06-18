@@ -1,5 +1,6 @@
 import SwiftUI
 import SystemExtensions
+import Foundation
 
 /**
  * Single-view UI with activate/deactivate controls for the camera
@@ -76,6 +77,12 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         "com.broadify.vcam.extension"
     }
 
+    private var expectedEmbeddedExtensionPath: String {
+        Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Library/SystemExtensions/\(extensionIdentifier).systemextension")
+            .path
+    }
+
     func activate() {
         guard !isRequestingActivation else {
             return
@@ -88,7 +95,11 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         )
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
-        statusText = "Activation requested…"
+        let extensionExists = FileManager.default.fileExists(atPath: expectedEmbeddedExtensionPath)
+        statusText =
+            "Activation requested… App bundle: \(Bundle.main.bundlePath). "
+            + "Expected embedded extension: \(expectedEmbeddedExtensionPath). "
+            + "Exists on disk: \(extensionExists ? "yes" : "no")."
     }
 
     func deactivate() {
@@ -142,6 +153,41 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         isRequestingActivation = false
         awaitingUserApproval = false
-        statusText = "Extension request failed: \(error.localizedDescription)"
+
+        if let nsError = error as NSError?,
+           nsError.domain == OSSystemExtensionErrorDomain,
+           nsError.code == OSSystemExtensionError.extensionNotFound.rawValue {
+            let extensionExists = FileManager.default.fileExists(atPath: expectedEmbeddedExtensionPath)
+            statusText =
+                "Extension request failed: embedded system extension was not found by macOS. "
+                + "App bundle: \(Bundle.main.bundlePath). "
+                + "Expected embedded extension: \(expectedEmbeddedExtensionPath). "
+                + "Exists on disk: \(extensionExists ? "yes" : "no")."
+            return
+        }
+
+        statusText =
+            "Extension request failed: \(error.localizedDescription). "
+            + formatNSError(error as NSError)
+    }
+
+    private func formatNSError(_ error: NSError) -> String {
+        var parts: [String] = [
+            "domain=\(error.domain)",
+            "code=\(error.code)",
+        ]
+
+        if !error.userInfo.isEmpty {
+            let serialized = error.userInfo.map { key, value in
+                "\(key)=\(String(describing: value))"
+            }.sorted().joined(separator: ", ")
+            parts.append("userInfo={\(serialized)}")
+        }
+
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("underlying=[\(formatNSError(underlying))]")
+        }
+
+        return parts.joined(separator: " ")
     }
 }

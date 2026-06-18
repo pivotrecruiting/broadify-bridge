@@ -24,9 +24,6 @@ jobs:
           - os: windows-2022
             artifact: win-x64
             dist_script: dist:win
-          - os: ubuntu-22.04
-            artifact: linux-x64
-            dist_script: dist:linux
 
     runs-on: ${{ matrix.os }}
     env:
@@ -38,6 +35,7 @@ jobs:
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      VCAM_APP_PROVISION_PROFILE: ${{ secrets.VCAM_APP_PROVISION_PROFILE }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -57,6 +55,7 @@ jobs:
       RELAY_URL: ${{ secrets.RELAY_URL }}
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
+      MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
       DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       DECKLINK_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       MACOS_FLOOR_VERSION: "13.0"
@@ -220,6 +219,10 @@ jobs:
           fi
           echo "Bridge config prepared"
 
+      - name: Install xcodegen (macOS, for vcam-helper)
+        if: matrix.os == 'macos-15'
+        run: brew install xcodegen
+
       - name: Resolve SDL2 bundle (macOS, for display-helper)
         if: matrix.os == 'macos-15'
         run: npm run ensure:sdl2-macos
@@ -265,6 +268,36 @@ jobs:
 
           "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "SDL2_DIR=$(Join-Path $vcpkgRoot 'installed\x64-windows')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install ONNX Runtime (Windows, for meeting-helper MODNet)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Must match the vendored macOS ONNX Runtime version
+          # (apps/bridge/native/meeting-helper/deps/onnxruntime/macos-arm64/VERSION_NUMBER).
+          $version = '1.26.0'
+          $pkg = "onnxruntime-win-x64-$version"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$version/$pkg.zip"
+          $tmp = Join-Path $env:RUNNER_TEMP 'onnxruntime'
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $zip = Join-Path $tmp "$pkg.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'apps\bridge\native\meeting-helper\deps\onnxruntime\windows-x64'
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $tmp "$pkg\*") $dest
+
+          if (-not (Test-Path (Join-Path $dest 'include\onnxruntime_cxx_api.h'))) {
+            throw "ONNX Runtime headers missing after extraction under $dest"
+          }
+          if (-not (Test-Path (Join-Path $dest 'lib\onnxruntime.dll'))) {
+            throw "ONNX Runtime DLL missing after extraction under $dest"
+          }
+          Write-Host "ONNX Runtime $version installed to $dest"
 
       - name: Validate Windows Trusted Signing configuration
         if: matrix.os == 'windows-2022'
@@ -424,9 +457,61 @@ jobs:
           Import-Module TrustedSigning
           Get-Command Invoke-TrustedSigning | Format-List Name, Version, Source
 
+      - name: Install vcam provisioning profile (macOS)
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${VCAM_APP_PROVISION_PROFILE:-}" ]]; then
+            echo "VCAM_APP_PROVISION_PROFILE secret is required for Developer ID vcam signing." >&2
+            exit 1
+          fi
+
+          # Different Xcode versions read profiles from different locations, so
+          # install into both the legacy and the modern UserData directory.
+          LEGACY_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          USERDATA_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$LEGACY_DIR" "$USERDATA_DIR"
+
+          decode_profile() {
+            local value="$1"
+            local filename="$2"
+            if [[ "$value" == data:*base64,* ]]; then
+              value="${value#*,}"
+            fi
+            local tmp
+            tmp="$(mktemp)"
+            printf '%s' "$value" | base64 -D > "$tmp"
+            # Validate it is a real provisioning profile (CMS-wrapped plist).
+            if ! security cms -D -i "$tmp" >/dev/null 2>&1; then
+              echo "Decoded file is not a valid provisioning profile: $filename" >&2
+              exit 1
+            fi
+            cp "$tmp" "$LEGACY_DIR/$filename"
+            cp "$tmp" "$USERDATA_DIR/$filename"
+            rm -f "$tmp"
+          }
+
+          decode_profile "$VCAM_APP_PROVISION_PROFILE" "broadify-vcam-app.provisionprofile"
+
+          echo "VCAM_SIGNING_MODE=developer-id" >> "$GITHUB_ENV"
+          echo "Installed vcam Developer ID provisioning profile."
+
+      - name: Cache MODNet model (meeting-helper, Windows only)
+        if: matrix.os == 'windows-2022'
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/meeting-helper/models/modnet.onnx
+          key: modnet-model-${{ hashFiles('apps/bridge/native/meeting-helper/models/manifest.json') }}
+
+      - name: Download MODNet model (meeting-helper, Windows only)
+        if: matrix.os == 'windows-2022'
+        run: npm run download:modnet-model
+
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
-        run: npm run ${{ matrix.dist_script }} -- --publish=never
+        run: npm run ${{ matrix.dist_script }}
 
       - name: Linux packaging diagnostics
         if: startsWith(matrix.os, 'ubuntu-')
@@ -443,7 +528,7 @@ jobs:
         env:
           DEBUG: electron-builder,builder-util
           ELECTRON_BUILDER_LOG_LEVEL: debug
-        run: npm run ${{ matrix.dist_script }} -- --publish=never
+        run: npm run ${{ matrix.dist_script }}
 
       - name: Verify Windows signatures
         if: matrix.os == 'windows-2022'

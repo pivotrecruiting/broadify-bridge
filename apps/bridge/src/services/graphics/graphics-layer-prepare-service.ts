@@ -7,6 +7,7 @@ import { sanitizeTemplateCss, validateTemplate } from "./template-sanitizer.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
 import type { GraphicsRenderer } from "./renderer/graphics-renderer.js";
 import type { PreparedLayerT } from "./graphics-manager-types.js";
+import { getBridgeContext } from "../bridge-context.js";
 
 const OUTPUT_KEYS_WITH_ALPHA: GraphicsOutputKeyT[] = [
   "browser_input",
@@ -37,7 +38,17 @@ export async function prepareLayerForRender(
     css: sanitizedCss,
   };
   // Validate template HTML/CSS against a safe subset (no scripts/externals).
-  const { assetIds } = validateTemplate(payload.bundle.html, sanitizedCss);
+  const { assetIds, warnings = [] } = validateTemplate(payload.bundle.html, sanitizedCss);
+  if (warnings.length > 0) {
+    getBridgeContext().logger.warn(
+      `[Graphics] Template render-risk warnings ${JSON.stringify({
+        layerId: payload.layerId,
+        category: payload.category,
+        presetId: payload.presetId ?? null,
+        warnings,
+      })}`
+    );
+  }
 
   for (const asset of sanitizedBundle.assets || []) {
     await assetRegistry.storeAsset(asset);

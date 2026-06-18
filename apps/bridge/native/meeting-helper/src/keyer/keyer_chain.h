@@ -21,7 +21,11 @@ class KeyerChain {
   mutable std::mutex mutex_;
   ModnetKeyerOptions options_;
   std::unique_ptr<Keyer> modnet_;
+#if defined(__APPLE__)
+  // Apple Vision person segmentation is macOS-only and must never ship on
+  // other platforms for licensing reasons; keep it out of non-Apple builds.
   std::unique_ptr<Keyer> vision_;
+#endif
   KeyerStatus status_;
 };
 

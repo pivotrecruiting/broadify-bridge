@@ -13,9 +13,7 @@ const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
   "apps/bridge/native/display-helper/display-helper",
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
-  "apps/bridge/native/meeting-helper/meeting-helper",
-  "apps/bridge/native/meeting-helper/libonnxruntime.dylib",
-  "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib",
+  "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app",
   "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
 ]);
 const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
@@ -89,6 +87,12 @@ if (config.win) {
     {
       from: "apps/bridge/native/meeting-helper/onnxruntime.dll",
       to: "native/meeting-helper/onnxruntime.dll",
+    },
+    {
+      // MODNet model ships on Windows only (macOS uses the Apple Vision keyer).
+      from: "apps/bridge/native/meeting-helper/models",
+      to: "native/meeting-helper/models",
+      filter: ["**/*"],
     },
   ];
 

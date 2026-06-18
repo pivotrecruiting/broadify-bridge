@@ -7,6 +7,7 @@ import type {
   GraphicsSendPayloadT,
 } from "./graphics-schemas.js";
 import type { TemplateBindingsT } from "./template-bindings.js";
+import type { GraphicsRendererLifecycleStateT } from "./renderer/graphics-renderer.js";
 
 export type GraphicsLayerStateT = {
   layerId: string;
@@ -38,6 +39,7 @@ export type PreparedLayerT = GraphicsSendPayloadT & {
 };
 
 export type GraphicsStatusSnapshotT = {
+  rendererLifecycleState: GraphicsRendererLifecycleStateT;
   outputConfig: GraphicsOutputConfigT | null;
   browserInput: {
     mode: "browser_input";

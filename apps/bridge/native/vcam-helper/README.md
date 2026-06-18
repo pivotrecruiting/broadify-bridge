@@ -64,7 +64,7 @@ Camera Extensions laufen nur signiert. Beide Targets benötigen:
    - App: `System Extension` + App Sandbox
    - Extension: App Sandbox + `com.apple.security.network.client`
    - Extension Info.plist: `CMIOExtension` mit `CMIOExtensionMachServiceName`
-     `$(TeamIdentifierPrefix)com.broadify.vcam.service`
+     `$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)`
 3. **Provisioning:** Automatic Signing mit dem Team reicht für Entwicklung.
    Für Distribution außerhalb des App Store: Developer-ID-Zertifikat + Notarisierung
    (`xcrun notarytool submit … --wait`, danach `xcrun stapler staple`).

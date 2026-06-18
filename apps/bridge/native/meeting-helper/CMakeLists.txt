@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.22)
 
+# Pin the macOS deployment target so the helper runs on the supported floor
+# (13.0). Without this it inherits the build host's SDK default (e.g. 15.0 on
+# macos-15 runners), which fails release artifact verification. Must be set
+# before project(). Overridable via MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET.
+if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+  if(DEFINED ENV{MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET} AND NOT "$ENV{MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET}" STREQUAL "")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "$ENV{MEETING_HELPER_MACOSX_DEPLOYMENT_TARGET}" CACHE STRING "Minimum macOS deployment version")
+  else()
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment version")
+  endif()
+endif()
+
 project(broadify_meeting_helper LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
@@ -51,6 +63,7 @@ if(APPLE)
   list(APPEND MEETING_HELPER_SOURCES
     src/capture/camera_avfoundation.mm
     src/keyer/vision_keyer.mm
+    src/macos/macos_app.mm
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
@@ -58,11 +71,18 @@ if(APPLE)
   set_source_files_properties(src/keyer/vision_keyer.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
+  set_source_files_properties(src/macos/macos_app.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
 else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
 endif()
 
-add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+if(APPLE)
+  add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
+else()
+  add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+endif()
 
 target_include_directories(meeting-helper PRIVATE
   src
@@ -108,6 +128,7 @@ endif()
 
 if(APPLE)
   target_link_libraries(meeting-helper PRIVATE
+    "-framework AppKit"
     "-framework AVFoundation"
     "-framework CoreGraphics"
     "-framework CoreMedia"
@@ -117,7 +138,11 @@ if(APPLE)
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES
+    OUTPUT_NAME "BroadifyMeetingHelper"
     MACOSX_RPATH ON
     BUILD_RPATH "@loader_path"
+    MACOSX_BUNDLE_BUNDLE_NAME "Broadify Bridge Meeting Helper"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.broadify.bridge.meeting-helper"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist"
   )
 endif()

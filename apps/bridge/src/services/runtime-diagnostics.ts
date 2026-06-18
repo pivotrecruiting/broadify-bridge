@@ -4,6 +4,7 @@ import type { LoggerLikeT } from "./bridge-context.js";
 import { resolveDecklinkHelperPath } from "../modules/decklink/decklink-helper.js";
 import { resolveDisplayHelperPath } from "../modules/display/display-helper.js";
 import { resolveFrameBusNativeCandidates } from "./graphics/framebus/framebus-client.js";
+import { resolveMeetingHelperPath } from "./meeting/meeting-helper-manager.js";
 
 type ArtifactCheckT = {
   label: string;
@@ -89,6 +90,11 @@ export function logRuntimeDiagnostics(logger: LoggerLikeT): void {
     {
       label: "Display helper",
       artifactPath: resolveDisplayHelperPath(),
+      executable: true,
+    },
+    {
+      label: "Meeting helper",
+      artifactPath: resolveMeetingHelperPath(),
       executable: true,
     },
   ];

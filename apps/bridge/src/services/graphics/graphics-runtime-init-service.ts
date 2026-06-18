@@ -36,9 +36,23 @@ export class GraphicsRuntimeInitService {
   async initialize(): Promise<void> {
     await assetRegistry.initialize();
     await outputConfigStore.initialize();
+    this.logPersistedRuntimeState();
 
     await this.initializeRendererWithFallback();
     await this.applyPersistedOutputConfigIfPresent();
+  }
+
+  private logPersistedRuntimeState(): void {
+    const assetCount = Object.keys(assetRegistry.getAssetMap()).length;
+    const outputConfig = outputConfigStore.getConfig();
+    getBridgeContext().logger.info(
+      `[Graphics] Loaded persisted runtime state ${JSON.stringify({
+        outputConfigured: Boolean(outputConfig),
+        outputKey: outputConfig?.outputKey ?? null,
+        format: outputConfig?.format ?? null,
+        assetCount,
+      })}`
+    );
   }
 
   private async initializeRendererWithFallback(): Promise<void> {

@@ -1,10 +1,7 @@
 {
   "appId": "com.broadify.bridge",
   "productName": "Broadify Bridge",
-  "files": [
-    "dist-electron/**",
-    "dist-react/**"
-  ],
+  "files": ["dist-electron/**", "dist-react/**"],
   "asar": true,
   "extraResources": [
     {
@@ -36,21 +33,8 @@
       "to": "bridge/native/framebus/build/Release/framebus.node"
     },
     {
-      "from": "apps/bridge/native/meeting-helper/meeting-helper",
-      "to": "native/meeting-helper/meeting-helper"
-    },
-    {
-      "from": "apps/bridge/native/meeting-helper/libonnxruntime.dylib",
-      "to": "native/meeting-helper/libonnxruntime.dylib"
-    },
-    {
-      "from": "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib",
-      "to": "native/meeting-helper/libonnxruntime.1.dylib"
-    },
-    {
-      "from": "apps/bridge/native/meeting-helper/models",
-      "to": "native/meeting-helper/models",
-      "filter": ["**/*"]
+      "from": "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app",
+      "to": "native/meeting-helper/Broadify Bridge Meeting Helper.app"
     },
     {
       "from": "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
@@ -67,16 +51,14 @@
     }
   ],
   "mac": {
-    "target": [
-      "dmg",
-      "zip"
-    ],
+    "target": ["dmg", "zip"],
     "icon": "./icon.png",
     "category": "public.app-category.utilities",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
-    "entitlementsInherit": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+    "signIgnore": ["BroadifyVCam.app"],
     "notarize": true,
     "extendInfo": {
       "NSLocalNetworkUsageDescription": "Broadify Bridge benötigt Zugriff auf das lokale Netzwerk, um Video-Mischer (z. B. ATEM) und Ausgabegeräte in deinem Netzwerk zu finden und zu steuern."
@@ -88,10 +70,7 @@
     "icon": "./icon.png"
   },
   "win": {
-    "target": [
-      "nsis",
-      "msi"
-    ],
+    "target": ["nsis"],
     "icon": "./icon.png",
     "azureSignOptions": {
       "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",

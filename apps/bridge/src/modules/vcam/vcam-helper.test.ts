@@ -59,15 +59,42 @@ describe("vcam-helper", () => {
   });
 
   it("ignores helper app paths without an embedded system extension", () => {
-    process.env.BRIDGE_VCAM_HELPER_PATH = process.cwd();
-    const installed = "/Applications/BroadifyVCam.app";
+    // process.cwd() is a real directory but not a valid vcam app bundle, so the
+    // override must never be selected. Assert exactly that (rather than null),
+    // since other valid fallbacks — e.g. an installed /Applications copy or a
+    // local dev build at build/Release/BroadifyVCam.app — may legitimately
+    // resolve instead.
+    const invalidOverride = process.cwd();
+    process.env.BRIDGE_VCAM_HELPER_PATH = invalidOverride;
 
-    if (hasEmbeddedVcamSystemExtension(installed)) {
-      expect(resolveVcamHelperAppPath()).toBe(installed);
+    expect(resolveVcamHelperAppPath()).not.toBe(invalidOverride);
+  });
+
+  it("rejects helper app activation paths outside /Applications", () => {
+    process.env.BRIDGE_VCAM_HELPER_PATH = join(
+      process.cwd(),
+      "apps",
+      "bridge",
+      "native",
+      "vcam-helper",
+      "build",
+      "Release",
+      "BroadifyVCam.app",
+    );
+
+    const status = getVcamHelperStatus();
+
+    if (process.platform !== "darwin") {
+      expect(status.available).toBe(false);
+      expect(status.requiresUserApproval).toBe(false);
+      expect(status.code).toBe("platform_not_supported");
       return;
     }
 
-    expect(resolveVcamHelperAppPath()).toBeNull();
+    expect(status.available).toBe(false);
+    expect(status.requiresUserApproval).toBe(true);
+    expect(status.code).toBe("helper_app_not_in_applications");
+    expect(status.message).toContain("/Applications/BroadifyVCam.app");
   });
 
   it("returns status with the meeting FrameBus name", () => {
@@ -159,6 +186,30 @@ describe("vcam-helper", () => {
     expect(status.requiresUserApproval).toBe(true);
     expect(status.code).toBe("activation_requested");
     expect(status.message).toContain("could not be opened automatically");
+  });
+
+  it("does not reopen the helper app when the extension is already active", async () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (!hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    mockExecFileSync.mockReturnValueOnce(
+      [
+        "1 extension(s)",
+        "--- com.apple.system_extension.cmio",
+        "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]",
+        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated enabled]",
+      ].join("\n"),
+    );
+
+    const status = await openVcamHelperApp();
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(status.launchRequested).toBe(false);
+    expect(status.code).toBe("already_active");
+    expect(status.message).toContain("already active");
   });
 
   it("resolves dev build path when present and valid", () => {

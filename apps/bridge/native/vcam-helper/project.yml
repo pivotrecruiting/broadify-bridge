@@ -12,8 +12,19 @@ settings:
     SWIFT_VERSION: "5.9"
     # Set your Apple Developer Team ID before building:
     DEVELOPMENT_TEAM: "PG38DC5RG9"
+    # Defaults target local development (automatic + Apple Development cert).
+    # The release build (scripts/build-vcam-helper-macos.sh with
+    # VCAM_SIGNING_MODE=developer-id) overrides these on the xcodebuild command
+    # line to CODE_SIGN_STYLE=Manual + "Developer ID Application".
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "Apple Development"
+    # Prevent Xcode from injecting default debug entitlements into signed
+    # release artifacts. The helper app and system extension must ship only
+    # with the explicit entitlements declared below to remain notarizable.
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: "NO"
+    # Required for notarized Developer ID distribution; harmless for dev builds.
+    ENABLE_HARDENED_RUNTIME: "YES"
+    OTHER_CODE_SIGN_FLAGS: "--timestamp"
 
 targets:
   BroadifyVCam:
@@ -25,17 +36,25 @@ targets:
       path: BroadifyVCam/Info.plist
       properties:
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "9"
+        CFBundleVersion: "12"
     entitlements:
       path: BroadifyVCam/BroadifyVCam.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.developer.system-extension.install: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.broadify.vcam
     settings:
       base:
         DEVELOPMENT_TEAM: "PG38DC5RG9"
         PRODUCT_BUNDLE_IDENTIFIER: com.broadify.vcam
         PRODUCT_NAME: BroadifyVCam
+        # Per-target so the Developer ID profile is applied ONLY to the
+        # container app. Setting this on the xcodebuild command line would leak
+        # it to the extension target (bundle ID com.broadify.vcam.extension),
+        # which the profile's app ID (com.broadify.vcam) does not match. Dev
+        # builds override this to empty on the command line (automatic signing).
+        PROVISIONING_PROFILE_SPECIFIER: "Broadify VCam Developer ID"
     dependencies:
       - sdk: ServiceManagement.framework
       - target: BroadifyVCamExtension
@@ -51,15 +70,17 @@ targets:
       properties:
         CFBundlePackageType: SYSX
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "9"
+        CFBundleVersion: "12"
         NSSystemExtensionUsageDescription: "broadify Virtual Camera exposes meeting program output as a system camera device."
         CMIOExtension:
-          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)com.broadify.vcam.service
+          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)
     entitlements:
       path: BroadifyVCamExtension/BroadifyVCamExtension.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.broadify.vcam
     settings:
       base:
         DEVELOPMENT_TEAM: "PG38DC5RG9"
@@ -67,3 +88,6 @@ targets:
         # Apple requires the embedded bundle filename to match the bundle ID.
         PRODUCT_NAME: com.broadify.vcam.extension
         EXECUTABLE_NAME: BroadifyVCamExtension
+        # No PROVISIONING_PROFILE_SPECIFIER: the extension has no restricted
+        # entitlements (only sandbox + network.client), so Developer ID manual
+        # signing does not need a profile for it — only the container app does.

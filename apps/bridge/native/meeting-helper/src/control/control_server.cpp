@@ -140,7 +140,11 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
   }
 }
 
-std::string handleRpc(const std::string &line, MeetingState &state, CameraSource &camera, const Options &options) {
+std::string handleRpc(const std::string &line,
+                      MeetingState &state,
+                      CameraSource &camera,
+                      const Options &options,
+                      std::atomic<bool> &running) {
   const std::string id = extractStringField(line, "id");
   const std::string method = extractStringField(line, "method");
   if (method.empty()) {
@@ -151,6 +155,11 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     return okResponse(id, "{\"pong\":true}");
   }
 
+  if (method == "control.shutdown") {
+    running.store(false);
+    return okResponse(id, "{\"ok\":true}");
+  }
+
   if (method == "state.get") {
     std::lock_guard<std::mutex> lock(state.mutex);
     std::ostringstream result;
@@ -159,12 +168,28 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
+           << "\"camera_permission_status\":\"" << jsonEscape(camera.cameraPermissionStatus()) << "\","
+           << "\"camera_last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << ","
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
     return okResponse(id, result.str());
   }
 
   if (method == "camera.list") {
-    return okResponse(id, camerasToJson(camera.listCameras()));
+    const std::vector<CameraInfo> cameras = camera.listCameras();
+    const std::string lastError = camera.lastError();
+    const std::string permissionStatus = camera.cameraPermissionStatus();
+    if (cameras.empty() && !lastError.empty()) {
+      const std::string code = permissionStatus == "denied" || permissionStatus == "restricted"
+          ? "camera_permission_denied"
+          : "camera_discovery_failed";
+      return errorResponse(id, code, lastError);
+    }
+    return okResponse(id, camerasToJson(cameras));
+  }
+
+  if (method == "camera.permission.request") {
+    const std::string permissionStatus = camera.requestCameraPermission();
+    return okResponse(id, "{\"camera_permission_status\":\"" + jsonEscape(permissionStatus) + "\"}");
   }
 
   if (method == "camera.select") {
@@ -185,7 +210,11 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
       state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
     }
     if (!started) {
-      return errorResponse(id, "camera_start_failed", camera.lastError());
+      const std::string permissionStatus = camera.cameraPermissionStatus();
+      const std::string code = permissionStatus == "denied" || permissionStatus == "restricted"
+          ? "camera_permission_denied"
+          : "camera_start_failed";
+      return errorResponse(id, code, camera.lastError());
     }
     return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + ",\"backend\":\"native\"}");
   }
@@ -271,7 +300,7 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
     }
-    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, options);
+    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, options, running);
   }
 
   if (method == "keyer.reset") {
@@ -391,7 +420,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-          const std::string response = handleRpc(line, state, camera, options);
+          const std::string response = handleRpc(line, state, camera, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           break;
@@ -442,7 +471,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-        const std::string response = handleRpc(line, state, camera, options);
+        const std::string response = handleRpc(line, state, camera, options, running);
         (void)write(client, response.c_str(), response.size());
         break;
       }

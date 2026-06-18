@@ -41,6 +41,7 @@ type SystemExtensionActivationStateT = {
   installed: boolean;
   activated: boolean;
   requiresUserApproval: boolean;
+  waitingForUninstallAfterReboot: boolean;
 };
 
 /**
@@ -53,6 +54,62 @@ export function hasEmbeddedVcamSystemExtension(appPath: string): boolean {
 
 function isValidVcamAppBundle(appPath: string): boolean {
   return existsSync(appPath) && hasEmbeddedVcamSystemExtension(appPath);
+}
+
+function isApplicationsVcamAppPath(appPath: string): boolean {
+  return appPath === DEFAULT_MACOS_VCAM_APP_PATH;
+}
+
+function resolveEmbeddedVcamHelperAppPath(): string | null {
+  if (platform() !== "darwin" || !process.resourcesPath) {
+    return null;
+  }
+  const candidate = join(process.resourcesPath, "native", "vcam-helper", "BroadifyVCam.app");
+  return isValidVcamAppBundle(candidate) ? candidate : null;
+}
+
+function readBundleVersion(appPath: string): number | null {
+  try {
+    const output = execFileSync(
+      "/usr/libexec/PlistBuddy",
+      ["-c", "Print :CFBundleVersion", join(appPath, "Contents", "Info.plist")],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    const parsed = Number.parseInt(output, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldInstallEmbeddedVcamApp(embeddedAppPath: string): boolean {
+  if (!isValidVcamAppBundle(DEFAULT_MACOS_VCAM_APP_PATH)) {
+    return true;
+  }
+  const embeddedVersion = readBundleVersion(embeddedAppPath);
+  const installedVersion = readBundleVersion(DEFAULT_MACOS_VCAM_APP_PATH);
+  if (embeddedVersion === null || installedVersion === null) {
+    return false;
+  }
+  return embeddedVersion > installedVersion;
+}
+
+function installEmbeddedVcamAppToApplications(): { installed: boolean; error?: string } {
+  const embeddedAppPath = resolveEmbeddedVcamHelperAppPath();
+  if (!embeddedAppPath || !shouldInstallEmbeddedVcamApp(embeddedAppPath)) {
+    return { installed: false };
+  }
+
+  try {
+    quitRunningVcamHelperApp();
+    execFileSync("/usr/bin/ditto", [embeddedAppPath, DEFAULT_MACOS_VCAM_APP_PATH], {
+      stdio: "ignore",
+    });
+    return { installed: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { installed: false, error: message };
+  }
 }
 
 function getDevVcamHelperCandidates(): string[] {
@@ -100,6 +157,7 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
       installed: false,
       activated: false,
       requiresUserApproval: false,
+      waitingForUninstallAfterReboot: false,
     };
   }
 
@@ -109,11 +167,16 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
     normalized.includes("waiting for user") ||
     normalized.includes("awaiting user approval") ||
     normalized.includes("needs user approval");
+  const waitingForUninstallAfterReboot = normalized.includes(
+    "waiting to uninstall on reboot",
+  );
 
   return {
     installed: true,
     activated,
-    requiresUserApproval: waitingForUser || !activated,
+    requiresUserApproval:
+      (waitingForUser || !activated) && !waitingForUninstallAfterReboot,
+    waitingForUninstallAfterReboot,
   };
 }
 
@@ -124,7 +187,7 @@ export function resolveVcamHelperAppPath(): string | null {
   const candidates: string[] = [];
 
   const envPath = process.env[VCAM_HELPER_PATH_ENV];
-  if (envPath) {
+  if (envPath && isApplicationsVcamAppPath(envPath)) {
     candidates.push(envPath);
   }
 
@@ -132,12 +195,9 @@ export function resolveVcamHelperAppPath(): string | null {
     candidates.push(DEFAULT_MACOS_VCAM_APP_PATH);
   }
 
-  const resourcesPath = process.resourcesPath;
-  if (process.env.NODE_ENV === "production" && resourcesPath) {
-    candidates.push(join(resourcesPath, "native", "vcam-helper", "BroadifyVCam.app"));
+  if (process.env.NODE_ENV !== "production" && !envPath) {
+    candidates.push(...getDevVcamHelperCandidates());
   }
-
-  candidates.push(...getDevVcamHelperCandidates());
 
   for (const candidate of candidates) {
     if (isValidVcamAppBundle(candidate)) {
@@ -195,8 +255,13 @@ export function getVcamHelperStatus(
   const platformSupported = currentPlatform === "darwin";
   const activationState = getSystemExtensionActivationState();
   const configuredAppPath = process.env[VCAM_HELPER_PATH_ENV] ?? DEFAULT_MACOS_VCAM_APP_PATH;
+  const hasNonApplicationsConfiguredApp =
+    platformSupported &&
+    process.env[VCAM_HELPER_PATH_ENV] !== undefined &&
+    !isApplicationsVcamAppPath(configuredAppPath);
   const hasInvalidConfiguredApp =
     platformSupported &&
+    !hasNonApplicationsConfiguredApp &&
     existsSync(configuredAppPath) &&
     !hasEmbeddedVcamSystemExtension(configuredAppPath);
   const installed = markerInstalled || helperAppPath !== null || activationState.installed;
@@ -236,6 +301,23 @@ export function getVcamHelperStatus(
     };
   }
 
+  if (hasNonApplicationsConfiguredApp) {
+    return {
+      platform: currentPlatform,
+      platformSupported,
+      available: false,
+      installed: activationState.installed,
+      running: false,
+      backend: "coremediaio_camera_extension",
+      framebusName,
+      helperAppPath,
+      requiresUserApproval: true,
+      code: "helper_app_not_in_applications",
+      message:
+        "BroadifyVCam.app must be installed at /Applications/BroadifyVCam.app before macOS can activate the camera extension.",
+    };
+  }
+
   if (!installed) {
     return {
       platform: currentPlatform,
@@ -270,6 +352,23 @@ export function getVcamHelperStatus(
     };
   }
 
+  if (activationState.waitingForUninstallAfterReboot) {
+    return {
+      platform: currentPlatform,
+      platformSupported,
+      available: false,
+      installed,
+      running: false,
+      backend: "coremediaio_camera_extension",
+      framebusName,
+      helperAppPath,
+      requiresUserApproval: false,
+      code: "reboot_required",
+      message:
+        "A previous broadify Virtual Camera extension uninstall is still pending in macOS. Reboot the Mac, then open BroadifyVCam.app again and activate the extension.",
+    };
+  }
+
   return {
     platform: currentPlatform,
     platformSupported,
@@ -293,10 +392,32 @@ export function getVcamHelperStatus(
 export async function openVcamHelperApp(
   options: VcamHelperStartOptionsT = {},
 ): Promise<VcamHelperStatusT> {
+  const installResult = installEmbeddedVcamAppToApplications();
+  if (installResult.error) {
+    return {
+      ...getVcamHelperStatus(options),
+      launchRequested: false,
+      requiresUserApproval: true,
+      code: "helper_app_install_failed",
+      message:
+        `Could not install BroadifyVCam.app to /Applications (${installResult.error}). ` +
+        "Move BroadifyVCam.app to /Applications manually, then activate the camera extension.",
+    };
+  }
+
   const status = getVcamHelperStatus(options);
   const helperAppPath = status.helperAppPath;
   if (!status.platformSupported || !helperAppPath) {
     return status;
+  }
+
+  if (status.available && !status.requiresUserApproval) {
+    return {
+      ...status,
+      launchRequested: false,
+      code: "already_active",
+      message: "Virtual camera extension is already active.",
+    };
   }
 
   try {

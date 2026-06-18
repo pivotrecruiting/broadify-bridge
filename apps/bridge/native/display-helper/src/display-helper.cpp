@@ -398,7 +398,20 @@ int main(int argc, char* argv[]) {
   const std::chrono::milliseconds frameInterval(fps > 0 ? std::max(1, 1000 / static_cast<int>(fps)) : 16);
   auto nextFrameAt = std::chrono::steady_clock::now();
 
+#if !defined(_WIN32)
+  // Parent-death watchdog: exit if the bridge process that spawned us dies
+  // without sending SIGTERM (e.g. crash or force-quit). Otherwise this
+  // fullscreen window would linger after the bridge is gone.
+  const pid_t initialParentPid = getppid();
+#endif
+
   while (!gShouldExit.load()) {
+#if !defined(_WIN32)
+    if (getppid() != initialParentPid) {
+      gShouldExit.store(true);
+      break;
+    }
+#endif
     const uint64_t seq = atomicLoad64(&reader.header->seq);
     if (seq == 0 || seq == lastSeq) {
       SDL_Event e;

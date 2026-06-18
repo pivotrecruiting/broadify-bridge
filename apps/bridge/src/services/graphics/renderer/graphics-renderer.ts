@@ -46,6 +46,12 @@ export type GraphicsRendererConfigT = {
   clearColor?: GraphicsRendererClearColorT;
 };
 
+export type GraphicsRendererLifecycleStateT =
+  | "ready"
+  | "recovering"
+  | "gpu_fallback"
+  | "degraded";
+
 /**
  * Graphics renderer interface for offscreen Chromium rendering.
  * Frame transport is handled by FrameBus; this interface only exposes control-plane operations.
@@ -108,6 +114,10 @@ export interface GraphicsRenderer {
    * @param callback Invoked for renderer errors.
    */
   onError(callback: (error: Error) => void): void;
+  /**
+   * Return the current renderer lifecycle state when supported.
+   */
+  getLifecycleState?(): GraphicsRendererLifecycleStateT;
   /**
    * Shutdown renderer and release resources.
    */

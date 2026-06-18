@@ -33,7 +33,10 @@ jest.mock("./output-config-store.js", () => ({
 }));
 
 const mockSanitizeCss = jest.fn((css: string) => css);
-const mockValidateTemplate = jest.fn(() => ({ assetIds: new Set<string>() }));
+const mockValidateTemplate = jest.fn(() => ({
+  assetIds: new Set<string>(),
+  warnings: [],
+}));
 jest.mock("./template-sanitizer.js", () => ({
   sanitizeTemplateCss: (css: string) => mockSanitizeCss(css),
   validateTemplate: (html: string, css: string) => mockValidateTemplate(html, css),

@@ -160,11 +160,17 @@ final class RawFrameStreamReader {
 
     private func publishFrame(rgba: [UInt8], width frameWidth: UInt32, height frameHeight: UInt32, seq: UInt64) {
         var bgra = [UInt8](repeating: 0, count: rgba.count)
-        for index in stride(from: 0, to: rgba.count, by: 4) {
-            bgra[index + 0] = rgba[index + 2]
-            bgra[index + 1] = rgba[index + 1]
-            bgra[index + 2] = rgba[index + 0]
-            bgra[index + 3] = rgba[index + 3]
+        let rowBytes = Int(frameWidth) * 4
+        for y in 0..<Int(frameHeight) {
+            let rowOffset = y * rowBytes
+            for x in 0..<Int(frameWidth) {
+                let srcIndex = rowOffset + x * 4
+                let dstIndex = rowOffset + (Int(frameWidth) - 1 - x) * 4
+                bgra[dstIndex + 0] = rgba[srcIndex + 2]
+                bgra[dstIndex + 1] = rgba[srcIndex + 1]
+                bgra[dstIndex + 2] = rgba[srcIndex + 0]
+                bgra[dstIndex + 3] = rgba[srcIndex + 3]
+            }
         }
 
         lock.lock()

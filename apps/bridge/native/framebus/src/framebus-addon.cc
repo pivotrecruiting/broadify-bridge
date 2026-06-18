@@ -392,6 +392,9 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
 
   const size_t total_size = static_cast<size_t>(total_size_64);
 
+  // Windows always reinitializes; Unix may reuse an existing mapping.
+  bool initialize_header = true;
+
 #if defined(_WIN32)
   DWORD size_high = static_cast<DWORD>((total_size_64 >> 32) & 0xFFFFFFFFu);
   DWORD size_low = static_cast<DWORD>(total_size_64 & 0xFFFFFFFFu);
@@ -419,7 +422,6 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
     shm_unlink(name.c_str());
   }
 
-  bool initialize_header = true;
   int fd = -1;
   if (!force_recreate) {
     fd = shm_open(name.c_str(), O_RDWR, 0600);

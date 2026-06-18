@@ -9,9 +9,18 @@ const EXTERNAL_URL_PATTERN = /(https?:\/\/|data:|file:|ftp:)/i;
 const IMPORT_PATTERN = /@import/i;
 const STYLE_BREAKOUT_PATTERN = /<\/style>/i;
 const ASSET_URL_PATTERN = /asset:\/\/([a-zA-Z0-9_-]+)/g;
+const BACKDROP_FILTER_PATTERN = /backdrop-filter\s*:/i;
+const FILTER_PATTERN = /(^|[;{]\s*)filter\s*:/i;
+const BLUR_PATTERN = /blur\(\s*([0-9.]+)px\s*\)/gi;
+const BOX_SHADOW_DECLARATION_PATTERN = /box-shadow\s*:[^;]+/gi;
+const PX_VALUE_PATTERN = /([0-9.]+)px/gi;
+const ANIMATED_FILTER_PATTERN = /@(keyframes|-\w+-keyframes)[\s\S]*filter\s*:/i;
+const LARGE_BLUR_PX = 24;
+const LARGE_BOX_SHADOW_PX = 80;
 
 export type TemplateValidationResultT = {
   assetIds: Set<string>;
+  warnings: string[];
 };
 
 /**
@@ -113,6 +122,7 @@ export function validateTemplate(html: string, css: string): TemplateValidationR
   }
 
   const assetIds = new Set<string>();
+  const warnings: string[] = [];
   const combined = `${html}\n${css}`;
   for (const match of combined.matchAll(ASSET_URL_PATTERN)) {
     if (match[1]) {
@@ -120,5 +130,35 @@ export function validateTemplate(html: string, css: string): TemplateValidationR
     }
   }
 
-  return { assetIds };
+  if (FILTER_PATTERN.test(css)) {
+    warnings.push("Template CSS uses filter; this can stress Chromium GPU rendering");
+  }
+  if (BACKDROP_FILTER_PATTERN.test(css)) {
+    warnings.push("Template CSS uses backdrop-filter; this can stress Chromium GPU rendering");
+  }
+  for (const match of css.matchAll(BLUR_PATTERN)) {
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value >= LARGE_BLUR_PX) {
+      warnings.push(`Template CSS uses large blur(${value}px)`);
+      break;
+    }
+  }
+  for (const declaration of css.matchAll(BOX_SHADOW_DECLARATION_PATTERN)) {
+    const values = declaration[0].matchAll(PX_VALUE_PATTERN);
+    for (const match of values) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value) && value >= LARGE_BOX_SHADOW_PX) {
+        warnings.push(`Template CSS uses large box-shadow radius/spread (${value}px)`);
+        break;
+      }
+    }
+    if (warnings.some((warning) => warning.includes("box-shadow"))) {
+      break;
+    }
+  }
+  if (ANIMATED_FILTER_PATTERN.test(css)) {
+    warnings.push("Template CSS animates filter properties");
+  }
+
+  return { assetIds, warnings };
 }

@@ -98,16 +98,12 @@ REQUIRED_FILES=(
   "apps/bridge/native/framebus/build/Release/framebus.node"
   "apps/bridge/native/display-helper/display-helper"
   "apps/bridge/native/decklink-helper/decklink-helper"
-  "apps/bridge/native/meeting-helper/meeting-helper"
-  "apps/bridge/native/meeting-helper/libonnxruntime.dylib"
-  "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib"
-  "apps/bridge/native/meeting-helper/models/manifest.json"
-  "apps/bridge/native/meeting-helper/models/modnet.onnx"
 )
+# macOS uses the Apple Vision keyer only; MODNet/ONNX Runtime and the model
+# ship on Windows, so they are intentionally absent from the macOS bundle.
 EXECUTABLE_FILES=(
   "apps/bridge/native/display-helper/display-helper"
   "apps/bridge/native/decklink-helper/decklink-helper"
-  "apps/bridge/native/meeting-helper/meeting-helper"
 )
 
 check_modnet_manifest_hash() {
@@ -142,8 +138,14 @@ check_modnet_manifest_hash() {
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/libSDL2-2.0.0.dylib")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
+  EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app/Contents/Library/SystemExtensions/com.broadify.vcam.extension.systemextension")
+else
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/meeting-helper")
+  EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper")
 fi
 
 check_exists() {
@@ -266,12 +268,9 @@ done
 check_architecture "apps/bridge/native/framebus/build/Release/framebus.node"
 check_architecture "apps/bridge/native/display-helper/display-helper"
 check_architecture "apps/bridge/native/decklink-helper/decklink-helper"
-check_architecture "apps/bridge/native/meeting-helper/meeting-helper"
-check_architecture "apps/bridge/native/meeting-helper/libonnxruntime.dylib"
-check_architecture "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib"
-check_modnet_manifest_hash
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
+  check_architecture "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper"
   check_architecture "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib"
   check_macos_install_name \
     "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib" \
@@ -282,9 +281,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   check_macos_max_minos "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/display-helper/display-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/decklink-helper/decklink-helper" "$MACOS_FLOOR_VERSION"
-  check_macos_max_minos "apps/bridge/native/meeting-helper/meeting-helper" "$MACOS_FLOOR_VERSION"
-  check_macos_max_minos "apps/bridge/native/meeting-helper/libonnxruntime.dylib" "$MACOS_FLOOR_VERSION"
-  check_macos_max_minos "apps/bridge/native/meeting-helper/libonnxruntime.1.dylib" "$MACOS_FLOOR_VERSION"
+  check_macos_max_minos "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" "$MACOS_FLOOR_VERSION"
+else
+  check_architecture "apps/bridge/native/meeting-helper/meeting-helper"
 fi
 
 echo "[Verify] Release artifact verification completed successfully."

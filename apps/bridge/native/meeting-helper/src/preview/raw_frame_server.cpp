@@ -125,6 +125,7 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, std::atomic<bool
   }
 
   uint64_t lastSequence = 0u;
+  uint64_t sentFrames = 0u;
   while (running.load()) {
     PreviewFrame frame;
     if (!previewFrames.copyLatest(frame) || frame.sequence == lastSequence) {
@@ -135,6 +136,14 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, std::atomic<bool
     const std::vector<uint8_t> payload = rawFramePayload(frame);
     if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
       return;
+    }
+    ++sentFrames;
+    if (sentFrames == 1u || sentFrames % 90u == 0u) {
+      std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"frame_sent\",\"seq\":" << frame.sequence
+                << ",\"width\":" << frame.width
+                << ",\"height\":" << frame.height
+                << ",\"sent_frames\":" << sentFrames
+                << "}" << std::endl;
     }
   }
 }
@@ -186,7 +195,9 @@ void runRawFrameServer(uint16_t port, PreviewFrameStore &previewFrames, std::ato
     configureClientSocket(client);
     const std::string request = readRequest(client);
     if (request.find("GET /stream.rgba ") != std::string::npos) {
+      std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_connected\",\"port\":" << port << "}" << std::endl;
       streamFrames(client, previewFrames, running);
+      std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_disconnected\",\"port\":" << port << "}" << std::endl;
     } else {
       const std::string response =
           "HTTP/1.1 404 Not Found\r\n"

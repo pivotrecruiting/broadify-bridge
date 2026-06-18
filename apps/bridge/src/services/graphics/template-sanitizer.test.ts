@@ -51,6 +51,7 @@ describe("validateTemplate", () => {
       ".bg { background: url(asset://bg-2); }"
     );
     expect(result.assetIds).toEqual(new Set(["logo-1", "bg-2"]));
+    expect(result.warnings).toEqual([]);
   });
 
   it("returns empty assetIds when no asset URLs", () => {
@@ -135,6 +136,24 @@ describe("validateTemplate", () => {
 
   it("accepts valid html and css", () => {
     const result = validateTemplate(validHtml, validCss);
-    expect(result).toEqual({ assetIds: new Set() });
+    expect(result).toEqual({ assetIds: new Set(), warnings: [] });
+  });
+
+  it("warns on GPU-expensive CSS without rejecting it", () => {
+    const result = validateTemplate(
+      validHtml,
+      "@keyframes fx { from { filter: blur(0px); } to { filter: blur(48px); } } .x { backdrop-filter: blur(48px); box-shadow: 0 0 120px black; }"
+    );
+
+    expect(result.assetIds).toEqual(new Set());
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("filter"),
+        expect.stringContaining("backdrop-filter"),
+        expect.stringContaining("large blur"),
+        expect.stringContaining("large box-shadow"),
+        expect.stringContaining("animates filter"),
+      ])
+    );
   });
 });

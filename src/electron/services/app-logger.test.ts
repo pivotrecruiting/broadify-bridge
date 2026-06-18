@@ -1,5 +1,5 @@
 import path from "node:path";
-import { getAppLogPath, logAppInfo, logAppWarn, logAppError } from "./app-logger.js";
+import { getAppLogDir, getAppLogPath, logAppInfo, logAppWarn, logAppError } from "./app-logger.js";
 
 const testUserData = path.join(process.cwd(), "node_modules", ".app-logger-test");
 
@@ -7,19 +7,24 @@ jest.mock("electron", () => ({
   app: { getPath: jest.fn(() => testUserData) },
 }));
 
-const mockWrite = jest.fn();
+const mockAppendFileSync = jest.fn();
+const mockMkdirSync = jest.fn();
 jest.mock("node:fs", () => ({
   ...jest.requireActual("node:fs"),
-  mkdirSync: jest.fn(),
-  createWriteStream: jest.fn(() => ({
-    write: mockWrite,
-    end: jest.fn(),
-  })),
+  mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
+  appendFileSync: (...args: unknown[]) => mockAppendFileSync(...args),
 }));
 
 describe("app-logger", () => {
   beforeEach(() => {
-    mockWrite.mockClear();
+    mockAppendFileSync.mockClear();
+    mockMkdirSync.mockClear();
+  });
+
+  describe("getAppLogDir", () => {
+    it("returns log directory under userData", () => {
+      expect(getAppLogDir()).toBe(path.join(testUserData, "logs"));
+    });
   });
 
   describe("getAppLogPath", () => {
@@ -37,8 +42,11 @@ describe("app-logger", () => {
       logAppWarn("warn message");
       logAppError("error message");
 
-      expect(mockWrite).toHaveBeenCalled();
-      const calls = mockWrite.mock.calls.map((c) => c[0]).join("");
+      expect(mockMkdirSync).toHaveBeenCalledWith(path.join(testUserData, "logs"), {
+        recursive: true,
+      });
+      expect(mockAppendFileSync).toHaveBeenCalled();
+      const calls = mockAppendFileSync.mock.calls.map((c) => c[1]).join("");
       expect(calls).toContain("[INFO]");
       expect(calls).toContain("info message");
       expect(calls).toContain("[WARN]");
@@ -49,7 +57,7 @@ describe("app-logger", () => {
 
     it("includes ISO timestamp in each line", () => {
       logAppInfo("test");
-      const content = mockWrite.mock.calls.map((c) => c[0]).join("");
+      const content = mockAppendFileSync.mock.calls.map((c) => c[1]).join("");
       expect(content).toMatch(/\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
   });

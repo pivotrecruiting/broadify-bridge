@@ -114,8 +114,13 @@ jest.mock("./services/app-logs.js", () => ({
 }));
 
 const mockLogAppError = jest.fn();
+const mockLogAppInfo = jest.fn();
+const mockLogAppWarn = jest.fn();
 jest.mock("./services/app-logger.js", () => ({
+  getAppLogPath: () => "/tmp/app.log",
   logAppError: (...args: unknown[]) => mockLogAppError(...args),
+  logAppInfo: (...args: unknown[]) => mockLogAppInfo(...args),
+  logAppWarn: (...args: unknown[]) => mockLogAppWarn(...args),
 }));
 
 const mockUpdaterInitialize = jest.fn();
@@ -178,10 +183,15 @@ jest.mock("fs", () => ({
 
 jest.mock("@sentry/electron", () => ({
   init: jest.fn(),
+  captureException: jest.fn(),
+  captureMessage: jest.fn(),
 }));
 
 const mockAppExit = jest.fn();
 const mockAppQuit = jest.fn();
+const mockAppSetName = jest.fn();
+const mockAppSetPath = jest.fn();
+const mockAppendSwitch = jest.fn();
 let singleInstanceLockReturns = true;
 const mockRequestSingleInstanceLock = jest.fn(() => singleInstanceLockReturns);
 const mockAppOn = jest.fn((event: string, handler: () => void) => {
@@ -196,7 +206,13 @@ jest.mock("electron", () => ({
   app: {
     getPath: jest.fn().mockReturnValue("/tmp/userData"),
     getAppPath: jest.fn().mockReturnValue("/app"),
+    getName: jest.fn().mockReturnValue("electron-vite-template"),
     getVersion: jest.fn().mockReturnValue("1.0.0"),
+    setName: (name: string) => mockAppSetName(name),
+    setPath: (name: string, value: string) => mockAppSetPath(name, value),
+    commandLine: {
+      appendSwitch: (...args: unknown[]) => mockAppendSwitch(...args),
+    },
     get requestSingleInstanceLock() {
       return mockRequestSingleInstanceLock;
     },
@@ -206,7 +222,7 @@ jest.mock("electron", () => ({
   },
   BrowserWindow: jest.fn().mockImplementation(function (
     this: {
-      webContents: { send: jest.Mock };
+      webContents: { on: jest.Mock; send: jest.Mock };
       loadURL: jest.Mock;
       loadFile: jest.Mock;
       on: jest.Mock;
@@ -216,9 +232,9 @@ jest.mock("electron", () => ({
       focus: jest.Mock;
     },
   ) {
-    this.webContents = { send: jest.fn() };
-    this.loadURL = jest.fn();
-    this.loadFile = jest.fn();
+    this.webContents = { on: jest.fn(), send: jest.fn() };
+    this.loadURL = jest.fn().mockResolvedValue(undefined);
+    this.loadFile = jest.fn().mockResolvedValue(undefined);
     this.on = jest.fn();
     this.isDestroyed = jest.fn().mockReturnValue(false);
     this.isMinimized = jest.fn().mockReturnValue(false);
