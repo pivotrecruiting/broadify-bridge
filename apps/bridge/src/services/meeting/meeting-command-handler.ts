@@ -13,7 +13,10 @@ import {
   MeetingProgramUpdateSchema,
 } from "./meeting-command-schemas.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
-import type { MeetingHelperClient } from "./meeting-helper-client.js";
+import {
+  MeetingHelperRequestError,
+  type MeetingHelperClient,
+} from "./meeting-helper-client.js";
 import { meetingGraphicsManager } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
 
@@ -21,6 +24,7 @@ export type MeetingCommandResultT = {
   success: boolean;
   data?: unknown;
   error?: string;
+  errorCode?: string;
 };
 
 const ENGINE_NOT_RUNNING_ERROR =
@@ -36,6 +40,21 @@ function requireClient(): MeetingHelperClient {
     throw new Error(ENGINE_NOT_RUNNING_ERROR);
   }
   return client;
+}
+
+async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCommandResultT> {
+  try {
+    return { success: true, data: await operation() };
+  } catch (error: unknown) {
+    if (error instanceof MeetingHelperRequestError) {
+      return {
+        success: false,
+        error: error.message,
+        errorCode: error.code,
+      };
+    }
+    throw error;
+  }
 }
 
 function clearMeetingGraphicsFrameBus(
@@ -129,7 +148,7 @@ export async function handleMeetingCommand(
     }
 
     case "meeting_camera_list": {
-      return { success: true, data: await requireClient().listCameras() };
+      return runMeetingRpc(() => requireClient().listCameras());
     }
 
     case "meeting_camera_select": {
@@ -138,10 +157,7 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_select",
       );
-      return {
-        success: true,
-        data: await requireClient().cameraSelect(options),
-      };
+      return runMeetingRpc(() => requireClient().cameraSelect(options));
     }
 
     case "meeting_camera_start": {
@@ -150,14 +166,11 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_start",
       );
-      return {
-        success: true,
-        data: await requireClient().cameraStart(options),
-      };
+      return runMeetingRpc(() => requireClient().cameraStart(options));
     }
 
     case "meeting_camera_stop": {
-      return { success: true, data: await requireClient().cameraStop() };
+      return runMeetingRpc(() => requireClient().cameraStop());
     }
 
     case "meeting_keyer_get": {

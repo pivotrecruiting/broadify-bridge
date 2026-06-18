@@ -159,12 +159,23 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
+           << "\"camera_permission_status\":\"" << jsonEscape(camera.cameraPermissionStatus()) << "\","
+           << "\"camera_last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << ","
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
     return okResponse(id, result.str());
   }
 
   if (method == "camera.list") {
-    return okResponse(id, camerasToJson(camera.listCameras()));
+    const std::vector<CameraInfo> cameras = camera.listCameras();
+    const std::string lastError = camera.lastError();
+    const std::string permissionStatus = camera.cameraPermissionStatus();
+    if (cameras.empty() && !lastError.empty()) {
+      const std::string code = permissionStatus == "denied" || permissionStatus == "restricted"
+          ? "camera_permission_denied"
+          : "camera_discovery_failed";
+      return errorResponse(id, code, lastError);
+    }
+    return okResponse(id, camerasToJson(cameras));
   }
 
   if (method == "camera.select") {

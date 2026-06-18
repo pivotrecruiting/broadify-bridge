@@ -20,6 +20,10 @@ jest.mock("./graphics/framebus/framebus-client.js", () => ({
   resolveFrameBusNativeCandidates: () => ["/tmp/framebus.node"],
 }));
 
+jest.mock("./meeting/meeting-helper-manager.js", () => ({
+  resolveMeetingHelperPath: () => "/tmp/meeting-helper",
+}));
+
 describe("runtime-diagnostics", () => {
   const mockLogger = {
     info: jest.fn(),

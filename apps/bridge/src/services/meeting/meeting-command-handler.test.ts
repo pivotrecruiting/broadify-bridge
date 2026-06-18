@@ -39,6 +39,7 @@ import {
   handleMeetingCommand,
   isMeetingCommand,
 } from "./meeting-command-handler.js";
+import { MeetingHelperRequestError } from "./meeting-helper-client.js";
 
 const mockClient = {
   listCameras: jest.fn(),
@@ -152,6 +153,23 @@ describe("meeting-command-handler", () => {
 
       expect(result.success).toBe(true);
       expect(result.data).toEqual([{ index: 0 }]);
+    });
+
+    it("returns structured camera errors from the helper", async () => {
+      mockClient.listCameras.mockRejectedValue(
+        new MeetingHelperRequestError(
+          "camera_permission_denied",
+          "Camera permission was not granted.",
+        ),
+      );
+
+      const result = await handleMeetingCommand("meeting_camera_list", {});
+
+      expect(result).toEqual({
+        success: false,
+        error: "Camera permission was not granted.",
+        errorCode: "camera_permission_denied",
+      });
     });
 
     it("forwards keyer configuration", async () => {

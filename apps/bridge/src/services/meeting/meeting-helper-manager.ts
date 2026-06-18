@@ -1,8 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
 import { platform, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -23,6 +23,8 @@ const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 const MODELS_DIR_ENV = "BRIDGE_MEETING_MODELS_DIR";
+const MACOS_MEETING_HELPER_APP_NAME = "Broadify Bridge Meeting Helper.app";
+const MACOS_MEETING_HELPER_EXECUTABLE_NAME = "BroadifyMeetingHelper";
 const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
 const HELPER_PING_ATTEMPTS = 15;
@@ -47,7 +49,17 @@ export type MeetingHelperManagerStatusT = {
   framebusName: string;
   previewPath: string;
   virtualCamera: VcamHelperStatusT;
+  helper: MeetingHelperIdentityT;
   lastError: string | null;
+};
+
+export type MeetingHelperIdentityT = {
+  path: string;
+  appPath: string | null;
+  bundleId: string | null;
+  teamId: string | null;
+  codeSignatureStatus: "not_checked" | "valid" | "invalid" | "missing";
+  tccIdentity: string | null;
 };
 
 type LoggerT = {
@@ -92,6 +104,91 @@ function uniquePaths(paths: string[]): string[] {
   return Array.from(new Set(paths));
 }
 
+function resolveMacosMeetingHelperExecutable(appPath: string): string {
+  return join(appPath, "Contents", "MacOS", MACOS_MEETING_HELPER_EXECUTABLE_NAME);
+}
+
+function findMacosMeetingHelperAppPath(): string | null {
+  const resourcesPath = process.resourcesPath;
+  const moduleDir = getModuleDirname();
+  const candidates = uniquePaths([
+    ...(process.env.NODE_ENV === "production" && resourcesPath
+      ? [join(resourcesPath, "native", "meeting-helper", MACOS_MEETING_HELPER_APP_NAME)]
+      : []),
+    join(process.cwd(), "apps/bridge/native/meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+    join(process.cwd(), "native/meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+    join(moduleDir, "../../../native/meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+  ]);
+
+  return candidates.find((candidate) => existsSync(resolveMacosMeetingHelperExecutable(candidate))) ?? null;
+}
+
+function readPlistValue(plistPath: string, key: string): string | null {
+  try {
+    return execFileSync("/usr/libexec/PlistBuddy", ["-c", `Print :${key}`, plistPath], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function readCodesignTeamId(targetPath: string): string | null {
+  const result = spawnSync("codesign", ["-dv", "--verbose=4", targetPath], {
+    encoding: "utf8",
+  });
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return output.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim() ?? null;
+}
+
+function inspectCodesignStatus(targetPath: string): MeetingHelperIdentityT["codeSignatureStatus"] {
+  if (!existsSync(targetPath)) {
+    return "missing";
+  }
+  if (platform() !== "darwin") {
+    return "not_checked";
+  }
+  try {
+    execFileSync("codesign", ["--verify", "--strict", "--verbose=2", targetPath], {
+      stdio: "ignore",
+    });
+    return "valid";
+  } catch {
+    return "invalid";
+  }
+}
+
+function inspectMeetingHelperIdentity(helperPath: string): MeetingHelperIdentityT {
+  if (platform() !== "darwin") {
+    return {
+      path: helperPath,
+      appPath: null,
+      bundleId: null,
+      teamId: null,
+      codeSignatureStatus: existsSync(helperPath) ? "not_checked" : "missing",
+      tccIdentity: null,
+    };
+  }
+
+  const normalizedPath = resolve(helperPath);
+  const marker = `${MACOS_MEETING_HELPER_APP_NAME}/Contents/MacOS/${MACOS_MEETING_HELPER_EXECUTABLE_NAME}`;
+  const appPath = normalizedPath.endsWith(marker)
+    ? normalizedPath.slice(0, -(`/Contents/MacOS/${MACOS_MEETING_HELPER_EXECUTABLE_NAME}`.length))
+    : null;
+  const infoPath = appPath ? join(appPath, "Contents", "Info.plist") : null;
+  const bundleId = infoPath ? readPlistValue(infoPath, "CFBundleIdentifier") : null;
+
+  return {
+    path: helperPath,
+    appPath,
+    bundleId,
+    teamId: readCodesignTeamId(helperPath),
+    codeSignatureStatus: inspectCodesignStatus(helperPath),
+    tccIdentity: bundleId ?? null,
+  };
+}
+
 /**
  * Resolve the native meeting-helper binary path.
  */
@@ -107,6 +204,18 @@ export function resolveMeetingHelperPath(): string {
   const binaryName = platform() === "win32" ? "meeting-helper.exe" : "meeting-helper";
   const moduleDir = getModuleDirname();
   const resourcesPath = process.resourcesPath;
+
+  if (platform() === "darwin") {
+    const appPath = findMacosMeetingHelperAppPath();
+    if (appPath) {
+      return resolveMacosMeetingHelperExecutable(appPath);
+    }
+    if (process.env.NODE_ENV === "production" && resourcesPath) {
+      return resolveMacosMeetingHelperExecutable(
+        join(resourcesPath, "native", "meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+      );
+    }
+  }
 
   if (process.env.NODE_ENV === "production" && resourcesPath) {
     return join(resourcesPath, "native", "meeting-helper", binaryName);
@@ -210,6 +319,7 @@ export class MeetingHelperManager {
   private stdoutBuffer = "";
   private readyResolver: ((event: ReadyEventT) => void) | null = null;
   private readyRejecter: ((error: Error) => void) | null = null;
+  private helperIdentity: MeetingHelperIdentityT | null = null;
 
   getClient(): MeetingHelperClient | null {
     return this.client;
@@ -227,6 +337,7 @@ export class MeetingHelperManager {
       framebusName: this.getFramebusName(),
       previewPath: "/preview.mjpg",
       virtualCamera: getVcamHelperStatus({ framebusName: this.getFramebusName() }),
+      helper: this.helperIdentity ?? inspectMeetingHelperIdentity(resolveMeetingHelperPath()),
       lastError: this.lastError,
     };
   }
@@ -282,6 +393,7 @@ export class MeetingHelperManager {
   ): Promise<MeetingHelperManagerStatusT> {
     const logger = getLogger();
     const helperPath = resolveMeetingHelperPath();
+    this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
     const modelsDir = resolveMeetingModelsDir(helperPath);
     if (!existsSync(helperPath)) {
       this.state = "error";

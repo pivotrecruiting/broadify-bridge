@@ -69,7 +69,7 @@ class AvFoundationCameraSource final : public CameraSource {
   std::vector<CameraInfo> listCameras() override {
     @autoreleasepool {
       if (!ensureAuthorization()) {
-        setError("Camera permission was not granted.");
+        setError("Camera permission was not granted.", "denied");
         return {};
       }
       NSArray<AVCaptureDevice *> *devices = BroadifyDiscoverVideoDevices();
@@ -99,6 +99,7 @@ class AvFoundationCameraSource final : public CameraSource {
         info.active = isRunning() && activeCameraIndex() == info.cameraIndex;
         cameras.push_back(info);
       }
+      setError("", "authorized");
       return cameras;
     }
   }
@@ -123,7 +124,7 @@ class AvFoundationCameraSource final : public CameraSource {
     @autoreleasepool {
       stop();
       if (!ensureAuthorization()) {
-        setError("Camera permission was not granted.");
+        setError("Camera permission was not granted.", "denied");
         return false;
       }
 
@@ -186,6 +187,7 @@ class AvFoundationCameraSource final : public CameraSource {
         targetFps_ = fps;
         running_ = true;
         lastError_.clear();
+        permissionStatus_ = "authorized";
       }
 
       [session startRunning];
@@ -242,6 +244,11 @@ class AvFoundationCameraSource final : public CameraSource {
     return lastError_;
   }
 
+  std::string cameraPermissionStatus() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return permissionStatus_;
+  }
+
   void handleSampleBuffer(CMSampleBufferRef sampleBuffer) {
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (imageBuffer == nullptr) {
@@ -283,11 +290,14 @@ class AvFoundationCameraSource final : public CameraSource {
   bool ensureAuthorization() {
     AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
     if (status == AVAuthorizationStatusAuthorized) {
+      setPermissionStatus("authorized");
       return true;
     }
     if (status != AVAuthorizationStatusNotDetermined) {
+      setPermissionStatus(status == AVAuthorizationStatusDenied ? "denied" : "restricted");
       return false;
     }
+    setPermissionStatus("not_determined");
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     __block BOOL granted = NO;
     [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL accessGranted) {
@@ -295,6 +305,7 @@ class AvFoundationCameraSource final : public CameraSource {
       dispatch_semaphore_signal(semaphore);
     }];
     dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    setPermissionStatus(granted == YES ? "authorized" : "denied");
     return granted == YES;
   }
 
@@ -309,9 +320,17 @@ class AvFoundationCameraSource final : public CameraSource {
     return nil;
   }
 
-  void setError(const std::string &error) {
+  void setPermissionStatus(const std::string &status) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    permissionStatus_ = status;
+  }
+
+  void setError(const std::string &error, const std::string &permissionStatus = "") {
     std::lock_guard<std::mutex> lock(mutex_);
     lastError_ = error;
+    if (!permissionStatus.empty()) {
+      permissionStatus_ = permissionStatus;
+    }
   }
 
   mutable std::mutex mutex_;
@@ -322,6 +341,7 @@ class AvFoundationCameraSource final : public CameraSource {
   uint32_t targetHeight_ = 720;
   uint32_t targetFps_ = 30;
   std::string lastError_;
+  std::string permissionStatus_ = "unknown";
   VideoFrame latestFrame_;
   AVCaptureSession *session_ = nil;
   AVCaptureDeviceInput *input_ = nil;

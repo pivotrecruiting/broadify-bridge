@@ -33,8 +33,8 @@
       "to": "bridge/native/framebus/build/Release/framebus.node"
     },
     {
-      "from": "apps/bridge/native/meeting-helper/meeting-helper",
-      "to": "native/meeting-helper/meeting-helper"
+      "from": "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app",
+      "to": "native/meeting-helper/Broadify Bridge Meeting Helper.app"
     },
     {
       "from": "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
@@ -57,7 +57,7 @@
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
-    "entitlementsInherit": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.meeting-helper.mac.plist",
     "signIgnore": ["BroadifyVCam.app"],
     "notarize": true,
     "extendInfo": {

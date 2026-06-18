@@ -74,7 +74,11 @@ else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
 endif()
 
-add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+if(APPLE)
+  add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
+else()
+  add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+endif()
 
 target_include_directories(meeting-helper PRIVATE
   src
@@ -129,7 +133,11 @@ if(APPLE)
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES
+    OUTPUT_NAME "BroadifyMeetingHelper"
     MACOSX_RPATH ON
     BUILD_RPATH "@loader_path"
+    MACOSX_BUNDLE_BUNDLE_NAME "Broadify Bridge Meeting Helper"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.broadify.bridge.meeting-helper"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist"
   )
 endif()

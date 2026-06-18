@@ -54,6 +54,7 @@ apps/bridge/native/display-helper/sdl2-macos-*.tar.gz
 apps/bridge/native/meeting-helper/build/
 apps/bridge/native/meeting-helper/meeting-helper
 apps/bridge/native/meeting-helper/meeting-helper.exe
+apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/
 apps/bridge/native/meeting-helper/libonnxruntime.dylib
 apps/bridge/native/meeting-helper/libonnxruntime.1.dylib
 apps/bridge/native/meeting-helper/onnxruntime.dll

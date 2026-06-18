@@ -50,6 +50,10 @@ class StubCameraSource final : public CameraSource {
     return "Native camera capture is not implemented on this platform yet.";
   }
 
+  std::string cameraPermissionStatus() const override {
+    return "unsupported";
+  }
+
  private:
   mutable std::mutex mutex_;
   bool running_ = false;
