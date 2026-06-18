@@ -5,6 +5,7 @@ const mockSetPath = jest.fn();
 const mockExistsSync = jest.fn();
 const mockMkdirSync = jest.fn();
 const mockCopyFileSync = jest.fn();
+const path = require("node:path") as typeof import("node:path");
 
 jest.mock("electron", () => ({
   app: {
@@ -48,20 +49,27 @@ describe("app-bootstrap", () => {
 
   it("sets a dedicated RC app name and userData path before services load", async () => {
     mockExistsSync.mockReturnValue(false);
+    const targetUserDataPath = path.join(
+      "/Users/test/Library/Application Support",
+      "Broadify Bridge RC",
+    );
 
     await import("./app-bootstrap.js");
 
     expect(mockSetName).toHaveBeenCalledWith("Broadify Bridge RC");
     expect(mockSetPath).toHaveBeenCalledWith(
       "userData",
-      "/Users/test/Library/Application Support/Broadify Bridge RC",
+      targetUserDataPath,
     );
   });
 
   it("migrates only known user files from the legacy template profile", async () => {
+    const appDataPath = "/Users/test/Library/Application Support";
+    const legacyUserDataPath = path.join(appDataPath, "electron-vite-template");
+    const targetUserDataPath = path.join(appDataPath, "Broadify Bridge RC");
     mockExistsSync.mockImplementation((targetPath: string) => {
-      if (targetPath.endsWith("electron-vite-template")) return true;
-      if (targetPath.includes("Broadify Bridge RC")) return false;
+      if (targetPath === legacyUserDataPath) return true;
+      if (targetPath.startsWith(targetUserDataPath)) return false;
       if (targetPath.endsWith("bridge-id.json")) return true;
       if (targetPath.endsWith("bridge-profile.json")) return true;
       if (targetPath.endsWith(".env")) return true;
@@ -71,21 +79,20 @@ describe("app-bootstrap", () => {
 
     await import("./app-bootstrap.js");
 
-    expect(mockMkdirSync).toHaveBeenCalledWith(
-      "/Users/test/Library/Application Support/Broadify Bridge RC",
-      { recursive: true },
+    expect(mockMkdirSync).toHaveBeenCalledWith(targetUserDataPath, {
+      recursive: true,
+    });
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      path.join(legacyUserDataPath, ".env"),
+      path.join(targetUserDataPath, ".env"),
     );
     expect(mockCopyFileSync).toHaveBeenCalledWith(
-      "/Users/test/Library/Application Support/electron-vite-template/.env",
-      "/Users/test/Library/Application Support/Broadify Bridge RC/.env",
+      path.join(legacyUserDataPath, "bridge-id.json"),
+      path.join(targetUserDataPath, "bridge-id.json"),
     );
     expect(mockCopyFileSync).toHaveBeenCalledWith(
-      "/Users/test/Library/Application Support/electron-vite-template/bridge-id.json",
-      "/Users/test/Library/Application Support/Broadify Bridge RC/bridge-id.json",
-    );
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      "/Users/test/Library/Application Support/electron-vite-template/bridge-profile.json",
-      "/Users/test/Library/Application Support/Broadify Bridge RC/bridge-profile.json",
+      path.join(legacyUserDataPath, "bridge-profile.json"),
+      path.join(targetUserDataPath, "bridge-profile.json"),
     );
     expect(mockCopyFileSync).not.toHaveBeenCalledWith(
       expect.stringContaining("GPUCache"),
