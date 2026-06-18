@@ -181,7 +181,7 @@ jest.mock("fs", () => ({
   writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
 }));
 
-jest.mock("@sentry/electron", () => ({
+jest.mock("@sentry/electron/main", () => ({
   init: jest.fn(),
   captureException: jest.fn(),
   captureMessage: jest.fn(),
@@ -191,6 +191,7 @@ const mockAppExit = jest.fn();
 const mockAppQuit = jest.fn();
 const mockAppSetName = jest.fn();
 const mockAppSetPath = jest.fn();
+const mockAppendSwitch = jest.fn();
 let singleInstanceLockReturns = true;
 const mockRequestSingleInstanceLock = jest.fn(() => singleInstanceLockReturns);
 const mockAppOn = jest.fn((event: string, handler: () => void) => {
@@ -209,6 +210,9 @@ jest.mock("electron", () => ({
     getVersion: jest.fn().mockReturnValue("1.0.0"),
     setName: (name: string) => mockAppSetName(name),
     setPath: (name: string, value: string) => mockAppSetPath(name, value),
+    commandLine: {
+      appendSwitch: (...args: unknown[]) => mockAppendSwitch(...args),
+    },
     get requestSingleInstanceLock() {
       return mockRequestSingleInstanceLock;
     },

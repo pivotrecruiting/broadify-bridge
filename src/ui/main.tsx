@@ -1,11 +1,17 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
-import * as Sentry from "@sentry/electron";
+import * as Sentry from "@sentry/electron/renderer";
 
-Sentry.init({
-  dsn: "https://a534ee90c276b99d94aec4c22e6fc8c3@o4510578425135104.ingest.de.sentry.io/4510578677645392",
-});
+const rendererSafeMode = new URLSearchParams(window.location.search).has(
+  "renderer_safe_mode",
+);
+
+if (!rendererSafeMode) {
+  Sentry.init();
+} else {
+  console.warn("[Renderer] Sentry renderer init skipped in safe mode");
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -45,15 +45,28 @@ import type {
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
-import * as Sentry from "@sentry/electron";
+import * as Sentry from "@sentry/electron/main";
 import { z } from "zod";
 
 const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
+const DISABLED_CHROMIUM_FEATURES = [
+  "DawnGraphite",
+  "SkiaGraphite",
+  "WebGPU",
+  "WebGPUDeveloperFeatures",
+];
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
 const isRendererProcess =
   argMap.has("graphics-renderer") || Boolean(rendererEntry);
+
+if (!isRendererProcess) {
+  app.commandLine.appendSwitch(
+    "disable-features",
+    DISABLED_CHROMIUM_FEATURES.join(","),
+  );
+}
 
 if (isRendererProcess) {
   if (!rendererEntry) {
@@ -85,6 +98,9 @@ let healthCheckCleanup: (() => void) | null = null;
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
+let rendererDomReady = false;
+let rendererSafeMode = false;
+let rendererCrashRecoveryAttempted = false;
 
 function describePath(label: string, targetPath: string): string {
   try {
@@ -122,6 +138,7 @@ function logDesktopStartupDiagnostics(params: {
       resourcesPath: process.resourcesPath,
       userData: app.getPath("userData"),
       logPath: getAppLogPath(),
+      disabledChromiumFeatures: DISABLED_CHROMIUM_FEATURES,
       argv: process.argv.filter((arg) => !arg.includes("token")),
     })}`,
   );
@@ -166,6 +183,7 @@ function registerRendererDiagnostics(window: BrowserWindow): void {
   });
 
   window.webContents.on("dom-ready", () => {
+    rendererDomReady = true;
     logAppInfo("[Renderer] dom-ready");
   });
 
@@ -177,6 +195,22 @@ function registerRendererDiagnostics(window: BrowserWindow): void {
     const message = `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`;
     logAppError(message);
     Sentry.captureMessage(message, "fatal");
+
+    if (
+      !rendererDomReady &&
+      !rendererSafeMode &&
+      !rendererCrashRecoveryAttempted &&
+      mainWindow &&
+      !mainWindow.isDestroyed()
+    ) {
+      rendererCrashRecoveryAttempted = true;
+      rendererSafeMode = true;
+      logAppWarn("[Renderer] startup crash before dom-ready, retrying in safe mode");
+      setTimeout(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        void loadRenderer(mainWindow, getUIPath(), true);
+      }, 250);
+    }
   });
 
   window.webContents.on("unresponsive", () => {
@@ -200,6 +234,39 @@ function registerRendererDiagnostics(window: BrowserWindow): void {
     logAppError(message);
     Sentry.captureException(error);
   });
+}
+
+function loadRenderer(
+  window: BrowserWindow,
+  uiPath: string,
+  safeMode: boolean,
+): Promise<void> {
+  rendererDomReady = false;
+
+  if (isDev()) {
+    const query = safeMode ? "?renderer_safe_mode=1" : "";
+    const devUrl = `http://localhost:${PORT}${query}`;
+    logAppInfo(`[Renderer] loadURL start url=${devUrl} safeMode=${safeMode}`);
+    return window.loadURL(devUrl).then(
+      () => logAppInfo(`[Renderer] loadURL resolved url=${devUrl} safeMode=${safeMode}`),
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logAppError(`[Renderer] loadURL rejected url=${devUrl} safeMode=${safeMode} error=${message}`);
+      },
+    );
+  }
+
+  logAppInfo(`[Renderer] loadFile start path=${uiPath} safeMode=${safeMode}`);
+  return window.loadFile(
+    uiPath,
+    safeMode ? { query: { renderer_safe_mode: "1" } } : undefined,
+  ).then(
+    () => logAppInfo(`[Renderer] loadFile resolved path=${uiPath} safeMode=${safeMode}`),
+    (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logAppError(`[Renderer] loadFile rejected path=${uiPath} safeMode=${safeMode} error=${message}`);
+    },
+  );
 }
 
 /**
@@ -444,26 +511,7 @@ if (!isRendererProcess) {
       });
       registerRendererDiagnostics(mainWindow);
 
-      if (isDev()) {
-        const devUrl = `http://localhost:${PORT}`;
-        logAppInfo(`[Renderer] loadURL start url=${devUrl}`);
-        mainWindow.loadURL(devUrl).then(
-          () => logAppInfo(`[Renderer] loadURL resolved url=${devUrl}`),
-          (error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            logAppError(`[Renderer] loadURL rejected url=${devUrl} error=${message}`);
-          },
-        );
-      } else {
-        logAppInfo(`[Renderer] loadFile start path=${uiPath}`);
-        mainWindow.loadFile(uiPath).then(
-          () => logAppInfo(`[Renderer] loadFile resolved path=${uiPath}`),
-          (error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            logAppError(`[Renderer] loadFile rejected path=${uiPath} error=${message}`);
-          },
-        );
-      }
+      void loadRenderer(mainWindow, uiPath, rendererSafeMode);
 
       if (isDev()) {
         pollResources(mainWindow);
