@@ -540,7 +540,7 @@ jobs:
 
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
-        run: npm run ${{ matrix.dist_script }} -- --publish=never
+        run: npm run ${{ matrix.dist_script }}
 
       - name: Linux packaging diagnostics
         if: startsWith(matrix.os, 'ubuntu-')
@@ -557,7 +557,7 @@ jobs:
         env:
           DEBUG: electron-builder,builder-util
           ELECTRON_BUILDER_LOG_LEVEL: debug
-        run: npm run ${{ matrix.dist_script }} -- --publish=never
+        run: npm run ${{ matrix.dist_script }}
 
       - name: Verify Windows signatures
         if: matrix.os == 'windows-2022'
