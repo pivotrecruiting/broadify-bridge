@@ -84,6 +84,13 @@ describe("vcam-helper", () => {
 
     const status = getVcamHelperStatus();
 
+    if (process.platform !== "darwin") {
+      expect(status.available).toBe(false);
+      expect(status.requiresUserApproval).toBe(false);
+      expect(status.code).toBe("platform_not_supported");
+      return;
+    }
+
     expect(status.available).toBe(false);
     expect(status.requiresUserApproval).toBe(true);
     expect(status.code).toBe("helper_app_not_in_applications");
