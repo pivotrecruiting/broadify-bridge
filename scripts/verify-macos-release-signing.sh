@@ -3,10 +3,17 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECTED_ARCH=""
+UPDATER_CHANNEL="${BROADIFY_UPDATER_CHANNEL:-latest}"
+APP_PRODUCT_NAME="Broadify Bridge"
 APP_BUNDLE_ID="com.broadify.bridge"
 HELPER_BUNDLE_ID="com.broadify.bridge.meeting-helper"
 HELPER_APP_REL="Contents/Resources/native/meeting-helper/Broadify Bridge Meeting Helper.app"
 HELPER_EXEC_REL="${HELPER_APP_REL}/Contents/MacOS/BroadifyMeetingHelper"
+
+if [[ "$UPDATER_CHANNEL" == "rc" ]]; then
+  APP_PRODUCT_NAME="Broadify Bridge RC"
+  APP_BUNDLE_ID="com.broadify.bridge.rc"
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,8 +54,8 @@ normalize_arch() {
 find_app() {
   local normalized_arch="$1"
   local candidates=(
-    "${ROOT_DIR}/dist/mac-${normalized_arch}/Broadify Bridge.app"
-    "${ROOT_DIR}/dist/mac/Broadify Bridge.app"
+    "${ROOT_DIR}/dist/mac-${normalized_arch}/${APP_PRODUCT_NAME}.app"
+    "${ROOT_DIR}/dist/mac/${APP_PRODUCT_NAME}.app"
   )
 
   for candidate in "${candidates[@]}"; do
@@ -58,7 +65,7 @@ find_app() {
     fi
   done
 
-  find "${ROOT_DIR}/dist" -maxdepth 3 -type d -name "Broadify Bridge.app" -print -quit
+  find "${ROOT_DIR}/dist" -maxdepth 3 -type d -name "${APP_PRODUCT_NAME}.app" -print -quit
 }
 
 plist_value() {
@@ -128,7 +135,7 @@ NORMALIZED_ARCH="$(normalize_arch "$EXPECTED_ARCH")"
 APP_PATH="$(find_app "$NORMALIZED_ARCH")"
 
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  echo "[MacSignVerify] Could not find packaged Broadify Bridge.app under dist/" >&2
+  echo "[MacSignVerify] Could not find packaged ${APP_PRODUCT_NAME}.app under dist/" >&2
   exit 1
 fi
 
@@ -175,7 +182,7 @@ echo "[MacSignVerify] Team ID -> ${APP_TEAM_ID}"
 spctl -a -t exec -vv "$APP_PATH"
 echo "[MacSignVerify] spctl accepted app"
 
-DMG_PATH="$(find "${ROOT_DIR}/dist" -maxdepth 1 -type f -name "Broadify-Bridge-*-${NORMALIZED_ARCH}.dmg" -print -quit)"
+DMG_PATH="$(find "${ROOT_DIR}/dist" -maxdepth 1 -type f \( -name "Broadify-Bridge-*-${NORMALIZED_ARCH}.dmg" -o -name "Broadify-Bridge-RC-*-${NORMALIZED_ARCH}.dmg" \) -print -quit)"
 if [[ -n "$DMG_PATH" ]]; then
   xcrun stapler validate "$DMG_PATH"
   echo "[MacSignVerify] stapler validate ok -> ${DMG_PATH}"
