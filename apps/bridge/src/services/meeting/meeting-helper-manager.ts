@@ -29,6 +29,7 @@ const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
+const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
 
 export type MeetingHelperLifecycleStateT =
   | "stopped"
@@ -277,12 +278,15 @@ function sleep(ms: number): Promise<void> {
 /**
  * Retry control.ping because helper startup can briefly race with socket accept.
  */
-async function waitForHelperPing(client: MeetingHelperClient): Promise<boolean> {
-  for (let attempt = 0; attempt < HELPER_PING_ATTEMPTS; attempt += 1) {
+async function waitForHelperPing(
+  client: MeetingHelperClient,
+  maxAttempts: number = HELPER_PING_ATTEMPTS,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (await client.ping()) {
       return true;
     }
-    if (attempt + 1 < HELPER_PING_ATTEMPTS) {
+    if (attempt + 1 < maxAttempts) {
       await sleep(HELPER_PING_DELAY_MS);
     }
   }
@@ -363,6 +367,15 @@ export class MeetingHelperManager {
 
   async stop(): Promise<MeetingHelperManagerStatusT> {
     this.stopStatusPolling();
+    const client = this.client;
+    if (client) {
+      try {
+        await client.shutdown();
+        await sleep(150);
+      } catch {
+        // Fall back to process termination below.
+      }
+    }
     this.killProcess();
     this.client = null;
     this.port = null;
@@ -394,6 +407,21 @@ export class MeetingHelperManager {
     const logger = getLogger();
     const helperPath = resolveMeetingHelperPath();
     this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
+    logger.info(
+      `[Meeting] Helper identity: bundleId=${this.helperIdentity.bundleId ?? "none"} tccIdentity=${this.helperIdentity.tccIdentity ?? "none"} codeSignature=${this.helperIdentity.codeSignatureStatus} teamId=${this.helperIdentity.teamId ?? "none"}`,
+    );
+    if (
+      platform() === "darwin" &&
+      this.helperIdentity.codeSignatureStatus !== "valid"
+    ) {
+      logger.warn(
+        `[Meeting] Helper code signature is ${this.helperIdentity.codeSignatureStatus}; macOS camera permission prompts may be denied or hidden.`,
+      );
+      publishMeetingErrorEvent(
+        "helper_codesign_invalid",
+        "Meeting helper code signature is invalid; macOS camera permission cannot be requested reliably.",
+      );
+    }
     const modelsDir = resolveMeetingModelsDir(helperPath);
     if (!existsSync(helperPath)) {
       this.state = "error";
@@ -447,8 +475,19 @@ export class MeetingHelperManager {
         MEETING_VCAM_NATIVE_AVAILABLE: isVcamExtensionAvailable() ? "1" : "0",
       };
 
-      logger.info(`[Meeting] Starting helper: ${helperPath} ${args.join(" ")}`);
-      const child = spawn(helperPath, args, {
+      const useLaunchServices =
+        platform() === "darwin" && this.helperIdentity.appPath !== null;
+      const launchPath = useLaunchServices ? "/usr/bin/open" : helperPath;
+      const launchArgs = useLaunchServices
+        ? ["-W", "-n", this.helperIdentity.appPath as string, "--args", ...args]
+        : args;
+
+      logger.info(
+        useLaunchServices
+          ? `[Meeting] Opening helper app: ${this.helperIdentity.appPath} ${args.join(" ")}`
+          : `[Meeting] Starting helper: ${helperPath} ${args.join(" ")}`,
+      );
+      const child = spawn(launchPath, launchArgs, {
         env,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -473,9 +512,14 @@ export class MeetingHelperManager {
         this.readyRejecter?.(error);
       });
 
-      await this.waitForReady();
       const client = new MeetingHelperClient(controlSocketPath);
-      const healthy = await waitForHelperPing(client);
+      if (!useLaunchServices) {
+        await this.waitForReady();
+      }
+      const healthy = await waitForHelperPing(
+        client,
+        useLaunchServices ? MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS : HELPER_PING_ATTEMPTS,
+      );
       if (!healthy) {
         this.lastError = "Meeting helper did not respond to control.ping";
         this.state = "error";

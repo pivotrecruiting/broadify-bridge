@@ -63,6 +63,10 @@ export class MeetingHelperClient {
     }
   }
 
+  async shutdown(): Promise<Record<string, unknown>> {
+    return this.rpc("control.shutdown");
+  }
+
   async getState(): Promise<Record<string, unknown>> {
     return this.rpc("state.get");
   }

@@ -57,9 +57,11 @@ muss die Camera Extension entsprechend gebaut bzw. angepasst werden.
 ## Kamera-Freigabe macOS
 
 Auf macOS laeuft der Kamera-Capture in `Broadify Bridge Meeting Helper.app`.
-Die TCC-Identitaet bleibt `com.broadify.bridge.meeting-helper`; der sichtbare
-Name in System Settings > Datenschutz & Sicherheit > Kamera ist `Broadify
-Meeting`.
+Die Bridge startet dieses Bundle ueber LaunchServices, nicht direkt ueber das
+Executable, damit macOS TCC den Prozess als App-Bundle mit Kamera-Usage-String
+bewerten kann. Die TCC-Identitaet bleibt
+`com.broadify.bridge.meeting-helper`; der sichtbare Name in System Settings >
+Datenschutz & Sicherheit > Kamera ist `Broadify Meeting`.
 
 Nach `meeting_engine_start` ruft die Bridge den Helper-RPC
 `camera.permission.request` fire-and-forget auf. Wenn der Status noch

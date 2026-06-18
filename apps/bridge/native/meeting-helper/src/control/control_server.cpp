@@ -140,7 +140,11 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
   }
 }
 
-std::string handleRpc(const std::string &line, MeetingState &state, CameraSource &camera, const Options &options) {
+std::string handleRpc(const std::string &line,
+                      MeetingState &state,
+                      CameraSource &camera,
+                      const Options &options,
+                      std::atomic<bool> &running) {
   const std::string id = extractStringField(line, "id");
   const std::string method = extractStringField(line, "method");
   if (method.empty()) {
@@ -149,6 +153,11 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
 
   if (method == "control.ping") {
     return okResponse(id, "{\"pong\":true}");
+  }
+
+  if (method == "control.shutdown") {
+    running.store(false);
+    return okResponse(id, "{\"ok\":true}");
   }
 
   if (method == "state.get") {
@@ -291,7 +300,7 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
     }
-    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, options);
+    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, options, running);
   }
 
   if (method == "keyer.reset") {
@@ -411,7 +420,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-          const std::string response = handleRpc(line, state, camera, options);
+          const std::string response = handleRpc(line, state, camera, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           break;
@@ -462,7 +471,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-        const std::string response = handleRpc(line, state, camera, options);
+        const std::string response = handleRpc(line, state, camera, options, running);
         (void)write(client, response.c_str(), response.size());
         break;
       }
