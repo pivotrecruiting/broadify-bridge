@@ -132,17 +132,22 @@ require_entitlement_key() {
   local key="$2"
   local output
   local plist
+  local tmp_plist
   if ! output="$(codesign -d --entitlements :- "$target" 2>&1)"; then
     echo "$output" >&2
     echo "[MacSignVerify] Could not read entitlements for ${target}" >&2
     exit 1
   fi
   plist="$(printf '%s\n' "$output" | sed -n '/^<?xml/,$p')"
-  if ! printf '%s\n' "$plist" | plutil -extract "$key" raw - >/dev/null 2>&1; then
+  tmp_plist="$(mktemp)"
+  printf '%s\n' "$plist" >"$tmp_plist"
+  if ! /usr/libexec/PlistBuddy -c "Print :${key}" "$tmp_plist" >/dev/null 2>&1; then
+    rm -f "$tmp_plist"
     echo "$output" >&2
     echo "[MacSignVerify] Missing entitlement ${key} for ${target}" >&2
     exit 1
   fi
+  rm -f "$tmp_plist"
   echo "[MacSignVerify] entitlement ${key} present -> ${target}"
 }
 
