@@ -435,6 +435,18 @@ describe("ElectronRendererClient", () => {
       expect(mockSpawn.mock.calls.length).toBeGreaterThanOrEqual(count);
     }
 
+    async function waitForLifecycleState(
+      c: ElectronRendererClient,
+      state: ReturnType<ElectronRendererClient["getLifecycleState"]>,
+      timeoutMs = 1000,
+    ): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (c.getLifecycleState() !== state && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(c.getLifecycleState()).toBe(state);
+    }
+
     it("restarts after an abnormal renderer exit without reporting engine-level failure", async () => {
       const c = await initializeClientWithHandshake();
       const onError = jest.fn();
@@ -444,7 +456,7 @@ describe("ElectronRendererClient", () => {
       firstChild?.emit("exit", 1, "SIGABRT");
       await waitForSpawnCount(2);
 
-      expect(c.getLifecycleState()).toBe("ready");
+      await waitForLifecycleState(c, "ready");
       expect(onError).not.toHaveBeenCalled();
       const secondChild = mockSpawn.mock.results[1]?.value;
       clientSocket?.destroy();
