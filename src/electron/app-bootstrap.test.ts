@@ -63,14 +63,16 @@ describe("app-bootstrap", () => {
     );
   });
 
-  it("migrates only known user files from the legacy template profile", async () => {
+  it("migrates known user files plus the coupled bridge identity from the legacy template profile", async () => {
     const appDataPath = "/Users/test/Library/Application Support";
     const legacyUserDataPath = path.join(appDataPath, "electron-vite-template");
     const targetUserDataPath = path.join(appDataPath, "Broadify Bridge RC");
+    const relayKeyRelPath = path.join("security", "relay-bridge-identity.json");
     mockExistsSync.mockImplementation((targetPath: string) => {
       if (targetPath === legacyUserDataPath) return true;
       if (targetPath.startsWith(targetUserDataPath)) return false;
       if (targetPath.endsWith("bridge-id.json")) return true;
+      if (targetPath.endsWith("relay-bridge-identity.json")) return true;
       if (targetPath.endsWith("bridge-profile.json")) return true;
       if (targetPath.endsWith(".env")) return true;
       if (targetPath.endsWith("network-config.json")) return false;
@@ -86,9 +88,18 @@ describe("app-bootstrap", () => {
       path.join(legacyUserDataPath, ".env"),
       path.join(targetUserDataPath, ".env"),
     );
+    // Identity migrates as a unit: id + relay keypair (with its parent dir).
     expect(mockCopyFileSync).toHaveBeenCalledWith(
       path.join(legacyUserDataPath, "bridge-id.json"),
       path.join(targetUserDataPath, "bridge-id.json"),
+    );
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      path.join(legacyUserDataPath, relayKeyRelPath),
+      path.join(targetUserDataPath, relayKeyRelPath),
+    );
+    expect(mockMkdirSync).toHaveBeenCalledWith(
+      path.dirname(path.join(targetUserDataPath, relayKeyRelPath)),
+      { recursive: true },
     );
     expect(mockCopyFileSync).toHaveBeenCalledWith(
       path.join(legacyUserDataPath, "bridge-profile.json"),
@@ -97,6 +108,45 @@ describe("app-bootstrap", () => {
     expect(mockCopyFileSync).not.toHaveBeenCalledWith(
       expect.stringContaining("GPUCache"),
       expect.any(String),
+    );
+  });
+
+  it("does NOT migrate the bridgeId when the legacy relay keypair is missing", async () => {
+    // Guards the regression that bricked relay auth: migrating bridge-id.json
+    // without security/relay-bridge-identity.json resurrects a bridgeId whose
+    // keyId no longer matches the enrolled public key.
+    const appDataPath = "/Users/test/Library/Application Support";
+    const legacyUserDataPath = path.join(appDataPath, "electron-vite-template");
+    const targetUserDataPath = path.join(appDataPath, "Broadify Bridge RC");
+    mockExistsSync.mockImplementation((targetPath: string) => {
+      if (targetPath === legacyUserDataPath) return true;
+      if (targetPath.startsWith(targetUserDataPath)) return false;
+      if (targetPath.endsWith("relay-bridge-identity.json")) return false; // keypair gone
+      if (targetPath.endsWith("bridge-id.json")) return true;
+      if (targetPath.endsWith("bridge-profile.json")) return true;
+      if (targetPath.endsWith(".env")) return true;
+      return false;
+    });
+
+    await import("./app-bootstrap.js");
+
+    // Identity files must be skipped entirely (atomic-or-nothing).
+    expect(mockCopyFileSync).not.toHaveBeenCalledWith(
+      path.join(legacyUserDataPath, "bridge-id.json"),
+      path.join(targetUserDataPath, "bridge-id.json"),
+    );
+    expect(mockCopyFileSync).not.toHaveBeenCalledWith(
+      expect.stringContaining("relay-bridge-identity.json"),
+      expect.any(String),
+    );
+    // Non-identity files still migrate normally.
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      path.join(legacyUserDataPath, "bridge-profile.json"),
+      path.join(targetUserDataPath, "bridge-profile.json"),
+    );
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      path.join(legacyUserDataPath, ".env"),
+      path.join(targetUserDataPath, ".env"),
     );
   });
 });
