@@ -42,6 +42,7 @@ const VOLATILE_RENDERER_CACHE_PATHS = [
 ];
 const RECOVERY_WINDOW_MS = 5 * 60 * 1000;
 const MAX_RECOVERY_ATTEMPTS = 2;
+const IPC_SERVER_CLOSE_TIMEOUT_MS = 500;
 
 /**
  * Electron-based offscreen renderer client.
@@ -809,7 +810,19 @@ export class ElectronRendererClient implements GraphicsRenderer {
       return;
     }
     this.ipcServerStopPromise = new Promise<void>((resolve) => {
-      this.ipcServer?.close(() => resolve());
+      let resolved = false;
+      const finish = () => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        resolve();
+      };
+      const timeoutId = setTimeout(finish, IPC_SERVER_CLOSE_TIMEOUT_MS);
+      this.ipcServer?.close(() => {
+        clearTimeout(timeoutId);
+        finish();
+      });
     });
     await this.ipcServerStopPromise;
     this.ipcServer = null;
