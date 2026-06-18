@@ -24,6 +24,7 @@ jest.mock("node:fs", () => ({
 
 describe("app-bootstrap", () => {
   const originalExecPath = process.execPath;
+  const originalArgv = process.argv;
 
   beforeEach(() => {
     jest.resetModules();
@@ -41,9 +42,14 @@ describe("app-bootstrap", () => {
   });
 
   afterEach(() => {
+    delete process.env.BRIDGE_GRAPHICS_USER_DATA_DIR;
     Object.defineProperty(process, "execPath", {
       configurable: true,
       value: originalExecPath,
+    });
+    Object.defineProperty(process, "argv", {
+      configurable: true,
+      value: originalArgv,
     });
   });
 
@@ -61,6 +67,24 @@ describe("app-bootstrap", () => {
       "userData",
       targetUserDataPath,
     );
+  });
+
+  it("uses the explicit graphics renderer userData path without legacy migration", async () => {
+    process.env.BRIDGE_GRAPHICS_USER_DATA_DIR =
+      "/Users/test/Library/Application Support/Broadify Bridge/graphics-renderer-profile";
+    Object.defineProperty(process, "argv", {
+      configurable: true,
+      value: ["electron", "/app", "--graphics-renderer"],
+    });
+
+    await import("./app-bootstrap.js");
+
+    expect(mockSetPath).toHaveBeenCalledWith(
+      "userData",
+      "/Users/test/Library/Application Support/Broadify Bridge/graphics-renderer-profile",
+    );
+    expect(mockSetName).not.toHaveBeenCalled();
+    expect(mockCopyFileSync).not.toHaveBeenCalled();
   });
 
   it("migrates known user files plus the coupled bridge identity from the legacy template profile", async () => {

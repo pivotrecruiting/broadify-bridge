@@ -35,6 +35,7 @@ Die App (`.app`-Bundle in `/Applications`) und dieser Datenordner sind **voneina
 | `graphics-output.json` | Grafik-Ausgabe-Konfiguration (Zielbildschirm, Auflösung …). |
 | `graphics-assets/` + `assets.json` | Hochgeladene Grafik-Assets (Lower Thirds, Bilder …) und deren Manifest. |
 | `graphics/` | Arbeits-/Ablageverzeichnis der Grafik-Engine. |
+| `graphics-renderer-profile/` | Isoliertes Electron-Profil des Offscreen-Graphics-Renderers. Enthält nur Renderer-Runtime-/Chromium-State. |
 | `.env` | Lokale Env-Overrides (z. B. `RELAY_URL`). Wird im Prod-Build ohnehin aus dem Paket nachgefüllt/überschrieben. |
 | `.updaterId` | Installations-ID des Updaters. |
 
@@ -51,6 +52,11 @@ Die App (`.app`-Bundle in `/Applications`) und dieser Datenordner sind **voneina
 `Network Persistent State`, `TransportSecurity`, `Trust Tokens`, `DIPS*`,
 `Preferences`, `blob_storage/`, `Crashpad/`, `sentry/` (Crash-Reports),
 `Singleton*` (Runtime-Locks), `logs/` + `app.log` / `bridge.log` / `bridge-process.log`.
+
+Zusätzlich gilt innerhalb von `graphics-renderer-profile/`: `GPUCache/`, `Code Cache/`,
+`DawnGraphiteCache/`, `DawnWebGPUCache/`, `ShaderCache/` und `GrShaderCache/` sind
+volatile Renderer-Caches. Die Bridge darf diese nach einem Renderer-Absturz automatisch
+löschen, nachdem der Renderer-Prozess vollständig beendet wurde.
 
 → Diese können bedenkenlos gelöscht werden; sie werden beim nächsten Start neu erzeugt.
 

@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { promises as fs } from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import type { GraphicsLayoutT } from "../graphics-schemas.js";
 import { getBridgeContext, type LoggerLikeT } from "../../bridge-context.js";
 import {
@@ -23,10 +25,23 @@ import type {
   GraphicsRenderer,
   GraphicsRenderLayerInputT,
   GraphicsRendererConfigT,
+  GraphicsRendererLifecycleStateT,
   GraphicsTemplateBindingsT,
 } from "./graphics-renderer.js";
 
 type RendererAssetMapT = Record<string, { filePath: string; mime: string }>;
+
+const GRAPHICS_RENDERER_PROFILE_DIR = "graphics-renderer-profile";
+const VOLATILE_RENDERER_CACHE_PATHS = [
+  "GPUCache",
+  "Code Cache",
+  "DawnGraphiteCache",
+  "DawnWebGPUCache",
+  "ShaderCache",
+  "GrShaderCache",
+];
+const RECOVERY_WINDOW_MS = 5 * 60 * 1000;
+const MAX_RECOVERY_ATTEMPTS = 2;
 
 /**
  * Electron-based offscreen renderer client.
@@ -45,6 +60,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private ipcBuffer: IpcBufferT = Buffer.alloc(0);
   private ipcPort: number | null = null;
   private ipcServerReady: Promise<number> | null = null;
+  private ipcServerStopPromise: Promise<void> | null = null;
   // Token used to authenticate IPC messages with the renderer process.
   private ipcToken: string | null = null;
   private ipcAuthenticated = false;
@@ -60,10 +76,13 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private configReadyRejecter: ((error: Error) => void) | null = null;
   private isShuttingDown = false;
   private latestAssets: RendererAssetMapT | null = null;
+  private latestLayers = new Map<string, GraphicsRenderLayerInputT>();
   private launchWithGpuDisabled =
     process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
   private gpuFallbackAttempted = this.launchWithGpuDisabled;
-  private recoveringWithGpuFallback = false;
+  private recovering = false;
+  private lifecycleState: GraphicsRendererLifecycleStateT = "ready";
+  private recoveryAttemptTimes: number[] = [];
 
   /**
    * Initialize the renderer process and IPC channel.
@@ -93,9 +112,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
         cwd: process.cwd(),
         execPath: process.execPath,
         resourcesPath: process.resourcesPath || "",
+        userDataDir: this.resolveRendererUserDataDir(),
+        lifecycleState: this.lifecycleState,
       },
       "[GraphicsRenderer] Runtime context",
     );
+    this.logRendererCacheDiagnostics();
     this.logStructured(
       "info",
       { component: "graphics-renderer" },
@@ -126,6 +148,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     if (this.launchWithGpuDisabled) {
       env.BRIDGE_GRAPHICS_DISABLE_GPU = "1";
     }
+    env.BRIDGE_GRAPHICS_USER_DATA_DIR = this.resolveRendererUserDataDir();
     env.BRIDGE_GRAPHICS_IPC_PORT = String(ipcPort);
     env.BRIDGE_GRAPHICS_IPC_TOKEN = this.ipcToken;
     this.logStructured(
@@ -136,6 +159,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
         ipcTokenSet: Boolean(this.ipcToken),
         electronRunAsNode: env.ELECTRON_RUN_AS_NODE === "1",
         gpuDisabled: env.BRIDGE_GRAPHICS_DISABLE_GPU === "1",
+        userDataDir: env.BRIDGE_GRAPHICS_USER_DATA_DIR,
       },
       "[GraphicsRenderer] IPC environment prepared",
     );
@@ -186,22 +210,13 @@ export class ElectronRendererClient implements GraphicsRenderer {
       }
 
       const exitError = this.createRendererExitError(code, signal);
-      const attemptGpuFallback =
-        !this.isShuttingDown &&
-        this.shouldAttemptGpuFallback(signal, exitedBeforeReady);
+      const shouldRecover =
+        !this.isShuttingDown && this.shouldAttemptRecovery(signal, exitedBeforeReady);
 
-      this.resetRuntimeStateAfterExit(exitError);
+      const ipcServerStopped = this.resetRuntimeStateAfterExit(exitError);
 
-      if (attemptGpuFallback) {
-        this.launchWithGpuDisabled = true;
-        this.gpuFallbackAttempted = true;
-        this.recoveringWithGpuFallback = true;
-        this.logStructured(
-          "warn",
-          { component: "graphics-renderer" },
-          "[GraphicsRenderer] Renderer crashed with SIGSEGV; retrying once with GPU disabled",
-        );
-        void this.recoverWithGpuFallback();
+      if (shouldRecover) {
+        void this.recoverRenderer("process_exit", exitError, ipcServerStopped);
         return;
       }
 
@@ -263,6 +278,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
   async renderLayer(input: GraphicsRenderLayerInputT): Promise<void> {
     await this.ensureReady();
     await this.ensureRendererConfigured();
+    this.latestLayers.set(input.layerId, { ...input });
     this.sendCommand({
       type: "create_layer",
       layerId: input.layerId,
@@ -292,6 +308,14 @@ export class ElectronRendererClient implements GraphicsRenderer {
     bindings?: GraphicsTemplateBindingsT,
   ): Promise<void> {
     await this.ensureReady();
+    const cached = this.latestLayers.get(layerId);
+    if (cached) {
+      this.latestLayers.set(layerId, {
+        ...cached,
+        values: { ...cached.values, ...values },
+        bindings,
+      });
+    }
     this.sendCommand({ type: "update_values", layerId, values, bindings });
   }
 
@@ -308,6 +332,14 @@ export class ElectronRendererClient implements GraphicsRenderer {
   ): Promise<void> {
     await this.ensureReady();
     await this.ensureRendererConfigured();
+    const cached = this.latestLayers.get(layerId);
+    if (cached) {
+      this.latestLayers.set(layerId, {
+        ...cached,
+        layout,
+        zIndex: typeof zIndex === "number" ? zIndex : cached.zIndex,
+      });
+    }
     if (typeof zIndex === "number") {
       this.sendCommand({ type: "update_layout", layerId, layout, zIndex });
       return;
@@ -322,6 +354,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
    */
   async removeLayer(layerId: string): Promise<void> {
     await this.ensureReady();
+    this.latestLayers.delete(layerId);
     this.sendCommand({ type: "remove_layer", layerId });
   }
 
@@ -332,6 +365,10 @@ export class ElectronRendererClient implements GraphicsRenderer {
    */
   onError(callback: (error: Error) => void): void {
     this.errorCallback = callback;
+  }
+
+  getLifecycleState(): GraphicsRendererLifecycleStateT {
+    return this.lifecycleState;
   }
 
   /**
@@ -389,6 +426,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.ipcSocket = null;
     this.ipcAuthenticated = false;
     this.pendingCommands = [];
+    this.latestLayers.clear();
     this.ipcToken = null;
     if (this.configReadyRejecter) {
       this.configReadyRejecter(new Error("Renderer shutdown"));
@@ -397,6 +435,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.configReadyRejecter = null;
     this.configReadyPromise = null;
     this.isShuttingDown = false;
+    this.lifecycleState = "ready";
     await this.stopIpcServer();
   }
 
@@ -411,30 +450,27 @@ export class ElectronRendererClient implements GraphicsRenderer {
     );
   }
 
-  private shouldAttemptGpuFallback(
+  private shouldAttemptRecovery(
     signal: NodeJS.Signals | null,
     exitedBeforeReady: boolean
   ): boolean {
     if (exitedBeforeReady) {
       return false;
     }
-    if (this.recoveringWithGpuFallback || this.gpuFallbackAttempted) {
+    if (this.recovering) {
       return false;
     }
-    if (process.env.NODE_ENV !== "production") {
-      return false;
+    if (!signal) {
+      return true;
     }
-    if (this.launchWithGpuDisabled) {
-      return false;
-    }
-    if (process.env.BRIDGE_GRAPHICS_AUTO_GPU_FALLBACK === "0") {
-      return false;
-    }
-    return signal === "SIGSEGV";
+    return signal !== "SIGTERM" && signal !== "SIGKILL";
   }
 
-  private resetRuntimeStateAfterExit(exitError: Error): void {
+  private resetRuntimeStateAfterExit(exitError: Error): Promise<void> {
     this.child = null;
+    this.readyPromise = null;
+    this.readyResolver = null;
+    this.readyRejecter = null;
     this.rendererConfigured = false;
     this.lastSentConfigKey = null;
     this.ipcSocket?.destroy();
@@ -450,11 +486,80 @@ export class ElectronRendererClient implements GraphicsRenderer {
     this.configReadyRejecter = null;
     this.configReadyPromise = null;
 
-    void this.stopIpcServer();
+    return this.stopIpcServer();
   }
 
-  private async recoverWithGpuFallback(): Promise<void> {
+  private async recoverRenderer(
+    reason: string,
+    cause: Error,
+    ipcServerStopped: Promise<void> = Promise.resolve()
+  ): Promise<void> {
+    const attempt = this.registerRecoveryAttempt();
+    const recoveryId = randomBytes(8).toString("hex");
+    if (attempt === null) {
+      this.lifecycleState = "degraded";
+      this.logStructured(
+        "error",
+        {
+          component: "graphics-renderer",
+          recoveryId,
+          reason,
+          lifecycleState: this.lifecycleState,
+          maxAttempts: MAX_RECOVERY_ATTEMPTS,
+          windowMs: RECOVERY_WINDOW_MS,
+        },
+        `[GraphicsRenderer] Recovery limit reached; entering degraded mode: ${cause.message}`,
+      );
+      if (this.errorCallback) {
+        this.errorCallback(
+          new Error(`Graphics renderer degraded after repeated failures: ${cause.message}`)
+        );
+      }
+      return;
+    }
+
+    this.recovering = true;
+    const shouldUseGpuFallback =
+      attempt >= 2 &&
+      !this.gpuFallbackAttempted &&
+      !this.launchWithGpuDisabled &&
+      process.env.BRIDGE_GRAPHICS_AUTO_GPU_FALLBACK !== "0";
+    if (shouldUseGpuFallback) {
+      this.launchWithGpuDisabled = true;
+      this.gpuFallbackAttempted = true;
+      this.lifecycleState = "gpu_fallback";
+    } else {
+      this.lifecycleState = "recovering";
+    }
+
+    this.logStructured(
+      "warn",
+      {
+        component: "graphics-renderer",
+        recoveryId,
+        reason,
+        attempt,
+        gpuDisabled: this.launchWithGpuDisabled,
+        lifecycleState: this.lifecycleState,
+      },
+      `[GraphicsRenderer] Recovery starting: ${cause.message}`,
+    );
+
     try {
+      await ipcServerStopped;
+      const cleanupResult = await this.cleanupRendererCaches();
+      this.logStructured(
+        "info",
+        {
+          component: "graphics-renderer",
+          recoveryId,
+          reason,
+          attempt,
+          cleanupPaths: cleanupResult.paths,
+          cleanupErrors: cleanupResult.errors,
+        },
+        "[GraphicsRenderer] Recovery cache cleanup complete",
+      );
       await this.initialize();
       if (this.latestAssets) {
         await this.setAssets(this.latestAssets);
@@ -462,26 +567,69 @@ export class ElectronRendererClient implements GraphicsRenderer {
       if (this.sessionConfig) {
         await this.configureSession(this.sessionConfig);
       }
+      await this.replayLatestLayers();
+      this.lifecycleState = this.launchWithGpuDisabled ? "gpu_fallback" : "ready";
       this.logStructured(
         "info",
-        { component: "graphics-renderer" },
-        "[GraphicsRenderer] GPU fallback renderer restart completed",
+        {
+          component: "graphics-renderer",
+          recoveryId,
+          reason,
+          attempt,
+          gpuDisabled: this.launchWithGpuDisabled,
+          restartResult: "success",
+          lifecycleState: this.lifecycleState,
+        },
+        "[GraphicsRenderer] Recovery restart completed",
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const recoveryError = new Error(
-        `Graphics renderer GPU fallback restart failed: ${message}`
+        `Graphics renderer recovery restart failed: ${message}`
       );
       this.logStructured(
         "error",
-        { component: "graphics-renderer" },
+        {
+          component: "graphics-renderer",
+          recoveryId,
+          reason,
+          attempt,
+          gpuDisabled: this.launchWithGpuDisabled,
+          restartResult: "failed",
+          lifecycleState: this.lifecycleState,
+        },
         `[GraphicsRenderer] ${recoveryError.message}`,
       );
+      if (attempt < MAX_RECOVERY_ATTEMPTS) {
+        this.recovering = false;
+        void this.recoverRenderer("recovery_restart_failed", recoveryError);
+        return;
+      }
       if (this.errorCallback) {
+        this.lifecycleState = "degraded";
         this.errorCallback(recoveryError);
       }
     } finally {
-      this.recoveringWithGpuFallback = false;
+      this.recovering = false;
+    }
+  }
+
+  private registerRecoveryAttempt(): number | null {
+    const now = Date.now();
+    this.recoveryAttemptTimes = this.recoveryAttemptTimes.filter(
+      (time) => now - time < RECOVERY_WINDOW_MS
+    );
+    if (this.recoveryAttemptTimes.length >= MAX_RECOVERY_ATTEMPTS) {
+      return null;
+    }
+    this.recoveryAttemptTimes.push(now);
+    return this.recoveryAttemptTimes.length;
+  }
+
+  private async replayLatestLayers(): Promise<void> {
+    const layers = Array.from(this.latestLayers.values());
+    for (const layer of layers) {
+      await this.renderLayer(layer);
     }
   }
 
@@ -653,15 +801,21 @@ export class ElectronRendererClient implements GraphicsRenderer {
   }
 
   private async stopIpcServer(): Promise<void> {
+    if (this.ipcServerStopPromise) {
+      await this.ipcServerStopPromise;
+      return;
+    }
     if (!this.ipcServer) {
       return;
     }
-    await new Promise<void>((resolve) => {
+    this.ipcServerStopPromise = new Promise<void>((resolve) => {
       this.ipcServer?.close(() => resolve());
     });
+    await this.ipcServerStopPromise;
     this.ipcServer = null;
     this.ipcPort = null;
     this.ipcServerReady = null;
+    this.ipcServerStopPromise = null;
   }
 
   private getLogger(): LoggerLikeT & { debug?: (msg: string) => void } {
@@ -854,6 +1008,73 @@ export class ElectronRendererClient implements GraphicsRenderer {
         );
       }
     }
+  }
+
+  private resolveRendererUserDataDir(): string {
+    try {
+      return path.join(getBridgeContext().userDataDir, GRAPHICS_RENDERER_PROFILE_DIR);
+    } catch {
+      return path.join(process.cwd(), ".bridge-data", GRAPHICS_RENDERER_PROFILE_DIR);
+    }
+  }
+
+  private resolveRendererCachePaths(): string[] {
+    const userDataDir = this.resolveRendererUserDataDir();
+    return VOLATILE_RENDERER_CACHE_PATHS.map((relativePath) =>
+      path.join(userDataDir, relativePath)
+    );
+  }
+
+  private async cleanupRendererCaches(): Promise<{
+    paths: string[];
+    errors: string[];
+  }> {
+    const paths = this.resolveRendererCachePaths();
+    const errors: string[] = [];
+    await fs.mkdir(this.resolveRendererUserDataDir(), { recursive: true });
+    for (const cachePath of paths) {
+      try {
+        await fs.rm(cachePath, { recursive: true, force: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`${cachePath}: ${message}`);
+      }
+    }
+    return { paths, errors };
+  }
+
+  private async inspectPath(targetPath: string): Promise<{
+    path: string;
+    exists: boolean;
+    size?: number;
+  }> {
+    try {
+      const stat = await fs.stat(targetPath);
+      return { path: targetPath, exists: true, size: stat.size };
+    } catch {
+      return { path: targetPath, exists: false };
+    }
+  }
+
+  private voidLogPromise(promise: Promise<void>): void {
+    void promise;
+  }
+
+  private logRendererCacheDiagnostics(): void {
+    this.voidLogPromise((async () => {
+      const cachePaths = await Promise.all(
+        this.resolveRendererCachePaths().map((cachePath) => this.inspectPath(cachePath))
+      );
+      this.logStructured(
+        "info",
+        {
+          component: "graphics-renderer",
+          userDataDir: this.resolveRendererUserDataDir(),
+          cachePaths,
+        },
+        "[GraphicsRenderer] Cache diagnostics",
+      );
+    })());
   }
 
   private sendCommand(message: Record<string, unknown>): void {

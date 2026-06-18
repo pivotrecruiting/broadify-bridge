@@ -652,6 +652,7 @@ export class GraphicsManager {
    * @returns Snapshot of output configuration and layer state.
    */
   getStatus(): {
+    rendererLifecycleState: GraphicsStatusSnapshotT["rendererLifecycleState"];
     outputConfig: GraphicsOutputConfigT | null;
     browserInput: GraphicsStatusSnapshotT["browserInput"];
     layers: unknown[];
@@ -684,6 +685,7 @@ export class GraphicsManager {
     const status = this.getStatusSnapshot();
 
     return {
+      rendererLifecycleState: status.rendererLifecycleState,
       outputConfig: this.outputConfig,
       browserInput: status.browserInput,
       layers,
@@ -715,6 +717,7 @@ export class GraphicsManager {
       : null;
 
     return {
+      rendererLifecycleState: this.renderer.getLifecycleState?.() ?? "ready",
       outputConfig: this.outputConfig,
       browserInput: this.browserInputRuntime.getStatus(),
       activePreset,

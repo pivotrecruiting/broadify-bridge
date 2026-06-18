@@ -35,6 +35,10 @@ function resolveDesktopAppName(): string {
   return DEFAULT_APP_NAME;
 }
 
+function isGraphicsRendererProcess(): boolean {
+  return process.argv.includes("--graphics-renderer");
+}
+
 function copyLegacyFileIfAbsent(
   legacyUserDataPath: string,
   targetUserDataPath: string,
@@ -87,6 +91,11 @@ function migrateLegacyUserFiles(legacyUserDataPath: string, targetUserDataPath: 
  * Chromium profile caches under Application Support/electron-vite-template.
  */
 export function bootstrapDesktopAppIdentity(): void {
+  if (isGraphicsRendererProcess() && process.env.BRIDGE_GRAPHICS_USER_DATA_DIR) {
+    app.setPath("userData", process.env.BRIDGE_GRAPHICS_USER_DATA_DIR);
+    return;
+  }
+
   const appName = resolveDesktopAppName();
   const appDataPath = app.getPath("appData");
   const targetUserDataPath = path.join(appDataPath, appName);

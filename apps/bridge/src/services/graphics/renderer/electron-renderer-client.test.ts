@@ -141,6 +141,7 @@ describe("ElectronRendererClient", () => {
     mockIsIpcBufferWithinLimitOverride = null;
     mockEncodeIpcPacketThrow = false;
     mockGetBridgeContext.mockReturnValue({
+      userDataDir: "/private/tmp/broadify-bridge-renderer-client-test",
       logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
     });
 
@@ -173,6 +174,12 @@ describe("ElectronRendererClient", () => {
     it("initializes and completes handshake when hello received", async () => {
       const c = await initializeClientWithHandshake();
       expect(c).toBeDefined();
+      expect(
+        (mockSpawn.mock.calls[0]?.[2] as { env?: Record<string, string> })?.env
+          ?.BRIDGE_GRAPHICS_USER_DATA_DIR
+      ).toBe(
+        "/private/tmp/broadify-bridge-renderer-client-test/graphics-renderer-profile"
+      );
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
@@ -412,6 +419,80 @@ describe("ElectronRendererClient", () => {
         (mockChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
       }
       await c.shutdown();
+    });
+  });
+
+  describe("recovery", () => {
+    async function waitForSpawnCount(count: number, timeoutMs = 1000): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (mockSpawn.mock.calls.length < count && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(mockSpawn.mock.calls.length).toBeGreaterThanOrEqual(count);
+    }
+
+    it("restarts after an abnormal renderer exit without reporting engine-level failure", async () => {
+      const c = await initializeClientWithHandshake();
+      const onError = jest.fn();
+      c.onError(onError);
+      const firstChild = mockSpawn.mock.results[0]?.value;
+
+      firstChild?.emit("exit", 1, "SIGABRT");
+      await waitForSpawnCount(2);
+
+      expect(c.getLifecycleState()).toBe("ready");
+      expect(onError).not.toHaveBeenCalled();
+      const secondChild = mockSpawn.mock.results[1]?.value;
+      clientSocket?.destroy();
+      clientSocket = null;
+      if (secondChild) {
+        (secondChild as { exitCode: number | null }).exitCode = 0;
+        (secondChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      }
+      await c.shutdown();
+    });
+
+    it("uses GPU fallback on the second recovery attempt", async () => {
+      const c = await initializeClientWithHandshake();
+      const firstChild = mockSpawn.mock.results[0]?.value;
+      firstChild?.emit("exit", 1, "SIGABRT");
+      await waitForSpawnCount(2);
+
+      const secondChild = mockSpawn.mock.results[1]?.value;
+      secondChild?.emit("exit", 1, "SIGABRT");
+      await waitForSpawnCount(3);
+
+      expect(
+        (mockSpawn.mock.calls[2]?.[2] as { env?: Record<string, string> })?.env
+          ?.BRIDGE_GRAPHICS_DISABLE_GPU
+      ).toBe("1");
+      expect(c.getLifecycleState()).toBe("gpu_fallback");
+      const thirdChild = mockSpawn.mock.results[2]?.value;
+      clientSocket?.destroy();
+      clientSocket = null;
+      if (thirdChild) {
+        (thirdChild as { exitCode: number | null }).exitCode = 0;
+        (thirdChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      }
+      await c.shutdown();
+    });
+
+    it("enters degraded mode after the recovery limit is reached", async () => {
+      const c = await initializeClientWithHandshake();
+      const onError = jest.fn();
+      c.onError(onError);
+      mockResolveElectronBinary.mockReturnValue(null);
+
+      const firstChild = mockSpawn.mock.results[0]?.value;
+      firstChild?.emit("exit", 1, "SIGABRT");
+
+      const deadline = Date.now() + 1000;
+      while (c.getLifecycleState() !== "degraded" && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      expect(c.getLifecycleState()).toBe("degraded");
+      expect(onError).toHaveBeenCalledWith(expect.any(Error));
     });
   });
 
