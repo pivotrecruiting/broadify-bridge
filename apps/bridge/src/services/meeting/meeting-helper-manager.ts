@@ -631,6 +631,9 @@ export class MeetingHelperManager {
       if (parsed.type === "meeting_graphics_framebus") {
         logger.info(`[MeetingHelper] ${line}`);
       }
+      if (parsed.type === "meeting_vcam_raw") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
       if (parsed.type === "ready") {
         this.readyResolver?.(parsed as ReadyEventT);
       }
