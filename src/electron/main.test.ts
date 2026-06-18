@@ -176,8 +176,13 @@ jest.mock("fs", () => ({
   writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
 }));
 
-jest.mock("@sentry/electron", () => ({
+jest.mock("@sentry/electron/main", () => ({
   init: jest.fn(),
+  captureException: jest.fn(),
+  captureMessage: jest.fn(),
+  IPCMode: {
+    Protocol: 2,
+  },
 }));
 
 const mockAppExit = jest.fn();
@@ -206,7 +211,7 @@ jest.mock("electron", () => ({
   },
   BrowserWindow: jest.fn().mockImplementation(function (
     this: {
-      webContents: { send: jest.Mock };
+      webContents: { on: jest.Mock; send: jest.Mock };
       loadURL: jest.Mock;
       loadFile: jest.Mock;
       on: jest.Mock;
@@ -216,7 +221,7 @@ jest.mock("electron", () => ({
       focus: jest.Mock;
     },
   ) {
-    this.webContents = { send: jest.fn() };
+    this.webContents = { on: jest.fn(), send: jest.fn() };
     this.loadURL = jest.fn();
     this.loadFile = jest.fn();
     this.on = jest.fn();

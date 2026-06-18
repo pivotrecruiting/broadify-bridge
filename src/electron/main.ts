@@ -18,7 +18,7 @@ import { bridgeProfile } from "./services/bridge-profile.js";
 import { bridgePairing } from "./services/bridge-pairing.js";
 import { createBridgeApiRequest } from "./services/bridge-api-request.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
-import { logAppError } from "./services/app-logger.js";
+import { logAppError, logAppWarn } from "./services/app-logger.js";
 import { appUpdaterService } from "./services/app-updater.js";
 import {
   isPortAvailable,
@@ -39,7 +39,7 @@ import type {
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
-import * as Sentry from "@sentry/electron";
+import * as Sentry from "@sentry/electron/main";
 import { z } from "zod";
 
 const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
@@ -70,8 +70,9 @@ if (isRendererProcess) {
 // This enables both Main and Renderer process error tracking
 Sentry.init({
   dsn: "https://a534ee90c276b99d94aec4c22e6fc8c3@o4510578425135104.ingest.de.sentry.io/4510578677645392",
-  // Electron SDK automatically handles Main + Renderer integration
-  // Renderer integration will be initialized automatically
+  // Keep renderer startup free of injected SDK preload code. Native renderer
+  // minidumps are still captured by the main-process crash reporter.
+  ipcMode: Sentry.IPCMode.Protocol,
 });
 
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
@@ -80,6 +81,42 @@ let healthCheckCleanup: (() => void) | null = null;
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * Register diagnostics for renderer startup and crash failures.
+ *
+ * These logs are intentionally owned by the main process so they still work
+ * when the renderer crashes before React can paint or report an error.
+ */
+function registerRendererDiagnostics(window: BrowserWindow): void {
+  window.webContents.on("render-process-gone", (_event, details) => {
+    const message = `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`;
+    logAppError(message);
+    Sentry.captureMessage(message, "fatal");
+  });
+
+  window.webContents.on("unresponsive", () => {
+    const message = "[Renderer] window became unresponsive";
+    logAppWarn(message);
+    Sentry.captureMessage(message, "warning");
+  });
+
+  window.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      const message = `[Renderer] did-fail-load code=${errorCode} description=${errorDescription} url=${validatedURL}`;
+      logAppError(message);
+      Sentry.captureMessage(message, "error");
+    },
+  );
+
+  window.webContents.on("preload-error", (_event, preloadPath, error) => {
+    const message = `[Renderer] preload-error path=${preloadPath} error=${error.message}`;
+    logAppError(message);
+    Sentry.captureException(error);
+  });
+}
 
 /**
  * Default network configuration
@@ -305,8 +342,9 @@ if (!isRendererProcess) {
 
     app.on("ready", () => {
       mainWindow = new BrowserWindow({
-        // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
         webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
           preload: getPreloadPath(),
         },
         icon: getIconPath(),
@@ -316,11 +354,14 @@ if (!isRendererProcess) {
         minHeight: 600,
         resizable: true,
       });
+      registerRendererDiagnostics(mainWindow);
 
       if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`);
       else mainWindow.loadFile(getUIPath());
 
-      pollResources(mainWindow);
+      if (isDev()) {
+        pollResources(mainWindow);
+      }
 
       appUpdaterService.initialize((status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
