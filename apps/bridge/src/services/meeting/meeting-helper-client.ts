@@ -63,6 +63,10 @@ export class MeetingHelperClient {
     }
   }
 
+  async shutdown(): Promise<Record<string, unknown>> {
+    return this.rpc("control.shutdown");
+  }
+
   async getState(): Promise<Record<string, unknown>> {
     return this.rpc("state.get");
   }
@@ -77,6 +81,10 @@ export class MeetingHelperClient {
 
   async listCameras(): Promise<unknown> {
     return this.rpc("camera.list");
+  }
+
+  async requestCameraPermission(): Promise<Record<string, unknown>> {
+    return this.rpc("camera.permission.request");
   }
 
   async cameraStart(

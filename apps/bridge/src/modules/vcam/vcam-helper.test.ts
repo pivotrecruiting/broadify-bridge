@@ -70,6 +70,33 @@ describe("vcam-helper", () => {
     expect(resolveVcamHelperAppPath()).not.toBe(invalidOverride);
   });
 
+  it("rejects helper app activation paths outside /Applications", () => {
+    process.env.BRIDGE_VCAM_HELPER_PATH = join(
+      process.cwd(),
+      "apps",
+      "bridge",
+      "native",
+      "vcam-helper",
+      "build",
+      "Release",
+      "BroadifyVCam.app",
+    );
+
+    const status = getVcamHelperStatus();
+
+    if (process.platform !== "darwin") {
+      expect(status.available).toBe(false);
+      expect(status.requiresUserApproval).toBe(false);
+      expect(status.code).toBe("platform_not_supported");
+      return;
+    }
+
+    expect(status.available).toBe(false);
+    expect(status.requiresUserApproval).toBe(true);
+    expect(status.code).toBe("helper_app_not_in_applications");
+    expect(status.message).toContain("/Applications/BroadifyVCam.app");
+  });
+
   it("returns status with the meeting FrameBus name", () => {
     const status = getVcamHelperStatus();
 

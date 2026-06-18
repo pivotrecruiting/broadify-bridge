@@ -1,3 +1,4 @@
+import "./app-bootstrap.js";
 import { app, BrowserWindow, shell } from "electron";
 import {
   getArgMap,
@@ -18,7 +19,12 @@ import { bridgeProfile } from "./services/bridge-profile.js";
 import { bridgePairing } from "./services/bridge-pairing.js";
 import { createBridgeApiRequest } from "./services/bridge-api-request.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
-import { logAppError } from "./services/app-logger.js";
+import {
+  getAppLogPath,
+  logAppError,
+  logAppInfo,
+  logAppWarn,
+} from "./services/app-logger.js";
 import { appUpdaterService } from "./services/app-updater.js";
 import {
   isPortAvailable,
@@ -43,11 +49,25 @@ import * as Sentry from "@sentry/electron";
 import { z } from "zod";
 
 const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
+const DISABLED_CHROMIUM_FEATURES = [
+  "DawnGraphite",
+  "SkiaGraphite",
+  "WebGPU",
+  "WebGPUDeveloperFeatures",
+];
+const APP_SHUTDOWN_TIMEOUT_MS = 8000;
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
 const isRendererProcess =
   argMap.has("graphics-renderer") || Boolean(rendererEntry);
+
+if (!isRendererProcess) {
+  app.commandLine.appendSwitch(
+    "disable-features",
+    DISABLED_CHROMIUM_FEATURES.join(","),
+  );
+}
 
 if (isRendererProcess) {
   if (!rendererEntry) {
@@ -70,8 +90,7 @@ if (isRendererProcess) {
 // This enables both Main and Renderer process error tracking
 Sentry.init({
   dsn: "https://a534ee90c276b99d94aec4c22e6fc8c3@o4510578425135104.ingest.de.sentry.io/4510578677645392",
-  // Electron SDK automatically handles Main + Renderer integration
-  // Renderer integration will be initialized automatically
+  // Electron SDK automatically handles Main + Renderer integration.
 });
 
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
@@ -80,6 +99,179 @@ let healthCheckCleanup: (() => void) | null = null;
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
+let rendererDomReady = false;
+let rendererSafeMode = false;
+let rendererCrashRecoveryAttempted = false;
+let appShutdownStarted = false;
+let appShutdownCompleted = false;
+let appShutdownPromise: Promise<void> | null = null;
+
+function describePath(label: string, targetPath: string): string {
+  try {
+    if (!fs.existsSync(targetPath)) {
+      return `${label}=missing path=${targetPath}`;
+    }
+    const stat = fs.statSync(targetPath);
+    return `${label}=ok path=${targetPath} size=${stat.size} mode=0${(
+      stat.mode & 0o777
+    ).toString(8)}`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `${label}=stat_failed path=${targetPath} error=${message}`;
+  }
+}
+
+function logDesktopStartupDiagnostics(params: {
+  preloadPath: string;
+  uiPath: string;
+}): void {
+  logAppInfo(
+    `[DesktopStartup] context ${JSON.stringify({
+      version: app.getVersion(),
+      name: app.name,
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      arch: process.arch,
+      nodeEnv: process.env.NODE_ENV ?? null,
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      cwd: process.cwd(),
+      execPath: process.execPath,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      userData: app.getPath("userData"),
+      logPath: getAppLogPath(),
+      disabledChromiumFeatures: DISABLED_CHROMIUM_FEATURES,
+      argv: process.argv.filter((arg) => !arg.includes("token")),
+    })}`,
+  );
+  logAppInfo(`[DesktopStartup] ${describePath("preload", params.preloadPath)}`);
+  logAppInfo(`[DesktopStartup] ${describePath("ui", params.uiPath)}`);
+}
+
+/**
+ * Register diagnostics for renderer startup and crash failures.
+ *
+ * These logs are intentionally owned by the main process so they still work
+ * when the renderer crashes before React can paint or report an error.
+ */
+function registerRendererDiagnostics(window: BrowserWindow): void {
+  window.webContents.on(
+    "console-message",
+    (_event, first, second, third, fourth) => {
+      const details =
+        first && typeof first === "object"
+          ? (first as {
+              level?: string | number;
+              message?: string;
+              lineNumber?: number;
+              sourceId?: string;
+            })
+          : {
+              level: first as string | number | undefined,
+              message: second as string | undefined,
+              lineNumber: third as number | undefined,
+              sourceId: fourth as string | undefined,
+            };
+      logAppInfo(
+        `[RendererConsole] level=${details.level ?? "unknown"} source=${
+          details.sourceId ?? "unknown"
+        }:${details.lineNumber ?? 0} message=${details.message ?? ""}`,
+      );
+    },
+  );
+
+  window.webContents.on("did-start-loading", () => {
+    logAppInfo("[Renderer] did-start-loading");
+  });
+
+  window.webContents.on("dom-ready", () => {
+    rendererDomReady = true;
+    logAppInfo("[Renderer] dom-ready");
+  });
+
+  window.webContents.on("did-finish-load", () => {
+    logAppInfo("[Renderer] did-finish-load");
+  });
+
+  window.webContents.on("render-process-gone", (_event, details) => {
+    const message = `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`;
+    logAppError(message);
+    Sentry.captureMessage(message, "fatal");
+
+    if (
+      !rendererDomReady &&
+      !rendererSafeMode &&
+      !rendererCrashRecoveryAttempted &&
+      mainWindow &&
+      !mainWindow.isDestroyed()
+    ) {
+      rendererCrashRecoveryAttempted = true;
+      rendererSafeMode = true;
+      logAppWarn("[Renderer] startup crash before dom-ready, retrying in safe mode");
+      setTimeout(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        void loadRenderer(mainWindow, getUIPath(), true);
+      }, 250);
+    }
+  });
+
+  window.webContents.on("unresponsive", () => {
+    const message = "[Renderer] window became unresponsive";
+    logAppWarn(message);
+    Sentry.captureMessage(message, "warning");
+  });
+
+  window.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      const message = `[Renderer] did-fail-load code=${errorCode} description=${errorDescription} url=${validatedURL}`;
+      logAppError(message);
+      Sentry.captureMessage(message, "error");
+    },
+  );
+
+  window.webContents.on("preload-error", (_event, preloadPath, error) => {
+    const message = `[Renderer] preload-error path=${preloadPath} error=${error.message}`;
+    logAppError(message);
+    Sentry.captureException(error);
+  });
+}
+
+function loadRenderer(
+  window: BrowserWindow,
+  uiPath: string,
+  safeMode: boolean,
+): Promise<void> {
+  rendererDomReady = false;
+
+  if (isDev()) {
+    const query = safeMode ? "?renderer_safe_mode=1" : "";
+    const devUrl = `http://localhost:${PORT}${query}`;
+    logAppInfo(`[Renderer] loadURL start url=${devUrl} safeMode=${safeMode}`);
+    return window.loadURL(devUrl).then(
+      () => logAppInfo(`[Renderer] loadURL resolved url=${devUrl} safeMode=${safeMode}`),
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logAppError(`[Renderer] loadURL rejected url=${devUrl} safeMode=${safeMode} error=${message}`);
+      },
+    );
+  }
+
+  logAppInfo(`[Renderer] loadFile start path=${uiPath} safeMode=${safeMode}`);
+  return window.loadFile(
+    uiPath,
+    safeMode ? { query: { renderer_safe_mode: "1" } } : undefined,
+  ).then(
+    () => logAppInfo(`[Renderer] loadFile resolved path=${uiPath} safeMode=${safeMode}`),
+    (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logAppError(`[Renderer] loadFile rejected path=${uiPath} safeMode=${safeMode} error=${message}`);
+    },
+  );
+}
 
 /**
  * Default network configuration
@@ -276,6 +468,52 @@ function buildWebAppUrl(): string | null {
   }
 }
 
+function runAppShutdownCleanup(): Promise<void> {
+  if (appShutdownPromise) {
+    return appShutdownPromise;
+  }
+
+  appShutdownPromise = (async () => {
+    appUpdaterService.shutdown();
+    if (healthCheckCleanup) {
+      healthCheckCleanup();
+      healthCheckCleanup = null;
+    }
+    const result = await bridgeProcessManager.stop();
+    if (!result.success) {
+      logAppError(`Bridge shutdown failed during app quit: ${result.error ?? "unknown error"}`);
+    }
+  })();
+
+  return appShutdownPromise;
+}
+
+async function shutdownAndExit(): Promise<void> {
+  if (appShutdownStarted) {
+    return;
+  }
+  appShutdownStarted = true;
+
+  const timeout = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      logAppWarn(
+        `[Shutdown] Cleanup timed out after ${APP_SHUTDOWN_TIMEOUT_MS}ms; forcing app exit`,
+      );
+      resolve();
+    }, APP_SHUTDOWN_TIMEOUT_MS);
+  });
+
+  try {
+    await Promise.race([runAppShutdownCleanup(), timeout]);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logAppError(`[Shutdown] Cleanup failed: ${message}`);
+  } finally {
+    appShutdownCompleted = true;
+    app.exit(0);
+  }
+}
+
 // Single Instance Lock: Prevent multiple instances of the app
 // Only the main desktop app should acquire the single-instance lock.
 if (!isRendererProcess) {
@@ -304,10 +542,15 @@ if (!isRendererProcess) {
     });
 
     app.on("ready", () => {
+      const preloadPath = getPreloadPath();
+      const uiPath = getUIPath();
+      logDesktopStartupDiagnostics({ preloadPath, uiPath });
+
       mainWindow = new BrowserWindow({
-        // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
         webPreferences: {
-          preload: getPreloadPath(),
+          contextIsolation: true,
+          nodeIntegration: false,
+          preload: preloadPath,
         },
         icon: getIconPath(),
         width: 800, // sm breakpoint width (640px) + padding
@@ -316,11 +559,13 @@ if (!isRendererProcess) {
         minHeight: 600,
         resizable: true,
       });
+      registerRendererDiagnostics(mainWindow);
 
-      if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`);
-      else mainWindow.loadFile(getUIPath());
+      void loadRenderer(mainWindow, uiPath, rendererSafeMode);
 
-      pollResources(mainWindow);
+      if (isDev()) {
+        pollResources(mainWindow);
+      }
 
       appUpdaterService.initialize((status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -945,22 +1190,21 @@ if (!isRendererProcess) {
       });
 
       // Cleanup on window close
-      mainWindow.on("close", async () => {
-        if (healthCheckCleanup) {
-          healthCheckCleanup();
-          healthCheckCleanup = null;
+      mainWindow.on("close", (event) => {
+        if (appShutdownCompleted) {
+          return;
         }
-        await bridgeProcessManager.stop();
+        event?.preventDefault();
+        void shutdownAndExit();
       });
 
       // Cleanup on app quit
-      app.on("before-quit", async () => {
-        appUpdaterService.shutdown();
-        if (healthCheckCleanup) {
-          healthCheckCleanup();
-          healthCheckCleanup = null;
+      app.on("before-quit", (event) => {
+        if (appShutdownCompleted) {
+          return;
         }
-        await bridgeProcessManager.stop();
+        event?.preventDefault();
+        void shutdownAndExit();
       });
     });
   }

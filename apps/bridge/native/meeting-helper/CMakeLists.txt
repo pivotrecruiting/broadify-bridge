@@ -63,6 +63,7 @@ if(APPLE)
   list(APPEND MEETING_HELPER_SOURCES
     src/capture/camera_avfoundation.mm
     src/keyer/vision_keyer.mm
+    src/macos/macos_app.mm
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
@@ -70,11 +71,18 @@ if(APPLE)
   set_source_files_properties(src/keyer/vision_keyer.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
+  set_source_files_properties(src/macos/macos_app.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
 else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
 endif()
 
-add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+if(APPLE)
+  add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
+else()
+  add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+endif()
 
 target_include_directories(meeting-helper PRIVATE
   src
@@ -120,6 +128,7 @@ endif()
 
 if(APPLE)
   target_link_libraries(meeting-helper PRIVATE
+    "-framework AppKit"
     "-framework AVFoundation"
     "-framework CoreGraphics"
     "-framework CoreMedia"
@@ -129,7 +138,11 @@ if(APPLE)
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES
+    OUTPUT_NAME "BroadifyMeetingHelper"
     MACOSX_RPATH ON
     BUILD_RPATH "@loader_path"
+    MACOSX_BUNDLE_BUNDLE_NAME "Broadify Bridge Meeting Helper"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.broadify.bridge.meeting-helper"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist"
   )
 endif()

@@ -7,7 +7,32 @@ BUILD_DIR="${ROOT_DIR}/build"
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 cmake --build "${BUILD_DIR}" --config "${CMAKE_BUILD_TYPE:-Release}"
 
-if [[ -f "${BUILD_DIR}/meeting-helper" ]]; then
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  APP_SOURCE=""
+  for candidate in \
+    "${BUILD_DIR}/BroadifyMeetingHelper.app" \
+    "${BUILD_DIR}/meeting-helper.app" \
+    "${BUILD_DIR}/Release/BroadifyMeetingHelper.app" \
+    "${BUILD_DIR}/Release/meeting-helper.app"; do
+    if [[ -d "${candidate}" ]]; then
+      APP_SOURCE="${candidate}"
+      break
+    fi
+  done
+
+  if [[ -z "${APP_SOURCE}" ]]; then
+    echo "Meeting helper app bundle not found under ${BUILD_DIR}" >&2
+    exit 1
+  fi
+
+  rm -rf "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+  cp -R "${APP_SOURCE}" "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+  chmod -R u+w "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+  if [[ -f "${ROOT_DIR}/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" ]]; then
+    cp -f "${ROOT_DIR}/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" "${ROOT_DIR}/meeting-helper"
+    chmod u+w "${ROOT_DIR}/meeting-helper"
+  fi
+elif [[ -f "${BUILD_DIR}/meeting-helper" ]]; then
   cp -f "${BUILD_DIR}/meeting-helper" "${ROOT_DIR}/meeting-helper"
   chmod u+w "${ROOT_DIR}/meeting-helper"
 fi
@@ -30,4 +55,8 @@ if [[ "${MEETING_HELPER_ENABLE_MODNET:-1}" == "1" ]]; then
   fi
 fi
 
-echo "Built ${ROOT_DIR}/meeting-helper"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo "Built ${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+else
+  echo "Built ${ROOT_DIR}/meeting-helper"
+fi

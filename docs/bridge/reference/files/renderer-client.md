@@ -2,7 +2,8 @@
 
 ## Zweck
 Startet den Electron‑Rendererprozess und kommuniziert via lokalem TCP‑IPC.
-Bei einem Production-`SIGSEGV` wird einmalig ein automatischer Neustart mit deaktivierter GPU versucht.
+Bei abnormalem Renderer-Exit wird begrenzte Runtime-Recovery versucht. Der zweite Versuch
+nutzt GPU-Fallback, sofern nicht per `BRIDGE_GRAPHICS_AUTO_GPU_FALLBACK=0` deaktiviert.
 
 ## Ein-/Ausgänge
 - Input: Render‑Commands (`create_layer`, `update_values`, ...)
@@ -16,7 +17,10 @@ Bei einem Production-`SIGSEGV` wird einmalig ein automatischer Neustart mit deak
 ## Side‑Effects
 - Spawnt Electron‑Prozess
 - Erstellt lokalen IPC‑Server
-- Kann in Production bei Renderer-Absturz einmalig mit `BRIDGE_GRAPHICS_DISABLE_GPU=1` neu starten
+- Setzt `BRIDGE_GRAPHICS_USER_DATA_DIR` auf ein isoliertes Renderer-Profil
+- Löscht bei Recovery nur volatile Cache-Pfade innerhalb dieses Profils
+- Kann bei wiederholtem Renderer-Absturz mit `BRIDGE_GRAPHICS_DISABLE_GPU=1` neu starten
+- Wechselt nach zwei Recovery-Versuchen in 5 Minuten in `degraded`
 
 ## Security
 - Token‑Handshake, Payload‑Limits, localhost‑Bind

@@ -8,6 +8,10 @@
 #include "state/meeting_state.h"
 #include "util/json_utils.h"
 
+#if defined(__APPLE__)
+#include "macos/macos_app.h"
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -53,6 +57,10 @@ int main(int argc, char **argv) {
   // stdout is piped to the bridge; ensure lifecycle events flush promptly.
   setvbuf(stdout, nullptr, _IOLBF, 0);
 
+#if defined(__APPLE__)
+  initializeMacosApplication();
+#endif
+
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
@@ -80,6 +88,9 @@ int main(int argc, char **argv) {
         << ",\"control_socket\":\"" << jsonEscape(options.controlSocket) << "\"}";
   printEvent(ready.str());
 
+#if defined(__APPLE__)
+  runMacosApplicationLoop(g_running);
+#else
   uint64_t tick = 0;
   while (g_running.load()) {
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -88,6 +99,7 @@ int main(int argc, char **argv) {
             << ",\"keyer\":\"passthrough\",\"inference_ms\":null,\"drops\":0,\"tick\":" << tick++ << "}";
     printEvent(metrics.str());
   }
+#endif
 
   camera->stop();
   if (frames.joinable()) {

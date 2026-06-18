@@ -54,6 +54,22 @@ Der macOS-VCam-Reader verwendet denselben Standardnamen:
 `broadify-meeting-framebus`. Wenn `BRIDGE_MEETING_FRAMEBUS_NAME` gesetzt wird,
 muss die Camera Extension entsprechend gebaut bzw. angepasst werden.
 
+## Kamera-Freigabe macOS
+
+Auf macOS laeuft der Kamera-Capture in `Broadify Bridge Meeting Helper.app`.
+Die Bridge startet dieses Bundle ueber LaunchServices, nicht direkt ueber das
+Executable, damit macOS TCC den Prozess als App-Bundle mit Kamera-Usage-String
+bewerten kann. Die TCC-Identitaet bleibt
+`com.broadify.bridge.meeting-helper`; der sichtbare Name in System Settings >
+Datenschutz & Sicherheit > Kamera ist `Broadify Meeting`.
+
+Nach `meeting_engine_start` ruft die Bridge den Helper-RPC
+`camera.permission.request` fire-and-forget auf. Wenn der Status noch
+`not_determined` ist, zeigt macOS den Kamera-Freigabe-Dialog. Der Meeting-Start
+blockiert nicht auf die Nutzerentscheidung. `camera.list` und `camera.start`
+bleiben permission-gated und liefern bei fehlender oder eingeschraenkter
+Freigabe den stabilen Fehlercode `camera_permission_denied`.
+
 ## Virtuelle Kamera macOS
 
 Die virtuelle Kamera ist eine CoreMediaIO Camera Extension unter

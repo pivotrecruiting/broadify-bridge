@@ -467,6 +467,101 @@ describe("RelayClient", () => {
     });
   });
 
+  it("maps command errorCode to command_result code", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const handleCommand = jest.fn(async () => ({
+      success: false,
+      error: "Camera permission was not granted.",
+      errorCode: "camera_permission_denied",
+    }));
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-camera-list",
+      sequence: 9,
+      command: "meeting_camera_list",
+      payload: {},
+    });
+    await flushAsync();
+
+    expect(JSON.parse(socket.sent[3])).toEqual({
+      type: "command_result",
+      requestId: "req-camera-list",
+      success: false,
+      error: "Camera permission was not granted.",
+      code: "camera_permission_denied",
+    });
+  });
+
+  it("maps async command errorCode to operation_result code", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const deferred = createDeferred<{
+      success: false;
+      error: string;
+      errorCode: string;
+    }>();
+    const handleCommand = jest.fn(() => deferred.promise);
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-camera-start",
+      sequence: 10,
+      command: "meeting_camera_start",
+      payload: {},
+    });
+    await flushAsync();
+
+    deferred.resolve({
+      success: false,
+      error: "Camera permission was not granted.",
+      errorCode: "camera_permission_denied",
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(JSON.parse(socket.sent[4])).toEqual({
+      type: "operation_result",
+      operationId: "req-camera-start",
+      requestId: "req-camera-start",
+      bridgeId: "bridge-1",
+      command: "meeting_camera_start",
+      success: false,
+      error: "Camera permission was not granted.",
+      code: "camera_permission_denied",
+      invalidates: ["meeting.camera"],
+    });
+  });
+
   it("deduplicates replayed requestIds and reuses cached command_result", async () => {
     const socket = new FakeWebSocket();
     const logger = createLogger();

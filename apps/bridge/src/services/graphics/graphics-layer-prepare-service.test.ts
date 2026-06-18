@@ -1,7 +1,11 @@
 import { prepareLayerForRender } from "./graphics-layer-prepare-service.js";
+import { setBridgeContext } from "../bridge-context.js";
 
 const mockSanitizeTemplateCss = jest.fn((css: string) => css);
-const mockValidateTemplate = jest.fn(() => ({ assetIds: new Set<string>() }));
+const mockValidateTemplate = jest.fn(() => ({
+  assetIds: new Set<string>(),
+  warnings: [] as string[],
+}));
 const mockDeriveTemplateBindings = jest.fn(() => ({
   cssVariables: {},
   textContent: {},
@@ -62,8 +66,18 @@ const basePayload = {
 describe("prepareLayerForRender", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setBridgeContext({
+      userDataDir: "/tmp/bridge-data",
+      logPath: "/tmp/bridge.log",
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      },
+    });
     mockSanitizeTemplateCss.mockImplementation((css: string) => css);
-    mockValidateTemplate.mockReturnValue({ assetIds: new Set() });
+    mockValidateTemplate.mockReturnValue({ assetIds: new Set(), warnings: [] });
     mockDeriveTemplateBindings.mockReturnValue({
       cssVariables: {},
       textContent: {},
@@ -88,6 +102,7 @@ describe("prepareLayerForRender", () => {
   it("stores bundle assets and checks assetIds exist", async () => {
     mockValidateTemplate.mockReturnValue({
       assetIds: new Set(["asset-1"]),
+      warnings: [],
     });
     mockGetAsset.mockImplementation((id: string) =>
       id === "asset-1" ? { assetId: "asset-1" } : null
@@ -112,6 +127,7 @@ describe("prepareLayerForRender", () => {
   it("throws when referenced asset is missing", async () => {
     mockValidateTemplate.mockReturnValue({
       assetIds: new Set(["missing-asset"]),
+      warnings: [],
     });
     mockGetAsset.mockReturnValue(null);
     const renderer = createMockRenderer();
@@ -179,6 +195,33 @@ describe("prepareLayerForRender", () => {
     expect(result.values).toEqual({ title: "Guest" });
     expect(result.bindings).toEqual(
       expect.objectContaining({ textContent: { title: "Guest" } })
+    );
+  });
+
+  it("logs render-risk warnings without rejecting the template", async () => {
+    const warn = jest.fn();
+    setBridgeContext({
+      userDataDir: "/tmp/bridge-data",
+      logPath: "/tmp/bridge.log",
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn,
+        error: jest.fn(),
+      },
+    });
+    mockValidateTemplate.mockReturnValue({
+      assetIds: new Set(),
+      warnings: ["Template CSS uses large blur(48px)"],
+    });
+    const renderer = createMockRenderer();
+
+    await expect(
+      prepareLayerForRender(basePayload, "stub", renderer)
+    ).resolves.toEqual(expect.objectContaining({ layerId: "layer-1" }));
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Template render-risk warnings")
     );
   });
 });

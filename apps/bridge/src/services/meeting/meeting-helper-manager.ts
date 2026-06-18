@@ -1,8 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
 import { platform, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -23,10 +23,15 @@ const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 const MODELS_DIR_ENV = "BRIDGE_MEETING_MODELS_DIR";
+const MACOS_MEETING_HELPER_APP_NAME = "Broadify Bridge Meeting Helper.app";
+const MACOS_MEETING_HELPER_EXECUTABLE_NAME = "BroadifyMeetingHelper";
 const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
+const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
+const CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS = 120;
+const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
 
 export type MeetingHelperLifecycleStateT =
   | "stopped"
@@ -47,7 +52,18 @@ export type MeetingHelperManagerStatusT = {
   framebusName: string;
   previewPath: string;
   virtualCamera: VcamHelperStatusT;
+  helper: MeetingHelperIdentityT;
   lastError: string | null;
+};
+
+export type MeetingHelperIdentityT = {
+  path: string;
+  appPath: string | null;
+  bundleId: string | null;
+  teamId: string | null;
+  codeSignatureStatus: "not_checked" | "valid" | "invalid" | "missing";
+  cameraEntitlementStatus: "not_checked" | "present" | "missing" | "invalid";
+  tccIdentity: string | null;
 };
 
 type LoggerT = {
@@ -92,6 +108,112 @@ function uniquePaths(paths: string[]): string[] {
   return Array.from(new Set(paths));
 }
 
+function resolveMacosMeetingHelperExecutable(appPath: string): string {
+  return join(appPath, "Contents", "MacOS", MACOS_MEETING_HELPER_EXECUTABLE_NAME);
+}
+
+function findMacosMeetingHelperAppPath(): string | null {
+  const resourcesPath = process.resourcesPath;
+  const moduleDir = getModuleDirname();
+  const candidates = uniquePaths([
+    ...(process.env.NODE_ENV === "production" && resourcesPath
+      ? [join(resourcesPath, "native", "meeting-helper", MACOS_MEETING_HELPER_APP_NAME)]
+      : []),
+    join(process.cwd(), "apps/bridge/native/meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+    join(process.cwd(), "native/meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+    join(moduleDir, "../../../native/meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+  ]);
+
+  return candidates.find((candidate) => existsSync(resolveMacosMeetingHelperExecutable(candidate))) ?? null;
+}
+
+function readPlistValue(plistPath: string, key: string): string | null {
+  try {
+    return execFileSync("/usr/libexec/PlistBuddy", ["-c", `Print :${key}`, plistPath], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function readCodesignTeamId(targetPath: string): string | null {
+  const result = spawnSync("codesign", ["-dv", "--verbose=4", targetPath], {
+    encoding: "utf8",
+  });
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return output.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim() ?? null;
+}
+
+function inspectCodesignStatus(targetPath: string): MeetingHelperIdentityT["codeSignatureStatus"] {
+  if (!existsSync(targetPath)) {
+    return "missing";
+  }
+  if (platform() !== "darwin") {
+    return "not_checked";
+  }
+  try {
+    execFileSync("codesign", ["--verify", "--strict", "--verbose=2", targetPath], {
+      stdio: "ignore",
+    });
+    return "valid";
+  } catch {
+    return "invalid";
+  }
+}
+
+function inspectCameraEntitlementStatus(
+  targetPath: string,
+): MeetingHelperIdentityT["cameraEntitlementStatus"] {
+  if (!existsSync(targetPath)) {
+    return "missing";
+  }
+  if (platform() !== "darwin") {
+    return "not_checked";
+  }
+  const result = spawnSync("codesign", ["-d", "--entitlements", ":-", targetPath], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return "invalid";
+  }
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return output.includes("com.apple.security.device.camera") ? "present" : "missing";
+}
+
+function inspectMeetingHelperIdentity(helperPath: string): MeetingHelperIdentityT {
+  if (platform() !== "darwin") {
+    return {
+      path: helperPath,
+      appPath: null,
+      bundleId: null,
+      teamId: null,
+      codeSignatureStatus: existsSync(helperPath) ? "not_checked" : "missing",
+      cameraEntitlementStatus: existsSync(helperPath) ? "not_checked" : "missing",
+      tccIdentity: null,
+    };
+  }
+
+  const normalizedPath = resolve(helperPath);
+  const marker = `${MACOS_MEETING_HELPER_APP_NAME}/Contents/MacOS/${MACOS_MEETING_HELPER_EXECUTABLE_NAME}`;
+  const appPath = normalizedPath.endsWith(marker)
+    ? normalizedPath.slice(0, -(`/Contents/MacOS/${MACOS_MEETING_HELPER_EXECUTABLE_NAME}`.length))
+    : null;
+  const infoPath = appPath ? join(appPath, "Contents", "Info.plist") : null;
+  const bundleId = infoPath ? readPlistValue(infoPath, "CFBundleIdentifier") : null;
+
+  return {
+    path: helperPath,
+    appPath,
+    bundleId,
+    teamId: readCodesignTeamId(helperPath),
+    codeSignatureStatus: inspectCodesignStatus(helperPath),
+    cameraEntitlementStatus: inspectCameraEntitlementStatus(helperPath),
+    tccIdentity: bundleId ?? null,
+  };
+}
+
 /**
  * Resolve the native meeting-helper binary path.
  */
@@ -107,6 +229,18 @@ export function resolveMeetingHelperPath(): string {
   const binaryName = platform() === "win32" ? "meeting-helper.exe" : "meeting-helper";
   const moduleDir = getModuleDirname();
   const resourcesPath = process.resourcesPath;
+
+  if (platform() === "darwin") {
+    const appPath = findMacosMeetingHelperAppPath();
+    if (appPath) {
+      return resolveMacosMeetingHelperExecutable(appPath);
+    }
+    if (process.env.NODE_ENV === "production" && resourcesPath) {
+      return resolveMacosMeetingHelperExecutable(
+        join(resourcesPath, "native", "meeting-helper", MACOS_MEETING_HELPER_APP_NAME),
+      );
+    }
+  }
 
   if (process.env.NODE_ENV === "production" && resourcesPath) {
     return join(resourcesPath, "native", "meeting-helper", binaryName);
@@ -168,12 +302,15 @@ function sleep(ms: number): Promise<void> {
 /**
  * Retry control.ping because helper startup can briefly race with socket accept.
  */
-async function waitForHelperPing(client: MeetingHelperClient): Promise<boolean> {
-  for (let attempt = 0; attempt < HELPER_PING_ATTEMPTS; attempt += 1) {
+async function waitForHelperPing(
+  client: MeetingHelperClient,
+  maxAttempts: number = HELPER_PING_ATTEMPTS,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (await client.ping()) {
       return true;
     }
-    if (attempt + 1 < HELPER_PING_ATTEMPTS) {
+    if (attempt + 1 < maxAttempts) {
       await sleep(HELPER_PING_DELAY_MS);
     }
   }
@@ -210,6 +347,7 @@ export class MeetingHelperManager {
   private stdoutBuffer = "";
   private readyResolver: ((event: ReadyEventT) => void) | null = null;
   private readyRejecter: ((error: Error) => void) | null = null;
+  private helperIdentity: MeetingHelperIdentityT | null = null;
 
   getClient(): MeetingHelperClient | null {
     return this.client;
@@ -227,6 +365,7 @@ export class MeetingHelperManager {
       framebusName: this.getFramebusName(),
       previewPath: "/preview.mjpg",
       virtualCamera: getVcamHelperStatus({ framebusName: this.getFramebusName() }),
+      helper: this.helperIdentity ?? inspectMeetingHelperIdentity(resolveMeetingHelperPath()),
       lastError: this.lastError,
     };
   }
@@ -252,6 +391,15 @@ export class MeetingHelperManager {
 
   async stop(): Promise<MeetingHelperManagerStatusT> {
     this.stopStatusPolling();
+    const client = this.client;
+    if (client) {
+      try {
+        await client.shutdown();
+        await sleep(150);
+      } catch {
+        // Fall back to process termination below.
+      }
+    }
     this.killProcess();
     this.client = null;
     this.port = null;
@@ -282,6 +430,34 @@ export class MeetingHelperManager {
   ): Promise<MeetingHelperManagerStatusT> {
     const logger = getLogger();
     const helperPath = resolveMeetingHelperPath();
+    this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
+    logger.info(
+      `[Meeting] Helper identity: bundleId=${this.helperIdentity.bundleId ?? "none"} tccIdentity=${this.helperIdentity.tccIdentity ?? "none"} codeSignature=${this.helperIdentity.codeSignatureStatus} cameraEntitlement=${this.helperIdentity.cameraEntitlementStatus} teamId=${this.helperIdentity.teamId ?? "none"}`,
+    );
+    if (
+      platform() === "darwin" &&
+      this.helperIdentity.codeSignatureStatus !== "valid"
+    ) {
+      logger.warn(
+        `[Meeting] Helper code signature is ${this.helperIdentity.codeSignatureStatus}; macOS camera permission prompts may be denied or hidden.`,
+      );
+      publishMeetingErrorEvent(
+        "helper_codesign_invalid",
+        "Meeting helper code signature is invalid; macOS camera permission cannot be requested reliably.",
+      );
+    }
+    if (
+      platform() === "darwin" &&
+      this.helperIdentity.cameraEntitlementStatus !== "present"
+    ) {
+      logger.warn(
+        `[Meeting] Helper camera entitlement is ${this.helperIdentity.cameraEntitlementStatus}; macOS may deny camera access without showing a permission prompt.`,
+      );
+      publishMeetingErrorEvent(
+        "helper_camera_entitlement_missing",
+        "Meeting helper is missing the macOS camera entitlement; camera permission cannot be requested reliably.",
+      );
+    }
     const modelsDir = resolveMeetingModelsDir(helperPath);
     if (!existsSync(helperPath)) {
       this.state = "error";
@@ -335,8 +511,19 @@ export class MeetingHelperManager {
         MEETING_VCAM_NATIVE_AVAILABLE: isVcamExtensionAvailable() ? "1" : "0",
       };
 
-      logger.info(`[Meeting] Starting helper: ${helperPath} ${args.join(" ")}`);
-      const child = spawn(helperPath, args, {
+      const useLaunchServices =
+        platform() === "darwin" && this.helperIdentity.appPath !== null;
+      const launchPath = useLaunchServices ? "/usr/bin/open" : helperPath;
+      const launchArgs = useLaunchServices
+        ? ["-W", "-n", this.helperIdentity.appPath as string, "--args", ...args]
+        : args;
+
+      logger.info(
+        useLaunchServices
+          ? `[Meeting] Opening helper app: ${this.helperIdentity.appPath} ${args.join(" ")}`
+          : `[Meeting] Starting helper: ${helperPath} ${args.join(" ")}`,
+      );
+      const child = spawn(launchPath, launchArgs, {
         env,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -361,9 +548,14 @@ export class MeetingHelperManager {
         this.readyRejecter?.(error);
       });
 
-      await this.waitForReady();
       const client = new MeetingHelperClient(controlSocketPath);
-      const healthy = await waitForHelperPing(client);
+      if (!useLaunchServices) {
+        await this.waitForReady();
+      }
+      const healthy = await waitForHelperPing(
+        client,
+        useLaunchServices ? MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS : HELPER_PING_ATTEMPTS,
+      );
       if (!healthy) {
         this.lastError = "Meeting helper did not respond to control.ping";
         this.state = "error";
@@ -378,6 +570,7 @@ export class MeetingHelperManager {
       this.client = client;
       this.state = "running";
       this.startStatusPolling();
+      this.requestCameraPermissionPreflight(client, logger);
       await this.publishStatus("engine_started", true);
       return this.getStatus();
     } catch (error: unknown) {
@@ -429,8 +622,16 @@ export class MeetingHelperManager {
   private handleStdoutLine(line: string, logger: LoggerT): void {
     logger.debug?.(`[MeetingHelper] ${line}`);
     try {
-      const parsed = JSON.parse(line) as { type?: string; code?: string; message?: string };
+      const parsed = JSON.parse(line) as {
+        type?: string;
+        code?: string;
+        message?: string;
+        camera_permission_status?: string;
+      };
       if (parsed.type === "meeting_graphics_framebus") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (parsed.type === "meeting_vcam_raw") {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "ready") {
@@ -442,9 +643,103 @@ export class MeetingHelperManager {
         this.lastError = message;
         publishMeetingErrorEvent(code, message);
       }
+      if (parsed.type === "camera_permission_completed") {
+        const status = parsed.camera_permission_status || "unknown";
+        logger.info(`[Meeting] Camera permission completion: ${status}`);
+        publishMeetingStatusEvent("camera_permission_completed", {
+          manager: this.getStatus(),
+          engine: {
+            camera_permission_status: status,
+          },
+        });
+        if (status === "denied" || status === "restricted") {
+          publishMeetingErrorEvent(
+            "camera_permission_denied",
+            "Camera permission was not granted.",
+          );
+        }
+      }
     } catch {
       logger.debug?.(`[MeetingHelper] Ignored non-JSON stdout line: ${line}`);
     }
+  }
+
+  private requestCameraPermissionPreflight(
+    client: MeetingHelperClient,
+    logger: LoggerT,
+  ): void {
+    if (platform() !== "darwin") {
+      return;
+    }
+
+    void client.requestCameraPermission()
+      .then((result) => {
+        const status =
+          typeof result.camera_permission_status === "string"
+            ? result.camera_permission_status
+            : "unknown";
+        logger.info(`[Meeting] Camera permission status: ${status}`);
+        publishMeetingStatusEvent("camera_permission_preflight", {
+          manager: this.getStatus(),
+          engine: {
+            camera_permission_status: status,
+          },
+        });
+        if (status === "denied" || status === "restricted") {
+          publishMeetingErrorEvent(
+            "camera_permission_denied",
+            "Camera permission was not granted.",
+          );
+        }
+        if (status === "prompt_requested") {
+          void this.pollCameraPermissionCompletion(client, logger);
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`[Meeting] Camera permission preflight failed: ${message}`);
+      });
+  }
+
+  private async pollCameraPermissionCompletion(
+    client: MeetingHelperClient,
+    logger: LoggerT,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS; attempt += 1) {
+      await sleep(CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS);
+      if (this.client !== client || this.state !== "running") {
+        return;
+      }
+      try {
+        const state = await client.getState();
+        const status =
+          typeof state.camera_permission_status === "string"
+            ? state.camera_permission_status
+            : "unknown";
+        if (status === "prompt_requested" || status === "not_determined") {
+          continue;
+        }
+        logger.info(`[Meeting] Camera permission completion: ${status}`);
+        publishMeetingStatusEvent("camera_permission_completed", {
+          manager: this.getStatus(),
+          engine: {
+            camera_permission_status: status,
+          },
+        });
+        if (status === "denied" || status === "restricted") {
+          publishMeetingErrorEvent(
+            "camera_permission_denied",
+            "Camera permission was not granted.",
+          );
+        }
+        return;
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`[Meeting] Camera permission status poll failed: ${message}`);
+        return;
+      }
+    }
+    logger.warn("[Meeting] Camera permission prompt did not complete before timeout");
   }
 
   private startStatusPolling(): void {

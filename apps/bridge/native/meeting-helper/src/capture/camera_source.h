@@ -41,6 +41,8 @@ class CameraSource {
   virtual int activeCameraIndex() const = 0;
   virtual bool copyLatestFrame(VideoFrame &frame) = 0;
   virtual std::string lastError() const = 0;
+  virtual std::string cameraPermissionStatus() const = 0;
+  virtual std::string requestCameraPermission() = 0;
 };
 
 std::unique_ptr<CameraSource> createCameraSource();

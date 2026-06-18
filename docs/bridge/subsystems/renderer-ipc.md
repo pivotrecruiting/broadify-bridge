@@ -8,6 +8,7 @@ Dieses Subsystem steuert das Rendering von HTML/CSS‑Templates in einem separat
 - IPC‑Handshake und Nachrichten‑Protokoll
 - Renderer-Session-Konfiguration (`renderer_configure`)
 - Offscreen‑Rendering im Single-Window-Modell
+- Begrenzte Runtime-Recovery nach Renderer-Absturz ohne Engine-/ATEM-Neustart
 
 ## Hauptkomponenten
 - Renderer Client (Bridge): `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`
@@ -62,6 +63,16 @@ sequenceDiagram
 - Renderer Entry nicht gefunden → Initialisierung schlägt fehl, Stub‑Renderer fallback.
 - Token‑Mismatch → IPC wird verworfen.
 - Unerwartete Frame-Payload via IPC → wird verworfen (Frames sind FrameBus-only).
+- Abnormaler Renderer-Exit → maximal zwei automatische Recovery-Versuche in 5 Minuten.
+- Zweiter Recovery-Versuch startet mit deaktivierter GPU, sofern `BRIDGE_GRAPHICS_AUTO_GPU_FALLBACK` nicht `0` ist.
+- Nach ausgeschöpftem Limit wechselt Graphics in `degraded`; Engine-/ATEM-Routen bleiben verfügbar.
+
+## Runtime-Recovery
+- Der Graphics-Renderer nutzt ein eigenes Electron-Profil: `userData/graphics-renderer-profile`.
+- Recovery löscht nur volatile Renderer-Cache-Pfade innerhalb dieses Profils (`GPUCache`, `Code Cache`, `DawnGraphiteCache`, `DawnWebGPUCache`, Shader-Caches).
+- Reihenfolge: Renderer-Prozess beendet sich → IPC-Server schließt → Cache-Cleanup → Renderer-Restart → Assets, Session und aktive Layer werden erneut gesendet.
+- Recovery-Logs enthalten `recoveryId`, `reason`, `attempt`, `gpuDisabled`, Cleanup-Pfade und Restart-Ergebnis.
+- Lifecycle-State: `ready`, `recovering`, `gpu_fallback`, `degraded`.
 
 ## IPC‑Framing (Detail)
 - 4‑Byte Big‑Endian Header‑Length\n
@@ -71,7 +82,7 @@ sequenceDiagram
 
 ## Startparameter (Renderer‑Process)
 - CLI: `--graphics-renderer --renderer-entry <path>`\n
-- Env: `BRIDGE_GRAPHICS_IPC_PORT`, `BRIDGE_GRAPHICS_IPC_TOKEN`
+- Env: `BRIDGE_GRAPHICS_IPC_PORT`, `BRIDGE_GRAPHICS_IPC_TOKEN`, `BRIDGE_GRAPHICS_USER_DATA_DIR`
 - Session-Setup: `renderer_configure` enthält `framebusName`, `framebusSlotCount`, `framebusSize`, `pixelFormat`
 
 ## Relevante Dateien

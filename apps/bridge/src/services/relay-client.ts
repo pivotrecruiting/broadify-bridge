@@ -331,6 +331,7 @@ type RelayClientDepsT = {
     success: boolean;
     data?: unknown;
     error?: string;
+    errorCode?: string;
   }>;
   now?: () => Date;
   relayHeartbeatIntervalMs?: number;
@@ -706,6 +707,7 @@ export class RelayClient {
     success: boolean;
     data?: unknown;
     error?: string;
+    errorCode?: string;
   }> {
     const policy = getRelayCommandPolicy(command);
     const handleCommand = this.deps.handleCommand ?? defaultHandleCommand;
@@ -757,6 +759,7 @@ export class RelayClient {
     success: boolean;
     data?: unknown;
     error?: string;
+    errorCode?: string;
   }> {
     const policy = getRelayCommandPolicy(command);
     const operation = () =>
@@ -822,6 +825,7 @@ export class RelayClient {
         success: result.success,
         data: result.data,
         error: result.error,
+        code: result.errorCode,
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -922,6 +926,7 @@ export class RelayClient {
           success: result.success,
           data: result.data,
           error: result.error,
+          code: result.errorCode,
           invalidates: policy.invalidates,
         };
         this.send(message);

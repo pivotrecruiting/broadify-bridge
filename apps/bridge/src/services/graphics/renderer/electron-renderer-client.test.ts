@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
+import path from "node:path";
 import { encodeIpcPacket } from "./renderer-ipc-framing.js";
 import { ElectronRendererClient } from "./electron-renderer-client.js";
 
@@ -58,6 +59,23 @@ jest.mock("./renderer-ipc-framing.js", () => {
     },
   };
 });
+
+// Polls the logger.warn mock until a call containing `substring` appears, or the
+// timeout elapses. Replaces fixed setImmediate tick counts, which race against the
+// real socket round-trip under load (e.g. the full suite on CI) and flake.
+async function waitForWarn(
+  logger: { warn: jest.Mock },
+  substring: string,
+  timeoutMs = 1000,
+): Promise<boolean> {
+  const matched = () =>
+    logger.warn.mock.calls.some((call) => String(call[0]).includes(substring));
+  const deadline = Date.now() + timeoutMs;
+  while (!matched() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return matched();
+}
 
 function createMockChild(): EventEmitter & {
   stdout: EventEmitter;
@@ -124,6 +142,7 @@ describe("ElectronRendererClient", () => {
     mockIsIpcBufferWithinLimitOverride = null;
     mockEncodeIpcPacketThrow = false;
     mockGetBridgeContext.mockReturnValue({
+      userDataDir: "/private/tmp/broadify-bridge-renderer-client-test",
       logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
     });
 
@@ -156,6 +175,15 @@ describe("ElectronRendererClient", () => {
     it("initializes and completes handshake when hello received", async () => {
       const c = await initializeClientWithHandshake();
       expect(c).toBeDefined();
+      expect(
+        (mockSpawn.mock.calls[0]?.[2] as { env?: Record<string, string> })?.env
+          ?.BRIDGE_GRAPHICS_USER_DATA_DIR
+      ).toBe(
+        path.join(
+          "/private/tmp/broadify-bridge-renderer-client-test",
+          "graphics-renderer-profile"
+        )
+      );
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
@@ -398,6 +426,105 @@ describe("ElectronRendererClient", () => {
     });
   });
 
+  describe("recovery", () => {
+    async function waitForSpawnCount(count: number, timeoutMs = 1000): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (mockSpawn.mock.calls.length < count && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(mockSpawn.mock.calls.length).toBeGreaterThanOrEqual(count);
+    }
+
+    async function waitForLifecycleState(
+      c: ElectronRendererClient,
+      state: ReturnType<ElectronRendererClient["getLifecycleState"]>,
+      timeoutMs = 1000,
+    ): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (c.getLifecycleState() !== state && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(c.getLifecycleState()).toBe(state);
+    }
+
+    it("restarts after an abnormal renderer exit without reporting engine-level failure", async () => {
+      const c = await initializeClientWithHandshake();
+      const onError = jest.fn();
+      c.onError(onError);
+      const firstChild = mockSpawn.mock.results[0]?.value;
+
+      firstChild?.emit("exit", 1, "SIGABRT");
+      await waitForSpawnCount(2);
+
+      await waitForLifecycleState(c, "ready");
+      expect(onError).not.toHaveBeenCalled();
+      const secondChild = mockSpawn.mock.results[1]?.value;
+      clientSocket?.destroy();
+      clientSocket = null;
+      if (secondChild) {
+        (secondChild as { exitCode: number | null }).exitCode = 0;
+        (secondChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      }
+      await c.shutdown();
+    });
+
+    it("does not recover after a clean renderer exit", async () => {
+      const c = await initializeClientWithHandshake();
+      const onError = jest.fn();
+      c.onError(onError);
+      const firstChild = mockSpawn.mock.results[0]?.value;
+
+      firstChild?.emit("exit", 0, null);
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    });
+
+    it("uses GPU fallback on the second recovery attempt", async () => {
+      const c = await initializeClientWithHandshake();
+      const firstChild = mockSpawn.mock.results[0]?.value;
+      firstChild?.emit("exit", 1, "SIGABRT");
+      await waitForSpawnCount(2);
+
+      const secondChild = mockSpawn.mock.results[1]?.value;
+      secondChild?.emit("exit", 1, "SIGABRT");
+      await waitForSpawnCount(3);
+
+      expect(
+        (mockSpawn.mock.calls[2]?.[2] as { env?: Record<string, string> })?.env
+          ?.BRIDGE_GRAPHICS_DISABLE_GPU
+      ).toBe("1");
+      expect(c.getLifecycleState()).toBe("gpu_fallback");
+      const thirdChild = mockSpawn.mock.results[2]?.value;
+      clientSocket?.destroy();
+      clientSocket = null;
+      if (thirdChild) {
+        (thirdChild as { exitCode: number | null }).exitCode = 0;
+        (thirdChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      }
+      await c.shutdown();
+    });
+
+    it("enters degraded mode after the recovery limit is reached", async () => {
+      const c = await initializeClientWithHandshake();
+      const onError = jest.fn();
+      c.onError(onError);
+      mockResolveElectronBinary.mockReturnValue(null);
+
+      const firstChild = mockSpawn.mock.results[0]?.value;
+      firstChild?.emit("exit", 1, "SIGABRT");
+
+      const deadline = Date.now() + 1000;
+      while (c.getLifecycleState() !== "degraded" && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      expect(c.getLifecycleState()).toBe("degraded");
+      expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    });
+  });
+
   describe("child process", () => {
     it("rejects ready when child emits error", async () => {
       mockResolveElectronBinary.mockReturnValue("/path/to/electron");
@@ -493,15 +620,8 @@ describe("ElectronRendererClient", () => {
           Buffer.from([1, 2, 3])
         )
       );
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setImmediate(r));
-      }
       const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
-      expect(
-        logger.warn.mock.calls.some((call) =>
-          String(call[0]).includes("Unexpected binary payload")
-        )
-      ).toBe(true);
+      expect(await waitForWarn(logger, "Unexpected binary payload")).toBe(true);
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
@@ -517,15 +637,8 @@ describe("ElectronRendererClient", () => {
       clientSocket?.write(
         encodeIpcPacket({ type: "ready", token: "wrongtoken12345678901234567890" })
       );
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setImmediate(r));
-      }
       const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
-      expect(
-        logger.warn.mock.calls.some((call) =>
-          String(call[0]).includes("Token mismatch on message")
-        )
-      ).toBe(true);
+      expect(await waitForWarn(logger, "Token mismatch on message")).toBe(true);
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
@@ -539,15 +652,8 @@ describe("ElectronRendererClient", () => {
     it("logs warn on unexpected frame payload", async () => {
       const c = await initializeClientWithHandshake();
       clientSocket?.write(encodeIpcPacket({ type: "frame", token: MOCK_TOKEN }));
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setImmediate(r));
-      }
       const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
-      expect(
-        logger.warn.mock.calls.some((call) =>
-          String(call[0]).includes("Unexpected frame payload")
-        )
-      ).toBe(true);
+      expect(await waitForWarn(logger, "Unexpected frame payload")).toBe(true);
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
