@@ -45,7 +45,7 @@ import type {
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
-import * as Sentry from "@sentry/electron/main";
+import * as Sentry from "@sentry/electron";
 import { z } from "zod";
 
 const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
