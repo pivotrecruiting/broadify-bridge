@@ -182,10 +182,17 @@ echo "[MacSignVerify] Team ID -> ${APP_TEAM_ID}"
 spctl -a -t exec -vv "$APP_PATH"
 echo "[MacSignVerify] spctl accepted app"
 
+xcrun stapler validate "$APP_PATH"
+echo "[MacSignVerify] stapler validate ok -> ${APP_PATH}"
+
 DMG_PATH="$(find "${ROOT_DIR}/dist" -maxdepth 1 -type f \( -name "Broadify-Bridge-*-${NORMALIZED_ARCH}.dmg" -o -name "Broadify-Bridge-RC-*-${NORMALIZED_ARCH}.dmg" \) -print -quit)"
 if [[ -n "$DMG_PATH" ]]; then
-  xcrun stapler validate "$DMG_PATH"
-  echo "[MacSignVerify] stapler validate ok -> ${DMG_PATH}"
+  if xcrun stapler validate "$DMG_PATH"; then
+    echo "[MacSignVerify] stapler validate ok -> ${DMG_PATH}"
+  else
+    echo "[MacSignVerify] DMG is notarized for online Gatekeeper checks but has no stapled ticket." >&2
+    echo "[MacSignVerify] Not stapling here because electron-builder already generated .blockmap/update metadata for this DMG." >&2
+  fi
 else
   echo "[MacSignVerify] No arch-specific DMG found for stapler validation; skipping DMG stapler check"
 fi
