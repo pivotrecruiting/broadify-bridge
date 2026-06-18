@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+  <!--
+    Inherited entitlements (electron-builder `mac.entitlementsInherit`).
+    Applied to EVERY nested bundle in the packaged app, including Electron's
+    own Helper (Renderer), Helper (GPU) and Helper (Plugin) processes as well
+    as embedded apps (e.g. the bundled meeting helper).
+    The renderer helper REQUIRES allow-jit / allow-unsigned-executable-memory
+    under hardened runtime — without them V8 is killed on launch (white screen,
+    render-process-gone exitCode=5). Do not strip these.
+  -->
   <dict>
     <key>com.apple.security.cs.allow-jit</key>
     <true/>

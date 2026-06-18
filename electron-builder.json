@@ -57,7 +57,7 @@
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
-    "entitlementsInherit": "build/entitlements.meeting-helper.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.inherit.plist",
     "signIgnore": ["BroadifyVCam.app"],
     "notarize": true,
     "extendInfo": {
