@@ -57,6 +57,25 @@ async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCom
   }
 }
 
+async function listCamerasWithPermissionGate(): Promise<unknown> {
+  const client = requireClient();
+  const state = await client.getState();
+  const permissionStatus =
+    typeof state.camera_permission_status === "string"
+      ? state.camera_permission_status
+      : "unknown";
+  if (
+    permissionStatus === "prompt_requested" ||
+    permissionStatus === "not_determined"
+  ) {
+    throw new MeetingHelperRequestError(
+      "camera_permission_pending",
+      "Camera permission request is still pending.",
+    );
+  }
+  return client.listCameras();
+}
+
 function clearMeetingGraphicsFrameBus(
   format: { width?: number; height?: number; fps?: number },
   reason: string,
@@ -148,7 +167,7 @@ export async function handleMeetingCommand(
     }
 
     case "meeting_camera_list": {
-      return runMeetingRpc(() => requireClient().listCameras());
+      return runMeetingRpc(() => listCamerasWithPermissionGate());
     }
 
     case "meeting_camera_select": {

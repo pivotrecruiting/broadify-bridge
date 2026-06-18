@@ -30,6 +30,8 @@ const STATUS_POLL_INTERVAL_MS = 2000;
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
 const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
+const CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS = 120;
+const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
 
 export type MeetingHelperLifecycleStateT =
   | "stopped"
@@ -586,7 +588,12 @@ export class MeetingHelperManager {
   private handleStdoutLine(line: string, logger: LoggerT): void {
     logger.debug?.(`[MeetingHelper] ${line}`);
     try {
-      const parsed = JSON.parse(line) as { type?: string; code?: string; message?: string };
+      const parsed = JSON.parse(line) as {
+        type?: string;
+        code?: string;
+        message?: string;
+        camera_permission_status?: string;
+      };
       if (parsed.type === "meeting_graphics_framebus") {
         logger.info(`[MeetingHelper] ${line}`);
       }
@@ -598,6 +605,22 @@ export class MeetingHelperManager {
         const message = parsed.message || "Meeting helper reported an error";
         this.lastError = message;
         publishMeetingErrorEvent(code, message);
+      }
+      if (parsed.type === "camera_permission_completed") {
+        const status = parsed.camera_permission_status || "unknown";
+        logger.info(`[Meeting] Camera permission completion: ${status}`);
+        publishMeetingStatusEvent("camera_permission_completed", {
+          manager: this.getStatus(),
+          engine: {
+            camera_permission_status: status,
+          },
+        });
+        if (status === "denied" || status === "restricted") {
+          publishMeetingErrorEvent(
+            "camera_permission_denied",
+            "Camera permission was not granted.",
+          );
+        }
       }
     } catch {
       logger.debug?.(`[MeetingHelper] Ignored non-JSON stdout line: ${line}`);
@@ -631,11 +654,55 @@ export class MeetingHelperManager {
             "Camera permission was not granted.",
           );
         }
+        if (status === "prompt_requested") {
+          void this.pollCameraPermissionCompletion(client, logger);
+        }
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(`[Meeting] Camera permission preflight failed: ${message}`);
       });
+  }
+
+  private async pollCameraPermissionCompletion(
+    client: MeetingHelperClient,
+    logger: LoggerT,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS; attempt += 1) {
+      await sleep(CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS);
+      if (this.client !== client || this.state !== "running") {
+        return;
+      }
+      try {
+        const state = await client.getState();
+        const status =
+          typeof state.camera_permission_status === "string"
+            ? state.camera_permission_status
+            : "unknown";
+        if (status === "prompt_requested" || status === "not_determined") {
+          continue;
+        }
+        logger.info(`[Meeting] Camera permission completion: ${status}`);
+        publishMeetingStatusEvent("camera_permission_completed", {
+          manager: this.getStatus(),
+          engine: {
+            camera_permission_status: status,
+          },
+        });
+        if (status === "denied" || status === "restricted") {
+          publishMeetingErrorEvent(
+            "camera_permission_denied",
+            "Camera permission was not granted.",
+          );
+        }
+        return;
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`[Meeting] Camera permission status poll failed: ${message}`);
+        return;
+      }
+    }
+    logger.warn("[Meeting] Camera permission prompt did not complete before timeout");
   }
 
   private startStatusPolling(): void {

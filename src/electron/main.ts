@@ -55,6 +55,7 @@ const DISABLED_CHROMIUM_FEATURES = [
   "WebGPU",
   "WebGPUDeveloperFeatures",
 ];
+const APP_SHUTDOWN_TIMEOUT_MS = 8000;
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
@@ -101,6 +102,9 @@ let mainWindow: BrowserWindow | null = null;
 let rendererDomReady = false;
 let rendererSafeMode = false;
 let rendererCrashRecoveryAttempted = false;
+let appShutdownStarted = false;
+let appShutdownCompleted = false;
+let appShutdownPromise: Promise<void> | null = null;
 
 function describePath(label: string, targetPath: string): string {
   try {
@@ -461,6 +465,52 @@ function buildWebAppUrl(): string | null {
   } catch (error) {
     console.error("[WebApp] Error building web app URL:", error);
     return null;
+  }
+}
+
+function runAppShutdownCleanup(): Promise<void> {
+  if (appShutdownPromise) {
+    return appShutdownPromise;
+  }
+
+  appShutdownPromise = (async () => {
+    appUpdaterService.shutdown();
+    if (healthCheckCleanup) {
+      healthCheckCleanup();
+      healthCheckCleanup = null;
+    }
+    const result = await bridgeProcessManager.stop();
+    if (!result.success) {
+      logAppError(`Bridge shutdown failed during app quit: ${result.error ?? "unknown error"}`);
+    }
+  })();
+
+  return appShutdownPromise;
+}
+
+async function shutdownAndExit(): Promise<void> {
+  if (appShutdownStarted) {
+    return;
+  }
+  appShutdownStarted = true;
+
+  const timeout = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      logAppWarn(
+        `[Shutdown] Cleanup timed out after ${APP_SHUTDOWN_TIMEOUT_MS}ms; forcing app exit`,
+      );
+      resolve();
+    }, APP_SHUTDOWN_TIMEOUT_MS);
+  });
+
+  try {
+    await Promise.race([runAppShutdownCleanup(), timeout]);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logAppError(`[Shutdown] Cleanup failed: ${message}`);
+  } finally {
+    appShutdownCompleted = true;
+    app.exit(0);
   }
 }
 
@@ -1140,22 +1190,21 @@ if (!isRendererProcess) {
       });
 
       // Cleanup on window close
-      mainWindow.on("close", async () => {
-        if (healthCheckCleanup) {
-          healthCheckCleanup();
-          healthCheckCleanup = null;
+      mainWindow.on("close", (event) => {
+        if (appShutdownCompleted) {
+          return;
         }
-        await bridgeProcessManager.stop();
+        event?.preventDefault();
+        void shutdownAndExit();
       });
 
       // Cleanup on app quit
-      app.on("before-quit", async () => {
-        appUpdaterService.shutdown();
-        if (healthCheckCleanup) {
-          healthCheckCleanup();
-          healthCheckCleanup = null;
+      app.on("before-quit", (event) => {
+        if (appShutdownCompleted) {
+          return;
         }
-        await bridgeProcessManager.stop();
+        event?.preventDefault();
+        void shutdownAndExit();
       });
     });
   }

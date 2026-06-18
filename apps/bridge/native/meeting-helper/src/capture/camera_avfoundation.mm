@@ -2,6 +2,7 @@
 
 #if defined(__APPLE__)
 
+#include "macos/macos_app.h"
 #include "util/json_utils.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -11,7 +12,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iostream>
 #include <mutex>
+#include <sstream>
 
 namespace broadify::meeting {
 class AvFoundationCameraSource;
@@ -54,6 +57,50 @@ bool isBroadifyVirtualCamera(const std::string &label, const std::string &unique
   return haystack.find("com.broadify.vcam") != std::string::npos ||
          haystack.find("broadify camera") != std::string::npos ||
          haystack.find("broadify virtual camera") != std::string::npos;
+}
+
+std::string authorizationStatusToString(AVAuthorizationStatus status) {
+  switch (status) {
+    case AVAuthorizationStatusAuthorized:
+      return "authorized";
+    case AVAuthorizationStatusDenied:
+      return "denied";
+    case AVAuthorizationStatusRestricted:
+      return "restricted";
+    case AVAuthorizationStatusNotDetermined:
+      return "not_determined";
+  }
+  return "unknown";
+}
+
+void emitCameraPermissionEvent(const std::string &status) {
+  std::ostringstream event;
+  event << "{\"type\":\"camera_permission_completed\",\"camera_permission_status\":\""
+        << jsonEscape(status) << "\"}";
+  std::cout << event.str() << std::endl;
+}
+
+void requestCameraAccessOnMainThread(void (^completion)(BOOL granted)) {
+  void (^requestBlock)(void) = ^{
+    prepareMacosCameraPermissionPrompt();
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:completion];
+  };
+  if ([NSThread isMainThread]) {
+    requestBlock();
+  } else {
+    dispatch_async(dispatch_get_main_queue(), requestBlock);
+  }
+}
+
+bool requestCameraAccessBlockingOnMainThread() {
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+  __block BOOL granted = NO;
+  requestCameraAccessOnMainThread(^(BOOL accessGranted) {
+    granted = accessGranted;
+    dispatch_semaphore_signal(semaphore);
+  });
+  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  return granted == YES;
 }
 
 }  // namespace
@@ -273,12 +320,14 @@ class AvFoundationCameraSource final : public CameraSource {
 
       setPermissionStatus("prompt_requested");
       AvFoundationCameraSource *owner = this;
-      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL accessGranted) {
-        owner->setPermissionStatus(accessGranted == YES ? "authorized" : "denied");
+      requestCameraAccessOnMainThread(^(BOOL accessGranted) {
+        const std::string completedStatus = accessGranted == YES ? "authorized" : "denied";
+        owner->setPermissionStatus(completedStatus);
         if (accessGranted != YES) {
           owner->setError("Camera permission was not granted.", "denied");
         }
-      }];
+        emitCameraPermissionEvent(completedStatus);
+      });
       return "prompt_requested";
     }
   }
@@ -328,19 +377,15 @@ class AvFoundationCameraSource final : public CameraSource {
       return true;
     }
     if (status != AVAuthorizationStatusNotDetermined) {
-      setPermissionStatus(status == AVAuthorizationStatusDenied ? "denied" : "restricted");
+      setPermissionStatus(authorizationStatusToString(status));
       return false;
     }
     setPermissionStatus("not_determined");
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    __block BOOL granted = NO;
-    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL accessGranted) {
-      granted = accessGranted;
-      dispatch_semaphore_signal(semaphore);
-    }];
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-    setPermissionStatus(granted == YES ? "authorized" : "denied");
-    return granted == YES;
+    const bool granted = requestCameraAccessBlockingOnMainThread();
+    const std::string completedStatus = granted ? "authorized" : "denied";
+    setPermissionStatus(completedStatus);
+    emitCameraPermissionEvent(completedStatus);
+    return granted;
   }
 
   AVCaptureDevice *findDeviceByUniqueId(const std::string &uniqueId) {

@@ -42,6 +42,7 @@ import {
 import { MeetingHelperRequestError } from "./meeting-helper-client.js";
 
 const mockClient = {
+  getState: jest.fn(),
   listCameras: jest.fn(),
   cameraSelect: jest.fn(),
   cameraStart: jest.fn(),
@@ -66,6 +67,7 @@ describe("meeting-command-handler", () => {
     jest.clearAllMocks();
     mockGetClient.mockReturnValue(mockClient);
     mockIsRunning.mockReturnValue(true);
+    mockClient.getState.mockResolvedValue({ camera_permission_status: "authorized" });
     mockMeetingGraphicsConfigureOutputs.mockResolvedValue(undefined);
     mockLoadFrameBusModule.mockReturnValue({
       createWriter: mockFrameBusCreateWriter,
@@ -169,6 +171,21 @@ describe("meeting-command-handler", () => {
         success: false,
         error: "Camera permission was not granted.",
         errorCode: "camera_permission_denied",
+      });
+    });
+
+    it("returns a pending camera permission state before listing cameras", async () => {
+      mockClient.getState.mockResolvedValue({
+        camera_permission_status: "prompt_requested",
+      });
+
+      const result = await handleMeetingCommand("meeting_camera_list", {});
+
+      expect(mockClient.listCameras).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        success: false,
+        error: "Camera permission request is still pending.",
+        errorCode: "camera_permission_pending",
       });
     });
 
