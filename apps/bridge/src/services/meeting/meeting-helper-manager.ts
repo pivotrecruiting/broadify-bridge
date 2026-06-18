@@ -490,6 +490,7 @@ export class MeetingHelperManager {
       this.client = client;
       this.state = "running";
       this.startStatusPolling();
+      this.requestCameraPermissionPreflight(client, logger);
       await this.publishStatus("engine_started", true);
       return this.getStatus();
     } catch (error: unknown) {
@@ -557,6 +558,40 @@ export class MeetingHelperManager {
     } catch {
       logger.debug?.(`[MeetingHelper] Ignored non-JSON stdout line: ${line}`);
     }
+  }
+
+  private requestCameraPermissionPreflight(
+    client: MeetingHelperClient,
+    logger: LoggerT,
+  ): void {
+    if (platform() !== "darwin") {
+      return;
+    }
+
+    void client.requestCameraPermission()
+      .then((result) => {
+        const status =
+          typeof result.camera_permission_status === "string"
+            ? result.camera_permission_status
+            : "unknown";
+        logger.info(`[Meeting] Camera permission status: ${status}`);
+        publishMeetingStatusEvent("camera_permission_preflight", {
+          manager: this.getStatus(),
+          engine: {
+            camera_permission_status: status,
+          },
+        });
+        if (status === "denied" || status === "restricted") {
+          publishMeetingErrorEvent(
+            "camera_permission_denied",
+            "Camera permission was not granted.",
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`[Meeting] Camera permission preflight failed: ${message}`);
+      });
   }
 
   private startStatusPolling(): void {

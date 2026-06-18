@@ -158,6 +158,8 @@ echo "[MacSignVerify] Verifying ${APP_PATH}"
 require_plist_value "$APP_INFO" "CFBundleIdentifier" "$APP_BUNDLE_ID"
 require_plist_value "$HELPER_INFO" "CFBundleIdentifier" "$HELPER_BUNDLE_ID"
 require_plist_value "$HELPER_INFO" "CFBundleExecutable" "BroadifyMeetingHelper"
+require_plist_value "$HELPER_INFO" "CFBundleDisplayName" "Broadify Meeting"
+require_plist_value "$HELPER_INFO" "CFBundleName" "Broadify Meeting"
 if ! plist_value "$HELPER_INFO" "NSCameraUsageDescription" >/dev/null; then
   echo "[MacSignVerify] Meeting Helper is missing NSCameraUsageDescription" >&2
   exit 1

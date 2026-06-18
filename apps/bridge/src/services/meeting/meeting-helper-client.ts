@@ -79,6 +79,10 @@ export class MeetingHelperClient {
     return this.rpc("camera.list");
   }
 
+  async requestCameraPermission(): Promise<Record<string, unknown>> {
+    return this.rpc("camera.permission.request");
+  }
+
   async cameraStart(
     options: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {

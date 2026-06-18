@@ -172,6 +172,23 @@ describe("meeting-command-handler", () => {
       });
     });
 
+    it("returns structured camera start permission errors from the helper", async () => {
+      mockClient.cameraStart.mockRejectedValue(
+        new MeetingHelperRequestError(
+          "camera_permission_denied",
+          "Camera permission was not granted.",
+        ),
+      );
+
+      const result = await handleMeetingCommand("meeting_camera_start", {});
+
+      expect(result).toEqual({
+        success: false,
+        error: "Camera permission was not granted.",
+        errorCode: "camera_permission_denied",
+      });
+    });
+
     it("forwards keyer configuration", async () => {
       mockClient.keyerConfigure.mockResolvedValue({ enabled: true });
 

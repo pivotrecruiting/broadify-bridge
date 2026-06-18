@@ -249,6 +249,40 @@ class AvFoundationCameraSource final : public CameraSource {
     return permissionStatus_;
   }
 
+  std::string requestCameraPermission() override {
+    @autoreleasepool {
+      AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+      if (status == AVAuthorizationStatusAuthorized) {
+        setPermissionStatus("authorized");
+        return "authorized";
+      }
+      if (status == AVAuthorizationStatusDenied) {
+        setPermissionStatus("denied");
+        setError("Camera permission was not granted.", "denied");
+        return "denied";
+      }
+      if (status == AVAuthorizationStatusRestricted) {
+        setPermissionStatus("restricted");
+        setError("Camera permission is restricted by the system.", "restricted");
+        return "restricted";
+      }
+      if (status != AVAuthorizationStatusNotDetermined) {
+        setPermissionStatus("unknown");
+        return "unknown";
+      }
+
+      setPermissionStatus("prompt_requested");
+      AvFoundationCameraSource *owner = this;
+      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL accessGranted) {
+        owner->setPermissionStatus(accessGranted == YES ? "authorized" : "denied");
+        if (accessGranted != YES) {
+          owner->setError("Camera permission was not granted.", "denied");
+        }
+      }];
+      return "prompt_requested";
+    }
+  }
+
   void handleSampleBuffer(CMSampleBufferRef sampleBuffer) {
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (imageBuffer == nullptr) {

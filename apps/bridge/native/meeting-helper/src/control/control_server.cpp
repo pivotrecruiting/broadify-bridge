@@ -178,6 +178,11 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
     return okResponse(id, camerasToJson(cameras));
   }
 
+  if (method == "camera.permission.request") {
+    const std::string permissionStatus = camera.requestCameraPermission();
+    return okResponse(id, "{\"camera_permission_status\":\"" + jsonEscape(permissionStatus) + "\"}");
+  }
+
   if (method == "camera.select") {
     const int cameraIndex = extractIntField(line, "camera_index", 0);
     const bool selected = camera.selectCamera(cameraIndex);
@@ -196,7 +201,11 @@ std::string handleRpc(const std::string &line, MeetingState &state, CameraSource
       state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
     }
     if (!started) {
-      return errorResponse(id, "camera_start_failed", camera.lastError());
+      const std::string permissionStatus = camera.cameraPermissionStatus();
+      const std::string code = permissionStatus == "denied" || permissionStatus == "restricted"
+          ? "camera_permission_denied"
+          : "camera_start_failed";
+      return errorResponse(id, code, camera.lastError());
     }
     return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + ",\"backend\":\"native\"}");
   }

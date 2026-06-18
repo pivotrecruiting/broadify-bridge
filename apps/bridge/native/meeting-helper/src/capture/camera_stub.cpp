@@ -54,6 +54,10 @@ class StubCameraSource final : public CameraSource {
     return "unsupported";
   }
 
+  std::string requestCameraPermission() override {
+    return "unsupported";
+  }
+
  private:
   mutable std::mutex mutex_;
   bool running_ = false;
