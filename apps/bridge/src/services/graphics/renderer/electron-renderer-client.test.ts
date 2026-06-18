@@ -59,6 +59,23 @@ jest.mock("./renderer-ipc-framing.js", () => {
   };
 });
 
+// Polls the logger.warn mock until a call containing `substring` appears, or the
+// timeout elapses. Replaces fixed setImmediate tick counts, which race against the
+// real socket round-trip under load (e.g. the full suite on CI) and flake.
+async function waitForWarn(
+  logger: { warn: jest.Mock },
+  substring: string,
+  timeoutMs = 1000,
+): Promise<boolean> {
+  const matched = () =>
+    logger.warn.mock.calls.some((call) => String(call[0]).includes(substring));
+  const deadline = Date.now() + timeoutMs;
+  while (!matched() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return matched();
+}
+
 function createMockChild(): EventEmitter & {
   stdout: EventEmitter;
   stderr: EventEmitter;
@@ -493,15 +510,8 @@ describe("ElectronRendererClient", () => {
           Buffer.from([1, 2, 3])
         )
       );
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setImmediate(r));
-      }
       const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
-      expect(
-        logger.warn.mock.calls.some((call) =>
-          String(call[0]).includes("Unexpected binary payload")
-        )
-      ).toBe(true);
+      expect(await waitForWarn(logger, "Unexpected binary payload")).toBe(true);
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
@@ -517,15 +527,8 @@ describe("ElectronRendererClient", () => {
       clientSocket?.write(
         encodeIpcPacket({ type: "ready", token: "wrongtoken12345678901234567890" })
       );
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setImmediate(r));
-      }
       const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
-      expect(
-        logger.warn.mock.calls.some((call) =>
-          String(call[0]).includes("Token mismatch on message")
-        )
-      ).toBe(true);
+      expect(await waitForWarn(logger, "Token mismatch on message")).toBe(true);
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
@@ -539,15 +542,8 @@ describe("ElectronRendererClient", () => {
     it("logs warn on unexpected frame payload", async () => {
       const c = await initializeClientWithHandshake();
       clientSocket?.write(encodeIpcPacket({ type: "frame", token: MOCK_TOKEN }));
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setImmediate(r));
-      }
       const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
-      expect(
-        logger.warn.mock.calls.some((call) =>
-          String(call[0]).includes("Unexpected frame payload")
-        )
-      ).toBe(true);
+      expect(await waitForWarn(logger, "Unexpected frame payload")).toBe(true);
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
