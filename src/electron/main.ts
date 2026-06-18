@@ -1,3 +1,4 @@
+import "./app-bootstrap.js";
 import { app, BrowserWindow, shell } from "electron";
 import {
   getArgMap,
@@ -18,7 +19,12 @@ import { bridgeProfile } from "./services/bridge-profile.js";
 import { bridgePairing } from "./services/bridge-pairing.js";
 import { createBridgeApiRequest } from "./services/bridge-api-request.js";
 import { clearAppLogs, readAppLogs } from "./services/app-logs.js";
-import { logAppError, logAppWarn } from "./services/app-logger.js";
+import {
+  getAppLogPath,
+  logAppError,
+  logAppInfo,
+  logAppWarn,
+} from "./services/app-logger.js";
 import { appUpdaterService } from "./services/app-updater.js";
 import {
   isPortAvailable,
@@ -80,6 +86,49 @@ let healthCheckCleanup: (() => void) | null = null;
 let currentNetworkBindingId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
 
+function describePath(label: string, targetPath: string): string {
+  try {
+    if (!fs.existsSync(targetPath)) {
+      return `${label}=missing path=${targetPath}`;
+    }
+    const stat = fs.statSync(targetPath);
+    return `${label}=ok path=${targetPath} size=${stat.size} mode=0${(
+      stat.mode & 0o777
+    ).toString(8)}`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `${label}=stat_failed path=${targetPath} error=${message}`;
+  }
+}
+
+function logDesktopStartupDiagnostics(params: {
+  preloadPath: string;
+  uiPath: string;
+}): void {
+  logAppInfo(
+    `[DesktopStartup] context ${JSON.stringify({
+      version: app.getVersion(),
+      name: app.name,
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      arch: process.arch,
+      nodeEnv: process.env.NODE_ENV ?? null,
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      cwd: process.cwd(),
+      execPath: process.execPath,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      userData: app.getPath("userData"),
+      logPath: getAppLogPath(),
+      argv: process.argv.filter((arg) => !arg.includes("token")),
+    })}`,
+  );
+  logAppInfo(`[DesktopStartup] ${describePath("preload", params.preloadPath)}`);
+  logAppInfo(`[DesktopStartup] ${describePath("ui", params.uiPath)}`);
+}
+
 /**
  * Register diagnostics for renderer startup and crash failures.
  *
@@ -87,6 +136,43 @@ let mainWindow: BrowserWindow | null = null;
  * when the renderer crashes before React can paint or report an error.
  */
 function registerRendererDiagnostics(window: BrowserWindow): void {
+  window.webContents.on(
+    "console-message",
+    (_event, first, second, third, fourth) => {
+      const details =
+        first && typeof first === "object"
+          ? (first as {
+              level?: string | number;
+              message?: string;
+              lineNumber?: number;
+              sourceId?: string;
+            })
+          : {
+              level: first as string | number | undefined,
+              message: second as string | undefined,
+              lineNumber: third as number | undefined,
+              sourceId: fourth as string | undefined,
+            };
+      logAppInfo(
+        `[RendererConsole] level=${details.level ?? "unknown"} source=${
+          details.sourceId ?? "unknown"
+        }:${details.lineNumber ?? 0} message=${details.message ?? ""}`,
+      );
+    },
+  );
+
+  window.webContents.on("did-start-loading", () => {
+    logAppInfo("[Renderer] did-start-loading");
+  });
+
+  window.webContents.on("dom-ready", () => {
+    logAppInfo("[Renderer] dom-ready");
+  });
+
+  window.webContents.on("did-finish-load", () => {
+    logAppInfo("[Renderer] did-finish-load");
+  });
+
   window.webContents.on("render-process-gone", (_event, details) => {
     const message = `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`;
     logAppError(message);
@@ -339,11 +425,15 @@ if (!isRendererProcess) {
     });
 
     app.on("ready", () => {
+      const preloadPath = getPreloadPath();
+      const uiPath = getUIPath();
+      logDesktopStartupDiagnostics({ preloadPath, uiPath });
+
       mainWindow = new BrowserWindow({
         webPreferences: {
           contextIsolation: true,
           nodeIntegration: false,
-          preload: getPreloadPath(),
+          preload: preloadPath,
         },
         icon: getIconPath(),
         width: 800, // sm breakpoint width (640px) + padding
@@ -354,8 +444,26 @@ if (!isRendererProcess) {
       });
       registerRendererDiagnostics(mainWindow);
 
-      if (isDev()) mainWindow.loadURL(`http://localhost:${PORT}`);
-      else mainWindow.loadFile(getUIPath());
+      if (isDev()) {
+        const devUrl = `http://localhost:${PORT}`;
+        logAppInfo(`[Renderer] loadURL start url=${devUrl}`);
+        mainWindow.loadURL(devUrl).then(
+          () => logAppInfo(`[Renderer] loadURL resolved url=${devUrl}`),
+          (error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logAppError(`[Renderer] loadURL rejected url=${devUrl} error=${message}`);
+          },
+        );
+      } else {
+        logAppInfo(`[Renderer] loadFile start path=${uiPath}`);
+        mainWindow.loadFile(uiPath).then(
+          () => logAppInfo(`[Renderer] loadFile resolved path=${uiPath}`),
+          (error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logAppError(`[Renderer] loadFile rejected path=${uiPath} error=${message}`);
+          },
+        );
+      }
 
       if (isDev()) {
         pollResources(mainWindow);

@@ -114,8 +114,13 @@ jest.mock("./services/app-logs.js", () => ({
 }));
 
 const mockLogAppError = jest.fn();
+const mockLogAppInfo = jest.fn();
+const mockLogAppWarn = jest.fn();
 jest.mock("./services/app-logger.js", () => ({
+  getAppLogPath: () => "/tmp/app.log",
   logAppError: (...args: unknown[]) => mockLogAppError(...args),
+  logAppInfo: (...args: unknown[]) => mockLogAppInfo(...args),
+  logAppWarn: (...args: unknown[]) => mockLogAppWarn(...args),
 }));
 
 const mockUpdaterInitialize = jest.fn();
@@ -184,6 +189,8 @@ jest.mock("@sentry/electron", () => ({
 
 const mockAppExit = jest.fn();
 const mockAppQuit = jest.fn();
+const mockAppSetName = jest.fn();
+const mockAppSetPath = jest.fn();
 let singleInstanceLockReturns = true;
 const mockRequestSingleInstanceLock = jest.fn(() => singleInstanceLockReturns);
 const mockAppOn = jest.fn((event: string, handler: () => void) => {
@@ -198,7 +205,10 @@ jest.mock("electron", () => ({
   app: {
     getPath: jest.fn().mockReturnValue("/tmp/userData"),
     getAppPath: jest.fn().mockReturnValue("/app"),
+    getName: jest.fn().mockReturnValue("electron-vite-template"),
     getVersion: jest.fn().mockReturnValue("1.0.0"),
+    setName: (name: string) => mockAppSetName(name),
+    setPath: (name: string, value: string) => mockAppSetPath(name, value),
     get requestSingleInstanceLock() {
       return mockRequestSingleInstanceLock;
     },
@@ -219,8 +229,8 @@ jest.mock("electron", () => ({
     },
   ) {
     this.webContents = { on: jest.fn(), send: jest.fn() };
-    this.loadURL = jest.fn();
-    this.loadFile = jest.fn();
+    this.loadURL = jest.fn().mockResolvedValue(undefined);
+    this.loadFile = jest.fn().mockResolvedValue(undefined);
     this.on = jest.fn();
     this.isDestroyed = jest.fn().mockReturnValue(false);
     this.isMinimized = jest.fn().mockReturnValue(false);

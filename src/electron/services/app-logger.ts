@@ -2,12 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 
-let logStream: fs.WriteStream | null = null;
-
 /**
  * Resolve the log directory for the desktop app.
  */
-function getLogDir(): string {
+export function getAppLogDir(): string {
   return path.join(app.getPath("userData"), "logs");
 }
 
@@ -15,29 +13,23 @@ function getLogDir(): string {
  * Resolve the log file path for the desktop app.
  */
 export function getAppLogPath(): string {
-  return path.join(getLogDir(), "app.log");
-}
-
-/**
- * Ensure a writable log stream is created.
- */
-function ensureLogStream(): fs.WriteStream {
-  if (logStream) {
-    return logStream;
-  }
-  const logDir = getLogDir();
-  fs.mkdirSync(logDir, { recursive: true });
-  logStream = fs.createWriteStream(getAppLogPath(), { flags: "a" });
-  return logStream;
+  return path.join(getAppLogDir(), "app.log");
 }
 
 /**
  * Write a single line to the app log.
  */
 function writeLine(level: "INFO" | "WARN" | "ERROR", message: string): void {
-  const stream = ensureLogStream();
   const timestamp = new Date().toISOString();
-  stream.write(`[${timestamp}] [${level}] ${message}\n`);
+  const line = `[${timestamp}] [${level}] ${message}\n`;
+  try {
+    fs.mkdirSync(getAppLogDir(), { recursive: true });
+    fs.appendFileSync(getAppLogPath(), line, "utf8");
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[AppLogger] Failed to write app log: ${errorMessage}`);
+    console.error(line.trimEnd());
+  }
 }
 
 /**
