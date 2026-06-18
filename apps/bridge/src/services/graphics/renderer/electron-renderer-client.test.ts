@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
+import path from "node:path";
 import { encodeIpcPacket } from "./renderer-ipc-framing.js";
 import { ElectronRendererClient } from "./electron-renderer-client.js";
 
@@ -178,7 +179,10 @@ describe("ElectronRendererClient", () => {
         (mockSpawn.mock.calls[0]?.[2] as { env?: Record<string, string> })?.env
           ?.BRIDGE_GRAPHICS_USER_DATA_DIR
       ).toBe(
-        "/private/tmp/broadify-bridge-renderer-client-test/graphics-renderer-profile"
+        path.join(
+          "/private/tmp/broadify-bridge-renderer-client-test",
+          "graphics-renderer-profile"
+        )
       );
       clientSocket?.destroy();
       clientSocket = null;

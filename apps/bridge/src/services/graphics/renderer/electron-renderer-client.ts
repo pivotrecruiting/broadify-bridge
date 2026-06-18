@@ -1044,7 +1044,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
   }> {
     const paths = this.resolveRendererCachePaths();
     const errors: string[] = [];
-    await fs.mkdir(this.resolveRendererUserDataDir(), { recursive: true });
+    try {
+      await fs.mkdir(this.resolveRendererUserDataDir(), { recursive: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${this.resolveRendererUserDataDir()}: ${message}`);
+    }
     for (const cachePath of paths) {
       try {
         await fs.rm(cachePath, { recursive: true, force: true });
