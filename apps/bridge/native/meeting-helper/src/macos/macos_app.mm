@@ -15,14 +15,14 @@ NSWindow *g_promptWindow = nil;
 void initializeMacosApplication() {
   @autoreleasepool {
     [NSApplication sharedApplication];
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
   }
 }
 
 void prepareMacosCameraPermissionPrompt() {
   @autoreleasepool {
     [NSApplication sharedApplication];
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     if (g_promptWindow == nil) {
       NSRect frame = NSMakeRect(-10000.0, -10000.0, 1.0, 1.0);
       g_promptWindow = [[NSWindow alloc] initWithContentRect:frame
@@ -35,7 +35,6 @@ void prepareMacosCameraPermissionPrompt() {
       [g_promptWindow setAlphaValue:0.01];
     }
     [g_promptWindow orderFrontRegardless];
-    [NSApp activateIgnoringOtherApps:YES];
   }
 }
 

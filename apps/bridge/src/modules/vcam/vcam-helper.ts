@@ -56,6 +56,10 @@ function isValidVcamAppBundle(appPath: string): boolean {
   return existsSync(appPath) && hasEmbeddedVcamSystemExtension(appPath);
 }
 
+function isApplicationsVcamAppPath(appPath: string): boolean {
+  return appPath === DEFAULT_MACOS_VCAM_APP_PATH;
+}
+
 function getDevVcamHelperCandidates(): string[] {
   return [
     join(
@@ -131,20 +135,17 @@ export function resolveVcamHelperAppPath(): string | null {
   const candidates: string[] = [];
 
   const envPath = process.env[VCAM_HELPER_PATH_ENV];
-  if (envPath) {
+  if (envPath && isApplicationsVcamAppPath(envPath)) {
     candidates.push(envPath);
-  }
-
-  const resourcesPath = process.resourcesPath;
-  if (process.env.NODE_ENV === "production" && resourcesPath) {
-    candidates.push(join(resourcesPath, "native", "vcam-helper", "BroadifyVCam.app"));
   }
 
   if (platform() === "darwin") {
     candidates.push(DEFAULT_MACOS_VCAM_APP_PATH);
   }
 
-  candidates.push(...getDevVcamHelperCandidates());
+  if (process.env.NODE_ENV !== "production" && !envPath) {
+    candidates.push(...getDevVcamHelperCandidates());
+  }
 
   for (const candidate of candidates) {
     if (isValidVcamAppBundle(candidate)) {
@@ -202,8 +203,13 @@ export function getVcamHelperStatus(
   const platformSupported = currentPlatform === "darwin";
   const activationState = getSystemExtensionActivationState();
   const configuredAppPath = process.env[VCAM_HELPER_PATH_ENV] ?? DEFAULT_MACOS_VCAM_APP_PATH;
+  const hasNonApplicationsConfiguredApp =
+    platformSupported &&
+    process.env[VCAM_HELPER_PATH_ENV] !== undefined &&
+    !isApplicationsVcamAppPath(configuredAppPath);
   const hasInvalidConfiguredApp =
     platformSupported &&
+    !hasNonApplicationsConfiguredApp &&
     existsSync(configuredAppPath) &&
     !hasEmbeddedVcamSystemExtension(configuredAppPath);
   const installed = markerInstalled || helperAppPath !== null || activationState.installed;
@@ -240,6 +246,23 @@ export function getVcamHelperStatus(
       message:
         `BroadifyVCam.app at ${configuredAppPath} is missing the embedded system extension. ` +
         "Run npm run install:vcam-helper and open only /Applications/BroadifyVCam.app.",
+    };
+  }
+
+  if (hasNonApplicationsConfiguredApp) {
+    return {
+      platform: currentPlatform,
+      platformSupported,
+      available: false,
+      installed: activationState.installed,
+      running: false,
+      backend: "coremediaio_camera_extension",
+      framebusName,
+      helperAppPath,
+      requiresUserApproval: true,
+      code: "helper_app_not_in_applications",
+      message:
+        "BroadifyVCam.app must be installed at /Applications/BroadifyVCam.app before macOS can activate the camera extension.",
     };
   }
 

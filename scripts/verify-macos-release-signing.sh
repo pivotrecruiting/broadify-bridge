@@ -127,6 +127,25 @@ require_valid_entitlements() {
   echo "[MacSignVerify] entitlements plist ok -> ${target}"
 }
 
+require_entitlement_key() {
+  local target="$1"
+  local key="$2"
+  local output
+  local plist
+  if ! output="$(codesign -d --entitlements :- "$target" 2>&1)"; then
+    echo "$output" >&2
+    echo "[MacSignVerify] Could not read entitlements for ${target}" >&2
+    exit 1
+  fi
+  plist="$(printf '%s\n' "$output" | sed -n '/^<?xml/,$p')"
+  if ! printf '%s\n' "$plist" | plutil -extract "$key" raw - >/dev/null 2>&1; then
+    echo "$output" >&2
+    echo "[MacSignVerify] Missing entitlement ${key} for ${target}" >&2
+    exit 1
+  fi
+  echo "[MacSignVerify] entitlement ${key} present -> ${target}"
+}
+
 team_id() {
   codesign -dv --verbose=4 "$1" 2>&1 | awk -F= '/TeamIdentifier=/ { print $2; exit }'
 }
@@ -172,6 +191,7 @@ verify_codesign "$APP_PATH" "deep"
 
 require_valid_entitlements "$HELPER_EXEC_PATH"
 require_valid_entitlements "$APP_PATH"
+require_entitlement_key "$HELPER_EXEC_PATH" "com.apple.security.device.camera"
 
 APP_TEAM_ID="$(team_id "$APP_PATH")"
 HELPER_TEAM_ID="$(team_id "$HELPER_EXEC_PATH")"
