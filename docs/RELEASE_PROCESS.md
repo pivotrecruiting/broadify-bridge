@@ -13,6 +13,7 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
 - GitHub Secrets gesetzt:
   - `DECKLINK_HELPER_URL_ARM64`, `DECKLINK_HELPER_SHA256_ARM64`
   - `DECKLINK_HELPER_URL_X64`, `DECKLINK_HELPER_SHA256_X64` (falls x64-Builds)
+  - `MODNET_MODEL_URL` (Windows MODNet ONNX, GitHub Release Asset URL)
 - `APPLE_SIGNING_IDENTITY` (für macOS Code-Signing / Notarization, z.B. `Developer ID Application: Your Team (XXXXX)`)
 - `BRIDGE_RELAY_JWKS_URL` (für Production Relay)
 - `RELAY_URL_RC` (für RC/Test-Relay)
@@ -218,6 +219,51 @@ Falls spaeter ein Intel-macOS-Build dazukommt:
 2. Workflow **Test Release Build** auswählen.
 3. **Run workflow** klicken.
 4. Nach Abschluss unter **Artifacts** prüfen, ob alle Plattformen gebaut wurden.
+
+## MODNet Model Hosting (Windows, ohne externes Rate-Limit)
+
+Best Practice: Eigener GitHub Release (separates Repo oder dediziertes Assets-Repo)
+mit nur `modnet.onnx`. Kein Hugging-Face-Direct-Download in CI.
+
+Security-Hinweis: Die CI lädt das Modell von `MODNET_MODEL_URL`. Die Integrität
+wird gegen `sha256` in `models/manifest.json` geprüft. Nur kontrollierte
+Release-Assets verwenden und den Manifest-Hash bei jedem Modell-Update committen.
+
+### Schritt A: Modell lokal bereitstellen
+
+1. `modnet.onnx` nach `apps/bridge/native/meeting-helper/models/modnet.onnx` legen.
+2. Hash in `manifest.json` aktualisieren:
+
+```bash
+bash scripts/hash-meeting-model.sh modnet.onnx
+```
+
+Kurzweg vom Repo-Root:
+
+```bash
+npm run prepare:modnet-model-release
+```
+
+Der Befehl gibt `SHA256` und den Asset-Pfad aus.
+
+### Schritt B: Release-Asset hochladen (GitHub UI)
+
+1. GitHub → Assets-Repo (z. B. `broadify-meeting-models`).
+2. **Releases** → **Draft a new release**.
+3. Tag setzen, z. B. `v1.0.0`.
+4. Asset hochladen: `modnet.onnx`.
+5. **Publish release**.
+
+### Schritt C: Secret im App-Repo setzen
+
+1. GitHub → App-Repo → **Settings** → **Secrets and variables** → **Actions**.
+2. **New repository secret**:
+   - `MODNET_MODEL_URL` =
+     `https://github.com/<owner>/<assets-repo>/releases/download/<tag>/modnet.onnx`
+
+Kein separates SHA-Secret nötig — der Hash kommt aus `manifest.json`.
+
+Details: `apps/bridge/native/meeting-helper/models/DEPLOY.md`
 
 ## FrameBus Addon - CI-Build
 

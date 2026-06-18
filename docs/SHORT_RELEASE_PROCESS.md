@@ -6,6 +6,18 @@
 npm run prepare:decklink-helper-release
 ```
 
+## MODNet Model (Windows)
+
+```bash
+npm run prepare:modnet-model-release
+```
+
+Details: `apps/bridge/native/meeting-helper/models/DEPLOY.md`
+
+Benötigtes GitHub-Secret:
+
+- `MODNET_MODEL_URL` (GitHub Release Asset URL)
+
 ## SDL2 macOS Bundle
 
 ```bash

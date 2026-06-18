@@ -37,6 +37,7 @@ jobs:
       SDL2_MACOS_SHA256_X64: ${{ secrets.SDL2_MACOS_SHA256_X64 }}
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
+      MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
       DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       MACOS_FLOOR_VERSION: "13.0"
       SDL2_STRICT_MINOS: "1"
@@ -216,6 +217,45 @@ jobs:
 
           "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "SDL2_DIR=$(Join-Path $vcpkgRoot 'installed\x64-windows')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install ONNX Runtime (Windows, for meeting-helper MODNet)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '1.26.0'
+          $pkg = "onnxruntime-win-x64-$version"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$version/$pkg.zip"
+          $tmp = Join-Path $env:RUNNER_TEMP 'onnxruntime'
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $zip = Join-Path $tmp "$pkg.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'apps\bridge\native\meeting-helper\deps\onnxruntime\windows-x64'
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $tmp "$pkg\*") $dest
+
+          if (-not (Test-Path (Join-Path $dest 'include\onnxruntime_cxx_api.h'))) {
+            throw "ONNX Runtime headers missing after extraction under $dest"
+          }
+          if (-not (Test-Path (Join-Path $dest 'lib\onnxruntime.dll'))) {
+            throw "ONNX Runtime DLL missing after extraction under $dest"
+          }
+          Write-Host "ONNX Runtime $version installed to $dest"
+
+      - name: Cache MODNet model (meeting-helper, Windows only)
+        if: matrix.os == 'windows-2022'
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/meeting-helper/models/modnet.onnx
+          key: modnet-model-${{ hashFiles('apps/bridge/native/meeting-helper/models/manifest.json') }}
+
+      - name: Download MODNet model (meeting-helper, Windows only)
+        if: matrix.os == 'windows-2022'
+        run: npm run download:modnet-model
 
       - name: Transpile Electron
         run: npm run transpile:electron

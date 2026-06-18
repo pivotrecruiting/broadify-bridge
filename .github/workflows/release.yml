@@ -58,6 +58,7 @@ jobs:
       RELAY_URL: ${{ secrets.RELAY_URL }}
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
+      MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
       DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       DECKLINK_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       MACOS_FLOOR_VERSION: "13.0"
@@ -500,43 +501,16 @@ jobs:
           echo "VCAM_SIGNING_MODE=developer-id" >> "$GITHUB_ENV"
           echo "Installed vcam Developer ID provisioning profile."
 
-      - name: Fetch MODNet model (meeting-helper, Windows only)
+      - name: Cache MODNet model (meeting-helper, Windows only)
         if: matrix.os == 'windows-2022'
-        shell: bash
-        env:
-          MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
-        run: |
-          set -euo pipefail
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/meeting-helper/models/modnet.onnx
+          key: modnet-model-${{ hashFiles('apps/bridge/native/meeting-helper/models/manifest.json') }}
 
-          if [[ -z "${MODNET_MODEL_URL:-}" ]]; then
-            echo "MODNET_MODEL_URL secret is not set; cannot fetch modnet.onnx" >&2
-            exit 1
-          fi
-
-          MODELS_DIR="apps/bridge/native/meeting-helper/models"
-          MODEL_PATH="$MODELS_DIR/modnet.onnx"
-          mkdir -p "$MODELS_DIR"
-
-          echo "Downloading MODNet model..."
-          curl -fsSL "$MODNET_MODEL_URL" -o "$MODEL_PATH"
-
-          EXPECTED_HASH="$(node -e 'const fs=require("fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const e=m.models.find((x)=>x.name==="modnet");process.stdout.write(e?.sha256||"")' "$MODELS_DIR/manifest.json")"
-          if [[ -z "$EXPECTED_HASH" ]]; then
-            echo "No expected SHA-256 for modnet in manifest.json" >&2
-            exit 1
-          fi
-
-          if command -v sha256sum >/dev/null 2>&1; then
-            ACTUAL_HASH="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
-          else
-            ACTUAL_HASH="$(shasum -a 256 "$MODEL_PATH" | awk '{print $1}')"
-          fi
-
-          if [[ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]]; then
-            echo "MODNet model hash mismatch: expected $EXPECTED_HASH, got $ACTUAL_HASH" >&2
-            exit 1
-          fi
-          echo "MODNet model verified ($ACTUAL_HASH)"
+      - name: Download MODNet model (meeting-helper, Windows only)
+        if: matrix.os == 'windows-2022'
+        run: npm run download:modnet-model
 
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
