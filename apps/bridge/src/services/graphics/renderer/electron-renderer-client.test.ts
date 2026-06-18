@@ -456,6 +456,19 @@ describe("ElectronRendererClient", () => {
       await c.shutdown();
     });
 
+    it("does not recover after a clean renderer exit", async () => {
+      const c = await initializeClientWithHandshake();
+      const onError = jest.fn();
+      c.onError(onError);
+      const firstChild = mockSpawn.mock.results[0]?.value;
+
+      firstChild?.emit("exit", 0, null);
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    });
+
     it("uses GPU fallback on the second recovery attempt", async () => {
       const c = await initializeClientWithHandshake();
       const firstChild = mockSpawn.mock.results[0]?.value;

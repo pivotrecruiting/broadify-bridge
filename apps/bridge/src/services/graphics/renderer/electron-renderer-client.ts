@@ -212,7 +212,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
       const exitError = this.createRendererExitError(code, signal);
       const shouldRecover =
-        !this.isShuttingDown && this.shouldAttemptRecovery(signal, exitedBeforeReady);
+        !this.isShuttingDown && this.shouldAttemptRecovery(code, signal, exitedBeforeReady);
 
       const ipcServerStopped = this.resetRuntimeStateAfterExit(exitError);
 
@@ -452,6 +452,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
   }
 
   private shouldAttemptRecovery(
+    code: number | null,
     signal: NodeJS.Signals | null,
     exitedBeforeReady: boolean
   ): boolean {
@@ -459,6 +460,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
       return false;
     }
     if (this.recovering) {
+      return false;
+    }
+    if (code === 0 && !signal) {
       return false;
     }
     if (!signal) {
