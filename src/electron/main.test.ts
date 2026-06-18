@@ -176,13 +176,10 @@ jest.mock("fs", () => ({
   writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
 }));
 
-jest.mock("@sentry/electron/main", () => ({
+jest.mock("@sentry/electron", () => ({
   init: jest.fn(),
   captureException: jest.fn(),
   captureMessage: jest.fn(),
-  IPCMode: {
-    Protocol: 2,
-  },
 }));
 
 const mockAppExit = jest.fn();

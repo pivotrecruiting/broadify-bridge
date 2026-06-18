@@ -39,7 +39,7 @@ import type {
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
-import * as Sentry from "@sentry/electron/main";
+import * as Sentry from "@sentry/electron";
 import { z } from "zod";
 
 const BRIDGE_NAME_SCHEMA = z.string().trim().min(1).max(64);
@@ -70,9 +70,7 @@ if (isRendererProcess) {
 // This enables both Main and Renderer process error tracking
 Sentry.init({
   dsn: "https://a534ee90c276b99d94aec4c22e6fc8c3@o4510578425135104.ingest.de.sentry.io/4510578677645392",
-  // Keep renderer startup free of injected SDK preload code. Native renderer
-  // minidumps are still captured by the main-process crash reporter.
-  ipcMode: Sentry.IPCMode.Protocol,
+  // Electron SDK automatically handles Main + Renderer integration.
 });
 
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
