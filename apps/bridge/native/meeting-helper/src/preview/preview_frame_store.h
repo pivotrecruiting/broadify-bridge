@@ -16,6 +16,7 @@ struct PreviewFrame {
 class PreviewFrameStore {
  public:
   void publish(uint32_t width, uint32_t height, const uint8_t *rgba, size_t rgbaSize);
+  void clear();
   bool copyLatest(PreviewFrame &frame) const;
 
  private:

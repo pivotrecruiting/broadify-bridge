@@ -53,6 +53,7 @@ struct MeetingState {
   int activeCameraIndex = -1;
   bool keyerEnabled = false;
   bool framebusRunning = true;
+  bool vcamRawRunning = true;
   std::string backgroundMode = "transparent";
   std::string activeKeyer = "passthrough";
   std::string requestedKeyerModel = "modnet";

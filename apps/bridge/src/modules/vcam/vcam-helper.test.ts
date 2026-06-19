@@ -20,6 +20,7 @@ import {
   isVcamExtensionAvailable,
   openVcamHelperApp,
   resolveVcamHelperAppPath,
+  shouldAutoUpgradeEmbeddedVcamApp,
   VCAM_EMBEDDED_EXTENSION_BUNDLE_NAME,
   VCAM_EMBEDDED_EXTENSION_REL_PATH,
 } from "./vcam-helper.js";
@@ -104,6 +105,13 @@ describe("vcam-helper", () => {
     expect(status.backend).toBe("coremediaio_camera_extension");
   });
 
+  it("does not auto-upgrade an installed VCam helper unless explicitly enabled", () => {
+    expect(shouldAutoUpgradeEmbeddedVcamApp(13, 12, false)).toBe(false);
+    expect(shouldAutoUpgradeEmbeddedVcamApp(13, 12, true)).toBe(true);
+    expect(shouldAutoUpgradeEmbeddedVcamApp(12, 12, true)).toBe(false);
+    expect(shouldAutoUpgradeEmbeddedVcamApp(null, 12, true)).toBe(false);
+  });
+
   it("reports the extension as active when systemextensionsctl shows it enabled", () => {
     const installed = "/Applications/BroadifyVCam.app";
     if (!hasEmbeddedVcamSystemExtension(installed)) {
@@ -181,7 +189,7 @@ describe("vcam-helper", () => {
 
     const status = await openVcamHelperApp();
 
-    expect(mockSpawn).toHaveBeenCalledWith("open", ["-n", installed], expect.any(Object));
+    expect(mockSpawn).toHaveBeenCalledWith("open", [installed], expect.any(Object));
     expect(status.launchRequested).toBe(true);
     expect(status.requiresUserApproval).toBe(true);
     expect(status.code).toBe("activation_requested");

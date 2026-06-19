@@ -19,6 +19,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <thread>
 
@@ -69,12 +70,13 @@ int main(int argc, char **argv) {
   std::future<void> controlListeningFuture = controlListening.get_future();
   std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(g_running));
-  std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(g_running));
+  std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread control(
       runControlServer,
       options.controlSocket,
       std::ref(state),
       std::ref(*camera),
+      std::ref(previewFrames),
       std::cref(options),
       std::ref(g_running),
       [&controlListening]() { controlListening.set_value(); });
@@ -102,17 +104,23 @@ int main(int argc, char **argv) {
 #endif
 
   camera->stop();
+  previewFrames.clear();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.framebusRunning = false;
+    state.vcamRawRunning = false;
+  }
   if (frames.joinable()) {
     frames.join();
   }
   if (preview.joinable()) {
-    preview.detach();
+    preview.join();
   }
   if (vcamRaw.joinable()) {
-    vcamRaw.detach();
+    vcamRaw.join();
   }
   if (control.joinable()) {
-    control.detach();
+    control.join();
   }
   return 0;
 }

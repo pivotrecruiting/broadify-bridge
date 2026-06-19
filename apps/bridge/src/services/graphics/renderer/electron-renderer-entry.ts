@@ -17,7 +17,7 @@ import {
   isIpcBufferWithinLimit,
 } from "./renderer-ipc-framing.js";
 import { AsyncSerialQueue } from "./async-serial-queue.js";
-import { bgraToRgba } from "./graphics-pixel-utils.js";
+import { bgraToRgba, downsampleRgbaBox } from "./graphics-pixel-utils.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -101,25 +101,69 @@ type RendererLayerBindingsT = {
   animationClass?: string;
 };
 
+type RendererLayerLayoutT = {
+  x: number;
+  y: number;
+  scale: number;
+  scaleX?: number;
+  scaleY?: number;
+  rotationX?: number;
+  rotationY?: number;
+  rotationZ?: number;
+};
+
 type SingleLayerSnapshotT = {
   layerId: string;
   html: string;
   css: string;
   values: Record<string, unknown>;
   bindings?: RendererLayerBindingsT;
-  layout: { x: number; y: number; scale: number };
+  layout: RendererLayerLayoutT;
   backgroundMode: string;
   zIndex?: number;
 };
 
 let singleWindow: BrowserWindow | null = null;
 let singleWindowReady: Promise<void> | null = null;
-let singleWindowFormat: { width: number; height: number; fps: number } | null =
-  null;
+let singleWindowFormat: {
+  width: number;
+  height: number;
+  fps: number;
+  renderScale: number;
+} | null = null;
 const singleLayerSnapshots = new Map<string, SingleLayerSnapshotT>();
 let frameBusModule: FrameBusModuleT | null = null;
 let frameBusWriter: FrameBusWriterT | null = null;
 let frameBusInitAttempted = false;
+
+const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
+
+function resolveRenderScale(width: number, height: number): number {
+  const configured = Number(process.env.BRIDGE_GRAPHICS_SUPERSAMPLE);
+  if (Number.isFinite(configured) && configured >= 1) {
+    return Math.max(1, Math.min(3, Math.round(configured)));
+  }
+  return width * height <= DEFAULT_SUPERSAMPLE_MAX_PIXELS ? 2 : 1;
+}
+
+function normalizeCapturedRgbaFrame(
+  rgbaBuffer: Buffer,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+): Buffer {
+  if (sourceWidth === targetWidth && sourceHeight === targetHeight) {
+    return rgbaBuffer;
+  }
+  return downsampleRgbaBox(
+    rgbaBuffer,
+    sourceWidth,
+    sourceHeight,
+    targetWidth,
+    targetHeight,
+  );
+}
 
 function logPerfIfNeeded(): void {
   if (!LOG_PERF) {
@@ -577,16 +621,20 @@ async function ensureSingleWindow(
   fps: number,
   backgroundMode: string,
 ): Promise<BrowserWindow> {
+  const renderScale = resolveRenderScale(width, height);
+  const renderWidth = width * renderScale;
+  const renderHeight = height * renderScale;
   if (singleWindow && singleWindowFormat) {
     if (
       singleWindowFormat.width !== width ||
       singleWindowFormat.height !== height ||
-      singleWindowFormat.fps !== fps
+      singleWindowFormat.fps !== fps ||
+      singleWindowFormat.renderScale !== renderScale
     ) {
       logger.warn(
         {
           existing: singleWindowFormat,
-          next: { width, height, fps },
+          next: { width, height, fps, renderScale },
         },
         "[GraphicsRenderer] Single renderer format mismatch",
       );
@@ -598,8 +646,8 @@ async function ensureSingleWindow(
 
   if (!singleWindow) {
     singleWindow = new BrowserWindow({
-      width,
-      height,
+      width: renderWidth,
+      height: renderHeight,
       show: false,
       transparent: true,
       paintWhenInitiallyHidden: true,
@@ -612,7 +660,7 @@ async function ensureSingleWindow(
       },
     });
 
-    singleWindowFormat = { width, height, fps };
+    singleWindowFormat = { width, height, fps, renderScale };
 
     singleWindow.webContents.setFrameRate(fps);
     singleWindow.webContents.on("paint", (_event, _dirty, image) => {
@@ -641,9 +689,36 @@ async function ensureSingleWindow(
         return;
       }
 
-      const buffer = bgraToRgba(image.toBitmap());
+      const sourceBuffer = bgraToRgba(image.toBitmap());
+      if (sourceBuffer.length !== imageSize.width * imageSize.height * 4) {
+        logger.warn("[GraphicsRenderer] Source frame buffer length mismatch (single)");
+        return;
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = normalizeCapturedRgbaFrame(
+          sourceBuffer,
+          imageSize.width,
+          imageSize.height,
+          width,
+          height,
+        );
+      } catch (error) {
+        logger.warn(
+          {
+            message: error instanceof Error ? error.message : String(error),
+            imageWidth: imageSize.width,
+            imageHeight: imageSize.height,
+            width,
+            height,
+          },
+          "[GraphicsRenderer] Frame downsample failed (single)",
+        );
+        return;
+      }
       if (buffer.length !== width * height * 4) {
-        logger.warn("[GraphicsRenderer] Frame buffer length mismatch (single)");
+        logger.warn("[GraphicsRenderer] Frame buffer length mismatch after downsample (single)");
         return;
       }
 
@@ -663,6 +738,9 @@ async function ensureSingleWindow(
               frameBusName,
               width,
               height,
+              renderWidth: imageSize.width,
+              renderHeight: imageSize.height,
+              renderScale,
               fps,
               layerIds: Array.from(singleLayerSnapshots.keys()),
             },
@@ -695,7 +773,7 @@ async function ensureSingleWindow(
       });
     });
 
-    const html = buildSingleWindowDocument();
+    const html = buildSingleWindowDocument(renderScale);
     await singleWindow.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
     );
@@ -802,7 +880,45 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
       return;
     }
 
-    const buffer = bgraToRgba(image.toBitmap());
+    const sourceBuffer = bgraToRgba(image.toBitmap());
+    if (sourceBuffer.length !== imageSize.width * imageSize.height * 4) {
+      logger.warn(
+        {
+          reason,
+          bufferLength: sourceBuffer.length,
+          expectedLength: imageSize.width * imageSize.height * 4,
+          imageWidth: imageSize.width,
+          imageHeight: imageSize.height,
+        },
+        "[GraphicsRenderer] Captured source frame buffer length mismatch",
+      );
+      return;
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = normalizeCapturedRgbaFrame(
+        sourceBuffer,
+        imageSize.width,
+        imageSize.height,
+        width,
+        height,
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          reason,
+          message: error instanceof Error ? error.message : String(error),
+          imageWidth: imageSize.width,
+          imageHeight: imageSize.height,
+          width,
+          height,
+        },
+        "[GraphicsRenderer] Captured frame downsample failed",
+      );
+      return;
+    }
+
     if (buffer.length !== width * height * 4) {
       logger.warn(
         {
@@ -812,7 +928,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
           imageWidth: imageSize.width,
           imageHeight: imageSize.height,
         },
-        "[GraphicsRenderer] Captured frame buffer length mismatch",
+        "[GraphicsRenderer] Captured frame buffer length mismatch after downsample",
       );
       return;
     }
@@ -892,7 +1008,7 @@ async function createLayer(message: {
   css: string;
   values: Record<string, unknown>;
   bindings?: RendererLayerBindingsT;
-  layout: { x: number; y: number; scale: number };
+  layout: RendererLayerLayoutT;
   backgroundMode: string;
   width: number;
   height: number;
@@ -987,7 +1103,7 @@ async function updateValues(message: {
  */
 async function updateLayout(message: {
   layerId: string;
-  layout: { x: number; y: number; scale: number };
+  layout: RendererLayerLayoutT;
   zIndex?: number;
 }): Promise<void> {
   const existing = singleLayerSnapshots.get(message.layerId);
@@ -1085,7 +1201,7 @@ async function handleMessage(message: unknown): Promise<void> {
           textTypes?: Record<string, string>;
           animationClass?: string;
         };
-        layout: { x: number; y: number; scale: number };
+        layout: RendererLayerLayoutT;
         backgroundMode: string;
         width: number;
         height: number;
@@ -1116,7 +1232,7 @@ async function handleMessage(message: unknown): Promise<void> {
     await updateLayout(
       msg as {
         layerId: string;
-        layout: { x: number; y: number; scale: number };
+        layout: RendererLayerLayoutT;
         zIndex?: number;
       },
     );

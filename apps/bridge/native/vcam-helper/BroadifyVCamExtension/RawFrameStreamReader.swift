@@ -79,6 +79,7 @@ final class RawFrameStreamReader {
             autoreleasepool {
                 self.runSingleStreamSession()
             }
+            self.clearLatestFrame()
             Thread.sleep(forTimeInterval: 0.2)
         }
     }
@@ -165,7 +166,7 @@ final class RawFrameStreamReader {
             let rowOffset = y * rowBytes
             for x in 0..<Int(frameWidth) {
                 let srcIndex = rowOffset + x * 4
-                let dstIndex = rowOffset + (Int(frameWidth) - 1 - x) * 4
+                let dstIndex = rowOffset + x * 4
                 bgra[dstIndex + 0] = rgba[srcIndex + 2]
                 bgra[dstIndex + 1] = rgba[srcIndex + 1]
                 bgra[dstIndex + 2] = rgba[srcIndex + 0]
@@ -185,6 +186,15 @@ final class RawFrameStreamReader {
             os_log(.info, log: Self.log, "Buffered raw VCam frame seq=%{public}llu %{public}ux%{public}u",
                    seq, frameWidth, frameHeight)
         }
+    }
+
+    private func clearLatestFrame() {
+        lock.lock()
+        latestBgra.removeAll(keepingCapacity: false)
+        width = 0
+        height = 0
+        latestAt = Date.distantPast
+        lock.unlock()
     }
 
     private func readHttpHeaders(socketFd: Int32) -> Bool {

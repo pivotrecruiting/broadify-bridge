@@ -1,8 +1,20 @@
 #include "compose/compositor.h"
+#include "util/json_utils.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <cmath>
+#include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
+
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <ImageIO/ImageIO.h>
+#endif
 
 namespace broadify::meeting {
 namespace {
@@ -19,6 +31,12 @@ struct SourceRect {
   uint32_t y = 0;
   uint32_t width = 0;
   uint32_t height = 0;
+};
+
+struct RgbaImage {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint8_t> rgba;
 };
 
 uint8_t clampByte(int value) {
@@ -55,6 +73,174 @@ void blendPixel(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, in
   frame[offset + 3] = 255u;
 }
 
+std::vector<uint8_t> decodeBase64(const std::string &value) {
+  std::vector<int> table(256, -1);
+  for (int i = 0; i < 26; ++i) {
+    table[static_cast<size_t>('A' + i)] = i;
+    table[static_cast<size_t>('a' + i)] = i + 26;
+  }
+  for (int i = 0; i < 10; ++i) {
+    table[static_cast<size_t>('0' + i)] = i + 52;
+  }
+  table[static_cast<size_t>('+')] = 62;
+  table[static_cast<size_t>('/')] = 63;
+
+  std::vector<uint8_t> decoded;
+  int accumulator = 0;
+  int bits = -8;
+  for (unsigned char ch : value) {
+    if (ch == '=') {
+      break;
+    }
+    if (std::isspace(ch)) {
+      continue;
+    }
+    const int part = table[ch];
+    if (part < 0) {
+      return {};
+    }
+    accumulator = (accumulator << 6) + part;
+    bits += 6;
+    if (bits >= 0) {
+      decoded.push_back(static_cast<uint8_t>((accumulator >> bits) & 0xff));
+      bits -= 8;
+    }
+  }
+  return decoded;
+}
+
+std::vector<uint8_t> decodeDataUrlBytes(const std::string &dataUrl) {
+  const size_t comma = dataUrl.find(',');
+  if (comma == std::string::npos) {
+    return {};
+  }
+  const std::string metadata = dataUrl.substr(0, comma);
+  if (metadata.find(";base64") == std::string::npos) {
+    return {};
+  }
+  return decodeBase64(dataUrl.substr(comma + 1));
+}
+
+#if defined(__APPLE__)
+std::shared_ptr<const RgbaImage> decodeImageBytes(const std::vector<uint8_t> &bytes) {
+  if (bytes.empty()) {
+    return nullptr;
+  }
+
+  CFDataRef data = CFDataCreate(kCFAllocatorDefault, bytes.data(), static_cast<CFIndex>(bytes.size()));
+  if (!data) {
+    return nullptr;
+  }
+
+  CGImageSourceRef source = CGImageSourceCreateWithData(data, nullptr);
+  CFRelease(data);
+  if (!source) {
+    return nullptr;
+  }
+
+  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, nullptr);
+  CFRelease(source);
+  if (!image) {
+    return nullptr;
+  }
+
+  const size_t width = CGImageGetWidth(image);
+  const size_t height = CGImageGetHeight(image);
+  if (width == 0 || height == 0 || width > 4096 || height > 4096) {
+    CGImageRelease(image);
+    return nullptr;
+  }
+
+  auto decoded = std::make_shared<RgbaImage>();
+  decoded->width = static_cast<uint32_t>(width);
+  decoded->height = static_cast<uint32_t>(height);
+  decoded->rgba.assign(width * height * 4u, 0);
+
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(decoded->rgba.data(),
+                                               width,
+                                               height,
+                                               8,
+                                               width * 4u,
+                                               colorSpace,
+                                               kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  CGColorSpaceRelease(colorSpace);
+  if (!context) {
+    CGImageRelease(image);
+    return nullptr;
+  }
+
+  CGContextClearRect(context, CGRectMake(0, 0, static_cast<CGFloat>(width), static_cast<CGFloat>(height)));
+  CGContextDrawImage(context, CGRectMake(0, 0, static_cast<CGFloat>(width), static_cast<CGFloat>(height)), image);
+  CGContextRelease(context);
+  CGImageRelease(image);
+  return decoded;
+}
+#else
+std::shared_ptr<const RgbaImage> decodeImageBytes(const std::vector<uint8_t> &) {
+  return nullptr;
+}
+#endif
+
+std::shared_ptr<const RgbaImage> getCornerbugImage(const CornerbugState &cornerbug) {
+  const std::string dataUrl = extractStringField(cornerbug.rawJson, "image_data_url");
+  if (dataUrl.empty()) {
+    return nullptr;
+  }
+
+  static std::mutex cacheMutex;
+  static std::string cachedDataUrl;
+  static std::shared_ptr<const RgbaImage> cachedImage;
+
+  std::lock_guard<std::mutex> lock(cacheMutex);
+  if (dataUrl == cachedDataUrl) {
+    return cachedImage;
+  }
+
+  cachedDataUrl = dataUrl;
+  cachedImage = decodeImageBytes(decodeDataUrlBytes(dataUrl));
+  return cachedImage;
+}
+
+void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &target, const RgbaImage &image) {
+  if (target.width <= 0 || target.height <= 0 || image.width == 0 || image.height == 0 || image.rgba.empty()) {
+    return;
+  }
+
+  const double scale = std::min(
+      static_cast<double>(target.width) / static_cast<double>(image.width),
+      static_cast<double>(target.height) / static_cast<double>(image.height));
+  const int drawWidth = std::max(1, static_cast<int>(std::round(image.width * scale)));
+  const int drawHeight = std::max(1, static_cast<int>(std::round(image.height * scale)));
+  const int drawX = target.x + (target.width - drawWidth) / 2;
+  const int drawY = target.y + (target.height - drawHeight) / 2;
+
+  for (int y = 0; y < drawHeight; ++y) {
+    const uint32_t sy = std::min(
+        image.height - 1u,
+        static_cast<uint32_t>((static_cast<uint64_t>(y) * image.height) / static_cast<uint32_t>(drawHeight)));
+    for (int x = 0; x < drawWidth; ++x) {
+      const uint32_t sx = std::min(
+          image.width - 1u,
+          static_cast<uint32_t>((static_cast<uint64_t>(x) * image.width) / static_cast<uint32_t>(drawWidth)));
+      const size_t srcOffset = (static_cast<size_t>(sy) * image.width + sx) * 4u;
+      const uint8_t alpha = image.rgba[srcOffset + 3];
+      if (alpha == 0u) {
+        continue;
+      }
+      uint8_t r = image.rgba[srcOffset + 0];
+      uint8_t g = image.rgba[srcOffset + 1];
+      uint8_t b = image.rgba[srcOffset + 2];
+      if (alpha > 0u && alpha < 255u) {
+        r = clampByte((static_cast<int>(r) * 255) / alpha);
+        g = clampByte((static_cast<int>(g) * 255) / alpha);
+        b = clampByte((static_cast<int>(b) * 255) / alpha);
+      }
+      blendPixel(frame, width, height, drawX + x, drawY + y, r, g, b, alpha);
+    }
+  }
+}
+
 void fillRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &rect, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
   const int minX = std::max(0, rect.x);
   const int minY = std::max(0, rect.y);
@@ -71,6 +257,43 @@ void fillRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, cons
       frame[offset + 1] = clampByte((g * a + frame[offset + 1] * (255 - a)) / 255);
       frame[offset + 2] = clampByte((b * a + frame[offset + 2] * (255 - a)) / 255);
       frame[offset + 3] = 255;
+    }
+  }
+}
+
+void fillRotatedRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &rect, double rotationDeg, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+  if (rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+  if (std::abs(rotationDeg) < 0.001) {
+    fillRect(frame, width, height, rect, r, g, b, a);
+    return;
+  }
+
+  constexpr double kPi = 3.14159265358979323846;
+  const double radians = rotationDeg * kPi / 180.0;
+  const double cosTheta = std::cos(radians);
+  const double sinTheta = std::sin(radians);
+  const double centerX = rect.x + rect.width / 2.0;
+  const double centerY = rect.y + rect.height / 2.0;
+  const double halfWidth = rect.width / 2.0;
+  const double halfHeight = rect.height / 2.0;
+  const double extentX = std::abs(halfWidth * cosTheta) + std::abs(halfHeight * sinTheta);
+  const double extentY = std::abs(halfWidth * sinTheta) + std::abs(halfHeight * cosTheta);
+  const int minX = std::max(0, static_cast<int>(std::floor(centerX - extentX)));
+  const int minY = std::max(0, static_cast<int>(std::floor(centerY - extentY)));
+  const int maxX = std::min(static_cast<int>(width), static_cast<int>(std::ceil(centerX + extentX)));
+  const int maxY = std::min(static_cast<int>(height), static_cast<int>(std::ceil(centerY + extentY)));
+
+  for (int y = minY; y < maxY; ++y) {
+    for (int x = minX; x < maxX; ++x) {
+      const double dx = (x + 0.5) - centerX;
+      const double dy = (y + 0.5) - centerY;
+      const double localX = dx * cosTheta + dy * sinTheta;
+      const double localY = -dx * sinTheta + dy * cosTheta;
+      if (std::abs(localX) <= halfWidth && std::abs(localY) <= halfHeight) {
+        blendPixel(frame, width, height, x, y, r, g, b, a);
+      }
     }
   }
 }
@@ -111,17 +334,33 @@ Rect cameraRect(uint32_t width, uint32_t height, const SpeakerLayoutState &speak
     return {0, 0, static_cast<int>(width), static_cast<int>(height)};
   }
   const double scale = std::clamp(speakerLayout.scale, 0.4, 1.5);
-  const int rectHeight = static_cast<int>(height * 0.50 * scale);
-  const int rectWidth = static_cast<int>(rectHeight * 0.58);
-  const int marginX = static_cast<int>(width * 0.06);
-  const int marginBottom = static_cast<int>(height * 0.08);
-  int x = static_cast<int>(width) - rectWidth - marginX;
-  if (speakerLayout.layout == "left") {
-    x = marginX;
-  } else if (speakerLayout.layout == "center") {
-    x = (static_cast<int>(width) - rectWidth) / 2;
+  const int frameWidth = static_cast<int>(width);
+  const int frameHeight = static_cast<int>(height);
+  const int marginX = 0;
+  const int marginBottom = 0;
+  const double speakerAspect = 16.0 / 9.0;
+  int rectHeight = static_cast<int>(height * 0.50 * scale);
+  int rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
+  const int maxRectWidth = std::max(1, frameWidth - marginX * 2);
+  const int maxRectHeight = std::max(1, frameHeight - marginBottom);
+  if (rectWidth > maxRectWidth) {
+    rectWidth = maxRectWidth;
+    rectHeight = static_cast<int>(std::round(rectWidth / speakerAspect));
   }
-  return {x, static_cast<int>(height) - rectHeight - marginBottom, rectWidth, rectHeight};
+  if (rectHeight > maxRectHeight) {
+    rectHeight = maxRectHeight;
+    rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
+  }
+  const int edgeCrop = static_cast<int>(std::round(rectWidth * 0.28));
+  int x = frameWidth - rectWidth - marginX + edgeCrop;
+  if (speakerLayout.layout == "left") {
+    x = marginX - edgeCrop;
+  } else if (speakerLayout.layout == "center") {
+    x = (frameWidth - rectWidth) / 2;
+  }
+  x = std::clamp(x, -edgeCrop, std::max(0, frameWidth - rectWidth) + edgeCrop);
+  const int y = std::clamp(frameHeight - rectHeight - marginBottom, 0, std::max(0, frameHeight - rectHeight));
+  return {x, y, rectWidth, rectHeight};
 }
 
 SourceRect coverSourceRect(uint32_t sourceWidth, uint32_t sourceHeight, int targetWidth, int targetHeight) {
@@ -198,8 +437,8 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
       static_cast<int>(height * std::clamp(mediaLayer.height, 0.05, 1.0)),
     };
   }
-  fillRect(frame, width, height, rect, 14, 116, 144, 210);
-  fillRect(frame, width, height, {rect.x + 8, rect.y + 8, std::max(0, rect.width - 16), 3}, 255, 255, 255, 190);
+  fillRotatedRect(frame, width, height, rect, mediaLayer.rotation, 14, 116, 144, 210);
+  fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 8, std::max(0, rect.width - 16), 3}, mediaLayer.rotation, 255, 255, 255, 190);
 }
 
 void drawGraphicsFrame(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const VideoFrame *graphicsFrame) {
@@ -242,11 +481,15 @@ void drawCornerbug(std::vector<uint8_t> &frame, uint32_t width, uint32_t height,
   }
   const int size = static_cast<int>(std::min(width, height) * std::clamp(cornerbug.size, 0.04, 0.35));
   const Rect rect{
-    static_cast<int>(width * clamp01(cornerbug.x)),
-    static_cast<int>(height * clamp01(cornerbug.y)),
+    static_cast<int>(width * clamp01(cornerbug.x)) - size / 2,
+    static_cast<int>(height * clamp01(cornerbug.y)) - size / 2,
     size,
     size,
   };
+  if (const std::shared_ptr<const RgbaImage> image = getCornerbugImage(cornerbug)) {
+    drawImageFit(frame, width, height, rect, *image);
+    return;
+  }
   fillRect(frame, width, height, rect, 255, 132, 28, 240);
   fillRect(frame, width, height, {rect.x + size / 5, rect.y + size / 5, size * 3 / 5, size * 3 / 5}, 255, 255, 255, 160);
 }
