@@ -1,8 +1,8 @@
 #include "framebus_writer.h"
 
+#include "framebus_atomic.h"
 #include "framebus.h"
 
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,13 +30,11 @@ struct framebus_writer {
 };
 
 static uint64_t load_seq(const FrameBusHeader *header) {
-  const _Atomic uint64_t *seq_ptr = (const _Atomic uint64_t *)&header->seq;
-  return atomic_load_explicit(seq_ptr, memory_order_acquire);
+  return framebus_atomic_load_u64(&header->seq);
 }
 
 static void store_u64(uint64_t *target, uint64_t value) {
-  _Atomic uint64_t *ptr = (_Atomic uint64_t *)target;
-  atomic_store_explicit(ptr, value, memory_order_release);
+  framebus_atomic_store_u64(target, value);
 }
 
 static int init_header(FrameBusHeader *header,
@@ -66,8 +64,26 @@ static int init_header(FrameBusHeader *header,
   return 0;
 }
 
-#if !defined(_WIN32)
-static void normalize_shm_name(const char *name, char *out, size_t out_size) {
+#if defined(_WIN32)
+static void normalize_mapping_name(const char *name, char *out, size_t out_size) {
+  char sanitized[256];
+  size_t write_index = 0;
+  for (size_t read_index = 0; name[read_index] != '\0' && write_index + 1 < sizeof(sanitized);
+       read_index++) {
+    if (name[read_index] == '/' || name[read_index] == '\\') {
+      continue;
+    }
+    sanitized[write_index++] = name[read_index];
+  }
+  sanitized[write_index] = '\0';
+  if (write_index == 0) {
+    out[0] = '\0';
+    return;
+  }
+  snprintf(out, out_size, "Local\\%s", sanitized);
+}
+#else
+static void normalize_mapping_name(const char *name, char *out, size_t out_size) {
   if (name[0] == '/') {
     snprintf(out, out_size, "%s", name);
     return;
@@ -93,10 +109,17 @@ framebus_writer_t *framebus_writer_open(const char *name,
   }
   writer->map_size = map_size;
 
+  char mapping_name[256];
+  normalize_mapping_name(name, mapping_name, sizeof(mapping_name));
+  if (mapping_name[0] == '\0') {
+    free(writer);
+    return NULL;
+  }
+
 #if defined(_WIN32)
   writer->mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
                                        (DWORD)((map_size >> 32u) & 0xffffffffu),
-                                       (DWORD)(map_size & 0xffffffffu), name);
+                                       (DWORD)(map_size & 0xffffffffu), mapping_name);
   if (writer->mapping == NULL) {
     free(writer);
     return NULL;
@@ -108,7 +131,7 @@ framebus_writer_t *framebus_writer_open(const char *name,
     return NULL;
   }
 #else
-  normalize_shm_name(name, writer->shm_name, sizeof(writer->shm_name));
+  snprintf(writer->shm_name, sizeof(writer->shm_name), "%s", mapping_name);
   shm_unlink(writer->shm_name);
   writer->fd = shm_open(writer->shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
   if (writer->fd < 0) {
