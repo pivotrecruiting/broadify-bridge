@@ -10,9 +10,12 @@
 
 namespace broadify::meeting {
 
+class PreviewFrameStore;
+
 void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
+                      PreviewFrameStore &previewFrames,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening = {});

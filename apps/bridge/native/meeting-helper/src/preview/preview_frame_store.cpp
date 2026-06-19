@@ -13,6 +13,14 @@ void PreviewFrameStore::publish(uint32_t width, uint32_t height, const uint8_t *
   ++frame_.sequence;
 }
 
+void PreviewFrameStore::clear() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  frame_.width = 0u;
+  frame_.height = 0u;
+  frame_.rgba.clear();
+  ++frame_.sequence;
+}
+
 bool PreviewFrameStore::copyLatest(PreviewFrame &frame) const {
   std::lock_guard<std::mutex> lock(mutex_);
   if (frame_.rgba.empty()) {

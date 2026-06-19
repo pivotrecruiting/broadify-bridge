@@ -1,5 +1,6 @@
 #include "control/control_server.h"
 
+#include "preview/preview_frame_store.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
@@ -17,6 +18,15 @@
 
 namespace broadify::meeting {
 namespace {
+
+#if !defined(_WIN32)
+void configureSocketForShutdownChecks(int socketHandle) {
+  timeval timeout{};
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 250000;
+  setsockopt(socketHandle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
+}
+#endif
 
 std::string programSectionJson(const MeetingState &state, const std::string &section) {
   if (section == "speaker_layout") {
@@ -143,6 +153,7 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
 std::string handleRpc(const std::string &line,
                       MeetingState &state,
                       CameraSource &camera,
+                      PreviewFrameStore &previewFrames,
                       const Options &options,
                       std::atomic<bool> &running) {
   const std::string id = extractStringField(line, "id");
@@ -156,6 +167,12 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "control.shutdown") {
+    previewFrames.clear();
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.framebusRunning = false;
+      state.vcamRawRunning = false;
+    }
     running.store(false);
     return okResponse(id, "{\"ok\":true}");
   }
@@ -221,6 +238,7 @@ std::string handleRpc(const std::string &line,
 
   if (method == "camera.stop") {
     camera.stop();
+    previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.cameraRunning = false;
     state.activeCameraIndex = -1;
@@ -300,7 +318,7 @@ std::string handleRpc(const std::string &line,
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
     }
-    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, options, running);
+    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, options, running);
   }
 
   if (method == "keyer.reset") {
@@ -374,12 +392,15 @@ std::string handleRpc(const std::string &line,
   if (method == "output.framebus.start") {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = true;
+    state.vcamRawRunning = true;
     return okResponse(id, "{\"enabled\":true,\"running\":true}");
   }
 
   if (method == "output.framebus.stop") {
+    previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = false;
+    state.vcamRawRunning = false;
     return okResponse(id, "{\"enabled\":true,\"running\":false}");
   }
 
@@ -396,6 +417,7 @@ std::string handleRpc(const std::string &line,
 void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
+                      PreviewFrameStore &previewFrames,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening) {
@@ -420,7 +442,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-          const std::string response = handleRpc(line, state, camera, options, running);
+          const std::string response = handleRpc(line, state, camera, previewFrames, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           break;
@@ -435,6 +457,7 @@ void runControlServer(const std::string &pipeName,
 void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
+                      PreviewFrameStore &previewFrames,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening) {
@@ -444,6 +467,7 @@ void runControlServer(const std::string &socketPath,
     std::cout << "{\"type\":\"error\",\"code\":\"control_socket_failed\",\"message\":\"Could not create control socket.\"}" << std::endl;
     return;
   }
+  configureSocketForShutdownChecks(serverFd);
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socketPath.c_str());
@@ -471,7 +495,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-        const std::string response = handleRpc(line, state, camera, options, running);
+        const std::string response = handleRpc(line, state, camera, previewFrames, options, running);
         (void)write(client, response.c_str(), response.size());
         break;
       }
