@@ -97,11 +97,27 @@ Danach:
 5. macOS-Freigabe in System Settings bestaetigen und in der Meeting-App
    `broadify Camera` auswaehlen.
 
-Wenn `BroadifyVCam.app` zwar startet, aber kein Kamera-Device erscheint, pruefe
-zuerst:
+`npm run dev` installiert die VCam-System-Extension nicht automatisch. Der Dev-
+Start prueft nur mit `verify:vcam-helper`, ob die bereits aktivierte Extension
+zur installierten App passt und ob AVFoundation `broadify Camera` listet.
 
+Wenn `/Applications/BroadifyVCam.app` fehlt oder der VCam-Helper bewusst neu
+installiert werden soll, fuehre zuerst aus:
+
+```bash
+npm run setup:vcam-helper
+```
+
+Wenn `BroadifyVCam.app` zwar startet, aber kein Kamera-Device erscheint, pruefe
+danach:
+
+- `npm run verify:vcam-helper`
 - `systemextensionsctl list | grep broadify`
 - `log show --last 2h --predicate 'eventMessage CONTAINS[c] "com.apple.developer.system-extension.install" OR eventMessage CONTAINS[c] "com.broadify.vcam"'`
+
+Wenn die aktivierte System-Extension-Version nicht zur installierten App passt
+oder AVFoundation `broadify Camera` nicht listet, bricht `npm run dev` ab,
+statt mit einer kaputten VCam-Annahme weiterzulaufen.
 
 Ein typischer Fehlfall ist ein Provisioning-/Signing-Problem der Container-App.
 Dann erscheint im Log `Unsatisfied entitlements: com.apple.developer.system-extension.install`
@@ -135,6 +151,10 @@ Die Kamera wird im Compositor standardmaessig horizontal gespiegelt, damit die
 Person im virtuellen Kamera-Output wie in einer Self-View wirkt. Das Spiegeln
 passiert nur in `drawCamera`; Backgrounds, Graphics, Lower Thirds und Schriften
 bleiben ungespiegelt.
+
+Die VCam-Extension gibt den fertigen Program-Frame unveraendert aus. Sie darf
+den Frame nicht nochmals horizontal spiegeln, weil sonst Grafiken und Text fuer
+Remote-Teilnehmer gespiegelt erscheinen.
 
 Zur Laufzeit kann das Verhalten ueber die Program-Section `camera` gesetzt
 werden:

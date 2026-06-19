@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -114,7 +115,12 @@ std::vector<uint8_t> rawFramePayload(const PreviewFrame &frame) {
   return payload;
 }
 
-void streamFrames(int client, PreviewFrameStore &previewFrames, std::atomic<bool> &running) {
+bool isVcamRawRunning(MeetingState &state) {
+  std::lock_guard<std::mutex> lock(state.mutex);
+  return state.vcamRawRunning;
+}
+
+void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &state, std::atomic<bool> &running) {
   const std::string header =
       "HTTP/1.1 200 OK\r\n"
       "Content-Type: application/vnd.broadify.raw-rgba-stream\r\n"
@@ -127,6 +133,9 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, std::atomic<bool
   uint64_t lastSequence = 0u;
   uint64_t sentFrames = 0u;
   while (running.load()) {
+    if (!isVcamRawRunning(state)) {
+      return;
+    }
     PreviewFrame frame;
     if (!previewFrames.copyLatest(frame) || frame.sequence == lastSequence) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -150,7 +159,10 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, std::atomic<bool
 
 }  // namespace
 
-void runRawFrameServer(uint16_t port, PreviewFrameStore &previewFrames, std::atomic<bool> &running) {
+void runRawFrameServer(uint16_t port,
+                       PreviewFrameStore &previewFrames,
+                       MeetingState &state,
+                       std::atomic<bool> &running) {
 #if defined(_WIN32)
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -196,7 +208,7 @@ void runRawFrameServer(uint16_t port, PreviewFrameStore &previewFrames, std::ato
     const std::string request = readRequest(client);
     if (request.find("GET /stream.rgba ") != std::string::npos) {
       std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_connected\",\"port\":" << port << "}" << std::endl;
-      streamFrames(client, previewFrames, running);
+      streamFrames(client, previewFrames, state, running);
       std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_disconnected\",\"port\":" << port << "}" << std::endl;
     } else {
       const std::string response =

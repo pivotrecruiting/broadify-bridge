@@ -1,7 +1,7 @@
 {
   "name": "electron-vite-template",
   "private": true,
-  "version": "0.17.8",
+  "version": "0.18.0-rc.1",
   "description": "Broadify Bridge desktop application for device bridging and realtime graphics output.",
   "author": "Broadify",
   "type": "module",
@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "npm-run-all --parallel dev:react dev:electron",
     "dev:react": "vite",
-    "dev:electron": "npm run build:display-helper && npm run build:meeting-helper && cross-env BRIDGE_VCAM_REINITIALIZE_ON_INSTALL=0 npm run install:vcam-helper && npm run build:framebus && npm run build:graphics-renderer && npm run transpile:electron && cross-env NODE_ENV=development BRIDGE_VCAM_HELPER_PATH=/Applications/BroadifyVCam.app electron .",
+    "dev:electron": "npm run build:display-helper && npm run build:meeting-helper && npm run verify:vcam-helper && npm run build:framebus && npm run build:graphics-renderer && npm run transpile:electron && cross-env NODE_ENV=development BRIDGE_VCAM_HELPER_PATH=/Applications/BroadifyVCam.app electron .",
     "clean:app": "node scripts/clean-build-artifacts.mjs",
     "build:app": "npm run clean:app && npm run transpile:electron && tsc -b && vite build",
     "build:protocol": "npm --prefix packages/protocol run build",
@@ -19,6 +19,8 @@
     "build:meeting-helper": "bash scripts/build-meeting-helper.sh",
     "build:vcam-helper": "bash scripts/build-vcam-helper-macos.sh",
     "install:vcam-helper": "bash scripts/install-vcam-helper-macos.sh",
+    "setup:vcam-helper": "npm run install:vcam-helper && npm run verify:vcam-helper",
+    "verify:vcam-helper": "bash scripts/verify-vcam-helper-macos.sh",
     "prepare:decklink-helper-release": "bash scripts/prepare-decklink-helper-release.sh",
     "prepare:sdl2-macos-release": "bash scripts/prepare-sdl2-macos-release.sh",
     "ensure:sdl2-macos": "bash scripts/ensure-sdl2-macos.sh",

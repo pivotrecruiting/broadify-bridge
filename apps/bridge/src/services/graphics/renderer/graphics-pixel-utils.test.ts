@@ -1,4 +1,4 @@
-import { bgraToRgba } from "./graphics-pixel-utils.js";
+import { bgraToRgba, downsampleRgbaBox } from "./graphics-pixel-utils.js";
 
 describe("graphics-pixel-utils", () => {
   describe("bgraToRgba", () => {
@@ -33,6 +33,33 @@ describe("graphics-pixel-utils", () => {
       expect(buffer[1]).toBe(0); // G
       expect(buffer[2]).toBe(255); // B
       expect(buffer[3]).toBe(128); // A
+    });
+  });
+
+  describe("downsampleRgbaBox", () => {
+    it("averages an integer source block into one target pixel", () => {
+      const source = Buffer.from([
+        0, 0, 0, 255,
+        20, 40, 60, 255,
+        40, 80, 120, 255,
+        60, 120, 180, 255,
+      ]);
+
+      expect(downsampleRgbaBox(source, 2, 2, 1, 1)).toEqual(
+        Buffer.from([30, 60, 90, 255])
+      );
+    });
+
+    it("returns the original buffer when dimensions match", () => {
+      const source = Buffer.from([1, 2, 3, 4]);
+
+      expect(downsampleRgbaBox(source, 1, 1, 1, 1)).toBe(source);
+    });
+
+    it("rejects non-integer scale factors", () => {
+      expect(() =>
+        downsampleRgbaBox(Buffer.alloc(3 * 2 * 4), 3, 2, 2, 1)
+      ).toThrow("positive integer scale factors");
     });
   });
 });

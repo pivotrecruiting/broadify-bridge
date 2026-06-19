@@ -40,8 +40,26 @@ describe("graphics-schemas", () => {
   });
 
   it("GraphicsLayoutSchema accepts valid layout", () => {
-    const result = GraphicsLayoutSchema.parse({ x: 0, y: 0, scale: 1 });
-    expect(result).toEqual({ x: 0, y: 0, scale: 1 });
+    const result = GraphicsLayoutSchema.parse({
+      x: 0,
+      y: 0,
+      scale: 1,
+      scaleX: 0.8,
+      scaleY: 0.6,
+      rotationX: 10,
+      rotationY: -12,
+      rotationZ: 18,
+    });
+    expect(result).toEqual({
+      x: 0,
+      y: 0,
+      scale: 1,
+      scaleX: 0.8,
+      scaleY: 0.6,
+      rotationX: 10,
+      rotationY: -12,
+      rotationZ: 18,
+    });
   });
 
   it("GraphicsCategorySchema accepts valid categories", () => {

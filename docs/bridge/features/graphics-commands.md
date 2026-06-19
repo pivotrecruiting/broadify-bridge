@@ -74,7 +74,7 @@ Schema: `GraphicsSendSchema`
   "layerId": "lower-third-1",
   "category": "lower-thirds",
   "backgroundMode": "transparent",
-  "layout": { "x": 0, "y": 780, "scale": 1 },
+  "layout": { "x": 0, "y": 780, "scale": 1, "scaleX": 1, "scaleY": 1, "rotationZ": 0 },
   "zIndex": 30,
   "bundle": {
     "manifest": { "render": { "width": 1920, "height": 1080, "fps": 50 } },
@@ -115,7 +115,7 @@ Schema: `GraphicsUpdateLayoutSchema`
 
 **Payload**
 ```json
-{ "layerId": "lower-third-1", "layout": { "x": 0, "y": 700, "scale": 1 }, "zIndex": 40 }
+{ "layerId": "lower-third-1", "layout": { "x": 0, "y": 700, "scale": 1, "scaleX": 1, "scaleY": 0.9, "rotationX": 0, "rotationY": 0, "rotationZ": 12 }, "zIndex": 40 }
 ```
 
 **Verhalten**

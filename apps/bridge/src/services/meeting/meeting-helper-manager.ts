@@ -32,6 +32,7 @@ const HELPER_PING_DELAY_MS = 100;
 const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
 const CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS = 120;
 const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
+const STALE_HELPER_PORT_RELEASE_TIMEOUT_MS = 1000;
 
 export type MeetingHelperLifecycleStateT =
   | "stopped"
@@ -299,6 +300,97 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function listTcpListenPids(port: number): number[] {
+  if (platform() !== "darwin") {
+    return [];
+  }
+  try {
+    const output = execFileSync(
+      "lsof",
+      ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    return output
+      .split(/\s+/)
+      .map((line) => Number.parseInt(line, 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+function isMeetingHelperProcess(pid: number): boolean {
+  if (platform() !== "darwin") {
+    return false;
+  }
+  try {
+    const output = execFileSync("lsof", ["-p", String(pid), "-a", "-d", "txt"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return (
+      output.includes(MACOS_MEETING_HELPER_APP_NAME) ||
+      output.includes(MACOS_MEETING_HELPER_EXECUTABLE_NAME)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      process.kill(pid, 0);
+      await sleep(50);
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Release stale native meeting helpers that still own the fixed VCam raw port.
+ */
+export async function releaseStaleMeetingHelperVcamPort(
+  port: number,
+  logger: LoggerT = getLogger(),
+): Promise<void> {
+  const pids = listTcpListenPids(port).filter((pid) => pid !== process.pid);
+  for (const pid of pids) {
+    if (!isMeetingHelperProcess(pid)) {
+      logger.warn(
+        `[Meeting] VCam raw port ${port} is owned by non-meeting-helper pid=${pid}; leaving it untouched.`,
+      );
+      continue;
+    }
+
+    logger.warn(
+      `[Meeting] Terminating stale meeting helper pid=${pid} on VCam raw port ${port}`,
+    );
+    try {
+      process.kill(pid, "SIGTERM");
+      const exited = await waitForProcessExit(pid, STALE_HELPER_PORT_RELEASE_TIMEOUT_MS);
+      if (!exited) {
+        logger.warn(
+          `[Meeting] Stale meeting helper pid=${pid} did not exit after SIGTERM; sending SIGKILL.`,
+        );
+        process.kill(pid, "SIGKILL");
+        await waitForProcessExit(pid, STALE_HELPER_PORT_RELEASE_TIMEOUT_MS);
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(
+        `[Meeting] Could not terminate stale meeting helper pid=${pid}: ${message}`,
+      );
+    }
+  }
+}
+
 /**
  * Retry control.ping because helper startup can briefly race with socket accept.
  */
@@ -510,6 +602,8 @@ export class MeetingHelperManager {
         MEETING_MODELS_DIR: modelsDir,
         MEETING_VCAM_NATIVE_AVAILABLE: isVcamExtensionAvailable() ? "1" : "0",
       };
+
+      await releaseStaleMeetingHelperVcamPort(DEFAULT_MEETING_VCAM_FRAME_PORT, logger);
 
       const useLaunchServices =
         platform() === "darwin" && this.helperIdentity.appPath !== null;
