@@ -71,6 +71,7 @@ Zusätzlich prüft der Windows-Workflow:
 
 - genau eine NSIS-`.exe`, genau eine `.msi`, `latest.yml` und NSIS-`.blockmap`
 - `latest.yml` verweist auf die NSIS-`.exe` und nicht auf die `.msi`
+- Wenn `electron-builder` bei `--publish=never` kein `latest.yml` schreibt, erzeugt `scripts/ensure-windows-updater-metadata.mjs` die Metadaten deterministisch aus der NSIS-`.exe`.
 - MSI lässt sich silent in ein temporäres Verzeichnis installieren und enthält die nativen Runtime-Dateien
 
 ## 6. Release-Best-Practices (kurz)
