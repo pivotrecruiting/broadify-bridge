@@ -8,6 +8,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECTED_ARCH=""
 MACOS_FLOOR_VERSION="${MACOS_FLOOR_VERSION:-${DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET:-${MACOSX_DEPLOYMENT_TARGET:-13.0}}}"
+UNAME_S="$(uname -s)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,7 +33,11 @@ normalize_arch() {
       echo "arm64"
       ;;
     x64 | x86_64 | amd64)
-      echo "x86_64"
+      if [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
+        echo "x86-64"
+      else
+        echo "x86_64"
+      fi
       ;;
     *)
       echo "$1"
@@ -96,14 +101,10 @@ REQUIRED_FILES=(
   "apps/bridge/dist/index.js"
   "apps/bridge/dist/services/graphics/renderer/electron-renderer-entry.js"
   "apps/bridge/native/framebus/build/Release/framebus.node"
-  "apps/bridge/native/display-helper/display-helper"
-  "apps/bridge/native/decklink-helper/decklink-helper"
 )
 # macOS uses the Apple Vision keyer only; MODNet/ONNX Runtime and the model
 # ship on Windows, so they are intentionally absent from the macOS bundle.
 EXECUTABLE_FILES=(
-  "apps/bridge/native/display-helper/display-helper"
-  "apps/bridge/native/decklink-helper/decklink-helper"
 )
 
 check_modnet_manifest_hash() {
@@ -136,13 +137,24 @@ check_modnet_manifest_hash() {
   echo "[Verify] MODNet model hash verified -> $actual_hash"
 }
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "$UNAME_S" == "Darwin" ]]; then
+  REQUIRED_FILES+=("apps/bridge/native/display-helper/display-helper")
+  REQUIRED_FILES+=("apps/bridge/native/decklink-helper/decklink-helper")
   REQUIRED_FILES+=("apps/bridge/native/display-helper/libSDL2-2.0.0.dylib")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
+  EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper")
+  EXECUTABLE_FILES+=("apps/bridge/native/decklink-helper/decklink-helper")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app/Contents/Library/SystemExtensions/com.broadify.vcam.extension.systemextension")
+elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
+  REQUIRED_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/onnxruntime.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/modnet.onnx")
+  EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
+  EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
 else
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/meeting-helper")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper")
@@ -170,7 +182,7 @@ log_file_metadata() {
   local relative_path="$1"
   local absolute_path="$ROOT_DIR/$relative_path"
   local stat_output
-  stat_output="$(stat -f "mode=%Sp size=%z bytes" "$absolute_path")"
+  stat_output="$(stat -f "mode=%Sp size=%z bytes" "$absolute_path" 2>/dev/null || stat -c "mode=%A size=%s bytes" "$absolute_path")"
   echo "[Verify] $relative_path -> $stat_output"
 }
 
@@ -266,10 +278,10 @@ for file_path in "${EXECUTABLE_FILES[@]}"; do
 done
 
 check_architecture "apps/bridge/native/framebus/build/Release/framebus.node"
-check_architecture "apps/bridge/native/display-helper/display-helper"
-check_architecture "apps/bridge/native/decklink-helper/decklink-helper"
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "$UNAME_S" == "Darwin" ]]; then
+  check_architecture "apps/bridge/native/display-helper/display-helper"
+  check_architecture "apps/bridge/native/decklink-helper/decklink-helper"
   check_architecture "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper"
   check_architecture "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib"
   check_macos_install_name \
@@ -282,6 +294,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   check_macos_max_minos "apps/bridge/native/display-helper/display-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/decklink-helper/decklink-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" "$MACOS_FLOOR_VERSION"
+elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
+  check_architecture "apps/bridge/native/display-helper/display-helper.exe"
+  check_architecture "apps/bridge/native/meeting-helper/meeting-helper.exe"
+  check_modnet_manifest_hash
 else
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper"
 fi

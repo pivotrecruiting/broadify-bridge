@@ -27,9 +27,16 @@ In `electron-builder.json` unter `win` muss NSIS plus MSI aktiv sein. NSIS bleib
       "TimestampRfc3161": "http://timestamp.acs.microsoft.com",
       "TimestampDigest": "SHA256"
     }
+  },
+  "msi": {
+    "oneClick": false,
+    "runAfterFinish": false,
+    "additionalLightArgs": ["-sval"]
   }
 }
 ```
+
+`additionalLightArgs: ["-sval"]` ist bewusst gesetzt: Auf GitHub Hosted Runnern mit `windows-2022` kann WiX `light.exe` bei ICE01-ICE105 an der Windows-Installer/Scripting-Umgebung des Runners scheitern (`LGHT0217`, "Windows Installer Service could not be accessed"). Die MSI-ICE-Validation wird deshalb im CI-Linking unterdrückt und durch konkrete Pipeline-Prüfungen ersetzt.
 
 ## 3. CI/Build-Umgebung (Secrets)
 
@@ -48,6 +55,7 @@ Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.y
 1. Windows CI-Runner nutzen.
 2. Build starten: npm ci dann npm run dist:win.
 3. Ergebnis: signierte Artefakte in `dist/` (`.exe` für NSIS/Auto-Update, `.msi` für manuelle Kundeninstallation).
+4. Der Build muss vor `electron-builder` alle Windows-Runtime-Artefakte prüfen (`display-helper.exe`, `meeting-helper.exe`, `onnxruntime.dll`, MODNet-Modell, FrameBus-Addon).
 
 ## 5. Signatur verifizieren (Pflicht)
 
@@ -58,6 +66,12 @@ Get-ChildItem dist -Recurse -Include *.exe,*.msi | ForEach-Object {
   signtool verify /pa /v $_.FullName
 }
 ```
+
+Zusätzlich prüft der Windows-Workflow:
+
+- genau eine NSIS-`.exe`, genau eine `.msi`, `latest.yml` und NSIS-`.blockmap`
+- `latest.yml` verweist auf die NSIS-`.exe` und nicht auf die `.msi`
+- MSI lässt sich silent in ein temporäres Verzeichnis installieren und enthält die nativen Runtime-Dateien
 
 ## 6. Release-Best-Practices (kurz)
 

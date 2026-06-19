@@ -134,7 +134,7 @@ Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 
 - **NSIS Installer (Updater-Pfad)**: `Broadify-Bridge-{version}-x64.exe`
 - **MSI (manuelle Kundeninstallation)**: `Broadify-Bridge-{version}-x64.msi`
-- **Update-Metadaten**: `latest.yml`
+- **Update-Metadaten**: `latest.yml` (muss auf die NSIS-`.exe` zeigen)
 
 ### Linux
 

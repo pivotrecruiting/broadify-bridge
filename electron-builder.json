@@ -85,5 +85,10 @@
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
     "runAfterFinish": false
+  },
+  "msi": {
+    "oneClick": false,
+    "runAfterFinish": false,
+    "additionalLightArgs": ["-sval"]
   }
 }

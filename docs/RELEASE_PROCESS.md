@@ -393,6 +393,13 @@ Nach Abschluss der Builds (ca. 10-20 Minuten):
    - `Broadify-Bridge-0.1.0-x64.msi` (Windows MSI, bevorzugt für manuelle Kundeninstallation)
    - `broadify-bridge-0.1.0-x64.AppImage` (Linux)
 
+Für Windows zusätzlich prüfen:
+
+- Der Workflow-Schritt `Assert Windows installer artifacts` ist erfolgreich.
+- Der Workflow-Schritt `Verify Windows signatures` ist erfolgreich für `.exe` und `.msi`.
+- Der Workflow-Schritt `Smoke test Windows MSI install` ist erfolgreich.
+- `latest.yml` verweist auf die NSIS-`.exe`; die `.msi` ist nur manueller Download.
+
 Für RC-Releases zusätzlich prüfen:
 
 - Release ist in GitHub als `Pre-release` markiert

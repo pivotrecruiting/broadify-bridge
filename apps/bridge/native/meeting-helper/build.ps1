@@ -17,6 +17,10 @@ if (-not (Test-Path $candidate)) {
 if (Test-Path $candidate) {
   Copy-Item -Force $candidate (Join-Path $rootDir "meeting-helper.exe")
 }
+$outputExe = Join-Path $rootDir "meeting-helper.exe"
+if (-not (Test-Path $outputExe)) {
+  throw "meeting-helper.exe was not produced by the Windows build. Expected output at $outputExe"
+}
 
 $onnxRuntimeRoot = $env:BROADIFY_ONNXRUNTIME_ROOT
 if ([string]::IsNullOrWhiteSpace($onnxRuntimeRoot)) {
@@ -33,4 +37,4 @@ if ($env:MEETING_HELPER_ENABLE_MODNET -ne "0") {
   Copy-Item -Force $dllCandidate (Join-Path $rootDir "onnxruntime.dll")
 }
 
-Write-Host "Built $(Join-Path $rootDir 'meeting-helper.exe')"
+Write-Host "Built $outputExe"
