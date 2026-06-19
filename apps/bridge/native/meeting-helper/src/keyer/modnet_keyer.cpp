@@ -18,6 +18,9 @@
 #if defined(__APPLE__)
 #include <coreml_provider_factory.h>
 #endif
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #endif
 
 namespace broadify::meeting {
@@ -59,6 +62,32 @@ int inferenceThreadCount() {
   }
   return static_cast<int>(std::clamp(detectedThreads, 2u, kMaxCpuInferenceThreads));
 }
+
+#if BROADIFY_ENABLE_MODNET && defined(_WIN32)
+std::wstring utf8ToWidePath(const std::string &path) {
+  if (path.empty()) {
+    return std::wstring();
+  }
+
+  const int requiredLength =
+      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, nullptr, 0);
+  if (requiredLength <= 0) {
+    return std::wstring();
+  }
+
+  std::wstring widePath(static_cast<size_t>(requiredLength), L'\0');
+  const int convertedLength =
+      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, widePath.data(), requiredLength);
+  if (convertedLength <= 0) {
+    return std::wstring();
+  }
+
+  if (!widePath.empty() && widePath.back() == L'\0') {
+    widePath.pop_back();
+  }
+  return widePath;
+}
+#endif
 
 }  // namespace
 
@@ -197,7 +226,16 @@ class ModnetKeyer::Impl {
 #else
       status_.provider = "cpu";
 #endif
+#if defined(_WIN32)
+      const std::wstring ortModelPath = utf8ToWidePath(modelPath);
+      if (ortModelPath.empty()) {
+        setFallback("model_path_invalid");
+        return false;
+      }
+      session_ = std::make_unique<Ort::Session>(*env_, ortModelPath.c_str(), sessionOptions);
+#else
       session_ = std::make_unique<Ort::Session>(*env_, modelPath.c_str(), sessionOptions);
+#endif
       Ort::AllocatorWithDefaultOptions allocator;
       Ort::AllocatedStringPtr inputNameAllocated = session_->GetInputNameAllocated(0, allocator);
       Ort::AllocatedStringPtr outputNameAllocated = session_->GetOutputNameAllocated(0, allocator);
