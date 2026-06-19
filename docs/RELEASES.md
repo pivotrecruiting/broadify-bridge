@@ -132,9 +132,9 @@ Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 
 ### Windows
 
-- **NSIS Installer (Updater-Pfad)**: `Broadify-Bridge-Setup-{version}.exe` (Name kann je nach Artifact-Template variieren)
-- **MSI**: `broadify-bridge-{version}-win-x64.msi`
-- **Update-Metadaten**: `latest.yml`
+- **NSIS Installer (Updater-Pfad)**: `Broadify-Bridge-{version}-x64.exe`
+- **MSI (manuelle Kundeninstallation)**: `Broadify-Bridge-{version}-x64.msi`
+- **Update-Metadaten**: `latest.yml` (muss auf die NSIS-`.exe` zeigen)
 
 ### Linux
 
@@ -212,14 +212,14 @@ Hinweis:
       "content_type": "text/yaml"
     },
     {
-      "name": "broadify-bridge-0.1.0-win-x64.exe",
-      "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/broadify-bridge-0.1.0-win-x64.exe",
+      "name": "Broadify-Bridge-0.1.0-x64.exe",
+      "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/Broadify-Bridge-0.1.0-x64.exe",
       "size": 120000000,
       "content_type": "application/x-msdownload"
     },
     {
-      "name": "broadify-bridge-0.1.0-win-x64.msi",
-      "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/broadify-bridge-0.1.0-win-x64.msi",
+      "name": "Broadify-Bridge-0.1.0-x64.msi",
+      "browser_download_url": "https://github.com/{owner}/{repo}/releases/download/v0.1.0/Broadify-Bridge-0.1.0-x64.msi",
       "size": 125000000,
       "content_type": "application/x-msi"
     },
@@ -236,6 +236,7 @@ Hinweis:
 **Filter-Regeln für Web-App:**
 
 - ✅ Verwende: `.dmg`, `.exe`, `.msi`, `.AppImage` Dateien
+- ✅ Für Windows-Downloads bevorzugt `.msi` anzeigen; `.exe` bleibt für Auto-Update/NSIS und als Alternative erhalten.
 - ❌ Ignoriere: `.blockmap` Dateien (für Delta-Updates, nicht für Downloads)
 - ❌ Ignoriere: `.yml` / `.yaml` Dateien (Update-Metadaten, nicht für Downloads)
 
