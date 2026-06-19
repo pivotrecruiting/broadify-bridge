@@ -1,4 +1,5 @@
 import { getStandardAnimationCss } from "./renderer/animation-css.js";
+import { getApplyLayoutRuntimeScript } from "./renderer/layout-runtime.js";
 
 /**
  * Build the HTML document served to the vMix browser input.
@@ -8,6 +9,7 @@ import { getStandardAnimationCss } from "./renderer/animation-css.js";
  */
 export function buildBrowserInputPageHtml(): string {
   const standardCss = JSON.stringify(getStandardAnimationCss());
+  const applyLayoutRuntimeScript = getApplyLayoutRuntimeScript();
 
   return `<!DOCTYPE html>
 <html>
@@ -34,6 +36,7 @@ export function buildBrowserInputPageHtml(): string {
         position: absolute;
         inset: 0;
         overflow: hidden;
+        perspective: 1200px;
       }
     </style>
   </head>
@@ -211,14 +214,7 @@ export function buildBrowserInputPageHtml(): string {
         });
       };
 
-      const applyLayout = (host, layout) => {
-        if (!host) return;
-        const x = Number(layout?.x || 0);
-        const y = Number(layout?.y || 0);
-        const scale = Number(layout?.scale || 1);
-        host.style.transform =
-          "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
-      };
+${applyLayoutRuntimeScript}
 
       const resolveBackgroundColor = (mode) => {
         if (mode === "green") return "#00FF00";

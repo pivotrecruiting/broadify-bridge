@@ -14,13 +14,42 @@ describe("layer-schemas", () => {
   describe("GraphicsLayoutSchema", () => {
     it("accepts valid layout", () => {
       expect(
-        GraphicsLayoutSchema.parse({ x: 0, y: 100, scale: 1.5 })
-      ).toEqual({ x: 0, y: 100, scale: 1.5 });
+        GraphicsLayoutSchema.parse({
+          x: 0,
+          y: 100,
+          scale: 1.5,
+          scaleX: 1.2,
+          scaleY: 0.8,
+          rotationX: 10,
+          rotationY: -12,
+          rotationZ: 18,
+        })
+      ).toEqual({
+        x: 0,
+        y: 100,
+        scale: 1.5,
+        scaleX: 1.2,
+        scaleY: 0.8,
+        rotationX: 10,
+        rotationY: -12,
+        rotationZ: 18,
+      });
     });
 
     it("rejects invalid scale", () => {
       expect(() =>
         GraphicsLayoutSchema.parse({ x: 0, y: 0, scale: 0 })
+      ).toThrow();
+    });
+
+    it("rejects invalid rotation", () => {
+      expect(() =>
+        GraphicsLayoutSchema.parse({
+          x: 0,
+          y: 0,
+          scale: 1,
+          rotationZ: Number.NaN,
+        })
       ).toThrow();
     });
   });

@@ -1,4 +1,5 @@
 import { getStandardAnimationCss } from "./animation-css.js";
+import { getApplyLayoutRuntimeScript } from "./layout-runtime.js";
 
 // Design baseline for templates (format-agnostic rendering).
 const BASE_RENDER_WIDTH = 1920;
@@ -9,8 +10,10 @@ const BASE_RENDER_HEIGHT = 1080;
  *
  * @returns HTML payload loaded into the hidden Electron BrowserWindow.
  */
-export function buildSingleWindowDocument(): string {
+export function buildSingleWindowDocument(renderScale = 1): string {
   const standardCss = JSON.stringify(getStandardAnimationCss());
+  const applyLayoutRuntimeScript = getApplyLayoutRuntimeScript(renderScale);
+  const perspectivePx = 1200 * renderScale;
   return `<!DOCTYPE html>
 <html>
   <head>
@@ -33,6 +36,7 @@ export function buildSingleWindowDocument(): string {
         position: absolute;
         inset: 0;
         overflow: hidden;
+        perspective: ${perspectivePx}px;
       }
     </style>
   </head>
@@ -205,13 +209,7 @@ export function buildSingleWindowDocument(): string {
         });
       };
 
-      const applyLayout = (host, layout) => {
-        if (!host) return;
-        const x = Number(layout?.x || 0);
-        const y = Number(layout?.y || 0);
-        const scale = Number(layout?.scale || 1);
-        host.style.transform = "translate(" + x + "px, " + y + "px) scale(" + scale + ")";
-      };
+${applyLayoutRuntimeScript}
 
       const resolveBackgroundColor = (mode) => {
         if (mode === "green") return "#00FF00";

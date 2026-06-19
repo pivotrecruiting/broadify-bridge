@@ -10,6 +10,11 @@ export const GraphicsLayoutSchema = z
     x: z.number().finite(),
     y: z.number().finite(),
     scale: z.number().finite().positive(),
+    scaleX: z.number().finite().positive().optional(),
+    scaleY: z.number().finite().positive().optional(),
+    rotationX: z.number().finite().optional(),
+    rotationY: z.number().finite().optional(),
+    rotationZ: z.number().finite().optional(),
   })
   .strict();
 

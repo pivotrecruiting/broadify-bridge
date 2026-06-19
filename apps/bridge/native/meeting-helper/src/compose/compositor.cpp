@@ -75,6 +75,43 @@ void fillRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, cons
   }
 }
 
+void fillRotatedRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &rect, double rotationDeg, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+  if (rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+  if (std::abs(rotationDeg) < 0.001) {
+    fillRect(frame, width, height, rect, r, g, b, a);
+    return;
+  }
+
+  constexpr double kPi = 3.14159265358979323846;
+  const double radians = rotationDeg * kPi / 180.0;
+  const double cosTheta = std::cos(radians);
+  const double sinTheta = std::sin(radians);
+  const double centerX = rect.x + rect.width / 2.0;
+  const double centerY = rect.y + rect.height / 2.0;
+  const double halfWidth = rect.width / 2.0;
+  const double halfHeight = rect.height / 2.0;
+  const double extentX = std::abs(halfWidth * cosTheta) + std::abs(halfHeight * sinTheta);
+  const double extentY = std::abs(halfWidth * sinTheta) + std::abs(halfHeight * cosTheta);
+  const int minX = std::max(0, static_cast<int>(std::floor(centerX - extentX)));
+  const int minY = std::max(0, static_cast<int>(std::floor(centerY - extentY)));
+  const int maxX = std::min(static_cast<int>(width), static_cast<int>(std::ceil(centerX + extentX)));
+  const int maxY = std::min(static_cast<int>(height), static_cast<int>(std::ceil(centerY + extentY)));
+
+  for (int y = minY; y < maxY; ++y) {
+    for (int x = minX; x < maxX; ++x) {
+      const double dx = (x + 0.5) - centerX;
+      const double dy = (y + 0.5) - centerY;
+      const double localX = dx * cosTheta + dy * sinTheta;
+      const double localY = -dx * sinTheta + dy * cosTheta;
+      if (std::abs(localX) <= halfWidth && std::abs(localY) <= halfHeight) {
+        blendPixel(frame, width, height, x, y, r, g, b, a);
+      }
+    }
+  }
+}
+
 void fillBackground(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const std::string &mode, uint64_t frameIndex) {
   frame.assign(static_cast<size_t>(width) * height * 4u, 255u);
   for (uint32_t y = 0; y < height; ++y) {
@@ -198,8 +235,8 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
       static_cast<int>(height * std::clamp(mediaLayer.height, 0.05, 1.0)),
     };
   }
-  fillRect(frame, width, height, rect, 14, 116, 144, 210);
-  fillRect(frame, width, height, {rect.x + 8, rect.y + 8, std::max(0, rect.width - 16), 3}, 255, 255, 255, 190);
+  fillRotatedRect(frame, width, height, rect, mediaLayer.rotation, 14, 116, 144, 210);
+  fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 8, std::max(0, rect.width - 16), 3}, mediaLayer.rotation, 255, 255, 255, 190);
 }
 
 void drawGraphicsFrame(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const VideoFrame *graphicsFrame) {

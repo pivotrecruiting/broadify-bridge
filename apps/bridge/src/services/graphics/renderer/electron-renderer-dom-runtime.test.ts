@@ -46,6 +46,19 @@ describe("electron-renderer-dom-runtime", () => {
       const doc = buildSingleWindowDocument();
       expect(doc).toContain("#graphics-background");
       expect(doc).toContain("#graphics-root");
+      expect(doc).toContain("perspective: 1200px");
+    });
+
+    it("applies rotation fields in layer transforms", () => {
+      const doc = buildSingleWindowDocument();
+      expect(doc).toContain("layout?.scaleX");
+      expect(doc).toContain("layout?.scaleY");
+      expect(doc).toContain("layout?.rotationX");
+      expect(doc).toContain("layout?.rotationY");
+      expect(doc).toContain("layout?.rotationZ");
+      expect(doc).toContain("rotateX(");
+      expect(doc).toContain("rotateY(");
+      expect(doc).toContain("rotateZ(");
     });
   });
 });

@@ -1996,7 +1996,16 @@ describe("electron-renderer-entry", () => {
           type: "update_layout",
           token: "test-token",
           layerId: "layer-1",
-          layout: { x: 10, y: 20, scale: 1.5 },
+          layout: {
+            x: 10,
+            y: 20,
+            scale: 1.5,
+            scaleX: 1.2,
+            scaleY: 0.8,
+            rotationX: 10,
+            rotationY: -12,
+            rotationZ: 18,
+          },
           zIndex: 2,
         },
         payload: Buffer.alloc(0),
@@ -2014,7 +2023,7 @@ describe("electron-renderer-entry", () => {
     await new Promise((r) => setTimeout(r, 80));
 
     expect(mockExecuteJS).toHaveBeenCalledWith(
-      expect.stringMatching(/__updateLayout.*layer-1/),
+      expect.stringMatching(/__updateLayout.*layer-1.*scaleY.*0\.8.*rotationZ.*18/),
       true
     );
   });
@@ -2887,7 +2896,10 @@ describe("electron-renderer-entry", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     expect(mockPinoWarn).toHaveBeenCalledWith(
-      expect.objectContaining({ existing: { width: 1920, height: 1080, fps: 30 } }),
+      expect.objectContaining({
+        existing: { width: 1920, height: 1080, fps: 30, renderScale: 1 },
+        next: { width: 1280, height: 720, fps: 30, renderScale: 2 },
+      }),
       "[GraphicsRenderer] Single renderer format mismatch"
     );
     expect(mockDestroy).toHaveBeenCalled();
@@ -3308,7 +3320,7 @@ describe("electron-renderer-entry", () => {
       paintHandlers[0]({}, {}, mockImage);
       await new Promise((r) => setImmediate(r));
       expect(mockPinoWarn).toHaveBeenCalledWith(
-        "[GraphicsRenderer] Frame buffer length mismatch (single)"
+        "[GraphicsRenderer] Source frame buffer length mismatch (single)"
       );
     }
   });
