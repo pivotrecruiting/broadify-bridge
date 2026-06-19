@@ -165,7 +165,7 @@ final class RawFrameStreamReader {
             let rowOffset = y * rowBytes
             for x in 0..<Int(frameWidth) {
                 let srcIndex = rowOffset + x * 4
-                let dstIndex = rowOffset + (Int(frameWidth) - 1 - x) * 4
+                let dstIndex = rowOffset + x * 4
                 bgra[dstIndex + 0] = rgba[srcIndex + 2]
                 bgra[dstIndex + 1] = rgba[srcIndex + 1]
                 bgra[dstIndex + 2] = rgba[srcIndex + 0]

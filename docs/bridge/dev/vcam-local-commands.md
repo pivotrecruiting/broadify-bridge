@@ -161,3 +161,22 @@ Wenn diese Zeile fehlt, laeuft noch die alte Extension.
 Wenn mehrere Treffer aus unterschiedlichen `/Library/SystemExtensions/<UUID>/...`
 kommen, in der App erneut **Activate extension** ausloesen und alte Versionen
 ueber den offiziellen `systemextensionsctl uninstall`-Flow entfernen.
+Diese Verzeichnisse nicht per `rm` loeschen; macOS besitzt und bereinigt
+`/Library/SystemExtensions` nach Replacement/Uninstall, oft erst nach Reboot.
+
+Der Production-Meeting-Start darf keine bestehende VCam-Installation automatisch
+upgraden. Eine neue embedded Helper-Version wird zur Laufzeit nur mit
+`BRIDGE_VCAM_AUTO_UPGRADE_ON_START=1` ueber eine vorhandene
+`/Applications/BroadifyVCam.app` kopiert; normaler Meeting-Betrieb verwendet die
+bereits aktivierte Camera Extension.
+
+Im Dev-Flow installiert `npm run dev` die VCam nicht automatisch. Nach VCam-
+Codeaenderungen oder wenn `/Applications/BroadifyVCam.app` fehlt:
+
+```bash
+npm run setup:vcam-helper
+```
+
+Danach `npm run dev` starten; der Dev-Start bricht ab, wenn
+`verify:vcam-helper` die Kamera nicht als aktiv und in AVFoundation sichtbar
+findet.

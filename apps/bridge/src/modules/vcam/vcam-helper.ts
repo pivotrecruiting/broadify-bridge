@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 const VCAM_HELPER_PATH_ENV = "BRIDGE_VCAM_HELPER_PATH";
 const VCAM_EXTENSION_MARKER_ENV = "BROADIFY_VCAM_EXTENSION_INSTALLED";
+const VCAM_AUTO_UPGRADE_ON_START_ENV = "BRIDGE_VCAM_AUTO_UPGRADE_ON_START";
 const VCAM_EXTENSION_BUNDLE_ID = "com.broadify.vcam.extension";
 const DEFAULT_MACOS_VCAM_APP_PATH = "/Applications/BroadifyVCam.app";
 const VCAM_APP_EXECUTABLE_NAME = "BroadifyVCam";
@@ -82,16 +83,25 @@ function readBundleVersion(appPath: string): number | null {
   }
 }
 
+export function shouldAutoUpgradeEmbeddedVcamApp(
+  embeddedVersion: number | null,
+  installedVersion: number | null,
+  autoUpgradeOnStart = process.env[VCAM_AUTO_UPGRADE_ON_START_ENV] === "1",
+): boolean {
+  if (!autoUpgradeOnStart || embeddedVersion === null || installedVersion === null) {
+    return false;
+  }
+  return embeddedVersion > installedVersion;
+}
+
 function shouldInstallEmbeddedVcamApp(embeddedAppPath: string): boolean {
   if (!isValidVcamAppBundle(DEFAULT_MACOS_VCAM_APP_PATH)) {
     return true;
   }
+
   const embeddedVersion = readBundleVersion(embeddedAppPath);
   const installedVersion = readBundleVersion(DEFAULT_MACOS_VCAM_APP_PATH);
-  if (embeddedVersion === null || installedVersion === null) {
-    return false;
-  }
-  return embeddedVersion > installedVersion;
+  return shouldAutoUpgradeEmbeddedVcamApp(embeddedVersion, installedVersion);
 }
 
 function installEmbeddedVcamAppToApplications(): { installed: boolean; error?: string } {
@@ -426,7 +436,7 @@ export async function openVcamHelperApp(
     quitRunningVcamHelperApp();
 
     await new Promise<void>((resolve, reject) => {
-      const child: ChildProcess = spawn("open", ["-n", helperAppPath], {
+      const child: ChildProcess = spawn("open", [helperAppPath], {
         detached: true,
         stdio: "ignore",
       });

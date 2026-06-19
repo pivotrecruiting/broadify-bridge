@@ -1,6 +1,7 @@
 import SwiftUI
 import SystemExtensions
 import Foundation
+import os
 
 /**
  * Single-view UI with activate/deactivate controls for the camera
@@ -8,7 +9,6 @@ import Foundation
  */
 struct ContentView: View {
     @StateObject private var manager = ExtensionManager()
-    @State private var didRequestAutoActivation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -55,12 +55,6 @@ struct ContentView: View {
             Spacer()
         }
         .padding(24)
-        .task {
-            if !didRequestAutoActivation {
-                didRequestAutoActivation = true
-                manager.activate()
-            }
-        }
     }
 }
 
@@ -71,6 +65,8 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
     @Published var statusText = "Ready."
     @Published var isRequestingActivation = false
     @Published var awaitingUserApproval = false
+
+    private let logger = Logger(subsystem: "com.broadify.vcam", category: "system-extension")
 
     private var extensionIdentifier: String {
         // Must match the PRODUCT_BUNDLE_IDENTIFIER of the extension target.
@@ -84,9 +80,6 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
     }
 
     func activate() {
-        guard !isRequestingActivation else {
-            return
-        }
         isRequestingActivation = true
         awaitingUserApproval = false
         let request = OSSystemExtensionRequest.activationRequest(
@@ -96,6 +89,9 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
         let extensionExists = FileManager.default.fileExists(atPath: expectedEmbeddedExtensionPath)
+        logger.info(
+            "Activation requested appBundle=\(Bundle.main.bundlePath, privacy: .public) embeddedExtension=\(self.expectedEmbeddedExtensionPath, privacy: .public) exists=\(extensionExists)"
+        )
         statusText =
             "Activation requested… App bundle: \(Bundle.main.bundlePath). "
             + "Expected embedded extension: \(expectedEmbeddedExtensionPath). "
@@ -111,6 +107,7 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         )
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
+        logger.info("Deactivation requested for \(self.extensionIdentifier, privacy: .public)")
         statusText = "Deactivation requested…"
     }
 
@@ -124,6 +121,9 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         statusText =
             "Replacing extension v\(existing.bundleShortVersion)/\(existing.bundleVersion) "
             + "with v\(ext.bundleShortVersion)/\(ext.bundleVersion)…"
+        logger.info(
+            "Replacing extension existing=\(existing.bundleShortVersion, privacy: .public)/\(existing.bundleVersion, privacy: .public) new=\(ext.bundleShortVersion, privacy: .public)/\(ext.bundleVersion, privacy: .public)"
+        )
         return .replace
     }
 
@@ -131,6 +131,7 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         awaitingUserApproval = true
         statusText =
             "Waiting for approval in System Settings → General → Login Items & Extensions → Camera Extensions."
+        logger.info("Activation requires user approval in System Settings")
         SystemExtensionSettings.openCameraExtensionApprovalPane()
     }
 
@@ -142,10 +143,13 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         awaitingUserApproval = false
         switch result {
         case .completed:
+            logger.info("Extension request completed")
             statusText = "Extension request completed."
         case .willCompleteAfterReboot:
+            logger.info("Extension request will complete after reboot")
             statusText = "Extension will be active after a reboot."
         @unknown default:
+            logger.error("Extension request finished with unknown result")
             statusText = "Extension request finished with unknown result."
         }
     }
@@ -163,12 +167,16 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
                 + "App bundle: \(Bundle.main.bundlePath). "
                 + "Expected embedded extension: \(expectedEmbeddedExtensionPath). "
                 + "Exists on disk: \(extensionExists ? "yes" : "no")."
+            logger.error(
+                "Extension request failed because embedded extension was not found appBundle=\(Bundle.main.bundlePath, privacy: .public) embeddedExtension=\(self.expectedEmbeddedExtensionPath, privacy: .public) exists=\(extensionExists)"
+            )
             return
         }
 
         statusText =
             "Extension request failed: \(error.localizedDescription). "
             + formatNSError(error as NSError)
+        logger.error("Extension request failed: \(self.formatNSError(error as NSError), privacy: .public)")
     }
 
     private func formatNSError(_ error: NSError) -> String {

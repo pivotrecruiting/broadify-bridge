@@ -395,6 +395,11 @@ backgrounds, rendered graphics, lower thirds, and text remain unmirrored in the
 program frame. The runtime setting is the `camera` program section:
 `{"mirror": true | false}`.
 
+The virtual camera extension consumes the final program frame as-is. Its raw
+frame reader only converts RGBA to BGRA for CMIO and must not apply another
+horizontal flip, otherwise the complete output, including graphics and text,
+would be mirrored for remote meeting participants.
+
 `blendPixel` uses straight alpha blending:
 
 ```text
