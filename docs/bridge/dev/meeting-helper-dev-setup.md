@@ -54,6 +54,12 @@ Der macOS-VCam-Reader verwendet denselben Standardnamen:
 `broadify-meeting-framebus`. Wenn `BRIDGE_MEETING_FRAMEBUS_NAME` gesetzt wird,
 muss die Camera Extension entsprechend gebaut bzw. angepasst werden.
 
+FrameBus-Namen werden plattformspezifisch normalisiert. macOS/Linux verwenden
+POSIX Shared Memory mit fuehrendem `/`. Windows verwendet native File Mappings
+im `Local\` Namespace und entfernt `/` sowie `\` aus dem Segmentnamen. Der
+native Meeting Helper nutzt dieselbe Normalisierung wie das FrameBus N-API
+Addon, damit Renderer-, Meeting- und VCam-Pfade dieselben Segmente oeffnen.
+
 ## Kamera-Freigabe macOS
 
 Auf macOS laeuft der Kamera-Capture in `Broadify Bridge Meeting Helper.app`.

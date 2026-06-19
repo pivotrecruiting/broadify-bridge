@@ -513,6 +513,44 @@ jobs:
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }}
 
+      - name: Assert Windows installer artifacts
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $exeFiles = @(Get-ChildItem -Path $dist -File -Filter '*.exe')
+          $msiFiles = @(Get-ChildItem -Path $dist -File -Filter '*.msi')
+          $latestYml = Join-Path $dist 'latest.yml'
+
+          if ($exeFiles.Count -ne 1) {
+            throw "Expected exactly one root Windows NSIS .exe in dist/, found $($exeFiles.Count)."
+          }
+          if ($msiFiles.Count -ne 1) {
+            throw "Expected exactly one root Windows .msi in dist/, found $($msiFiles.Count)."
+          }
+          if (-not (Test-Path $latestYml)) {
+            throw "Missing Windows updater metadata: dist/latest.yml"
+          }
+
+          $exeBlockmap = "$($exeFiles[0].FullName).blockmap"
+          if (-not (Test-Path $exeBlockmap)) {
+            throw "Missing NSIS blockmap: $exeBlockmap"
+          }
+
+          $latestContent = Get-Content -Raw -Path $latestYml
+          if ($latestContent -notmatch [regex]::Escape($exeFiles[0].Name)) {
+            throw "latest.yml does not reference the NSIS installer $($exeFiles[0].Name)."
+          }
+          if ($latestContent -match '\.msi') {
+            throw "latest.yml unexpectedly references the MSI installer; Windows auto-update must use NSIS."
+          }
+
+          Write-Host "Windows installer artifacts verified:"
+          Write-Host "  NSIS: $($exeFiles[0].Name)"
+          Write-Host "  MSI:  $($msiFiles[0].Name)"
+
       - name: Linux packaging diagnostics
         if: startsWith(matrix.os, 'ubuntu-')
         shell: bash
@@ -534,6 +572,7 @@ jobs:
         if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $signtool = (Get-Command signtool -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
           if (-not $signtool) {
             $candidates = @()
@@ -556,6 +595,72 @@ jobs:
             Write-Host "Verifying signature:" $file.FullName
             & $signtool verify /pa /v $file.FullName
           }
+
+      - name: Smoke test Windows MSI install
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $msi = Get-ChildItem -Path dist -File -Filter '*.msi' | Select-Object -First 1
+          if (-not $msi) {
+            throw "No MSI artifact found for smoke test."
+          }
+
+          $installDir = Join-Path $env:RUNNER_TEMP 'broadify-bridge-msi-smoke'
+          $installLog = Join-Path $env:RUNNER_TEMP 'broadify-bridge-msi-smoke-install.log'
+          $uninstallLog = Join-Path $env:RUNNER_TEMP 'broadify-bridge-msi-smoke-uninstall.log'
+          if (Test-Path $installDir) {
+            Remove-Item -Recurse -Force $installDir
+          }
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+          $installArgs = @(
+            '/i', $msi.FullName,
+            '/qn',
+            '/norestart',
+            '/L*v', $installLog,
+            "APPLICATIONFOLDER=$installDir",
+            'ALLUSERS=2',
+            'MSIINSTALLPERUSER=1'
+          )
+          $install = Start-Process msiexec.exe -ArgumentList $installArgs -Wait -PassThru
+          if ($install.ExitCode -notin @(0, 3010)) {
+            throw "MSI smoke install failed with exit code $($install.ExitCode). See $installLog"
+          }
+
+          $expectedPaths = @(
+            (Join-Path $installDir 'resources\native\display-helper\display-helper.exe'),
+            (Join-Path $installDir 'resources\native\meeting-helper\meeting-helper.exe'),
+            (Join-Path $installDir 'resources\native\meeting-helper\onnxruntime.dll'),
+            (Join-Path $installDir 'resources\native\meeting-helper\models\modnet.onnx'),
+            (Join-Path $installDir 'resources\bridge\native\framebus\build\Release\framebus.node')
+          )
+          $mainExe = Get-ChildItem -Path $installDir -File -Filter 'BroadifyBridge*.exe' | Select-Object -First 1
+          if (-not $mainExe) {
+            throw "MSI smoke install did not create a BroadifyBridge*.exe in $installDir"
+          }
+          foreach ($path in $expectedPaths) {
+            if (-not (Test-Path $path)) {
+              throw "MSI smoke install missing expected packaged file: $path"
+            }
+          }
+
+          $uninstallArgs = @('/x', $msi.FullName, '/qn', '/norestart', '/L*v', $uninstallLog)
+          $uninstall = Start-Process msiexec.exe -ArgumentList $uninstallArgs -Wait -PassThru
+          if ($uninstall.ExitCode -notin @(0, 3010, 1605)) {
+            throw "MSI smoke uninstall failed with exit code $($uninstall.ExitCode). See $uninstallLog"
+          }
+
+          Write-Host "MSI smoke install verified in $installDir"
+
+      - name: Upload Windows MSI smoke logs
+        if: failure() && matrix.os == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi-smoke-logs-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/broadify-bridge-msi-smoke*.log
+          if-no-files-found: ignore
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -101,6 +101,15 @@ function createMockChild(): EventEmitter & {
 
 let clientSocket: net.Socket | null = null;
 
+function attachMockSocketErrorHandler(socket: net.Socket): void {
+  socket.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "ECONNRESET" || error.code === "ECONNREFUSED") {
+      return;
+    }
+    throw error;
+  });
+}
+
 async function initializeClientWithHandshake(): Promise<ElectronRendererClient> {
   return initializeClientWithCustomHello((token) =>
     encodeIpcPacket({ type: "hello", token })
@@ -121,6 +130,7 @@ async function initializeClientWithCustomHello(
       clientSocket = net.connect({ port, host: "127.0.0.1" }, () => {
         clientSocket?.write(buildHelloPacket(token));
       });
+      attachMockSocketErrorHandler(clientSocket);
     });
 
     return child;
@@ -486,10 +496,12 @@ describe("ElectronRendererClient", () => {
       const firstChild = mockSpawn.mock.results[0]?.value;
       firstChild?.emit("exit", 1, "SIGABRT");
       await waitForSpawnCount(2);
+      await waitForLifecycleState(c, "ready");
 
       const secondChild = mockSpawn.mock.results[1]?.value;
       secondChild?.emit("exit", 1, "SIGABRT");
       await waitForSpawnCount(3);
+      await waitForLifecycleState(c, "gpu_fallback");
 
       expect(
         (mockSpawn.mock.calls[2]?.[2] as { env?: Record<string, string> })?.env

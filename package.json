@@ -1,7 +1,7 @@
 {
   "name": "electron-vite-template",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.17.7-rc.1",
   "description": "Broadify Bridge desktop application for device bridging and realtime graphics output.",
   "author": "Broadify",
   "type": "module",
@@ -36,7 +36,7 @@
     "dist:mac": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run build:meeting-helper && npm run build:vcam-helper && npm run build:framebus && npm run transpile:electron && npm run build && bash scripts/verify-release-artifacts.sh --arch arm64 && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish=never && bash scripts/verify-macos-release-signing.sh --arch arm64",
     "dist:mac:arm64": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run build:meeting-helper && npm run build:vcam-helper && npm run build:framebus && npm run transpile:electron && npm run build && bash scripts/verify-release-artifacts.sh --arch arm64 && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish=never && bash scripts/verify-macos-release-signing.sh --arch arm64",
     "dist:mac:x64": "npm run build:decklink-helper && npm run download:decklink-helper && npm run check:decklink-helper && npm run build:display-helper && npm run build:meeting-helper && npm run build:vcam-helper && npm run build:framebus && npm run transpile:electron && npm run build && bash scripts/verify-release-artifacts.sh --arch x64 && electron-builder --config electron-builder.config.cjs --mac --x64 --publish=never && bash scripts/verify-macos-release-signing.sh --arch x64",
-    "dist:win": "npm run download:modnet-model && npm run build:display-helper && npm run build:meeting-helper && npm run build:framebus && npm run transpile:electron && npm run build && electron-builder --config electron-builder.config.cjs --win --x64 --publish=never",
+    "dist:win": "npm run download:modnet-model && npm run build:display-helper && npm run build:meeting-helper && npm run build:framebus && npm run transpile:electron && npm run build && bash scripts/verify-release-artifacts.sh --arch x64 && electron-builder --config electron-builder.config.cjs --win --x64 --publish=never && node scripts/ensure-windows-updater-metadata.mjs",
     "dist:linux": "npm run build:framebus && npm run transpile:electron && npm run build && electron-builder --config electron-builder.config.cjs --linux --x64 --publish=never",
     "dist:all": "npm run dist:mac:arm64 && npm run dist:mac:x64 && npm run dist:win",
     "release": "npm run dist:all",

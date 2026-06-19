@@ -1,4 +1,4 @@
-Stand: 19. Februar 2026.
+Stand: 19. Juni 2026.
 
 ## 1. Außerhalb vom Code: Azure Artifact Signing einrichten
 
@@ -12,12 +12,12 @@ Stand: 19. Februar 2026.
 
 ## 2. Im Repo: electron-builder konfigurieren
 
-In electron-builder.json unter win ergänzen (du hast aktuell portable + msi in electron-builder.json:46):
+In `electron-builder.json` unter `win` muss NSIS plus MSI aktiv sein. NSIS bleibt der primäre `electron-updater`-Pfad, MSI ist der kundenfreundliche manuelle Installer:
 
 ```json
 {
   "win": {
-    "target": ["portable", "msi"],
+    "target": ["nsis", "msi"],
     "icon": "./icon.png",
     "azureSignOptions": {
       "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",
@@ -27,9 +27,16 @@ In electron-builder.json unter win ergänzen (du hast aktuell portable + msi in 
       "TimestampRfc3161": "http://timestamp.acs.microsoft.com",
       "TimestampDigest": "SHA256"
     }
+  },
+  "msi": {
+    "oneClick": false,
+    "runAfterFinish": false,
+    "additionalLightArgs": ["-sval"]
   }
 }
 ```
+
+`additionalLightArgs: ["-sval"]` ist bewusst gesetzt: Auf GitHub Hosted Runnern mit `windows-2022` kann WiX `light.exe` bei ICE01-ICE105 an der Windows-Installer/Scripting-Umgebung des Runners scheitern (`LGHT0217`, "Windows Installer Service could not be accessed"). Die MSI-ICE-Validation wird deshalb im CI-Linking unterdrückt und durch konkrete Pipeline-Prüfungen ersetzt.
 
 ## 3. CI/Build-Umgebung (Secrets)
 
@@ -47,7 +54,8 @@ Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.y
 
 1. Windows CI-Runner nutzen.
 2. Build starten: npm ci dann npm run dist:win.
-3. Ergebnis: signierte Artefakte in dist/ (.exe, .msi).
+3. Ergebnis: signierte Artefakte in `dist/` (`.exe` für NSIS/Auto-Update, `.msi` für manuelle Kundeninstallation).
+4. Der Build muss vor `electron-builder` alle Windows-Runtime-Artefakte prüfen (`display-helper.exe`, `meeting-helper.exe`, `onnxruntime.dll`, MODNet-Modell, FrameBus-Addon).
 
 ## 5. Signatur verifizieren (Pflicht)
 
@@ -59,14 +67,20 @@ Get-ChildItem dist -Recurse -Include *.exe,*.msi | ForEach-Object {
 }
 ```
 
+Zusätzlich prüft der Windows-Workflow:
+
+- genau eine NSIS-`.exe`, genau eine `.msi`, `latest.yml` und NSIS-`.blockmap`
+- `latest.yml` verweist auf die NSIS-`.exe` und nicht auf die `.msi`
+- Wenn `electron-builder` bei `--publish=never` kein `latest.yml` schreibt, erzeugt `scripts/ensure-windows-updater-metadata.mjs` die Metadaten deterministisch aus der NSIS-`.exe`.
+- MSI lässt sich silent in ein temporäres Verzeichnis installieren und enthält die nativen Runtime-Dateien
+
 ## 6. Release-Best-Practices (kurz)
 
 1. Immer alle Windows-Artefakte signieren (Installer + Helper-Binaries, falls separat verteilt).
 2. Immer Timestamp setzen (sonst später ungültig, weil Signing-Zertifikate sehr kurz leben).
 3. Publisher-Name konsistent halten.
-4. Stable/Beta-Channels nutzen, aber Reputation nicht mit zu vielen unnötigen neuen Artefakten zerfasern.
-
-Wenn du willst, schreibe ich dir jetzt direkt eine fertige Patch-Version für electron-builder.json plus einen verify:win-signatures Script-Eintrag in package.json.
+4. Stable/RC-Channels nutzen, aber Reputation nicht mit zu vielen unnötigen neuen Artefakten zerfasern.
+5. Microsoft SmartScreen-Reputation baut sich trotz gültiger Signatur erst über konsistente, signierte Downloads auf; die MSI-Datei verbessert die Installations-UX, ersetzt aber keine Reputation.
 
 Quellen:
 

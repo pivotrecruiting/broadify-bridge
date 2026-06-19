@@ -389,9 +389,16 @@ Nach Abschluss der Builds (ca. 10-20 Minuten):
 3. Prüfe, ob alle Plattformen erfolgreich gebaut wurden:
    - `broadify-bridge-0.1.0-arm64.dmg` (macOS Apple Silicon)
    - `Broadify-Bridge-0.1.0-arm64.zip` (macOS Updater-Paket)
-   - `Broadify-Bridge-Setup-0.1.0.exe` (Windows NSIS Installer, primär für Auto-Update)
-   - `broadify-bridge-0.1.0-win-x64.msi` (Windows MSI)
+   - `Broadify-Bridge-0.1.0-x64.exe` (Windows NSIS Installer, primär für Auto-Update)
+   - `Broadify-Bridge-0.1.0-x64.msi` (Windows MSI, bevorzugt für manuelle Kundeninstallation)
    - `broadify-bridge-0.1.0-x64.AppImage` (Linux)
+
+Für Windows zusätzlich prüfen:
+
+- Der Workflow-Schritt `Assert Windows installer artifacts` ist erfolgreich.
+- Der Workflow-Schritt `Verify Windows signatures` ist erfolgreich für `.exe` und `.msi`.
+- Der Workflow-Schritt `Smoke test Windows MSI install` ist erfolgreich.
+- `latest.yml` verweist auf die NSIS-`.exe`; die `.msi` ist nur manueller Download.
 
 Für RC-Releases zusätzlich prüfen:
 

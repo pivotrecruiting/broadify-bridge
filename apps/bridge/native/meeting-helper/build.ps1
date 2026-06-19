@@ -6,16 +6,51 @@ $ErrorActionPreference = "Stop"
 
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $rootDir "build"
+$outputExe = Join-Path $rootDir "meeting-helper.exe"
 
-cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config
-cmake --build $buildDir --config $Config
+function Invoke-NativeCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Arguments
+  )
 
-$candidate = Join-Path $buildDir "$Config\meeting-helper.exe"
-if (-not (Test-Path $candidate)) {
-  $candidate = Join-Path $buildDir "meeting-helper.exe"
+  & $FilePath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "$FilePath failed with exit code $LASTEXITCODE"
+  }
 }
-if (Test-Path $candidate) {
-  Copy-Item -Force $candidate (Join-Path $rootDir "meeting-helper.exe")
+
+if (Test-Path $outputExe) {
+  Remove-Item -Force $outputExe
+}
+
+Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config
+Invoke-NativeCommand cmake --build $buildDir --target meeting-helper --config $Config --verbose
+
+$candidates = @(
+  (Join-Path $buildDir "$Config\meeting-helper.exe"),
+  (Join-Path $buildDir "meeting-helper.exe")
+)
+$candidate = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $candidate) {
+  $candidate = Get-ChildItem -Path $buildDir -Filter "meeting-helper.exe" -Recurse -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+}
+if ($candidate) {
+  Copy-Item -Force $candidate $outputExe
+}
+if (-not (Test-Path $outputExe)) {
+  Write-Host "meeting-helper.exe candidates searched:"
+  foreach ($path in $candidates) {
+    Write-Host "  $path"
+  }
+  Write-Host "Build directory executable outputs:"
+  Get-ChildItem -Path $buildDir -Recurse -File -Include "*.exe" -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty FullName |
+    ForEach-Object { Write-Host "  $_" }
+  throw "meeting-helper.exe was not produced by the Windows build. Expected output at $outputExe"
 }
 
 $onnxRuntimeRoot = $env:BROADIFY_ONNXRUNTIME_ROOT
@@ -33,4 +68,4 @@ if ($env:MEETING_HELPER_ENABLE_MODNET -ne "0") {
   Copy-Item -Force $dllCandidate (Join-Path $rootDir "onnxruntime.dll")
 }
 
-Write-Host "Built $(Join-Path $rootDir 'meeting-helper.exe')"
+Write-Host "Built $outputExe"
