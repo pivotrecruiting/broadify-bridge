@@ -148,17 +148,33 @@ Rect cameraRect(uint32_t width, uint32_t height, const SpeakerLayoutState &speak
     return {0, 0, static_cast<int>(width), static_cast<int>(height)};
   }
   const double scale = std::clamp(speakerLayout.scale, 0.4, 1.5);
-  const int rectHeight = static_cast<int>(height * 0.50 * scale);
-  const int rectWidth = static_cast<int>(rectHeight * 0.58);
-  const int marginX = static_cast<int>(width * 0.06);
-  const int marginBottom = static_cast<int>(height * 0.08);
-  int x = static_cast<int>(width) - rectWidth - marginX;
-  if (speakerLayout.layout == "left") {
-    x = marginX;
-  } else if (speakerLayout.layout == "center") {
-    x = (static_cast<int>(width) - rectWidth) / 2;
+  const int frameWidth = static_cast<int>(width);
+  const int frameHeight = static_cast<int>(height);
+  const int marginX = 0;
+  const int marginBottom = 0;
+  const double speakerAspect = 16.0 / 9.0;
+  int rectHeight = static_cast<int>(height * 0.50 * scale);
+  int rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
+  const int maxRectWidth = std::max(1, frameWidth - marginX * 2);
+  const int maxRectHeight = std::max(1, frameHeight - marginBottom);
+  if (rectWidth > maxRectWidth) {
+    rectWidth = maxRectWidth;
+    rectHeight = static_cast<int>(std::round(rectWidth / speakerAspect));
   }
-  return {x, static_cast<int>(height) - rectHeight - marginBottom, rectWidth, rectHeight};
+  if (rectHeight > maxRectHeight) {
+    rectHeight = maxRectHeight;
+    rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
+  }
+  const int edgeCrop = static_cast<int>(std::round(rectWidth * 0.28));
+  int x = frameWidth - rectWidth - marginX + edgeCrop;
+  if (speakerLayout.layout == "left") {
+    x = marginX - edgeCrop;
+  } else if (speakerLayout.layout == "center") {
+    x = (frameWidth - rectWidth) / 2;
+  }
+  x = std::clamp(x, -edgeCrop, std::max(0, frameWidth - rectWidth) + edgeCrop);
+  const int y = std::clamp(frameHeight - rectHeight - marginBottom, 0, std::max(0, frameHeight - rectHeight));
+  return {x, y, rectWidth, rectHeight};
 }
 
 SourceRect coverSourceRect(uint32_t sourceWidth, uint32_t sourceHeight, int targetWidth, int targetHeight) {
