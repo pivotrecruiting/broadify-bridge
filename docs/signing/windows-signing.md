@@ -1,4 +1,4 @@
-Stand: 19. Februar 2026.
+Stand: 19. Juni 2026.
 
 ## 1. Außerhalb vom Code: Azure Artifact Signing einrichten
 
@@ -12,12 +12,12 @@ Stand: 19. Februar 2026.
 
 ## 2. Im Repo: electron-builder konfigurieren
 
-In electron-builder.json unter win ergänzen (du hast aktuell portable + msi in electron-builder.json:46):
+In `electron-builder.json` unter `win` muss NSIS plus MSI aktiv sein. NSIS bleibt der primäre `electron-updater`-Pfad, MSI ist der kundenfreundliche manuelle Installer:
 
 ```json
 {
   "win": {
-    "target": ["portable", "msi"],
+    "target": ["nsis", "msi"],
     "icon": "./icon.png",
     "azureSignOptions": {
       "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",
@@ -47,7 +47,7 @@ Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.y
 
 1. Windows CI-Runner nutzen.
 2. Build starten: npm ci dann npm run dist:win.
-3. Ergebnis: signierte Artefakte in dist/ (.exe, .msi).
+3. Ergebnis: signierte Artefakte in `dist/` (`.exe` für NSIS/Auto-Update, `.msi` für manuelle Kundeninstallation).
 
 ## 5. Signatur verifizieren (Pflicht)
 
@@ -64,9 +64,8 @@ Get-ChildItem dist -Recurse -Include *.exe,*.msi | ForEach-Object {
 1. Immer alle Windows-Artefakte signieren (Installer + Helper-Binaries, falls separat verteilt).
 2. Immer Timestamp setzen (sonst später ungültig, weil Signing-Zertifikate sehr kurz leben).
 3. Publisher-Name konsistent halten.
-4. Stable/Beta-Channels nutzen, aber Reputation nicht mit zu vielen unnötigen neuen Artefakten zerfasern.
-
-Wenn du willst, schreibe ich dir jetzt direkt eine fertige Patch-Version für electron-builder.json plus einen verify:win-signatures Script-Eintrag in package.json.
+4. Stable/RC-Channels nutzen, aber Reputation nicht mit zu vielen unnötigen neuen Artefakten zerfasern.
+5. Microsoft SmartScreen-Reputation baut sich trotz gültiger Signatur erst über konsistente, signierte Downloads auf; die MSI-Datei verbessert die Installations-UX, ersetzt aber keine Reputation.
 
 Quellen:
 

@@ -509,6 +509,40 @@ jobs:
         if: matrix.os == 'windows-2022'
         run: npm run download:modnet-model
 
+      - name: Repair WiX ICE prerequisites (Windows, for MSI build)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # WiX light.exe runs ICE validation through the Windows Installer
+          # scripting engine. On hosted Windows runners these COM DLLs can be
+          # unregistered, which surfaces as ICE93-ICE105 validation failures.
+          $targets = @(
+            @{ RegSvr = "$env:SystemRoot\System32\regsvr32.exe";  Dir = "$env:SystemRoot\System32"  },
+            @{ RegSvr = "$env:SystemRoot\SysWOW64\regsvr32.exe"; Dir = "$env:SystemRoot\SysWOW64" }
+          )
+          foreach ($target in $targets) {
+            foreach ($dll in @('vbscript.dll', 'jscript.dll')) {
+              $path = Join-Path $target.Dir $dll
+              if (Test-Path $path) {
+                & $target.RegSvr /s $path
+              }
+            }
+          }
+
+          # Ensure the Windows Installer service can be opened by WiX ICE validation.
+          $msiexec = "$env:SystemRoot\System32\msiexec.exe"
+          Start-Process $msiexec -ArgumentList '/unregister' -Wait -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Process $msiexec -ArgumentList '/regserver'  -Wait -NoNewWindow -ErrorAction SilentlyContinue
+
+          try {
+            Set-Service -Name msiserver -StartupType Manual -ErrorAction Stop
+            Start-Service -Name msiserver -ErrorAction Stop
+            (Get-Service msiserver | Format-List Name, Status, StartType | Out-String) | Write-Host
+          } catch {
+            Write-Warning "Could not start msiserver service: $_"
+          }
+
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }}
