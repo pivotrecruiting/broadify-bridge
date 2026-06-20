@@ -1277,7 +1277,7 @@ describe("electron-renderer-entry", () => {
     );
   });
 
-  it("sends error IPC when FrameBus writer not ready after config", async () => {
+  it("sends error IPC when FrameBus writer is still not ready after retries", async () => {
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
     delete process.env.BRIDGE_FRAMEBUS_NAME;
     let connectionCallback: (() => void) | null = null;
@@ -1326,6 +1326,7 @@ describe("electron-renderer-entry", () => {
 
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 950));
     expect(mockEncodeIpcPacket).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "error",

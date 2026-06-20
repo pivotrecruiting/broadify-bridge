@@ -77,6 +77,7 @@ export class CommandRouter {
           const engineState = engineAdapter.getState();
           const runtimeConfigData = runtimeConfig.getConfig();
           const context = getBridgeContext();
+          const graphicsStatus = graphicsManager.getStatus();
 
           return {
             success: true,
@@ -85,7 +86,9 @@ export class CommandRouter {
               version: getRuntimeAppVersion(),
               bridgeName: context.bridgeName || null,
               state: runtimeConfig.getState(),
-              outputsConfigured: runtimeConfig.hasOutputs(),
+              outputsConfigured: graphicsStatus.outputsConfigured,
+              outputStatus: graphicsStatus.outputStatus,
+              lastOutputError: graphicsStatus.lastOutputError,
               engine: {
                 configured: !!runtimeConfigData?.engine,
                 status: engineState.status,

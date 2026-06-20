@@ -35,6 +35,7 @@ import type {
   GraphicsLayerStateT,
   PreparedLayerT,
   GraphicsStatusSnapshotT,
+  GraphicsOutputStatusT,
 } from "./graphics-manager-types.js";
 import {
   clearAllLayers,
@@ -150,6 +151,8 @@ export class GraphicsManager {
   private layers = new Map<string, GraphicsLayerStateT>();
   private categoryToLayer = new Map<GraphicsCategoryT, string>();
   private outputConfig: GraphicsOutputConfigT | null = null;
+  private outputStatus: GraphicsOutputStatusT = "unconfigured";
+  private lastOutputError: GraphicsStatusSnapshotT["lastOutputError"] = null;
   private activePreset: GraphicsActivePresetT | null = null;
   private frameBusConfig: FrameBusConfigT | null = null;
   private presetService: GraphicsPresetService;
@@ -225,7 +228,7 @@ export class GraphicsManager {
         },
         buildRendererConfig: (config) => this.buildRendererConfig(config),
         publishGraphicsError: (code, message) =>
-          publishGraphicsErrorEvent(code, message),
+          this.reportGraphicsError(code, message),
       });
 
     this.browserInputRuntime.subscribe(() => {
@@ -249,6 +252,8 @@ export class GraphicsManager {
       return;
     }
     await this.runtimeInitService.initialize();
+    this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
+    this.lastOutputError = null;
 
     this.initialized = true;
   }
@@ -305,7 +310,15 @@ export class GraphicsManager {
       }
     }
     try {
+      this.outputStatus = "configuring";
+      this.lastOutputError = null;
+      publishGraphicsStatusEvent(
+        "outputs_configuring",
+        this.getStatusSnapshot(),
+      );
       await this.outputTransitionService.runAtomicTransition(config);
+      this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
+      this.lastOutputError = null;
       this.browserInputRuntime.configure(this.outputConfig);
       publishGraphicsStatusEvent(
         "outputs_configured",
@@ -319,9 +332,21 @@ export class GraphicsManager {
             : error.stage === "persist"
               ? "output_config_error"
               : "output_helper_error";
+        this.outputStatus = "error";
+        this.lastOutputError = {
+          code,
+          message: error.message,
+          at: Date.now(),
+        };
         this.failGraphics(code, error.message);
       }
       const message = error instanceof Error ? error.message : String(error);
+      this.outputStatus = "error";
+      this.lastOutputError = {
+        code: "output_config_error",
+        message,
+        at: Date.now(),
+      };
       this.failGraphics("output_config_error", message);
     }
   }
@@ -336,6 +361,8 @@ export class GraphicsManager {
     this.layers.clear();
     this.categoryToLayer.clear();
     this.outputConfig = null;
+    this.outputStatus = "unconfigured";
+    this.lastOutputError = null;
     this.browserInputRuntime.configure(null);
 
     try {
@@ -653,6 +680,9 @@ export class GraphicsManager {
    */
   getStatus(): {
     rendererLifecycleState: GraphicsStatusSnapshotT["rendererLifecycleState"];
+    outputsConfigured: boolean;
+    outputStatus: GraphicsStatusSnapshotT["outputStatus"];
+    lastOutputError: GraphicsStatusSnapshotT["lastOutputError"];
     outputConfig: GraphicsOutputConfigT | null;
     browserInput: GraphicsStatusSnapshotT["browserInput"];
     layers: unknown[];
@@ -686,6 +716,9 @@ export class GraphicsManager {
 
     return {
       rendererLifecycleState: status.rendererLifecycleState,
+      outputsConfigured: status.outputsConfigured,
+      outputStatus: status.outputStatus,
+      lastOutputError: status.lastOutputError,
       outputConfig: this.outputConfig,
       browserInput: status.browserInput,
       layers,
@@ -741,6 +774,12 @@ export class GraphicsManager {
 
     return {
       rendererLifecycleState: this.renderer.getLifecycleState?.() ?? "ready",
+      outputsConfigured:
+        this.outputStatus === "ready" &&
+        this.outputConfig !== null &&
+        this.outputConfig.outputKey !== "stub",
+      outputStatus: this.outputStatus,
+      lastOutputError: this.lastOutputError,
       outputConfig: this.outputConfig,
       browserInput: this.browserInputRuntime.getStatus(),
       activePreset,
@@ -777,10 +816,21 @@ export class GraphicsManager {
   }
 
   private failGraphics(code: GraphicsErrorCodeT, message: string): never {
+    this.reportGraphicsError(code, message);
+    throw new GraphicsError(code, message);
+  }
+
+  private reportGraphicsError(code: string, message: string): void {
+    this.outputStatus = "error";
+    this.lastOutputError = {
+      code,
+      message,
+      at: Date.now(),
+    };
     const publishGraphicsError =
       this.deps.publishGraphicsError ?? publishGraphicsErrorEvent;
-    publishGraphicsError(code, message);
-    throw new GraphicsError(code, message);
+    publishGraphicsError(code as GraphicsErrorCodeT, message);
+    publishGraphicsStatusEvent("output_error", this.getStatusSnapshot());
   }
 
   private async removeLayerById(

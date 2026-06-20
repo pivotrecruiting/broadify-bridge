@@ -20,6 +20,10 @@ export function publishGraphicsStatusEvent(
     event: "graphics_status",
     data: {
       reason,
+      outputsConfigured: status.outputsConfigured,
+      outputStatus: status.outputStatus,
+      rendererLifecycleState: status.rendererLifecycleState,
+      lastOutputError: status.lastOutputError,
       outputConfig: status.outputConfig,
       browserInput: status.browserInput,
       activePreset: status.activePreset,
