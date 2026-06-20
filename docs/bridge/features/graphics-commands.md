@@ -97,6 +97,8 @@ Schema: `GraphicsSendSchema`
 - HTML/CSS wird gesäubert und gegen gefährliche Inhalte geprüft.
 - Assets müssen im Bundle enthalten oder bereits registriert sein.
 - Bei Outputs mit Alpha wird `backgroundMode` erzwungen auf `transparent`.
+- Unterstützte Kategorien sind `backgrounds`, `lower-thirds`, `overlays` und `slides`.
+- Default-Layering ist `backgrounds` < `slides` < `overlays` < `lower-thirds`.
 
 ## 3) graphics_update_values
 Schema: `GraphicsUpdateValuesSchema`

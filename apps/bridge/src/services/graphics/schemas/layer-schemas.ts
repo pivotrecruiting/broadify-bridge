@@ -58,6 +58,7 @@ export const GraphicsBackgroundModeSchema = z.enum([
  * Layer categories (one active layer per category).
  */
 export const GraphicsCategorySchema = z.enum([
+  "backgrounds",
   "lower-thirds",
   "overlays",
   "slides",

@@ -96,6 +96,7 @@ describe("layer-schemas", () => {
 
   describe("GraphicsCategorySchema", () => {
     it("accepts valid categories", () => {
+      expect(GraphicsCategorySchema.parse("backgrounds")).toBe("backgrounds");
       expect(GraphicsCategorySchema.parse("lower-thirds")).toBe("lower-thirds");
       expect(GraphicsCategorySchema.parse("overlays")).toBe("overlays");
     });

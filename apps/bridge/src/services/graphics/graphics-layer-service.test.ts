@@ -158,7 +158,7 @@ describe("graphics-layer-service", () => {
     it("throws when max active layers reached and layer is new", () => {
       const layers = new Map<string, GraphicsLayerStateT>();
       const categoryToLayer = new Map<string, string>();
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 4; i++) {
         layers.set(`layer-${i}`, {} as GraphicsLayerStateT);
       }
 

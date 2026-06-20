@@ -29,6 +29,16 @@ type GraphicsPresetServiceDepsT = {
   getRenderer?: () => GraphicsRenderer;
 };
 
+const isBackgroundCategory = (category: GraphicsCategoryT): boolean =>
+  category === "backgrounds";
+
+const isSameReplaceGroup = (
+  existingCategory: GraphicsCategoryT,
+  incomingCategory: GraphicsCategoryT
+): boolean =>
+  isBackgroundCategory(existingCategory) ===
+  isBackgroundCategory(incomingCategory);
+
 /**
  * Preset lifecycle manager.
  *
@@ -70,7 +80,7 @@ export class GraphicsPresetService {
   ): Promise<void> {
     const activePreset = this.deps.getActivePreset();
     if (presetId) {
-      await this.removeLayersNotInPreset(presetId);
+      await this.removeLayersNotInPreset(presetId, category);
       const existingLayerId = this.deps.categoryToLayer.get(category);
       if (!existingLayerId) {
         return;
@@ -113,6 +123,9 @@ export class GraphicsPresetService {
     let shouldPublishPreset = false;
 
     if (isNewPreset) {
+      if (activePreset) {
+        clearPresetTimer(activePreset);
+      }
       activePreset = {
         presetId,
         durationMs: durationMs ?? null,
@@ -300,9 +313,14 @@ export class GraphicsPresetService {
     );
   }
 
-  private async removeLayersNotInPreset(presetId: string): Promise<void> {
+  private async removeLayersNotInPreset(
+    presetId: string,
+    incomingCategory: GraphicsCategoryT
+  ): Promise<void> {
     const layersToRemove = Array.from(this.deps.layers.values()).filter(
-      (layer) => layer.presetId !== presetId
+      (layer) =>
+        layer.presetId !== presetId &&
+        isSameReplaceGroup(layer.category, incomingCategory)
     );
     const presetIds = new Set<string>();
     let nonPresetCount = 0;

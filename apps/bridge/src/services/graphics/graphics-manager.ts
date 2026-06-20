@@ -695,33 +695,56 @@ export class GraphicsManager {
   }
 
   private getStatusSnapshot(): GraphicsStatusSnapshotT {
+    const buildPresetStatus = (
+      presetId: string,
+      layerIds: string[]
+    ): NonNullable<GraphicsStatusSnapshotT["activePreset"]> => {
+      const categories = new Set<GraphicsCategoryT>();
+      layerIds.forEach((layerId) => {
+        const layer = this.layers.get(layerId);
+        if (layer?.category) {
+          categories.add(layer.category);
+        }
+      });
+      const timerPreset =
+        this.activePreset?.presetId === presetId ? this.activePreset : null;
+
+      return {
+        presetId,
+        durationMs: timerPreset?.durationMs ?? null,
+        startedAt: timerPreset?.startedAt ?? null,
+        expiresAt: timerPreset?.expiresAt ?? null,
+        pendingStart: timerPreset?.pendingStart ?? false,
+        layerIds,
+        categories: Array.from(categories),
+      };
+    };
+
     const activePreset = this.activePreset
-      ? (() => {
-          const categories = new Set<GraphicsCategoryT>();
-          this.activePreset?.layerIds.forEach((layerId) => {
-            const layer = this.layers.get(layerId);
-            if (layer?.category) {
-              categories.add(layer.category);
-            }
-          });
-          return {
-            presetId: this.activePreset.presetId,
-            durationMs: this.activePreset.durationMs,
-            startedAt: this.activePreset.startedAt,
-            expiresAt: this.activePreset.expiresAt,
-            pendingStart: this.activePreset.pendingStart,
-            layerIds: Array.from(this.activePreset.layerIds),
-            categories: Array.from(categories),
-          };
-        })()
+      ? buildPresetStatus(
+          this.activePreset.presetId,
+          Array.from(this.activePreset.layerIds)
+        )
       : null;
+    const layerIdsByPreset = new Map<string, string[]>();
+    Array.from(this.layers.values()).forEach((layer) => {
+      if (!layer.presetId) {
+        return;
+      }
+      const layerIds = layerIdsByPreset.get(layer.presetId) ?? [];
+      layerIds.push(layer.layerId);
+      layerIdsByPreset.set(layer.presetId, layerIds);
+    });
+    const activePresets = Array.from(layerIdsByPreset.entries()).map(
+      ([presetId, layerIds]) => buildPresetStatus(presetId, layerIds)
+    );
 
     return {
       rendererLifecycleState: this.renderer.getLifecycleState?.() ?? "ready",
       outputConfig: this.outputConfig,
       browserInput: this.browserInputRuntime.getStatus(),
       activePreset,
-      activePresets: activePreset ? [activePreset] : [],
+      activePresets,
     };
   }
 

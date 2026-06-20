@@ -752,4 +752,36 @@ describe("GraphicsManager with configured outputs", () => {
     expect(status.activePreset?.presetId).toBe("preset-1");
     expect(status.activePresets).toHaveLength(1);
   });
+
+  it("keeps background preset active after sending a foreground preset", async () => {
+    const manager = createManagerWithRealTransition();
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "background-layer",
+      category: "backgrounds",
+      zIndex: 0,
+      presetId: "background-preset",
+    });
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "foreground-layer",
+      category: "overlays",
+      zIndex: 20,
+      presetId: "foreground-preset",
+    });
+
+    const status = manager.getStatus();
+    const activePresetIds = status.activePresets.map(
+      (preset) => preset.presetId
+    );
+
+    expect(activePresetIds).toEqual([
+      "background-preset",
+      "foreground-preset",
+    ]);
+    expect(status.layers).toHaveLength(2);
+    expect(status.activePreset?.presetId).toBe("foreground-preset");
+  });
 });

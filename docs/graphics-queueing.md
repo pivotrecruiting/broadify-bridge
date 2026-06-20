@@ -10,7 +10,7 @@
 ## Begriffe
 
 - **Preset**: Kombination aus Templates und Layouts, optional mit Count (`durationMs`).
-- **Kategorie**: `lower-thirds`, `overlays`, `slides` (max. ein Layer pro Kategorie).
+- **Kategorie**: `backgrounds`, `lower-thirds`, `overlays`, `slides` (max. ein Layer pro Kategorie).
 - **Count/No-Count**: `durationMs > 0` bedeutet Count, nicht gesetzt bedeutet No-Count.
 - **Active Preset**: Das aktuell on-air Preset inkl. Layern und optionalem Timer.
 

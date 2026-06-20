@@ -3,7 +3,7 @@ import type { GraphicsCategoryT } from "./graphics-schemas.js";
 import type { GraphicsRenderer } from "./renderer/graphics-renderer.js";
 import type { GraphicsLayerStateT, PreparedLayerT } from "./graphics-manager-types.js";
 
-const MAX_ACTIVE_LAYERS = 3;
+const MAX_ACTIVE_LAYERS = 4;
 const MEETING_LAYER_ID_PREFIX = "meeting-";
 
 type RemoveLayerDepsT = {
