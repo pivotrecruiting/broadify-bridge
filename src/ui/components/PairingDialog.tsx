@@ -71,10 +71,10 @@ export function PairingDialog({
         }
       }}
     >
-      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-background/70 backdrop-blur-sm" />
 
-      <div className="relative w-full max-w-lg overflow-hidden rounded-lg glass-frosted border border-white/20 shadow-2xl">
-        <div className="flex items-center justify-between p-6 border-b border-white/10">
+      <div className="relative w-full max-w-lg overflow-hidden rounded-lg glass-frosted border border-hairline-strong shadow-2xl">
+        <div className="flex items-center justify-between p-6 border-b border-hairline">
           <div>
             <h2 className="text-2xl font-bold text-foreground">Pairing</h2>
             <p className="text-sm text-muted-foreground">
@@ -83,7 +83,7 @@ export function PairingDialog({
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-md hover:bg-white/10 transition-colors text-foreground hover:text-foreground/80"
+            className="p-2 rounded-md hover:bg-secondary transition-colors text-foreground hover:text-foreground/80"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
@@ -91,7 +91,7 @@ export function PairingDialog({
         </div>
 
         <div className="p-6 space-y-4">
-          <div className="rounded-md border border-black/10 bg-white/60 p-4">
+          <div className="rounded-md border border-hairline bg-surface-2 p-4">
             {hasPairingCode ? (
               <div className="flex items-center justify-between gap-3">
                 <span className="text-lg font-mono text-card-foreground">
@@ -102,7 +102,7 @@ export function PairingDialog({
                   size="icon"
                   onClick={handleCopy}
                   aria-label="Copy pairing code"
-                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/10"
+                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-secondary"
                 >
                   {copied ? (
                     <Check className="copy-check-animate" />

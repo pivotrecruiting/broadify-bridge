@@ -99,199 +99,184 @@
   font-display: swap;
 }
 
+/*
+ * ──────────────────────────────────────────────────────────────────────────
+ * Broadify Liquid Glass design tokens (shared with the web app)
+ * ──────────────────────────────────────────────────────────────────────────
+ * Dark mode is the primary target (matches the design prototype). Light mode
+ * is kept functional. The glass system is built from a small set of tokens:
+ *
+ *   --surface-1 / --surface-2 : translucent glass bodies (panels, controls)
+ *   --card                    : the main card glass body
+ *   --hairline(-strong)       : fine, slightly bright glass edges
+ *   --radius* / glow / shadow  : large rounding + depth + accent glow
+ *
+ * Components reference these via Tailwind theme colors (bg-card, border-border,
+ * …) and the `.glass-*` utilities below. Retuning a token re-skins the app.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #0a0a0a;
-  --card: #ffffff;
-  --card-foreground: #0a0a0a;
+  /* Light mode (secondary). White-based translucent glass. */
+  --background: #f4f5f7;
+  --foreground: #0f172a;
+
+  --surface-1: oklch(1 0 0 / 0.42);
+  --surface-2: oklch(1 0 0 / 0.58);
+
+  --card: oklch(1 0 0 / 0.5);
+  --card-foreground: #0f172a;
   --popover: #ffffff;
-  --popover-foreground: #0a0a0a;
+  --popover-foreground: #0f172a;
+
   --primary: #e2792e;
-  --primary-foreground: #000000;
-  --secondary: #e3e3e3;
+  --primary-foreground: #ffffff;
+  --secondary: oklch(0.96 0.005 270 / 0.9);
   --secondary-foreground: #171717;
-  --muted: #f5f5f5;
-  --muted-foreground: #737373;
-  --accent: #b4c3d3;
+  --muted: oklch(0.96 0.005 270 / 0.7);
+  --muted-foreground: #5b6472;
+  --accent: oklch(0.93 0.01 255 / 0.8);
   --accent-foreground: #171717;
   --destructive: #e7000b;
   --destructive-foreground: #ffffff;
-  --border: #e5e5e5;
-  --input: #e5e5e5;
+
+  /* Fine glass edges */
+  --hairline: oklch(0.2 0.02 270 / 0.1);
+  --hairline-strong: oklch(0.2 0.02 270 / 0.18);
+  --border: oklch(0.2 0.02 270 / 0.08);
+  --input: oklch(0.2 0.02 270 / 0.1);
   --ring: #a1a1a1;
+
   --chart-1: #91c5ff;
   --chart-2: #3a81f6;
   --chart-3: #2563ef;
   --chart-4: #1a4eda;
   --chart-5: #1f3fad;
-  --sidebar: #fafafa;
-  --sidebar-foreground: #0a0a0a;
-  --sidebar-primary: #171717;
-  --sidebar-primary-foreground: #fafafa;
-  --sidebar-accent: #f5f5f5;
+  --sidebar: oklch(1 0 0 / 0.7);
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #e2792e;
+  --sidebar-primary-foreground: #1a0f06;
+  --sidebar-accent: oklch(0.96 0.005 270 / 0.8);
   --sidebar-accent-foreground: #171717;
-  --sidebar-border: #e5e5e5;
+  --sidebar-border: oklch(0.2 0.02 270 / 0.08);
   --sidebar-ring: #a1a1a1;
+
   --font-open-sans: "Open Sans", ui-sans-serif, sans-serif, system-ui;
-  --font-sans: var(--font-open-sans);
+  --font-sans:
+    var(--font-open-sans), "Open Sans", ui-sans-serif, sans-serif, system-ui;
   --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
-  --radius: 0.5rem;
-  --shadow-x: 0;
-  --shadow-y: 1px;
-  --shadow-blur: 3px;
-  --shadow-spread: 0px;
-  --shadow-opacity: 0.02;
-  --shadow-color: oklch(0 0 0);
-  --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
-  --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
-  --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 1px 2px -1px hsl(0 0% 0% / 0.02);
-  --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 1px 2px -1px hsl(0 0% 0% / 0.02);
-  --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 2px 4px -1px hsl(0 0% 0% / 0.02);
-  --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 4px 6px -1px hsl(0 0% 0% / 0.02);
-  --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 8px 10px -1px hsl(0 0% 0% / 0.02);
-  --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+
+  /* Large rounding scale (liquid glass) */
+  --radius: 0.75rem;
   --tracking-normal: 0em;
   --spacing: 0.25rem;
 
-  /* Apple-standard glassmorphism - Very subtle and refined */
-  /* Low opacity for Apple's standard glass effect */
-  --glass-bg: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.15) 0%,
-    rgba(255, 255, 255, 0.12) 25%,
-    rgba(240, 248, 255, 0.13) 50%,
-    rgba(255, 255, 255, 0.11) 75%,
-    rgba(230, 240, 255, 0.12) 100%
-  );
-  /* Very subtle white border - Apple standard */
-  --glass-border: rgba(255, 255, 255, 0.12);
-  /* Minimal shadows with subtle inner glow - Apple standard */
-  --glass-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04),
-    0 0 0 0.5px rgba(255, 255, 255, 0.08) inset,
-    0 0 12px rgba(255, 255, 255, 0.1) inset;
-  --glass-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.1),
-    0 2px 8px rgba(0, 0, 0, 0.06), 0 0 0 0.5px rgba(255, 255, 255, 0.1) inset,
-    0 0 20px rgba(255, 255, 255, 0.12) inset;
-  --glass-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06),
-    0 1px 2px rgba(0, 0, 0, 0.03), 0 0 0 0.5px rgba(255, 255, 255, 0.06) inset,
-    0 0 8px rgba(255, 255, 255, 0.08) inset;
-  --gradient: linear-gradient(135deg, #a855f7 0%, #3b82f6 100%);
-  /* Apple-standard blur values - moderate blur */
-  --blur: 10px;
-  --blur-sm: 10px;
-  --blur-lg: 10px;
+  /* Accent glow */
+  --primary-glow: oklch(0.78 0.18 55);
+  --shadow-glow: 0 0 32px -8px oklch(0.72 0.19 50 / 0.45);
 
-  /* Frosted glass variant - Enhanced opacity and stronger blur */
-  --glass-frosted-bg: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.42) 0%,
-    rgba(255, 255, 255, 0.4) 25%,
-    rgba(240, 248, 255, 0.41) 50%,
-    rgba(255, 255, 255, 0.38) 75%,
-    rgba(230, 240, 255, 0.4) 100%
-  );
-  --glass-frosted-border: rgba(255, 255, 255, 0.4);
-  --glass-frosted-shadow: 0 8px 24px rgba(0, 0, 0, 0.1),
-    0 2px 6px rgba(0, 0, 0, 0.08), 0 0 0 0.5px rgba(255, 255, 255, 0.2) inset,
-    0 0 20px rgba(255, 255, 255, 0.2) inset;
-  --blur-frosted: 25px;
+  /* Depth */
+  --shadow-elevated: 0 24px 60px -20px oklch(0 0 0 / 0.25);
 
-  /* Fluted glass variant - Vertical ridges pattern */
-  --glass-fluted-pattern: repeating-linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.08) 0px,
-    rgba(255, 255, 255, 0.15) 4px,
-    rgba(255, 255, 255, 0.08) 8px,
-    rgba(255, 255, 255, 0.02) 10px,
-    rgba(255, 255, 255, 0.08) 12px
-  );
+  /* Glass body backdrop blur — heavy frost so only diffuse color bleeds
+     through; the sharp background artwork must not read through panels. */
+  --glass-blur: 40px;
+  --glass-saturate: 180%;
 
-  /* Crystal glass variant - Clear glass with highlights and glow */
-  --glass-crystal-bg: rgba(255, 255, 255, 0.3);
-  --glass-crystal-border: rgba(255, 255, 255, 0.3);
-  --glass-crystal-shadow: 0 0 20px rgba(0, 0, 0, 0.2),
-    0 0 30px rgba(255, 255, 255, 0.1);
-  --glass-crystal-shadow-hover: 0 0 25px rgba(0, 0, 0, 0.3),
-    0 0 35px rgba(255, 255, 255, 0.15);
-  --blur-crystal: 2px;
+  /* Glass surface highlight + depth (the defining liquid-glass shadow) */
+  --glass-shadow:
+    0 8px 32px -8px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.55);
+  --glass-shadow-sm:
+    0 4px 16px -8px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.5);
+  --glass-shadow-lg:
+    0 24px 60px -20px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.6);
+
+  /* Legacy aliases kept so existing inline references stay valid */
+  --shadow-2xs: var(--glass-shadow-sm);
+  --shadow-xs: var(--glass-shadow-sm);
+  --shadow-sm: var(--glass-shadow-sm);
+  --shadow: var(--glass-shadow);
+  --shadow-md: var(--glass-shadow);
+  --shadow-lg: var(--glass-shadow-lg);
+  --shadow-xl: var(--glass-shadow-lg);
+  --shadow-2xl: var(--shadow-elevated);
 }
 
 .dark {
-  --background: #0a0a0a;
-  --foreground: #fafafa;
-  --card: #171717;
-  --card-foreground: #fafafa;
-  --popover: #262626;
-  --popover-foreground: #fafafa;
-  --primary: #e5e5e5;
-  --primary-foreground: #171717;
-  --secondary: #262626;
-  --secondary-foreground: #fafafa;
-  --muted: #262626;
-  --muted-foreground: #a1a1a1;
-  --accent: #404040;
-  --accent-foreground: #fafafa;
+  /* ── Primary target: dark liquid glass ── */
+  --background: oklch(0.05 0 0);
+  --foreground: oklch(0.97 0 0);
+
+  --surface-1: oklch(0.08 0 0 / 0.46);
+  --surface-2: oklch(0.12 0 0 / 0.56);
+
+  --card: oklch(0.09 0 0 / 0.54);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.07 0 0 / 0.92);
+  --popover-foreground: oklch(0.97 0 0);
+
+  --primary: #e2792e;
+  --primary-foreground: #1a0f06;
+  --secondary: oklch(1 0 0 / 0.06);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(1 0 0 / 0.05);
+  --muted-foreground: oklch(0.8 0 0);
+  --accent: oklch(1 0 0 / 0.08);
+  --accent-foreground: oklch(0.97 0 0);
   --destructive: #ff6467;
-  --destructive-foreground: #fafafa;
-  --border: #282828;
-  --input: #343434;
-  --ring: #737373;
+  --destructive-foreground: oklch(0.97 0 0);
+
+  --hairline: oklch(1 0 0 / 0.1);
+  --hairline-strong: oklch(1 0 0 / 0.18);
+  --border: oklch(1 0 0 / 0.08);
+  --input: oklch(1 0 0 / 0.08);
+  --ring: oklch(0.78 0 0);
+
   --chart-1: #91c5ff;
   --chart-2: #3a81f6;
   --chart-3: #2563ef;
   --chart-4: #1a4eda;
   --chart-5: #1f3fad;
-  --sidebar: #171717;
-  --sidebar-foreground: #fafafa;
-  --sidebar-primary: #1447e6;
-  --sidebar-primary-foreground: #fafafa;
-  --sidebar-accent: #262626;
-  --sidebar-accent-foreground: #fafafa;
-  --sidebar-border: #282828;
-  --sidebar-ring: #525252;
-  --font-open-sans: "Open Sans", ui-sans-serif, sans-serif, system-ui;
-  --font-sans: var(--font-open-sans);
-  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
-  --radius: 0.5rem;
-  --shadow-x: 0;
-  --shadow-y: 1px;
-  --shadow-blur: 3px;
-  --shadow-spread: 0px;
-  --shadow-opacity: 0.02;
-  --shadow-color: oklch(0 0 0);
-  --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
-  --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.01);
-  --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 1px 2px -1px hsl(0 0% 0% / 0.02);
-  --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 1px 2px -1px hsl(0 0% 0% / 0.02);
-  --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 2px 4px -1px hsl(0 0% 0% / 0.02);
-  --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 4px 6px -1px hsl(0 0% 0% / 0.02);
-  --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.02),
-    0 8px 10px -1px hsl(0 0% 0% / 0.02);
-  --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+  --sidebar: oklch(0.07 0 0 / 0.62);
+  --sidebar-foreground: oklch(0.97 0 0);
+  --sidebar-primary: #e2792e;
+  --sidebar-primary-foreground: #1a0f06;
+  --sidebar-accent: oklch(1 0 0 / 0.1);
+  --sidebar-accent-foreground: oklch(0.97 0 0);
+  --sidebar-border: oklch(1 0 0 / 0.1);
+  --sidebar-ring: oklch(0.78 0 0);
+
+  /* Depth reads stronger over the dark ambient background */
+  --shadow-elevated: 0 24px 60px -20px oklch(0 0 0 / 0.6);
+
+  --glass-shadow:
+    0 8px 32px -8px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+  --glass-shadow-sm:
+    0 4px 16px -8px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+  --glass-shadow-lg:
+    0 24px 60px -20px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-glow: var(--primary-glow);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -301,6 +286,8 @@
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-chart-1: var(--chart-1);
@@ -317,15 +304,18 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  --font-open-sans: "Open Sans", ui-sans-serif, sans-serif, system-ui;
-  --font-sans: var(--font-open-sans);
+  --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
   --font-serif: var(--font-serif);
 
+  /* Large rounding scale */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
 
   --shadow-2xs: var(--shadow-2xs);
   --shadow-xs: var(--shadow-xs);
@@ -335,6 +325,8 @@
   --shadow-lg: var(--shadow-lg);
   --shadow-xl: var(--shadow-xl);
   --shadow-2xl: var(--shadow-2xl);
+  --shadow-glow: var(--shadow-glow);
+  --shadow-elevated: var(--shadow-elevated);
 }
 
 @layer base {
@@ -357,160 +349,112 @@
   }
 }
 
-/* Next.js Dev Indicator (static/dynamic badge) customization */
-@layer utilities {
-  /* Hide the dev indicator completely */
-  /* 
-  [data-nextjs-toast] {
-    display: none !important;
-  }
-  */
-
-  /* Customize the dev indicator styling */
-  [data-nextjs-toast] {
-    /* Position */
-    bottom: 1rem !important;
-    left: 1rem !important;
-
-    /* Styling */
-    background: rgba(0, 0, 0, 0.8) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: 0.5rem !important;
-    padding: 0.5rem 1rem !important;
-    font-size: 0.75rem !important;
-    font-weight: 500 !important;
-    color: white !important;
-    backdrop-filter: blur(8px) !important;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-      0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
-
-    /* Animation */
-    transition: all 0.2s ease-in-out !important;
-  }
-
-  [data-nextjs-toast]:hover {
-    background: rgba(0, 0, 0, 0.9) !important;
-    transform: scale(1.05) !important;
-  }
-
-  /* Style for "static" badge */
-  [data-nextjs-toast][data-type="static"] {
-    background: rgba(34, 197, 94, 0.9) !important; /* green */
-  }
-
-  /* Style for "dynamic" badge */
-  [data-nextjs-toast][data-type="dynamic"] {
-    background: rgba(59, 130, 246, 0.9) !important; /* blue */
-  }
+/*
+ * Ambient background: the colored, near-black artwork sits in a single fixed
+ * layer behind everything. Glass panels carry no gradient of their own — the
+ * color you see through them is this image read through their transparency.
+ * Fixed so it stays put while content scrolls.
+ */
+@utility ambient-background {
+  position: relative;
+  /* Establishes a stacking context so the fixed `z-index:-1` artwork layer
+     paints ABOVE the opaque body background instead of being hidden behind it.
+     Load-bearing — do not remove. Does not interfere with the glass
+     backdrop-filter (the artwork still sits in the backdrop of the panels). */
+  isolation: isolate;
+  background-color: var(--background);
 }
 
+@utility ambient-background-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  /* ~80% so the colored light lines read softer; the remainder reveals the
+     matching solid background behind, dimming the artwork toward the base. */
+  opacity: 0.8;
+  background-color: var(--background);
+  background-image: url("/assets/backgrounds/broadify-bg-darkmode.webp");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Light mode uses the bright sibling artwork. */
+:root.light .ambient-background-layer {
+  background-image: url("/assets/backgrounds/broadify-bg-lightmode.webp");
+}
+
+/*
+ * ──────────────────────────────────────────────────────────────────────────
+ * Liquid glass utilities
+ * ──────────────────────────────────────────────────────────────────────────
+ * The variant class names below are kept stable (glass-bg / glass-frosted /
+ * glass-fluted / glass-crystal) so existing call sites keep working, but they
+ * now all resolve to the refined surface system. The difference between them
+ * is just how opaque / textured the glass body is.
+ */
 @layer utilities {
-  /* Apple-standard glass utility - Very subtle and refined */
-  /* This creates Apple's standard glassmorphism with moderate blur */
   .glass-bg {
-    /* Low opacity gradient background - Apple standard */
-    background-image: var(--glass-bg);
-    background-color: transparent;
-    /* Moderate backdrop blur - Apple standard (20px) */
-    backdrop-filter: blur(var(--blur)) saturate(180%);
-    -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
-    /* Very subtle white border - Apple standard */
-    border: 0.5px solid var(--glass-border);
-    /* Minimal shadow with subtle inner glow - Apple standard */
+    background-color: var(--surface-1);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur))
+      saturate(var(--glass-saturate));
+    border: 1px solid var(--hairline);
     box-shadow: var(--glass-shadow);
   }
 
-  /* Frosted glass utility - Enhanced blur and higher opacity */
+  /* Main panel surface — slightly more opaque, the workhorse look */
   .glass-frosted {
-    background-image: var(--glass-frosted-bg) !important;
-    background-color: transparent !important;
-    /* Stronger backdrop blur for frosted effect */
-    backdrop-filter: blur(var(--blur-frosted)) saturate(200%) !important;
-    -webkit-backdrop-filter: blur(var(--blur-frosted)) saturate(200%) !important;
-    /* More pronounced border */
-    border: 0.5px solid var(--glass-frosted-border) !important;
-    /* Enhanced shadow for depth */
-    box-shadow: var(--glass-frosted-shadow) !important;
+    background-color: var(--card);
+    backdrop-filter: blur(calc(var(--glass-blur) + 8px))
+      saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 8px))
+      saturate(var(--glass-saturate));
+    border: 1px solid var(--hairline);
+    box-shadow: var(--glass-shadow);
   }
 
-  /* Fluted glass utility - Vertical ridges with glass effect */
+  /* Inner control surface — denser, sits inside frosted panels */
+  .glass-surface {
+    background-color: var(--surface-2);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur))
+      saturate(var(--glass-saturate));
+    border: 1px solid var(--hairline);
+    box-shadow: var(--glass-shadow-sm);
+  }
+
   .glass-fluted {
-    /* Base glass background combined with fluted pattern */
-    background-image: var(--glass-fluted-pattern), var(--glass-bg) !important;
-    background-color: transparent !important;
-    /* Moderate backdrop blur like standard glass */
-    backdrop-filter: blur(var(--blur)) saturate(180%) !important;
-    -webkit-backdrop-filter: blur(var(--blur)) saturate(180%) !important;
-    /* Standard glass border */
-    border: 0.5px solid var(--glass-border) !important;
-    /* Standard glass shadow */
-    box-shadow: var(--glass-shadow) !important;
+    background-image: repeating-linear-gradient(
+      90deg,
+      oklch(1 0 0 / 0.05) 0px,
+      oklch(1 0 0 / 0.09) 4px,
+      oklch(1 0 0 / 0.05) 8px,
+      oklch(1 0 0 / 0.02) 10px,
+      oklch(1 0 0 / 0.05) 12px
+    );
+    background-color: var(--surface-1);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur))
+      saturate(var(--glass-saturate));
+    border: 1px solid var(--hairline);
+    box-shadow: var(--glass-shadow);
   }
 
-  /* Crystal glass utility - Clear glass with highlights and glow */
   .glass-crystal {
-    position: relative;
-    background-color: var(--glass-crystal-bg) !important;
-    /* Minimal backdrop blur for clarity */
-    backdrop-filter: blur(var(--blur-crystal)) !important;
-    -webkit-backdrop-filter: blur(var(--blur-crystal)) !important;
-    border: 1px solid var(--glass-crystal-border) !important;
-    box-shadow: var(--glass-crystal-shadow) !important;
-    transition: all 0.3s ease !important;
-    /* Top highlight gradient */
-    background-image: linear-gradient(
-      to bottom right,
-      rgba(255, 255, 255, 0.15),
-      transparent 50%
-    ) !important;
-    background-size: 200% 200% !important;
+    background-color: var(--surface-1);
+    backdrop-filter: blur(calc(var(--glass-blur) - 8px))
+      saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur) - 8px))
+      saturate(var(--glass-saturate));
+    border: 1px solid var(--hairline-strong);
+    box-shadow: var(--glass-shadow);
   }
 
-  .glass-crystal::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: linear-gradient(
-      to bottom,
-      rgba(255, 255, 255, 0.4),
-      transparent
-    );
-    opacity: 0.7;
-    pointer-events: none;
-    height: 30%;
-  }
-
-  .glass-crystal::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: radial-gradient(
-      circle at 50% 120%,
-      rgba(255, 255, 255, 0.2),
-      transparent 70%
-    );
-    opacity: 0.8;
-    pointer-events: none;
-  }
-
-  .glass-crystal:hover {
-    box-shadow: var(--glass-crystal-shadow-hover) !important;
-    background-position: 100% 100% !important;
-  }
-
-  /* Ensure react-day-picker doesn't override glass effect */
-  .glass-bg[class*="rdp"] {
-    background-color: transparent !important;
-  }
-
-  .glass-bg .rdp {
-    background-color: transparent !important;
-  }
-
-  .glass-bg .rdp-month {
-    background-color: transparent !important;
+  /* Bright top highlight edge — reusable on any rounded glass element */
+  .glass-highlight {
+    box-shadow: inset 0 1px 0 0 oklch(1 0 0 / 0.12);
   }
 }
 
@@ -542,12 +486,12 @@
   animation: copyCheckPulse 1500ms ease-out;
 }
 
-/* Sonner Toast Notifications - Glass Effect Overrides */
+/* Sonner Toast Notifications — opaque-ish glass background for readability */
 [data-sonner-toast] {
-  background: var(--glass-bg) !important;
-  backdrop-filter: blur(var(--blur)) !important;
-  -webkit-backdrop-filter: blur(var(--blur)) !important;
-  border: 1px solid var(--glass-border) !important;
+  background: var(--popover) !important;
+  backdrop-filter: blur(20px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
+  border: 1px solid var(--hairline) !important;
   box-shadow: var(--glass-shadow-lg) !important;
   color: var(--foreground) !important;
 }
@@ -568,17 +512,13 @@
   border-color: rgba(59, 130, 246, 0.3) !important;
 }
 
-/* Toast description text */
 [data-sonner-toast] [data-description] {
   color: var(--muted-foreground) !important;
 }
 
-/* Toast action buttons - Glass styled */
 [data-sonner-toast] [data-button] {
-  background: var(--glass-bg) !important;
-  backdrop-filter: blur(var(--blur-sm)) !important;
-  -webkit-backdrop-filter: blur(var(--blur-sm)) !important;
-  border: 1px solid var(--glass-border) !important;
+  background: var(--secondary) !important;
+  border: 1px solid var(--border) !important;
   color: var(--foreground) !important;
   transition: opacity 0.2s ease !important;
 }
@@ -587,12 +527,9 @@
   opacity: 0.9 !important;
 }
 
-/* Toast cancel button */
 [data-sonner-toast] [data-cancel] {
-  background: var(--glass-bg) !important;
-  backdrop-filter: blur(var(--blur-sm)) !important;
-  -webkit-backdrop-filter: blur(var(--blur-sm)) !important;
-  border: 1px solid var(--glass-border) !important;
+  background: var(--secondary) !important;
+  border: 1px solid var(--border) !important;
   color: var(--muted-foreground) !important;
 }
 
@@ -600,12 +537,9 @@
   opacity: 0.9 !important;
 }
 
-/* Toast close button */
 [data-sonner-toast] [data-close-button] {
-  background: var(--glass-bg) !important;
-  backdrop-filter: blur(var(--blur-sm)) !important;
-  -webkit-backdrop-filter: blur(var(--blur-sm)) !important;
-  border: 1px solid var(--glass-border) !important;
+  background: var(--secondary) !important;
+  border: 1px solid var(--border) !important;
   color: var(--foreground) !important;
 }
 

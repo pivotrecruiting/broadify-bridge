@@ -267,7 +267,8 @@ function App() {
   const bridgeId = bridgeProfile?.bridgeId || bridgeStatus.bridgeId;
 
   return (
-    <div className="min-h-screen md:h-screen md:overflow-hidden w-full bg-gradient-to-tr from-background to-accent/50 flex items-center justify-center p-4 sm:p-6 md:p-8">
+    <div className="ambient-background min-h-screen md:h-screen md:overflow-hidden w-full flex items-center justify-center p-4 sm:p-6 md:p-8">
+      <div className="ambient-background-layer" aria-hidden="true" />
       <div className="w-full max-w-4xl md:h-auto flex items-center justify-center md:overflow-visible">
         <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-5 md:space-y-6 w-full">
           <Header

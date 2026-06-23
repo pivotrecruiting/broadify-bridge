@@ -84,7 +84,7 @@ export function BridgeIdentitySection({
                   size="icon"
                   onClick={() => copyToClipboard(bridgeId, "id")}
                   aria-label="Copy bridge ID"
-                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/10"
+                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-secondary"
                 >
                   {copiedField === "id" ? (
                     <Check className="copy-check-animate" />

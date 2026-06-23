@@ -106,8 +106,10 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
         className={cn(
           "relative overflow-hidden rounded-xl",
           variantClass,
-          gradient &&
-            "bg-gradient-to-tr from-purple-500/10 via-blue-500/10 to-pink-500/10",
+          // `gradient` is kept for API compatibility but intentionally inert:
+          // card color now comes from the ambient background read through the
+          // glass transparency, not a per-card gradient overlay.
+          gradient && "",
           animated &&
             "hover:shadow-(--glass-shadow-lg) transition-all duration-300 hover:scale-[1.02]",
           hoverEffects({ hover }),

@@ -109,10 +109,10 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
         }
       }}
     >
-      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-background/70 backdrop-blur-sm" />
 
-      <div className="relative w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-lg glass-frosted border border-white/20 shadow-2xl">
-        <div className="flex items-center justify-between p-6 border-b border-white/10">
+      <div className="relative w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-lg glass-frosted border border-hairline-strong shadow-2xl">
+        <div className="flex items-center justify-between p-6 border-b border-hairline">
           <div>
             <h2 className="text-2xl font-bold text-foreground">Diagnostics</h2>
             <p className="text-sm text-muted-foreground">
@@ -121,7 +121,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-md hover:bg-white/10 transition-colors text-foreground hover:text-foreground/80"
+            className="p-2 rounded-md hover:bg-secondary transition-colors text-foreground hover:text-foreground/80"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
@@ -148,7 +148,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
             onValueChange={(value: string) => setScope(value as LogScope)}
           >
             <div className="flex items-center justify-between gap-3">
-              <TabsList className="bg-white border w-fit justify-start p-0 gap-0">
+              <TabsList className="bg-surface-2 border w-fit justify-start p-0 gap-0">
                 <TabsTrigger 
                   value="bridge" 
                   className="px-4 py-1.5 text-center data-[state=active]:bg-primary/30 border-r border-border rounded-none first:rounded-l-md last:rounded-r-md"
@@ -183,7 +183,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
                   onClick={fetchLogs}
                   disabled={loading}
                   aria-label="Refresh logs"
-                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/10"
+                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-secondary"
                 >
                   <RefreshCw className="w-4 h-4" />
                 </Button>
@@ -193,7 +193,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
                   onClick={clearLogs}
                   disabled={loading}
                   aria-label="Clear logs"
-                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/10"
+                  className="bg-transparent text-muted-foreground hover:text-foreground hover:bg-secondary"
                 >
                   <Trash2 className="w-4 h-4" />
                 </Button>
@@ -207,7 +207,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
             )}
 
             <TabsContent value="bridge">
-              <div className="border border-black/10 rounded-md bg-white/60 h-[50vh] overflow-auto p-3">
+              <div className="border border-hairline rounded-md bg-surface-2 h-[50vh] overflow-auto p-3">
                 <pre className="text-xs text-slate-800 whitespace-pre-wrap break-words font-mono">
                   {loading ? "Loading..." : content || "No logs available."}
                 </pre>
@@ -215,7 +215,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
             </TabsContent>
 
             <TabsContent value="app">
-              <div className="border border-black/10 rounded-md bg-white/60 h-[50vh] overflow-auto p-3">
+              <div className="border border-hairline rounded-md bg-surface-2 h-[50vh] overflow-auto p-3">
                 <pre className="text-xs text-slate-800 whitespace-pre-wrap break-words font-mono">
                   {loading ? "Loading..." : content || "No logs available."}
                 </pre>

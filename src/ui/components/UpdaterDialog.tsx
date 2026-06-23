@@ -59,16 +59,16 @@ export function UpdaterDialog({
         }
       }}
     >
-      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-background/70 backdrop-blur-sm" />
 
-      <div className="relative w-full max-w-lg rounded-xl glass-frosted border border-white/20 shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between p-5 border-b border-white/10">
+      <div className="relative w-full max-w-lg rounded-xl glass-frosted border border-hairline-strong shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between p-5 border-b border-hairline">
           <h2 className="text-xl font-bold text-foreground">
             {isUpdateAvailable ? "Software update available" : "App Updates"}
           </h2>
           <button
             onClick={onClose}
-            className="p-2 rounded-md hover:bg-white/10 transition-colors text-foreground hover:text-foreground/80"
+            className="p-2 rounded-md hover:bg-secondary transition-colors text-foreground hover:text-foreground/80"
             aria-label="Close updates"
           >
             <X className="w-5 h-5" />
@@ -111,7 +111,7 @@ export function UpdaterDialog({
 
           {status.state === "downloading" && status.progressPercent !== null ? (
             <div className="space-y-1">
-              <div className="h-2 w-full rounded-full bg-white/20 overflow-hidden">
+              <div className="h-2 w-full rounded-full bg-foreground/10 overflow-hidden">
                 <div
                   className="h-full bg-primary transition-all duration-200"
                   style={{ width: `${Math.max(0, Math.min(status.progressPercent, 100))}%` }}

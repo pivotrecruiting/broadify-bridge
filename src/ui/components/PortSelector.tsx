@@ -52,7 +52,7 @@ export function PortSelector({
           disabled={disabled}
           min={1}
           max={65535}
-          className="w-full sm:w-24 border border-card-foreground/15 bg-white/20 hover:bg-white/25 active:bg-white/30 text-card-foreground font-medium placeholder:text-card-foreground/60 focus-visible:ring-card-foreground/30 focus-visible:border-card-foreground/30 shadow-lg shadow-card-foreground/15 hover:shadow-xl hover:shadow-card-foreground/20 focus-visible:shadow-xl focus-visible:shadow-card-foreground/25 transition-all h-9 px-3 py-2 text-sm"
+          className="w-full sm:w-24 border border-card-foreground/15 bg-foreground/5 hover:bg-foreground/8 active:bg-foreground/12 text-card-foreground font-medium placeholder:text-card-foreground/60 focus-visible:ring-card-foreground/30 focus-visible:border-card-foreground/30 shadow-lg shadow-card-foreground/15 hover:shadow-xl hover:shadow-card-foreground/20 focus-visible:shadow-xl focus-visible:shadow-card-foreground/25 transition-all h-9 px-3 py-2 text-sm"
         />
       ) : (
         <>

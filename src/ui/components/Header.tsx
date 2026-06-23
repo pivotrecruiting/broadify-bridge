@@ -1,7 +1,9 @@
 import { CloudDownload, Settings } from "lucide-react";
 import type { BridgeStatus } from "@broadify/protocol";
 import { StatusIndicator } from "./StatusIndicator";
+import { ThemeToggle } from "./ThemeToggle";
 import logo from "../assets/logo.svg";
+import logoWhite from "../assets/logo-white.svg";
 
 interface HeaderProps {
   bridgeStatus: BridgeStatus;
@@ -52,9 +54,21 @@ export function Header({
           </button>
         </div>
         <div className="flex-1 flex justify-center">
-          <img src={logo} alt="broadify" className="h-14 sm:h-16 md:h-20" />
+          {/* Colored logo for light mode, white wordmark variant for dark mode */}
+          <img
+            src={logo}
+            alt="broadify"
+            className="h-14 sm:h-16 md:h-20 dark:hidden"
+          />
+          <img
+            src={logoWhite}
+            alt=""
+            aria-hidden="true"
+            className="h-14 sm:h-16 md:h-20 hidden dark:block"
+          />
         </div>
-        <div className="flex items-center justify-end gap-2 w-[120px] sm:w-[140px]">
+        <div className="flex items-center justify-end gap-3 w-[120px] sm:w-[140px]">
+          <ThemeToggle />
           <StatusIndicator status={bridgeStatus} />
         </div>
       </div>
@@ -90,7 +104,7 @@ function WebAppLink({ bridgeStatus }: { bridgeStatus: BridgeStatus }) {
   return (
     <button
       onClick={handleClick}
-      className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-md transition-colors"
+      className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 rounded-full transition-colors"
     >
       <span>Open web app</span>
       <svg
