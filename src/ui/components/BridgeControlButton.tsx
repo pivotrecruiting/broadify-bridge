@@ -27,7 +27,7 @@ export function BridgeControlButton({
         {!bridgeStatus.running ? (
           <Button
             variant="cta"
-            className="font-bold px-8 sm:px-30 md:px-36 py-5 sm:py-6 md:py-6 h-auto text-base sm:text-lg w-full sm:w-auto"
+            className="font-bold px-8 sm:px-16 md:px-20 py-3 sm:py-3.5 md:py-4 h-auto text-sm sm:text-base w-full sm:w-auto"
             onClick={onStart}
             disabled={disabled || isStarting}
           >
@@ -36,7 +36,7 @@ export function BridgeControlButton({
         ) : (
           <Button
             variant="destructive"
-            className="font-bold px-8 sm:px-24 md:px-32 py-5 sm:py-5 md:py-6 h-auto text-base sm:text-lg w-full sm:w-auto"
+            className="font-bold px-8 sm:px-16 md:px-20 py-3 sm:py-3.5 md:py-4 h-auto text-sm sm:text-base w-full sm:w-auto"
             onClick={onStop}
             disabled={isStopping}
           >
