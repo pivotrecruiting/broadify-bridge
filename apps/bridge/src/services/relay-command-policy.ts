@@ -116,6 +116,13 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_button_trigger: sideEffect("meeting_button_trigger", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.engine", ["meeting.program"]),
   meeting_output_configure: sideEffect("meeting_output_configure", "graphics", 20_000, 16_000, "meeting.graphics", ["meeting.graphics", "outputs"]),
   meeting_graphics_configure_outputs: sideEffect("meeting_graphics_configure_outputs", "graphics", 20_000, 16_000, "meeting.graphics", ["meeting.graphics", "outputs"]),
+  canon_xc_list_devices: readOnly("canon_xc_list_devices", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.devices"]),
+  canon_xc_save_device: sideEffect("canon_xc_save_device", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "canon_xc", ["canon_xc.devices"]),
+  canon_xc_test_connection: readOnly("canon_xc_test_connection", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.presets"]),
+  canon_xc_delete_device: sideEffect("canon_xc_delete_device", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "canon_xc", ["canon_xc.devices"]),
+  canon_xc_test_device: readOnly("canon_xc_test_device", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.presets"]),
+  canon_xc_list_presets: readOnly("canon_xc_list_presets", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.presets"]),
+  canon_xc_recall_preset: sideEffect("canon_xc_recall_preset", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "canon_xc", ["canon_xc.presets"], "never"),
 };
 
 /**

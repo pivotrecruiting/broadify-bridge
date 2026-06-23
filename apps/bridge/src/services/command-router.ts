@@ -4,6 +4,9 @@ import { runtimeConfig } from "./runtime-config.js";
 import { graphicsManager } from "./graphics/graphics-manager.js";
 import {
   EmptyPayloadSchema,
+  CanonXCDeviceIdSchema,
+  CanonXCDeviceSchema,
+  CanonXCPresetRecallSchema,
   EngineConnectSchema,
   ListOutputsSchema,
   MacroIdSchema,
@@ -25,6 +28,7 @@ import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { transformDevicesToOutputs } from "./device-to-output-transform.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
+import { canonXCService } from "./canon-xc/canon-xc-service.js";
 
 /**
  * Relay command payload.
@@ -465,6 +469,96 @@ export class CommandRouter {
           return {
             success: true,
             data: graphicsManager.getStatus(),
+          };
+        }
+
+        case "canon_xc_list_devices": {
+          parseRelayPayload(
+            EmptyPayloadSchema,
+            payload ?? {},
+            "Invalid payload for canon_xc_list_devices",
+          );
+          return {
+            success: true,
+            data: await canonXCService.listDevices(),
+          };
+        }
+
+        case "canon_xc_save_device": {
+          const input = parseRelayPayload(
+            CanonXCDeviceSchema,
+            payload ?? {},
+            "Invalid payload for canon_xc_save_device",
+          );
+          return {
+            success: true,
+            data: {
+              device: await canonXCService.saveDevice(input),
+            },
+          };
+        }
+
+        case "canon_xc_test_connection": {
+          const input = parseRelayPayload(
+            CanonXCDeviceSchema,
+            payload ?? {},
+            "Invalid payload for canon_xc_test_connection",
+          );
+          return {
+            success: true,
+            data: await canonXCService.testConnection(input),
+          };
+        }
+
+        case "canon_xc_delete_device": {
+          const { deviceId } = parseRelayPayload(
+            CanonXCDeviceIdSchema,
+            payload ?? {},
+            "Invalid payload for canon_xc_delete_device",
+          );
+          return {
+            success: true,
+            data: await canonXCService.deleteDevice(deviceId),
+          };
+        }
+
+        case "canon_xc_test_device": {
+          const { deviceId } = parseRelayPayload(
+            CanonXCDeviceIdSchema,
+            payload ?? {},
+            "Invalid payload for canon_xc_test_device",
+          );
+          return {
+            success: true,
+            data: await canonXCService.testDevice(deviceId),
+          };
+        }
+
+        case "canon_xc_list_presets": {
+          const { deviceId } = parseRelayPayload(
+            CanonXCDeviceIdSchema,
+            payload ?? {},
+            "Invalid payload for canon_xc_list_presets",
+          );
+          return {
+            success: true,
+            data: await canonXCService.listPresets(deviceId),
+          };
+        }
+
+        case "canon_xc_recall_preset": {
+          const input = parseRelayPayload(
+            CanonXCPresetRecallSchema,
+            payload ?? {},
+            "Invalid payload for canon_xc_recall_preset",
+          );
+          return {
+            success: true,
+            data: await canonXCService.recallPreset(
+              input.deviceId,
+              input.preset,
+              input.options,
+            ),
           };
         }
 

@@ -108,6 +108,29 @@ jest.mock("./runtime-app-version.js", () => ({
   getRuntimeAppVersion: jest.fn(() => "0.1.0"),
 }));
 
+jest.mock("./canon-xc/canon-xc-service.js", () => ({
+  canonXCService: {
+    listDevices: jest.fn().mockResolvedValue({ devices: [] }),
+    saveDevice: jest.fn().mockResolvedValue({
+      id: "canon-1",
+      deviceId: "canon-1",
+      name: "Canon 1",
+      host: "192.168.0.100",
+      port: 80,
+      protocol: "http",
+      type: "camera",
+      username: null,
+      cameraNo: null,
+      enabled: true,
+    }),
+    deleteDevice: jest.fn().mockResolvedValue({ ok: true, message: "deleted" }),
+    testConnection: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+    testDevice: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+    listPresets: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+    recallPreset: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+  },
+}));
+
 const defaultBridgeContext = {
   bridgeName: "test-bridge",
   bridgeId: "bridge-1",
@@ -730,6 +753,142 @@ describe("command-router", () => {
         },
       );
       expect(result.success).toBe(true);
+    });
+
+    it("canon_xc_list_devices returns persisted Canon devices", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+      canonXCService.listDevices.mockResolvedValue({
+        devices: [{ deviceId: "canon-1", name: "Canon 1" }],
+      });
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_list_devices",
+        {},
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({
+        devices: [{ deviceId: "canon-1", name: "Canon 1" }],
+      });
+      expect(canonXCService.listDevices).toHaveBeenCalledWith();
+    });
+
+    it("canon_xc_save_device validates and persists camera input", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_save_device",
+        {
+          name: "Stage Canon",
+          host: "192.168.0.100",
+          port: 80,
+          protocol: "http",
+          type: "camera",
+          username: "operator",
+          password: "secret",
+          cameraNo: null,
+          enabled: true,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.saveDevice).toHaveBeenCalledWith({
+        name: "Stage Canon",
+        host: "192.168.0.100",
+        port: 80,
+        protocol: "http",
+        type: "camera",
+        username: "operator",
+        password: "secret",
+        cameraNo: null,
+        enabled: true,
+      });
+    });
+
+    it("canon_xc_test_connection validates without persisting camera input", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_test_connection",
+        {
+          name: "Stage Canon",
+          host: "192.168.0.100",
+          port: 80,
+          protocol: "http",
+          type: "camera",
+          username: "operator",
+          password: "secret",
+          enabled: true,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.testConnection).toHaveBeenCalledWith({
+        name: "Stage Canon",
+        host: "192.168.0.100",
+        port: 80,
+        protocol: "http",
+        type: "camera",
+        username: "operator",
+        password: "secret",
+        enabled: true,
+      });
+      expect(canonXCService.saveDevice).not.toHaveBeenCalled();
+    });
+
+    it("canon_xc_delete_device validates the device id", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_delete_device",
+        { deviceId: "canon-1" },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.deleteDevice).toHaveBeenCalledWith("canon-1");
+    });
+
+    it("canon_xc_list_presets validates the device id", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_list_presets",
+        { deviceId: "canon-1" },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.listPresets).toHaveBeenCalledWith("canon-1");
+    });
+
+    it("canon_xc_recall_preset validates preset recall payload", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_recall_preset",
+        {
+          deviceId: "canon-1",
+          preset: 3,
+          options: { ptzspeed: 30 },
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.recallPreset).toHaveBeenCalledWith("canon-1", 3, {
+        ptzspeed: 30,
+      });
+    });
+
+    it("returns validation error for invalid Canon preset recall payload", async () => {
+      const result = await commandRouter.handleCommand(
+        "canon_xc_recall_preset",
+        {
+          deviceId: "canon-1",
+          preset: 101,
+        },
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid payload");
     });
 
     it("returns validation error for invalid engine_connect payload", async () => {
