@@ -43,8 +43,9 @@ struct GraphicsState {
 };
 
 struct CameraRenderState {
+  bool enabled = true;
   bool mirror = true;
-  std::string rawJson = "{\"mirror\":true}";
+  std::string rawJson = "{\"enabled\":true,\"mirror\":true}";
 };
 
 struct MeetingState {

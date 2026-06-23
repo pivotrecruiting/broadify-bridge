@@ -390,9 +390,6 @@ void drawCamera(std::vector<uint8_t> &frame,
     return;
   }
   if (cameraFrame == nullptr || cameraFrame->rgba.empty() || cameraFrame->width == 0 || cameraFrame->height == 0) {
-    fillRect(frame, width, height, rect, 255, 255, 255, 46);
-    const Rect head{rect.x + rect.width / 3, rect.y + rect.height / 5, rect.width / 3, rect.width / 3};
-    fillRect(frame, width, height, head, 255, 255, 255, 80);
     return;
   }
 
@@ -518,13 +515,15 @@ void renderProgramFrame(const Options &options,
   fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
   drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
   drawGraphicsFrame(output, options.width, options.height, graphicsFrame);
-  drawCamera(
-      output,
-      options.width,
-      options.height,
-      cameraRect(options.width, options.height, snapshot.speakerLayout),
-      cameraFrame,
-      snapshot.cameraRender.mirror);
+  if (snapshot.cameraRender.enabled) {
+    drawCamera(
+        output,
+        options.width,
+        options.height,
+        cameraRect(options.width, options.height, snapshot.speakerLayout),
+        cameraFrame,
+        snapshot.cameraRender.mirror);
+  }
   drawGraphics(output, options.width, options.height, snapshot.graphics);
   drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
 }

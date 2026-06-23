@@ -105,6 +105,7 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
   const std::string safeValues = values.empty() ? "{\"enabled\":false}" : values;
   if (section == "speaker_layout") {
     state.speakerLayout.enabled = extractBoolField(safeValues, "enabled", state.speakerLayout.enabled);
+    state.cameraRender.enabled = extractBoolField(safeValues, "camera_enabled", state.cameraRender.enabled);
     const std::string layout = extractStringField(safeValues, "layout");
     if (!layout.empty()) {
       state.speakerLayout.layout = layout;
@@ -145,8 +146,10 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     return;
   }
   if (section == "camera") {
+    state.cameraRender.enabled = extractBoolField(safeValues, "enabled", state.cameraRender.enabled);
     state.cameraRender.mirror = extractBoolField(safeValues, "mirror", state.cameraRender.mirror);
-    state.cameraRender.rawJson = std::string("{\"mirror\":") + (state.cameraRender.mirror ? "true" : "false") + "}";
+    state.cameraRender.rawJson = std::string("{\"enabled\":") + (state.cameraRender.enabled ? "true" : "false") +
+        ",\"mirror\":" + (state.cameraRender.mirror ? "true" : "false") + "}";
   }
 }
 
