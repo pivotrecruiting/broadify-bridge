@@ -298,6 +298,19 @@ void fillRotatedRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t heigh
   }
 }
 
+void drawGlassRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &rect, double rotationDeg = 0.0) {
+  if (rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+
+  fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 10, rect.width, rect.height}, rotationDeg, 0, 0, 0, 46);
+  fillRotatedRect(frame, width, height, rect, rotationDeg, 255, 255, 255, 36);
+  fillRotatedRect(frame, width, height, {rect.x + 1, rect.y + 1, std::max(0, rect.width - 2), 2}, rotationDeg, 255, 255, 255, 92);
+  fillRotatedRect(frame, width, height, {rect.x + 1, rect.y + 1, 2, std::max(0, rect.height - 2)}, rotationDeg, 255, 255, 255, 54);
+  fillRotatedRect(frame, width, height, {rect.x + rect.width - 3, rect.y + 1, 2, std::max(0, rect.height - 2)}, rotationDeg, 255, 255, 255, 24);
+  fillRotatedRect(frame, width, height, {rect.x + 1, rect.y + rect.height - 3, std::max(0, rect.width - 2), 2}, rotationDeg, 255, 255, 255, 24);
+}
+
 void fillBackground(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const std::string &mode, uint64_t frameIndex) {
   frame.assign(static_cast<size_t>(width) * height * 4u, 255u);
   for (uint32_t y = 0; y < height; ++y) {
@@ -434,8 +447,9 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
       static_cast<int>(height * std::clamp(mediaLayer.height, 0.05, 1.0)),
     };
   }
-  fillRotatedRect(frame, width, height, rect, mediaLayer.rotation, 14, 116, 144, 210);
-  fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 8, std::max(0, rect.width - 16), 3}, mediaLayer.rotation, 255, 255, 255, 190);
+  drawGlassRect(frame, width, height, rect, mediaLayer.rotation);
+  fillRotatedRect(frame, width, height, {rect.x + 12, rect.y + 12, std::max(0, rect.width - 24), 4}, mediaLayer.rotation, 255, 255, 255, 108);
+  fillRotatedRect(frame, width, height, {rect.x + 12, rect.y + rect.height - 18, std::max(0, (rect.width - 24) * 2 / 3), 6}, mediaLayer.rotation, 255, 255, 255, 78);
 }
 
 void drawGraphicsFrame(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const VideoFrame *graphicsFrame) {
@@ -487,8 +501,9 @@ void drawCornerbug(std::vector<uint8_t> &frame, uint32_t width, uint32_t height,
     drawImageFit(frame, width, height, rect, *image);
     return;
   }
-  fillRect(frame, width, height, rect, 255, 132, 28, 240);
-  fillRect(frame, width, height, {rect.x + size / 5, rect.y + size / 5, size * 3 / 5, size * 3 / 5}, 255, 255, 255, 160);
+  drawGlassRect(frame, width, height, rect);
+  fillRect(frame, width, height, {rect.x + size / 5, rect.y + size / 5, size * 3 / 5, size * 3 / 5}, 255, 255, 255, 72);
+  fillRect(frame, width, height, {rect.x + size / 3, rect.y + size / 3, size / 3, size / 3}, 255, 255, 255, 52);
 }
 
 }  // namespace
