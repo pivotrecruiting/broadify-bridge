@@ -1,4 +1,5 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 
 import {
   CanonXCService,
@@ -128,11 +129,18 @@ describe("canon-xc-service", () => {
         protocol: "http",
       });
       expect(device).not.toHaveProperty("password");
-      expect(mockMkdir).toHaveBeenCalledWith("/tmp/broadify-test/studio-adapters", {
-        recursive: true,
-      });
+      expect(mockMkdir).toHaveBeenCalledWith(
+        path.join("/tmp/broadify-test", "studio-adapters"),
+        {
+          recursive: true,
+        },
+      );
       expect(mockWriteFile).toHaveBeenCalledWith(
-        "/tmp/broadify-test/studio-adapters/canon-xc-devices.json",
+        path.join(
+          "/tmp/broadify-test",
+          "studio-adapters",
+          "canon-xc-devices.json",
+        ),
         expect.stringContaining('"password": "secret"'),
         "utf8",
       );
