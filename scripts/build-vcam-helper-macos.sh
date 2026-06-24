@@ -140,6 +140,17 @@ TIMESTAMP_FLAG=""
 cd "${VCAM_DIR}"
 xcodegen generate
 
+if [[ "${VCAM_CLEAN_BUILD:-1}" == "1" ]]; then
+  echo "build-vcam-helper-macos: cleaning previous Xcode build artifacts"
+  xcodebuild \
+    -project BroadifyVCam.xcodeproj \
+    -scheme BroadifyVCam \
+    -configuration Release \
+    -derivedDataPath build \
+    SYMROOT=build \
+    clean
+fi
+
 if [[ "${VCAM_SIGNING_MODE}" == "developer-id" ]]; then
   # Validate the Developer ID cert is present for the expected team. The
   # per-target profile selection comes from PROVISIONING_PROFILE_SPECIFIER in

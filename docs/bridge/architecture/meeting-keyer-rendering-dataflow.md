@@ -491,12 +491,18 @@ The final `programFrame` is written to:
 
 The native helper exposes FrameBus status through `output.framebus.status`.
 Virtual camera status in `MeetingHelperClient` explicitly reports that virtual
-camera is provided by a separate `vcam-helper` FrameBus consumer.
+camera is provided by the separate `vcam-helper`.
 
 Therefore:
 
 - Meeting helper produces the program frame.
-- VCam helper consumes the meeting output FrameBus.
+- VCam helper consumes the meeting output through the local raw-frame stream.
+  The stream now prefers BGRA payloads so the CMIO extension can copy live
+  frames without per-pixel channel conversion; RGBA remains accepted for
+  compatibility.
+- VCam helper uses a lazy reader lifecycle: no raw-stream reader when no CMIO
+  client is streaming, 1 FPS cached no-signal output in idle, and 30 FPS output
+  only while fresh program frames are available.
 - Meeting helper does not own virtual camera lifecycle internally.
 
 ## Observability

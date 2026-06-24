@@ -81,6 +81,8 @@ Freigabe den stabilen Fehlercode `camera_permission_denied`.
 Die virtuelle Kamera ist eine CoreMediaIO Camera Extension unter
 `apps/bridge/native/vcam-helper`. Sie liest den Meeting-FrameBus und stellt
 `broadify Camera` fuer Zoom, Meet und Teams bereit.
+Wegen macOS-SystemExtension-Sandboxing konsumiert die Extension den fertigen
+Program-Frame ueber den lokalen Raw-Frame-Stream des Meeting-Helpers.
 
 ```bash
 npm run build:vcam-helper

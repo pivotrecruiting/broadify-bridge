@@ -13,15 +13,21 @@ final class RawFrameStreamReader {
     private static let magic: UInt32 = 0x47524642
     private static let version: UInt32 = 1
     private static let pixelFormatRgba8: UInt32 = 1
+    private static let pixelFormatBgra8: UInt32 = 2
     private static let headerSize = 32
     private static let frameMaxAgeSeconds = 2.0
+    private static let reconnectInitialDelaySeconds = 0.25
+    private static let reconnectMaxDelaySeconds = 3.0
     private static let log = OSLog(subsystem: "com.broadify.vcam.extension", category: "raw-frame-stream")
 
     private let host = "127.0.0.1"
     private let port: UInt16 = 18787
     private let lock = NSLock()
-    private var readerStarted = false
+    private var shouldRun = false
+    private var readerRunning = false
+    private var activeSocketFd: Int32 = -1
     private var lastFailureLog = Date.distantPast
+    private var reconnectDelaySeconds = reconnectInitialDelaySeconds
     private var latestBgra = [UInt8]()
     private var latestAt = Date.distantPast
 
@@ -29,9 +35,49 @@ final class RawFrameStreamReader {
     private(set) var height: UInt32 = 0
     private(set) var publishedSeq: UInt64 = 0
 
-    func copyLatestFrame(into dst: UnsafeMutablePointer<UInt8>, stride: Int) -> Bool {
-        startReaderIfNeeded()
+    func start() {
+        lock.lock()
+        if readerRunning {
+            shouldRun = true
+            lock.unlock()
+            return
+        }
+        shouldRun = true
+        readerRunning = true
+        reconnectDelaySeconds = Self.reconnectInitialDelaySeconds
+        lock.unlock()
 
+        Thread.detachNewThread { [weak self] in
+            self?.readerLoop()
+        }
+    }
+
+    func stop() {
+        let socketFd: Int32
+        lock.lock()
+        shouldRun = false
+        socketFd = activeSocketFd
+        activeSocketFd = -1
+        lock.unlock()
+
+        if socketFd >= 0 {
+            shutdown(socketFd, SHUT_RDWR)
+        }
+        clearLatestFrame(keepCapacity: false)
+    }
+
+    func hasFreshFrame() -> Bool {
+        lock.lock()
+        let hasFrame = !latestBgra.isEmpty &&
+            Date().timeIntervalSince(latestAt) <= Self.frameMaxAgeSeconds &&
+            width > 0 &&
+            height > 0
+        lock.unlock()
+
+        return hasFrame
+    }
+
+    func copyLatestFrame(into dst: UnsafeMutablePointer<UInt8>, stride: Int) -> Bool {
         lock.lock()
         let frame = latestBgra
         let frameWidth = width
@@ -60,37 +106,56 @@ final class RawFrameStreamReader {
         return true
     }
 
-    private func startReaderIfNeeded() {
+    private func isRunning() -> Bool {
         lock.lock()
-        if readerStarted {
-            lock.unlock()
-            return
-        }
-        readerStarted = true
+        let running = shouldRun
         lock.unlock()
-
-        Thread.detachNewThread { [weak self] in
-            self?.readerLoop()
-        }
+        return running
     }
 
     private func readerLoop() {
-        while true {
-            autoreleasepool {
+        while isRunning() {
+            let connected = autoreleasepool {
                 self.runSingleStreamSession()
             }
-            self.clearLatestFrame()
-            Thread.sleep(forTimeInterval: 0.2)
+            self.clearLatestFrame(keepCapacity: connected)
+            guard isRunning() else {
+                break
+            }
+            if connected {
+                reconnectDelaySeconds = Self.reconnectInitialDelaySeconds
+            } else {
+                Thread.sleep(forTimeInterval: reconnectDelaySeconds)
+                reconnectDelaySeconds = min(
+                    reconnectDelaySeconds * 1.8,
+                    Self.reconnectMaxDelaySeconds
+                )
+            }
         }
+
+        lock.lock()
+        readerRunning = false
+        reconnectDelaySeconds = Self.reconnectInitialDelaySeconds
+        lock.unlock()
     }
 
-    private func runSingleStreamSession() {
+    private func runSingleStreamSession() -> Bool {
         let socketFd = socket(AF_INET, SOCK_STREAM, 0)
         guard socketFd >= 0 else {
             logFailure("socket failed")
-            return
+            return false
         }
-        defer { close(socketFd) }
+        lock.lock()
+        activeSocketFd = socketFd
+        lock.unlock()
+        defer {
+            lock.lock()
+            if activeSocketFd == socketFd {
+                activeSocketFd = -1
+            }
+            lock.unlock()
+            close(socketFd)
+        }
 
         var timeout = timeval(tv_sec: 1, tv_usec: 0)
         setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
@@ -107,29 +172,32 @@ final class RawFrameStreamReader {
                 connect(socketFd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        guard isRunning() else {
+            return true
+        }
         guard connected == 0 else {
             logFailure("Raw frame stream unavailable")
-            return
+            return false
         }
 
         let request = "GET /stream.rgba HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
         let sent = request.withCString { send(socketFd, $0, strlen($0), 0) }
         guard sent > 0 else {
             logFailure("Raw frame stream request failed")
-            return
+            return false
         }
 
         guard readHttpHeaders(socketFd: socketFd) else {
             logFailure("Raw frame stream HTTP handshake failed")
-            return
+            return false
         }
 
         os_log(.info, log: Self.log, "Connected to raw VCam frame stream")
 
-        while true {
+        while isRunning() {
             guard let header = readExact(socketFd: socketFd, byteCount: Self.headerSize) else {
                 logFailure("Raw frame stream disconnected")
-                return
+                return true
             }
             let magic = readU32(header, 0)
             let version = readU32(header, 4)
@@ -142,36 +210,44 @@ final class RawFrameStreamReader {
 
             guard magic == Self.magic,
                   version == Self.version,
-                  pixelFormat == Self.pixelFormatRgba8,
+                  (pixelFormat == Self.pixelFormatRgba8 || pixelFormat == Self.pixelFormatBgra8),
                   frameWidth > 0,
                   frameHeight > 0,
                   Int(frameSize) == expectedFrameSize,
                   expectedFrameSize <= 64 * 1024 * 1024 else {
                 logFailure("Invalid raw frame stream header")
-                return
+                return true
             }
 
             guard let rgba = readExact(socketFd: socketFd, byteCount: expectedFrameSize) else {
                 logFailure("Raw frame stream payload incomplete")
-                return
+                return true
             }
-            publishFrame(rgba: rgba, width: frameWidth, height: frameHeight, seq: seq)
+            publishFrame(bytes: rgba, pixelFormat: pixelFormat, width: frameWidth, height: frameHeight, seq: seq)
         }
+
+        return true
     }
 
-    private func publishFrame(rgba: [UInt8], width frameWidth: UInt32, height frameHeight: UInt32, seq: UInt64) {
-        var bgra = [UInt8](repeating: 0, count: rgba.count)
-        let rowBytes = Int(frameWidth) * 4
-        for y in 0..<Int(frameHeight) {
-            let rowOffset = y * rowBytes
-            for x in 0..<Int(frameWidth) {
-                let srcIndex = rowOffset + x * 4
-                let dstIndex = rowOffset + x * 4
-                bgra[dstIndex + 0] = rgba[srcIndex + 2]
-                bgra[dstIndex + 1] = rgba[srcIndex + 1]
-                bgra[dstIndex + 2] = rgba[srcIndex + 0]
-                bgra[dstIndex + 3] = rgba[srcIndex + 3]
+    private func publishFrame(bytes: [UInt8], pixelFormat: UInt32, width frameWidth: UInt32, height frameHeight: UInt32, seq: UInt64) {
+        let bgra: [UInt8]
+        if pixelFormat == Self.pixelFormatBgra8 {
+            bgra = bytes
+        } else {
+            var converted = [UInt8](repeating: 0, count: bytes.count)
+            let rowBytes = Int(frameWidth) * 4
+            for y in 0..<Int(frameHeight) {
+                let rowOffset = y * rowBytes
+                for x in 0..<Int(frameWidth) {
+                    let srcIndex = rowOffset + x * 4
+                    let dstIndex = rowOffset + x * 4
+                    converted[dstIndex + 0] = bytes[srcIndex + 2]
+                    converted[dstIndex + 1] = bytes[srcIndex + 1]
+                    converted[dstIndex + 2] = bytes[srcIndex + 0]
+                    converted[dstIndex + 3] = bytes[srcIndex + 3]
+                }
             }
+            bgra = converted
         }
 
         lock.lock()
@@ -188,9 +264,9 @@ final class RawFrameStreamReader {
         }
     }
 
-    private func clearLatestFrame() {
+    private func clearLatestFrame(keepCapacity: Bool) {
         lock.lock()
-        latestBgra.removeAll(keepingCapacity: false)
+        latestBgra.removeAll(keepingCapacity: keepCapacity)
         width = 0
         height = 0
         latestAt = Date.distantPast

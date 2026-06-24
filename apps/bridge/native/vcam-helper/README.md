@@ -3,38 +3,33 @@
 CoreMediaIO Camera Extension, die den MeetingHelper-Program-Output als
 virtuelle Kamera ("broadify Camera") in Teams, Zoom, Google Meet und Browsern bereitstellt.
 
-**Status: Scaffold.** Der Code ist vollständig angelegt, wird aber nicht automatisch
-gebaut. Build, Signierung und Aktivierung erfolgen manuell (Apple Developer Account nötig).
-
 ## Architektur
 
 ```
 meeting-helper (C++)             vcam-helper (dieses Verzeichnis)
-  Program frame store ─RGBA8 stream▶  127.0.0.1:18787/stream.rgba
-                                      │  RawFrameStreamReader (RGBA8 → BGRA8)
+  Program frame store ─BGRA8 stream▶  127.0.0.1:18787/stream.rgba
+                                      │  RawFrameStreamReader (lazy lifecycle)
                                       ▼
                                   BroadifyVCamExtension (CMIOExtension)
                                     ▼
                                   Teams / Zoom / Meet / Browser
 ```
 
-CMIO-Extensions sind sandboxed und können den POSIX-shm-FrameBus des GUI-Users
-nicht direkt lesen. Die VCam nutzt deshalb einen lokalen Raw-Frame-Stream auf
-`127.0.0.1` als Data-Plane zwischen MeetingHelper und Extension.
+CMIO-Extensions sind sandboxed und lesen den MeetingHelper-Output ueber einen
+lokalen Raw-Frame-Stream auf `127.0.0.1`. Der direkte POSIX-shm-FrameBus ist fuer
+die aktivierte SystemExtension nicht der zuverlaessige Transport.
 
-- `BroadifyVCamExtension/RawFrameStreamReader.swift` — persistenter Reader für
-  `/stream.rgba`; puffert den neuesten Frame im Hintergrund und kopiert ihn pro
-  CMIO-Tick in den PixelBuffer.
+- `BroadifyVCamExtension/RawFrameStreamReader.swift` — persistenter Reader fuer
+  `/stream.rgba`; startet nur waehrend aktiver CMIO-Streams, puffert den
+  neuesten Frame im Hintergrund und kopiert ihn pro Live-Tick in den PixelBuffer.
 - `BroadifyVCamExtension/` — Camera Extension (Swift, `CMIOExtensionProvider`).
-  Liest pro Frame-Tick den neuesten gepufferten Stream-Frame; ohne aktive Engine
-  wird ein "No Signal"-Frame gesendet, damit die Kamera auswählbar bleibt.
+  Wechselt zwischen 1-FPS-Idle und 30-FPS-Live-Timer. Ohne aktive Engine wird
+  ein gecachter "No Signal"-Frame gesendet, damit die Kamera auswählbar bleibt.
 - `BroadifyVCam/` — Container-App (SwiftUI-Stub), aktiviert/deaktiviert die
   System Extension über `OSSystemExtensionManager` und fordert die Aktivierung
   beim Start automatisch an.
 - `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen)-Definition.
 
-Der VCam-Stream-Port ist `18787` (`MEETING_VCAM_FRAME_PORT` /
-`DEFAULT_MEETING_VCAM_FRAME_PORT`).
 Die WebApp-Preview nutzt den internen MJPEG-Preview-Store des Meeting-Helpers;
 sie kann deshalb korrekt aussehen, auch wenn die aktive macOS-SystemExtension
 noch eine alte Version nutzt oder den Raw-Frame-Stream nicht erreicht.
@@ -118,9 +113,8 @@ strings /Library/SystemExtensions/*/com.broadify.vcam.extension.systemextension/
 ```
 
 Die MeetingHelper-Logs müssen `meeting_vcam_raw` mit `event:"listening"` zeigen.
-Die Extension-Logs müssen `Connected to raw VCam frame stream` und steigende
-`Buffered raw VCam frame seq=...`-Meldungen zeigen. Fehlt der `strings`-Treffer,
-läuft noch eine alte SystemExtension.
+Die Extension-Logs müssen `Connected to raw VCam frame stream` zeigen. Fehlt der
+`strings`-Treffer, läuft noch eine alte SystemExtension.
 
 ## Offene Punkte (bewusst nicht Teil des Scaffolds)
 
