@@ -100,6 +100,13 @@ export class CommandRouter {
                 connected: engineState.status === "connected",
                 macrosCount: engineState.macros.length,
               },
+              capabilities: {
+                canonXC: {
+                  testConnection: true,
+                  presetDiscovery: true,
+                  presetRecall: true,
+                },
+              },
             },
           };
         }

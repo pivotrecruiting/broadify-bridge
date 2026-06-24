@@ -81,6 +81,18 @@ export type CanonXCStatusT = {
   lastError: string | null;
 };
 
+export type CanonXCDiagnosticCodeT =
+  | "authentication"
+  | "network"
+  | "timeout"
+  | "tls"
+  | "camera_response";
+
+export type CanonXCDiagnosticT = {
+  code: CanonXCDiagnosticCodeT;
+  hint: string;
+};
+
 export type CanonXCResponseT = {
   ok: boolean;
   message: string;
@@ -89,6 +101,7 @@ export type CanonXCResponseT = {
   presets: CanonXCPresetT[];
   result: Record<string, unknown>;
   rawError: string | null;
+  diagnostic: CanonXCDiagnosticT | null;
 };
 
 type CanonDevicesFileT = {
@@ -378,6 +391,7 @@ export class CanonXCService {
         livescopeStatus: response.headers.get("livescope-status"),
       },
       rawError: null,
+      diagnostic: null,
     };
   }
 
@@ -405,6 +419,7 @@ export class CanonXCService {
       presets,
       result: { info },
       rawError: null,
+      diagnostic: null,
     };
   }
 
@@ -443,6 +458,7 @@ export class CanonXCService {
     message: string,
     response: CanonHttpResponseT,
   ): CanonXCResponseT {
+    const diagnostic = this.diagnosticFromResponse(response);
     return {
       ok: false,
       message,
@@ -462,6 +478,48 @@ export class CanonXCService {
         response: response.text.slice(0, 1000),
       },
       rawError: response.error,
+      diagnostic,
+    };
+  }
+
+  private diagnosticFromResponse(response: CanonHttpResponseT): CanonXCDiagnosticT {
+    const error = (response.error ?? "").toLowerCase();
+
+    if (response.statusCode === 401 || response.statusCode === 403) {
+      return {
+        code: "authentication",
+        hint: "Check the Canon username, password, and assigned access rights.",
+      };
+    }
+
+    if (error.includes("timed out")) {
+      return {
+        code: "timeout",
+        hint: "Check the camera address, port, firewall, and local network access.",
+      };
+    }
+
+    if (
+      error.includes("certificate") ||
+      error.includes("tls") ||
+      error.includes("ssl")
+    ) {
+      return {
+        code: "tls",
+        hint: "Check the selected HTTPS setting and the camera certificate.",
+      };
+    }
+
+    if (response.statusCode === 0) {
+      return {
+        code: "network",
+        hint: "Check the camera address, port, firewall, and macOS Local Network permission for Broadify Bridge.",
+      };
+    }
+
+    return {
+      code: "camera_response",
+      hint: "The camera rejected the Canon XC request. Check the selected protocol and camera settings.",
     };
   }
 
@@ -470,6 +528,7 @@ export class CanonXCService {
     command: string,
     params?: Record<string, string | number>,
   ): Promise<CanonHttpResponseT> {
+    const startedAt = Date.now();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
     const headers = new Headers();
@@ -490,7 +549,7 @@ export class CanonXCService {
       const livescopeOk =
         !livescopeStatus || ["0", "0 OK", "OK"].includes(livescopeStatus.trim());
 
-      return {
+      const result = {
         ok: response.ok && livescopeOk,
         text,
         statusCode: response.status,
@@ -499,10 +558,12 @@ export class CanonXCService {
           ? livescopeOk
             ? null
             : `Canon Livescope status ${livescopeStatus}.`
-          : `HTTP ${response.status}: ${response.statusText}`,
+            : `HTTP ${response.status}: ${response.statusText}`,
       };
+      this.logRequest(device, command, result, startedAt);
+      return result;
     } catch (error) {
-      return {
+      const result = {
         ok: false,
         text: "",
         statusCode: 0,
@@ -514,9 +575,52 @@ export class CanonXCService {
               ? error.message
               : String(error),
       };
+      this.logRequest(device, command, result, startedAt);
+      return result;
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  private logRequest(
+    device: CanonXCDeviceT,
+    command: string,
+    response: CanonHttpResponseT,
+    startedAt: number,
+  ): void {
+    const logger = getBridgeContext().logger;
+    const details = {
+      component: "canon-xc",
+      command,
+      host: device.host,
+      port: device.port,
+      protocol: device.protocol,
+      statusCode: response.statusCode,
+      ok: response.ok,
+      durationMs: Date.now() - startedAt,
+      error: this.redactLogError(response.error),
+      message: response.ok
+        ? "[CanonXC] Request completed"
+        : "[CanonXC] Request failed",
+    };
+    const logMessage = JSON.stringify(details);
+
+    if (response.ok) {
+      logger?.info?.(logMessage);
+      return;
+    }
+    logger?.warn?.(logMessage);
+  }
+
+  private redactLogError(error: string | null): string | null {
+    if (!error) {
+      return null;
+    }
+
+    return error.replace(
+      /\b(password|passwd|authorization)\s*[:=]\s*[^\s,;]+/gi,
+      "$1=[redacted]",
+    );
   }
 
   private buildUrl(

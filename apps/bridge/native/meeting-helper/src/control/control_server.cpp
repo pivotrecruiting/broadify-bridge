@@ -4,9 +4,14 @@
 #include "util/json_utils.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <sstream>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -368,20 +373,6 @@ std::string handleRpc(const std::string &line,
       updateProgramSection(state, section, values);
     }
     return okResponse(id, "{\"ok\":true,\"section\":\"" + jsonEscape(section) + "\"}");
-  }
-
-  if (method == "button.list") {
-    return okResponse(id,
-      "{\"mode\":\"meeting\",\"buttons\":["
-      "{\"id\":\"btn-keyer\",\"label\":\"AI KEYER\",\"icon\":\"sparkles\",\"enabled\":true,\"action\":{\"type\":\"keyer.toggle\"},\"group\":\"OUTPUT\",\"position\":1},"
-      "{\"id\":\"btn-camera\",\"label\":\"CAMERA\",\"icon\":\"camera\",\"enabled\":true,\"action\":{\"type\":\"camera.toggle\"},\"group\":\"OUTPUT\",\"position\":2},"
-      "{\"id\":\"btn-logo\",\"label\":\"LOGO\",\"icon\":\"logo\",\"enabled\":true,\"action\":{\"type\":\"logo.toggle\"},\"group\":\"OUTPUT\",\"position\":3},"
-      "{\"id\":\"btn-mute\",\"label\":\"MUTE\",\"icon\":\"mic\",\"enabled\":false,\"action\":{\"type\":\"meeting.mute_toggle\"},\"group\":\"CALL\",\"position\":1}"
-      "]}");
-  }
-
-  if (method == "button.trigger") {
-    return okResponse(id, "{\"ok\":true,\"message\":\"Button action accepted by native helper.\"}");
   }
 
   if (method == "output.framebus.status") {

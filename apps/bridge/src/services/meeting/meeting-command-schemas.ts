@@ -52,15 +52,6 @@ export const MeetingProgramUpdateSchema = z.object({
   values: z.record(z.unknown()),
 });
 
-export const MeetingButtonModeSchema = z.object({
-  mode: z.enum(["meeting", "studio"]),
-});
-
-export const MeetingButtonTriggerSchema = z.object({
-  mode: z.enum(["meeting", "studio"]),
-  buttonId: z.string().trim().min(1).max(128),
-});
-
 export const MeetingOutputConfigureSchema = z.object({
   target: z.enum(["framebus", "virtual_camera"]),
   action: z.enum(["start", "stop", "configure"]),

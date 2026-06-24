@@ -28,6 +28,32 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   rm -rf "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
   cp -R "${APP_SOURCE}" "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
   chmod -R u+w "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+
+  SIGNING_IDENTITY="${MEETING_HELPER_SIGNING_IDENTITY:-}"
+  if [[ -z "${SIGNING_IDENTITY}" ]]; then
+    SIGNING_IDENTITY="$(
+      security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Developer ID Application:.*(PG38DC5RG9)\)"/\1/p' \
+        | head -n 1
+    )"
+  fi
+
+  if [[ -n "${SIGNING_IDENTITY}" ]]; then
+    codesign \
+      --force \
+      --sign "${SIGNING_IDENTITY}" \
+      --entitlements "${ROOT_DIR}/macos/BroadifyMeetingHelper.entitlements" \
+      --options runtime \
+      "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+  else
+    codesign \
+      --force \
+      --sign - \
+      --entitlements "${ROOT_DIR}/macos/BroadifyMeetingHelper.entitlements" \
+      "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+  fi
+  codesign --verify --strict --deep --verbose=2 "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+
   if [[ -f "${ROOT_DIR}/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" ]]; then
     cp -f "${ROOT_DIR}/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" "${ROOT_DIR}/meeting-helper"
     chmod u+w "${ROOT_DIR}/meeting-helper"

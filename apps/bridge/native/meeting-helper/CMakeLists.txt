@@ -129,6 +129,7 @@ endif()
 if(APPLE)
   target_link_libraries(meeting-helper PRIVATE
     "-framework AppKit"
+    "-framework ApplicationServices"
     "-framework AVFoundation"
     "-framework CoreGraphics"
     "-framework CoreMedia"

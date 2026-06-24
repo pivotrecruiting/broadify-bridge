@@ -3,8 +3,6 @@ import {
   EmptyPayloadSchema,
 } from "../relay-command-schemas.js";
 import {
-  MeetingButtonModeSchema,
-  MeetingButtonTriggerSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
   MeetingKeyerConfigureSchema,
@@ -230,27 +228,6 @@ export async function handleMeetingCommand(
       return {
         success: true,
         data: await requireClient().programUpdate(section, values),
-      };
-    }
-
-    case "meeting_button_list": {
-      const { mode } = parseRelayPayload(
-        MeetingButtonModeSchema,
-        payload ?? {},
-        "Invalid payload for meeting_button_list",
-      );
-      return { success: true, data: await requireClient().buttonsList(mode) };
-    }
-
-    case "meeting_button_trigger": {
-      const { mode, buttonId } = parseRelayPayload(
-        MeetingButtonTriggerSchema,
-        payload ?? {},
-        "Invalid payload for meeting_button_trigger",
-      );
-      return {
-        success: true,
-        data: await requireClient().buttonTrigger(mode, buttonId),
       };
     }
 

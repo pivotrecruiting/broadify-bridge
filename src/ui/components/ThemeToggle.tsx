@@ -1,27 +1,24 @@
-import { Monitor, Moon, Sun } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 import { useTheme, type Theme } from "../theme/theme-provider";
 
 type ThemeTogglePropsT = {
   className?: string;
 };
 
-/** Cycle order for the toggle: dark → light → system → dark. */
+/** Cycle order for the toggle: dark → light → dark. */
 const NEXT_THEME: Record<Theme, Theme> = {
   dark: "light",
-  light: "system",
-  system: "dark",
+  light: "dark",
 };
 
 const LABELS: Record<Theme, string> = {
   dark: "Dark mode (click for light)",
-  light: "Light mode (click for system)",
-  system: "System theme (click for dark)",
+  light: "Light mode (click for dark)",
 };
 
 /**
- * Cycles appearance between dark, light and system. The provider applies the
- * resolved theme to the document root; "system" follows the OS preference.
- * Styled to match the sibling header icon buttons.
+ * Toggles appearance between dark and light. The provider applies the active
+ * theme to the document root. Styled to match the sibling header icon buttons.
  */
 export function ThemeToggle({ className }: ThemeTogglePropsT) {
   const { theme, setTheme } = useTheme();
@@ -35,9 +32,7 @@ export function ThemeToggle({ className }: ThemeTogglePropsT) {
       data-testid="theme-toggle"
       onClick={() => setTheme(NEXT_THEME[theme])}
     >
-      {theme === "system" ? (
-        <Monitor className="w-5 h-5 sm:w-6 sm:h-6" aria-hidden />
-      ) : theme === "dark" ? (
+      {theme === "dark" ? (
         <Moon className="w-5 h-5 sm:w-6 sm:h-6" aria-hidden />
       ) : (
         <Sun className="w-5 h-5 sm:w-6 sm:h-6" aria-hidden />

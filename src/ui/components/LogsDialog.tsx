@@ -208,7 +208,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
 
             <TabsContent value="bridge">
               <div className="border border-hairline rounded-md bg-surface-2 h-[50vh] overflow-auto p-3">
-                <pre className="text-xs text-slate-800 whitespace-pre-wrap break-words font-mono">
+                <pre className="text-xs text-foreground whitespace-pre-wrap break-words font-mono">
                   {loading ? "Loading..." : content || "No logs available."}
                 </pre>
               </div>
@@ -216,7 +216,7 @@ export function LogsDialog({ isOpen, onClose }: LogsDialogProps) {
 
             <TabsContent value="app">
               <div className="border border-hairline rounded-md bg-surface-2 h-[50vh] overflow-auto p-3">
-                <pre className="text-xs text-slate-800 whitespace-pre-wrap break-words font-mono">
+                <pre className="text-xs text-foreground whitespace-pre-wrap break-words font-mono">
                   {loading ? "Loading..." : content || "No logs available."}
                 </pre>
               </div>

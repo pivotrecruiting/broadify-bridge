@@ -61,7 +61,7 @@
     "signIgnore": ["BroadifyVCam.app"],
     "notarize": true,
     "extendInfo": {
-      "NSLocalNetworkUsageDescription": "Broadify Bridge benötigt Zugriff auf das lokale Netzwerk, um Video-Mischer (z. B. ATEM) und Ausgabegeräte in deinem Netzwerk zu finden und zu steuern."
+      "NSLocalNetworkUsageDescription": "Broadify Bridge benötigt Zugriff auf das lokale Netzwerk, um Video-Mischer, Canon Kameras und Ausgabegeräte in deinem Netzwerk zu finden und zu steuern."
     }
   },
   "linux": {

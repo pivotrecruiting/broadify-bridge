@@ -52,8 +52,6 @@ const mockClient = {
   keyerReset: jest.fn(),
   programGet: jest.fn(),
   programUpdate: jest.fn(),
-  buttonsList: jest.fn(),
-  buttonTrigger: jest.fn(),
   framebusStart: jest.fn(),
   framebusStop: jest.fn(),
   framebusConfigure: jest.fn(),
@@ -316,17 +314,6 @@ describe("meeting-command-handler", () => {
       ).rejects.toThrow("Invalid payload for meeting_program_update");
     });
 
-    it("triggers buttons", async () => {
-      mockClient.buttonTrigger.mockResolvedValue({ ok: true });
-
-      const result = await handleMeetingCommand("meeting_button_trigger", {
-        mode: "meeting",
-        buttonId: "btn-1",
-      });
-
-      expect(mockClient.buttonTrigger).toHaveBeenCalledWith("meeting", "btn-1");
-      expect(result.success).toBe(true);
-    });
   });
 
   describe("meeting_output_configure", () => {

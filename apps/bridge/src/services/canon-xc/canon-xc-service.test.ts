@@ -7,6 +7,11 @@ import {
   presetsFromCanonInfo,
 } from "./canon-xc-service.js";
 
+const mockLogger = {
+  info: jest.fn(),
+  warn: jest.fn(),
+};
+
 jest.mock("node:fs/promises", () => ({
   mkdir: jest.fn().mockResolvedValue(undefined),
   readFile: jest.fn(),
@@ -16,6 +21,7 @@ jest.mock("node:fs/promises", () => ({
 jest.mock("../bridge-context.js", () => ({
   getBridgeContext: jest.fn(() => ({
     userDataDir: "/tmp/broadify-test",
+    logger: mockLogger,
   })),
 }));
 
@@ -234,6 +240,50 @@ describe("canon-xc-service", () => {
         .headers as Headers;
       expect(headers.get("Authorization")).toBe(
         `Basic ${Buffer.from("operator:secret", "utf8").toString("base64")}`,
+      );
+    });
+
+    it("returns a safe authentication diagnostic for rejected credentials", async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        responseWithText("Unauthorized", {
+          ok: false,
+          status: 401,
+          statusText: "Unauthorized",
+        }),
+      ) as jest.Mock;
+      const service = new CanonXCService();
+
+      const result = await service.testConnection({
+        name: "Canon 1",
+        host: "192.168.0.100",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        rawError: "HTTP 401: Unauthorized",
+        diagnostic: {
+          code: "authentication",
+          hint: "Check the Canon username, password, and assigned access rights.",
+        },
+      });
+    });
+
+    it("redacts credential fragments from Canon request logs", async () => {
+      global.fetch = jest
+        .fn()
+        .mockRejectedValue(new Error("password=super-secret connection failed")) as jest.Mock;
+      const service = new CanonXCService();
+
+      await service.testConnection({
+        name: "Canon 1",
+        host: "192.168.0.100",
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.not.stringContaining("super-secret"),
+      );
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("password=[redacted]"),
       );
     });
 
