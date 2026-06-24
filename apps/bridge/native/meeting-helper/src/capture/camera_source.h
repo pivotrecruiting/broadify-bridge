@@ -40,6 +40,12 @@ class CameraSource {
   virtual bool isRunning() const = 0;
   virtual int activeCameraIndex() const = 0;
   virtual bool copyLatestFrame(VideoFrame &frame) = 0;
+  virtual bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
+    if (!copyLatestFrame(frame) || frame.timestampNs == lastTimestampNs) {
+      return false;
+    }
+    return true;
+  }
   virtual std::string lastError() const = 0;
   virtual std::string cameraPermissionStatus() const = 0;
   virtual std::string requestCameraPermission() = 0;

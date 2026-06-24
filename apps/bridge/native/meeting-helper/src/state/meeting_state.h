@@ -55,6 +55,16 @@ struct MeetingState {
   bool keyerEnabled = false;
   bool framebusRunning = true;
   bool vcamRawRunning = true;
+  int previewClientCount = 0;
+  int vcamClientCount = 0;
+  bool graphicsDirty = true;
+  bool programDirty = true;
+  std::string pipelineMode = "idle";
+  uint64_t programRevision = 1;
+  uint64_t renderedFrames = 0;
+  uint64_t reusedFrames = 0;
+  uint64_t publishedPreviewFrames = 0;
+  uint64_t writtenFramebusFrames = 0;
   std::string backgroundMode = "transparent";
   std::string activeKeyer = "passthrough";
   std::string requestedKeyerModel = "modnet";

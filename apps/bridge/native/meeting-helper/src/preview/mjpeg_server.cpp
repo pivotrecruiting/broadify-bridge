@@ -1,7 +1,9 @@
 #include "preview/mjpeg_server.h"
 
 #include "preview/preview_frame_store.h"
+#include "state/meeting_state.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <sstream>
@@ -180,9 +182,32 @@ bool sendString(int socketHandle, const std::string &data) {
   return sendAll(socketHandle, data.c_str(), data.size());
 }
 
+class PreviewClientCounter {
+ public:
+  explicit PreviewClientCounter(MeetingState &state) : state_(state) {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    ++state_.previewClientCount;
+    state_.programDirty = true;
+    ++state_.programRevision;
+  }
+
+  ~PreviewClientCounter() {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    state_.previewClientCount = std::max(0, state_.previewClientCount - 1);
+    state_.programDirty = true;
+    ++state_.programRevision;
+  }
+
+ private:
+  MeetingState &state_;
+};
+
 }  // namespace
 
-void runMjpegServer(uint16_t port, PreviewFrameStore &previewFrames, std::atomic<bool> &running) {
+void runMjpegServer(uint16_t port,
+                    PreviewFrameStore &previewFrames,
+                    MeetingState &state,
+                    std::atomic<bool> &running) {
 #if defined(_WIN32)
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -227,10 +252,13 @@ void runMjpegServer(uint16_t port, PreviewFrameStore &previewFrames, std::atomic
       continue;
     }
 
+    PreviewClientCounter clientCounter(state);
     std::vector<uint8_t> lastValidJpeg(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+    uint64_t lastSequence = 0u;
     while (running.load()) {
       PreviewFrame frame;
-      if (previewFrames.copyLatest(frame)) {
+      if (previewFrames.copyLatestIfNew(lastSequence, frame)) {
+        lastSequence = frame.sequence;
         lastValidJpeg = encodeJpeg(frame);
       }
       std::ostringstream part;

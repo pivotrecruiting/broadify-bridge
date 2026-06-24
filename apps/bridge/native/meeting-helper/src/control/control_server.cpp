@@ -89,6 +89,12 @@ KeyerDegradationSettings normalizedDegradationSettings(KeyerDegradationSettings 
   return settings;
 }
 
+void markProgramDirty(MeetingState &state, bool graphicsDirty = false) {
+  state.programDirty = true;
+  state.graphicsDirty = state.graphicsDirty || graphicsDirty;
+  ++state.programRevision;
+}
+
 std::string keyerMetricsJson(const KeyerMetrics &metrics) {
   std::ostringstream result;
   result << "{\"camera_copy_ms\":" << metricNumber(metrics.cameraCopyMs)
@@ -202,6 +208,16 @@ std::string handleRpc(const std::string &line,
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
+           << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
+           << "\"preview_clients\":" << state.previewClientCount << ","
+           << "\"vcam_clients\":" << state.vcamClientCount << ","
+           << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
+           << "\"program_dirty\":" << (state.programDirty ? "true" : "false") << ","
+           << "\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false") << ","
+           << "\"rendered_frames\":" << state.renderedFrames << ","
+           << "\"reused_frames\":" << state.reusedFrames << ","
+           << "\"published_preview_frames\":" << state.publishedPreviewFrames << ","
+           << "\"written_framebus_frames\":" << state.writtenFramebusFrames << ","
            << "\"camera_permission_status\":\"" << jsonEscape(camera.cameraPermissionStatus()) << "\","
            << "\"camera_last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << ","
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
@@ -242,6 +258,7 @@ std::string handleRpc(const std::string &line,
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = started;
       state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
+      markProgramDirty(state);
     }
     if (!started) {
       const std::string permissionStatus = camera.cameraPermissionStatus();
@@ -259,6 +276,7 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.cameraRunning = false;
     state.activeCameraIndex = -1;
+    markProgramDirty(state);
     return okResponse(id, "{\"ok\":true}");
   }
 
@@ -292,6 +310,15 @@ std::string handleRpc(const std::string &line,
            << ",\"inference_ms\":" << (state.inferenceMs >= 0.0 ? std::to_string(state.inferenceMs) : "null")
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
+           << ",\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode)
+           << "\",\"preview_clients\":" << state.previewClientCount
+           << ",\"vcam_clients\":" << state.vcamClientCount
+           << ",\"program_dirty\":" << (state.programDirty ? "true" : "false")
+           << ",\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false")
+           << ",\"rendered_frames\":" << state.renderedFrames
+           << ",\"reused_frames\":" << state.reusedFrames
+           << ",\"published_preview_frames\":" << state.publishedPreviewFrames
+           << ",\"written_framebus_frames\":" << state.writtenFramebusFrames
            << ",\"metrics\":" << keyerMetricsJson(state.keyerMetrics) << "}}";
     return okResponse(id, result.str());
   }
@@ -341,6 +368,7 @@ std::string handleRpc(const std::string &line,
       state.provider.clear();
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
+      markProgramDirty(state);
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, options, running);
   }
@@ -368,6 +396,7 @@ std::string handleRpc(const std::string &line,
     state.provider.clear();
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};
+    markProgramDirty(state);
     return okResponse(id, "{\"ok\":true,\"active_keyer\":\"passthrough\"}");
   }
 
@@ -389,6 +418,7 @@ std::string handleRpc(const std::string &line,
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       updateProgramSection(state, section, values);
+      markProgramDirty(state, section == "graphics");
     }
     return okResponse(id, "{\"ok\":true,\"section\":\"" + jsonEscape(section) + "\"}");
   }
@@ -405,6 +435,7 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = true;
     state.vcamRawRunning = true;
+    markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":true}");
   }
 
@@ -413,6 +444,7 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = false;
     state.vcamRawRunning = false;
+    markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":false}");
   }
 

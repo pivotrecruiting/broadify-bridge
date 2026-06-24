@@ -1,5 +1,6 @@
 #include "preview/raw_frame_server.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <mutex>
@@ -128,6 +129,26 @@ bool isVcamRawRunning(MeetingState &state) {
   return state.vcamRawRunning;
 }
 
+class VcamClientCounter {
+ public:
+  explicit VcamClientCounter(MeetingState &state) : state_(state) {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    ++state_.vcamClientCount;
+    state_.programDirty = true;
+    ++state_.programRevision;
+  }
+
+  ~VcamClientCounter() {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    state_.vcamClientCount = std::max(0, state_.vcamClientCount - 1);
+    state_.programDirty = true;
+    ++state_.programRevision;
+  }
+
+ private:
+  MeetingState &state_;
+};
+
 void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &state, std::atomic<bool> &running) {
   const std::string header =
       "HTTP/1.1 200 OK\r\n"
@@ -141,13 +162,14 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &st
   uint64_t lastSequence = 0u;
   uint64_t sentFrames = 0u;
   std::vector<uint8_t> payload;
+  VcamClientCounter clientCounter(state);
   while (running.load()) {
     if (!isVcamRawRunning(state)) {
       return;
     }
     PreviewFrame frame;
-    if (!previewFrames.copyLatest(frame) || frame.sequence == lastSequence) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    if (!previewFrames.copyLatestIfNew(lastSequence, frame)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
       continue;
     }
     lastSequence = frame.sequence;

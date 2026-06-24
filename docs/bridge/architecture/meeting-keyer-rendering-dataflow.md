@@ -107,14 +107,28 @@ Inside the native helper, the relevant long-running components are:
 - `AsyncKeyerWorker`: runs the selected keyer on a background thread.
 - `GraphicsFrameBusReader`: reads the latest meeting graphics frame from
   `bfy-meet-gfx`.
-- `renderProgramFrame`: composites the final program frame.
+- `renderProgramFrame`: composites the final program frame when camera,
+  graphics, program state, or a static-output heartbeat requires it.
 - `framebus_writer_write_rgba`: writes the final program frame to the meeting
   output FrameBus.
-- `PreviewFrameStore`: publishes the same final program frame to MJPEG preview.
+- `PreviewFrameStore`: publishes the same final program frame to MJPEG preview
+  and the VCam raw stream only while those consumers are connected.
 
 The native pipeline is `latest-frame-wins`. It does not queue every camera frame
 for keying. If a keyer frame is already pending, submitting another frame drops
 the previous pending frame and increments `droppedFrames`.
+
+The program loop is mode-gated:
+
+- `idle`: no camera, no graphics output, and no active output consumer. The
+  helper sleeps at a low cadence instead of producing 30 FPS no-signal frames.
+- `static_output`: no camera and no animated graphics, but FrameBus, preview, or
+  VCam needs a frame. The helper reuses the cached program frame and writes a
+  1 FPS FrameBus heartbeat.
+- `live`: camera or meeting graphics output is active. The helper processes new
+  camera or graphics frames at the configured cadence.
+- `keyer_live`: camera and keyer are active. Existing quality and performance
+  profiles still control keyer submission rate.
 
 ## Camera Capture
 
@@ -212,13 +226,19 @@ current-frame application in the async pipeline uses bilinear alpha sampling.
 
 The keyer worker is created inside `runFramePipeline`.
 
-Main-thread behavior per output frame:
+Main-thread behavior per program tick:
 
-1. Copy latest camera frame.
-2. If keyer is enabled, submit that camera frame to `AsyncKeyerWorker`.
-3. Ask the worker for the latest paired camera frame and mask.
-4. If a usable pair exists, apply the mask to the paired camera frame.
-5. If no usable pair exists, pass the current camera frame through unchanged.
+1. Read output consumer counts and compute the pipeline mode.
+2. Copy the latest camera frame only when its timestamp changed.
+3. If keyer is enabled and a new camera frame exists, submit that frame to
+   `AsyncKeyerWorker`.
+4. Ask the worker for the latest paired camera frame and mask.
+5. If a usable pair exists, apply the mask to the paired camera frame.
+6. If no usable pair exists, pass the current camera frame through unchanged.
+7. Render a new program frame only for a new camera frame, new graphics frame,
+   newer keyer pair, program-state revision, or static-output heartbeat.
+8. Publish preview frames only when MJPEG preview or VCam raw-stream clients are
+   connected.
 
 Worker-thread behavior:
 
@@ -489,6 +509,12 @@ The final `programFrame` is written to:
 - meeting output FrameBus through `framebus_writer_write_rgba`
 - MJPEG preview through `PreviewFrameStore`
 
+FrameBus writes are skipped while `output.framebus.stop` has disabled the
+meeting output. With camera off and a static program, FrameBus receives only a
+low-cadence cached-frame heartbeat instead of full-FPS recomposition. MJPEG
+preview clients and VCam raw-stream clients increment explicit consumer counts;
+without those clients, `PreviewFrameStore::publish` is not called.
+
 The native helper exposes FrameBus status through `output.framebus.status`.
 Virtual camera status in `MeetingHelperClient` explicitly reports that virtual
 camera is provided by the separate `vcam-helper`.
@@ -512,6 +538,10 @@ Therefore:
 - active keyer
 - fallback state and reason
 - degradation stage and stale-mask state
+- pipeline mode: `idle`, `static_output`, `live`, or `keyer_live`
+- preview and VCam raw-stream client counts
+- dirty flags and frame counters for rendered, reused, preview-published, and
+  FrameBus-written frames
 - backend/provider/model path
 - quality mode
 - inference time
