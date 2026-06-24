@@ -148,6 +148,11 @@ if [[ "$UNAME_S" == "Darwin" ]]; then
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app/Contents/Library/SystemExtensions/com.broadify.vcam.extension.systemextension")
+  if [[ "$EXPECTED_ARCH_NORMALIZED" == "arm64" ]]; then
+    REQUIRED_FILES+=("apps/bridge/vendor/presentation-runtime/macos-arm64/LibreOffice.app")
+    REQUIRED_FILES+=("apps/bridge/vendor/presentation-runtime/macos-arm64/LibreOffice.app/Contents/MacOS/soffice")
+    EXECUTABLE_FILES+=("apps/bridge/vendor/presentation-runtime/macos-arm64/LibreOffice.app/Contents/MacOS/soffice")
+  fi
 elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")

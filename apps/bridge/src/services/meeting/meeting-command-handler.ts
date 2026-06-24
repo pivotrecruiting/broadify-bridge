@@ -28,7 +28,7 @@ export type MeetingCommandResultT = {
 const ENGINE_NOT_RUNNING_ERROR =
   "Meeting engine is not running. Start it with meeting_engine_start first.";
 const MEETING_GRAPHICS_FRAMEBUS_NAME = "bfy-meet-gfx";
-const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1280, height: 720, fps: 30 };
+const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1920, height: 1080, fps: 30 };
 const MEETING_GRAPHICS_SLOT_COUNT = 3;
 const MEETING_GRAPHICS_PIXEL_FORMAT = 1;
 

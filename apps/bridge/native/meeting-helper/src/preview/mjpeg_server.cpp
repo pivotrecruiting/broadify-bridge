@@ -75,7 +75,7 @@ std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
       ? nullptr
       : CGImageDestinationCreateWithData(data, CFSTR("public.jpeg"), 1, nullptr);
   if (destination != nullptr && image != nullptr) {
-    const float qualityValue = 0.78f;
+    const float qualityValue = 0.95f;
     CFNumberRef quality = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloatType, &qualityValue);
     const void *keys[] = {kCGImageDestinationLossyCompressionQuality};
     const void *values[] = {quality};

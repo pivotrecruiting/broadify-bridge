@@ -9,6 +9,8 @@ APP_BUNDLE_ID="com.broadify.bridge"
 HELPER_BUNDLE_ID="com.broadify.bridge.meeting-helper"
 HELPER_APP_REL="Contents/Resources/native/meeting-helper/Broadify Bridge Meeting Helper.app"
 HELPER_EXEC_REL="${HELPER_APP_REL}/Contents/MacOS/BroadifyMeetingHelper"
+PRESENTATION_RUNTIME_REL="Contents/Resources/presentation-runtime/macos-arm64/LibreOffice.app"
+PRESENTATION_RUNTIME_EXEC_REL="${PRESENTATION_RUNTIME_REL}/Contents/MacOS/soffice"
 
 if [[ "$UPDATER_CHANNEL" == "rc" ]]; then
   APP_PRODUCT_NAME="Broadify Bridge RC"
@@ -165,6 +167,8 @@ fi
 
 HELPER_APP_PATH="${APP_PATH}/${HELPER_APP_REL}"
 HELPER_EXEC_PATH="${APP_PATH}/${HELPER_EXEC_REL}"
+PRESENTATION_RUNTIME_PATH="${APP_PATH}/${PRESENTATION_RUNTIME_REL}"
+PRESENTATION_RUNTIME_EXEC_PATH="${APP_PATH}/${PRESENTATION_RUNTIME_EXEC_REL}"
 APP_INFO="${APP_PATH}/Contents/Info.plist"
 HELPER_INFO="${HELPER_APP_PATH}/Contents/Info.plist"
 
@@ -178,6 +182,16 @@ echo "[MacSignVerify] Verifying ${APP_PATH}"
   echo "[MacSignVerify] Missing executable Meeting Helper at ${HELPER_EXEC_PATH}" >&2
   exit 1
 }
+if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
+  [[ -d "$PRESENTATION_RUNTIME_PATH" ]] || {
+    echo "[MacSignVerify] Missing bundled presentation runtime at ${PRESENTATION_RUNTIME_PATH}" >&2
+    exit 1
+  }
+  [[ -x "$PRESENTATION_RUNTIME_EXEC_PATH" ]] || {
+    echo "[MacSignVerify] Missing bundled LibreOffice executable at ${PRESENTATION_RUNTIME_EXEC_PATH}" >&2
+    exit 1
+  }
+fi
 
 require_plist_value "$APP_INFO" "CFBundleIdentifier" "$APP_BUNDLE_ID"
 require_plist_value "$HELPER_INFO" "CFBundleIdentifier" "$HELPER_BUNDLE_ID"
@@ -192,6 +206,10 @@ echo "[MacSignVerify] NSCameraUsageDescription present"
 
 verify_codesign "$HELPER_APP_PATH" "deep"
 verify_codesign "$HELPER_EXEC_PATH" "nodeep"
+if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
+  verify_codesign "$PRESENTATION_RUNTIME_PATH" "deep"
+  verify_codesign "$PRESENTATION_RUNTIME_EXEC_PATH" "nodeep"
+fi
 verify_codesign "$APP_PATH" "deep"
 
 require_valid_entitlements "$HELPER_EXEC_PATH"

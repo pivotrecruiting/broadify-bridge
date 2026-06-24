@@ -25,6 +25,11 @@ struct CornerbugState {
 struct MediaLayerState {
   bool enabled = false;
   std::string mode = "pip";
+  std::string assetId;
+  std::string renderedPagePath;
+  std::string renderStatus;
+  int page = 0;
+  int pageCount = 0;
   double x = 0.58;
   double y = 0.12;
   double width = 0.34;

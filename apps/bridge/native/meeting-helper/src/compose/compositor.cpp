@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cmath>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -202,6 +203,34 @@ std::shared_ptr<const RgbaImage> getCornerbugImage(const CornerbugState &cornerb
   return cachedImage;
 }
 
+std::shared_ptr<const RgbaImage> getMediaLayerImage(const MediaLayerState &mediaLayer) {
+  if (mediaLayer.renderedPagePath.empty() || mediaLayer.renderStatus != "ready") {
+    return nullptr;
+  }
+
+  static std::mutex cacheMutex;
+  static std::string cachedPath;
+  static std::shared_ptr<const RgbaImage> cachedImage;
+
+  std::lock_guard<std::mutex> lock(cacheMutex);
+  if (mediaLayer.renderedPagePath == cachedPath) {
+    return cachedImage;
+  }
+
+  std::ifstream file(mediaLayer.renderedPagePath, std::ios::binary);
+  if (!file) {
+    cachedPath = mediaLayer.renderedPagePath;
+    cachedImage = nullptr;
+    return nullptr;
+  }
+  std::vector<uint8_t> bytes(
+      (std::istreambuf_iterator<char>(file)),
+      std::istreambuf_iterator<char>());
+  cachedPath = mediaLayer.renderedPagePath;
+  cachedImage = decodeImageBytes(bytes);
+  return cachedImage;
+}
+
 void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &target, const RgbaImage &image) {
   if (target.width <= 0 || target.height <= 0 || image.width == 0 || image.height == 0 || image.rgba.empty()) {
     return;
@@ -216,21 +245,31 @@ void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, 
   const int drawY = target.y + (target.height - drawHeight) / 2;
 
   for (int y = 0; y < drawHeight; ++y) {
-    const uint32_t sy = std::min(
-        image.height - 1u,
-        static_cast<uint32_t>((static_cast<uint64_t>(y) * image.height) / static_cast<uint32_t>(drawHeight)));
+    const double sourceY = ((static_cast<double>(y) + 0.5) * image.height / drawHeight) - 0.5;
+    const uint32_t y0 = static_cast<uint32_t>(std::clamp(static_cast<int>(std::floor(sourceY)), 0, static_cast<int>(image.height) - 1));
+    const uint32_t y1 = std::min(y0 + 1u, image.height - 1u);
+    const double yWeight = std::clamp(sourceY - std::floor(sourceY), 0.0, 1.0);
     for (int x = 0; x < drawWidth; ++x) {
-      const uint32_t sx = std::min(
-          image.width - 1u,
-          static_cast<uint32_t>((static_cast<uint64_t>(x) * image.width) / static_cast<uint32_t>(drawWidth)));
-      const size_t srcOffset = (static_cast<size_t>(sy) * image.width + sx) * 4u;
-      const uint8_t alpha = image.rgba[srcOffset + 3];
+      const double sourceX = ((static_cast<double>(x) + 0.5) * image.width / drawWidth) - 0.5;
+      const uint32_t x0 = static_cast<uint32_t>(std::clamp(static_cast<int>(std::floor(sourceX)), 0, static_cast<int>(image.width) - 1));
+      const uint32_t x1 = std::min(x0 + 1u, image.width - 1u);
+      const double xWeight = std::clamp(sourceX - std::floor(sourceX), 0.0, 1.0);
+      const size_t topLeftOffset = (static_cast<size_t>(y0) * image.width + x0) * 4u;
+      const size_t topRightOffset = (static_cast<size_t>(y0) * image.width + x1) * 4u;
+      const size_t bottomLeftOffset = (static_cast<size_t>(y1) * image.width + x0) * 4u;
+      const size_t bottomRightOffset = (static_cast<size_t>(y1) * image.width + x1) * 4u;
+      const auto sample = [&](size_t channel) {
+        const double top = image.rgba[topLeftOffset + channel] * (1.0 - xWeight) + image.rgba[topRightOffset + channel] * xWeight;
+        const double bottom = image.rgba[bottomLeftOffset + channel] * (1.0 - xWeight) + image.rgba[bottomRightOffset + channel] * xWeight;
+        return clampByte(static_cast<int>(std::round(top * (1.0 - yWeight) + bottom * yWeight)));
+      };
+      const uint8_t alpha = sample(3u);
       if (alpha == 0u) {
         continue;
       }
-      uint8_t r = image.rgba[srcOffset + 0];
-      uint8_t g = image.rgba[srcOffset + 1];
-      uint8_t b = image.rgba[srcOffset + 2];
+      uint8_t r = sample(0u);
+      uint8_t g = sample(1u);
+      uint8_t b = sample(2u);
       if (alpha > 0u && alpha < 255u) {
         r = clampByte((static_cast<int>(r) * 255) / alpha);
         g = clampByte((static_cast<int>(g) * 255) / alpha);
@@ -438,7 +477,7 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
   }
   Rect rect;
   if (mediaLayer.mode == "fullscreen") {
-    rect = {static_cast<int>(width * 0.06), static_cast<int>(height * 0.08), static_cast<int>(width * 0.88), static_cast<int>(height * 0.72)};
+    rect = {0, 0, static_cast<int>(width), static_cast<int>(height)};
   } else {
     rect = {
       static_cast<int>(width * clamp01(mediaLayer.x)),
@@ -447,6 +486,13 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
       static_cast<int>(height * std::clamp(mediaLayer.height, 0.05, 1.0)),
     };
   }
+  const auto image = getMediaLayerImage(mediaLayer);
+  if (image != nullptr) {
+    fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 10, rect.width, rect.height}, mediaLayer.rotation, 0, 0, 0, 46);
+    drawImageFit(frame, width, height, rect, *image);
+    return;
+  }
+
   drawGlassRect(frame, width, height, rect, mediaLayer.rotation);
   fillRotatedRect(frame, width, height, {rect.x + 12, rect.y + 12, std::max(0, rect.width - 24), 4}, mediaLayer.rotation, 255, 255, 255, 108);
   fillRotatedRect(frame, width, height, {rect.x + 12, rect.y + rect.height - 18, std::max(0, (rect.width - 24) * 2 / 3), 6}, mediaLayer.rotation, 255, 255, 255, 78);

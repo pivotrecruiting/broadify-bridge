@@ -148,6 +148,11 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     if (!mode.empty()) {
       state.mediaLayer.mode = mode;
     }
+    state.mediaLayer.assetId = extractStringField(safeValues, "asset_id");
+    state.mediaLayer.renderedPagePath = extractStringField(safeValues, "rendered_page_path");
+    state.mediaLayer.renderStatus = extractStringField(safeValues, "render_status");
+    state.mediaLayer.page = extractIntField(safeValues, "page", state.mediaLayer.page);
+    state.mediaLayer.pageCount = extractIntField(safeValues, "page_count", state.mediaLayer.pageCount);
     state.mediaLayer.x = extractDoubleField(safeValues, "x", state.mediaLayer.x);
     state.mediaLayer.y = extractDoubleField(safeValues, "y", state.mediaLayer.y);
     state.mediaLayer.width = extractDoubleField(safeValues, "width", state.mediaLayer.width);

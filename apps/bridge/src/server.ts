@@ -9,6 +9,7 @@ import { registerConfigRoute } from "./routes/config.js";
 import { registerEngineRoute } from "./routes/engine.js";
 import { registerVideoRoute } from "./routes/video.js";
 import { registerGraphicsBrowserInputRoute } from "./routes/graphics-browser-input.js";
+import { registerMeetingMediaRoute } from "./routes/meeting-media.js";
 import { registerWebSocketRoute } from "./routes/websocket.js";
 import { registerRelayRoute } from "./routes/relay.js";
 import { registerLogsRoute } from "./routes/logs.js";
@@ -162,6 +163,7 @@ export async function createServer(config: BridgeConfigT) {
       registerEngineRoute,
       registerVideoRoute,
       registerGraphicsBrowserInputRoute,
+      registerMeetingMediaRoute,
       registerWebSocketRoute,
       registerRelayRoute,
       registerLogsRoute,
