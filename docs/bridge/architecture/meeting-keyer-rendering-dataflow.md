@@ -70,6 +70,27 @@ Vision runs in `balanced` mode. This is the current quality-first baseline.
 `fast` remains useful only as an A/B diagnostic mode because it reduced edge
 quality in real preview tests.
 
+## Performance Profiles
+
+`meeting_keyer_configure` accepts `performance_mode` independently from the
+selected keyer model and `quality_mode`. The value is validated as one of
+`high_quality`, `quality`, `balanced`, or `performance`.
+
+- `high_quality`: 30 keyer FPS, Vision `balanced`, maximum Vision input 1280x720.
+- `quality`: 25 keyer FPS, Vision `balanced`, maximum Vision input 1280x720.
+- `balanced`: 20 keyer FPS, Vision `balanced`, maximum Vision input 960x540.
+- `performance`: 15 keyer FPS, Vision `fast`, maximum Vision input 640x360.
+
+The program output remains 1280x720 at 30 FPS in all profiles. The helper
+uses a latest-frame scheduler, so skipped capture frames are intentional and
+reported as `metrics.skipped_frames`; they never queue behind old work. MODNet
+keeps its fixed 512x512 ONNX input and benefits from the rate limit.
+
+The WebApp stores the chosen profile locally per device rather than in a shared
+meeting scene. It may recommend one lower profile after five seconds of
+insufficient keyer FPS, elevated mask age, or sustained frame drops, but it
+never changes the profile automatically.
+
 ## Native Runtime Topology
 
 `MeetingHelperManager` starts the native `meeting-helper` process with:
@@ -342,6 +363,8 @@ Displayed values:
 - `metrics.dropped_frames_per_sec`: rolling async keyer drop rate
 - `metrics.mask_width` and `metrics.mask_height`: produced mask resolution
 - `metrics.dropped_frames`: total async keyer worker drops since reset/clear
+- `metrics.skipped_frames`: capture frames intentionally skipped by the active
+  performance-profile scheduler
 - `settings.mask_erode_px`: configured mask erosion radius shown as `Erode` in
   the WebApp statusbar
 - `settings.edge_stabilization_enabled`: shown as `Edge stab` in the WebApp

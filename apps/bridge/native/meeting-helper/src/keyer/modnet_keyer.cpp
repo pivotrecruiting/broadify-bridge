@@ -99,9 +99,8 @@ class ModnetKeyer::Impl {
     status_.fallbackReason = "not_loaded";
   }
 
-  KeyerResult apply(const VideoFrame &input, const KeyerSettings &) {
+  KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) {
     KeyerResult result;
-    result.frame = copyPassthroughFrame(input);
     if (!ensureLoaded()) {
       result.status = status_;
       return result;
@@ -109,15 +108,15 @@ class ModnetKeyer::Impl {
 #if BROADIFY_ENABLE_MODNET
     const auto start = std::chrono::steady_clock::now();
     status_.backend = "modnet";
-    status_.qualityMode = "realtime";
+    status_.qualityMode = settings.qualityMode;
     status_.metrics = KeyerMetrics{};
     const auto tensorStart = std::chrono::steady_clock::now();
-    std::vector<float> tensor = makeInputTensor(input);
+    makeInputTensor(input, tensor_);
     const auto tensorEnd = std::chrono::steady_clock::now();
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-        memoryInfo, tensor.data(), tensor.size(), inputShape.data(), inputShape.size());
+        memoryInfo, tensor_.data(), tensor_.size(), inputShape.data(), inputShape.size());
 
     try {
       const auto runStart = std::chrono::steady_clock::now();
@@ -145,7 +144,6 @@ class ModnetKeyer::Impl {
       }
       const auto maskStart = std::chrono::steady_clock::now();
       copyAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
-      applyAlphaMask(mask, maskWidth, maskHeight, result.frame);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
       status_.activeKeyer = "modnet";
@@ -264,8 +262,8 @@ class ModnetKeyer::Impl {
 #endif
   }
 
-  std::vector<float> makeInputTensor(const VideoFrame &input) const {
-    std::vector<float> tensor(static_cast<size_t>(3u) * inputWidth_ * inputHeight_);
+  void makeInputTensor(const VideoFrame &input, std::vector<float> &tensor) const {
+    tensor.resize(static_cast<size_t>(3u) * inputWidth_ * inputHeight_);
     const size_t channelSize = static_cast<size_t>(inputWidth_) * inputHeight_;
     for (uint32_t y = 0; y < inputHeight_; ++y) {
       const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * input.height) / inputHeight_);
@@ -279,22 +277,6 @@ class ModnetKeyer::Impl {
         tensor[dstOffset] = (r - kMean[0]) / kStd[0];
         tensor[channelSize + dstOffset] = (g - kMean[1]) / kStd[1];
         tensor[channelSize * 2u + dstOffset] = (b - kMean[2]) / kStd[2];
-      }
-    }
-    return tensor;
-  }
-
-  void applyAlphaMask(const float *mask, uint32_t maskWidth, uint32_t maskHeight, VideoFrame &frame) const {
-    if (mask == nullptr || maskWidth == 0u || maskHeight == 0u || frame.rgba.empty()) {
-      return;
-    }
-    for (uint32_t y = 0; y < frame.height; ++y) {
-      const size_t my = clampIndex(static_cast<size_t>((static_cast<uint64_t>(y) * maskHeight) / frame.height), maskHeight);
-      for (uint32_t x = 0; x < frame.width; ++x) {
-        const size_t mx = clampIndex(static_cast<size_t>((static_cast<uint64_t>(x) * maskWidth) / frame.width), maskWidth);
-        const float alpha = std::clamp(mask[my * maskWidth + mx], 0.0f, 1.0f);
-        const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
-        frame.rgba[offset + 3u] = static_cast<uint8_t>(std::round(alpha * 255.0f));
       }
     }
   }
@@ -338,6 +320,7 @@ class ModnetKeyer::Impl {
   std::string outputName_;
   std::array<const char *, 1> inputNames_ = {nullptr};
   std::array<const char *, 1> outputNames_ = {nullptr};
+  std::vector<float> tensor_;
 #endif
 };
 

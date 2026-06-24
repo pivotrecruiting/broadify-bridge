@@ -67,6 +67,14 @@ std::string normalizedQualityMode(const std::string &qualityMode) {
   return "balanced";
 }
 
+std::string normalizedPerformanceMode(const std::string &performanceMode) {
+  if (performanceMode == "high_quality" || performanceMode == "quality" ||
+      performanceMode == "balanced" || performanceMode == "performance") {
+    return performanceMode;
+  }
+  return "high_quality";
+}
+
 uint32_t clampedPixelRadius(int value, uint32_t maxValue) {
   return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int>(maxValue)));
 }
@@ -102,7 +110,8 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
-         << ",\"dropped_frames\":" << metrics.droppedFrames << "}";
+         << ",\"dropped_frames\":" << metrics.droppedFrames
+         << ",\"skipped_frames\":" << metrics.skippedFrames << "}";
   return result.str();
 }
 
@@ -260,6 +269,7 @@ std::string handleRpc(const std::string &line,
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel) << "\",\"background_type\":\"mode\",\"background_mode\":\""
            << jsonEscape(state.backgroundMode)
            << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
+           << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
            << "\",\"mask_erode_px\":" << state.maskErodePx
            << ",\"mask_dilate_px\":" << state.maskDilatePx
            << ",\"mask_feather_px\":" << state.maskFeatherPx
@@ -276,7 +286,8 @@ std::string handleRpc(const std::string &line,
            << "\",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel)
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
-           << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
+           << "\",\"quality_mode\":\"" << jsonEscape(state.activeQualityMode)
+           << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
            << "\",\"provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"")
            << ",\"inference_ms\":" << (state.inferenceMs >= 0.0 ? std::to_string(state.inferenceMs) : "null")
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
@@ -300,6 +311,11 @@ std::string handleRpc(const std::string &line,
       const std::string qualityMode = extractStringField(line, "quality_mode");
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);
+        state.activeQualityMode = state.qualityMode;
+      }
+      const std::string performanceMode = extractStringField(line, "performance_mode");
+      if (!performanceMode.empty()) {
+        state.performanceMode = normalizedPerformanceMode(performanceMode);
       }
       state.maskErodePx = clampedDouble(extractDoubleField(line, "mask_erode_px", state.maskErodePx), 0.0, 3.0);
       state.maskDilatePx = clampedPixelRadius(
@@ -337,6 +353,8 @@ std::string handleRpc(const std::string &line,
     state.fallbackReason = "keyer_disabled";
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
+    state.activeQualityMode = "balanced";
+    state.performanceMode = "high_quality";
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
     state.maskFeatherPx = 0u;

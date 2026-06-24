@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 
@@ -103,6 +105,56 @@ bool requestCameraAccessBlockingOnMainThread() {
   return granted == YES;
 }
 
+void configureCaptureFormat(AVCaptureDevice *device, uint32_t targetWidth, uint32_t targetHeight, uint32_t targetFps) {
+  if (device == nil || targetWidth == 0u || targetHeight == 0u || targetFps == 0u) {
+    return;
+  }
+
+  AVCaptureDeviceFormat *bestFormat = nil;
+  double bestScore = std::numeric_limits<double>::max();
+  for (AVCaptureDeviceFormat *format in device.formats) {
+    const CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    if (dimensions.width <= 0 || dimensions.height <= 0) {
+      continue;
+    }
+    bool supportsFps = false;
+    for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
+      if (range.minFrameRate <= static_cast<double>(targetFps) &&
+          range.maxFrameRate >= static_cast<double>(targetFps)) {
+        supportsFps = true;
+        break;
+      }
+    }
+    if (!supportsFps) {
+      continue;
+    }
+
+    const double widthDelta = std::abs(static_cast<double>(dimensions.width) - targetWidth);
+    const double heightDelta = std::abs(static_cast<double>(dimensions.height) - targetHeight);
+    const bool belowTarget = dimensions.width < static_cast<int32_t>(targetWidth) ||
+        dimensions.height < static_cast<int32_t>(targetHeight);
+    const double score = widthDelta + heightDelta + (belowTarget ? 1000000.0 : 0.0);
+    if (score < bestScore) {
+      bestScore = score;
+      bestFormat = format;
+    }
+  }
+
+  if (bestFormat == nil) {
+    return;
+  }
+
+  NSError *error = nil;
+  if (![device lockForConfiguration:&error]) {
+    return;
+  }
+  device.activeFormat = bestFormat;
+  const CMTime frameDuration = CMTimeMake(1, static_cast<int32_t>(targetFps));
+  device.activeVideoMinFrameDuration = frameDuration;
+  device.activeVideoMaxFrameDuration = frameDuration;
+  [device unlockForConfiguration];
+}
+
 }  // namespace
 
 class AvFoundationCameraSource final : public CameraSource {
@@ -191,6 +243,8 @@ class AvFoundationCameraSource final : public CameraSource {
         return false;
       }
 
+      configureCaptureFormat(device, width, height, fps);
+
       NSError *inputError = nil;
       AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&inputError];
       if (input == nil) {
@@ -205,6 +259,13 @@ class AvFoundationCameraSource final : public CameraSource {
         return false;
       }
       [session addInput:input];
+      AVCaptureSessionPreset requestedPreset =
+          width <= 1280u && height <= 720u
+              ? AVCaptureSessionPreset1280x720
+              : AVCaptureSessionPreset1920x1080;
+      if ([session canSetSessionPreset:requestedPreset]) {
+        session.sessionPreset = requestedPreset;
+      }
 
       AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
       output.alwaysDiscardsLateVideoFrames = YES;

@@ -59,7 +59,21 @@ struct KeyerRuntimeStats {
   double keyerFps = -1.0;
   double droppedFramesPerSec = -1.0;
   uint64_t droppedFramesTotal = 0;
+  uint64_t skippedFramesTotal = 0;
 };
+
+uint32_t targetKeyerFps(const std::string &performanceMode) {
+  if (performanceMode == "quality") {
+    return 25u;
+  }
+  if (performanceMode == "balanced") {
+    return 20u;
+  }
+  if (performanceMode == "performance") {
+    return 15u;
+  }
+  return 30u;
+}
 
 class RateMeter {
  public:
@@ -534,13 +548,26 @@ class AsyncKeyerWorker {
   }
 
   void submit(const VideoFrame &frame) {
+    uint32_t targetFps = 30u;
+    {
+      std::lock_guard<std::mutex> stateLock(state_.mutex);
+      targetFps = targetKeyerFps(state_.performanceMode);
+    }
+    const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
+    const auto minimumInterval = std::chrono::duration<double>(1.0 / static_cast<double>(targetFps));
+    if (lastSubmittedAt_ != std::chrono::steady_clock::time_point{} &&
+        now - lastSubmittedAt_ < minimumInterval) {
+      ++skippedFrames_;
+      return;
+    }
     if (hasPendingFrame_) {
       ++droppedFrames_;
     }
     pendingFrame_ = frame;
     pendingGeneration_ = generation_;
     hasPendingFrame_ = true;
+    lastSubmittedAt_ = now;
     cv_.notify_one();
   }
 
@@ -559,6 +586,8 @@ class AsyncKeyerWorker {
     hasPendingFrame_ = false;
     hasLatestPair_ = false;
     droppedFrames_ = 0;
+    skippedFrames_ = 0;
+    lastSubmittedAt_ = std::chrono::steady_clock::time_point{};
     keyerRate_ = RateMeter{};
     lastDropRateSample_ = std::chrono::steady_clock::now();
     lastDropRateTotal_ = 0u;
@@ -574,7 +603,7 @@ class AsyncKeyerWorker {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto now = std::chrono::steady_clock::now();
     updateDropRateLocked(now);
-    return KeyerRuntimeStats{keyerRate_.value(now), droppedFramesPerSec_, droppedFrames_};
+    return KeyerRuntimeStats{keyerRate_.value(now), droppedFramesPerSec_, droppedFrames_, skippedFrames_};
   }
 
   void stop() {
@@ -645,6 +674,7 @@ class AsyncKeyerWorker {
           keyerRate_.tick(now);
           updateDropRateLocked(now);
           keyed.status.metrics.droppedFrames = droppedFrames_;
+          keyed.status.metrics.skippedFrames = skippedFrames_;
           keyed.status.metrics.keyerFps = keyerRate_.value(now);
           keyed.status.metrics.droppedFramesPerSec = droppedFramesPerSec_;
           keyed.status.metrics.keyerInputAgeMs = frame.timestampNs > 0u && keyerStartNs >= frame.timestampNs
@@ -692,6 +722,8 @@ class AsyncKeyerWorker {
   uint64_t generation_ = 0;
   uint64_t pendingGeneration_ = 0;
   uint64_t droppedFrames_ = 0;
+  uint64_t skippedFrames_ = 0;
+  std::chrono::steady_clock::time_point lastSubmittedAt_{};
   RateMeter keyerRate_;
   std::chrono::steady_clock::time_point lastDropRateSample_{};
   uint64_t lastDropRateTotal_ = 0u;
@@ -903,6 +935,7 @@ void runFramePipeline(const Options &options,
                   : -1.0;
               state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+              state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
               state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
               state.keyerMetrics.keyerFps = keyerStats.keyerFps;
               if (pairIsUsable) {
@@ -921,6 +954,7 @@ void runFramePipeline(const Options &options,
               state.degradationStage = "passthrough";
               state.staleMaskActive = false;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+              state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
               state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
               state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             }
@@ -978,6 +1012,7 @@ void runFramePipeline(const Options &options,
                 : -1.0;
             state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
             state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+            state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
             state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
             state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             if (pairIsUsable) {

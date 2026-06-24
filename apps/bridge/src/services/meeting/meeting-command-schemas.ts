@@ -28,6 +28,9 @@ export const MeetingKeyerConfigureSchema = z
     background_template_id: z.string().nullable().optional(),
     background_template_name: z.string().nullable().optional(),
     quality_mode: z.enum(["fast", "balanced", "accurate"]).optional(),
+    performance_mode: z
+      .enum(["high_quality", "quality", "balanced", "performance"])
+      .optional(),
     mask_erode_px: z.number().min(0).max(3).optional(),
     mask_dilate_px: z.number().int().min(0).max(8).optional(),
     mask_feather_px: z.number().int().min(0).max(3).optional(),

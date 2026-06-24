@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -29,7 +30,7 @@ std::string normalizedQualityMode(const std::string &qualityMode) {
 #if defined(__APPLE__)
 void releaseFrameData(void *, const void *, size_t) {}
 
-CGImageRef createImageFromFrame(const VideoFrame &frame) {
+CGImageRef createImageFromFrame(const VideoFrame &frame, const KeyerSettings &settings) {
   if (frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
     return nullptr;
   }
@@ -39,7 +40,7 @@ CGImageRef createImageFromFrame(const VideoFrame &frame) {
     return nullptr;
   }
   CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-  CGImageRef image = CGImageCreate(
+  CGImageRef sourceImage = CGImageCreate(
       frame.width,
       frame.height,
       8,
@@ -55,7 +56,42 @@ CGImageRef createImageFromFrame(const VideoFrame &frame) {
     CGColorSpaceRelease(colorSpace);
   }
   CGDataProviderRelease(provider);
-  return image;
+  if (sourceImage == nullptr) {
+    return nullptr;
+  }
+
+  const uint32_t maxWidth = std::max(1u, settings.maxInputWidth);
+  const uint32_t maxHeight = std::max(1u, settings.maxInputHeight);
+  const double scale = std::min(
+      1.0,
+      std::min(
+          static_cast<double>(maxWidth) / static_cast<double>(frame.width),
+          static_cast<double>(maxHeight) / static_cast<double>(frame.height)));
+  if (scale >= 1.0) {
+    return sourceImage;
+  }
+
+  const size_t targetWidth = std::max<size_t>(1u, static_cast<size_t>(std::round(frame.width * scale)));
+  const size_t targetHeight = std::max<size_t>(1u, static_cast<size_t>(std::round(frame.height * scale)));
+  CGColorSpaceRef targetColorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(
+      nullptr,
+      targetWidth,
+      targetHeight,
+      8,
+      targetWidth * 4u,
+      targetColorSpace,
+      kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  CGColorSpaceRelease(targetColorSpace);
+  if (context == nullptr) {
+    return sourceImage;
+  }
+  CGContextSetInterpolationQuality(context, kCGInterpolationMedium);
+  CGContextDrawImage(context, CGRectMake(0, 0, targetWidth, targetHeight), sourceImage);
+  CGImageRef scaledImage = CGBitmapContextCreateImage(context);
+  CGContextRelease(context);
+  CGImageRelease(sourceImage);
+  return scaledImage;
 }
 
 VNGeneratePersonSegmentationRequestQualityLevel visionQualityLevel(const std::string &qualityMode) {
@@ -66,22 +102,6 @@ VNGeneratePersonSegmentationRequestQualityLevel visionQualityLevel(const std::st
     return VNGeneratePersonSegmentationRequestQualityLevelAccurate;
   }
   return VNGeneratePersonSegmentationRequestQualityLevelBalanced;
-}
-
-void applyMaskToFrame(const AlphaMask &mask, VideoFrame &frame) {
-  if (mask.alpha.empty() || frame.rgba.empty() || mask.width == 0u || mask.height == 0u || frame.width == 0u || frame.height == 0u) {
-    return;
-  }
-
-  for (uint32_t y = 0; y < frame.height; ++y) {
-    const uint32_t maskY = static_cast<uint32_t>((static_cast<uint64_t>(y) * mask.height) / frame.height);
-    for (uint32_t x = 0; x < frame.width; ++x) {
-      const uint32_t maskX = static_cast<uint32_t>((static_cast<uint64_t>(x) * mask.width) / frame.width);
-      const size_t frameOffset = (static_cast<size_t>(y) * frame.width + x) * 4u;
-      const size_t maskOffset = static_cast<size_t>(maskY) * mask.width + maskX;
-      frame.rgba[frameOffset + 3u] = mask.alpha[maskOffset];
-    }
-  }
 }
 
 void copyMask(CVPixelBufferRef maskBuffer, uint64_t timestampNs, AlphaMask &outputMask, KeyerMetrics &metrics) {
@@ -121,7 +141,6 @@ class VisionKeyer::Impl {
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) {
     KeyerResult result;
-    result.frame = copyPassthroughFrame(input);
     result.status.activeKeyer = "passthrough";
     result.status.backend = "vision_person_segmentation";
     result.status.qualityMode = normalizedQualityMode(settings.qualityMode);
@@ -133,7 +152,7 @@ class VisionKeyer::Impl {
     if (@available(macOS 12.0, *)) {
       @autoreleasepool {
         const auto start = std::chrono::steady_clock::now();
-        CGImageRef image = createImageFromFrame(input);
+        CGImageRef image = createImageFromFrame(input, settings);
         if (image == nullptr) {
           result.status.fallbackReason = "invalid_frame";
           return result;
@@ -158,7 +177,6 @@ class VisionKeyer::Impl {
         VNPixelBufferObservation *observation = (VNPixelBufferObservation *)request.results.firstObject;
         const auto maskStart = std::chrono::steady_clock::now();
         copyMask(observation.pixelBuffer, input.timestampNs, result.mask, result.status.metrics);
-        applyMaskToFrame(result.mask, result.frame);
         const auto end = std::chrono::steady_clock::now();
 
         result.status.activeKeyer = "vision_person_segmentation";

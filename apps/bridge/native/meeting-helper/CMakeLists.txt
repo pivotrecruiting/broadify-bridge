@@ -48,7 +48,6 @@ set(MEETING_HELPER_SOURCES
   src/keyer/keyer_chain.cpp
   src/keyer/model_manifest.cpp
   src/keyer/modnet_keyer.cpp
-  src/keyer/passthrough_keyer.cpp
   src/main.cpp
   src/pipeline/frame_pipeline.cpp
   src/preview/preview_frame_store.cpp
