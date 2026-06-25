@@ -192,6 +192,14 @@ describe("GraphicsManager", () => {
         message: "renderer failed",
       })
     );
+    expect(manager.getStatusSnapshot()).toMatchObject({
+      outputsConfigured: false,
+      outputStatus: "error",
+      lastOutputError: {
+        code: "renderer_error",
+        message: "renderer failed",
+      },
+    });
   });
 
   it("rejects sendLayer when outputs are not configured", async () => {

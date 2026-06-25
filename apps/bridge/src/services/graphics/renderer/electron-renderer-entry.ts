@@ -27,7 +27,7 @@ const logger = pino({
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
-const FRAMEBUS_READY_RETRY_ATTEMPTS = 8;
+const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
@@ -599,11 +599,37 @@ function scheduleFrameBusReadyRetry(
     );
     rendererConfigReady = frameBusReady;
     if (frameBusReady) {
+      logger.info(
+        {
+          attempt: attempts,
+          maxAttempts: FRAMEBUS_READY_RETRY_ATTEMPTS,
+          configGeneration,
+          frameBusName,
+          frameBusSlotCount,
+          frameBusPixelFormat,
+        },
+        "[GraphicsRenderer] FrameBus writer became ready after retry",
+      );
       maybeSendReady();
       return;
     }
 
     if (attempts >= FRAMEBUS_READY_RETRY_ATTEMPTS) {
+      logger.error(
+        {
+          attempts,
+          maxAttempts: FRAMEBUS_READY_RETRY_ATTEMPTS,
+          configGeneration,
+          frameBusName,
+          frameBusSlotCount,
+          frameBusPixelFormat,
+          width: config.width,
+          height: config.height,
+          fps: config.fps,
+          reason: "FrameBus writer not ready",
+        },
+        "[GraphicsRenderer] FrameBus writer readiness exhausted",
+      );
       sendIpcMessage({
         type: "error",
         message: "FrameBus writer not ready",
