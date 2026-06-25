@@ -65,6 +65,11 @@ export const GraphicsCategorySchema = z.enum([
 ]);
 
 /**
+ * Meeting compositor plane for layers routed through the meeting FrameBus path.
+ */
+export const MeetingGraphicsPlaneSchema = z.enum(["back", "front"]);
+
+/**
  * Payload for creating/updating a graphics layer.
  */
 export const GraphicsSendSchema = z
@@ -78,6 +83,7 @@ export const GraphicsSendSchema = z
     values: z.record(z.unknown()).optional().default({}),
     presetId: z.string().min(1).optional(),
     durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
+    meetingPlane: MeetingGraphicsPlaneSchema.optional(),
   })
   .strict();
 
@@ -125,6 +131,7 @@ export type GraphicsAssetT = z.infer<typeof GraphicsAssetSchema>;
 export type GraphicsBundleT = z.infer<typeof GraphicsBundleSchema>;
 export type GraphicsBackgroundModeT = z.infer<typeof GraphicsBackgroundModeSchema>;
 export type GraphicsCategoryT = z.infer<typeof GraphicsCategorySchema>;
+export type MeetingGraphicsPlaneT = z.infer<typeof MeetingGraphicsPlaneSchema>;
 export type GraphicsSendPayloadT = z.infer<typeof GraphicsSendSchema>;
 export type GraphicsUpdateValuesPayloadT = z.infer<
   typeof GraphicsUpdateValuesSchema

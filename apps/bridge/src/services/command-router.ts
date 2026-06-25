@@ -21,8 +21,10 @@ import {
   isMeetingCommand,
 } from "./meeting/meeting-command-handler.js";
 import {
+  forgetMeetingGraphicsPlane,
   isMeetingGraphicsLayerPayload,
-  meetingGraphicsManager,
+  rememberMeetingGraphicsPlane,
+  resolveMeetingGraphicsManager,
 } from "./meeting/meeting-graphics-manager.js";
 import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
@@ -380,10 +382,14 @@ export class CommandRouter {
           }
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
-          const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
-            ? meetingGraphicsManager
+          const isMeetingLayer = isMeetingGraphicsLayerPayload(payload);
+          const targetGraphicsManager = isMeetingLayer
+            ? resolveMeetingGraphicsManager(payload)
             : graphicsManager;
           await targetGraphicsManager.sendLayer(payload);
+          if (isMeetingLayer) {
+            rememberMeetingGraphicsPlane(payload);
+          }
           return {
             success: true,
             data: {},
@@ -408,7 +414,7 @@ export class CommandRouter {
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
-            ? meetingGraphicsManager
+            ? resolveMeetingGraphicsManager(payload)
             : graphicsManager;
           await targetGraphicsManager.updateValues(payload);
           return {
@@ -427,7 +433,7 @@ export class CommandRouter {
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
           const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
-            ? meetingGraphicsManager
+            ? resolveMeetingGraphicsManager(payload)
             : graphicsManager;
           await targetGraphicsManager.updateLayout(payload);
           return {
@@ -445,10 +451,14 @@ export class CommandRouter {
           }
 
           // Graphics payloads are validated inside GraphicsManager via Zod schemas.
-          const targetGraphicsManager = isMeetingGraphicsLayerPayload(payload)
-            ? meetingGraphicsManager
+          const isMeetingLayer = isMeetingGraphicsLayerPayload(payload);
+          const targetGraphicsManager = isMeetingLayer
+            ? resolveMeetingGraphicsManager(payload)
             : graphicsManager;
           await targetGraphicsManager.removeLayer(payload);
+          if (isMeetingLayer) {
+            forgetMeetingGraphicsPlane(payload);
+          }
           return {
             success: true,
             data: {},

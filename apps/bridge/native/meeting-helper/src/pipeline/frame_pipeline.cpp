@@ -39,7 +39,8 @@ constexpr float kEdgeStabilizationMaxMotion = 0.55f;
 constexpr double kEdgeStabilizationFreshAgeMs = 40.0;
 constexpr double kEdgeStabilizationFadeOutAgeMs = 75.0;
 constexpr float kEdgeStabilizationMinAgeFactor = 0.12f;
-constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
+constexpr const char *kMeetingBackGraphicsFrameBusName = "bfy-meet-gfx-back";
+constexpr const char *kMeetingFrontGraphicsFrameBusName = "bfy-meet-gfx-front";
 constexpr double kMetricsWindowMs = 1000.0;
 constexpr size_t kMaskAgeWindowSize = 30u;
 constexpr auto kIdleSleep = std::chrono::milliseconds(1000);
@@ -775,6 +776,8 @@ class AsyncKeyerWorker {
 
 class GraphicsFrameBusReader {
  public:
+  explicit GraphicsFrameBusReader(std::string name) : name_(std::move(name)) {}
+
   ~GraphicsFrameBusReader() {
     close();
   }
@@ -844,7 +847,7 @@ class GraphicsFrameBusReader {
     if (reader_ != nullptr) {
       return;
     }
-    reader_ = framebus_reader_open(kMeetingGraphicsFrameBusName);
+    reader_ = framebus_reader_open(name_.c_str());
     lastSeq_ = 0;
     if (reader_ == nullptr) {
       logReaderEvent("open_failed", 0, 0, 0, 0, 0);
@@ -874,7 +877,7 @@ class GraphicsFrameBusReader {
     lastLoggedSeq_ = lastSeq_;
     lastLoggedEvent_ = event;
     std::cout << "{\"type\":\"meeting_graphics_framebus\",\"event\":\"" << event
-              << "\",\"name\":\"" << kMeetingGraphicsFrameBusName
+              << "\",\"name\":\"" << name_
               << "\",\"seq\":" << lastSeq_
               << ",\"width\":" << width
               << ",\"height\":" << height
@@ -888,6 +891,7 @@ class GraphicsFrameBusReader {
   uint64_t lastSeq_ = 0;
   uint64_t lastLoggedSeq_ = 0;
   std::string lastLoggedEvent_;
+  std::string name_;
   bool hasLatestFrame_ = false;
   VideoFrame latestFrame_;
   std::vector<uint8_t> scratch_;
@@ -917,10 +921,12 @@ void runFramePipeline(const Options &options,
   uint64_t lastCameraTimestampNs = 0u;
   uint64_t lastProgramRevision = 0u;
   uint64_t lastUsedKeyerPublishedNs = 0u;
-  uint64_t lastGraphicsTimestampNs = 0u;
+  uint64_t lastBackGraphicsTimestampNs = 0u;
+  uint64_t lastFrontGraphicsTimestampNs = 0u;
   auto lastStaticHeartbeatAt = std::chrono::steady_clock::time_point{};
   AsyncKeyerWorker keyerWorker(options, state, running);
-  GraphicsFrameBusReader graphicsReader;
+  GraphicsFrameBusReader backGraphicsReader(kMeetingBackGraphicsFrameBusName);
+  GraphicsFrameBusReader frontGraphicsReader(kMeetingFrontGraphicsFrameBusName);
   RateMeter programRate;
   RollingAverage maskAgeAverage;
   uint64_t previousProgramStartNs = 0u;
@@ -1078,14 +1084,24 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.maskAgeAvgMs = -1.0;
         }
       }
-      VideoFrame graphicsFrame;
+      VideoFrame backGraphicsFrame;
+      VideoFrame frontGraphicsFrame;
       const bool graphicsOutputActive = isGraphicsOutputActive(snapshot);
-      const VideoFrame *graphicsFrameForCompositor = graphicsReader.copyLatest(graphicsFrame, graphicsOutputActive) ? &graphicsFrame : nullptr;
-      const bool hasNewGraphicsFrame = graphicsFrameForCompositor != nullptr &&
-          graphicsFrameForCompositor->timestampNs != 0u &&
-          graphicsFrameForCompositor->timestampNs != lastGraphicsTimestampNs;
-      if (hasNewGraphicsFrame) {
-        lastGraphicsTimestampNs = graphicsFrameForCompositor->timestampNs;
+      const VideoFrame *backGraphicsFrameForCompositor =
+          backGraphicsReader.copyLatest(backGraphicsFrame, graphicsOutputActive) ? &backGraphicsFrame : nullptr;
+      const VideoFrame *frontGraphicsFrameForCompositor =
+          frontGraphicsReader.copyLatest(frontGraphicsFrame, graphicsOutputActive) ? &frontGraphicsFrame : nullptr;
+      const bool hasNewBackGraphicsFrame = backGraphicsFrameForCompositor != nullptr &&
+          backGraphicsFrameForCompositor->timestampNs != 0u &&
+          backGraphicsFrameForCompositor->timestampNs != lastBackGraphicsTimestampNs;
+      const bool hasNewFrontGraphicsFrame = frontGraphicsFrameForCompositor != nullptr &&
+          frontGraphicsFrameForCompositor->timestampNs != 0u &&
+          frontGraphicsFrameForCompositor->timestampNs != lastFrontGraphicsTimestampNs;
+      if (hasNewBackGraphicsFrame) {
+        lastBackGraphicsTimestampNs = backGraphicsFrameForCompositor->timestampNs;
+      }
+      if (hasNewFrontGraphicsFrame) {
+        lastFrontGraphicsTimestampNs = frontGraphicsFrameForCompositor->timestampNs;
       }
       if (hasCameraFrame && snapshot.keyerEnabled) {
         PairedKeyerFrame latestPair;
@@ -1134,7 +1150,8 @@ void runFramePipeline(const Options &options,
       const bool hasNewUsableKeyerPair = hasSelectedPair && selectedPair.publishedAtNs > lastUsedKeyerPublishedNs;
       shouldRenderProgram = shouldRenderProgram ||
           hasNewCameraFrame ||
-          hasNewGraphicsFrame ||
+          hasNewBackGraphicsFrame ||
+          hasNewFrontGraphicsFrame ||
           hasNewUsableKeyerPair ||
           ((runtime.mode == "live" || runtime.mode == "keyer_live") && graphicsOutputActive);
       if (runtime.mode == "idle" && !outputConsumerActive && !shouldRenderProgram) {
@@ -1149,7 +1166,14 @@ void runFramePipeline(const Options &options,
       }
 
       if (shouldRenderProgram) {
-        renderProgramFrame(options, snapshot, frameForCompositor, graphicsFrameForCompositor, frameIndex++, programFrame);
+        renderProgramFrame(
+            options,
+            snapshot,
+            frameForCompositor,
+            backGraphicsFrameForCompositor,
+            frontGraphicsFrameForCompositor,
+            frameIndex++,
+            programFrame);
         if (hasSelectedPair) {
           lastUsedKeyerPublishedNs = selectedPair.publishedAtNs;
         }

@@ -37,7 +37,10 @@ let frameBusPixelFormat = Number(
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT ||
     1,
 );
-const MEETING_GRAPHICS_FRAMEBUS_NAME = "bfy-meet-gfx";
+const MEETING_GRAPHICS_FRAMEBUS_NAMES = new Set([
+  "bfy-meet-gfx-back",
+  "bfy-meet-gfx-front",
+]);
 
 logger.info(
   {
@@ -324,7 +327,7 @@ function resolveFrameBusCandidatesForLog(): string[] {
 }
 
 function shouldForceRecreateFrameBus(): boolean {
-  return frameBusName !== MEETING_GRAPHICS_FRAMEBUS_NAME;
+  return !MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
 }
 
 function ensureFrameBusWriter(

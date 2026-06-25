@@ -91,13 +91,37 @@ jest.mock("./meeting/meeting-graphics-manager.js", () => ({
   ) =>
     typeof payload?.layerId === "string" &&
     payload.layerId.startsWith("meeting-"),
-  meetingGraphicsManager: {
+  meetingBackGraphicsManager: {
     configureOutputs: jest.fn().mockResolvedValue(undefined),
     sendLayer: jest.fn().mockResolvedValue(undefined),
     updateValues: jest.fn().mockResolvedValue(undefined),
     updateLayout: jest.fn().mockResolvedValue(undefined),
     removeLayer: jest.fn().mockResolvedValue(undefined),
   },
+  meetingFrontGraphicsManager: {
+    configureOutputs: jest.fn().mockResolvedValue(undefined),
+    sendLayer: jest.fn().mockResolvedValue(undefined),
+    updateValues: jest.fn().mockResolvedValue(undefined),
+    updateLayout: jest.fn().mockResolvedValue(undefined),
+    removeLayer: jest.fn().mockResolvedValue(undefined),
+  },
+  resolveMeetingGraphicsManager: jest.fn((payload: Record<string, unknown>) => {
+    const {
+      meetingBackGraphicsManager,
+      meetingFrontGraphicsManager,
+    } = require("./meeting/meeting-graphics-manager.js");
+    if (
+      payload.meetingPlane === "back" ||
+      payload.category === "backgrounds" ||
+      payload.category === "slides" ||
+      payload.layerId === "meeting-content-template"
+    ) {
+      return meetingBackGraphicsManager;
+    }
+    return meetingFrontGraphicsManager;
+  }),
+  rememberMeetingGraphicsPlane: jest.fn(),
+  forgetMeetingGraphicsPlane: jest.fn(),
 }));
 
 jest.mock("./relay-bridge-identity.js", () => ({
@@ -612,7 +636,8 @@ describe("command-router", () => {
     it("graphics_send succeeds with payload", async () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const {
-        meetingGraphicsManager,
+        meetingBackGraphicsManager,
+        meetingFrontGraphicsManager,
       } = require("./meeting/meeting-graphics-manager.js");
 
       const result = await commandRouter.handleCommand("graphics_send", {
@@ -624,13 +649,15 @@ describe("command-router", () => {
       expect(graphicsManager.sendLayer).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "l1" }),
       );
-      expect(meetingGraphicsManager.sendLayer).not.toHaveBeenCalled();
+      expect(meetingBackGraphicsManager.sendLayer).not.toHaveBeenCalled();
+      expect(meetingFrontGraphicsManager.sendLayer).not.toHaveBeenCalled();
     });
 
-    it("routes meeting graphics_send payloads to the meeting graphics manager", async () => {
+    it("routes meeting content graphics_send payloads to the back meeting graphics manager", async () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const {
-        meetingGraphicsManager,
+        meetingBackGraphicsManager,
+        meetingFrontGraphicsManager,
       } = require("./meeting/meeting-graphics-manager.js");
       const payload = {
         layerId: "meeting-content-template",
@@ -644,7 +671,31 @@ describe("command-router", () => {
       );
 
       expect(result.success).toBe(true);
-      expect(meetingGraphicsManager.sendLayer).toHaveBeenCalledWith(payload);
+      expect(meetingBackGraphicsManager.sendLayer).toHaveBeenCalledWith(payload);
+      expect(meetingFrontGraphicsManager.sendLayer).not.toHaveBeenCalled();
+      expect(graphicsManager.sendLayer).not.toHaveBeenCalled();
+    });
+
+    it("routes meeting lower-third graphics_send payloads to the front meeting graphics manager", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const {
+        meetingBackGraphicsManager,
+        meetingFrontGraphicsManager,
+      } = require("./meeting/meeting-graphics-manager.js");
+      const payload = {
+        layerId: "meeting-lower-third-template",
+        category: "lower-thirds",
+        bundle: { html: "<div/>", manifest: {} },
+      };
+
+      const result = await commandRouter.handleCommand(
+        "graphics_send",
+        payload,
+      );
+
+      expect(result.success).toBe(true);
+      expect(meetingFrontGraphicsManager.sendLayer).toHaveBeenCalledWith(payload);
+      expect(meetingBackGraphicsManager.sendLayer).not.toHaveBeenCalled();
       expect(graphicsManager.sendLayer).not.toHaveBeenCalled();
     });
 
@@ -698,7 +749,7 @@ describe("command-router", () => {
     it("routes meeting graphics updates and removes to the meeting graphics manager", async () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const {
-        meetingGraphicsManager,
+        meetingBackGraphicsManager,
       } = require("./meeting/meeting-graphics-manager.js");
 
       await commandRouter.handleCommand("graphics_update_values", {
@@ -713,13 +764,13 @@ describe("command-router", () => {
         layerId: "meeting-content-template",
       });
 
-      expect(meetingGraphicsManager.updateValues).toHaveBeenCalledWith(
+      expect(meetingBackGraphicsManager.updateValues).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "meeting-content-template" }),
       );
-      expect(meetingGraphicsManager.updateLayout).toHaveBeenCalledWith(
+      expect(meetingBackGraphicsManager.updateLayout).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "meeting-content-template" }),
       );
-      expect(meetingGraphicsManager.removeLayer).toHaveBeenCalledWith(
+      expect(meetingBackGraphicsManager.removeLayer).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "meeting-content-template" }),
       );
       expect(graphicsManager.updateValues).not.toHaveBeenCalled();

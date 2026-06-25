@@ -570,12 +570,14 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
 void renderProgramFrame(const Options &options,
                         const CompositorSnapshot &snapshot,
                         const VideoFrame *cameraFrame,
-                        const VideoFrame *graphicsFrame,
+                        const VideoFrame *backGraphicsFrame,
+                        const VideoFrame *frontGraphicsFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output) {
   fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
   drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
-  drawGraphicsFrame(output, options.width, options.height, graphicsFrame);
+  drawGraphicsFrame(output, options.width, options.height, backGraphicsFrame);
+  drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
   if (snapshot.cameraRender.enabled) {
     drawCamera(
         output,
@@ -586,7 +588,7 @@ void renderProgramFrame(const Options &options,
         snapshot.cameraRender.mirror);
   }
   drawGraphics(output, options.width, options.height, snapshot.graphics);
-  drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
+  drawGraphicsFrame(output, options.width, options.height, frontGraphicsFrame);
 }
 
 }  // namespace broadify::meeting

@@ -105,8 +105,8 @@ Inside the native helper, the relevant long-running components are:
 
 - `CameraSource`: captures the latest camera frame.
 - `AsyncKeyerWorker`: runs the selected keyer on a background thread.
-- `GraphicsFrameBusReader`: reads the latest meeting graphics frame from
-  `bfy-meet-gfx`.
+- `GraphicsFrameBusReader`: reads the latest meeting back/front graphics frames
+  from `bfy-meet-gfx-back` and `bfy-meet-gfx-front`.
 - `renderProgramFrame`: composites the final program frame when camera,
   graphics, program state, or a static-output heartbeat requires it.
 - `framebus_writer_write_rgba`: writes the final program frame to the meeting
@@ -414,19 +414,23 @@ program frame.
 
 1. `fillBackground`
 2. `drawMediaLayer`
-3. `drawGraphicsFrame`
-4. `drawCamera`
-5. `drawGraphics`
-6. `drawCornerbug`
+3. `drawBackGraphicsFrame`
+4. `drawCornerbug`
+5. `drawCamera`
+6. `drawGraphics`
+7. `drawFrontGraphicsFrame`
 
 Actual layering:
 
 - Background is always the bottom layer.
 - Native media placeholder is drawn above background.
-- Meeting graphics FrameBus layer is drawn above media.
-- Keyed camera/person is drawn above meeting graphics.
+- Meeting back graphics FrameBus layer is drawn above media and behind the
+  keyed camera/person.
+- Native cornerbug placeholder is drawn behind the keyed camera/person.
+- Keyed camera/person is drawn above back graphics and native cornerbug.
 - Native placeholder lower-third graphics are drawn above camera.
-- Native cornerbug placeholder is drawn last.
+- Meeting front graphics FrameBus layer is drawn last above the keyed
+  camera/person.
 
 `drawCamera` scales/crops the camera frame into `cameraRect`. If speaker layout
 is disabled, the camera rect is full-frame. If speaker layout is enabled, the
@@ -477,30 +481,37 @@ Current reality:
 This is important when reasoning about virtual-camera output: the program output
 is not a transparent keyed person layer. It is a finished composited frame.
 
-## Meeting Graphics FrameBus Layer
+## Meeting Graphics FrameBus Layers
 
-Meeting graphics are rendered by the regular graphics renderer into a separate
-FrameBus named `bfy-meet-gfx`.
+Meeting graphics are rendered by two regular graphics renderer instances into
+separate semantic FrameBus planes:
+
+- `bfy-meet-gfx-back`: background, content, slides, and logo/cornerbug graphics
+  that must sit behind the keyed person.
+- `bfy-meet-gfx-front`: overlays and lower-thirds that must sit in front of the
+  keyed person.
 
 `GraphicsFrameBusReader`:
 
-- opens `bfy-meet-gfx`
+- opens the configured meeting graphics FrameBus plane
 - reads the latest RGBA frame
 - keeps the last successful frame if no new frame is available
 - logs frame dimensions, sequence, non-transparent pixel count, and max alpha
 
-`drawGraphicsFrame` composites that graphics frame into the program frame using
+`drawGraphicsFrame` composites each graphics frame into the program frame using
 straight alpha blending. It uses cover-style scaling/cropping to fit the meeting
 program dimensions.
 
 The Meeting Builder currently sends:
 
-- background template as layer `meeting-background-template`, z-index `0`
-- content template as layer `meeting-content-template`
-- both with `backgroundMode: "transparent"`
+- background/content templates to the back meeting plane
+- overlay/lower-third templates to the front meeting plane
+- all meeting graphics with `backgroundMode: "transparent"`
 
-These graphics are not inserted directly into the C++ compositor as independent
-semantic layers. They arrive as one rendered RGBA graphics frame over FrameBus.
+Within each plane, HTML z-index still orders templates relative to other
+templates on the same plane. Cross-plane ordering is controlled only by the
+native compositor: the back plane is always behind the person, and the front
+plane is always in front of the person.
 
 ## Output And Preview Dataflow
 
