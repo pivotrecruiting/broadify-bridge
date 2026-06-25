@@ -85,6 +85,7 @@ let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
 let rendererConfigReady = false;
 let rendererConfig: {
+  configId?: string;
   width: number;
   height: number;
   fps: number;
@@ -283,11 +284,18 @@ function maybeSendReady(): void {
   readySent = true;
   sendIpcMessage({
     type: "ready",
+    configId: rendererConfig?.configId,
     width: rendererConfig?.width,
     height: rendererConfig?.height,
     fps: rendererConfig?.fps,
     pixelFormat: rendererConfig?.pixelFormat,
-    framebusName: rendererConfig?.framebusName,
+    framebusName: frameBusWriter?.name ?? rendererConfig?.framebusName,
+    framebusSize: frameBusWriter?.size,
+    framebusSlotCount:
+      typeof frameBusWriter?.header?.slotCount === "number"
+        ? frameBusWriter.header.slotCount
+        : rendererConfig?.framebusSlotCount,
+    rendererConfigGeneration,
   });
 }
 
@@ -424,6 +432,7 @@ function ensureFrameBusWriter(
       slotCount: frameBusSlotCount,
       forceRecreate: shouldForceRecreateFrameBus(),
     });
+    frameBusWriter.writeFrame(Buffer.alloc(width * height * 4, 0));
     logger.info(
       {
         name: frameBusWriter.name,
@@ -470,6 +479,7 @@ function applyRendererConfig(message: unknown): void {
   const configGeneration = rendererConfigGeneration;
   clearFrameBusReadyRetry();
   rendererConfig = {
+    configId: config.configId,
     width: config.width,
     height: config.height,
     fps: config.fps,

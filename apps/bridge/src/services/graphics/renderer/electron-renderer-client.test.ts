@@ -1,7 +1,11 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
 import path from "node:path";
-import { encodeIpcPacket } from "./renderer-ipc-framing.js";
+import {
+  decodeNextIpcPacket,
+  encodeIpcPacket,
+  type DecodedIpcPacketT,
+} from "./renderer-ipc-framing.js";
 import { ElectronRendererClient } from "./electron-renderer-client.js";
 
 const mockResolveElectronBinary = jest.fn();
@@ -101,6 +105,17 @@ function createMockChild(): EventEmitter & {
 
 let clientSocket: net.Socket | null = null;
 
+type RendererConfigureCommandT = {
+  configId: string;
+  width: number;
+  height: number;
+  fps: number;
+  pixelFormat: number;
+  framebusName: string;
+  framebusSlotCount: number;
+  framebusSize: number;
+};
+
 function attachMockSocketErrorHandler(socket: net.Socket): void {
   socket.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "ECONNRESET" || error.code === "ECONNREFUSED") {
@@ -142,6 +157,40 @@ async function initializeClientWithCustomHello(
   return client;
 }
 
+async function readRendererConfigureCommand(): Promise<RendererConfigureCommandT> {
+  const socket = clientSocket;
+  if (!socket) {
+    throw new Error("Client socket is not connected");
+  }
+
+  const data = await new Promise<Buffer>((resolve) => {
+    socket.once("data", (chunk) => resolve(chunk));
+  });
+  const decoded = decodeNextIpcPacket(data) as DecodedIpcPacketT;
+  if (decoded.kind !== "packet") {
+    throw new Error("Expected renderer_configure packet");
+  }
+  return decoded.header as RendererConfigureCommandT;
+}
+
+function sendRendererReadyAck(command: RendererConfigureCommandT): void {
+  clientSocket?.write(
+    encodeIpcPacket({
+      type: "ready",
+      token: MOCK_TOKEN,
+      configId: command.configId,
+      width: command.width,
+      height: command.height,
+      fps: command.fps,
+      pixelFormat: command.pixelFormat,
+      framebusName: command.framebusName,
+      framebusSlotCount: command.framebusSlotCount,
+      framebusSize: command.framebusSize,
+      rendererConfigGeneration: 1,
+    })
+  );
+}
+
 describe("ElectronRendererClient", () => {
   let client: ElectronRendererClient;
 
@@ -162,6 +211,7 @@ describe("ElectronRendererClient", () => {
   });
 
   afterEach(async () => {
+    jest.useRealTimers();
     clientSocket?.destroy();
     clientSocket = null;
   });
@@ -258,8 +308,97 @@ describe("ElectronRendererClient", () => {
         framebusSize: 4096,
         backgroundMode: "transparent" as const,
       };
+      const commandPromise = readRendererConfigureCommand();
       const configurePromise = c.configureSession(config);
-      clientSocket?.write(encodeIpcPacket({ type: "ready", token: MOCK_TOKEN }));
+      const command = await commandPromise;
+      sendRendererReadyAck(command);
+      await expect(configurePromise).resolves.toBeUndefined();
+      clientSocket?.destroy();
+      clientSocket = null;
+      const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
+      if (mockChild) {
+        (mockChild as { exitCode: number | null }).exitCode = 0;
+        (mockChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      }
+      await c.shutdown();
+    });
+
+    it("accepts renderer ready when native FrameBus name adds a leading slash", async () => {
+      const c = await initializeClientWithHandshake();
+      const commandPromise = readRendererConfigureCommand();
+      const configurePromise = c.configureSession({
+        width: 2560,
+        height: 1440,
+        fps: 60,
+        pixelFormat: 1,
+        framebusName: "broadify-framebus",
+        framebusSlotCount: 2,
+        framebusSize: 29491328,
+        backgroundMode: "transparent",
+      });
+      const command = await commandPromise;
+      clientSocket?.write(
+        encodeIpcPacket({
+          type: "ready",
+          token: MOCK_TOKEN,
+          configId: command.configId,
+          width: command.width,
+          height: command.height,
+          fps: command.fps,
+          pixelFormat: command.pixelFormat,
+          framebusName: `/${command.framebusName}`,
+          framebusSlotCount: command.framebusSlotCount,
+          framebusSize: command.framebusSize,
+          rendererConfigGeneration: 1,
+        })
+      );
+
+      await expect(configurePromise).resolves.toBeUndefined();
+      clientSocket?.destroy();
+      clientSocket = null;
+      const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
+      if (mockChild) {
+        (mockChild as { exitCode: number | null }).exitCode = 0;
+        (mockChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      }
+      await c.shutdown();
+    });
+
+    it("ignores ready ACK when FrameBus metadata does not match the current config", async () => {
+      const c = await initializeClientWithHandshake();
+      const logger = mockGetBridgeContext().logger as { warn: jest.Mock };
+      const commandPromise = readRendererConfigureCommand();
+      const configurePromise = c.configureSession({
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        pixelFormat: 1,
+        framebusName: "/test-shm",
+        framebusSlotCount: 2,
+        framebusSize: 4096,
+        backgroundMode: "transparent",
+      });
+      const command = await commandPromise;
+      clientSocket?.write(
+        encodeIpcPacket({
+          type: "ready",
+          token: MOCK_TOKEN,
+          configId: command.configId,
+          width: command.width,
+          height: command.height,
+          fps: command.fps,
+          pixelFormat: command.pixelFormat,
+          framebusName: "/other-shm",
+          framebusSlotCount: command.framebusSlotCount,
+          framebusSize: command.framebusSize,
+          rendererConfigGeneration: 1,
+        })
+      );
+      expect(
+        await waitForWarn(logger, "Ignoring renderer ready for non-current config")
+      ).toBe(true);
+
+      sendRendererReadyAck(command);
       await expect(configurePromise).resolves.toBeUndefined();
       clientSocket?.destroy();
       clientSocket = null;
@@ -333,6 +472,7 @@ describe("ElectronRendererClient", () => {
       "sends update_layout with zIndex when provided",
       async () => {
         const c = await initializeClientWithHandshake();
+        const commandPromise = readRendererConfigureCommand();
         const configPromise = c.configureSession({
           width: 1920,
           height: 1080,
@@ -343,7 +483,8 @@ describe("ElectronRendererClient", () => {
           framebusSize: 4096,
           backgroundMode: "transparent",
         });
-        clientSocket?.write(encodeIpcPacket({ type: "ready", token: MOCK_TOKEN }));
+        const command = await commandPromise;
+        sendRendererReadyAck(command);
         await configPromise;
         await c.updateLayout("l1", { x: 0, y: 0, scale: 1 }, 5);
         clientSocket?.destroy();

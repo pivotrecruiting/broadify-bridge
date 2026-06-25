@@ -13,6 +13,7 @@ const ClearColorSchema = z
 
 export const RendererConfigureSchema = z
   .object({
+    configId: z.string().min(1).optional(),
     width: z.number().int().positive().max(MAX_FRAME_DIMENSION),
     height: z.number().int().positive().max(MAX_FRAME_DIMENSION),
     fps: z.number().positive(),
