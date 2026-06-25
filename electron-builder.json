@@ -58,7 +58,10 @@
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
     "entitlementsInherit": "build/entitlements.mac.inherit.plist",
-    "signIgnore": ["BroadifyVCam.app"],
+    "signIgnore": [
+      "BroadifyVCam.app",
+      "presentation-runtime/macos-arm64/LibreOffice.app"
+    ],
     "notarize": true,
     "extendInfo": {
       "NSLocalNetworkUsageDescription": "Broadify Bridge benötigt Zugriff auf das lokale Netzwerk, um Video-Mischer, Canon Kameras und Ausgabegeräte in deinem Netzwerk zu finden und zu steuern."

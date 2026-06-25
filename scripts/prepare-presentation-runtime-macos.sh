@@ -12,10 +12,11 @@ if [[ "$(uname -m)" != "arm64" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="26.2.4"
-FILENAME="LibreOffice_${VERSION}_MacOS_aarch64.dmg"
-URL="https://download.documentfoundation.org/libreoffice/stable/${VERSION}/mac/aarch64/${FILENAME}"
-SHA256="64e0ad05564554eeee639d49b08b20908a38d4722ec95f1620d05c99bcbe9fb1"
+MANIFEST_PATH="${ROOT_DIR}/apps/bridge/vendor/presentation-runtime/manifest.json"
+VERSION="$(node -pe "JSON.parse(require('fs').readFileSync('${MANIFEST_PATH}','utf8')).libreoffice_version")"
+FILENAME="$(node -pe "JSON.parse(require('fs').readFileSync('${MANIFEST_PATH}','utf8')).libreoffice_dmg.filename")"
+URL="$(node -pe "JSON.parse(require('fs').readFileSync('${MANIFEST_PATH}','utf8')).libreoffice_dmg.url")"
+SHA256="$(node -pe "JSON.parse(require('fs').readFileSync('${MANIFEST_PATH}','utf8')).libreoffice_dmg.sha256")"
 CACHE_DIR="${BROADIFY_RUNTIME_CACHE_DIR:-${HOME}/Library/Caches/Broadify Bridge}"
 DMG_PATH="${CACHE_DIR}/${FILENAME}"
 RUNTIME_DIR="${ROOT_DIR}/apps/bridge/vendor/presentation-runtime/macos-arm64"
@@ -49,8 +50,8 @@ fi
 rm -rf "$RUNTIME_DIR"
 mkdir -p "$RUNTIME_DIR"
 ditto "$SOURCE_APP" "${RUNTIME_DIR}/LibreOffice.app"
-cat >"${RUNTIME_DIR}/THIRD_PARTY_NOTICES.md" <<'EOF'
-LibreOffice 26.2.4 is bundled for local PowerPoint-to-PDF conversion.
+cat >"${RUNTIME_DIR}/THIRD_PARTY_NOTICES.md" <<EOF
+LibreOffice ${VERSION} is bundled for local PowerPoint-to-PDF conversion.
 LibreOffice is distributed by The Document Foundation under the Mozilla Public License v2.0.
 Source and license information: https://www.libreoffice.org/about-us/licenses/
 EOF

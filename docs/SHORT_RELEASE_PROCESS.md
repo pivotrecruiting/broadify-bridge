@@ -33,6 +33,30 @@ Nicht zwingend:
 
 - Test- und Live-Release bauen SDL2 jetzt automatisch selbst, falls keine SDL2-Secrets gesetzt sind.
 
+## Presentation Runtime (LibreOffice, macOS arm64)
+
+Einmalig oder bei LibreOffice-Versionswechsel:
+
+GitHub Actions:
+
+- `Build Presentation Runtime macOS Asset`
+- mit `runner_label=macos-15`
+
+Oder lokal auf Apple Silicon:
+
+```bash
+npm run prepare:presentation-runtime-macos-release
+```
+
+Details: `apps/bridge/vendor/presentation-runtime/DEPLOY.md`
+
+Benötigte GitHub-Secrets (für schnelle Release-Builds):
+
+- `PRESENTATION_RUNTIME_URL_ARM64`
+- `PRESENTATION_RUNTIME_SHA256_ARM64`
+
+Ohne diese Secrets baut CI weiterhin über den langsamen DMG-Fallback.
+
 ## RC / Test Release
 
 Benötigte GitHub-Secrets:

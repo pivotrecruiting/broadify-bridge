@@ -192,6 +192,36 @@ Hinweis:
 - Wenn sie nicht gesetzt sind, bauen `release.yml` und `test-release.yml` SDL2 automatisch direkt aus dem offiziellen Source-Tarball.
 - Der dedizierte Workflow `Build SDL2 macOS Asset` bleibt trotzdem sinnvoll, wenn du reproduzierbare und wiederverwendbare SDL2-Artefakte haben willst.
 
+### Presentation Runtime (LibreOffice, macOS arm64)
+
+Fuer schnelle macOS-arm64-Release-Builds wird ein pre-signed LibreOffice-Bundle als GitHub Release Asset verwendet.
+
+Workflow:
+
+1. GitHub → App-Repo → **Actions**
+2. Workflow **Build Presentation Runtime macOS Asset** starten
+3. `runner_label=macos-15`, `publish_release=true`
+4. Aus der Workflow-Zusammenfassung URL und SHA256 notieren
+
+Workflow-Datei:
+
+- `.github/workflows/build-presentation-runtime-macos-asset.yml`
+
+Details:
+
+- `apps/bridge/vendor/presentation-runtime/DEPLOY.md`
+
+GitHub-Secrets fuer den Release-Workflow:
+
+- `PRESENTATION_RUNTIME_URL_ARM64`
+- `PRESENTATION_RUNTIME_SHA256_ARM64`
+
+Hinweis:
+
+- Diese Secrets sind fuer produktive Release-Builds **dringend empfohlen**.
+- Ohne Secrets faellt CI auf den langsamen DMG-Fallback zurueck (LibreOffice wird bei jedem Build neu extrahiert und von electron-builder neu signiert).
+- Mit Secrets laedt CI nur das pre-signed Tarball; `electron-builder` signiert `LibreOffice.app` nicht erneut.
+
 ### Schritt C: SHA256 berechnen (lokal)
 
 ```bash
@@ -207,6 +237,8 @@ shasum -a 256 apps/bridge/native/decklink-helper/decklink-helper-arm64
    - `DECKLINK_HELPER_SHA256_ARM64` = Hash aus Schritt C
    - `SDL2_MACOS_URL_ARM64` = URL aus dem Workflow **Build SDL2 macOS Asset**
    - `SDL2_MACOS_SHA256_ARM64` = SHA256 aus der Workflow-Zusammenfassung
+   - `PRESENTATION_RUNTIME_URL_ARM64` = URL aus dem Workflow **Build Presentation Runtime macOS Asset**
+   - `PRESENTATION_RUNTIME_SHA256_ARM64` = SHA256 aus der Workflow-Zusammenfassung
 
 Falls spaeter ein Intel-macOS-Build dazukommt:
 
