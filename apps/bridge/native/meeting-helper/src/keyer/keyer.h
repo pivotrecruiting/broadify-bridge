@@ -29,6 +29,7 @@ struct KeyerMetrics {
   uint32_t maskWidth = 0;
   uint32_t maskHeight = 0;
   uint64_t droppedFrames = 0;
+  uint64_t skippedFrames = 0;
 };
 
 struct KeyerDegradationSettings {
@@ -57,13 +58,15 @@ struct AlphaMask {
 };
 
 struct KeyerResult {
-  VideoFrame frame;
   AlphaMask mask;
   KeyerStatus status;
 };
 
 struct KeyerSettings {
   std::string qualityMode = "balanced";
+  std::string performanceMode = "high_quality";
+  uint32_t maxInputWidth = 1280;
+  uint32_t maxInputHeight = 720;
   double maskErodePx = 0.0;
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;
@@ -79,7 +82,5 @@ class Keyer {
   virtual ~Keyer() = default;
   virtual KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) = 0;
 };
-
-VideoFrame copyPassthroughFrame(const VideoFrame &input);
 
 }  // namespace broadify::meeting

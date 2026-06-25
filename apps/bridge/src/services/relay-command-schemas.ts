@@ -43,6 +43,43 @@ export const VmixActionSchema = z
     }).strict(),
   ]);
 
+export const CanonXCDeviceSchema = z
+  .object({
+    deviceId: z.string().trim().min(1).max(128).optional(),
+    name: z.string().trim().min(1).max(128),
+    host: z.string().trim().min(1).max(255),
+    port: z.number().int().min(1).max(65535).optional(),
+    protocol: z.enum(["http", "https"]).optional(),
+    type: z.enum(["camera", "rc-ip1000"]).optional(),
+    username: z.string().trim().max(128).nullable().optional(),
+    password: z.string().max(256).nullable().optional(),
+    cameraNo: z.number().int().min(1).max(999).nullable().optional(),
+    enabled: z.boolean().optional(),
+  })
+  .strict();
+
+export const CanonXCDeviceIdSchema = z
+  .object({
+    deviceId: z.string().trim().min(1).max(128),
+  })
+  .strict();
+
+export const CanonXCPresetRecallSchema = z
+  .object({
+    deviceId: z.string().trim().min(1).max(128),
+    preset: z.number().int().min(1).max(100),
+    options: z
+      .object({
+        ptztime: z.number().int().min(2000).max(99000).optional(),
+        ptzspeed: z.number().int().min(1).max(100).optional(),
+        useSavedSpeed: z.boolean().optional(),
+        freeze: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 /**
  * Parse a relay payload with a schema and normalize errors.
  */

@@ -6,7 +6,11 @@
 namespace broadify::meeting {
 
 class PreviewFrameStore;
+struct MeetingState;
 
-void runMjpegServer(uint16_t port, PreviewFrameStore &previewFrames, std::atomic<bool> &running);
+void runMjpegServer(uint16_t port,
+                    PreviewFrameStore &previewFrames,
+                    MeetingState &state,
+                    std::atomic<bool> &running);
 
 }  // namespace broadify::meeting

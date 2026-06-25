@@ -12,6 +12,13 @@ describe("relay-command-allowlist", () => {
       expect(RELAY_COMMAND_ALLOWLIST).toContain("engine_vmix_run_action");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("engine_vmix_ensure_browser_input");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("graphics_send");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_list_devices");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_save_device");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_test_connection");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_delete_device");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_test_device");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_list_presets");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_recall_preset");
     });
 
     it("is readonly tuple", () => {
@@ -27,6 +34,8 @@ describe("relay-command-allowlist", () => {
       expect(isRelayCommand("engine_vmix_run_action")).toBe(true);
       expect(isRelayCommand("engine_vmix_ensure_browser_input")).toBe(true);
       expect(isRelayCommand("graphics_configure_outputs")).toBe(true);
+      expect(isRelayCommand("canon_xc_recall_preset")).toBe(true);
+      expect(isRelayCommand("canon_xc_test_connection")).toBe(true);
     });
 
     it("returns false for unknown command", () => {

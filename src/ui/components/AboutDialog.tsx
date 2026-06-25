@@ -38,18 +38,18 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
       }}
     >
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-white/55 backdrop-blur-sm" />
+      <div className="fixed inset-0 bg-background/70 backdrop-blur-sm" />
 
       {/* Dialog */}
-      <div className="relative w-full max-w-2xl max-h-[90vh] overflow-hidden rounded-lg glass-frosted border border-white/20 shadow-2xl">
+      <div className="relative w-full max-w-2xl max-h-[90vh] overflow-hidden rounded-lg glass-frosted border border-hairline-strong shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-white/10">
+        <div className="flex items-center justify-between p-6 border-b border-hairline">
           <h2 className="text-2xl font-bold text-foreground">
             About Broadify Bridge
           </h2>
           <button
             onClick={onClose}
-            className="p-2 rounded-md hover:bg-white/10 transition-colors text-foreground hover:text-foreground/80"
+            className="p-2 rounded-md hover:bg-secondary transition-colors text-foreground hover:text-foreground/80"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
@@ -72,7 +72,7 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
               License Information
             </h3>
             <div className="space-y-4 text-sm text-muted-foreground">
-              <div className="pt-3 border-t border-white/10">
+              <div className="pt-3 border-t border-hairline">
                 <h4 className="font-medium text-foreground mb-1">Electron</h4>
                 <p>This application was built with Electron.</p>
                 <p className="mt-1">
@@ -92,7 +92,7 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
                 </p>
               </div>
 
-              <div className="pt-3 border-t border-white/10">
+              <div className="pt-3 border-t border-hairline">
                 <h4 className="font-medium text-foreground mb-1">React</h4>
                 <p>
                   This application uses React for the user interface.
@@ -124,21 +124,21 @@ export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
             <div className="space-y-2 text-sm text-muted-foreground">
               <p>
                 All npm dependencies are listed in{" "}
-                <code className="bg-white/10 px-1 rounded">package.json</code>.
+                <code className="bg-secondary px-1 rounded">package.json</code>.
                 Most dependencies use permissive licenses (MIT, Apache-2.0,
                 BSD-2-Clause, ISC).
               </p>
               <p>
                 For a complete list of dependencies and their licenses, see{" "}
-                <code className="bg-white/10 px-1 rounded">NOTICES.md</code> and{" "}
-                <code className="bg-white/10 px-1 rounded">LICENSE</code>.
+                <code className="bg-secondary px-1 rounded">NOTICES.md</code> and{" "}
+                <code className="bg-secondary px-1 rounded">LICENSE</code>.
               </p>
             </div>
           </div>
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end p-6 border-t border-white/10">
+        <div className="flex items-center justify-end p-6 border-t border-hairline">
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium text-foreground bg-primary hover:bg-primary/90 rounded-md transition-colors"

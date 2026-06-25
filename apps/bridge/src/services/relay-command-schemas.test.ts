@@ -5,6 +5,9 @@ import {
   EngineConnectSchema,
   MacroIdSchema,
   VmixActionSchema,
+  CanonXCDeviceSchema,
+  CanonXCDeviceIdSchema,
+  CanonXCPresetRecallSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
 
@@ -149,6 +152,78 @@ describe("relay-command-schemas", () => {
         actionType: "script_start",
         scriptName: "   ",
       });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("CanonXCDeviceSchema", () => {
+    it("accepts a Canon XC camera config", () => {
+      const result = CanonXCDeviceSchema.safeParse({
+        name: "Stage Canon",
+        host: "192.168.0.100",
+        port: 80,
+        protocol: "http",
+        type: "camera",
+        username: "operator",
+        password: "secret",
+        cameraNo: null,
+        enabled: true,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects invalid Canon XC ports and extra keys", () => {
+      expect(
+        CanonXCDeviceSchema.safeParse({
+          name: "Stage Canon",
+          host: "192.168.0.100",
+          port: 0,
+        }).success,
+      ).toBe(false);
+
+      expect(
+        CanonXCDeviceSchema.safeParse({
+          name: "Stage Canon",
+          host: "192.168.0.100",
+          unexpected: true,
+        }).success,
+      ).toBe(false);
+    });
+  });
+
+  describe("CanonXCDeviceIdSchema", () => {
+    it("accepts a valid Canon XC device id", () => {
+      const result = CanonXCDeviceIdSchema.safeParse({ deviceId: "canon-1" });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects blank Canon XC device ids", () => {
+      const result = CanonXCDeviceIdSchema.safeParse({ deviceId: "   " });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("CanonXCPresetRecallSchema", () => {
+    it("accepts preset recall options", () => {
+      const result = CanonXCPresetRecallSchema.safeParse({
+        deviceId: "canon-1",
+        preset: 3,
+        options: {
+          ptztime: 2500,
+          freeze: true,
+        },
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects presets outside the Canon XC documented range", () => {
+      const result = CanonXCPresetRecallSchema.safeParse({
+        deviceId: "canon-1",
+        preset: 101,
+      });
+
       expect(result.success).toBe(false);
     });
   });

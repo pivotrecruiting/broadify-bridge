@@ -30,4 +30,18 @@ bool PreviewFrameStore::copyLatest(PreviewFrame &frame) const {
   return true;
 }
 
+bool PreviewFrameStore::copyLatestIfNew(uint64_t lastSequence, PreviewFrame &frame) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (frame_.rgba.empty() || frame_.sequence == lastSequence) {
+    return false;
+  }
+  frame = frame_;
+  return true;
+}
+
+uint64_t PreviewFrameStore::sequence() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return frame_.sequence;
+}
+
 }  // namespace broadify::meeting

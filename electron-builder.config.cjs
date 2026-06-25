@@ -24,6 +24,35 @@ const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
   "!**/typescript{,/**}",
   "!**/@types{,/**}",
 ];
+const PRESENTATION_RUNTIME_PATH =
+  "apps/bridge/vendor/presentation-runtime/macos-arm64";
+
+const argValues = process.argv.flatMap((arg, index, args) => {
+  const values = [arg];
+  if (
+    ["--arch", "-a", "--mac"].includes(arg) &&
+    typeof args[index + 1] === "string"
+  ) {
+    values.push(args[index + 1]);
+  }
+  return values;
+});
+const requestedArchValues = [
+  ...argValues,
+  process.env.npm_config_arch,
+  process.env.ARCH,
+  process.env.CSC_ARCH,
+  process.env.ELECTRON_BUILDER_ARCH,
+].filter((value) => typeof value === "string");
+const hasRequestedArch = (arch) =>
+  requestedArchValues.some((value) =>
+    new RegExp(`(^|[=,\\s-])${arch}($|[,\\s])`).test(value),
+  );
+const targetsAppleSilicon = hasRequestedArch("arm64");
+const targetsIntelMac = hasRequestedArch("x64");
+const includesAppleSiliconPresentationRuntime =
+  targetsAppleSilicon ||
+  (!targetsIntelMac && process.platform === "darwin" && process.arch === "arm64");
 
 if (isRcChannel) {
   config.appId = "com.broadify.bridge.rc";
@@ -55,6 +84,14 @@ config.mac.extraResources = [
   ...(config.mac.extraResources || []),
   ...macOnlyResources,
 ];
+
+if (includesAppleSiliconPresentationRuntime) {
+  config.mac.extraResources.push({
+    from: PRESENTATION_RUNTIME_PATH,
+    to: "presentation-runtime/macos-arm64",
+    filter: ["**/*"],
+  });
+}
 
 // Keep artifact names deterministic so the published release assets match
 // the filenames referenced inside the generated updater metadata.

@@ -26,6 +26,10 @@ describe("graphics-event-publisher", () => {
   describe("publishGraphicsStatusEvent", () => {
     it("publishes graphics_status event with reason and status snapshot", () => {
       const status = {
+        rendererLifecycleState: "ready" as const,
+        outputsConfigured: true,
+        outputStatus: "ready" as const,
+        lastOutputError: null,
         outputConfig: { version: 1, outputKey: "stub" as const, targets: {}, format: { width: 1920, height: 1080, fps: 50 }, range: "legal" as const, colorspace: "auto" as const },
         browserInput: {
           mode: "browser_input" as const,
@@ -53,6 +57,10 @@ describe("graphics-event-publisher", () => {
         event: "graphics_status",
         data: {
           reason: "output_changed",
+          outputsConfigured: status.outputsConfigured,
+          outputStatus: status.outputStatus,
+          rendererLifecycleState: status.rendererLifecycleState,
+          lastOutputError: status.lastOutputError,
           outputConfig: status.outputConfig,
           browserInput: status.browserInput,
           activePreset: status.activePreset,
@@ -71,6 +79,10 @@ describe("graphics-event-publisher", () => {
       });
 
       publishGraphicsStatusEvent("test", {
+        rendererLifecycleState: "ready",
+        outputsConfigured: false,
+        outputStatus: "unconfigured",
+        lastOutputError: null,
         outputConfig: null,
         browserInput: null,
         activePreset: null,

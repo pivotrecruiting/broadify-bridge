@@ -130,17 +130,6 @@ export class MeetingHelperClient {
     return this.rpc("program.update", { section, values });
   }
 
-  async buttonsList(mode: string): Promise<Record<string, unknown>> {
-    return this.rpc("button.list", { mode });
-  }
-
-  async buttonTrigger(
-    mode: string,
-    buttonId: string,
-  ): Promise<Record<string, unknown>> {
-    return this.rpc("button.trigger", { mode, button_id: buttonId });
-  }
-
   async framebusStatus(): Promise<Record<string, unknown>> {
     return this.rpc("output.framebus.status");
   }

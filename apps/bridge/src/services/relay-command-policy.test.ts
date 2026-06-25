@@ -63,4 +63,38 @@ describe("relay-command-policy", () => {
       }),
     );
   });
+
+  it("uses strict policies for Canon XC configuration and preset recall", () => {
+    expect(getRelayCommandPolicy("canon_xc_list_devices")).toEqual(
+      expect.objectContaining({
+        timeoutClass: "fast",
+        executionMode: "read_only",
+        invalidates: ["canon_xc.devices"],
+      }),
+    );
+    expect(getRelayCommandPolicy("canon_xc_save_device")).toEqual(
+      expect.objectContaining({
+        timeoutClass: "fast",
+        executionMode: "side_effect",
+        concurrencyKey: "canon_xc",
+        invalidates: ["canon_xc.devices"],
+      }),
+    );
+    expect(getRelayCommandPolicy("canon_xc_test_connection")).toEqual(
+      expect.objectContaining({
+        timeoutClass: "fast",
+        executionMode: "read_only",
+        invalidates: ["canon_xc.presets"],
+      }),
+    );
+    expect(getRelayCommandPolicy("canon_xc_recall_preset")).toEqual(
+      expect.objectContaining({
+        timeoutClass: "fast",
+        executionMode: "side_effect",
+        concurrencyKey: "canon_xc",
+        invalidates: ["canon_xc.presets"],
+        replayPolicy: "never",
+      }),
+    );
+  });
 });

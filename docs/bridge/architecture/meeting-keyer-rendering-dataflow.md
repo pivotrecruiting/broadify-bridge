@@ -70,6 +70,27 @@ Vision runs in `balanced` mode. This is the current quality-first baseline.
 `fast` remains useful only as an A/B diagnostic mode because it reduced edge
 quality in real preview tests.
 
+## Performance Profiles
+
+`meeting_keyer_configure` accepts `performance_mode` independently from the
+selected keyer model and `quality_mode`. The value is validated as one of
+`high_quality`, `quality`, `balanced`, or `performance`.
+
+- `high_quality`: 30 keyer FPS, Vision `balanced`, maximum Vision input 1280x720.
+- `quality`: 25 keyer FPS, Vision `balanced`, maximum Vision input 1280x720.
+- `balanced`: 20 keyer FPS, Vision `balanced`, maximum Vision input 960x540.
+- `performance`: 15 keyer FPS, Vision `fast`, maximum Vision input 640x360.
+
+The program output remains 1280x720 at 30 FPS in all profiles. The helper
+uses a latest-frame scheduler, so skipped capture frames are intentional and
+reported as `metrics.skipped_frames`; they never queue behind old work. MODNet
+keeps its fixed 512x512 ONNX input and benefits from the rate limit.
+
+The WebApp stores the chosen profile locally per device rather than in a shared
+meeting scene. It may recommend one lower profile after five seconds of
+insufficient keyer FPS, elevated mask age, or sustained frame drops, but it
+never changes the profile automatically.
+
 ## Native Runtime Topology
 
 `MeetingHelperManager` starts the native `meeting-helper` process with:
@@ -84,16 +105,30 @@ Inside the native helper, the relevant long-running components are:
 
 - `CameraSource`: captures the latest camera frame.
 - `AsyncKeyerWorker`: runs the selected keyer on a background thread.
-- `GraphicsFrameBusReader`: reads the latest meeting graphics frame from
-  `bfy-meet-gfx`.
-- `renderProgramFrame`: composites the final program frame.
+- `GraphicsFrameBusReader`: reads the latest meeting back/front graphics frames
+  from `bfy-meet-gfx-back` and `bfy-meet-gfx-front`.
+- `renderProgramFrame`: composites the final program frame when camera,
+  graphics, program state, or a static-output heartbeat requires it.
 - `framebus_writer_write_rgba`: writes the final program frame to the meeting
   output FrameBus.
-- `PreviewFrameStore`: publishes the same final program frame to MJPEG preview.
+- `PreviewFrameStore`: publishes the same final program frame to MJPEG preview
+  and the VCam raw stream only while those consumers are connected.
 
 The native pipeline is `latest-frame-wins`. It does not queue every camera frame
 for keying. If a keyer frame is already pending, submitting another frame drops
 the previous pending frame and increments `droppedFrames`.
+
+The program loop is mode-gated:
+
+- `idle`: no camera, no graphics output, and no active output consumer. The
+  helper sleeps at a low cadence instead of producing 30 FPS no-signal frames.
+- `static_output`: no camera and no animated graphics, but FrameBus, preview, or
+  VCam needs a frame. The helper reuses the cached program frame and writes a
+  1 FPS FrameBus heartbeat.
+- `live`: camera or meeting graphics output is active. The helper processes new
+  camera or graphics frames at the configured cadence.
+- `keyer_live`: camera and keyer are active. Existing quality and performance
+  profiles still control keyer submission rate.
 
 ## Camera Capture
 
@@ -191,13 +226,19 @@ current-frame application in the async pipeline uses bilinear alpha sampling.
 
 The keyer worker is created inside `runFramePipeline`.
 
-Main-thread behavior per output frame:
+Main-thread behavior per program tick:
 
-1. Copy latest camera frame.
-2. If keyer is enabled, submit that camera frame to `AsyncKeyerWorker`.
-3. Ask the worker for the latest paired camera frame and mask.
-4. If a usable pair exists, apply the mask to the paired camera frame.
-5. If no usable pair exists, pass the current camera frame through unchanged.
+1. Read output consumer counts and compute the pipeline mode.
+2. Copy the latest camera frame only when its timestamp changed.
+3. If keyer is enabled and a new camera frame exists, submit that frame to
+   `AsyncKeyerWorker`.
+4. Ask the worker for the latest paired camera frame and mask.
+5. If a usable pair exists, apply the mask to the paired camera frame.
+6. If no usable pair exists, pass the current camera frame through unchanged.
+7. Render a new program frame only for a new camera frame, new graphics frame,
+   newer keyer pair, program-state revision, or static-output heartbeat.
+8. Publish preview frames only when MJPEG preview or VCam raw-stream clients are
+   connected.
 
 Worker-thread behavior:
 
@@ -342,6 +383,8 @@ Displayed values:
 - `metrics.dropped_frames_per_sec`: rolling async keyer drop rate
 - `metrics.mask_width` and `metrics.mask_height`: produced mask resolution
 - `metrics.dropped_frames`: total async keyer worker drops since reset/clear
+- `metrics.skipped_frames`: capture frames intentionally skipped by the active
+  performance-profile scheduler
 - `settings.mask_erode_px`: configured mask erosion radius shown as `Erode` in
   the WebApp statusbar
 - `settings.edge_stabilization_enabled`: shown as `Edge stab` in the WebApp
@@ -371,19 +414,23 @@ program frame.
 
 1. `fillBackground`
 2. `drawMediaLayer`
-3. `drawGraphicsFrame`
-4. `drawCamera`
-5. `drawGraphics`
-6. `drawCornerbug`
+3. `drawBackGraphicsFrame`
+4. `drawCornerbug`
+5. `drawCamera`
+6. `drawGraphics`
+7. `drawFrontGraphicsFrame`
 
 Actual layering:
 
 - Background is always the bottom layer.
 - Native media placeholder is drawn above background.
-- Meeting graphics FrameBus layer is drawn above media.
-- Keyed camera/person is drawn above meeting graphics.
+- Meeting back graphics FrameBus layer is drawn above media and behind the
+  keyed camera/person.
+- Native cornerbug placeholder is drawn behind the keyed camera/person.
+- Keyed camera/person is drawn above back graphics and native cornerbug.
 - Native placeholder lower-third graphics are drawn above camera.
-- Native cornerbug placeholder is drawn last.
+- Meeting front graphics FrameBus layer is drawn last above the keyed
+  camera/person.
 
 `drawCamera` scales/crops the camera frame into `cameraRect`. If speaker layout
 is disabled, the camera rect is full-frame. If speaker layout is enabled, the
@@ -434,30 +481,37 @@ Current reality:
 This is important when reasoning about virtual-camera output: the program output
 is not a transparent keyed person layer. It is a finished composited frame.
 
-## Meeting Graphics FrameBus Layer
+## Meeting Graphics FrameBus Layers
 
-Meeting graphics are rendered by the regular graphics renderer into a separate
-FrameBus named `bfy-meet-gfx`.
+Meeting graphics are rendered by two regular graphics renderer instances into
+separate semantic FrameBus planes:
+
+- `bfy-meet-gfx-back`: background, content, slides, and logo/cornerbug graphics
+  that must sit behind the keyed person.
+- `bfy-meet-gfx-front`: overlays and lower-thirds that must sit in front of the
+  keyed person.
 
 `GraphicsFrameBusReader`:
 
-- opens `bfy-meet-gfx`
+- opens the configured meeting graphics FrameBus plane
 - reads the latest RGBA frame
 - keeps the last successful frame if no new frame is available
 - logs frame dimensions, sequence, non-transparent pixel count, and max alpha
 
-`drawGraphicsFrame` composites that graphics frame into the program frame using
+`drawGraphicsFrame` composites each graphics frame into the program frame using
 straight alpha blending. It uses cover-style scaling/cropping to fit the meeting
 program dimensions.
 
 The Meeting Builder currently sends:
 
-- background template as layer `meeting-background-template`, z-index `0`
-- content template as layer `meeting-content-template`
-- both with `backgroundMode: "transparent"`
+- background/content templates to the back meeting plane
+- overlay/lower-third templates to the front meeting plane
+- all meeting graphics with `backgroundMode: "transparent"`
 
-These graphics are not inserted directly into the C++ compositor as independent
-semantic layers. They arrive as one rendered RGBA graphics frame over FrameBus.
+Within each plane, HTML z-index still orders templates relative to other
+templates on the same plane. Cross-plane ordering is controlled only by the
+native compositor: the back plane is always behind the person, and the front
+plane is always in front of the person.
 
 ## Output And Preview Dataflow
 
@@ -466,14 +520,26 @@ The final `programFrame` is written to:
 - meeting output FrameBus through `framebus_writer_write_rgba`
 - MJPEG preview through `PreviewFrameStore`
 
+FrameBus writes are skipped while `output.framebus.stop` has disabled the
+meeting output. With camera off and a static program, FrameBus receives only a
+low-cadence cached-frame heartbeat instead of full-FPS recomposition. MJPEG
+preview clients and VCam raw-stream clients increment explicit consumer counts;
+without those clients, `PreviewFrameStore::publish` is not called.
+
 The native helper exposes FrameBus status through `output.framebus.status`.
 Virtual camera status in `MeetingHelperClient` explicitly reports that virtual
-camera is provided by a separate `vcam-helper` FrameBus consumer.
+camera is provided by the separate `vcam-helper`.
 
 Therefore:
 
 - Meeting helper produces the program frame.
-- VCam helper consumes the meeting output FrameBus.
+- VCam helper consumes the meeting output through the local raw-frame stream.
+  The stream now prefers BGRA payloads so the CMIO extension can copy live
+  frames without per-pixel channel conversion; RGBA remains accepted for
+  compatibility.
+- VCam helper uses a lazy reader lifecycle: no raw-stream reader when no CMIO
+  client is streaming, 1 FPS cached no-signal output in idle, and 30 FPS output
+  only while fresh program frames are available.
 - Meeting helper does not own virtual camera lifecycle internally.
 
 ## Observability
@@ -483,6 +549,10 @@ Therefore:
 - active keyer
 - fallback state and reason
 - degradation stage and stale-mask state
+- pipeline mode: `idle`, `static_output`, `live`, or `keyer_live`
+- preview and VCam raw-stream client counts
+- dirty flags and frame counters for rendered, reused, preview-published, and
+  FrameBus-written frames
 - backend/provider/model path
 - quality mode
 - inference time

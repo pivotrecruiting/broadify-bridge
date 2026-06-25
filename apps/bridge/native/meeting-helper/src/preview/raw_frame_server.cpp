@@ -1,7 +1,7 @@
 #include "preview/raw_frame_server.h"
 
+#include <algorithm>
 #include <chrono>
-#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -23,7 +23,7 @@ namespace {
 
 constexpr uint32_t kRawFrameMagic = 0x47524642u;  // "BFRG" little endian.
 constexpr uint32_t kRawFrameVersion = 1u;
-constexpr uint32_t kRawFramePixelFormatRgba8 = 1u;
+constexpr uint32_t kRawFramePixelFormatBgra8 = 2u;
 constexpr size_t kRawFrameHeaderSize = 32u;
 
 void closeSocketHandle(int socketHandle) {
@@ -102,17 +102,26 @@ void writeU64Le(std::vector<uint8_t> &data, size_t offset, uint64_t value) {
   }
 }
 
-std::vector<uint8_t> rawFramePayload(const PreviewFrame &frame) {
-  std::vector<uint8_t> payload(kRawFrameHeaderSize + frame.rgba.size());
+void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &payload) {
+  payload.resize(kRawFrameHeaderSize + frame.rgba.size());
   writeU32Le(payload, 0u, kRawFrameMagic);
   writeU32Le(payload, 4u, kRawFrameVersion);
   writeU32Le(payload, 8u, frame.width);
   writeU32Le(payload, 12u, frame.height);
-  writeU32Le(payload, 16u, kRawFramePixelFormatRgba8);
+  writeU32Le(payload, 16u, kRawFramePixelFormatBgra8);
   writeU32Le(payload, 20u, static_cast<uint32_t>(frame.rgba.size()));
   writeU64Le(payload, 24u, frame.sequence);
-  std::memcpy(payload.data() + kRawFrameHeaderSize, frame.rgba.data(), frame.rgba.size());
-  return payload;
+
+  uint8_t *dst = payload.data() + kRawFrameHeaderSize;
+  const uint8_t *src = frame.rgba.data();
+  const size_t pixelCount = frame.rgba.size() / 4u;
+  for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
+    const size_t offset = pixel * 4u;
+    dst[offset + 0u] = src[offset + 2u];
+    dst[offset + 1u] = src[offset + 1u];
+    dst[offset + 2u] = src[offset + 0u];
+    dst[offset + 3u] = src[offset + 3u];
+  }
 }
 
 bool isVcamRawRunning(MeetingState &state) {
@@ -120,10 +129,30 @@ bool isVcamRawRunning(MeetingState &state) {
   return state.vcamRawRunning;
 }
 
+class VcamClientCounter {
+ public:
+  explicit VcamClientCounter(MeetingState &state) : state_(state) {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    ++state_.vcamClientCount;
+    state_.programDirty = true;
+    ++state_.programRevision;
+  }
+
+  ~VcamClientCounter() {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    state_.vcamClientCount = std::max(0, state_.vcamClientCount - 1);
+    state_.programDirty = true;
+    ++state_.programRevision;
+  }
+
+ private:
+  MeetingState &state_;
+};
+
 void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &state, std::atomic<bool> &running) {
   const std::string header =
       "HTTP/1.1 200 OK\r\n"
-      "Content-Type: application/vnd.broadify.raw-rgba-stream\r\n"
+      "Content-Type: application/vnd.broadify.raw-bgra-stream\r\n"
       "Cache-Control: no-store\r\n"
       "Connection: close\r\n\r\n";
   if (!sendAll(client, header.c_str(), header.size())) {
@@ -132,17 +161,19 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &st
 
   uint64_t lastSequence = 0u;
   uint64_t sentFrames = 0u;
+  std::vector<uint8_t> payload;
+  VcamClientCounter clientCounter(state);
   while (running.load()) {
     if (!isVcamRawRunning(state)) {
       return;
     }
     PreviewFrame frame;
-    if (!previewFrames.copyLatest(frame) || frame.sequence == lastSequence) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    if (!previewFrames.copyLatestIfNew(lastSequence, frame)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
       continue;
     }
     lastSequence = frame.sequence;
-    const std::vector<uint8_t> payload = rawFramePayload(frame);
+    writeRawFramePayload(frame, payload);
     if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
       return;
     }

@@ -1,0 +1,12 @@
+{
+  "libreoffice_version": "26.2.4",
+  "platform": "macos-arm64",
+  "libreoffice_dmg": {
+    "filename": "LibreOffice_26.2.4_MacOS_aarch64.dmg",
+    "url": "https://download.documentfoundation.org/libreoffice/stable/26.2.4/mac/aarch64/LibreOffice_26.2.4_MacOS_aarch64.dmg",
+    "sha256": "64e0ad05564554eeee639d49b08b20908a38d4722ec95f1620d05c99bcbe9fb1"
+  },
+  "release_artifact": {
+    "filename": "presentation-runtime-macos-arm64.tar.gz"
+  }
+}

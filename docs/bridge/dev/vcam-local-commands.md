@@ -121,11 +121,10 @@ Aktive Extension-Logs pruefen:
 /usr/bin/log show --last 5m --style compact --predicate 'subsystem == "com.broadify.vcam.extension"'
 ```
 
-Erwartet sind `Connected to raw VCam frame stream` und steigende
-`Buffered raw VCam frame seq=...`-Meldungen. Wenn die WebApp-Preview korrekt ist,
-aber die Kamera grau bleibt, ist der Program/Preview-Pfad meist nicht das
-Problem. Dann laeuft sehr wahrscheinlich noch eine alte Extension-Version oder
-die aktive Extension erreicht den lokalen Stream nicht.
+Erwartet ist `Connected to raw VCam frame stream`. Wenn die WebApp-Preview
+korrekt ist, aber die Kamera grau bleibt, ist der Program/Preview-Pfad meist
+nicht das Problem. Dann laeuft sehr wahrscheinlich noch eine alte
+Extension-Version oder die aktive Extension erreicht den lokalen Stream nicht.
 
 ## 10. Extension nach Rebuild ersetzen (wichtig)
 

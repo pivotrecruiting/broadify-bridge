@@ -33,10 +33,15 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_keyer_reset",
   "meeting_program_get",
   "meeting_program_update",
-  "meeting_button_list",
-  "meeting_button_trigger",
   "meeting_output_configure",
   "meeting_graphics_configure_outputs",
+  "canon_xc_list_devices",
+  "canon_xc_save_device",
+  "canon_xc_test_connection",
+  "canon_xc_delete_device",
+  "canon_xc_test_device",
+  "canon_xc_list_presets",
+  "canon_xc_recall_preset",
 ] as const;
 
 const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);

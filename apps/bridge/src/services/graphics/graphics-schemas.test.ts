@@ -63,6 +63,7 @@ describe("graphics-schemas", () => {
   });
 
   it("GraphicsCategorySchema accepts valid categories", () => {
+    expect(GraphicsCategorySchema.parse("backgrounds")).toBe("backgrounds");
     expect(GraphicsCategorySchema.parse("lower-thirds")).toBe("lower-thirds");
     expect(GraphicsCategorySchema.parse("overlays")).toBe("overlays");
     expect(GraphicsCategorySchema.parse("slides")).toBe("slides");

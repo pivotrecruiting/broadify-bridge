@@ -3,8 +3,6 @@ import {
   EmptyPayloadSchema,
 } from "../relay-command-schemas.js";
 import {
-  MeetingButtonModeSchema,
-  MeetingButtonTriggerSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
   MeetingKeyerConfigureSchema,
@@ -17,7 +15,12 @@ import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
 } from "./meeting-helper-client.js";
-import { meetingGraphicsManager } from "./meeting-graphics-manager.js";
+import {
+  MEETING_GRAPHICS_BACK_FRAMEBUS_NAME,
+  MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
+  meetingBackGraphicsManager,
+  meetingFrontGraphicsManager,
+} from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
 
 export type MeetingCommandResultT = {
@@ -29,8 +32,11 @@ export type MeetingCommandResultT = {
 
 const ENGINE_NOT_RUNNING_ERROR =
   "Meeting engine is not running. Start it with meeting_engine_start first.";
-const MEETING_GRAPHICS_FRAMEBUS_NAME = "bfy-meet-gfx";
-const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1280, height: 720, fps: 30 };
+const MEETING_GRAPHICS_FRAMEBUS_NAMES = [
+  MEETING_GRAPHICS_BACK_FRAMEBUS_NAME,
+  MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
+];
+const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1920, height: 1080, fps: 30 };
 const MEETING_GRAPHICS_SLOT_COUNT = 3;
 const MEETING_GRAPHICS_PIXEL_FORMAT = 1;
 
@@ -88,17 +94,19 @@ function clearMeetingGraphicsFrameBus(
     if (!module) {
       throw new Error("FrameBus module not loaded");
     }
-    const writer = module.createWriter({
-      name: MEETING_GRAPHICS_FRAMEBUS_NAME,
-      width,
-      height,
-      fps,
-      pixelFormat: MEETING_GRAPHICS_PIXEL_FORMAT,
-      slotCount: MEETING_GRAPHICS_SLOT_COUNT,
-      forceRecreate: true,
-    });
-    writer.writeFrame(Buffer.alloc(width * height * 4, 0));
-    writer.close();
+    for (const framebusName of MEETING_GRAPHICS_FRAMEBUS_NAMES) {
+      const writer = module.createWriter({
+        name: framebusName,
+        width,
+        height,
+        fps,
+        pixelFormat: MEETING_GRAPHICS_PIXEL_FORMAT,
+        slotCount: MEETING_GRAPHICS_SLOT_COUNT,
+        forceRecreate: true,
+      });
+      writer.writeFrame(Buffer.alloc(width * height * 4, 0));
+      writer.close();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(
@@ -233,27 +241,6 @@ export async function handleMeetingCommand(
       };
     }
 
-    case "meeting_button_list": {
-      const { mode } = parseRelayPayload(
-        MeetingButtonModeSchema,
-        payload ?? {},
-        "Invalid payload for meeting_button_list",
-      );
-      return { success: true, data: await requireClient().buttonsList(mode) };
-    }
-
-    case "meeting_button_trigger": {
-      const { mode, buttonId } = parseRelayPayload(
-        MeetingButtonTriggerSchema,
-        payload ?? {},
-        "Invalid payload for meeting_button_trigger",
-      );
-      return {
-        success: true,
-        data: await requireClient().buttonTrigger(mode, buttonId),
-      };
-    }
-
     case "meeting_output_configure": {
       const { target, action, settings } = parseRelayPayload(
         MeetingOutputConfigureSchema,
@@ -295,10 +282,20 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_graphics_configure_outputs",
       );
-      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRAMEBUS_NAME;
+      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
       process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
       process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
-      await meetingGraphicsManager.configureOutputs({
+      await meetingBackGraphicsManager.configureOutputs({
+        outputKey: "framebus",
+        targets: {},
+        format: { width, height, fps },
+        range: "full",
+        colorspace: "rec709",
+      });
+      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+      await meetingFrontGraphicsManager.configureOutputs({
         outputKey: "framebus",
         targets: {},
         format: { width, height, fps },
@@ -308,7 +305,11 @@ export async function handleMeetingCommand(
       return {
         success: true,
         data: {
-          framebusName: MEETING_GRAPHICS_FRAMEBUS_NAME,
+          framebusName: MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
+          framebusNames: {
+            back: MEETING_GRAPHICS_BACK_FRAMEBUS_NAME,
+            front: MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
+          },
           width,
           height,
           fps,

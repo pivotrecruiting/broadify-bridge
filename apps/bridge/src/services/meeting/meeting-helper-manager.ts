@@ -567,8 +567,8 @@ export class MeetingHelperManager {
       const controlSocketPath = resolveControlSocketPath();
       this.port = port;
 
-      const width = options.width ?? 1280;
-      const height = options.height ?? 720;
+      const width = options.width ?? 1920;
+      const height = options.height ?? 1080;
       const fps = options.fps ?? 30;
       const args = [
         "--run",

@@ -28,6 +28,9 @@ export const MeetingKeyerConfigureSchema = z
     background_template_id: z.string().nullable().optional(),
     background_template_name: z.string().nullable().optional(),
     quality_mode: z.enum(["fast", "balanced", "accurate"]).optional(),
+    performance_mode: z
+      .enum(["high_quality", "quality", "balanced", "performance"])
+      .optional(),
     mask_erode_px: z.number().min(0).max(3).optional(),
     mask_dilate_px: z.number().int().min(0).max(8).optional(),
     mask_feather_px: z.number().int().min(0).max(3).optional(),
@@ -50,15 +53,6 @@ export const MeetingKeyerConfigureSchema = z
 export const MeetingProgramUpdateSchema = z.object({
   section: z.enum(["camera", "cornerbug", "graphics", "speaker_layout", "media_layer"]),
   values: z.record(z.unknown()),
-});
-
-export const MeetingButtonModeSchema = z.object({
-  mode: z.enum(["meeting", "studio"]),
-});
-
-export const MeetingButtonTriggerSchema = z.object({
-  mode: z.enum(["meeting", "studio"]),
-  buttonId: z.string().trim().min(1).max(128),
 });
 
 export const MeetingOutputConfigureSchema = z.object({

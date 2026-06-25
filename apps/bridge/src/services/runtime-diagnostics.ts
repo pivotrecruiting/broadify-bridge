@@ -12,6 +12,22 @@ type ArtifactCheckT = {
   executable?: boolean;
 };
 
+const bundledPresentationRuntimePath = (): string =>
+  path.join(
+    process.resourcesPath || "",
+    "presentation-runtime",
+    "macos-arm64",
+    "LibreOffice.app"
+  );
+
+const bundledPresentationRuntimeExecutablePath = (): string =>
+  path.join(
+    bundledPresentationRuntimePath(),
+    "Contents",
+    "MacOS",
+    "soffice"
+  );
+
 const formatStatMode = (mode: number): string => {
   return `0${(mode & 0o777).toString(8)}`;
 };
@@ -114,6 +130,18 @@ export function logRuntimeDiagnostics(logger: LoggerLikeT): void {
         "libSDL2-2.0.0.dylib"
       ),
     });
+
+    checks.push(
+      {
+        label: "Presentation runtime app",
+        artifactPath: bundledPresentationRuntimePath(),
+      },
+      {
+        label: "Presentation runtime executable",
+        artifactPath: bundledPresentationRuntimeExecutablePath(),
+        executable: true,
+      }
+    );
   }
 
   for (const check of checks) {

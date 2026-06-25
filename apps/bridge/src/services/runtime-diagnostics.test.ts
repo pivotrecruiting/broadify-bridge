@@ -66,6 +66,19 @@ describe("runtime-diagnostics", () => {
     );
   });
 
+  it("logs bundled presentation runtime checks on macOS", () => {
+    if (process.platform !== "darwin") {
+      return;
+    }
+    logRuntimeDiagnostics(mockLogger);
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("Presentation runtime app")
+    );
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("Presentation runtime executable")
+    );
+  });
+
   it("reports missing when artifact does not exist", () => {
     (fs.existsSync as jest.Mock).mockImplementation((p: string) =>
       !String(p).includes("index.js")

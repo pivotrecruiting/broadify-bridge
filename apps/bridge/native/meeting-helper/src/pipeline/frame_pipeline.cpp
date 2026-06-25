@@ -39,9 +39,13 @@ constexpr float kEdgeStabilizationMaxMotion = 0.55f;
 constexpr double kEdgeStabilizationFreshAgeMs = 40.0;
 constexpr double kEdgeStabilizationFadeOutAgeMs = 75.0;
 constexpr float kEdgeStabilizationMinAgeFactor = 0.12f;
-constexpr const char *kMeetingGraphicsFrameBusName = "bfy-meet-gfx";
+constexpr const char *kMeetingBackGraphicsFrameBusName = "bfy-meet-gfx-back";
+constexpr const char *kMeetingFrontGraphicsFrameBusName = "bfy-meet-gfx-front";
 constexpr double kMetricsWindowMs = 1000.0;
 constexpr size_t kMaskAgeWindowSize = 30u;
+constexpr auto kIdleSleep = std::chrono::milliseconds(1000);
+constexpr auto kStaticPollInterval = std::chrono::milliseconds(100);
+constexpr auto kStaticHeartbeatInterval = std::chrono::milliseconds(1000);
 
 struct MaskSample {
   size_t lower = 0u;
@@ -59,7 +63,58 @@ struct KeyerRuntimeStats {
   double keyerFps = -1.0;
   double droppedFramesPerSec = -1.0;
   uint64_t droppedFramesTotal = 0;
+  uint64_t skippedFramesTotal = 0;
 };
+
+struct PipelineRuntimeState {
+  bool cameraRunning = false;
+  bool keyerEnabled = false;
+  bool framebusRunning = false;
+  int previewClients = 0;
+  int vcamClients = 0;
+  bool programDirty = false;
+  bool graphicsDirty = false;
+  uint64_t programRevision = 0;
+  std::string mode = "idle";
+};
+
+uint32_t targetKeyerFps(const std::string &performanceMode) {
+  if (performanceMode == "quality") {
+    return 25u;
+  }
+  if (performanceMode == "balanced") {
+    return 20u;
+  }
+  if (performanceMode == "performance") {
+    return 15u;
+  }
+  return 30u;
+}
+
+bool hasActiveOutputConsumer(const PipelineRuntimeState &runtime) {
+  return runtime.framebusRunning || runtime.previewClients > 0 || runtime.vcamClients > 0;
+}
+
+bool isGraphicsOutputActive(const CompositorSnapshot &snapshot) {
+  return snapshot.graphics.enabled ||
+      !snapshot.graphics.graphicId.empty() ||
+      !snapshot.graphics.templateName.empty() ||
+      !snapshot.graphics.source.empty();
+}
+
+std::string determinePipelineMode(const PipelineRuntimeState &runtime,
+                                  const CompositorSnapshot &snapshot) {
+  if (runtime.cameraRunning) {
+    return runtime.keyerEnabled ? "keyer_live" : "live";
+  }
+  if (isGraphicsOutputActive(snapshot)) {
+    return "live";
+  }
+  if (hasActiveOutputConsumer(runtime)) {
+    return "static_output";
+  }
+  return "idle";
+}
 
 class RateMeter {
  public:
@@ -534,13 +589,26 @@ class AsyncKeyerWorker {
   }
 
   void submit(const VideoFrame &frame) {
+    uint32_t targetFps = 30u;
+    {
+      std::lock_guard<std::mutex> stateLock(state_.mutex);
+      targetFps = targetKeyerFps(state_.performanceMode);
+    }
+    const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
+    const auto minimumInterval = std::chrono::duration<double>(1.0 / static_cast<double>(targetFps));
+    if (lastSubmittedAt_ != std::chrono::steady_clock::time_point{} &&
+        now - lastSubmittedAt_ < minimumInterval) {
+      ++skippedFrames_;
+      return;
+    }
     if (hasPendingFrame_) {
       ++droppedFrames_;
     }
     pendingFrame_ = frame;
     pendingGeneration_ = generation_;
     hasPendingFrame_ = true;
+    lastSubmittedAt_ = now;
     cv_.notify_one();
   }
 
@@ -559,6 +627,8 @@ class AsyncKeyerWorker {
     hasPendingFrame_ = false;
     hasLatestPair_ = false;
     droppedFrames_ = 0;
+    skippedFrames_ = 0;
+    lastSubmittedAt_ = std::chrono::steady_clock::time_point{};
     keyerRate_ = RateMeter{};
     lastDropRateSample_ = std::chrono::steady_clock::now();
     lastDropRateTotal_ = 0u;
@@ -574,7 +644,7 @@ class AsyncKeyerWorker {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto now = std::chrono::steady_clock::now();
     updateDropRateLocked(now);
-    return KeyerRuntimeStats{keyerRate_.value(now), droppedFramesPerSec_, droppedFrames_};
+    return KeyerRuntimeStats{keyerRate_.value(now), droppedFramesPerSec_, droppedFrames_, skippedFrames_};
   }
 
   void stop() {
@@ -645,6 +715,7 @@ class AsyncKeyerWorker {
           keyerRate_.tick(now);
           updateDropRateLocked(now);
           keyed.status.metrics.droppedFrames = droppedFrames_;
+          keyed.status.metrics.skippedFrames = skippedFrames_;
           keyed.status.metrics.keyerFps = keyerRate_.value(now);
           keyed.status.metrics.droppedFramesPerSec = droppedFramesPerSec_;
           keyed.status.metrics.keyerInputAgeMs = frame.timestampNs > 0u && keyerStartNs >= frame.timestampNs
@@ -692,6 +763,8 @@ class AsyncKeyerWorker {
   uint64_t generation_ = 0;
   uint64_t pendingGeneration_ = 0;
   uint64_t droppedFrames_ = 0;
+  uint64_t skippedFrames_ = 0;
+  std::chrono::steady_clock::time_point lastSubmittedAt_{};
   RateMeter keyerRate_;
   std::chrono::steady_clock::time_point lastDropRateSample_{};
   uint64_t lastDropRateTotal_ = 0u;
@@ -703,11 +776,19 @@ class AsyncKeyerWorker {
 
 class GraphicsFrameBusReader {
  public:
+  explicit GraphicsFrameBusReader(std::string name) : name_(std::move(name)) {}
+
   ~GraphicsFrameBusReader() {
     close();
   }
 
-  bool copyLatest(VideoFrame &frame) {
+  bool copyLatest(VideoFrame &frame, bool enabled) {
+    if (!enabled) {
+      close();
+      hasLatestFrame_ = false;
+      latestFrame_ = VideoFrame{};
+      return false;
+    }
     ensureOpen();
     if (reader_ == nullptr) {
       return hasLatestFrame_;
@@ -722,7 +803,10 @@ class GraphicsFrameBusReader {
       return hasLatestFrame_;
     }
 
-    scratch_.assign(static_cast<size_t>(width) * height * 4u, 0u);
+    const size_t requiredSize = static_cast<size_t>(width) * height * 4u;
+    if (scratch_.size() != requiredSize) {
+      scratch_.assign(requiredSize, 0u);
+    }
     const int result = framebus_reader_copy_latest_rgba(reader_, scratch_.data(), static_cast<size_t>(width) * 4u, &lastSeq_);
     if (result == -1) {
       logReaderEvent("copy_failed", width, height, fps, 0, 0);
@@ -732,11 +816,14 @@ class GraphicsFrameBusReader {
     if (result == 1) {
       uint64_t nonTransparentPixels = 0;
       uint32_t maxAlpha = 0;
-      for (size_t index = 3; index < scratch_.size(); index += 4u) {
-        const uint32_t alpha = scratch_[index];
-        if (alpha > 0u) {
-          ++nonTransparentPixels;
-          maxAlpha = std::max(maxAlpha, alpha);
+      const bool shouldSampleAlpha = lastSeq_ == 1u || lastSeq_ % 300u == 0u;
+      if (shouldSampleAlpha) {
+        for (size_t index = 3; index < scratch_.size(); index += 4u) {
+          const uint32_t alpha = scratch_[index];
+          if (alpha > 0u) {
+            ++nonTransparentPixels;
+            maxAlpha = std::max(maxAlpha, alpha);
+          }
         }
       }
       latestFrame_.width = width;
@@ -744,7 +831,9 @@ class GraphicsFrameBusReader {
       latestFrame_.timestampNs = nowNs();
       latestFrame_.rgba = scratch_;
       hasLatestFrame_ = true;
-      logReaderEvent("frame_read", width, height, fps, nonTransparentPixels, maxAlpha);
+      if (shouldSampleAlpha) {
+        logReaderEvent("frame_read", width, height, fps, nonTransparentPixels, maxAlpha);
+      }
     }
 
     if (hasLatestFrame_) {
@@ -758,7 +847,7 @@ class GraphicsFrameBusReader {
     if (reader_ != nullptr) {
       return;
     }
-    reader_ = framebus_reader_open(kMeetingGraphicsFrameBusName);
+    reader_ = framebus_reader_open(name_.c_str());
     lastSeq_ = 0;
     if (reader_ == nullptr) {
       logReaderEvent("open_failed", 0, 0, 0, 0, 0);
@@ -788,7 +877,7 @@ class GraphicsFrameBusReader {
     lastLoggedSeq_ = lastSeq_;
     lastLoggedEvent_ = event;
     std::cout << "{\"type\":\"meeting_graphics_framebus\",\"event\":\"" << event
-              << "\",\"name\":\"" << kMeetingGraphicsFrameBusName
+              << "\",\"name\":\"" << name_
               << "\",\"seq\":" << lastSeq_
               << ",\"width\":" << width
               << ",\"height\":" << height
@@ -802,6 +891,7 @@ class GraphicsFrameBusReader {
   uint64_t lastSeq_ = 0;
   uint64_t lastLoggedSeq_ = 0;
   std::string lastLoggedEvent_;
+  std::string name_;
   bool hasLatestFrame_ = false;
   VideoFrame latestFrame_;
   std::vector<uint8_t> scratch_;
@@ -827,22 +917,59 @@ void runFramePipeline(const Options &options,
   auto nextFrameAt = std::chrono::steady_clock::now();
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
+  VideoFrame latestCameraFrame;
+  uint64_t lastCameraTimestampNs = 0u;
+  uint64_t lastProgramRevision = 0u;
+  uint64_t lastUsedKeyerPublishedNs = 0u;
+  uint64_t lastBackGraphicsTimestampNs = 0u;
+  uint64_t lastFrontGraphicsTimestampNs = 0u;
+  auto lastStaticHeartbeatAt = std::chrono::steady_clock::time_point{};
   AsyncKeyerWorker keyerWorker(options, state, running);
-  GraphicsFrameBusReader graphicsReader;
+  GraphicsFrameBusReader backGraphicsReader(kMeetingBackGraphicsFrameBusName);
+  GraphicsFrameBusReader frontGraphicsReader(kMeetingFrontGraphicsFrameBusName);
   RateMeter programRate;
   RollingAverage maskAgeAverage;
   uint64_t previousProgramStartNs = 0u;
   while (running.load()) {
-    bool framebusRunning = true;
+    PipelineRuntimeState runtime;
     {
       std::lock_guard<std::mutex> lock(state.mutex);
-      framebusRunning = state.framebusRunning;
       state.cameraRunning = camera.isRunning();
       state.activeCameraIndex = camera.activeCameraIndex();
+      runtime.cameraRunning = state.cameraRunning;
+      runtime.keyerEnabled = state.keyerEnabled;
+      runtime.framebusRunning = state.framebusRunning;
+      runtime.previewClients = state.previewClientCount;
+      runtime.vcamClients = state.vcamClientCount;
+      runtime.programDirty = state.programDirty;
+      runtime.graphicsDirty = state.graphicsDirty;
+      runtime.programRevision = state.programRevision;
     }
 
+    const CompositorSnapshot snapshot = copyCompositorSnapshot(state);
+    runtime.mode = determinePipelineMode(runtime, snapshot);
     {
-      const auto programStart = std::chrono::steady_clock::now();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.pipelineMode = runtime.mode;
+    }
+
+    if (runtime.mode == "idle" && !runtime.programDirty && programFrame.empty()) {
+      std::this_thread::sleep_for(kIdleSleep);
+      nextFrameAt = std::chrono::steady_clock::now();
+      continue;
+    }
+
+    const bool outputConsumerActive = hasActiveOutputConsumer(runtime);
+    const bool previewConsumerActive = runtime.previewClients > 0 || runtime.vcamClients > 0;
+    const auto programStart = std::chrono::steady_clock::now();
+    const bool staticHeartbeatDue =
+        lastStaticHeartbeatAt == std::chrono::steady_clock::time_point{} ||
+        programStart - lastStaticHeartbeatAt >= kStaticHeartbeatInterval;
+    bool shouldRenderProgram = runtime.programDirty || runtime.programRevision != lastProgramRevision || programFrame.empty();
+    bool shouldPublishPreview = false;
+    bool shouldWriteFramebus = false;
+
+    {
       const uint64_t programStartNs = nowNs();
       const double programFrameIntervalMs = previousProgramStartNs > 0u && programStartNs >= previousProgramStartNs
           ? static_cast<double>(programStartNs - previousProgramStartNs) / 1000000.0
@@ -850,7 +977,17 @@ void runFramePipeline(const Options &options,
       previousProgramStartNs = programStartNs;
       VideoFrame frame;
       const auto cameraCopyStart = std::chrono::steady_clock::now();
-      const bool hasCameraFrame = camera.copyLatestFrame(frame) && !frame.rgba.empty();
+      const bool hasNewCameraFrame = runtime.cameraRunning &&
+          camera.copyLatestFrameIfNew(lastCameraTimestampNs, frame) &&
+          !frame.rgba.empty();
+      if (hasNewCameraFrame) {
+        latestCameraFrame = frame;
+        lastCameraTimestampNs = frame.timestampNs;
+      } else if (!runtime.cameraRunning) {
+        latestCameraFrame = VideoFrame{};
+        lastCameraTimestampNs = 0u;
+      }
+      const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
       VideoFrame keyedFrame;
       const VideoFrame *frameForCompositor = nullptr;
@@ -871,17 +1008,16 @@ void runFramePipeline(const Options &options,
         keyerSettings.edgeStabilizationStrength = state.edgeStabilizationStrength;
         keyerSettings.degradation = state.degradationSettings;
       }
-      if (hasCameraFrame && keyerEnabled) {
-        keyerWorker.submit(frame);
+      if (hasNewCameraFrame && keyerEnabled) {
+        keyerWorker.submit(latestCameraFrame);
       }
-      const CompositorSnapshot snapshot = copyCompositorSnapshot(state);
       if (hasCameraFrame) {
         if (snapshot.keyerEnabled) {
           PairedKeyerFrame latestPair;
           if (keyerWorker.copyLatest(latestPair)) {
             double maskAgeMs = 0.0;
-            if (frame.timestampNs >= latestPair.frame.timestampNs) {
-              maskAgeMs = static_cast<double>(frame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
+            if (latestCameraFrame.timestampNs >= latestPair.frame.timestampNs) {
+              maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
             }
             maskAgeAverage.add(maskAgeMs);
             const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
@@ -891,7 +1027,7 @@ void runFramePipeline(const Options &options,
               selectedPair = latestPair;
               hasSelectedPair = true;
             } else {
-              frameForCompositor = &frame;
+              frameForCompositor = &latestCameraFrame;
             }
             const KeyerRuntimeStats keyerStats = keyerWorker.stats();
             {
@@ -903,6 +1039,7 @@ void runFramePipeline(const Options &options,
                   : -1.0;
               state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+              state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
               state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
               state.keyerMetrics.keyerFps = keyerStats.keyerFps;
               if (pairIsUsable) {
@@ -914,13 +1051,14 @@ void runFramePipeline(const Options &options,
               }
             }
           } else {
-            frameForCompositor = &frame;
+            frameForCompositor = &latestCameraFrame;
             const KeyerRuntimeStats keyerStats = keyerWorker.stats();
             {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.degradationStage = "passthrough";
               state.staleMaskActive = false;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+              state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
               state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
               state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             }
@@ -928,7 +1066,7 @@ void runFramePipeline(const Options &options,
         } else {
           keyerWorker.clear();
           maskAgeAverage.clear();
-          frameForCompositor = &frame;
+          frameForCompositor = &latestCameraFrame;
           {
             std::lock_guard<std::mutex> lock(state.mutex);
             state.degradationStage = "fresh";
@@ -946,15 +1084,32 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.maskAgeAvgMs = -1.0;
         }
       }
-      VideoFrame graphicsFrame;
-      const VideoFrame *graphicsFrameForCompositor = graphicsReader.copyLatest(graphicsFrame) ? &graphicsFrame : nullptr;
+      VideoFrame backGraphicsFrame;
+      VideoFrame frontGraphicsFrame;
+      const bool graphicsOutputActive = isGraphicsOutputActive(snapshot);
+      const VideoFrame *backGraphicsFrameForCompositor =
+          backGraphicsReader.copyLatest(backGraphicsFrame, graphicsOutputActive) ? &backGraphicsFrame : nullptr;
+      const VideoFrame *frontGraphicsFrameForCompositor =
+          frontGraphicsReader.copyLatest(frontGraphicsFrame, graphicsOutputActive) ? &frontGraphicsFrame : nullptr;
+      const bool hasNewBackGraphicsFrame = backGraphicsFrameForCompositor != nullptr &&
+          backGraphicsFrameForCompositor->timestampNs != 0u &&
+          backGraphicsFrameForCompositor->timestampNs != lastBackGraphicsTimestampNs;
+      const bool hasNewFrontGraphicsFrame = frontGraphicsFrameForCompositor != nullptr &&
+          frontGraphicsFrameForCompositor->timestampNs != 0u &&
+          frontGraphicsFrameForCompositor->timestampNs != lastFrontGraphicsTimestampNs;
+      if (hasNewBackGraphicsFrame) {
+        lastBackGraphicsTimestampNs = backGraphicsFrameForCompositor->timestampNs;
+      }
+      if (hasNewFrontGraphicsFrame) {
+        lastFrontGraphicsTimestampNs = frontGraphicsFrameForCompositor->timestampNs;
+      }
       if (hasCameraFrame && snapshot.keyerEnabled) {
         PairedKeyerFrame latestPair;
         if (keyerWorker.copyLatest(latestPair) &&
             (!hasSelectedPair || latestPair.publishedAtNs > selectedPair.publishedAtNs)) {
           double maskAgeMs = 0.0;
-          if (frame.timestampNs >= latestPair.frame.timestampNs) {
-            maskAgeMs = static_cast<double>(frame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
+          if (latestCameraFrame.timestampNs >= latestPair.frame.timestampNs) {
+            maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
           }
           maskAgeAverage.add(maskAgeMs);
           const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
@@ -964,7 +1119,7 @@ void runFramePipeline(const Options &options,
             selectedPair = latestPair;
             hasSelectedPair = true;
           } else {
-            frameForCompositor = &frame;
+            frameForCompositor = &latestCameraFrame;
             hasSelectedPair = false;
           }
           const KeyerRuntimeStats keyerStats = keyerWorker.stats();
@@ -978,6 +1133,7 @@ void runFramePipeline(const Options &options,
                 : -1.0;
             state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
             state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
+            state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
             state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
             state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             if (pairIsUsable) {
@@ -990,11 +1146,71 @@ void runFramePipeline(const Options &options,
           }
         }
       }
-      renderProgramFrame(options, snapshot, frameForCompositor, graphicsFrameForCompositor, frameIndex++, programFrame);
-      if (framebusRunning) {
-        framebus_writer_write_rgba(writer, programFrame.data(), programFrame.size(), hasCameraFrame ? frame.timestampNs : nowNs());
+
+      const bool hasNewUsableKeyerPair = hasSelectedPair && selectedPair.publishedAtNs > lastUsedKeyerPublishedNs;
+      shouldRenderProgram = shouldRenderProgram ||
+          hasNewCameraFrame ||
+          hasNewBackGraphicsFrame ||
+          hasNewFrontGraphicsFrame ||
+          hasNewUsableKeyerPair ||
+          ((runtime.mode == "live" || runtime.mode == "keyer_live") && graphicsOutputActive);
+      if (runtime.mode == "idle" && !outputConsumerActive && !shouldRenderProgram) {
+        std::this_thread::sleep_for(kIdleSleep);
+        nextFrameAt = std::chrono::steady_clock::now();
+        continue;
       }
-      previewFrames.publish(options.width, options.height, programFrame.data(), programFrame.size());
+      if (runtime.mode == "static_output" && !shouldRenderProgram && !staticHeartbeatDue) {
+        std::this_thread::sleep_for(kStaticPollInterval);
+        nextFrameAt = std::chrono::steady_clock::now();
+        continue;
+      }
+
+      if (shouldRenderProgram) {
+        renderProgramFrame(
+            options,
+            snapshot,
+            frameForCompositor,
+            backGraphicsFrameForCompositor,
+            frontGraphicsFrameForCompositor,
+            frameIndex++,
+            programFrame);
+        if (hasSelectedPair) {
+          lastUsedKeyerPublishedNs = selectedPair.publishedAtNs;
+        }
+        lastProgramRevision = runtime.programRevision;
+        {
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.programDirty = false;
+          state.graphicsDirty = false;
+          ++state.renderedFrames;
+        }
+      } else {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        ++state.reusedFrames;
+      }
+
+      shouldWriteFramebus = runtime.framebusRunning && !programFrame.empty() &&
+          (shouldRenderProgram || runtime.mode == "live" || runtime.mode == "keyer_live" || staticHeartbeatDue);
+      if (shouldWriteFramebus) {
+        framebus_writer_write_rgba(
+            writer,
+            programFrame.data(),
+            programFrame.size(),
+            hasCameraFrame ? latestCameraFrame.timestampNs : nowNs());
+        {
+          std::lock_guard<std::mutex> lock(state.mutex);
+          ++state.writtenFramebusFrames;
+        }
+        lastStaticHeartbeatAt = programStart;
+      }
+
+      shouldPublishPreview = previewConsumerActive && shouldRenderProgram && !programFrame.empty();
+      if (shouldPublishPreview) {
+        previewFrames.publish(options.width, options.height, programFrame.data(), programFrame.size());
+        std::lock_guard<std::mutex> lock(state.mutex);
+        ++state.publishedPreviewFrames;
+      }
+
       const auto programEnd = std::chrono::steady_clock::now();
       programRate.tick(programEnd);
       nextFrameAt += frameInterval;

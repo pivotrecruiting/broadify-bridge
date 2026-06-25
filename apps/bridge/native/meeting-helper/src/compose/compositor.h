@@ -24,7 +24,8 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state);
 void renderProgramFrame(const Options &options,
                         const CompositorSnapshot &snapshot,
                         const VideoFrame *cameraFrame,
-                        const VideoFrame *graphicsFrame,
+                        const VideoFrame *backGraphicsFrame,
+                        const VideoFrame *frontGraphicsFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output);
 

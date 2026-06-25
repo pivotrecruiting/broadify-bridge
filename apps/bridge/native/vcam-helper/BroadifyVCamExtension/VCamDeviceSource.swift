@@ -8,30 +8,36 @@ import os.log
 private let kDefaultWidth = 1280
 private let kDefaultHeight = 720
 private let kDefaultFps = 30
+private let kIdleSplashFps = 1.0
 
 private let log = OSLog(subsystem: "com.broadify.vcam.extension", category: "device")
+
+private enum VCamTimerMode: String {
+    case idle
+    case live
+}
 
 /**
  * Virtual camera device with a single streaming output.
  *
  * A dispatch timer copies the latest raw stream frame on every tick and
- * forwards it as a CMSampleBuffer. When no frame stream exists (engine
- * stopped or output disabled) a generated splash frame is sent instead so
- * the camera stays selectable in meeting apps.
+ * forwards it as a CMSampleBuffer. When no frame stream exists (engine stopped
+ * or output disabled) a cached splash frame is sent instead so the camera stays
+ * selectable in meeting apps without redrawing the idle frame at 30 fps.
  */
 final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private(set) var device: CMIOExtensionDevice!
     private var streamSource: VCamStreamSource!
 
     private var timer: DispatchSourceTimer?
-    private let timerQueue = DispatchQueue(
-        label: "com.broadify.vcam.frame-timer",
-        qos: .userInteractive
-    )
+    private let timerQueue = DispatchQueue(label: "com.broadify.vcam.frame-timer", qos: .utility)
 
     private let rawFrameStreamReader = RawFrameStreamReader()
     private var bufferPool: CVPixelBufferPool?
     private var formatDescription: CMFormatDescription?
+    private var outputPixelBuffer: CVPixelBuffer?
+    private var splashPixelBuffer: CVPixelBuffer?
+    private var timerMode: VCamTimerMode = .idle
     private var currentWidth = kDefaultWidth
     private var currentHeight = kDefaultHeight
     private var streamingCounter = 0
@@ -98,18 +104,15 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
             return
         }
 
+        rawFrameStreamReader.start()
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
-        timer.schedule(
-            deadline: .now(),
-            repeating: 1.0 / Double(kDefaultFps),
-            leeway: .milliseconds(2)
-        )
         timer.setEventHandler { [weak self] in
             self?.emitFrame()
         }
-        timer.resume()
         self.timer = timer
-        os_log(.info, log: log, "Streaming started")
+        scheduleTimer(mode: .idle, deadline: .now())
+        timer.resume()
+        os_log(.info, log: log, "Streaming started clients=%{public}d", streamingCounter)
     }
 
     func stopStreaming() {
@@ -119,13 +122,91 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         }
         timer?.cancel()
         timer = nil
-        os_log(.info, log: log, "Streaming stopped")
+        timerMode = .idle
+        rawFrameStreamReader.stop()
+        os_log(.info, log: log, "Streaming stopped clients=0")
     }
 
     // MARK: - Frame production
 
+    private func scheduleTimer(mode: VCamTimerMode, deadline: DispatchTime = .now() + .milliseconds(1)) {
+        guard let timer else {
+            return
+        }
+        timerMode = mode
+        let frameInterval = mode == .live ? 1.0 / Double(kDefaultFps) : 1.0 / kIdleSplashFps
+        let leeway: DispatchTimeInterval = mode == .live ? .milliseconds(2) : .milliseconds(100)
+        timer.schedule(deadline: deadline, repeating: frameInterval, leeway: leeway)
+        os_log(.info, log: log, "VCam timer mode=%{public}@", mode.rawValue)
+    }
+
+    private func switchTimerModeIfNeeded(_ mode: VCamTimerMode) {
+        guard timerMode != mode else {
+            return
+        }
+        scheduleTimer(mode: mode)
+    }
+
     private func emitFrame() {
         guard let pool = bufferPool, let formatDescription else {
+            return
+        }
+
+        guard rawFrameStreamReader.hasFreshFrame() else {
+            switchTimerModeIfNeeded(.idle)
+            sendSplashFrame(formatDescription: formatDescription, pool: pool)
+            return
+        }
+
+        switchTimerModeIfNeeded(.live)
+        let streamWidth = Int(rawFrameStreamReader.width)
+        let streamHeight = Int(rawFrameStreamReader.height)
+        if streamWidth > 0,
+           streamHeight > 0,
+           streamWidth != currentWidth || streamHeight != currentHeight {
+            rebuildVideoFormat(width: streamWidth, height: streamHeight)
+            return
+        }
+
+        let pixelBuffer: CVPixelBuffer
+        if let cachedPixelBuffer = outputPixelBuffer {
+            pixelBuffer = cachedPixelBuffer
+        } else {
+            var createdPixelBuffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &createdPixelBuffer)
+            guard let createdPixelBuffer else {
+                return
+            }
+            outputPixelBuffer = createdPixelBuffer
+            pixelBuffer = createdPixelBuffer
+        }
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return
+        }
+        let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let dst = baseAddress.assumingMemoryBound(to: UInt8.self)
+
+        let hasFrame = rawFrameStreamReader.copyLatestFrame(into: dst, stride: stride)
+        if hasFrame {
+            sendPixelBuffer(pixelBuffer, formatDescription: formatDescription)
+            return
+        }
+
+        os_log(.debug, log: log, "No VCam raw frame (seq=%{public}llu)",
+               rawFrameStreamReader.publishedSeq)
+        switchTimerModeIfNeeded(.idle)
+        sendSplashFrame(formatDescription: formatDescription, pool: pool)
+    }
+
+    private func sendSplashFrame(
+        formatDescription: CMFormatDescription,
+        pool: CVPixelBufferPool
+    ) {
+        if let splashPixelBuffer {
+            sendPixelBuffer(splashPixelBuffer, formatDescription: formatDescription)
             return
         }
 
@@ -144,19 +225,15 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
         let dst = baseAddress.assumingMemoryBound(to: UInt8.self)
 
-        let hasFrame = rawFrameStreamReader.copyLatestFrame(into: dst, stride: stride)
-        if hasFrame {
-            let streamWidth = Int(rawFrameStreamReader.width)
-            let streamHeight = Int(rawFrameStreamReader.height)
-            if streamWidth > 0, streamHeight > 0, streamWidth != currentWidth || streamHeight != currentHeight {
-                rebuildVideoFormat(width: streamWidth, height: streamHeight)
-            }
-        } else {
-            os_log(.debug, log: log, "No VCam raw frame (seq=%{public}llu)",
-                   rawFrameStreamReader.publishedSeq)
-            drawSplashFrame(dst: dst, stride: stride)
-        }
+        drawSplashFrame(dst: dst, stride: stride)
+        splashPixelBuffer = pixelBuffer
+        sendPixelBuffer(pixelBuffer, formatDescription: formatDescription)
+    }
 
+    private func sendPixelBuffer(
+        _ pixelBuffer: CVPixelBuffer,
+        formatDescription: CMFormatDescription
+    ) {
         var sampleBuffer: CMSampleBuffer?
         var timingInfo = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: Int32(kDefaultFps)),
@@ -230,6 +307,8 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
             &pool
         )
         bufferPool = pool
+        outputPixelBuffer = nil
+        splashPixelBuffer = nil
     }
 }
 

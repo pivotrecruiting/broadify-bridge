@@ -27,6 +27,8 @@ const logger = pino({
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
+const FRAMEBUS_READY_RETRY_ATTEMPTS = 8;
+const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
@@ -35,7 +37,10 @@ let frameBusPixelFormat = Number(
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT ||
     1,
 );
-const MEETING_GRAPHICS_FRAMEBUS_NAME = "bfy-meet-gfx";
+const MEETING_GRAPHICS_FRAMEBUS_NAMES = new Set([
+  "bfy-meet-gfx-back",
+  "bfy-meet-gfx-front",
+]);
 
 logger.info(
   {
@@ -135,6 +140,8 @@ const singleLayerSnapshots = new Map<string, SingleLayerSnapshotT>();
 let frameBusModule: FrameBusModuleT | null = null;
 let frameBusWriter: FrameBusWriterT | null = null;
 let frameBusInitAttempted = false;
+let frameBusReadyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let rendererConfigGeneration = 0;
 
 const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
 
@@ -284,6 +291,14 @@ function maybeSendReady(): void {
   });
 }
 
+function clearFrameBusReadyRetry(): void {
+  if (!frameBusReadyRetryTimer) {
+    return;
+  }
+  clearTimeout(frameBusReadyRetryTimer);
+  frameBusReadyRetryTimer = null;
+}
+
 function logFrameBusOnce(
   key: string,
   message: string,
@@ -312,7 +327,7 @@ function resolveFrameBusCandidatesForLog(): string[] {
 }
 
 function shouldForceRecreateFrameBus(): boolean {
-  return frameBusName !== MEETING_GRAPHICS_FRAMEBUS_NAME;
+  return !MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
 }
 
 function ensureFrameBusWriter(
@@ -451,6 +466,9 @@ function applyRendererConfig(message: unknown): void {
   }
 
   const config = parsed.data;
+  rendererConfigGeneration += 1;
+  const configGeneration = rendererConfigGeneration;
+  clearFrameBusReadyRetry();
   rendererConfig = {
     width: config.width,
     height: config.height,
@@ -533,10 +551,7 @@ function applyRendererConfig(message: unknown): void {
   readySent = false;
   rendererConfigReady = frameBusReady;
   if (!rendererConfigReady) {
-    sendIpcMessage({
-      type: "error",
-      message: "FrameBus writer not ready",
-    });
+    scheduleFrameBusReadyRetry(config, configGeneration);
     return;
   }
   if (singleWindow) {
@@ -554,6 +569,58 @@ function applyRendererConfig(message: unknown): void {
       .catch(() => null);
   }
   maybeSendReady();
+}
+
+function scheduleFrameBusReadyRetry(
+  config: {
+    width: number;
+    height: number;
+    fps: number;
+  },
+  configGeneration: number,
+): void {
+  let attempts = 0;
+
+  const runAttempt = (): void => {
+    frameBusReadyRetryTimer = null;
+    if (configGeneration !== rendererConfigGeneration) {
+      return;
+    }
+
+    attempts += 1;
+    if (!frameBusWriter) {
+      frameBusInitAttempted = false;
+    }
+
+    const frameBusReady = ensureFrameBusWriter(
+      config.width,
+      config.height,
+      config.fps,
+    );
+    rendererConfigReady = frameBusReady;
+    if (frameBusReady) {
+      maybeSendReady();
+      return;
+    }
+
+    if (attempts >= FRAMEBUS_READY_RETRY_ATTEMPTS) {
+      sendIpcMessage({
+        type: "error",
+        message: "FrameBus writer not ready",
+      });
+      return;
+    }
+
+    frameBusReadyRetryTimer = setTimeout(
+      runAttempt,
+      FRAMEBUS_READY_RETRY_DELAY_MS,
+    );
+  };
+
+  frameBusReadyRetryTimer = setTimeout(
+    runAttempt,
+    FRAMEBUS_READY_RETRY_DELAY_MS,
+  );
 }
 
 async function destroySingleWindow(): Promise<void> {
@@ -1245,6 +1312,7 @@ async function handleMessage(message: unknown): Promise<void> {
   }
 
   if (msg.type === "shutdown") {
+    clearFrameBusReadyRetry();
     singleLayerSnapshots.clear();
     await destroySingleWindow();
     if (frameBusWriter) {

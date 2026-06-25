@@ -3,7 +3,8 @@ const mockIsRunning = jest.fn();
 const mockStart = jest.fn();
 const mockStop = jest.fn();
 const mockGetFullStatus = jest.fn();
-const mockMeetingGraphicsConfigureOutputs = jest.fn();
+const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
+const mockMeetingFrontGraphicsConfigureOutputs = jest.fn();
 const mockFrameBusWriteFrame = jest.fn();
 const mockFrameBusClose = jest.fn();
 const mockFrameBusCreateWriter = jest.fn(() => ({
@@ -25,9 +26,15 @@ jest.mock("./meeting-helper-manager.js", () => ({
 }));
 
 jest.mock("./meeting-graphics-manager.js", () => ({
-  meetingGraphicsManager: {
+  MEETING_GRAPHICS_BACK_FRAMEBUS_NAME: "bfy-meet-gfx-back",
+  MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME: "bfy-meet-gfx-front",
+  meetingBackGraphicsManager: {
     configureOutputs: (...args: unknown[]) =>
-      mockMeetingGraphicsConfigureOutputs(...args),
+      mockMeetingBackGraphicsConfigureOutputs(...args),
+  },
+  meetingFrontGraphicsManager: {
+    configureOutputs: (...args: unknown[]) =>
+      mockMeetingFrontGraphicsConfigureOutputs(...args),
   },
 }));
 
@@ -52,8 +59,6 @@ const mockClient = {
   keyerReset: jest.fn(),
   programGet: jest.fn(),
   programUpdate: jest.fn(),
-  buttonsList: jest.fn(),
-  buttonTrigger: jest.fn(),
   framebusStart: jest.fn(),
   framebusStop: jest.fn(),
   framebusConfigure: jest.fn(),
@@ -68,7 +73,8 @@ describe("meeting-command-handler", () => {
     mockGetClient.mockReturnValue(mockClient);
     mockIsRunning.mockReturnValue(true);
     mockClient.getState.mockResolvedValue({ camera_permission_status: "authorized" });
-    mockMeetingGraphicsConfigureOutputs.mockResolvedValue(undefined);
+    mockMeetingBackGraphicsConfigureOutputs.mockResolvedValue(undefined);
+    mockMeetingFrontGraphicsConfigureOutputs.mockResolvedValue(undefined);
     mockLoadFrameBusModule.mockReturnValue({
       createWriter: mockFrameBusCreateWriter,
     });
@@ -217,6 +223,7 @@ describe("meeting-command-handler", () => {
         background_template_id: null,
         background_template_name: "Default background",
         quality_mode: "accurate",
+        performance_mode: "balanced",
         mask_erode_px: 0.5,
         mask_dilate_px: 0,
         mask_feather_px: 0,
@@ -236,6 +243,7 @@ describe("meeting-command-handler", () => {
         background_template_id: null,
         background_template_name: "Default background",
         quality_mode: "accurate",
+        performance_mode: "balanced",
         mask_erode_px: 0.5,
         mask_dilate_px: 0,
         mask_feather_px: 0,
@@ -273,6 +281,12 @@ describe("meeting-command-handler", () => {
         handleMeetingCommand("meeting_keyer_configure", {
           fresh_mask_age_ms: 240,
           max_mask_age_ms: 220,
+        }),
+      ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
+
+      await expect(
+        handleMeetingCommand("meeting_keyer_configure", {
+          performance_mode: "turbo",
         }),
       ).rejects.toThrow("Invalid payload for meeting_keyer_configure");
 
@@ -316,17 +330,6 @@ describe("meeting-command-handler", () => {
       ).rejects.toThrow("Invalid payload for meeting_program_update");
     });
 
-    it("triggers buttons", async () => {
-      mockClient.buttonTrigger.mockResolvedValue({ ok: true });
-
-      const result = await handleMeetingCommand("meeting_button_trigger", {
-        mode: "meeting",
-        buttonId: "btn-1",
-      });
-
-      expect(mockClient.buttonTrigger).toHaveBeenCalledWith("meeting", "btn-1");
-      expect(result.success).toBe(true);
-    });
   });
 
   describe("meeting_output_configure", () => {
@@ -370,7 +373,14 @@ describe("meeting-command-handler", () => {
       );
 
       expect(result.success).toBe(true);
-      expect(mockMeetingGraphicsConfigureOutputs).toHaveBeenCalledWith({
+      expect(mockMeetingBackGraphicsConfigureOutputs).toHaveBeenCalledWith({
+        outputKey: "framebus",
+        targets: {},
+        format: { width: 1280, height: 720, fps: 30 },
+        range: "full",
+        colorspace: "rec709",
+      });
+      expect(mockMeetingFrontGraphicsConfigureOutputs).toHaveBeenCalledWith({
         outputKey: "framebus",
         targets: {},
         format: { width: 1280, height: 720, fps: 30 },
@@ -378,7 +388,11 @@ describe("meeting-command-handler", () => {
         colorspace: "rec709",
       });
       expect(result.data).toMatchObject({
-        framebusName: "bfy-meet-gfx",
+        framebusName: "bfy-meet-gfx-front",
+        framebusNames: {
+          back: "bfy-meet-gfx-back",
+          front: "bfy-meet-gfx-front",
+        },
         width: 1280,
         height: 720,
         fps: 30,

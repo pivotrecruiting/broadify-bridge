@@ -25,6 +25,11 @@ struct CornerbugState {
 struct MediaLayerState {
   bool enabled = false;
   std::string mode = "pip";
+  std::string assetId;
+  std::string renderedPagePath;
+  std::string renderStatus;
+  int page = 0;
+  int pageCount = 0;
   double x = 0.58;
   double y = 0.12;
   double width = 0.34;
@@ -43,8 +48,9 @@ struct GraphicsState {
 };
 
 struct CameraRenderState {
+  bool enabled = true;
   bool mirror = true;
-  std::string rawJson = "{\"mirror\":true}";
+  std::string rawJson = "{\"enabled\":true,\"mirror\":true}";
 };
 
 struct MeetingState {
@@ -54,12 +60,24 @@ struct MeetingState {
   bool keyerEnabled = false;
   bool framebusRunning = true;
   bool vcamRawRunning = true;
+  int previewClientCount = 0;
+  int vcamClientCount = 0;
+  bool graphicsDirty = true;
+  bool programDirty = true;
+  std::string pipelineMode = "idle";
+  uint64_t programRevision = 1;
+  uint64_t renderedFrames = 0;
+  uint64_t reusedFrames = 0;
+  uint64_t publishedPreviewFrames = 0;
+  uint64_t writtenFramebusFrames = 0;
   std::string backgroundMode = "transparent";
   std::string activeKeyer = "passthrough";
   std::string requestedKeyerModel = "modnet";
   std::string fallbackReason = "native_keyers_not_configured";
   std::string keyerBackend = "passthrough";
   std::string qualityMode = "balanced";
+  std::string activeQualityMode = "balanced";
+  std::string performanceMode = "high_quality";
   double maskErodePx = 0.0;
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;

@@ -38,8 +38,21 @@ export type PreparedLayerT = GraphicsSendPayloadT & {
   bindings: TemplateBindingsT;
 };
 
+export type GraphicsOutputStatusT =
+  | "unconfigured"
+  | "configuring"
+  | "ready"
+  | "error";
+
 export type GraphicsStatusSnapshotT = {
   rendererLifecycleState: GraphicsRendererLifecycleStateT;
+  outputsConfigured: boolean;
+  outputStatus: GraphicsOutputStatusT;
+  lastOutputError: {
+    code: string;
+    message: string;
+    at: number;
+  } | null;
   outputConfig: GraphicsOutputConfigT | null;
   browserInput: {
     mode: "browser_input";

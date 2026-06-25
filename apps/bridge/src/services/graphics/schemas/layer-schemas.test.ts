@@ -96,6 +96,7 @@ describe("layer-schemas", () => {
 
   describe("GraphicsCategorySchema", () => {
     it("accepts valid categories", () => {
+      expect(GraphicsCategorySchema.parse("backgrounds")).toBe("backgrounds");
       expect(GraphicsCategorySchema.parse("lower-thirds")).toBe("lower-thirds");
       expect(GraphicsCategorySchema.parse("overlays")).toBe("overlays");
     });
@@ -113,6 +114,19 @@ describe("layer-schemas", () => {
       });
       expect(result.layerId).toBe("layer-1");
       expect(result.durationMs).toBeUndefined();
+    });
+
+    it("accepts an optional meeting compositor plane", () => {
+      const result = GraphicsSendSchema.parse({
+        layerId: "meeting-content-template",
+        category: "overlays",
+        backgroundMode: "transparent",
+        layout: { x: 0, y: 0, scale: 1 },
+        zIndex: 0,
+        bundle: { manifest: {}, html: "<div/>" },
+        meetingPlane: "back",
+      });
+      expect(result.meetingPlane).toBe("back");
     });
 
     it("rejects durationMs over max", () => {

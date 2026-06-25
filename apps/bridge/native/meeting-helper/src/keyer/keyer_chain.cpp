@@ -30,6 +30,14 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
     enabled = state.keyerEnabled;
     requestedModel = state.requestedKeyerModel;
     settings.qualityMode = state.qualityMode;
+    settings.performanceMode = state.performanceMode;
+    if (settings.performanceMode == "balanced") {
+      settings.maxInputWidth = 960u;
+      settings.maxInputHeight = 540u;
+    } else if (settings.performanceMode == "performance") {
+      settings.maxInputWidth = 640u;
+      settings.maxInputHeight = 360u;
+    }
     settings.maskErodePx = state.maskErodePx;
     settings.maskDilatePx = state.maskDilatePx;
     settings.maskFeatherPx = state.maskFeatherPx;
@@ -43,7 +51,6 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
   std::lock_guard<std::mutex> lock(mutex_);
   if (!enabled) {
     KeyerResult result;
-    result.frame = copyPassthroughFrame(input);
     status_.activeKeyer = "passthrough";
     status_.backend = "passthrough";
     status_.fallbackActive = true;
@@ -62,6 +69,9 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
 
 #if defined(__APPLE__)
   if (requestedModel == "vision_person_segmentation") {
+    if (settings.performanceMode == "performance") {
+      settings.qualityMode = "fast";
+    }
     KeyerResult result = vision_->apply(input, settings);
     status_ = result.status;
     return result;
@@ -70,7 +80,6 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
 
   {
     KeyerResult result;
-    result.frame = copyPassthroughFrame(input);
     status_.activeKeyer = "passthrough";
     status_.backend = requestedModel;
     status_.fallbackActive = true;
@@ -93,7 +102,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.fallbackActive = status.fallbackActive;
   state.fallbackReason = status.fallbackReason;
   state.keyerBackend = status.backend;
-  state.qualityMode = status.qualityMode;
+  state.activeQualityMode = status.qualityMode;
   state.provider = status.provider;
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;

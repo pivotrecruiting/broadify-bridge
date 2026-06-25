@@ -76,7 +76,7 @@ export function MacroList({
             {macros.map((macro) => (
               <div
                 key={macro.id}
-                className="flex items-center justify-between gap-3 p-3 rounded-lg bg-white/10 border border-card-foreground/10"
+                className="flex items-center justify-between gap-3 p-3 rounded-lg bg-secondary border border-card-foreground/10"
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -97,7 +97,7 @@ export function MacroList({
                       onClick={() => onStopMacro(macro.id)}
                       disabled={loading}
                       size="sm"
-                      className="bg-destructive hover:bg-destructive/90 text-white font-semibold px-3 py-1.5 text-xs rounded-lg border border-red-500/20 shadow-lg"
+                      className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold px-3 py-1.5 text-xs rounded-lg border border-red-500/20 shadow-lg"
                     >
                       {loading ? (
                         <Loader2 className="h-3 w-3 animate-spin" />

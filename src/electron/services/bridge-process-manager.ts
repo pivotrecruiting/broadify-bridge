@@ -61,6 +61,14 @@ export class BridgeProcessManager {
       lines.push(
         this.describeArtifact("native/display-helper/libSDL2-2.0.0.dylib")
       );
+      lines.push(
+        this.describeArtifact("presentation-runtime/macos-arm64/LibreOffice.app")
+      );
+      lines.push(
+        this.describeArtifact(
+          "presentation-runtime/macos-arm64/LibreOffice.app/Contents/MacOS/soffice"
+        )
+      );
     }
 
     if (process.platform === "win32") {

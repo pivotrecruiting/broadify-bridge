@@ -91,13 +91,37 @@ jest.mock("./meeting/meeting-graphics-manager.js", () => ({
   ) =>
     typeof payload?.layerId === "string" &&
     payload.layerId.startsWith("meeting-"),
-  meetingGraphicsManager: {
+  meetingBackGraphicsManager: {
     configureOutputs: jest.fn().mockResolvedValue(undefined),
     sendLayer: jest.fn().mockResolvedValue(undefined),
     updateValues: jest.fn().mockResolvedValue(undefined),
     updateLayout: jest.fn().mockResolvedValue(undefined),
     removeLayer: jest.fn().mockResolvedValue(undefined),
   },
+  meetingFrontGraphicsManager: {
+    configureOutputs: jest.fn().mockResolvedValue(undefined),
+    sendLayer: jest.fn().mockResolvedValue(undefined),
+    updateValues: jest.fn().mockResolvedValue(undefined),
+    updateLayout: jest.fn().mockResolvedValue(undefined),
+    removeLayer: jest.fn().mockResolvedValue(undefined),
+  },
+  resolveMeetingGraphicsManager: jest.fn((payload: Record<string, unknown>) => {
+    const {
+      meetingBackGraphicsManager,
+      meetingFrontGraphicsManager,
+    } = require("./meeting/meeting-graphics-manager.js");
+    if (
+      payload.meetingPlane === "back" ||
+      payload.category === "backgrounds" ||
+      payload.category === "slides" ||
+      payload.layerId === "meeting-content-template"
+    ) {
+      return meetingBackGraphicsManager;
+    }
+    return meetingFrontGraphicsManager;
+  }),
+  rememberMeetingGraphicsPlane: jest.fn(),
+  forgetMeetingGraphicsPlane: jest.fn(),
 }));
 
 jest.mock("./relay-bridge-identity.js", () => ({
@@ -106,6 +130,29 @@ jest.mock("./relay-bridge-identity.js", () => ({
 
 jest.mock("./runtime-app-version.js", () => ({
   getRuntimeAppVersion: jest.fn(() => "0.1.0"),
+}));
+
+jest.mock("./canon-xc/canon-xc-service.js", () => ({
+  canonXCService: {
+    listDevices: jest.fn().mockResolvedValue({ devices: [] }),
+    saveDevice: jest.fn().mockResolvedValue({
+      id: "canon-1",
+      deviceId: "canon-1",
+      name: "Canon 1",
+      host: "192.168.0.100",
+      port: 80,
+      protocol: "http",
+      type: "camera",
+      username: null,
+      cameraNo: null,
+      enabled: true,
+    }),
+    deleteDevice: jest.fn().mockResolvedValue({ ok: true, message: "deleted" }),
+    testConnection: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+    testDevice: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+    listPresets: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+    recallPreset: jest.fn().mockResolvedValue({ ok: true, presets: [] }),
+  },
 }));
 
 const defaultBridgeContext = {
@@ -589,7 +636,8 @@ describe("command-router", () => {
     it("graphics_send succeeds with payload", async () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const {
-        meetingGraphicsManager,
+        meetingBackGraphicsManager,
+        meetingFrontGraphicsManager,
       } = require("./meeting/meeting-graphics-manager.js");
 
       const result = await commandRouter.handleCommand("graphics_send", {
@@ -601,13 +649,15 @@ describe("command-router", () => {
       expect(graphicsManager.sendLayer).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "l1" }),
       );
-      expect(meetingGraphicsManager.sendLayer).not.toHaveBeenCalled();
+      expect(meetingBackGraphicsManager.sendLayer).not.toHaveBeenCalled();
+      expect(meetingFrontGraphicsManager.sendLayer).not.toHaveBeenCalled();
     });
 
-    it("routes meeting graphics_send payloads to the meeting graphics manager", async () => {
+    it("routes meeting content graphics_send payloads to the back meeting graphics manager", async () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const {
-        meetingGraphicsManager,
+        meetingBackGraphicsManager,
+        meetingFrontGraphicsManager,
       } = require("./meeting/meeting-graphics-manager.js");
       const payload = {
         layerId: "meeting-content-template",
@@ -621,7 +671,31 @@ describe("command-router", () => {
       );
 
       expect(result.success).toBe(true);
-      expect(meetingGraphicsManager.sendLayer).toHaveBeenCalledWith(payload);
+      expect(meetingBackGraphicsManager.sendLayer).toHaveBeenCalledWith(payload);
+      expect(meetingFrontGraphicsManager.sendLayer).not.toHaveBeenCalled();
+      expect(graphicsManager.sendLayer).not.toHaveBeenCalled();
+    });
+
+    it("routes meeting lower-third graphics_send payloads to the front meeting graphics manager", async () => {
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      const {
+        meetingBackGraphicsManager,
+        meetingFrontGraphicsManager,
+      } = require("./meeting/meeting-graphics-manager.js");
+      const payload = {
+        layerId: "meeting-lower-third-template",
+        category: "lower-thirds",
+        bundle: { html: "<div/>", manifest: {} },
+      };
+
+      const result = await commandRouter.handleCommand(
+        "graphics_send",
+        payload,
+      );
+
+      expect(result.success).toBe(true);
+      expect(meetingFrontGraphicsManager.sendLayer).toHaveBeenCalledWith(payload);
+      expect(meetingBackGraphicsManager.sendLayer).not.toHaveBeenCalled();
       expect(graphicsManager.sendLayer).not.toHaveBeenCalled();
     });
 
@@ -675,7 +749,7 @@ describe("command-router", () => {
     it("routes meeting graphics updates and removes to the meeting graphics manager", async () => {
       const { graphicsManager } = require("./graphics/graphics-manager.js");
       const {
-        meetingGraphicsManager,
+        meetingBackGraphicsManager,
       } = require("./meeting/meeting-graphics-manager.js");
 
       await commandRouter.handleCommand("graphics_update_values", {
@@ -690,13 +764,13 @@ describe("command-router", () => {
         layerId: "meeting-content-template",
       });
 
-      expect(meetingGraphicsManager.updateValues).toHaveBeenCalledWith(
+      expect(meetingBackGraphicsManager.updateValues).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "meeting-content-template" }),
       );
-      expect(meetingGraphicsManager.updateLayout).toHaveBeenCalledWith(
+      expect(meetingBackGraphicsManager.updateLayout).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "meeting-content-template" }),
       );
-      expect(meetingGraphicsManager.removeLayer).toHaveBeenCalledWith(
+      expect(meetingBackGraphicsManager.removeLayer).toHaveBeenCalledWith(
         expect.objectContaining({ layerId: "meeting-content-template" }),
       );
       expect(graphicsManager.updateValues).not.toHaveBeenCalled();
@@ -730,6 +804,142 @@ describe("command-router", () => {
         },
       );
       expect(result.success).toBe(true);
+    });
+
+    it("canon_xc_list_devices returns persisted Canon devices", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+      canonXCService.listDevices.mockResolvedValue({
+        devices: [{ deviceId: "canon-1", name: "Canon 1" }],
+      });
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_list_devices",
+        {},
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({
+        devices: [{ deviceId: "canon-1", name: "Canon 1" }],
+      });
+      expect(canonXCService.listDevices).toHaveBeenCalledWith();
+    });
+
+    it("canon_xc_save_device validates and persists camera input", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_save_device",
+        {
+          name: "Stage Canon",
+          host: "192.168.0.100",
+          port: 80,
+          protocol: "http",
+          type: "camera",
+          username: "operator",
+          password: "secret",
+          cameraNo: null,
+          enabled: true,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.saveDevice).toHaveBeenCalledWith({
+        name: "Stage Canon",
+        host: "192.168.0.100",
+        port: 80,
+        protocol: "http",
+        type: "camera",
+        username: "operator",
+        password: "secret",
+        cameraNo: null,
+        enabled: true,
+      });
+    });
+
+    it("canon_xc_test_connection validates without persisting camera input", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_test_connection",
+        {
+          name: "Stage Canon",
+          host: "192.168.0.100",
+          port: 80,
+          protocol: "http",
+          type: "camera",
+          username: "operator",
+          password: "secret",
+          enabled: true,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.testConnection).toHaveBeenCalledWith({
+        name: "Stage Canon",
+        host: "192.168.0.100",
+        port: 80,
+        protocol: "http",
+        type: "camera",
+        username: "operator",
+        password: "secret",
+        enabled: true,
+      });
+      expect(canonXCService.saveDevice).not.toHaveBeenCalled();
+    });
+
+    it("canon_xc_delete_device validates the device id", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_delete_device",
+        { deviceId: "canon-1" },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.deleteDevice).toHaveBeenCalledWith("canon-1");
+    });
+
+    it("canon_xc_list_presets validates the device id", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_list_presets",
+        { deviceId: "canon-1" },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.listPresets).toHaveBeenCalledWith("canon-1");
+    });
+
+    it("canon_xc_recall_preset validates preset recall payload", async () => {
+      const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+
+      const result = await commandRouter.handleCommand(
+        "canon_xc_recall_preset",
+        {
+          deviceId: "canon-1",
+          preset: 3,
+          options: { ptzspeed: 30 },
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(canonXCService.recallPreset).toHaveBeenCalledWith("canon-1", 3, {
+        ptzspeed: 30,
+      });
+    });
+
+    it("returns validation error for invalid Canon preset recall payload", async () => {
+      const result = await commandRouter.handleCommand(
+        "canon_xc_recall_preset",
+        {
+          deviceId: "canon-1",
+          preset: 101,
+        },
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid payload");
     });
 
     it("returns validation error for invalid engine_connect payload", async () => {

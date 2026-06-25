@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
   std::promise<void> controlListening;
   std::future<void> controlListeningFuture = controlListening.get_future();
   std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(g_running));
-  std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(g_running));
+  std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread control(
       runControlServer,

@@ -4,9 +4,14 @@
 #include "util/json_utils.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <sstream>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -62,6 +67,14 @@ std::string normalizedQualityMode(const std::string &qualityMode) {
   return "balanced";
 }
 
+std::string normalizedPerformanceMode(const std::string &performanceMode) {
+  if (performanceMode == "high_quality" || performanceMode == "quality" ||
+      performanceMode == "balanced" || performanceMode == "performance") {
+    return performanceMode;
+  }
+  return "high_quality";
+}
+
 uint32_t clampedPixelRadius(int value, uint32_t maxValue) {
   return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int>(maxValue)));
 }
@@ -74,6 +87,12 @@ KeyerDegradationSettings normalizedDegradationSettings(KeyerDegradationSettings 
   settings.freshMaskAgeMs = clampedDouble(settings.freshMaskAgeMs, 0.0, 500.0);
   settings.maxMaskAgeMs = clampedDouble(settings.maxMaskAgeMs, settings.freshMaskAgeMs, 2000.0);
   return settings;
+}
+
+void markProgramDirty(MeetingState &state, bool graphicsDirty = false) {
+  state.programDirty = true;
+  state.graphicsDirty = state.graphicsDirty || graphicsDirty;
+  ++state.programRevision;
 }
 
 std::string keyerMetricsJson(const KeyerMetrics &metrics) {
@@ -97,7 +116,8 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
-         << ",\"dropped_frames\":" << metrics.droppedFrames << "}";
+         << ",\"dropped_frames\":" << metrics.droppedFrames
+         << ",\"skipped_frames\":" << metrics.skippedFrames << "}";
   return result.str();
 }
 
@@ -105,6 +125,7 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
   const std::string safeValues = values.empty() ? "{\"enabled\":false}" : values;
   if (section == "speaker_layout") {
     state.speakerLayout.enabled = extractBoolField(safeValues, "enabled", state.speakerLayout.enabled);
+    state.cameraRender.enabled = extractBoolField(safeValues, "camera_enabled", state.cameraRender.enabled);
     const std::string layout = extractStringField(safeValues, "layout");
     if (!layout.empty()) {
       state.speakerLayout.layout = layout;
@@ -127,6 +148,11 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     if (!mode.empty()) {
       state.mediaLayer.mode = mode;
     }
+    state.mediaLayer.assetId = extractStringField(safeValues, "asset_id");
+    state.mediaLayer.renderedPagePath = extractStringField(safeValues, "rendered_page_path");
+    state.mediaLayer.renderStatus = extractStringField(safeValues, "render_status");
+    state.mediaLayer.page = extractIntField(safeValues, "page", state.mediaLayer.page);
+    state.mediaLayer.pageCount = extractIntField(safeValues, "page_count", state.mediaLayer.pageCount);
     state.mediaLayer.x = extractDoubleField(safeValues, "x", state.mediaLayer.x);
     state.mediaLayer.y = extractDoubleField(safeValues, "y", state.mediaLayer.y);
     state.mediaLayer.width = extractDoubleField(safeValues, "width", state.mediaLayer.width);
@@ -145,8 +171,10 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     return;
   }
   if (section == "camera") {
+    state.cameraRender.enabled = extractBoolField(safeValues, "enabled", state.cameraRender.enabled);
     state.cameraRender.mirror = extractBoolField(safeValues, "mirror", state.cameraRender.mirror);
-    state.cameraRender.rawJson = std::string("{\"mirror\":") + (state.cameraRender.mirror ? "true" : "false") + "}";
+    state.cameraRender.rawJson = std::string("{\"enabled\":") + (state.cameraRender.enabled ? "true" : "false") +
+        ",\"mirror\":" + (state.cameraRender.mirror ? "true" : "false") + "}";
   }
 }
 
@@ -185,6 +213,16 @@ std::string handleRpc(const std::string &line,
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
+           << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
+           << "\"preview_clients\":" << state.previewClientCount << ","
+           << "\"vcam_clients\":" << state.vcamClientCount << ","
+           << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
+           << "\"program_dirty\":" << (state.programDirty ? "true" : "false") << ","
+           << "\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false") << ","
+           << "\"rendered_frames\":" << state.renderedFrames << ","
+           << "\"reused_frames\":" << state.reusedFrames << ","
+           << "\"published_preview_frames\":" << state.publishedPreviewFrames << ","
+           << "\"written_framebus_frames\":" << state.writtenFramebusFrames << ","
            << "\"camera_permission_status\":\"" << jsonEscape(camera.cameraPermissionStatus()) << "\","
            << "\"camera_last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << ","
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
@@ -225,6 +263,7 @@ std::string handleRpc(const std::string &line,
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = started;
       state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
+      markProgramDirty(state);
     }
     if (!started) {
       const std::string permissionStatus = camera.cameraPermissionStatus();
@@ -242,6 +281,7 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.cameraRunning = false;
     state.activeCameraIndex = -1;
+    markProgramDirty(state);
     return okResponse(id, "{\"ok\":true}");
   }
 
@@ -252,6 +292,7 @@ std::string handleRpc(const std::string &line,
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel) << "\",\"background_type\":\"mode\",\"background_mode\":\""
            << jsonEscape(state.backgroundMode)
            << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
+           << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
            << "\",\"mask_erode_px\":" << state.maskErodePx
            << ",\"mask_dilate_px\":" << state.maskDilatePx
            << ",\"mask_feather_px\":" << state.maskFeatherPx
@@ -268,11 +309,21 @@ std::string handleRpc(const std::string &line,
            << "\",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel)
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
-           << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
+           << "\",\"quality_mode\":\"" << jsonEscape(state.activeQualityMode)
+           << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
            << "\",\"provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"")
            << ",\"inference_ms\":" << (state.inferenceMs >= 0.0 ? std::to_string(state.inferenceMs) : "null")
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
+           << ",\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode)
+           << "\",\"preview_clients\":" << state.previewClientCount
+           << ",\"vcam_clients\":" << state.vcamClientCount
+           << ",\"program_dirty\":" << (state.programDirty ? "true" : "false")
+           << ",\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false")
+           << ",\"rendered_frames\":" << state.renderedFrames
+           << ",\"reused_frames\":" << state.reusedFrames
+           << ",\"published_preview_frames\":" << state.publishedPreviewFrames
+           << ",\"written_framebus_frames\":" << state.writtenFramebusFrames
            << ",\"metrics\":" << keyerMetricsJson(state.keyerMetrics) << "}}";
     return okResponse(id, result.str());
   }
@@ -292,6 +343,11 @@ std::string handleRpc(const std::string &line,
       const std::string qualityMode = extractStringField(line, "quality_mode");
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);
+        state.activeQualityMode = state.qualityMode;
+      }
+      const std::string performanceMode = extractStringField(line, "performance_mode");
+      if (!performanceMode.empty()) {
+        state.performanceMode = normalizedPerformanceMode(performanceMode);
       }
       state.maskErodePx = clampedDouble(extractDoubleField(line, "mask_erode_px", state.maskErodePx), 0.0, 3.0);
       state.maskDilatePx = clampedPixelRadius(
@@ -317,6 +373,7 @@ std::string handleRpc(const std::string &line,
       state.provider.clear();
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
+      markProgramDirty(state);
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, options, running);
   }
@@ -329,6 +386,8 @@ std::string handleRpc(const std::string &line,
     state.fallbackReason = "keyer_disabled";
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
+    state.activeQualityMode = "balanced";
+    state.performanceMode = "high_quality";
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
     state.maskFeatherPx = 0u;
@@ -342,6 +401,7 @@ std::string handleRpc(const std::string &line,
     state.provider.clear();
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};
+    markProgramDirty(state);
     return okResponse(id, "{\"ok\":true,\"active_keyer\":\"passthrough\"}");
   }
 
@@ -363,22 +423,9 @@ std::string handleRpc(const std::string &line,
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       updateProgramSection(state, section, values);
+      markProgramDirty(state, section == "graphics");
     }
     return okResponse(id, "{\"ok\":true,\"section\":\"" + jsonEscape(section) + "\"}");
-  }
-
-  if (method == "button.list") {
-    return okResponse(id,
-      "{\"mode\":\"meeting\",\"buttons\":["
-      "{\"id\":\"btn-keyer\",\"label\":\"AI KEYER\",\"icon\":\"sparkles\",\"enabled\":true,\"action\":{\"type\":\"keyer.toggle\"},\"group\":\"OUTPUT\",\"position\":1},"
-      "{\"id\":\"btn-camera\",\"label\":\"CAMERA\",\"icon\":\"camera\",\"enabled\":true,\"action\":{\"type\":\"camera.toggle\"},\"group\":\"OUTPUT\",\"position\":2},"
-      "{\"id\":\"btn-logo\",\"label\":\"LOGO\",\"icon\":\"logo\",\"enabled\":true,\"action\":{\"type\":\"logo.toggle\"},\"group\":\"OUTPUT\",\"position\":3},"
-      "{\"id\":\"btn-mute\",\"label\":\"MUTE\",\"icon\":\"mic\",\"enabled\":false,\"action\":{\"type\":\"meeting.mute_toggle\"},\"group\":\"CALL\",\"position\":1}"
-      "]}");
-  }
-
-  if (method == "button.trigger") {
-    return okResponse(id, "{\"ok\":true,\"message\":\"Button action accepted by native helper.\"}");
   }
 
   if (method == "output.framebus.status") {
@@ -393,6 +440,7 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = true;
     state.vcamRawRunning = true;
+    markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":true}");
   }
 
@@ -401,6 +449,7 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = false;
     state.vcamRawRunning = false;
+    markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":false}");
   }
 

@@ -105,6 +105,70 @@ describe("GraphicsPresetService", () => {
       );
     });
 
+    it("keeps background layers when a foreground preset is rendered", async () => {
+      layers.set(
+        "background-layer",
+        createLayerState({
+          layerId: "background-layer",
+          category: "backgrounds",
+          presetId: "background-preset",
+        })
+      );
+      layers.set(
+        "old-foreground-layer",
+        createLayerState({
+          layerId: "old-foreground-layer",
+          category: "slides",
+          presetId: "old-foreground-preset",
+        })
+      );
+      categoryToLayer.set("backgrounds", "background-layer");
+      categoryToLayer.set("slides", "old-foreground-layer");
+      const service = createService();
+
+      await service.prepareBeforeRender("new-foreground-preset", "overlays");
+
+      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledTimes(1);
+      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledWith(
+        expect.anything(),
+        "old-foreground-layer",
+        "preset_replace"
+      );
+      expect(layers.has("background-layer")).toBe(true);
+    });
+
+    it("keeps foreground layers when a background preset is rendered", async () => {
+      layers.set(
+        "old-background-layer",
+        createLayerState({
+          layerId: "old-background-layer",
+          category: "backgrounds",
+          presetId: "old-background-preset",
+        })
+      );
+      layers.set(
+        "foreground-layer",
+        createLayerState({
+          layerId: "foreground-layer",
+          category: "lower-thirds",
+          presetId: "foreground-preset",
+        })
+      );
+      categoryToLayer.set("backgrounds", "old-background-layer");
+      categoryToLayer.set("lower-thirds", "foreground-layer");
+      const service = createService();
+
+      await service.prepareBeforeRender("new-background-preset", "backgrounds");
+
+      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledTimes(1);
+      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledWith(
+        expect.anything(),
+        "old-background-layer",
+        "preset_replace"
+      );
+      expect(layers.has("foreground-layer")).toBe(true);
+    });
+
     it("when no presetId and activePreset exists, removes active preset", async () => {
       activePreset = {
         presetId: "p1",
