@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 
 import { getBridgeContext } from "../bridge-context.js";
@@ -86,11 +87,15 @@ export type CanonXCDiagnosticCodeT =
   | "network"
   | "timeout"
   | "tls"
+  | "connection_refused"
+  | "network_unreachable"
+  | "permission_denied"
   | "camera_response";
 
 export type CanonXCDiagnosticT = {
   code: CanonXCDiagnosticCodeT;
   hint: string;
+  networkCode?: string;
 };
 
 export type CanonXCResponseT = {
@@ -115,6 +120,18 @@ type CanonHttpResponseT = {
   statusCode: number;
   headers: Headers;
   error: string | null;
+  networkCode?: string | null;
+  syscall?: string | null;
+  address?: string | null;
+  port?: number | null;
+};
+
+type NetworkErrorDetailsT = {
+  message: string;
+  networkCode: string | null;
+  syscall: string | null;
+  address: string | null;
+  port: number | null;
 };
 
 /**
@@ -476,6 +493,10 @@ export class CanonXCService {
       result: {
         statusCode: response.statusCode,
         response: response.text.slice(0, 1000),
+        networkCode: response.networkCode ?? null,
+        syscall: response.syscall ?? null,
+        address: response.address ?? null,
+        port: response.port ?? null,
       },
       rawError: response.error,
       diagnostic,
@@ -492,10 +513,11 @@ export class CanonXCService {
       };
     }
 
-    if (error.includes("timed out")) {
+    if (response.networkCode === "ETIMEDOUT" || error.includes("timed out")) {
       return {
         code: "timeout",
         hint: "Check the camera address, port, firewall, and local network access.",
+        networkCode: response.networkCode ?? undefined,
       };
     }
 
@@ -511,9 +533,37 @@ export class CanonXCService {
     }
 
     if (response.statusCode === 0) {
+      if (response.networkCode === "ECONNREFUSED") {
+        return {
+          code: "connection_refused",
+          hint: "The camera host is reachable but refused the connection. Check the Canon port and selected HTTP/HTTPS protocol.",
+          networkCode: response.networkCode,
+        };
+      }
+
+      if (
+        response.networkCode === "ENETUNREACH" ||
+        response.networkCode === "EHOSTUNREACH"
+      ) {
+        return {
+          code: "network_unreachable",
+          hint: "The camera network is unreachable from this Mac. Check the active network interface, VLAN/subnet, routing, and macOS Local Network permission.",
+          networkCode: response.networkCode,
+        };
+      }
+
+      if (response.networkCode === "EPERM" || response.networkCode === "EACCES") {
+        return {
+          code: "permission_denied",
+          hint: "macOS denied the local network connection. Check Local Network permission for Broadify Bridge and restart the app after changing it.",
+          networkCode: response.networkCode,
+        };
+      }
+
       return {
         code: "network",
         hint: "Check the camera address, port, firewall, and macOS Local Network permission for Broadify Bridge.",
+        networkCode: response.networkCode ?? undefined,
       };
     }
 
@@ -539,6 +589,23 @@ export class CanonXCService {
     }
 
     try {
+      const preflightError = await this.preflightTcpConnection(device);
+      if (preflightError) {
+        const result = {
+          ok: false,
+          text: "",
+          statusCode: 0,
+          headers: new Headers(),
+          error: preflightError.message,
+          networkCode: preflightError.networkCode,
+          syscall: preflightError.syscall,
+          address: preflightError.address,
+          port: preflightError.port,
+        };
+        this.logRequest(device, command, result, startedAt);
+        return result;
+      }
+
       const response = await fetch(this.buildUrl(device, command, params), {
         method: "GET",
         headers,
@@ -558,28 +625,119 @@ export class CanonXCService {
           ? livescopeOk
             ? null
             : `Canon Livescope status ${livescopeStatus}.`
-            : `HTTP ${response.status}: ${response.statusText}`,
+          : `HTTP ${response.status}: ${response.statusText}`,
+        networkCode: null,
+        syscall: null,
+        address: null,
+        port: null,
       };
       this.logRequest(device, command, result, startedAt);
       return result;
     } catch (error) {
+      const networkError = this.networkErrorFromUnknown(error, device);
       const result = {
         ok: false,
         text: "",
         statusCode: 0,
         headers: new Headers(),
-        error:
-          error instanceof Error && error.name === "AbortError"
-            ? "Canon XC request timed out."
-            : error instanceof Error
-              ? error.message
-              : String(error),
+        error: networkError.message,
+        networkCode: networkError.networkCode,
+        syscall: networkError.syscall,
+        address: networkError.address,
+        port: networkError.port,
       };
       this.logRequest(device, command, result, startedAt);
       return result;
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  private preflightTcpConnection(
+    device: CanonXCDeviceT,
+  ): Promise<NetworkErrorDetailsT | null> {
+    return new Promise((resolve) => {
+      const socket = net.createConnection({
+        host: device.host,
+        port: device.port,
+      });
+      let settled = false;
+
+      const finish = (error: NetworkErrorDetailsT | null) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        socket.removeAllListeners();
+        socket.destroy();
+        resolve(error);
+      };
+
+      socket.setTimeout(Math.min(this.timeoutMs, 1_500), () => {
+        finish({
+          message: "Canon XC TCP preflight timed out.",
+          networkCode: "ETIMEDOUT",
+          syscall: "connect",
+          address: device.host,
+          port: device.port,
+        });
+      });
+      socket.once("connect", () => finish(null));
+      socket.once("error", (error) => {
+        finish(this.networkErrorFromUnknown(error, device, "Canon XC TCP preflight failed."));
+      });
+    });
+  }
+
+  private networkErrorFromUnknown(
+    error: unknown,
+    device: CanonXCDeviceT,
+    fallbackMessage?: string,
+  ): NetworkErrorDetailsT {
+    if (error instanceof Error && error.name === "AbortError") {
+      return {
+        message: "Canon XC request timed out.",
+        networkCode: "ETIMEDOUT",
+        syscall: null,
+        address: device.host,
+        port: device.port,
+      };
+    }
+
+    const errorRecord = this.errorRecord(error);
+    const causeRecord = this.errorRecord(errorRecord?.cause);
+    const source = causeRecord ?? errorRecord;
+    const message =
+      fallbackMessage ??
+      (error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "Canon XC request failed.");
+    const causeMessage =
+      causeRecord?.message && typeof causeRecord.message === "string"
+        ? causeRecord.message
+        : null;
+
+    return {
+      message: causeMessage ? `${message}: ${causeMessage}` : message,
+      networkCode: this.optionalString(source?.code),
+      syscall: this.optionalString(source?.syscall),
+      address: this.optionalString(source?.address) ?? device.host,
+      port: this.optionalNumber(source?.port) ?? device.port,
+    };
+  }
+
+  private errorRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  }
+
+  private optionalString(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private optionalNumber(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
   }
 
   private logRequest(
@@ -598,6 +756,8 @@ export class CanonXCService {
       statusCode: response.statusCode,
       ok: response.ok,
       durationMs: Date.now() - startedAt,
+      networkCode: response.networkCode ?? null,
+      syscall: response.syscall ?? null,
       error: this.redactLogError(response.error),
       message: response.ok
         ? "[CanonXC] Request completed"

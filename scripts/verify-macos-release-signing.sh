@@ -194,6 +194,11 @@ if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
 fi
 
 require_plist_value "$APP_INFO" "CFBundleIdentifier" "$APP_BUNDLE_ID"
+if ! plist_value "$APP_INFO" "NSLocalNetworkUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] App is missing NSLocalNetworkUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSLocalNetworkUsageDescription present"
 require_plist_value "$HELPER_INFO" "CFBundleIdentifier" "$HELPER_BUNDLE_ID"
 require_plist_value "$HELPER_INFO" "CFBundleExecutable" "BroadifyMeetingHelper"
 require_plist_value "$HELPER_INFO" "CFBundleDisplayName" "Broadify Meeting"
@@ -214,6 +219,8 @@ verify_codesign "$APP_PATH" "deep"
 
 require_valid_entitlements "$HELPER_EXEC_PATH"
 require_valid_entitlements "$APP_PATH"
+require_entitlement_key "$APP_PATH" "com.apple.security.network.client"
+require_entitlement_key "$APP_PATH" "com.apple.security.network.server"
 require_entitlement_key "$HELPER_EXEC_PATH" "com.apple.security.device.camera"
 
 APP_TEAM_ID="$(team_id "$APP_PATH")"

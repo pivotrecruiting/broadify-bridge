@@ -1,4 +1,6 @@
+import { EventEmitter } from "node:events";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 
 import {
@@ -18,6 +20,13 @@ jest.mock("node:fs/promises", () => ({
   writeFile: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock("node:net", () => ({
+  __esModule: true,
+  default: {
+    createConnection: jest.fn(),
+  },
+}));
+
 jest.mock("../bridge-context.js", () => ({
   getBridgeContext: jest.fn(() => ({
     userDataDir: "/tmp/broadify-test",
@@ -28,6 +37,35 @@ jest.mock("../bridge-context.js", () => ({
 const mockReadFile = readFile as jest.MockedFunction<typeof readFile>;
 const mockWriteFile = writeFile as jest.MockedFunction<typeof writeFile>;
 const mockMkdir = mkdir as jest.MockedFunction<typeof mkdir>;
+const mockCreateConnection = net.createConnection as jest.MockedFunction<
+  typeof net.createConnection
+>;
+
+const mockTcpConnectSuccess = () => {
+  mockCreateConnection.mockImplementation(() => {
+    const socket = new EventEmitter() as EventEmitter & {
+      setTimeout: jest.Mock;
+      destroy: jest.Mock;
+    };
+    socket.setTimeout = jest.fn();
+    socket.destroy = jest.fn();
+    process.nextTick(() => socket.emit("connect"));
+    return socket as unknown as net.Socket;
+  });
+};
+
+const mockTcpConnectError = (error: NodeJS.ErrnoException) => {
+  mockCreateConnection.mockImplementation(() => {
+    const socket = new EventEmitter() as EventEmitter & {
+      setTimeout: jest.Mock;
+      destroy: jest.Mock;
+    };
+    socket.setTimeout = jest.fn();
+    socket.destroy = jest.fn();
+    process.nextTick(() => socket.emit("error", error));
+    return socket as unknown as net.Socket;
+  });
+};
 
 const responseWithText = (
   text: string,
@@ -51,6 +89,7 @@ describe("canon-xc-service", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockReadFile.mockRejectedValue(new Error("not found"));
+    mockTcpConnectSuccess();
     global.fetch = jest.fn().mockResolvedValue(responseWithText("")) as jest.Mock;
   });
 
@@ -264,6 +303,87 @@ describe("canon-xc-service", () => {
         diagnostic: {
           code: "authentication",
           hint: "Check the Canon username, password, and assigned access rights.",
+        },
+      });
+    });
+
+    it("returns a macOS local network diagnostic for permission denied", async () => {
+      mockTcpConnectError(
+        Object.assign(new Error("operation not permitted"), {
+          code: "EPERM",
+          syscall: "connect",
+          address: "192.168.0.100",
+          port: 80,
+        }),
+      );
+      const service = new CanonXCService();
+
+      const result = await service.testConnection({
+        name: "Canon 1",
+        host: "192.168.0.100",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        rawError: expect.stringContaining("Canon XC TCP preflight failed"),
+        diagnostic: {
+          code: "permission_denied",
+          networkCode: "EPERM",
+        },
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("classifies refused Canon ports before issuing HTTP requests", async () => {
+      mockTcpConnectError(
+        Object.assign(new Error("connection refused"), {
+          code: "ECONNREFUSED",
+          syscall: "connect",
+          address: "192.168.0.100",
+          port: 80,
+        }),
+      );
+      const service = new CanonXCService();
+
+      const result = await service.testConnection({
+        name: "Canon 1",
+        host: "192.168.0.100",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        diagnostic: {
+          code: "connection_refused",
+          networkCode: "ECONNREFUSED",
+        },
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("keeps fetch cause details when HTTP fetch fails after TCP preflight", async () => {
+      global.fetch = jest.fn().mockRejectedValue(
+        Object.assign(new Error("fetch failed"), {
+          cause: Object.assign(new Error("host unreachable"), {
+            code: "EHOSTUNREACH",
+            syscall: "connect",
+            address: "192.168.0.100",
+            port: 80,
+          }),
+        }),
+      ) as jest.Mock;
+      const service = new CanonXCService();
+
+      const result = await service.testConnection({
+        name: "Canon 1",
+        host: "192.168.0.100",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        rawError: "fetch failed: host unreachable",
+        diagnostic: {
+          code: "network_unreachable",
+          networkCode: "EHOSTUNREACH",
         },
       });
     });
