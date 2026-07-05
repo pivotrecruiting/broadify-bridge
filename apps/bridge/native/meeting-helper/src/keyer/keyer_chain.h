@@ -5,6 +5,7 @@
 #include "keyer/modnet_keyer.h"
 #include "state/meeting_state.h"
 
+#include <chrono>
 #include <mutex>
 #include <memory>
 
@@ -31,6 +32,7 @@ class KeyerChain {
   std::string autoVisionQuality_ = "balanced";
   double autoInferenceEmaMs_ = -1.0;
   uint64_t autoInferenceSamples_ = 0;
+  std::chrono::steady_clock::time_point autoQualityDegradedAt_{};
 #endif
   KeyerStatus status_;
 };

@@ -12,9 +12,12 @@ namespace {
 // Auto-quality thresholds: with inference above ~30ms the keyer cannot hold
 // ~30fps with headroom, so the governor steps down to the "fast" tier (whose
 // coarse masks the pipeline refines along the camera image afterwards).
-constexpr double kAutoQualityMaxInferenceMs = 30.0;
+constexpr double kAutoQualityMaxInferenceMs = 34.0;
 constexpr uint64_t kAutoQualityMinSamples = 10u;
 constexpr double kAutoQualityEmaWeight = 0.2;
+// After degrading to "fast", periodically probe the better tier again: load
+// spikes (exports, dev tooling) must not pin the session to coarse masks.
+constexpr auto kAutoQualityReprobeInterval = std::chrono::seconds(60);
 #endif
 
 }  // namespace
@@ -89,6 +92,12 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
     if (settings.performanceMode == "performance") {
       settings.qualityMode = "fast";
     } else if (settings.performanceMode == "balanced") {
+      if (autoVisionQuality_ == "fast" &&
+          std::chrono::steady_clock::now() - autoQualityDegradedAt_ >= kAutoQualityReprobeInterval) {
+        autoVisionQuality_ = "balanced";
+        autoInferenceEmaMs_ = -1.0;
+        autoInferenceSamples_ = 0;
+      }
       settings.qualityMode = autoVisionQuality_;
     }
     KeyerResult result = vision_->apply(input, settings);
@@ -102,6 +111,7 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
       if (autoInferenceSamples_ >= kAutoQualityMinSamples &&
           autoInferenceEmaMs_ > kAutoQualityMaxInferenceMs) {
         autoVisionQuality_ = "fast";
+        autoQualityDegradedAt_ = std::chrono::steady_clock::now();
       }
     }
     status_ = result.status;
