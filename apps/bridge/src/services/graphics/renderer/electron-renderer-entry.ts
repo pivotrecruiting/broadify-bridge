@@ -730,6 +730,9 @@ async function ensureSingleWindow(
     singleWindowFormat = { width, height, fps, renderScale };
 
     singleWindow.webContents.setFrameRate(fps);
+
+    let lastWrittenChecksum = -1;
+    let lastWrittenAtMs = 0;
     singleWindow.webContents.on("paint", (_event, _dirty, image) => {
       const frameStartAt = Date.now();
       if (paintCount === 0) {
@@ -795,6 +798,20 @@ async function ensureSingleWindow(
         logPerfIfNeeded();
         return;
       }
+
+      // Skip FrameBus writes for pixel-identical frames (static content),
+      // with a 1s heartbeat so readers still see a live stream.
+      let checksum = buffer.length >>> 0;
+      for (let i = 0; i < buffer.length; i += 4093) {
+        checksum = ((checksum * 31) ^ (buffer[i] ?? 0)) >>> 0;
+      }
+      const writeNowMs = Date.now();
+      if (checksum === lastWrittenChecksum && writeNowMs - lastWrittenAtMs < 1000) {
+        logPerfIfNeeded();
+        return;
+      }
+      lastWrittenChecksum = checksum;
+      lastWrittenAtMs = writeNowMs;
 
       try {
         frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
