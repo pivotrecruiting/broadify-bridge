@@ -61,10 +61,14 @@ if(APPLE)
   enable_language(OBJCXX)
   list(APPEND MEETING_HELPER_SOURCES
     src/capture/camera_avfoundation.mm
+    src/compose/metal_compositor.mm
     src/keyer/vision_keyer.mm
     src/macos/macos_app.mm
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/compose/metal_compositor.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/keyer/vision_keyer.mm PROPERTIES
@@ -127,6 +131,7 @@ endif()
 
 if(APPLE)
   target_link_libraries(meeting-helper PRIVATE
+    "-framework Accelerate"
     "-framework AppKit"
     "-framework ApplicationServices"
     "-framework AVFoundation"
@@ -135,6 +140,7 @@ if(APPLE)
     "-framework CoreVideo"
     "-framework Foundation"
     "-framework ImageIO"
+    "-framework Metal"
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES

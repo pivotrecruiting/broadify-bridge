@@ -7,6 +7,11 @@
 
 namespace broadify::meeting {
 
+// Zero-config default: "balanced" is the auto profile — the keyer chain picks
+// the best Vision tier the machine sustains and steps down on its own. Users
+// should never need to tune keyer performance manually.
+inline constexpr const char *kDefaultKeyerPerformanceMode = "balanced";
+
 struct SpeakerLayoutState {
   bool enabled = false;
   std::string layout = "right";
@@ -34,7 +39,11 @@ struct MediaLayerState {
   double y = 0.12;
   double width = 0.34;
   double height = 0.28;
+  // Rotation in degrees; matches the builder preview's CSS
+  // rotateX() rotateY() rotateZ() order without perspective (orthographic).
   double rotation = 0.0;
+  double rotationX = 0.0;
+  double rotationY = 0.0;
   std::string rawJson = "{\"enabled\":false,\"mode\":\"pip\",\"x\":0.58,\"y\":0.12,\"width\":0.34,\"height\":0.28,\"rotation\":0}";
 };
 
@@ -72,12 +81,19 @@ struct MeetingState {
   uint64_t writtenFramebusFrames = 0;
   std::string backgroundMode = "transparent";
   std::string activeKeyer = "passthrough";
+  // Default backend: Apple Vision runs hardware-accelerated on every Mac and
+  // needs no model download; MODNet stays available as an opt-in high-quality
+  // backend (and remains the default where Vision is unavailable).
+#if defined(__APPLE__)
+  std::string requestedKeyerModel = "vision_person_segmentation";
+#else
   std::string requestedKeyerModel = "modnet";
+#endif
   std::string fallbackReason = "native_keyers_not_configured";
   std::string keyerBackend = "passthrough";
   std::string qualityMode = "balanced";
   std::string activeQualityMode = "balanced";
-  std::string performanceMode = "high_quality";
+  std::string performanceMode = kDefaultKeyerPerformanceMode;
   double maskErodePx = 0.0;
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;

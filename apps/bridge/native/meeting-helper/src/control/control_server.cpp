@@ -158,6 +158,8 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.mediaLayer.width = extractDoubleField(safeValues, "width", state.mediaLayer.width);
     state.mediaLayer.height = extractDoubleField(safeValues, "height", state.mediaLayer.height);
     state.mediaLayer.rotation = extractDoubleField(safeValues, "rotation", state.mediaLayer.rotation);
+    state.mediaLayer.rotationX = extractDoubleField(safeValues, "rotation_x", state.mediaLayer.rotationX);
+    state.mediaLayer.rotationY = extractDoubleField(safeValues, "rotation_y", state.mediaLayer.rotationY);
     state.mediaLayer.rawJson = safeValues;
     return;
   }
@@ -387,7 +389,7 @@ std::string handleRpc(const std::string &line,
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
     state.activeQualityMode = "balanced";
-    state.performanceMode = "high_quality";
+    state.performanceMode = kDefaultKeyerPerformanceMode;
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
     state.maskFeatherPx = 0u;

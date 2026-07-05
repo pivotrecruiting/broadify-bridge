@@ -6,6 +6,18 @@
 #endif
 
 namespace broadify::meeting {
+namespace {
+
+#if defined(__APPLE__)
+// Auto-quality thresholds: with inference above ~30ms the keyer cannot hold
+// ~30fps with headroom, so the governor steps down to the "fast" tier (whose
+// coarse masks the pipeline refines along the camera image afterwards).
+constexpr double kAutoQualityMaxInferenceMs = 30.0;
+constexpr uint64_t kAutoQualityMinSamples = 10u;
+constexpr double kAutoQualityEmaWeight = 0.2;
+#endif
+
+}  // namespace
 
 KeyerChain::KeyerChain(const Options &options)
     : options_{options.modelsDir},
@@ -57,6 +69,11 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
     status_.fallbackReason = "keyer_disabled";
     status_.inferenceMs = -1.0;
     status_.metrics = KeyerMetrics{};
+#if defined(__APPLE__)
+    autoVisionQuality_ = "balanced";
+    autoInferenceEmaMs_ = -1.0;
+    autoInferenceSamples_ = 0;
+#endif
     result.status = status_;
     return result;
   }
@@ -71,8 +88,22 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
   if (requestedModel == "vision_person_segmentation") {
     if (settings.performanceMode == "performance") {
       settings.qualityMode = "fast";
+    } else if (settings.performanceMode == "balanced") {
+      settings.qualityMode = autoVisionQuality_;
     }
     KeyerResult result = vision_->apply(input, settings);
+    if (settings.performanceMode == "balanced" && !result.status.fallbackActive &&
+        result.status.qualityMode == "balanced" && result.status.inferenceMs > 0.0) {
+      autoInferenceEmaMs_ = autoInferenceEmaMs_ < 0.0
+          ? result.status.inferenceMs
+          : kAutoQualityEmaWeight * result.status.inferenceMs +
+              (1.0 - kAutoQualityEmaWeight) * autoInferenceEmaMs_;
+      ++autoInferenceSamples_;
+      if (autoInferenceSamples_ >= kAutoQualityMinSamples &&
+          autoInferenceEmaMs_ > kAutoQualityMaxInferenceMs) {
+        autoVisionQuality_ = "fast";
+      }
+    }
     status_ = result.status;
     return result;
   }

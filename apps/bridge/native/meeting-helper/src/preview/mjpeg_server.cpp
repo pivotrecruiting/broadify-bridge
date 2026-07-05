@@ -75,7 +75,9 @@ std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
       ? nullptr
       : CGImageDestinationCreateWithData(data, CFSTR("public.jpeg"), 1, nullptr);
   if (destination != nullptr && image != nullptr) {
-    const float qualityValue = 0.95f;
+    // Preview-only stream: 0.7 is visually near-indistinguishable in the
+    // builder preview but substantially cheaper to encode than 0.95.
+    const float qualityValue = 0.7f;
     CFNumberRef quality = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloatType, &qualityValue);
     const void *keys[] = {kCGImageDestinationLossyCompressionQuality};
     const void *values[] = {quality};
@@ -269,7 +271,9 @@ void runMjpegServer(uint16_t port,
           !sendAll(client, "\r\n", 2)) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(33));
+      // ~15fps: the builder preview does not need program frame rate, and
+      // JPEG encoding is one of the most expensive per-client costs.
+      std::this_thread::sleep_for(std::chrono::milliseconds(66));
     }
     closeSocketHandle(client);
   }

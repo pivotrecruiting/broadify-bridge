@@ -7,11 +7,13 @@
 #include "util/json_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -43,9 +45,24 @@ constexpr const char *kMeetingBackGraphicsFrameBusName = "bfy-meet-gfx-back";
 constexpr const char *kMeetingFrontGraphicsFrameBusName = "bfy-meet-gfx-front";
 constexpr double kMetricsWindowMs = 1000.0;
 constexpr size_t kMaskAgeWindowSize = 30u;
+// Joint bilateral upsampling of coarse segmentation masks: only masks below
+// this width get refined (Vision "fast" delivers 256px; "balanced" 512px
+// masks are already fine and would double the refinement cost).
+constexpr uint32_t kMaskRefineMaxSourceWidthPx = 400u;
+constexpr int kMaskRefineRadiusPx = 2;
+constexpr float kMaskRefineSpatialSigmaPx = 1.0f;
+constexpr float kMaskRefineRangeSigmaLuma = 14.0f;
 constexpr auto kIdleSleep = std::chrono::milliseconds(1000);
 constexpr auto kStaticPollInterval = std::chrono::milliseconds(100);
 constexpr auto kStaticHeartbeatInterval = std::chrono::milliseconds(1000);
+// Duty-cycle guard: only when one keyer pass clearly exceeds a camera frame
+// interval (1.5x, i.e. the machine sustains at most ~20fps anyway) insert a
+// cooldown of this fraction of the pass duration, so weak machines keep ~20%
+// idle headroom instead of running at full load. Borderline machines that
+// almost keep camera rate must not be penalized.
+constexpr double kKeyerCooldownTriggerFactor = 1.5;
+constexpr double kKeyerCooldownFraction = 0.25;
+constexpr double kKeyerMaxCooldownMs = 50.0;
 
 struct MaskSample {
   size_t lower = 0u;
@@ -77,19 +94,6 @@ struct PipelineRuntimeState {
   uint64_t programRevision = 0;
   std::string mode = "idle";
 };
-
-uint32_t targetKeyerFps(const std::string &performanceMode) {
-  if (performanceMode == "quality") {
-    return 25u;
-  }
-  if (performanceMode == "balanced") {
-    return 20u;
-  }
-  if (performanceMode == "performance") {
-    return 15u;
-  }
-  return 30u;
-}
 
 bool hasActiveOutputConsumer(const PipelineRuntimeState &runtime) {
   return runtime.framebusRunning || runtime.previewClients > 0 || runtime.vcamClients > 0;
@@ -199,14 +203,216 @@ float smoothstep(float edge0, float edge1, float value) {
   return t * t * (3.0f - 2.0f * t);
 }
 
+const std::array<uint8_t, 256> &smoothstepAlphaLut() {
+  static const std::array<uint8_t, 256> lut = [] {
+    std::array<uint8_t, 256> table{};
+    for (size_t index = 0; index < table.size(); ++index) {
+      const float normalizedAlpha = static_cast<float>(index) / 255.0f;
+      table[index] =
+          static_cast<uint8_t>(std::round(smoothstep(kSmoothstepLow, kSmoothstepHigh, normalizedAlpha) * 255.0f));
+    }
+    return table;
+  }();
+  return lut;
+}
+
 void remapAlphaSmoothstep(AlphaMask &mask) {
   if (mask.alpha.empty()) {
     return;
   }
 
+  const std::array<uint8_t, 256> &lut = smoothstepAlphaLut();
   for (uint8_t &alpha : mask.alpha) {
-    const float normalizedAlpha = static_cast<float>(alpha) / 255.0f;
-    alpha = static_cast<uint8_t>(std::round(smoothstep(kSmoothstepLow, kSmoothstepHigh, normalizedAlpha) * 255.0f));
+    alpha = lut[alpha];
+  }
+}
+
+constexpr int kMaskRefineTapCount = 2 * kMaskRefineRadiusPx + 1;
+
+const std::array<uint16_t, 256> &maskRefineRangeLut() {
+  static const std::array<uint16_t, 256> lut = [] {
+    std::array<uint16_t, 256> table{};
+    for (size_t diff = 0; diff < table.size(); ++diff) {
+      const float weight = std::exp(
+          -static_cast<float>(diff * diff) /
+          (2.0f * kMaskRefineRangeSigmaLuma * kMaskRefineRangeSigmaLuma));
+      table[diff] = static_cast<uint16_t>(std::round(weight * 64.0f));
+    }
+    return table;
+  }();
+  return lut;
+}
+
+// Spatial weights per output-pixel parity: with 2x upsampling, even/odd output
+// pixels sit a quarter source pixel left/right (up/down) of their base tap.
+const std::array<std::array<uint16_t, kMaskRefineTapCount>, 2> &maskRefineSpatialLut() {
+  static const std::array<std::array<uint16_t, kMaskRefineTapCount>, 2> lut = [] {
+    std::array<std::array<uint16_t, kMaskRefineTapCount>, 2> table{};
+    for (int parity = 0; parity < 2; ++parity) {
+      const float offset = parity == 0 ? -0.25f : 0.25f;
+      for (int tap = 0; tap < kMaskRefineTapCount; ++tap) {
+        const float distance = static_cast<float>(tap - kMaskRefineRadiusPx) - offset;
+        const float weight = std::exp(
+            -(distance * distance) /
+            (2.0f * kMaskRefineSpatialSigmaPx * kMaskRefineSpatialSigmaPx));
+        table[parity][tap] = static_cast<uint16_t>(std::round(weight * 64.0f));
+      }
+    }
+    return table;
+  }();
+  return lut;
+}
+
+// Joint bilateral 2x upsampling: coarse masks (e.g. Vision "fast", 256x192)
+// are refined along the luminance edges of the camera frame before
+// postprocessing, so cheap masks produce smooth, image-aligned edges instead
+// of the blocky gradients a plain bilinear upscale would give.
+void refineAlphaMaskEdges(AlphaMask &mask, const VideoFrame &frame) {
+  if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u ||
+      frame.rgba.empty() || frame.width == 0u || frame.height == 0u ||
+      mask.width >= kMaskRefineMaxSourceWidthPx) {
+    return;
+  }
+
+  const uint32_t refinedWidth = mask.width * 2u;
+  const uint32_t refinedHeight = mask.height * 2u;
+
+  // Guide luma at refined resolution; the mask spans the full frame, so
+  // sample the camera frame at matching normalized positions.
+  std::vector<uint8_t> lumaHigh(static_cast<size_t>(refinedWidth) * refinedHeight);
+  for (uint32_t y = 0; y < refinedHeight; ++y) {
+    const uint32_t frameY = std::min<uint32_t>(
+        frame.height - 1u,
+        static_cast<uint32_t>(((2ull * y + 1ull) * frame.height) / (2ull * refinedHeight)));
+    const size_t frameRowOffset = static_cast<size_t>(frameY) * frame.width;
+    const size_t lumaRowOffset = static_cast<size_t>(y) * refinedWidth;
+    for (uint32_t x = 0; x < refinedWidth; ++x) {
+      const uint32_t frameX = std::min<uint32_t>(
+          frame.width - 1u,
+          static_cast<uint32_t>(((2ull * x + 1ull) * frame.width) / (2ull * refinedWidth)));
+      const size_t pixelOffset = (frameRowOffset + frameX) * 4u;
+      lumaHigh[lumaRowOffset + x] = static_cast<uint8_t>(
+          (77u * frame.rgba[pixelOffset] +
+           150u * frame.rgba[pixelOffset + 1u] +
+           29u * frame.rgba[pixelOffset + 2u]) >> 8u);
+    }
+  }
+
+  // Guide luma at mask resolution (2x2 box of the refined guide).
+  std::vector<uint8_t> lumaLow(static_cast<size_t>(mask.width) * mask.height);
+  for (uint32_t y = 0; y < mask.height; ++y) {
+    const size_t rowTop = static_cast<size_t>(y) * 2u * refinedWidth;
+    const size_t rowBottom = rowTop + refinedWidth;
+    for (uint32_t x = 0; x < mask.width; ++x) {
+      const size_t left = static_cast<size_t>(x) * 2u;
+      const uint32_t sum =
+          static_cast<uint32_t>(lumaHigh[rowTop + left]) + lumaHigh[rowTop + left + 1u] +
+          lumaHigh[rowBottom + left] + lumaHigh[rowBottom + left + 1u];
+      lumaLow[static_cast<size_t>(y) * mask.width + x] = static_cast<uint8_t>(sum / 4u);
+    }
+  }
+
+  const std::array<uint16_t, 256> &rangeLut = maskRefineRangeLut();
+  const auto &spatialLut = maskRefineSpatialLut();
+  std::vector<uint8_t> refinedAlpha(lumaHigh.size());
+  for (uint32_t oy = 0; oy < refinedHeight; ++oy) {
+    const int baseY = static_cast<int>(oy >> 1u);
+    const std::array<uint16_t, kMaskRefineTapCount> &spatialY = spatialLut[oy & 1u];
+    const uint8_t *guideRow = lumaHigh.data() + static_cast<size_t>(oy) * refinedWidth;
+    uint8_t *outputRow = refinedAlpha.data() + static_cast<size_t>(oy) * refinedWidth;
+    for (uint32_t ox = 0; ox < refinedWidth; ++ox) {
+      const int baseX = static_cast<int>(ox >> 1u);
+      const std::array<uint16_t, kMaskRefineTapCount> &spatialX = spatialLut[ox & 1u];
+      const uint8_t guideLuma = guideRow[ox];
+      uint32_t weightedAlpha = 0u;
+      uint32_t weightSum = 0u;
+      for (int tapY = 0; tapY < kMaskRefineTapCount; ++tapY) {
+        const int sampleY = std::clamp(baseY + tapY - kMaskRefineRadiusPx, 0, static_cast<int>(mask.height) - 1);
+        const size_t sampleRowOffset = static_cast<size_t>(sampleY) * mask.width;
+        const uint32_t spatialWeightY = spatialY[tapY];
+        for (int tapX = 0; tapX < kMaskRefineTapCount; ++tapX) {
+          const int sampleX = std::clamp(baseX + tapX - kMaskRefineRadiusPx, 0, static_cast<int>(mask.width) - 1);
+          const size_t sampleOffset = sampleRowOffset + static_cast<size_t>(sampleX);
+          const uint32_t lumaDiff = static_cast<uint32_t>(
+              std::abs(static_cast<int>(lumaLow[sampleOffset]) - static_cast<int>(guideLuma)));
+          const uint32_t weight = spatialWeightY * spatialX[tapX] * rangeLut[lumaDiff];
+          weightedAlpha += weight * mask.alpha[sampleOffset];
+          weightSum += weight;
+        }
+      }
+      outputRow[ox] = weightSum > 0u
+          ? static_cast<uint8_t>((weightedAlpha + weightSum / 2u) / weightSum)
+          : mask.alpha[static_cast<size_t>(baseY) * mask.width + static_cast<size_t>(baseX)];
+    }
+  }
+
+  mask.width = refinedWidth;
+  mask.height = refinedHeight;
+  mask.alpha = std::move(refinedAlpha);
+}
+
+struct WedgeEntry {
+  size_t index = 0u;
+  uint8_t value = 0u;
+};
+
+// Sliding-window extremum (monotonic wedge): for every position the min or
+// max over the clamped window [i - radius, i + radius] in amortized O(1) per
+// pixel, independent of the radius. Results match a brute-force clamped
+// window scan exactly.
+void slidingExtremaLine(const uint8_t *source,
+                        uint8_t *destination,
+                        size_t count,
+                        size_t stride,
+                        size_t radius,
+                        bool takeMax,
+                        std::vector<WedgeEntry> &wedge) {
+  if (count == 0u) {
+    return;
+  }
+
+  wedge.clear();
+  size_t head = 0u;
+  size_t next = 0u;
+  const auto push = [&](size_t index) {
+    const uint8_t candidate = source[index * stride];
+    while (wedge.size() > head &&
+           (takeMax ? wedge.back().value <= candidate : wedge.back().value >= candidate)) {
+      wedge.pop_back();
+    }
+    wedge.push_back(WedgeEntry{index, candidate});
+  };
+
+  for (size_t index = 0; index < count; ++index) {
+    const size_t upper = std::min(count - 1u, index + radius);
+    while (next <= upper) {
+      push(next);
+      ++next;
+    }
+    const size_t lower = index > radius ? index - radius : 0u;
+    while (wedge[head].index < lower) {
+      ++head;
+    }
+    destination[index * stride] = wedge[head].value;
+  }
+}
+
+void slidingExtrema2d(const std::vector<uint8_t> &source,
+                      std::vector<uint8_t> &destination,
+                      uint32_t width,
+                      uint32_t height,
+                      uint32_t radius,
+                      bool takeMax) {
+  std::vector<uint8_t> horizontal(source.size());
+  std::vector<WedgeEntry> wedge;
+  wedge.reserve(static_cast<size_t>(radius) * 2u + 2u);
+  for (uint32_t y = 0; y < height; ++y) {
+    const size_t rowOffset = static_cast<size_t>(y) * width;
+    slidingExtremaLine(source.data() + rowOffset, horizontal.data() + rowOffset, width, 1u, radius, takeMax, wedge);
+  }
+  destination.resize(source.size());
+  for (uint32_t x = 0; x < width; ++x) {
+    slidingExtremaLine(horizontal.data() + x, destination.data() + x, height, width, radius, takeMax, wedge);
   }
 }
 
@@ -215,66 +421,14 @@ void dilateAlpha(AlphaMask &mask, uint32_t radius) {
     return;
   }
 
-  const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
-  std::vector<uint8_t> horizontalAlpha(pixelCount);
-  std::vector<uint8_t> dilatedAlpha(pixelCount);
-
-  for (uint32_t y = 0; y < mask.height; ++y) {
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      uint8_t maxAlpha = 0u;
-      const uint32_t minX = x > radius ? x - radius : 0u;
-      const uint32_t maxX = std::min(mask.width - 1u, x + radius);
-      for (uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
-        maxAlpha = std::max(maxAlpha, mask.alpha[static_cast<size_t>(y) * mask.width + sampleX]);
-      }
-      horizontalAlpha[static_cast<size_t>(y) * mask.width + x] = maxAlpha;
-    }
-  }
-
-  for (uint32_t y = 0; y < mask.height; ++y) {
-    const uint32_t minY = y > radius ? y - radius : 0u;
-    const uint32_t maxY = std::min(mask.height - 1u, y + radius);
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      uint8_t maxAlpha = 0u;
-      for (uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
-        maxAlpha = std::max(maxAlpha, horizontalAlpha[static_cast<size_t>(sampleY) * mask.width + x]);
-      }
-      dilatedAlpha[static_cast<size_t>(y) * mask.width + x] = maxAlpha;
-    }
-  }
-
+  std::vector<uint8_t> dilatedAlpha;
+  slidingExtrema2d(mask.alpha, dilatedAlpha, mask.width, mask.height, radius, true);
   mask.alpha = std::move(dilatedAlpha);
 }
 
 std::vector<uint8_t> erodedAlphaForRadius(const AlphaMask &mask, uint32_t radius) {
-  const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
-  std::vector<uint8_t> horizontalAlpha(pixelCount);
-  std::vector<uint8_t> erodedAlpha(pixelCount);
-
-  for (uint32_t y = 0; y < mask.height; ++y) {
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      uint8_t minAlpha = 255u;
-      const uint32_t minX = x > radius ? x - radius : 0u;
-      const uint32_t maxX = std::min(mask.width - 1u, x + radius);
-      for (uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
-        minAlpha = std::min(minAlpha, mask.alpha[static_cast<size_t>(y) * mask.width + sampleX]);
-      }
-      horizontalAlpha[static_cast<size_t>(y) * mask.width + x] = minAlpha;
-    }
-  }
-
-  for (uint32_t y = 0; y < mask.height; ++y) {
-    const uint32_t minY = y > radius ? y - radius : 0u;
-    const uint32_t maxY = std::min(mask.height - 1u, y + radius);
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      uint8_t minAlpha = 255u;
-      for (uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
-        minAlpha = std::min(minAlpha, horizontalAlpha[static_cast<size_t>(sampleY) * mask.width + x]);
-      }
-      erodedAlpha[static_cast<size_t>(y) * mask.width + x] = minAlpha;
-    }
-  }
-
+  std::vector<uint8_t> erodedAlpha;
+  slidingExtrema2d(mask.alpha, erodedAlpha, mask.width, mask.height, radius, false);
   return erodedAlpha;
 }
 
@@ -308,6 +462,39 @@ void erodeAlpha(AlphaMask &mask, double radius) {
   }
 }
 
+// Running-sum box average over the clamped window [i - radius, i + radius];
+// same integer arithmetic as a brute-force window scan, but O(1) per pixel.
+void slidingBoxAverageLine(const uint8_t *source,
+                           uint8_t *destination,
+                           size_t count,
+                           size_t stride,
+                           size_t radius) {
+  if (count == 0u) {
+    return;
+  }
+
+  uint32_t sumAlpha = 0u;
+  uint32_t sampleCount = 0u;
+  const size_t initialUpper = std::min(count - 1u, radius);
+  for (size_t index = 0; index <= initialUpper; ++index) {
+    sumAlpha += source[index * stride];
+    ++sampleCount;
+  }
+
+  for (size_t index = 0; index < count; ++index) {
+    destination[index * stride] = static_cast<uint8_t>(sumAlpha / std::max(1u, sampleCount));
+    const size_t incoming = index + radius + 1u;
+    if (incoming < count) {
+      sumAlpha += source[incoming * stride];
+      ++sampleCount;
+    }
+    if (index >= radius) {
+      sumAlpha -= source[(index - radius) * stride];
+      --sampleCount;
+    }
+  }
+}
+
 void featherAlpha(AlphaMask &mask, uint32_t radius) {
   if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u || radius == 0u) {
     return;
@@ -318,33 +505,11 @@ void featherAlpha(AlphaMask &mask, uint32_t radius) {
   std::vector<uint8_t> featheredAlpha(pixelCount);
 
   for (uint32_t y = 0; y < mask.height; ++y) {
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      uint32_t sumAlpha = 0u;
-      uint32_t sampleCount = 0u;
-      const uint32_t minX = x > radius ? x - radius : 0u;
-      const uint32_t maxX = std::min(mask.width - 1u, x + radius);
-      for (uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
-        sumAlpha += mask.alpha[static_cast<size_t>(y) * mask.width + sampleX];
-        ++sampleCount;
-      }
-      horizontalAlpha[static_cast<size_t>(y) * mask.width + x] =
-          static_cast<uint8_t>(sumAlpha / std::max(1u, sampleCount));
-    }
+    const size_t rowOffset = static_cast<size_t>(y) * mask.width;
+    slidingBoxAverageLine(mask.alpha.data() + rowOffset, horizontalAlpha.data() + rowOffset, mask.width, 1u, radius);
   }
-
-  for (uint32_t y = 0; y < mask.height; ++y) {
-    const uint32_t minY = y > radius ? y - radius : 0u;
-    const uint32_t maxY = std::min(mask.height - 1u, y + radius);
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      uint32_t sumAlpha = 0u;
-      uint32_t sampleCount = 0u;
-      for (uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
-        sumAlpha += horizontalAlpha[static_cast<size_t>(sampleY) * mask.width + x];
-        ++sampleCount;
-      }
-      featheredAlpha[static_cast<size_t>(y) * mask.width + x] =
-          static_cast<uint8_t>(sumAlpha / std::max(1u, sampleCount));
-    }
+  for (uint32_t x = 0; x < mask.width; ++x) {
+    slidingBoxAverageLine(horizontalAlpha.data() + x, featheredAlpha.data() + x, mask.height, mask.width, radius);
   }
 
   mask.alpha = std::move(featheredAlpha);
@@ -353,39 +518,12 @@ void featherAlpha(AlphaMask &mask, uint32_t radius) {
 std::vector<uint8_t> alphaProtectionMask(const AlphaMask &mask, uint32_t radius) {
   const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
   std::vector<uint8_t> sourceMask(pixelCount);
-  std::vector<uint8_t> horizontalMask(pixelCount);
-  std::vector<uint8_t> protectionMask(pixelCount);
-
   for (size_t index = 0; index < pixelCount; ++index) {
     sourceMask[index] = mask.alpha[index] >= kTemporalProtectionAlphaThreshold ? 1u : 0u;
   }
 
-  for (uint32_t y = 0; y < mask.height; ++y) {
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      const uint32_t minX = x > radius ? x - radius : 0u;
-      const uint32_t maxX = std::min(mask.width - 1u, x + radius);
-      for (uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
-        if (sourceMask[static_cast<size_t>(y) * mask.width + sampleX] != 0u) {
-          horizontalMask[static_cast<size_t>(y) * mask.width + x] = 1u;
-          break;
-        }
-      }
-    }
-  }
-
-  for (uint32_t y = 0; y < mask.height; ++y) {
-    const uint32_t minY = y > radius ? y - radius : 0u;
-    const uint32_t maxY = std::min(mask.height - 1u, y + radius);
-    for (uint32_t x = 0; x < mask.width; ++x) {
-      for (uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
-        if (horizontalMask[static_cast<size_t>(sampleY) * mask.width + x] != 0u) {
-          protectionMask[static_cast<size_t>(y) * mask.width + x] = 1u;
-          break;
-        }
-      }
-    }
-  }
-
+  std::vector<uint8_t> protectionMask;
+  slidingExtrema2d(sourceMask, protectionMask, mask.width, mask.height, radius, true);
   return protectionMask;
 }
 
@@ -434,9 +572,7 @@ void stabilizeAlphaEdges(AlphaMask &mask, const AlphaMask &previousMask, const K
     return;
   }
 
-  AlphaMask previous = previousMask;
-  remapAlphaSmoothstep(previous);
-
+  const std::array<uint8_t, 256> &lut = smoothstepAlphaLut();
   const float strength = static_cast<float>(std::clamp(settings.edgeStabilizationStrength, 0.0, 1.0));
   float ageFactor = 1.0f;
   if (maskAgeMs >= kEdgeStabilizationFadeOutAgeMs) {
@@ -454,7 +590,7 @@ void stabilizeAlphaEdges(AlphaMask &mask, const AlphaMask &previousMask, const K
       continue;
     }
 
-    const uint8_t previousAlpha = previous.alpha[index];
+    const uint8_t previousAlpha = lut[previousMask.alpha[index]];
     const float motion = static_cast<float>(std::abs(static_cast<int>(currentAlpha) - static_cast<int>(previousAlpha))) / 255.0f;
     if (motion >= kEdgeStabilizationMaxMotion) {
       continue;
@@ -554,27 +690,52 @@ void buildMaskSamples(uint32_t frameWidth,
   }
 }
 
-void applyLatestAlphaToCurrentFrame(const VideoFrame &currentFrame,
-                                    const AlphaMask &latestMask,
-                                    VideoFrame &outputFrame) {
-  outputFrame = currentFrame;
-  if (currentFrame.rgba.empty() ||
-      latestMask.alpha.empty() ||
-      currentFrame.width == 0u ||
-      currentFrame.height == 0u ||
-      latestMask.width == 0u ||
-      latestMask.height == 0u) {
+
+uint8_t normalizeKeyedLayerAlpha(uint8_t alpha) {
+  constexpr uint8_t kTransparentCutoff = 18u;
+  constexpr uint8_t kOpaqueCutoff = 242u;
+
+  if (alpha <= kTransparentCutoff) {
+    return 0u;
+  }
+  if (alpha >= kOpaqueCutoff) {
+    return 255u;
+  }
+
+  const float normalized = static_cast<float>(alpha - kTransparentCutoff) /
+      static_cast<float>(kOpaqueCutoff - kTransparentCutoff);
+  return static_cast<uint8_t>(std::round(smoothstep(0.0f, 1.0f, normalized) * 255.0f));
+}
+
+// Applies the alpha mask onto the frame in place. Runs on the keyer worker
+// thread once per published mask, so the program loop composites pre-keyed
+// frames without a full-resolution alpha pass (and frame copy) per program
+// frame.
+void applyAlphaMaskToFrame(VideoFrame &frame, const AlphaMask &mask) {
+  if (frame.rgba.empty() ||
+      mask.alpha.empty() ||
+      frame.width == 0u ||
+      frame.height == 0u ||
+      mask.width == 0u ||
+      mask.height == 0u) {
     return;
   }
 
-  std::vector<MaskSample> xSamples(currentFrame.width);
-  std::vector<MaskSample> ySamples(currentFrame.height);
-  buildMaskSamples(currentFrame.width, currentFrame.height, latestMask, xSamples, ySamples);
+  std::vector<MaskSample> xSamples(frame.width);
+  std::vector<MaskSample> ySamples(frame.height);
+  buildMaskSamples(frame.width, frame.height, mask, xSamples, ySamples);
 
-  for (uint32_t y = 0; y < currentFrame.height; ++y) {
-    for (uint32_t x = 0; x < currentFrame.width; ++x) {
-      const size_t frameOffset = (static_cast<size_t>(y) * currentFrame.width + x) * 4u;
-      outputFrame.rgba[frameOffset + 3u] = sampleMaskBilinear(latestMask, xSamples, ySamples, x, y);
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      const size_t frameOffset = (static_cast<size_t>(y) * frame.width + x) * 4u;
+      const uint8_t sampledAlpha = sampleMaskBilinear(mask, xSamples, ySamples, x, y);
+      const uint8_t normalizedAlpha = normalizeKeyedLayerAlpha(sampledAlpha);
+      frame.rgba[frameOffset + 3u] = normalizedAlpha;
+      if (normalizedAlpha == 0u) {
+        frame.rgba[frameOffset + 0u] = 0u;
+        frame.rgba[frameOffset + 1u] = 0u;
+        frame.rgba[frameOffset + 2u] = 0u;
+      }
     }
   }
 }
@@ -582,53 +743,45 @@ void applyLatestAlphaToCurrentFrame(const VideoFrame &currentFrame,
 class AsyncKeyerWorker {
  public:
   AsyncKeyerWorker(const Options &options, MeetingState &state, std::atomic<bool> &running)
-      : keyerChain_(options), state_(state), running_(running), thread_(&AsyncKeyerWorker::run, this) {}
+      : keyerChain_(options),
+        state_(state),
+        running_(running),
+        frameIntervalMs_(1000.0 / static_cast<double>(options.fps == 0u ? 30u : options.fps)),
+        thread_(&AsyncKeyerWorker::run, this) {}
 
   ~AsyncKeyerWorker() {
     stop();
   }
 
+  // Adaptive pacing: every new camera frame is offered to the worker; while
+  // the worker is busy the pending slot is replaced (counted as dropped) so
+  // inference always runs back-to-back on the freshest frame. The effective
+  // keyer rate is min(camera fps, 1 / inference time) without a fixed cap.
   void submit(const VideoFrame &frame) {
-    uint32_t targetFps = 30u;
-    {
-      std::lock_guard<std::mutex> stateLock(state_.mutex);
-      targetFps = targetKeyerFps(state_.performanceMode);
-    }
-    const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto minimumInterval = std::chrono::duration<double>(1.0 / static_cast<double>(targetFps));
-    if (lastSubmittedAt_ != std::chrono::steady_clock::time_point{} &&
-        now - lastSubmittedAt_ < minimumInterval) {
-      ++skippedFrames_;
-      return;
-    }
     if (hasPendingFrame_) {
       ++droppedFrames_;
     }
     pendingFrame_ = frame;
     pendingGeneration_ = generation_;
     hasPendingFrame_ = true;
-    lastSubmittedAt_ = now;
     cv_.notify_one();
   }
 
-  bool copyLatest(PairedKeyerFrame &pair) const {
+  // Returns the latest published pair without copying frame data; callers
+  // share ownership of the immutable pair.
+  std::shared_ptr<const PairedKeyerFrame> copyLatest() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!hasLatestPair_) {
-      return false;
-    }
-    pair = latestPair_;
-    return true;
+    return latestPair_;
   }
 
   void clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++generation_;
     hasPendingFrame_ = false;
-    hasLatestPair_ = false;
+    latestPair_.reset();
     droppedFrames_ = 0;
     skippedFrames_ = 0;
-    lastSubmittedAt_ = std::chrono::steady_clock::time_point{};
     keyerRate_ = RateMeter{};
     lastDropRateSample_ = std::chrono::steady_clock::now();
     lastDropRateTotal_ = 0u;
@@ -679,11 +832,14 @@ class AsyncKeyerWorker {
 
       const uint64_t keyerStartNs = nowNs();
       KeyerResult keyed = keyerChain_.process(frame, state_);
+      const auto refineStart = std::chrono::steady_clock::now();
+      refineAlphaMaskEdges(keyed.mask, frame);
+      const double refineMs = elapsedMs(refineStart, std::chrono::steady_clock::now());
       AlphaMask previousMask;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (hasLatestPair_) {
-          previousMask = latestPair_.mask;
+        if (latestPair_ != nullptr) {
+          previousMask = latestPair_->mask;
         }
       }
       KeyerSettings settings;
@@ -705,6 +861,10 @@ class AsyncKeyerWorker {
         blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
       }
       postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs, keyed.status.metrics);
+      keyed.status.metrics.maskPostprocessMs += refineMs;
+      keyed.status.metrics.maskWidth = keyed.mask.width;
+      keyed.status.metrics.maskHeight = keyed.mask.height;
+      applyAlphaMaskToFrame(frame, keyed.mask);
       bool shouldPublish = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -724,14 +884,25 @@ class AsyncKeyerWorker {
           keyed.status.metrics.keyerProcessingMs = publishNs >= keyerStartNs
               ? static_cast<double>(publishNs - keyerStartNs) / 1000000.0
               : -1.0;
-          latestPair_.frame = std::move(frame);
-          latestPair_.mask = std::move(keyed.mask);
-          latestPair_.publishedAtNs = publishNs;
-          hasLatestPair_ = !latestPair_.mask.alpha.empty();
+          if (!keyed.mask.alpha.empty()) {
+            auto pair = std::make_shared<PairedKeyerFrame>();
+            pair->frame = std::move(frame);
+            pair->mask = std::move(keyed.mask);
+            pair->publishedAtNs = publishNs;
+            latestPair_ = std::move(pair);
+          } else {
+            latestPair_.reset();
+          }
         }
       }
       if (shouldPublish) {
         updateMeetingKeyerStatus(state_, keyed.status);
+      }
+
+      const double processingMs = static_cast<double>(nowNs() - keyerStartNs) / 1000000.0;
+      if (running_.load() && processingMs > frameIntervalMs_ * kKeyerCooldownTriggerFactor) {
+        const double cooldownMs = std::min(kKeyerMaxCooldownMs, processingMs * kKeyerCooldownFraction);
+        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(cooldownMs));
       }
     }
   }
@@ -755,22 +926,21 @@ class AsyncKeyerWorker {
   KeyerChain keyerChain_;
   MeetingState &state_;
   std::atomic<bool> &running_;
+  const double frameIntervalMs_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::thread thread_;
   VideoFrame pendingFrame_;
-  PairedKeyerFrame latestPair_;
+  std::shared_ptr<const PairedKeyerFrame> latestPair_;
   uint64_t generation_ = 0;
   uint64_t pendingGeneration_ = 0;
   uint64_t droppedFrames_ = 0;
   uint64_t skippedFrames_ = 0;
-  std::chrono::steady_clock::time_point lastSubmittedAt_{};
   RateMeter keyerRate_;
   std::chrono::steady_clock::time_point lastDropRateSample_{};
   uint64_t lastDropRateTotal_ = 0u;
   double droppedFramesPerSec_ = -1.0;
   bool hasPendingFrame_ = false;
-  bool hasLatestPair_ = false;
   bool stopping_ = false;
 };
 
@@ -975,24 +1145,22 @@ void runFramePipeline(const Options &options,
           ? static_cast<double>(programStartNs - previousProgramStartNs) / 1000000.0
           : -1.0;
       previousProgramStartNs = programStartNs;
-      VideoFrame frame;
       const auto cameraCopyStart = std::chrono::steady_clock::now();
+      // Copy straight into latestCameraFrame: the intermediate local frame
+      // cost an extra full-frame copy (~3.7 MB) per camera frame.
       const bool hasNewCameraFrame = runtime.cameraRunning &&
-          camera.copyLatestFrameIfNew(lastCameraTimestampNs, frame) &&
-          !frame.rgba.empty();
+          camera.copyLatestFrameIfNew(lastCameraTimestampNs, latestCameraFrame) &&
+          !latestCameraFrame.rgba.empty();
       if (hasNewCameraFrame) {
-        latestCameraFrame = frame;
-        lastCameraTimestampNs = frame.timestampNs;
+        lastCameraTimestampNs = latestCameraFrame.timestampNs;
       } else if (!runtime.cameraRunning) {
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
       }
       const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
-      VideoFrame keyedFrame;
       const VideoFrame *frameForCompositor = nullptr;
-      PairedKeyerFrame selectedPair;
-      bool hasSelectedPair = false;
+      std::shared_ptr<const PairedKeyerFrame> selectedPair;
       KeyerSettings keyerSettings;
       bool keyerEnabled = false;
       {
@@ -1013,19 +1181,16 @@ void runFramePipeline(const Options &options,
       }
       if (hasCameraFrame) {
         if (snapshot.keyerEnabled) {
-          PairedKeyerFrame latestPair;
-          if (keyerWorker.copyLatest(latestPair)) {
+          if (const std::shared_ptr<const PairedKeyerFrame> latestPair = keyerWorker.copyLatest()) {
             double maskAgeMs = 0.0;
-            if (latestCameraFrame.timestampNs >= latestPair.frame.timestampNs) {
-              maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
+            if (latestCameraFrame.timestampNs >= latestPair->frame.timestampNs) {
+              maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair->frame.timestampNs) / 1000000.0;
             }
             maskAgeAverage.add(maskAgeMs);
             const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
             if (pairIsUsable) {
-              applyLatestAlphaToCurrentFrame(latestPair.frame, latestPair.mask, keyedFrame);
-              frameForCompositor = &keyedFrame;
               selectedPair = latestPair;
-              hasSelectedPair = true;
+              frameForCompositor = &selectedPair->frame;
             } else {
               frameForCompositor = &latestCameraFrame;
             }
@@ -1034,8 +1199,8 @@ void runFramePipeline(const Options &options,
               std::lock_guard<std::mutex> lock(state.mutex);
               state.keyerMetrics.maskAgeMs = maskAgeMs;
               state.keyerMetrics.maskAgeAvgMs = maskAgeAverage.value();
-              state.keyerMetrics.keyerPublishToProgramMs = latestPair.publishedAtNs > 0u && programStartNs >= latestPair.publishedAtNs
-                  ? static_cast<double>(programStartNs - latestPair.publishedAtNs) / 1000000.0
+              state.keyerMetrics.keyerPublishToProgramMs = latestPair->publishedAtNs > 0u && programStartNs >= latestPair->publishedAtNs
+                  ? static_cast<double>(programStartNs - latestPair->publishedAtNs) / 1000000.0
                   : -1.0;
               state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
@@ -1104,23 +1269,21 @@ void runFramePipeline(const Options &options,
         lastFrontGraphicsTimestampNs = frontGraphicsFrameForCompositor->timestampNs;
       }
       if (hasCameraFrame && snapshot.keyerEnabled) {
-        PairedKeyerFrame latestPair;
-        if (keyerWorker.copyLatest(latestPair) &&
-            (!hasSelectedPair || latestPair.publishedAtNs > selectedPair.publishedAtNs)) {
+        const std::shared_ptr<const PairedKeyerFrame> latestPair = keyerWorker.copyLatest();
+        if (latestPair != nullptr &&
+            (selectedPair == nullptr || latestPair->publishedAtNs > selectedPair->publishedAtNs)) {
           double maskAgeMs = 0.0;
-          if (latestCameraFrame.timestampNs >= latestPair.frame.timestampNs) {
-            maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair.frame.timestampNs) / 1000000.0;
+          if (latestCameraFrame.timestampNs >= latestPair->frame.timestampNs) {
+            maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair->frame.timestampNs) / 1000000.0;
           }
           maskAgeAverage.add(maskAgeMs);
           const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
           if (pairIsUsable) {
-            applyLatestAlphaToCurrentFrame(latestPair.frame, latestPair.mask, keyedFrame);
-            frameForCompositor = &keyedFrame;
             selectedPair = latestPair;
-            hasSelectedPair = true;
+            frameForCompositor = &selectedPair->frame;
           } else {
             frameForCompositor = &latestCameraFrame;
-            hasSelectedPair = false;
+            selectedPair.reset();
           }
           const KeyerRuntimeStats keyerStats = keyerWorker.stats();
           const uint64_t programUseNs = nowNs();
@@ -1128,8 +1291,8 @@ void runFramePipeline(const Options &options,
             std::lock_guard<std::mutex> lock(state.mutex);
             state.keyerMetrics.maskAgeMs = maskAgeMs;
             state.keyerMetrics.maskAgeAvgMs = maskAgeAverage.value();
-            state.keyerMetrics.keyerPublishToProgramMs = latestPair.publishedAtNs > 0u && programUseNs >= latestPair.publishedAtNs
-                ? static_cast<double>(programUseNs - latestPair.publishedAtNs) / 1000000.0
+            state.keyerMetrics.keyerPublishToProgramMs = latestPair->publishedAtNs > 0u && programUseNs >= latestPair->publishedAtNs
+                ? static_cast<double>(programUseNs - latestPair->publishedAtNs) / 1000000.0
                 : -1.0;
             state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
             state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
@@ -1147,7 +1310,7 @@ void runFramePipeline(const Options &options,
         }
       }
 
-      const bool hasNewUsableKeyerPair = hasSelectedPair && selectedPair.publishedAtNs > lastUsedKeyerPublishedNs;
+      const bool hasNewUsableKeyerPair = selectedPair != nullptr && selectedPair->publishedAtNs > lastUsedKeyerPublishedNs;
       shouldRenderProgram = shouldRenderProgram ||
           hasNewCameraFrame ||
           hasNewBackGraphicsFrame ||
@@ -1174,8 +1337,8 @@ void runFramePipeline(const Options &options,
             frontGraphicsFrameForCompositor,
             frameIndex++,
             programFrame);
-        if (hasSelectedPair) {
-          lastUsedKeyerPublishedNs = selectedPair.publishedAtNs;
+        if (selectedPair != nullptr) {
+          lastUsedKeyerPublishedNs = selectedPair->publishedAtNs;
         }
         lastProgramRevision = runtime.programRevision;
         {

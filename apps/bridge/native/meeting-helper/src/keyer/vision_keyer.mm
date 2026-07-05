@@ -6,7 +6,7 @@
 #include <vector>
 
 #if defined(__APPLE__)
-#import <CoreGraphics/CoreGraphics.h>
+#import <Accelerate/Accelerate.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #import <Vision/Vision.h>
@@ -28,38 +28,12 @@ std::string normalizedQualityMode(const std::string &qualityMode) {
 }
 
 #if defined(__APPLE__)
-void releaseFrameData(void *, const void *, size_t) {}
+struct VisionInputSize {
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
 
-CGImageRef createImageFromFrame(const VideoFrame &frame, const KeyerSettings &settings) {
-  if (frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
-    return nullptr;
-  }
-  CGDataProviderRef provider = CGDataProviderCreateWithData(
-      nullptr, frame.rgba.data(), frame.rgba.size(), releaseFrameData);
-  if (provider == nullptr) {
-    return nullptr;
-  }
-  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-  CGImageRef sourceImage = CGImageCreate(
-      frame.width,
-      frame.height,
-      8,
-      32,
-      static_cast<size_t>(frame.width) * 4u,
-      colorSpace,
-      kCGImageAlphaLast | kCGBitmapByteOrder32Big,
-      provider,
-      nullptr,
-      false,
-      kCGRenderingIntentDefault);
-  if (colorSpace != nullptr) {
-    CGColorSpaceRelease(colorSpace);
-  }
-  CGDataProviderRelease(provider);
-  if (sourceImage == nullptr) {
-    return nullptr;
-  }
-
+VisionInputSize visionInputSize(const VideoFrame &frame, const KeyerSettings &settings) {
   const uint32_t maxWidth = std::max(1u, settings.maxInputWidth);
   const uint32_t maxHeight = std::max(1u, settings.maxInputHeight);
   const double scale = std::min(
@@ -67,31 +41,10 @@ CGImageRef createImageFromFrame(const VideoFrame &frame, const KeyerSettings &se
       std::min(
           static_cast<double>(maxWidth) / static_cast<double>(frame.width),
           static_cast<double>(maxHeight) / static_cast<double>(frame.height)));
-  if (scale >= 1.0) {
-    return sourceImage;
-  }
-
-  const size_t targetWidth = std::max<size_t>(1u, static_cast<size_t>(std::round(frame.width * scale)));
-  const size_t targetHeight = std::max<size_t>(1u, static_cast<size_t>(std::round(frame.height * scale)));
-  CGColorSpaceRef targetColorSpace = CGColorSpaceCreateDeviceRGB();
-  CGContextRef context = CGBitmapContextCreate(
-      nullptr,
-      targetWidth,
-      targetHeight,
-      8,
-      targetWidth * 4u,
-      targetColorSpace,
-      kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-  CGColorSpaceRelease(targetColorSpace);
-  if (context == nullptr) {
-    return sourceImage;
-  }
-  CGContextSetInterpolationQuality(context, kCGInterpolationMedium);
-  CGContextDrawImage(context, CGRectMake(0, 0, targetWidth, targetHeight), sourceImage);
-  CGImageRef scaledImage = CGBitmapContextCreateImage(context);
-  CGContextRelease(context);
-  CGImageRelease(sourceImage);
-  return scaledImage;
+  VisionInputSize size;
+  size.width = std::max(1u, static_cast<uint32_t>(std::lround(frame.width * scale)));
+  size.height = std::max(1u, static_cast<uint32_t>(std::lround(frame.height * scale)));
+  return size;
 }
 
 VNGeneratePersonSegmentationRequestQualityLevel visionQualityLevel(const std::string &qualityMode) {
@@ -139,6 +92,15 @@ class VisionKeyer::Impl {
  public:
   Impl() = default;
 
+#if defined(__APPLE__)
+  ~Impl() {
+    if (pixelBuffer_ != nullptr) {
+      CVPixelBufferRelease(pixelBuffer_);
+      pixelBuffer_ = nullptr;
+    }
+  }
+#endif
+
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) {
     KeyerResult result;
     result.status.activeKeyer = "passthrough";
@@ -152,11 +114,16 @@ class VisionKeyer::Impl {
     if (@available(macOS 12.0, *)) {
       @autoreleasepool {
         const auto start = std::chrono::steady_clock::now();
-        CGImageRef image = createImageFromFrame(input, settings);
-        if (image == nullptr) {
+        if (input.rgba.empty() || input.width == 0u || input.height == 0u) {
           result.status.fallbackReason = "invalid_frame";
           return result;
         }
+        const auto convertStart = std::chrono::steady_clock::now();
+        if (!fillPixelBuffer(input, settings)) {
+          result.status.fallbackReason = "frame_convert_failed";
+          return result;
+        }
+        const auto convertEnd = std::chrono::steady_clock::now();
 
         VNGeneratePersonSegmentationRequest *request = requestForCurrentThread();
         VNSequenceRequestHandler *handler = sequenceHandlerForCurrentThread();
@@ -164,9 +131,9 @@ class VisionKeyer::Impl {
 
         NSError *error = nil;
         const auto runStart = std::chrono::steady_clock::now();
-        const BOOL ok = [handler performRequests:@[ request ] onCGImage:image error:&error];
+        const BOOL ok = [handler performRequests:@[ request ] onCVPixelBuffer:pixelBuffer_ error:&error];
         const auto runEnd = std::chrono::steady_clock::now();
-        CGImageRelease(image);
+        result.status.metrics.tensorMs = elapsedMs(convertStart, convertEnd);
 
         if (!ok || request.results.count == 0u) {
           result.status.fallbackReason = "vision_request_failed";
@@ -198,6 +165,67 @@ class VisionKeyer::Impl {
 
 #if defined(__APPLE__)
  private:
+  bool ensurePixelBuffer(uint32_t width, uint32_t height) {
+    if (pixelBuffer_ != nullptr &&
+        CVPixelBufferGetWidth(pixelBuffer_) == width &&
+        CVPixelBufferGetHeight(pixelBuffer_) == height) {
+      return true;
+    }
+    if (pixelBuffer_ != nullptr) {
+      CVPixelBufferRelease(pixelBuffer_);
+      pixelBuffer_ = nullptr;
+    }
+    // IOSurface backing lets Vision read the buffer without an extra copy.
+    NSDictionary *attributes = @{(id)kCVPixelBufferIOSurfacePropertiesKey : @{}};
+    const CVReturn status = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        width,
+        height,
+        kCVPixelFormatType_32BGRA,
+        (__bridge CFDictionaryRef)attributes,
+        &pixelBuffer_);
+    return status == kCVReturnSuccess && pixelBuffer_ != nullptr;
+  }
+
+  bool fillPixelBuffer(const VideoFrame &frame, const KeyerSettings &settings) {
+    const VisionInputSize target = visionInputSize(frame, settings);
+    if (!ensurePixelBuffer(target.width, target.height)) {
+      return false;
+    }
+
+    vImage_Buffer source;
+    source.data = const_cast<uint8_t *>(frame.rgba.data());
+    source.height = frame.height;
+    source.width = frame.width;
+    source.rowBytes = static_cast<size_t>(frame.width) * 4u;
+
+    vImage_Buffer scaled = source;
+    if (target.width != frame.width || target.height != frame.height) {
+      scaleScratch_.resize(static_cast<size_t>(target.width) * target.height * 4u);
+      scaled.data = scaleScratch_.data();
+      scaled.height = target.height;
+      scaled.width = target.width;
+      scaled.rowBytes = static_cast<size_t>(target.width) * 4u;
+      if (vImageScale_ARGB8888(&source, &scaled, nullptr, kvImageNoFlags) != kvImageNoError) {
+        return false;
+      }
+    }
+
+    if (CVPixelBufferLockBaseAddress(pixelBuffer_, 0) != kCVReturnSuccess) {
+      return false;
+    }
+    vImage_Buffer destination;
+    destination.data = CVPixelBufferGetBaseAddress(pixelBuffer_);
+    destination.height = target.height;
+    destination.width = target.width;
+    destination.rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer_);
+    const uint8_t kRgbaToBgra[4] = {2, 1, 0, 3};
+    const vImage_Error permuteStatus =
+        vImagePermuteChannels_ARGB8888(&scaled, &destination, kRgbaToBgra, kvImageNoFlags);
+    CVPixelBufferUnlockBaseAddress(pixelBuffer_, 0);
+    return permuteStatus == kvImageNoError;
+  }
+
   VNGeneratePersonSegmentationRequest *requestForCurrentThread() {
     if (request_ == nil) {
       request_ = [[VNGeneratePersonSegmentationRequest alloc] init];
@@ -216,6 +244,8 @@ class VisionKeyer::Impl {
 
   VNSequenceRequestHandler *sequenceHandler_ = nil;
   VNGeneratePersonSegmentationRequest *request_ = nil;
+  CVPixelBufferRef pixelBuffer_ = nullptr;
+  std::vector<uint8_t> scaleScratch_;
 #endif
 };
 

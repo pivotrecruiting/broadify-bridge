@@ -6,6 +6,7 @@
 #include "util/json_utils.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <Accelerate/Accelerate.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
@@ -347,6 +348,18 @@ class AvFoundationCameraSource final : public CameraSource {
     return true;
   }
 
+  // Checks the timestamp before copying: the default implementation copies
+  // the full frame (~3.7 MB) first and only then compares, which wastes a
+  // copy on every poll where no new frame arrived.
+  bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!hasFrame_ || latestFrame_.timestampNs == lastTimestampNs) {
+      return false;
+    }
+    frame = latestFrame_;
+    return true;
+  }
+
   std::string lastError() const override {
     std::lock_guard<std::mutex> lock(mutex_);
     return lastError_;
@@ -413,17 +426,25 @@ class AvFoundationCameraSource final : public CameraSource {
     frame.height = static_cast<uint32_t>(height);
     frame.timestampNs = nowNs();
     frame.rgba.resize(width * height * 4u);
-    for (size_t y = 0; y < height; ++y) {
-      const uint8_t *row = src + y * stride;
-      uint8_t *dst = frame.rgba.data() + y * width * 4u;
-      for (size_t x = 0; x < width; ++x) {
-        dst[x * 4u + 0u] = row[x * 4u + 2u];
-        dst[x * 4u + 1u] = row[x * 4u + 1u];
-        dst[x * 4u + 2u] = row[x * 4u + 0u];
-        dst[x * 4u + 3u] = row[x * 4u + 3u];
-      }
-    }
+    // SIMD-accelerated BGRA->RGBA swizzle; the scalar per-pixel loop cost
+    // several milliseconds per frame at 30fps.
+    vImage_Buffer sourceBuffer;
+    sourceBuffer.data = const_cast<uint8_t *>(src);
+    sourceBuffer.height = height;
+    sourceBuffer.width = width;
+    sourceBuffer.rowBytes = stride;
+    vImage_Buffer destinationBuffer;
+    destinationBuffer.data = frame.rgba.data();
+    destinationBuffer.height = height;
+    destinationBuffer.width = width;
+    destinationBuffer.rowBytes = width * 4u;
+    const uint8_t kBgraToRgba[4] = {2, 1, 0, 3};
+    const vImage_Error permuteStatus =
+        vImagePermuteChannels_ARGB8888(&sourceBuffer, &destinationBuffer, kBgraToRgba, kvImageNoFlags);
     CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
+    if (permuteStatus != kvImageNoError) {
+      return;
+    }
 
     std::lock_guard<std::mutex> lock(mutex_);
     latestFrame_ = std::move(frame);
