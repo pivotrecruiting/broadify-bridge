@@ -53,6 +53,11 @@ struct MetalComposePlan {
   uint64_t frameIndex = 0;
   const VideoFrame *cameraFrame = nullptr;
   MetalLayerMapping camera;
+  // Keyer mask (R8, stretched over the camera frame); applied in the shader.
+  const uint8_t *cameraMask = nullptr;
+  uint32_t maskWidth = 0;
+  uint32_t maskHeight = 0;
+  uint64_t maskTimestampNs = 0;
   const VideoFrame *backGraphics = nullptr;
   MetalLayerMapping backMapping;
   const VideoFrame *frontGraphics = nullptr;

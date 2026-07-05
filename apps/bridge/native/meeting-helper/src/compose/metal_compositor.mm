@@ -57,6 +57,11 @@ struct ComposeUniforms {
   float m22; float s00; float s01; float s02;
   float s10; float s11; float s12; float s20;
   float s21; float s22; float padM1; float padM2;
+
+  uint32_t maskPresent;
+  uint32_t padK0;
+  uint32_t padK1;
+  uint32_t padK2;
 };
 
 constexpr const char *kComposeShaderSource = R"MSL(
@@ -109,6 +114,11 @@ struct ComposeUniforms {
   float m22; float s00; float s01; float s02;
   float s10; float s11; float s12; float s20;
   float s21; float s22; float padM1; float padM2;
+
+  uint maskPresent;
+  uint padK0;
+  uint padK1;
+  uint padK2;
 };
 
 constexpr sampler kLayerSampler(filter::linear, address::clamp_to_edge, coord::normalized);
@@ -154,6 +164,7 @@ kernel void composeProgram(device uchar4 *output [[buffer(0)]],
                            texture2d<float> backTex [[texture(1)]],
                            texture2d<float> frontTex [[texture(2)]],
                            texture2d<float> mediaTex [[texture(3)]],
+                           texture2d<float> maskTex [[texture(4)]],
                            uint2 gid [[thread_position_in_grid]]) {
   if (gid.x >= u.width || gid.y >= u.height) {
     return;
@@ -209,8 +220,20 @@ kernel void composeProgram(device uchar4 *output [[buffer(0)]],
     if (src.x >= 0.0 && src.x <= u.camTexWidth - 1.0 && src.y >= 0.0 && src.y <= u.camTexHeight - 1.0) {
       const float4 s = sampleLayer(cameraTex, src);
       float alpha = s.a;
-      if (u.cameraKeyed != 0u && alpha <= 24.5 / 255.0) {
+      if (u.cameraKeyed != 0u) {
+        // Keyer mask (stretched over the camera frame) + the same normalize
+        // curve as the previous CPU alpha pass (cutoffs 18/242, smoothstep).
         alpha = 0.0;
+        if (u.maskPresent != 0u) {
+          const float2 uv = (src + 0.5) / float2(u.camTexWidth, u.camTexHeight);
+          const float raw = maskTex.sample(kLayerSampler, uv).r * 255.0;
+          if (raw > 18.0) {
+            alpha = raw >= 242.0 ? 1.0 : smoothstep(0.0, 1.0, (raw - 18.0) / 224.0);
+          }
+          if (alpha <= 24.5 / 255.0) {
+            alpha = 0.0;
+          }
+        }
       }
       rgb = mix(rgb, s.rgb, alpha);
     }
@@ -252,6 +275,7 @@ struct MetalContext {
   LayerTexture back;
   LayerTexture front;
   LayerTexture media;
+  LayerTexture mask;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -418,6 +442,33 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
       }
     }
 
+    if (plan.camera.keyed && plan.cameraMask != nullptr && plan.maskWidth > 0u && plan.maskHeight > 0u) {
+      LayerTexture &slot = ctx.mask;
+      if (slot.texture == nil || slot.width != plan.maskWidth || slot.height != plan.maskHeight) {
+        MTLTextureDescriptor *descriptor =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+                                                               width:plan.maskWidth
+                                                              height:plan.maskHeight
+                                                           mipmapped:NO];
+        descriptor.usage = MTLTextureUsageShaderRead;
+        descriptor.storageMode = MTLStorageModeManaged;
+        slot.texture = [ctx.device newTextureWithDescriptor:descriptor];
+        slot.width = plan.maskWidth;
+        slot.height = plan.maskHeight;
+        slot.timestampNs = 0;
+      }
+      if (slot.texture != nil) {
+        if (plan.maskTimestampNs == 0u || plan.maskTimestampNs != slot.timestampNs) {
+          [slot.texture replaceRegion:MTLRegionMake2D(0, 0, plan.maskWidth, plan.maskHeight)
+                          mipmapLevel:0
+                            withBytes:plan.cameraMask
+                          bytesPerRow:plan.maskWidth];
+          slot.timestampNs = plan.maskTimestampNs;
+        }
+        uniforms.maskPresent = 1u;
+      }
+    }
+
     const size_t byteCount = static_cast<size_t>(plan.width) * plan.height * 4u;
     if (ctx.outputBuffer == nil || ctx.outputBufferSize != byteCount) {
       ctx.outputBuffer = [ctx.device newBufferWithLength:byteCount
@@ -440,6 +491,7 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
     [encoder setTexture:(uniforms.backPresent != 0u ? ctx.back.texture : nil) atIndex:1];
     [encoder setTexture:(uniforms.frontPresent != 0u ? ctx.front.texture : nil) atIndex:2];
     [encoder setTexture:(uniforms.mediaPresent != 0u ? ctx.media.texture : nil) atIndex:3];
+    [encoder setTexture:(uniforms.maskPresent != 0u ? ctx.mask.texture : nil) atIndex:4];
 
     const MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
     const MTLSize threadgroups = MTLSizeMake(

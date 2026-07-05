@@ -1158,6 +1158,71 @@ bool projectedMediaQuad(const Rect &target, uint32_t imageWidth, uint32_t imageH
   return true;
 }
 
+
+// CPU fallback for scenes the GPU compositor does not cover: applies the
+// keyer mask (bilinear, same normalize curve as the former worker-side pass)
+// onto a scratch copy of the camera frame.
+void applyMaskToFrameCpu(VideoFrame &frame, const AlphaMask &mask) {
+  if (frame.rgba.empty() || mask.alpha.empty() || mask.width == 0u || mask.height == 0u) {
+    return;
+  }
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    const double srcY = ((y + 0.5) / frame.height) * mask.height - 0.5;
+    const uint32_t y0 = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(std::floor(srcY)), 0, static_cast<int>(mask.height) - 1));
+    const uint32_t y1 = std::min(y0 + 1u, mask.height - 1u);
+    const double wy = std::clamp(srcY - std::floor(srcY), 0.0, 1.0);
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      const double srcX = ((x + 0.5) / frame.width) * mask.width - 0.5;
+      const uint32_t x0 = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(std::floor(srcX)), 0, static_cast<int>(mask.width) - 1));
+      const uint32_t x1 = std::min(x0 + 1u, mask.width - 1u);
+      const double wx = std::clamp(srcX - std::floor(srcX), 0.0, 1.0);
+      const double top = mask.alpha[static_cast<size_t>(y0) * mask.width + x0] * (1.0 - wx) +
+                         mask.alpha[static_cast<size_t>(y0) * mask.width + x1] * wx;
+      const double bottom = mask.alpha[static_cast<size_t>(y1) * mask.width + x0] * (1.0 - wx) +
+                            mask.alpha[static_cast<size_t>(y1) * mask.width + x1] * wx;
+      const double raw = top * (1.0 - wy) + bottom * wy;
+      double alpha = 0.0;
+      if (raw > 18.0) {
+        if (raw >= 242.0) {
+          alpha = 255.0;
+        } else {
+          const double t = (raw - 18.0) / 224.0;
+          alpha = t * t * (3.0 - 2.0 * t) * 255.0;
+        }
+      }
+      const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
+      const uint8_t a = clampByte(static_cast<int>(std::round(alpha)));
+      frame.rgba[offset + 3u] = a;
+      if (a == 0u) {
+        frame.rgba[offset + 0u] = 0u;
+        frame.rgba[offset + 1u] = 0u;
+        frame.rgba[offset + 2u] = 0u;
+      }
+    }
+  }
+}
+
+// Presenter bottom anchor from the mask (raw values), scaled to frame rows.
+int maskAnchorBottomFrameY(const AlphaMask &mask, uint32_t frameHeight) {
+  int fallbackRow = -1;
+  for (int my = static_cast<int>(mask.height) - 1; my >= 0; --my) {
+    const uint8_t *row = mask.alpha.data() + static_cast<size_t>(my) * mask.width;
+    int count = 0;
+    for (uint32_t mx = 0; mx < mask.width; ++mx) {
+      if (row[mx] > 40u) {
+        ++count;
+        if (count >= 4) {
+          return static_cast<int>(((my + 0.5) * frameHeight) / mask.height);
+        }
+      }
+    }
+    if (count > 0 && fallbackRow < 0) {
+      fallbackRow = static_cast<int>(((my + 0.5) * frameHeight) / mask.height);
+    }
+  }
+  return fallbackRow;
+}
+
 // GPU stage 1: composites background, back/front graphics and the camera
 // layer (keyed presenter or cover camera) on the GPU. Scenes with layers the
 // GPU path does not cover yet (media layer, built-in lower third) fall back
@@ -1166,6 +1231,7 @@ bool projectedMediaQuad(const Rect &target, uint32_t imageWidth, uint32_t imageH
 bool tryRenderProgramFrameMetal(const Options &options,
                                 const CompositorSnapshot &snapshot,
                                 const VideoFrame *cameraFrame,
+                                const AlphaMask *cameraMask,
                                 const VideoFrame *backGraphicsFrame,
                                 const VideoFrame *frontGraphicsFrame,
                                 uint64_t frameIndex,
@@ -1244,10 +1310,15 @@ bool tryRenderProgramFrameMetal(const Options &options,
   const bool hasCameraFrame = snapshot.cameraRender.enabled && cameraFrame != nullptr &&
       !cameraFrame->rgba.empty() && cameraFrame->width > 0u && cameraFrame->height > 0u;
   if (hasCameraFrame) {
-    const bool keyedCameraFrame = snapshot.keyerEnabled && frameHasTransparency(cameraFrame);
+    const bool keyedCameraFrame = snapshot.keyerEnabled && cameraMask != nullptr &&
+        !cameraMask->alpha.empty() && cameraMask->width > 0u && cameraMask->height > 0u;
     plan.media.belowCamera = keyedCameraFrame;
     if (keyedCameraFrame) {
-      const int keyedAlphaBottomY = keyedAnchorBottomY(*cameraFrame);
+      plan.cameraMask = cameraMask->alpha.data();
+      plan.maskWidth = cameraMask->width;
+      plan.maskHeight = cameraMask->height;
+      plan.maskTimestampNs = cameraMask->timestampNs;
+      const int keyedAlphaBottomY = maskAnchorBottomFrameY(*cameraMask, cameraFrame->height);
       if (keyedAlphaBottomY >= 0) {
         const double scale =
             snapshot.speakerLayout.enabled ? std::clamp(snapshot.speakerLayout.scale, 0.4, 1.8) : 1.0;
@@ -1301,16 +1372,23 @@ bool tryRenderProgramFrameMetal(const Options &options,
 void renderProgramFrame(const Options &options,
                         const CompositorSnapshot &snapshot,
                         const VideoFrame *cameraFrame,
+                        const AlphaMask *cameraMask,
                         const VideoFrame *backGraphicsFrame,
                         const VideoFrame *frontGraphicsFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output) {
 #if defined(__APPLE__)
   if (tryRenderProgramFrameMetal(
-          options, snapshot, cameraFrame, backGraphicsFrame, frontGraphicsFrame, frameIndex, output)) {
+          options, snapshot, cameraFrame, cameraMask, backGraphicsFrame, frontGraphicsFrame, frameIndex, output)) {
     return;
   }
 #endif
+  VideoFrame keyedScratch;
+  if (cameraFrame != nullptr && cameraMask != nullptr && !cameraMask->alpha.empty() && snapshot.keyerEnabled) {
+    keyedScratch = *cameraFrame;
+    applyMaskToFrameCpu(keyedScratch, *cameraMask);
+    cameraFrame = &keyedScratch;
+  }
   fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
 
   const Rect fullFrame{0, 0, static_cast<int>(options.width), static_cast<int>(options.height)};

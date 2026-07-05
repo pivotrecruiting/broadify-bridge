@@ -864,7 +864,6 @@ class AsyncKeyerWorker {
       keyed.status.metrics.maskPostprocessMs += refineMs;
       keyed.status.metrics.maskWidth = keyed.mask.width;
       keyed.status.metrics.maskHeight = keyed.mask.height;
-      applyAlphaMaskToFrame(frame, keyed.mask);
       bool shouldPublish = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1333,6 +1332,7 @@ void runFramePipeline(const Options &options,
             options,
             snapshot,
             frameForCompositor,
+            selectedPair != nullptr ? &selectedPair->mask : nullptr,
             backGraphicsFrameForCompositor,
             frontGraphicsFrameForCompositor,
             frameIndex++,
