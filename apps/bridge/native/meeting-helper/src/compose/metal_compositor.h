@@ -25,7 +25,27 @@ struct MetalLayerMapping {
   float mirrorConst = 0.0f;
 };
 
+// Media (PiP/fullscreen) layer: the fitted, rotated (perspective) image quad
+// is described by an inverse homography mapping destination pixels to image
+// UV coordinates in [0,1]. The optional drop shadow is a second quad.
+struct MetalMediaLayer {
+  bool present = false;
+  // Keyed scenes draw the media below the presenter, plain camera scenes
+  // draw it above the camera.
+  bool belowCamera = false;
+  bool shadowPresent = false;
+  const uint8_t *rgba = nullptr;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  // Cache key for texture uploads (image identity; media images are cached
+  // CPU-side and only change on program updates).
+  uint64_t cacheKey = 0;
+  float invHomography[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  float shadowInvHomography[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+};
+
 struct MetalComposePlan {
+  MetalMediaLayer media;
   uint32_t width = 0;
   uint32_t height = 0;
   // 0 dark, 1 gradient (animated), 2 solid_light, 3 checkerboard, 4 transparent

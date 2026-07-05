@@ -46,6 +46,17 @@ struct ComposeUniforms {
   float pad0;
   float pad1;
   float pad2;
+
+  uint32_t mediaPresent;
+  uint32_t mediaBelowCamera;
+  uint32_t shadowPresent;
+  uint32_t padM;
+
+  float m00; float m01; float m02; float m10;
+  float m11; float m12; float m20; float m21;
+  float m22; float s00; float s01; float s02;
+  float s10; float s11; float s12; float s20;
+  float s21; float s22; float padM1; float padM2;
 };
 
 constexpr const char *kComposeShaderSource = R"MSL(
@@ -87,6 +98,17 @@ struct ComposeUniforms {
   float pad0;
   float pad1;
   float pad2;
+
+  uint mediaPresent;
+  uint mediaBelowCamera;
+  uint shadowPresent;
+  uint padM;
+
+  float m00; float m01; float m02; float m10;
+  float m11; float m12; float m20; float m21;
+  float m22; float s00; float s01; float s02;
+  float s10; float s11; float s12; float s20;
+  float s21; float s22; float padM1; float padM2;
 };
 
 constexpr sampler kLayerSampler(filter::linear, address::clamp_to_edge, coord::normalized);
@@ -97,11 +119,41 @@ static float4 sampleLayer(texture2d<float> layer, float2 sourcePx) {
   return layer.sample(kLayerSampler, uv);
 }
 
+// Media (PiP) layer: inverse-homography lookup into the fitted image quad,
+// preceded by the optional planar drop shadow quad.
+static float3 blendMedia(float3 rgb, constant ComposeUniforms &u, texture2d<float> mediaTex, float2 dest) {
+  if (u.shadowPresent != 0u) {
+    const float sw = u.s20 * dest.x + u.s21 * dest.y + u.s22;
+    if (fabs(sw) > 1e-9) {
+      const float su = (u.s00 * dest.x + u.s01 * dest.y + u.s02) / sw;
+      const float sv = (u.s10 * dest.x + u.s11 * dest.y + u.s12) / sw;
+      if (su >= 0.0 && su <= 1.0 && sv >= 0.0 && sv <= 1.0) {
+        rgb = mix(rgb, float3(0.0), 46.0 / 255.0);
+      }
+    }
+  }
+  const float w = u.m20 * dest.x + u.m21 * dest.y + u.m22;
+  if (fabs(w) < 1e-9) {
+    return rgb;
+  }
+  const float mu = (u.m00 * dest.x + u.m01 * dest.y + u.m02) / w;
+  const float mv = (u.m10 * dest.x + u.m11 * dest.y + u.m12) / w;
+  if (mu < 0.0 || mu > 1.0 || mv < 0.0 || mv > 1.0) {
+    return rgb;
+  }
+  const float2 dims = float2(mediaTex.get_width(), mediaTex.get_height());
+  const float4 s = sampleLayer(mediaTex, float2(mu, mv) * dims - 0.5);
+  const float a = s.a;
+  const float3 c = a > 0.001 ? min(s.rgb / a, 1.0) : float3(0.0);
+  return mix(rgb, c, a);
+}
+
 kernel void composeProgram(device uchar4 *output [[buffer(0)]],
                            constant ComposeUniforms &u [[buffer(1)]],
                            texture2d<float> cameraTex [[texture(0)]],
                            texture2d<float> backTex [[texture(1)]],
                            texture2d<float> frontTex [[texture(2)]],
+                           texture2d<float> mediaTex [[texture(3)]],
                            uint2 gid [[thread_position_in_grid]]) {
   if (gid.x >= u.width || gid.y >= u.height) {
     return;
@@ -143,6 +195,10 @@ kernel void composeProgram(device uchar4 *output [[buffer(0)]],
     rgb = mix(rgb, s.rgb, s.a);
   }
 
+  if (u.mediaPresent != 0u && u.mediaBelowCamera != 0u) {
+    rgb = blendMedia(rgb, u, mediaTex, dest);
+  }
+
   // Camera layer: keyed presenter (transform anchored to the keyed bottom
   // edge) or full-frame cover camera.
   if (u.cameraPresent != 0u) {
@@ -158,6 +214,10 @@ kernel void composeProgram(device uchar4 *output [[buffer(0)]],
       }
       rgb = mix(rgb, s.rgb, alpha);
     }
+  }
+
+  if (u.mediaPresent != 0u && u.mediaBelowCamera == 0u) {
+    rgb = blendMedia(rgb, u, mediaTex, dest);
   }
 
   // Front graphics.
@@ -191,6 +251,7 @@ struct MetalContext {
   LayerTexture camera;
   LayerTexture back;
   LayerTexture front;
+  LayerTexture media;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -335,6 +396,28 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
       uniforms.frontBiasY = plan.frontMapping.biasY;
     }
 
+    if (plan.media.present && plan.media.rgba != nullptr && plan.media.width > 0u && plan.media.height > 0u) {
+      VideoFrame mediaFrame;
+      mediaFrame.width = plan.media.width;
+      mediaFrame.height = plan.media.height;
+      mediaFrame.timestampNs = plan.media.cacheKey;
+      // Borrow the pixel data without copying; uploadLayer only reads it.
+      mediaFrame.rgba.assign(plan.media.rgba, plan.media.rgba + static_cast<size_t>(plan.media.width) * plan.media.height * 4u);
+      if (uploadLayer(ctx.media, &mediaFrame)) {
+        uniforms.mediaPresent = 1u;
+        uniforms.mediaBelowCamera = plan.media.belowCamera ? 1u : 0u;
+        uniforms.shadowPresent = plan.media.shadowPresent ? 1u : 0u;
+        const float *m = plan.media.invHomography;
+        uniforms.m00 = m[0]; uniforms.m01 = m[1]; uniforms.m02 = m[2];
+        uniforms.m10 = m[3]; uniforms.m11 = m[4]; uniforms.m12 = m[5];
+        uniforms.m20 = m[6]; uniforms.m21 = m[7]; uniforms.m22 = m[8];
+        const float *sh = plan.media.shadowInvHomography;
+        uniforms.s00 = sh[0]; uniforms.s01 = sh[1]; uniforms.s02 = sh[2];
+        uniforms.s10 = sh[3]; uniforms.s11 = sh[4]; uniforms.s12 = sh[5];
+        uniforms.s20 = sh[6]; uniforms.s21 = sh[7]; uniforms.s22 = sh[8];
+      }
+    }
+
     const size_t byteCount = static_cast<size_t>(plan.width) * plan.height * 4u;
     if (ctx.outputBuffer == nil || ctx.outputBufferSize != byteCount) {
       ctx.outputBuffer = [ctx.device newBufferWithLength:byteCount
@@ -356,6 +439,7 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
     [encoder setTexture:(uniforms.cameraPresent != 0u ? ctx.camera.texture : nil) atIndex:0];
     [encoder setTexture:(uniforms.backPresent != 0u ? ctx.back.texture : nil) atIndex:1];
     [encoder setTexture:(uniforms.frontPresent != 0u ? ctx.front.texture : nil) atIndex:2];
+    [encoder setTexture:(uniforms.mediaPresent != 0u ? ctx.media.texture : nil) atIndex:3];
 
     const MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
     const MTLSize threadgroups = MTLSizeMake(

@@ -1077,6 +1077,87 @@ MetalLayerMapping coverMapping(const VideoFrame &frame, uint32_t canvasWidth, ui
   return mapping;
 }
 
+
+// Inverse homography (dest px -> uv in [0,1]) for a projected quad whose
+// corners correspond to uv (0,0),(1,0),(1,1),(0,1). Same math as the CPU
+// perspective path in drawImageFitRotated.
+bool quadInverseHomography(const double quadX[4], const double quadY[4], float out[9]) {
+  const double dx1 = quadX[1] - quadX[2];
+  const double dx2 = quadX[3] - quadX[2];
+  const double dx3 = quadX[0] - quadX[1] + quadX[2] - quadX[3];
+  const double dy1 = quadY[1] - quadY[2];
+  const double dy2 = quadY[3] - quadY[2];
+  const double dy3 = quadY[0] - quadY[1] + quadY[2] - quadY[3];
+  const double den = dx1 * dy2 - dx2 * dy1;
+  if (std::abs(den) < 1e-9) {
+    return false;
+  }
+  const double g = (dx3 * dy2 - dx2 * dy3) / den;
+  const double h = (dx1 * dy3 - dx3 * dy1) / den;
+  const double a = quadX[1] - quadX[0] + g * quadX[1];
+  const double b = quadX[3] - quadX[0] + h * quadX[3];
+  const double c = quadX[0];
+  const double d = quadY[1] - quadY[0] + g * quadY[1];
+  const double e = quadY[3] - quadY[0] + h * quadY[3];
+  const double f = quadY[0];
+  out[0] = static_cast<float>(e - f * h);
+  out[1] = static_cast<float>(c * h - b);
+  out[2] = static_cast<float>(b * f - c * e);
+  out[3] = static_cast<float>(f * g - d);
+  out[4] = static_cast<float>(a - c * g);
+  out[5] = static_cast<float>(c * d - a * f);
+  out[6] = static_cast<float>(d * h - e * g);
+  out[7] = static_cast<float>(b * g - a * h);
+  out[8] = static_cast<float>(a * e - b * d);
+  return true;
+}
+
+// Projected corners of the fitted media image inside `target`, rotated on
+// all three axes with the same perspective as drawImageFitRotated.
+bool projectedMediaQuad(const Rect &target, uint32_t imageWidth, uint32_t imageHeight,
+                        double rotXDeg, double rotYDeg, double rotZDeg,
+                        double quadX[4], double quadY[4]) {
+  if (target.width <= 0 || target.height <= 0 || imageWidth == 0u || imageHeight == 0u) {
+    return false;
+  }
+  const double scale = std::min(
+      static_cast<double>(target.width) / imageWidth,
+      static_cast<double>(target.height) / imageHeight);
+  const double drawWidth = std::max(1.0, imageWidth * scale);
+  const double drawHeight = std::max(1.0, imageHeight * scale);
+  const double halfW = drawWidth / 2.0;
+  const double halfH = drawHeight / 2.0;
+  const double centerX = target.x + target.width / 2.0;
+  const double centerY = target.y + target.height / 2.0;
+  constexpr double kPi = 3.14159265358979323846;
+  const double ca = std::cos(rotXDeg * kPi / 180.0), sa = std::sin(rotXDeg * kPi / 180.0);
+  const double cb = std::cos(rotYDeg * kPi / 180.0), sb = std::sin(rotYDeg * kPi / 180.0);
+  const double cc = std::cos(rotZDeg * kPi / 180.0), sc = std::sin(rotZDeg * kPi / 180.0);
+  const double m00 = cb * cc, m01 = -cb * sc;
+  const double m10 = ca * sc + sa * sb * cc, m11 = ca * cc - sa * sb * sc;
+  const double m20 = sa * sc - ca * sb * cc, m21 = sa * cc + ca * sb * sc;
+  const bool depth = std::abs(rotXDeg) >= 0.001 || std::abs(rotYDeg) >= 0.001;
+  const double d = 3.0 * std::max(drawWidth, drawHeight);
+  const double lx[4] = {-halfW, halfW, halfW, -halfW};
+  const double ly[4] = {-halfH, -halfH, halfH, halfH};
+  for (int i = 0; i < 4; ++i) {
+    const double X = m00 * lx[i] + m01 * ly[i];
+    const double Y = m10 * lx[i] + m11 * ly[i];
+    const double Z = m20 * lx[i] + m21 * ly[i];
+    double projection = 1.0;
+    if (depth) {
+      const double denom = d - Z;
+      if (denom <= 1.0) {
+        return false;
+      }
+      projection = d / denom;
+    }
+    quadX[i] = centerX + X * projection;
+    quadY[i] = centerY + Y * projection;
+  }
+  return true;
+}
+
 // GPU stage 1: composites background, back/front graphics and the camera
 // layer (keyed presenter or cover camera) on the GPU. Scenes with layers the
 // GPU path does not cover yet (media layer, built-in lower third) fall back
@@ -1092,7 +1173,7 @@ bool tryRenderProgramFrameMetal(const Options &options,
   if (!metalCompositorAvailable()) {
     return false;
   }
-  if (snapshot.mediaLayer.enabled || snapshot.graphics.enabled) {
+  if (snapshot.graphics.enabled) {
     return false;
   }
 
@@ -1111,10 +1192,60 @@ bool tryRenderProgramFrameMetal(const Options &options,
     plan.frontMapping = coverMapping(*frontGraphicsFrame, plan.width, plan.height);
   }
 
+  // Media (PiP/fullscreen) layer on the GPU; the glass placeholder (no image
+  // yet) still falls back to the CPU path.
+  std::shared_ptr<const RgbaImage> mediaImage;
+  if (snapshot.mediaLayer.enabled) {
+    mediaImage = getMediaLayerImage(snapshot.mediaLayer);
+    if (mediaImage == nullptr) {
+      return false;
+    }
+    Rect rect;
+    if (snapshot.mediaLayer.mode == "fullscreen") {
+      rect = {0, 0, static_cast<int>(plan.width), static_cast<int>(plan.height)};
+    } else {
+      rect = {
+        static_cast<int>(plan.width * clamp01(snapshot.mediaLayer.x)),
+        static_cast<int>(plan.height * clamp01(snapshot.mediaLayer.y)),
+        static_cast<int>(plan.width * std::clamp(snapshot.mediaLayer.width, 0.05, 1.0)),
+        static_cast<int>(plan.height * std::clamp(snapshot.mediaLayer.height, 0.05, 1.0)),
+      };
+    }
+    double quadX[4];
+    double quadY[4];
+    if (!projectedMediaQuad(rect, mediaImage->width, mediaImage->height,
+                            snapshot.mediaLayer.rotationX, snapshot.mediaLayer.rotationY,
+                            snapshot.mediaLayer.rotation, quadX, quadY) ||
+        !quadInverseHomography(quadX, quadY, plan.media.invHomography)) {
+      return false;
+    }
+    const bool depthRotated =
+        std::abs(snapshot.mediaLayer.rotationX) >= 0.001 || std::abs(snapshot.mediaLayer.rotationY) >= 0.001;
+    if (!depthRotated) {
+      // Planar drop shadow: the target rect rotated around its center by Z,
+      // offset by (8, 10) - same as the CPU path.
+      const Rect shadowRect{rect.x + 8, rect.y + 10, rect.width, rect.height};
+      double shadowX[4];
+      double shadowY[4];
+      if (projectedMediaQuad(shadowRect, static_cast<uint32_t>(shadowRect.width),
+                             static_cast<uint32_t>(shadowRect.height), 0.0, 0.0,
+                             snapshot.mediaLayer.rotation, shadowX, shadowY) &&
+          quadInverseHomography(shadowX, shadowY, plan.media.shadowInvHomography)) {
+        plan.media.shadowPresent = true;
+      }
+    }
+    plan.media.present = true;
+    plan.media.rgba = mediaImage->rgba.data();
+    plan.media.width = mediaImage->width;
+    plan.media.height = mediaImage->height;
+    plan.media.cacheKey = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(mediaImage.get()));
+  }
+
   const bool hasCameraFrame = snapshot.cameraRender.enabled && cameraFrame != nullptr &&
       !cameraFrame->rgba.empty() && cameraFrame->width > 0u && cameraFrame->height > 0u;
   if (hasCameraFrame) {
     const bool keyedCameraFrame = snapshot.keyerEnabled && frameHasTransparency(cameraFrame);
+    plan.media.belowCamera = keyedCameraFrame;
     if (keyedCameraFrame) {
       const int keyedAlphaBottomY = keyedAnchorBottomY(*cameraFrame);
       if (keyedAlphaBottomY >= 0) {
