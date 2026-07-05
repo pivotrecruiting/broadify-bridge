@@ -48,6 +48,80 @@ function requireClient(): MeetingHelperClient {
   return client;
 }
 
+/**
+ * Configures the back/front meeting graphics outputs. Idempotent: repeated
+ * calls with an unchanged format are no-ops, so toggling a background in the
+ * builder does not re-run the full atomic output transition every time.
+ * Spawning the Electron renderers (cold start of several seconds) happens on
+ * the first call — which is why meeting_engine_start pre-warms this.
+ *
+ * Calls are strictly serialized through a queue: the pre-warm and the web
+ * app command can otherwise run concurrently, and both mutate the global
+ * BRIDGE_FRAMEBUS_* env vars that the renderers read on spawn — a race would
+ * point a renderer at the wrong FrameBus.
+ */
+let lastConfiguredGraphicsOutputsKey: string | null = null;
+let pendingGraphicsOutputsKey: string | null = null;
+let graphicsOutputsQueue: Promise<void> = Promise.resolve();
+
+type ConfigureGraphicsOutputsResultT = {
+  completion: Promise<void>;
+  /**
+   * True when the same config is already applied or currently being applied
+   * (e.g. by the engine-start pre-warm). Callers with a command timeout must
+   * NOT await `completion` in that case — a renderer cold start can take
+   * longer than the relay timeout, and the work finishes regardless.
+   */
+  alreadySatisfiedOrPending: boolean;
+};
+
+function configureMeetingGraphicsOutputs(
+  width: number,
+  height: number,
+  fps: number,
+): ConfigureGraphicsOutputsResultT {
+  const configKey = `${width}x${height}@${fps}`;
+  const alreadySatisfiedOrPending =
+    lastConfiguredGraphicsOutputsKey === configKey || pendingGraphicsOutputsKey === configKey;
+  pendingGraphicsOutputsKey = configKey;
+  const run = graphicsOutputsQueue.then(async () => {
+    if (lastConfiguredGraphicsOutputsKey === configKey) {
+      return;
+    }
+    process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
+    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+    await meetingBackGraphicsManager.configureOutputs({
+      outputKey: "framebus",
+      targets: {},
+      format: { width, height, fps },
+      range: "full",
+      colorspace: "rec709",
+    });
+    process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
+    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+    await meetingFrontGraphicsManager.configureOutputs({
+      outputKey: "framebus",
+      targets: {},
+      format: { width, height, fps },
+      range: "full",
+      colorspace: "rec709",
+    });
+    lastConfiguredGraphicsOutputsKey = configKey;
+  });
+  // Keep the queue alive even if this run fails; the failure still surfaces
+  // to the caller through `completion`.
+  graphicsOutputsQueue = run
+    .catch(() => {})
+    .finally(() => {
+      if (pendingGraphicsOutputsKey === configKey) {
+        pendingGraphicsOutputsKey = null;
+      }
+    });
+  return { completion: run, alreadySatisfiedOrPending };
+}
+
 async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCommandResultT> {
   try {
     return { success: true, data: await operation() };
@@ -154,6 +228,13 @@ export async function handleMeetingCommand(
         "Invalid payload for meeting_engine_start",
       );
       clearMeetingGraphicsFrameBus(options, "engine_start");
+      // Reset through the queue so an in-flight configure cannot overwrite
+      // the reset with its stale key afterwards.
+      graphicsOutputsQueue = graphicsOutputsQueue
+        .then(() => {
+          lastConfiguredGraphicsOutputsKey = null;
+        })
+        .catch(() => {});
       const status = await meetingHelperManager.start(options);
       if (status.state !== "running") {
         return {
@@ -162,6 +243,16 @@ export async function handleMeetingCommand(
           data: status,
         };
       }
+      // Pre-warm the graphics renderers in the background: the Electron
+      // processes take seconds to spawn, and doing it now means toggling a
+      // background later only costs a layer send instead of a cold start.
+      // Format must match what the web app sends (MEETING_GRAPHICS_FORMAT,
+      // 1920x1080@30) so the later configure call is a cache hit.
+      configureMeetingGraphicsOutputs(1920, 1080, 30).completion.catch((error: unknown) => {
+        console.warn(
+          `[meeting] graphics renderer pre-warm failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
       return { success: true, data: status };
     }
 
@@ -282,26 +373,19 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_graphics_configure_outputs",
       );
-      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
-      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
-      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
-      await meetingBackGraphicsManager.configureOutputs({
-        outputKey: "framebus",
-        targets: {},
-        format: { width, height, fps },
-        range: "full",
-        colorspace: "rec709",
-      });
-      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
-      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
-      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
-      await meetingFrontGraphicsManager.configureOutputs({
-        outputKey: "framebus",
-        targets: {},
-        format: { width, height, fps },
-        range: "full",
-        colorspace: "rec709",
-      });
+      const outputsConfiguration = configureMeetingGraphicsOutputs(width, height, fps);
+      if (outputsConfiguration.alreadySatisfiedOrPending) {
+        // The pre-warm (or an earlier identical call) is already doing the
+        // work; report success now instead of risking the relay timeout
+        // behind a renderer cold start. Failures surface in the bridge log.
+        outputsConfiguration.completion.catch((error: unknown) => {
+          console.warn(
+            `[meeting] graphics outputs configuration failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      } else {
+        await outputsConfiguration.completion;
+      }
       return {
         success: true,
         data: {
