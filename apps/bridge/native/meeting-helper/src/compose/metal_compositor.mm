@@ -62,7 +62,18 @@ struct ComposeUniforms {
   uint32_t padK0;
   uint32_t padK1;
   uint32_t padK2;
+
+  uint32_t bgImagePresent;
+  float bgImgScaleX;
+  float bgImgScaleY;
+  float bgImgBiasX;
+
+  float bgImgBiasY;
+  float padBG0;
+  float padBG1;
+  float padBG2;
 };
+
 
 constexpr const char *kComposeShaderSource = R"MSL(
 #include <metal_stdlib>
@@ -119,7 +130,18 @@ struct ComposeUniforms {
   uint padK0;
   uint padK1;
   uint padK2;
+
+  uint bgImagePresent;
+  float bgImgScaleX;
+  float bgImgScaleY;
+  float bgImgBiasX;
+
+  float bgImgBiasY;
+  float padBG0;
+  float padBG1;
+  float padBG2;
 };
+
 
 constexpr sampler kLayerSampler(filter::linear, address::clamp_to_edge, coord::normalized);
 
@@ -165,6 +187,7 @@ kernel void composeProgram(device uchar4 *output [[buffer(0)]],
                            texture2d<float> frontTex [[texture(2)]],
                            texture2d<float> mediaTex [[texture(3)]],
                            texture2d<float> maskTex [[texture(4)]],
+                           texture2d<float> bgImageTex [[texture(5)]],
                            uint2 gid [[thread_position_in_grid]]) {
   if (gid.x >= u.width || gid.y >= u.height) {
     return;
@@ -197,6 +220,13 @@ kernel void composeProgram(device uchar4 *output [[buffer(0)]],
     default:
       rgb = float3(8.0, 10.0, 14.0) / 255.0;
       break;
+  }
+
+  // Uploaded company background image (cover-cropped, below all layers).
+  if (u.bgImagePresent != 0u) {
+    float2 src = float2(dest.x * u.bgImgScaleX + u.bgImgBiasX, dest.y * u.bgImgScaleY + u.bgImgBiasY);
+    const float4 s = sampleLayer(bgImageTex, src);
+    rgb = mix(rgb, s.rgb, s.a);
   }
 
   // Back graphics (cover-cropped full-frame layer).
@@ -276,6 +306,7 @@ struct MetalContext {
   LayerTexture front;
   LayerTexture media;
   LayerTexture mask;
+  LayerTexture backgroundImage;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -420,6 +451,22 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
       uniforms.frontBiasY = plan.frontMapping.biasY;
     }
 
+    if (plan.backgroundImage != nullptr && plan.backgroundImageWidth > 0u && plan.backgroundImageHeight > 0u) {
+      VideoFrame bgFrame;
+      bgFrame.width = plan.backgroundImageWidth;
+      bgFrame.height = plan.backgroundImageHeight;
+      bgFrame.timestampNs = plan.backgroundImageCacheKey;
+      bgFrame.rgba.assign(plan.backgroundImage,
+                          plan.backgroundImage + static_cast<size_t>(plan.backgroundImageWidth) * plan.backgroundImageHeight * 4u);
+      if (uploadLayer(ctx.backgroundImage, &bgFrame)) {
+        uniforms.bgImagePresent = 1u;
+        uniforms.bgImgScaleX = plan.backgroundImageMapping.scaleX;
+        uniforms.bgImgScaleY = plan.backgroundImageMapping.scaleY;
+        uniforms.bgImgBiasX = plan.backgroundImageMapping.biasX;
+        uniforms.bgImgBiasY = plan.backgroundImageMapping.biasY;
+      }
+    }
+
     if (plan.media.present && plan.media.rgba != nullptr && plan.media.width > 0u && plan.media.height > 0u) {
       VideoFrame mediaFrame;
       mediaFrame.width = plan.media.width;
@@ -492,6 +539,7 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
     [encoder setTexture:(uniforms.frontPresent != 0u ? ctx.front.texture : nil) atIndex:2];
     [encoder setTexture:(uniforms.mediaPresent != 0u ? ctx.media.texture : nil) atIndex:3];
     [encoder setTexture:(uniforms.maskPresent != 0u ? ctx.mask.texture : nil) atIndex:4];
+    [encoder setTexture:(uniforms.bgImagePresent != 0u ? ctx.backgroundImage.texture : nil) atIndex:5];
 
     const MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
     const MTLSize threadgroups = MTLSizeMake(

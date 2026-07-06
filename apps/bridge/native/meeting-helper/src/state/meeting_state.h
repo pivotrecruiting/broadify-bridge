@@ -80,6 +80,8 @@ struct MeetingState {
   uint64_t publishedPreviewFrames = 0;
   uint64_t writtenFramebusFrames = 0;
   std::string backgroundMode = "transparent";
+  // Absolute file path of an uploaded company background image; empty = none.
+  std::string backgroundImagePath;
   std::string activeKeyer = "passthrough";
   // Default backend: Apple Vision runs hardware-accelerated on every Mac and
   // needs no model download; MODNet stays available as an opt-in high-quality

@@ -13,6 +13,7 @@ namespace broadify::meeting {
 struct CompositorSnapshot {
   bool keyerEnabled = false;
   std::string backgroundMode = "transparent";
+  std::string backgroundImagePath;
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;
   MediaLayerState mediaLayer;

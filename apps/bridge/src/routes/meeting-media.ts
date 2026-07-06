@@ -1,9 +1,13 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Readable } from "node:stream";
 
 import { meetingMediaService } from "../services/meeting/meeting-media-service.js";
 import { enforceLocalOrToken } from "./route-guards.js";
+import { getBridgeContext } from "../services/bridge-context.js";
 
 const MEETING_MEDIA_BODY_LIMIT_BYTES = 500 * 1024 * 1024;
 const RAW_CONTENT_TYPES = new Set([
@@ -33,7 +37,7 @@ const decodeFilenameHeader = (value: string): string => {
 export async function registerMeetingMediaRoute(
   fastify: FastifyInstance,
 ): Promise<void> {
-  for (const contentType of RAW_CONTENT_TYPES) {
+  for (const contentType of [...RAW_CONTENT_TYPES, "image/png", "image/jpeg", "image/webp"]) {
     fastify.addContentTypeParser(
       contentType,
       { bodyLimit: MEETING_MEDIA_BODY_LIMIT_BYTES },
@@ -74,6 +78,48 @@ export async function registerMeetingMediaRoute(
           error: error instanceof Error ? error.message : String(error),
         };
       }
+    },
+  );
+
+  // Company background images: stored locally, the native compositor loads
+  // them by absolute path (keyer.configure background_image_path).
+  fastify.post(
+    "/meeting/background-image",
+    { bodyLimit: 8 * 1024 * 1024 },
+    async (request, reply) => {
+      if (!enforceLocalOrToken(request, reply)) {
+        return;
+      }
+      const stream = request.body as Readable | undefined;
+      if (!stream || typeof stream.pipe !== "function") {
+        reply.code(400);
+        return { success: false, error: "Expected raw image request body." };
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const body = Buffer.concat(chunks);
+      if (body.length === 0) {
+        reply.code(400);
+        return { success: false, error: "Empty image request body." };
+      }
+      const contentType = readHeader(request.headers["content-type"]) ?? "";
+      const extension =
+        contentType.includes("png") ? "png"
+        : contentType.includes("webp") ? "webp"
+        : contentType.includes("jpeg") || contentType.includes("jpg") ? "jpg"
+        : null;
+      if (!extension) {
+        reply.code(400);
+        return { success: false, error: "Only PNG, JPEG or WebP backgrounds are supported." };
+      }
+      const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
+      const directory = join(getBridgeContext().userDataDir, "meeting-backgrounds");
+      await mkdir(directory, { recursive: true });
+      const filePath = join(directory, `${hash}.${extension}`);
+      await writeFile(filePath, body);
+      return { success: true, path: filePath };
     },
   );
 

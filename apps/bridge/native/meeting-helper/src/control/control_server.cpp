@@ -342,6 +342,8 @@ std::string handleRpc(const std::string &line,
       if (!backgroundMode.empty()) {
         state.backgroundMode = backgroundMode;
       }
+      // Sent with every keyer configure (empty string clears the image).
+      state.backgroundImagePath = extractStringField(line, "background_image_path");
       const std::string qualityMode = extractStringField(line, "quality_mode");
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);
@@ -389,6 +391,7 @@ std::string handleRpc(const std::string &line,
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
     state.activeQualityMode = "balanced";
+    state.backgroundImagePath.clear();
     state.performanceMode = kDefaultKeyerPerformanceMode;
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
