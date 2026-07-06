@@ -1470,12 +1470,16 @@ process.on("unhandledRejection", (reason) => {
   sendIpcMessage({ type: "error", message: errorMessage });
 });
 
-// Orphan watchdog: when the bridge process dies without stopping us (dev
-// Ctrl+C, crash, hard kill), we get re-parented to PID 1 - exit instead of
-// living on as a CPU-burning orphan.
-const initialParentPid = process.ppid;
-setInterval(() => {
-  if (process.ppid !== initialParentPid) {
-    process.exit(0);
-  }
-}, 2000).unref();
+// Orphan watchdog: the bridge passes its PID via env (a ppid comparison is
+// unreliable - the dev electron CLI wrapper re-parents us right after
+// spawn). When the bridge is gone, exit instead of living on as an orphan.
+const bridgeParentPid = Number.parseInt(process.env.BRIDGE_PARENT_PID ?? "", 10);
+if (Number.isFinite(bridgeParentPid) && bridgeParentPid > 0) {
+  setInterval(() => {
+    try {
+      process.kill(bridgeParentPid, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 2000).unref();
+}

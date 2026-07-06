@@ -146,6 +146,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
     const env = { ...process.env } as Record<string, string>;
     delete env.ELECTRON_RUN_AS_NODE;
+    env.BRIDGE_PARENT_PID = String(process.pid);
     if (this.launchWithGpuDisabled) {
       env.BRIDGE_GRAPHICS_DISABLE_GPU = "1";
     }
