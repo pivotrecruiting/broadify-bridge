@@ -17,6 +17,11 @@ export const MeetingEngineStartSchema = z
 
 export const MeetingPassthroughSchema = z.record(z.unknown());
 
+export const MeetingCallControlSchema = z.object({
+  platform: z.enum(["teams", "zoom"]),
+  action: z.enum(["mic_toggle", "speaker_toggle", "hangup"]),
+});
+
 export const MeetingKeyerConfigureSchema = z
   .object({
     enabled: z.boolean().optional(),

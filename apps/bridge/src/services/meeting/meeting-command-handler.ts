@@ -3,6 +3,7 @@ import {
   EmptyPayloadSchema,
 } from "../relay-command-schemas.js";
 import {
+  MeetingCallControlSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
   MeetingKeyerConfigureSchema,
@@ -11,6 +12,10 @@ import {
   MeetingProgramUpdateSchema,
 } from "./meeting-command-schemas.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
+import {
+  executeMeetingCallControl,
+  MeetingCallControlError,
+} from "./meeting-call-control.js";
 import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
@@ -289,6 +294,23 @@ export async function handleMeetingCommand(
 
     case "meeting_camera_stop": {
       return runMeetingRpc(() => requireClient().cameraStop());
+    }
+
+    case "meeting_call_control": {
+      const { platform, action } = parseRelayPayload(
+        MeetingCallControlSchema,
+        payload ?? {},
+        "Invalid payload for meeting_call_control",
+      );
+      try {
+        // Independent of the meeting engine: controls the external client.
+        return { success: true, data: await executeMeetingCallControl(platform, action) };
+      } catch (error: unknown) {
+        if (error instanceof MeetingCallControlError) {
+          return { success: false, error: error.message, errorCode: error.code };
+        }
+        throw error;
+      }
     }
 
     case "meeting_keyer_get": {

@@ -34,6 +34,7 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_program_get",
   "meeting_program_update",
   "meeting_output_configure",
+  "meeting_call_control",
   "meeting_graphics_configure_outputs",
   "canon_xc_list_devices",
   "canon_xc_save_device",
