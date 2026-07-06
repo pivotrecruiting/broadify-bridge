@@ -136,6 +136,22 @@ describe("canon-xc-service", () => {
         contentEnabled: false,
       });
     });
+
+    it("includes presets in non-contiguous slots (p.count is a count, not a max slot)", () => {
+      const presets = presetsFromCanonInfo("canon-1", {
+        "p.count": "1",
+        "p.5.name.utf8": "Stage Right",
+        "p.5.content": "enabled",
+        "p.5.content.ptz": "enabled",
+      });
+
+      expect(presets).toHaveLength(1);
+      expect(presets[0]).toMatchObject({
+        preset: 5,
+        label: "Stage Right",
+        enabled: true,
+      });
+    });
   });
 
   describe("device persistence", () => {

@@ -178,11 +178,20 @@ export function presetsFromCanonInfo(
   deviceId: string,
   info: Record<string, string>,
 ): CanonXCPresetT[] {
-  const parsedCount = Number.parseInt(info["p.count"] ?? "0", 10);
-  const maxPreset = Number.isFinite(parsedCount) && parsedCount > 0 ? parsedCount : 100;
+  // p.count is the NUMBER of stored presets, not the highest slot number —
+  // slots are not necessarily contiguous (e.g. only slot 5 in use). Iterating
+  // 1..count therefore dropped every preset stored in a higher slot. Derive
+  // the actual slot numbers from the returned keys instead.
+  const presetNumbers = new Set<number>();
+  for (const key of Object.keys(info)) {
+    const match = /^p\.(\d+)\./.exec(key);
+    if (match) {
+      presetNumbers.add(Number.parseInt(match[1], 10));
+    }
+  }
   const presets: CanonXCPresetT[] = [];
 
-  for (let presetNo = 1; presetNo <= maxPreset; presetNo += 1) {
+  for (const presetNo of Array.from(presetNumbers).sort((a, b) => a - b)) {
     const prefix = `p.${presetNo}`;
     const name = info[`${prefix}.name.utf8`] ?? info[`${prefix}.name`] ?? "";
     const content = info[`${prefix}.content`];
