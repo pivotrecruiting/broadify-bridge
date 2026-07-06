@@ -89,6 +89,23 @@ KeyerDegradationSettings normalizedDegradationSettings(KeyerDegradationSettings 
   return settings;
 }
 
+// Signature over every keyer.configure-relevant field; used to skip the
+// disruptive status reset (passthrough/pending) when a configure call does
+// not actually change anything (idempotent re-sends from the web app).
+std::string keyerConfigSignature(const MeetingState &state) {
+  std::ostringstream signature;
+  signature << state.keyerEnabled << '|' << state.requestedKeyerModel << '|'
+            << state.backgroundMode << '|' << state.backgroundImagePath << '|'
+            << state.qualityMode << '|' << state.performanceMode << '|'
+            << state.maskErodePx << '|' << state.maskDilatePx << '|'
+            << state.maskFeatherPx << '|' << state.dynamicDilation << '|'
+            << state.temporalBlendEnabled << '|' << state.edgeStabilizationEnabled << '|'
+            << state.edgeStabilizationStrength << '|'
+            << state.degradationSettings.freshMaskAgeMs << '|'
+            << state.degradationSettings.maxMaskAgeMs;
+  return signature.str();
+}
+
 void markProgramDirty(MeetingState &state, bool graphicsDirty = false) {
   state.programDirty = true;
   state.graphicsDirty = state.graphicsDirty || graphicsDirty;
@@ -333,6 +350,7 @@ std::string handleRpc(const std::string &line,
   if (method == "keyer.configure") {
     {
       std::lock_guard<std::mutex> lock(state.mutex);
+      const std::string signatureBefore = keyerConfigSignature(state);
       state.keyerEnabled = extractBoolField(line, "enabled", state.keyerEnabled);
       const std::string model = extractStringField(line, "model");
       if (!model.empty()) {
@@ -368,16 +386,18 @@ std::string handleRpc(const std::string &line,
       degradation.freshMaskAgeMs = extractDoubleField(line, "fresh_mask_age_ms", degradation.freshMaskAgeMs);
       degradation.maxMaskAgeMs = extractDoubleField(line, "max_mask_age_ms", degradation.maxMaskAgeMs);
       state.degradationSettings = normalizedDegradationSettings(degradation);
-      state.activeKeyer = "passthrough";
-      state.fallbackActive = true;
-      state.fallbackReason = state.keyerEnabled ? state.requestedKeyerModel + "_pending" : "keyer_disabled";
-      state.keyerBackend = "passthrough";
-      state.degradationStage = "fresh";
-      state.staleMaskActive = false;
-      state.provider.clear();
-      state.inferenceMs = -1.0;
-      state.keyerMetrics = KeyerMetrics{};
-      markProgramDirty(state);
+      if (keyerConfigSignature(state) != signatureBefore) {
+        state.activeKeyer = "passthrough";
+        state.fallbackActive = true;
+        state.fallbackReason = state.keyerEnabled ? state.requestedKeyerModel + "_pending" : "keyer_disabled";
+        state.keyerBackend = "passthrough";
+        state.degradationStage = "fresh";
+        state.staleMaskActive = false;
+        state.provider.clear();
+        state.inferenceMs = -1.0;
+        state.keyerMetrics = KeyerMetrics{};
+        markProgramDirty(state);
+      }
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, options, running);
   }
