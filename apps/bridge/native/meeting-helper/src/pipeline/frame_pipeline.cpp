@@ -263,14 +263,77 @@ const std::array<std::array<uint16_t, kMaskRefineTapCount>, 2> &maskRefineSpatia
   return lut;
 }
 
+// Edge-guided smoothing at mask resolution for mid-size masks (Vision
+// "balanced"): same joint-bilateral kernel as the 2x upsampling path, but
+// without scaling - the mask snaps to real image contours and flickers less.
+void smoothAlphaMaskEdgesGuided(AlphaMask &mask, const VideoFrame &frame) {
+  const uint32_t width = mask.width;
+  const uint32_t height = mask.height;
+  std::vector<uint8_t> luma(static_cast<size_t>(width) * height);
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint32_t frameY = std::min<uint32_t>(
+        frame.height - 1u,
+        static_cast<uint32_t>(((2ull * y + 1ull) * frame.height) / (2ull * height)));
+    const size_t frameRowOffset = static_cast<size_t>(frameY) * frame.width;
+    const size_t lumaRowOffset = static_cast<size_t>(y) * width;
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint32_t frameX = std::min<uint32_t>(
+          frame.width - 1u,
+          static_cast<uint32_t>(((2ull * x + 1ull) * frame.width) / (2ull * width)));
+      const size_t pixelOffset = (frameRowOffset + frameX) * 4u;
+      luma[lumaRowOffset + x] = static_cast<uint8_t>(
+          (77u * frame.rgba[pixelOffset] +
+           150u * frame.rgba[pixelOffset + 1u] +
+           29u * frame.rgba[pixelOffset + 2u]) >> 8u);
+    }
+  }
+
+  static const uint16_t kCenteredSpatial[kMaskRefineTapCount] = {9, 39, 64, 39, 9};
+  const std::array<uint16_t, 256> &rangeLut = maskRefineRangeLut();
+  std::vector<uint8_t> smoothed(mask.alpha.size());
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t *guideRow = luma.data() + static_cast<size_t>(y) * width;
+    uint8_t *outputRow = smoothed.data() + static_cast<size_t>(y) * width;
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint8_t guide = guideRow[x];
+      uint32_t weightedAlpha = 0u;
+      uint32_t weightSum = 0u;
+      for (int tapY = 0; tapY < kMaskRefineTapCount; ++tapY) {
+        const int sampleY = std::clamp(static_cast<int>(y) + tapY - kMaskRefineRadiusPx, 0, static_cast<int>(height) - 1);
+        const size_t rowOffset = static_cast<size_t>(sampleY) * width;
+        const uint32_t wy = kCenteredSpatial[tapY];
+        for (int tapX = 0; tapX < kMaskRefineTapCount; ++tapX) {
+          const int sampleX = std::clamp(static_cast<int>(x) + tapX - kMaskRefineRadiusPx, 0, static_cast<int>(width) - 1);
+          const size_t sampleOffset = rowOffset + static_cast<size_t>(sampleX);
+          const uint32_t lumaDiff = static_cast<uint32_t>(
+              std::abs(static_cast<int>(luma[sampleOffset]) - static_cast<int>(guide)));
+          const uint32_t weight = wy * kCenteredSpatial[tapX] * rangeLut[lumaDiff];
+          weightedAlpha += weight * mask.alpha[sampleOffset];
+          weightSum += weight;
+        }
+      }
+      outputRow[x] = weightSum > 0u
+          ? static_cast<uint8_t>((weightedAlpha + weightSum / 2u) / weightSum)
+          : mask.alpha[static_cast<size_t>(y) * width + x];
+    }
+  }
+  mask.alpha = std::move(smoothed);
+}
+
 // Joint bilateral 2x upsampling: coarse masks (e.g. Vision "fast", 256x192)
 // are refined along the luminance edges of the camera frame before
 // postprocessing, so cheap masks produce smooth, image-aligned edges instead
 // of the blocky gradients a plain bilinear upscale would give.
 void refineAlphaMaskEdges(AlphaMask &mask, const VideoFrame &frame) {
   if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u ||
-      frame.rgba.empty() || frame.width == 0u || frame.height == 0u ||
-      mask.width >= kMaskRefineMaxSourceWidthPx) {
+      frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
+    return;
+  }
+  if (mask.width >= kMaskRefineMaxSourceWidthPx) {
+    // Mid-size (balanced) masks: edge-guided smoothing without upscaling.
+    if (mask.width < 640u) {
+      smoothAlphaMaskEdgesGuided(mask, frame);
+    }
     return;
   }
 

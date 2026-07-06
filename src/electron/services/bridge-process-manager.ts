@@ -184,6 +184,9 @@ export class BridgeProcessManager {
         stdio: ["ignore", "pipe", "pipe"],
         cwd,
         env,
+        // Own process group (POSIX): quitting kills the whole bridge tree
+        // (graphics renderers, meeting helper, ...) instead of orphaning it.
+        detached: process.platform !== "win32",
       });
       this.logProductionArtifactStatus();
 

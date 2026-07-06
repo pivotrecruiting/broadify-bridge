@@ -572,6 +572,8 @@ export class MeetingHelperManager {
       const fps = options.fps ?? 30;
       const args = [
         "--run",
+        "--parent-pid",
+        String(process.pid),
         "--preview-port",
         String(port),
         "--control-socket",

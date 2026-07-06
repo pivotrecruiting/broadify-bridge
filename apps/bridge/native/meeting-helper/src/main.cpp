@@ -21,7 +21,12 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <cstdlib>
 #include <thread>
+#include <chrono>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 namespace broadify::meeting {
 namespace {
@@ -68,6 +73,30 @@ int main(int argc, char **argv) {
 
   std::promise<void> controlListening;
   std::future<void> controlListeningFuture = controlListening.get_future();
+  // Parent watchdog: if the bridge dies without stopping us (crash, hard
+  // kill, dev Ctrl+C), we get re-parented to PID 1 - shut down instead of
+  // living on as an orphan in the user's process list.
+#if !defined(_WIN32)
+  // The bridge passes its PID via --parent-pid (the helper app is launched
+  // through launchd, so getppid() never points at the bridge). Fall back to
+  // the re-parenting check for direct spawns.
+  const pid_t bridgePid = static_cast<pid_t>(options.parentPid);
+  const pid_t initialParentPid = getppid();
+  std::thread parentWatchdog([bridgePid, initialParentPid]() {
+    while (g_running.load()) {
+      const bool bridgeGone = bridgePid > 0
+          ? (kill(bridgePid, 0) != 0 && errno == ESRCH)
+          : (getppid() != initialParentPid);
+      if (bridgeGone) {
+        g_running.store(false);
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+  });
+  parentWatchdog.detach();
+#endif
+
   std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
@@ -110,17 +139,17 @@ int main(int argc, char **argv) {
     state.framebusRunning = false;
     state.vcamRawRunning = false;
   }
+  // The frame pipeline checks g_running and releases the FrameBus shared
+  // memory on its way out - wait for it.
   if (frames.joinable()) {
     frames.join();
   }
-  if (preview.joinable()) {
-    preview.join();
-  }
-  if (vcamRaw.joinable()) {
-    vcamRaw.join();
-  }
-  if (control.joinable()) {
-    control.join();
-  }
-  return 0;
+  // The preview/vcam/control servers block in accept() and never observe
+  // g_running; joining them would hang forever (the historical reason this
+  // helper survived every shutdown). Their sockets are closed by the OS.
+  preview.detach();
+  vcamRaw.detach();
+  control.detach();
+  printEvent("{\"type\":\"shutdown\"}");
+  std::_Exit(0);
 }

@@ -67,6 +67,8 @@ Options parseOptions(int argc, char **argv) {
       options.framebusName = next();
     } else if (arg == "--control-socket") {
       options.controlSocket = next();
+    } else if (arg == "--parent-pid") {
+      options.parentPid = static_cast<int>(parseU32(next(), 0u));
     } else if (arg == "--models-dir") {
       options.modelsDir = next();
     } else if (arg == "--width") {
