@@ -1469,3 +1469,13 @@ process.on("unhandledRejection", (reason) => {
   logger.error(`[GraphicsRenderer] Unhandled rejection: ${errorMessage}`);
   sendIpcMessage({ type: "error", message: errorMessage });
 });
+
+// Orphan watchdog: when the bridge process dies without stopping us (dev
+// Ctrl+C, crash, hard kill), we get re-parented to PID 1 - exit instead of
+// living on as a CPU-burning orphan.
+const initialParentPid = process.ppid;
+setInterval(() => {
+  if (process.ppid !== initialParentPid) {
+    process.exit(0);
+  }
+}, 2000).unref();
