@@ -519,6 +519,10 @@ void runControlServer(const std::string &pipeName,
           const std::string response = handleRpc(line, state, camera, previewFrames, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
+          // Block until the client has read the response; without this,
+          // DisconnectNamedPipe below discards any unread data and the
+          // client sees an empty reply (lost fast-command responses).
+          FlushFileBuffers(pipe);
           break;
         }
       }

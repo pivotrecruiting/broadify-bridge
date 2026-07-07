@@ -77,6 +77,8 @@ if(APPLE)
   set_source_files_properties(src/macos/macos_app.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
+elseif(WIN32)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_mediafoundation.cpp)
 else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
 endif()
@@ -121,7 +123,7 @@ endif()
 
 if(WIN32)
   target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(meeting-helper PRIVATE ws2_32)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
