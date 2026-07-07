@@ -18,6 +18,18 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
+#else
+// Windows/Linux image decoder for data-URL logos, uploaded background images
+// and rendered media pages (macOS decodes via ImageIO). PNG and JPEG cover
+// everything the bridge hands us. The implementation is compiled into this
+// single translation unit.
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO
+#define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#include "stb_image.h"
+
+#include <limits>
 #endif
 
 namespace broadify::meeting {
@@ -194,8 +206,45 @@ std::shared_ptr<const RgbaImage> decodeImageBytes(const std::vector<uint8_t> &by
   return decoded;
 }
 #else
-std::shared_ptr<const RgbaImage> decodeImageBytes(const std::vector<uint8_t> &) {
-  return nullptr;
+std::shared_ptr<const RgbaImage> decodeImageBytes(const std::vector<uint8_t> &bytes) {
+  if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return nullptr;
+  }
+  const int byteCount = static_cast<int>(bytes.size());
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  // Probe the header first: oversized or malformed images are rejected before
+  // stb commits to the full pixel allocation (same 4096 cap as the Apple
+  // path; callers treat nullptr as "draw the placeholder").
+  if (!stbi_info_from_memory(bytes.data(), byteCount, &width, &height, &channels)) {
+    return nullptr;
+  }
+  if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+    return nullptr;
+  }
+  stbi_uc *pixels = stbi_load_from_memory(bytes.data(), byteCount, &width, &height, &channels, 4);
+  if (!pixels) {
+    return nullptr;
+  }
+  auto decoded = std::make_shared<RgbaImage>();
+  decoded->width = static_cast<uint32_t>(width);
+  decoded->height = static_cast<uint32_t>(height);
+  decoded->rgba.assign(pixels, pixels + static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
+  stbi_image_free(pixels);
+  // stb decodes to straight alpha; the draw paths expect premultiplied RGBA
+  // as the Apple decoder emits it (drawImageFit un-premultiplies again).
+  std::vector<uint8_t> &rgba = decoded->rgba;
+  for (size_t offset = 0; offset < rgba.size(); offset += 4u) {
+    const uint32_t alpha = rgba[offset + 3u];
+    if (alpha == 255u) {
+      continue;
+    }
+    rgba[offset + 0u] = static_cast<uint8_t>(div255(rgba[offset + 0u] * alpha));
+    rgba[offset + 1u] = static_cast<uint8_t>(div255(rgba[offset + 1u] * alpha));
+    rgba[offset + 2u] = static_cast<uint8_t>(div255(rgba[offset + 2u] * alpha));
+  }
+  return decoded;
 }
 #endif
 
