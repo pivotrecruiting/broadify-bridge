@@ -881,6 +881,49 @@ void drawCornerbug(std::vector<uint8_t> &frame, uint32_t width, uint32_t height,
   fillRect(frame, width, height, {rect.x + size / 3, rect.y + size / 3, size / 3, size / 3}, 255, 255, 255, 52);
 }
 
+// CPU fallback for scenes the GPU compositor does not cover: applies the
+// keyer mask (bilinear, same normalize curve as the former worker-side pass)
+// onto a scratch copy of the camera frame.
+void applyMaskToFrameCpu(VideoFrame &frame, const AlphaMask &mask) {
+  if (frame.rgba.empty() || mask.alpha.empty() || mask.width == 0u || mask.height == 0u) {
+    return;
+  }
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    const double srcY = ((y + 0.5) / frame.height) * mask.height - 0.5;
+    const uint32_t y0 = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(std::floor(srcY)), 0, static_cast<int>(mask.height) - 1));
+    const uint32_t y1 = std::min(y0 + 1u, mask.height - 1u);
+    const double wy = std::clamp(srcY - std::floor(srcY), 0.0, 1.0);
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      const double srcX = ((x + 0.5) / frame.width) * mask.width - 0.5;
+      const uint32_t x0 = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(std::floor(srcX)), 0, static_cast<int>(mask.width) - 1));
+      const uint32_t x1 = std::min(x0 + 1u, mask.width - 1u);
+      const double wx = std::clamp(srcX - std::floor(srcX), 0.0, 1.0);
+      const double top = mask.alpha[static_cast<size_t>(y0) * mask.width + x0] * (1.0 - wx) +
+                         mask.alpha[static_cast<size_t>(y0) * mask.width + x1] * wx;
+      const double bottom = mask.alpha[static_cast<size_t>(y1) * mask.width + x0] * (1.0 - wx) +
+                            mask.alpha[static_cast<size_t>(y1) * mask.width + x1] * wx;
+      const double raw = top * (1.0 - wy) + bottom * wy;
+      double alpha = 0.0;
+      if (raw > 18.0) {
+        if (raw >= 242.0) {
+          alpha = 255.0;
+        } else {
+          const double t = (raw - 18.0) / 224.0;
+          alpha = t * t * (3.0 - 2.0 * t) * 255.0;
+        }
+      }
+      const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
+      const uint8_t a = clampByte(static_cast<int>(std::round(alpha)));
+      frame.rgba[offset + 3u] = a;
+      if (a == 0u) {
+        frame.rgba[offset + 0u] = 0u;
+        frame.rgba[offset + 1u] = 0u;
+        frame.rgba[offset + 2u] = 0u;
+      }
+    }
+  }
+}
+
 }  // namespace
 
 CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
@@ -1180,50 +1223,6 @@ bool projectedMediaQuad(const Rect &target, uint32_t imageWidth, uint32_t imageH
     quadY[i] = centerY + Y * projection;
   }
   return true;
-}
-
-
-// CPU fallback for scenes the GPU compositor does not cover: applies the
-// keyer mask (bilinear, same normalize curve as the former worker-side pass)
-// onto a scratch copy of the camera frame.
-void applyMaskToFrameCpu(VideoFrame &frame, const AlphaMask &mask) {
-  if (frame.rgba.empty() || mask.alpha.empty() || mask.width == 0u || mask.height == 0u) {
-    return;
-  }
-  for (uint32_t y = 0; y < frame.height; ++y) {
-    const double srcY = ((y + 0.5) / frame.height) * mask.height - 0.5;
-    const uint32_t y0 = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(std::floor(srcY)), 0, static_cast<int>(mask.height) - 1));
-    const uint32_t y1 = std::min(y0 + 1u, mask.height - 1u);
-    const double wy = std::clamp(srcY - std::floor(srcY), 0.0, 1.0);
-    for (uint32_t x = 0; x < frame.width; ++x) {
-      const double srcX = ((x + 0.5) / frame.width) * mask.width - 0.5;
-      const uint32_t x0 = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(std::floor(srcX)), 0, static_cast<int>(mask.width) - 1));
-      const uint32_t x1 = std::min(x0 + 1u, mask.width - 1u);
-      const double wx = std::clamp(srcX - std::floor(srcX), 0.0, 1.0);
-      const double top = mask.alpha[static_cast<size_t>(y0) * mask.width + x0] * (1.0 - wx) +
-                         mask.alpha[static_cast<size_t>(y0) * mask.width + x1] * wx;
-      const double bottom = mask.alpha[static_cast<size_t>(y1) * mask.width + x0] * (1.0 - wx) +
-                            mask.alpha[static_cast<size_t>(y1) * mask.width + x1] * wx;
-      const double raw = top * (1.0 - wy) + bottom * wy;
-      double alpha = 0.0;
-      if (raw > 18.0) {
-        if (raw >= 242.0) {
-          alpha = 255.0;
-        } else {
-          const double t = (raw - 18.0) / 224.0;
-          alpha = t * t * (3.0 - 2.0 * t) * 255.0;
-        }
-      }
-      const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
-      const uint8_t a = clampByte(static_cast<int>(std::round(alpha)));
-      frame.rgba[offset + 3u] = a;
-      if (a == 0u) {
-        frame.rgba[offset + 0u] = 0u;
-        frame.rgba[offset + 1u] = 0u;
-        frame.rgba[offset + 2u] = 0u;
-      }
-    }
-  }
 }
 
 // Presenter bottom anchor from the mask (raw values), scaled to frame rows.
