@@ -141,28 +141,56 @@ std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
   if (frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
     return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
   }
-  // JPEG is 3-channel: drop the alpha (RGBA -> RGB) into a scratch buffer.
-  const size_t pixels = static_cast<size_t>(frame.width) * frame.height;
-  std::vector<uint8_t> rgb(pixels * 3u);
-  for (size_t i = 0; i < pixels; ++i) {
-    rgb[i * 3u + 0u] = frame.rgba[i * 4u + 0u];
-    rgb[i * 3u + 1u] = frame.rgba[i * 4u + 1u];
-    rgb[i * 3u + 2u] = frame.rgba[i * 4u + 2u];
+  const auto encodeStart = std::chrono::steady_clock::now();
+  // Downscale the preview 2x (2x2 box average, RGBA -> RGB in one pass) before
+  // encoding. This keeps the MJPEG encode well inside the ~66ms/15fps loop
+  // budget and cuts loopback bandwidth ~4x. Only the preview path is affected;
+  // the program frame, FrameBus and virtual camera keep the full resolution.
+  const bool halve = (frame.width % 2u == 0u) && (frame.height % 2u == 0u);
+  const uint32_t outW = halve ? frame.width / 2u : frame.width;
+  const uint32_t outH = halve ? frame.height / 2u : frame.height;
+  std::vector<uint8_t> rgb(static_cast<size_t>(outW) * outH * 3u);
+  if (halve) {
+    for (uint32_t y = 0u; y < outH; ++y) {
+      for (uint32_t x = 0u; x < outW; ++x) {
+        const uint32_t sx = x * 2u;
+        const uint32_t sy = y * 2u;
+        uint32_t r = 0u, g = 0u, b = 0u;
+        for (uint32_t dy = 0u; dy < 2u; ++dy) {
+          for (uint32_t dx = 0u; dx < 2u; ++dx) {
+            const size_t si = (static_cast<size_t>(sy + dy) * frame.width + (sx + dx)) * 4u;
+            r += frame.rgba[si + 0u];
+            g += frame.rgba[si + 1u];
+            b += frame.rgba[si + 2u];
+          }
+        }
+        const size_t di = (static_cast<size_t>(y) * outW + x) * 3u;
+        rgb[di + 0u] = static_cast<uint8_t>(r / 4u);
+        rgb[di + 1u] = static_cast<uint8_t>(g / 4u);
+        rgb[di + 2u] = static_cast<uint8_t>(b / 4u);
+      }
+    }
+  } else {
+    const size_t pixels = static_cast<size_t>(frame.width) * frame.height;
+    for (size_t i = 0u; i < pixels; ++i) {
+      rgb[i * 3u + 0u] = frame.rgba[i * 4u + 0u];
+      rgb[i * 3u + 1u] = frame.rgba[i * 4u + 1u];
+      rgb[i * 3u + 2u] = frame.rgba[i * 4u + 2u];
+    }
   }
   std::vector<uint8_t> jpeg;
-  const auto encodeStart = std::chrono::steady_clock::now();
   // Quality 70 matches the macOS ImageIO path (deliberate preview-only choice).
   const int ok = stbi_write_jpg_to_func(
       appendJpegBytes, &jpeg,
-      static_cast<int>(frame.width), static_cast<int>(frame.height), 3,
+      static_cast<int>(outW), static_cast<int>(outH), 3,
       rgb.data(), 70);
   const double encodeMs = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - encodeStart).count();
   static bool logged = false;
   if (!logged) {
     logged = true;
-    std::cout << "{\"type\":\"preview_encode\",\"width\":" << frame.width
-              << ",\"height\":" << frame.height
+    std::cout << "{\"type\":\"preview_encode\",\"width\":" << outW
+              << ",\"height\":" << outH
               << ",\"encode_ms\":" << encodeMs << "}" << std::endl;
   }
   if (ok == 0 || jpeg.empty()) {
