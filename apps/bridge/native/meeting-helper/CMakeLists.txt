@@ -45,6 +45,7 @@ set(MEETING_HELPER_SOURCES
   src/compose/compositor.cpp
   src/common/options.cpp
   src/control/control_server.cpp
+  src/output/vcam_controller.cpp
   src/keyer/keyer_chain.cpp
   src/keyer/model_manifest.cpp
   src/keyer/modnet_keyer.cpp
@@ -123,7 +124,7 @@ endif()
 
 if(WIN32)
   target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfsensorgroup mfuuid ole32 shlwapi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)

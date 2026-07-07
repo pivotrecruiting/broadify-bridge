@@ -1,5 +1,6 @@
 #include "control/control_server.h"
 
+#include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
 #include "util/json_utils.h"
 
@@ -220,6 +221,7 @@ std::string handleRpc(const std::string &line,
       state.framebusRunning = false;
       state.vcamRawRunning = false;
     }
+    stopVirtualCamera();
     running.store(false);
     return okResponse(id, "{\"ok\":true}");
   }
@@ -480,6 +482,31 @@ std::string handleRpc(const std::string &line,
 
   if (method == "output.framebus.configure") {
     return okResponse(id, "{\"ok\":true}");
+  }
+
+  if (method == "output.vcam.start") {
+    std::string vcamError;
+    if (startVirtualCamera(vcamError)) {
+      return okResponse(id, "{\"ok\":true,\"active\":true}");
+    }
+    return errorResponse(id, "vcam_start_failed", vcamError);
+  }
+
+  if (method == "output.vcam.stop") {
+    stopVirtualCamera();
+    return okResponse(id, "{\"ok\":true,\"active\":false}");
+  }
+
+  if (method == "output.vcam.status") {
+    const VcamStatus vcam = virtualCameraStatus();
+    std::ostringstream result;
+    result << "{\"active\":" << (vcam.active ? "true" : "false")
+           << ",\"supported\":" << (vcam.supported ? "true" : "false")
+           << ",\"last_error\":"
+           << (vcam.lastError.empty() ? "null"
+                                      : "\"" + jsonEscape(vcam.lastError) + "\"")
+           << "}";
+    return okResponse(id, result.str());
   }
 
   return errorResponse(id, "unknown_method", "Unknown meeting-helper method: " + method);

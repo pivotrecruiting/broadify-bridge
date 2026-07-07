@@ -5,6 +5,7 @@
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
+#include "output/vcam_controller.h"
 #include "state/meeting_state.h"
 #include "util/json_utils.h"
 
@@ -24,7 +25,12 @@
 #include <cstdlib>
 #include <thread>
 #include <chrono>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -104,6 +110,29 @@ int main(int argc, char **argv) {
   parentWatchdog.detach();
 #endif
 
+#if defined(_WIN32)
+  // Windows parent watchdog: the bridge passes its PID via --parent-pid; when
+  // that process exits (crash, hard kill, dev Ctrl+C) we shut down instead of
+  // lingering as an orphan holding the camera and the virtual camera.
+  if (options.parentPid > 0) {
+    const DWORD bridgePid = static_cast<DWORD>(options.parentPid);
+    std::thread parentWatchdog([bridgePid]() {
+      HANDLE handle = OpenProcess(SYNCHRONIZE, FALSE, bridgePid);
+      if (handle == nullptr) {
+        return;
+      }
+      while (g_running.load()) {
+        if (WaitForSingleObject(handle, 2000) == WAIT_OBJECT_0) {
+          g_running.store(false);
+          break;
+        }
+      }
+      CloseHandle(handle);
+    });
+    parentWatchdog.detach();
+  }
+#endif
+
   std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
@@ -139,6 +168,7 @@ int main(int argc, char **argv) {
   }
 #endif
 
+  stopVirtualCamera();
   camera->stop();
   previewFrames.clear();
   {
