@@ -95,6 +95,7 @@ target_include_directories(meeting-helper PRIVATE
   Shared/include
   ../vcam-helper/Shared/include
   ../framebus/include
+  third_party/stb
 )
 
 if(MEETING_HELPER_ENABLE_MODNET STREQUAL "1")

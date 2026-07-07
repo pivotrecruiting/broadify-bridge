@@ -27,6 +27,14 @@
 #include <unistd.h>
 #endif
 
+#if !defined(__APPLE__)
+// Windows/Linux JPEG encoder for the MJPEG preview (macOS uses ImageIO below).
+// The implementation is compiled into this single translation unit.
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#include "stb_image_write.h"
+#endif
+
 namespace broadify::meeting {
 namespace {
 
@@ -122,8 +130,45 @@ std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
   return jpeg;
 }
 #else
-std::vector<uint8_t> encodeJpeg(const PreviewFrame &) {
-  return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+// stb_image_write memory sink: append encoded bytes to the target vector.
+void appendJpegBytes(void *context, void *data, int size) {
+  auto *out = static_cast<std::vector<uint8_t> *>(context);
+  const auto *bytes = static_cast<const uint8_t *>(data);
+  out->insert(out->end(), bytes, bytes + size);
+}
+
+std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
+  if (frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
+    return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+  }
+  // JPEG is 3-channel: drop the alpha (RGBA -> RGB) into a scratch buffer.
+  const size_t pixels = static_cast<size_t>(frame.width) * frame.height;
+  std::vector<uint8_t> rgb(pixels * 3u);
+  for (size_t i = 0; i < pixels; ++i) {
+    rgb[i * 3u + 0u] = frame.rgba[i * 4u + 0u];
+    rgb[i * 3u + 1u] = frame.rgba[i * 4u + 1u];
+    rgb[i * 3u + 2u] = frame.rgba[i * 4u + 2u];
+  }
+  std::vector<uint8_t> jpeg;
+  const auto encodeStart = std::chrono::steady_clock::now();
+  // Quality 70 matches the macOS ImageIO path (deliberate preview-only choice).
+  const int ok = stbi_write_jpg_to_func(
+      appendJpegBytes, &jpeg,
+      static_cast<int>(frame.width), static_cast<int>(frame.height), 3,
+      rgb.data(), 70);
+  const double encodeMs = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - encodeStart).count();
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    std::cout << "{\"type\":\"preview_encode\",\"width\":" << frame.width
+              << ",\"height\":" << frame.height
+              << ",\"encode_ms\":" << encodeMs << "}" << std::endl;
+  }
+  if (ok == 0 || jpeg.empty()) {
+    return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+  }
+  return jpeg;
 }
 #endif
 
