@@ -66,6 +66,16 @@ if ($env:MEETING_HELPER_ENABLE_MODNET -ne "0") {
     throw "ONNX Runtime DLL not found under $onnxRuntimeRoot"
   }
   Copy-Item -Force $dllCandidate (Join-Path $rootDir "onnxruntime.dll")
+  # DirectML execution-provider runtime dependencies. Present in the DirectML
+  # ONNX Runtime build; copied next to the exe so the DML provider can load.
+  # Absent on a CPU-only ORT build (macOS/CI CPU builds), which is fine.
+  $ortLibDir = Split-Path -Parent $dllCandidate
+  foreach ($dep in @("onnxruntime_providers_shared.dll", "DirectML.dll")) {
+    $depPath = Join-Path $ortLibDir $dep
+    if (Test-Path $depPath) {
+      Copy-Item -Force $depPath (Join-Path $rootDir $dep)
+    }
+  }
 }
 
 Write-Host "Built $outputExe"

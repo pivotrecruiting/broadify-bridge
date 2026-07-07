@@ -35,6 +35,37 @@ apps/bridge/native/meeting-helper/deps/onnxruntime/macos-arm64/
 └── lib/libonnxruntime.dylib
 ```
 
+### Windows ONNX Runtime (DirectML)
+
+The Windows build vendors the DirectML-enabled ONNX Runtime here:
+
+```text
+apps/bridge/native/meeting-helper/deps/onnxruntime/windows-x64/
+├── include/  (onnxruntime_cxx_api.h, dml_provider_factory.h, …)
+└── lib/  onnxruntime.dll · onnxruntime.lib · onnxruntime_providers_shared.dll · DirectML.dll
+```
+
+The Windows keyer runs the **DirectML** execution provider (GPU offload) with an
+automatic CPU fallback. The active provider is reported in `keyer.get` /
+`state.get` (`provider: "directml" | "cpu"`) for support diagnostics.
+
+**Version divergence (temporary).** Windows uses ONNX Runtime **1.24.4 (DirectML
+build)**; macOS uses **1.26.0 (CPU/CoreML build)**. There is no official 1.26.0
+DirectML distribution — the `Microsoft.ML.OnnxRuntime.DirectML` NuGet series ends
+at 1.24.4, and the GitHub 1.26.0 release ships only CPU + CUDA (NVIDIA) builds.
+The previous CPU-only 1.26.0 build is kept as a backup at
+`deps/onnxruntime/windows-x64-cpu-1.26.0.bak/`.
+
+Vendored packages (both signed by Microsoft, Authenticode `Valid`):
+
+| Package | Version | nupkg SHA-256 |
+| --- | --- | --- |
+| `Microsoft.ML.OnnxRuntime.DirectML` | 1.24.4 | `57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681` |
+| `Microsoft.AI.DirectML` (DirectML.dll) | 1.15.4 | `4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9` |
+
+**TODO:** unify Windows and macOS on one ONNX Runtime version once an official
+DirectML build for that version is published.
+
 The model must be placed here:
 
 ```text

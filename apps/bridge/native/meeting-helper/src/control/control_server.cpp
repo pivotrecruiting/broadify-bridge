@@ -235,6 +235,7 @@ std::string handleRpc(const std::string &line,
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
+           << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
            << "\"preview_clients\":" << state.previewClientCount << ","
            << "\"vcam_clients\":" << state.vcamClientCount << ","
            << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","

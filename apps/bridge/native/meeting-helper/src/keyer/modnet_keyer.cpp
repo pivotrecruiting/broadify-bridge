@@ -20,6 +20,7 @@
 #endif
 #if defined(_WIN32)
 #include <windows.h>
+#include <dml_provider_factory.h>
 #endif
 #endif
 
@@ -46,6 +47,24 @@ uint32_t dimensionOrFallback(int64_t value) {
     return static_cast<uint32_t>(value);
   }
   return kFallbackInputSize;
+}
+
+// Square MODNet input resolution derived from the performance mode. The model
+// accepts dynamic input dimensions, so lowering this is the primary lever for
+// inference latency on weak GPUs/CPUs. Masks below 400px are edge-refined by
+// the joint-bilateral upsampler in the frame pipeline, which recovers detail.
+constexpr uint32_t kModnetInputHighQuality = 512u;
+constexpr uint32_t kModnetInputBalanced = 320u;
+constexpr uint32_t kModnetInputPerformance = 256u;
+
+uint32_t modnetInputSizeForMode(const std::string &performanceMode) {
+  if (performanceMode == "performance") {
+    return kModnetInputPerformance;
+  }
+  if (performanceMode == "balanced") {
+    return kModnetInputBalanced;
+  }
+  return kModnetInputHighQuality;  // high_quality / unknown -> full resolution
 }
 
 size_t clampIndex(size_t value, size_t upperExclusive) {
@@ -110,6 +129,14 @@ class ModnetKeyer::Impl {
     status_.backend = "modnet";
     status_.qualityMode = settings.qualityMode;
     status_.metrics = KeyerMetrics{};
+    // Derive the model input resolution from the performance mode. The model is
+    // dynamic, so a smaller square input directly cuts inference cost; the
+    // frame pipeline's joint-bilateral upsampler refines masks below 400px.
+    if (modelDynamic_) {
+      const uint32_t size = modnetInputSizeForMode(settings.performanceMode);
+      inputWidth_ = size;
+      inputHeight_ = size;
+    }
     const auto tensorStart = std::chrono::steady_clock::now();
     makeInputTensor(input, tensor_);
     const auto tensorEnd = std::chrono::steady_clock::now();
@@ -221,6 +248,24 @@ class ModnetKeyer::Impl {
       } else {
         Ort::GetApi().ReleaseStatus(coreMlStatus);
       }
+#elif defined(_WIN32)
+      status_.provider = "cpu";
+      // The DirectML execution provider offloads MODNet inference to the GPU,
+      // freeing the CPU that otherwise starves the capture, preview and status
+      // pipeline. DML requires disabling the memory-pattern optimizer and
+      // running the graph sequentially.
+      sessionOptions.DisableMemPattern();
+      sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
+      OrtStatus *dmlStatus =
+          OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
+      if (dmlStatus == nullptr) {
+        status_.provider = "directml";
+      } else {
+        // No DirectML device (no DX12 GPU or driver): fall back to the CPU
+        // provider. The sequential / mem-pattern settings above are harmless
+        // for CPU execution.
+        Ort::GetApi().ReleaseStatus(dmlStatus);
+      }
 #else
       status_.provider = "cpu";
 #endif
@@ -244,6 +289,10 @@ class ModnetKeyer::Impl {
       const auto inputInfo = session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
       const std::vector<int64_t> inputShape = inputInfo.GetShape();
       if (inputShape.size() >= 4u) {
+        // A dynamic model (dims reported as <= 0) lets us pick the input
+        // resolution per frame from the performance mode; a static model is
+        // pinned to its declared size.
+        modelDynamic_ = inputShape[2] <= 0 || inputShape[3] <= 0;
         inputHeight_ = dimensionOrFallback(inputShape[2]);
         inputWidth_ = dimensionOrFallback(inputShape[3]);
       }
@@ -313,6 +362,7 @@ class ModnetKeyer::Impl {
   bool loadAttempted_ = false;
   uint32_t inputWidth_ = kFallbackInputSize;
   uint32_t inputHeight_ = kFallbackInputSize;
+  bool modelDynamic_ = false;
 #if BROADIFY_ENABLE_MODNET
   std::unique_ptr<Ort::Env> env_;
   std::unique_ptr<Ort::Session> session_;
