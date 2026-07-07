@@ -149,6 +149,11 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStatus(): Promise<Record<string, unknown>> {
+    if (process.platform === "win32") {
+      // Windows: the virtual camera is owned by the native meeting-helper
+      // (MFCreateVirtualCamera), not a separate app.
+      return this.rpc("output.vcam.status");
+    }
     return getVcamHelperStatus({
       framebusName: process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME,
     });
@@ -164,6 +169,13 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStart(): Promise<Record<string, unknown>> {
+    if (process.platform === "win32") {
+      // Windows has no separate helper app: start the raw frame output and ask
+      // the meeting-helper to create the "Broadify Camera" (MFCreateVirtualCamera).
+      const framebusOutput = await this.framebusStart();
+      const vcam = await this.rpc("output.vcam.start");
+      return { ...vcam, framebus_output: framebusOutput };
+    }
     const framebusOutput = await this.framebusStart();
     const status = await openVcamHelperApp({
       framebusName: process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME,
@@ -175,6 +187,16 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStop(): Promise<Record<string, unknown>> {
+    if (process.platform === "win32") {
+      const framebusOutput = await this.framebusStop();
+      const vcam = await this.rpc("output.vcam.stop");
+      return {
+        ...vcam,
+        framebus_output: framebusOutput,
+        message:
+          "Virtual camera output was stopped. Meeting preview and program rendering remain active.",
+      };
+    }
     const framebusOutput = await this.framebusStop();
     return {
       ...(await this.virtualCameraStatus()),
