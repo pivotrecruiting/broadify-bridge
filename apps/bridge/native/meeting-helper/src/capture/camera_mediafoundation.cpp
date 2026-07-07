@@ -546,29 +546,14 @@ class MediaFoundationCameraSource final : public CameraSource {
   }
 
   // Windows has no per-app camera prompt for unpackaged Win32 apps; access is
-  // governed by the global privacy setting. Probe it by briefly opening a
-  // device, which is the only reliable authorized/denied signal.
+  // governed by the global privacy setting and only surfaces as an access-denied
+  // HRESULT when a device is actually opened (see start()). There is no
+  // "not_determined"/prompt state to resolve on Windows, so report authorized up
+  // front; a real denial is reported by start() when it opens the device. This
+  // keeps the bridge's macOS-style permission gate from blocking camera.list.
   std::string requestCameraPermission() override {
-    ComApartment com;
-    const std::vector<CameraInfo> cameras = listCameras();
-    if (cameras.empty()) {
-      setPermissionStatus("not_determined");
-      return "not_determined";
-    }
-    MfCaptureSession probe;
-    std::string error;
-    if (probe.open(cameras.front().cameraId, 1280, 720, 30, error)) {
-      probe.stop();
-      setPermissionStatus("authorized");
-      return "authorized";
-    }
-    const bool denied = lowerAscii(error).find("permission") != std::string::npos;
-    if (denied) {
-      setError(error, "denied");
-      return "denied";
-    }
-    setPermissionStatus("not_determined");
-    return "not_determined";
+    setPermissionStatus("authorized");
+    return "authorized";
   }
 
  private:
@@ -605,7 +590,9 @@ class MediaFoundationCameraSource final : public CameraSource {
   bool running_ = false;
   int selectedIndex_ = 0;
   std::string lastError_;
-  std::string permissionStatus_ = "not_determined";
+  // Windows has no camera prompt; start() flips this to "denied" only if the
+  // global privacy setting blocks opening a device.
+  std::string permissionStatus_ = "authorized";
   std::shared_ptr<MfCaptureSession> session_;
 };
 
