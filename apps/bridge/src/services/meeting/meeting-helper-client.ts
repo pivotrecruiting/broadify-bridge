@@ -48,6 +48,7 @@ export class MeetingHelperClient {
   private readonly socketPath: string;
   private readonly timeoutMs: number;
   private requestSeq = 0;
+  private rpcQueue: Promise<unknown> = Promise.resolve();
 
   constructor(socketPath: string, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS) {
     this.socketPath = socketPath;
@@ -206,7 +207,32 @@ export class MeetingHelperClient {
     };
   }
 
+  /**
+   * Serialize every RPC through a queue. The Windows control channel is a
+   * single-instance named pipe that accepts exactly one connection at a time;
+   * concurrent connections fail with ENOENT (e.g. getFullStatus firing
+   * getState + framebusStatus in parallel, or the web app sending commands at
+   * once). RPCs are millisecond-scale, so serializing them is negligible on all
+   * platforms and eliminates every present and future collision.
+   */
   private rpc<T = Record<string, unknown>>(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<T> {
+    const result = this.rpcQueue.then(
+      () => this.rpcInternal<T>(method, params),
+      () => this.rpcInternal<T>(method, params),
+    );
+    // Chain the next RPC after this one settles; swallow errors here so one
+    // failed RPC never rejects the shared queue for later callers.
+    this.rpcQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private rpcInternal<T = Record<string, unknown>>(
     method: string,
     params?: Record<string, unknown>,
   ): Promise<T> {
