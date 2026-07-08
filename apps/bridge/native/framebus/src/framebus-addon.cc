@@ -291,8 +291,19 @@ napi_value ReaderReadLatest(napi_env env, napi_callback_info info) {
   const uint32_t slot_index = static_cast<uint32_t>((seq - 1) % handle->header->slot_count);
   uint8_t* slot_ptr = handle->slots + (static_cast<size_t>(slot_index) * handle->header->slot_stride);
 
+  // Copy the slot into a managed buffer rather than exposing it as an external
+  // buffer: modern Electron/Node builds ship with the V8 sandbox enabled, where
+  // napi_create_external_buffer is rejected (napi_no_external_buffers_allowed)
+  // and silently yields a non-buffer value -> readers saw a black frame. A copy
+  // is cheap at display rates and also avoids the reader observing a slot that
+  // the writer overwrites mid-read.
   napi_value buffer;
-  napi_create_external_buffer(env, handle->header->frame_size, slot_ptr, nullptr, nullptr, &buffer);
+  void* buffer_data = nullptr;
+  napi_status buffer_status = napi_create_buffer_copy(
+      env, handle->header->frame_size, slot_ptr, &buffer_data, &buffer);
+  if (buffer_status != napi_ok) {
+    return ThrowError(env, "Failed to allocate frame buffer");
+  }
 
   napi_value result;
   napi_create_object(env, &result);
