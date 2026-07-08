@@ -118,6 +118,13 @@ export class MeetingHelperClient {
     return this.rpc("camera.program_select", options);
   }
 
+  /** Conference: draw an open camera as picture-in-picture (-1 = off). */
+  async cameraPipSet(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.pip_set", options);
+  }
+
   async keyerGet(): Promise<Record<string, unknown>> {
     return this.rpc("keyer.get");
   }

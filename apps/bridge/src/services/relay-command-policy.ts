@@ -109,6 +109,7 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_camera_stop: sideEffect("meeting_camera_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"], "after_state_check"),
   meeting_camera_open_set: sideEffect("meeting_camera_open_set", "helper_start", 35_000, 30_000, "meeting.camera", ["meeting.camera"], "after_state_check", "async", "join_existing"),
   meeting_camera_program_select: sideEffect("meeting_camera_program_select", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
+  meeting_camera_pip_set: sideEffect("meeting_camera_pip_set", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
   meeting_keyer_get: readOnly("meeting_keyer_get", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.keyer"]),
   meeting_keyer_configure: sideEffect("meeting_keyer_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.keyer", ["meeting.keyer"]),
   meeting_call_control: sideEffect("meeting_call_control", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.call", ["meeting.call"]),
