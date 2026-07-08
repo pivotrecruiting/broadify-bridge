@@ -3,6 +3,7 @@ import {
   EmptyPayloadSchema,
 } from "../relay-command-schemas.js";
 import {
+  ConferenceDisplayStartSchema,
   MeetingCallControlSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
@@ -11,6 +12,7 @@ import {
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
 } from "./meeting-command-schemas.js";
+import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
 import {
   executeMeetingCallControl,
@@ -198,8 +200,14 @@ function clearMeetingGraphicsFrameBus(
  * Check whether a command is a meeting command.
  */
 export function isMeetingCommand(command: string): boolean {
-  return command.startsWith("meeting_");
+  return command.startsWith("meeting_") || command.startsWith("conference_");
 }
+
+/**
+ * Conference display output. Shares the meeting program FrameBus, so it lives
+ * alongside the meeting command handler. Single instance per bridge process.
+ */
+const conferenceDisplayOutput = new ConferenceDisplayOutput();
 
 /**
  * Handle a meeting_* relay command by delegating to the engine manager
@@ -311,6 +319,40 @@ export async function handleMeetingCommand(
         }
         throw error;
       }
+    }
+
+    case "conference_display_start": {
+      const target = parseRelayPayload(
+        ConferenceDisplayStartSchema,
+        payload ?? {},
+        "Invalid payload for conference_display_start",
+      );
+      try {
+        await conferenceDisplayOutput.start({
+          matchName: target.match_name,
+          matchWidth: target.match_width,
+          matchHeight: target.match_height,
+        });
+        return { success: true, data: conferenceDisplayOutput.status() };
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Conference display failed to start",
+          data: conferenceDisplayOutput.status(),
+        };
+      }
+    }
+
+    case "conference_display_stop": {
+      await conferenceDisplayOutput.stop();
+      return { success: true, data: conferenceDisplayOutput.status() };
+    }
+
+    case "conference_display_status": {
+      return { success: true, data: conferenceDisplayOutput.status() };
     }
 
     case "meeting_keyer_get": {

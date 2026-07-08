@@ -22,6 +22,16 @@ export const MeetingCallControlSchema = z.object({
   action: z.enum(["mic_toggle", "speaker_toggle", "hangup"]),
 });
 
+/**
+ * Conference display output target. All fields optional: with none set the
+ * display window auto-selects the external display (falling back to primary).
+ */
+export const ConferenceDisplayStartSchema = z.object({
+  match_name: z.string().max(128).optional(),
+  match_width: z.number().int().positive().max(16384).optional(),
+  match_height: z.number().int().positive().max(16384).optional(),
+});
+
 export const MeetingKeyerConfigureSchema = z
   .object({
     enabled: z.boolean().optional(),
