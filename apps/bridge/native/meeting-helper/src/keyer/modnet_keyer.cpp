@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <numeric>
 #include <thread>
@@ -132,10 +133,30 @@ class ModnetKeyer::Impl {
     // Derive the model input resolution from the performance mode. The model is
     // dynamic, so a smaller square input directly cuts inference cost; the
     // frame pipeline's joint-bilateral upsampler refines masks below 400px.
+    //
+    // The DirectML EP compiles its kernels for the shape of the first Run
+    // only; feeding a different shape afterwards recompiles on EVERY Run
+    // (~145ms -> ~2.4s per inference at 320 -> 256, measured 2026-07-07,
+    // steady over minutes). A resolution change therefore needs a fresh
+    // session plus one warmup Run at the new shape. If the rebuild fails,
+    // keying continues at the previous resolution instead of degrading into
+    // the per-Run recompile trap; the failed size is remembered so a stale
+    // performance mode cannot retrigger the rebuild every frame.
     if (modelDynamic_) {
-      const uint32_t size = modnetInputSizeForMode(settings.performanceMode);
-      inputWidth_ = size;
-      inputHeight_ = size;
+      const uint32_t requested = modnetInputSizeForMode(settings.performanceMode);
+      uint32_t effective = requested;
+      if (sessionRunSize_ != 0u && requested != sessionRunSize_) {
+        if (requested == failedRebuildSize_) {
+          effective = sessionRunSize_;
+        } else if (rebuildSessionForSize(requested)) {
+          failedRebuildSize_ = 0u;
+        } else {
+          failedRebuildSize_ = requested;
+          effective = sessionRunSize_;
+        }
+      }
+      inputWidth_ = effective;
+      inputHeight_ = effective;
     }
     const auto tensorStart = std::chrono::steady_clock::now();
     makeInputTensor(input, tensor_);
@@ -173,6 +194,7 @@ class ModnetKeyer::Impl {
       copyAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
+      sessionRunSize_ = inputWidth_;
       status_.activeKeyer = "modnet";
       status_.fallbackActive = false;
       status_.fallbackReason.clear();
@@ -234,51 +256,12 @@ class ModnetKeyer::Impl {
 #if BROADIFY_ENABLE_MODNET
     try {
       env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "broadify-meeting-helper");
-      Ort::SessionOptions sessionOptions;
-      sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
-      sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-#if defined(__APPLE__)
-      status_.provider = "cpu";
-      const uint32_t coreMlFlags =
-          COREML_FLAG_ENABLE_ON_SUBGRAPH |
-          COREML_FLAG_ONLY_ALLOW_STATIC_INPUT_SHAPES;
-      OrtStatus *coreMlStatus = OrtSessionOptionsAppendExecutionProvider_CoreML(sessionOptions, coreMlFlags);
-      if (coreMlStatus == nullptr) {
-        status_.provider = "coreml";
-      } else {
-        Ort::GetApi().ReleaseStatus(coreMlStatus);
-      }
-#elif defined(_WIN32)
-      status_.provider = "cpu";
-      // The DirectML execution provider offloads MODNet inference to the GPU,
-      // freeing the CPU that otherwise starves the capture, preview and status
-      // pipeline. DML requires disabling the memory-pattern optimizer and
-      // running the graph sequentially.
-      sessionOptions.DisableMemPattern();
-      sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
-      OrtStatus *dmlStatus =
-          OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
-      if (dmlStatus == nullptr) {
-        status_.provider = "directml";
-      } else {
-        // No DirectML device (no DX12 GPU or driver): fall back to the CPU
-        // provider. The sequential / mem-pattern settings above are harmless
-        // for CPU execution.
-        Ort::GetApi().ReleaseStatus(dmlStatus);
-      }
-#else
-      status_.provider = "cpu";
-#endif
-#if defined(_WIN32)
-      const std::wstring ortModelPath = utf8ToWidePath(modelPath);
-      if (ortModelPath.empty()) {
+      modelPath_ = modelPath;
+      session_ = createSession();
+      if (!session_) {
         setFallback("model_path_invalid");
         return false;
       }
-      session_ = std::make_unique<Ort::Session>(*env_, ortModelPath.c_str(), sessionOptions);
-#else
-      session_ = std::make_unique<Ort::Session>(*env_, modelPath.c_str(), sessionOptions);
-#endif
       Ort::AllocatorWithDefaultOptions allocator;
       Ort::AllocatedStringPtr inputNameAllocated = session_->GetInputNameAllocated(0, allocator);
       Ort::AllocatedStringPtr outputNameAllocated = session_->GetOutputNameAllocated(0, allocator);
@@ -310,6 +293,88 @@ class ModnetKeyer::Impl {
     return false;
 #endif
   }
+
+#if BROADIFY_ENABLE_MODNET
+  // Creates an ORT session for modelPath_ with the platform execution
+  // provider (sets status_.provider). Returns nullptr if the model path
+  // cannot be represented for the platform API; ORT errors throw.
+  std::unique_ptr<Ort::Session> createSession() {
+    Ort::SessionOptions sessionOptions;
+    sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
+    sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+#if defined(__APPLE__)
+    status_.provider = "cpu";
+    const uint32_t coreMlFlags =
+        COREML_FLAG_ENABLE_ON_SUBGRAPH |
+        COREML_FLAG_ONLY_ALLOW_STATIC_INPUT_SHAPES;
+    OrtStatus *coreMlStatus = OrtSessionOptionsAppendExecutionProvider_CoreML(sessionOptions, coreMlFlags);
+    if (coreMlStatus == nullptr) {
+      status_.provider = "coreml";
+    } else {
+      Ort::GetApi().ReleaseStatus(coreMlStatus);
+    }
+#elif defined(_WIN32)
+    status_.provider = "cpu";
+    // The DirectML execution provider offloads MODNet inference to the GPU,
+    // freeing the CPU that otherwise starves the capture, preview and status
+    // pipeline. DML requires disabling the memory-pattern optimizer and
+    // running the graph sequentially.
+    sessionOptions.DisableMemPattern();
+    sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
+    OrtStatus *dmlStatus =
+        OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
+    if (dmlStatus == nullptr) {
+      status_.provider = "directml";
+    } else {
+      // No DirectML device (no DX12 GPU or driver): fall back to the CPU
+      // provider. The sequential / mem-pattern settings above are harmless
+      // for CPU execution.
+      Ort::GetApi().ReleaseStatus(dmlStatus);
+    }
+#else
+    status_.provider = "cpu";
+#endif
+#if defined(_WIN32)
+    const std::wstring ortModelPath = utf8ToWidePath(modelPath_);
+    if (ortModelPath.empty()) {
+      return nullptr;
+    }
+    return std::make_unique<Ort::Session>(*env_, ortModelPath.c_str(), sessionOptions);
+#else
+    return std::make_unique<Ort::Session>(*env_, modelPath_.c_str(), sessionOptions);
+#endif
+  }
+
+  // Replaces the session and pays the execution provider's shape-compile cost
+  // for `size` through a warmup Run, so visible inferences never hit it. The
+  // old session stays in place when anything fails.
+  bool rebuildSessionForSize(uint32_t size) {
+    const auto rebuildStart = std::chrono::steady_clock::now();
+    try {
+      std::unique_ptr<Ort::Session> newSession = createSession();
+      if (!newSession) {
+        return false;
+      }
+      std::vector<float> warmupTensor(static_cast<size_t>(3u) * size * size, 0.0f);
+      std::array<int64_t, 4> warmupShape = {1, 3, static_cast<int64_t>(size), static_cast<int64_t>(size)};
+      Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+      Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
+          memoryInfo, warmupTensor.data(), warmupTensor.size(), warmupShape.data(), warmupShape.size());
+      newSession->Run(
+          Ort::RunOptions{nullptr}, inputNames_.data(), &warmupInput, 1, outputNames_.data(), 1);
+      session_ = std::move(newSession);
+      sessionRunSize_ = size;
+      std::cout << "{\"type\":\"keyer_session_rebuild\",\"input_size\":" << size
+                << ",\"warmup_ms\":" << elapsedMs(rebuildStart, std::chrono::steady_clock::now())
+                << "}" << std::endl;
+      return true;
+    } catch (...) {
+      std::cout << "{\"type\":\"keyer_session_rebuild_failed\",\"input_size\":" << size
+                << "}" << std::endl;
+      return false;
+    }
+  }
+#endif
 
   void makeInputTensor(const VideoFrame &input, std::vector<float> &tensor) const {
     tensor.resize(static_cast<size_t>(3u) * inputWidth_ * inputHeight_);
@@ -363,6 +428,11 @@ class ModnetKeyer::Impl {
   uint32_t inputWidth_ = kFallbackInputSize;
   uint32_t inputHeight_ = kFallbackInputSize;
   bool modelDynamic_ = false;
+  // Shape the current session has run with (0 = no Run yet) and the last
+  // size a rebuild failed for (retried only after the requested size changes).
+  uint32_t sessionRunSize_ = 0u;
+  uint32_t failedRebuildSize_ = 0u;
+  std::string modelPath_;
 #if BROADIFY_ENABLE_MODNET
   std::unique_ptr<Ort::Env> env_;
   std::unique_ptr<Ort::Session> session_;
