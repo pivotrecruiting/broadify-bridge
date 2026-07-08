@@ -26,12 +26,15 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state);
 // cameraMask: alpha mask belonging to cameraFrame (nullptr for passthrough).
 // The mask is applied during compositing (GPU shader or CPU fallback);
 // camera frames arrive unkeyed.
+// cameraPipFrame: an optional second live camera drawn as a picture-in-picture
+// inset (nullptr = no camera PiP). Conference uses it for a second angle.
 void renderProgramFrame(const Options &options,
                         const CompositorSnapshot &snapshot,
                         const VideoFrame *cameraFrame,
                         const AlphaMask *cameraMask,
                         const VideoFrame *backGraphicsFrame,
                         const VideoFrame *frontGraphicsFrame,
+                        const VideoFrame *cameraPipFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output);
 

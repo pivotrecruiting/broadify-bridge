@@ -1453,17 +1453,66 @@ bool tryRenderProgramFrameMetal(const Options &options,
 }  // namespace
 #endif
 
+// Draws a second live camera as a picture-in-picture inset in the bottom-right
+// corner of the finished program frame. Runs on the CPU over the final RGBA
+// output, so it works after either the GPU or CPU main compositing path.
+void drawCameraPipInset(std::vector<uint8_t> &output, uint32_t width,
+                        uint32_t height, const VideoFrame &pip) {
+  if (pip.rgba.empty() || pip.width == 0u || pip.height == 0u) {
+    return;
+  }
+  // ~28% of program width, keeping the PiP camera's aspect ratio.
+  const uint32_t insetW = std::max<uint32_t>(1u, (width * 28u) / 100u);
+  const uint32_t insetH = std::max<uint32_t>(
+      1u, static_cast<uint32_t>((static_cast<uint64_t>(insetW) * pip.height) /
+                                pip.width));
+  const uint32_t margin = std::max<uint32_t>(8u, width / 80u);
+  const uint32_t border = std::max<uint32_t>(2u, width / 480u);
+  if (insetW + margin >= width || insetH + margin >= height) {
+    return;
+  }
+  const uint32_t x0 = width - insetW - margin;
+  const uint32_t y0 = height - insetH - margin;
+
+  // Border frame behind the inset.
+  for (uint32_t y = y0 - border; y < y0 + insetH + border; ++y) {
+    for (uint32_t x = x0 - border; x < x0 + insetW + border; ++x) {
+      blendPixel(output, width, height, static_cast<int>(x),
+                 static_cast<int>(y), 235, 238, 242, 255);
+    }
+  }
+  // Nearest-neighbour downscale of the PiP camera into the inset.
+  for (uint32_t y = 0; y < insetH; ++y) {
+    const uint32_t sy = std::min(
+        pip.height - 1u,
+        static_cast<uint32_t>((static_cast<uint64_t>(y) * pip.height) / insetH));
+    for (uint32_t x = 0; x < insetW; ++x) {
+      const uint32_t sx = std::min(
+          pip.width - 1u,
+          static_cast<uint32_t>((static_cast<uint64_t>(x) * pip.width) / insetW));
+      const size_t s = (static_cast<size_t>(sy) * pip.width + sx) * 4u;
+      blendPixel(output, width, height, static_cast<int>(x0 + x),
+                 static_cast<int>(y0 + y), pip.rgba[s + 0], pip.rgba[s + 1],
+                 pip.rgba[s + 2], 255);
+    }
+  }
+}
+
 void renderProgramFrame(const Options &options,
                         const CompositorSnapshot &snapshot,
                         const VideoFrame *cameraFrame,
                         const AlphaMask *cameraMask,
                         const VideoFrame *backGraphicsFrame,
                         const VideoFrame *frontGraphicsFrame,
+                        const VideoFrame *cameraPipFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output) {
 #if defined(__APPLE__)
   if (tryRenderProgramFrameMetal(
           options, snapshot, cameraFrame, cameraMask, backGraphicsFrame, frontGraphicsFrame, frameIndex, output)) {
+    if (cameraPipFrame != nullptr) {
+      drawCameraPipInset(output, options.width, options.height, *cameraPipFrame);
+    }
     return;
   }
 #endif
@@ -1541,6 +1590,11 @@ void renderProgramFrame(const Options &options,
   drawGraphics(output, options.width, options.height, snapshot.graphics);
   drawGraphicsFrame(output, options.width, options.height, frontGraphicsFrame);
   drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
+
+  // Conference camera picture-in-picture, above all layers.
+  if (cameraPipFrame != nullptr) {
+    drawCameraPipInset(output, options.width, options.height, *cameraPipFrame);
+  }
 }
 
 }  // namespace broadify::meeting

@@ -92,6 +92,7 @@ struct PipelineRuntimeState {
   bool programDirty = false;
   bool graphicsDirty = false;
   uint64_t programRevision = 0;
+  int pipCameraIndex = -1;
   std::string mode = "idle";
 };
 
@@ -1150,6 +1151,8 @@ void runFramePipeline(const Options &options,
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
   VideoFrame latestCameraFrame;
+  VideoFrame latestPipFrame;
+  uint64_t lastPipCameraTimestampNs = 0u;
   uint64_t lastCameraTimestampNs = 0u;
   uint64_t lastProgramRevision = 0u;
   uint64_t lastUsedKeyerPublishedNs = 0u;
@@ -1176,6 +1179,7 @@ void runFramePipeline(const Options &options,
       runtime.programDirty = state.programDirty;
       runtime.graphicsDirty = state.graphicsDirty;
       runtime.programRevision = state.programRevision;
+      runtime.pipCameraIndex = state.pipCameraIndex;
     }
 
     const CompositorSnapshot snapshot = copyCompositorSnapshot(state);
@@ -1218,6 +1222,22 @@ void runFramePipeline(const Options &options,
       } else if (!runtime.cameraRunning) {
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
+      }
+
+      // Conference PiP: a second open camera drawn as an inset. Read its
+      // newest frame if configured and distinct from the program camera.
+      const bool pipActive = runtime.cameraRunning &&
+                             runtime.pipCameraIndex >= 0 &&
+                             runtime.pipCameraIndex != camera.activeCameraIndex();
+      if (pipActive) {
+        camera.copyLatestFrameFrom(runtime.pipCameraIndex,
+                                   lastPipCameraTimestampNs, latestPipFrame);
+        if (!latestPipFrame.rgba.empty()) {
+          lastPipCameraTimestampNs = latestPipFrame.timestampNs;
+        }
+      } else {
+        latestPipFrame = VideoFrame{};
+        lastPipCameraTimestampNs = 0u;
       }
       const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
@@ -1398,6 +1418,8 @@ void runFramePipeline(const Options &options,
             selectedPair != nullptr ? &selectedPair->mask : nullptr,
             backGraphicsFrameForCompositor,
             frontGraphicsFrameForCompositor,
+            (pipActive && !latestPipFrame.rgba.empty()) ? &latestPipFrame
+                                                        : nullptr,
             frameIndex++,
             programFrame);
         if (selectedPair != nullptr) {

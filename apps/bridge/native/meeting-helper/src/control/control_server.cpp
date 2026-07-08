@@ -373,6 +373,16 @@ std::string handleRpc(const std::string &line,
                 "}");
   }
 
+  // Conference: draw an open camera as picture-in-picture (-1 = off).
+  if (method == "camera.pip_set") {
+    const int cameraIndex = extractIntField(line, "camera_index", -1);
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.pipCameraIndex = cameraIndex;
+    markProgramDirty(state);
+    return okResponse(
+        id, "{\"ok\":true,\"pip_index\":" + std::to_string(cameraIndex) + "}");
+  }
+
   if (method == "keyer.get") {
     std::lock_guard<std::mutex> lock(state.mutex);
     std::ostringstream result;
