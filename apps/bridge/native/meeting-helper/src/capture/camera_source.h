@@ -49,6 +49,41 @@ class CameraSource {
   virtual std::string lastError() const = 0;
   virtual std::string cameraPermissionStatus() const = 0;
   virtual std::string requestCameraPermission() = 0;
+
+  // --- Multi-camera (Conference) ---------------------------------------------
+  // Open several cameras at once and switch the program feed between them with
+  // no device reopen (seamless cut) or read a specific one for picture-in-
+  // picture. Backends without multi-camera support fall back to the single
+  // active camera via these default implementations, so meeting and the stub
+  // keep working unchanged.
+
+  // Opens every listed camera simultaneously; the first becomes the program.
+  virtual bool startSet(const std::vector<int> &cameraIndices, uint32_t width,
+                        uint32_t height, uint32_t fps) {
+    return !cameraIndices.empty() &&
+           start(cameraIndices.front(), width, height, fps);
+  }
+
+  // The cameras currently open (program + any additional ones).
+  virtual std::vector<int> activeCameraSet() const {
+    const int index = activeCameraIndex();
+    return index >= 0 ? std::vector<int>{index} : std::vector<int>{};
+  }
+
+  // Switches which open camera feeds the program (copyLatestFrame). Seamless
+  // when the camera is already open; falls back to selectCamera otherwise.
+  virtual bool setProgramCamera(int cameraIndex) {
+    return selectCamera(cameraIndex);
+  }
+
+  // Reads the newest frame of a specific open camera (for PiP/preview).
+  virtual bool copyLatestFrameFrom(int cameraIndex, uint64_t lastTimestampNs,
+                                   VideoFrame &frame) {
+    if (cameraIndex != activeCameraIndex()) {
+      return false;
+    }
+    return copyLatestFrameIfNew(lastTimestampNs, frame);
+  }
 };
 
 std::unique_ptr<CameraSource> createCameraSource();
