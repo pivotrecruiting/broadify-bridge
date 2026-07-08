@@ -28,6 +28,8 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_camera_select",
   "meeting_camera_start",
   "meeting_camera_stop",
+  "meeting_camera_open_set",
+  "meeting_camera_program_select",
   "meeting_keyer_get",
   "meeting_keyer_configure",
   "meeting_keyer_reset",

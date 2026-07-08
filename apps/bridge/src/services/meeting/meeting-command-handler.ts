@@ -304,6 +304,24 @@ export async function handleMeetingCommand(
       return runMeetingRpc(() => requireClient().cameraStop());
     }
 
+    case "meeting_camera_open_set": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_camera_open_set",
+      );
+      return runMeetingRpc(() => requireClient().cameraOpenSet(options));
+    }
+
+    case "meeting_camera_program_select": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_camera_program_select",
+      );
+      return runMeetingRpc(() => requireClient().cameraProgramSelect(options));
+    }
+
     case "meeting_call_control": {
       const { platform, action } = parseRelayPayload(
         MeetingCallControlSchema,

@@ -104,6 +104,20 @@ export class MeetingHelperClient {
     return this.rpc("camera.select", options);
   }
 
+  /** Conference: open several cameras at once for seamless switching. */
+  async cameraOpenSet(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.open_set", options);
+  }
+
+  /** Conference: cut the program feed to an already-open camera. */
+  async cameraProgramSelect(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.program_select", options);
+  }
+
   async keyerGet(): Promise<Record<string, unknown>> {
     return this.rpc("keyer.get");
   }
