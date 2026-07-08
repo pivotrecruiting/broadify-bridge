@@ -307,6 +307,72 @@ std::string handleRpc(const std::string &line,
     return okResponse(id, "{\"ok\":true}");
   }
 
+  // Conference: open several cameras at once. Payload
+  // "camera_indices":[0,1,2] — the first becomes the program feed. The others
+  // stay running so program_select can cut between them with no reopen.
+  if (method == "camera.open_set") {
+    std::vector<int> indices;
+    const std::string key = "\"camera_indices\"";
+    const size_t keyPos = line.find(key);
+    if (keyPos != std::string::npos) {
+      const size_t open = line.find('[', keyPos);
+      const size_t close = open == std::string::npos
+                               ? std::string::npos
+                               : line.find(']', open);
+      if (open != std::string::npos && close != std::string::npos) {
+        const std::string inner = line.substr(open + 1, close - open - 1);
+        std::stringstream ss(inner);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+          try {
+            indices.push_back(std::stoi(token));
+          } catch (...) {
+          }
+        }
+      }
+    }
+    const bool started =
+        camera.startSet(indices, options.width, options.height, options.fps);
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.cameraRunning = started;
+      state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
+      markProgramDirty(state);
+    }
+    if (!started) {
+      const std::string permissionStatus = camera.cameraPermissionStatus();
+      const std::string code =
+          permissionStatus == "denied" || permissionStatus == "restricted"
+              ? "camera_permission_denied"
+              : "camera_start_failed";
+      return errorResponse(id, code, camera.lastError());
+    }
+    const std::vector<int> openSet = camera.activeCameraSet();
+    std::ostringstream result;
+    result << "{\"ok\":true,\"program_index\":" << camera.activeCameraIndex()
+           << ",\"open\":[";
+    for (size_t i = 0; i < openSet.size(); ++i) {
+      result << (i ? "," : "") << openSet[i];
+    }
+    result << "]}";
+    return okResponse(id, result.str());
+  }
+
+  // Conference: cut the program feed to an already-open camera (seamless).
+  if (method == "camera.program_select") {
+    const int cameraIndex = extractIntField(line, "camera_index", 0);
+    if (!camera.setProgramCamera(cameraIndex)) {
+      return errorResponse(id, "camera_program_select_failed",
+                           camera.lastError());
+    }
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.activeCameraIndex = camera.activeCameraIndex();
+    markProgramDirty(state);
+    return okResponse(
+        id, "{\"ok\":true,\"program_index\":" + std::to_string(cameraIndex) +
+                "}");
+  }
+
   if (method == "keyer.get") {
     std::lock_guard<std::mutex> lock(state.mutex);
     std::ostringstream result;
