@@ -206,8 +206,11 @@ bool liveSnapEnabled() {
 // motion edge-lag). Falls back to the async path on any failure.
 bool gpuPipelineEnabled() {
   static const bool enabled = [] {
+    // Default ON: the fused synchronous native-CoreML/GPU keyer is the production
+    // path (mask age 0 -> motion edges track exactly). Kill-switch: set
+    // BROADIFY_MEETING_GPU_PIPELINE=0 to fall back to the async Vision keyer.
     const char *raw = std::getenv("BROADIFY_MEETING_GPU_PIPELINE");
-    return raw != nullptr && raw[0] == '1';
+    return raw == nullptr || raw[0] != '0';
   }();
   return enabled;
 }

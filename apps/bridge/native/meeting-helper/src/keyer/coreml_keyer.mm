@@ -36,11 +36,11 @@ MLComputeUnits computeUnitsFromEnv() {
   return MLComputeUnitsAll;  // default: CPU+GPU+ANE, Core ML picks
 }
 
-// Stage 2: refine the mask on the GPU (MPSImageGuidedFilter) instead of the CPU
-// joint-bilateral pass. Opt-in while it is validated.
+// Refine the mask on the GPU (MPSImageGuidedFilter) instead of the CPU
+// joint-bilateral pass. Default ON. Kill-switch: BROADIFY_MEETING_GPU_REFINE=0.
 bool gpuRefineEnabled() {
   const char *raw = std::getenv("BROADIFY_MEETING_GPU_REFINE");
-  return raw != nullptr && raw[0] == '1';
+  return raw == nullptr || raw[0] != '0';
 }
 #endif
 
