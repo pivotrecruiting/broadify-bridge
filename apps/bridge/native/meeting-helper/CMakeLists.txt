@@ -68,12 +68,16 @@ if(APPLE)
     src/keyer/vision_keyer.mm
     src/keyer/coreml_keyer.mm
     src/keyer/gpu_mask_refine.mm
+    src/recorder/meeting_recorder.mm
     src/macos/macos_app.mm
   )
   set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/keyer/gpu_mask_refine.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/recorder/meeting_recorder.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
@@ -92,9 +96,9 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
 elseif(WIN32)
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_mediafoundation.cpp)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_mediafoundation.cpp src/recorder/meeting_recorder_stub.cpp)
 else()
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
 endif()
 
 if(APPLE)

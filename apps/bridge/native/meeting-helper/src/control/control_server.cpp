@@ -2,6 +2,7 @@
 
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
+#include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
@@ -198,10 +199,23 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
   }
 }
 
+std::string recordingStatusJson(MeetingRecorder &recorder) {
+  const RecordingStatus s = recorder.status();
+  std::ostringstream out;
+  out << "{\"ok\":true,\"recording\":{"
+      << "\"active\":" << (s.active ? "true" : "false") << ","
+      << "\"file_path\":\"" << jsonEscape(s.filePath) << "\","
+      << "\"elapsed_seconds\":" << s.elapsedSeconds << ","
+      << "\"video_frames\":" << s.videoFrames << ","
+      << "\"last_error\":\"" << jsonEscape(s.lastError) << "\"}}";
+  return out.str();
+}
+
 std::string handleRpc(const std::string &line,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running) {
   const std::string id = extractStringField(line, "id");
@@ -307,6 +321,48 @@ std::string handleRpc(const std::string &line,
     state.activeCameraIndex = -1;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true}");
+  }
+
+  if (method == "recording.microphones") {
+    const std::vector<MicrophoneInfo> mics = recorder.listMicrophones();
+    std::ostringstream out;
+    out << "{\"ok\":true,\"microphones\":[";
+    for (size_t i = 0; i < mics.size(); ++i) {
+      if (i > 0) {
+        out << ",";
+      }
+      out << "{\"device_id\":\"" << jsonEscape(mics[i].deviceId) << "\","
+          << "\"label\":\"" << jsonEscape(mics[i].label) << "\","
+          << "\"is_default\":" << (mics[i].isDefault ? "true" : "false")
+          << "}";
+    }
+    out << "]}";
+    return okResponse(id, out.str());
+  }
+
+  if (method == "recording.start") {
+    const std::string filePath = extractStringField(line, "file_path");
+    const std::string micDeviceId = extractStringField(line, "mic_device_id");
+    if (filePath.empty()) {
+      return errorResponse(id, "invalid_request",
+                           "recording.start requires file_path.");
+    }
+    const bool started = recorder.start(filePath, micDeviceId, options.width,
+                                        options.height, options.fps);
+    if (!started) {
+      return errorResponse(id, "recording_start_failed",
+                           recorder.status().lastError);
+    }
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
+  if (method == "recording.stop") {
+    recorder.stop();
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
+  if (method == "recording.status") {
+    return okResponse(id, recordingStatusJson(recorder));
   }
 
   // Conference: open several cameras at once. Payload
@@ -514,7 +570,7 @@ std::string handleRpc(const std::string &line,
         markProgramDirty(state);
       }
     }
-    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, options, running);
+    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, recorder, options, running);
   }
 
   if (method == "keyer.reset") {
@@ -632,6 +688,7 @@ void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening) {
@@ -656,7 +713,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-          const std::string response = handleRpc(line, state, camera, previewFrames, options, running);
+          const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           // Block until the client has read the response; without this,
@@ -676,6 +733,7 @@ void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening) {
@@ -713,7 +771,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-        const std::string response = handleRpc(line, state, camera, previewFrames, options, running);
+        const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
         (void)write(client, response.c_str(), response.size());
         break;
       }

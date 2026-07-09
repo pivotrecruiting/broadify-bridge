@@ -5,6 +5,7 @@
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
+#include "recorder/meeting_recorder.h"
 #include "output/vcam_controller.h"
 #include "state/meeting_state.h"
 #include "util/json_utils.h"
@@ -83,6 +84,7 @@ int main(int argc, char **argv) {
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
+  MeetingRecorder recorder;
 
   std::promise<void> controlListening;
   std::future<void> controlListeningFuture = controlListening.get_future();
@@ -133,7 +135,7 @@ int main(int argc, char **argv) {
   }
 #endif
 
-  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(g_running));
+  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(recorder), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread control(
@@ -142,6 +144,7 @@ int main(int argc, char **argv) {
       std::ref(state),
       std::ref(*camera),
       std::ref(previewFrames),
+      std::ref(recorder),
       std::cref(options),
       std::ref(g_running),
       [&controlListening]() { controlListening.set_value(); });

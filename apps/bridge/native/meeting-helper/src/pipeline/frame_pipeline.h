@@ -9,10 +9,13 @@
 
 namespace broadify::meeting {
 
+class MeetingRecorder;
+
 void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       std::atomic<bool> &running);
 
 }  // namespace broadify::meeting

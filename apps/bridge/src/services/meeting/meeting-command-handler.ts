@@ -23,6 +23,7 @@ import {
   executeMeetingCallControl,
   MeetingCallControlError,
 } from "./meeting-call-control.js";
+import { pickRecordingSavePath } from "./meeting-recording-dialog.js";
 import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
@@ -356,6 +357,42 @@ export async function handleMeetingCommand(
         "Invalid payload for meeting_camera_auto_director",
       );
       return runMeetingRpc(() => requireClient().cameraAutoDirector(options));
+    }
+
+    case "meeting_recording_microphones": {
+      return runMeetingRpc(() => requireClient().recordingMicrophones());
+    }
+
+    case "meeting_recording_pick_path": {
+      // Bridge-local: the file is written on this machine by the helper, so the
+      // save location is chosen here via the native macOS panel, not in the
+      // browser. Returns { cancelled: true } when the user dismisses the panel.
+      const defaultName =
+        typeof payload?.default_name === "string"
+          ? payload.default_name
+          : "meeting.mp4";
+      const filePath = await pickRecordingSavePath(defaultName);
+      if (filePath === null) {
+        return { success: true, data: { cancelled: true } };
+      }
+      return { success: true, data: { cancelled: false, file_path: filePath } };
+    }
+
+    case "meeting_recording_start": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_recording_start",
+      );
+      return runMeetingRpc(() => requireClient().recordingStart(options));
+    }
+
+    case "meeting_recording_stop": {
+      return runMeetingRpc(() => requireClient().recordingStop());
+    }
+
+    case "meeting_recording_status": {
+      return runMeetingRpc(() => requireClient().recordingStatus());
     }
 
     case "meeting_call_control": {
