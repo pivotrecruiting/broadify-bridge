@@ -26,6 +26,10 @@ class KeyerChain {
   // Apple Vision person segmentation is macOS-only and must never ship on
   // other platforms for licensing reasons; keep it out of non-Apple builds.
   std::unique_ptr<Keyer> vision_;
+  // Native Core ML MODNet backend (zero-copy GPU rework, Stage 1). Opt-in via
+  // BROADIFY_MEETING_KEYER_BACKEND=coreml_modnet; the model is MODNet.mlpackage
+  // in the models dir.
+  std::unique_ptr<Keyer> coreml_;
   // Auto-quality governor for the "balanced" profile: starts at Vision
   // "balanced" and drops to "fast" once the smoothed inference time shows the
   // machine cannot sustain it. Resets when the keyer is re-enabled.
@@ -33,6 +37,12 @@ class KeyerChain {
   double autoInferenceEmaMs_ = -1.0;
   uint64_t autoInferenceSamples_ = 0;
   std::chrono::steady_clock::time_point autoQualityDegradedAt_{};
+  // Re-probe backoff: a machine that genuinely cannot hold "balanced" must not
+  // retry every 60s (each retry visibly wobbles quality). The interval doubles
+  // on every failed probe and resets once a probe holds. See keyer_chain.cpp.
+  std::chrono::steady_clock::duration autoQualityReprobeInterval_{
+      std::chrono::seconds(60)};
+  bool autoQualityProbing_ = false;
 #endif
   KeyerStatus status_;
 };

@@ -51,6 +51,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/modnet_keyer.cpp
   src/main.cpp
   src/pipeline/frame_pipeline.cpp
+  src/pipeline/guided_mask_refine.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
   src/preview/raw_frame_server.cpp
@@ -63,13 +64,25 @@ if(APPLE)
   list(APPEND MEETING_HELPER_SOURCES
     src/capture/camera_avfoundation.mm
     src/compose/metal_compositor.mm
+    src/compose/metal_device.mm
     src/keyer/vision_keyer.mm
+    src/keyer/coreml_keyer.mm
+    src/keyer/gpu_mask_refine.mm
     src/macos/macos_app.mm
+  )
+  set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/keyer/gpu_mask_refine.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/compose/metal_compositor.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/compose/metal_device.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/keyer/vision_keyer.mm PROPERTIES
@@ -140,11 +153,14 @@ if(APPLE)
     "-framework ApplicationServices"
     "-framework AVFoundation"
     "-framework CoreGraphics"
+    "-framework CoreImage"
+    "-framework CoreML"
     "-framework CoreMedia"
     "-framework CoreVideo"
     "-framework Foundation"
     "-framework ImageIO"
     "-framework Metal"
+    "-framework MetalPerformanceShaders"
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES

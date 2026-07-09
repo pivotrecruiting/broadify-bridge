@@ -68,6 +68,14 @@ struct MeetingState {
   int activeCameraIndex = -1;
   // Conference: a second open camera drawn as picture-in-picture (-1 = off).
   int pipCameraIndex = -1;
+  // Conference auto-director ("Auto-Regie"): when enabled, the program feed
+  // automatically follows the loudest camera microphone, with hysteresis so a
+  // brief cough or door slam does not trigger a cut. Manual program selection
+  // stays available and simply competes with the next auto evaluation.
+  bool autoDirectorEnabled = false;
+  // Minimum smoothed RMS (0..1) for a camera to be considered "someone
+  // speaking". Below this the auto-director holds the current program.
+  float autoDirectorThreshold = 0.02f;
   bool keyerEnabled = false;
   bool framebusRunning = true;
   bool vcamRawRunning = true;

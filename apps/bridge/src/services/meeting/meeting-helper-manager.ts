@@ -265,6 +265,17 @@ export function resolveMeetingModelsDir(helperPath: string = resolveMeetingHelpe
   if (process.env.NODE_ENV === "production" && resourcesPath) {
     return join(resourcesPath, "native", "meeting-helper", "models");
   }
+  // On macOS the helper path points INSIDE the .app bundle
+  // (<dir>/X.app/Contents/MacOS/exe), but the models live next to the bundle at
+  // <dir>/models — not inside it. Resolve relative to the bundle's parent so
+  // the MODNet model is found in dev (Vision needs no model, so this was
+  // latent until the MODNet backend was enabled on macOS).
+  const bundleMarker = ".app/Contents/MacOS/";
+  const bundleIndex = helperPath.indexOf(bundleMarker);
+  if (bundleIndex !== -1) {
+    const bundlePath = helperPath.slice(0, bundleIndex) + ".app";
+    return join(dirname(bundlePath), "models");
+  }
   return join(dirname(helperPath), "models");
 }
 
@@ -591,6 +602,17 @@ export class MeetingHelperManager {
         "--models-dir",
         modelsDir,
       ];
+
+      // macOS launches the helper via `/usr/bin/open`, which strips the
+      // caller's environment, so BROADIFY_MEETING_* overrides set on the bridge
+      // (e.g. BROADIFY_MEETING_KEYER_BACKEND=modnet npm run dev) would never
+      // reach the helper. Forward them explicitly as --env args; the helper
+      // re-exports each into its own environment before reading them.
+      for (const [key, value] of Object.entries(process.env)) {
+        if (key.startsWith("BROADIFY_MEETING_") && typeof value === "string") {
+          args.push("--env", `${key}=${value}`);
+        }
+      }
 
       const env: NodeJS.ProcessEnv = {
         ...process.env,

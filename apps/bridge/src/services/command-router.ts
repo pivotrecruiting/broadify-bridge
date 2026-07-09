@@ -31,6 +31,10 @@ import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { transformDevicesToOutputs } from "./device-to-output-transform.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import {
+  streamDeckManager,
+  parseStreamDeckConfig,
+} from "./streamdeck/stream-deck-manager.js";
 
 /**
  * Relay command payload.
@@ -579,6 +583,34 @@ export class CommandRouter {
           };
         }
 
+        case "streamdeck_status": {
+          await streamDeckManager.ensureStarted();
+          return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "streamdeck_configure": {
+          await streamDeckManager.ensureStarted();
+          await streamDeckManager.configure(parseStreamDeckConfig(payload ?? {}));
+          return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "streamdeck_set_page": {
+          await streamDeckManager.ensureStarted();
+          const page = typeof payload?.page === "number" ? payload.page : 0;
+          await streamDeckManager.setPage(page);
+          return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "streamdeck_press": {
+          await streamDeckManager.ensureStarted();
+          const keyIndex =
+            typeof payload?.key_index === "number" ? payload.key_index : -1;
+          if (keyIndex >= 0) {
+            streamDeckManager.press(keyIndex);
+          }
+          return { success: true, data: streamDeckManager.status() };
+        }
+
         default:
           return {
             success: false,
@@ -600,3 +632,9 @@ export class CommandRouter {
 
 // Singleton instance
 export const commandRouter = new CommandRouter();
+
+// A Stream Deck key press executes its bound action through the very same
+// command router a webapp button uses — no duplicated action logic.
+streamDeckManager.setExecutor((command, payload) =>
+  commandRouter.handleCommand(command as RelayCommand, payload),
+);

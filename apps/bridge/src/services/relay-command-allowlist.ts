@@ -31,6 +31,8 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_camera_open_set",
   "meeting_camera_program_select",
   "meeting_camera_pip_set",
+  "meeting_camera_audio_levels",
+  "meeting_camera_auto_director",
   "meeting_keyer_get",
   "meeting_keyer_configure",
   "meeting_keyer_reset",
@@ -42,6 +44,11 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "conference_display_start",
   "conference_display_stop",
   "conference_display_status",
+  "conference_director_configure",
+  "conference_director_start",
+  "conference_director_stop",
+  "conference_director_status",
+  "conference_director_inject",
   "canon_xc_list_devices",
   "canon_xc_save_device",
   "canon_xc_test_connection",
@@ -49,6 +56,10 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "canon_xc_test_device",
   "canon_xc_list_presets",
   "canon_xc_recall_preset",
+  "streamdeck_status",
+  "streamdeck_configure",
+  "streamdeck_set_page",
+  "streamdeck_press",
 ] as const;
 
 const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);

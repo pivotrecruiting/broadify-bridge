@@ -1434,6 +1434,14 @@ bool tryRenderProgramFrameMetal(const Options &options,
         plan.camera.biasX = static_cast<float>(sourceCenterX - 0.5 - targetCenterX / kx);
         plan.camera.biasY = static_cast<float>(sourceCenterY - 0.5 - targetCenterY / ky);
         plan.camera.mirrorConst = static_cast<float>(cameraFrame->width) - 1.0f;
+      } else {
+        // The mask collapsed (no confident foreground pixel): show the un-keyed
+        // camera instead of dropping the presenter entirely.
+        plan.media.belowCamera = false;
+        plan.cameraFrame = cameraFrame;
+        plan.camera = coverMapping(*cameraFrame, plan.width, plan.height);
+        plan.camera.keyed = false;
+        plan.camera.mirror = snapshot.cameraRender.mirror;
       }
     } else {
       plan.cameraFrame = cameraFrame;

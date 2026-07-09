@@ -110,6 +110,8 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_camera_open_set: sideEffect("meeting_camera_open_set", "helper_start", 35_000, 30_000, "meeting.camera", ["meeting.camera"], "after_state_check", "async", "join_existing"),
   meeting_camera_program_select: sideEffect("meeting_camera_program_select", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
   meeting_camera_pip_set: sideEffect("meeting_camera_pip_set", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
+  meeting_camera_audio_levels: readOnly("meeting_camera_audio_levels", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.camera"]),
+  meeting_camera_auto_director: sideEffect("meeting_camera_auto_director", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
   meeting_keyer_get: readOnly("meeting_keyer_get", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.keyer"]),
   meeting_keyer_configure: sideEffect("meeting_keyer_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.keyer", ["meeting.keyer"]),
   meeting_call_control: sideEffect("meeting_call_control", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.call", ["meeting.call"]),
@@ -121,6 +123,11 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   conference_display_start: sideEffect("conference_display_start", "helper_start", 20_000, 16_000, "conference.display", ["conference.display"]),
   conference_display_stop: sideEffect("conference_display_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "conference.display", ["conference.display"]),
   conference_display_status: readOnly("conference_display_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["conference.display"]),
+  conference_director_configure: sideEffect("conference_director_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "conference.director", ["conference.director"]),
+  conference_director_start: sideEffect("conference_director_start", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "conference.director", ["conference.director"]),
+  conference_director_stop: sideEffect("conference_director_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "conference.director", ["conference.director"]),
+  conference_director_status: readOnly("conference_director_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["conference.director"]),
+  conference_director_inject: sideEffect("conference_director_inject", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "conference.director", ["conference.director"]),
   canon_xc_list_devices: readOnly("canon_xc_list_devices", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.devices"]),
   canon_xc_save_device: sideEffect("canon_xc_save_device", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "canon_xc", ["canon_xc.devices"]),
   canon_xc_test_connection: readOnly("canon_xc_test_connection", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.presets"]),
@@ -128,6 +135,10 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   canon_xc_test_device: readOnly("canon_xc_test_device", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.presets"]),
   canon_xc_list_presets: readOnly("canon_xc_list_presets", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["canon_xc.presets"]),
   canon_xc_recall_preset: sideEffect("canon_xc_recall_preset", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "canon_xc", ["canon_xc.presets"], "never"),
+  streamdeck_status: readOnly("streamdeck_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["streamdeck"]),
+  streamdeck_configure: sideEffect("streamdeck_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
+  streamdeck_set_page: sideEffect("streamdeck_set_page", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
+  streamdeck_press: sideEffect("streamdeck_press", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
 };
 
 /**

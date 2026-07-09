@@ -30,8 +30,11 @@ namespace {
 
 constexpr uint32_t kFallbackInputSize = 512;
 constexpr uint32_t kMaxCpuInferenceThreads = 4;
-constexpr float kMean[3] = {0.485f, 0.456f, 0.406f};
-constexpr float kStd[3] = {0.229f, 0.224f, 0.225f};
+// MODNet normalizes input as (value/255 - 0.5)/0.5 -> range [-1,1] (mean/std
+// 0.5 per channel), NOT ImageNet mean/std. Using ImageNet stats here silently
+// degrades the matte. Channel order is RGB (our frames are already RGBA), NCHW.
+constexpr float kMean[3] = {0.5f, 0.5f, 0.5f};
+constexpr float kStd[3] = {0.5f, 0.5f, 0.5f};
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
@@ -121,6 +124,16 @@ class ModnetKeyer::Impl {
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) {
     KeyerResult result;
+#if defined(__APPLE__)
+    // Choose the CoreML input size from the performance mode BEFORE the session
+    // is created: the free-dimension override freezes the shape for the session's
+    // life. high_quality=512 (sharpest), balanced=320 / performance=256 (lower
+    // latency: smaller input -> faster inference -> fresher mask on motion).
+    // Changing the mode takes effect on the next engine start.
+    if (!loaded_) {
+      inputWidth_ = inputHeight_ = modnetInputSizeForMode(settings.performanceMode);
+    }
+#endif
     if (!ensureLoaded()) {
       result.status = status_;
       return result;
@@ -142,6 +155,13 @@ class ModnetKeyer::Impl {
     // keying continues at the previous resolution instead of degrading into
     // the per-Run recompile trap; the failed size is remembered so a stale
     // performance mode cannot retrigger the rebuild every frame.
+#if defined(__APPLE__)
+    // macOS pins MODNet to the size the CoreML session was frozen to (see the
+    // free-dimension override in createSession); switching sizes per frame would
+    // break the fixed-shape MLProgram graph. inputWidth_/inputHeight_ keep their
+    // loaded value (512).
+    (void)settings;
+#else
     if (modelDynamic_) {
       const uint32_t requested = modnetInputSizeForMode(settings.performanceMode);
       uint32_t effective = requested;
@@ -158,6 +178,7 @@ class ModnetKeyer::Impl {
       inputWidth_ = effective;
       inputHeight_ = effective;
     }
+#endif
     const auto tensorStart = std::chrono::steady_clock::now();
     makeInputTensor(input, tensor_);
     const auto tensorEnd = std::chrono::steady_clock::now();
@@ -276,8 +297,13 @@ class ModnetKeyer::Impl {
         // resolution per frame from the performance mode; a static model is
         // pinned to its declared size.
         modelDynamic_ = inputShape[2] <= 0 || inputShape[3] <= 0;
+#if !defined(__APPLE__)
         inputHeight_ = dimensionOrFallback(inputShape[2]);
         inputWidth_ = dimensionOrFallback(inputShape[3]);
+#else
+        // macOS keeps the size chosen in apply() (frozen into the CoreML
+        // free-dimension override); don't overwrite it with the model's dims.
+#endif
       }
       loaded_ = true;
       status_.activeKeyer = "modnet";
@@ -304,7 +330,20 @@ class ModnetKeyer::Impl {
     sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 #if defined(__APPLE__)
     status_.provider = "cpu";
+    // Freeze the model's dynamic input dims (batch/height/width) to the fixed
+    // size we run at. Without this CoreML rejects the whole dynamic graph and
+    // MODNet runs on CPU (~150ms/frame); with a static shape plus the MLProgram
+    // backend it compiles for ANE/GPU (~30ms at 512 on M1 Pro). The default
+    // NeuralNetwork backend still CPU-falls-back MODNet's Resize/Pad ops, so
+    // COREML_FLAG_CREATE_MLPROGRAM is required. The model file itself is left
+    // dynamic (Windows/DirectML picks its own sizes).
+    sessionOptions.AddFreeDimensionOverrideByName("batch_size", 1);
+    sessionOptions.AddFreeDimensionOverrideByName(
+        "height", static_cast<int64_t>(inputHeight_));
+    sessionOptions.AddFreeDimensionOverrideByName(
+        "width", static_cast<int64_t>(inputWidth_));
     const uint32_t coreMlFlags =
+        COREML_FLAG_CREATE_MLPROGRAM |
         COREML_FLAG_ENABLE_ON_SUBGRAPH |
         COREML_FLAG_ONLY_ALLOW_STATIC_INPUT_SHAPES;
     OrtStatus *coreMlStatus = OrtSessionOptionsAppendExecutionProvider_CoreML(sessionOptions, coreMlFlags);

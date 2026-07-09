@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -84,6 +85,12 @@ class CameraSource {
     }
     return copyLatestFrameIfNew(lastTimestampNs, frame);
   }
+
+  // --- Auto-director (V3) ----------------------------------------------------
+  // Recent audio level (0..1, smoothed RMS) of each open camera's paired
+  // microphone, keyed by camera index. Empty when audio capture is unsupported.
+  // The auto-director cuts the program to the loudest speaker.
+  virtual std::map<int, float> cameraAudioLevels() const { return {}; }
 };
 
 std::unique_ptr<CameraSource> createCameraSource();

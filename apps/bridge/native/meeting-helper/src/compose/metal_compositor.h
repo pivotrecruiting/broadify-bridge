@@ -64,6 +64,10 @@ struct MetalComposePlan {
   uint32_t maskWidth = 0;
   uint32_t maskHeight = 0;
   uint64_t maskTimestampNs = 0;
+  // Optional: a pre-made GPU mask texture ((__bridge void *)id<MTLTexture>,
+  // single-channel, [0,1]) from the fused GPU path — used directly instead of
+  // uploading cameraMask when set, so the mask never round-trips through the CPU.
+  const void *maskTextureHandle = nullptr;
   const VideoFrame *backGraphics = nullptr;
   MetalLayerMapping backMapping;
   const VideoFrame *frontGraphics = nullptr;

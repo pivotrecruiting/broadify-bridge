@@ -125,6 +125,18 @@ export class MeetingHelperClient {
     return this.rpc("camera.pip_set", options);
   }
 
+  /** Conference: per-camera microphone level (0..1) of the open cameras. */
+  async cameraAudioLevels(): Promise<Record<string, unknown>> {
+    return this.rpc("camera.audio_levels", {});
+  }
+
+  /** Conference auto-director: follow the loudest camera automatically. */
+  async cameraAutoDirector(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.auto_director", options);
+  }
+
   async keyerGet(): Promise<Record<string, unknown>> {
     return this.rpc("keyer.get");
   }

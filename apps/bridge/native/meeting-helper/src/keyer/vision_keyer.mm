@@ -84,6 +84,26 @@ void copyMask(CVPixelBufferRef maskBuffer, uint64_t timestampNs, AlphaMask &outp
   }
   CVPixelBufferUnlockBaseAddress(maskBuffer, kCVPixelBufferLock_ReadOnly);
 }
+
+// Fraction of the mask that is confident foreground. A low-confidence frame
+// (backlight, bright window, low contrast) can make the stateful sequence
+// handler emit a near-full-frame foreground mask — the whole background stops
+// keying — and then "stick" in that state until strong motion re-converges it.
+constexpr double kDegenerateCoverageThreshold = 0.92;
+bool isDegenerateCoverage(const AlphaMask &mask) {
+  if (mask.alpha.empty()) {
+    return false;
+  }
+  size_t foreground = 0u;
+  for (const uint8_t alpha : mask.alpha) {
+    if (alpha >= 128u) {
+      ++foreground;
+    }
+  }
+  return static_cast<double>(foreground) /
+             static_cast<double>(mask.alpha.size()) >
+         kDegenerateCoverageThreshold;
+}
 #endif
 
 }  // namespace
@@ -136,6 +156,9 @@ class VisionKeyer::Impl {
         result.status.metrics.tensorMs = elapsedMs(convertStart, convertEnd);
 
         if (!ok || request.results.count == 0u) {
+          // A failed request can leave the sequence handler in a bad temporal
+          // state; start the next frame fresh.
+          resetSequenceHandler();
           result.status.fallbackReason = "vision_request_failed";
           result.status.metrics.sessionRunMs = elapsedMs(runStart, runEnd);
           return result;
@@ -145,6 +168,16 @@ class VisionKeyer::Impl {
         const auto maskStart = std::chrono::steady_clock::now();
         copyMask(observation.pixelBuffer, input.timestampNs, result.mask, result.status.metrics);
         const auto end = std::chrono::steady_clock::now();
+
+        // Degenerate-mask watchdog: if this mask is an implausible near-full-frame
+        // foreground (the "whole background un-keyed" stick), recreate the
+        // sequence handler so the NEXT frame re-inferences from a clean temporal
+        // state — instead of staying stuck until the user waves an arm. The
+        // current (bad) mask is still returned; the pipeline holds its last good
+        // mask rather than publishing this one.
+        if (isDegenerateCoverage(result.mask)) {
+          resetSequenceHandler();
+        }
 
         result.status.activeKeyer = "vision_person_segmentation";
         result.status.fallbackActive = false;
@@ -241,6 +274,10 @@ class VisionKeyer::Impl {
     }
     return sequenceHandler_;
   }
+
+  // Drop the sequence handler so the next frame builds a fresh one, clearing
+  // Vision's accumulated temporal state (used to break out of a stuck mask).
+  void resetSequenceHandler() { sequenceHandler_ = nil; }
 
   VNSequenceRequestHandler *sequenceHandler_ = nil;
   VNGeneratePersonSegmentationRequest *request_ = nil;

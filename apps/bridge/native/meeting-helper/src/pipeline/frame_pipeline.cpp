@@ -1,9 +1,12 @@
 #include "pipeline/frame_pipeline.h"
 
 #include "compose/compositor.h"
+#include "director/auto_director.h"
 #include "framebus_reader.h"
 #include "framebus_writer.h"
+#include "keyer/coreml_keyer.h"
 #include "keyer/keyer_chain.h"
+#include "pipeline/guided_mask_refine.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
@@ -11,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <deque>
 #include <iostream>
 #include <memory>
@@ -26,11 +30,17 @@ namespace {
 constexpr uint32_t kSlotCount = 3;
 constexpr uint32_t kMaxAlphaDilateRadiusPx = 8;
 constexpr uint32_t kMaxAlphaFeatherRadiusPx = 3;
+// Morphological close (dilate then erode, same radius) run first in
+// postprocessing: fills small background pinholes inside the foreground
+// silhouette ("holes in the background") without net-growing the outline.
+constexpr uint32_t kMaskCloseRadiusPx = 2;
 constexpr uint32_t kTemporalProtectionRadiusPx = 10;
 constexpr uint8_t kTemporalProtectionAlphaThreshold = 32;
 constexpr uint64_t kTemporalAlphaMaxAgeNs = 250000000u;
 constexpr double kStaleMaskAgeMs = 140.0;
-constexpr float kSmoothstepLow = 0.12f;
+// Softened low cutoff: 0.12 discarded faint hair/edge alpha before it ever
+// reached the compositor. 0.08 keeps more of the soft band (Fix 4).
+constexpr float kSmoothstepLow = 0.08f;
 constexpr float kSmoothstepHigh = 0.88f;
 constexpr float kQuietPreviousWeight = 0.85f;
 constexpr float kMotionPreviousWeight = 0.35f;
@@ -64,11 +74,186 @@ constexpr double kKeyerCooldownTriggerFactor = 1.5;
 constexpr double kKeyerCooldownFraction = 0.25;
 constexpr double kKeyerMaxCooldownMs = 50.0;
 
+// Mask-collapse guard: Apple Vision intermittently returns a (near-)empty mask
+// under backlight / bad contrast, which would key the whole person out. We
+// measure the raw foreground coverage and, if a mask collapses, keep serving
+// the last good mask instead of publishing the broken one. The program loop's
+// mask-age limit bounds this hold, so a genuinely absent person still falls
+// back to the un-keyed camera rather than freezing forever.
+constexpr uint8_t kCoverageAlphaThreshold = 64u;   // counts as "foreground"
+constexpr double kMinForegroundCoverage = 0.006;   // below = essentially empty
+constexpr double kHealthyCoverage = 0.05;          // last mask was a real person
+constexpr double kCollapseDropRatio = 0.28;        // sudden drop below this = collapse
+// Upper guard (symmetric to the empty-mask guard): a low-confidence frame can
+// make Vision emit a near-full-frame foreground mask ("whole background stops
+// keying"). Above this coverage the mask is treated as a dropout and the last
+// good pair is held instead. Set high so a subject genuinely filling the frame
+// is not misclassified. The keyer also resets its temporal state on this event
+// so the next frame re-converges.
+constexpr double kMaxForegroundCoverage = 0.92;
+
+// Motion-adaptive temporal EMA: the current frame's weight scales with how much
+// the mask changed since the last frame. When the subject is still we lean on
+// the previous mask (strong smoothing, kills flicker); when they move we nearly
+// pass the current mask through (minimal lag). This removes the trailing latency
+// a fixed low weight caused while keeping the anti-flicker/region-restore
+// benefit. meanDiff is the mean absolute alpha change (0..255) vs the previous.
+constexpr float kEmaWeightStatic = 0.55f;   // still subject -> smooth
+constexpr float kEmaWeightMotion = 0.9f;    // moving subject -> low latency
+constexpr double kEmaMotionLow = 6.0;       // meanDiff below this = static
+constexpr double kEmaMotionHigh = 30.0;     // meanDiff above this = clear motion
+
 struct MaskSample {
   size_t lower = 0u;
   size_t upper = 0u;
   uint32_t upperWeight = 0u;
 };
+
+// True full-frame temporal EMA: mask = w*current + (1-w)*previous. Unlike the
+// edge-gated blend it mixes the whole frame, so it both suppresses flicker and
+// restores regions the current frame dropped. Resamples the previous mask
+// (nearest) when the quality tier changed its resolution, so smoothing is not
+// skipped at tier transitions.
+void blendAlphaEma(AlphaMask &mask, const AlphaMask &previous) {
+  if (mask.alpha.empty() || previous.alpha.empty() || mask.width == 0u ||
+      mask.height == 0u) {
+    return;
+  }
+  const bool sameSize =
+      previous.width == mask.width && previous.height == mask.height;
+  // Reads the previous mask at the current mask's (x,y), resampling (nearest)
+  // when the quality tier changed the resolution.
+  const auto prevAt = [&](uint32_t x, uint32_t y) -> int {
+    size_t index;
+    if (sameSize) {
+      index = static_cast<size_t>(y) * mask.width + x;
+    } else {
+      const uint32_t py = static_cast<uint32_t>(
+          (static_cast<uint64_t>(y) * previous.height) / mask.height);
+      const uint32_t px = static_cast<uint32_t>(
+          (static_cast<uint64_t>(x) * previous.width) / mask.width);
+      index = static_cast<size_t>(py) * previous.width + px;
+    }
+    return index < previous.alpha.size() ? previous.alpha[index] : 0;
+  };
+
+  // 1) Motion metric: mean absolute alpha change vs the previous mask.
+  double sumDiff = 0.0;
+  size_t count = 0;
+  for (uint32_t y = 0; y < mask.height; ++y) {
+    for (uint32_t x = 0; x < mask.width; ++x) {
+      const size_t di = static_cast<size_t>(y) * mask.width + x;
+      if (di >= mask.alpha.size()) {
+        continue;
+      }
+      sumDiff += std::abs(static_cast<int>(mask.alpha[di]) - prevAt(x, y));
+      ++count;
+    }
+  }
+  const double meanDiff = count > 0 ? sumDiff / static_cast<double>(count) : 0.0;
+
+  // 2) Adaptive current-frame weight: smooth when static, responsive on motion.
+  const double t = std::clamp(
+      (meanDiff - kEmaMotionLow) / (kEmaMotionHigh - kEmaMotionLow), 0.0, 1.0);
+  const float wCur = static_cast<float>(
+      kEmaWeightStatic + t * (kEmaWeightMotion - kEmaWeightStatic));
+  const float wPrev = 1.0f - wCur;
+
+  // 3) Blend.
+  for (uint32_t y = 0; y < mask.height; ++y) {
+    for (uint32_t x = 0; x < mask.width; ++x) {
+      const size_t di = static_cast<size_t>(y) * mask.width + x;
+      if (di >= mask.alpha.size()) {
+        continue;
+      }
+      mask.alpha[di] = static_cast<uint8_t>(
+          wCur * mask.alpha[di] + wPrev * prevAt(x, y) + 0.5f);
+    }
+  }
+}
+
+// Fraction of the mask that is confidently foreground (raw, pre-postprocessing).
+double computeMaskCoverage(const AlphaMask &mask) {
+  if (mask.alpha.empty()) {
+    return 0.0;
+  }
+  size_t foreground = 0u;
+  for (const uint8_t a : mask.alpha) {
+    if (a >= kCoverageAlphaThreshold) {
+      ++foreground;
+    }
+  }
+  return static_cast<double>(foreground) / static_cast<double>(mask.alpha.size());
+}
+
+// Live-frame edge-snap toggle (default ON). The keyer publishes a mask paired
+// with the OLD frame it was computed on; compositing that old frame is the
+// source of the visible latency on motion. When enabled, the program loop
+// instead composites the LIVE camera frame and snaps the (slightly old) mask
+// onto its real edges with the guided filter — removing both the latency and the
+// boundary flicker. Set BROADIFY_MEETING_LIVE_SNAP=0 to A/B against the old path.
+bool liveSnapEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_LIVE_SNAP");
+    return raw == nullptr || raw[0] == '\0' || raw[0] != '0';
+  }();
+  return enabled;
+}
+
+// Fused synchronous GPU keyer path (default OFF). When enabled the program loop
+// computes the mask on the CURRENT frame via the native CoreML keyer instead of
+// consuming the async worker's older mask, driving mask age to zero (kills the
+// motion edge-lag). Falls back to the async path on any failure.
+bool gpuPipelineEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_GPU_PIPELINE");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return enabled;
+}
+
+// Edge-live mode (default OFF = the proven path). When ON, MODNet's edge cleanup
+// moves OUT of the keyer worker (where the joint-bilateral refine ages the mask)
+// INTO the program loop's live-frame snap: the mask publishes fresher (less
+// latency) and the edge is aligned+sharpened against the CURRENT frame (better on
+// motion). Opt in with BROADIFY_MEETING_EDGE_LIVE=1 to A/B without ever leaving
+// the known-good default.
+bool edgeLiveEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_EDGE_LIVE");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return enabled;
+}
+
+// Half-width of the alpha band (around 0.5) that gets stretched to a crisp
+// transition by sharpenAlphaEdge. Smaller = harder edge. Overridable for tuning.
+double edgeSharpenHalfWidth() {
+  static const double w = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_EDGE_SHARPEN");
+    if (raw == nullptr || raw[0] == '\0') return 0.30;
+    const double v = std::atof(raw);
+    return (v > 0.02 && v <= 0.5) ? v : 0.30;
+  }();
+  return w;
+}
+
+// Tighten the soft edge the guided filter leaves: stretch the mid-alpha band
+// around 0.5 into a crisp smoothstep transition. This kills the background bleed
+// of a purely-aligned soft edge without moving the boundary the snap locked onto
+// the live frame.
+void sharpenAlphaEdge(AlphaMask &mask) {
+  if (mask.alpha.empty()) {
+    return;
+  }
+  const float halfWidth = static_cast<float>(edgeSharpenHalfWidth());
+  const float invSpan = 1.0f / (2.0f * halfWidth);
+  for (uint8_t &alpha : mask.alpha) {
+    const float centered = (static_cast<float>(alpha) / 255.0f - 0.5f) * invSpan + 0.5f;
+    const float t = std::clamp(centered, 0.0f, 1.0f);
+    alpha = static_cast<uint8_t>(t * t * (3.0f - 2.0f * t) * 255.0f + 0.5f);
+  }
+}
 
 struct PairedKeyerFrame {
   VideoFrame frame;
@@ -93,6 +278,8 @@ struct PipelineRuntimeState {
   bool graphicsDirty = false;
   uint64_t programRevision = 0;
   int pipCameraIndex = -1;
+  bool autoDirectorEnabled = false;
+  float autoDirectorThreshold = 0.02f;
   std::string mode = "idle";
 };
 
@@ -692,6 +879,12 @@ void postprocessAlpha(AlphaMask &mask,
                       double maskAgeMs,
                       KeyerMetrics &metrics) {
   const auto start = std::chrono::steady_clock::now();
+  // Morphological close first: fill small holes the segmenter left inside the
+  // foreground before smoothing/eroding shape the edge.
+  if (kMaskCloseRadiusPx > 0u) {
+    dilateAlpha(mask, kMaskCloseRadiusPx);
+    erodeAlpha(mask, static_cast<double>(kMaskCloseRadiusPx));
+  }
   remapAlphaSmoothstep(mask);
   stabilizeAlphaEdges(mask, previousMask, settings, maskAgeMs);
   const auto dilateStart = std::chrono::steady_clock::now();
@@ -844,6 +1037,7 @@ class AsyncKeyerWorker {
     ++generation_;
     hasPendingFrame_ = false;
     latestPair_.reset();
+    lastPublishedCoverage_ = 0.0;
     droppedFrames_ = 0;
     skippedFrames_ = 0;
     keyerRate_ = RateMeter{};
@@ -896,8 +1090,15 @@ class AsyncKeyerWorker {
 
       const uint64_t keyerStartNs = nowNs();
       KeyerResult keyed = keyerChain_.process(frame, state_);
+      // Measure coverage on the RAW mask, before postprocessing can zero out a
+      // faint mask — this is what the collapse guard judges.
+      const double rawCoverage = computeMaskCoverage(keyed.mask);
       const auto refineStart = std::chrono::steady_clock::now();
-      refineAlphaMaskEdges(keyed.mask, frame);
+      // Edge-live mode moves MODNet's edge cleanup to the program loop's
+      // live-frame snap, so skip the mask-ageing worker-side refine here.
+      if (!(edgeLiveEnabled() && keyed.status.backend == "modnet")) {
+        refineAlphaMaskEdges(keyed.mask, frame);
+      }
       const double refineMs = elapsedMs(refineStart, std::chrono::steady_clock::now());
       AlphaMask previousMask;
       {
@@ -925,6 +1126,13 @@ class AsyncKeyerWorker {
         blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
       }
       postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs, keyed.status.metrics);
+      // Full-frame temporal EMA against the last published mask — the core
+      // anti-flicker stabilizer. Skipped when the current mask collapsed (Fix 1
+      // holds the last good pair instead), so a dropout is never smeared in.
+      if (settings.temporalBlendEnabled && rawCoverage >= kMinForegroundCoverage &&
+          rawCoverage <= kMaxForegroundCoverage) {
+        blendAlphaEma(keyed.mask, previousMask);
+      }
       keyed.status.metrics.maskPostprocessMs += refineMs;
       keyed.status.metrics.maskWidth = keyed.mask.width;
       keyed.status.metrics.maskHeight = keyed.mask.height;
@@ -947,15 +1155,29 @@ class AsyncKeyerWorker {
           keyed.status.metrics.keyerProcessingMs = publishNs >= keyerStartNs
               ? static_cast<double>(publishNs - keyerStartNs) / 1000000.0
               : -1.0;
-          if (!keyed.mask.alpha.empty()) {
+          // Collapse guard: a (near-)empty mask, or a mask whose coverage
+          // suddenly collapses versus the last good one, is a Vision dropout —
+          // keep the last good pair instead of keying the person out. The
+          // program loop ages the held pair out after maxMaskAgeMs, so a truly
+          // absent person still falls back to the un-keyed camera.
+          const bool collapsed =
+              rawCoverage < kMinForegroundCoverage ||
+              rawCoverage > kMaxForegroundCoverage ||
+              (lastPublishedCoverage_ > kHealthyCoverage &&
+               rawCoverage < lastPublishedCoverage_ * kCollapseDropRatio);
+          if (!keyed.mask.alpha.empty() && !collapsed) {
             auto pair = std::make_shared<PairedKeyerFrame>();
             pair->frame = std::move(frame);
             pair->mask = std::move(keyed.mask);
             pair->publishedAtNs = publishNs;
             latestPair_ = std::move(pair);
-          } else {
+            lastPublishedCoverage_ = rawCoverage;
+          } else if (latestPair_ == nullptr) {
+            // No good mask to fall back to yet (startup): reset so the program
+            // loop shows the un-keyed camera rather than a stale frame.
             latestPair_.reset();
           }
+          // else: hold the last good pair (skip publishing the broken mask).
         }
       }
       if (shouldPublish) {
@@ -963,7 +1185,14 @@ class AsyncKeyerWorker {
       }
 
       const double processingMs = static_cast<double>(nowNs() - keyerStartNs) / 1000000.0;
-      if (running_.load() && processingMs > frameIntervalMs_ * kKeyerCooldownTriggerFactor) {
+      // The duty-cycle cooldown leaves CPU headroom on machines where a keyer
+      // pass is CPU-bound. When inference runs on the GPU (CoreML/DirectML) the
+      // CPU is idle during the pass, so the cooldown would only add mask-age
+      // latency without protecting anything — skip it for GPU-backed keyers.
+      const bool gpuInference = keyed.status.provider == "coreml" ||
+                                keyed.status.provider == "directml";
+      if (running_.load() && !gpuInference &&
+          processingMs > frameIntervalMs_ * kKeyerCooldownTriggerFactor) {
         const double cooldownMs = std::min(kKeyerMaxCooldownMs, processingMs * kKeyerCooldownFraction);
         std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(cooldownMs));
       }
@@ -995,6 +1224,7 @@ class AsyncKeyerWorker {
   std::thread thread_;
   VideoFrame pendingFrame_;
   std::shared_ptr<const PairedKeyerFrame> latestPair_;
+  double lastPublishedCoverage_ = 0.0;
   uint64_t generation_ = 0;
   uint64_t pendingGeneration_ = 0;
   uint64_t droppedFrames_ = 0;
@@ -1164,6 +1394,7 @@ void runFramePipeline(const Options &options,
   GraphicsFrameBusReader frontGraphicsReader(kMeetingFrontGraphicsFrameBusName);
   RateMeter programRate;
   RollingAverage maskAgeAverage;
+  AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
   while (running.load()) {
     PipelineRuntimeState runtime;
@@ -1180,6 +1411,25 @@ void runFramePipeline(const Options &options,
       runtime.graphicsDirty = state.graphicsDirty;
       runtime.programRevision = state.programRevision;
       runtime.pipCameraIndex = state.pipCameraIndex;
+      runtime.autoDirectorEnabled = state.autoDirectorEnabled;
+      runtime.autoDirectorThreshold = state.autoDirectorThreshold;
+    }
+
+    // Conference auto-director: cut the program to the loudest camera. Runs
+    // before rendering so a cut takes effect on this very frame. The evaluator
+    // enforces its own dwell/hold hysteresis; toggling it off clears any
+    // in-progress challenger so it starts fresh next time.
+    if (runtime.autoDirectorEnabled && runtime.cameraRunning) {
+      const int decided = autoDirector.evaluate(
+          camera.cameraAudioLevels(), camera.activeCameraIndex(),
+          runtime.autoDirectorThreshold, std::chrono::steady_clock::now());
+      if (decided >= 0 && camera.setProgramCamera(decided)) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.activeCameraIndex = decided;
+        state.programDirty = true;
+      }
+    } else {
+      autoDirector.reset();
     }
 
     const CompositorSnapshot snapshot = copyCompositorSnapshot(state);
@@ -1258,7 +1508,9 @@ void runFramePipeline(const Options &options,
         keyerSettings.edgeStabilizationStrength = state.edgeStabilizationStrength;
         keyerSettings.degradation = state.degradationSettings;
       }
-      if (hasNewCameraFrame && keyerEnabled) {
+      // The fused path keys synchronously below; don't also run the async worker
+      // (that would run CoreML twice per frame).
+      if (hasNewCameraFrame && keyerEnabled && !gpuPipelineEnabled()) {
         keyerWorker.submit(latestCameraFrame);
       }
       if (hasCameraFrame) {
@@ -1410,12 +1662,77 @@ void runFramePipeline(const Options &options,
         continue;
       }
 
+      // Live-frame edge-snap: the selected keyer pair carries the OLDER frame it
+      // was computed on. Compositing that old frame is what the user sees as
+      // latency on motion. Instead composite the LIVE camera frame and snap the
+      // (slightly old) mask onto its real edges with the guided filter, so the
+      // boundary is re-locked to the current frame every program frame. Only
+      // runs when a genuinely fresher live frame exists (else it is a no-op);
+      // the still path is untouched. Falls back to the paired mask on any issue.
+      AlphaMask liveRefinedMask;
+      const AlphaMask *maskForCompositor =
+          selectedPair != nullptr ? &selectedPair->mask : nullptr;
+      if (selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
+          !latestCameraFrame.rgba.empty() && !selectedPair->mask.alpha.empty() &&
+          guidedRefineAvailable()) {
+        const bool fresherFrame =
+            latestCameraFrame.timestampNs > selectedPair->frame.timestampNs;
+        // Edge-live carries no worker-side refine, so it must clean the edge on
+        // EVERY frame — otherwise the edge quality beats in and out as keyer and
+        // program fps drift through phase (~1Hz). The plain live-snap only needs
+        // to run when a fresher frame exists (else the paired mask already
+        // carries the worker refine).
+        const bool run =
+            edgeLiveEnabled() ? true : (liveSnapEnabled() && fresherFrame);
+        if (run) {
+          liveRefinedMask = selectedPair->mask;  // pair is shared/immutable
+          // Guide with the live frame when we have a fresher one (motion-
+          // aligned); otherwise the mask's own paired frame (still cleans the
+          // edge, no beat).
+          guidedRefineMask(liveRefinedMask,
+                           fresherFrame ? latestCameraFrame : selectedPair->frame);
+          // The guided snap aligns the edge but leaves it soft (bleed); sharpen
+          // it into a crisp boundary in edge-live mode.
+          if (edgeLiveEnabled()) {
+            sharpenAlphaEdge(liveRefinedMask);
+          }
+          if (!liveRefinedMask.alpha.empty()) {
+            maskForCompositor = &liveRefinedMask;
+            if (fresherFrame) {
+              frameForCompositor = &latestCameraFrame;
+            }
+          }
+        }
+      }
+
+      // Fused synchronous GPU keyer: key the CURRENT frame now (mask age 0) via
+      // the native CoreML keyer, overriding the async selection. Falls back to
+      // whatever the async path chose on any failure.
+      AlphaMask fusedMask;
+      if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+          !latestCameraFrame.rgba.empty()) {
+        static CoreMLKeyer fusedKeyer(options.modelsDir);
+        KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
+        if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
+          fusedMask = std::move(fused.mask);
+          frameForCompositor = &latestCameraFrame;
+          maskForCompositor = &fusedMask;
+          shouldRenderProgram = true;
+          updateMeetingKeyerStatus(state, fused.status);
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.keyerMetrics.maskAgeMs = 0.0;
+          state.keyerMetrics.maskAgeAvgMs = 0.0;
+          state.degradationStage = "fused";
+          state.staleMaskActive = false;
+        }
+      }
+
       if (shouldRenderProgram) {
         renderProgramFrame(
             options,
             snapshot,
             frameForCompositor,
-            selectedPair != nullptr ? &selectedPair->mask : nullptr,
+            maskForCompositor,
             backGraphicsFrameForCompositor,
             frontGraphicsFrameForCompositor,
             (pipActive && !latestPipFrame.rgba.empty()) ? &latestPipFrame

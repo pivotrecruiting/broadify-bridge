@@ -30,6 +30,11 @@ class AvFoundationCameraSource;
                   cameraIndex:(int)cameraIndex;
 @end
 
+@interface BroadifyCameraAudioDelegate : NSObject <AVCaptureAudioDataOutputSampleBufferDelegate>
+- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner
+                  cameraIndex:(int)cameraIndex;
+@end
+
 static NSArray<AVCaptureDevice *> *BroadifyDiscoverVideoDevices() {
   NSMutableArray<AVCaptureDeviceType> *deviceTypes = [NSMutableArray arrayWithObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
   if (@available(macOS 14.0, *)) {
@@ -105,6 +110,36 @@ bool requestCameraAccessBlockingOnMainThread() {
     granted = accessGranted;
     dispatch_semaphore_signal(semaphore);
   });
+  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  return granted == YES;
+}
+
+// V3 auto-director: microphone access is optional. Returns true only when the
+// user has authorized it, so the audio path is skipped (rather than silently
+// failing) when denied. Prompts once if the status is still undetermined.
+bool ensureMicrophoneAuthorization() {
+  const AVAuthorizationStatus status =
+      [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+  if (status == AVAuthorizationStatusAuthorized) {
+    return true;
+  }
+  if (status != AVAuthorizationStatusNotDetermined) {
+    return false;
+  }
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+  __block BOOL granted = NO;
+  void (^requestBlock)(void) = ^{
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+                             completionHandler:^(BOOL accessGranted) {
+                               granted = accessGranted;
+                               dispatch_semaphore_signal(semaphore);
+                             }];
+  };
+  if ([NSThread isMainThread]) {
+    requestBlock();
+  } else {
+    dispatch_async(dispatch_get_main_queue(), requestBlock);
+  }
   dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
   return granted == YES;
 }
@@ -298,6 +333,9 @@ class AvFoundationCameraSource final : public CameraSource {
         if (entry.second->output != nil) {
           [entry.second->output setSampleBufferDelegate:nil queue:nil];
         }
+        if (entry.second->audioOutput != nil) {
+          [entry.second->audioOutput setSampleBufferDelegate:nil queue:nil];
+        }
         if (entry.second->session != nil) {
           [entry.second->session stopRunning];
         }
@@ -468,6 +506,72 @@ class AvFoundationCameraSource final : public CameraSource {
     it->second->hasFrame = true;
   }
 
+  void handleAudioSample(int cameraIndex, CMSampleBufferRef sampleBuffer) {
+    CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sampleBuffer);
+    if (block == nullptr) {
+      return;
+    }
+    size_t length = 0;
+    char *data = nullptr;
+    if (CMBlockBufferGetDataPointer(block, 0, nullptr, &length, &data) !=
+            kCMBlockBufferNoErr ||
+        data == nullptr || length == 0) {
+      return;
+    }
+
+    // AVCaptureAudioDataOutput delivers linear PCM but the concrete format
+    // varies by device (macOS defaults to 32-bit float; some mics deliver
+    // 16-bit signed int). Read the actual sample layout instead of assuming.
+    CMFormatDescriptionRef format =
+        CMSampleBufferGetFormatDescription(sampleBuffer);
+    const AudioStreamBasicDescription *asbd =
+        format != nullptr
+            ? CMAudioFormatDescriptionGetStreamBasicDescription(format)
+            : nullptr;
+    if (asbd == nullptr) {
+      return;
+    }
+    const bool isFloat =
+        (asbd->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+    const uint32_t bits = asbd->mBitsPerChannel;
+
+    double sumSquares = 0.0;
+    size_t count = 0;
+    if (isFloat && bits == 32) {
+      const float *samples = reinterpret_cast<const float *>(data);
+      count = length / sizeof(float);
+      for (size_t i = 0; i < count; ++i) {
+        sumSquares += static_cast<double>(samples[i]) * samples[i];
+      }
+    } else if (!isFloat && bits == 16) {
+      const int16_t *samples = reinterpret_cast<const int16_t *>(data);
+      count = length / sizeof(int16_t);
+      for (size_t i = 0; i < count; ++i) {
+        const double s = samples[i] / 32768.0;
+        sumSquares += s * s;
+      }
+    } else if (!isFloat && bits == 32) {
+      const int32_t *samples = reinterpret_cast<const int32_t *>(data);
+      count = length / sizeof(int32_t);
+      for (size_t i = 0; i < count; ++i) {
+        const double s = samples[i] / 2147483648.0;
+        sumSquares += s * s;
+      }
+    } else {
+      return;  // Unsupported layout — leave the level unchanged.
+    }
+    const float rms =
+        count > 0 ? static_cast<float>(std::sqrt(sumSquares / count)) : 0.0f;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = streams_.find(cameraIndex);
+    if (it == streams_.end()) {
+      return;
+    }
+    // Exponential smoothing so brief transients do not dominate.
+    it->second->audioLevel = 0.6f * it->second->audioLevel + 0.4f * rms;
+  }
+
  private:
   void setErrorLocked(const std::string &error) { lastError_ = error; }
 
@@ -524,6 +628,12 @@ class AvFoundationCameraSource final : public CameraSource {
     dispatch_queue_t queue = nil;
     VideoFrame latestFrame;
     bool hasFrame = false;
+    // V3 auto-director: paired microphone level (smoothed RMS, 0..1).
+    AVCaptureDeviceInput *audioInput = nil;
+    AVCaptureAudioDataOutput *audioOutput = nil;
+    BroadifyCameraAudioDelegate *audioDelegate = nil;
+    dispatch_queue_t audioQueue = nil;
+    float audioLevel = 0.0f;
   };
 
   // Opens a camera device into a new stream (not yet added to streams_).
@@ -587,7 +697,80 @@ class AvFoundationCameraSource final : public CameraSource {
         [[BroadifyCameraFrameDelegate alloc] initWithOwner:this
                                                cameraIndex:cameraIndex];
     [output setSampleBufferDelegate:stream->delegate queue:stream->queue];
+
+    // V3 auto-director: attach the camera's paired microphone (matched by
+    // device name) so we can measure per-camera speech level. Best-effort —
+    // cameras without a microphone simply report a zero level.
+    const bool micAuthorized = ensureMicrophoneAuthorization();
+    AVCaptureDevice *audioDevice =
+        micAuthorized ? findMatchingAudioDevice(device) : nil;
+    if (audioDevice != nil) {
+      NSError *audioError = nil;
+      AVCaptureDeviceInput *audioInput =
+          [AVCaptureDeviceInput deviceInputWithDevice:audioDevice
+                                                error:&audioError];
+      if (audioInput != nil && [session canAddInput:audioInput]) {
+        [session addInput:audioInput];
+        AVCaptureAudioDataOutput *audioOutput =
+            [[AVCaptureAudioDataOutput alloc] init];
+        stream->audioQueue = dispatch_queue_create(
+            [[NSString stringWithFormat:@"com.broadify.meeting.audio.%d",
+                                        cameraIndex] UTF8String],
+            DISPATCH_QUEUE_SERIAL);
+        stream->audioDelegate = [[BroadifyCameraAudioDelegate alloc]
+            initWithOwner:this
+              cameraIndex:cameraIndex];
+        [audioOutput setSampleBufferDelegate:stream->audioDelegate
+                                       queue:stream->audioQueue];
+        if ([session canAddOutput:audioOutput]) {
+          [session addOutput:audioOutput];
+          stream->audioInput = audioInput;
+          stream->audioOutput = audioOutput;
+        }
+      }
+    }
     return stream;
+  }
+
+  // Finds the microphone paired with a camera: prefer one whose name shares a
+  // meaningful prefix (e.g. "iPhone" camera <-> "Mikrofon von iPhone"), else a
+  // same-manufacturer external mic. Returns nil when nothing matches.
+  AVCaptureDevice *findMatchingAudioDevice(AVCaptureDevice *cameraDevice) {
+    NSString *cameraName = [cameraDevice localizedName];
+    if (cameraName.length == 0) {
+      return nil;
+    }
+    NSArray<AVCaptureDevice *> *audioDevices = [AVCaptureDeviceDiscoverySession
+        discoverySessionWithDeviceTypes:@[
+          AVCaptureDeviceTypeBuiltInMicrophone,
+          AVCaptureDeviceTypeExternalUnknown
+        ]
+                              mediaType:AVMediaTypeAudio
+                               position:AVCaptureDevicePositionUnspecified]
+        .devices;
+    for (AVCaptureDevice *audio in audioDevices) {
+      NSString *audioName = [audio localizedName];
+      // Match on any shared word >= 4 chars (e.g. "iPhone", device brand).
+      for (NSString *word in
+           [cameraName componentsSeparatedByString:@" "]) {
+        if (word.length >= 4 &&
+            [audioName rangeOfString:word
+                             options:NSCaseInsensitiveSearch]
+                    .location != NSNotFound) {
+          return audio;
+        }
+      }
+    }
+    return nil;
+  }
+
+  std::map<int, float> cameraAudioLevels() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::map<int, float> levels;
+    for (const auto &entry : streams_) {
+      levels[entry.first] = entry.second->audioLevel;
+    }
+    return levels;
   }
 
   mutable std::mutex mutex_;
@@ -627,6 +810,33 @@ class AvFoundationCameraSource final : public CameraSource {
   (void)connection;
   if (_owner != nullptr) {
     _owner->handleSampleBuffer(_cameraIndex, sampleBuffer);
+  }
+}
+
+@end
+
+@implementation BroadifyCameraAudioDelegate {
+  broadify::meeting::AvFoundationCameraSource *_owner;
+  int _cameraIndex;
+}
+
+- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner
+                  cameraIndex:(int)cameraIndex {
+  self = [super init];
+  if (self) {
+    _owner = owner;
+    _cameraIndex = cameraIndex;
+  }
+  return self;
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+    didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+           fromConnection:(AVCaptureConnection *)connection {
+  (void)output;
+  (void)connection;
+  if (_owner != nullptr) {
+    _owner->handleAudioSample(_cameraIndex, sampleBuffer);
   }
 }
 

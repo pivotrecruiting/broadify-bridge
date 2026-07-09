@@ -13,6 +13,11 @@ import {
   MeetingProgramUpdateSchema,
 } from "./meeting-command-schemas.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
+import {
+  conferenceDirectorService,
+  parseDirectorConfigPatch,
+  parseInjectReading,
+} from "../conference/director/conference-director-service.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
 import {
   executeMeetingCallControl,
@@ -209,6 +214,15 @@ export function isMeetingCommand(command: string): boolean {
  */
 const conferenceDisplayOutput = new ConferenceDisplayOutput();
 
+// The auto-director cuts the program feed via the meeting helper's seamless
+// camera.program_select. It only fires while the engine is running.
+conferenceDirectorService.setSwitcher(async (cameraIndex) => {
+  const client = meetingHelperManager.getClient();
+  if (client && meetingHelperManager.isRunning()) {
+    await client.cameraProgramSelect({ camera_index: cameraIndex });
+  }
+});
+
 /**
  * Handle a meeting_* relay command by delegating to the engine manager
  * or the native meeting-helper JSON-RPC API.
@@ -331,6 +345,19 @@ export async function handleMeetingCommand(
       return runMeetingRpc(() => requireClient().cameraPipSet(options));
     }
 
+    case "meeting_camera_audio_levels": {
+      return runMeetingRpc(() => requireClient().cameraAudioLevels());
+    }
+
+    case "meeting_camera_auto_director": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_camera_auto_director",
+      );
+      return runMeetingRpc(() => requireClient().cameraAutoDirector(options));
+    }
+
     case "meeting_call_control": {
       const { platform, action } = parseRelayPayload(
         MeetingCallControlSchema,
@@ -380,6 +407,72 @@ export async function handleMeetingCommand(
 
     case "conference_display_status": {
       return { success: true, data: conferenceDisplayOutput.status() };
+    }
+
+    case "conference_director_configure": {
+      const patch = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for conference_director_configure",
+      );
+      const config = conferenceDirectorService.configure(
+        parseDirectorConfigPatch(patch),
+      );
+      return {
+        success: true,
+        data: { config, status: conferenceDirectorService.status() },
+      };
+    }
+
+    case "conference_director_start": {
+      const patch = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for conference_director_start",
+      );
+      if (Object.keys(patch).length > 0) {
+        conferenceDirectorService.configure(parseDirectorConfigPatch(patch));
+      }
+      // The webapp passes the live program camera; fall back to the wide shot
+      // (or camera 0) so the first decision compares against a sensible shot.
+      const initialCamera =
+        typeof patch.initial_camera === "number"
+          ? patch.initial_camera
+          : (conferenceDirectorService.status().wide_camera_index as
+              | number
+              | null) ?? 0;
+      try {
+        await conferenceDirectorService.start(initialCamera);
+        return { success: true, data: conferenceDirectorService.status() };
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Conference director failed to start",
+          data: conferenceDirectorService.status(),
+        };
+      }
+    }
+
+    case "conference_director_stop": {
+      await conferenceDirectorService.stop();
+      return { success: true, data: conferenceDirectorService.status() };
+    }
+
+    case "conference_director_status": {
+      return { success: true, data: conferenceDirectorService.status() };
+    }
+
+    case "conference_director_inject": {
+      const raw = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for conference_director_inject",
+      );
+      conferenceDirectorService.inject(parseInjectReading(raw));
+      return { success: true, data: conferenceDirectorService.status() };
     }
 
     case "meeting_keyer_get": {

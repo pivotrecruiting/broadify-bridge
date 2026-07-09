@@ -233,6 +233,8 @@ std::string handleRpc(const std::string &line,
            << "\"camera_running\":" << (state.cameraRunning ? "true" : "false") << ","
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
+           << "\"pip_camera_index\":" << (state.pipCameraIndex >= 0 ? std::to_string(state.pipCameraIndex) : "null") << ","
+           << "\"auto_director_enabled\":" << (state.autoDirectorEnabled ? "true" : "false") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
            << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
@@ -381,6 +383,40 @@ std::string handleRpc(const std::string &line,
     markProgramDirty(state);
     return okResponse(
         id, "{\"ok\":true,\"pip_index\":" + std::to_string(cameraIndex) + "}");
+  }
+
+  // Conference auto-director: per-camera microphone level (0..1) of the open
+  // cameras, for the loudest-speaker switching logic.
+  if (method == "camera.audio_levels") {
+    const std::map<int, float> levels = camera.cameraAudioLevels();
+    std::ostringstream result;
+    result << "{\"ok\":true,\"levels\":{";
+    bool first = true;
+    for (const auto &entry : levels) {
+      result << (first ? "" : ",") << "\"" << entry.first
+             << "\":" << entry.second;
+      first = false;
+    }
+    result << "}}";
+    return okResponse(id, result.str());
+  }
+
+  // Conference auto-director on/off (+ optional speech threshold). The pipeline
+  // loop reads these flags and cuts the program to the loudest camera.
+  if (method == "camera.auto_director") {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.autoDirectorEnabled =
+        extractBoolField(line, "enabled", state.autoDirectorEnabled);
+    const double threshold =
+        extractDoubleField(line, "threshold", state.autoDirectorThreshold);
+    if (threshold > 0.0 && threshold < 1.0) {
+      state.autoDirectorThreshold = static_cast<float>(threshold);
+    }
+    std::ostringstream result;
+    result << "{\"ok\":true,\"auto_director\":"
+           << (state.autoDirectorEnabled ? "true" : "false")
+           << ",\"threshold\":" << state.autoDirectorThreshold << "}";
+    return okResponse(id, result.str());
   }
 
   if (method == "keyer.get") {

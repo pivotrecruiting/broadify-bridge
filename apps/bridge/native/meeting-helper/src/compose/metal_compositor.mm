@@ -1,4 +1,5 @@
 #include "compose/metal_compositor.h"
+#include "compose/metal_device.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -260,7 +261,9 @@ kernel void composeProgram(device uchar4 *output [[buffer(0)]],
           if (raw > 18.0) {
             alpha = raw >= 242.0 ? 1.0 : smoothstep(0.0, 1.0, (raw - 18.0) / 224.0);
           }
-          if (alpha <= 24.5 / 255.0) {
+          // Only clip truly negligible alpha; keep the soft hair/edge band that
+          // the old 24.5/255 snap discarded.
+          if (alpha <= 8.0 / 255.0) {
             alpha = 0.0;
           }
         }
@@ -334,7 +337,7 @@ bool initializeContext() {
   }
 
   @autoreleasepool {
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id<MTLDevice> device = sharedMetalDevice();
     if (device == nil) {
       logCompositorEvent("unavailable", "no Metal device");
       return false;
@@ -362,7 +365,7 @@ bool initializeContext() {
       return false;
     }
     ctx.device = device;
-    ctx.queue = [device newCommandQueue];
+    ctx.queue = sharedMetalQueue();
     ctx.pipeline = pipeline;
     ctx.available = ctx.queue != nil;
     if (ctx.available) {
@@ -489,7 +492,13 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
       }
     }
 
-    if (plan.camera.keyed && plan.cameraMask != nullptr && plan.maskWidth > 0u && plan.maskHeight > 0u) {
+    // Mask: a pre-made GPU texture (fused zero-copy path) is used directly;
+    // otherwise the CPU R8 mask is uploaded into the cached slot.
+    id<MTLTexture> maskTexture = nil;
+    if (plan.camera.keyed && plan.maskTextureHandle != nullptr) {
+      maskTexture = (__bridge id<MTLTexture>)plan.maskTextureHandle;
+      uniforms.maskPresent = 1u;
+    } else if (plan.camera.keyed && plan.cameraMask != nullptr && plan.maskWidth > 0u && plan.maskHeight > 0u) {
       LayerTexture &slot = ctx.mask;
       if (slot.texture == nil || slot.width != plan.maskWidth || slot.height != plan.maskHeight) {
         MTLTextureDescriptor *descriptor =
@@ -512,6 +521,7 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
                           bytesPerRow:plan.maskWidth];
           slot.timestampNs = plan.maskTimestampNs;
         }
+        maskTexture = slot.texture;
         uniforms.maskPresent = 1u;
       }
     }
@@ -538,7 +548,7 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
     [encoder setTexture:(uniforms.backPresent != 0u ? ctx.back.texture : nil) atIndex:1];
     [encoder setTexture:(uniforms.frontPresent != 0u ? ctx.front.texture : nil) atIndex:2];
     [encoder setTexture:(uniforms.mediaPresent != 0u ? ctx.media.texture : nil) atIndex:3];
-    [encoder setTexture:(uniforms.maskPresent != 0u ? ctx.mask.texture : nil) atIndex:4];
+    [encoder setTexture:(uniforms.maskPresent != 0u ? maskTexture : nil) atIndex:4];
     [encoder setTexture:(uniforms.bgImagePresent != 0u ? ctx.backgroundImage.texture : nil) atIndex:5];
 
     const MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);

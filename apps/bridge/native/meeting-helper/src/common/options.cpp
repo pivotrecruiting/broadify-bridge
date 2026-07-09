@@ -81,6 +81,22 @@ Options parseOptions(int argc, char **argv) {
       options.previewPort = parseU16(next(), options.previewPort);
     } else if (arg == "--vcam-frame-port") {
       options.vcamFramePort = parseU16(next(), options.vcamFramePort);
+    } else if (arg == "--env") {
+      // Re-export a KEY=VALUE pair into the process environment. macOS launches
+      // the helper via `open`, which strips the caller's environment, so the
+      // bridge forwards dev/keyer overrides (BROADIFY_MEETING_*) this way; the
+      // helper's getenv-based overrides then work under `npm run dev`.
+      const std::string kv = next();
+      const size_t eq = kv.find('=');
+      if (eq != std::string::npos && eq > 0u) {
+        const std::string key = kv.substr(0, eq);
+        const std::string value = kv.substr(eq + 1u);
+#if defined(_WIN32)
+        _putenv_s(key.c_str(), value.c_str());
+#else
+        setenv(key.c_str(), value.c_str(), 1);
+#endif
+      }
     }
   }
   return options;
