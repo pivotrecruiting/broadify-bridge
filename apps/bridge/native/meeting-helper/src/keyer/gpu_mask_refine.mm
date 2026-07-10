@@ -15,10 +15,6 @@
 namespace broadify::meeting {
 namespace {
 
-// Guided-filter coefficients are computed at the mask's native resolution (the
-// CoreML matte is 512), then joint-upsampled against a higher-res guide.
-constexpr uint32_t kRegSize = 512u;
-
 int envInt(const char *name, int fallback, int lo, int hi) {
   const char *raw = std::getenv(name);
   if (raw == nullptr || raw[0] == '\0') return fallback;
@@ -49,9 +45,18 @@ class GpuMaskRefiner::Impl {
       guided_.epsilon = static_cast<float>(
           envDouble("BROADIFY_MEETING_GPU_EPSILON", 1.0e-4));
       scale_ = [[MPSImageBilinearScale alloc] initWithDevice:device_];
+      ema_ = [[MPSImageAdd alloc] initWithDevice:device_];
     }
     outWidth_ = static_cast<uint32_t>(
         envInt("BROADIFY_MEETING_GPU_REFINE_WIDTH", 960, 320, 1920));
+    // Temporal EMA on the guided-filter coefficients (Apple's recommended way to
+    // kill edge flicker without smearing moving edges or softening the matte).
+    // The value is the new-frame weight: 1.0 disables it, lower = steadier but
+    // laggier. Applied between regression and reconstruction. Default OFF so the
+    // confirmed 512px look is unchanged; opt in for smaller models via the env.
+    const double ema = envDouble("BROADIFY_MEETING_GPU_EMA", 1.0);
+    emaAlpha_ = static_cast<float>(std::clamp(ema, 0.05, 1.0));
+    emaEnabled_ = emaAlpha_ < 0.999f;
     ready_ = guided_ != nil && scale_ != nil;
   }
 
@@ -78,16 +83,38 @@ class GpuMaskRefiner::Impl {
     id<MTLTexture> cameraTex = uploadCamera(camera);  // Stage 3 makes this zero-copy
     if (cameraTex == nil) return false;
 
-    ensureTexture(guideLow_, kRegSize, kRegSize, MTLPixelFormatRGBA8Unorm,
+    // The guided-filter regression requires its source (the mask) and guidance
+    // to be the SAME resolution — the mask's native size, which is the model's
+    // input size (512px or 320px). This MUST track the actual matte, or a 320px
+    // model produces a 320 mask against a 512 guide and the filter collapses.
+    const uint32_t regW = static_cast<uint32_t>(CVPixelBufferGetWidth(alpha));
+    const uint32_t regH = static_cast<uint32_t>(CVPixelBufferGetHeight(alpha));
+
+    ensureTexture(guideLow_, regW, regH, MTLPixelFormatRGBA8Unorm,
                   MTLStorageModePrivate);
     ensureTexture(guideHigh_, outW, outH, MTLPixelFormatRGBA8Unorm,
                   MTLStorageModePrivate);
-    ensureTexture(coeff_, kRegSize, kRegSize, MTLPixelFormatRGBA32Float,
+    ensureTexture(coeff_, regW, regH, MTLPixelFormatRGBA32Float,
                   MTLStorageModePrivate);
     ensureTexture(outMask_, outW, outH, MTLPixelFormatR16Float,
                   MTLStorageModeShared);
     if (guideLow_ == nil || guideHigh_ == nil || coeff_ == nil || outMask_ == nil) {
       return false;
+    }
+
+    // Persistent history + scratch for the coefficient EMA. Reset the history
+    // when the regression size changes (e.g. switching model), so no stale
+    // coefficients bleed across resolutions.
+    if (emaEnabled_) {
+      if (coeffPrev_ == nil || coeffPrev_.width != regW ||
+          coeffPrev_.height != regH) {
+        ensureTexture(coeffPrev_, regW, regH, MTLPixelFormatRGBA32Float,
+                      MTLStorageModePrivate);
+        coeffPrevReady_ = false;
+      }
+      ensureTexture(coeffOut_, regW, regH, MTLPixelFormatRGBA32Float,
+                    MTLStorageModePrivate);
+      if (coeffPrev_ == nil || coeffOut_ == nil) return false;
     }
 
     if (@available(macOS 10.13, *)) {
@@ -99,10 +126,40 @@ class GpuMaskRefiner::Impl {
                                guidanceTexture:guideLow_
                                 weightsTexture:nil
                 destinationCoefficientsTexture:coeff_];
+
+      // Blend this frame's coefficients with the previous frame's (EMA) so the
+      // edge is temporally stable. Skipped on the first frame after a reset.
+      id<MTLTexture> coeffForRecon = coeff_;
+      if (emaEnabled_ && ema_ != nil && coeffPrevReady_) {
+        ema_.primaryScale = emaAlpha_;
+        ema_.secondaryScale = 1.0f - emaAlpha_;
+        [ema_ encodeToCommandBuffer:cb
+                     primaryTexture:coeff_
+                   secondaryTexture:coeffPrev_
+                  destinationTexture:coeffOut_];
+        coeffForRecon = coeffOut_;
+      }
+
       [guided_ encodeReconstructionToCommandBuffer:cb
                                    guidanceTexture:guideHigh_
-                               coefficientsTexture:coeff_
+                               coefficientsTexture:coeffForRecon
                                 destinationTexture:outMask_];
+
+      if (emaEnabled_) {
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromTexture:coeffForRecon
+                  sourceSlice:0
+                  sourceLevel:0
+                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake(regW, regH, 1)
+                    toTexture:coeffPrev_
+             destinationSlice:0
+             destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit endEncoding];
+        coeffPrevReady_ = true;
+      }
+
       [cb commit];
       [cb waitUntilCompleted];
       return cb.status != MTLCommandBufferStatusError;
@@ -197,14 +254,20 @@ class GpuMaskRefiner::Impl {
   CVMetalTextureCacheRef textureCache_ = nullptr;
   MPSImageGuidedFilter *guided_ = nil;
   MPSImageBilinearScale *scale_ = nil;
+  MPSImageAdd *ema_ = nil;
   id<MTLTexture> cameraTex_ = nil;
   id<MTLTexture> guideLow_ = nil;
   id<MTLTexture> guideHigh_ = nil;
   id<MTLTexture> coeff_ = nil;
+  id<MTLTexture> coeffPrev_ = nil;
+  id<MTLTexture> coeffOut_ = nil;
   id<MTLTexture> outMask_ = nil;
   std::vector<uint16_t> halfScratch_;
   std::vector<float> floatScratch_;
   uint32_t outWidth_ = 960u;
+  float emaAlpha_ = 0.5f;
+  bool emaEnabled_ = true;
+  bool coeffPrevReady_ = false;
   bool ready_ = false;
 };
 

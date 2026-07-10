@@ -210,7 +210,14 @@ class CoreMLKeyer::Impl {
     if (@available(macOS 13.0, *)) {
       @autoreleasepool {
         NSString *dir = [NSString stringWithUTF8String:modelsDir_.c_str()];
-        NSString *path = [dir stringByAppendingPathComponent:@"MODNet.mlpackage"];
+        // The model file is selectable so a smaller/faster model (e.g. 320px for
+        // 30 fps) can be A/B tested against the default 512px one. The input size
+        // is queried from whichever model loads, so the rest of the path adapts.
+        const char *modelEnv = std::getenv("BROADIFY_MEETING_COREML_MODEL");
+        NSString *modelFile = (modelEnv != nullptr && modelEnv[0] != '\0')
+                                  ? [NSString stringWithUTF8String:modelEnv]
+                                  : @"MODNet.mlpackage";
+        NSString *path = [dir stringByAppendingPathComponent:modelFile];
         status_.modelPath = std::string([path UTF8String]);
         NSURL *url = [NSURL fileURLWithPath:path];
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
