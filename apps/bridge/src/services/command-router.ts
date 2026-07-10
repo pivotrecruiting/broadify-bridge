@@ -31,6 +31,7 @@ import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { transformDevicesToOutputs } from "./device-to-output-transform.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import { powerSocketService } from "./power/power-socket-service.js";
 import {
   streamDeckManager,
   parseStreamDeckConfig,
@@ -610,6 +611,65 @@ export class CommandRouter {
             streamDeckManager.press(keyIndex);
           }
           return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "power_socket_list": {
+          return {
+            success: true,
+            data: { sockets: await powerSocketService.list() },
+          };
+        }
+
+        case "power_socket_save": {
+          const socket = await powerSocketService.save({
+            id: typeof payload?.id === "string" ? payload.id : undefined,
+            name: typeof payload?.name === "string" ? payload.name : undefined,
+            preset:
+              typeof payload?.preset === "string"
+                ? (payload.preset as never)
+                : undefined,
+            host: typeof payload?.host === "string" ? payload.host : undefined,
+            onUrl: typeof payload?.on_url === "string" ? payload.on_url : undefined,
+            offUrl:
+              typeof payload?.off_url === "string" ? payload.off_url : undefined,
+            method:
+              payload?.method === "POST" || payload?.method === "GET"
+                ? payload.method
+                : undefined,
+            autostart:
+              typeof payload?.autostart === "boolean"
+                ? payload.autostart
+                : undefined,
+          });
+          return { success: true, data: { socket } };
+        }
+
+        case "power_socket_delete": {
+          const id = typeof payload?.id === "string" ? payload.id : "";
+          if (!id) {
+            return { success: false, error: "A socket id is required." };
+          }
+          return { success: true, data: await powerSocketService.remove(id) };
+        }
+
+        case "power_socket_set": {
+          const id = typeof payload?.id === "string" ? payload.id : "";
+          if (!id) {
+            return { success: false, error: "A socket id is required." };
+          }
+          const on = payload?.on !== false;
+          return {
+            success: true,
+            data: await powerSocketService.setState(id, on),
+          };
+        }
+
+        case "power_socket_test": {
+          const id = typeof payload?.id === "string" ? payload.id : "";
+          if (!id) {
+            return { success: false, error: "A socket id is required." };
+          }
+          return { success: true, data: await powerSocketService.test(id) };
         }
 
         default:

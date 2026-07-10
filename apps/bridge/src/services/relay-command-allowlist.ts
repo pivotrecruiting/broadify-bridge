@@ -65,6 +65,11 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "streamdeck_configure",
   "streamdeck_set_page",
   "streamdeck_press",
+  "power_socket_list",
+  "power_socket_save",
+  "power_socket_delete",
+  "power_socket_set",
+  "power_socket_test",
 ] as const;
 
 const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);
