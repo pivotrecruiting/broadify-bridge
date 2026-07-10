@@ -239,6 +239,7 @@ export class StreamDeckManager {
             binding.style,
             layout.keyWidth,
             layout.keyHeight,
+            { command: binding.command, payload: binding.payload },
           );
           await this.device.setKeyImage(key, rgba);
         } else {
