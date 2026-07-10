@@ -74,6 +74,15 @@ export interface StreamDeckDevice {
 /** Paging and other actions handled by the manager itself, not the router. */
 export const STREAMDECK_INTERNAL_PREFIX = "streamdeck:";
 
+/**
+ * Actions that must run in the open webapp instead of bridge-side (e.g. graphics
+ * presets, whose payload is built live from webapp state). On key press the
+ * manager forwards these as a `streamdeck_action` bridge event; the webapp
+ * executes them with current values. The action name is the command with this
+ * prefix stripped.
+ */
+export const STREAMDECK_WEBAPP_PREFIX = "webapp:";
+
 export const DEFAULT_STREAMDECK_LAYOUT: StreamDeckLayout = {
   columns: 5,
   rows: 3,

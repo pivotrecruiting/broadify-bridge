@@ -35,6 +35,7 @@ import {
   streamDeckManager,
   parseStreamDeckConfig,
 } from "./streamdeck/stream-deck-manager.js";
+import { startStreamDeckHardwareWatch } from "./streamdeck/hid-stream-deck.js";
 
 /**
  * Relay command payload.
@@ -637,4 +638,11 @@ export const commandRouter = new CommandRouter();
 // command router a webapp button uses — no duplicated action logic.
 streamDeckManager.setExecutor((command, payload) =>
   commandRouter.handleCommand(command as RelayCommand, payload),
+);
+
+// Attach a physical Stream Deck when present and hot-swap on plug/unplug; falls
+// back to the virtual device when none is connected (or the Elgato app holds
+// it). Any model works — geometry is read from the device.
+startStreamDeckHardwareWatch(streamDeckManager, (message) =>
+  console.info(`[streamdeck] ${message}`),
 );

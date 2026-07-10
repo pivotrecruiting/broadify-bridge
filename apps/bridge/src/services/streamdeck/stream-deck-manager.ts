@@ -6,6 +6,7 @@ import { VirtualStreamDeck } from "./virtual-stream-deck.js";
 import {
   DEFAULT_STREAMDECK_LAYOUT,
   STREAMDECK_INTERNAL_PREFIX,
+  STREAMDECK_WEBAPP_PREFIX,
   StreamDeckDevice,
   StreamDeckLayout,
   StreamDeckPage,
@@ -155,8 +156,54 @@ export class StreamDeckManager {
       await this.handleInternal(binding.command, binding.payload);
       return;
     }
+    // Notify the webapp so a matching on-screen button can flash "pressed".
+    this.publishKeyPressed(binding.command, binding.payload);
+    if (binding.command.startsWith(STREAMDECK_WEBAPP_PREFIX)) {
+      this.publishWebappAction(
+        binding.command.slice(STREAMDECK_WEBAPP_PREFIX.length),
+        binding.payload,
+      );
+      return;
+    }
     try {
       await this.executor?.(binding.command, binding.payload);
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /**
+   * Announces a key press to the webapp (command + payload) so an on-screen
+   * button bound to the same action can briefly show its pressed state. No-op if
+   * no relay is connected.
+   */
+  private publishKeyPressed(
+    command: string,
+    payload?: Record<string, unknown>,
+  ): void {
+    try {
+      getBridgeContext().publishBridgeEvent?.({
+        event: "streamdeck_key_pressed",
+        data: { command, payload: payload ?? null },
+      });
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /**
+   * Forwards a webapp-routed action (e.g. a graphics preset) to the open webapp
+   * over the relay, so it runs with live state. No-op if no relay is connected.
+   */
+  private publishWebappAction(
+    action: string,
+    payload?: Record<string, unknown>,
+  ): void {
+    try {
+      getBridgeContext().publishBridgeEvent?.({
+        event: "streamdeck_action",
+        data: { action, payload: payload ?? null },
+      });
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
     }
