@@ -88,32 +88,36 @@ Falls etwas fehlt:
 
 ---
 
-## 3. Code auf den Windows-Rechner bringen (via Teams)
+## 3. Code auf den Windows-Rechner bringen (via Teams, als Git-Bundle)
 
-Du schickst den Code per Teams als **ZIP**. Damit das sauber läuft:
+Statt eines ZIPs (bei dem man `node_modules` etc. mühsam ausschließen müsste) kommt der
+Code als **Git-Bundle** — je Repo **eine** Datei, die nur den echten Code enthält (kein
+`node_modules`, keine Build-Reste), sauber klonbar. Auf dem Mac liegen sie in
+`~/Desktop/broadify-windows-transfer/`:
+- `broadify-bridge-<datum>.bundle`  (Bridge-Repo, ~120 MB)
+- `broadify-<datum>.bundle`         (Webapp-Repo, ~10 MB)
 
-**Beim Zippen auf dem Mac unbedingt AUSSCHLIESSEN** (sonst riesig + kaputt auf Windows):
-- `node_modules/` (in **beiden** Repos, auch verschachtelt) — wird auf Windows neu installiert
-- `build/`, `dist/`, `.git/` (optional), `apps/bridge/.bridge-data/`
-- die nativen `build/`-Ordner unter `native/*/`
+**Beide Dateien per Teams** auf den Windows-Rechner schicken (z. B. nach
+`C:\Users\<du>\Downloads\`). Dann in PowerShell **klonen** (kurze Pfade unter `C:\dev\`!):
 
-**Mit ins ZIP muss** (ist im Code enthalten):
-- `apps/bridge/native/meeting-helper/deps/onnxruntime/windows-x64/` (ORT + DirectML, 35 MB) ✅
-- `apps/bridge/native/meeting-helper/models/manifest.json` ✅
-- alle `*.ps1`, `CMakeLists.txt`, Quellcode
+```powershell
+git clone "C:\Users\<du>\Downloads\broadify-bridge-<datum>.bundle" C:\dev\broadify-bridge
+cd C:\dev\broadify-bridge
+git checkout feature/conference-mode
 
-**NICHT im ZIP (extra/separat):**
-- `.env`-Dateien (Secrets) — die schickst du getrennt/sicher, siehe Schritt 5.
-- `modnet.onnx` (das KI-Modell, 25 MB) — holen wir auf Windows per Skript (Schritt 6).
-
-Auf Windows dann entpacken nach:
-```
-C:\dev\broadify-bridge      (das Bridge-Repo)
-C:\dev\broadify             (das Webapp-Repo)
+git clone "C:\Users\<du>\Downloads\broadify-<datum>.bundle" C:\dev\broadify
+cd C:\dev\broadify
+git checkout feature/conference-mode
 ```
 
-> Kurze Pfade wie `C:\dev\...` sind wichtig — Windows hat ein Pfadlängen-Limit, und
-> tiefe Ordner in `Downloads\…` machen beim Build Ärger.
+Was das Bundle **enthält** (getrackt): den kompletten Quellcode, die ORT+DirectML-DLLs
+(`deps/onnxruntime/windows-x64`), alle `*.ps1` + `CMakeLists.txt`, die Anleitung.
+Was **nicht** drin ist und separat/per Skript kommt:
+- `node_modules` → Schritt 4 (`npm install`).
+- `.env`-Dateien (Secrets) → Schritt 5 (getrennt, sicher).
+- `modnet.onnx` (KI-Modell, 25 MB) → Schritt 6 (`npm run download:modnet-model`).
+
+> Kurze Pfade wie `C:\dev\...` sind wichtig — Windows hat ein Pfadlängen-Limit.
 
 ---
 
