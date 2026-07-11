@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -462,56 +463,107 @@ class MediaFoundationCameraSource final : public CameraSource {
       return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    selectedIndex_ = cameraIndex;
+    programIndex_ = cameraIndex;
     lastError_.clear();
     return true;
   }
 
   bool start(int cameraIndex, uint32_t width, uint32_t height,
              uint32_t fps) override {
-    ComApartment com;
-    stop();
-
-    const std::vector<CameraInfo> cameras = listCameras();
     int resolvedIndex = cameraIndex;
     if (resolvedIndex < 0) {
       std::lock_guard<std::mutex> lock(mutex_);
-      resolvedIndex = selectedIndex_;
+      resolvedIndex = programIndex_;
     }
-    const CameraInfo *camera = findByIndex(cameras, resolvedIndex);
-    if (camera == nullptr) {
-      setError("Requested camera index is not available.");
+    return startSet({resolvedIndex}, width, height, fps);
+  }
+
+  // Opens every requested camera at once (each on its own capture thread), so
+  // conference mode can cut between them with no reopen. The program camera
+  // starts as the first requested index that actually opened.
+  bool startSet(const std::vector<int> &cameraIndices, uint32_t width,
+                uint32_t height, uint32_t fps) override {
+    ComApartment com;
+    stop();
+    if (cameraIndices.empty()) {
+      setError("No cameras requested.");
       return false;
     }
 
-    auto session = std::make_shared<MfCaptureSession>();
-    std::string error;
-    if (!session->open(camera->cameraId, width, height, fps, error)) {
-      const bool denied = lowerAscii(error).find("permission") != std::string::npos;
-      setError(error.empty() ? "Could not start the camera." : error,
+    const std::vector<CameraInfo> cameras = listCameras();
+    std::map<int, std::shared_ptr<MfCaptureSession>> opened;
+    std::string lastOpenError;
+    for (int requestedIndex : cameraIndices) {
+      const CameraInfo *camera = findByIndex(cameras, requestedIndex);
+      if (camera == nullptr) {
+        lastOpenError = "Requested camera index is not available.";
+        continue;
+      }
+      if (opened.count(camera->cameraIndex) != 0) {
+        continue;  // de-dupe repeated indices.
+      }
+      auto session = std::make_shared<MfCaptureSession>();
+      std::string error;
+      if (!session->open(camera->cameraId, width, height, fps, error)) {
+        lastOpenError = error.empty() ? "Could not start the camera." : error;
+        continue;
+      }
+      opened[camera->cameraIndex] = std::move(session);
+    }
+
+    if (opened.empty()) {
+      const bool denied =
+          lowerAscii(lastOpenError).find("permission") != std::string::npos;
+      setError(lastOpenError.empty() ? "No requested camera could be opened."
+                                     : lastOpenError,
                denied ? "denied" : "");
       return false;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    session_ = std::move(session);
-    selectedIndex_ = camera->cameraIndex;
+    sessions_ = std::move(opened);
+    programIndex_ = sessions_.count(cameraIndices.front())
+                        ? cameraIndices.front()
+                        : sessions_.begin()->first;
     running_ = true;
     permissionStatus_ = "authorized";
     lastError_.clear();
     return true;
   }
 
+  bool setProgramCamera(int cameraIndex) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (sessions_.count(cameraIndex) == 0) {
+      lastError_ = "Requested program camera is not open.";
+      return false;
+    }
+    // Seamless: every camera is already running; only the program pointer moves.
+    programIndex_ = cameraIndex;
+    lastError_.clear();
+    return true;
+  }
+
+  std::vector<int> activeCameraSet() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<int> indices;
+    indices.reserve(sessions_.size());
+    for (const auto &entry : sessions_) {
+      indices.push_back(entry.first);
+    }
+    return indices;
+  }
+
   void stop() override {
-    std::shared_ptr<MfCaptureSession> session;
+    std::map<int, std::shared_ptr<MfCaptureSession>> sessions;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      session = std::move(session_);
-      session_.reset();
+      sessions.swap(sessions_);
       running_ = false;
     }
-    if (session) {
-      session->stop();  // outside the lock: joins the capture thread.
+    for (auto &entry : sessions) {
+      if (entry.second) {
+        entry.second->stop();  // outside the lock: joins the capture thread.
+      }
     }
   }
 
@@ -522,16 +574,24 @@ class MediaFoundationCameraSource final : public CameraSource {
 
   int activeCameraIndex() const override {
     std::lock_guard<std::mutex> lock(mutex_);
-    return running_ ? selectedIndex_ : -1;
+    return running_ ? programIndex_ : -1;
   }
 
   bool copyLatestFrame(VideoFrame &frame) override {
-    const std::shared_ptr<MfCaptureSession> session = activeSession();
+    const std::shared_ptr<MfCaptureSession> session = programSession();
     return session ? session->copyLatestFrame(frame) : false;
   }
 
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
-    const std::shared_ptr<MfCaptureSession> session = activeSession();
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
+  }
+
+  // Reads a specific camera's latest frame (used for the conference PiP layer),
+  // independent of which camera is currently the program.
+  bool copyLatestFrameFrom(int cameraIndex, uint64_t lastTimestampNs,
+                           VideoFrame &frame) override {
+    const std::shared_ptr<MfCaptureSession> session = sessionFor(cameraIndex);
     return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
   }
 
@@ -557,9 +617,16 @@ class MediaFoundationCameraSource final : public CameraSource {
   }
 
  private:
-  std::shared_ptr<MfCaptureSession> activeSession() const {
+  std::shared_ptr<MfCaptureSession> programSession() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return session_;
+    const auto it = sessions_.find(programIndex_);
+    return it == sessions_.end() ? nullptr : it->second;
+  }
+
+  std::shared_ptr<MfCaptureSession> sessionFor(int cameraIndex) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = sessions_.find(cameraIndex);
+    return it == sessions_.end() ? nullptr : it->second;
   }
 
   static const CameraInfo *findByIndex(const std::vector<CameraInfo> &cameras,
@@ -588,12 +655,14 @@ class MediaFoundationCameraSource final : public CameraSource {
   mutable std::mutex mutex_;
   bool mfStarted_ = false;
   bool running_ = false;
-  int selectedIndex_ = 0;
+  int programIndex_ = 0;
   std::string lastError_;
-  // Windows has no camera prompt; start() flips this to "denied" only if the
+  // Windows has no camera prompt; startSet() flips this to "denied" only if the
   // global privacy setting blocks opening a device.
   std::string permissionStatus_ = "authorized";
-  std::shared_ptr<MfCaptureSession> session_;
+  // One capture session per open camera index. Conference mode holds several and
+  // cuts between them by moving programIndex_ (no reopen); meeting holds one.
+  std::map<int, std::shared_ptr<MfCaptureSession>> sessions_;
 };
 
 }  // namespace
