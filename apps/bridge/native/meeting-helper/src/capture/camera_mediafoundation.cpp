@@ -15,9 +15,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -158,37 +159,114 @@ void swizzleBgraToRgba(const uint8_t *scan0, ptrdiff_t pitch, uint32_t width,
   }
 }
 
-// One MediaFoundation capture session. Owns its source reader end-to-end on a
-// dedicated capture thread so all MF object creation and use stays on a single
-// MTA thread. Instantiable more than once (a future conference mode can hold
-// several); the CameraSource facade keeps one active instance.
-class MfCaptureSession {
+// One MediaFoundation capture session (one per camera). The source reader runs
+// in async callback mode (MF_SOURCE_READER_ASYNC_CALLBACK): OnReadSample stores
+// the latest frame and immediately re-arms the next ReadSample, so no thread
+// ever blocks inside ReadSample. That keeps stop() prompt even for a device
+// that never delivers a frame (HDMI grabber without signal, NDI webcam without
+// an active sender) -- the case that used to hang the sync reader's join.
+//
+// Lifetime: the reader holds a COM reference on the callback (async-callback
+// attribute) and the callback holds the reader, so the pair stays alive while
+// an async op can still fire. shutdown() clears running_, issues an async
+// Flush and waits (bounded) for OnFlush; only then is the reader released --
+// never from inside a callback (the reader's final release waits for its
+// callback queue to drain, so releasing there would self-deadlock). The source
+// reader serializes its callbacks, so OnFlush never runs mid-OnReadSample.
+class MfReaderCallback final : public IMFSourceReaderCallback {
  public:
-  ~MfCaptureSession() { stop(); }
+  MfReaderCallback() = default;
 
-  // Blocks until the capture thread reports initialization success or failure.
-  bool open(const std::string &cameraId, uint32_t width, uint32_t height,
-            uint32_t fps, std::string &errorOut) {
-    running_.store(true);
-    std::promise<bool> initPromise;
-    std::future<bool> initFuture = initPromise.get_future();
-    thread_ = std::thread(&MfCaptureSession::run, this, utf8ToWide(cameraId),
-                          width, height, fps, std::move(initPromise));
-    const bool ok = initFuture.get();
-    if (!ok) {
-      errorOut = initError_;
-      running_.store(false);
-      if (thread_.joinable()) {
-        thread_.join();
-      }
+  // IUnknown --------------------------------------------------------------
+  STDMETHODIMP QueryInterface(REFIID riid, void **ppv) override {
+    if (ppv == nullptr) {
+      return E_POINTER;
     }
-    return ok;
+    if (riid == IID_IUnknown || riid == __uuidof(IMFSourceReaderCallback)) {
+      *ppv = static_cast<IMFSourceReaderCallback *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  STDMETHODIMP_(ULONG) AddRef() override {
+    return static_cast<ULONG>(refCount_.fetch_add(1) + 1);
+  }
+  STDMETHODIMP_(ULONG) Release() override {
+    const long remaining = refCount_.fetch_sub(1) - 1;
+    if (remaining == 0) {
+      delete this;
+    }
+    return static_cast<ULONG>(remaining);
   }
 
-  void stop() {
+  // Creates the device source + async reader and arms the first read. Runs on
+  // the caller's MTA thread and only blocks for reader creation, never for a
+  // frame. width/height/fps are accepted for contract parity with macOS; like
+  // the previous sync implementation the reader keeps the negotiated native
+  // RGB32 size. Returns false with initError() set on failure.
+  bool open(const std::wstring &symbolicLink, uint32_t /*width*/,
+            uint32_t /*height*/, uint32_t /*fps*/) {
+    ComPtr<IMFSourceReader> reader;
+    // Prefer the standard video processor; fall back to the advanced one, which
+    // wraps the full DXVA video processor and handles more source formats.
+    if (!initReader(symbolicLink, false, reader) &&
+        !initReader(symbolicLink, true, reader)) {
+      if (initError_.empty()) {
+        initError_ = "Camera does not support an RGB32 output format.";
+      }
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      reader_ = reader;
+    }
+    running_.store(true);
+    const HRESULT hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                                          0, nullptr, nullptr, nullptr, nullptr);
+    if (FAILED(hr)) {
+      running_.store(false);
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      reader_.Reset();
+      initError_ = "Could not start reading camera frames.";
+      return false;
+    }
+    return true;
+  }
+
+  // Prompt, non-blocking-on-frames shutdown. Idempotent; callable from any
+  // non-callback thread. The bounded wait is purely defensive -- Flush cancels
+  // the pending ReadSample without waiting for data, so OnFlush normally
+  // arrives within milliseconds even for a frameless device. On timeout the
+  // reader/callback ref cycle keeps both alive until MF eventually completes
+  // the flush (OnFlush then hands the reader to a detached releaser thread).
+  void shutdown() {
+    if (shutdownStarted_.exchange(true)) {
+      return;
+    }
     running_.store(false);
-    if (thread_.joinable()) {
-      thread_.join();
+    ComPtr<IMFSourceReader> reader;
+    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      reader = reader_;
+    }
+    if (!reader) {
+      return;
+    }
+    const HRESULT hr = reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+    std::unique_lock<std::mutex> lock(stateMutex_);
+    if (FAILED(hr)) {
+      // Flush could not be queued; the re-arm loop has stopped (running_ is
+      // false), so release from here (a non-callback thread, which is safe).
+      reader_.Reset();
+      return;
+    }
+    if (flushCv_.wait_for(lock, std::chrono::seconds(2),
+                          [this] { return flushCompleted_; })) {
+      reader_.Reset();
+    } else {
+      abandoned_ = true;
     }
   }
 
@@ -210,43 +288,63 @@ class MfCaptureSession {
     return true;
   }
 
- private:
-  void run(std::wstring symbolicLink, uint32_t width, uint32_t height,
-           uint32_t fps, std::promise<bool> initPromise) {
-    ComApartment com;
-    ComPtr<IMFSourceReader> reader;
-    // Prefer the standard video processor; fall back to the advanced one, which
-    // wraps the full DXVA video processor and handles more source formats.
-    if (!initReader(symbolicLink, false, reader) &&
-        !initReader(symbolicLink, true, reader)) {
-      if (initError_.empty()) {
-        initError_ = "Camera does not support an RGB32 output format.";
-      }
-      initPromise.set_value(false);
-      return;
-    }
-    initPromise.set_value(true);
+  const std::string &initError() const { return initError_; }
 
-    while (running_.load()) {
-      DWORD streamIndex = 0;
-      DWORD flags = 0;
-      LONGLONG timestamp = 0;
-      ComPtr<IMFSample> sample;
-      const HRESULT hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-                                            0, &streamIndex, &flags, &timestamp,
-                                            &sample);
-      if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
-        break;
-      }
-      if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
-        refreshFormat(reader.Get());
-      }
-      if (!sample) {
-        continue;  // stream tick / gap; keep pumping.
-      }
-      processSample(sample.Get());
+  // IMFSourceReaderCallback -------------------------------------------------
+  STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD /*streamIndex*/,
+                            DWORD streamFlags, LONGLONG /*timestamp*/,
+                            IMFSample *sample) override {
+    if (FAILED(hrStatus) || (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+      return S_OK;  // stream is done; stop re-arming.
     }
+    ComPtr<IMFSourceReader> reader;
+    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      reader = reader_;
+    }
+    if (!reader) {
+      return S_OK;
+    }
+    if (streamFlags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
+      refreshFormat(reader.Get());
+    }
+    if (sample != nullptr) {
+      processSample(sample);
+    }
+    // Re-arm. A shutdown() racing this re-arm is fine: its Flush cancels the
+    // request we queue here, and a ReadSample failure simply ends the loop.
+    if (running_.load()) {
+      reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr,
+                         nullptr, nullptr, nullptr);
+    }
+    return S_OK;
   }
+
+  STDMETHODIMP OnFlush(DWORD /*streamIndex*/) override {
+    ComPtr<IMFSourceReader> orphan;
+    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      flushCompleted_ = true;
+      if (abandoned_) {
+        orphan.Swap(reader_);
+      }
+    }
+    flushCv_.notify_all();
+    if (orphan) {
+      // shutdown() gave up waiting; the reader must still not be released on
+      // this (callback) thread, so hand it to a detached releaser.
+      IMFSourceReader *raw = orphan.Detach();
+      std::thread([raw] { raw->Release(); }).detach();
+    }
+    return S_OK;
+  }
+
+  STDMETHODIMP OnEvent(DWORD /*streamIndex*/, IMFMediaEvent * /*event*/) override {
+    return S_OK;
+  }
+
+ private:
+  ~MfReaderCallback() = default;  // COM-refcounted: delete only via Release().
 
   bool initReader(const std::wstring &symbolicLink, bool advancedProcessing,
                   ComPtr<IMFSourceReader> &readerOut) {
@@ -272,13 +370,20 @@ class MfCaptureSession {
     }
 
     ComPtr<IMFAttributes> readerAttributes;
-    if (FAILED(MFCreateAttributes(&readerAttributes, 1))) {
+    if (FAILED(MFCreateAttributes(&readerAttributes, 2))) {
       return false;
     }
     readerAttributes->SetUINT32(advancedProcessing
                                     ? MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING
                                     : MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
                                 TRUE);
+    // Async callback mode: the reader delivers frames via OnReadSample instead
+    // of a blocking ReadSample, so a frameless device never stalls shutdown().
+    if (FAILED(readerAttributes->SetUnknown(
+            MF_SOURCE_READER_ASYNC_CALLBACK,
+            static_cast<IMFSourceReaderCallback *>(this)))) {
+      return false;
+    }
 
     ComPtr<IMFSourceReader> reader;
     hr = MFCreateSourceReaderFromMediaSource(source.Get(), readerAttributes.Get(),
@@ -312,8 +417,10 @@ class MfCaptureSession {
     return true;
   }
 
-  // Reads the negotiated frame size and stride. Runs on the capture thread only,
-  // so the format fields need no locking.
+  // Reads the negotiated frame size and stride. Touched by the opening thread
+  // before the first read, then by OnReadSample only (the reader serializes its
+  // callbacks, so at most one read is in flight), so the format fields need no
+  // locking.
   bool refreshFormat(IMFSourceReader *reader) {
     ComPtr<IMFMediaType> current;
     if (FAILED(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
@@ -399,11 +506,20 @@ class MfCaptureSession {
     hasFrame_ = true;
   }
 
-  std::thread thread_;
+  std::atomic<long> refCount_{1};
   std::atomic<bool> running_{false};
+  std::atomic<bool> shutdownStarted_{false};
   std::string initError_;
 
-  // Format fields are touched only by the capture thread.
+  // Guards reader_ / flushCompleted_ / abandoned_ (the shutdown handshake).
+  std::mutex stateMutex_;
+  std::condition_variable flushCv_;
+  ComPtr<IMFSourceReader> reader_;
+  bool flushCompleted_ = false;
+  bool abandoned_ = false;
+
+  // Format fields: opening thread before the first read, then OnReadSample only
+  // (see refreshFormat).
   uint32_t frameWidth_ = 0;
   uint32_t frameHeight_ = 0;
   LONG stride_ = 0;
@@ -411,6 +527,51 @@ class MfCaptureSession {
   mutable std::mutex frameMutex_;
   bool hasFrame_ = false;
   VideoFrame latestFrame_;
+};
+
+// One capture session as seen by the CameraSource facade. Thin owner of the
+// COM-refcounted reader callback; instantiable more than once (conference mode
+// holds one per open camera). stop() only quiesces the callback -- the object
+// reference is intentionally kept so concurrent copyLatestFrame* readers on the
+// program loop never race a pointer reset; it is dropped in the destructor, when
+// the facade's last shared_ptr goes away.
+class MfCaptureSession {
+ public:
+  ~MfCaptureSession() {
+    stop();
+    callback_.Reset();
+  }
+
+  // Blocks only for device/reader creation, never for a frame.
+  bool open(const std::string &cameraId, uint32_t width, uint32_t height,
+            uint32_t fps, std::string &errorOut) {
+    ComPtr<MfReaderCallback> callback;
+    callback.Attach(new MfReaderCallback());
+    if (!callback->open(utf8ToWide(cameraId), width, height, fps)) {
+      errorOut = callback->initError();
+      return false;
+    }
+    callback_ = std::move(callback);
+    return true;
+  }
+
+  void stop() {
+    if (callback_) {
+      callback_->shutdown();
+    }
+  }
+
+  bool copyLatestFrame(VideoFrame &frame) {
+    return callback_ ? callback_->copyLatestFrame(frame) : false;
+  }
+
+  bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
+    return callback_ ? callback_->copyLatestFrameIfNew(lastTimestampNs, frame)
+                     : false;
+  }
+
+ private:
+  ComPtr<MfReaderCallback> callback_;
 };
 
 class MediaFoundationCameraSource final : public CameraSource {
