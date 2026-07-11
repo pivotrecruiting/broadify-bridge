@@ -206,6 +206,7 @@ bool liveSnapEnabled() {
 // consuming the async worker's older mask, driving mask age to zero (kills the
 // motion edge-lag). Falls back to the async path on any failure.
 bool gpuPipelineEnabled() {
+#if defined(__APPLE__)
   static const bool enabled = [] {
     // Default ON: the fused synchronous native-CoreML/GPU keyer is the production
     // path (mask age 0 -> motion edges track exactly). Kill-switch: set
@@ -214,6 +215,13 @@ bool gpuPipelineEnabled() {
     return raw == nullptr || raw[0] != '0';
   }();
   return enabled;
+#else
+  // The fused path is CoreML/Metal (Apple-only). On other platforms it MUST be
+  // compile-time false: it keeps the async MODNet worker enabled (DirectML on
+  // Windows — see the async gate below) and prevents any reference to the
+  // Apple-only CoreMLKeyer symbols, which would otherwise fail to link.
+  return false;
+#endif
 }
 
 // Edge-live mode (default OFF = the proven path). When ON, MODNet's edge cleanup
@@ -1712,7 +1720,11 @@ void runFramePipeline(const Options &options,
 
       // Fused synchronous GPU keyer: key the CURRENT frame now (mask age 0) via
       // the native CoreML keyer, overriding the async selection. Falls back to
-      // whatever the async path chose on any failure.
+      // whatever the async path chose on any failure. Apple-only: it uses the
+      // CoreML/Metal keyer (coreml_keyer.mm is entirely #if __APPLE__), so the
+      // whole block is guarded — on non-Apple gpuPipelineEnabled() is already
+      // compile-time false and this must not reference CoreMLKeyer (link error).
+#if defined(__APPLE__)
       AlphaMask fusedMask;
       if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
           !latestCameraFrame.rgba.empty()) {
@@ -1731,6 +1743,7 @@ void runFramePipeline(const Options &options,
           state.staleMaskActive = false;
         }
       }
+#endif
 
       if (shouldRenderProgram) {
         renderProgramFrame(

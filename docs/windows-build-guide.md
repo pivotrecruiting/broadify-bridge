@@ -50,7 +50,8 @@ schnell" ist ein Entwickler-Ziel (D3D-GPU-Compositing, Abschnitt 11). Mit den He
 | Punkt | Anforderung | Prüfen |
 |---|---|---|
 | **Windows-Version** | **Windows 11** x64 (jede Build-Nr.) | `Win + R` → `winver` |
-| **GPU** | DirectX-12-fähig (praktisch jede GPU ab ~2016; dedizierte GPU empfohlen) | `dxdiag` → Anzeige |
+| **GPU (Grundfunktion)** | DirectX-12-fähig (praktisch jede GPU ab ~2016) | `dxdiag` → Anzeige |
+| **GPU (guter Keyer!)** | **stark**: dediziert (NVIDIA/AMD) oder Intel **Iris Xe / Arc**. Alte integrierte Grafik (z. B. Intel **UHD 620**) ist für Echtzeit-MODNet **zu schwach** → Keyer langsam/Passthrough | `dxdiag` |
 | **RAM** | ≥ 8 GB (16 GB empfohlen) | — |
 | **Festplatte** | ~5 GB frei für Code + Build | — |
 
@@ -123,10 +124,14 @@ Was **nicht** drin ist und separat/per Skript kommt:
 
 ## 4. Abhängigkeiten installieren (`npm install`)
 
-In **beiden** Repos je einmal, in der Developer-PowerShell:
+**Drei** `npm install` nötig (die Bridge ist ein Monorepo, aber `apps/bridge` ist ein
+**eigenständiges Paket ohne Workspace-Verknüpfung** und braucht ein separates Install):
 
 ```powershell
 cd C:\dev\broadify-bridge
+npm install
+
+cd C:\dev\broadify-bridge\apps\bridge
 npm install
 
 cd C:\dev\broadify
@@ -161,14 +166,20 @@ C:\dev\broadify-bridge\apps\bridge\.env          (Bridge)
 Der Windows-Keyer braucht `modnet.onnx` (nicht im Git, wird hash-verifiziert geladen).
 **In „Git Bash"** (nicht PowerShell — das Skript ist ein Bash-Skript):
 
+Das Skript braucht die Download-URL in der Umgebungsvariable **`MODNET_MODEL_URL`** (ist
+sie nicht gesetzt, bricht es ab). Das Modell ist der **öffentliche Xenova-MODNet-ONNX-
+Export** (Hugging Face `Xenova/modnet`); das Skript prüft danach die **SHA-256 gegen
+`manifest.json`** (Soll: `07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9`)
+— stimmt sie, ist das Modell verifiziert.
+
 ```bash
 cd /c/dev/broadify-bridge
+export MODNET_MODEL_URL="<URL zum Xenova-modnet-onnx-Export>"   # SHA muss zum Manifest passen
 npm run download:modnet-model
 ```
 
-Das lädt das Modell (öffentlicher Xenova-Export) nach
-`apps/bridge/native/meeting-helper/models/modnet.onnx` und prüft die SHA-256 gegen
-`manifest.json`. Danach kurz kontrollieren:
+Das lädt das Modell nach `apps/bridge/native/meeting-helper/models/modnet.onnx` und prüft
+die SHA-256 gegen `manifest.json`. Danach kurz kontrollieren:
 ```powershell
 dir C:\dev\broadify-bridge\apps\bridge\native\meeting-helper\models\
 ```
@@ -239,13 +250,15 @@ Conference nutzt dieselbe Engine wie Meeting (Kamera + Grafik + Logo + PiP, Keyi
 schaltet mehrere Kameras live und gibt das Programmbild als **HDMI-Vollbild** aus, plus
 optional die **Auto-Regie** (Shure/Sennheiser). Für Windows-Parität:
 
-**8.5.1 HDMI-Ausgang bauen (`display-helper`).** Wie der Meeting-Helper:
+**8.5.1 HDMI-Ausgang bauen (`display-helper`).** Der Ausgang nutzt **SDL2** — das muss auf
+dem Rechner vorhanden sein. Falls der Build SDL2 nicht findet: die **SDL2 „VC-Devel"**-
+Pakete (z. B. 2.32.x) von libsdl.org holen, z. B. nach `C:\SDL2` entpacken, und `SDL2.dll`
+neben die fertige Exe legen. Dann:
 ```powershell
 cd C:\dev\broadify-bridge\apps\bridge\native\display-helper
 .\build.ps1
 ```
-→ `display-helper.exe`. Der Ausgang nutzt SDL2 (plattformübergreifend), das Skript legt
-die Exe am erwarteten Ort ab.
+→ `display-helper.exe`. Das Skript legt die Exe am erwarteten Ort ab.
 
 **8.5.2 Auto-Regie** (Array-Mikrofone Shure/Sennheiser) ist reines TypeScript
 (`src/services/conference/director/…`, node net/dgram) → läuft auf Windows **ohne
