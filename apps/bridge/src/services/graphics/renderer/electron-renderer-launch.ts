@@ -53,6 +53,24 @@ export function resolveElectronBinary(): string | null {
     return process.execPath;
   }
 
+  // Node >=20 refuses to spawn .cmd shims without shell:true
+  // (CVE-2024-27980), so on Windows the real electron.exe must be used
+  // instead of the node_modules/.bin wrapper.
+  if (process.platform === "win32") {
+    const exeCandidate = path.resolve(
+      process.cwd(),
+      "..",
+      "..",
+      "node_modules",
+      "electron",
+      "dist",
+      "electron.exe",
+    );
+    if (fs.existsSync(exeCandidate)) {
+      return exeCandidate;
+    }
+  }
+
   const binaryName =
     process.platform === "win32"
       ? ELECTRON_BINARIES.win32

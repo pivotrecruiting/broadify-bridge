@@ -715,6 +715,11 @@ async function ensureSingleWindow(
     singleWindow = new BrowserWindow({
       width: renderWidth,
       height: renderHeight,
+      // Without these, Windows treats width/height as the OUTER frame size:
+      // the content area loses the title bar/border height (1080 -> 1020) and
+      // offscreen captures come out short, breaking the integer downsample.
+      useContentSize: true,
+      frame: false,
       show: false,
       transparent: true,
       paintWhenInitiallyHidden: true,
