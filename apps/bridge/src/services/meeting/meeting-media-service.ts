@@ -276,7 +276,9 @@ class MeetingMediaService {
   async renderingStatus(): Promise<Record<string, unknown>> {
     const runtimeStatus = getRuntimeStatus();
     return {
-      pdfSupported: process.platform === "darwin" && process.arch === "arm64",
+      // PDF is rendered by pdf.js + @napi-rs/canvas (cross-platform); only PPTX
+      // needs the bundled LibreOffice runtime.
+      pdfSupported: true,
       pptxSupported: runtimeStatus === "ready",
       runtimeStatus,
       renderer: "pdfjs-napi-canvas",
@@ -294,10 +296,13 @@ class MeetingMediaService {
     try {
       let asset = await this.getAsset(assetId);
       const runtimeStatus = getRuntimeStatus();
-      if (runtimeStatus !== "ready") {
+      // Only PPTX needs the bundled presentation runtime (LibreOffice) to
+      // convert to PDF first. PDF is rendered directly by pdf.js + @napi-rs/canvas,
+      // which are cross-platform, so a PDF upload works on every platform.
+      if (asset.sourceFormat === "pptx" && runtimeStatus !== "ready") {
         throw new Error(
           runtimeStatus === "unsupported_platform"
-            ? "Presentation rendering is currently supported on macOS Apple Silicon only."
+            ? "PPTX conversion needs the bundled presentation runtime (LibreOffice), which is currently macOS Apple Silicon only. Export the slides to PDF and upload that instead."
             : "The bundled presentation runtime is unavailable.",
         );
       }
