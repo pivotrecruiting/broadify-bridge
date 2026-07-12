@@ -31,6 +31,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dbghelp.h>
 #else
 #include <unistd.h>
 #endif
@@ -44,6 +45,84 @@ void signalHandler(int) {
   g_running.store(false);
 }
 
+#if defined(_WIN32)
+// Crash triage: unhandled SEH exceptions (access violations etc.) write a
+// minidump next to the executable and log the faulting address before the
+// process dies. WER LocalDumps needs admin rights, this does not.
+LONG WINAPI writeCrashDump(EXCEPTION_POINTERS *pointers) {
+  wchar_t modulePath[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+  std::wstring dumpPath(modulePath);
+  const size_t slash = dumpPath.find_last_of(L'\\');
+  dumpPath = dumpPath.substr(0, slash + 1) + L"meeting-helper-crash-" +
+             std::to_wstring(GetCurrentProcessId()) + L".dmp";
+
+  fprintf(stderr,
+          "{\"type\":\"crash\",\"code\":\"0x%08lX\",\"address\":\"%p\"}\n",
+          pointers->ExceptionRecord->ExceptionCode,
+          pointers->ExceptionRecord->ExceptionAddress);
+
+  // Symbolized stack of the crashing thread (PDB sits next to the exe in dev
+  // builds). Best-effort: any failure just leaves the minidump as evidence.
+  if (SymInitialize(GetCurrentProcess(), nullptr, TRUE)) {
+    CONTEXT context = *pointers->ContextRecord;
+    STACKFRAME64 frame{};
+    frame.AddrPC.Offset = context.Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = context.Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = context.Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+    for (int depth = 0; depth < 24; ++depth) {
+      if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(),
+                       GetCurrentThread(), &frame, &context, nullptr,
+                       SymFunctionTableAccess64, SymGetModuleBase64, nullptr) ||
+          frame.AddrPC.Offset == 0) {
+        break;
+      }
+      char symbolBuffer[sizeof(SYMBOL_INFO) + 256] = {};
+      SYMBOL_INFO *symbol = reinterpret_cast<SYMBOL_INFO *>(symbolBuffer);
+      symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+      symbol->MaxNameLen = 255;
+      DWORD64 displacement = 0;
+      HMODULE module = nullptr;
+      char moduleName[MAX_PATH] = "?";
+      if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             reinterpret_cast<LPCSTR>(frame.AddrPC.Offset),
+                             &module)) {
+        GetModuleFileNameA(module, moduleName, MAX_PATH);
+      }
+      if (SymFromAddr(GetCurrentProcess(), frame.AddrPC.Offset, &displacement,
+                      symbol)) {
+        fprintf(stderr, "  #%02d %s!%s+0x%llx\n", depth, moduleName,
+                symbol->Name, static_cast<unsigned long long>(displacement));
+      } else {
+        fprintf(stderr, "  #%02d %s+0x%llx\n", depth, moduleName,
+                static_cast<unsigned long long>(
+                    frame.AddrPC.Offset -
+                    reinterpret_cast<DWORD64>(module)));
+      }
+    }
+  }
+  fflush(stderr);
+
+  HANDLE file = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    MINIDUMP_EXCEPTION_INFORMATION info{};
+    info.ThreadId = GetCurrentThreadId();
+    info.ExceptionPointers = pointers;
+    info.ClientPointers = FALSE;
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file,
+                      MiniDumpWithIndirectlyReferencedMemory, &info, nullptr,
+                      nullptr);
+    CloseHandle(file);
+  }
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 void printEvent(const std::string &json) {
   std::cout << json << std::endl;
 }
@@ -54,6 +133,9 @@ void printEvent(const std::string &json) {
 int main(int argc, char **argv) {
   using namespace broadify::meeting;
 
+#if defined(_WIN32)
+  SetUnhandledExceptionFilter(writeCrashDump);
+#endif
   std::signal(SIGINT, signalHandler);
   std::signal(SIGTERM, signalHandler);
 
