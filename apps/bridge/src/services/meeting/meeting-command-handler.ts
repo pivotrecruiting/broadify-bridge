@@ -1,3 +1,6 @@
+import { mkdir } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   parseRelayPayload,
   EmptyPayloadSchema,
@@ -35,6 +38,19 @@ import {
   meetingFrontGraphicsManager,
 } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
+import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
+
+/** Reads `recording.active` out of a recording.* RPC result, default false. */
+function isRecordingActive(data: unknown): boolean {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  const recording = (data as Record<string, unknown>).recording;
+  if (!recording || typeof recording !== "object") {
+    return false;
+  }
+  return (recording as Record<string, unknown>).active === true;
+}
 
 export type MeetingCommandResultT = {
   success: boolean;
@@ -384,11 +400,60 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_recording_start",
       );
-      return runMeetingRpc(() => requireClient().recordingStart(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().recordingStart(options),
+      );
+      if (result.success && isRecordingActive(result.data)) {
+        streamDeckManager.setRecordingActive(true);
+      }
+      return result;
     }
 
     case "meeting_recording_stop": {
-      return runMeetingRpc(() => requireClient().recordingStop());
+      const result = await runMeetingRpc(() => requireClient().recordingStop());
+      if (result.success) {
+        streamDeckManager.setRecordingActive(false);
+      }
+      return result;
+    }
+
+    case "meeting_recording_toggle": {
+      // One-key start/stop (Stream Deck). Unlike meeting_recording_start there
+      // is no save dialog: the file goes to a fixed recordings folder with a
+      // timestamped name.
+      const client = requireClient();
+      const status = await runMeetingRpc(() => client.recordingStatus());
+      const active = isRecordingActive(status.data);
+      if (active) {
+        const stopped = await runMeetingRpc(() => client.recordingStop());
+        if (stopped.success) {
+          streamDeckManager.setRecordingActive(false);
+        }
+        return stopped;
+      }
+      const recordingsDir = path.join(
+        os.homedir(),
+        "Videos",
+        "Broadify Recordings",
+      );
+      await mkdir(recordingsDir, { recursive: true });
+      const stamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")
+        .slice(0, 19);
+      const filePath = path.join(recordingsDir, `meeting-${stamp}.mp4`);
+      const micDeviceId =
+        typeof payload?.mic_device_id === "string" ? payload.mic_device_id : "";
+      const started = await runMeetingRpc(() =>
+        client.recordingStart({
+          file_path: filePath,
+          mic_device_id: micDeviceId,
+        }),
+      );
+      if (started.success) {
+        streamDeckManager.setRecordingActive(true);
+      }
+      return started;
     }
 
     case "meeting_recording_status": {

@@ -37,6 +37,7 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_recording_pick_path",
   "meeting_recording_start",
   "meeting_recording_stop",
+  "meeting_recording_toggle",
   "meeting_recording_status",
   "meeting_keyer_get",
   "meeting_keyer_configure",

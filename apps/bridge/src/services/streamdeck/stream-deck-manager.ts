@@ -34,6 +34,9 @@ const STORE_FILE = "mapping.json";
  * Paging is handled here (more buttons than keys); the mapping persists to
  * .bridge-data so the deck lights up correctly after a bridge restart.
  */
+/** Commands whose keys render state-dependent (see renderCurrentPage). */
+const RECORDING_TOGGLE_COMMAND = "meeting_recording_toggle";
+
 export class StreamDeckManager {
   private device: StreamDeckDevice | null = null;
   private pages: StreamDeckPage[] = [{ keys: {} }];
@@ -42,6 +45,7 @@ export class StreamDeckManager {
   private executor: CommandExecutor | null = null;
   private lastError: string | null = null;
   private started = false;
+  private recordingActive = false;
 
   /** Provides the action executor (the command router). Call once at wiring. */
   setExecutor(executor: CommandExecutor): void {
@@ -97,6 +101,20 @@ export class StreamDeckManager {
   async setPage(page: number): Promise<void> {
     this.currentPage = clampPage(page, this.pages.length);
     await this.renderCurrentPage();
+  }
+
+  /**
+   * Reflects the meeting recording state on every key bound to the record
+   * toggle (red "REC" while running). Called by the meeting command handler on
+   * every start/stop/toggle, so webapp-initiated recordings update the deck
+   * too.
+   */
+  setRecordingActive(active: boolean): void {
+    if (this.recordingActive === active) {
+      return;
+    }
+    this.recordingActive = active;
+    void this.renderCurrentPage();
   }
 
   /** Simulates a key press (virtual device / test / `streamdeck_press`). */
@@ -235,8 +253,19 @@ export class StreamDeckManager {
       const binding = page.keys[key];
       try {
         if (binding) {
+          // Record-toggle keys mirror the live recording state: red "REC ●"
+          // while a recording runs, the configured style otherwise.
+          const style =
+            binding.command === RECORDING_TOGGLE_COMMAND && this.recordingActive
+              ? {
+                  ...binding.style,
+                  label: "REC ●",
+                  bgColor: "#dc2626",
+                  textColor: "#ffffff",
+                }
+              : binding.style;
           const rgba = await renderKeyImage(
-            binding.style,
+            style,
             layout.keyWidth,
             layout.keyHeight,
             { command: binding.command, payload: binding.payload },

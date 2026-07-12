@@ -116,6 +116,7 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_recording_pick_path: sideEffect("meeting_recording_pick_path", "helper_start", 130_000, 125_000, "meeting.recording.dialog", ["meeting.recording"]),
   meeting_recording_start: sideEffect("meeting_recording_start", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
   meeting_recording_stop: sideEffect("meeting_recording_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.recording", ["meeting.recording"], "after_state_check"),
+  meeting_recording_toggle: sideEffect("meeting_recording_toggle", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
   meeting_recording_status: readOnly("meeting_recording_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.recording"]),
   meeting_keyer_get: readOnly("meeting_keyer_get", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.keyer"]),
   meeting_keyer_configure: sideEffect("meeting_keyer_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.keyer", ["meeting.keyer"]),
