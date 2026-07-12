@@ -1,6 +1,8 @@
 #include "compose/compositor.h"
 #if defined(__APPLE__)
 #include "compose/metal_compositor.h"
+#elif defined(_WIN32)
+#include "compose/d3d11_compositor.h"
 #endif
 #include "util/json_utils.h"
 
@@ -1161,7 +1163,7 @@ void drawKeyedPresenterLayer(std::vector<uint8_t> &frame,
 
 
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
 namespace {
 
 int backgroundModeCode(const std::string &mode) {
@@ -1300,17 +1302,23 @@ int maskAnchorBottomFrameY(const AlphaMask &mask, uint32_t frameHeight) {
 // GPU path does not cover yet (media layer, built-in lower third) fall back
 // to the CPU compositor; the cornerbug is drawn on the CPU on top of the GPU
 // result, which matches its position as the topmost layer.
-bool tryRenderProgramFrameMetal(const Options &options,
-                                const CompositorSnapshot &snapshot,
-                                const VideoFrame *cameraFrame,
-                                const AlphaMask *cameraMask,
-                                const VideoFrame *backGraphicsFrame,
-                                const VideoFrame *frontGraphicsFrame,
-                                uint64_t frameIndex,
-                                std::vector<uint8_t> &output) {
+bool tryRenderProgramFrameGpu(const Options &options,
+                              const CompositorSnapshot &snapshot,
+                              const VideoFrame *cameraFrame,
+                              const AlphaMask *cameraMask,
+                              const VideoFrame *backGraphicsFrame,
+                              const VideoFrame *frontGraphicsFrame,
+                              uint64_t frameIndex,
+                              std::vector<uint8_t> &output) {
+#if defined(__APPLE__)
   if (!metalCompositorAvailable()) {
     return false;
   }
+#else
+  if (!d3d11CompositorAvailable()) {
+    return false;
+  }
+#endif
   if (snapshot.graphics.enabled) {
     return false;
   }
@@ -1451,9 +1459,15 @@ bool tryRenderProgramFrameMetal(const Options &options,
     }
   }
 
+#if defined(__APPLE__)
   if (!renderProgramFrameMetal(plan, output)) {
     return false;
   }
+#else
+  if (!renderProgramFrameD3D11(plan, output)) {
+    return false;
+  }
+#endif
   drawCornerbug(output, plan.width, plan.height, snapshot.cornerbug);
   return true;
 }
@@ -1506,6 +1520,15 @@ void drawCameraPipInset(std::vector<uint8_t> &output, uint32_t width,
   }
 }
 
+namespace {
+// See lastCompositorBackend(); plain pointer swap, no synchronization needed.
+const char *g_lastCompositorBackend = "cpu";
+}  // namespace
+
+const char *lastCompositorBackend() {
+  return g_lastCompositorBackend;
+}
+
 void renderProgramFrame(const Options &options,
                         const CompositorSnapshot &snapshot,
                         const VideoFrame *cameraFrame,
@@ -1515,15 +1538,21 @@ void renderProgramFrame(const Options &options,
                         const VideoFrame *cameraPipFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output) {
-#if defined(__APPLE__)
-  if (tryRenderProgramFrameMetal(
+#if defined(__APPLE__) || defined(_WIN32)
+  if (tryRenderProgramFrameGpu(
           options, snapshot, cameraFrame, cameraMask, backGraphicsFrame, frontGraphicsFrame, frameIndex, output)) {
+#if defined(__APPLE__)
+    g_lastCompositorBackend = "metal";
+#else
+    g_lastCompositorBackend = "d3d11";
+#endif
     if (cameraPipFrame != nullptr) {
       drawCameraPipInset(output, options.width, options.height, *cameraPipFrame);
     }
     return;
   }
 #endif
+  g_lastCompositorBackend = "cpu";
   VideoFrame keyedScratch;
   if (cameraFrame != nullptr && cameraMask != nullptr && !cameraMask->alpha.empty() && snapshot.keyerEnabled) {
     keyedScratch = *cameraFrame;

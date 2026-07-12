@@ -7,6 +7,9 @@
 #include "keyer/coreml_keyer.h"
 #include "keyer/keyer_chain.h"
 #include "pipeline/guided_mask_refine.h"
+#if defined(_WIN32)
+#include "compose/d3d11_compositor.h"
+#endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
 
@@ -206,7 +209,11 @@ bool liveSnapEnabled() {
 // consuming the async worker's older mask, driving mask age to zero (kills the
 // motion edge-lag). Falls back to the async path on any failure.
 bool gpuPipelineEnabled() {
-#if defined(__APPLE__)
+#if !defined(__APPLE__)
+  // The fused synchronous keyer is CoreML (macOS-only). Off here so the async
+  // MODNet worker keeps receiving frames on Windows.
+  return false;
+#else
   static const bool enabled = [] {
     // Default ON: the fused synchronous native-CoreML/GPU keyer is the production
     // path (mask age 0 -> motion edges track exactly). Kill-switch: set
@@ -215,12 +222,6 @@ bool gpuPipelineEnabled() {
     return raw == nullptr || raw[0] != '0';
   }();
   return enabled;
-#else
-  // The fused path is CoreML/Metal (Apple-only). On other platforms it MUST be
-  // compile-time false: it keeps the async MODNet worker enabled (DirectML on
-  // Windows — see the async gate below) and prevents any reference to the
-  // Apple-only CoreMLKeyer symbols, which would otherwise fail to link.
-  return false;
 #endif
 }
 
@@ -520,6 +521,19 @@ void smoothAlphaMaskEdgesGuided(AlphaMask &mask, const VideoFrame &frame) {
   mask.alpha = std::move(smoothed);
 }
 
+// The 2x joint-bilateral upsample quadruples the pixel count of every
+// downstream postprocess pass (close/erode/feather/temporal). The compositor
+// samples the mask bilinearly at any resolution, so by default small masks
+// keep their native size and get the edge-guided smoothing instead. Opt back
+// into the old upscale path with BROADIFY_MEETING_MASK_UPSCALE_2X=1.
+bool maskUpscale2xEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_MASK_UPSCALE_2X");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return enabled;
+}
+
 // Joint bilateral 2x upsampling: coarse masks (e.g. Vision "fast", 256x192)
 // are refined along the luminance edges of the camera frame before
 // postprocessing, so cheap masks produce smooth, image-aligned edges instead
@@ -534,6 +548,10 @@ void refineAlphaMaskEdges(AlphaMask &mask, const VideoFrame &frame) {
     if (mask.width < 640u) {
       smoothAlphaMaskEdgesGuided(mask, frame);
     }
+    return;
+  }
+  if (!maskUpscale2xEnabled()) {
+    smoothAlphaMaskEdgesGuided(mask, frame);
     return;
   }
 
@@ -897,7 +915,9 @@ void postprocessAlpha(AlphaMask &mask,
     dilateAlpha(mask, kMaskCloseRadiusPx);
     erodeAlpha(mask, static_cast<double>(kMaskCloseRadiusPx));
   }
+  const auto closeEnd = std::chrono::steady_clock::now();
   remapAlphaSmoothstep(mask);
+  const auto remapEnd = std::chrono::steady_clock::now();
   stabilizeAlphaEdges(mask, previousMask, settings, maskAgeMs);
   const auto dilateStart = std::chrono::steady_clock::now();
   erodeAlpha(mask, settings.maskErodePx);
@@ -905,7 +925,11 @@ void postprocessAlpha(AlphaMask &mask,
   const auto dilateEnd = std::chrono::steady_clock::now();
   featherAlpha(mask, std::min(settings.maskFeatherPx, kMaxAlphaFeatherRadiusPx));
   const auto end = std::chrono::steady_clock::now();
+  metrics.maskCloseMs = elapsedMs(start, closeEnd);
+  metrics.maskRemapMs = elapsedMs(closeEnd, remapEnd);
+  metrics.maskStabilizeMs = elapsedMs(remapEnd, dilateStart);
   metrics.maskDilateMs = elapsedMs(dilateStart, dilateEnd);
+  metrics.maskFeatherMs = elapsedMs(dilateEnd, end);
   metrics.maskPostprocessMs = elapsedMs(start, end);
 }
 
@@ -1134,17 +1158,23 @@ class AsyncKeyerWorker {
         settings.degradation = state_.degradationSettings;
         maskAgeMs = state_.keyerMetrics.maskAgeMs;
       }
+      const auto temporalStart = std::chrono::steady_clock::now();
       if (settings.temporalBlendEnabled) {
         blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
       }
+      const double temporalPreMs =
+          elapsedMs(temporalStart, std::chrono::steady_clock::now());
       postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs, keyed.status.metrics);
       // Full-frame temporal EMA against the last published mask — the core
       // anti-flicker stabilizer. Skipped when the current mask collapsed (Fix 1
       // holds the last good pair instead), so a dropout is never smeared in.
+      const auto emaStart = std::chrono::steady_clock::now();
       if (settings.temporalBlendEnabled && rawCoverage >= kMinForegroundCoverage &&
           rawCoverage <= kMaxForegroundCoverage) {
         blendAlphaEma(keyed.mask, previousMask);
       }
+      keyed.status.metrics.maskTemporalMs =
+          temporalPreMs + elapsedMs(emaStart, std::chrono::steady_clock::now());
       keyed.status.metrics.maskPostprocessMs += refineMs;
       keyed.status.metrics.maskWidth = keyed.mask.width;
       keyed.status.metrics.maskHeight = keyed.mask.height;
@@ -1702,8 +1732,18 @@ void runFramePipeline(const Options &options,
           // Guide with the live frame when we have a fresher one (motion-
           // aligned); otherwise the mask's own paired frame (still cleans the
           // edge, no beat).
-          guidedRefineMask(liveRefinedMask,
-                           fresherFrame ? latestCameraFrame : selectedPair->frame);
+          const VideoFrame &guide =
+              fresherFrame ? latestCameraFrame : selectedPair->frame;
+#if defined(_WIN32)
+          // GPU guided refine (BROADIFY_MEETING_GPU_GUIDED=1): same math on
+          // the D3D11 device; the CPU refine stays as fallback and reference.
+          if (!(d3d11GuidedRefineAvailable() &&
+                guidedRefineMaskD3D11(liveRefinedMask, guide))) {
+            guidedRefineMask(liveRefinedMask, guide);
+          }
+#else
+          guidedRefineMask(liveRefinedMask, guide);
+#endif
           // The guided snap aligns the edge but leaves it soft (bleed); sharpen
           // it into a crisp boundary in edge-live mode.
           if (edgeLiveEnabled()) {
@@ -1720,12 +1760,9 @@ void runFramePipeline(const Options &options,
 
       // Fused synchronous GPU keyer: key the CURRENT frame now (mask age 0) via
       // the native CoreML keyer, overriding the async selection. Falls back to
-      // whatever the async path chose on any failure. Apple-only: it uses the
-      // CoreML/Metal keyer (coreml_keyer.mm is entirely #if __APPLE__), so the
-      // whole block is guarded — on non-Apple gpuPipelineEnabled() is already
-      // compile-time false and this must not reference CoreMLKeyer (link error).
-#if defined(__APPLE__)
+      // whatever the async path chose on any failure.
       AlphaMask fusedMask;
+#if defined(__APPLE__)
       if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
           !latestCameraFrame.rgba.empty()) {
         static CoreMLKeyer fusedKeyer(options.modelsDir);
@@ -1743,7 +1780,9 @@ void runFramePipeline(const Options &options,
           state.staleMaskActive = false;
         }
       }
-#endif
+#else
+      (void)fusedMask;
+#endif  // __APPLE__
 
       if (shouldRenderProgram) {
         renderProgramFrame(
@@ -1807,6 +1846,7 @@ void runFramePipeline(const Options &options,
       nextFrameAt += frameInterval;
       {
         std::lock_guard<std::mutex> lock(state.mutex);
+        state.compositorBackend = lastCompositorBackend();
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);

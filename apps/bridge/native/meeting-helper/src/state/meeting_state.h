@@ -115,6 +115,8 @@ struct MeetingState {
   double edgeStabilizationStrength = 0.35;
   KeyerDegradationSettings degradationSettings;
   std::string degradationStage = "fresh";
+  // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
+  std::string compositorBackend = "cpu";
   bool staleMaskActive = false;
   std::string provider;
   std::string modelPath;

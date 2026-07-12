@@ -23,6 +23,10 @@ struct CompositorSnapshot {
 
 CompositorSnapshot copyCompositorSnapshot(const MeetingState &state);
 
+// Which backend rendered the most recent program frame ("cpu", "d3d11",
+// "metal"). Written by the program-loop thread inside renderProgramFrame.
+const char *lastCompositorBackend();
+
 // cameraMask: alpha mask belonging to cameraFrame (nullptr for passthrough).
 // The mask is applied during compositing (GPU shader or CPU fallback);
 // camera frames arrive unkeyed.

@@ -14,6 +14,11 @@ struct KeyerMetrics {
   double sessionRunMs = -1.0;
   double maskApplyMs = -1.0;
   double maskDilateMs = -1.0;
+  double maskCloseMs = -1.0;
+  double maskRemapMs = -1.0;
+  double maskStabilizeMs = -1.0;
+  double maskFeatherMs = -1.0;
+  double maskTemporalMs = -1.0;
   double maskPostprocessMs = -1.0;
   double maskAgeMs = -1.0;
   double maskAgeAvgMs = -1.0;
