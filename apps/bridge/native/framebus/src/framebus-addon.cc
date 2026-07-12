@@ -419,9 +419,14 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
     return ThrowError(env, "Failed to create shared memory");
   }
 
-  // Windows named file mappings cannot be force-unlinked while opened by another process.
-  // We always reinitialize the header to ensure deterministic writer state.
-  (void)force_recreate;
+  // Windows named file mappings cannot be force-unlinked while opened by
+  // another process. Reinitializing the header of an EXISTING section races
+  // attached readers/writers (another process may be mid-copy while the
+  // fields are rewritten -> torn slot geometry -> access violation), so an
+  // existing section is reused and validated like on Unix. Only a brand-new
+  // section, or an explicit forceRecreate, gets its header (re)initialized.
+  const bool section_already_exists = GetLastError() == ERROR_ALREADY_EXISTS;
+  initialize_header = force_recreate || !section_already_exists;
 
   void* base = MapViewOfFile(map_handle, FILE_MAP_ALL_ACCESS, 0, 0, total_size);
   if (!base) {
