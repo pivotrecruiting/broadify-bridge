@@ -352,7 +352,9 @@ jobs:
             productName: config.productName,
             artifactName: config.artifactName,
             executableName: win.executableName ?? null,
-            signExts: win.signExts ?? [],
+            nativeResourceAfterSignConfigured:
+              typeof config.afterSign === "string" &&
+              config.afterSign.endsWith("sign-windows-native-resources.cjs"),
             publisherNameConfigured:
               typeof win.publisherName === "string" && win.publisherName.trim() !== "",
             azureSignConfigured: Boolean(win.azureSignOptions),

@@ -110,7 +110,6 @@ if (Array.isArray(config.publish)) {
 }
 
 if (config.win) {
-  config.win.signExts = [".dll"];
   config.win.extraResources = [
     ...(config.win.extraResources || []),
     {
@@ -137,6 +136,14 @@ if (config.win) {
     from: "apps/bridge/native/display-helper/SDL2.dll",
     to: "native/display-helper/SDL2.dll",
   });
+
+  // electron-builder 25 signs extension-matched DLLs concurrently and does not
+  // apply that transformer to individually copied extraResources. Sign only the
+  // packaged native Windows resources in a dedicated, sequential afterSign hook.
+  if (process.platform === "win32") {
+    config.afterSign =
+      require.resolve("./scripts/sign-windows-native-resources.cjs");
+  }
 }
 
 if (config.win) {
