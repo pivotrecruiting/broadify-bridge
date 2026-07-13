@@ -49,7 +49,7 @@ Windows (Developer PowerShell):
 
 The binary is placed at:
 - macOS: `display-helper` + bundled runtime `libSDL2-2.0.0.dylib`
-- Windows: `display-helper.exe` (plus optional `SDL2.dll` copied next to it)
+- Windows: `display-helper.exe` plus required `SDL2.dll` copied next to it
 
 On macOS the bundled runtime is rewritten to `@loader_path/libSDL2-2.0.0.dylib`, so the packaged app does not depend on Homebrew paths on the target machine.
 After the rewrite, the build re-signs both the dylib and helper binary. Local builds use ad-hoc signing automatically; release builds use `APPLE_SIGNING_IDENTITY` / `CSC_NAME` when present.
@@ -73,6 +73,9 @@ BRIDGE_FRAME_FPS=60 \
   --height 1440 \
   --fps 60 \
   --display-index 0
+
+# Windows discovery without opening FrameBus/SDL output
+.\display-helper.exe --list-displays
 ```
 
 ## Arguments
@@ -84,6 +87,13 @@ BRIDGE_FRAME_FPS=60 \
 | `--height <int>` | Frame height |
 | `--fps <int>` | Target FPS (default 50) |
 | `--display-index <int>` | SDL display index (default 0) |
+| `--list-displays` | Windows only: emit active displays and DXGI modes as validated JSON |
+| `--display-device-name <name>` | Windows only: select the exact `\\.\DISPLAYn` target returned by discovery |
+
+On Windows, the Bridge uses `--list-displays` for discovery and passes the returned
+device name back with `--display-device-name`. Display discovery therefore does not
+depend on PowerShell, WMI, or WMIC. The selector is internal to the Bridge and is not
+part of the public Relay/WebApp protocol.
 
 ## Handshake
 

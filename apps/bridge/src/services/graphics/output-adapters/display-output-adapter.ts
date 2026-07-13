@@ -10,6 +10,8 @@ import { getBridgeContext } from "../../bridge-context.js";
 import { deviceCache } from "../../device-cache.js";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import { resolveDisplayHelperPath } from "../../../modules/display/display-helper.js";
+import { displayTargetRegistry } from "../../../modules/display/display-target-registry.js";
+import { OUTPUT_DEVICE_MODULE_NAMES } from "../../output-device-modules.js";
 
 type OutputPortMatchT = {
   device: DeviceDescriptorT;
@@ -81,6 +83,15 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       throw new Error("Native display helper requires BRIDGE_FRAMEBUS_NAME");
     }
     const nativeFrameRate = normalizeNativeFrameRate(config.format.fps);
+    const nativeSelector =
+      process.platform === "win32"
+        ? displayTargetRegistry.resolve(match.port.id)
+        : null;
+    if (process.platform === "win32" && !nativeSelector) {
+      throw new Error(
+        `Native Windows display selector missing for ${match.port.id}`,
+      );
+    }
 
     this.readyPromise = new Promise((resolve, reject) => {
       this.readyResolver = resolve;
@@ -99,6 +110,9 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       "--display-index",
       "0",
     ];
+    if (nativeSelector) {
+      args.push("--display-device-name", nativeSelector.deviceName);
+    }
 
     const env = { ...process.env } as Record<string, string>;
     env.BRIDGE_FRAMEBUS_NAME = frameBusName;
@@ -209,7 +223,10 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
   private async findOutputPort(
     portId: string
   ): Promise<OutputPortMatchT | null> {
-    const devices = await deviceCache.getDevices();
+    const devices = await deviceCache.getDevices(
+      false,
+      OUTPUT_DEVICE_MODULE_NAMES,
+    );
     for (const device of devices) {
       const port = device.ports.find((entry) => entry.id === portId);
       if (port) {

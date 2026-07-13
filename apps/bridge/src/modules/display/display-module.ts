@@ -1,58 +1,18 @@
 import { spawn } from "node:child_process";
-import { join } from "node:path";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import type { DeviceController, DeviceModule } from "../device-module.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
 import {
   normalizeConnectionType,
-  normalizeWindowsInstanceKey,
-  normalizeWindowsConnectionType,
-  parseCsvRows,
   parseResolution,
   parseRefreshHz,
-  parseWindowsMonitorPnpId,
 } from "./display-parse-utils.js";
 import {
   mapRawDisplaysToDevices,
-  type RawDisplayModeT,
   type RawDisplayInfoT,
 } from "./display-module-utils.js";
-
-type WindowsMonitorIdRowT = {
-  instance_name?: string;
-  active?: boolean;
-  name?: string;
-  manufacturer?: string;
-  product_code?: string;
-  serial?: string;
-};
-
-type WindowsMonitorConnectionRowT = {
-  instance_name?: string;
-  active?: boolean;
-  video_output_technology?: number;
-};
-
-type WindowsMonitorSourceModeT = {
-  width?: number;
-  height?: number;
-  refresh_numerator?: number;
-  refresh_denominator?: number;
-  interlaced?: boolean;
-  preferred?: boolean;
-};
-
-type WindowsMonitorModesRowT = {
-  instance_name?: string;
-  active?: boolean;
-  modes?: WindowsMonitorSourceModeT[] | WindowsMonitorSourceModeT;
-};
-
-type WindowsDisplayDetectorPayloadT = {
-  ids?: WindowsMonitorIdRowT[] | WindowsMonitorIdRowT;
-  connections?: WindowsMonitorConnectionRowT[] | WindowsMonitorConnectionRowT;
-  modes?: WindowsMonitorModesRowT[] | WindowsMonitorModesRowT;
-};
+import { displayTargetRegistry } from "./display-target-registry.js";
+import { listNativeWindowsDisplays } from "./windows-display-helper.js";
 
 // system_profiler output keys vary by macOS version and GPU type.
 // These key lists intentionally include multiple aliases for resilience.
@@ -95,44 +55,6 @@ const MAX_SERIAL_SEARCH_KEYS = [
   "spdisplays_display_serial-number2",
   "spdisplays_display_serial_number",
 ];
-
-const resolveWindowsSystemExe = (
-  ...relativeSegments: string[]
-): string | undefined => {
-  if (process.platform !== "win32") {
-    return undefined;
-  }
-  const systemRoot = process.env.SystemRoot || process.env.WINDIR;
-  if (!systemRoot) {
-    return undefined;
-  }
-  return join(systemRoot, "System32", ...relativeSegments);
-};
-
-const WINDOWS_POWERSHELL_PATH =
-  resolveWindowsSystemExe("WindowsPowerShell", "v1.0", "powershell.exe") ||
-  "powershell.exe";
-const WINDOWS_WMIC_PATH = resolveWindowsSystemExe("wbem", "wmic.exe") || "wmic";
-
-const WINDOWS_INTERNAL_OUTPUT_TECH_VALUES = new Set<number>([
-  -2147483648, 2147483648,
-]);
-
-const isLikelyWindowsInternalDisplay = (
-  name: string | undefined,
-  videoOutputTechnology?: number,
-): boolean => {
-  if (
-    videoOutputTechnology !== undefined &&
-    WINDOWS_INTERNAL_OUTPUT_TECH_VALUES.has(videoOutputTechnology)
-  ) {
-    return true;
-  }
-  if (name && /built-?in|internal|integrated/i.test(name)) {
-    return true;
-  }
-  return false;
-};
 
 // Prefer known keys over scanning all values to avoid false positives.
 const getStringField = (
@@ -199,48 +121,6 @@ const collectDisplays = (items: unknown[]): Record<string, unknown>[] => {
   };
   walk(items);
   return results;
-};
-
-const toObjectArray = <T>(value: T[] | T | undefined): T[] => {
-  if (!value) {
-    return [];
-  }
-  return Array.isArray(value) ? value : [value];
-};
-
-const parseWindowsDisplayModes = (
-  row: WindowsMonitorModesRowT | undefined
-): RawDisplayModeT[] => {
-  if (!row) {
-    return [];
-  }
-  return toObjectArray(row.modes).flatMap((mode) => {
-    const width = mode.width;
-    const height = mode.height;
-    const numerator = mode.refresh_numerator;
-    const denominator = mode.refresh_denominator;
-    if (
-      typeof width !== "number" ||
-      typeof height !== "number" ||
-      typeof numerator !== "number" ||
-      typeof denominator !== "number" ||
-      width <= 0 ||
-      height <= 0 ||
-      numerator <= 0 ||
-      denominator <= 0
-    ) {
-      return [];
-    }
-    return [
-      {
-        width,
-        height,
-        fps: numerator / denominator,
-        fieldDominance: mode.interlaced ? "interlaced" : "progressive",
-        preferred: mode.preferred === true,
-      },
-    ];
-  });
 };
 
 // Security: this spawns a fixed, local system_profiler command with a hard timeout.
@@ -324,352 +204,6 @@ const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
   });
 };
 
-// Security: fixed PowerShell/CIM queries only, no user-controlled arguments, bounded runtime.
-const getWindowsDisplays = async (): Promise<RawDisplayInfoT[]> => {
-  const powerShellResult = await getWindowsDisplaysViaPowerShell();
-  if (powerShellResult.ok) {
-    return powerShellResult.displays;
-  }
-
-  getBridgeContext().logger.warn(
-    `[DisplayDetector] Falling back to WMIC for Windows display detection (reason: ${powerShellResult.reason})`,
-  );
-  return getWindowsDisplaysViaWmic();
-};
-
-type WindowsDisplayDetectionResultT = {
-  ok: boolean;
-  displays: RawDisplayInfoT[];
-  reason?: string;
-};
-
-const getWindowsDisplaysViaPowerShell =
-  async (): Promise<WindowsDisplayDetectionResultT> => {
-    return new Promise((resolve) => {
-      const psCommand = `
-      $ErrorActionPreference = 'SilentlyContinue'
-      function Convert-WmiChars([object]$Values) {
-        if ($null -eq $Values) { return '' }
-        return (-join ($Values | Where-Object { $_ -ne $null -and [int]$_ -ne 0 } | ForEach-Object { [char][int]$_ }))
-      }
-      $ids = @(
-        Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorID |
-        ForEach-Object {
-          [PSCustomObject]@{
-            instance_name = [string]$_.InstanceName
-            active = [bool]$_.Active
-            name = (Convert-WmiChars $_.UserFriendlyName)
-            manufacturer = (Convert-WmiChars $_.ManufacturerName)
-            product_code = (Convert-WmiChars $_.ProductCodeID)
-            serial = (Convert-WmiChars $_.SerialNumberID)
-          }
-        }
-      )
-      $connections = @(
-        Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorConnectionParams |
-        ForEach-Object {
-          [PSCustomObject]@{
-            instance_name = [string]$_.InstanceName
-            active = [bool]$_.Active
-            video_output_technology = [long]$_.VideoOutputTechnology
-          }
-        }
-      )
-      $mode_sets = @(
-        Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorListedSupportedSourceModes |
-        ForEach-Object {
-          $preferred_index = [int]$_.PreferredMonitorSourceModeIndex
-          $source_modes = @($_.MonitorSourceModes)
-          $mode_index = 0
-          $serialized_modes = @(
-            foreach ($mode in $source_modes) {
-              [PSCustomObject]@{
-                width = [int]$mode.HorizontalActivePixels
-                height = [int]$mode.VerticalActivePixels
-                refresh_numerator = [int]$mode.VerticalRefreshRateNumerator
-                refresh_denominator = [int]$mode.VerticalRefreshRateDenominator
-                interlaced = [bool]$mode.IsInterlaced
-                preferred = ($mode_index -eq $preferred_index)
-              }
-              $mode_index++
-            }
-          )
-          [PSCustomObject]@{
-            instance_name = [string]$_.InstanceName
-            active = [bool]$_.Active
-            modes = $serialized_modes
-          }
-        }
-      )
-      [PSCustomObject]@{
-        ids = $ids
-        connections = $connections
-        modes = $mode_sets
-      } | ConvertTo-Json -Compress -Depth 6
-    `;
-
-      const process = spawn(
-        WINDOWS_POWERSHELL_PATH,
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          psCommand,
-        ],
-        { windowsHide: true },
-      );
-      let stdout = "";
-      let stderr = "";
-      const timeout = setTimeout(() => {
-        process.kill("SIGTERM");
-        resolve({ ok: false, displays: [], reason: "timeout" });
-      }, 5000);
-
-      process.stdout.on("data", (data) => {
-        stdout += data.toString();
-      });
-
-      process.stderr.on("data", (data) => {
-        stderr += data.toString();
-      });
-
-      process.on("close", (code) => {
-        clearTimeout(timeout);
-        try {
-          if (code !== 0 && !stdout.trim()) {
-            const stderrPreview = stderr.trim().slice(0, 300);
-            getBridgeContext().logger.warn(
-              `[DisplayDetector] PowerShell exited with code ${code}${
-                stderrPreview ? `: ${stderrPreview}` : ""
-              }`,
-            );
-            resolve({
-              ok: false,
-              displays: [],
-              reason: `powershell_exit_${code ?? "unknown"}`,
-            });
-            return;
-          }
-
-          const json = JSON.parse(stdout) as WindowsDisplayDetectorPayloadT;
-          const idRows = toObjectArray(json.ids);
-          const connectionRows = toObjectArray(json.connections);
-          const modeRows = toObjectArray(json.modes);
-
-          const connectionByInstance = new Map<
-            string,
-            WindowsMonitorConnectionRowT
-          >();
-          for (const row of connectionRows) {
-            if (!row.instance_name || row.active === false) {
-              continue;
-            }
-            connectionByInstance.set(
-              normalizeWindowsInstanceKey(row.instance_name),
-              row,
-            );
-          }
-
-          const modesByInstance = new Map<string, WindowsMonitorModesRowT>();
-          for (const row of modeRows) {
-            if (!row.instance_name) {
-              continue;
-            }
-            modesByInstance.set(
-              normalizeWindowsInstanceKey(row.instance_name),
-              row,
-            );
-          }
-
-          const results: RawDisplayInfoT[] = [];
-          for (const row of idRows) {
-            if (!row.instance_name || row.active === false) {
-              continue;
-            }
-
-            const instanceKey = normalizeWindowsInstanceKey(row.instance_name);
-            const connection = connectionByInstance.get(instanceKey);
-            const modes = parseWindowsDisplayModes(
-              modesByInstance.get(instanceKey),
-            );
-            const videoOutputTechnology =
-              typeof connection?.video_output_technology === "number"
-                ? connection.video_output_technology
-                : undefined;
-
-            const name = row.name?.trim() || "External Display";
-            if (isLikelyWindowsInternalDisplay(name, videoOutputTechnology)) {
-              continue;
-            }
-
-            let connectionType = normalizeWindowsConnectionType(
-              videoOutputTechnology,
-            );
-            if (!connectionType) {
-              connectionType = "displayport";
-              getBridgeContext().logger.warn(
-                `[DisplayDetector] Missing/unknown Windows connection type for "${name}", falling back to displayport`,
-              );
-            }
-
-            if (modes.length === 0) {
-              getBridgeContext().logger.warn(
-                `[DisplayDetector] No supported Windows display modes reported for "${name}"`,
-              );
-            }
-
-            results.push({
-              name,
-              connectionType,
-              vendorId: row.manufacturer?.trim() || undefined,
-              productId: row.product_code?.trim() || undefined,
-              serial: row.serial?.trim() || undefined,
-              modes,
-            });
-          }
-
-          resolve({ ok: true, displays: results });
-        } catch (error) {
-          getBridgeContext().logger.warn(
-            `[DisplayDetector] Failed to parse Windows monitor output: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          resolve({ ok: false, displays: [], reason: "parse_error" });
-        }
-      });
-
-      process.on("error", (error) => {
-        clearTimeout(timeout);
-        getBridgeContext().logger.warn(
-          `[DisplayDetector] Failed to run PowerShell for Windows display detection (${WINDOWS_POWERSHELL_PATH}): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        resolve({
-          ok: false,
-          displays: [],
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      });
-    });
-  };
-
-// Security: fixed WMIC query only, no user-controlled arguments, bounded runtime.
-const getWindowsDisplaysViaWmic = async (): Promise<RawDisplayInfoT[]> => {
-  return new Promise((resolve) => {
-    const process = spawn(
-      WINDOWS_WMIC_PATH,
-      [
-        "path",
-        "Win32_DesktopMonitor",
-        "get",
-        "Name,PNPDeviceID,Status",
-        "/format:csv",
-      ],
-      { windowsHide: true },
-    );
-
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      process.kill("SIGTERM");
-      resolve([]);
-    }, 5000);
-
-    process.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    process.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    process.on("close", (code) => {
-      clearTimeout(timeout);
-
-      if (code !== 0 && !stdout.trim()) {
-        const stderrPreview = stderr.trim().slice(0, 300);
-        getBridgeContext().logger.warn(
-          `[DisplayDetector] WMIC exited with code ${code}${
-            stderrPreview ? `: ${stderrPreview}` : ""
-          }`,
-        );
-        resolve([]);
-        return;
-      }
-
-      try {
-        const rows = parseCsvRows(stdout);
-        const seen = new Set<string>();
-        const results: RawDisplayInfoT[] = [];
-
-        for (const row of rows) {
-          const pnpDeviceId = row.PNPDeviceID?.trim();
-          if (
-            !pnpDeviceId ||
-            !pnpDeviceId.toUpperCase().startsWith("DISPLAY\\")
-          ) {
-            continue;
-          }
-
-          const status = row.Status?.trim();
-          if (status && status.toUpperCase() !== "OK") {
-            continue;
-          }
-
-          const name = row.Name?.trim() || "External Display";
-          if (isLikelyWindowsInternalDisplay(name)) {
-            continue;
-          }
-
-          const uniqueKey = `${name}|${pnpDeviceId}`;
-          if (seen.has(uniqueKey)) {
-            continue;
-          }
-          seen.add(uniqueKey);
-
-          const { vendorId, productId } = parseWindowsMonitorPnpId(pnpDeviceId);
-          results.push({
-            name,
-            connectionType: "displayport",
-            vendorId,
-            productId,
-          });
-        }
-
-        if (results.length > 0) {
-          getBridgeContext().logger.warn(
-            `[DisplayDetector] Windows display detection used WMIC fallback (${results.length} display(s), connection type defaults to displayport)`,
-          );
-        }
-
-        resolve(results);
-      } catch (error) {
-        getBridgeContext().logger.warn(
-          `[DisplayDetector] Failed to parse WMIC Windows monitor output: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        resolve([]);
-      }
-    });
-
-    process.on("error", (error) => {
-      clearTimeout(timeout);
-      getBridgeContext().logger.warn(
-        `[DisplayDetector] Failed to run WMIC for Windows display detection (${WINDOWS_WMIC_PATH}): ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      resolve([]);
-    });
-  });
-};
-
 // Placeholder controller for parity with other device modules.
 class DisplayController implements DeviceController {
   constructor(private readonly deviceId: string) {}
@@ -704,6 +238,7 @@ class DisplayController implements DeviceController {
  */
 export class DisplayModule implements DeviceModule {
   readonly name = "display";
+  readonly detectionTimeoutMs = 3_000;
 
   async detect(): Promise<DeviceDescriptorT[]> {
     if (process.platform === "darwin") {
@@ -714,10 +249,20 @@ export class DisplayModule implements DeviceModule {
     }
 
     if (process.platform === "win32") {
-      const rawDisplays = await getWindowsDisplays();
-      return mapRawDisplaysToDevices(rawDisplays, {
+      const rawDisplays = await listNativeWindowsDisplays();
+      const devices = mapRawDisplaysToDevices(rawDisplays, {
         outputRuntimeSupported: true,
       });
+      displayTargetRegistry.replace(
+        devices.flatMap((device, index) => {
+          const nativeSelector = rawDisplays[index]?.nativeSelector;
+          const portId = device.ports[0]?.id;
+          return nativeSelector && portId
+            ? [[portId, { deviceName: nativeSelector }] as const]
+            : [];
+        }),
+      );
+      return devices;
     }
 
     return [];

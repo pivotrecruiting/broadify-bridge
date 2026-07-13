@@ -1,13 +1,9 @@
 import {
   sanitizeIdPart,
   normalizeConnectionType,
-  normalizeWindowsInstanceKey,
   normalizeWindowsConnectionType,
-  parseCsvLine,
-  parseCsvRows,
   parseResolution,
   parseRefreshHz,
-  parseWindowsMonitorPnpId,
 } from "./display-parse-utils.js";
 
 describe("display-parse-utils", () => {
@@ -43,16 +39,6 @@ describe("display-parse-utils", () => {
     });
   });
 
-  describe("normalizeWindowsInstanceKey", () => {
-    it("trims and lowercases", () => {
-      expect(normalizeWindowsInstanceKey("  FOO  ")).toBe("foo");
-    });
-
-    it("strips trailing _N", () => {
-      expect(normalizeWindowsInstanceKey("Monitor_0")).toBe("monitor");
-    });
-  });
-
   describe("normalizeWindowsConnectionType", () => {
     it("returns hdmi for values 5 and 6", () => {
       expect(normalizeWindowsConnectionType(5)).toBe("hdmi");
@@ -67,35 +53,6 @@ describe("display-parse-utils", () => {
     it("returns null for unknown or invalid", () => {
       expect(normalizeWindowsConnectionType(99)).toBeNull();
       expect(normalizeWindowsConnectionType(undefined)).toBeNull();
-    });
-  });
-
-  describe("parseCsvRows", () => {
-    it("parses CSV with header and data rows", () => {
-      const csv = "Name,PNPDeviceID,Status\nMonitor1,DISPLAY\\ABC1234,OK\nMonitor2,DISPLAY\\DEF5678,OK";
-      const rows = parseCsvRows(csv);
-      expect(rows).toHaveLength(2);
-      expect(rows[0]).toEqual({ Name: "Monitor1", PNPDeviceID: "DISPLAY\\ABC1234", Status: "OK" });
-      expect(rows[1]).toEqual({ Name: "Monitor2", PNPDeviceID: "DISPLAY\\DEF5678", Status: "OK" });
-    });
-
-    it("returns empty array for fewer than 2 lines", () => {
-      expect(parseCsvRows("")).toEqual([]);
-      expect(parseCsvRows("HeaderOnly")).toEqual([]);
-    });
-  });
-
-  describe("parseCsvLine", () => {
-    it("splits on comma", () => {
-      expect(parseCsvLine("a,b,c")).toEqual(["a", "b", "c"]);
-    });
-
-    it("handles quoted fields with comma", () => {
-      expect(parseCsvLine('a,"b,c",d')).toEqual(["a", "b,c", "d"]);
-    });
-
-    it("handles escaped quote in quoted field", () => {
-      expect(parseCsvLine('"a""b"')).toEqual(['a"b']);
     });
   });
 
@@ -123,17 +80,4 @@ describe("display-parse-utils", () => {
     });
   });
 
-  describe("parseWindowsMonitorPnpId", () => {
-    it("extracts vendor and product from DISPLAY format", () => {
-      expect(parseWindowsMonitorPnpId("DISPLAY\\ABC1234")).toEqual({
-        vendorId: "ABC",
-        productId: "1234",
-      });
-    });
-
-    it("returns empty for invalid format", () => {
-      expect(parseWindowsMonitorPnpId("invalid")).toEqual({});
-      expect(parseWindowsMonitorPnpId(undefined)).toEqual({});
-    });
-  });
 });

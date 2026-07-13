@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { DisplayVideoOutputAdapter } from "./display-output-adapter.js";
+import { displayTargetRegistry } from "../../../modules/display/display-target-registry.js";
 
 const mockLogger = {
   debug: jest.fn(),
@@ -131,6 +132,7 @@ describe("DisplayVideoOutputAdapter", () => {
       emitExit(lastSpawnedChild, 0, null);
     }
     await adapter.stop();
+    displayTargetRegistry.clear();
     lastSpawnedChild = null;
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
     process.env = originalEnv;
@@ -572,6 +574,9 @@ describe("DisplayVideoOutputAdapter", () => {
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      displayTargetRegistry.replace([
+        ["display-1-hdmi", { deviceName: "\\\\.\\DISPLAY2" }],
+      ]);
       const child = createMockChild();
       setSpawnChild(child);
 
@@ -587,6 +592,14 @@ describe("DisplayVideoOutputAdapter", () => {
       await configurePromise;
 
       expect(mockAccess).toHaveBeenCalledWith("/tmp/display-helper", 0);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "/tmp/display-helper",
+        expect.arrayContaining([
+          "--display-device-name",
+          "\\\\.\\DISPLAY2",
+        ]),
+        expect.any(Object),
+      );
     });
 
     it("handles ready message split across data chunks", async () => {

@@ -19,9 +19,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -29,6 +34,7 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dxgi1_2.h>
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -39,6 +45,384 @@
 namespace {
 
 std::atomic<bool> gShouldExit{false};
+
+#if defined(_WIN32)
+struct WindowsDisplayMode {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t refreshNumerator = 0;
+  uint32_t refreshDenominator = 1;
+  bool interlaced = false;
+  bool preferred = false;
+};
+
+struct WindowsDisplayInfo {
+  std::string deviceName;
+  std::string monitorDevicePath;
+  std::string friendlyName;
+  std::string adapterLuid;
+  uint32_t targetId = 0;
+  int64_t outputTechnology = 0;
+  int32_t x = 0;
+  int32_t y = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  bool primary = false;
+  std::vector<WindowsDisplayMode> modes;
+};
+
+std::string wideToUtf8(const wchar_t* value) {
+  if (!value || value[0] == L'\0') {
+    return std::string();
+  }
+  const int required = WideCharToMultiByte(
+      CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, nullptr, 0, nullptr, nullptr);
+  if (required <= 1) {
+    return std::string();
+  }
+  std::string output(static_cast<size_t>(required), '\0');
+  WideCharToMultiByte(
+      CP_UTF8,
+      WC_ERR_INVALID_CHARS,
+      value,
+      -1,
+      output.data(),
+      required,
+      nullptr,
+      nullptr);
+  output.pop_back();
+  return output;
+}
+
+std::string jsonEscape(const std::string& value) {
+  std::ostringstream output;
+  for (const unsigned char ch : value) {
+    switch (ch) {
+      case '"': output << "\\\""; break;
+      case '\\': output << "\\\\"; break;
+      case '\b': output << "\\b"; break;
+      case '\f': output << "\\f"; break;
+      case '\n': output << "\\n"; break;
+      case '\r': output << "\\r"; break;
+      case '\t': output << "\\t"; break;
+      default:
+        if (ch < 0x20) {
+          const char hex[] = "0123456789abcdef";
+          output << "\\u00" << hex[(ch >> 4) & 0x0f] << hex[ch & 0x0f];
+        } else {
+          output << static_cast<char>(ch);
+        }
+    }
+  }
+  return output.str();
+}
+
+std::string luidToString(const LUID& luid) {
+  std::ostringstream output;
+  output << std::hex << std::setfill('0')
+         << std::setw(8) << static_cast<uint32_t>(luid.HighPart)
+         << ":" << std::setw(8) << luid.LowPart;
+  return output.str();
+}
+
+bool queryActiveDisplayConfig(
+    std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+    std::vector<DISPLAYCONFIG_MODE_INFO>& modes,
+    std::string& error) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    UINT32 pathCount = 0;
+    UINT32 modeCount = 0;
+    LONG status = GetDisplayConfigBufferSizes(
+        QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
+    if (status != ERROR_SUCCESS) {
+      error = "GetDisplayConfigBufferSizes failed: " + std::to_string(status);
+      return false;
+    }
+    paths.resize(pathCount);
+    modes.resize(modeCount);
+    status = QueryDisplayConfig(
+        QDC_ONLY_ACTIVE_PATHS,
+        &pathCount,
+        paths.data(),
+        &modeCount,
+        modes.data(),
+        nullptr);
+    if (status == ERROR_INSUFFICIENT_BUFFER) {
+      continue;
+    }
+    if (status != ERROR_SUCCESS) {
+      error = "QueryDisplayConfig failed: " + std::to_string(status);
+      return false;
+    }
+    paths.resize(pathCount);
+    modes.resize(modeCount);
+    return true;
+  }
+  error = "QueryDisplayConfig topology changed repeatedly";
+  return false;
+}
+
+bool getDxgiOutput(
+    const std::wstring& deviceName,
+    IDXGIOutput** matchedOutput,
+    DXGI_OUTPUT_DESC* matchedDescription) {
+  *matchedOutput = nullptr;
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+    return false;
+  }
+
+  bool found = false;
+  for (UINT adapterIndex = 0; !found; ++adapterIndex) {
+    IDXGIAdapter1* adapter = nullptr;
+    if (factory->EnumAdapters1(adapterIndex, &adapter) == DXGI_ERROR_NOT_FOUND) {
+      break;
+    }
+    if (!adapter) {
+      continue;
+    }
+    for (UINT outputIndex = 0; !found; ++outputIndex) {
+      IDXGIOutput* output = nullptr;
+      if (adapter->EnumOutputs(outputIndex, &output) == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (!output) {
+        continue;
+      }
+      DXGI_OUTPUT_DESC description{};
+      if (SUCCEEDED(output->GetDesc(&description)) &&
+          deviceName == description.DeviceName) {
+        *matchedOutput = output;
+        if (matchedDescription) {
+          *matchedDescription = description;
+        }
+        found = true;
+      } else {
+        output->Release();
+      }
+    }
+    adapter->Release();
+  }
+  factory->Release();
+  return found;
+}
+
+void appendDxgiModes(
+    const std::wstring& deviceName,
+    WindowsDisplayInfo& display,
+    const DISPLAYCONFIG_TARGET_PREFERRED_MODE* preferredMode) {
+  IDXGIOutput* output = nullptr;
+  DXGI_OUTPUT_DESC description{};
+  if (!getDxgiOutput(deviceName, &output, &description) || !output) {
+    return;
+  }
+
+  display.x = description.DesktopCoordinates.left;
+  display.y = description.DesktopCoordinates.top;
+  display.width = static_cast<uint32_t>(
+      std::max<LONG>(0, description.DesktopCoordinates.right - description.DesktopCoordinates.left));
+  display.height = static_cast<uint32_t>(
+      std::max<LONG>(0, description.DesktopCoordinates.bottom - description.DesktopCoordinates.top));
+  display.primary = display.x == 0 && display.y == 0;
+
+  IDXGIOutput1* output1 = nullptr;
+  if (FAILED(output->QueryInterface(
+          __uuidof(IDXGIOutput1), reinterpret_cast<void**>(&output1))) ||
+      !output1) {
+    output->Release();
+    return;
+  }
+
+  UINT count = 0;
+  const UINT flags = DXGI_ENUM_MODES_INTERLACED | DXGI_ENUM_MODES_SCALING;
+  HRESULT status = output1->GetDisplayModeList1(
+      DXGI_FORMAT_R8G8B8A8_UNORM, flags, &count, nullptr);
+  if (SUCCEEDED(status) && count > 0 && count <= 4096) {
+    std::vector<DXGI_MODE_DESC1> descriptions(count);
+    status = output1->GetDisplayModeList1(
+        DXGI_FORMAT_R8G8B8A8_UNORM, flags, &count, descriptions.data());
+    if (SUCCEEDED(status)) {
+      std::unordered_set<std::string> seen;
+      for (const auto& mode : descriptions) {
+        if (mode.Width == 0 || mode.Height == 0 ||
+            mode.RefreshRate.Numerator == 0 || mode.RefreshRate.Denominator == 0) {
+          continue;
+        }
+        const bool interlaced =
+            mode.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_UPPER_FIELD_FIRST ||
+            mode.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_LOWER_FIELD_FIRST;
+        const std::string key =
+            std::to_string(mode.Width) + "x" + std::to_string(mode.Height) + "@" +
+            std::to_string(mode.RefreshRate.Numerator) + "/" +
+            std::to_string(mode.RefreshRate.Denominator) + (interlaced ? "i" : "p");
+        if (!seen.insert(key).second) {
+          continue;
+        }
+        bool preferred = false;
+        if (preferredMode) {
+          const auto& signal = preferredMode->targetMode.targetVideoSignalInfo;
+          preferred =
+              preferredMode->width == mode.Width &&
+              preferredMode->height == mode.Height &&
+              signal.vSyncFreq.Numerator == mode.RefreshRate.Numerator &&
+              signal.vSyncFreq.Denominator == mode.RefreshRate.Denominator;
+        }
+        display.modes.push_back({
+            mode.Width,
+            mode.Height,
+            mode.RefreshRate.Numerator,
+            mode.RefreshRate.Denominator,
+            interlaced,
+            preferred,
+        });
+        if (display.modes.size() >= 512) {
+          break;
+        }
+      }
+    }
+  }
+
+  output1->Release();
+  output->Release();
+}
+
+bool listWindowsDisplays(std::vector<WindowsDisplayInfo>& displays, std::string& error) {
+  std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+  std::vector<DISPLAYCONFIG_MODE_INFO> configModes;
+  if (!queryActiveDisplayConfig(paths, configModes, error)) {
+    return false;
+  }
+
+  for (const auto& path : paths) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName{};
+    sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    sourceName.header.size = sizeof(sourceName);
+    sourceName.header.adapterId = path.sourceInfo.adapterId;
+    sourceName.header.id = path.sourceInfo.id;
+    if (DisplayConfigGetDeviceInfo(&sourceName.header) != ERROR_SUCCESS ||
+        sourceName.viewGdiDeviceName[0] == L'\0') {
+      continue;
+    }
+
+    DISPLAYCONFIG_TARGET_DEVICE_NAME targetName{};
+    targetName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+    targetName.header.size = sizeof(targetName);
+    targetName.header.adapterId = path.targetInfo.adapterId;
+    targetName.header.id = path.targetInfo.id;
+    if (DisplayConfigGetDeviceInfo(&targetName.header) != ERROR_SUCCESS) {
+      continue;
+    }
+
+    DISPLAYCONFIG_TARGET_PREFERRED_MODE preferredMode{};
+    preferredMode.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_PREFERRED_MODE;
+    preferredMode.header.size = sizeof(preferredMode);
+    preferredMode.header.adapterId = path.targetInfo.adapterId;
+    preferredMode.header.id = path.targetInfo.id;
+    const bool hasPreferredMode =
+        DisplayConfigGetDeviceInfo(&preferredMode.header) == ERROR_SUCCESS;
+
+    WindowsDisplayInfo display;
+    display.deviceName = wideToUtf8(sourceName.viewGdiDeviceName);
+    display.monitorDevicePath = wideToUtf8(targetName.monitorDevicePath);
+    display.friendlyName = wideToUtf8(targetName.monitorFriendlyDeviceName);
+    if (display.friendlyName.empty()) {
+      display.friendlyName = display.deviceName;
+    }
+    display.adapterLuid = luidToString(path.targetInfo.adapterId);
+    display.targetId = path.targetInfo.id;
+    display.outputTechnology = static_cast<int64_t>(path.targetInfo.outputTechnology);
+    appendDxgiModes(
+        sourceName.viewGdiDeviceName,
+        display,
+        hasPreferredMode ? &preferredMode : nullptr);
+
+    if (display.modes.empty() && path.targetInfo.refreshRate.Numerator > 0 &&
+        path.targetInfo.refreshRate.Denominator > 0) {
+      uint32_t fallbackWidth = display.width;
+      uint32_t fallbackHeight = display.height;
+      if (hasPreferredMode && (fallbackWidth == 0 || fallbackHeight == 0)) {
+        fallbackWidth = preferredMode.width;
+        fallbackHeight = preferredMode.height;
+      }
+      if (fallbackWidth > 0 && fallbackHeight > 0) {
+        display.modes.push_back({
+            fallbackWidth,
+            fallbackHeight,
+            path.targetInfo.refreshRate.Numerator,
+            path.targetInfo.refreshRate.Denominator,
+            false,
+            true,
+        });
+      }
+    }
+    displays.push_back(std::move(display));
+  }
+  return true;
+}
+
+void writeWindowsDisplayList(const std::vector<WindowsDisplayInfo>& displays) {
+  std::cout << "{\"type\":\"display_list\",\"version\":1,\"displays\":[";
+  for (size_t displayIndex = 0; displayIndex < displays.size(); ++displayIndex) {
+    if (displayIndex > 0) std::cout << ',';
+    const auto& display = displays[displayIndex];
+    std::cout
+        << "{\"device_name\":\"" << jsonEscape(display.deviceName)
+        << "\",\"monitor_device_path\":\"" << jsonEscape(display.monitorDevicePath)
+        << "\",\"friendly_name\":\"" << jsonEscape(display.friendlyName)
+        << "\",\"adapter_luid\":\"" << jsonEscape(display.adapterLuid)
+        << "\",\"target_id\":" << display.targetId
+        << ",\"output_technology\":" << display.outputTechnology
+        << ",\"x\":" << display.x
+        << ",\"y\":" << display.y
+        << ",\"width\":" << display.width
+        << ",\"height\":" << display.height
+        << ",\"primary\":" << (display.primary ? "true" : "false")
+        << ",\"modes\":[";
+    for (size_t modeIndex = 0; modeIndex < display.modes.size(); ++modeIndex) {
+      if (modeIndex > 0) std::cout << ',';
+      const auto& mode = display.modes[modeIndex];
+      std::cout
+          << "{\"width\":" << mode.width
+          << ",\"height\":" << mode.height
+          << ",\"refresh_numerator\":" << mode.refreshNumerator
+          << ",\"refresh_denominator\":" << mode.refreshDenominator
+          << ",\"interlaced\":" << (mode.interlaced ? "true" : "false")
+          << ",\"preferred\":" << (mode.preferred ? "true" : "false")
+          << '}';
+    }
+    std::cout << "]}";
+  }
+  std::cout << "]}" << std::endl;
+}
+
+bool resolveWindowsDisplayBounds(const std::string& deviceName, RECT& bounds) {
+  if (deviceName.empty()) {
+    return false;
+  }
+  const int wideLength = MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, deviceName.c_str(), -1, nullptr, 0);
+  if (wideLength <= 1) {
+    return false;
+  }
+  std::wstring wideName(static_cast<size_t>(wideLength), L'\0');
+  MultiByteToWideChar(
+      CP_UTF8,
+      MB_ERR_INVALID_CHARS,
+      deviceName.c_str(),
+      -1,
+      wideName.data(),
+      wideLength);
+  wideName.pop_back();
+  IDXGIOutput* output = nullptr;
+  DXGI_OUTPUT_DESC description{};
+  if (!getDxgiOutput(wideName, &output, &description) || !output) {
+    return false;
+  }
+  bounds = description.DesktopCoordinates;
+  output->Release();
+  return true;
+}
+#endif
 
 struct FrameBusReader {
 #if defined(_WIN32)
@@ -220,10 +604,12 @@ void signalHandler(int) {
 
 int main(int argc, char* argv[]) {
   std::string frameBusName;
+  std::string displayDeviceName;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t fps = 50;
   int displayIndex = 0;
+  bool listDisplays = false;
 
   // Parse CLI args
   for (int i = 1; i < argc; ++i) {
@@ -238,7 +624,27 @@ int main(int argc, char* argv[]) {
       fps = static_cast<uint32_t>(std::atoi(argv[++i]));
     } else if (arg == "--display-index" && i + 1 < argc) {
       displayIndex = std::atoi(argv[++i]);
+    } else if (arg == "--display-device-name" && i + 1 < argc) {
+      displayDeviceName = argv[++i];
+    } else if (arg == "--list-displays") {
+      listDisplays = true;
     }
+  }
+
+  if (listDisplays) {
+#if defined(_WIN32)
+    std::vector<WindowsDisplayInfo> displays;
+    std::string error;
+    if (!listWindowsDisplays(displays, error)) {
+      std::cerr << "Display discovery failed: " << error << std::endl;
+      return 1;
+    }
+    writeWindowsDisplayList(displays);
+    return 0;
+#else
+    std::cerr << "Display discovery is only available on Windows" << std::endl;
+    return 1;
+#endif
   }
 
   // Fallback to env
@@ -305,11 +711,49 @@ int main(int argc, char* argv[]) {
   const int matchWidth = matchWidthEnv ? std::atoi(matchWidthEnv) : 0;
   const int matchHeight = matchHeightEnv ? std::atoi(matchHeightEnv) : 0;
   const int numDisplays = SDL_GetNumVideoDisplays();
+  if (numDisplays <= 0) {
+    std::cerr << "No SDL displays available: " << SDL_GetError() << std::endl;
+    SDL_Quit();
+    closeFrameBusReader(reader);
+    return 1;
+  }
   if (displayIndex < 0 || displayIndex >= numDisplays) {
     displayIndex = 0;
   }
   bool matchedByName = false;
-  if (!matchName.empty()) {
+#if defined(_WIN32)
+  if (!displayDeviceName.empty()) {
+    RECT nativeBounds{};
+    if (!resolveWindowsDisplayBounds(displayDeviceName, nativeBounds)) {
+      std::cerr << "Selected Windows display device was not found" << std::endl;
+      SDL_Quit();
+      closeFrameBusReader(reader);
+      return 1;
+    }
+    bool matchedNativeDisplay = false;
+    for (int i = 0; i < numDisplays; ++i) {
+      SDL_Rect bounds;
+      if (SDL_GetDisplayBounds(i, &bounds) != 0) {
+        continue;
+      }
+      if (bounds.x == nativeBounds.left && bounds.y == nativeBounds.top &&
+          bounds.w == nativeBounds.right - nativeBounds.left &&
+          bounds.h == nativeBounds.bottom - nativeBounds.top) {
+        displayIndex = i;
+        matchedNativeDisplay = true;
+        break;
+      }
+    }
+    if (!matchedNativeDisplay) {
+      std::cerr << "Selected Windows display could not be mapped to SDL" << std::endl;
+      SDL_Quit();
+      closeFrameBusReader(reader);
+      return 1;
+    }
+    matchedByName = true;
+  }
+#endif
+  if (!matchedByName && !matchName.empty()) {
     std::string matchLower = matchName;
     std::transform(matchLower.begin(), matchLower.end(), matchLower.begin(), ::tolower);
     for (int i = 0; i < numDisplays; ++i) {

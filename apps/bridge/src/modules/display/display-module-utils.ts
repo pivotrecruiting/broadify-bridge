@@ -8,6 +8,8 @@ import { sanitizeIdPart } from "./display-parse-utils.js";
 export type RawDisplayInfoT = {
   name: string;
   connectionType: PortDescriptorT["type"];
+  stableId?: string;
+  nativeSelector?: string;
   vendorId?: string;
   productId?: string;
   serial?: string;
@@ -114,8 +116,9 @@ export const mapRawDisplaysToDevices = (
       display.productId ? sanitizeIdPart(display.productId) : "",
       display.serial ? sanitizeIdPart(display.serial) : "",
     ].filter(Boolean);
-    const baseId =
-      idParts.length > 0
+    const baseId = display.stableId
+      ? `display-${sanitizeIdPart(display.stableId)}`
+      : idParts.length > 0
         ? `display-${idParts.join("-")}`
         : `display-${sanitizeIdPart(display.name)}-${index}`;
     let deviceId = baseId;
