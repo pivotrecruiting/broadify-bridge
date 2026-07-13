@@ -144,4 +144,11 @@ if (-not (Test-Path $runtimeDll) -or (Get-Item $runtimeDll).Length -le 0) {
 }
 Write-Host "[DisplayHelper] Copied SDL2 runtime DLL to $runtimeDll"
 
+$repoRoot = (Resolve-Path (Join-Path $rootDir "..\..\..\..")).Path
+$selfTestScript = Join-Path $repoRoot "scripts\test-windows-display-helper.ps1"
+if (-not (Test-Path $selfTestScript)) {
+  throw "Display helper self-test script not found at $selfTestScript"
+}
+& $selfTestScript -HelperPath $outFile -Attempts 3
+
 Write-Host "[DisplayHelper] Built $outFile"

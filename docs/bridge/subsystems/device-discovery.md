@@ -51,6 +51,8 @@ sequenceDiagram
 - Watcher: debounced refresh (250ms)
 - Cache wird pro Modul geführt. Timeout/Fehler behalten den letzten erfolgreichen
   Modulstand; ein erfolgreicher leerer Scan entfernt abgezogene Geräte.
+- macOS `system_profiler` hat einen 5s-Kindprozess-Timeout; das Display-Modul erhält
+  6s. Spawn-, Exit- und Parsefehler werden als Fehlerstatus an den Cache weitergegeben.
 - Output-Abfragen erkennen nur `display` und `decklink`. USB-Capture kann dadurch
   weder `/outputs` noch Graphics-Konfiguration blockieren.
 

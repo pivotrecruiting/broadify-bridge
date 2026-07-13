@@ -610,6 +610,7 @@ int main(int argc, char* argv[]) {
   uint32_t fps = 50;
   int displayIndex = 0;
   bool listDisplays = false;
+  bool selfTest = false;
 
   // Parse CLI args
   for (int i = 1; i < argc; ++i) {
@@ -628,7 +629,14 @@ int main(int argc, char* argv[]) {
       displayDeviceName = argv[++i];
     } else if (arg == "--list-displays") {
       listDisplays = true;
+    } else if (arg == "--self-test") {
+      selfTest = true;
     }
+  }
+
+  if (selfTest) {
+    std::cout << "{\"type\":\"self_test\",\"version\":1,\"status\":\"ok\"}" << std::endl;
+    return 0;
   }
 
   if (listDisplays) {

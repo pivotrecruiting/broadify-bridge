@@ -54,6 +54,11 @@ sequenceDiagram
 - Windows-Discovery nutzt denselben festen Helper mit `--list-displays`; die Antwort
   ist größenbegrenzt und wird strikt validiert. Der Output-Start erhält ausschließlich
   den intern registrierten `\\.\DISPLAYn`-Selector.
+- Windows-Spawnfehler werden mit `code`, `errno`, `syscall`, sanitisiertem
+  Ressourcenpfad, Dateigröße und der festen Argumentliste strukturiert protokolliert.
+- `--self-test` bestätigt, dass der Windows-Loader inklusive `SDL2.dll` bis `main()`
+  gelangt. Release-Smokes führen ihn aus Build, `win-unpacked`, MSI und NSIS je drei
+  Mal aus; `SDL2.dll` und `onnxruntime.dll` werden signiert und explizit verifiziert.
 - `key_fill_ndi` hat aktuell keinen nativen Adapterpfad und landet im Stub-Adapter.
 
 ## Fehlerbilder

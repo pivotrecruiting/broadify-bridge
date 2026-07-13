@@ -76,6 +76,9 @@ BRIDGE_FRAME_FPS=60 \
 
 # Windows discovery without opening FrameBus/SDL output
 .\display-helper.exe --list-displays
+
+# Windows loader smoke test without discovery or output initialization
+.\display-helper.exe --self-test
 ```
 
 ## Arguments
@@ -88,12 +91,18 @@ BRIDGE_FRAME_FPS=60 \
 | `--fps <int>` | Target FPS (default 50) |
 | `--display-index <int>` | SDL display index (default 0) |
 | `--list-displays` | Windows only: emit active displays and DXGI modes as validated JSON |
+| `--self-test` | Emit loader self-test JSON and exit with code 0 before FrameBus/output initialization |
 | `--display-device-name <name>` | Windows only: select the exact `\\.\DISPLAYn` target returned by discovery |
 
 On Windows, the Bridge uses `--list-displays` for discovery and passes the returned
 device name back with `--display-device-name`. Display discovery therefore does not
 depend on PowerShell, WMI, or WMIC. The selector is internal to the Bridge and is not
 part of the public Relay/WebApp protocol.
+
+Windows release builds run `--self-test` three times directly after compilation and
+again from `win-unpacked`, the MSI installation and the default per-user NSIS path.
+Because Windows resolves the linked `SDL2.dll` before entering `main()`, this catches
+loader failures that a file-existence check cannot detect.
 
 ## Handshake
 

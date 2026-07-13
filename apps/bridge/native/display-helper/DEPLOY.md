@@ -100,8 +100,11 @@ Artefakte:
 
 - `npm run dist:win` ruft `build.ps1` über `build:display-helper:windows` vor `electron-builder` auf.
 - `electron-builder.config.cjs` nimmt `display-helper.exe` und `SDL2.dll` zwingend in `extraResources` auf.
-- Release- und Test-Release-Workflow prüfen beide Dateien im `win-unpacked`-Bundle
-  sowie nach der MSI-Smoke-Installation.
+- `win.signExts: [".dll"]` signiert neben EXEs auch `SDL2.dll` und `onnxruntime.dll`.
+- Release- und Test-Release-Workflow prüfen die Signaturen beider DLLs explizit.
+- `--self-test` läuft je drei Mal direkt nach dem Build, im `win-unpacked`-Bundle,
+  nach der MSI-Installation und nach der NSIS-Installation unter
+  `%LOCALAPPDATA%\Programs`.
 
 ## Optional: GitHub Release + Download
 
@@ -120,5 +123,7 @@ separates vorgebautes Release-Asset ist derzeit nicht erforderlich.
 - Für Notarization (macOS) muessen Runtime-Dylib und Binary signiert sein.
 - Homebrew-SDL2 von neueren macOS-Versionen kann selbst Ventura-inkompatibel sein. Fuer Release-Builds sollte deshalb ein gepinntes SDL2-Bundle via `SDL2_BUNDLE_DIR` bzw. CI-Download verwendet werden.
 - Auf Windows wird `SDL2.dll` zwingend neben `display-helper.exe` verpackt.
+- Vor RC-Promotion das Kunden-PC-Runbook unter
+  `docs/bridge/analysis/windows-display-helper-loader-diagnostics.md` ausführen.
 - Binary-Pfad muss fix bleiben; Override nur via `BRIDGE_DISPLAY_HELPER_PATH`.
 - Build-Artefakte (`display-helper`, `libSDL2-2.0.0.dylib`, `display-helper.exe`, `SDL2.dll`) sind in `.gitignore`; nicht committen.

@@ -1,7 +1,8 @@
 import { join } from "node:path";
 
 const DISPLAY_HELPER_PATH_ENV = "BRIDGE_DISPLAY_HELPER_PATH";
-const DISPLAY_HELPER_BASENAME =
+
+const getDisplayHelperBasename = (): string =>
   process.platform === "win32" ? "display-helper.exe" : "display-helper";
 
 /**
@@ -24,10 +25,20 @@ export function resolveDisplayHelperPath(): string {
   // Production: packaged resources (Electron)
   const resourcesPath = process.resourcesPath;
   if (process.env.NODE_ENV === "production" && resourcesPath) {
-    return join(resourcesPath, "native", "display-helper", DISPLAY_HELPER_BASENAME);
+    return join(
+      resourcesPath,
+      "native",
+      "display-helper",
+      getDisplayHelperBasename(),
+    );
   }
 
   // Dev: Bridge runs with cwd = apps/bridge (bridge-process-manager spawn)
-  const cwdPath = join(process.cwd(), "native", "display-helper", DISPLAY_HELPER_BASENAME);
+  const cwdPath = join(
+    process.cwd(),
+    "native",
+    "display-helper",
+    getDisplayHelperBasename(),
+  );
   return cwdPath;
 }

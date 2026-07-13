@@ -56,6 +56,8 @@ const MAX_SERIAL_SEARCH_KEYS = [
   "spdisplays_display_serial_number",
 ];
 
+const SYSTEM_PROFILER_TIMEOUT_MS = 5_000;
+
 // Prefer known keys over scanning all values to avoid false positives.
 const getStringField = (
   obj: Record<string, unknown>,
@@ -126,25 +128,79 @@ const collectDisplays = (items: unknown[]): Record<string, unknown>[] => {
 // Security: this spawns a fixed, local system_profiler command with a hard timeout.
 // Mitigation: no user-controlled arguments, bounded runtime, and JSON parsing guards.
 const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
-  return new Promise((resolve) => {
-    const process = spawn("system_profiler", ["SPDisplaysDataType", "-json"]);
+  return new Promise((resolve, reject) => {
+    let process: ReturnType<typeof spawn>;
+    try {
+      process = spawn("system_profiler", ["SPDisplaysDataType", "-json"]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.warn(
+        `[DisplayDetector] Failed to start system_profiler: ${message}`,
+      );
+      reject(new Error(`Failed to start system_profiler: ${message}`));
+      return;
+    }
+
     let stdout = "";
+    let settled = false;
+
+    const finish = (
+      result: { displays: RawDisplayInfoT[] } | { error: Error },
+    ): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if ("error" in result) {
+        reject(result.error);
+        return;
+      }
+      resolve(result.displays);
+    };
+
     const timeout = setTimeout(() => {
       process.kill("SIGTERM");
-      resolve([]);
-    }, 5000);
+      const error = new Error(
+        `system_profiler timed out after ${SYSTEM_PROFILER_TIMEOUT_MS}ms`,
+      );
+      getBridgeContext().logger.warn(`[DisplayDetector] ${error.message}`);
+      finish({ error });
+    }, SYSTEM_PROFILER_TIMEOUT_MS);
 
-    process.stdout.on("data", (data) => {
+    process.stdout?.on("data", (data) => {
+      if (settled) {
+        return;
+      }
       stdout += data.toString();
     });
 
-    process.on("close", () => {
-      clearTimeout(timeout);
+    process.on("error", (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.warn(
+        `[DisplayDetector] system_profiler spawn failed: ${message}`,
+      );
+      finish({ error: new Error(`system_profiler spawn failed: ${message}`) });
+    });
+
+    process.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      if (code !== 0) {
+        const error = new Error(
+          `system_profiler exited with code ${code ?? "unknown"}`,
+        );
+        getBridgeContext().logger.warn(`[DisplayDetector] ${error.message}`);
+        finish({ error });
+        return;
+      }
       try {
-        const json = JSON.parse(stdout) as { SPDisplaysDataType?: unknown[] };
-        const items = Array.isArray(json.SPDisplaysDataType)
-          ? json.SPDisplaysDataType
-          : [];
+        const json = JSON.parse(stdout) as { SPDisplaysDataType?: unknown };
+        if (!Array.isArray(json.SPDisplaysDataType)) {
+          throw new Error("SPDisplaysDataType is not an array");
+        }
+        const items = json.SPDisplaysDataType;
         const displayItems = collectDisplays(items);
         const results: RawDisplayInfoT[] = [];
 
@@ -191,14 +247,14 @@ const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
           });
         }
 
-        resolve(results);
+        finish({ displays: results });
       } catch (error) {
-        getBridgeContext().logger.warn(
-          `[DisplayDetector] Failed to parse system_profiler output: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        const message = error instanceof Error ? error.message : String(error);
+        const parseError = new Error(
+          `Failed to parse system_profiler output: ${message}`,
         );
-        resolve([]);
+        getBridgeContext().logger.warn(`[DisplayDetector] ${parseError.message}`);
+        finish({ error: parseError });
       }
     });
   });
@@ -238,7 +294,7 @@ class DisplayController implements DeviceController {
  */
 export class DisplayModule implements DeviceModule {
   readonly name = "display";
-  readonly detectionTimeoutMs = 3_000;
+  readonly detectionTimeoutMs = 6_000;
 
   async detect(): Promise<DeviceDescriptorT[]> {
     if (process.platform === "darwin") {

@@ -110,6 +110,7 @@ if (Array.isArray(config.publish)) {
 }
 
 if (config.win) {
+  config.win.signExts = [".dll"];
   config.win.extraResources = [
     ...(config.win.extraResources || []),
     {

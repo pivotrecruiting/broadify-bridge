@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { setBridgeContext } from "../../services/bridge-context.js";
+import { DeviceCache } from "../../services/device-cache.js";
+import { ModuleRegistry } from "../module-registry.js";
 import { DisplayModule } from "./display-module.js";
 import { displayTargetRegistry } from "./display-target-registry.js";
 
@@ -107,6 +109,7 @@ describe("DisplayModule", () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     Object.defineProperty(process, "platform", {
       value: originalPlatform,
       configurable: true,
@@ -146,7 +149,7 @@ describe("DisplayModule", () => {
 
       setImmediate(() => {
         child.stdout.emit("data", Buffer.from(macOsDisplayJson()));
-        child.emit("close");
+        child.emit("close", 0);
       });
 
       const result = await detectPromise;
@@ -191,7 +194,7 @@ describe("DisplayModule", () => {
       const detectPromise = module.detect();
       setImmediate(() => {
         child.stdout.emit("data", Buffer.from(json));
-        child.emit("close");
+        child.emit("close", 0);
       });
 
       const result = await detectPromise;
@@ -236,7 +239,7 @@ describe("DisplayModule", () => {
       const detectPromise = module.detect();
       setImmediate(() => {
         child.stdout.emit("data", Buffer.from(json));
-        child.emit("close");
+        child.emit("close", 0);
       });
 
       const result = await detectPromise;
@@ -275,7 +278,7 @@ describe("DisplayModule", () => {
       const detectPromise = module.detect();
       setImmediate(() => {
         child.stdout.emit("data", Buffer.from(json));
-        child.emit("close");
+        child.emit("close", 0);
       });
 
       const result = await detectPromise;
@@ -313,7 +316,7 @@ describe("DisplayModule", () => {
       const detectPromise = module.detect();
       setImmediate(() => {
         child.stdout.emit("data", Buffer.from(json));
-        child.emit("close");
+        child.emit("close", 0);
       });
 
       await detectPromise;
@@ -322,7 +325,7 @@ describe("DisplayModule", () => {
       );
     });
 
-    it("on darwin returns empty array on system_profiler parse error", async () => {
+    it("on darwin rejects a system_profiler parse error", async () => {
       Object.defineProperty(process, "platform", {
         value: "darwin",
         configurable: true,
@@ -334,17 +337,18 @@ describe("DisplayModule", () => {
       const detectPromise = module.detect();
       setImmediate(() => {
         child.stdout.emit("data", "not json {");
-        child.emit("close");
+        child.emit("close", 0);
       });
 
-      const result = await detectPromise;
-      expect(result).toEqual([]);
+      await expect(detectPromise).rejects.toThrow(
+        "Failed to parse system_profiler output",
+      );
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining("Failed to parse system_profiler")
       );
     });
 
-    it("on darwin returns empty array on spawn timeout", async () => {
+    it("on darwin kills system_profiler and rejects on timeout", async () => {
       jest.useFakeTimers();
       Object.defineProperty(process, "platform", {
         value: "darwin",
@@ -355,10 +359,49 @@ describe("DisplayModule", () => {
 
       const module = new DisplayModule();
       const detectPromise = module.detect();
-      await jest.advanceTimersByTimeAsync(6000);
-      const result = await detectPromise;
-      expect(result).toEqual([]);
+      const rejection = expect(detectPromise).rejects.toThrow(
+        "system_profiler timed out after 5000ms",
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+      await rejection;
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
       jest.useRealTimers();
+    });
+
+    it("on darwin rejects a system_profiler spawn error", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "darwin",
+        configurable: true,
+      });
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const detectPromise = new DisplayModule().detect();
+      child.emit("error", new Error("spawn EACCES"));
+
+      await expect(detectPromise).rejects.toThrow(
+        "system_profiler spawn failed: spawn EACCES",
+      );
+    });
+
+    it("on darwin rejects a nonzero system_profiler exit", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "darwin",
+        configurable: true,
+      });
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const detectPromise = new DisplayModule().detect();
+      child.emit("close", 2);
+
+      await expect(detectPromise).rejects.toThrow(
+        "system_profiler exited with code 2",
+      );
+    });
+
+    it("uses a module timeout longer than the system_profiler timeout", () => {
+      expect(new DisplayModule().detectionTimeoutMs).toBe(6_000);
     });
 
     it("on darwin collectDisplays skips non-object nodes", async () => {
@@ -390,7 +433,7 @@ describe("DisplayModule", () => {
       const detectPromise = module.detect();
       setImmediate(() => {
         child.stdout.emit("data", Buffer.from(json));
-        child.emit("close");
+        child.emit("close", 0);
       });
 
       const result = await detectPromise;
@@ -433,7 +476,7 @@ describe("DisplayModule", () => {
       const detectPromise = module.detect();
       setImmediate(() => {
         child.stdout.emit("data", Buffer.from(json));
-        child.emit("close");
+        child.emit("close", 0);
       });
 
       const result = await detectPromise;
@@ -484,6 +527,55 @@ describe("DisplayModule", () => {
       expect(
         displayTargetRegistry.resolve(result[0].ports[0].id),
       ).toEqual({ deviceName: "\\\\.\\DISPLAY2" });
+    });
+
+    it("preserves the last valid macOS output across a parse failure and clears it after a valid disconnect", async () => {
+      jest.spyOn(console, "error").mockImplementation(() => undefined);
+      Object.defineProperty(process, "platform", {
+        value: "darwin",
+        configurable: true,
+      });
+      const profilerOutputs = [
+        macOsDisplayJson(),
+        macOsDisplayJson().replace("External Display", "Updated Display"),
+        "not json {",
+        macOsDisplayJson({ SPDisplaysDataType: [] }),
+      ];
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        const output = profilerOutputs.shift();
+        setImmediate(() => {
+          child.stdout.emit("data", Buffer.from(output ?? ""));
+          child.emit("close", 0);
+        });
+        return child;
+      });
+
+      const registry = new ModuleRegistry();
+      registry.register(new DisplayModule());
+      const cache = new DeviceCache({
+        moduleRegistry: registry,
+        getLogger: () => mockLogger,
+        refreshRateLimitMs: 0,
+      });
+
+      const first = await cache.getDevices();
+      const second = await cache.getDevices(true);
+      const afterParseFailure = await cache.getDevices(true);
+      const afterDisconnect = await cache.getDevices(true);
+
+      expect(first).toEqual([
+        expect.objectContaining({ displayName: "External Display" }),
+      ]);
+      expect(second).toEqual([
+        expect.objectContaining({ displayName: "Updated Display" }),
+      ]);
+      expect(afterParseFailure).toEqual(second);
+      expect(afterDisconnect).toEqual([]);
+      expect(mockSpawn).toHaveBeenCalledTimes(4);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("preserving 1 cached device"),
+      );
     });
 
   });

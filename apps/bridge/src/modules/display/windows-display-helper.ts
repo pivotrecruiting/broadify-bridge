@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
+import { basename } from "node:path";
 import { z } from "zod";
 import type { PortDescriptorT } from "@broadify/protocol";
 import { getBridgeContext } from "../../services/bridge-context.js";
@@ -9,6 +11,27 @@ import type { RawDisplayInfoT } from "./display-module-utils.js";
 
 const WINDOWS_DISPLAY_DISCOVERY_TIMEOUT_MS = 2_000;
 const MAX_HELPER_STDOUT_BYTES = 1_048_576;
+const WINDOWS_DISPLAY_DISCOVERY_ARGS = ["--list-displays"];
+
+type WindowsDisplayHelperDepsT = {
+  spawn: typeof spawn;
+  resolveHelperPath: () => string;
+  getHelperFileSize: (helperPath: string) => number | null;
+};
+
+const getHelperFileSize = (helperPath: string): number | null => {
+  try {
+    return statSync(helperPath).size;
+  } catch {
+    return null;
+  }
+};
+
+const defaultDeps: WindowsDisplayHelperDepsT = {
+  spawn,
+  resolveHelperPath: resolveDisplayHelperPath,
+  getHelperFileSize,
+};
 
 const NativeDisplayModeSchema = z
   .object({
@@ -100,14 +123,78 @@ export const parseNativeWindowsDisplayList = (
   return mapNativeWindowsDisplays(result.displays);
 };
 
-export const listNativeWindowsDisplays = async (): Promise<RawDisplayInfoT[]> =>
-  new Promise((resolve, reject) => {
+const sanitizeHelperPath = (helperPath: string): string => {
+  const normalized = helperPath.replace(/\\/g, "/");
+  const nativeResourceIndex = normalized
+    .toLowerCase()
+    .lastIndexOf("/native/display-helper/");
+  if (nativeResourceIndex >= 0) {
+    return `<resources>${normalized.slice(nativeResourceIndex)}`;
+  }
+  return `<external>/${basename(normalized) || "display-helper.exe"}`;
+};
+
+const getErrorField = (
+  error: unknown,
+  field: "code" | "errno" | "syscall",
+): string | number | null => {
+  if (!error || typeof error !== "object" || !(field in error)) {
+    return null;
+  }
+  const value = (error as Record<string, unknown>)[field];
+  if (typeof value === "number") {
+    return value;
+  }
+  if (typeof value === "string") {
+    if (field === "syscall") {
+      return value.trim().split(/\s+/, 1)[0]?.slice(0, 64) || null;
+    }
+    return value.slice(0, 128);
+  }
+  return null;
+};
+
+const logSpawnFailure = (
+  error: unknown,
+  helperPath: string,
+  helperFileSize: number | null,
+): Error => {
+  const code = getErrorField(error, "code");
+  const details = {
+    event: "windows_display_helper_spawn_failed",
+    code,
+    errno: getErrorField(error, "errno"),
+    syscall: getErrorField(error, "syscall"),
+    helper_path: sanitizeHelperPath(helperPath),
+    helper_size_bytes: helperFileSize,
+    arguments: WINDOWS_DISPLAY_DISCOVERY_ARGS,
+  };
+  getBridgeContext().logger.error(
+    `[DisplayDetector] ${JSON.stringify(details)}`,
+  );
+  return new Error(
+    `Native Windows display helper spawn failed (code=${code ?? "unknown"})`,
+  );
+};
+
+export const listNativeWindowsDisplays = async (
+  dependencyOverrides: Partial<WindowsDisplayHelperDepsT> = {},
+): Promise<RawDisplayInfoT[]> => {
+  const deps = { ...defaultDeps, ...dependencyOverrides };
+  return new Promise<RawDisplayInfoT[]>((resolve, reject) => {
     const startedAt = Date.now();
-    const helperPath = resolveDisplayHelperPath();
-    const child = spawn(helperPath, ["--list-displays"], {
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const helperPath = deps.resolveHelperPath();
+    const helperFileSize = deps.getHelperFileSize(helperPath);
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = deps.spawn(helperPath, WINDOWS_DISPLAY_DISCOVERY_ARGS, {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      reject(logSpawnFailure(error, helperPath, helperFileSize));
+      return;
+    }
     let stdout = "";
     let settled = false;
 
@@ -149,7 +236,9 @@ export const listNativeWindowsDisplays = async (): Promise<RawDisplayInfoT[]> =>
 
     child.stderr?.on("data", () => undefined);
 
-    child.on("error", (error) => finish({ error }));
+    child.on("error", (error) =>
+      finish({ error: logSpawnFailure(error, helperPath, helperFileSize) }),
+    );
     child.on("close", (code) => {
       if (settled) return;
       if (code !== 0) {
@@ -171,3 +260,4 @@ export const listNativeWindowsDisplays = async (): Promise<RawDisplayInfoT[]> =>
       }
     });
   });
+};

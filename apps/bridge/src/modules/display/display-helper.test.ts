@@ -13,17 +13,25 @@ describe("display-helper", () => {
     process.env = { ...originalEnv };
     Object.defineProperty(process, "platform", {
       value: originalPlatform,
-      writable: true,
+      configurable: true,
     });
     Object.defineProperty(process, "resourcesPath", {
       value: originalResourcesPath,
-      writable: true,
+      configurable: true,
     });
     process.env.NODE_ENV = originalNodeEnv;
   });
 
   afterAll(() => {
     process.env = originalEnv;
+    Object.defineProperty(process, "platform", {
+      value: originalPlatform,
+      configurable: true,
+    });
+    Object.defineProperty(process, "resourcesPath", {
+      value: originalResourcesPath,
+      configurable: true,
+    });
   });
 
   describe("resolveDisplayHelperPath", () => {
@@ -40,7 +48,7 @@ describe("display-helper", () => {
       process.env.NODE_ENV = "development";
       Object.defineProperty(process, "resourcesPath", {
         value: "",
-        writable: true,
+        configurable: true,
       });
 
       const result = resolveDisplayHelperPath();
@@ -57,7 +65,7 @@ describe("display-helper", () => {
       process.env.NODE_ENV = "production";
       Object.defineProperty(process, "resourcesPath", {
         value: "/app/resources",
-        writable: true,
+        configurable: true,
       });
 
       const result = resolveDisplayHelperPath();
@@ -66,6 +74,28 @@ describe("display-helper", () => {
         process.platform === "win32" ? "display-helper.exe" : "display-helper";
       expect(result).toBe(
         path.join("/app/resources", "native", "display-helper", basename)
+      );
+    });
+
+    it("returns the packaged .exe path in Windows production", () => {
+      delete process.env[DISPLAY_HELPER_PATH_ENV];
+      process.env.NODE_ENV = "production";
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true,
+      });
+      Object.defineProperty(process, "resourcesPath", {
+        value: "C:\\Program Files\\Broadify Bridge\\resources",
+        configurable: true,
+      });
+
+      expect(resolveDisplayHelperPath()).toBe(
+        path.join(
+          "C:\\Program Files\\Broadify Bridge\\resources",
+          "native",
+          "display-helper",
+          "display-helper.exe",
+        ),
       );
     });
   });
