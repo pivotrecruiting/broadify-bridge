@@ -5,6 +5,7 @@ import type {
   DeviceDescriptorT,
 } from "@broadify/protocol";
 import { deviceCache } from "../services/device-cache.js";
+import { OUTPUT_DEVICE_MODULE_NAMES } from "../services/output-device-modules.js";
 import { enforceLocalOrToken } from "./route-guards.js";
 
 /**
@@ -95,7 +96,10 @@ export async function registerOutputsRoute(
       }
 
       // Get devices from cache (with optional refresh)
-      const devices = await deviceCache.getDevices(forceRefresh);
+      const devices = await deviceCache.getDevices(
+        forceRefresh,
+        OUTPUT_DEVICE_MODULE_NAMES,
+      );
 
       // Transform to UI-compatible format
       const outputs = transformDevicesToOutputs(devices);

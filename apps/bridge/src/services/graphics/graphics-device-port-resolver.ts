@@ -1,5 +1,6 @@
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import { deviceCache } from "../device-cache.js";
+import { OUTPUT_DEVICE_MODULE_NAMES } from "../output-device-modules.js";
 
 export type DevicePortMatchT = {
   device: DeviceDescriptorT;
@@ -35,6 +36,9 @@ export function findDevicePort(
 export async function findCachedDevicePortById(
   portId: string
 ): Promise<DevicePortMatchT | null> {
-  const devices = await deviceCache.getDevices();
+  const devices = await deviceCache.getDevices(
+    false,
+    OUTPUT_DEVICE_MODULE_NAMES,
+  );
   return findDevicePort(devices, portId);
 }

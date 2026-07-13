@@ -188,7 +188,10 @@ describe("command-router", () => {
       const result = await commandRouter.handleCommand("list_outputs", {});
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ output1: [], output2: [] });
-      expect(deviceCache.getDevices).toHaveBeenCalledWith(false);
+      expect(deviceCache.getDevices).toHaveBeenCalledWith(false, [
+        "display",
+        "decklink",
+      ]);
     });
 
     it("list_outputs passes refresh to device cache when requested", async () => {
@@ -196,7 +199,10 @@ describe("command-router", () => {
       deviceCache.getDevices.mockResolvedValue([]);
 
       await commandRouter.handleCommand("list_outputs", { refresh: true });
-      expect(deviceCache.getDevices).toHaveBeenCalledWith(true);
+      expect(deviceCache.getDevices).toHaveBeenCalledWith(true, [
+        "display",
+        "decklink",
+      ]);
     });
 
     it("returns error for unknown command", async () => {

@@ -12,6 +12,10 @@ import {
   supportsAnyPixelFormat,
 } from "./output-format-policy.js";
 import { findDevicePort } from "./graphics-device-port-resolver.js";
+import { OUTPUT_DEVICE_MODULE_NAMES } from "../output-device-modules.js";
+
+const getOutputDevices = () =>
+  deviceCache.getDevices(false, OUTPUT_DEVICE_MODULE_NAMES);
 
 type ValidateOutputTargetsOptionsT = {
   currentOutputConfig?: GraphicsOutputConfigT | null;
@@ -87,7 +91,7 @@ export async function validateOutputTargets(
       throw new Error("Output 1 and Output 2 must be different");
     }
 
-    const devices = await deviceCache.getDevices();
+    const devices = await getOutputDevices();
     const output1Match = findDevicePort(devices, targets.output1Id);
     const output2Match = findDevicePort(devices, targets.output2Id);
     if (!output1Match || !output2Match) {
@@ -123,7 +127,7 @@ export async function validateOutputTargets(
     if (!targets.output1Id) {
       throw new Error("Output 1 is required for Video SDI");
     }
-    const devices = await deviceCache.getDevices();
+    const devices = await getOutputDevices();
     const output1Match = findDevicePort(devices, targets.output1Id);
     if (!output1Match) {
       throw new Error("Invalid output port selected");
@@ -146,7 +150,7 @@ export async function validateOutputTargets(
     if (!targets.output1Id) {
       throw new Error("Output 1 is required for Video HDMI");
     }
-    const devices = await deviceCache.getDevices();
+    const devices = await getOutputDevices();
     const output1Match = findDevicePort(devices, targets.output1Id);
     if (!output1Match) {
       throw new Error("Invalid output port selected");
@@ -191,7 +195,7 @@ export async function validateOutputFormat(
   }
 
   const outputIds = [targets.output1Id];
-  const devices = await deviceCache.getDevices();
+  const devices = await getOutputDevices();
   const requireKeying = outputKey === "key_fill_sdi";
   const preferredFormats =
     outputKey === "key_fill_sdi"

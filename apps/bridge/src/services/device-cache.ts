@@ -8,7 +8,10 @@ type DeviceCacheLoggerT = {
 };
 
 type DeviceCacheDepsT = {
-  moduleRegistry: Pick<typeof moduleRegistry, "getModuleNames" | "detectAll" | "watchAll">;
+  moduleRegistry: Pick<
+    typeof moduleRegistry,
+    "getModuleNames" | "detectModules" | "watchAll"
+  >;
   getLogger: () => DeviceCacheLoggerT;
   now: () => number;
   wait: (ms: number) => Promise<void>;
@@ -37,12 +40,14 @@ const defaultDeps: DeviceCacheDepsT = {
  * Manages caching of device detection results with refresh logic.
  */
 export class DeviceCache {
-  private cachedDevices: DeviceDescriptorT[] = [];
+  private cachedDevicesByModule = new Map<string, DeviceDescriptorT[]>();
+  private lastDetectionTimeByModule = new Map<string, number>();
   private lastDetectionTime = 0;
   private detectionInProgress = false;
   private watchInitialized = false;
   private watchUnsubscribe: (() => void) | undefined;
   private watchRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private pendingWatchModules = new Set<string>();
   private deps: DeviceCacheDepsT;
 
   /**
@@ -72,23 +77,32 @@ export class DeviceCache {
    * @param forceRefresh Force immediate detection (rate-limited).
    * @returns Array of detected devices.
    */
-  async getDevices(forceRefresh = false): Promise<DeviceDescriptorT[]> {
+  async getDevices(
+    forceRefresh = false,
+    moduleNames?: readonly string[],
+  ): Promise<DeviceDescriptorT[]> {
     const logger = this.deps.getLogger();
     const logDebug = logger.debug?.bind(logger);
     const now = this.deps.now();
-    const timeSinceLastDetection = now - this.lastDetectionTime;
-
-    // Check if refresh is needed
-    const needsRefresh =
-      forceRefresh ||
-      this.cachedDevices.length === 0 ||
-      timeSinceLastDetection >= this.cacheTtlMs;
-
-    if (!needsRefresh) {
-      logDebug?.(
-        `[Devices] Using cached results (${this.cachedDevices.length} devices)`
+    const availableModuleNames = this.deps.moduleRegistry.getModuleNames();
+    const requestedModuleNames = moduleNames
+      ? availableModuleNames.filter((name) => moduleNames.includes(name))
+      : availableModuleNames;
+    const modulesNeedingDetection = requestedModuleNames.filter((name) => {
+      const lastModuleDetection = this.lastDetectionTimeByModule.get(name) ?? 0;
+      return (
+        forceRefresh ||
+        !this.cachedDevicesByModule.has(name) ||
+        now - lastModuleDetection >= this.cacheTtlMs
       );
-      return this.cachedDevices;
+    });
+
+    if (modulesNeedingDetection.length === 0) {
+      const cachedDevices = this.collectCachedDevices(requestedModuleNames);
+      logDebug?.(
+        `[Devices] Using cached results (${cachedDevices.length} devices)`,
+      );
+      return cachedDevices;
     }
 
     // Check rate limit for manual refresh
@@ -110,44 +124,62 @@ export class DeviceCache {
       while (this.detectionInProgress) {
         await this.deps.wait(50);
       }
-      return this.cachedDevices;
+      return this.getDevices(false, requestedModuleNames);
     }
 
     // Perform detection
     this.detectionInProgress = true;
     try {
-      const moduleNames = this.deps.moduleRegistry.getModuleNames().join(", ");
       logDebug?.(
-        `[Devices] Detecting devices (forceRefresh=${forceRefresh}) [modules: ${moduleNames || "none"}]`
+        `[Devices] Detecting devices (forceRefresh=${forceRefresh}) [modules: ${modulesNeedingDetection.join(", ") || "none"}]`,
       );
-      this.cachedDevices = await this.deps.moduleRegistry.detectAll();
+      const results = await this.deps.moduleRegistry.detectModules(
+        modulesNeedingDetection,
+      );
       this.lastDetectionTime = this.deps.now();
+      for (const result of results) {
+        this.lastDetectionTimeByModule.set(
+          result.moduleName,
+          this.lastDetectionTime,
+        );
+        if (result.status === "success") {
+          this.cachedDevicesByModule.set(result.moduleName, result.devices);
+          continue;
+        }
+        const cachedCount =
+          this.cachedDevicesByModule.get(result.moduleName)?.length ?? 0;
+        logger.warn(
+          `[Devices] ${result.moduleName} detection ${result.status}; preserving ${cachedCount} cached device(s)`,
+        );
+      }
 
-      const typeCounts = this.cachedDevices.reduce<Record<string, number>>(
+      const cachedDevices = this.collectCachedDevices(requestedModuleNames);
+
+      const typeCounts = cachedDevices.reduce<Record<string, number>>(
         (acc, device) => {
           acc[device.type] = (acc[device.type] || 0) + 1;
           return acc;
         },
         {}
       );
-      const totalPorts = this.cachedDevices.reduce(
+      const totalPorts = cachedDevices.reduce(
         (sum, device) => sum + device.ports.length,
         0
       );
 
       logDebug?.(
-        `[Devices] Detection complete: ${this.cachedDevices.length} devices, ${totalPorts} ports (by type: ${JSON.stringify(
+        `[Devices] Detection complete: ${cachedDevices.length} devices, ${totalPorts} ports (by type: ${JSON.stringify(
           typeCounts
         )})`
       );
 
-      if (this.cachedDevices.length === 0) {
+      if (cachedDevices.length === 0) {
         logger.warn(
           "[Devices] No devices detected. Check device drivers and connections."
         );
       }
 
-      return this.cachedDevices;
+      return cachedDevices;
     } finally {
       this.detectionInProgress = false;
     }
@@ -168,14 +200,15 @@ export class DeviceCache {
     const logDebug = logger.debug?.bind(logger);
     this.watchUnsubscribe = this.deps.moduleRegistry.watchAll((moduleName) => {
       logDebug?.(`[Devices] Watch update from ${moduleName}`);
-      this.scheduleWatchRefresh();
+      this.scheduleWatchRefresh(moduleName);
     });
   }
 
   /**
    * Schedule a debounced refresh when a watch event is received.
    */
-  private scheduleWatchRefresh(): void {
+  private scheduleWatchRefresh(moduleName: string): void {
+    this.pendingWatchModules.add(moduleName);
     if (this.watchRefreshTimer) {
       return;
     }
@@ -185,15 +218,31 @@ export class DeviceCache {
       const logger = this.deps.getLogger();
       const logDebug = logger.debug?.bind(logger);
       if (this.detectionInProgress) {
-        logDebug?.("[Devices] Detection in progress, skipping watch refresh");
+        logDebug?.("[Devices] Detection in progress, deferring watch refresh");
+        this.scheduleWatchRefresh(moduleName);
         return;
       }
 
       this.detectionInProgress = true;
       try {
         logDebug?.("[Devices] Refreshing cache from watch event");
-        this.cachedDevices = await this.deps.moduleRegistry.detectAll();
-        this.lastDetectionTime = this.deps.now();
+        const pendingModules = Array.from(this.pendingWatchModules);
+        this.pendingWatchModules.clear();
+        const results = await this.deps.moduleRegistry.detectModules(
+          pendingModules,
+        );
+        const detectedAt = this.deps.now();
+        for (const result of results) {
+          this.lastDetectionTimeByModule.set(result.moduleName, detectedAt);
+          if (result.status === "success") {
+            this.cachedDevicesByModule.set(result.moduleName, result.devices);
+          } else {
+            logger.warn(
+              `[Devices] Watch refresh for ${result.moduleName} ${result.status}; preserving cached devices`,
+            );
+          }
+        }
+        this.lastDetectionTime = detectedAt;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(`[Devices] Watch refresh failed: ${message}`);
@@ -208,15 +257,18 @@ export class DeviceCache {
    *
    * @returns Cached devices (may be stale).
    */
-  getCachedDevices(): DeviceDescriptorT[] {
-    return this.cachedDevices;
+  getCachedDevices(moduleNames?: readonly string[]): DeviceDescriptorT[] {
+    return this.collectCachedDevices(
+      moduleNames ?? this.deps.moduleRegistry.getModuleNames(),
+    );
   }
 
   /**
    * Clear cache and stop watchers.
    */
   clear(): void {
-    this.cachedDevices = [];
+    this.cachedDevicesByModule.clear();
+    this.lastDetectionTimeByModule.clear();
     this.lastDetectionTime = 0;
     if (this.watchRefreshTimer) {
       this.deps.clearTimeoutFn(this.watchRefreshTimer);
@@ -227,6 +279,7 @@ export class DeviceCache {
       this.watchUnsubscribe = undefined;
     }
     this.watchInitialized = false;
+    this.pendingWatchModules.clear();
   }
 
   /**
@@ -236,9 +289,20 @@ export class DeviceCache {
    */
   isFresh(): boolean {
     const now = this.deps.now();
-    const timeSinceLastDetection = now - this.lastDetectionTime;
+    const moduleNames = this.deps.moduleRegistry.getModuleNames();
     return (
-      this.cachedDevices.length > 0 && timeSinceLastDetection < this.cacheTtlMs
+      this.collectCachedDevices(moduleNames).length > 0 &&
+      moduleNames.every(
+        (name) =>
+          now - (this.lastDetectionTimeByModule.get(name) ?? 0) <
+          this.cacheTtlMs,
+      )
+    );
+  }
+
+  private collectCachedDevices(moduleNames: readonly string[]): DeviceDescriptorT[] {
+    return moduleNames.flatMap(
+      (name) => this.cachedDevicesByModule.get(name) ?? [],
     );
   }
 }

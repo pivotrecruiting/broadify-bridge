@@ -7,6 +7,16 @@ import type { DeviceDescriptorT } from "@broadify/protocol";
 
 const DEFAULT_DETECTION_TIMEOUT = 5000; // 5 seconds per module
 
+export type ModuleDetectionStatusT = "success" | "timeout" | "error";
+
+export type ModuleDetectionResultT = {
+  moduleName: string;
+  status: ModuleDetectionStatusT;
+  devices: DeviceDescriptorT[];
+  durationMs: number;
+  errorCode?: "detection_timeout" | "detection_failed";
+};
+
 /**
  * Module registry for device detection.
  *
@@ -42,7 +52,7 @@ export class ModuleRegistry {
    * @returns Array of all detected devices.
    */
   async detectAll(
-    timeoutMs: number = DEFAULT_DETECTION_TIMEOUT,
+    timeoutMs?: number,
     useWorkerThreads: boolean = false
   ): Promise<DeviceDescriptorT[]> {
     // Phase 1: Direct async detection with timeout
@@ -51,50 +61,73 @@ export class ModuleRegistry {
     if (useWorkerThreads) {
       // TODO: Implement worker thread isolation for Phase 2
       // This would be useful for native SDK calls that might block
-      return this.detectAllWithWorkers(timeoutMs);
+      return this.detectAllWithWorkers(timeoutMs ?? DEFAULT_DETECTION_TIMEOUT);
     }
 
-    // Current implementation: Direct async with timeout
-    const detectionPromises = this.modules.map(async (module) => {
+    const results = await this.detectModules(undefined, timeoutMs);
+    return results.flatMap((result) => result.devices);
+  }
+
+  /**
+   * Detect selected modules and preserve status information for cache policy.
+   */
+  async detectModules(
+    moduleNames?: readonly string[],
+    timeoutMs?: number,
+  ): Promise<ModuleDetectionResultT[]> {
+    const requestedNames = moduleNames ? new Set(moduleNames) : null;
+    const modules = requestedNames
+      ? this.modules.filter((module) => requestedNames.has(module.name))
+      : this.modules;
+
+    const detectionPromises = modules.map(async (module) => {
+      const startedAt = Date.now();
+      const moduleTimeoutMs =
+        timeoutMs ?? module.detectionTimeoutMs ?? DEFAULT_DETECTION_TIMEOUT;
       let timeoutId: ReturnType<typeof setTimeout>;
       const timeoutPromise = new Promise<DeviceDescriptorT[]>((_, reject) => {
         timeoutId = setTimeout(
           () =>
             reject(
               new Error(
-                `Timeout: ${module.name} detection exceeded ${timeoutMs}ms`
+                `Timeout: ${module.name} detection exceeded ${moduleTimeoutMs}ms`
               )
             ),
-          timeoutMs
+          moduleTimeoutMs
         );
       });
 
       try {
         const detectionPromise = module.detect();
         const devices = await Promise.race([detectionPromise, timeoutPromise]);
-        return devices;
+        return {
+          moduleName: module.name,
+          status: "success" as const,
+          devices,
+          durationMs: Date.now() - startedAt,
+        };
       } catch (error) {
-        // Error isolation: log but don't fail entire detection
+        const isTimeout =
+          error instanceof Error && error.message.startsWith("Timeout:");
         console.error(
           `[ModuleRegistry] Error detecting devices in module ${module.name}:`,
           error
         );
-        return [];
+        return {
+          moduleName: module.name,
+          status: isTimeout ? ("timeout" as const) : ("error" as const),
+          devices: [],
+          durationMs: Date.now() - startedAt,
+          errorCode: isTimeout
+            ? ("detection_timeout" as const)
+            : ("detection_failed" as const),
+        };
       } finally {
         clearTimeout(timeoutId!);
       }
     });
 
-    // Wait for all modules (failed ones return empty arrays)
-    const results = await Promise.all(detectionPromises);
-
-    // Merge all results
-    const allDevices: DeviceDescriptorT[] = [];
-    for (const devices of results) {
-      allDevices.push(...devices);
-    }
-
-    return allDevices;
+    return Promise.all(detectionPromises);
   }
 
   /**
@@ -121,7 +154,25 @@ export class ModuleRegistry {
    * @returns Device controller
    * @throws Error if device not found or controller cannot be created
    */
-  async getController(deviceId: string): Promise<DeviceController> {
+  async getController(
+    deviceId: string,
+    moduleName?: string,
+  ): Promise<DeviceController> {
+    if (moduleName) {
+      const owner = this.modules.find((module) => module.name === moduleName);
+      if (!owner) {
+        throw new Error(`Device module ${moduleName} not found`);
+      }
+      const [result] = await this.detectModules([moduleName]);
+      if (
+        result?.status !== "success" ||
+        !result.devices.some((device) => device.id === deviceId)
+      ) {
+        throw new Error(`Device ${deviceId} not found`);
+      }
+      return owner.createController(deviceId);
+    }
+
     // First, detect all devices to find which module owns this device
     const allDevices = await this.detectAll();
 
