@@ -751,6 +751,8 @@ async function ensureSingleWindow(
     singleWindow = new BrowserWindow({
       width: renderWidth,
       height: renderHeight,
+      useContentSize: true,
+      frame: false,
       show: false,
       transparent: true,
       paintWhenInitiallyHidden: true,

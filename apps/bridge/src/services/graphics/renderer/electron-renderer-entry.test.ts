@@ -3091,6 +3091,83 @@ describe("electron-renderer-entry", () => {
     expect(mockInvalidate).toHaveBeenCalled();
   });
 
+  it("creates the offscreen renderer with content-sized frameless bounds", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    const validConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...validConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "create_layer",
+          token: "test-token",
+          layerId: "l1",
+          html: "<div>a</div>",
+          css: "",
+          values: {},
+          layout: { x: 0, y: 0, scale: 1 },
+          backgroundMode: "transparent",
+          width: 1920,
+          height: 1080,
+          fps: 30,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        width: 1920,
+        height: 1080,
+        useContentSize: true,
+        frame: false,
+      })
+    );
+  });
+
   it("applyRendererConfig with singleWindow existing calls executeJavaScript for clearColor", async () => {
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
     process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
