@@ -219,7 +219,8 @@ Source: apps/bridge/src/services/command-router.ts
 
 - get_status: returns version, runtime state, outputsConfigured, engine state.
 - bridge_pair_validate: validates pairing code and expiry. Returns bridgeId/bridgeName on success.
-- list_outputs: returns devices/ports from device cache.
+- list_outputs: returns devices/ports from device cache. Only `refresh: true`
+  starts output-module discovery; an omitted or false flag is cache-only.
 - engine_*: connects/disconnects and fetches macro/status data.
 - graphics_*: validated and executed by GraphicsManager (Zod schemas + sanitization).
 

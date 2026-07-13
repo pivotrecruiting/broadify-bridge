@@ -170,10 +170,9 @@ export class CommandRouter {
               "[CommandRouter] list_outputs refresh requested",
             );
           }
-          const devices = await deviceCache.getDevices(
-            refresh,
-            OUTPUT_DEVICE_MODULE_NAMES,
-          );
+          const devices = refresh
+            ? await deviceCache.getDevices(true, OUTPUT_DEVICE_MODULE_NAMES)
+            : deviceCache.getCachedDevices(OUTPUT_DEVICE_MODULE_NAMES);
           const outputs = transformDevicesToOutputs(devices);
 
           return {

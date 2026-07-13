@@ -80,6 +80,8 @@ UI‑Logik kann damit externe Displays getrennt von DeckLink und Capture anzeige
   aus dem Cache.
 - `/outputs?refresh=1` und `list_outputs` mit `refresh: true` starten jeweils eine neue
   Discovery; automatisches macOS-Hotplug ist davon unabhängig und nicht garantiert.
+- `list_outputs` ohne `refresh: true` liest ausschließlich den vorhandenen Bridge-Cache.
+  Ein WebApp-Reload startet deshalb keine neue Display-Discovery.
 
 ## Security Notes
 - Der Prozess nutzt einen fest verdrahteten lokalen Befehl ohne User‑Input.
