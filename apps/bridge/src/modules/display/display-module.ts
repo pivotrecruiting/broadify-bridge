@@ -14,6 +14,7 @@ import {
 } from "./display-parse-utils.js";
 import {
   mapRawDisplaysToDevices,
+  type RawDisplayModeT,
   type RawDisplayInfoT,
 } from "./display-module-utils.js";
 
@@ -32,9 +33,25 @@ type WindowsMonitorConnectionRowT = {
   video_output_technology?: number;
 };
 
+type WindowsMonitorSourceModeT = {
+  width?: number;
+  height?: number;
+  refresh_numerator?: number;
+  refresh_denominator?: number;
+  interlaced?: boolean;
+  preferred?: boolean;
+};
+
+type WindowsMonitorModesRowT = {
+  instance_name?: string;
+  active?: boolean;
+  modes?: WindowsMonitorSourceModeT[] | WindowsMonitorSourceModeT;
+};
+
 type WindowsDisplayDetectorPayloadT = {
   ids?: WindowsMonitorIdRowT[] | WindowsMonitorIdRowT;
   connections?: WindowsMonitorConnectionRowT[] | WindowsMonitorConnectionRowT;
+  modes?: WindowsMonitorModesRowT[] | WindowsMonitorModesRowT;
 };
 
 // system_profiler output keys vary by macOS version and GPU type.
@@ -191,6 +208,41 @@ const toObjectArray = <T>(value: T[] | T | undefined): T[] => {
   return Array.isArray(value) ? value : [value];
 };
 
+const parseWindowsDisplayModes = (
+  row: WindowsMonitorModesRowT | undefined
+): RawDisplayModeT[] => {
+  if (!row || row.active === false) {
+    return [];
+  }
+  return toObjectArray(row.modes).flatMap((mode) => {
+    const width = mode.width;
+    const height = mode.height;
+    const numerator = mode.refresh_numerator;
+    const denominator = mode.refresh_denominator;
+    if (
+      typeof width !== "number" ||
+      typeof height !== "number" ||
+      typeof numerator !== "number" ||
+      typeof denominator !== "number" ||
+      width <= 0 ||
+      height <= 0 ||
+      numerator <= 0 ||
+      denominator <= 0
+    ) {
+      return [];
+    }
+    return [
+      {
+        width,
+        height,
+        fps: numerator / denominator,
+        fieldDominance: mode.interlaced ? "interlaced" : "progressive",
+        preferred: mode.preferred === true,
+      },
+    ];
+  });
+};
+
 // Security: this spawns a fixed, local system_profiler command with a hard timeout.
 // Mitigation: no user-controlled arguments, bounded runtime, and JSON parsing guards.
 const getSystemProfilerDisplays = async (): Promise<RawDisplayInfoT[]> => {
@@ -323,10 +375,37 @@ const getWindowsDisplaysViaPowerShell =
           }
         }
       )
+      $mode_sets = @(
+        Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorListedSupportedSourceModes |
+        ForEach-Object {
+          $preferred_index = [int]$_.PreferredMonitorSourceModeIndex
+          $source_modes = @($_.MonitorSourceModes)
+          $mode_index = 0
+          $serialized_modes = @(
+            foreach ($mode in $source_modes) {
+              [PSCustomObject]@{
+                width = [int]$mode.HorizontalActivePixels
+                height = [int]$mode.VerticalActivePixels
+                refresh_numerator = [int]$mode.VerticalRefreshRateNumerator
+                refresh_denominator = [int]$mode.VerticalRefreshRateDenominator
+                interlaced = [bool]$mode.IsInterlaced
+                preferred = ($mode_index -eq $preferred_index)
+              }
+              $mode_index++
+            }
+          )
+          [PSCustomObject]@{
+            instance_name = [string]$_.InstanceName
+            active = [bool]$_.Active
+            modes = $serialized_modes
+          }
+        }
+      )
       [PSCustomObject]@{
         ids = $ids
         connections = $connections
-      } | ConvertTo-Json -Compress -Depth 4
+        modes = $mode_sets
+      } | ConvertTo-Json -Compress -Depth 6
     `;
 
       const process = spawn(
@@ -378,6 +457,7 @@ const getWindowsDisplaysViaPowerShell =
           const json = JSON.parse(stdout) as WindowsDisplayDetectorPayloadT;
           const idRows = toObjectArray(json.ids);
           const connectionRows = toObjectArray(json.connections);
+          const modeRows = toObjectArray(json.modes);
 
           const connectionByInstance = new Map<
             string,
@@ -393,6 +473,17 @@ const getWindowsDisplaysViaPowerShell =
             );
           }
 
+          const modesByInstance = new Map<string, WindowsMonitorModesRowT>();
+          for (const row of modeRows) {
+            if (!row.instance_name || row.active === false) {
+              continue;
+            }
+            modesByInstance.set(
+              normalizeWindowsInstanceKey(row.instance_name),
+              row,
+            );
+          }
+
           const results: RawDisplayInfoT[] = [];
           for (const row of idRows) {
             if (!row.instance_name || row.active === false) {
@@ -401,6 +492,9 @@ const getWindowsDisplaysViaPowerShell =
 
             const instanceKey = normalizeWindowsInstanceKey(row.instance_name);
             const connection = connectionByInstance.get(instanceKey);
+            const modes = parseWindowsDisplayModes(
+              modesByInstance.get(instanceKey),
+            );
             const videoOutputTechnology =
               typeof connection?.video_output_technology === "number"
                 ? connection.video_output_technology
@@ -421,12 +515,19 @@ const getWindowsDisplaysViaPowerShell =
               );
             }
 
+            if (modes.length === 0) {
+              getBridgeContext().logger.warn(
+                `[DisplayDetector] No supported Windows display modes reported for "${name}"`,
+              );
+            }
+
             results.push({
               name,
               connectionType,
               vendorId: row.manufacturer?.trim() || undefined,
               productId: row.product_code?.trim() || undefined,
               serial: row.serial?.trim() || undefined,
+              modes,
             });
           }
 

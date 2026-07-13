@@ -59,7 +59,10 @@ type RendererReadyAckT = {
 };
 
 const normalizeFrameBusNameForCompare = (name: string): string =>
-  name.trim().replace(/^\/+/, "");
+  name
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/^(?:local|global)\\+/i, "");
 
 /**
  * Electron-based offscreen renderer client.

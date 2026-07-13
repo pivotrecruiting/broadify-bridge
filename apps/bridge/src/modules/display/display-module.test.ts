@@ -75,10 +75,23 @@ function windowsPowerShellJson(payload: {
     active?: boolean;
     video_output_technology?: number;
   }>;
+  modes?: Array<{
+    instance_name?: string;
+    active?: boolean;
+    modes?: Array<{
+      width?: number;
+      height?: number;
+      refresh_numerator?: number;
+      refresh_denominator?: number;
+      interlaced?: boolean;
+      preferred?: boolean;
+    }>;
+  }>;
 }): string {
   return JSON.stringify({
     ids: payload.ids ?? [],
     connections: payload.connections ?? [],
+    modes: payload.modes ?? [],
   });
 }
 
@@ -465,6 +478,22 @@ describe("DisplayModule", () => {
             video_output_technology: 5,
           },
         ],
+        modes: [
+          {
+            instance_name: "DISPLAY\\MONITOR\\1234_5678_0",
+            active: true,
+            modes: [
+              {
+                width: 1920,
+                height: 1080,
+                refresh_numerator: 60000,
+                refresh_denominator: 1001,
+                interlaced: false,
+                preferred: true,
+              },
+            ],
+          },
+        ],
       });
 
       const module = new DisplayModule();
@@ -477,6 +506,99 @@ describe("DisplayModule", () => {
       const result = await detectPromise;
       expect(result.length).toBe(1);
       expect(result[0].displayName).toBe("DELL P2415Q");
+      expect(result[0].ports[0].capabilities.modes).toEqual([
+        expect.objectContaining({
+          width: 1920,
+          height: 1080,
+          fps: 60000 / 1001,
+          fieldDominance: "progressive",
+        }),
+      ]);
+    });
+
+    it("on win32 normalizes, deduplicates, and sorts monitor source modes", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true,
+      });
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const instanceName = "DISPLAY\\MONITOR\\MODE_TEST_0";
+      const payload = windowsPowerShellJson({
+        ids: [{ instance_name: instanceName, active: true, name: "ATEM" }],
+        connections: [
+          {
+            instance_name: instanceName,
+            active: true,
+            video_output_technology: 5,
+          },
+        ],
+        modes: [
+          {
+            instance_name: instanceName,
+            active: true,
+            modes: [
+              {
+                width: 1280,
+                height: 720,
+                refresh_numerator: 50,
+                refresh_denominator: 1,
+                interlaced: false,
+              },
+              {
+                width: 1920,
+                height: 1080,
+                refresh_numerator: 60000,
+                refresh_denominator: 1001,
+                interlaced: true,
+                preferred: true,
+              },
+              {
+                width: 1920,
+                height: 1080,
+                refresh_numerator: 60000,
+                refresh_denominator: 1001,
+                interlaced: true,
+              },
+              {
+                width: 3840,
+                height: 2160,
+                refresh_numerator: 60,
+                refresh_denominator: 0,
+                interlaced: false,
+              },
+            ],
+          },
+        ],
+      });
+
+      const module = new DisplayModule();
+      const detectPromise = module.detect();
+      setImmediate(() => {
+        child.stdout.emit("data", payload);
+        child.emit("close", 0);
+      });
+
+      const result = await detectPromise;
+      const modes = result[0].ports[0].capabilities.modes ?? [];
+      expect(modes).toHaveLength(2);
+      expect(modes[0]).toEqual(
+        expect.objectContaining({
+          width: 1920,
+          height: 1080,
+          fps: 60000 / 1001,
+          fieldDominance: "interlaced",
+        }),
+      );
+      expect(modes[1]).toEqual(
+        expect.objectContaining({
+          width: 1280,
+          height: 720,
+          fps: 50,
+          fieldDominance: "progressive",
+        }),
+      );
     });
 
     it("on win32 filters internal display by name", async () => {

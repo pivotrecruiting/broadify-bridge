@@ -323,7 +323,11 @@ describe("ElectronRendererClient", () => {
       await c.shutdown();
     });
 
-    it("accepts renderer ready when native FrameBus name adds a leading slash", async () => {
+    it.each([
+      ["POSIX leading slash", "/"],
+      ["Windows local namespace", "Local\\"],
+      ["Windows global namespace", "gLoBaL\\"],
+    ])("accepts renderer ready with %s", async (_description, prefix) => {
       const c = await initializeClientWithHandshake();
       const commandPromise = readRendererConfigureCommand();
       const configurePromise = c.configureSession({
@@ -346,7 +350,7 @@ describe("ElectronRendererClient", () => {
           height: command.height,
           fps: command.fps,
           pixelFormat: command.pixelFormat,
-          framebusName: `/${command.framebusName}`,
+          framebusName: `${prefix}${command.framebusName}`,
           framebusSlotCount: command.framebusSlotCount,
           framebusSize: command.framebusSize,
           rendererConfigGeneration: 1,

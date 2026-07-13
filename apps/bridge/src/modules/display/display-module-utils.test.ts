@@ -38,6 +38,53 @@ describe("display-module-utils", () => {
       };
       expect(buildDisplayMode(info)).toEqual([]);
     });
+
+    it("uses explicit modes, keeps preferred first, and removes duplicates", () => {
+      const info: RawDisplayInfoT = {
+        name: "Display",
+        connectionType: "hdmi",
+        modes: [
+          {
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            fieldDominance: "progressive",
+          },
+          {
+            width: 1920,
+            height: 1080,
+            fps: 60000 / 1001,
+            fieldDominance: "interlaced",
+            preferred: true,
+          },
+          {
+            width: 1920,
+            height: 1080,
+            fps: 60000 / 1001,
+            fieldDominance: "interlaced",
+          },
+          {
+            width: 0,
+            height: 1080,
+            fps: 60,
+            fieldDominance: "progressive",
+          },
+        ],
+      };
+
+      expect(buildDisplayMode(info)).toEqual([
+        expect.objectContaining({
+          id: 0,
+          label: "1080i59.94 (1920x1080)",
+          fieldDominance: "interlaced",
+        }),
+        expect.objectContaining({
+          id: 1,
+          label: "2160p30 (3840x2160)",
+          fieldDominance: "progressive",
+        }),
+      ]);
+    });
   });
 
   describe("mapRawDisplaysToDevices", () => {

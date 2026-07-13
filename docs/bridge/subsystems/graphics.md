@@ -71,6 +71,13 @@ Dabei werden Device‑Infos aus `device-cache` und Display‑Modes aus Device-Mo
 - `apps/bridge/src/modules/display/display-module.ts`
 - `apps/bridge/src/modules/decklink/decklink-helper.ts`
 
+Unter Windows liest die Display-Erkennung neben Monitor-ID und Anschlussart auch
+`WmiMonitorListedSupportedSourceModes`. Die Modi werden über die normalisierte
+WMI-`InstanceName` dem Display zugeordnet, aus Refresh-Zähler/-Nenner berechnet,
+dedupliziert und mit dem bevorzugten EDID-Modus zuerst veröffentlicht. Wenn der
+Treiber keine Modedaten liefert, bleibt das Display verfügbar und die Bridge
+überspringt wie bisher nur die Formatvalidierung.
+
 ## Renderer‑IPC (Offscreen)
 Renderer‑Client: `apps/bridge/src/services/graphics/renderer/electron-renderer-client.ts`
 - Startet Electron‑Rendererprozess mit IPC‑Port + Token
