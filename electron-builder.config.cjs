@@ -1,4 +1,3 @@
-const fs = require("fs");
 const baseConfig = require("./electron-builder.json");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
@@ -133,13 +132,10 @@ if (config.win) {
     },
   ];
 
-  const sdlRuntimePath = "apps/bridge/native/display-helper/SDL2.dll";
-  if (fs.existsSync(sdlRuntimePath)) {
-    config.win.extraResources.push({
-      from: sdlRuntimePath,
-      to: "native/display-helper/SDL2.dll",
-    });
-  }
+  config.win.extraResources.push({
+    from: "apps/bridge/native/display-helper/SDL2.dll",
+    to: "native/display-helper/SDL2.dll",
+  });
 }
 
 if (config.win) {

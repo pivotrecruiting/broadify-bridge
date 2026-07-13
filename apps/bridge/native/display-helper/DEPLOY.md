@@ -63,7 +63,7 @@ Ohne konfigurierte Identity verwendet das Script lokal automatisch Ad-hoc-Signin
 
 Die Plattform-spezifische Einbindung erfolgt über `electron-builder.config.cjs`:
 - macOS: `native/display-helper/display-helper` + `native/display-helper/libSDL2-2.0.0.dylib`
-- Windows: `native/display-helper/display-helper.exe` (optional zusätzlich `SDL2.dll`)
+- Windows: `native/display-helper/display-helper.exe` plus `native/display-helper/SDL2.dll`
 
 Die Pfad-Auflösung in `display-helper.ts` nutzt:
 - Dev: `apps/bridge/native/display-helper/display-helper`
@@ -94,12 +94,14 @@ Voraussetzungen:
 
 Artefakte:
 - `display-helper.exe`
-- optional `SDL2.dll` (wird vom Build-Script neben das EXE kopiert, wenn gefunden)
+- `SDL2.dll` (wird vom Build-Script zwingend neben die EXE kopiert)
 
 ### 2) Packaging
 
-- `npm run dist:win` baut jetzt den Display Helper vor `electron-builder`.
-- `electron-builder.config.cjs` nimmt `display-helper.exe` (und optional `SDL2.dll`) in `extraResources` auf.
+- `npm run dist:win` ruft `build.ps1` über `build:display-helper:windows` vor `electron-builder` auf.
+- `electron-builder.config.cjs` nimmt `display-helper.exe` und `SDL2.dll` zwingend in `extraResources` auf.
+- Release- und Test-Release-Workflow prüfen beide Dateien im `win-unpacked`-Bundle
+  sowie nach der MSI-Smoke-Installation.
 
 ## Optional: GitHub Release + Download
 
@@ -109,13 +111,14 @@ Analog zum DeckLink Helper können Display Helper Binaries als Release Assets be
 - Secrets: `DISPLAY_HELPER_URL_ARM64`, `DISPLAY_HELPER_SHA256_ARM64`, analog für x64
 - `package.json` dist-Scripts: `build:display-helper` vor `electron-builder` ausführen
 
-Bis dahin: Lokaler Build und manuelles Kopieren oder Einbinden in die Build-Pipeline.
+Die Windows-Release-Pipeline baut den Helper direkt auf dem Windows-Runner; ein
+separates vorgebautes Release-Asset ist derzeit nicht erforderlich.
 
 ## Hinweise
 
 - SDL2 ist die einzige externe Abhängigkeit; kein proprietäres SDK.
 - Für Notarization (macOS) muessen Runtime-Dylib und Binary signiert sein.
 - Homebrew-SDL2 von neueren macOS-Versionen kann selbst Ventura-inkompatibel sein. Fuer Release-Builds sollte deshalb ein gepinntes SDL2-Bundle via `SDL2_BUNDLE_DIR` bzw. CI-Download verwendet werden.
-- Auf Windows muss `SDL2.dll` zur Laufzeit verfügbar sein (neben `display-helper.exe` oder via PATH).
+- Auf Windows wird `SDL2.dll` zwingend neben `display-helper.exe` verpackt.
 - Binary-Pfad muss fix bleiben; Override nur via `BRIDGE_DISPLAY_HELPER_PATH`.
 - Build-Artefakte (`display-helper`, `libSDL2-2.0.0.dylib`, `display-helper.exe`, `SDL2.dll`) sind in `.gitignore`; nicht committen.

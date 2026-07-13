@@ -155,6 +155,7 @@ if [[ "$UNAME_S" == "Darwin" ]]; then
   fi
 elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
+  REQUIRED_FILES+=("apps/bridge/native/display-helper/SDL2.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/onnxruntime.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/modnet.onnx")
@@ -301,6 +302,7 @@ if [[ "$UNAME_S" == "Darwin" ]]; then
   check_macos_max_minos "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" "$MACOS_FLOOR_VERSION"
 elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
   check_architecture "apps/bridge/native/display-helper/display-helper.exe"
+  check_architecture "apps/bridge/native/display-helper/SDL2.dll"
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper.exe"
   check_modnet_manifest_hash
 else

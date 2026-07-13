@@ -30,8 +30,8 @@ if [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; t
     pwsh -NoProfile -File "$BUILD_PS1"
     exit 0
   fi
-  echo "Skipping Display helper build on Windows: PowerShell not found." >&2
-  exit 0
+  echo "Display helper build failed on Windows: PowerShell not found." >&2
+  exit 1
 fi
 
 echo "Skipping Display helper build on unsupported platform: $UNAME_S"

@@ -320,6 +320,16 @@ jobs:
             throw "latest.yml unexpectedly references the MSI installer; Windows auto-update must use NSIS."
           }
 
+          $packagedDisplayHelperPaths = @(
+            (Join-Path $dist 'win-unpacked\resources\native\display-helper\display-helper.exe'),
+            (Join-Path $dist 'win-unpacked\resources\native\display-helper\SDL2.dll')
+          )
+          foreach ($path in $packagedDisplayHelperPaths) {
+            if (-not (Test-Path $path)) {
+              throw "Windows packaged app is missing display-helper runtime: $path"
+            }
+          }
+
           Write-Host "Windows installer artifacts verified:"
           Write-Host "  NSIS: $($exeFiles[0].Name)"
           Write-Host "  MSI:  $($msiFiles[0].Name)"
@@ -387,6 +397,7 @@ jobs:
 
           $expectedPaths = @(
             (Join-Path $installDir 'resources\native\display-helper\display-helper.exe'),
+            (Join-Path $installDir 'resources\native\display-helper\SDL2.dll'),
             (Join-Path $installDir 'resources\native\meeting-helper\meeting-helper.exe'),
             (Join-Path $installDir 'resources\native\meeting-helper\onnxruntime.dll'),
             (Join-Path $installDir 'resources\native\meeting-helper\models\modnet.onnx'),
