@@ -8,6 +8,9 @@ const test = require("node:test");
 const {
   serializeWindowsAzureSigning,
 } = require("./lib/serialize-windows-azure-signing.cjs");
+const {
+  resolveWindowsInstallDirectoryName,
+} = require("./resolve-windows-install-directory-name.cjs");
 const signWindowsNativeResources = require("./sign-windows-native-resources.cjs");
 
 const waitForImmediate = () => new Promise((resolve) => setImmediate(resolve));
@@ -140,4 +143,46 @@ test("loads the serialization patch through the electron-builder CLI", () => {
     /Azure Trusted Signing calls will run sequentially/,
   );
   assert.match(result.stdout, /25\.1\.8/);
+});
+
+test("resolves the NSIS install directory from executableName", () => {
+  assert.equal(
+    resolveWindowsInstallDirectoryName({
+      productName: "Broadify Bridge RC",
+      win: { executableName: "BroadifyBridgeRC" },
+    }),
+    "BroadifyBridgeRC",
+  );
+});
+
+test("falls back to productName and rejects unsafe directory names", () => {
+  assert.equal(
+    resolveWindowsInstallDirectoryName({
+      productName: "Broadify Bridge",
+      win: {},
+    }),
+    "Broadify Bridge",
+  );
+  assert.throws(
+    () =>
+      resolveWindowsInstallDirectoryName({
+        productName: "Broadify Bridge",
+        win: { executableName: "..\\outside" },
+      }),
+    /safe Windows installation directory name/,
+  );
+});
+
+test("resolves the RC directory used by the current builder config", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, "resolve-windows-install-directory-name.cjs")],
+    {
+      encoding: "utf8",
+      env: { ...process.env, BROADIFY_UPDATER_CHANNEL: "rc" },
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "BroadifyBridgeRC");
 });

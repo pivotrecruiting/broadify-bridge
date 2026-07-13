@@ -12,7 +12,7 @@ enthalten und müssen deshalb als Supportdaten vertraulich behandelt werden.
 PowerShell mit dem tatsächlich installierten NSIS-Pfad starten:
 
 ```powershell
-$helper = "$env:LOCALAPPDATA\Programs\Broadify Bridge RC\resources\native\display-helper\display-helper.exe"
+$helper = "$env:LOCALAPPDATA\Programs\BroadifyBridgeRC\resources\native\display-helper\display-helper.exe"
 .\scripts\collect-windows-display-helper-diagnostics.ps1 -HelperPath $helper
 ```
 

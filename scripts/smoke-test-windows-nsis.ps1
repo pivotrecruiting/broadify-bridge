@@ -6,17 +6,20 @@ param(
 $ErrorActionPreference = "Stop"
 
 $resolvedInstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
-$productName = if ($env:BROADIFY_UPDATER_CHANNEL -eq "rc") {
-  "Broadify Bridge RC"
-} else {
-  "Broadify Bridge"
+$installDirectoryResolver = Join-Path $PSScriptRoot "resolve-windows-install-directory-name.cjs"
+$installDirectoryName = (& node $installDirectoryResolver | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installDirectoryName)) {
+  throw "Unable to resolve the NSIS installation directory name from electron-builder config."
 }
-$installDir = Join-Path (Join-Path $env:LOCALAPPDATA "Programs") $productName
+$userProgramsDir = Join-Path $env:LOCALAPPDATA "Programs"
+$installDir = Join-Path $userProgramsDir $installDirectoryName
 $selfTestScript = Join-Path $PSScriptRoot "test-windows-display-helper.ps1"
 
 if (Test-Path -LiteralPath $installDir) {
   throw "NSIS smoke target already exists and will not be overwritten: $installDir"
 }
+
+Write-Host "NSIS smoke expected installation directory: $installDir"
 
 $installed = $false
 try {
@@ -25,6 +28,20 @@ try {
     throw "NSIS smoke install failed with exit code $($install.ExitCode)."
   }
   $installed = $true
+
+  if (-not (Test-Path -LiteralPath $installDir -PathType Container)) {
+    $candidateDirectories = @(
+      Get-ChildItem -LiteralPath $userProgramsDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "*Bridge*" } |
+        Select-Object -ExpandProperty FullName
+    )
+    $candidateSummary = if ($candidateDirectories.Count -gt 0) {
+      $candidateDirectories -join "; "
+    } else {
+      "none"
+    }
+    throw "NSIS smoke installation directory was not created: $installDir. Bridge-like candidates: $candidateSummary"
+  }
 
   $helperPath = Join-Path $installDir "resources\native\display-helper\display-helper.exe"
   $sdlPath = Join-Path $installDir "resources\native\display-helper\SDL2.dll"
