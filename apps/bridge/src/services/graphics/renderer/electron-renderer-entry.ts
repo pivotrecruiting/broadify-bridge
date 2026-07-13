@@ -338,11 +338,15 @@ function shouldForceRecreateFrameBus(): boolean {
   return !MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
 }
 
+const normalizeNativeFrameRate = (fps: number): number =>
+  Math.min(240, Math.max(1, Math.round(fps)));
+
 function ensureFrameBusWriter(
   width: number,
   height: number,
   fps: number,
 ): boolean {
+  const nativeFrameRate = normalizeNativeFrameRate(fps);
   if (frameBusWriter) {
     const header = frameBusWriter.header;
     const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
@@ -351,7 +355,7 @@ function ensureFrameBusWriter(
     const matches =
       header.width === width &&
       header.height === height &&
-      header.fps === fps &&
+      header.fps === nativeFrameRate &&
       header.slotCount === frameBusSlotCount &&
       header.pixelFormat === desiredPixelFormat;
     if (matches) {
@@ -425,7 +429,7 @@ function ensureFrameBusWriter(
       name: frameBusName,
       width,
       height,
-      fps,
+      fps: nativeFrameRate,
       pixelFormat: Number.isFinite(frameBusPixelFormat)
         ? (frameBusPixelFormat as 1 | 2 | 3)
         : 1,
@@ -767,7 +771,7 @@ async function ensureSingleWindow(
 
     singleWindowFormat = { width, height, fps, renderScale };
 
-    singleWindow.webContents.setFrameRate(fps);
+    singleWindow.webContents.setFrameRate(normalizeNativeFrameRate(fps));
     singleWindow.webContents.on("paint", (_event, _dirty, image) => {
       const frameStartAt = Date.now();
       if (paintCount === 0) {

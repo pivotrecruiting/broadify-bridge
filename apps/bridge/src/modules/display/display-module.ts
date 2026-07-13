@@ -211,7 +211,7 @@ const toObjectArray = <T>(value: T[] | T | undefined): T[] => {
 const parseWindowsDisplayModes = (
   row: WindowsMonitorModesRowT | undefined
 ): RawDisplayModeT[] => {
-  if (!row || row.active === false) {
+  if (!row) {
     return [];
   }
   return toObjectArray(row.modes).flatMap((mode) => {
@@ -475,7 +475,7 @@ const getWindowsDisplaysViaPowerShell =
 
           const modesByInstance = new Map<string, WindowsMonitorModesRowT>();
           for (const row of modeRows) {
-            if (!row.instance_name || row.active === false) {
+            if (!row.instance_name) {
               continue;
             }
             modesByInstance.set(

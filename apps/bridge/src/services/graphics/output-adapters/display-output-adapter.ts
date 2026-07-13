@@ -16,6 +16,9 @@ type OutputPortMatchT = {
   port: DeviceDescriptorT["ports"][number];
 };
 
+const normalizeNativeFrameRate = (fps: number): number =>
+  Math.min(240, Math.max(1, Math.round(fps)));
+
 /**
  * Display output adapter for HDMI/DisplayPort/Thunderbolt screens.
  *
@@ -77,6 +80,7 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     if (!frameBusName) {
       throw new Error("Native display helper requires BRIDGE_FRAMEBUS_NAME");
     }
+    const nativeFrameRate = normalizeNativeFrameRate(config.format.fps);
 
     this.readyPromise = new Promise((resolve, reject) => {
       this.readyResolver = resolve;
@@ -91,7 +95,7 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       "--height",
       String(config.format.height),
       "--fps",
-      String(config.format.fps),
+      String(nativeFrameRate),
       "--display-index",
       "0",
     ];
@@ -100,7 +104,7 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     env.BRIDGE_FRAMEBUS_NAME = frameBusName;
     env.BRIDGE_FRAME_WIDTH = String(config.format.width);
     env.BRIDGE_FRAME_HEIGHT = String(config.format.height);
-    env.BRIDGE_FRAME_FPS = String(config.format.fps);
+    env.BRIDGE_FRAME_FPS = String(nativeFrameRate);
     if (process.env.BRIDGE_FRAMEBUS_SIZE) {
       env.BRIDGE_FRAMEBUS_SIZE = process.env.BRIDGE_FRAMEBUS_SIZE;
     }

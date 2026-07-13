@@ -385,6 +385,32 @@ describe("DisplayVideoOutputAdapter", () => {
       );
     });
 
+    it("rounds fractional broadcast fps for the integer-only display helper", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        format: { width: 1920, height: 1080, fps: 59.94 },
+        targets: { output1Id: "display-1-hdmi" },
+      });
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+
+      await configurePromise;
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "/tmp/display-helper",
+        expect.arrayContaining(["--fps", "60"]),
+        expect.objectContaining({
+          env: expect.objectContaining({ BRIDGE_FRAME_FPS: "60" }),
+        })
+      );
+    });
+
     it("includes BRIDGE_FRAMEBUS_SIZE when set in env", async () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);

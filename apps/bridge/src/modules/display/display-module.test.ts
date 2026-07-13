@@ -516,6 +516,55 @@ describe("DisplayModule", () => {
       ]);
     });
 
+    it("on win32 keeps supported modes when only the mode row is inactive", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true,
+      });
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const instanceName = "DISPLAY\\BMD0001\\MODE_REFRESH_0";
+      const payload = windowsPowerShellJson({
+        ids: [{ instance_name: instanceName, active: true, name: "ATEM" }],
+        connections: [
+          {
+            instance_name: instanceName,
+            active: true,
+            video_output_technology: 5,
+          },
+        ],
+        modes: [
+          {
+            instance_name: instanceName,
+            active: false,
+            modes: [
+              {
+                width: 1920,
+                height: 1080,
+                refresh_numerator: 50,
+                refresh_denominator: 1,
+                interlaced: false,
+                preferred: true,
+              },
+            ],
+          },
+        ],
+      });
+
+      const detectPromise = new DisplayModule().detect();
+      setImmediate(() => {
+        child.stdout.emit("data", payload);
+        child.emit("close", 0);
+      });
+
+      const result = await detectPromise;
+      expect(result).toHaveLength(1);
+      expect(result[0].ports[0].capabilities.modes).toEqual([
+        expect.objectContaining({ width: 1920, height: 1080, fps: 50 }),
+      ]);
+    });
+
     it("on win32 normalizes, deduplicates, and sorts monitor source modes", async () => {
       Object.defineProperty(process, "platform", {
         value: "win32",

@@ -1856,7 +1856,7 @@ describe("electron-renderer-entry", () => {
     const validConfig = {
       width: 1920,
       height: 1080,
-      fps: 30,
+      fps: 59.94,
       pixelFormat: 1,
       framebusName: "/test-shm",
       framebusSlotCount: 2,
@@ -1864,21 +1864,20 @@ describe("electron-renderer-entry", () => {
       backgroundMode: "transparent" as const,
     };
     mockSafeParse.mockReturnValue({ success: true, data: validConfig });
-    mockLoadFrameBusModule.mockReturnValue({
-      createWriter: () => ({
-        name: "test",
-        size: 0,
-        header: {
-          width: 1920,
-          height: 1080,
-          fps: 30,
-          slotCount: 2,
-          pixelFormat: 1,
-        },
-        writeFrame: jest.fn(),
-        close: jest.fn(),
-      }),
+    const createWriter = jest.fn().mockReturnValue({
+      name: "test",
+      size: 0,
+      header: {
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        slotCount: 2,
+        pixelFormat: 1,
+      },
+      writeFrame: jest.fn(),
+      close: jest.fn(),
     });
+    mockLoadFrameBusModule.mockReturnValue({ createWriter });
     let connectionCallback: (() => void) | null = null;
     const dataHandlers: Array<(data: Buffer) => void> = [];
     const mockSocket = {
@@ -1903,7 +1902,7 @@ describe("electron-renderer-entry", () => {
       backgroundMode: "transparent",
       width: 1920,
       height: 1080,
-      fps: 30,
+      fps: 59.94,
     };
     mockDecodeNextIpcPacket
       .mockReturnValueOnce({
@@ -1940,6 +1939,10 @@ describe("electron-renderer-entry", () => {
       expect.stringContaining("__createLayer"),
       true
     );
+    expect(createWriter).toHaveBeenCalledWith(
+      expect.objectContaining({ fps: 60 })
+    );
+    expect(mockSetFrameRate).toHaveBeenCalledWith(60);
     expect(mockInvalidate).toHaveBeenCalled();
   });
 
