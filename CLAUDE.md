@@ -82,12 +82,23 @@ or hard-to-undo.
   it reads as "the agent lost my changes".
 
 ## Where the pieces live
-- **Global, one copy** (`~/.claude`): the slash commands and `notion-routing.json`.
-  Improve them once, every repo gets it.
-- **Per-repo**: the git guardrail hook + `.claude/settings.json`, `bin/wt.sh`,
-  `templates/TASK.md`, the PR template, and this doctrine.
-- Never re-add `.claude/commands/task*.md` to a repo: a stale local copy shadows
-  the global one, and the repo silently keeps running an old kit.
+- **Global, one copy** (`~/.claude`): the slash commands, the git guardrail
+  (`hooks/git-guardrails.sh` + its PreToolUse registration in `settings.json`),
+  the `guardrail-exempt` list, and `notion-routing.json`. Improve once, every repo
+  gets it.
+- **Per-repo**: `bin/wt.sh`, `templates/TASK.md`, the PR template, and this
+  doctrine — the things that are only meaningful relative to a repo.
+- **Never re-add `.claude/commands/task*.md` or `.claude/hooks/` to a repo.**
+  User- and project-level hooks FIRE TOGETHER and command copies shadow the global
+  ones, so a leftover silently runs old logic and ignores the exemption list.
+- The guardrail applies to **every repo on this machine**, not just kit repos —
+  a per-repo hook only ever guarded the branch you had checked out. A repo where
+  pushing to `main` is legitimate belongs in `~/.claude/guardrail-exempt`, listed
+  by remote slug (which also covers its worktrees).
+- The guardrail sees **one string, not a parsed shell**: it cannot tell a command
+  from text quoting one. Pass commit messages and PR bodies via files
+  (`git commit -F`, `gh pr create --body-file`), and don't chain a push with a
+  `gh pr create --base <protected>` in a single shell command.
 
 ## The bounded review loop (no infinite tot-correction)
 - Max 3 rounds. Track `Round: N/3` in `TASK.md`.
