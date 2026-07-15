@@ -57,6 +57,37 @@ or hard-to-undo.
   switch to a protected branch. (Enforced by the hook + rulesets.)
 - The agent may **merge**, but ONLY via `gh pr merge` after the required chat
   confirmation above. No confirmation, or an ambiguous one → do not merge; ask.
+- **Never report a check you did not run, and never round a blocked check up to a
+  passed one.** BLOCKED (couldn't check — no credentials, service not connected,
+  flow behind a login) is not FAILED and not PASSED. Name it, say what would close
+  it, let the human decide. Never enter credentials to unblock yourself.
+- **The verifier is never the implementer.** Re-run the checks yourself and record
+  the real output; do not restate the implementer's summary as verified fact.
+
+## Reality checks this kit learned the hard way
+- **Verify the "before", not just the "after".** For a bug, a green test or a green
+  browser check proves nothing until you have shown it can go red: revert only the
+  production files and confirm it fails — and fails for the *right* reason.
+- **Use the project's own scripts** (`package.json`), never improvised commands. An
+  invented test invocation can fail on pre-existing pollution and send you hunting
+  a defect that does not exist.
+- **A sibling worktree is "outside the project"** for anything sandboxed to a
+  project root. Start such tools (Codex) from inside the worktree, and query their
+  state from there too — their job state is scoped to that directory.
+- **A fresh worktree cannot run**: no `node_modules`, no `.env*` (both gitignored).
+  `bin/wt.sh prep <slug>` fixes both. A symlinked `node_modules` satisfies jest but
+  not Turbopack.
+- **Tell the human where the work is.** Their editor sits on the base branch and
+  will show nothing. That is the worktree working as designed — but silence about
+  it reads as "the agent lost my changes".
+
+## Where the pieces live
+- **Global, one copy** (`~/.claude`): the slash commands and `notion-routing.json`.
+  Improve them once, every repo gets it.
+- **Per-repo**: the git guardrail hook + `.claude/settings.json`, `bin/wt.sh`,
+  `templates/TASK.md`, the PR template, and this doctrine.
+- Never re-add `.claude/commands/task*.md` to a repo: a stale local copy shadows
+  the global one, and the repo silently keeps running an old kit.
 
 ## The bounded review loop (no infinite tot-correction)
 - Max 3 rounds. Track `Round: N/3` in `TASK.md`.

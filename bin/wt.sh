@@ -8,10 +8,20 @@
 #   wt.sh inventory            Show the full state before starting (do this first).
 #   wt.sh new <slug> [base]    Create ../<repo>-worktrees/<slug> on branch
 #                              feature/<slug>, based on origin/<base> (default: dev).
+#   wt.sh prep <slug>          Make the worktree runnable: link .env* from the
+#                              primary checkout, then install dependencies.
 #   wt.sh list                 List existing worktrees.
 #   wt.sh prune <slug>         Remove the worktree (branch is kept unless --branch).
 #
 # Worktrees are placed in a SIBLING folder so they never nest inside the repo.
+# Two consequences that will bite you if you don't know them:
+#   - A sibling worktree is "outside the project" for anything that sandboxes to a
+#     project root. Codex started from the repo rejects EVERY write into it
+#     ("patch rejected: writing outside of the project") — start it from inside
+#     the worktree instead.
+#   - The worktree has no node_modules and no .env* (both gitignored). Symlinking
+#     node_modules is enough for jest but Turbopack refuses it ("points out of the
+#     filesystem root"), so a dev server needs a real install -> `wt.sh prep`.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -52,7 +62,52 @@ new () {
     echo "  ! AGENT_GIT_NAME / AGENT_GIT_EMAIL not set — commits will use your global identity."
   fi
 
-  echo "✓ Ready. cd \"${path}\"  and start Claude Code there."
+  cat <<EOF
+
+✓ Worktree ready:  ${path}
+   branch:         ${branch}   (from origin/${base})
+
+  Your primary checkout (${ROOT}) is untouched and still on its own branch —
+  it will show NO changes from this task. That is intended, not a bug.
+
+  Look at it:   cursor "${path}"      # or: code "${path}"
+  Run it:       bin/wt.sh prep ${slug}   # links .env*, installs deps
+                then start the dev server on a NON-default port — your own
+                server on the default port serves the base branch, i.e. the
+                code WITHOUT this task's changes.
+  Work on it:   cd "${path}" && run /task there.
+                Tools that sandbox to a project root (Codex) must be started
+                from inside this directory, not from the repo.
+EOF
+}
+
+prep () {
+  local slug="${1:?usage: wt.sh prep <slug>}"
+  local path="${WT_DIR}/${slug}"
+  [ -d "$path" ] || { echo "No worktree at ${path}. Run: wt.sh new ${slug}"; exit 1; }
+
+  # .env* are gitignored, so a fresh worktree has none. Link (don't copy) so
+  # secrets keep exactly one home and stay in sync.
+  local linked=0
+  for f in "$ROOT"/.env "$ROOT"/.env.local "$ROOT"/.env.development.local; do
+    [ -f "$f" ] || continue
+    ln -sfn "$f" "${path}/$(basename "$f")" && linked=$((linked + 1))
+  done
+  echo "✓ Linked ${linked} env file(s) from the primary checkout"
+
+  # A symlinked node_modules is fine for jest but Turbopack rejects it, so the
+  # worktree needs its own real install.
+  if [ -d "${path}/node_modules" ] && [ ! -L "${path}/node_modules" ]; then
+    echo "✓ node_modules already present"
+  else
+    rm -f "${path}/node_modules"
+    echo ">> Installing dependencies in the worktree (this is not a symlink — Turbopack needs a real tree) ..."
+    ( cd "$path" && { npm ci || npm install; } )
+  fi
+
+  echo "✓ ${path} is runnable. Start the dev server on a non-default port, e.g.:"
+  echo "    cd \"${path}\" && npx next dev -p 3555"
+  echo "  next dev also prints a Network URL (http://<lan-ip>:3555) — use it to test a mobile-only bug on a real phone."
 }
 
 list () { git worktree list; }
@@ -74,7 +129,8 @@ prune () {
 case "$cmd" in
   inventory) inventory ;;
   new)       new "$@" ;;
+  prep)      prep "$@" ;;
   list)      list ;;
   prune)     prune "$@" ;;
-  *) echo "Unknown command: ${cmd}"; echo "Try: inventory | new | list | prune"; exit 1 ;;
+  *) echo "Unknown command: ${cmd}"; echo "Try: inventory | new | prep | list | prune"; exit 1 ;;
 esac
