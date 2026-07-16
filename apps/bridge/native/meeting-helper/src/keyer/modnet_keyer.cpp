@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -305,6 +306,32 @@ class ModnetKeyer::Impl {
         // free-dimension override); don't overwrite it with the model's dims.
 #endif
       }
+#if defined(_WIN32)
+      // Warm up the freshly created session so the FIRST visible inference does
+      // not pay the DirectML shape-compile stall (documented above, ~145ms up
+      // to ~2.4s) -- that stall is what makes the keyer flicker/jump for the
+      // first seconds after the engine starts. A single zero-input Run compiles
+      // the kernels now. Non-fatal: on failure the first real frame just pays it.
+      if (inputWidth_ > 0u && inputHeight_ > 0u) {
+        try {
+          std::vector<float> warmupTensor(
+              static_cast<size_t>(3u) * inputWidth_ * inputHeight_, 0.0f);
+          std::array<int64_t, 4> warmupShape = {
+              1, 3, static_cast<int64_t>(inputHeight_),
+              static_cast<int64_t>(inputWidth_)};
+          Ort::MemoryInfo memoryInfo =
+              Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+          Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
+              memoryInfo, warmupTensor.data(), warmupTensor.size(),
+              warmupShape.data(), warmupShape.size());
+          session_->Run(Ort::RunOptions{nullptr}, inputNames_.data(),
+                        &warmupInput, 1, outputNames_.data(), 1);
+          sessionRunSize_ = inputWidth_;
+        } catch (...) {
+          // Warmup is best-effort; ignore failures.
+        }
+      }
+#endif
       loaded_ = true;
       status_.activeKeyer = "modnet";
       status_.fallbackActive = false;
@@ -360,8 +387,40 @@ class ModnetKeyer::Impl {
     // running the graph sequentially.
     sessionOptions.DisableMemPattern();
     sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
-    OrtStatus *dmlStatus =
-        OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
+    // DirectML device selection. Device 0 (the legacy default) is on hybrid
+    // laptops usually the weak Intel iGPU rather than the discrete NVIDIA/AMD
+    // GPU -> slow inference, stale masks, keyer flicker. Prefer the DML2 API,
+    // which asks DXGI for the HighPerformance (discrete) GPU adapter, and fall
+    // back to the legacy device-0 append (then CPU) if DML2 or a GPU is
+    // unavailable. BROADIFY_MEETING_KEYER_DML_LEGACY=1 forces the old device 0.
+    OrtStatus *dmlStatus = nullptr;
+    const char *dmlLegacyEnv = std::getenv("BROADIFY_MEETING_KEYER_DML_LEGACY");
+    const bool forceLegacyDevice0 =
+        dmlLegacyEnv != nullptr && dmlLegacyEnv[0] == '1';
+    const OrtDmlApi *dmlApi = nullptr;
+    if (!forceLegacyDevice0) {
+      OrtStatus *apiStatus = Ort::GetApi().GetExecutionProviderApi(
+          "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&dmlApi));
+      if (apiStatus != nullptr) {
+        Ort::GetApi().ReleaseStatus(apiStatus);
+        dmlApi = nullptr;
+      }
+    }
+    if (dmlApi != nullptr) {
+      OrtDmlDeviceOptions deviceOptions{
+          OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
+      dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
+          sessionOptions, &deviceOptions);
+      if (dmlStatus != nullptr) {
+        // HighPerformance append failed: fall back to the legacy device 0.
+        Ort::GetApi().ReleaseStatus(dmlStatus);
+        dmlStatus =
+            OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
+      }
+    } else {
+      dmlStatus =
+          OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
+    }
     if (dmlStatus == nullptr) {
       status_.provider = "directml";
     } else {
