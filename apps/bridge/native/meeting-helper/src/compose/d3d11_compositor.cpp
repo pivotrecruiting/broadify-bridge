@@ -349,12 +349,13 @@ bool initializeContext() {
   }
   ctx.initialized = true;
 
-  // Opt-in only while the Windows GPU path is being validated (the macOS
-  // Metal compositor is opt-OUT; flip this once proven in the field).
+  // Default ON (proven in the field): the D3D11 GPU compositor is the Windows
+  // production path, matching the macOS Metal opt-OUT. Kill-switch: set
+  // BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 to fall back to the CPU compositor.
   const char *envToggle = std::getenv("BROADIFY_MEETING_GPU_COMPOSITOR_D3D11");
-  if (envToggle == nullptr || std::strcmp(envToggle, "1") != 0) {
+  if (envToggle != nullptr && std::strcmp(envToggle, "0") == 0) {
     logCompositorEvent("disabled",
-                       "set BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=1 to enable");
+                       "BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 (CPU compositor)");
     return false;
   }
 
@@ -834,10 +835,12 @@ bool initializeGuidedContext() {
   }
   ctx.initialized = true;
 
+  // Default ON: the GPU guided edge-refine is the Windows production path.
+  // Kill-switch: BROADIFY_MEETING_GPU_GUIDED=0 falls back to the CPU guided filter.
   const char *envToggle = std::getenv("BROADIFY_MEETING_GPU_GUIDED");
-  if (envToggle == nullptr || std::strcmp(envToggle, "1") != 0) {
+  if (envToggle != nullptr && std::strcmp(envToggle, "0") == 0) {
     logCompositorEvent("guided_disabled",
-                       "set BROADIFY_MEETING_GPU_GUIDED=1 to enable");
+                       "BROADIFY_MEETING_GPU_GUIDED=0 (CPU guided)");
     return false;
   }
   if (!initializeContext()) {
@@ -864,9 +867,11 @@ bool initializeGuidedContext() {
   }
 
   ctx.radius = std::max(
-      1, static_cast<int>(guidedEnvDouble("BROADIFY_MEETING_GUIDED_RADIUS", 8.0) + 0.5));
+      1, static_cast<int>(guidedEnvDouble("BROADIFY_MEETING_GUIDED_RADIUS", 4.0) + 0.5));
+  // Apple-parity defaults: radius 4 + epsilon 1e-4 snap the edge harder to the
+  // real luminance boundary (was 8 / 1e-3, softer). Env-overridable for tuning.
   ctx.epsilon = static_cast<float>(
-      guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 1.0e-3));
+      guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 1.0e-4));
 
   ctx.available = true;
   logCompositorEvent("guided_enabled",

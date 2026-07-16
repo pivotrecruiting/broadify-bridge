@@ -223,12 +223,15 @@ bool gpuPipelineEnabled() {
   return enabled;
 #elif defined(_WIN32)
   // Fused synchronous DirectML keyer: key the CURRENT frame every program frame
-  // (mask age 0 -> the mask body tracks motion, no edge lag). Opt-in, default
-  // OFF: set BROADIFY_MEETING_GPU_PIPELINE=1. Off keeps the known-good async
-  // MODNet worker path. When ON, the worker self-parks (submit guard below).
+  // (mask age 0 -> the mask body tracks motion, no edge lag). Default ON -- the
+  // Windows production keyer, matching the macOS fused path. Kill-switch:
+  // BROADIFY_MEETING_GPU_PIPELINE=0 falls back to the async MODNet worker (older
+  // mask, edge lag on motion). The worker self-parks when ON (submit guard
+  // below). NOTE: fused locks program fps to inference fps; on a very weak GPU
+  // the async path (=0) can be smoother.
   static const bool enabled = [] {
     const char *raw = std::getenv("BROADIFY_MEETING_GPU_PIPELINE");
-    return raw != nullptr && raw[0] == '1';
+    return raw == nullptr || raw[0] != '0';
   }();
   return enabled;
 #else
