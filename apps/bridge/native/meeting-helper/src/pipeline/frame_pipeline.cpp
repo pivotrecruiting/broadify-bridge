@@ -6,6 +6,7 @@
 #include "framebus_writer.h"
 #include "keyer/coreml_keyer.h"
 #include "keyer/keyer_chain.h"
+#include "keyer/modnet_keyer.h"
 #include "pipeline/guided_mask_refine.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
@@ -118,7 +119,9 @@ struct MaskSample {
 // restores regions the current frame dropped. Resamples the previous mask
 // (nearest) when the quality tier changed its resolution, so smoothing is not
 // skipped at tier transitions.
-void blendAlphaEma(AlphaMask &mask, const AlphaMask &previous) {
+void blendAlphaEma(AlphaMask &mask, const AlphaMask &previous,
+                   float staticWeight = kEmaWeightStatic,
+                   float motionWeight = kEmaWeightMotion) {
   if (mask.alpha.empty() || previous.alpha.empty() || mask.width == 0u ||
       mask.height == 0u) {
     return;
@@ -160,7 +163,7 @@ void blendAlphaEma(AlphaMask &mask, const AlphaMask &previous) {
   const double t = std::clamp(
       (meanDiff - kEmaMotionLow) / (kEmaMotionHigh - kEmaMotionLow), 0.0, 1.0);
   const float wCur = static_cast<float>(
-      kEmaWeightStatic + t * (kEmaWeightMotion - kEmaWeightStatic));
+      staticWeight + t * (motionWeight - staticWeight));
   const float wPrev = 1.0f - wCur;
 
   // 3) Blend.
@@ -209,11 +212,7 @@ bool liveSnapEnabled() {
 // consuming the async worker's older mask, driving mask age to zero (kills the
 // motion edge-lag). Falls back to the async path on any failure.
 bool gpuPipelineEnabled() {
-#if !defined(__APPLE__)
-  // The fused synchronous keyer is CoreML (macOS-only). Off here so the async
-  // MODNet worker keeps receiving frames on Windows.
-  return false;
-#else
+#if defined(__APPLE__)
   static const bool enabled = [] {
     // Default ON: the fused synchronous native-CoreML/GPU keyer is the production
     // path (mask age 0 -> motion edges track exactly). Kill-switch: set
@@ -222,6 +221,18 @@ bool gpuPipelineEnabled() {
     return raw == nullptr || raw[0] != '0';
   }();
   return enabled;
+#elif defined(_WIN32)
+  // Fused synchronous DirectML keyer: key the CURRENT frame every program frame
+  // (mask age 0 -> the mask body tracks motion, no edge lag). Opt-in, default
+  // OFF: set BROADIFY_MEETING_GPU_PIPELINE=1. Off keeps the known-good async
+  // MODNet worker path. When ON, the worker self-parks (submit guard below).
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_GPU_PIPELINE");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return enabled;
+#else
+  return false;
 #endif
 }
 
@@ -1550,6 +1561,7 @@ void runFramePipeline(const Options &options,
         keyerSettings.edgeStabilizationEnabled = state.edgeStabilizationEnabled;
         keyerSettings.edgeStabilizationStrength = state.edgeStabilizationStrength;
         keyerSettings.degradation = state.degradationSettings;
+        keyerSettings.performanceMode = state.performanceMode;
       }
       // The fused path keys synchronously below; don't also run the async worker
       // (that would run CoreML twice per frame).
@@ -1769,6 +1781,80 @@ void runFramePipeline(const Options &options,
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
         if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
           fusedMask = std::move(fused.mask);
+          frameForCompositor = &latestCameraFrame;
+          maskForCompositor = &fusedMask;
+          shouldRenderProgram = true;
+          updateMeetingKeyerStatus(state, fused.status);
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.keyerMetrics.maskAgeMs = 0.0;
+          state.keyerMetrics.maskAgeAvgMs = 0.0;
+          state.degradationStage = "fused";
+          state.staleMaskActive = false;
+        }
+      }
+#elif defined(_WIN32)
+      if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+          !latestCameraFrame.rgba.empty()) {
+        // Synchronous DirectML keyer on the CURRENT frame -> mask age 0. The raw
+        // MODNet matte carries no refine, so snap its edge onto the current
+        // frame with the same GPU guided filter the live-snap path uses (CPU
+        // guided as fallback). The async worker self-parks (submit guard above),
+        // so this dedicated instance is the only live DirectML session.
+        static ModnetKeyer fusedKeyer(ModnetKeyerOptions{options.modelsDir});
+        KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
+        if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
+          fusedMask = std::move(fused.mask);
+          // Temporal stabilization FIRST, on the raw matte: the motion-adaptive
+          // EMA smooths the per-frame confidence jitter and the collapse guard
+          // holds through MODNet dropouts (no "person briefly gone"). The guided
+          // refine BELOW then re-snaps the edge to the CURRENT frame, so the EMA
+          // never softens the visible boundary -> stable body AND crisp edge
+          // (mirrors the async worker's EMA -> live-snap order).
+          static AlphaMask prevFusedMask;
+          static double prevFusedCoverage = 0.0;
+          static int fusedCollapseHold = 0;
+          constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
+          const double fusedCoverage = computeMaskCoverage(fusedMask);
+          const bool fusedCollapsed =
+              fusedCoverage < kMinForegroundCoverage ||
+              fusedCoverage > kMaxForegroundCoverage ||
+              (prevFusedCoverage > kHealthyCoverage &&
+               fusedCoverage < prevFusedCoverage * kCollapseDropRatio);
+          if (fusedCollapsed && !prevFusedMask.alpha.empty() &&
+              fusedCollapseHold < kMaxFusedCollapseHold) {
+            fusedMask = prevFusedMask;
+            ++fusedCollapseHold;
+          } else {
+            fusedCollapseHold = 0;
+            if (!prevFusedMask.alpha.empty() &&
+                fusedCoverage >= kMinForegroundCoverage &&
+                fusedCoverage <= kMaxForegroundCoverage) {
+              // Lighter EMA than the async path: the fused matte is age-0, so it
+              // needs less smoothing -> less body trail while still killing the
+              // per-frame flicker. Env-tunable to dial the flicker/ghost
+              // trade-off without a rebuild (higher = crisper/less ghost).
+              static const float fusedEmaStatic = [] {
+                const char *raw =
+                    std::getenv("BROADIFY_MEETING_FUSED_EMA_STATIC");
+                return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.72f;
+              }();
+              static const float fusedEmaMotion = [] {
+                const char *raw =
+                    std::getenv("BROADIFY_MEETING_FUSED_EMA_MOTION");
+                return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.96f;
+              }();
+              blendAlphaEma(fusedMask, prevFusedMask, fusedEmaStatic,
+                            fusedEmaMotion);
+            }
+            prevFusedMask = fusedMask;
+            prevFusedCoverage = fusedCoverage;
+          }
+          // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
+          // CURRENT frame so the visible boundary stays crisp on motion.
+          if (!(d3d11GuidedRefineAvailable() &&
+                guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+            guidedRefineMask(fusedMask, latestCameraFrame);
+          }
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           shouldRenderProgram = true;
