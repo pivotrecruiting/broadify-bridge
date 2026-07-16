@@ -720,6 +720,10 @@ async function ensureSingleWindow(
       // offscreen captures come out short, breaking the integer downsample.
       useContentSize: true,
       frame: false,
+      // Windows clamps even an offscreen window to the work area (screen minus
+      // the taskbar), so a 1080-tall window only captured 1032 rows and the
+      // downsample failed every frame. Allow the window to exceed the screen.
+      enableLargerThanScreen: true,
       show: false,
       transparent: true,
       paintWhenInitiallyHidden: true,
