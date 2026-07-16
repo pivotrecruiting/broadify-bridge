@@ -1298,10 +1298,12 @@ int maskAnchorBottomFrameY(const AlphaMask &mask, uint32_t frameHeight) {
 }
 
 // GPU stage 1: composites background, back/front graphics and the camera
-// layer (keyed presenter or cover camera) on the GPU. Scenes with layers the
-// GPU path does not cover yet (media layer, built-in lower third) fall back
-// to the CPU compositor; the cornerbug is drawn on the CPU on top of the GPU
-// result, which matches its position as the topmost layer.
+// layer (keyed presenter or cover camera) on the GPU. Only a media layer the
+// GPU path does not cover yet falls back to the CPU compositor; the built-in
+// lower third and the cornerbug are drawn on the CPU on top of the GPU result
+// (cheap rects, ~100K px), matching their position as the topmost layers -- so
+// a graphics-enabled scene no longer drags the whole 1080p composite onto one
+// CPU core.
 bool tryRenderProgramFrameGpu(const Options &options,
                               const CompositorSnapshot &snapshot,
                               const VideoFrame *cameraFrame,
@@ -1319,10 +1321,6 @@ bool tryRenderProgramFrameGpu(const Options &options,
     return false;
   }
 #endif
-  if (snapshot.graphics.enabled) {
-    return false;
-  }
-
   MetalComposePlan plan;
   plan.width = options.width;
   plan.height = options.height;
@@ -1468,6 +1466,11 @@ bool tryRenderProgramFrameGpu(const Options &options,
     return false;
   }
 #endif
+  // The built-in lower third is the only overlay the GPU shader lacks; draw it
+  // (and the cornerbug) CPU-over-GPU on top of the GPU result -- both are cheap
+  // rects, so a graphics-enabled scene stays on the GPU instead of dropping to
+  // the full CPU compositor.
+  drawGraphics(output, plan.width, plan.height, snapshot.graphics);
   drawCornerbug(output, plan.width, plan.height, snapshot.cornerbug);
   return true;
 }
