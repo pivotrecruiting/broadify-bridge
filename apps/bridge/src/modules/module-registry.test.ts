@@ -100,6 +100,50 @@ describe("ModuleRegistry", () => {
     });
   });
 
+  describe("detectModules", () => {
+    it("does not invoke modules outside the requested set", async () => {
+      const display = createMockModule("display", []);
+      const usb = createMockModule("usb-capture", []);
+      const displaySpy = jest.spyOn(display, "detect");
+      const usbSpy = jest.spyOn(usb, "detect");
+      registry.register(usb);
+      registry.register(display);
+
+      const results = await registry.detectModules(["display"]);
+
+      expect(results).toEqual([
+        expect.objectContaining({
+          moduleName: "display",
+          status: "success",
+        }),
+      ]);
+      expect(displaySpy).toHaveBeenCalledTimes(1);
+      expect(usbSpy).not.toHaveBeenCalled();
+    });
+
+    it("returns timeout status using the module-specific timeout", async () => {
+      const slowModule: DeviceModule = {
+        name: "display",
+        detectionTimeoutMs: 10,
+        detect: () => new Promise(() => {}),
+        createController: () => Promise.reject(new Error("no controller")),
+      };
+      registry.register(slowModule);
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const results = await registry.detectModules(["display"]);
+
+      expect(results).toEqual([
+        expect.objectContaining({
+          moduleName: "display",
+          status: "timeout",
+          errorCode: "detection_timeout",
+        }),
+      ]);
+      consoleSpy.mockRestore();
+    });
+  });
+
   describe("getController", () => {
     it("returns controller for detected device", async () => {
       registry.register(
@@ -117,6 +161,21 @@ describe("ModuleRegistry", () => {
       await expect(registry.getController("missing")).rejects.toThrow(
         "Device missing not found"
       );
+    });
+
+    it("detects only the explicitly selected owner module", async () => {
+      const usb = createMockModule("usb-capture", []);
+      const display = createMockModule("display", [
+        { id: "display-1", name: "Display", type: "display", available: true },
+      ]);
+      const usbSpy = jest.spyOn(usb, "detect");
+      registry.register(usb);
+      registry.register(display);
+
+      const controller = await registry.getController("display-1", "display");
+
+      expect(controller.deviceId).toBe("display-1");
+      expect(usbSpy).not.toHaveBeenCalled();
     });
   });
 

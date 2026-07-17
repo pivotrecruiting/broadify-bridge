@@ -8,37 +8,96 @@ import { sanitizeIdPart } from "./display-parse-utils.js";
 export type RawDisplayInfoT = {
   name: string;
   connectionType: PortDescriptorT["type"];
+  stableId?: string;
+  nativeSelector?: string;
   vendorId?: string;
   productId?: string;
   serial?: string;
   resolution?: { width: number; height: number };
   refreshHz?: number;
+  modes?: RawDisplayModeT[];
+};
+
+export type RawDisplayModeT = {
+  width: number;
+  height: number;
+  fps: number;
+  fieldDominance: "progressive" | "interlaced";
+  preferred?: boolean;
+};
+
+const toModeKey = (mode: RawDisplayModeT): string =>
+  `${mode.width}x${mode.height}@${mode.fps.toFixed(3)}-${mode.fieldDominance}`;
+
+const isValidRawDisplayMode = (mode: RawDisplayModeT): boolean =>
+  Number.isFinite(mode.width) &&
+  Number.isFinite(mode.height) &&
+  Number.isFinite(mode.fps) &&
+  mode.width > 0 &&
+  mode.height > 0 &&
+  mode.fps > 0;
+
+const compareRawDisplayModes = (
+  left: RawDisplayModeT,
+  right: RawDisplayModeT
+): number => {
+  if (Boolean(left.preferred) !== Boolean(right.preferred)) {
+    return left.preferred ? -1 : 1;
+  }
+  return (
+    right.height - left.height ||
+    right.width - left.width ||
+    right.fps - left.fps ||
+    left.fieldDominance.localeCompare(right.fieldDominance)
+  );
 };
 
 /**
  * Build display mode from raw display info.
  */
 export const buildDisplayMode = (info: RawDisplayInfoT): OutputDisplayModeT[] => {
-  if (!info.resolution || !info.refreshHz) {
-    return [];
-  }
-  const { width, height } = info.resolution;
-  const fps = info.refreshHz;
-  const fpsLabel =
-    Math.abs(fps - Math.round(fps)) < 0.01
-      ? String(Math.round(fps))
-      : fps.toFixed(2);
-  return [
-    {
-      id: 0,
-      label: `${height}p${fpsLabel} (${width}x${height})`,
-      width,
-      height,
-      fps,
-      fieldDominance: "progressive",
+  const rawModes = info.modes?.length
+    ? info.modes
+    : info.resolution && info.refreshHz
+      ? [
+          {
+            width: info.resolution.width,
+            height: info.resolution.height,
+            fps: info.refreshHz,
+            fieldDominance: "progressive" as const,
+            preferred: true,
+          },
+        ]
+      : [];
+  const seen = new Set<string>();
+  const modes = rawModes
+    .filter(isValidRawDisplayMode)
+    .filter((mode) => {
+      const key = toModeKey(mode);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .sort(compareRawDisplayModes);
+
+  return modes.map((mode, id) => {
+    const fpsLabel =
+      Math.abs(mode.fps - Math.round(mode.fps)) < 0.01
+        ? String(Math.round(mode.fps))
+        : mode.fps.toFixed(2);
+    const scanLabel = mode.fieldDominance === "interlaced" ? "i" : "p";
+    return {
+      id,
+      label: `${mode.height}${scanLabel}${fpsLabel} (${mode.width}x${mode.height})`,
+      width: mode.width,
+      height: mode.height,
+      fps: mode.fps,
+      fieldDominance: mode.fieldDominance,
       pixelFormats: [],
-    },
-  ];
+    };
+  });
 };
 
 /**
@@ -57,8 +116,9 @@ export const mapRawDisplaysToDevices = (
       display.productId ? sanitizeIdPart(display.productId) : "",
       display.serial ? sanitizeIdPart(display.serial) : "",
     ].filter(Boolean);
-    const baseId =
-      idParts.length > 0
+    const baseId = display.stableId
+      ? `display-${sanitizeIdPart(display.stableId)}`
+      : idParts.length > 0
         ? `display-${idParts.join("-")}`
         : `display-${sanitizeIdPart(display.name)}-${index}`;
     let deviceId = baseId;
@@ -68,7 +128,9 @@ export const mapRawDisplaysToDevices = (
     seenIds.add(deviceId);
 
     const modes = buildDisplayMode(display);
-    const formats = modes.length > 0 ? [modes[0].label.split(" ")[0]] : [];
+    const formats = Array.from(
+      new Set(modes.map((mode) => mode.label.split(" ")[0]))
+    );
 
     const portId = `${deviceId}-${display.connectionType}`;
     const portLabelMap: Record<PortDescriptorT["type"], string> = {

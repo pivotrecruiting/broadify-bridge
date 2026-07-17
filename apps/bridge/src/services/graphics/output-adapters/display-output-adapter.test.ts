@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { DisplayVideoOutputAdapter } from "./display-output-adapter.js";
+import { displayTargetRegistry } from "../../../modules/display/display-target-registry.js";
 
 const mockLogger = {
   debug: jest.fn(),
@@ -131,6 +132,7 @@ describe("DisplayVideoOutputAdapter", () => {
       emitExit(lastSpawnedChild, 0, null);
     }
     await adapter.stop();
+    displayTargetRegistry.clear();
     lastSpawnedChild = null;
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
     process.env = originalEnv;
@@ -385,6 +387,32 @@ describe("DisplayVideoOutputAdapter", () => {
       );
     });
 
+    it("rounds fractional broadcast fps for the integer-only display helper", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      setSpawnChild(child);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        format: { width: 1920, height: 1080, fps: 59.94 },
+        targets: { output1Id: "display-1-hdmi" },
+      });
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+
+      await configurePromise;
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "/tmp/display-helper",
+        expect.arrayContaining(["--fps", "60"]),
+        expect.objectContaining({
+          env: expect.objectContaining({ BRIDGE_FRAME_FPS: "60" }),
+        })
+      );
+    });
+
     it("includes BRIDGE_FRAMEBUS_SIZE when set in env", async () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
@@ -546,6 +574,9 @@ describe("DisplayVideoOutputAdapter", () => {
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      displayTargetRegistry.replace([
+        ["display-1-hdmi", { deviceName: "\\\\.\\DISPLAY2" }],
+      ]);
       const child = createMockChild();
       setSpawnChild(child);
 
@@ -561,6 +592,14 @@ describe("DisplayVideoOutputAdapter", () => {
       await configurePromise;
 
       expect(mockAccess).toHaveBeenCalledWith("/tmp/display-helper", 0);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "/tmp/display-helper",
+        expect.arrayContaining([
+          "--display-device-name",
+          "\\\\.\\DISPLAY2",
+        ]),
+        expect.any(Object),
+      );
     });
 
     it("handles ready message split across data chunks", async () => {

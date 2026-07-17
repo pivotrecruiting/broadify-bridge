@@ -11,6 +11,7 @@ describe("fetchBridgeOutputs", () => {
   const originalDebugFlag = process.env.BRIDGE_LOG_OUTPUTS;
 
   afterEach(() => {
+    jest.useRealTimers();
     global.fetch = originalFetch;
     if (originalDebugFlag) {
       process.env.BRIDGE_LOG_OUTPUTS = originalDebugFlag;
@@ -87,5 +88,36 @@ describe("fetchBridgeOutputs", () => {
 
     expect(clearTimeoutSpy).toHaveBeenCalled();
     clearTimeoutSpy.mockRestore();
+  });
+
+  it("keeps a refresh request alive beyond the per-module detection timeout", async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >();
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          setTimeout(
+            () =>
+              resolve(
+                new Response(JSON.stringify({ output1: [], output2: [] }), {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                })
+              ),
+            5_100
+          );
+        })
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const resultPromise = fetchBridgeOutputs(
+      createBridgeConfig("127.0.0.1", 8787)
+    );
+    await jest.advanceTimersByTimeAsync(5_100);
+
+    await expect(resultPromise).resolves.toEqual({ output1: [], output2: [] });
   });
 });

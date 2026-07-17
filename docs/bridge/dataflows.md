@@ -79,16 +79,23 @@ sequenceDiagram
   participant MR as ModuleRegistry
   participant DM as DeviceModules
 
-  API->>DC: getDevices(refresh?)
-  DC->>MR: detectAll()
-  MR->>DM: decklink/display/usb-capture detect
-  DM-->>MR: DeviceDescriptor[]
-  MR-->>DC: merged devices
-  DC-->>API: cached/updated devices
+  alt expliziter Nutzer-Refresh
+    API->>DC: getDevices(true, output modules)
+    DC->>MR: detectModules(display/decklink)
+    MR->>DM: decklink/display detect
+    DM-->>MR: DeviceDescriptor[]
+    MR-->>DC: updated devices
+    DC-->>API: updated devices
+  else normaler Listenabruf / WebApp-Reload
+    API->>DC: getCachedDevices(output modules)
+    DC-->>API: cached devices ohne Discovery
+  end
 ```
 
 Wesentliche Punkte:
-- Cache TTL und Refresh-Rate-Limit begrenzen Detection-Last.
+- Nur ein expliziter Refresh startet im Relay-`list_outputs`-Pfad eine Discovery;
+  normale WebApp-Abrufe lesen den vorhandenen Cache.
+- Refresh-Rate-Limit begrenzt die manuell ausgelöste Detection-Last.
 - Ausgabe wird auf UI-kompatibles Output-Modell transformiert.
 
 ## 5) Status- und Error-Events

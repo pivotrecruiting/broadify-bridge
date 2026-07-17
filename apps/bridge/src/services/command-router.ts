@@ -31,6 +31,7 @@ import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { transformDevicesToOutputs } from "./device-to-output-transform.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 
 /**
  * Relay command payload.
@@ -169,7 +170,9 @@ export class CommandRouter {
               "[CommandRouter] list_outputs refresh requested",
             );
           }
-          const devices = await deviceCache.getDevices(refresh);
+          const devices = refresh
+            ? await deviceCache.getDevices(true, OUTPUT_DEVICE_MODULE_NAMES)
+            : deviceCache.getCachedDevices(OUTPUT_DEVICE_MODULE_NAMES);
           const outputs = transformDevicesToOutputs(devices);
 
           return {

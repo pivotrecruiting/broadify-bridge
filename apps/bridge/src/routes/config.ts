@@ -8,6 +8,7 @@ import { outputConfigStore } from "../services/graphics/output-config-store.js";
 import { getAuthFailure } from "./route-guards.js";
 import type { FastifyInstance } from "fastify";
 import type { DeviceDescriptorT } from "@broadify/protocol";
+import { OUTPUT_DEVICE_MODULE_NAMES } from "../services/output-device-modules.js";
 
 type ConfigRouteDepsT = {
   runtimeConfig: Pick<
@@ -110,7 +111,10 @@ export async function registerConfigRoute(
     output1: string,
     output2: string
   ): Promise<{ valid: boolean; error?: string }> {
-    const devices = await deps.deviceCache.getDevices();
+    const devices = await deps.deviceCache.getDevices(
+      false,
+      OUTPUT_DEVICE_MODULE_NAMES,
+    );
 
     // Find output1 device
     const device1 = await findDevice(output1, devices);
@@ -187,12 +191,18 @@ export async function registerConfigRoute(
     output2: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      const devices = await deps.deviceCache.getDevices();
+      const devices = await deps.deviceCache.getDevices(
+        false,
+        OUTPUT_DEVICE_MODULE_NAMES,
+      );
 
       // Find and open output1 controller
       const device1 = await findDevice(output1, devices);
       if (device1) {
-        const controller1 = await deps.moduleRegistry.getController(device1.id);
+        const controller1 = await deps.moduleRegistry.getController(
+          device1.id,
+          device1.type,
+        );
         await controller1.open();
         fastify.log.info(
           `[Config] Opened controller for output1: ${device1.id}`
@@ -210,7 +220,10 @@ export async function registerConfigRoute(
       if (!connectionTypes.includes(output2.toLowerCase())) {
         const device2 = await findDevice(output2, devices);
         if (device2) {
-          const controller2 = await deps.moduleRegistry.getController(device2.id);
+          const controller2 = await deps.moduleRegistry.getController(
+            device2.id,
+            device2.type,
+          );
           await controller2.open();
           fastify.log.info(
             `[Config] Opened controller for output2: ${device2.id}`

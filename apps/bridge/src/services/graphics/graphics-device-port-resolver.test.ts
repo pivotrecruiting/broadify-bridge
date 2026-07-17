@@ -66,6 +66,10 @@ describe("graphics-device-port-resolver", () => {
       const result = await findCachedDevicePortById("port-x");
       expect(result).not.toBeNull();
       expect(result!.port.id).toBe("port-x");
+      expect(deviceCache.getDevices).toHaveBeenCalledWith(false, [
+        "display",
+        "decklink",
+      ]);
     });
 
     it("returns null when port not in cache", async () => {

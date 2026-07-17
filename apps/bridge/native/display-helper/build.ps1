@@ -9,6 +9,7 @@ $srcDir = Join-Path $rootDir "src"
 $framebusInclude = Join-Path (Join-Path $rootDir "..") "framebus\include"
 $sourceFile = Join-Path $srcDir "display-helper.cpp"
 $outFile = Join-Path $rootDir "display-helper.exe"
+$runtimeDll = Join-Path $rootDir "SDL2.dll"
 
 if (-not (Test-Path $framebusInclude)) {
   throw "FrameBus include not found at $framebusInclude"
@@ -93,6 +94,9 @@ $sdl = Resolve-Sdl2Paths
 if (-not $sdl) {
   throw "SDL2 not found. Set SDL2_DIR or VCPKG_ROOT so include/lib paths can be resolved."
 }
+if (-not $sdl.Sdl2Dll) {
+  throw "SDL2.dll not found. The Windows display helper release requires the dynamic SDL2 runtime."
+}
 
 $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
 if (-not $cl) {
@@ -120,20 +124,31 @@ $compileArgs = @(
   "Ole32.lib",
   "OleAut32.lib",
   "Version.lib",
-  "Setupapi.lib"
+  "Setupapi.lib",
+  "Dxgi.lib"
 )
 
 Write-Host "[DisplayHelper] Building Windows helper with SDL2 from $($sdl.BaseDir)"
+Remove-Item -Path $outFile -Force -ErrorAction SilentlyContinue
 & cl.exe @compileArgs
 if ($LASTEXITCODE -ne 0) {
   throw "cl.exe build failed with exit code $LASTEXITCODE"
 }
-
-if ($sdl.Sdl2Dll) {
-  Copy-Item -Force $sdl.Sdl2Dll (Join-Path $rootDir "SDL2.dll")
-  Write-Host "[DisplayHelper] Copied SDL2 runtime DLL to $(Join-Path $rootDir 'SDL2.dll')"
-} else {
-  Write-Warning "SDL2.dll not found. Helper may fail at runtime unless SDL2 runtime is available via PATH."
+if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -le 0) {
+  throw "Display helper build did not produce a non-empty executable at $outFile"
 }
+
+Copy-Item -Force $sdl.Sdl2Dll $runtimeDll
+if (-not (Test-Path $runtimeDll) -or (Get-Item $runtimeDll).Length -le 0) {
+  throw "Failed to copy a non-empty SDL2 runtime to $runtimeDll"
+}
+Write-Host "[DisplayHelper] Copied SDL2 runtime DLL to $runtimeDll"
+
+$repoRoot = (Resolve-Path (Join-Path $rootDir "..\..\..\..")).Path
+$selfTestScript = Join-Path $repoRoot "scripts\test-windows-display-helper.ps1"
+if (-not (Test-Path $selfTestScript)) {
+  throw "Display helper self-test script not found at $selfTestScript"
+}
+& $selfTestScript -HelperPath $outFile -Attempts 3
 
 Write-Host "[DisplayHelper] Built $outFile"

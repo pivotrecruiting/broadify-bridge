@@ -4,7 +4,7 @@ import { registerOutputsRoute } from "./outputs.js";
 const mockGetDevices = jest.fn().mockResolvedValue([]);
 jest.mock("../services/device-cache.js", () => ({
   deviceCache: {
-    getDevices: (forceRefresh?: boolean) => mockGetDevices(forceRefresh),
+    getDevices: (...args: unknown[]) => mockGetDevices(...args),
   },
 }));
 
@@ -67,7 +67,7 @@ describe("registerOutputsRoute integration", () => {
     expect(body).toHaveProperty("output2");
     expect(Array.isArray(body.output1)).toBe(true);
     expect(Array.isArray(body.output2)).toBe(true);
-    expect(mockGetDevices).toHaveBeenCalledWith(false);
+    expect(mockGetDevices).toHaveBeenCalledWith(false, ["display", "decklink"]);
   });
 
   it("GET /outputs?refresh=1 calls getDevices with true", async () => {
@@ -76,7 +76,7 @@ describe("registerOutputsRoute integration", () => {
       url: "/outputs?refresh=1",
     });
 
-    expect(mockGetDevices).toHaveBeenCalledWith(true);
+    expect(mockGetDevices).toHaveBeenCalledWith(true, ["display", "decklink"]);
   });
 
   it("transforms decklink device ports to output1 (fill) and output2 (key)", async () => {

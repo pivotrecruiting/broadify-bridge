@@ -37,6 +37,13 @@ jobs:
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
       MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+      AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+      AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME }}
+      AZURE_CODE_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER_NAME }}
       DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       MACOS_FLOOR_VERSION: "13.0"
       SDL2_STRICT_MINOS: "1"
@@ -282,6 +289,24 @@ jobs:
           Import-Module TrustedSigning
           Get-Command Invoke-TrustedSigning | Format-List Name, Version, Source
 
+      - name: Validate Windows Trusted Signing configuration
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $requiredVars = @(
+            'AZURE_TENANT_ID',
+            'AZURE_CLIENT_ID',
+            'AZURE_CLIENT_SECRET',
+            'AZURE_CODE_SIGNING_ENDPOINT',
+            'AZURE_CODE_SIGNING_ACCOUNT_NAME',
+            'AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME',
+            'AZURE_CODE_SIGNING_PUBLISHER_NAME'
+          )
+          $missing = @($requiredVars | Where-Object { -not (Get-Item "Env:$_" -ErrorAction SilentlyContinue).Value })
+          if ($missing.Count -gt 0) {
+            throw "Missing Windows Trusted Signing secrets: $($missing -join ', ')"
+          }
+
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }} -- --publish=never
@@ -320,37 +345,32 @@ jobs:
             throw "latest.yml unexpectedly references the MSI installer; Windows auto-update must use NSIS."
           }
 
+          $packagedDisplayHelperPaths = @(
+            (Join-Path $dist 'win-unpacked\resources\native\display-helper\display-helper.exe'),
+            (Join-Path $dist 'win-unpacked\resources\native\display-helper\SDL2.dll')
+          )
+          foreach ($path in $packagedDisplayHelperPaths) {
+            if (-not (Test-Path $path)) {
+              throw "Windows packaged app is missing display-helper runtime: $path"
+            }
+          }
+
           Write-Host "Windows installer artifacts verified:"
           Write-Host "  NSIS: $($exeFiles[0].Name)"
           Write-Host "  MSI:  $($msiFiles[0].Name)"
+
+      - name: Smoke test Windows unpacked display helper
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $helperPath = Join-Path $env:GITHUB_WORKSPACE 'dist\win-unpacked\resources\native\display-helper\display-helper.exe'
+          & .\scripts\test-windows-display-helper.ps1 -HelperPath $helperPath -Attempts 3
 
       - name: Verify Windows signatures
         if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $signtool = (Get-Command signtool -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
-          if (-not $signtool) {
-            $candidates = @()
-            $candidates += Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
-            $candidates += Get-ChildItem "$env:LOCALAPPDATA\TrustedSigning\Microsoft.Windows.SDK.BuildTools" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
-            $signtool = $candidates |
-              Sort-Object FullName -Descending |
-              Select-Object -First 1 -ExpandProperty FullName
-          }
-          if (-not $signtool) {
-            throw "signtool.exe not found on runner (PATH/Windows SDK/TrustedSigning cache)."
-          }
-          Write-Host "Using signtool:" $signtool
-
-          $files = Get-ChildItem -Path dist -Recurse -Include *.exe,*.msi
-          if (-not $files) {
-            throw "No Windows artifacts found in dist/ for signature verification."
-          }
-          foreach ($file in $files) {
-            Write-Host "Verifying signature:" $file.FullName
-            & $signtool verify /pa /v $file.FullName
-          }
+          & .\scripts\verify-windows-release-signatures.ps1 -DistPath dist
 
       - name: Smoke test Windows MSI install
         if: matrix.os == 'windows-2022'
@@ -387,6 +407,7 @@ jobs:
 
           $expectedPaths = @(
             (Join-Path $installDir 'resources\native\display-helper\display-helper.exe'),
+            (Join-Path $installDir 'resources\native\display-helper\SDL2.dll'),
             (Join-Path $installDir 'resources\native\meeting-helper\meeting-helper.exe'),
             (Join-Path $installDir 'resources\native\meeting-helper\onnxruntime.dll'),
             (Join-Path $installDir 'resources\native\meeting-helper\models\modnet.onnx'),
@@ -402,6 +423,9 @@ jobs:
             }
           }
 
+          $msiHelperPath = Join-Path $installDir 'resources\native\display-helper\display-helper.exe'
+          & .\scripts\test-windows-display-helper.ps1 -HelperPath $msiHelperPath -Attempts 3
+
           $uninstallArgs = @('/x', $msi.FullName, '/qn', '/norestart', '/L*v', $uninstallLog)
           $uninstall = Start-Process msiexec.exe -ArgumentList $uninstallArgs -Wait -PassThru
           if ($uninstall.ExitCode -notin @(0, 3010, 1605)) {
@@ -409,6 +433,16 @@ jobs:
           }
 
           Write-Host "MSI smoke install verified in $installDir"
+
+      - name: Smoke test Windows NSIS install
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path dist -File -Filter '*.exe' | Select-Object -First 1
+          if (-not $installer) {
+            throw "No NSIS artifact found for smoke test."
+          }
+          & .\scripts\smoke-test-windows-nsis.ps1 -InstallerPath $installer.FullName
 
       - name: Upload Windows MSI smoke logs
         if: failure() && matrix.os == 'windows-2022'

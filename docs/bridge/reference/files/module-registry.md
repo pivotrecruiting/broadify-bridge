@@ -5,10 +5,11 @@ Koordiniert Device‑Module, führt parallele Detection mit Timeout aus und merg
 
 ## Ein-/Ausgänge
 - Input: Device‑Module (register)
-- Output: `DeviceDescriptorT[]`
+- Output: `DeviceDescriptorT[]` oder statusbehaftete Ergebnisse aus `detectModules`
 
 ## Abhängigkeiten
 - `device-module.ts`
 
 ## Side‑Effects
 - Optional: Watcher‑Subscription
+- Modul-spezifische Timeouts und selektive Detection

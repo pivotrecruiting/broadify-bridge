@@ -1,6 +1,8 @@
 import type { BridgeConfig } from "../types.js";
 
-const OUTPUTS_FETCH_TIMEOUT = 5000; // 5 seconds timeout
+// Device detection has a 5-second timeout per module. Keep the caller timeout
+// above that boundary so a timed-out optional module cannot discard display data.
+const OUTPUTS_FETCH_TIMEOUT = 10_000;
 
 /**
  * Output device information from bridge.

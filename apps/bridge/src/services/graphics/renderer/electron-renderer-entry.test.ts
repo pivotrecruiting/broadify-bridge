@@ -165,6 +165,10 @@ describe("electron-renderer-entry", () => {
     process.env = originalEnv;
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it("loads without throwing when IPC port is unset", async () => {
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "";
     await expect(
@@ -1277,7 +1281,100 @@ describe("electron-renderer-entry", () => {
     );
   });
 
+  it("sends ready IPC when FrameBus writer becomes available within retry budget", async () => {
+    jest.useFakeTimers();
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const config = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 16588928,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: config });
+    const createWriter = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("writer warming up");
+      })
+      .mockImplementationOnce(() => {
+        throw new Error("writer still warming up");
+      })
+      .mockReturnValue({
+        name: "/test-shm",
+        size: 16588928,
+        header: {},
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      });
+    mockLoadFrameBusModule.mockReturnValue({ createWriter });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...config,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    const readyHandler = mockApp.on.mock.calls.find(
+      ([event]) => event === "ready"
+    )?.[1] as (() => void) | undefined;
+    readyHandler?.();
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    await Promise.resolve();
+    jest.advanceTimersByTime(200);
+    await Promise.resolve();
+
+    expect(createWriter).toHaveBeenCalledTimes(3);
+    expect(mockEncodeIpcPacket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "ready",
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      }),
+      undefined
+    );
+    expect(mockPinoInfo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 2,
+        maxAttempts: 30,
+        frameBusName: "/test-shm",
+        frameBusSlotCount: 2,
+      }),
+      "[GraphicsRenderer] FrameBus writer became ready after retry"
+    );
+  });
+
   it("sends error IPC when FrameBus writer is still not ready after retries", async () => {
+    jest.useFakeTimers();
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
     delete process.env.BRIDGE_FRAMEBUS_NAME;
     let connectionCallback: (() => void) | null = null;
@@ -1324,15 +1421,23 @@ describe("electron-renderer-entry", () => {
     connectionCallback!();
     dataHandlers[0](Buffer.alloc(10));
 
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 950));
+    await Promise.resolve();
+    jest.advanceTimersByTime(3000);
+    await Promise.resolve();
     expect(mockEncodeIpcPacket).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "error",
         message: "FrameBus writer not ready",
       }),
       undefined
+    );
+    expect(mockPinoError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempts: 30,
+        maxAttempts: 30,
+        reason: "FrameBus writer not ready",
+      }),
+      "[GraphicsRenderer] FrameBus writer readiness exhausted"
     );
   });
 
@@ -1751,7 +1856,7 @@ describe("electron-renderer-entry", () => {
     const validConfig = {
       width: 1920,
       height: 1080,
-      fps: 30,
+      fps: 59.94,
       pixelFormat: 1,
       framebusName: "/test-shm",
       framebusSlotCount: 2,
@@ -1759,21 +1864,20 @@ describe("electron-renderer-entry", () => {
       backgroundMode: "transparent" as const,
     };
     mockSafeParse.mockReturnValue({ success: true, data: validConfig });
-    mockLoadFrameBusModule.mockReturnValue({
-      createWriter: () => ({
-        name: "test",
-        size: 0,
-        header: {
-          width: 1920,
-          height: 1080,
-          fps: 30,
-          slotCount: 2,
-          pixelFormat: 1,
-        },
-        writeFrame: jest.fn(),
-        close: jest.fn(),
-      }),
+    const createWriter = jest.fn().mockReturnValue({
+      name: "test",
+      size: 0,
+      header: {
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        slotCount: 2,
+        pixelFormat: 1,
+      },
+      writeFrame: jest.fn(),
+      close: jest.fn(),
     });
+    mockLoadFrameBusModule.mockReturnValue({ createWriter });
     let connectionCallback: (() => void) | null = null;
     const dataHandlers: Array<(data: Buffer) => void> = [];
     const mockSocket = {
@@ -1798,7 +1902,7 @@ describe("electron-renderer-entry", () => {
       backgroundMode: "transparent",
       width: 1920,
       height: 1080,
-      fps: 30,
+      fps: 59.94,
     };
     mockDecodeNextIpcPacket
       .mockReturnValueOnce({
@@ -1835,6 +1939,10 @@ describe("electron-renderer-entry", () => {
       expect.stringContaining("__createLayer"),
       true
     );
+    expect(createWriter).toHaveBeenCalledWith(
+      expect.objectContaining({ fps: 60 })
+    );
+    expect(mockSetFrameRate).toHaveBeenCalledWith(60);
     expect(mockInvalidate).toHaveBeenCalled();
   });
 
@@ -2984,6 +3092,83 @@ describe("electron-renderer-entry", () => {
     await new Promise((r) => setTimeout(r, 80));
 
     expect(mockInvalidate).toHaveBeenCalled();
+  });
+
+  it("creates the offscreen renderer with content-sized frameless bounds", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    const validConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...validConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "create_layer",
+          token: "test-token",
+          layerId: "l1",
+          html: "<div>a</div>",
+          css: "",
+          values: {},
+          layout: { x: 0, y: 0, scale: 1 },
+          backgroundMode: "transparent",
+          width: 1920,
+          height: 1080,
+          fps: 30,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        width: 1920,
+        height: 1080,
+        useContentSize: true,
+        frame: false,
+      })
+    );
   });
 
   it("applyRendererConfig with singleWindow existing calls executeJavaScript for clearColor", async () => {

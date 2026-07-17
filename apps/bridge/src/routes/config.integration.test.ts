@@ -77,7 +77,7 @@ describe("registerConfigRoute integration", () => {
 
     expect(response.statusCode).toBe(200);
     expect(getDevices).toHaveBeenCalledTimes(2);
-    expect(getController).toHaveBeenCalledWith("deck-1");
+    expect(getController).toHaveBeenCalledWith("deck-1", "decklink");
     expect(controllerOpen).toHaveBeenCalledTimes(1);
     expect(response.json()).toEqual({
       success: true,
