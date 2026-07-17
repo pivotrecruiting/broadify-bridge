@@ -1,4 +1,3 @@
-const fs = require("fs");
 const baseConfig = require("./electron-builder.json");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
@@ -133,12 +132,17 @@ if (config.win) {
     },
   ];
 
-  const sdlRuntimePath = "apps/bridge/native/display-helper/SDL2.dll";
-  if (fs.existsSync(sdlRuntimePath)) {
-    config.win.extraResources.push({
-      from: sdlRuntimePath,
-      to: "native/display-helper/SDL2.dll",
-    });
+  config.win.extraResources.push({
+    from: "apps/bridge/native/display-helper/SDL2.dll",
+    to: "native/display-helper/SDL2.dll",
+  });
+
+  // electron-builder 25 signs extension-matched DLLs concurrently and does not
+  // apply that transformer to individually copied extraResources. Sign only the
+  // packaged native Windows resources in a dedicated, sequential afterSign hook.
+  if (process.platform === "win32") {
+    config.afterSign =
+      require.resolve("./scripts/sign-windows-native-resources.cjs");
   }
 }
 

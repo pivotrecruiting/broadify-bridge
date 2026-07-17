@@ -43,6 +43,26 @@ const VOLATILE_RENDERER_CACHE_PATHS = [
 const RECOVERY_WINDOW_MS = 5 * 60 * 1000;
 const MAX_RECOVERY_ATTEMPTS = 2;
 const IPC_SERVER_CLOSE_TIMEOUT_MS = 500;
+const CONFIG_READY_TIMEOUT_MS = 15_000;
+
+type RendererReadyAckT = {
+  type: "ready";
+  configId?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+  pixelFormat?: number;
+  framebusName?: string;
+  framebusSize?: number;
+  framebusSlotCount?: number;
+  rendererConfigGeneration?: number;
+};
+
+const normalizeFrameBusNameForCompare = (name: string): string =>
+  name
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/^(?:local|global)\\+/i, "");
 
 /**
  * Electron-based offscreen renderer client.
@@ -72,9 +92,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private rendererConfigured = false;
   private sessionConfig: GraphicsRendererConfigT | null = null;
   private lastSentConfigKey: string | null = null;
+  private pendingConfigId: string | null = null;
   private configReadyPromise: Promise<void> | null = null;
   private configReadyResolver: (() => void) | null = null;
   private configReadyRejecter: ((error: Error) => void) | null = null;
+  private configReadyTimeout: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private latestAssets: RendererAssetMapT | null = null;
   private latestLayers = new Map<string, GraphicsRenderLayerInputT>();
@@ -432,9 +454,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     if (this.configReadyRejecter) {
       this.configReadyRejecter(new Error("Renderer shutdown"));
     }
+    this.clearConfigReadyTimeout();
     this.configReadyResolver = null;
     this.configReadyRejecter = null;
     this.configReadyPromise = null;
+    this.pendingConfigId = null;
     this.isShuttingDown = false;
     this.lifecycleState = "ready";
     await this.stopIpcServer();
@@ -487,9 +511,11 @@ export class ElectronRendererClient implements GraphicsRenderer {
     if (this.configReadyRejecter) {
       this.configReadyRejecter(exitError);
     }
+    this.clearConfigReadyTimeout();
     this.configReadyResolver = null;
     this.configReadyRejecter = null;
     this.configReadyPromise = null;
+    this.pendingConfigId = null;
 
     return this.stopIpcServer();
   }
@@ -686,10 +712,25 @@ export class ElectronRendererClient implements GraphicsRenderer {
     if (this.configReadyRejecter) {
       this.configReadyRejecter(new Error("Renderer config superseded"));
     }
+    this.clearConfigReadyTimeout();
+    const configId = randomBytes(8).toString("hex");
+    this.pendingConfigId = configId;
     this.configReadyPromise = new Promise((resolve, reject) => {
       this.configReadyResolver = resolve;
       this.configReadyRejecter = reject;
     });
+    this.configReadyTimeout = setTimeout(() => {
+      if (!this.configReadyRejecter) {
+        return;
+      }
+      const error = new Error("Renderer config ready timed out");
+      this.configReadyRejecter(error);
+      this.configReadyResolver = null;
+      this.configReadyRejecter = null;
+      this.configReadyPromise = null;
+      this.pendingConfigId = null;
+      this.configReadyTimeout = null;
+    }, CONFIG_READY_TIMEOUT_MS);
 
     this.logStructured(
       "info",
@@ -710,6 +751,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
     this.sendCommand({
       type: "renderer_configure",
+      configId,
       width: config.width,
       height: config.height,
       fps: config.fps,
@@ -725,6 +767,82 @@ export class ElectronRendererClient implements GraphicsRenderer {
     if (this.configReadyPromise) {
       await this.configReadyPromise;
     }
+  }
+
+  private clearConfigReadyTimeout(): void {
+    if (!this.configReadyTimeout) {
+      return;
+    }
+    clearTimeout(this.configReadyTimeout);
+    this.configReadyTimeout = null;
+  }
+
+  private isReadyAckForCurrentConfig(ack: RendererReadyAckT): boolean {
+    const config = this.sessionConfig;
+    if (!config || !this.pendingConfigId) {
+      this.logStructured(
+        "warn",
+        { component: "graphics-renderer" },
+        "[GraphicsRenderer IPC] Ignoring ready without pending renderer_configure",
+      );
+      return false;
+    }
+
+    const expectedFrameBusName = config.framebusName.trim();
+    const actualFrameBusName = ack.framebusName?.trim() ?? "";
+    const normalizedExpectedFrameBusName =
+      normalizeFrameBusNameForCompare(expectedFrameBusName);
+    const normalizedActualFrameBusName =
+      normalizeFrameBusNameForCompare(actualFrameBusName);
+    const mismatches: string[] = [];
+
+    if (ack.configId !== this.pendingConfigId) {
+      mismatches.push("configId");
+    }
+    if (ack.width !== config.width) {
+      mismatches.push("width");
+    }
+    if (ack.height !== config.height) {
+      mismatches.push("height");
+    }
+    if (ack.fps !== config.fps) {
+      mismatches.push("fps");
+    }
+    if (ack.pixelFormat !== config.pixelFormat) {
+      mismatches.push("pixelFormat");
+    }
+    if (normalizedActualFrameBusName !== normalizedExpectedFrameBusName) {
+      mismatches.push("framebusName");
+    }
+    if (ack.framebusSlotCount !== config.framebusSlotCount) {
+      mismatches.push("framebusSlotCount");
+    }
+    if (ack.framebusSize !== config.framebusSize) {
+      mismatches.push("framebusSize");
+    }
+
+    if (mismatches.length === 0) {
+      return true;
+    }
+
+    this.logStructured(
+      "warn",
+      {
+        component: "graphics-renderer",
+        mismatches,
+        expectedConfigId: this.pendingConfigId,
+        actualConfigId: ack.configId ?? null,
+        expectedFrameBusName,
+        actualFrameBusName,
+        expectedFrameBusSlotCount: config.framebusSlotCount,
+        actualFrameBusSlotCount: ack.framebusSlotCount ?? null,
+        expectedFrameBusSize: config.framebusSize,
+        actualFrameBusSize: ack.framebusSize ?? null,
+        rendererConfigGeneration: ack.rendererConfigGeneration ?? null,
+      },
+      "[GraphicsRenderer IPC] Ignoring renderer ready for non-current config",
+    );
+    return false;
   }
 
   /**
@@ -988,7 +1106,33 @@ export class ElectronRendererClient implements GraphicsRenderer {
       }
 
       if (messageType === "ready") {
+        const readyAck: RendererReadyAckT = {
+          type: "ready",
+          configId: typeof header.configId === "string" ? header.configId : undefined,
+          width: typeof header.width === "number" ? header.width : undefined,
+          height: typeof header.height === "number" ? header.height : undefined,
+          fps: typeof header.fps === "number" ? header.fps : undefined,
+          pixelFormat:
+            typeof header.pixelFormat === "number" ? header.pixelFormat : undefined,
+          framebusName:
+            typeof header.framebusName === "string" ? header.framebusName : undefined,
+          framebusSize:
+            typeof header.framebusSize === "number" ? header.framebusSize : undefined,
+          framebusSlotCount:
+            typeof header.framebusSlotCount === "number"
+              ? header.framebusSlotCount
+              : undefined,
+          rendererConfigGeneration:
+            typeof header.rendererConfigGeneration === "number"
+              ? header.rendererConfigGeneration
+              : undefined,
+        };
+        if (!this.isReadyAckForCurrentConfig(readyAck)) {
+          continue;
+        }
         this.rendererConfigured = true;
+        this.pendingConfigId = null;
+        this.clearConfigReadyTimeout();
         if (this.configReadyResolver) {
           this.configReadyResolver();
         }

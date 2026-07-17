@@ -21,7 +21,8 @@ Warum:
 - Liefert strukturierte Infos zu Displays und Ports
 
 ## Ablauf (Kurz)
-1. `DisplayModule.detect()` ruft `system_profiler` mit Hard‑Timeout (5s) auf.
+1. `DisplayModule.detect()` ruft `system_profiler` mit Hard‑Timeout (5s) auf; der
+   umgebende Modul-Timeout beträgt 6s.
 2. JSON wird geparst, rekursiv nach `spdisplays_ndrvs` gesucht.
 3. Built‑in Displays werden gefiltert.
 4. Relevante Felder werden über Key‑Listen extrahiert.
@@ -67,6 +68,20 @@ UI‑Logik kann damit externe Displays getrennt von DeckLink und Capture anzeige
 - `system_profiler` kann je nach System langsam sein → Hard‑Timeout
 - Einige GPUs liefern keine eindeutigen Connection‑Typen → Fallback + Warnung
 - Nur aktuell aktiver Modus wird erkannt, keine vollständige Mode‑Liste
+
+## Fehler- und Cache-Semantik
+
+- Spawn-Fehler, Nonzero-Exit, Timeout und ungültiges JSON sind fehlgeschlagene
+  Erkennungen. Der Kindprozess wird bei Timeout mit `SIGTERM` beendet.
+- Diese Fehler werden nicht als erfolgreicher Leerfund veröffentlicht. Der
+  per-Modul geführte `DeviceCache` behält dadurch den letzten gültigen Display-Stand.
+- Ein syntaktisch und strukturell valides `SPDisplaysDataType` ohne externe Displays
+  bleibt ein erfolgreicher Leerfund und entfernt ein tatsächlich getrenntes Display
+  aus dem Cache.
+- `/outputs?refresh=1` und `list_outputs` mit `refresh: true` starten jeweils eine neue
+  Discovery; automatisches macOS-Hotplug ist davon unabhängig und nicht garantiert.
+- `list_outputs` ohne `refresh: true` liest ausschließlich den vorhandenen Bridge-Cache.
+  Ein WebApp-Reload startet deshalb keine neue Display-Discovery.
 
 ## Security Notes
 - Der Prozess nutzt einen fest verdrahteten lokalen Befehl ohne User‑Input.

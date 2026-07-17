@@ -16,7 +16,7 @@
 
 | # | Severity | Bug | Repo | Status |
 | --- | --- | --- | --- | --- |
-| [1](#1-macos-local-network-berechtigung-nicht-deklariert) | **Critical** | macOS „Lokales Netzwerk"-Berechtigung nicht deklariert | bridge | `open` |
+| [1](#1-macos-local-network-berechtigung-nicht-deklariert) | **Critical** | macOS „Lokales Netzwerk" (ATEM/LAN): TCC hängt oder fehlt | bridge | `in_progress` |
 | [2](#2-relay-async-operation-wird-bei-timeout-nie-freigegeben) | **High** | Relay: async Operation bei Timeout/Disconnect nie freigegeben → dauerhafter „Resource busy"-Lock | relay | `open` |
 | [3](#3-netzwerk-interface-erkennung-falsch-auf-macos) | **Medium** | Interface-Erkennung klassifiziert macOS-Interfaces falsch (`en0` = WLAN als Ethernet) | bridge | `open` |
 | [4](#4-relay-client-error-handler-stößt-keinen-reconnect-an) | **Medium** | Relay-Client `error`-Handler stößt keinen Reconnect an | bridge | `open` |
@@ -28,25 +28,45 @@
 
 ## 1. macOS „Lokales Netzwerk"-Berechtigung nicht deklariert
 
-**Severity:** Critical · **Status:** `open` · **Repo:** `broadify-bridge`
-**Bestätigt als Ursache** des ATEM-Ausfalls am Mac (Kunde hat Haken in Systemeinstellungen gesetzt → ATEM lief wieder).
+**Severity:** Critical · **Status:** `in_progress` · **Repo:** `broadify-bridge`
+**Bestätigt als Ursache** des ATEM-Ausfalls am Mac (mehrere Kundenfälle; siehe Support-Workaround unten).
 
 **Beschreibung**
-Seit macOS Sonoma/Sequoia braucht jede App eine Nutzerfreigabe für LAN-Zugriff. Ohne Freigabe wird LAN-Traffic (ATEM UDP `:9910`) lautlos verworfen → `Connection timeout`. Die WS-Verbindung zum Relay (öffentliche Adresse `broadify-relay.fly.dev`) ist nicht betroffen → „Bridge verbindet mit WebApp, aber kein ATEM". Windows kennt diese Berechtigung nicht → dort kein Problem.
+Seit macOS Sonoma/Sequoia braucht jede App eine Nutzerfreigabe für LAN-Zugriff. Ohne Freigabe — oder bei **hängendem TCC-Zustand** — wird LAN-Traffic (ATEM UDP `:9910`) lautlos verworfen → `Connection timeout`. Es werden **keine Netzwerkfehler** geloggt. Die WS-Verbindung zum Relay (öffentliche Adresse `broadify-relay.fly.dev`) ist nicht betroffen → „Bridge verbindet mit WebApp, aber kein ATEM". Windows kennt diese Berechtigung nicht → dort kein Problem.
 
 **Beleg**
-- `build/entitlements.mac.plist` — enthält **keine** Netzwerk-/Local-Network-Deklaration.
-- `electron-builder.json` / `electron-builder.config.cjs` — setzen **kein** `NSLocalNetworkUsageDescription` (kein `extendInfo`).
-- `electron-builder.config.cjs:27` — RC-Build hat eigene Bundle-ID `com.broadify.bridge.rc` ≠ Release `com.broadify.bridge` → macOS behandelt sie als **getrennte Apps**, jede braucht **eigene** Local-Network-Freigabe (RC↔Release-Wechsel setzt Berechtigung zurück → „mal geht's, mal tagelang nicht").
+- `build/entitlements.mac.plist` — `com.apple.security.network.client` / `network.server` gesetzt (seit 2026-06-15).
+- `electron-builder.json` — `NSLocalNetworkUsageDescription` via `extendInfo` gesetzt (seit 2026-06-15).
+- `electron-builder.config.cjs:57-60` — RC-Build hat eigene Bundle-ID `com.broadify.bridge.rc` ≠ Release `com.broadify.bridge` → macOS behandelt sie als **getrennte Apps**, jede braucht **eigene** Local-Network-Freigabe (RC↔Release-Wechsel → „mal geht's, mal tagelang nicht").
+- `apps/bridge/src/services/engine/adapters/atem-adapter.ts:43` — 10s-Timeout ohne macOS-spezifischen Hinweis.
+- `scripts/verify-macos-release-signing.sh:197-201` — Release-Build prüft `NSLocalNetworkUsageDescription`.
 
 **Impact**
-LAN-Geräte (ATEM) am Mac nicht erreichbar, obwohl Netzwerk/Ping ok. Selbstheilung nur durch manuelle Freigabe.
+LAN-Geräte (ATEM, Canon XC) am Mac nicht erreichbar, obwohl Netzwerk/Ping ok und Windows im gleichen Netz funktioniert.
 
-**Fix-Ziel**
-- `NSLocalNetworkUsageDescription` (Klartext-Begründung) via `extendInfo`/Info.plist setzen, damit der Berechtigungs-Dialog zuverlässig erscheint.
-- Ggf. `com.apple.security.network.client` in den Entitlements ergänzen.
-- In der UI/Onboarding einen Hinweis + Deep-Link zu „Systemeinstellungen → Datenschutz → Lokales Netzwerk" zeigen, wenn Engine-Connect mit Timeout fehlschlägt.
-- RC↔Release-Bundle-ID-Caveat dokumentieren.
+**Support-Workaround** (verifiziert 2026-06-25, Kunde Gabriel Bäuerle)
+
+Symptom: ATEM-Connect läuft ins Timeout, **kein Fehler**, Windows verbindet normal.
+
+1. Broadify Bridge **vollständig beenden** (Cmd+Q).
+2. **Systemeinstellungen → Datenschutz & Sicherheit → Lokales Netzwerk** → Haken bei „Broadify Bridge" (ggf. auch „Broadify Bridge RC") **entfernen**.
+3. **Mac neu starten** (Neustart ist wichtig — alleiniges Entfernen reicht manchmal nicht).
+4. Broadify Bridge starten → Berechtigungsdialog bestätigen (falls er erscheint).
+5. ATEM erneut verbinden.
+
+Alternativer Erstversuch (ohne Neustart): Haken **setzen**, App neu starten. Hilft, wenn die Freigabe noch nie erteilt wurde. Bei **gesetztem, aber defektem TCC-Eintrag** hilft nur Entfernen + Neustart.
+
+Abgrenzung: ATEM Software Control am gleichen Mac funktioniert, Broadify nicht → fast sicher Local-Network-Permission für Broadify. Beides schlägt fehl → Netzwerkproblem (Subnetz, VLAN, VPN, Firewall).
+
+**Fix-Ziel** (offen)
+- In der UI/Onboarding einen Hinweis + Deep-Link zu „Systemeinstellungen → Datenschutz → Lokales Netzwerk" zeigen, wenn Engine-Connect mit Timeout fehlschlägt (analog Canon XC).
+- ATEM-Timeout-Fehlermeldung auf macOS um Local-Network-Hinweis erweitern.
+- RC↔Release-Bundle-ID-Caveat in Onboarding/Support-Doku sichtbar machen.
+
+**Erledigt** (2026-06-15)
+- `NSLocalNetworkUsageDescription` via `extendInfo`.
+- `com.apple.security.network.client` / `network.server` in Entitlements.
+- Release-Signing-Verify prüft Local-Network-Plist-Eintrag.
 
 ---
 
@@ -192,3 +212,4 @@ Sporadische `delivery_timeout` direkt nach (Re)Connect bzw. erstem Command pro `
 | Datum | Änderung |
 | --- | --- |
 | 2026-06-15 | Initiale Liste: Bugs 1–7 aus Connection-Debug-Session |
+| 2026-06-25 | Bug 1: Support-Workaround (Permission entfernen + Mac-Neustart) dokumentiert; Build-Fix-Stand aktualisiert (Gabriel Bäuerle) |

@@ -28,19 +28,18 @@ sequenceDiagram
   participant Registry as ModuleRegistry
   participant Decklink as DecklinkModule
   participant Display as DisplayModule
-  participant USB as USBCaptureModule
-  participant Helper as Decklink Helper
+  participant DeckHelper as DeckLink Helper
+  participant DisplayHelper as Display Helper
 
   UI->>Outputs: GET /outputs
   Outputs->>Cache: getDevices(forceRefresh?)
-  Cache->>Registry: detectAll()
+  Cache->>Registry: detectModules([display, decklink])
   Registry->>Decklink: detect()
   Registry->>Display: detect()
-  Registry->>USB: detect()
-  Decklink->>Helper: list devices + modes
+  Decklink->>DeckHelper: list devices + modes
+  Display->>DisplayHelper: Windows: native topology + DXGI modes
   Decklink-->>Registry: DeckLink devices
   Display-->>Registry: Display devices
-  USB-->>Registry: USB devices
   Registry-->>Cache: combined devices
   Cache-->>Outputs: devices
   Outputs-->>UI: outputs {output1, output2}
@@ -50,6 +49,12 @@ sequenceDiagram
 - Cache TTL: 1s
 - Force‑Refresh: rate‑limited (2s)
 - Watcher: debounced refresh (250ms)
+- Cache wird pro Modul geführt. Timeout/Fehler behalten den letzten erfolgreichen
+  Modulstand; ein erfolgreicher leerer Scan entfernt abgezogene Geräte.
+- macOS `system_profiler` hat einen 5s-Kindprozess-Timeout; das Display-Modul erhält
+  6s. Spawn-, Exit- und Parsefehler werden als Fehlerstatus an den Cache weitergegeben.
+- Output-Abfragen erkennen nur `display` und `decklink`. USB-Capture kann dadurch
+  weder `/outputs` noch Graphics-Konfiguration blockieren.
 
 ## Security & Risiken
 - **Native Helper:** DeckLink‑Helper wird per Child‑Process ausgeführt.

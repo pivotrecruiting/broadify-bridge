@@ -15,28 +15,38 @@ const createDevice = (id: string, type: string = "decklink") =>
       {
         id: `${id}-port`,
         displayName: `${id} port`,
-        type: "sdi",
-        role: "fill",
+        type: type === "display" ? "hdmi" : "sdi",
+        role: "video",
         direction: "output",
-        status: {
-          available: true,
-        },
-        capabilities: {
-          formats: [],
-        },
+        status: { available: true },
+        capabilities: { formats: [] },
       },
     ],
   }) as any;
+
+const success = (moduleName: string, devices: any[]) => ({
+  moduleName,
+  status: "success" as const,
+  devices,
+  durationMs: 1,
+});
 
 describe("DeviceCache", () => {
   const createDeps = () => {
     let now = 1_000;
     let watchCallback: ((moduleName: string) => void) | undefined;
     const unsubscribe = jest.fn();
-    const detectAll = jest.fn(async () => [createDevice("deck-1")]);
+    const detectModules = jest.fn(async (moduleNames?: readonly string[]) =>
+      (moduleNames ?? ["decklink"]).map((moduleName) =>
+        success(
+          moduleName,
+          moduleName === "decklink" ? [createDevice("deck-1")] : [],
+        ),
+      ),
+    );
     const moduleRegistry = {
       getModuleNames: jest.fn(() => ["decklink"]),
-      detectAll,
+      detectModules,
       watchAll: jest.fn((callback: (moduleName: string) => void) => {
         watchCallback = callback;
         return unsubscribe;
@@ -50,7 +60,7 @@ describe("DeviceCache", () => {
     return {
       moduleRegistry,
       logger,
-      detectAll,
+      detectModules,
       unsubscribe,
       getNow: () => now,
       setNow: (value: number) => {
@@ -78,8 +88,8 @@ describe("DeviceCache", () => {
 
     expect(first).toHaveLength(1);
     expect(first[0]).toMatchObject({ id: "deck-1", type: "decklink" });
-    expect(second).toBe(first);
-    expect(deps.detectAll).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+    expect(deps.detectModules).toHaveBeenCalledTimes(1);
     expect(cache.isFresh()).toBe(true);
   });
 
@@ -98,7 +108,7 @@ describe("DeviceCache", () => {
     await cache.getDevices();
 
     expect(deps.logger.debug).toHaveBeenCalledWith(
-      "[Devices] Using cached results (1 devices)"
+      "[Devices] Using cached results (1 devices)",
     );
   });
 
@@ -116,7 +126,7 @@ describe("DeviceCache", () => {
     deps.setNow(2_000);
 
     await expect(cache.getDevices(true)).rejects.toThrow("Rate limit exceeded");
-    expect(deps.detectAll).toHaveBeenCalledTimes(1);
+    expect(deps.detectModules).toHaveBeenCalledTimes(1);
   });
 
   it("waits for ongoing detection instead of starting a second one", async () => {
@@ -127,9 +137,9 @@ describe("DeviceCache", () => {
     });
     const detectedDevices = [createDevice("deck-1")];
 
-    deps.detectAll.mockImplementation(async () => {
+    deps.detectModules.mockImplementation(async () => {
       await detectionGate;
-      return detectedDevices;
+      return [success("decklink", detectedDevices)];
     });
 
     const cache = new DeviceCache({
@@ -145,7 +155,93 @@ describe("DeviceCache", () => {
 
     await expect(first).resolves.toEqual(detectedDevices);
     await expect(second).resolves.toEqual(detectedDevices);
-    expect(deps.detectAll).toHaveBeenCalledTimes(1);
+    expect(deps.detectModules).toHaveBeenCalledTimes(1);
+  });
+
+  it("detects only requested output modules", async () => {
+    const deps = createDeps();
+    deps.moduleRegistry.getModuleNames.mockReturnValue([
+      "usb-capture",
+      "display",
+      "decklink",
+    ]);
+    deps.detectModules.mockImplementation(async (moduleNames) =>
+      (moduleNames ?? []).map((moduleName) =>
+        success(
+          moduleName,
+          moduleName === "display"
+            ? [createDevice("display-1", "display")]
+            : [],
+        ),
+      ),
+    );
+    const cache = new DeviceCache({
+      moduleRegistry: deps.moduleRegistry as any,
+      getLogger: () => deps.logger,
+      now: () => deps.getNow(),
+      wait: async () => undefined,
+    });
+
+    const devices = await cache.getDevices(false, ["display", "decklink"]);
+
+    expect(deps.detectModules).toHaveBeenCalledWith(["display", "decklink"]);
+    expect(devices).toEqual([expect.objectContaining({ id: "display-1" })]);
+  });
+
+  it("preserves a previously detected display after a timeout", async () => {
+    const deps = createDeps();
+    deps.moduleRegistry.getModuleNames.mockReturnValue(["display"]);
+    deps.detectModules
+      .mockResolvedValueOnce([
+        success("display", [createDevice("display-1", "display")]),
+      ])
+      .mockResolvedValueOnce([
+        {
+          moduleName: "display",
+          status: "timeout",
+          devices: [],
+          durationMs: 2_000,
+          errorCode: "detection_timeout",
+        },
+      ]);
+    const cache = new DeviceCache({
+      moduleRegistry: deps.moduleRegistry as any,
+      getLogger: () => deps.logger,
+      now: () => deps.getNow(),
+      wait: async () => undefined,
+      refreshRateLimitMs: 0,
+    });
+
+    await cache.getDevices();
+    deps.setNow(4_000);
+    const refreshed = await cache.getDevices(true);
+
+    expect(refreshed).toEqual([expect.objectContaining({ id: "display-1" })]);
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("preserving 1 cached device"),
+    );
+  });
+
+  it("clears a module after a successful empty detection", async () => {
+    const deps = createDeps();
+    deps.moduleRegistry.getModuleNames.mockReturnValue(["display"]);
+    deps.detectModules
+      .mockResolvedValueOnce([
+        success("display", [createDevice("display-1", "display")]),
+      ])
+      .mockResolvedValueOnce([success("display", [])]);
+    const cache = new DeviceCache({
+      moduleRegistry: deps.moduleRegistry as any,
+      getLogger: () => deps.logger,
+      now: () => deps.getNow(),
+      wait: async () => undefined,
+      refreshRateLimitMs: 0,
+    });
+
+    await cache.getDevices();
+    deps.setNow(4_000);
+
+    await expect(cache.getDevices(true)).resolves.toEqual([]);
   });
 
   it("debounces watch-triggered refreshes", async () => {
@@ -166,11 +262,12 @@ describe("DeviceCache", () => {
     deps.triggerWatch("decklink");
 
     expect(deps.moduleRegistry.watchAll).toHaveBeenCalledTimes(1);
-    expect(deps.detectAll).toHaveBeenCalledTimes(0);
+    expect(deps.detectModules).toHaveBeenCalledTimes(0);
 
     await jest.advanceTimersByTimeAsync(250);
 
-    expect(deps.detectAll).toHaveBeenCalledTimes(1);
+    expect(deps.detectModules).toHaveBeenCalledTimes(1);
+    expect(deps.detectModules).toHaveBeenCalledWith(["decklink"]);
     jest.useRealTimers();
   });
 
@@ -197,7 +294,7 @@ describe("DeviceCache", () => {
     expect(cache.getCachedDevices()).toEqual([]);
     expect(cache.isFresh()).toBe(false);
     expect(deps.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(deps.detectAll).toHaveBeenCalledTimes(1);
+    expect(deps.detectModules).toHaveBeenCalledTimes(1);
     jest.useRealTimers();
   });
 });

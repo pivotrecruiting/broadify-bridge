@@ -4,7 +4,7 @@
 Cached Device‑Detection Ergebnisse, schützt vor Overload und liefert Outputs für die UI.
 
 ## Ein-/Ausgänge
-- Input: `forceRefresh` Flag
+- Input: `forceRefresh` Flag und optionale Modulnamen
 - Output: `DeviceDescriptorT[]`
 
 ## Abhängigkeiten
@@ -13,3 +13,4 @@ Cached Device‑Detection Ergebnisse, schützt vor Overload und liefert Outputs 
 ## Side‑Effects
 - Startet Watcher (Hotplug)
 - Rate‑limit bei Refresh
+- Hält Ergebnisse pro Modul; Timeout/Fehler überschreiben keinen erfolgreichen Cache

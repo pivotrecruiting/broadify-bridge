@@ -56,6 +56,11 @@ Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.y
 2. Build starten: npm ci dann npm run dist:win.
 3. Ergebnis: signierte Artefakte in `dist/` (`.exe` für NSIS/Auto-Update, `.msi` für manuelle Kundeninstallation).
 4. Der Build muss vor `electron-builder` alle Windows-Runtime-Artefakte prüfen (`display-helper.exe`, `meeting-helper.exe`, `onnxruntime.dll`, MODNet-Modell, FrameBus-Addon).
+5. `scripts/sign-windows-native-resources.cjs` signiert nach dem Packen gezielt
+   `display-helper.exe`, `SDL2.dll`, `meeting-helper.exe` und `onnxruntime.dll`.
+   `scripts/register-windows-azure-signing-serialization.cjs` serialisiert dabei
+   alle Azure-Signing-Aufrufe. Das verhindert die bekannten Dateisperren und
+   NuGet-Installationskollisionen von electron-builder 25 bei parallelem Signing.
 
 ## 5. Signatur verifizieren (Pflicht)
 
@@ -73,6 +78,8 @@ Zusätzlich prüft der Windows-Workflow:
 - `latest.yml` verweist auf die NSIS-`.exe` und nicht auf die `.msi`
 - Wenn `electron-builder` bei `--publish=never` kein `latest.yml` schreibt, erzeugt `scripts/ensure-windows-updater-metadata.mjs` die Metadaten deterministisch aus der NSIS-`.exe`.
 - MSI lässt sich silent in ein temporäres Verzeichnis installieren und enthält die nativen Runtime-Dateien
+- die beiden nativen Runtime-DLLs `SDL2.dll` und `onnxruntime.dll` besitzen eine
+  gültige Authenticode-Signatur
 
 ## 6. Release-Best-Practices (kurz)
 
@@ -89,3 +96,5 @@ Quellen:
 - Microsoft RBAC-Rollen Artifact Signing: https://learn.microsoft.com/en-us/azure/artifact-signing/tutorial-assign-roles
 - electron-builder Azure Trusted Signing: https://www.electron.build/code-signing-win.html
 - electron-builder Windows config (azureSignOptions): https://www.electron.build/electron-builder.interface.windowsconfiguration
+- electron-builder Parallel-Signing-Bug: https://github.com/electron-userland/electron-builder/issues/8615
+- Upstream-Serialisierungsfix: https://github.com/electron-userland/electron-builder/pull/8632

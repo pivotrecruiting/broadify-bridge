@@ -40,6 +40,9 @@ export interface DeviceModule {
    */
   readonly name: string;
 
+  /** Optional module-specific detection timeout. */
+  readonly detectionTimeoutMs?: number;
+
   /**
    * Discovery: Detect available devices
    * 
@@ -75,4 +78,3 @@ export interface DeviceModule {
    */
   createController(deviceId: string): DeviceController;
 }
-

@@ -1,10 +1,10 @@
 import Fastify from "fastify";
 import { registerDevicesRoute } from "./devices.js";
 
-const mockDetectAll = jest.fn().mockResolvedValue([]);
-jest.mock("../modules/module-registry.js", () => ({
-  moduleRegistry: {
-    detectAll: () => mockDetectAll(),
+const mockGetDevices = jest.fn().mockResolvedValue([]);
+jest.mock("../services/device-cache.js", () => ({
+  deviceCache: {
+    getDevices: (...args: unknown[]) => mockGetDevices(...args),
   },
 }));
 
@@ -19,7 +19,7 @@ describe("registerDevicesRoute integration", () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockEnforceLocalOrToken.mockReturnValue(true);
-    mockDetectAll.mockResolvedValue([
+    mockGetDevices.mockResolvedValue([
       {
         id: "device-1",
         displayName: "Test Device",
@@ -47,7 +47,7 @@ describe("registerDevicesRoute integration", () => {
     expect(Array.isArray(body)).toBe(true);
     expect(body).toHaveLength(1);
     expect(body[0]).toMatchObject({ id: "device-1", type: "decklink" });
-    expect(mockDetectAll).toHaveBeenCalled();
+    expect(mockGetDevices).toHaveBeenCalledWith(false);
   });
 
   it("GET /devices?refresh=1 forces new detection", async () => {
@@ -57,11 +57,13 @@ describe("registerDevicesRoute integration", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockDetectAll).toHaveBeenCalled();
+    expect(mockGetDevices).toHaveBeenCalledWith(true);
   });
 
   it("GET /devices?refresh=1 returns 429 when rate limited", async () => {
-    await app.inject({ method: "GET", url: "/devices?refresh=1" });
+    mockGetDevices.mockRejectedValueOnce(
+      new Error("Rate limit exceeded. Please wait 2 seconds"),
+    );
     const response = await app.inject({
       method: "GET",
       url: "/devices?refresh=1",
@@ -70,12 +72,13 @@ describe("registerDevicesRoute integration", () => {
     expect(response.statusCode).toBe(429);
     expect(response.json()).toMatchObject({
       error: "Rate limit exceeded",
+      message: "Please wait 2 seconds before refreshing again",
       retryAfter: expect.any(Number),
     });
   });
 
   it("returns 500 when detection fails", async () => {
-    mockDetectAll.mockRejectedValueOnce(new Error("Detection failed"));
+    mockGetDevices.mockRejectedValueOnce(new Error("Detection failed"));
 
     const response = await app.inject({
       method: "GET",

@@ -32,7 +32,6 @@ coverage/
 resources/cloudflared/
 
 # Agents
-AGENTS.MD
 /docs/agents/*
 
 # Protocol types (generated)

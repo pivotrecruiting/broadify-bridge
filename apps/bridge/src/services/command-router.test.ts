@@ -19,6 +19,7 @@ jest.mock("./engine-adapter.js", () => ({
 jest.mock("./device-cache.js", () => ({
   deviceCache: {
     getDevices: jest.fn().mockResolvedValue([]),
+    getCachedDevices: jest.fn().mockReturnValue([]),
   },
 }));
 
@@ -181,22 +182,30 @@ describe("command-router", () => {
       });
     });
 
-    it("list_outputs returns output lists from device cache", async () => {
+    it("list_outputs without refresh returns cached outputs without detection", async () => {
       const { deviceCache } = require("./device-cache.js");
-      deviceCache.getDevices.mockResolvedValue([]);
+      deviceCache.getCachedDevices.mockReturnValue([]);
 
       const result = await commandRouter.handleCommand("list_outputs", {});
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ output1: [], output2: [] });
-      expect(deviceCache.getDevices).toHaveBeenCalledWith(false);
+      expect(deviceCache.getCachedDevices).toHaveBeenCalledWith([
+        "display",
+        "decklink",
+      ]);
+      expect(deviceCache.getDevices).not.toHaveBeenCalled();
     });
 
-    it("list_outputs passes refresh to device cache when requested", async () => {
+    it("list_outputs with refresh forces output module detection", async () => {
       const { deviceCache } = require("./device-cache.js");
       deviceCache.getDevices.mockResolvedValue([]);
 
       await commandRouter.handleCommand("list_outputs", { refresh: true });
-      expect(deviceCache.getDevices).toHaveBeenCalledWith(true);
+      expect(deviceCache.getDevices).toHaveBeenCalledWith(true, [
+        "display",
+        "decklink",
+      ]);
+      expect(deviceCache.getCachedDevices).not.toHaveBeenCalled();
     });
 
     it("returns error for unknown command", async () => {

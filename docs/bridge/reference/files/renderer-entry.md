@@ -1,11 +1,11 @@
 # File Reference – apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts
 
 ## Zweck
-Renderer‑Entry für Offscreen‑Rendering: erstellt BrowserWindow je Layer, rendert HTML/CSS und sendet RGBA‑Frames via IPC.
+Renderer‑Entry für Offscreen‑Rendering: erstellt ein gemeinsames BrowserWindow, rendert HTML/CSS und schreibt RGBA‑Frames in den FrameBus. Fractional Broadcast‑FPS bleiben im Control‑Plane‑Format erhalten und werden nur für Electron, FrameBus und native Display‑Helper mit Integer‑FPS gerundet.
 
 ## Ein-/Ausgänge
 - Input: IPC‑Commands (`set_assets`, `create_layer`, ...)
-- Output: `frame`‑Events mit RGBA‑Payload
+- Output: RGBA‑Frames im FrameBus sowie Status-/Fehler‑Events über IPC
 
 ## Abhängigkeiten
 - Electron `BrowserWindow` (offscreen)
