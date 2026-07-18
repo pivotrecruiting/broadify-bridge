@@ -1,10 +1,10 @@
 #include "compose/d3d11_compositor.h"
+#include "compose/gpu_compositor_uniforms.h"
 
 // D3D11 port of the Metal GPU compositor (metal_compositor.mm): one compute
-// dispatch composites background (mode/company image), back graphics, the
-// keyed presenter (or cover camera), the media layer and front graphics into
-// an RGBA program frame. It is enabled by default; every failure falls back to
-// the CPU compositor. BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 disables it.
+// dispatch composites the background mode, graphics, and camera into an RGBA
+// program frame. It is enabled by default; every failure falls back to the CPU
+// compositor. BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 disables it.
 //
 // The HLSL kernel below is a line-for-line port of the MSL kernel so both
 // backends stay pixel-equivalent; keep them in sync.
@@ -28,70 +28,6 @@ using Microsoft::WRL::ComPtr;
 
 namespace broadify::meeting {
 namespace {
-
-// Must match the HLSL cbuffer below (rows of four 32-bit values).
-struct ComposeUniforms {
-  uint32_t width;
-  uint32_t height;
-  uint32_t backgroundMode;
-  uint32_t frameIndex96;
-
-  uint32_t cameraPresent;
-  uint32_t cameraKeyed;
-  uint32_t cameraMirror;
-  uint32_t backPresent;
-
-  float camScaleX;
-  float camScaleY;
-  float camBiasX;
-  float camBiasY;
-
-  float camMirrorConst;
-  float camTexWidth;
-  float camTexHeight;
-  float backMirrorConst;
-
-  float backScaleX;
-  float backScaleY;
-  float backBiasX;
-  float backBiasY;
-
-  uint32_t frontPresent;
-  float frontScaleX;
-  float frontScaleY;
-  float frontBiasX;
-
-  float frontBiasY;
-  float pad0;
-  float pad1;
-  float pad2;
-
-  uint32_t mediaPresent;
-  uint32_t mediaBelowCamera;
-  uint32_t shadowPresent;
-  uint32_t padM;
-
-  float m00; float m01; float m02; float m10;
-  float m11; float m12; float m20; float m21;
-  float m22; float s00; float s01; float s02;
-  float s10; float s11; float s12; float s20;
-  float s21; float s22; float padM1; float padM2;
-
-  uint32_t maskPresent;
-  uint32_t padK0;
-  uint32_t padK1;
-  uint32_t padK2;
-
-  uint32_t bgImagePresent;
-  float bgImgScaleX;
-  float bgImgScaleY;
-  float bgImgBiasX;
-
-  float bgImgBiasY;
-  float padBG0;
-  float padBG1;
-  float padBG2;
-};
 
 constexpr const char *kComposeShaderSource = R"HLSL(
 cbuffer ComposeUniforms : register(b0) {
@@ -130,39 +66,16 @@ cbuffer ComposeUniforms : register(b0) {
   float pad1;
   float pad2;
 
-  uint mediaPresent;
-  uint mediaBelowCamera;
-  uint shadowPresent;
-  uint padM;
-
-  float m00; float m01; float m02; float m10;
-  float m11; float m12; float m20; float m21;
-  float m22; float s00; float s01; float s02;
-  float s10; float s11; float s12; float s20;
-  float s21; float s22; float padM1; float padM2;
-
   uint maskPresent;
   uint padK0;
   uint padK1;
   uint padK2;
-
-  uint bgImagePresent;
-  float bgImgScaleX;
-  float bgImgScaleY;
-  float bgImgBiasX;
-
-  float bgImgBiasY;
-  float padBG0;
-  float padBG1;
-  float padBG2;
 };
 
 Texture2D<float4> cameraTex : register(t0);
 Texture2D<float4> backTex : register(t1);
 Texture2D<float4> frontTex : register(t2);
-Texture2D<float4> mediaTex : register(t3);
-Texture2D<float4> maskTex : register(t4);
-Texture2D<float4> bgImageTex : register(t5);
+Texture2D<float4> maskTex : register(t3);
 SamplerState layerSampler : register(s0);
 RWByteAddressBuffer output : register(u0);
 
@@ -176,36 +89,6 @@ float4 sampleLayer(Texture2D<float4> layer, float2 sourcePx) {
 float3 blendUnorm8(float3 destination, float3 source, float alpha) {
   const float3 blended = lerp(destination, source, alpha);
   return floor(saturate(blended) * 255.0 + 1.0e-4) / 255.0;
-}
-
-// Media (PiP) layer: inverse-homography lookup into the fitted image quad,
-// preceded by the optional planar drop shadow quad.
-float3 blendMedia(float3 rgb, float2 dest) {
-  if (shadowPresent != 0u) {
-    const float sw = s20 * dest.x + s21 * dest.y + s22;
-    if (abs(sw) > 1e-9) {
-      const float su = (s00 * dest.x + s01 * dest.y + s02) / sw;
-      const float sv = (s10 * dest.x + s11 * dest.y + s12) / sw;
-      if (su >= 0.0 && su <= 1.0 && sv >= 0.0 && sv <= 1.0) {
-        rgb = blendUnorm8(rgb, float3(0.0, 0.0, 0.0), 46.0 / 255.0);
-      }
-    }
-  }
-  const float w = m20 * dest.x + m21 * dest.y + m22;
-  if (abs(w) < 1e-9) {
-    return rgb;
-  }
-  const float mu = (m00 * dest.x + m01 * dest.y + m02) / w;
-  const float mv = (m10 * dest.x + m11 * dest.y + m12) / w;
-  if (mu < 0.0 || mu > 1.0 || mv < 0.0 || mv > 1.0) {
-    return rgb;
-  }
-  float texW, texH;
-  mediaTex.GetDimensions(texW, texH);
-  const float4 s = sampleLayer(mediaTex, float2(mu, mv) * float2(texW, texH) - 0.5);
-  const float a = s.a;
-  const float3 c = a > 0.001 ? min(s.rgb / a, 1.0) : float3(0.0, 0.0, 0.0);
-  return blendUnorm8(rgb, c, a);
 }
 
 [numthreads(8, 8, 1)]
@@ -235,22 +118,11 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
     rgb = float3(8.0, 10.0, 14.0) / 255.0;
   }
 
-  // Uploaded company background image (cover-cropped, below all layers).
-  if (bgImagePresent != 0u) {
-    const float2 src = float2(dest.x * bgImgScaleX + bgImgBiasX, dest.y * bgImgScaleY + bgImgBiasY);
-    const float4 s = sampleLayer(bgImageTex, src);
-    rgb = blendUnorm8(rgb, s.rgb, s.a);
-  }
-
   // Back graphics (cover-cropped full-frame layer).
   if (backPresent != 0u) {
     const float2 src = float2(dest.x * backScaleX + backBiasX, dest.y * backScaleY + backBiasY);
     const float4 s = sampleLayer(backTex, src);
     rgb = blendUnorm8(rgb, s.rgb, s.a);
-  }
-
-  if (mediaPresent != 0u && mediaBelowCamera != 0u) {
-    rgb = blendMedia(rgb, dest);
   }
 
   // Camera layer: keyed presenter (transform anchored to the keyed bottom
@@ -274,10 +146,6 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
       }
       rgb = blendUnorm8(rgb, s.rgb, alpha);
     }
-  }
-
-  if (mediaPresent != 0u && mediaBelowCamera == 0u) {
-    rgb = blendMedia(rgb, dest);
   }
 
   // Front graphics.
@@ -317,9 +185,7 @@ struct D3D11Context {
   LayerTexture camera;
   LayerTexture back;
   LayerTexture front;
-  LayerTexture media;
   LayerTexture mask;
-  LayerTexture backgroundImage;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -512,7 +378,7 @@ bool d3d11CompositorAvailable() {
   return initializeContext();
 }
 
-bool renderProgramFrameD3D11(const MetalComposePlan &plan,
+bool renderProgramFrameD3D11(const GpuComposePlan &plan,
                              std::vector<uint8_t> &output) {
   if (!initializeContext() || plan.width == 0u || plan.height == 0u) {
     return false;
@@ -523,7 +389,7 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
     return false;
   }
 
-  ComposeUniforms uniforms{};
+  GpuComposeUniforms uniforms{};
   uniforms.width = plan.width;
   uniforms.height = plan.height;
   uniforms.backgroundMode = static_cast<uint32_t>(plan.backgroundMode);
@@ -564,38 +430,6 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
     uniforms.frontBiasX = plan.frontMapping.biasX;
     uniforms.frontBiasY = plan.frontMapping.biasY;
   }
-  if (plan.backgroundImage != nullptr && plan.backgroundImageWidth > 0u &&
-      plan.backgroundImageHeight > 0u) {
-    if (!uploadLayer(ctx.backgroundImage, plan.backgroundImage,
-                     plan.backgroundImageWidth, plan.backgroundImageHeight,
-                     plan.backgroundImageCacheKey, DXGI_FORMAT_R8G8B8A8_UNORM,
-                     4u)) {
-      return false;
-    }
-    uniforms.bgImagePresent = 1u;
-    uniforms.bgImgScaleX = plan.backgroundImageMapping.scaleX;
-    uniforms.bgImgScaleY = plan.backgroundImageMapping.scaleY;
-    uniforms.bgImgBiasX = plan.backgroundImageMapping.biasX;
-    uniforms.bgImgBiasY = plan.backgroundImageMapping.biasY;
-  }
-  if (plan.media.present && plan.media.rgba != nullptr) {
-    if (!uploadLayer(ctx.media, plan.media.rgba, plan.media.width,
-                     plan.media.height, plan.media.cacheKey,
-                     DXGI_FORMAT_R8G8B8A8_UNORM, 4u)) {
-      return false;
-    }
-    uniforms.mediaPresent = 1u;
-    uniforms.mediaBelowCamera = plan.media.belowCamera ? 1u : 0u;
-    uniforms.shadowPresent = plan.media.shadowPresent ? 1u : 0u;
-    const float *m = plan.media.invHomography;
-    uniforms.m00 = m[0]; uniforms.m01 = m[1]; uniforms.m02 = m[2];
-    uniforms.m10 = m[3]; uniforms.m11 = m[4]; uniforms.m12 = m[5];
-    uniforms.m20 = m[6]; uniforms.m21 = m[7]; uniforms.m22 = m[8];
-    const float *sh = plan.media.shadowInvHomography;
-    uniforms.s00 = sh[0]; uniforms.s01 = sh[1]; uniforms.s02 = sh[2];
-    uniforms.s10 = sh[3]; uniforms.s11 = sh[4]; uniforms.s12 = sh[5];
-    uniforms.s20 = sh[6]; uniforms.s21 = sh[7]; uniforms.s22 = sh[8];
-  }
   if (plan.camera.keyed) {
     if (plan.cameraMask == nullptr || plan.maskWidth == 0u || plan.maskHeight == 0u ||
         !uploadLayer(ctx.mask, plan.cameraMask, plan.maskWidth, plan.maskHeight,
@@ -607,25 +441,25 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
 
   ctx.context->UpdateSubresource(ctx.uniforms.Get(), 0, nullptr, &uniforms, 0, 0);
 
-  ID3D11ShaderResourceView *srvs[6] = {
-      ctx.camera.srv.Get(), ctx.back.srv.Get(),  ctx.front.srv.Get(),
-      ctx.media.srv.Get(),  ctx.mask.srv.Get(),  ctx.backgroundImage.srv.Get(),
+  ID3D11ShaderResourceView *srvs[4] = {
+      ctx.camera.srv.Get(), ctx.back.srv.Get(), ctx.front.srv.Get(),
+      ctx.mask.srv.Get(),
   };
   ID3D11Buffer *cbs[1] = {ctx.uniforms.Get()};
   ID3D11SamplerState *samplers[1] = {ctx.sampler.Get()};
   ID3D11UnorderedAccessView *uavs[1] = {ctx.outputUav.Get()};
   ctx.context->CSSetShader(ctx.shader.Get(), nullptr, 0);
   ctx.context->CSSetConstantBuffers(0, 1, cbs);
-  ctx.context->CSSetShaderResources(0, 6, srvs);
+  ctx.context->CSSetShaderResources(0, 4, srvs);
   ctx.context->CSSetSamplers(0, 1, samplers);
   ctx.context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
   ctx.context->Dispatch((plan.width + 7u) / 8u, (plan.height + 7u) / 8u, 1u);
 
   // Unbind so the next frame's UpdateSubresource never hits a bound resource.
   ID3D11UnorderedAccessView *nullUav[1] = {nullptr};
-  ID3D11ShaderResourceView *nullSrvs[6] = {};
+  ID3D11ShaderResourceView *nullSrvs[4] = {};
   ctx.context->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
-  ctx.context->CSSetShaderResources(0, 6, nullSrvs);
+  ctx.context->CSSetShaderResources(0, 4, nullSrvs);
 
   ctx.context->CopyResource(ctx.stagingBuffer.Get(), ctx.outputBuffer.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};

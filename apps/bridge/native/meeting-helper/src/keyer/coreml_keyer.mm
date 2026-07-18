@@ -162,50 +162,6 @@ class CoreMLKeyer::Impl {
 #endif
   }
 
-  void *predictMaskTexture(const VideoFrame &input, uint32_t &width,
-                           uint32_t &height) {
-    width = 0;
-    height = 0;
-#if defined(__APPLE__)
-    if (@available(macOS 13.0, *)) {
-      if (!ensureLoaded()) return nullptr;
-      @autoreleasepool {
-        if (input.rgba.empty() || input.width == 0u || input.height == 0u ||
-            !fillPixelBuffer(input)) {
-          return nullptr;
-        }
-        MLFeatureValue *imageValue =
-            [MLFeatureValue featureValueWithPixelBuffer:pixelBuffer_];
-        NSError *error = nil;
-        MLDictionaryFeatureProvider *provider =
-            [[MLDictionaryFeatureProvider alloc]
-                initWithDictionary:@{inputName_ : imageValue}
-                             error:&error];
-        if (provider == nil) return nullptr;
-        id<MLFeatureProvider> prediction =
-            [model_ predictionFromFeatures:provider error:&error];
-        if (prediction == nil) return nullptr;
-        MLFeatureValue *alphaValue = [prediction featureValueForName:outputName_];
-        CVPixelBufferRef maskBuffer =
-            alphaValue != nil ? [alphaValue imageBufferValue] : nullptr;
-        if (maskBuffer == nullptr) return nullptr;
-        if (refiner_ == nullptr) {
-          refiner_ = std::make_unique<GpuMaskRefiner>();
-        }
-        if (!refiner_->available()) return nullptr;
-        status_.activeKeyer = "coreml_modnet";
-        status_.fallbackActive = false;
-        status_.fallbackReason.clear();
-        return refiner_->refineToTexture(maskBuffer, input, width, height);
-      }
-    }
-    return nullptr;
-#else
-    (void)input;
-    return nullptr;
-#endif
-  }
-
 #if defined(__APPLE__)
  private:
   bool ensureLoaded() {
@@ -390,11 +346,6 @@ CoreMLKeyer::~CoreMLKeyer() = default;
 
 KeyerResult CoreMLKeyer::apply(const VideoFrame &input, const KeyerSettings &settings) {
   return impl_->apply(input, settings);
-}
-
-void *CoreMLKeyer::predictMaskTexture(const VideoFrame &input, uint32_t &width,
-                                      uint32_t &height) {
-  return impl_->predictMaskTexture(input, width, height);
 }
 
 }  // namespace broadify::meeting

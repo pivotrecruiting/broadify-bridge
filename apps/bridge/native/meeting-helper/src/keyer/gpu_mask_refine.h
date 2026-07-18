@@ -28,14 +28,6 @@ class GpuMaskRefiner {
   // so the caller can fall back to the CPU path.
   bool refine(CVPixelBufferRef alpha, const VideoFrame &camera, AlphaMask &out);
 
-  // Same guided-filter refinement, but leaves the result on the GPU and returns
-  // a BORROWED handle to the refined-mask MTLTexture (r16Float, valid until the
-  // next refine call on this instance), for consumers that can avoid a CPU
-  // round-trip. `outWidth`/`outHeight` receive the texture size.
-  // Returns nullptr on failure. The handle is an `(__bridge void *)id<MTLTexture>`.
-  void *refineToTexture(CVPixelBufferRef alpha, const VideoFrame &camera,
-                        uint32_t &outWidth, uint32_t &outHeight);
-
  private:
   class Impl;
   std::unique_ptr<Impl> impl_;

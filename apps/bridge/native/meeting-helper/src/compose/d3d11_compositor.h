@@ -1,6 +1,6 @@
 #pragma once
 
-#include "compose/metal_compositor.h"
+#include "compose/gpu_compositor_types.h"
 #include "keyer/keyer.h"
 
 namespace broadify::meeting {
@@ -10,10 +10,10 @@ namespace broadify::meeting {
 bool d3d11CompositorAvailable();
 
 // Composites the shared GPU compose plan (background + graphics + keyed
-// camera + media layer) on the GPU into `output` (RGBA, width*height*4).
+// camera) on the GPU into `output` (RGBA, width*height*4).
 // Returns false on any failure; callers must then render through the CPU
 // compositor instead.
-bool renderProgramFrameD3D11(const MetalComposePlan &plan,
+bool renderProgramFrameD3D11(const GpuComposePlan &plan,
                              std::vector<uint8_t> &output);
 
 // True when the D3D11 guided mask refine is available. It is enabled by

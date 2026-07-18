@@ -588,9 +588,9 @@ int gpuBackgroundMode(const std::string &mode) {
   return 0;
 }
 
-MetalLayerMapping layerMapping(const VideoFrame *frame, const Rect &target,
-                               bool mirror, bool keyed) {
-  MetalLayerMapping mapping;
+GpuLayerMapping layerMapping(const VideoFrame *frame, const Rect &target,
+                             bool mirror, bool keyed) {
+  GpuLayerMapping mapping;
   if (frame == nullptr || frame->rgba.empty() || frame->width == 0u ||
       frame->height == 0u || target.width <= 0 || target.height <= 0) {
     return mapping;
@@ -636,14 +636,14 @@ bool canUseGpuCompositor(const CompositorSnapshot &snapshot) {
   return !snapshot.mediaLayer.enabled;
 }
 
-MetalComposePlan buildGpuPlan(const Options &options,
+GpuComposePlan buildGpuPlan(const Options &options,
                               const CompositorSnapshot &snapshot,
                               const VideoFrame *cameraFrame,
                               const AlphaMask *cameraMask,
                               const VideoFrame *backGraphicsFrame,
                               const VideoFrame *frontGraphicsFrame,
                               uint64_t frameIndex) {
-  MetalComposePlan plan;
+  GpuComposePlan plan;
   plan.width = options.width;
   plan.height = options.height;
   plan.backgroundMode = gpuBackgroundMode(snapshot.backgroundMode);
@@ -764,7 +764,7 @@ std::string renderProgramFrame(const Options &options,
                                uint64_t frameIndex,
                                std::vector<uint8_t> &output) {
   if (canUseGpuCompositor(snapshot)) {
-    const MetalComposePlan plan = buildGpuPlan(
+    const GpuComposePlan plan = buildGpuPlan(
         options, snapshot, cameraFrame, cameraMask, backGraphicsFrame,
         frontGraphicsFrame, frameIndex);
 #if defined(__APPLE__)
@@ -851,7 +851,7 @@ GpuCompositorSelfTestResult runGpuCompositorSelfTest() {
   std::vector<uint8_t> cpuOutput;
   renderProgramFrameCpu(options, snapshot, &camera, &mask, &backGraphics,
                         &frontGraphics, 11u, cpuOutput);
-  const MetalComposePlan plan = buildGpuPlan(
+  const GpuComposePlan plan = buildGpuPlan(
       options, snapshot, &camera, &mask, &backGraphics, &frontGraphics, 11u);
   std::vector<uint8_t> gpuOutput;
   GpuCompositorSelfTestResult result;

@@ -110,8 +110,6 @@ void boxBlur(std::vector<float> &img, int W, int H, int r) {
 
 }  // namespace
 
-bool guidedRefineAvailable() { return true; }
-
 void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame) {
   if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u ||
       guideFrame.rgba.empty() || guideFrame.width == 0u ||

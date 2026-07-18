@@ -51,19 +51,19 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
 ] as const;
 const MEETING_HELPER_ENV_VALUE_PATTERN = /^[A-Za-z0-9._+-]{1,64}$/;
 
-export type MeetingHelperLifecycleStateT =
+type MeetingHelperLifecycleStateT =
   | "stopped"
   | "starting"
   | "running"
   | "error";
 
-export type MeetingHelperStartOptionsT = {
+type MeetingHelperStartOptionsT = {
   width?: number;
   height?: number;
   fps?: number;
 };
 
-export type MeetingHelperManagerStatusT = {
+type MeetingHelperManagerStatusT = {
   state: MeetingHelperLifecycleStateT;
   port: number | null;
   pid: number | null;
@@ -74,7 +74,7 @@ export type MeetingHelperManagerStatusT = {
   lastError: string | null;
 };
 
-export type MeetingHelperIdentityT = {
+type MeetingHelperIdentityT = {
   path: string;
   appPath: string | null;
   bundleId: string | null;
@@ -577,6 +577,14 @@ export class MeetingHelperManager {
   ): Promise<MeetingHelperManagerStatusT> {
     const logger = getLogger();
     const helperPath = resolveMeetingHelperPath();
+    if (!existsSync(helperPath)) {
+      this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
+      this.state = "error";
+      this.lastError = "Meeting helper is not installed.";
+      logger.debug?.(`[Meeting] Helper not found at ${helperPath}`);
+      publishMeetingErrorEvent("helper_missing", this.lastError);
+      return this.getStatus();
+    }
     this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
     logger.info(
       `[Meeting] Helper identity: bundleId=${this.helperIdentity.bundleId ?? "none"} tccIdentity=${this.helperIdentity.tccIdentity ?? "none"} codeSignature=${this.helperIdentity.codeSignatureStatus} cameraEntitlement=${this.helperIdentity.cameraEntitlementStatus} teamId=${this.helperIdentity.teamId ?? "none"}`,
@@ -612,12 +620,6 @@ export class MeetingHelperManager {
         : platform() === "win32"
           ? join(modelsDir, "modnet.onnx")
           : null;
-    if (!existsSync(helperPath)) {
-      this.state = "error";
-      this.lastError = `Meeting helper not found at ${helperPath}`;
-      publishMeetingErrorEvent("helper_missing", this.lastError);
-      return this.getStatus();
-    }
     if (requiredModelPath !== null && !existsSync(requiredModelPath)) {
       this.state = "error";
       this.lastError = `Meeting keyer model not found at ${requiredModelPath}`;

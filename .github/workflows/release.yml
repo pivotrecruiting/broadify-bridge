@@ -679,6 +679,10 @@ jobs:
           $msiHelperPath = Join-Path $installDir 'resources\native\display-helper\display-helper.exe'
           & .\scripts\test-windows-display-helper.ps1 -HelperPath $msiHelperPath -Attempts 3
 
+          $meetingHelperPath = Join-Path $installDir 'resources\native\meeting-helper\meeting-helper.exe'
+          $meetingModelsDir = Join-Path $installDir 'resources\native\meeting-helper\models'
+          & .\scripts\test-windows-meeting-helper.ps1 -HelperPath $meetingHelperPath -ModelsDir $meetingModelsDir
+
           $uninstallArgs = @('/x', $msi.FullName, '/qn', '/norestart', '/L*v', $uninstallLog)
           $uninstall = Start-Process msiexec.exe -ArgumentList $uninstallArgs -Wait -PassThru
           if ($uninstall.ExitCode -notin @(0, 3010, 1605)) {

@@ -175,14 +175,6 @@ class GpuMaskRefiner::Impl {
     }
   }
 
-  void *refineToTexture(CVPixelBufferRef alpha, const VideoFrame &camera,
-                        uint32_t &outWidth, uint32_t &outHeight) {
-    @autoreleasepool {
-      if (!encodeRefine(alpha, camera, outWidth, outHeight)) return nullptr;
-      return (__bridge void *)outMask_;
-    }
-  }
-
  private:
   id<MTLTexture> wrapAlpha(CVPixelBufferRef buffer) {
     const size_t w = CVPixelBufferGetWidth(buffer);
@@ -276,10 +268,6 @@ GpuMaskRefiner::~GpuMaskRefiner() = default;
 bool GpuMaskRefiner::available() const { return impl_->available(); }
 bool GpuMaskRefiner::refine(CVPixelBufferRef alpha, const VideoFrame &camera, AlphaMask &out) {
   return impl_->refine(alpha, camera, out);
-}
-void *GpuMaskRefiner::refineToTexture(CVPixelBufferRef alpha, const VideoFrame &camera,
-                                      uint32_t &outWidth, uint32_t &outHeight) {
-  return impl_->refineToTexture(alpha, camera, outWidth, outHeight);
 }
 
 }  // namespace broadify::meeting

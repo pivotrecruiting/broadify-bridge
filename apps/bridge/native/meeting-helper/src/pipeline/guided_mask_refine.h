@@ -13,7 +13,4 @@ namespace broadify::meeting {
 // empty, so the caller can invoke it unconditionally.
 void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame);
 
-// True when the guided-filter backend initialized successfully (for logging).
-bool guidedRefineAvailable();
-
 }  // namespace broadify::meeting

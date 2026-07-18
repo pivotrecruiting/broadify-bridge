@@ -2,9 +2,15 @@ const { spawnSync } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const path = require("node:path");
 
-const root = path.resolve(__dirname, "..");
-const helperRoot = path.join(
-  root,
+const mode = process.argv[2];
+if (mode !== "gpu" && mode !== "keyer") {
+  console.error("Usage: node scripts/test-meeting-helper.cjs <gpu|keyer>");
+  process.exit(2);
+}
+
+const helperRoot = path.resolve(
+  __dirname,
+  "..",
   "apps",
   "bridge",
   "native",
@@ -25,19 +31,24 @@ const helperPath =
 
 if (!existsSync(helperPath)) {
   console.error(
-    "Meeting helper binary is missing. Build it before the keyer self-test.",
+    `Meeting helper binary is missing. Build it before the ${mode} self-test.`,
   );
   process.exit(2);
 }
-const modelsDir =
-  process.env.BRIDGE_MEETING_MODELS_DIR ||
-  process.env.MEETING_MODELS_DIR ||
-  path.join(helperRoot, "models");
-const result = spawnSync(
-  helperPath,
-  ["--keyer-self-test", "--models-dir", modelsDir],
-  { env: process.env, stdio: "inherit" },
-);
+
+const args = mode === "gpu" ? ["--self-test"] : ["--keyer-self-test"];
+if (mode === "keyer") {
+  const modelsDir =
+    process.env.BRIDGE_MEETING_MODELS_DIR ||
+    process.env.MEETING_MODELS_DIR ||
+    path.join(helperRoot, "models");
+  args.push("--models-dir", modelsDir);
+}
+
+const result = spawnSync(helperPath, args, {
+  env: process.env,
+  stdio: "inherit",
+});
 if (result.error) {
   throw result.error;
 }

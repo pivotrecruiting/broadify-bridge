@@ -132,8 +132,20 @@ describe("meeting-helper-manager", () => {
       const status = await manager.start();
 
       expect(status.state).toBe("error");
-      expect(status.lastError).toContain("Meeting helper not found");
+      expect(status.lastError).toBe("Meeting helper is not installed.");
       expect(manager.isRunning()).toBe(false);
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({ code: "helper_missing" }),
+        }),
+      );
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({ code: "helper_codesign_invalid" }),
+        }),
+      );
     });
 
     it("getFullStatus returns manager status without helper when stopped", async () => {

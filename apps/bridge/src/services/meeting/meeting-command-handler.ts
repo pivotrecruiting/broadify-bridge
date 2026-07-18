@@ -23,7 +23,7 @@ import {
 } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
 
-export type MeetingCommandResultT = {
+type MeetingCommandResultT = {
   success: boolean;
   data?: unknown;
   error?: string;

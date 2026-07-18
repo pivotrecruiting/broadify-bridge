@@ -144,7 +144,7 @@ if (config.win) {
       // when available and falls back to Apple Vision.
       from: "apps/bridge/native/meeting-helper/models",
       to: "native/meeting-helper/models",
-      filter: ["**/*", "!MODNet.mlpackage{,/**}", "!coreml-manifest.json"],
+      filter: ["manifest.json", "modnet.onnx"],
     },
   ];
 

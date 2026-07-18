@@ -59,11 +59,15 @@ When `modnet` is requested:
 4. MPS guided filtering refines the mask against the current camera frame.
 5. If fused inference fails, the helper disables the fused path for the current
    keyer revision and resumes the asynchronous fallback worker.
-6. If the model is missing, invalid, cannot compile, or inference fails, the
-   asynchronous worker tries the optional ONNX path.
-7. If ONNX is disabled or unavailable, Apple Vision person segmentation
-   produces the mask.
+6. After a successful model preflight, compile, initialization, or inference
+   failures resume the asynchronous worker.
+7. Because macOS ONNX is disabled in release builds, Apple Vision person
+   segmentation produces the fallback mask.
 8. If no keyer produces a valid mask, the program frame uses passthrough.
+
+A missing or hash-invalid CoreML package fails the Bridge startup preflight.
+Vision fallback is available only after the required release artifact has
+passed that preflight and the helper has started.
 
 The release build disables macOS ONNX Runtime because the vendored runtime does
 not meet the macOS 13 deployment floor. CoreML is the primary production path,
@@ -236,7 +240,7 @@ Hardware GPU to CPU parity test:
 npm run test:meeting-helper-gpu
 ```
 
-CoreML model and fallback test:
+Accelerated keyer primary-path test:
 
 ```bash
 npm run test:meeting-helper-keyer

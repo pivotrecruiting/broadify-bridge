@@ -61,6 +61,10 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_GPU_EPSILON` | Epsilon des MPS Guided Filters |
 | `BROADIFY_MEETING_GPU_REFINE_WIDTH` | Zielbreite der MPS-Maske |
 | `BROADIFY_MEETING_GPU_EMA` | EMA-Staerke der MPS-Koeffizienten |
+| `BROADIFY_MEETING_COREML_UNITS` | CoreML Compute Units waehlen |
+| `BROADIFY_MEETING_GUIDED_RADIUS` | Radius des portablen Guided Filters |
+| `BROADIFY_MEETING_GUIDED_EPSILON` | Epsilon des portablen Guided Filters |
+| `BROADIFY_MEETING_KEYER_DML_LEGACY=1` | DirectML Device 0 erzwingen |
 
 Beim Start des macOS-App-Bundles reicht die Bridge ausschließlich diese
 dokumentierten `BROADIFY_MEETING_*`-Variablen als validierte `--env`-Argumente

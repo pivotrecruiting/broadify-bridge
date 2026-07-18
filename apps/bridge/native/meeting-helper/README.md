@@ -55,10 +55,12 @@ apps/bridge/native/meeting-helper/deps/onnxruntime/windows-x64/
 ```
 
 Windows also requires the hash-verified model at
-`models/modnet.onnx`. For a local compiler-only build without ONNX Runtime:
+`models/modnet.onnx`. For a local compiler-only build without ONNX Runtime,
+set the environment variable before using the Windows build script:
 
-```bash
-MEETING_HELPER_ENABLE_MODNET=0 bash apps/bridge/native/meeting-helper/build.sh
+```powershell
+$env:MEETING_HELPER_ENABLE_MODNET = '0'
+powershell -NoProfile -ExecutionPolicy Bypass -File apps\bridge\native\meeting-helper\build.ps1
 ```
 
 ## Build

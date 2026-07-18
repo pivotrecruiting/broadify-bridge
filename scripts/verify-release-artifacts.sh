@@ -329,6 +329,9 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   check_architecture "apps/bridge/native/display-helper/display-helper.exe"
   check_architecture "apps/bridge/native/display-helper/SDL2.dll"
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper.exe"
+  check_architecture "apps/bridge/native/meeting-helper/onnxruntime.dll"
+  check_architecture "apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll"
+  check_architecture "apps/bridge/native/meeting-helper/DirectML.dll"
   check_modnet_manifest_hash
 else
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper"

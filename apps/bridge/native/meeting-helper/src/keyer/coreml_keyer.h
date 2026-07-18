@@ -18,9 +18,6 @@ class CoreMLKeyer final : public Keyer {
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override;
 
-  void *predictMaskTexture(const VideoFrame &input, uint32_t &width,
-                           uint32_t &height);
-
  private:
   class Impl;
   std::unique_ptr<Impl> impl_;
