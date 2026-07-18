@@ -59,6 +59,7 @@ apps/bridge/native/meeting-helper/libonnxruntime.1.dylib
 apps/bridge/native/meeting-helper/onnxruntime.dll
 apps/bridge/native/meeting-helper/models/*.onnx
 apps/bridge/native/meeting-helper/models/*.task
+apps/bridge/native/meeting-helper/models/*.mlpackage/
 
 # Native virtual camera build artifacts
 apps/bridge/native/vcam-helper/build/

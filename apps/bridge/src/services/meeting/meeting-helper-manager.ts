@@ -33,20 +33,37 @@ const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
 const CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS = 120;
 const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
 const STALE_HELPER_PORT_RELEASE_TIMEOUT_MS = 1000;
+const MEETING_HELPER_FORWARDED_ENV_KEYS = [
+  "BROADIFY_MEETING_COREML_UNITS",
+  "BROADIFY_MEETING_GPU_COMPOSITOR",
+  "BROADIFY_MEETING_GPU_COMPOSITOR_D3D11",
+  "BROADIFY_MEETING_GPU_EMA",
+  "BROADIFY_MEETING_GPU_EPSILON",
+  "BROADIFY_MEETING_GPU_GUIDED",
+  "BROADIFY_MEETING_GPU_PIPELINE",
+  "BROADIFY_MEETING_GPU_RADIUS",
+  "BROADIFY_MEETING_GPU_REFINE",
+  "BROADIFY_MEETING_GPU_REFINE_WIDTH",
+  "BROADIFY_MEETING_GUIDED_EPSILON",
+  "BROADIFY_MEETING_GUIDED_RADIUS",
+  "BROADIFY_MEETING_GUIDED_REFINE",
+  "BROADIFY_MEETING_KEYER_DML_LEGACY",
+] as const;
+const MEETING_HELPER_ENV_VALUE_PATTERN = /^[A-Za-z0-9._+-]{1,64}$/;
 
-export type MeetingHelperLifecycleStateT =
+type MeetingHelperLifecycleStateT =
   | "stopped"
   | "starting"
   | "running"
   | "error";
 
-export type MeetingHelperStartOptionsT = {
+type MeetingHelperStartOptionsT = {
   width?: number;
   height?: number;
   fps?: number;
 };
 
-export type MeetingHelperManagerStatusT = {
+type MeetingHelperManagerStatusT = {
   state: MeetingHelperLifecycleStateT;
   port: number | null;
   pid: number | null;
@@ -57,7 +74,7 @@ export type MeetingHelperManagerStatusT = {
   lastError: string | null;
 };
 
-export type MeetingHelperIdentityT = {
+type MeetingHelperIdentityT = {
   path: string;
   appPath: string | null;
   bundleId: string | null;
@@ -107,6 +124,35 @@ function getModuleDirname(): string {
 
 function uniquePaths(paths: string[]): string[] {
   return Array.from(new Set(paths));
+}
+
+export function resolveMeetingHelperForwardedEnvArgs(
+  environment: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const args: string[] = [];
+  for (const key of MEETING_HELPER_FORWARDED_ENV_KEYS) {
+    const value = environment[key];
+    if (
+      typeof value === "string" &&
+      MEETING_HELPER_ENV_VALUE_PATTERN.test(value)
+    ) {
+      args.push("--env", `${key}=${value}`);
+    }
+  }
+  return args;
+}
+
+function meetingHelperArgsForLog(args: string[]): string {
+  return args
+    .map((value, index) => {
+      if (index > 0 && args[index - 1] === "--env") {
+        const separator = value.indexOf("=");
+        const key = separator >= 0 ? value.slice(0, separator) : "invalid";
+        return `${key}=<redacted>`;
+      }
+      return value;
+    })
+    .join(" ");
 }
 
 function resolveMacosMeetingHelperExecutable(appPath: string): string {
@@ -264,6 +310,12 @@ export function resolveMeetingModelsDir(helperPath: string = resolveMeetingHelpe
   const resourcesPath = process.resourcesPath;
   if (process.env.NODE_ENV === "production" && resourcesPath) {
     return join(resourcesPath, "native", "meeting-helper", "models");
+  }
+  const bundleMarker = ".app/Contents/MacOS/";
+  const bundleIndex = helperPath.indexOf(bundleMarker);
+  if (bundleIndex !== -1) {
+    const bundlePath = helperPath.slice(0, bundleIndex) + ".app";
+    return join(dirname(bundlePath), "models");
   }
   return join(dirname(helperPath), "models");
 }
@@ -440,6 +492,7 @@ export class MeetingHelperManager {
   private readyResolver: ((event: ReadyEventT) => void) | null = null;
   private readyRejecter: ((error: Error) => void) | null = null;
   private helperIdentity: MeetingHelperIdentityT | null = null;
+  private lastRuntimeBackendStatus: string | null = null;
 
   getClient(): MeetingHelperClient | null {
     return this.client;
@@ -496,6 +549,7 @@ export class MeetingHelperManager {
     this.client = null;
     this.port = null;
     this.state = "stopped";
+    this.lastRuntimeBackendStatus = null;
     await this.publishStatus("engine_stopped", true);
     return this.getStatus();
   }
@@ -506,11 +560,12 @@ export class MeetingHelperManager {
       return { manager, engine: null };
     }
     try {
-      const [engineState, framebus] = await Promise.all([
+      const [engineState, framebus, keyer] = await Promise.all([
         this.client.getState(),
         this.client.framebusStatus(),
+        this.client.keyerGet(),
       ]);
-      return { manager, engine: engineState, framebus };
+      return { manager, engine: engineState, framebus, keyer };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       return { manager, engine: null, engineError: message };
@@ -522,6 +577,14 @@ export class MeetingHelperManager {
   ): Promise<MeetingHelperManagerStatusT> {
     const logger = getLogger();
     const helperPath = resolveMeetingHelperPath();
+    if (!existsSync(helperPath)) {
+      this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
+      this.state = "error";
+      this.lastError = "Meeting helper is not installed.";
+      logger.debug?.(`[Meeting] Helper not found at ${helperPath}`);
+      publishMeetingErrorEvent("helper_missing", this.lastError);
+      return this.getStatus();
+    }
     this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
     logger.info(
       `[Meeting] Helper identity: bundleId=${this.helperIdentity.bundleId ?? "none"} tccIdentity=${this.helperIdentity.tccIdentity ?? "none"} codeSignature=${this.helperIdentity.codeSignatureStatus} cameraEntitlement=${this.helperIdentity.cameraEntitlementStatus} teamId=${this.helperIdentity.teamId ?? "none"}`,
@@ -551,12 +614,22 @@ export class MeetingHelperManager {
       );
     }
     const modelsDir = resolveMeetingModelsDir(helperPath);
-    if (!existsSync(helperPath)) {
+    const requiredModelPath =
+      platform() === "darwin"
+        ? join(modelsDir, "MODNet.mlpackage")
+        : platform() === "win32"
+          ? join(modelsDir, "modnet.onnx")
+          : null;
+    if (requiredModelPath !== null && !existsSync(requiredModelPath)) {
       this.state = "error";
-      this.lastError = `Meeting helper not found at ${helperPath}`;
-      publishMeetingErrorEvent("helper_missing", this.lastError);
+      this.lastError = `Meeting keyer model not found at ${requiredModelPath}`;
+      publishMeetingErrorEvent("keyer_model_missing", this.lastError);
+      logger.error(`[Meeting] ${this.lastError}`);
       return this.getStatus();
     }
+    logger.info(
+      `[Meeting] Models directory resolved: ${modelsDir}${requiredModelPath ? ` model=${requiredModelPath}` : ""}`,
+    );
 
     this.state = "starting";
     this.lastError = null;
@@ -572,6 +645,8 @@ export class MeetingHelperManager {
       const fps = options.fps ?? 30;
       const args = [
         "--run",
+        "--parent-pid",
+        String(process.pid),
         "--preview-port",
         String(port),
         "--control-socket",
@@ -588,6 +663,7 @@ export class MeetingHelperManager {
         String(fps),
         "--models-dir",
         modelsDir,
+        ...resolveMeetingHelperForwardedEnvArgs(),
       ];
 
       const env: NodeJS.ProcessEnv = {
@@ -614,8 +690,8 @@ export class MeetingHelperManager {
 
       logger.info(
         useLaunchServices
-          ? `[Meeting] Opening helper app: ${this.helperIdentity.appPath} ${args.join(" ")}`
-          : `[Meeting] Starting helper: ${helperPath} ${args.join(" ")}`,
+          ? `[Meeting] Opening helper app: ${this.helperIdentity.appPath} ${meetingHelperArgsForLog(args)}`
+          : `[Meeting] Starting helper: ${helperPath} ${meetingHelperArgsForLog(args)}`,
       );
       const child = spawn(launchPath, launchArgs, {
         env,
@@ -726,6 +802,12 @@ export class MeetingHelperManager {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "meeting_vcam_raw") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (parsed.type === "meeting_gpu_compositor") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (parsed.type === "meeting_keyer_pipeline") {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "ready") {
@@ -852,6 +934,27 @@ export class MeetingHelperManager {
 
   private async publishStatus(reason: string, force: boolean): Promise<void> {
     const status = await this.getFullStatus();
+    const keyer = status.keyer;
+    if (keyer && typeof keyer === "object") {
+      const runtimeStatus = (keyer as Record<string, unknown>).status;
+      if (runtimeStatus && typeof runtimeStatus === "object") {
+        const value = runtimeStatus as Record<string, unknown>;
+        const backendStatus = JSON.stringify({
+          active_keyer: value.active_keyer ?? null,
+          provider: value.provider ?? null,
+          fallback_active: value.fallback_active ?? null,
+          fallback_reason: value.fallback_reason ?? null,
+          keyer_pipeline_mode: value.keyer_pipeline_mode ?? null,
+          compositor: value.compositor ?? null,
+          model_hash_ok: value.model_hash_ok ?? null,
+          model_path: value.model_path ?? null,
+        });
+        if (backendStatus !== this.lastRuntimeBackendStatus) {
+          getLogger().info(`[Meeting] Runtime keyer status ${backendStatus}`);
+          this.lastRuntimeBackendStatus = backendStatus;
+        }
+      }
+    }
     const serialized = JSON.stringify(status);
     if (!force && serialized === this.lastPublishedStatus) {
       return;
@@ -864,6 +967,7 @@ export class MeetingHelperManager {
     this.stopStatusPolling();
     this.process = null;
     this.client = null;
+    this.lastRuntimeBackendStatus = null;
     this.readyRejecter?.(new Error(`Meeting helper exited with code ${code}`));
     const wasRunning = this.state === "running";
     if (this.state !== "stopped") {

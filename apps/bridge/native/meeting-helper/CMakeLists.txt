@@ -14,15 +14,19 @@ endif()
 
 project(broadify_meeting_helper LANGUAGES C CXX)
 
+include(CTest)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(DEFINED ENV{MEETING_HELPER_ENABLE_MODNET})
-  set(MEETING_HELPER_ENABLE_MODNET "$ENV{MEETING_HELPER_ENABLE_MODNET}")
-else()
-  set(MEETING_HELPER_ENABLE_MODNET "1")
+if(NOT DEFINED MEETING_HELPER_ENABLE_MODNET)
+  if(DEFINED ENV{MEETING_HELPER_ENABLE_MODNET})
+    set(MEETING_HELPER_ENABLE_MODNET "$ENV{MEETING_HELPER_ENABLE_MODNET}" CACHE STRING "Enable ONNX Runtime MODNet")
+  else()
+    set(MEETING_HELPER_ENABLE_MODNET "1" CACHE STRING "Enable ONNX Runtime MODNet")
+  endif()
 endif()
 
 if(APPLE)
@@ -31,6 +35,15 @@ elseif(WIN32)
   set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/windows-x64")
 else()
   set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/linux-x64")
+endif()
+
+if(BUILD_TESTING)
+  add_executable(meeting-helper-guided-mask-test
+    tests/guided_mask_refine_test.cpp
+    src/pipeline/guided_mask_refine.cpp
+  )
+  target_include_directories(meeting-helper-guided-mask-test PRIVATE src)
+  add_test(NAME meeting-helper-guided-mask-test COMMAND meeting-helper-guided-mask-test)
 endif()
 
 set(BROADIFY_ONNXRUNTIME_ROOT "$ENV{BROADIFY_ONNXRUNTIME_ROOT}" CACHE PATH "Path to vendored ONNX Runtime C/C++ distribution")
@@ -50,6 +63,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/modnet_keyer.cpp
   src/main.cpp
   src/pipeline/frame_pipeline.cpp
+  src/pipeline/guided_mask_refine.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
   src/preview/raw_frame_server.cpp
@@ -61,10 +75,26 @@ if(APPLE)
   enable_language(OBJCXX)
   list(APPEND MEETING_HELPER_SOURCES
     src/capture/camera_avfoundation.mm
+    src/compose/metal_compositor.mm
+    src/compose/metal_device.mm
+    src/keyer/coreml_keyer.mm
+    src/keyer/gpu_mask_refine.mm
     src/keyer/vision_keyer.mm
     src/macos/macos_app.mm
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/compose/metal_compositor.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/compose/metal_device.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/keyer/gpu_mask_refine.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/keyer/vision_keyer.mm PROPERTIES
@@ -73,6 +103,8 @@ if(APPLE)
   set_source_files_properties(src/macos/macos_app.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
+elseif(WIN32)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/compose/d3d11_compositor.cpp)
 else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
 endif()
@@ -117,7 +149,7 @@ endif()
 
 if(WIN32)
   target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(meeting-helper PRIVATE ws2_32)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 d3d11 d3dcompiler dxgi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -127,14 +159,18 @@ endif()
 
 if(APPLE)
   target_link_libraries(meeting-helper PRIVATE
+    "-framework Accelerate"
     "-framework AppKit"
     "-framework ApplicationServices"
     "-framework AVFoundation"
     "-framework CoreGraphics"
+    "-framework CoreML"
     "-framework CoreMedia"
     "-framework CoreVideo"
     "-framework Foundation"
     "-framework ImageIO"
+    "-framework Metal"
+    "-framework MetalPerformanceShaders"
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES

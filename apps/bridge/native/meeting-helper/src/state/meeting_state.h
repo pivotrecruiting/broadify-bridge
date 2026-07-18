@@ -65,7 +65,10 @@ struct MeetingState {
   bool graphicsDirty = true;
   bool programDirty = true;
   std::string pipelineMode = "idle";
+  std::string keyerPipelineMode = "passthrough";
+  std::string compositorBackend = "cpu";
   uint64_t programRevision = 1;
+  uint64_t keyerRevision = 1;
   uint64_t renderedFrames = 0;
   uint64_t reusedFrames = 0;
   uint64_t publishedPreviewFrames = 0;
@@ -77,7 +80,7 @@ struct MeetingState {
   std::string keyerBackend = "passthrough";
   std::string qualityMode = "balanced";
   std::string activeQualityMode = "balanced";
-  std::string performanceMode = "high_quality";
+  std::string performanceMode = "balanced";
   double maskErodePx = 0.0;
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;

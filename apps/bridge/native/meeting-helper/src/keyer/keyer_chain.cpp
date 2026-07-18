@@ -2,6 +2,7 @@
 
 #include "keyer/modnet_keyer.h"
 #if defined(__APPLE__)
+#include "keyer/coreml_keyer.h"
 #include "keyer/vision_keyer.h"
 #endif
 
@@ -12,6 +13,7 @@ KeyerChain::KeyerChain(const Options &options)
       modnet_(std::make_unique<ModnetKeyer>(options_))
 #if defined(__APPLE__)
       ,
+      coreml_(std::make_unique<CoreMLKeyer>(options.modelsDir)),
       vision_(std::make_unique<VisionKeyer>())
 #endif
 {
@@ -23,11 +25,13 @@ KeyerChain::KeyerChain(const Options &options)
 
 KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &state) {
   bool enabled = false;
+  int cameraIndex = -1;
   std::string requestedModel;
   KeyerSettings settings;
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     enabled = state.keyerEnabled;
+    cameraIndex = state.activeCameraIndex;
     requestedModel = state.requestedKeyerModel;
     settings.qualityMode = state.qualityMode;
     settings.performanceMode = state.performanceMode;
@@ -49,6 +53,15 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+#if defined(__APPLE__)
+  if (enabled && (!lastEnabled_ || requestedModel != lastRequestedModel_ ||
+                  cameraIndex != lastCameraIndex_)) {
+    vision_ = std::make_unique<VisionKeyer>();
+  }
+#endif
+  lastEnabled_ = enabled;
+  lastRequestedModel_ = requestedModel;
+  lastCameraIndex_ = cameraIndex;
   if (!enabled) {
     KeyerResult result;
     status_.activeKeyer = "passthrough";
@@ -62,7 +75,25 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
   }
 
   if (requestedModel == "modnet") {
+#if defined(__APPLE__)
+    KeyerResult coremlResult = coreml_->apply(input, settings);
+    if (!coremlResult.mask.alpha.empty() && !coremlResult.status.fallbackActive) {
+      status_ = coremlResult.status;
+      return coremlResult;
+    }
+#endif
     KeyerResult result = modnet_->apply(input, settings);
+#if defined(__APPLE__)
+    if (result.mask.alpha.empty() || result.status.fallbackActive) {
+      KeyerResult visionResult = vision_->apply(input, settings);
+      if (!visionResult.mask.alpha.empty() && !visionResult.status.fallbackActive) {
+        visionResult.status.fallbackActive = true;
+        visionResult.status.fallbackReason = "modnet_unavailable_using_vision";
+        status_ = visionResult.status;
+        return visionResult;
+      }
+    }
+#endif
     status_ = result.status;
     return result;
   }

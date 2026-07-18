@@ -24,7 +24,9 @@ if (-not $signtool) {
 $files = @(Get-ChildItem -Path $resolvedDistPath -Recurse -Include *.exe,*.msi -File)
 $requiredDllPaths = @(
   (Join-Path $resolvedDistPath "win-unpacked\resources\native\display-helper\SDL2.dll"),
-  (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\onnxruntime.dll")
+  (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\onnxruntime.dll"),
+  (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\onnxruntime_providers_shared.dll"),
+  (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\DirectML.dll")
 )
 
 foreach ($dllPath in $requiredDllPaths) {
