@@ -2,6 +2,9 @@
 
 #include "common/options.h"
 #include "keyer/keyer.h"
+#if defined(__APPLE__)
+#include "keyer/coreml_keyer.h"
+#endif
 #include "keyer/modnet_keyer.h"
 #include "state/meeting_state.h"
 
@@ -22,10 +25,14 @@ class KeyerChain {
   ModnetKeyerOptions options_;
   std::unique_ptr<Keyer> modnet_;
 #if defined(__APPLE__)
+  std::unique_ptr<Keyer> coreml_;
   // Apple Vision person segmentation is macOS-only and must never ship on
   // other platforms for licensing reasons; keep it out of non-Apple builds.
   std::unique_ptr<Keyer> vision_;
 #endif
+  bool lastEnabled_ = false;
+  std::string lastRequestedModel_;
+  int lastCameraIndex_ = -1;
   KeyerStatus status_;
 };
 

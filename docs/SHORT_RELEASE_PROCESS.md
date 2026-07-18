@@ -18,6 +18,16 @@ Benötigtes GitHub-Secret:
 
 - `MODNET_MODEL_URL` (GitHub Release Asset URL)
 
+## MODNet CoreML Model (macOS)
+
+```bash
+npm run prepare:modnet-coreml-model
+```
+
+Benötigtes GitHub-Secret:
+
+- `MODNET_COREML_MODEL_URL` (ZIP mit `MODNet.mlpackage`)
+
 ## SDL2 macOS Bundle
 
 ```bash

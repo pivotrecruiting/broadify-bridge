@@ -51,7 +51,9 @@ const targetsAppleSilicon = hasRequestedArch("arm64");
 const targetsIntelMac = hasRequestedArch("x64");
 const includesAppleSiliconPresentationRuntime =
   targetsAppleSilicon ||
-  (!targetsIntelMac && process.platform === "darwin" && process.arch === "arm64");
+  (!targetsIntelMac &&
+    process.platform === "darwin" &&
+    process.arch === "arm64");
 
 if (isRcChannel) {
   config.appId = "com.broadify.bridge.rc";
@@ -82,6 +84,11 @@ config.mac = config.mac || {};
 config.mac.extraResources = [
   ...(config.mac.extraResources || []),
   ...macOnlyResources,
+  {
+    from: "apps/bridge/native/meeting-helper/models/MODNet.mlpackage",
+    to: "native/meeting-helper/models/MODNet.mlpackage",
+    filter: ["**/*"],
+  },
 ];
 
 if (includesAppleSiliconPresentationRuntime) {
@@ -125,10 +132,19 @@ if (config.win) {
       to: "native/meeting-helper/onnxruntime.dll",
     },
     {
-      // MODNet model ships on Windows only (macOS uses the Apple Vision keyer).
+      from: "apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll",
+      to: "native/meeting-helper/onnxruntime_providers_shared.dll",
+    },
+    {
+      from: "apps/bridge/native/meeting-helper/DirectML.dll",
+      to: "native/meeting-helper/DirectML.dll",
+    },
+    {
+      // MODNet ONNX model ships on Windows. macOS uses the native CoreML model
+      // when available and falls back to Apple Vision.
       from: "apps/bridge/native/meeting-helper/models",
       to: "native/meeting-helper/models",
-      filter: ["**/*"],
+      filter: ["**/*", "!MODNet.mlpackage{,/**}", "!coreml-manifest.json"],
     },
   ];
 
@@ -181,7 +197,8 @@ if (config.win) {
 
     // Inject resolved values directly because Azure Trusted Signing options are not
     // reliably macro-expanded when passed through a JS config object.
-    config.win.publisherName = process.env.AZURE_CODE_SIGNING_PUBLISHER_NAME.trim();
+    config.win.publisherName =
+      process.env.AZURE_CODE_SIGNING_PUBLISHER_NAME.trim();
     config.win.azureSignOptions = {
       ...azureSignOptions,
       endpoint: process.env.AZURE_CODE_SIGNING_ENDPOINT.trim(),

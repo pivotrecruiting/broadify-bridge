@@ -6,8 +6,8 @@ JSON-RPC auf einem lokalen Control-Socket.
 
 ## Build
 
-MODNet ist im nativen Helper der Hauptpfad. Der Standard-Build erwartet lokale
-ONNX Runtime Artefakte und `modnet.onnx`.
+MODNet ist im nativen Helper der Hauptpfad. macOS baut CoreML und Apple Vision
+ohne ONNX Runtime. Windows erwartet ONNX Runtime DirectML und `modnet.onnx`.
 
 ```bash
 npm run build:meeting-helper
@@ -32,9 +32,11 @@ Die Bridge spawnt:
 ```bash
 apps/bridge/native/meeting-helper/meeting-helper \
   --run \
+  --parent-pid <bridge-pid> \
   --preview-port <port> \
   --control-socket <path> \
   --framebus-name broadify-meeting-framebus \
+  --models-dir <path> \
   --width 1280 \
   --height 720 \
   --fps 30
@@ -49,6 +51,22 @@ Wichtige Env-Fallbacks:
 | `BRIDGE_MEETING_FRAMEBUS_NAME` | FrameBus-Segmentname |
 | `BRIDGE_MEETING_MODELS_DIR` | Bridge-Override für das Modellverzeichnis |
 | `MEETING_MODELS_DIR` | Modellverzeichnis im Helper |
+| `BROADIFY_MEETING_GPU_COMPOSITOR=0` | Metal-Compositor deaktivieren |
+| `BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0` | D3D11-Compositor deaktivieren |
+| `BROADIFY_MEETING_GPU_PIPELINE=0` | Fused CoreML-Pipeline deaktivieren |
+| `BROADIFY_MEETING_GPU_REFINE=0` | MPS-Maskenverfeinerung deaktivieren |
+| `BROADIFY_MEETING_GPU_GUIDED=0` | D3D11 Guided Refine deaktivieren |
+| `BROADIFY_MEETING_GUIDED_REFINE=0` | Guided Live Snap deaktivieren |
+| `BROADIFY_MEETING_GPU_RADIUS` | Radius des MPS Guided Filters |
+| `BROADIFY_MEETING_GPU_EPSILON` | Epsilon des MPS Guided Filters |
+| `BROADIFY_MEETING_GPU_REFINE_WIDTH` | Zielbreite der MPS-Maske |
+| `BROADIFY_MEETING_GPU_EMA` | EMA-Staerke der MPS-Koeffizienten |
+
+Beim Start des macOS-App-Bundles reicht die Bridge ausschließlich diese
+dokumentierten `BROADIFY_MEETING_*`-Variablen als validierte `--env`-Argumente
+weiter. Die Werte werden in Lifecycle-Logs nicht ausgegeben. `--parent-pid`
+aktiviert den Orphan-Watchdog, damit der Helper nach einem Bridge-Absturz Kamera
+und VCam nicht weiter belegt.
 
 Der macOS-VCam-Reader verwendet denselben Standardnamen:
 `broadify-meeting-framebus`. Wenn `BRIDGE_MEETING_FRAMEBUS_NAME` gesetzt wird,
@@ -147,6 +165,26 @@ Der Helper schreibt Async-Events auf stdout:
 {"type":"error","code":"model_missing","message":"modnet.onnx not found"}
 ```
 
+Bei einem Launch ueber macOS LaunchServices wird Helper-stdout nicht
+zuverlaessig an den Bridge-Prozess weitergereicht. Deshalb fragt die Bridge den
+Keyer-Status ueber `keyer.get` ab und protokolliert Backend-Wechsel als
+`[Meeting] Runtime keyer status`. `meeting_get_state` liefert neben dem
+Engine-Status auch den aktuellen `keyer`-Status.
+
+Der erwartete macOS-Lauf mit automatischer WebApp-Konfiguration enthaelt:
+
+```json
+{
+  "active_keyer": "coreml_modnet",
+  "provider": "coreml",
+  "fallback_active": false,
+  "keyer_pipeline_mode": "fused_coreml",
+  "compositor": "metal",
+  "model_hash_ok": true,
+  "mask_age_ms": 0
+}
+```
+
 ## Kamera-Spiegelung
 
 Die Kamera wird im Compositor standardmaessig horizontal gespiegelt, damit die
@@ -179,8 +217,16 @@ Modelle liegen unter:
 apps/bridge/native/meeting-helper/models/
 ```
 
-`manifest.json` ist im Repo. `modnet.onnx` muss lokal bereitgestellt und per
-SHA-256 verifiziert werden.
+Im lokalen macOS-Build liegt das App-Bundle direkt neben diesem Ordner. Die
+Bridge loest deshalb bei
+`Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper` das
+Modellverzeichnis neben dem App-Bundle auf. Sie startet den Helper nicht, wenn
+`MODNet.mlpackage` dort fehlt. `BRIDGE_MEETING_MODELS_DIR` bleibt der explizite
+Override fuer Sonderfaelle.
+
+Windows nutzt `manifest.json` und `modnet.onnx`. macOS nutzt
+`coreml-manifest.json` und `MODNet.mlpackage`. Beide Artefakte werden vor einem
+Release per SHA-256 verifiziert.
 
 Hash-Helfer:
 
@@ -191,15 +237,33 @@ bash scripts/hash-meeting-model.sh modnet.onnx
 ONNX Runtime liegt vendored unter:
 
 ```text
-apps/bridge/native/meeting-helper/deps/onnxruntime/macos-arm64/
+apps/bridge/native/meeting-helper/deps/onnxruntime/windows-x64/
 ├── include/
-└── lib/libonnxruntime.dylib
+└── lib/
+    ├── onnxruntime.lib
+    ├── onnxruntime.dll
+    ├── onnxruntime_providers_shared.dll
+    └── DirectML.dll
+```
+
+CoreML-Modell vorbereiten:
+
+```bash
+MODNET_COREML_MODEL_SOURCE=/path/to/model-parent npm run prepare:modnet-coreml-model
 ```
 
 Temporärer Build ohne MODNet, nur für Compiler-/Bridge-Arbeit:
 
 ```bash
 MEETING_HELPER_ENABLE_MODNET=0 npm run build:meeting-helper
+```
+
+Native Tests:
+
+```bash
+npm run test:meeting-helper-native
+npm run test:meeting-helper-gpu
+npm run test:meeting-helper-keyer
 ```
 
 ## Nicht Mehr Vorhanden

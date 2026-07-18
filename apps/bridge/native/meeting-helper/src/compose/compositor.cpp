@@ -1,4 +1,8 @@
 #include "compose/compositor.h"
+#include "compose/metal_compositor.h"
+#if defined(_WIN32)
+#include "compose/d3d11_compositor.h"
+#endif
 #include "util/json_utils.h"
 
 #include <algorithm>
@@ -437,6 +441,7 @@ void drawCamera(std::vector<uint8_t> &frame,
                 uint32_t height,
                 const Rect &rect,
                 const VideoFrame *cameraFrame,
+                const AlphaMask *cameraMask,
                 bool mirror) {
   if (rect.width <= 0 || rect.height <= 0) {
     return;
@@ -462,11 +467,34 @@ void drawCamera(std::vector<uint8_t> &frame,
           ? source.x + source.width - 1u - (sampledX - source.x)
           : sampledX;
       const size_t srcOffset = (static_cast<size_t>(sy) * cameraFrame->width + sx) * 4u;
+      uint8_t alpha = cameraFrame->rgba[srcOffset + 3];
+      if (cameraMask != nullptr && !cameraMask->alpha.empty() &&
+          cameraMask->width > 0u && cameraMask->height > 0u) {
+        const double maskX = cameraFrame->width > 1u
+            ? static_cast<double>(sx) * static_cast<double>(cameraMask->width - 1u) /
+                  static_cast<double>(cameraFrame->width - 1u)
+            : 0.0;
+        const double maskY = cameraFrame->height > 1u
+            ? static_cast<double>(sy) * static_cast<double>(cameraMask->height - 1u) /
+                  static_cast<double>(cameraFrame->height - 1u)
+            : 0.0;
+        const uint32_t mx0 = static_cast<uint32_t>(std::floor(maskX));
+        const uint32_t my0 = static_cast<uint32_t>(std::floor(maskY));
+        const uint32_t mx1 = std::min(mx0 + 1u, cameraMask->width - 1u);
+        const uint32_t my1 = std::min(my0 + 1u, cameraMask->height - 1u);
+        const double wx = maskX - static_cast<double>(mx0);
+        const double wy = maskY - static_cast<double>(my0);
+        const double top = cameraMask->alpha[static_cast<size_t>(my0) * cameraMask->width + mx0] * (1.0 - wx) +
+            cameraMask->alpha[static_cast<size_t>(my0) * cameraMask->width + mx1] * wx;
+        const double bottom = cameraMask->alpha[static_cast<size_t>(my1) * cameraMask->width + mx0] * (1.0 - wx) +
+            cameraMask->alpha[static_cast<size_t>(my1) * cameraMask->width + mx1] * wx;
+        alpha = clampByte(static_cast<int>(std::round(top * (1.0 - wy) + bottom * wy)));
+      }
       blendPixel(frame, width, height, x, y,
                  cameraFrame->rgba[srcOffset + 0],
                  cameraFrame->rgba[srcOffset + 1],
                  cameraFrame->rgba[srcOffset + 2],
-                 cameraFrame->rgba[srcOffset + 3]);
+                 alpha);
     }
   }
 }
@@ -552,6 +580,166 @@ void drawCornerbug(std::vector<uint8_t> &frame, uint32_t width, uint32_t height,
   fillRect(frame, width, height, {rect.x + size / 3, rect.y + size / 3, size / 3, size / 3}, 255, 255, 255, 52);
 }
 
+int gpuBackgroundMode(const std::string &mode) {
+  if (mode == "gradient") return 1;
+  if (mode == "solid_light") return 2;
+  if (mode == "checkerboard") return 3;
+  if (mode == "transparent") return 4;
+  return 0;
+}
+
+MetalLayerMapping layerMapping(const VideoFrame *frame, const Rect &target,
+                               bool mirror, bool keyed) {
+  MetalLayerMapping mapping;
+  if (frame == nullptr || frame->rgba.empty() || frame->width == 0u ||
+      frame->height == 0u || target.width <= 0 || target.height <= 0) {
+    return mapping;
+  }
+  const SourceRect source = coverSourceRect(frame->width, frame->height,
+                                             target.width, target.height);
+  mapping.present = true;
+  mapping.keyed = keyed;
+  mapping.mirror = mirror;
+  mapping.scaleX = static_cast<float>(source.width) / static_cast<float>(target.width);
+  mapping.scaleY = static_cast<float>(source.height) / static_cast<float>(target.height);
+  mapping.biasX = static_cast<float>(source.x) -
+      static_cast<float>(target.x) * mapping.scaleX - 0.5f;
+  mapping.biasY = static_cast<float>(source.y) -
+      static_cast<float>(target.y) * mapping.scaleY - 0.5f;
+  mapping.mirrorConst = static_cast<float>(source.x * 2u + source.width - 1u);
+  return mapping;
+}
+
+int maskAnchorBottomFrameY(const AlphaMask &mask, uint32_t frameHeight) {
+  int fallbackRow = -1;
+  for (int my = static_cast<int>(mask.height) - 1; my >= 0; --my) {
+    const uint8_t *row =
+        mask.alpha.data() + static_cast<size_t>(my) * mask.width;
+    int count = 0;
+    for (uint32_t mx = 0; mx < mask.width; ++mx) {
+      if (row[mx] > 40u) {
+        ++count;
+        if (count >= 4) {
+          return static_cast<int>(((my + 0.5) * frameHeight) / mask.height);
+        }
+      }
+    }
+    if (count > 0 && fallbackRow < 0) {
+      fallbackRow =
+          static_cast<int>(((my + 0.5) * frameHeight) / mask.height);
+    }
+  }
+  return fallbackRow;
+}
+
+bool canUseGpuCompositor(const CompositorSnapshot &snapshot) {
+  return !snapshot.mediaLayer.enabled;
+}
+
+MetalComposePlan buildGpuPlan(const Options &options,
+                              const CompositorSnapshot &snapshot,
+                              const VideoFrame *cameraFrame,
+                              const AlphaMask *cameraMask,
+                              const VideoFrame *backGraphicsFrame,
+                              const VideoFrame *frontGraphicsFrame,
+                              uint64_t frameIndex) {
+  MetalComposePlan plan;
+  plan.width = options.width;
+  plan.height = options.height;
+  plan.backgroundMode = gpuBackgroundMode(snapshot.backgroundMode);
+  plan.frameIndex = frameIndex;
+  plan.cameraFrame = cameraFrame;
+  const Rect fullFrame{0, 0, static_cast<int>(options.width),
+                       static_cast<int>(options.height)};
+  const bool keyed = snapshot.keyerEnabled && cameraMask != nullptr &&
+      !cameraMask->alpha.empty();
+  if (snapshot.cameraRender.enabled && keyed && cameraFrame != nullptr &&
+      !cameraFrame->rgba.empty()) {
+    plan.cameraMask = cameraMask->alpha.data();
+    plan.maskWidth = cameraMask->width;
+    plan.maskHeight = cameraMask->height;
+    plan.maskTimestampNs = cameraMask->timestampNs;
+    const int keyedAlphaBottomY =
+        maskAnchorBottomFrameY(*cameraMask, cameraFrame->height);
+    if (keyedAlphaBottomY >= 0) {
+      const double scale = snapshot.speakerLayout.enabled
+          ? std::clamp(snapshot.speakerLayout.scale, 0.4, 1.8)
+          : 1.0;
+      double offsetX = 0.0;
+      if (snapshot.speakerLayout.enabled) {
+        const double horizontalTravel =
+            static_cast<double>(plan.width) * 0.22;
+        if (snapshot.speakerLayout.layout == "left") {
+          offsetX -= horizontalTravel;
+        } else if (snapshot.speakerLayout.layout == "right") {
+          offsetX += horizontalTravel;
+        }
+      }
+      const double sourceCenterX =
+          static_cast<double>(cameraFrame->width) * 0.5;
+      const double sourceCenterY =
+          static_cast<double>(cameraFrame->height) * 0.5;
+      const double kx =
+          (static_cast<double>(plan.width) / cameraFrame->width) * scale;
+      const double ky =
+          (static_cast<double>(plan.height) / cameraFrame->height) * scale;
+      const double targetCenterX =
+          static_cast<double>(plan.width) * 0.5 + offsetX;
+      const double targetBottomY = static_cast<double>(plan.height) - 0.5;
+      const double targetCenterY = targetBottomY -
+          ((static_cast<double>(keyedAlphaBottomY) + 0.5 - sourceCenterY) * ky);
+      plan.camera.present = true;
+      plan.camera.keyed = true;
+      plan.camera.mirror = snapshot.cameraRender.mirror;
+      plan.camera.scaleX = static_cast<float>(1.0 / kx);
+      plan.camera.scaleY = static_cast<float>(1.0 / ky);
+      plan.camera.biasX = static_cast<float>(
+          sourceCenterX - 0.5 - targetCenterX / kx);
+      plan.camera.biasY = static_cast<float>(
+          sourceCenterY - 0.5 - targetCenterY / ky);
+      plan.camera.mirrorConst =
+          static_cast<float>(cameraFrame->width) - 1.0f;
+    } else {
+      plan.camera = layerMapping(cameraFrame, fullFrame,
+                                 snapshot.cameraRender.mirror, false);
+    }
+  } else if (snapshot.cameraRender.enabled) {
+    plan.camera = layerMapping(cameraFrame, fullFrame,
+                               snapshot.cameraRender.mirror, false);
+  }
+  plan.backGraphics = backGraphicsFrame;
+  plan.backMapping = layerMapping(backGraphicsFrame, fullFrame, false, false);
+  plan.frontGraphics = frontGraphicsFrame;
+  plan.frontMapping = layerMapping(frontGraphicsFrame, fullFrame, false, false);
+  return plan;
+}
+
+void renderProgramFrameCpu(const Options &options,
+                           const CompositorSnapshot &snapshot,
+                           const VideoFrame *cameraFrame,
+                           const AlphaMask *cameraMask,
+                           const VideoFrame *backGraphicsFrame,
+                           const VideoFrame *frontGraphicsFrame,
+                           uint64_t frameIndex,
+                           std::vector<uint8_t> &output) {
+  fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
+  drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+  drawGraphicsFrame(output, options.width, options.height, backGraphicsFrame);
+  if (snapshot.cameraRender.enabled) {
+    drawCamera(
+        output,
+        options.width,
+        options.height,
+        cameraRect(options.width, options.height, snapshot.speakerLayout),
+        cameraFrame,
+        cameraMask,
+        snapshot.cameraRender.mirror);
+  }
+  drawGraphics(output, options.width, options.height, snapshot.graphics);
+  drawGraphicsFrame(output, options.width, options.height, frontGraphicsFrame);
+  drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
+}
+
 }  // namespace
 
 CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
@@ -567,28 +755,144 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
   return snapshot;
 }
 
-void renderProgramFrame(const Options &options,
-                        const CompositorSnapshot &snapshot,
-                        const VideoFrame *cameraFrame,
-                        const VideoFrame *backGraphicsFrame,
-                        const VideoFrame *frontGraphicsFrame,
-                        uint64_t frameIndex,
-                        std::vector<uint8_t> &output) {
-  fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
-  drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
-  drawGraphicsFrame(output, options.width, options.height, backGraphicsFrame);
-  drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
-  if (snapshot.cameraRender.enabled) {
-    drawCamera(
-        output,
-        options.width,
-        options.height,
-        cameraRect(options.width, options.height, snapshot.speakerLayout),
-        cameraFrame,
-        snapshot.cameraRender.mirror);
+std::string renderProgramFrame(const Options &options,
+                               const CompositorSnapshot &snapshot,
+                               const VideoFrame *cameraFrame,
+                               const AlphaMask *cameraMask,
+                               const VideoFrame *backGraphicsFrame,
+                               const VideoFrame *frontGraphicsFrame,
+                               uint64_t frameIndex,
+                               std::vector<uint8_t> &output) {
+  if (canUseGpuCompositor(snapshot)) {
+    const MetalComposePlan plan = buildGpuPlan(
+        options, snapshot, cameraFrame, cameraMask, backGraphicsFrame,
+        frontGraphicsFrame, frameIndex);
+#if defined(__APPLE__)
+    if (metalCompositorAvailable() && renderProgramFrameMetal(plan, output)) {
+      drawGraphics(output, options.width, options.height, snapshot.graphics);
+      drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
+      return "metal";
+    }
+#elif defined(_WIN32)
+    if (d3d11CompositorAvailable() && renderProgramFrameD3D11(plan, output)) {
+      drawGraphics(output, options.width, options.height, snapshot.graphics);
+      drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
+      return "d3d11";
+    }
+#endif
   }
-  drawGraphics(output, options.width, options.height, snapshot.graphics);
-  drawGraphicsFrame(output, options.width, options.height, frontGraphicsFrame);
+  renderProgramFrameCpu(options, snapshot, cameraFrame, cameraMask,
+                        backGraphicsFrame, frontGraphicsFrame, frameIndex,
+                        output);
+  return "cpu";
+}
+
+GpuCompositorSelfTestResult runGpuCompositorSelfTest() {
+  Options options;
+  options.width = 64u;
+  options.height = 36u;
+  CompositorSnapshot snapshot;
+  snapshot.keyerEnabled = true;
+  snapshot.backgroundMode = "gradient";
+  snapshot.cameraRender.enabled = true;
+  snapshot.cameraRender.mirror = true;
+
+  VideoFrame camera;
+  camera.width = options.width;
+  camera.height = options.height;
+  camera.timestampNs = 1u;
+  camera.rgba.assign(static_cast<size_t>(camera.width) * camera.height * 4u, 255u);
+  for (uint32_t y = 0; y < camera.height; ++y) {
+    for (uint32_t x = 0; x < camera.width; ++x) {
+      const size_t offset = (static_cast<size_t>(y) * camera.width + x) * 4u;
+      camera.rgba[offset + 0u] = static_cast<uint8_t>(32u + x * 3u);
+      camera.rgba[offset + 1u] = static_cast<uint8_t>(40u + y * 4u);
+      camera.rgba[offset + 2u] = 180u;
+    }
+  }
+
+  AlphaMask mask;
+  mask.width = camera.width;
+  mask.height = camera.height;
+  mask.timestampNs = 1u;
+  mask.alpha.assign(static_cast<size_t>(mask.width) * mask.height, 0u);
+  for (uint32_t y = 0; y < mask.height; ++y) {
+    for (uint32_t x = 0; x < mask.width; ++x) {
+      mask.alpha[static_cast<size_t>(y) * mask.width + x] =
+          x < mask.width / 2u ? 0u : 255u;
+    }
+  }
+
+  VideoFrame backGraphics;
+  backGraphics.width = options.width;
+  backGraphics.height = options.height;
+  backGraphics.timestampNs = 2u;
+  backGraphics.rgba.assign(
+      static_cast<size_t>(backGraphics.width) * backGraphics.height * 4u, 0u);
+  for (size_t index = 0; index < backGraphics.rgba.size(); index += 4u) {
+    backGraphics.rgba[index + 2u] = 220u;
+    backGraphics.rgba[index + 3u] = 48u;
+  }
+
+  VideoFrame frontGraphics;
+  frontGraphics.width = options.width;
+  frontGraphics.height = options.height;
+  frontGraphics.timestampNs = 3u;
+  frontGraphics.rgba.assign(
+      static_cast<size_t>(frontGraphics.width) * frontGraphics.height * 4u, 0u);
+  for (uint32_t y = options.height * 3u / 4u; y < options.height; ++y) {
+    for (uint32_t x = 0; x < options.width; ++x) {
+      const size_t offset = (static_cast<size_t>(y) * options.width + x) * 4u;
+      frontGraphics.rgba[offset + 1u] = 240u;
+      frontGraphics.rgba[offset + 3u] = 96u;
+    }
+  }
+
+  std::vector<uint8_t> cpuOutput;
+  renderProgramFrameCpu(options, snapshot, &camera, &mask, &backGraphics,
+                        &frontGraphics, 11u, cpuOutput);
+  const MetalComposePlan plan = buildGpuPlan(
+      options, snapshot, &camera, &mask, &backGraphics, &frontGraphics, 11u);
+  std::vector<uint8_t> gpuOutput;
+  GpuCompositorSelfTestResult result;
+#if defined(__APPLE__)
+  result.backend = "metal";
+  result.available = metalCompositorAvailable();
+  const bool rendered = result.available && renderProgramFrameMetal(plan, gpuOutput);
+#elif defined(_WIN32)
+  result.backend = "d3d11";
+  result.available = d3d11CompositorAvailable();
+  const bool rendered = result.available && renderProgramFrameD3D11(plan, gpuOutput);
+#else
+  const bool rendered = false;
+#endif
+  if (!rendered || gpuOutput.size() != cpuOutput.size()) {
+    return result;
+  }
+  int maxDelta = 0;
+  for (size_t index = 0; index < cpuOutput.size(); ++index) {
+    const int delta = std::abs(
+        static_cast<int>(cpuOutput[index]) - static_cast<int>(gpuOutput[index]));
+    if (delta > maxDelta) {
+      maxDelta = delta;
+      const size_t pixelIndex = index / 4u;
+      result.maxDeltaX = static_cast<uint32_t>(pixelIndex % options.width);
+      result.maxDeltaY = static_cast<uint32_t>(pixelIndex / options.width);
+      result.maxDeltaChannel = static_cast<uint32_t>(index % 4u);
+      result.maxDeltaCpuValue = cpuOutput[index];
+      result.maxDeltaGpuValue = gpuOutput[index];
+    }
+  }
+  result.maxChannelDelta = maxDelta;
+  CompositorSnapshot layeredSnapshot = snapshot;
+  layeredSnapshot.cornerbug.enabled = true;
+  layeredSnapshot.graphics.enabled = true;
+  std::vector<uint8_t> layeredOutput;
+  const std::string integratedBackend = renderProgramFrame(
+      options, layeredSnapshot, &camera, &mask, &backGraphics, &frontGraphics,
+      12u, layeredOutput);
+  result.passed = maxDelta <= 2 && integratedBackend == result.backend;
+  return result;
 }
 
 }  // namespace broadify::meeting

@@ -4,6 +4,8 @@ import {
   findFreePort,
   MeetingHelperManager,
   resolveMeetingHelperPath,
+  resolveMeetingHelperForwardedEnvArgs,
+  resolveMeetingModelsDir,
 } from "./meeting-helper-manager.js";
 
 describe("meeting-helper-manager", () => {
@@ -20,6 +22,7 @@ describe("meeting-helper-manager", () => {
     delete process.env.BRIDGE_MEETING_HELPER_PATH;
     delete process.env.BRIDGE_MEETING_CONTROL_SOCKET;
     delete process.env.BRIDGE_MEETING_FRAMEBUS_NAME;
+    delete process.env.BRIDGE_MEETING_MODELS_DIR;
     __setMeetingHelperPathForTesting(null);
     setBridgeContext({
       userDataDir: "/tmp",
@@ -46,6 +49,56 @@ describe("meeting-helper-manager", () => {
     it("allows a test-only path override", () => {
       __setMeetingHelperPathForTesting("/tmp/test-helper");
       expect(resolveMeetingHelperPath()).toBe("/tmp/test-helper");
+    });
+  });
+
+  describe("resolveMeetingModelsDir", () => {
+    it("prefers the BRIDGE_MEETING_MODELS_DIR env override", () => {
+      process.env.BRIDGE_MEETING_MODELS_DIR = "/custom/models";
+
+      expect(resolveMeetingModelsDir("/tmp/meeting-helper")).toBe(
+        "/custom/models",
+      );
+    });
+
+    it("resolves models beside a macOS helper app bundle in development", () => {
+      expect(
+        resolveMeetingModelsDir(
+          "/repo/apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper",
+        ),
+      ).toBe("/repo/apps/bridge/native/meeting-helper/models");
+    });
+
+    it("resolves models beside a standalone helper", () => {
+      expect(resolveMeetingModelsDir("/repo/native/meeting-helper")).toBe(
+        "/repo/native/models",
+      );
+    });
+  });
+
+  describe("resolveMeetingHelperForwardedEnvArgs", () => {
+    it("forwards only allowlisted meeting helper tuning values", () => {
+      expect(
+        resolveMeetingHelperForwardedEnvArgs({
+          BROADIFY_MEETING_GPU_PIPELINE: "0",
+          BROADIFY_MEETING_COREML_UNITS: "cpuAndNeuralEngine",
+          BROADIFY_MEETING_FUTURE_SECRET: "do-not-forward",
+          UNRELATED_VALUE: "ignored",
+        }),
+      ).toEqual([
+        "--env",
+        "BROADIFY_MEETING_COREML_UNITS=cpuAndNeuralEngine",
+        "--env",
+        "BROADIFY_MEETING_GPU_PIPELINE=0",
+      ]);
+    });
+
+    it("rejects unsafe forwarded values", () => {
+      expect(
+        resolveMeetingHelperForwardedEnvArgs({
+          BROADIFY_MEETING_GPU_PIPELINE: "0\nBROADIFY_MEETING_GPU_REFINE=0",
+        }),
+      ).toEqual([]);
     });
   });
 

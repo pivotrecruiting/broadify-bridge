@@ -12,7 +12,9 @@ $resourceRoot = (Resolve-Path (Join-Path $helperDirectory "..\..")).Path
 $artifactPaths = @(
   $resolvedHelperPath,
   (Join-Path $helperDirectory "SDL2.dll"),
-  (Join-Path $resourceRoot "native\meeting-helper\onnxruntime.dll")
+  (Join-Path $resourceRoot "native\meeting-helper\onnxruntime.dll"),
+  (Join-Path $resourceRoot "native\meeting-helper\onnxruntime_providers_shared.dll"),
+  (Join-Path $resourceRoot "native\meeting-helper\DirectML.dll")
 )
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
@@ -88,7 +90,7 @@ foreach ($query in $eventLogQueries) {
       StartTime = $startTime
     } -ErrorAction Stop |
       Where-Object {
-        $_.Message -match "display-helper|SDL2\.dll|onnxruntime\.dll|Broadify"
+        $_.Message -match "display-helper|SDL2\.dll|onnxruntime.*\.dll|DirectML\.dll|Broadify"
       } |
       Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message
     @($events) |
