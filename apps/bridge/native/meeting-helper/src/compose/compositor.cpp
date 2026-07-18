@@ -858,10 +858,12 @@ GpuCompositorSelfTestResult runGpuCompositorSelfTest() {
 #if defined(__APPLE__)
   result.backend = "metal";
   result.available = metalCompositorAvailable();
+  result.hardwareAccelerated = result.available;
   const bool rendered = result.available && renderProgramFrameMetal(plan, gpuOutput);
 #elif defined(_WIN32)
   result.backend = "d3d11";
-  result.available = d3d11CompositorAvailable();
+  result.available = d3d11CompositorSelfTestAvailable();
+  result.hardwareAccelerated = d3d11CompositorHardwareAccelerated();
   const bool rendered = result.available && renderProgramFrameD3D11(plan, gpuOutput);
 #else
   const bool rendered = false;

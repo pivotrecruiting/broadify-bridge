@@ -8,6 +8,9 @@ const ROOT_DIR = process.cwd();
 const PACKAGE_JSON_PATH = path.join(ROOT_DIR, "package.json");
 const MAIN_BRANCH = "main";
 const DEV_BRANCH = "dev";
+const PACKAGE_PREFLIGHT_WORKFLOW = "test-release.yml";
+const PACKAGE_PREFLIGHT_LOOKUP_ATTEMPTS = 24;
+const PACKAGE_PREFLIGHT_LOOKUP_DELAY_MS = 5_000;
 
 /**
  * Print usage and exit.
@@ -83,6 +86,87 @@ function run(command, args, dryRun) {
     cwd: ROOT_DIR,
     stdio: "inherit",
   });
+}
+
+/**
+ * Block the current process without invoking a shell command.
+ *
+ * @param {number} milliseconds Wait duration.
+ */
+function sleep(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/**
+ * Run the complete package preflight and wait for the exact release commit.
+ *
+ * @param {string} releaseBranch Branch containing the release commit.
+ * @param {string} releaseCommit Exact commit to validate.
+ * @param {"test" | "live"} mode Release mode.
+ * @param {boolean} dryRun Whether to skip execution.
+ */
+function runPackagePreflight(releaseBranch, releaseCommit, mode, dryRun) {
+  const channel = mode === "test" ? "rc" : "latest";
+  if (dryRun) {
+    console.log(
+      `[dry-run] gh workflow run ${PACKAGE_PREFLIGHT_WORKFLOW} --ref ${releaseBranch} -f release_channel=${channel}`,
+    );
+    console.log(
+      `[dry-run] wait for successful ${PACKAGE_PREFLIGHT_WORKFLOW} run at ${releaseCommit}`,
+    );
+    return;
+  }
+
+  run(
+    "gh",
+    [
+      "workflow",
+      "run",
+      PACKAGE_PREFLIGHT_WORKFLOW,
+      "--ref",
+      releaseBranch,
+      "-f",
+      `release_channel=${channel}`,
+    ],
+    false,
+  );
+
+  console.log(`Waiting for package preflight at commit ${releaseCommit}...`);
+  let workflowRun = null;
+  for (let attempt = 1; attempt <= PACKAGE_PREFLIGHT_LOOKUP_ATTEMPTS; attempt += 1) {
+    const runs = JSON.parse(
+      capture("gh", [
+        "run",
+        "list",
+        "--workflow",
+        PACKAGE_PREFLIGHT_WORKFLOW,
+        "--branch",
+        releaseBranch,
+        "--event",
+        "workflow_dispatch",
+        "--limit",
+        "20",
+        "--json",
+        "databaseId,headSha,status,conclusion,url,createdAt",
+      ]),
+    );
+    workflowRun = runs.find((candidate) => candidate.headSha === releaseCommit);
+    if (workflowRun) {
+      break;
+    }
+    if (attempt < PACKAGE_PREFLIGHT_LOOKUP_ATTEMPTS) {
+      sleep(PACKAGE_PREFLIGHT_LOOKUP_DELAY_MS);
+    }
+  }
+
+  if (!workflowRun) {
+    throw new Error(
+      `GitHub did not create ${PACKAGE_PREFLIGHT_WORKFLOW} for commit ${releaseCommit}. No tag was created.`,
+    );
+  }
+
+  console.log(`Package preflight: ${workflowRun.url}`);
+  run("gh", ["run", "watch", String(workflowRun.databaseId), "--exit-status"], false);
 }
 
 /**
@@ -281,11 +365,14 @@ if (
   );
 }
 
+run("gh", ["auth", "status", "--hostname", "github.com"], dryRun);
 run("npm", ["version", "--no-git-tag-version", nextVersion], dryRun);
 run("git", ["add", "package.json", "package-lock.json"], dryRun);
 run("git", ["commit", "-m", commitMessage], dryRun);
-run("git", ["tag", "-a", nextTag, "-m", commitMessage], dryRun);
 run("git", ["push", "origin", releaseBranch], dryRun);
+const releaseCommit = dryRun ? "<release-commit>" : capture("git", ["rev-parse", "HEAD"]);
+runPackagePreflight(releaseBranch, releaseCommit, mode, dryRun);
+run("git", ["tag", "-a", nextTag, "-m", commitMessage], dryRun);
 run("git", ["push", "origin", nextTag], dryRun);
 
 console.log(

@@ -173,6 +173,7 @@ struct LayerTexture {
 struct D3D11Context {
   bool initialized = false;
   bool available = false;
+  bool hardwareAccelerated = false;
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   ComPtr<ID3D11ComputeShader> shader;
@@ -205,7 +206,7 @@ std::string hresultDetail(HRESULT hr) {
   return buffer;
 }
 
-bool initializeContext() {
+bool initializeContext(bool selfTest = false) {
   D3D11Context &ctx = context();
   if (ctx.initialized) {
     return ctx.available;
@@ -225,13 +226,26 @@ bool initializeContext() {
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
                                       D3D_FEATURE_LEVEL_11_0};
   D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
+  const char *selfTestDriver =
+      std::getenv("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER");
+  const bool forceWarp =
+      selfTest && selfTestDriver != nullptr &&
+      std::strcmp(selfTestDriver, "warp") == 0;
+  const D3D_DRIVER_TYPE driverType =
+      forceWarp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
   HRESULT hr = D3D11CreateDevice(
-      nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels,
+      nullptr, driverType, nullptr, 0, levels,
       static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &ctx.device,
       &got, &ctx.context);
   if (FAILED(hr)) {
-    logCompositorEvent("unavailable", "no D3D11 hardware device, " + hresultDetail(hr));
+    const std::string driverName = forceWarp ? "WARP" : "hardware";
+    logCompositorEvent("unavailable", "no D3D11 " + driverName +
+                                          " device, " + hresultDetail(hr));
     return false;
+  }
+  ctx.hardwareAccelerated = !forceWarp;
+  if (forceWarp) {
+    logCompositorEvent("self_test_warp", "software adapter forced");
   }
 
   ComPtr<ID3DBlob> blob;
@@ -376,6 +390,14 @@ bool uploadFrame(LayerTexture &slot, const VideoFrame *frame) {
 
 bool d3d11CompositorAvailable() {
   return initializeContext();
+}
+
+bool d3d11CompositorSelfTestAvailable() {
+  return initializeContext(true);
+}
+
+bool d3d11CompositorHardwareAccelerated() {
+  return initializeContext() && context().hardwareAccelerated;
 }
 
 bool renderProgramFrameD3D11(const GpuComposePlan &plan,

@@ -76,6 +76,16 @@ Branch-Regeln:
 - `release:test` auf `main`, `dev` oder Feature-Branches (baut den getaggten Branch-Stand)
 - `release:live` nur auf `main`
 
+Das NPM-Release-Skript arbeitet zweiphasig:
+
+1. Versions-Commit erstellen und zum Release-Branch pushen.
+2. `Test Release Build` für exakt diesen Commit starten.
+3. macOS- und Windows-Package-Builds inklusive Signing und Installer-Smokes abwarten.
+4. Nur nach einem grünen Preflight den Tag erstellen und pushen.
+
+Voraussetzung ist eine installierte und authentifizierte GitHub CLI `gh`. Bei
+einem fehlgeschlagenen Preflight wird kein Tag erzeugt.
+
 ## Release-Prozess
 
 ### 1. Version aktualisieren
@@ -112,14 +122,14 @@ Ergebnis:
 
 Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 
-- Build für alle Plattformen (macOS ARM64, Windows x64, Linux x64)
+- Build für die unterstützten Release-Plattformen macOS ARM64 und Windows x64
 - Upload der Artefakte zu GitHub Releases
 - Erstellung eines GitHub Releases mit allen Download-Links
 
 ### 4. Release verifizieren
 
 1. GitHub Repository → Releases
-2. Prüfen, ob alle Plattformen gebaut wurden
+2. Prüfen, ob macOS ARM64 und Windows x64 gebaut wurden
 3. Download-Links testen
 
 ## Build-Artefakte

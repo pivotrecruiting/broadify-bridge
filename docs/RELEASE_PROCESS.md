@@ -7,6 +7,7 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
 ## Voraussetzungen
 
 - Git Repository mit `main`, `dev` und Feature-Branches
+- GitHub CLI `gh` installiert und mit Schreibzugriff auf das Repository angemeldet
 - GitHub Actions Workflow (`.github/workflows/release.yml`) muss auf `main` vorhanden sein
 - Version in `package.json` sollte aktualisiert sein
 - DeckLink Helper Binary (macOS) ist als Release-Asset verfügbar
@@ -15,6 +16,7 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
   - `DECKLINK_HELPER_URL_X64`, `DECKLINK_HELPER_SHA256_X64` (falls x64-Builds)
   - `MODNET_MODEL_URL` (Windows MODNet ONNX, GitHub Release Asset URL)
   - `MODNET_COREML_MODEL_URL` (macOS MODNet CoreML ZIP)
+  - `PRESENTATION_RUNTIME_URL_ARM64`, `PRESENTATION_RUNTIME_SHA256_ARM64`
 - `APPLE_SIGNING_IDENTITY` (für macOS Code-Signing / Notarization, z.B. `Developer ID Application: Your Team (XXXXX)`)
 - `BRIDGE_RELAY_JWKS_URL` (für Production Relay)
 - `RELAY_URL_RC` (für RC/Test-Relay)
@@ -62,7 +64,16 @@ Verhalten:
 - `--feature` erhöht die Minor-Version und setzt Patch auf `0`
 - `release:test` erzeugt Tags wie `v0.12.0-rc.1`
 - `release:live` erzeugt Tags wie `v0.12.0`
-- das Skript commitet den Versionssprung, erstellt den Tag und pusht Branch plus Tag nach `origin`
+- das Skript commitet und pusht zuerst nur den Versionssprung
+- danach startet es `Test Release Build` für exakt diesen Commit und wartet auf beide Plattformen
+- erst nach erfolgreichem macOS- und Windows-Package-Build erstellt und pusht es den Tag
+- bei einem fehlgeschlagenen Preflight bleibt der Versions-Commit erhalten, aber es wird kein Tag erstellt
+
+Einmalige GitHub-CLI-Anmeldung:
+
+```bash
+gh auth login -h github.com
+```
 
 RC-Folgeschritte:
 
@@ -79,6 +90,8 @@ Sicherheitsnetz:
 - nur auf sauberem Working Tree
 - `release:test` auf `main`, `dev` oder Feature-Branches
 - `release:live` nur auf Branch `main`
+- vollständige Installer-, Signing- und Helper-Smoke-Tests vor dem Tag
+- `Meeting Helper Preflight` zusätzlich auf Pull Requests und Branch-Pushes
 - optional prüfbar mit `--dry-run`
 
 Empfohlener RC-Workflow ohne vorzeitigen `main`-Merge:
@@ -251,7 +264,7 @@ Falls spaeter ein Intel-macOS-Build dazukommt:
 1. GitHub → App-Repo → **Actions**.
 2. Workflow **Test Release Build** auswählen.
 3. **Run workflow** klicken.
-4. Nach Abschluss unter **Artifacts** prüfen, ob alle Plattformen gebaut wurden.
+4. Nach Abschluss unter **Artifacts** macOS ARM64 und Windows x64 prüfen.
 
 ## MODNet Model Hosting (Windows, ohne externes Rate-Limit)
 
@@ -407,11 +420,9 @@ Ergebnis:
 1. Gehe zu deinem GitHub Repository
 2. Klicke auf den Tab **"Actions"**
 3. Du solltest einen laufenden Workflow **"Release Build"** sehen
-4. Die Builds für alle Plattformen laufen parallel:
+4. Die unterstützten Release-Builds laufen parallel:
    - macOS ARM64 (Apple Silicon)
-   - macOS x64 (Intel)
    - Windows x64
-   - Linux x64
 
 ### Schritt 6: Release verifizieren
 
@@ -419,12 +430,11 @@ Nach Abschluss der Builds (ca. 10-20 Minuten):
 
 1. Gehe zu **"Releases"** im Repository
 2. Es sollte ein Release **"v0.1.0"** mit allen Download-Links geben
-3. Prüfe, ob alle Plattformen erfolgreich gebaut wurden:
+3. Prüfe, ob beide unterstützten Plattformen erfolgreich gebaut wurden:
    - `broadify-bridge-0.1.0-arm64.dmg` (macOS Apple Silicon)
    - `Broadify-Bridge-0.1.0-arm64.zip` (macOS Updater-Paket)
    - `Broadify-Bridge-0.1.0-x64.exe` (Windows NSIS Installer, primär für Auto-Update)
    - `Broadify-Bridge-0.1.0-x64.msi` (Windows MSI, bevorzugt für manuelle Kundeninstallation)
-   - `broadify-bridge-0.1.0-x64.AppImage` (Linux)
 
 Für Windows zusätzlich prüfen:
 

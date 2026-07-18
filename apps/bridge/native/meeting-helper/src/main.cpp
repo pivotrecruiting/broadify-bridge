@@ -18,7 +18,9 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -60,10 +62,28 @@ int main(int argc, char **argv) {
   Options options = parseOptions(argc, argv);
   if (options.selfTest) {
     const GpuCompositorSelfTestResult result = runGpuCompositorSelfTest();
+#if defined(__APPLE__)
+    const bool expectedAcceleration = true;
+#elif defined(_WIN32)
+    const char *selfTestDriver =
+        std::getenv("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER");
+    const bool expectedAcceleration =
+        selfTestDriver == nullptr || std::strcmp(selfTestDriver, "warp") != 0;
+#else
+    const bool expectedAcceleration = false;
+#endif
+    const bool modeMatches =
+        result.hardwareAccelerated == expectedAcceleration;
+    const bool passed = result.passed && modeMatches;
     std::cout << "{\"type\":\"meeting_gpu_self_test\",\"backend\":\""
               << result.backend << "\",\"available\":"
               << (result.available ? "true" : "false") << ",\"passed\":"
-              << (result.passed ? "true" : "false") << ",\"max_channel_delta\":"
+              << (passed ? "true" : "false")
+              << ",\"hardware_accelerated\":"
+              << (result.hardwareAccelerated ? "true" : "false")
+              << ",\"mode_matches\":"
+              << (modeMatches ? "true" : "false")
+              << ",\"max_channel_delta\":"
               << result.maxChannelDelta << ",\"max_delta_x\":"
               << result.maxDeltaX << ",\"max_delta_y\":" << result.maxDeltaY
               << ",\"max_delta_channel\":" << result.maxDeltaChannel
@@ -71,7 +91,7 @@ int main(int argc, char **argv) {
               << static_cast<uint32_t>(result.maxDeltaCpuValue)
               << ",\"max_delta_gpu_value\":"
               << static_cast<uint32_t>(result.maxDeltaGpuValue) << "}" << std::endl;
-    return result.passed ? 0 : 3;
+    return passed ? 0 : 3;
   }
   if (options.keyerSelfTest) {
     MeetingState state;
@@ -102,15 +122,28 @@ int main(int argc, char **argv) {
     const bool acceleratedProvider = result.status.provider == "coreml";
 #elif defined(_WIN32)
     const bool acceleratedProvider = result.status.provider == "directml";
+    const char *selfTestProvider =
+        std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER");
+    const bool forceCpuProvider =
+        selfTestProvider != nullptr &&
+        std::strcmp(selfTestProvider, "cpu") == 0;
+    const bool acceptedProvider = forceCpuProvider
+        ? result.status.provider == "cpu"
+        : acceleratedProvider;
 #else
     const bool acceleratedProvider = false;
 #endif
-    const bool passed = acceleratedProvider && result.status.modelHashOk &&
+#if !defined(_WIN32)
+    const bool acceptedProvider = acceleratedProvider;
+#endif
+    const bool passed = acceptedProvider && result.status.modelHashOk &&
         !result.status.fallbackActive && !result.mask.alpha.empty();
     std::cout << "{\"type\":\"meeting_keyer_self_test\",\"provider\":\""
               << result.status.provider << "\",\"active_keyer\":\""
               << result.status.activeKeyer << "\",\"fallback_active\":"
               << (result.status.fallbackActive ? "true" : "false")
+              << ",\"hardware_accelerated\":"
+              << (acceleratedProvider ? "true" : "false")
               << ",\"fallback_reason\":\"" << result.status.fallbackReason
               << "\",\"model_hash_ok\":"
               << (result.status.modelHashOk ? "true" : "false")

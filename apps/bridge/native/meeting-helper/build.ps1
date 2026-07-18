@@ -7,14 +7,15 @@ $ErrorActionPreference = "Stop"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $rootDir "build"
 $outputExe = Join-Path $rootDir "meeting-helper.exe"
-$modnetEnabled = if ([string]::IsNullOrWhiteSpace($env:MEETING_HELPER_ENABLE_MODNET)) { "1" } else { $env:MEETING_HELPER_ENABLE_MODNET }
+$modnetRequested = if ([string]::IsNullOrWhiteSpace($env:MEETING_HELPER_ENABLE_MODNET)) { "1" } else { $env:MEETING_HELPER_ENABLE_MODNET }
+$modnetEnabled = if ($modnetRequested -match '^(0|false|off|no)$') { "OFF" } else { "ON" }
 Write-Host "Meeting helper MODNet enabled: $modnetEnabled"
 
 function Invoke-NativeCommand {
   param(
     [Parameter(Mandatory = $true)]
     [string]$FilePath,
-    [Parameter(ValueFromRemainingArguments = $true)]
+    [Parameter(Mandatory = $true)]
     [string[]]$Arguments
   )
 
@@ -28,8 +29,27 @@ if (Test-Path $outputExe) {
   Remove-Item -Force $outputExe
 }
 
-Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config -DMEETING_HELPER_ENABLE_MODNET=$modnetEnabled
-Invoke-NativeCommand cmake --build $buildDir --target meeting-helper --config $Config --verbose
+$configureArguments = @(
+  "-S", $rootDir,
+  "-B", $buildDir,
+  "-DMEETING_HELPER_ENABLE_MODNET:BOOL=$modnetEnabled"
+)
+Invoke-NativeCommand -FilePath "cmake" -Arguments $configureArguments
+
+$cachePath = Join-Path $buildDir "CMakeCache.txt"
+$expectedCacheEntry = "MEETING_HELPER_ENABLE_MODNET:BOOL=$modnetEnabled"
+if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
+  throw "CMake did not produce its cache: $cachePath"
+}
+$cacheEntry = Get-Content -LiteralPath $cachePath |
+  Where-Object { $_ -like "MEETING_HELPER_ENABLE_MODNET:*" } |
+  Select-Object -First 1
+if ($cacheEntry -ne $expectedCacheEntry) {
+  throw "CMake MODNet configuration mismatch. Expected '$expectedCacheEntry', found '$cacheEntry'."
+}
+
+$buildArguments = @("--build", $buildDir, "--target", "meeting-helper", "--config", $Config, "--verbose")
+Invoke-NativeCommand -FilePath "cmake" -Arguments $buildArguments
 
 $candidates = @(
   (Join-Path $buildDir "$Config\meeting-helper.exe"),
@@ -59,7 +79,16 @@ $onnxRuntimeRoot = $env:BROADIFY_ONNXRUNTIME_ROOT
 if ([string]::IsNullOrWhiteSpace($onnxRuntimeRoot)) {
   $onnxRuntimeRoot = Join-Path $rootDir "deps\onnxruntime\windows-x64"
 }
-if ($modnetEnabled -ne "0") {
+if ($modnetEnabled -eq "ON") {
+  $dumpbinOutput = & dumpbin.exe /DEPENDENTS $outputExe 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "dumpbin failed while verifying meeting-helper.exe imports."
+  }
+  if (($dumpbinOutput | Out-String) -notmatch '(?im)^\s*onnxruntime\.dll\s*$') {
+    throw "meeting-helper.exe was built without an onnxruntime.dll import."
+  }
+  Write-Host "Verified meeting-helper.exe imports onnxruntime.dll"
+
   $dllCandidate = Join-Path $onnxRuntimeRoot "lib\onnxruntime.dll"
   if (-not (Test-Path $dllCandidate)) {
     $dllCandidate = Join-Path $onnxRuntimeRoot "onnxruntime.dll"

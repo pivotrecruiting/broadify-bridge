@@ -1,0 +1,146 @@
+name: Meeting Helper Preflight
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - ".github/workflows/**"
+      - "apps/bridge/native/meeting-helper/**"
+      - "scripts/*meeting-helper*"
+      - "package.json"
+      - "package-lock.json"
+  push:
+    paths:
+      - ".github/workflows/**"
+      - "apps/bridge/native/meeting-helper/**"
+      - "scripts/*meeting-helper*"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch:
+    inputs:
+      run_windows_hardware_tests:
+        description: "Run strict DirectML and D3D11 tests on the Broadify GPU runner"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: meeting-helper-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate release contracts
+        run: node --test scripts/windows-signing-hooks.test.cjs scripts/meeting-helper-release-contract.test.cjs
+
+  native-portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    env:
+      MODNET_COREML_MODEL_URL: ${{ matrix.os == 'macos-15' && secrets.MODNET_COREML_MODEL_URL || '' }}
+      MODNET_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_MODEL_URL || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+
+      - name: Setup MSVC Developer Command Prompt
+        if: matrix.os == 'windows-2022'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      - name: Prepare macOS CoreML model
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${MODNET_COREML_MODEL_URL:-}" ]]; then
+            echo "MODNET_COREML_MODEL_URL is required." >&2
+            exit 1
+          fi
+          npm run prepare:modnet-coreml-model
+
+      - name: Prepare Windows DirectML dependencies
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: .\scripts\prepare-windows-meeting-helper-deps.ps1
+
+      - name: Download Windows MODNet model
+        if: matrix.os == 'windows-2022'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${MODNET_MODEL_URL:-}" ]]; then
+            echo "MODNET_MODEL_URL is required." >&2
+            exit 1
+          fi
+          npm run download:modnet-model
+
+      - name: Build meeting helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            export MEETING_HELPER_ENABLE_MODNET=1
+          fi
+          npm run build:meeting-helper
+
+      - name: Run native CTest suite
+        run: npm run test:meeting-helper-native
+
+      - name: Run portable GPU compositor self-test
+        run: npm run test:meeting-helper-gpu
+
+      - name: Run portable keyer inference self-test
+        run: npm run test:meeting-helper-keyer
+
+  windows-hardware:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_hardware_tests
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - broadify-gpu
+    env:
+      MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+      - shell: pwsh
+        run: .\scripts\prepare-windows-meeting-helper-deps.ps1
+      - shell: bash
+        run: npm run download:modnet-model
+      - shell: bash
+        run: MEETING_HELPER_ENABLE_MODNET=1 npm run build:meeting-helper
+      - run: npm run test:meeting-helper-native
+      - run: npm run test:meeting-helper-gpu-hardware
+      - run: npm run test:meeting-helper-keyer-hardware

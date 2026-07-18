@@ -9,6 +9,14 @@ namespace broadify::meeting {
 // BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 forces the CPU fallback.
 bool d3d11CompositorAvailable();
 
+// Initializes the compositor for a self-test and permits the explicit WARP
+// driver override. Normal runtime initialization ignores that override.
+bool d3d11CompositorSelfTestAvailable();
+
+// True when the initialized D3D11 compositor uses a hardware device rather
+// than the explicit self-test-only WARP device.
+bool d3d11CompositorHardwareAccelerated();
+
 // Composites the shared GPU compose plan (background + graphics + keyed
 // camera) on the GPU into `output` (RGBA, width*height*4).
 // Returns false on any failure; callers must then render through the CPU

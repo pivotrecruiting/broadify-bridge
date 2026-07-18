@@ -23,6 +23,7 @@ struct CompositorSnapshot {
 struct GpuCompositorSelfTestResult {
   bool available = false;
   bool passed = false;
+  bool hardwareAccelerated = false;
   int maxChannelDelta = -1;
   uint32_t maxDeltaX = 0u;
   uint32_t maxDeltaY = 0u;

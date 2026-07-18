@@ -3,7 +3,9 @@ param(
   [string]$HelperPath,
 
   [Parameter(Mandatory = $true)]
-  [string]$ModelsDir
+  [string]$ModelsDir,
+
+  [switch]$RequireHardwareAcceleration
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,14 +27,31 @@ foreach ($path in $requiredFiles) {
   }
 }
 
-& $resolvedHelperPath --self-test
-if ($LASTEXITCODE -ne 0) {
-  throw "Meeting helper GPU self-test failed with exit code $LASTEXITCODE."
+$previousGpuSelfTestDriver = [Environment]::GetEnvironmentVariable("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER", "Process")
+$previousKeyerSelfTestProvider = [Environment]::GetEnvironmentVariable("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER", "Process")
+
+if (-not $RequireHardwareAcceleration) {
+  $env:BROADIFY_MEETING_GPU_SELF_TEST_DRIVER = "warp"
+  $env:BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER = "cpu"
+} else {
+  Remove-Item Env:BROADIFY_MEETING_GPU_SELF_TEST_DRIVER -ErrorAction SilentlyContinue
+  Remove-Item Env:BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER -ErrorAction SilentlyContinue
 }
 
-& $resolvedHelperPath --keyer-self-test --models-dir $resolvedModelsDir
-if ($LASTEXITCODE -ne 0) {
-  throw "Meeting helper keyer self-test failed with exit code $LASTEXITCODE."
+try {
+  & $resolvedHelperPath --self-test
+  if ($LASTEXITCODE -ne 0) {
+    throw "Meeting helper GPU self-test failed with exit code $LASTEXITCODE."
+  }
+
+  & $resolvedHelperPath --keyer-self-test --models-dir $resolvedModelsDir
+  if ($LASTEXITCODE -ne 0) {
+    throw "Meeting helper keyer self-test failed with exit code $LASTEXITCODE."
+  }
+} finally {
+  [Environment]::SetEnvironmentVariable("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER", $previousGpuSelfTestDriver, "Process")
+  [Environment]::SetEnvironmentVariable("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER", $previousKeyerSelfTestProvider, "Process")
 }
 
-Write-Host "Meeting helper GPU and keyer smoke tests passed: $resolvedHelperPath"
+$mode = if ($RequireHardwareAcceleration) { "hardware" } else { "portable CI" }
+Write-Host "Meeting helper GPU and keyer smoke tests passed ($mode): $resolvedHelperPath"
