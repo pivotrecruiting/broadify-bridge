@@ -8,6 +8,7 @@ $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $rootDir "build"
 $outputExe = Join-Path $rootDir "meeting-helper.exe"
 $modnetEnabled = if ([string]::IsNullOrWhiteSpace($env:MEETING_HELPER_ENABLE_MODNET)) { "1" } else { $env:MEETING_HELPER_ENABLE_MODNET }
+Write-Host "Meeting helper MODNet enabled: $modnetEnabled"
 
 function Invoke-NativeCommand {
   param(

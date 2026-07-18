@@ -256,7 +256,7 @@ bool initializeContext() {
   }
 
   D3D11_BUFFER_DESC uniformDesc{};
-  uniformDesc.ByteWidth = (sizeof(ComposeUniforms) + 15u) & ~15u;
+  uniformDesc.ByteWidth = (sizeof(GpuComposeUniforms) + 15u) & ~15u;
   uniformDesc.Usage = D3D11_USAGE_DEFAULT;
   uniformDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   hr = ctx.device->CreateBuffer(&uniformDesc, nullptr, &ctx.uniforms);
