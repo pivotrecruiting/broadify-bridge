@@ -1,3 +1,4 @@
+import { normalize } from "node:path";
 import { setBridgeContext } from "../bridge-context.js";
 import {
   __setMeetingHelperPathForTesting,
@@ -66,12 +67,12 @@ describe("meeting-helper-manager", () => {
         resolveMeetingModelsDir(
           "/repo/apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper",
         ),
-      ).toBe("/repo/apps/bridge/native/meeting-helper/models");
+      ).toBe(normalize("/repo/apps/bridge/native/meeting-helper/models"));
     });
 
     it("resolves models beside a standalone helper", () => {
       expect(resolveMeetingModelsDir("/repo/native/meeting-helper")).toBe(
-        "/repo/native/models",
+        normalize("/repo/native/models"),
       );
     });
   });
