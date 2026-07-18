@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "package": "MODNet.mlpackage",
+  "files": [
+    {
+      "path": "Manifest.json",
+      "sha256": "8b6a58da5d94fa96f129ed471c7d11297cbcc2c8b3e0f540276e0edd10068a91"
+    },
+    {
+      "path": "Data/com.apple.CoreML/model.mlmodel",
+      "sha256": "aa5716096125bd4573f02b82da789147c2ee5505285ac3b857dbfaa11f34ec43"
+    },
+    {
+      "path": "Data/com.apple.CoreML/weights/weight.bin",
+      "sha256": "4fea2648996b6db19ba818594ad04a700b8a55ca4eca461240694a71f6c5ad25"
+    }
+  ]
+}

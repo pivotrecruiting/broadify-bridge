@@ -14,6 +14,7 @@ Diese Anleitung beschreibt den kompletten Prozess für das Erstellen und Veröff
   - `DECKLINK_HELPER_URL_ARM64`, `DECKLINK_HELPER_SHA256_ARM64`
   - `DECKLINK_HELPER_URL_X64`, `DECKLINK_HELPER_SHA256_X64` (falls x64-Builds)
   - `MODNET_MODEL_URL` (Windows MODNet ONNX, GitHub Release Asset URL)
+  - `MODNET_COREML_MODEL_URL` (macOS MODNet CoreML ZIP)
 - `APPLE_SIGNING_IDENTITY` (für macOS Code-Signing / Notarization, z.B. `Developer ID Application: Your Team (XXXXX)`)
 - `BRIDGE_RELAY_JWKS_URL` (für Production Relay)
 - `RELAY_URL_RC` (für RC/Test-Relay)
@@ -293,7 +294,7 @@ Der Befehl gibt `SHA256` und den Asset-Pfad aus.
    - `MODNET_MODEL_URL` =
      `https://github.com/<owner>/<assets-repo>/releases/download/<tag>/modnet.onnx`
 
-Kein separates SHA-Secret nötig — der Hash kommt aus `manifest.json`.
+Kein separates SHA-Secret nötig, der Hash kommt aus `manifest.json`.
 
 Details: `apps/bridge/native/meeting-helper/models/DEPLOY.md`
 

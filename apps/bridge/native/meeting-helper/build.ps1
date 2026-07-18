@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $rootDir "build"
 $outputExe = Join-Path $rootDir "meeting-helper.exe"
+$modnetEnabled = if ([string]::IsNullOrWhiteSpace($env:MEETING_HELPER_ENABLE_MODNET)) { "1" } else { $env:MEETING_HELPER_ENABLE_MODNET }
 
 function Invoke-NativeCommand {
   param(
@@ -26,7 +27,7 @@ if (Test-Path $outputExe) {
   Remove-Item -Force $outputExe
 }
 
-Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config
+Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config -DMEETING_HELPER_ENABLE_MODNET=$modnetEnabled
 Invoke-NativeCommand cmake --build $buildDir --target meeting-helper --config $Config --verbose
 
 $candidates = @(
@@ -57,7 +58,7 @@ $onnxRuntimeRoot = $env:BROADIFY_ONNXRUNTIME_ROOT
 if ([string]::IsNullOrWhiteSpace($onnxRuntimeRoot)) {
   $onnxRuntimeRoot = Join-Path $rootDir "deps\onnxruntime\windows-x64"
 }
-if ($env:MEETING_HELPER_ENABLE_MODNET -ne "0") {
+if ($modnetEnabled -ne "0") {
   $dllCandidate = Join-Path $onnxRuntimeRoot "lib\onnxruntime.dll"
   if (-not (Test-Path $dllCandidate)) {
     $dllCandidate = Join-Path $onnxRuntimeRoot "onnxruntime.dll"
@@ -66,6 +67,14 @@ if ($env:MEETING_HELPER_ENABLE_MODNET -ne "0") {
     throw "ONNX Runtime DLL not found under $onnxRuntimeRoot"
   }
   Copy-Item -Force $dllCandidate (Join-Path $rootDir "onnxruntime.dll")
+  $ortLibDir = Split-Path -Parent $dllCandidate
+  foreach ($dependency in @("onnxruntime_providers_shared.dll", "DirectML.dll")) {
+    $dependencyPath = Join-Path $ortLibDir $dependency
+    if (-not (Test-Path $dependencyPath)) {
+      throw "DirectML runtime dependency missing: $dependencyPath"
+    }
+    Copy-Item -Force $dependencyPath (Join-Path $rootDir $dependency)
+  }
 }
 
 Write-Host "Built $outputExe"

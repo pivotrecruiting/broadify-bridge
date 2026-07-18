@@ -9,7 +9,7 @@ import {
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 
-export type MeetingProgramSectionT =
+type MeetingProgramSectionT =
   | "camera"
   | "cornerbug"
   | "graphics"
@@ -69,14 +69,6 @@ export class MeetingHelperClient {
 
   async getState(): Promise<Record<string, unknown>> {
     return this.rpc("state.get");
-  }
-
-  async getPipelineState(): Promise<Record<string, unknown>> {
-    return this.getState();
-  }
-
-  async getPerformance(): Promise<Record<string, unknown>> {
-    return { available: true, source: "meeting-helper" };
   }
 
   async listCameras(): Promise<unknown> {

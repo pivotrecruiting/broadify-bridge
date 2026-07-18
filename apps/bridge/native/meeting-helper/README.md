@@ -19,38 +19,48 @@ The current implementation is native-only:
 - exposes all stable control methods with structured responses,
 - stores and renders `speaker_layout`, `cornerbug`, `media_layer` and
   `graphics` program sections,
-- runs MODNet through ONNX Runtime as the primary keyer,
+- runs native CoreML MODNet with Apple Vision fallback on macOS,
+- runs MODNet through ONNX Runtime DirectML with CPU fallback on Windows,
+- uses Metal or D3D11 composition with atomic CPU fallback,
+- exits through a parent-process watchdog when the Bridge terminates,
 - keeps call-control and legacy prototype features disabled.
 
-MediaPipe and Windows Media Foundation are added later without reintroducing
-Python.
+Recording, multi-camera, conference and call-control features are intentionally
+outside this helper scope.
 
 ## MODNet Dependencies
 
-The macOS build expects vendored ONNX Runtime here:
+The macOS release uses the verified CoreML package:
 
 ```text
-apps/bridge/native/meeting-helper/deps/onnxruntime/macos-arm64/
+apps/bridge/native/meeting-helper/models/MODNet.mlpackage/
+```
+
+Prepare it from an approved artifact source:
+
+```bash
+MODNET_COREML_MODEL_SOURCE=/path/to/model-parent npm run prepare:modnet-coreml-model
+```
+
+The Windows build expects the DirectML NuGet runtime layout under:
+
+```text
+apps/bridge/native/meeting-helper/deps/onnxruntime/windows-x64/
 ├── include/onnxruntime_cxx_api.h
-└── lib/libonnxruntime.dylib
+└── lib/
+    ├── onnxruntime.lib
+    ├── onnxruntime.dll
+    ├── onnxruntime_providers_shared.dll
+    └── DirectML.dll
 ```
 
-The model must be placed here:
+Windows also requires the hash-verified model at
+`models/modnet.onnx`. For a local compiler-only build without ONNX Runtime,
+set the environment variable before using the Windows build script:
 
-```text
-apps/bridge/native/meeting-helper/models/modnet.onnx
-```
-
-Update `models/manifest.json` with the concrete SHA-256:
-
-```bash
-bash scripts/hash-meeting-model.sh modnet.onnx
-```
-
-Builds fail when MODNet artifacts are missing. For a local non-keying build:
-
-```bash
-MEETING_HELPER_ENABLE_MODNET=0 bash apps/bridge/native/meeting-helper/build.sh
+```powershell
+$env:MEETING_HELPER_ENABLE_MODNET = '0'
+powershell -NoProfile -ExecutionPolicy Bypass -File apps\bridge\native\meeting-helper\build.ps1
 ```
 
 ## Build
@@ -66,3 +76,14 @@ Windows:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File apps\bridge\native\meeting-helper\build.ps1
 ```
+
+## Verification
+
+```bash
+npm run test:meeting-helper-native
+npm run test:meeting-helper-gpu
+npm run test:meeting-helper-keyer
+```
+
+The GPU and keyer self-tests require access to the real Metal, CoreML, D3D11,
+or DirectML backend selected for the platform.

@@ -102,8 +102,8 @@ REQUIRED_FILES=(
   "apps/bridge/dist/services/graphics/renderer/electron-renderer-entry.js"
   "apps/bridge/native/framebus/build/Release/framebus.node"
 )
-# macOS uses the Apple Vision keyer only; MODNet/ONNX Runtime and the model
-# ship on Windows, so they are intentionally absent from the macOS bundle.
+# macOS uses native CoreML MODNet with Apple Vision as a safe fallback. Windows
+# uses ONNX Runtime DirectML. Platform-specific requirements are added below.
 EXECUTABLE_FILES=(
 )
 
@@ -137,12 +137,34 @@ check_modnet_manifest_hash() {
   echo "[Verify] MODNet model hash verified -> $actual_hash"
 }
 
+check_coreml_manifest_hashes() {
+  node - "$ROOT_DIR/apps/bridge/native/meeting-helper/models/coreml-manifest.json" \
+    "$ROOT_DIR/apps/bridge/native/meeting-helper/models/MODNet.mlpackage" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const [manifestPath, packagePath] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+for (const file of manifest.files) {
+  const filePath = path.join(packagePath, ...file.path.split("/"));
+  const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  if (actual !== file.sha256) {
+    throw new Error(`CoreML model hash mismatch: ${file.path}`);
+  }
+}
+NODE
+  echo "[Verify] CoreML MODNet model hashes verified"
+}
+
 if [[ "$UNAME_S" == "Darwin" ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/display-helper")
   REQUIRED_FILES+=("apps/bridge/native/decklink-helper/decklink-helper")
   REQUIRED_FILES+=("apps/bridge/native/display-helper/libSDL2-2.0.0.dylib")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Manifest.json")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Data/com.apple.CoreML/model.mlmodel")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
   EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper")
   EXECUTABLE_FILES+=("apps/bridge/native/decklink-helper/decklink-helper")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
@@ -158,6 +180,8 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   REQUIRED_FILES+=("apps/bridge/native/display-helper/SDL2.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/onnxruntime.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/DirectML.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/modnet.onnx")
   EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
@@ -300,10 +324,14 @@ if [[ "$UNAME_S" == "Darwin" ]]; then
   check_macos_max_minos "apps/bridge/native/display-helper/display-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/decklink-helper/decklink-helper" "$MACOS_FLOOR_VERSION"
   check_macos_max_minos "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" "$MACOS_FLOOR_VERSION"
+  check_coreml_manifest_hashes
 elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
   check_architecture "apps/bridge/native/display-helper/display-helper.exe"
   check_architecture "apps/bridge/native/display-helper/SDL2.dll"
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper.exe"
+  check_architecture "apps/bridge/native/meeting-helper/onnxruntime.dll"
+  check_architecture "apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll"
+  check_architecture "apps/bridge/native/meeting-helper/DirectML.dll"
   check_modnet_manifest_hash
 else
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper"

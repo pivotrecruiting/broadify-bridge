@@ -2,659 +2,262 @@
 
 ## Summary
 
-This document describes the current meeting keyer and rendering pipeline as it
-exists in code. It focuses on the Apple Vision keyer path, alpha mask handling,
-frame composition, graphics layering, preview, and FrameBus output.
+The Meeting Helper uses one program compositor with two keyer execution modes.
+On macOS, the primary MODNet path runs CoreML inference for the current camera
+frame, refines the mask through Metal Performance Shaders, and composes that
+same frame through Metal. If the fused path is unavailable, the helper resumes
+the asynchronous latest-frame worker. Camera RGB and alpha masks remain
+separate until the compositor boundary.
 
-The current architecture now keeps the camera RGB frame and alpha mask paired at
-the async keyer boundary. The keyer still runs asynchronously, but the compositor
-does not apply an old mask to the current camera frame. It applies each mask only
-to the RGB frame that produced it, then uses `max_mask_age_ms` as a safety cutoff
-before falling back to passthrough. The current compositor also renders a fully
-opaque program frame, even when the configured background mode is named
-`transparent`.
+GPU acceleration is enabled by default when the platform backend initializes:
 
-## Control Plane Dataflow
+- macOS: native CoreML MODNet inference, MPS mask refine, Metal composition.
+- Windows: ONNX Runtime DirectML inference, D3D11 composition and guided refine.
+- Portable fallback: asynchronous Apple Vision on macOS, ONNX Runtime CPU on
+  Windows, CPU guided refine and CPU composition.
 
-The web app controls the meeting helper through the Bridge and Relay command
-path.
+Every GPU stage has a CPU or Vision fallback. A failed required texture upload
+fails the complete GPU frame and rerenders it through the CPU compositor. It
+never reports a successful frame with a missing camera, mask, or FrameBus
+graphics layer.
 
-1. `hooks/use-meeting-builder-sync.ts` converts Meeting Builder state into
-   command payloads.
-2. `lib/bridge-commands.ts` sends `meeting_*` commands through the web app
-   command route and Relay.
-3. `apps/bridge/src/services/meeting/meeting-command-handler.ts` validates and
-   dispatches those commands inside the Bridge.
-4. `MeetingHelperClient` sends JSON-RPC requests over the native helper control
-   socket.
-5. `apps/bridge/native/meeting-helper/src/control/control_server.cpp` mutates
-   `MeetingState`.
+## Control Plane
 
-Important command mappings:
+The existing public Meeting commands remain unchanged:
 
-- `meeting_keyer_configure` -> `keyer.configure`
-- `meeting_keyer_get` -> `keyer.get`
-- `meeting_program_update` -> `program.update`
-- `meeting_output_configure` -> `output.framebus.*`
-- `meeting_graphics_configure_outputs` -> meeting graphics FrameBus setup
+- `meeting_keyer_configure` maps to `keyer.configure`.
+- `meeting_keyer_get` maps to `keyer.get`.
+- `meeting_program_update` maps to `program.update`.
+- `meeting_output_configure` controls FrameBus output.
+- `meeting_graphics_configure_outputs` controls the graphics FrameBus inputs.
 
-The web app currently sends keyer configuration with:
+`keyer.configure` validates the model allowlist. Supported values are
+`modnet` and `vision_person_segmentation`. Existing quality, performance,
+mask, temporal, edge stabilization, and mask-age settings stay compatible.
 
-- `enabled`: Meeting Builder keyer feature state
-- `model`: `modnet` or `vision_person_segmentation`
-- `background_mode`: always `transparent` from the builder sync
-- `mask_erode_px`: `0.5` for `vision_person_segmentation`, `0` for other keyers
-- `edge_stabilization_enabled`: `true` for `vision_person_segmentation`
-- `edge_stabilization_strength`: `0.35` for `vision_person_segmentation`
-- no explicit `quality_mode`, `mask_dilate_px`, `mask_feather_px`, or
-  `dynamic_dilation` in the builder sync path
+Status responses add these fields without changing existing fields:
 
-The native defaults in `MeetingState` are:
+- `status.provider`: `coreml`, `vision_sequence`, `directml`, or `cpu`.
+- `status.compositor`: `metal`, `d3d11`, or `cpu`.
+- `status.keyer_pipeline_mode`: `fused_coreml`, `async_fallback`,
+  `async_live_snap`, or `passthrough`.
+- `status.pipeline_mode`: retains the existing helper lifecycle meaning.
+- Detailed mask stage metrics expose remap, stabilization, close/dilate,
+  feather, temporal, and total postprocess time.
 
-- `requestedKeyerModel = "modnet"`
-- `qualityMode = "balanced"`
-- `maskErodePx = 0`
-- `maskDilatePx = 0`
-- `maskFeatherPx = 0`
-- `dynamicDilation = false`
-- `temporalBlendEnabled = true`
-- `edgeStabilizationEnabled = true`
-- `edgeStabilizationStrength = 0.35`
-- `freshMaskAgeMs = 60`
-- `maxMaskAgeMs = 220`
-- `backgroundMode = "transparent"`
+## Keyer Selection And Fallbacks
 
-Practical consequence: when the WebApp selects
-`vision_person_segmentation` and does not send an explicit `quality_mode`, Apple
-Vision runs in `balanced` mode. This is the current quality-first baseline.
-`fast` remains useful only as an A/B diagnostic mode because it reduced edge
-quality in real preview tests.
+### macOS
 
-## Performance Profiles
+When `modnet` is requested:
 
-`meeting_keyer_configure` accepts `performance_mode` independently from the
-selected keyer model and `quality_mode`. The value is validated as one of
-`high_quality`, `quality`, `balanced`, or `performance`.
+1. `CoreMLKeyer` verifies all files in `MODNet.mlpackage` by SHA-256.
+2. CoreML compiles and loads the model with all compute units enabled by
+   default.
+3. The primary program path synchronously evaluates the current camera frame
+   and publishes the mask as `fused_coreml` with mask age zero.
+4. MPS guided filtering refines the mask against the current camera frame.
+5. If fused inference fails, the helper disables the fused path for the current
+   keyer revision and resumes the asynchronous fallback worker.
+6. After a successful model preflight, compile, initialization, or inference
+   failures resume the asynchronous worker.
+7. Because macOS ONNX is disabled in release builds, Apple Vision person
+   segmentation produces the fallback mask.
+8. If no keyer produces a valid mask, the program frame uses passthrough.
 
-- `high_quality`: 30 keyer FPS, Vision `balanced`, maximum Vision input 1280x720.
-- `quality`: 25 keyer FPS, Vision `balanced`, maximum Vision input 1280x720.
-- `balanced`: 20 keyer FPS, Vision `balanced`, maximum Vision input 960x540.
-- `performance`: 15 keyer FPS, Vision `fast`, maximum Vision input 640x360.
+A missing or hash-invalid CoreML package fails the Bridge startup preflight.
+Vision fallback is available only after the required release artifact has
+passed that preflight and the helper has started.
 
-The program output remains 1280x720 at 30 FPS in all profiles. The helper
-uses a latest-frame scheduler, so skipped capture frames are intentional and
-reported as `metrics.skipped_frames`; they never queue behind old work. MODNet
-keeps its fixed 512x512 ONNX input and benefits from the rate limit.
+The release build disables macOS ONNX Runtime because the vendored runtime does
+not meet the macOS 13 deployment floor. CoreML is the primary production path,
+with Apple Vision as the safe runtime fallback.
 
-The WebApp stores the chosen profile locally per device rather than in a shared
-meeting scene. It may recommend one lower profile after five seconds of
-insufficient keyer FPS, elevated mask age, or sustained frame drops, but it
-never changes the profile automatically.
+When `vision_person_segmentation` is explicitly requested, the helper uses the
+asynchronous Vision path directly. Vision reuses a CoreVideo pixel buffer and
+sequence request handler. A near-full-frame collapse resets the sequence
+handler.
 
-## Native Runtime Topology
+### Windows
 
-`MeetingHelperManager` starts the native `meeting-helper` process with:
+When `modnet` is requested:
 
-- output width, height, and FPS
-- output FrameBus name, default `broadify-meeting-framebus`
-- JSON-RPC control socket path
-- MJPEG preview port
-- models directory
+1. ONNX Runtime loads the hash-verified `modnet.onnx`.
+2. The DirectML execution provider requests a high-performance GPU.
+3. The session disables memory patterns and uses sequential execution as
+   required by DirectML.
+4. Dynamic input sizes follow the performance profile.
+5. A new shape builds a fresh session and performs a warmup run before it is
+   published.
+6. If DirectML is unavailable, ONNX Runtime uses the CPU provider.
 
-Inside the native helper, the relevant long-running components are:
+The Windows package must place these files next to `meeting-helper.exe`:
 
-- `CameraSource`: captures the latest camera frame.
-- `AsyncKeyerWorker`: runs the selected keyer on a background thread.
-- `GraphicsFrameBusReader`: reads the latest meeting back/front graphics frames
-  from `bfy-meet-gfx-back` and `bfy-meet-gfx-front`.
-- `renderProgramFrame`: composites the final program frame when camera,
-  graphics, program state, or a static-output heartbeat requires it.
-- `framebus_writer_write_rgba`: writes the final program frame to the meeting
-  output FrameBus.
-- `PreviewFrameStore`: publishes the same final program frame to MJPEG preview
-  and the VCam raw stream only while those consumers are connected.
+- `onnxruntime.dll`
+- `onnxruntime_providers_shared.dll`
+- `DirectML.dll`
+- `models/modnet.onnx`
 
-The native pipeline is `latest-frame-wins`. It does not queue every camera frame
-for keying. If a keyer frame is already pending, submitting another frame drops
-the previous pending frame and increments `droppedFrames`.
+All three DLLs are included in package, signing, signature verification,
+diagnostic collection, and installer smoke checks.
 
-The program loop is mode-gated:
+## Fused CoreML Pipeline
 
-- `idle`: no camera, no graphics output, and no active output consumer. The
-  helper sleeps at a low cadence instead of producing 30 FPS no-signal frames.
-- `static_output`: no camera and no animated graphics, but FrameBus, preview, or
-  VCam needs a frame. The helper reuses the cached program frame and writes a
-  1 FPS FrameBus heartbeat.
-- `live`: camera or meeting graphics output is active. The helper processes new
-  camera or graphics frames at the configured cadence.
-- `keyer_live`: camera and keyer are active. Existing quality and performance
-  profiles still control keyer submission rate.
+The default macOS MODNet path keeps the camera frame and its mask in the same
+program iteration:
 
-## Camera Capture
+1. Capture publishes the newest camera frame.
+2. `CoreMLKeyer` evaluates that frame with all CoreML compute units enabled.
+3. `GpuMaskRefiner` scales the model mask, runs an MPS guided filter against
+   the camera frame, and applies optional coefficient EMA stabilization.
+4. The postprocessor applies close, remap, temporal, edge stabilization, and
+   feather stages.
+5. The compositor receives the current camera RGB and current refined alpha
+   mask separately.
+6. Metal renders the background, back FrameBus layer, keyed presenter, front
+   FrameBus layer, generated graphics, and cornerbug.
 
-On macOS, `camera_avfoundation.mm` uses `AVCaptureVideoDataOutput` with
-`kCVPixelFormatType_32BGRA`.
+The helper reports `keyer_pipeline_mode: "fused_coreml"`,
+`degradation: "fused"`, and mask age zero. This mode intentionally couples
+program FPS to CoreML inference throughput so the visible silhouette does not
+trail the presenter.
 
-For every sample buffer:
+Changing the camera, requested model, keyer settings, or enabled state bumps a
+keyer revision. This recreates the fused keyer state and allows a previously
+failed fused path to be retried safely.
 
-1. The pixel buffer is locked read-only.
-2. BGRA bytes are copied into a new `VideoFrame`.
-3. Channels are converted to RGBA.
-4. `timestampNs` is set to `nowNs()`, not the camera sample timestamp.
-5. The frame becomes `latestFrame_`.
+## Asynchronous Fallback Pipeline
 
-Late camera frames are discarded by AVFoundation through
-`alwaysDiscardsLateVideoFrames = YES`.
+The fallback program loop never waits for inference.
 
-Important consequence: timestamp comparisons are based on helper wall-clock
-capture time, not native camera presentation timestamps.
+1. Capture publishes the newest camera frame.
+2. `AsyncKeyerWorker::submit` replaces any pending frame with the newest
+   frame and records dropped or throttled submissions.
+3. The worker runs the requested keyer, temporal blending, remap,
+   stabilization, close/dilate, and feather stages.
+4. A near-full-frame collapse is rejected and reports
+   `mask_collapse_rejected`. The previous mask keeps its original source
+   timestamp, so it ages into passthrough instead of sticking indefinitely.
+5. The worker publishes an immutable shared mask result with its source-frame
+   timestamp. The full source RGBA frame is not retained or copied.
+6. The program loop checks mask age against `max_mask_age_ms`.
+7. A usable mask is edge-refined against the current camera frame. D3D11 is
+   used on Windows when available, otherwise the portable guided filter runs.
+8. The current camera RGB and refined alpha mask are passed separately to the
+   compositor.
+9. If the mask is too old or absent, the current camera frame is rendered
+   without keying.
 
-## Keyer Selection
+Changing the camera, requested model, keyer settings, or enabled state bumps a
+keyer revision. Pending work and the previous published mask are cleared before
+the next submission, preventing temporal state from leaking across identities.
 
-`KeyerChain::process` reads `MeetingState` and routes each submitted frame:
+Normal asynchronous operation is reported as `async_live_snap`. A failed fused
+CoreML attempt first reports `async_fallback`, then the worker publishes its
+normal asynchronous status. This preserves a complete fallback path if the
+model or GPU stage fails at runtime.
 
-- disabled keyer -> passthrough frame, fallback reason `keyer_disabled`
-- `modnet` -> `ModnetKeyer`
-- `vision_person_segmentation` -> `VisionKeyer`
-- anything else -> passthrough frame, fallback reason `unsupported_model`
+## Compositor
 
-The returned `KeyerResult` contains:
+The GPU compose plan supports the production single-renderer path:
 
-- a copied RGBA frame
-- an `AlphaMask`
-- a `KeyerStatus`
+1. Background mode
+2. Back graphics FrameBus layer
+3. Camera layer with optional alpha mask
+4. Front graphics FrameBus layer
+5. Generated placeholder graphics
+6. Cornerbug
 
-In the current async pipeline, the published `AlphaMask` is the important
-artifact. The keyed RGBA frame returned by the keyer is not the frame that the
-program compositor usually displays.
+Generated graphics and the cornerbug are drawn as cheap CPU overlays after the
+Metal or D3D11 frame. They no longer disable the GPU compositor. An enabled
+media layer still forces complete CPU composition because it does not yet have
+a pixel-equivalent GPU implementation.
 
-## Apple Vision Keyer Path
+Metal and D3D11 cache layer textures by dimensions and timestamps. A required
+camera, FrameBus graphics, or mask upload failure returns `false`. The caller
+immediately renders the complete frame on CPU.
 
-`vision_keyer.mm` implements `VisionKeyer`.
+## Runtime Switches
 
-For each submitted frame:
+GPU paths are default-on. These environment variables are emergency kill
+switches or bounded tuning controls:
 
-1. The RGBA frame is wrapped as a `CGImage`.
-2. A cached `VNGeneratePersonSegmentationRequest` on the `VisionKeyer`
-   implementation is reused.
-3. A cached `VNSequenceRequestHandler` on the `VisionKeyer` implementation is
-   reused.
-4. `qualityLevel` is set from normalized `quality_mode`:
-   - `fast`
-   - `balanced`
-   - `accurate`
-5. `outputPixelFormat` is `kCVPixelFormatType_OneComponent8`.
-6. Vision returns a `VNPixelBufferObservation`.
-7. The one-channel mask is copied into `AlphaMask`.
-8. `applyMaskToFrame` writes mask alpha into a copy of the input frame.
+- `BROADIFY_MEETING_GPU_COMPOSITOR=0`: disable Metal composition.
+- `BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0`: disable D3D11 composition.
+- `BROADIFY_MEETING_GPU_PIPELINE=0`: disable the fused macOS CoreML path.
+- `BROADIFY_MEETING_GPU_REFINE=0`: disable MPS mask refine.
+- `BROADIFY_MEETING_GPU_GUIDED=0`: disable D3D11 guided refine.
+- `BROADIFY_MEETING_GUIDED_REFINE=0`: disable live guided refine.
+- `BROADIFY_MEETING_KEYER_DML_LEGACY=1`: use DirectML device 0.
+- `BROADIFY_MEETING_COREML_UNITS`: `cpuOnly`, `cpuAndGPU`,
+  `cpuAndNeuralEngine`, or the default `all`.
+- `BROADIFY_MEETING_GUIDED_RADIUS`: positive guided-filter radius.
+- `BROADIFY_MEETING_GUIDED_EPSILON`: positive guided-filter epsilon.
+- `BROADIFY_MEETING_GPU_RADIUS`: positive MPS guided-filter radius.
+- `BROADIFY_MEETING_GPU_EPSILON`: positive MPS guided-filter epsilon.
+- `BROADIFY_MEETING_GPU_REFINE_WIDTH`: positive MPS output width.
+- `BROADIFY_MEETING_GPU_EMA`: MPS coefficient EMA value from 0.05 to 1.0.
 
-`applyMaskToFrame` uses nearest-neighbor sampling from mask resolution to frame
-resolution. Later in the real compositor boundary, `applyLatestAlphaToCurrentFrame`
-uses bilinear alpha sampling. That means there are two different mask sampling
-implementations in the codebase, but the async compositor path depends on the
-bilinear one.
+The Bridge forwards only this fixed allowlist to the helper. This explicit
+forwarding is required because macOS LaunchServices does not reliably preserve
+the environment of `/usr/bin/open`. Values are restricted to bounded tuning
+tokens, redacted in lifecycle logs, and are not exposed as arbitrary remote
+command inputs.
 
-There is no explicit Vision temporal-reset logic when cameras switch or keyer
-settings change beyond clearing the async worker state. The Vision sequence
-handler instance is retained inside the keyer implementation.
+## Model Release Artifacts
 
-## MODNet Keyer Path
+Windows keeps the existing ONNX model download and manifest verification.
 
-`modnet_keyer.cpp` implements the MODNet path.
+macOS requires `MODNet.mlpackage`. Prepare it with:
 
-Load behavior:
-
-- reads the model manifest
-- verifies model file existence
-- requires a real SHA-256 value
-- attempts CoreML provider on Apple platforms
-- falls back to CPU provider if CoreML registration fails
-- uses up to four CPU inference threads
-
-Per submitted frame:
-
-1. RGBA input is resized to model input dimensions.
-2. RGB is normalized with ImageNet mean/std values.
-3. ONNX Runtime runs inference.
-4. The float mask is copied to `AlphaMask`.
-5. The mask is applied to a copied RGBA frame.
-
-The input tensor resize uses nearest-neighbor sampling. The final mask to
-current-frame application in the async pipeline uses bilinear alpha sampling.
-
-## Async Keyer Worker
-
-The keyer worker is created inside `runFramePipeline`.
-
-Main-thread behavior per program tick:
-
-1. Read output consumer counts and compute the pipeline mode.
-2. Copy the latest camera frame only when its timestamp changed.
-3. If keyer is enabled and a new camera frame exists, submit that frame to
-   `AsyncKeyerWorker`.
-4. Ask the worker for the latest paired camera frame and mask.
-5. If a usable pair exists, apply the mask to the paired camera frame.
-6. If no usable pair exists, pass the current camera frame through unchanged.
-7. Render a new program frame only for a new camera frame, new graphics frame,
-   newer keyer pair, program-state revision, or static-output heartbeat.
-8. Publish preview frames only when MJPEG preview or VCam raw-stream clients are
-   connected.
-
-Worker-thread behavior:
-
-1. Wait for the latest pending frame.
-2. Run `KeyerChain::process`.
-3. Copy the previous published mask if present.
-4. Read current keyer settings and the last reported `maskAgeMs`.
-5. Run temporal alpha blending.
-6. Run alpha postprocessing.
-7. Publish the new mask if generation still matches.
-8. Update keyer status in `MeetingState`.
-
-This is the core sync boundary: RGB and alpha in the keyed camera layer come from
-the same submitted camera frame. `mask_age_ms` is still computed against the
-current camera frame so the system can report how delayed the visible keyed pair
-is:
-
-```text
-current_frame.timestampNs - paired_frame.timestampNs
+```bash
+MODNET_COREML_MODEL_SOURCE=/path/to/model-parent \
+  npm run prepare:modnet-coreml-model
 ```
 
-If the person moves between those timestamps, alpha can visibly lag behind the
-person.
+CI can instead provide `MODNET_COREML_MODEL_URL`, pointing to a ZIP archive
+that contains `MODNet.mlpackage`. Preparation and release verification compare
+all three package files with `models/coreml-manifest.json`.
 
-## Alpha Postprocessing
+Electron Builder copies the verified package to
+`resources/native/meeting-helper/models/MODNet.mlpackage`.
 
-Alpha postprocessing runs on the `AlphaMask` before it is published.
+During development, the Bridge resolves the model directory beside the helper
+app bundle, not inside `Contents/MacOS`. It refuses to start the helper and
+reports `keyer_model_missing` when the required platform model is absent.
 
-Current steps:
+## Verification
 
-1. `remapAlphaSmoothstep`
-   - maps alpha through `smoothstep(0.12, 0.88, alpha)`
-   - suppresses weak alpha and strengthens high alpha
-2. `blendAlphaTemporal`
-   - blends current mask with previous mask when dimensions and timestamps are
-     compatible
-3. `stabilizeAlphaEdges`
-   - blends only uncertain alpha-edge pixels with the previous mask
-   - motion-gated so large alpha changes keep the current mask and do not
-     recreate transparency trails
-   - age-gated: full strength below `40 ms` mask age, fades down until
-     `75 ms` so moving paired frames do not retain old edge alpha strongly
-4. `erodeAlpha`
-   - fractional min-filter radius; subpixel values interpolate between the
-     original mask and integer-radius erosion
-   - used conservatively by the WebApp with `mask_erode_px = 0.5` for Vision to
-     remove visible background rim without the hard 1px cut
-5. `dilateAlpha`
-   - max filter with configured or dynamic radius
-6. `featherAlpha`
-   - box blur with configured radius
+Portable native regression test:
 
-Important constants:
-
-- `kTemporalAlphaMaxAgeNs = 250000000` (250ms)
-- `kStaleMaskAgeMs = 140.0`
-- `kQuietPreviousWeight = 0.85`
-- `kMotionPreviousWeight = 0.35`
-- `kStalePreviousWeight = 0.12`
-- `kTemporalProtectionRadiusPx = 10`
-- `kTemporalProtectionAlphaThreshold = 32`
-- `kMaxAlphaDilateRadiusPx = 8`
-- `kMaxAlphaFeatherRadiusPx = 3`
-
-The temporal blend is protected by a dilated current-mask zone. Pixels outside
-that zone are not blended with previous alpha. Pixels inside the zone can retain
-substantial previous alpha, especially when the current and previous alpha are
-similar.
-
-This can stabilize flicker, but it can also create perceived trailing during
-motion because old alpha is intentionally retained near the current mask.
-
-## Applying The Latest Mask
-
-The async keyer publishes a paired camera frame and alpha mask from the same
-submitted capture frame. The program loop applies the mask only to that paired
-camera frame. This removes the previous RGB/mask mismatch where a stale mask was
-applied to the current camera RGB frame.
-
-Current stages:
-
-- `fresh`: paired frame age below `fresh_mask_age_ms`; paired hard keying.
-- `paired`: paired frame age between `fresh_mask_age_ms` and
-  `max_mask_age_ms`; still uses the synchronized RGB/mask pair and marks
-  `stale_mask_active`.
-- `passthrough`: paired frame age above `max_mask_age_ms` or no usable pair;
-  renders the current camera without keying.
-
-`applyLatestAlphaToCurrentFrame` copies the paired camera frame and replaces
-only the alpha channel using the paired mask.
-
-Behavior:
-
-- RGB comes from the paired camera frame that produced the mask.
-- Alpha comes from the paired mask.
-- Mask-to-frame scaling uses bilinear sampling.
-- No motion compensation is performed; the entire keyed camera layer is delayed
-  as one synchronized pair.
-- When `mask_age_ms` is above `max_mask_age_ms`, the program loop stops using
-  the paired keyer output and passes the current camera frame through.
-- Hard mask-age cutoffs prevent very old masks from being used for hard keying.
-  Very old masks degrade to passthrough.
-
-The output of this function is the paired keyed camera frame used by the
-compositor.
-
-## Live Statusbar Metrics
-
-The native `keyer.get` response exposes the current keyer status and metrics.
-The Meeting Builder preview statusbar polls `meeting_keyer_get` while the
-preview is running and the keyer feature is enabled.
-
-Displayed values:
-
-- `active_keyer`: selected/active keyer, for example `vision_person_segmentation`
-- `quality_mode`: current Vision quality mode; `balanced` is the current
-  baseline
-- `backend`: native backend reported by the helper
-- `inference_ms`: total keyer apply time
-- `metrics.camera_copy_ms`: camera frame copy cost in the program loop
-- `metrics.tensor_ms`: model input/tensor preparation cost
-- `metrics.session_run_ms`: model/Vision run cost
-- `metrics.mask_apply_ms`: mask application cost
-- `metrics.mask_dilate_ms`: erode/dilate phase cost
-- `metrics.mask_postprocess_ms`: mask postprocess cost
-- `metrics.mask_age_ms`: age of the paired keyer frame relative to the current
-  program frame
-- `metrics.mask_age_avg_ms`: rolling average mask age over the latest program
-  frames
-- `metrics.keyer_input_age_ms`: age of the submitted camera frame when the
-  async keyer starts processing it
-- `metrics.keyer_processing_ms`: worker processing time from keyer start to
-  pair publish
-- `metrics.keyer_publish_to_program_ms`: time between publishing a paired
-  keyer frame and using it in the program loop
-- `metrics.program_frame_interval_ms`: measured interval between program-frame
-  starts
-- `metrics.program_frame_ms`: full program-frame render/write cost
-- `metrics.mjpeg_encode_ms`: preview MJPEG encode cost when available
-- `metrics.keyer_fps`: rolling published keyer-result rate
-- `metrics.program_fps`: rolling program-frame rate
-- `metrics.dropped_frames_per_sec`: rolling async keyer drop rate
-- `metrics.mask_width` and `metrics.mask_height`: produced mask resolution
-- `metrics.dropped_frames`: total async keyer worker drops since reset/clear
-- `metrics.skipped_frames`: capture frames intentionally skipped by the active
-  performance-profile scheduler
-- `settings.mask_erode_px`: configured mask erosion radius shown as `Erode` in
-  the WebApp statusbar
-- `settings.edge_stabilization_enabled`: shown as `Edge stab` in the WebApp
-  statusbar
-- `settings.edge_stabilization_strength`: shown as `Edge strength` in the
-  WebApp statusbar
-- `degradation_stage`: `fresh`, `paired`, or `passthrough`
-
-These values are the main decision surface for Phase 2 latency work. If
-`session_run_ms` dominates, the next target is the Vision path. If
-`camera_copy_ms` or `program_frame_ms` dominates, the next target is capture,
-copy, or compositing.
-
-The program loop uses deadline-based frame pacing. Render/write time is part of
-the target frame interval; it is not followed by a full fixed-frame sleep. This
-keeps `program_fps` close to the configured output FPS when rendering completes
-within budget.
-
-Before rendering, the program loop performs a final non-blocking check for a
-newer paired keyer frame. If the async keyer published a fresher pair during
-program-loop preparation, that pair is used immediately without blocking the
-program frame.
-
-## Program Composition And Layering
-
-`renderProgramFrame` builds a single program RGBA buffer in this order:
-
-1. `fillBackground`
-2. `drawMediaLayer`
-3. `drawBackGraphicsFrame`
-4. `drawCornerbug`
-5. `drawCamera`
-6. `drawGraphics`
-7. `drawFrontGraphicsFrame`
-
-Actual layering:
-
-- Background is always the bottom layer.
-- Native media placeholder is drawn above background.
-- Meeting back graphics FrameBus layer is drawn above media and behind the
-  keyed camera/person.
-- Native cornerbug placeholder is drawn behind the keyed camera/person.
-- Keyed camera/person is drawn above back graphics and native cornerbug.
-- Native placeholder lower-third graphics are drawn above camera.
-- Meeting front graphics FrameBus layer is drawn last above the keyed
-  camera/person.
-
-`drawCamera` scales/crops the camera frame into `cameraRect`. If speaker layout
-is disabled, the camera rect is full-frame. If speaker layout is enabled, the
-camera is placed as a portrait-style rectangle.
-
-The compositor mirrors only the camera layer by default. This mirror is applied
-inside `drawCamera` while sampling the camera source X coordinate, so
-backgrounds, rendered graphics, lower thirds, and text remain unmirrored in the
-program frame. The runtime setting is the `camera` program section:
-`{"mirror": true | false}`.
-
-The virtual camera extension consumes the final program frame as-is. Its raw
-frame reader only converts RGBA to BGRA for CMIO and must not apply another
-horizontal flip, otherwise the complete output, including graphics and text,
-would be mirrored for remote meeting participants.
-
-`blendPixel` uses straight alpha blending:
-
-```text
-dst.rgb = src.rgb * src.a + dst.rgb * (1 - src.a)
-dst.a = 255
+```bash
+npm run test:meeting-helper-native
 ```
 
-The destination alpha is forced to `255` for blended pixels.
+Hardware GPU to CPU parity test:
 
-## Background Transparency Reality
-
-`fillBackground` starts with:
-
-```text
-frame.assign(width * height * 4, 255)
+```bash
+npm run test:meeting-helper-gpu
 ```
 
-Then each pixel is written through `setPixel`, whose default alpha is `255`.
+Accelerated keyer primary-path test:
 
-When `backgroundMode == "transparent"`, the RGB values are set to black, but
-alpha remains `255`. In the meeting program path this is intentional P0
-semantics: the output is a finished opaque program frame, not an alpha-preserved
-key/fill layer.
+```bash
+npm run test:meeting-helper-keyer
+```
 
-Current reality:
+The self-test renders the same keyed frame on CPU and GPU and fails when the
+backend is unavailable, rendering fails, output sizes differ, or any channel
+differs by more than two levels. It also verifies that generated graphics and a
+cornerbug do not downgrade the integrated compositor from Metal or D3D11.
 
-- `transparent` means black opaque background in the final program frame.
-- The meeting output FrameBus receives a fully composited opaque RGBA image.
-- Alpha from the person mask is consumed during composition and not preserved as
-  output alpha.
+`dist:win` runs both hardware self-tests before packaging. Windows remains
+release-gated until those tests, a real camera motion test, signing verification,
+and installer smoke tests pass on real Windows GPU hardware.
 
-This is important when reasoning about virtual-camera output: the program output
-is not a transparent keyed person layer. It is a finished composited frame.
+## Explicitly Deferred Gabriel Scope
 
-## Meeting Graphics FrameBus Layers
-
-Meeting graphics are rendered by two regular graphics renderer instances into
-separate semantic FrameBus planes:
-
-- `bfy-meet-gfx-back`: background, content, slides, and logo/cornerbug graphics
-  that must sit behind the keyed person.
-- `bfy-meet-gfx-front`: overlays and lower-thirds that must sit in front of the
-  keyed person.
-
-`GraphicsFrameBusReader`:
-
-- opens the configured meeting graphics FrameBus plane
-- reads the latest RGBA frame
-- keeps the last successful frame if no new frame is available
-- logs frame dimensions, sequence, non-transparent pixel count, and max alpha
-
-`drawGraphicsFrame` composites each graphics frame into the program frame using
-straight alpha blending. It uses cover-style scaling/cropping to fit the meeting
-program dimensions.
-
-The Meeting Builder currently sends:
-
-- background/content templates to the back meeting plane
-- overlay/lower-third templates to the front meeting plane
-- all meeting graphics with `backgroundMode: "transparent"`
-
-Within each plane, HTML z-index still orders templates relative to other
-templates on the same plane. Cross-plane ordering is controlled only by the
-native compositor: the back plane is always behind the person, and the front
-plane is always in front of the person.
-
-## Output And Preview Dataflow
-
-The final `programFrame` is written to:
-
-- meeting output FrameBus through `framebus_writer_write_rgba`
-- MJPEG preview through `PreviewFrameStore`
-
-FrameBus writes are skipped while `output.framebus.stop` has disabled the
-meeting output. With camera off and a static program, FrameBus receives only a
-low-cadence cached-frame heartbeat instead of full-FPS recomposition. MJPEG
-preview clients and VCam raw-stream clients increment explicit consumer counts;
-without those clients, `PreviewFrameStore::publish` is not called.
-
-The native helper exposes FrameBus status through `output.framebus.status`.
-Virtual camera status in `MeetingHelperClient` explicitly reports that virtual
-camera is provided by the separate `vcam-helper`.
-
-Therefore:
-
-- Meeting helper produces the program frame.
-- VCam helper consumes the meeting output through the local raw-frame stream.
-  The stream now prefers BGRA payloads so the CMIO extension can copy live
-  frames without per-pixel channel conversion; RGBA remains accepted for
-  compatibility.
-- VCam helper uses a lazy reader lifecycle: no raw-stream reader when no CMIO
-  client is streaming, 1 FPS cached no-signal output in idle, and 30 FPS output
-  only while fresh program frames are available.
-- Meeting helper does not own virtual camera lifecycle internally.
-
-## Observability
-
-`keyer.get` exposes:
-
-- active keyer
-- fallback state and reason
-- degradation stage and stale-mask state
-- pipeline mode: `idle`, `static_output`, `live`, or `keyer_live`
-- preview and VCam raw-stream client counts
-- dirty flags and frame counters for rendered, reused, preview-published, and
-  FrameBus-written frames
-- backend/provider/model path
-- quality mode
-- inference time
-- model hash status
-- metrics
-
-Metrics currently include:
-
-- `camera_copy_ms`
-- `tensor_ms`
-- `session_run_ms`
-- `mask_apply_ms`
-- `mask_dilate_ms`
-- `mask_postprocess_ms`
-- `mask_age_ms`
-- `program_frame_ms`
-- `mjpeg_encode_ms`
-- `mask_width`
-- `mask_height`
-- `dropped_frames`
-- `degradation_stage`
-- `stale_mask_active`
-
-The most relevant motion diagnostics are:
-
-- `mask_age_ms`
-- `dropped_frames`
-- `session_run_ms`
-- `program_frame_ms`
-- `mask_width`
-- `mask_height`
-
-## Known Weakness Candidates
-
-These are code-derived candidates, not proven runtime root causes.
-
-1. Keyed layer delay
-   - The compositor applies each mask to its paired camera RGB frame.
-   - Fast motion should no longer reveal offset alpha, but the whole keyed
-     camera layer can lag by `mask_age_ms`.
-
-2. Temporal alpha retention
-   - Previous alpha can contribute up to `0.85` in quiet areas.
-   - This can reduce flicker but can also preserve old matte near the person.
-
-3. Stale-mask tolerance
-   - Masks can be reused within a 250ms timestamp window.
-   - `kStaleMaskAgeMs` reduces previous-mask contribution after 140ms, but it
-     does not prevent using the stale mask.
-
-4. Resolution and sampling mismatch
-   - Vision and MODNet masks can be lower resolution than the camera frame.
-   - Final mask application is bilinear, but earlier keyer-local application
-     paths still contain nearest-neighbor sampling.
-
-5. CPU copy cost
-   - Camera frames are copied BGRA -> RGBA on CPU.
-   - Vision wraps RGBA as `CGImage`.
-   - Masks are copied into `std::vector<uint8_t>`.
-   - Program composition loops over pixels on CPU.
-   - These copies can increase keyer latency and therefore `mask_age_ms`.
-
-6. Opaque final program
-   - `transparent` background is currently black with alpha `255`.
-   - If downstream systems expect preserved alpha, the current meeting program
-     output does not provide it.
-
-7. Straight-alpha composition
-   - The compositor blends straight alpha and forces destination alpha to `255`.
-   - Any premultiplied-alpha assumption from upstream graphics would produce
-     incorrect edges.
-
-8. Camera timestamp source
-   - Camera frames use `nowNs()` when copied, not sample presentation time.
-   - This is good enough for helper-local age measurement, but not a true camera
-     timeline.
-
-## Practical Debug Checklist
-
-For motion trailing:
-
-- Watch `mask_age_ms` while moving hands and shoulders quickly.
-- Compare `session_run_ms` across `fast`, `balanced`, and `accurate`.
-- Watch `dropped_frames`; pending keyer frames are overwritten.
-- Temporarily disable temporal blend in code or reduce previous weights to
-  isolate trailing from model latency.
-- Test with `mask_dilate_px = 0`, `mask_feather_px = 0`, and
-  `dynamic_dilation = false`.
-
-For pixelated or dirty edges:
-
-- Check `mask_width` and `mask_height` from `keyer.get`.
-- Compare Vision quality modes.
-- Test `mask_erode_px = 0.25..1.0` for background rim removal; keep the lowest
-  value that removes the rim without eating hair, ears, or fingers.
-- Inspect whether artifacts appear before or after final bilinear upscale.
-- Verify upstream graphics are straight-alpha compatible.
-- Confirm the selected camera resolution; AVFoundation currently uses
-  `AVCaptureSessionPresetHigh`, not an explicit format lock to the helper output
-  size.
-
-For unexpected black background:
-
-- Treat `background_mode: "transparent"` as opaque black in the meeting program
-  until `fillBackground` and compositor output alpha semantics are changed.
+This integration does not include recording, multi-camera, conference control,
+Stream Deck, power control, call control, background uploads, free file paths,
+or remote URLs. Those features require separate reviewed contracts and
+security boundaries.

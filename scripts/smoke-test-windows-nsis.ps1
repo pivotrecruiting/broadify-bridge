@@ -13,7 +13,8 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installDirectoryName))
 }
 $userProgramsDir = Join-Path $env:LOCALAPPDATA "Programs"
 $installDir = Join-Path $userProgramsDir $installDirectoryName
-$selfTestScript = Join-Path $PSScriptRoot "test-windows-display-helper.ps1"
+$displayHelperTestScript = Join-Path $PSScriptRoot "test-windows-display-helper.ps1"
+$meetingHelperTestScript = Join-Path $PSScriptRoot "test-windows-meeting-helper.ps1"
 
 if (Test-Path -LiteralPath $installDir) {
   throw "NSIS smoke target already exists and will not be overwritten: $installDir"
@@ -48,9 +49,13 @@ try {
   if (-not (Test-Path -LiteralPath $sdlPath)) {
     throw "NSIS smoke install is missing SDL2.dll: $sdlPath"
   }
-  & $selfTestScript -HelperPath $helperPath -Attempts 3
+  & $displayHelperTestScript -HelperPath $helperPath -Attempts 3
 
-  Write-Host "NSIS display-helper smoke test passed in $installDir"
+  $meetingHelperPath = Join-Path $installDir "resources\native\meeting-helper\meeting-helper.exe"
+  $meetingModelsDir = Join-Path $installDir "resources\native\meeting-helper\models"
+  & $meetingHelperTestScript -HelperPath $meetingHelperPath -ModelsDir $meetingModelsDir
+
+  Write-Host "NSIS native helper smoke tests passed in $installDir"
 } finally {
   if ($installed -and (Test-Path -LiteralPath $installDir)) {
     $uninstaller = Get-ChildItem -Path $installDir -File -Filter "Uninstall*.exe" |

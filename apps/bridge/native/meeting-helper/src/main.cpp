@@ -1,6 +1,8 @@
 #include "capture/camera_source.h"
 #include "common/options.h"
+#include "compose/compositor.h"
 #include "control/control_server.h"
+#include "keyer/keyer_chain.h"
 #include "pipeline/frame_pipeline.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
@@ -13,6 +15,7 @@
 #endif
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -22,6 +25,15 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace broadify::meeting {
 namespace {
@@ -46,6 +58,68 @@ int main(int argc, char **argv) {
   std::signal(SIGTERM, signalHandler);
 
   Options options = parseOptions(argc, argv);
+  if (options.selfTest) {
+    const GpuCompositorSelfTestResult result = runGpuCompositorSelfTest();
+    std::cout << "{\"type\":\"meeting_gpu_self_test\",\"backend\":\""
+              << result.backend << "\",\"available\":"
+              << (result.available ? "true" : "false") << ",\"passed\":"
+              << (result.passed ? "true" : "false") << ",\"max_channel_delta\":"
+              << result.maxChannelDelta << ",\"max_delta_x\":"
+              << result.maxDeltaX << ",\"max_delta_y\":" << result.maxDeltaY
+              << ",\"max_delta_channel\":" << result.maxDeltaChannel
+              << ",\"max_delta_cpu_value\":"
+              << static_cast<uint32_t>(result.maxDeltaCpuValue)
+              << ",\"max_delta_gpu_value\":"
+              << static_cast<uint32_t>(result.maxDeltaGpuValue) << "}" << std::endl;
+    return result.passed ? 0 : 3;
+  }
+  if (options.keyerSelfTest) {
+    MeetingState state;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.keyerEnabled = true;
+      state.requestedKeyerModel = "modnet";
+      state.performanceMode = "performance";
+    }
+    VideoFrame frame;
+    frame.width = 640u;
+    frame.height = 360u;
+    frame.timestampNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    frame.rgba.assign(static_cast<size_t>(frame.width) * frame.height * 4u, 255u);
+    for (uint32_t y = 0; y < frame.height; ++y) {
+      for (uint32_t x = 0; x < frame.width; ++x) {
+        const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
+        frame.rgba[offset + 0u] = static_cast<uint8_t>((x * 255u) / frame.width);
+        frame.rgba[offset + 1u] = static_cast<uint8_t>((y * 255u) / frame.height);
+        frame.rgba[offset + 2u] = 96u;
+      }
+    }
+    KeyerChain keyer(options);
+    const KeyerResult result = keyer.process(frame, state);
+#if defined(__APPLE__)
+    const bool acceleratedProvider = result.status.provider == "coreml";
+#elif defined(_WIN32)
+    const bool acceleratedProvider = result.status.provider == "directml";
+#else
+    const bool acceleratedProvider = false;
+#endif
+    const bool passed = acceleratedProvider && result.status.modelHashOk &&
+        !result.status.fallbackActive && !result.mask.alpha.empty();
+    std::cout << "{\"type\":\"meeting_keyer_self_test\",\"provider\":\""
+              << result.status.provider << "\",\"active_keyer\":\""
+              << result.status.activeKeyer << "\",\"fallback_active\":"
+              << (result.status.fallbackActive ? "true" : "false")
+              << ",\"fallback_reason\":\"" << result.status.fallbackReason
+              << "\",\"model_hash_ok\":"
+              << (result.status.modelHashOk ? "true" : "false")
+              << ",\"mask_width\":" << result.mask.width
+              << ",\"mask_height\":" << result.mask.height
+              << ",\"passed\":" << (passed ? "true" : "false") << "}"
+              << std::endl;
+    return passed ? 0 : 4;
+  }
   if (!options.run) {
     std::cerr << "meeting-helper requires --run" << std::endl;
     return 2;
@@ -65,6 +139,40 @@ int main(int argc, char **argv) {
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
+
+#if defined(_WIN32)
+  if (options.parentPid > 0) {
+    const DWORD bridgePid = static_cast<DWORD>(options.parentPid);
+    std::thread([bridgePid]() {
+      HANDLE handle = OpenProcess(SYNCHRONIZE, FALSE, bridgePid);
+      if (handle == nullptr) {
+        return;
+      }
+      while (g_running.load()) {
+        if (WaitForSingleObject(handle, 2000) == WAIT_OBJECT_0) {
+          g_running.store(false);
+          break;
+        }
+      }
+      CloseHandle(handle);
+    }).detach();
+  }
+#else
+  const pid_t bridgePid = static_cast<pid_t>(options.parentPid);
+  const pid_t initialParentPid = getppid();
+  std::thread([bridgePid, initialParentPid]() {
+    while (g_running.load()) {
+      const bool bridgeGone = bridgePid > 0
+          ? (kill(bridgePid, 0) != 0 && errno == ESRCH)
+          : (getppid() != initialParentPid);
+      if (bridgeGone) {
+        g_running.store(false);
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+  }).detach();
+#endif
 
   std::promise<void> controlListening;
   std::future<void> controlListeningFuture = controlListening.get_future();

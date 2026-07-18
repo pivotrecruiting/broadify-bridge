@@ -257,6 +257,36 @@ describe("meeting-command-handler", () => {
       expect(result.success).toBe(true);
     });
 
+    it("forwards automatic keyer configuration without forcing a model", async () => {
+      mockClient.keyerConfigure.mockResolvedValue({ enabled: true });
+
+      const result = await handleMeetingCommand("meeting_keyer_configure", {
+        enabled: true,
+        performance_mode: "balanced",
+        mask_erode_px: 0.5,
+        mask_feather_px: 1,
+        edge_stabilization_enabled: true,
+        edge_stabilization_strength: 0.5,
+        background_type: "mode",
+        background_mode: "transparent",
+      });
+
+      expect(mockClient.keyerConfigure).toHaveBeenCalledWith({
+        enabled: true,
+        performance_mode: "balanced",
+        mask_erode_px: 0.5,
+        mask_feather_px: 1,
+        edge_stabilization_enabled: true,
+        edge_stabilization_strength: 0.5,
+        background_type: "mode",
+        background_mode: "transparent",
+      });
+      expect(mockClient.keyerConfigure.mock.calls[0]?.[0]).not.toHaveProperty(
+        "model",
+      );
+      expect(result.success).toBe(true);
+    });
+
     it("rejects invalid keyer configuration", async () => {
       await expect(
         handleMeetingCommand("meeting_keyer_configure", {

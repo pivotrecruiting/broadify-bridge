@@ -75,6 +75,10 @@ std::string normalizedPerformanceMode(const std::string &performanceMode) {
   return "high_quality";
 }
 
+bool isSupportedKeyerModel(const std::string &model) {
+  return model == "modnet" || model == "vision_person_segmentation";
+}
+
 uint32_t clampedPixelRadius(int value, uint32_t maxValue) {
   return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int>(maxValue)));
 }
@@ -102,6 +106,11 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"session_run_ms\":" << metricNumber(metrics.sessionRunMs)
          << ",\"mask_apply_ms\":" << metricNumber(metrics.maskApplyMs)
          << ",\"mask_dilate_ms\":" << metricNumber(metrics.maskDilateMs)
+         << ",\"mask_close_ms\":" << metricNumber(metrics.maskCloseMs)
+         << ",\"mask_remap_ms\":" << metricNumber(metrics.maskRemapMs)
+         << ",\"mask_stabilize_ms\":" << metricNumber(metrics.maskStabilizeMs)
+         << ",\"mask_feather_ms\":" << metricNumber(metrics.maskFeatherMs)
+         << ",\"mask_temporal_ms\":" << metricNumber(metrics.maskTemporalMs)
          << ",\"mask_postprocess_ms\":" << metricNumber(metrics.maskPostprocessMs)
          << ",\"mask_age_ms\":" << metricNumber(metrics.maskAgeMs)
          << ",\"mask_age_avg_ms\":" << metricNumber(metrics.maskAgeAvgMs)
@@ -214,6 +223,8 @@ std::string handleRpc(const std::string &line,
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
+           << "\"keyer_pipeline_mode\":\"" << jsonEscape(state.keyerPipelineMode) << "\","
+           << "\"compositor\":\"" << jsonEscape(state.compositorBackend) << "\","
            << "\"preview_clients\":" << state.previewClientCount << ","
            << "\"vcam_clients\":" << state.vcamClientCount << ","
            << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
@@ -316,6 +327,8 @@ std::string handleRpc(const std::string &line,
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
            << ",\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode)
+           << "\",\"keyer_pipeline_mode\":\"" << jsonEscape(state.keyerPipelineMode)
+           << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)
            << "\",\"preview_clients\":" << state.previewClientCount
            << ",\"vcam_clients\":" << state.vcamClientCount
            << ",\"program_dirty\":" << (state.programDirty ? "true" : "false")
@@ -329,12 +342,15 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "keyer.configure") {
+    const std::string requestedModel = extractStringField(line, "model");
+    if (!requestedModel.empty() && !isSupportedKeyerModel(requestedModel)) {
+      return errorResponse(id, "invalid_keyer_model", "Unsupported keyer model");
+    }
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.keyerEnabled = extractBoolField(line, "enabled", state.keyerEnabled);
-      const std::string model = extractStringField(line, "model");
-      if (!model.empty()) {
-        state.requestedKeyerModel = model;
+      if (!requestedModel.empty()) {
+        state.requestedKeyerModel = requestedModel;
       }
       const std::string backgroundMode = extractStringField(line, "background_mode");
       if (!backgroundMode.empty()) {
@@ -370,9 +386,13 @@ std::string handleRpc(const std::string &line,
       state.keyerBackend = "passthrough";
       state.degradationStage = "fresh";
       state.staleMaskActive = false;
+      state.keyerPipelineMode = state.keyerEnabled ? "async_live_snap" : "passthrough";
       state.provider.clear();
+      state.modelPath.clear();
+      state.modelHashOk = false;
       state.inferenceMs = -1.0;
       state.keyerMetrics = KeyerMetrics{};
+      ++state.keyerRevision;
       markProgramDirty(state);
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, options, running);
@@ -387,7 +407,7 @@ std::string handleRpc(const std::string &line,
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
     state.activeQualityMode = "balanced";
-    state.performanceMode = "high_quality";
+    state.performanceMode = "balanced";
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
     state.maskFeatherPx = 0u;
@@ -398,9 +418,13 @@ std::string handleRpc(const std::string &line,
     state.degradationSettings = KeyerDegradationSettings{};
     state.degradationStage = "fresh";
     state.staleMaskActive = false;
+    state.keyerPipelineMode = "passthrough";
     state.provider.clear();
+    state.modelPath.clear();
+    state.modelHashOk = false;
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};
+    ++state.keyerRevision;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true,\"active_keyer\":\"passthrough\"}");
   }

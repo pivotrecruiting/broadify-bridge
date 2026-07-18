@@ -3,8 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${ROOT_DIR}/build"
+MODNET_ENABLED="${MEETING_HELPER_ENABLE_MODNET:-1}"
 
-cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
+cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
+  -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \
+  -DMEETING_HELPER_ENABLE_MODNET="${MODNET_ENABLED}"
 cmake --build "${BUILD_DIR}" --config "${CMAKE_BUILD_TYPE:-Release}"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -64,7 +67,7 @@ elif [[ -f "${BUILD_DIR}/meeting-helper" ]]; then
 fi
 
 ONNXRUNTIME_ROOT="${BROADIFY_ONNXRUNTIME_ROOT:-${ROOT_DIR}/deps/onnxruntime/macos-arm64}"
-if [[ "${MEETING_HELPER_ENABLE_MODNET:-1}" == "1" ]]; then
+if [[ "${MODNET_ENABLED}" == "1" ]]; then
   if [[ -f "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.dylib" ]]; then
     cp -f "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.dylib" "${ROOT_DIR}/libonnxruntime.dylib"
     cp -f "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.dylib" "${ROOT_DIR}/libonnxruntime.1.dylib"
