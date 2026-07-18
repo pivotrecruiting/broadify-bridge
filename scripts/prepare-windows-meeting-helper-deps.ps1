@@ -12,8 +12,10 @@ if ([string]::IsNullOrWhiteSpace($Destination)) {
 }
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("broadify-onnxruntime-" + [guid]::NewGuid().ToString("N"))
-$onnxPackage = "microsoft.ml.onnxruntime.directml.$OnnxRuntimeVersion"
-$directMlPackage = "microsoft.ai.directml.$DirectMLVersion"
+$onnxPackageId = "microsoft.ml.onnxruntime.directml"
+$directMlPackageId = "microsoft.ai.directml"
+$onnxPackage = "$onnxPackageId.$OnnxRuntimeVersion"
+$directMlPackage = "$directMlPackageId.$DirectMLVersion"
 $onnxArchive = Join-Path $tempRoot "$onnxPackage.zip"
 $directMlArchive = Join-Path $tempRoot "$directMlPackage.zip"
 $onnxRoot = Join-Path $tempRoot $onnxPackage
@@ -38,10 +40,10 @@ function Invoke-VerifiedNugetDownload {
 try {
   New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
   Invoke-VerifiedNugetDownload `
-    -Url "https://api.nuget.org/v3-flatcontainer/$onnxPackage/$OnnxRuntimeVersion/$onnxPackage.nupkg" `
+    -Url "https://api.nuget.org/v3-flatcontainer/$onnxPackageId/$OnnxRuntimeVersion/$onnxPackage.nupkg" `
     -ArchivePath $onnxArchive
   Invoke-VerifiedNugetDownload `
-    -Url "https://api.nuget.org/v3-flatcontainer/$directMlPackage/$DirectMLVersion/$directMlPackage.nupkg" `
+    -Url "https://api.nuget.org/v3-flatcontainer/$directMlPackageId/$DirectMLVersion/$directMlPackage.nupkg" `
     -ArchivePath $directMlArchive
 
   Expand-Archive -Path $onnxArchive -DestinationPath $onnxRoot -Force

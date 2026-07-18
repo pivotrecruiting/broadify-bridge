@@ -25,6 +25,36 @@ test("Windows build fails closed when CMake does not enable MODNet", () => {
   assert.match(build, /imports onnxruntime\.dll/);
 });
 
+test("Windows meeting-helper dependencies use valid NuGet flat-container paths", () => {
+  const dependencyScript = read(
+    "scripts/prepare-windows-meeting-helper-deps.ps1",
+  );
+  assert.match(
+    dependencyScript,
+    /\$onnxPackageId = "microsoft\.ml\.onnxruntime\.directml"/,
+  );
+  assert.match(
+    dependencyScript,
+    /\$directMlPackageId = "microsoft\.ai\.directml"/,
+  );
+  assert.match(
+    dependencyScript,
+    /v3-flatcontainer\/\$onnxPackageId\/\$OnnxRuntimeVersion\/\$onnxPackage\.nupkg/,
+  );
+  assert.match(
+    dependencyScript,
+    /v3-flatcontainer\/\$directMlPackageId\/\$DirectMLVersion\/\$directMlPackage\.nupkg/,
+  );
+  assert.doesNotMatch(
+    dependencyScript,
+    /v3-flatcontainer\/\$onnxPackage\/\$OnnxRuntimeVersion/,
+  );
+  assert.doesNotMatch(
+    dependencyScript,
+    /v3-flatcontainer\/\$directMlPackage\/\$DirectMLVersion/,
+  );
+});
+
 test("Windows distribution enables MODNet before native tests", () => {
   const script = packageJson.scripts["dist:win"];
   const orderedTokens = [
