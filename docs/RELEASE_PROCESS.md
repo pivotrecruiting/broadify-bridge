@@ -64,16 +64,11 @@ Verhalten:
 - `--feature` erhöht die Minor-Version und setzt Patch auf `0`
 - `release:test` erzeugt Tags wie `v0.12.0-rc.1`
 - `release:live` erzeugt Tags wie `v0.12.0`
-- das Skript commitet und pusht zuerst nur den Versionssprung
-- danach startet es `Test Release Build` für exakt diesen Commit und wartet auf beide Plattformen
-- erst nach erfolgreichem macOS- und Windows-Package-Build erstellt und pusht es den Tag
-- bei einem fehlgeschlagenen Preflight bleibt der Versions-Commit erhalten, aber es wird kein Tag erstellt
-
-Einmalige GitHub-CLI-Anmeldung:
-
-```bash
-gh auth login -h github.com
-```
+- das Skript führt zuerst lokal `npm run build` aus
+- bei einem fehlgeschlagenen Build wird weder die Version geändert noch ein Tag erstellt
+- nach erfolgreichem Build erstellt es den Versions-Commit und den normalen RC- oder Live-Tag
+- anschließend pusht es den Branch und den Tag
+- der Tag startet den regulären GitHub-Workflow `Release Build`
 
 RC-Folgeschritte:
 
@@ -90,8 +85,8 @@ Sicherheitsnetz:
 - nur auf sauberem Working Tree
 - `release:test` auf `main`, `dev` oder Feature-Branches
 - `release:live` nur auf Branch `main`
-- vollständige Installer-, Signing- und Helper-Smoke-Tests vor dem Tag
-- `Meeting Helper Preflight` zusätzlich auf Pull Requests und Branch-Pushes
+- lokaler Jest-, TypeScript- und Anwendungs-Build vor Versionsänderung und Tag
+- vollständige plattformspezifische Installer-, Signing- und Helper-Smoke-Tests im regulären `Release Build`
 - optional prüfbar mit `--dry-run`
 
 Empfohlener RC-Workflow ohne vorzeitigen `main`-Merge:

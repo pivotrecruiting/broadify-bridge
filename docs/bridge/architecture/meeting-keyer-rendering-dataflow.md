@@ -263,10 +263,10 @@ npm run test:meeting-helper-gpu-hardware
 npm run test:meeting-helper-keyer-hardware
 ```
 
-The `Meeting Helper Preflight` workflow exposes these commands through its
-manual `run_windows_hardware_tests` input on a self-hosted runner labeled
-`broadify-gpu`. macOS release verification additionally hashes the packaged
-CoreML model and executes both self-tests from the final app bundle.
+These strict hardware commands can be run manually on a Windows machine with a
+real GPU. GitHub-hosted release jobs use the portable WARP and CPU paths instead.
+macOS release verification additionally hashes the packaged CoreML model and
+executes both self-tests from the final app bundle.
 
 ## Explicitly Deferred Gabriel Scope
 

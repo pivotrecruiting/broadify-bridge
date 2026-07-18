@@ -6,15 +6,6 @@ on:
       - test-release
       - test-release/**
   workflow_dispatch:
-    inputs:
-      release_channel:
-        description: "Relay and updater configuration to validate"
-        required: true
-        default: rc
-        type: choice
-        options:
-          - rc
-          - latest
 
 jobs:
   build:
@@ -50,8 +41,6 @@ jobs:
       SDL2_MACOS_SHA256_X64: ${{ matrix.os == 'macos-15' && secrets.SDL2_MACOS_SHA256_X64 || '' }}
       PRESENTATION_RUNTIME_URL_ARM64: ${{ matrix.os == 'macos-15' && secrets.PRESENTATION_RUNTIME_URL_ARM64 || '' }}
       PRESENTATION_RUNTIME_SHA256_ARM64: ${{ matrix.os == 'macos-15' && secrets.PRESENTATION_RUNTIME_SHA256_ARM64 || '' }}
-      BRIDGE_RELAY_JWKS_URL: ${{ secrets.BRIDGE_RELAY_JWKS_URL }}
-      RELAY_URL: ${{ secrets.RELAY_URL }}
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
       MODNET_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_MODEL_URL || '' }}
@@ -78,29 +67,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          CHANNEL="rc"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            CHANNEL="${{ inputs.release_channel }}"
-          fi
-
-          if [[ "$CHANNEL" == "latest" ]]; then
-            RESOLVED_RELAY_URL="${RELAY_URL:-}"
-            RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL:-}"
-            ERROR_MESSAGE="Stable release preflight requires RELAY_URL and BRIDGE_RELAY_JWKS_URL secrets."
-          else
-            RESOLVED_RELAY_URL="${RELAY_URL_RC:-}"
-            RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL_RC:-}"
-            ERROR_MESSAGE="Test release preflight requires RELAY_URL_RC and BRIDGE_RELAY_JWKS_URL_RC secrets."
-          fi
-
-          if [[ -z "$RESOLVED_RELAY_URL" || -z "$RESOLVED_RELAY_JWKS_URL" ]]; then
-            echo "$ERROR_MESSAGE" >&2
+          if [[ -z "${RELAY_URL_RC:-}" || -z "${BRIDGE_RELAY_JWKS_URL_RC:-}" ]]; then
+            echo "Test releases require RELAY_URL_RC and BRIDGE_RELAY_JWKS_URL_RC secrets." >&2
             exit 1
           fi
 
-          echo "BROADIFY_UPDATER_CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
-          echo "RESOLVED_RELAY_URL=$RESOLVED_RELAY_URL" >> "$GITHUB_ENV"
-          echo "RESOLVED_BRIDGE_RELAY_JWKS_URL=$RESOLVED_RELAY_JWKS_URL" >> "$GITHUB_ENV"
+          echo "BROADIFY_UPDATER_CHANNEL=rc" >> "$GITHUB_ENV"
+          echo "RESOLVED_RELAY_URL=${RELAY_URL_RC}" >> "$GITHUB_ENV"
+          echo "RESOLVED_BRIDGE_RELAY_JWKS_URL=${BRIDGE_RELAY_JWKS_URL_RC}" >> "$GITHUB_ENV"
 
       - name: Validate macOS release secrets
         if: matrix.os == 'macos-15'

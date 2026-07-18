@@ -107,37 +107,36 @@ test("packaged macOS helper verifies the model and executes both runtime paths",
   assert.match(verification, /--keyer-self-test --models-dir/);
 });
 
-test("meeting helper preflight covers both release platforms", () => {
-  const workflow = read(".github/workflows/meeting-helper-preflight.yml");
-  assert.match(workflow, /macos-15/);
-  assert.match(workflow, /windows-2022/);
-  assert.match(workflow, /test:meeting-helper-native/);
-  assert.match(workflow, /test:meeting-helper-gpu/);
-  assert.match(workflow, /test:meeting-helper-keyer/);
-  assert.match(workflow, /broadify-gpu/);
-});
-
-test("release tags are created only after the package preflight passes", () => {
+test("release runs the local build before the normal tag flow", () => {
   const releaseScript = read("scripts/push-release.mjs");
-  const authIndex = releaseScript.lastIndexOf(
-    'run("gh", ["auth", "status", "--hostname", "github.com"]',
+  const buildIndex = releaseScript.lastIndexOf(
+    'run("npm", ["run", "build"], dryRun)',
   );
   const versionIndex = releaseScript.lastIndexOf(
     'run("npm", ["version", "--no-git-tag-version"',
   );
-  const pushIndex = releaseScript.lastIndexOf(
-    'run("git", ["push", "origin", releaseBranch]',
-  );
-  const preflightIndex = releaseScript.lastIndexOf(
-    "runPackagePreflight(releaseBranch, releaseCommit, mode, dryRun)",
-  );
   const tagIndex = releaseScript.lastIndexOf(
     'run("git", ["tag", "-a", nextTag',
   );
-  assert.ok(authIndex >= 0, "GitHub CLI authentication check is missing");
-  assert.ok(versionIndex > authIndex, "GitHub CLI auth must pass before versioning");
-  assert.ok(pushIndex >= 0, "release branch push is missing");
-  assert.ok(preflightIndex > pushIndex, "package preflight must run after push");
-  assert.ok(tagIndex > preflightIndex, "tag must be created after package preflight");
-  assert.match(releaseScript, /gh.*run.*watch/s);
+  const branchPushIndex = releaseScript.lastIndexOf(
+    'run("git", ["push", "origin", releaseBranch]',
+  );
+  const tagPushIndex = releaseScript.lastIndexOf(
+    'run("git", ["push", "origin", nextTag]',
+  );
+  assert.ok(buildIndex >= 0, "local npm build is missing");
+  assert.ok(versionIndex > buildIndex, "local build must pass before versioning");
+  assert.ok(tagIndex > versionIndex, "normal RC tag creation is missing");
+  assert.ok(
+    branchPushIndex > tagIndex,
+    "release branch push must follow tag creation",
+  );
+  assert.ok(
+    tagPushIndex > branchPushIndex,
+    "tag push must finish the normal release flow",
+  );
+  assert.doesNotMatch(
+    releaseScript,
+    /runPackagePreflight|test-release\.yml|gh.*run.*watch/s,
+  );
 });
