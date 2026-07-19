@@ -79,6 +79,7 @@ if(APPLE)
     src/keyer/gpu_mask_refine.mm
     src/keyer/vision_keyer.mm
     src/macos/macos_app.mm
+    src/recorder/meeting_recorder.mm
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
@@ -101,10 +102,13 @@ if(APPLE)
   set_source_files_properties(src/macos/macos_app.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
+  set_source_files_properties(src/recorder/meeting_recorder.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
 elseif(WIN32)
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/compose/d3d11_compositor.cpp)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_mediafoundation.cpp src/compose/d3d11_compositor.cpp)
 else()
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
 endif()
 
 if(APPLE)
@@ -147,7 +151,7 @@ endif()
 
 if(WIN32)
   target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(meeting-helper PRIVATE ws2_32 d3d11 d3dcompiler dxgi)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfsensorgroup mfuuid ole32 d3d11 d3dcompiler dxgi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)

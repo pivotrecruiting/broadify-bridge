@@ -95,6 +95,24 @@ export class MeetingHelperClient {
     return this.rpc("camera.select", options);
   }
 
+  async recordingMicrophones(): Promise<Record<string, unknown>> {
+    return this.rpc("recording.microphones");
+  }
+
+  async recordingStart(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("recording.start", options);
+  }
+
+  async recordingStop(): Promise<Record<string, unknown>> {
+    return this.rpc("recording.stop");
+  }
+
+  async recordingStatus(): Promise<Record<string, unknown>> {
+    return this.rpc("recording.status");
+  }
+
   async keyerGet(): Promise<Record<string, unknown>> {
     return this.rpc("keyer.get");
   }

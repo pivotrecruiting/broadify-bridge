@@ -11,6 +11,7 @@
 #include "keyer/coreml_keyer.h"
 #endif
 #include "pipeline/guided_mask_refine.h"
+#include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
@@ -896,6 +897,7 @@ void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       std::atomic<bool> &running) {
   framebus_writer_t *writer = framebus_writer_open(
       options.framebusName.c_str(), options.width, options.height, options.fps, kSlotCount);
@@ -1266,6 +1268,14 @@ void runFramePipeline(const Options &options,
       } else {
         std::lock_guard<std::mutex> lock(state.mutex);
         ++state.reusedFrames;
+      }
+
+      // Tap the composited program frame for recording. No-op unless a
+      // recording is active; runs every tick so the file keeps a steady
+      // timeline (and holds the last image) even during static periods.
+      if (!programFrame.empty()) {
+        recorder.appendVideoFrame(programFrame.data(), options.width,
+                                  options.height);
       }
 
       shouldWriteFramebus = runtime.framebusRunning && !programFrame.empty() &&

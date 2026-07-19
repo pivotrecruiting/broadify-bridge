@@ -68,3 +68,33 @@ export const MeetingGraphicsConfigureOutputsSchema = z
     fps: z.number().int().min(1).max(240).optional(),
   })
   .strict();
+
+// An absolute path (POSIX "/..." or Windows "X:\...") ending in .mp4, with no
+// parent-directory traversal or NUL bytes. The native recorder deletes the
+// target before writing, so this guards the relay boundary against a
+// compromised client deleting/clobbering arbitrary files: only the honest
+// meeting_recording_pick_path flow (or an equally well-formed path) is allowed.
+const isSafeRecordingPath = (filePath: string): boolean => {
+  if (filePath.includes("\0") || filePath.includes("..")) {
+    return false;
+  }
+  if (!/\.mp4$/i.test(filePath)) {
+    return false;
+  }
+  const isPosixAbsolute = filePath.startsWith("/");
+  const isWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(filePath);
+  return isPosixAbsolute || isWindowsAbsolute;
+};
+
+export const MeetingRecordingStartSchema = z
+  .object({
+    file_path: z
+      .string()
+      .min(1)
+      .refine(isSafeRecordingPath, {
+        message:
+          "file_path must be an absolute .mp4 path without parent traversal",
+      }),
+    mic_device_id: z.string().optional(),
+  })
+  .strict();

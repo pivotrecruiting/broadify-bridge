@@ -9,8 +9,10 @@ import {
   MeetingOutputConfigureSchema,
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
+  MeetingRecordingStartSchema,
 } from "./meeting-command-schemas.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
+import { pickRecordingSavePath } from "./meeting-recording-dialog.js";
 import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
@@ -198,6 +200,49 @@ export async function handleMeetingCommand(
 
     case "meeting_camera_stop": {
       return runMeetingRpc(() => requireClient().cameraStop());
+    }
+
+    case "meeting_recording_microphones": {
+      return runMeetingRpc(() => requireClient().recordingMicrophones());
+    }
+
+    case "meeting_recording_pick_path": {
+      // Bridge-local: the file is written on this machine by the helper, so the
+      // save location is chosen here via the native macOS panel, not in the
+      // browser. Returns { cancelled: true } when the user dismisses the panel.
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_recording_pick_path",
+      );
+      const defaultName =
+        typeof options.default_name === "string"
+          ? options.default_name
+          : "meeting.mp4";
+      const locale =
+        typeof options.locale === "string" ? options.locale : "de";
+      const filePath = await pickRecordingSavePath(defaultName, locale);
+      if (filePath === null) {
+        return { success: true, data: { cancelled: true } };
+      }
+      return { success: true, data: { cancelled: false, file_path: filePath } };
+    }
+
+    case "meeting_recording_start": {
+      const options = parseRelayPayload(
+        MeetingRecordingStartSchema,
+        payload ?? {},
+        "Invalid payload for meeting_recording_start",
+      );
+      return runMeetingRpc(() => requireClient().recordingStart(options));
+    }
+
+    case "meeting_recording_stop": {
+      return runMeetingRpc(() => requireClient().recordingStop());
+    }
+
+    case "meeting_recording_status": {
+      return runMeetingRpc(() => requireClient().recordingStatus());
     }
 
     case "meeting_keyer_get": {
