@@ -755,8 +755,15 @@ async function ensureSingleWindow(
     singleWindow = new BrowserWindow({
       width: renderWidth,
       height: renderHeight,
+      // Without these, Windows treats width/height as the OUTER frame size:
+      // the content area loses the title bar/border height (1080 -> 1020) and
+      // offscreen captures come out short, breaking the integer downsample.
       useContentSize: true,
       frame: false,
+      // Windows clamps even an offscreen window to the work area (screen minus
+      // the taskbar), so a 1080-tall window only captured 1032 rows and the
+      // downsample failed every frame. Allow the window to exceed the screen.
+      enableLargerThanScreen: true,
       show: false,
       transparent: true,
       paintWhenInitiallyHidden: true,
@@ -772,6 +779,9 @@ async function ensureSingleWindow(
     singleWindowFormat = { width, height, fps, renderScale };
 
     singleWindow.webContents.setFrameRate(normalizeNativeFrameRate(fps));
+
+    let lastWrittenChecksum = -1;
+    let lastWrittenAtMs = 0;
     singleWindow.webContents.on("paint", (_event, _dirty, image) => {
       const frameStartAt = Date.now();
       if (paintCount === 0) {
@@ -837,6 +847,20 @@ async function ensureSingleWindow(
         logPerfIfNeeded();
         return;
       }
+
+      // Skip FrameBus writes for pixel-identical frames (static content),
+      // with a 1s heartbeat so readers still see a live stream.
+      let checksum = buffer.length >>> 0;
+      for (let i = 0; i < buffer.length; i += 4093) {
+        checksum = ((checksum * 31) ^ (buffer[i] ?? 0)) >>> 0;
+      }
+      const writeNowMs = Date.now();
+      if (checksum === lastWrittenChecksum && writeNowMs - lastWrittenAtMs < 1000) {
+        logPerfIfNeeded();
+        return;
+      }
+      lastWrittenChecksum = checksum;
+      lastWrittenAtMs = writeNowMs;
 
       try {
         frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
@@ -1494,3 +1518,17 @@ process.on("unhandledRejection", (reason) => {
   logger.error(`[GraphicsRenderer] Unhandled rejection: ${errorMessage}`);
   sendIpcMessage({ type: "error", message: errorMessage });
 });
+
+// Orphan watchdog: the bridge passes its PID via env (a ppid comparison is
+// unreliable - the dev electron CLI wrapper re-parents us right after
+// spawn). When the bridge is gone, exit instead of living on as an orphan.
+const bridgeParentPid = Number.parseInt(process.env.BRIDGE_PARENT_PID ?? "", 10);
+if (Number.isFinite(bridgeParentPid) && bridgeParentPid > 0) {
+  setInterval(() => {
+    try {
+      process.kill(bridgeParentPid, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 2000).unref();
+}

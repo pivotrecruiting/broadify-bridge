@@ -723,18 +723,52 @@ void renderProgramFrameCpu(const Options &options,
                            uint64_t frameIndex,
                            std::vector<uint8_t> &output) {
   fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
-  drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+
+  const bool keyedCameraFrame = snapshot.keyerEnabled &&
+      cameraMask != nullptr && !cameraMask->alpha.empty();
+  const bool mediaLayerIsPip =
+      snapshot.mediaLayer.enabled && snapshot.mediaLayer.mode == "pip";
+  const bool mediaLayerIsFullscreen =
+      snapshot.mediaLayer.enabled && snapshot.mediaLayer.mode == "fullscreen";
+
+  // Back graphics are treated as a background/backplate layer.
+  // They must never cover PiP, camera/key, normal graphics or cornerbug.
   drawGraphicsFrame(output, options.width, options.height, backGraphicsFrame);
-  if (snapshot.cameraRender.enabled) {
-    drawCamera(
-        output,
-        options.width,
-        options.height,
-        cameraRect(options.width, options.height, snapshot.speakerLayout),
-        cameraFrame,
-        cameraMask,
-        snapshot.cameraRender.mirror);
+
+  if (keyedCameraFrame) {
+    // Keyer ON with a usable mask:
+    // backplate -> fullscreen background media -> PiP media -> keyed presenter.
+    if (mediaLayerIsFullscreen || mediaLayerIsPip) {
+      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+    }
+    if (snapshot.cameraRender.enabled) {
+      drawCamera(
+          output,
+          options.width,
+          options.height,
+          cameraRect(options.width, options.height, snapshot.speakerLayout),
+          cameraFrame,
+          cameraMask,
+          snapshot.cameraRender.mirror);
+    }
+  } else {
+    // Keyer OFF or keyer fallback/passthrough:
+    // camera is the base layer; only PiP media draws above it.
+    if (snapshot.cameraRender.enabled) {
+      drawCamera(
+          output,
+          options.width,
+          options.height,
+          cameraRect(options.width, options.height, snapshot.speakerLayout),
+          cameraFrame,
+          cameraMask,
+          snapshot.cameraRender.mirror);
+    }
+    if (mediaLayerIsPip) {
+      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+    }
   }
+
   drawGraphics(output, options.width, options.height, snapshot.graphics);
   drawGraphicsFrame(output, options.width, options.height, frontGraphicsFrame);
   drawCornerbug(output, options.width, options.height, snapshot.cornerbug);

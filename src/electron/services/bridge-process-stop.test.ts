@@ -27,14 +27,14 @@ describe("stopChildProcessGracefully", () => {
     expect(processRef.killCalls).toEqual(["SIGTERM"]);
   });
 
-  it("sends SIGKILL on timeout and rejects", async () => {
+  it("sends SIGKILL on timeout and resolves so shutdown continues", async () => {
     jest.useFakeTimers();
     const processRef = new FakeChildProcess(false);
 
     const stopPromise = stopChildProcessGracefully(processRef, 50);
     jest.advanceTimersByTime(50);
 
-    await expect(stopPromise).rejects.toThrow("Bridge process did not exit in time");
+    await expect(stopPromise).resolves.toBeUndefined();
     expect(processRef.killCalls).toEqual(["SIGTERM", "SIGKILL"]);
     jest.useRealTimers();
   });

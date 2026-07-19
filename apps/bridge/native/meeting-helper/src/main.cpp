@@ -251,17 +251,17 @@ int main(int argc, char **argv) {
     state.framebusRunning = false;
     state.vcamRawRunning = false;
   }
+  // The frame pipeline checks g_running and releases the FrameBus shared
+  // memory on its way out - wait for it.
   if (frames.joinable()) {
     frames.join();
   }
-  if (preview.joinable()) {
-    preview.join();
-  }
-  if (vcamRaw.joinable()) {
-    vcamRaw.join();
-  }
-  if (control.joinable()) {
-    control.join();
-  }
-  return 0;
+  // The preview/vcam/control servers block in accept() and never observe
+  // g_running; joining them would hang forever (the historical reason this
+  // helper survived every shutdown). Their sockets are closed by the OS.
+  preview.detach();
+  vcamRaw.detach();
+  control.detach();
+  printEvent("{\"type\":\"shutdown\"}");
+  std::_Exit(0);
 }

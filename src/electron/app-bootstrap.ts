@@ -5,6 +5,7 @@ import path from "node:path";
 const LEGACY_APP_NAME = "electron-vite-template";
 const DEFAULT_APP_NAME = "Broadify Bridge";
 const RC_APP_NAME = "Broadify Bridge RC";
+const DEV_APP_NAME = "Broadify Bridge Dev";
 
 // The bridge identity is two coupled files: the bridgeId and the relay auth
 // keypair. The keyId is derived from the bridgeId, so they MUST stay together.
@@ -25,6 +26,15 @@ function resolveDesktopAppName(): string {
   }
   if (executableName === DEFAULT_APP_NAME || executableName.includes("Broadify Bridge")) {
     return DEFAULT_APP_NAME;
+  }
+
+  // An unpackaged run executes the bare Electron binary, so neither name above
+  // matches and app.getName() is still the legacy template name. Without this
+  // branch the dev run falls through to DEFAULT_APP_NAME and shares the
+  // Chromium profile, the bridge identity and the single-instance lock with an
+  // installed production build.
+  if (!app.isPackaged) {
+    return DEV_APP_NAME;
   }
 
   const currentName = app.getName();
@@ -60,7 +70,11 @@ function copyLegacyFileIfAbsent(
   }
 }
 
-function migrateLegacyUserFiles(legacyUserDataPath: string, targetUserDataPath: string): void {
+function migrateLegacyUserFiles(
+  legacyUserDataPath: string,
+  targetUserDataPath: string,
+  { includeIdentity = true }: { includeIdentity?: boolean } = {},
+): void {
   if (legacyUserDataPath === targetUserDataPath || !fs.existsSync(legacyUserDataPath)) {
     return;
   }
@@ -74,7 +88,7 @@ function migrateLegacyUserFiles(legacyUserDataPath: string, targetUserDataPath: 
   // the target generate a fresh, self-consistent identity that can be paired.
   const legacyHasBridgeId = fs.existsSync(path.join(legacyUserDataPath, BRIDGE_ID_FILE));
   const legacyHasRelayKey = fs.existsSync(path.join(legacyUserDataPath, RELAY_IDENTITY_FILE));
-  if (legacyHasBridgeId && legacyHasRelayKey) {
+  if (includeIdentity && legacyHasBridgeId && legacyHasRelayKey) {
     copyLegacyFileIfAbsent(legacyUserDataPath, targetUserDataPath, BRIDGE_ID_FILE);
     copyLegacyFileIfAbsent(legacyUserDataPath, targetUserDataPath, RELAY_IDENTITY_FILE);
   }
@@ -103,7 +117,25 @@ export function bootstrapDesktopAppIdentity(): void {
 
   app.setName(appName);
   app.setPath("userData", targetUserDataPath);
-  migrateLegacyUserFiles(legacyUserDataPath, targetUserDataPath);
+
+  const isDevProfile = appName === DEV_APP_NAME;
+
+  // Dev runs used to land in DEFAULT_APP_NAME, so that profile -- not the far
+  // older legacy one -- holds their current settings. Seed from it BEFORE the
+  // legacy pass: migration only fills gaps, so the first source to provide a
+  // file wins, and seeding afterwards would silently lose to a stale legacy
+  // copy (e.g. an .env still pointing at the production relay).
+  // Never the identity: a copied bridgeId would leave this run and an installed
+  // build enrolled as the same bridge, which is the conflict the split prevents.
+  if (isDevProfile) {
+    migrateLegacyUserFiles(path.join(appDataPath, DEFAULT_APP_NAME), targetUserDataPath, {
+      includeIdentity: false,
+    });
+  }
+
+  migrateLegacyUserFiles(legacyUserDataPath, targetUserDataPath, {
+    includeIdentity: !isDevProfile,
+  });
 }
 
 bootstrapDesktopAppIdentity();
