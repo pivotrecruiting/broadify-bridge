@@ -35,6 +35,8 @@ struct MediaLayerState {
   double width = 0.34;
   double height = 0.28;
   double rotation = 0.0;
+  double rotationX = 0.0;
+  double rotationY = 0.0;
   std::string rawJson = "{\"enabled\":false,\"mode\":\"pip\",\"x\":0.58,\"y\":0.12,\"width\":0.34,\"height\":0.28,\"rotation\":0}";
 };
 
