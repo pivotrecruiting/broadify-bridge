@@ -933,6 +933,11 @@ void runFramePipeline(const Options &options,
   bool fusedFailureLogged = false;
 #if defined(__APPLE__)
   std::unique_ptr<CoreMLKeyer> fusedCoreMlKeyer;
+  // The synchronous fused path bypasses the async worker, so it must carry its
+  // own previous matte to temporally smooth against and to hold through a brief
+  // matte collapse instead of dropping the subject for a frame.
+  AlphaMask previousFusedMask;
+  int fusedCollapseHoldFrames = 0;
 #endif
   while (running.load()) {
     PipelineRuntimeState runtime;
@@ -965,6 +970,8 @@ void runFramePipeline(const Options &options,
       fusedFailureLogged = false;
 #if defined(__APPLE__)
       fusedCoreMlKeyer.reset();
+      previousFusedMask = AlphaMask{};
+      fusedCollapseHoldFrames = 0;
 #endif
     }
 
@@ -1190,6 +1197,27 @@ void runFramePipeline(const Options &options,
         KeyerResult fused = fusedCoreMlKeyer->apply(latestCameraFrame, keyerSettings);
         if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
           fusedMask = std::move(fused.mask);
+          // The raw CoreML matte is emitted straight from the model, so without
+          // stabilization it jitters frame to frame and the edges flicker under
+          // difficult light. The async path already smooths its matte; mirror
+          // that here for the synchronous fused path: hold through a momentary
+          // collapse, then temporal-blend and edge post-process against the last
+          // good matte. Constants and helpers are shared with the async path.
+          constexpr int kMaxFusedCollapseHoldFrames = 12;  // ~0.4s at 30fps
+          if (hasDegenerateForegroundCoverage(fusedMask) &&
+              !previousFusedMask.alpha.empty() &&
+              fusedCollapseHoldFrames < kMaxFusedCollapseHoldFrames) {
+            fusedMask = previousFusedMask;
+            ++fusedCollapseHoldFrames;
+          } else {
+            fusedCollapseHoldFrames = 0;
+            if (keyerSettings.temporalBlendEnabled) {
+              blendAlphaTemporal(fusedMask, previousFusedMask, 0.0);
+            }
+            postprocessAlpha(fusedMask, previousFusedMask, keyerSettings, 0.0,
+                             fused.status.metrics);
+          }
+          previousFusedMask = fusedMask;
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           selectedPair.reset();
