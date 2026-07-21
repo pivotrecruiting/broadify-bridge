@@ -395,7 +395,7 @@ Rect cameraRect(uint32_t width, uint32_t height, const SpeakerLayoutState &speak
   const int marginX = 0;
   const int marginBottom = 0;
   const double speakerAspect = 16.0 / 9.0;
-  int rectHeight = static_cast<int>(height * 0.50 * scale);
+  int rectHeight = static_cast<int>(height * 0.82 * scale);
   int rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
   const int maxRectWidth = std::max(1, frameWidth - marginX * 2);
   const int maxRectHeight = std::max(1, frameHeight - marginBottom);
@@ -407,7 +407,9 @@ Rect cameraRect(uint32_t width, uint32_t height, const SpeakerLayoutState &speak
     rectHeight = maxRectHeight;
     rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
   }
-  const int edgeCrop = static_cast<int>(std::round(rectWidth * 0.28));
+  // Keep the keyed speaker fully in frame: only a small nudge toward the edge
+  // instead of pushing ~28% of the person off-screen.
+  const int edgeCrop = static_cast<int>(std::round(rectWidth * 0.05));
   int x = frameWidth - rectWidth - marginX + edgeCrop;
   if (speakerLayout.layout == "left") {
     x = marginX - edgeCrop;
@@ -499,6 +501,227 @@ void drawCamera(std::vector<uint8_t> &frame,
   }
 }
 
+
+void sampleImageBilinear(const RgbaImage &image, double sourceX, double sourceY, uint8_t sample[4]) {
+  const uint32_t x0 = static_cast<uint32_t>(std::clamp(static_cast<int>(std::floor(sourceX)), 0, static_cast<int>(image.width) - 1));
+  const uint32_t x1 = std::min(x0 + 1u, image.width - 1u);
+  const double xWeight = std::clamp(sourceX - std::floor(sourceX), 0.0, 1.0);
+  const uint32_t y0 = static_cast<uint32_t>(std::clamp(static_cast<int>(std::floor(sourceY)), 0, static_cast<int>(image.height) - 1));
+  const uint32_t y1 = std::min(y0 + 1u, image.height - 1u);
+  const double yWeight = std::clamp(sourceY - std::floor(sourceY), 0.0, 1.0);
+  const size_t topLeftOffset = (static_cast<size_t>(y0) * image.width + x0) * 4u;
+  const size_t topRightOffset = (static_cast<size_t>(y0) * image.width + x1) * 4u;
+  const size_t bottomLeftOffset = (static_cast<size_t>(y1) * image.width + x0) * 4u;
+  const size_t bottomRightOffset = (static_cast<size_t>(y1) * image.width + x1) * 4u;
+  for (size_t channel = 0; channel < 4u; ++channel) {
+    const double top = image.rgba[topLeftOffset + channel] * (1.0 - xWeight) + image.rgba[topRightOffset + channel] * xWeight;
+    const double bottom = image.rgba[bottomLeftOffset + channel] * (1.0 - xWeight) + image.rgba[bottomRightOffset + channel] * xWeight;
+    sample[channel] = clampByte(static_cast<int>(std::round(top * (1.0 - yWeight) + bottom * yWeight)));
+  }
+}
+
+// Samples one fitted-image pixel (bilinear, un-premultiplied) and blends it.
+void blendSampledImagePixel(std::vector<uint8_t> &frame,
+                            uint32_t width,
+                            uint32_t height,
+                            const RgbaImage &image,
+                            double sourceX,
+                            double sourceY,
+                            int x,
+                            int y) {
+  uint8_t sample[4];
+  sampleImageBilinear(image, sourceX, sourceY, sample);
+  const uint8_t alpha = sample[3];
+  if (alpha == 0u) {
+    return;
+  }
+  uint8_t r = sample[0];
+  uint8_t g = sample[1];
+  uint8_t b = sample[2];
+  if (alpha < 255u) {
+    r = clampByte((static_cast<int>(r) * 255) / alpha);
+    g = clampByte((static_cast<int>(g) * 255) / alpha);
+    b = clampByte((static_cast<int>(b) * 255) / alpha);
+  }
+  blendPixel(frame, width, height, x, y, r, g, b, alpha);
+}
+
+// Perspective depth for X/Y-rotated media panels, relative to the panel size.
+// Mirrors the CSS `perspective()` look in the builder preview: large enough
+// to avoid extreme distortion, small enough that a turned panel visibly
+// "stands in the room" (news-studio style).
+constexpr double kMediaPerspectiveFactor = 3.0;
+
+// Draws the image fitted into the target rect and rotated around the rect
+// center on all three axes, matching the builder preview's CSS
+// `rotateX(a) rotateY(b) rotateZ(c)` order. Pure Z rotation stays planar and
+// is drawn through an inverse affine map; X/Y rotation leaves the image
+// plane and is projected with a CSS-like perspective, inverted per pixel via
+// the homography of the projected quad.
+void drawImageFitRotated(std::vector<uint8_t> &frame,
+                         uint32_t width,
+                         uint32_t height,
+                         const Rect &target,
+                         const RgbaImage &image,
+                         double rotationXDeg,
+                         double rotationYDeg,
+                         double rotationZDeg) {
+  if (std::abs(rotationXDeg) < 0.001 && std::abs(rotationYDeg) < 0.001 && std::abs(rotationZDeg) < 0.001) {
+    drawImageFit(frame, width, height, target, image);
+    return;
+  }
+  if (target.width <= 0 || target.height <= 0 || image.width == 0 || image.height == 0 || image.rgba.empty()) {
+    return;
+  }
+
+  const double scale = std::min(
+      static_cast<double>(target.width) / static_cast<double>(image.width),
+      static_cast<double>(target.height) / static_cast<double>(image.height));
+  const double drawWidth = std::max(1.0, image.width * scale);
+  const double drawHeight = std::max(1.0, image.height * scale);
+  const double halfWidth = drawWidth / 2.0;
+  const double halfHeight = drawHeight / 2.0;
+  const double centerX = target.x + target.width / 2.0;
+  const double centerY = target.y + target.height / 2.0;
+
+  constexpr double kPi = 3.14159265358979323846;
+  const double angleX = rotationXDeg * kPi / 180.0;
+  const double angleY = rotationYDeg * kPi / 180.0;
+  const double angleZ = rotationZDeg * kPi / 180.0;
+  const double ca = std::cos(angleX);
+  const double sa = std::sin(angleX);
+  const double cb = std::cos(angleY);
+  const double sb = std::sin(angleY);
+  const double cc = std::cos(angleZ);
+  const double sc = std::sin(angleZ);
+
+  const bool hasDepthRotation = std::abs(rotationXDeg) >= 0.001 || std::abs(rotationYDeg) >= 0.001;
+  if (hasDepthRotation) {
+    // Full rotation matrix M = Rx*Ry*Rz applied to the panel plane (z = 0),
+    // then perspective projection: p' = p * d / (d - z).
+    const double m00 = cb * cc;
+    const double m01 = -cb * sc;
+    const double m10 = ca * sc + sa * sb * cc;
+    const double m11 = ca * cc - sa * sb * sc;
+    const double m20 = sa * sc - ca * sb * cc;
+    const double m21 = sa * cc + ca * sb * sc;
+    const double depth = kMediaPerspectiveFactor * std::max(drawWidth, drawHeight);
+
+    // Projected quad corners for (u,v) = (0,0), (1,0), (1,1), (0,1).
+    const double localXs[4] = {-halfWidth, halfWidth, halfWidth, -halfWidth};
+    const double localYs[4] = {-halfHeight, -halfHeight, halfHeight, halfHeight};
+    double quadX[4];
+    double quadY[4];
+    for (int corner = 0; corner < 4; ++corner) {
+      const double rotatedX = m00 * localXs[corner] + m01 * localYs[corner];
+      const double rotatedY = m10 * localXs[corner] + m11 * localYs[corner];
+      const double rotatedZ = m20 * localXs[corner] + m21 * localYs[corner];
+      const double denominator = depth - rotatedZ;
+      if (denominator <= 1.0) {
+        // Corner behind the camera (only possible for extreme angles): give
+        // up on perspective and let the affine path below handle it.
+        break;
+      }
+      const double projectionScale = depth / denominator;
+      quadX[corner] = centerX + rotatedX * projectionScale;
+      quadY[corner] = centerY + rotatedY * projectionScale;
+      if (corner == 3) {
+        // Homography H mapping (u,v) in [0,1]^2 onto the projected quad.
+        const double dx1 = quadX[1] - quadX[2];
+        const double dx2 = quadX[3] - quadX[2];
+        const double dx3 = quadX[0] - quadX[1] + quadX[2] - quadX[3];
+        const double dy1 = quadY[1] - quadY[2];
+        const double dy2 = quadY[3] - quadY[2];
+        const double dy3 = quadY[0] - quadY[1] + quadY[2] - quadY[3];
+        const double denominatorH = dx1 * dy2 - dx2 * dy1;
+        if (std::abs(denominatorH) < 1e-9) {
+          break;
+        }
+        const double g = (dx3 * dy2 - dx2 * dy3) / denominatorH;
+        const double h = (dx1 * dy3 - dx3 * dy1) / denominatorH;
+        const double a = quadX[1] - quadX[0] + g * quadX[1];
+        const double b = quadX[3] - quadX[0] + h * quadX[3];
+        const double c = quadX[0];
+        const double d = quadY[1] - quadY[0] + g * quadY[1];
+        const double e = quadY[3] - quadY[0] + h * quadY[3];
+        const double f = quadY[0];
+
+        // Inverse of H = [[a,b,c],[d,e,f],[g,h,1]] via adjugate.
+        const double inv00 = e - f * h;
+        const double inv01 = c * h - b;
+        const double inv02 = b * f - c * e;
+        const double inv10 = f * g - d;
+        const double inv11 = a - c * g;
+        const double inv12 = c * d - a * f;
+        const double inv20 = d * h - e * g;
+        const double inv21 = b * g - a * h;
+        const double inv22 = a * e - b * d;
+
+        const int minX = std::max(0, static_cast<int>(std::floor(std::min({quadX[0], quadX[1], quadX[2], quadX[3]}))));
+        const int maxX = std::min(static_cast<int>(width), static_cast<int>(std::ceil(std::max({quadX[0], quadX[1], quadX[2], quadX[3]}))));
+        const int minY = std::max(0, static_cast<int>(std::floor(std::min({quadY[0], quadY[1], quadY[2], quadY[3]}))));
+        const int maxY = std::min(static_cast<int>(height), static_cast<int>(std::ceil(std::max({quadY[0], quadY[1], quadY[2], quadY[3]}))));
+
+        for (int y = minY; y < maxY; ++y) {
+          for (int x = minX; x < maxX; ++x) {
+            const double px = x + 0.5;
+            const double py = y + 0.5;
+            const double w = inv20 * px + inv21 * py + inv22;
+            if (std::abs(w) < 1e-9) {
+              continue;
+            }
+            const double u = (inv00 * px + inv01 * py + inv02) / w;
+            const double v = (inv10 * px + inv11 * py + inv12) / w;
+            if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) {
+              continue;
+            }
+            const double sourceX = u * image.width - 0.5;
+            const double sourceY = v * image.height - 0.5;
+            blendSampledImagePixel(frame, width, height, image, sourceX, sourceY, x, y);
+          }
+        }
+        return;
+      }
+    }
+  }
+
+  const double a00 = cb * cc;
+  const double a01 = -cb * sc;
+  const double a10 = ca * sc + sa * sb * cc;
+  const double a11 = ca * cc - sa * sb * sc;
+  const double det = a00 * a11 - a01 * a10;
+  if (std::abs(det) < 1e-6) {
+    // Edge-on (e.g. 90° X/Y rotation): the plane projects to a line.
+    return;
+  }
+  const double inv00 = a11 / det;
+  const double inv01 = -a01 / det;
+  const double inv10 = -a10 / det;
+  const double inv11 = a00 / det;
+
+  const double extentX = std::abs(a00 * halfWidth) + std::abs(a01 * halfHeight);
+  const double extentY = std::abs(a10 * halfWidth) + std::abs(a11 * halfHeight);
+  const int minX = std::max(0, static_cast<int>(std::floor(centerX - extentX)));
+  const int minY = std::max(0, static_cast<int>(std::floor(centerY - extentY)));
+  const int maxX = std::min(static_cast<int>(width), static_cast<int>(std::ceil(centerX + extentX)));
+  const int maxY = std::min(static_cast<int>(height), static_cast<int>(std::ceil(centerY + extentY)));
+
+  for (int y = minY; y < maxY; ++y) {
+    for (int x = minX; x < maxX; ++x) {
+      const double dx = (x + 0.5) - centerX;
+      const double dy = (y + 0.5) - centerY;
+      const double localX = inv00 * dx + inv01 * dy;
+      const double localY = inv10 * dx + inv11 * dy;
+      if (std::abs(localX) > halfWidth || std::abs(localY) > halfHeight) {
+        continue;
+      }
+      const double sourceX = ((localX + halfWidth) / drawWidth) * image.width - 0.5;
+      const double sourceY = ((localY + halfHeight) / drawHeight) * image.height - 0.5;
+      blendSampledImagePixel(frame, width, height, image, sourceX, sourceY, x, y);
+    }
+  }
+}
+
 void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const MediaLayerState &mediaLayer) {
   if (!mediaLayer.enabled) {
     return;
@@ -516,8 +739,13 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
   }
   const auto image = getMediaLayerImage(mediaLayer);
   if (image != nullptr) {
-    fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 10, rect.width, rect.height}, mediaLayer.rotation, 0, 0, 0, 46);
-    drawImageFit(frame, width, height, rect, *image);
+    // No full-panel backdrop behind the content. The drop shadow was drawn at
+    // the whole 16:9 media rect, so for a portrait document it overhung the
+    // page on both sides and read as a translucent panel. Draw only the fitted
+    // content itself, tilted in perspective when a rotation is set (News style).
+    drawImageFitRotated(frame, width, height, rect, *image,
+                        mediaLayer.rotationX, mediaLayer.rotationY,
+                        mediaLayer.rotation);
     return;
   }
 
@@ -632,8 +860,11 @@ int maskAnchorBottomFrameY(const AlphaMask &mask, uint32_t frameHeight) {
   return fallbackRow;
 }
 
-bool canUseGpuCompositor(const CompositorSnapshot &snapshot) {
-  return !snapshot.mediaLayer.enabled;
+bool canUseGpuCompositor(const CompositorSnapshot &) {
+  // Content is baked into the back-graphics layer before compositing (see
+  // renderProgramFrame), so the GPU path handles content scenes too instead of
+  // falling back to the heavy full-frame CPU compositor.
+  return true;
 }
 
 GpuComposePlan buildGpuPlan(const Options &options,
@@ -797,9 +1028,43 @@ std::string renderProgramFrame(const Options &options,
                                const VideoFrame *frontGraphicsFrame,
                                uint64_t frameIndex,
                                std::vector<uint8_t> &output) {
+  // Bake the content layer into the back-graphics layer so the GPU compositor
+  // can render content scenes on the GPU. Only the content's own rect plus one
+  // back-buffer copy stay on the CPU; the heavy full-frame multi-layer blend
+  // moves to the GPU (previously any content forced the full CPU compositor).
+  const VideoFrame *effectiveBack = backGraphicsFrame;
+  if (snapshot.mediaLayer.enabled) {
+    // Rebuild the baked layer only when its inputs change (content page,
+    // transform or the back-graphics frame) instead of every frame. The stable
+    // timestamp also lets the GPU skip re-uploading the unchanged texture.
+    static VideoFrame cachedBack;
+    static uint64_t cachedKey = 0u;
+    const uint64_t backTs =
+        (backGraphicsFrame != nullptr) ? backGraphicsFrame->timestampNs : 0u;
+    const uint64_t key =
+        std::hash<std::string>{}(snapshot.mediaLayer.rawJson) * 1099511628211u +
+        backTs;
+    if (key != cachedKey || cachedBack.width != options.width ||
+        cachedBack.height != options.height) {
+      cachedBack.width = options.width;
+      cachedBack.height = options.height;
+      cachedBack.rgba.assign(
+          static_cast<size_t>(options.width) * options.height * 4u, 0u);
+      if (backGraphicsFrame != nullptr && !backGraphicsFrame->rgba.empty()) {
+        drawGraphicsFrame(cachedBack.rgba, options.width, options.height,
+                          backGraphicsFrame);
+      }
+      drawMediaLayer(cachedBack.rgba, options.width, options.height,
+                     snapshot.mediaLayer);
+      cachedBack.timestampNs = key;
+      cachedKey = key;
+    }
+    effectiveBack = &cachedBack;
+  }
+
   if (canUseGpuCompositor(snapshot)) {
     const GpuComposePlan plan = buildGpuPlan(
-        options, snapshot, cameraFrame, cameraMask, backGraphicsFrame,
+        options, snapshot, cameraFrame, cameraMask, effectiveBack,
         frontGraphicsFrame, frameIndex);
 #if defined(__APPLE__)
     if (metalCompositorAvailable() && renderProgramFrameMetal(plan, output)) {

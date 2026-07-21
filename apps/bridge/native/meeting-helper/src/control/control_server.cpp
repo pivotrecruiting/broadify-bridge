@@ -168,6 +168,8 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.mediaLayer.width = extractDoubleField(safeValues, "width", state.mediaLayer.width);
     state.mediaLayer.height = extractDoubleField(safeValues, "height", state.mediaLayer.height);
     state.mediaLayer.rotation = extractDoubleField(safeValues, "rotation", state.mediaLayer.rotation);
+    state.mediaLayer.rotationX = extractDoubleField(safeValues, "rotationX", state.mediaLayer.rotationX);
+    state.mediaLayer.rotationY = extractDoubleField(safeValues, "rotationY", state.mediaLayer.rotationY);
     state.mediaLayer.rawJson = safeValues;
     return;
   }
