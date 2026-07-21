@@ -4,6 +4,7 @@
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
 #endif
+#include "director/auto_director.h"
 #include "framebus_reader.h"
 #include "framebus_writer.h"
 #include "keyer/keyer_chain.h"
@@ -75,6 +76,9 @@ struct PipelineRuntimeState {
   bool cameraRunning = false;
   bool keyerEnabled = false;
   int activeCameraIndex = -1;
+  int pipCameraIndex = -1;
+  bool autoDirectorEnabled = false;
+  float autoDirectorThreshold = 0.02f;
   bool framebusRunning = false;
   int previewClients = 0;
   int vcamClients = 0;
@@ -914,6 +918,10 @@ void runFramePipeline(const Options &options,
   std::vector<uint8_t> programFrame;
   VideoFrame latestCameraFrame;
   uint64_t lastCameraTimestampNs = 0u;
+  VideoFrame latestPipFrame;
+  uint64_t lastPipCameraTimestampNs = 0u;
+  // Conference auto-director: persists dwell/hold hysteresis across frames.
+  AutoDirector autoDirector;
   uint64_t lastProgramRevision = 0u;
   uint64_t lastUsedKeyerPublishedNs = 0u;
   uint64_t lastBackGraphicsTimestampNs = 0u;
@@ -948,6 +956,9 @@ void runFramePipeline(const Options &options,
       runtime.cameraRunning = state.cameraRunning;
       runtime.keyerEnabled = state.keyerEnabled;
       runtime.activeCameraIndex = state.activeCameraIndex;
+      runtime.pipCameraIndex = state.pipCameraIndex;
+      runtime.autoDirectorEnabled = state.autoDirectorEnabled;
+      runtime.autoDirectorThreshold = state.autoDirectorThreshold;
       runtime.framebusRunning = state.framebusRunning;
       runtime.previewClients = state.previewClientCount;
       runtime.vcamClients = state.vcamClientCount;
@@ -955,6 +966,22 @@ void runFramePipeline(const Options &options,
       runtime.graphicsDirty = state.graphicsDirty;
       runtime.programRevision = state.programRevision;
       runtime.keyerRevision = state.keyerRevision;
+    }
+
+    // Conference native auto-director ("Auto-Regie"): follow the loudest open
+    // camera's own microphone. Runs before the camera read so a cut takes
+    // effect on this frame. Off (meeting) → the evaluator is reset, never cuts.
+    if (runtime.autoDirectorEnabled && runtime.cameraRunning) {
+      const int decided = autoDirector.evaluate(
+          camera.cameraAudioLevels(), camera.activeCameraIndex(),
+          runtime.autoDirectorThreshold, std::chrono::steady_clock::now());
+      if (decided >= 0 && camera.setProgramCamera(decided)) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.activeCameraIndex = decided;
+        state.programDirty = true;
+      }
+    } else {
+      autoDirector.reset();
     }
 
     if (runtime.keyerRevision != lastKeyerRevision ||
@@ -1015,6 +1042,21 @@ void runFramePipeline(const Options &options,
       } else if (!runtime.cameraRunning) {
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
+      }
+      // Conference PiP: read a second open camera's newest frame (distinct from
+      // the program camera) so it can be overlaid onto the finished frame.
+      const bool pipActive = runtime.cameraRunning &&
+                             runtime.pipCameraIndex >= 0 &&
+                             runtime.pipCameraIndex != camera.activeCameraIndex();
+      if (pipActive) {
+        camera.copyLatestFrameFrom(runtime.pipCameraIndex,
+                                   lastPipCameraTimestampNs, latestPipFrame);
+        if (!latestPipFrame.rgba.empty()) {
+          lastPipCameraTimestampNs = latestPipFrame.timestampNs;
+        }
+      } else {
+        latestPipFrame = VideoFrame{};
+        lastPipCameraTimestampNs = 0u;
       }
       const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
@@ -1282,6 +1324,13 @@ void runFramePipeline(const Options &options,
             frontGraphicsFrameForCompositor,
             frameIndex++,
             programFrame);
+        // Conference PiP overlay: drawn on the CPU over the finished RGBA frame,
+        // after either compositing path. Guarded, so meeting mode (no PiP) is
+        // untouched.
+        if (pipActive && !latestPipFrame.rgba.empty()) {
+          drawCameraPipInset(programFrame, options.width, options.height,
+                             latestPipFrame);
+        }
         if (selectedPair != nullptr) {
           lastUsedKeyerPublishedNs = selectedPair->publishedAtNs;
         }

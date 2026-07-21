@@ -32,6 +32,15 @@ import { transformDevicesToOutputs } from "./device-to-output-transform.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
+import { powerSocketService } from "./power/power-socket-service.js";
+import {
+  streamDeckManager,
+  parseStreamDeckConfig,
+} from "./streamdeck/stream-deck-manager.js";
+import {
+  startStreamDeckHardwareWatch,
+  type StreamDeckHardwareWatch,
+} from "./streamdeck/hid-stream-deck.js";
 
 /**
  * Relay command payload.
@@ -582,6 +591,94 @@ export class CommandRouter {
           };
         }
 
+        case "streamdeck_status": {
+          await streamDeckManager.ensureStarted();
+          return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "streamdeck_configure": {
+          await streamDeckManager.ensureStarted();
+          await streamDeckManager.configure(parseStreamDeckConfig(payload ?? {}));
+          return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "streamdeck_set_page": {
+          await streamDeckManager.ensureStarted();
+          const page = typeof payload?.page === "number" ? payload.page : 0;
+          await streamDeckManager.setPage(page);
+          return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "streamdeck_press": {
+          await streamDeckManager.ensureStarted();
+          const keyIndex =
+            typeof payload?.key_index === "number" ? payload.key_index : -1;
+          if (keyIndex >= 0) {
+            streamDeckManager.press(keyIndex);
+          }
+          return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "power_socket_list": {
+          return {
+            success: true,
+            data: { sockets: await powerSocketService.list() },
+          };
+        }
+
+        case "power_socket_save": {
+          const socket = await powerSocketService.save({
+            id: typeof payload?.id === "string" ? payload.id : undefined,
+            name: typeof payload?.name === "string" ? payload.name : undefined,
+            preset:
+              typeof payload?.preset === "string"
+                ? (payload.preset as never)
+                : undefined,
+            host: typeof payload?.host === "string" ? payload.host : undefined,
+            onUrl: typeof payload?.on_url === "string" ? payload.on_url : undefined,
+            offUrl:
+              typeof payload?.off_url === "string" ? payload.off_url : undefined,
+            method:
+              payload?.method === "POST" || payload?.method === "GET"
+                ? payload.method
+                : undefined,
+            autostart:
+              typeof payload?.autostart === "boolean"
+                ? payload.autostart
+                : undefined,
+          });
+          return { success: true, data: { socket } };
+        }
+
+        case "power_socket_delete": {
+          const id = typeof payload?.id === "string" ? payload.id : "";
+          if (!id) {
+            return { success: false, error: "A socket id is required." };
+          }
+          return { success: true, data: await powerSocketService.remove(id) };
+        }
+
+        case "power_socket_set": {
+          const id = typeof payload?.id === "string" ? payload.id : "";
+          if (!id) {
+            return { success: false, error: "A socket id is required." };
+          }
+          const on = payload?.on !== false;
+          return {
+            success: true,
+            data: await powerSocketService.setState(id, on),
+          };
+        }
+
+        case "power_socket_test": {
+          const id = typeof payload?.id === "string" ? payload.id : "";
+          if (!id) {
+            return { success: false, error: "A socket id is required." };
+          }
+          return { success: true, data: await powerSocketService.test(id) };
+        }
+
+
         default:
           return {
             success: false,
@@ -603,3 +700,35 @@ export class CommandRouter {
 
 // Singleton instance
 export const commandRouter = new CommandRouter();
+
+let streamDeckWatch: StreamDeckHardwareWatch | null = null;
+
+/**
+ * Wires the command router into process-wide services that must not start on
+ * mere module import:
+ *  - the Stream Deck key executor, so a key-down runs its bound relay command
+ *    through the same path a webapp button uses (commandRouter.handleCommand);
+ *  - the USB hot-plug watch that attaches a physical Stream Deck when present
+ *    and hot-swaps on plug/unplug (falling back to the virtual device). Any
+ *    model works — geometry is read from the device.
+ *
+ * Idempotent; called once from the server bootstrap after the bridge context
+ * (and thus the logger) is set.
+ */
+export function initCommandRouter(): void {
+  if (streamDeckWatch) {
+    return;
+  }
+  streamDeckManager.setExecutor((command, payload) =>
+    commandRouter.handleCommand(command as RelayCommand, payload),
+  );
+  streamDeckWatch = startStreamDeckHardwareWatch(streamDeckManager, (message) => {
+    getBridgeContext().logger.info(`[streamdeck] ${message}`);
+  });
+}
+
+/** Stops the Stream Deck hot-plug watch (bridge shutdown). */
+export function stopCommandRouter(): void {
+  streamDeckWatch?.stop();
+  streamDeckWatch = null;
+}

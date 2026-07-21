@@ -40,6 +40,9 @@ export const MeetingKeyerConfigureSchema = z
     edge_stabilization_strength: z.number().min(0).max(1).optional(),
     fresh_mask_age_ms: z.number().min(0).max(500).optional(),
     max_mask_age_ms: z.number().min(0).max(2000).optional(),
+    // Conference mode: never keys, and lets the native compositor draw content
+    // over the un-keyed camera. Forwarded to the helper's keyer.configure.
+    conference_mode: z.boolean().optional(),
   })
   .strict()
   .refine(
@@ -98,3 +101,14 @@ export const MeetingRecordingStartSchema = z
     mic_device_id: z.string().optional(),
   })
   .strict();
+
+export const MeetingCallControlSchema = z.object({
+  platform: z.enum(["teams", "zoom"]),
+  action: z.enum(["mic_toggle", "speaker_toggle", "hangup"]),
+});
+
+export const ConferenceDisplayStartSchema = z.object({
+  match_name: z.string().max(128).optional(),
+  match_width: z.number().int().positive().max(16384).optional(),
+  match_height: z.number().int().positive().max(16384).optional(),
+});
