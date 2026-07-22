@@ -70,12 +70,23 @@ cbuffer ComposeUniforms : register(b0) {
   uint padK0;
   uint padK1;
   uint padK2;
+
+  uint bgImagePresent;
+  float bgImgScaleX;
+  float bgImgScaleY;
+  float bgImgBiasX;
+
+  float bgImgBiasY;
+  float padBG0;
+  float padBG1;
+  float padBG2;
 };
 
 Texture2D<float4> cameraTex : register(t0);
 Texture2D<float4> backTex : register(t1);
 Texture2D<float4> frontTex : register(t2);
 Texture2D<float4> maskTex : register(t3);
+Texture2D<float4> bgImageTex : register(t4);
 SamplerState layerSampler : register(s0);
 RWByteAddressBuffer output : register(u0);
 
@@ -116,6 +127,13 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
     rgb = float3(0.0, 0.0, 0.0);
   } else {
     rgb = float3(8.0, 10.0, 14.0) / 255.0;
+  }
+
+  // Uploaded company background image (cover-cropped, below all layers).
+  if (bgImagePresent != 0u) {
+    const float2 src = float2(dest.x * bgImgScaleX + bgImgBiasX, dest.y * bgImgScaleY + bgImgBiasY);
+    const float4 s = sampleLayer(bgImageTex, src);
+    rgb = blendUnorm8(rgb, s.rgb, s.a);
   }
 
   // Back graphics (cover-cropped full-frame layer).
@@ -187,6 +205,7 @@ struct D3D11Context {
   LayerTexture back;
   LayerTexture front;
   LayerTexture mask;
+  LayerTexture backgroundImage;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -452,6 +471,17 @@ bool renderProgramFrameD3D11(const GpuComposePlan &plan,
     uniforms.frontBiasX = plan.frontMapping.biasX;
     uniforms.frontBiasY = plan.frontMapping.biasY;
   }
+  if (plan.backgroundImage != nullptr && plan.backgroundImageWidth > 0u &&
+      plan.backgroundImageHeight > 0u &&
+      uploadLayer(ctx.backgroundImage, plan.backgroundImage,
+                  plan.backgroundImageWidth, plan.backgroundImageHeight,
+                  plan.backgroundImageCacheKey, DXGI_FORMAT_R8G8B8A8_UNORM, 4u)) {
+    uniforms.bgImagePresent = 1u;
+    uniforms.bgImgScaleX = plan.backgroundImageMapping.scaleX;
+    uniforms.bgImgScaleY = plan.backgroundImageMapping.scaleY;
+    uniforms.bgImgBiasX = plan.backgroundImageMapping.biasX;
+    uniforms.bgImgBiasY = plan.backgroundImageMapping.biasY;
+  }
   if (plan.camera.keyed) {
     if (plan.cameraMask == nullptr || plan.maskWidth == 0u || plan.maskHeight == 0u ||
         !uploadLayer(ctx.mask, plan.cameraMask, plan.maskWidth, plan.maskHeight,
@@ -463,25 +493,25 @@ bool renderProgramFrameD3D11(const GpuComposePlan &plan,
 
   ctx.context->UpdateSubresource(ctx.uniforms.Get(), 0, nullptr, &uniforms, 0, 0);
 
-  ID3D11ShaderResourceView *srvs[4] = {
+  ID3D11ShaderResourceView *srvs[5] = {
       ctx.camera.srv.Get(), ctx.back.srv.Get(), ctx.front.srv.Get(),
-      ctx.mask.srv.Get(),
+      ctx.mask.srv.Get(), ctx.backgroundImage.srv.Get(),
   };
   ID3D11Buffer *cbs[1] = {ctx.uniforms.Get()};
   ID3D11SamplerState *samplers[1] = {ctx.sampler.Get()};
   ID3D11UnorderedAccessView *uavs[1] = {ctx.outputUav.Get()};
   ctx.context->CSSetShader(ctx.shader.Get(), nullptr, 0);
   ctx.context->CSSetConstantBuffers(0, 1, cbs);
-  ctx.context->CSSetShaderResources(0, 4, srvs);
+  ctx.context->CSSetShaderResources(0, 5, srvs);
   ctx.context->CSSetSamplers(0, 1, samplers);
   ctx.context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
   ctx.context->Dispatch((plan.width + 7u) / 8u, (plan.height + 7u) / 8u, 1u);
 
   // Unbind so the next frame's UpdateSubresource never hits a bound resource.
   ID3D11UnorderedAccessView *nullUav[1] = {nullptr};
-  ID3D11ShaderResourceView *nullSrvs[4] = {};
+  ID3D11ShaderResourceView *nullSrvs[5] = {};
   ctx.context->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
-  ctx.context->CSSetShaderResources(0, 4, nullSrvs);
+  ctx.context->CSSetShaderResources(0, 5, nullSrvs);
 
   ctx.context->CopyResource(ctx.stagingBuffer.Get(), ctx.outputBuffer.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};

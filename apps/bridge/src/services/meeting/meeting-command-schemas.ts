@@ -27,6 +27,8 @@ export const MeetingKeyerConfigureSchema = z
     background_type: z.enum(["mode"]).optional(),
     background_template_id: z.string().nullable().optional(),
     background_template_name: z.string().nullable().optional(),
+    // Absolute local path of an uploaded company background image ("" clears).
+    background_image_path: z.string().optional(),
     quality_mode: z.enum(["fast", "balanced", "accurate"]).optional(),
     performance_mode: z
       .enum(["high_quality", "quality", "balanced", "performance"])

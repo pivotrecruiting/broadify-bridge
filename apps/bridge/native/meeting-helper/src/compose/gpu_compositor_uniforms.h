@@ -39,9 +39,19 @@ struct GpuComposeUniforms {
   uint32_t padK0;
   uint32_t padK1;
   uint32_t padK2;
+  // Uploaded company background image (cover-fitted below all layers).
+  uint32_t bgImagePresent;
+  float bgImgScaleX;
+  float bgImgScaleY;
+  float bgImgBiasX;
+  float bgImgBiasY;
+  float padBG0;
+  float padBG1;
+  float padBG2;
 };
 
-static_assert(sizeof(GpuComposeUniforms) == 128u);
+static_assert(sizeof(GpuComposeUniforms) == 160u);
 static_assert(offsetof(GpuComposeUniforms, maskPresent) == 112u);
+static_assert(offsetof(GpuComposeUniforms, bgImagePresent) == 128u);
 
 }  // namespace broadify::meeting

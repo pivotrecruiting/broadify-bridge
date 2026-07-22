@@ -87,6 +87,8 @@ struct MeetingState {
   uint64_t publishedPreviewFrames = 0;
   uint64_t writtenFramebusFrames = 0;
   std::string backgroundMode = "transparent";
+  // Absolute file path of an uploaded company background image; empty = none.
+  std::string backgroundImagePath;
   std::string activeKeyer = "passthrough";
   std::string requestedKeyerModel = "modnet";
   std::string fallbackReason = "native_keyers_not_configured";

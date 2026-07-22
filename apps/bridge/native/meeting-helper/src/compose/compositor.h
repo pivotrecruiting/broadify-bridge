@@ -14,6 +14,7 @@ struct CompositorSnapshot {
   bool keyerEnabled = false;
   bool conferenceMode = false;
   std::string backgroundMode = "transparent";
+  std::string backgroundImagePath;
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;
   MediaLayerState mediaLayer;
