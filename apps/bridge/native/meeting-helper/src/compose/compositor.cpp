@@ -1180,15 +1180,55 @@ std::string renderProgramFrame(const Options &options,
     static uint64_t cachedKey = 0u;
     const uint64_t backTs =
         (backGraphicsFrame != nullptr) ? backGraphicsFrame->timestampNs : 0u;
+    // The uploaded company background is baked in as the base of this layer, so
+    // the cache key must also track the background path — otherwise switching
+    // (or clearing) the background would not rebuild the baked frame.
     const uint64_t key =
-        std::hash<std::string>{}(snapshot.mediaLayer.rawJson) * 1099511628211u +
-        backTs;
+        (std::hash<std::string>{}(snapshot.mediaLayer.rawJson) * 1099511628211u +
+         backTs) *
+            1099511628211u +
+        std::hash<std::string>{}(snapshot.backgroundImagePath);
     if (key != cachedKey || cachedBack.width != options.width ||
         cachedBack.height != options.height) {
       cachedBack.width = options.width;
       cachedBack.height = options.height;
       cachedBack.rgba.assign(
           static_cast<size_t>(options.width) * options.height * 4u, 0u);
+      // Bake the uploaded company background as the opaque base FIRST, so PiP
+      // content and back graphics composite over it. Baking it into this layer
+      // (instead of leaving it to the separate GPU background-image pass) keeps
+      // the back plate self-contained: with content enabled the GPU back layer
+      // is present and full-frame, and the standalone background pass would
+      // otherwise be lost, leaving the area around the content black.
+      if (const auto backgroundImage =
+              getBackgroundImage(snapshot.backgroundImagePath)) {
+        const SourceRect source = coverSourceRect(
+            backgroundImage->width, backgroundImage->height,
+            static_cast<int>(options.width),
+            static_cast<int>(options.height));
+        for (uint32_t y = 0; y < options.height; ++y) {
+          const uint32_t sy = std::min(
+              backgroundImage->height - 1u,
+              source.y + static_cast<uint32_t>(
+                             (static_cast<uint64_t>(y) * source.height) /
+                             options.height));
+          for (uint32_t x = 0; x < options.width; ++x) {
+            const uint32_t sx = std::min(
+                backgroundImage->width - 1u,
+                source.x + static_cast<uint32_t>(
+                               (static_cast<uint64_t>(x) * source.width) /
+                               options.width));
+            const size_t srcOffset =
+                (static_cast<size_t>(sy) * backgroundImage->width + sx) * 4u;
+            blendPixel(cachedBack.rgba, options.width, options.height,
+                       static_cast<int>(x), static_cast<int>(y),
+                       backgroundImage->rgba[srcOffset + 0],
+                       backgroundImage->rgba[srcOffset + 1],
+                       backgroundImage->rgba[srcOffset + 2],
+                       backgroundImage->rgba[srcOffset + 3]);
+          }
+        }
+      }
       if (backGraphicsFrame != nullptr && !backGraphicsFrame->rgba.empty()) {
         drawGraphicsFrame(cachedBack.rgba, options.width, options.height,
                           backGraphicsFrame);
