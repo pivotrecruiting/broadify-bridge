@@ -89,6 +89,14 @@ jest.mock("./services/graphics/graphics-manager.js", () => ({
   },
 }));
 
+// server.ts wires the command router (Stream Deck executor + USB watch) via
+// initCommandRouter/stopCommandRouter; mock it so the test does not pull in the
+// real command router chain (meeting-command-handler → graphics managers).
+jest.mock("./services/command-router.js", () => ({
+  initCommandRouter: jest.fn(),
+  stopCommandRouter: jest.fn(),
+}));
+
 jest.mock("./server-registration.js", () => ({
   registerServerPlugins: (...args: unknown[]) =>
     mockRegisterServerPlugins(...args),
