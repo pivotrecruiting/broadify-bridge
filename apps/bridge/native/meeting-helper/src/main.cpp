@@ -164,7 +164,14 @@ int main(int argc, char **argv) {
   }
 
   // stdout is piped to the bridge; ensure lifecycle events flush promptly.
+#if defined(_WIN32)
+  // The Windows UCRT rejects setvbuf with _IOLBF and a zero-sized buffer
+  // (invalid parameter -> fast-fail 0xC0000409). Use unbuffered stdout; the
+  // lifecycle events are low-volume and already flushed per line.
+  setvbuf(stdout, nullptr, _IONBF, 0);
+#else
   setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
 
 #if defined(__APPLE__)
   initializeMacosApplication();
