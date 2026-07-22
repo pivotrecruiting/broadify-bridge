@@ -59,7 +59,18 @@ struct MeetingState {
   mutable std::mutex mutex;
   bool cameraRunning = false;
   int activeCameraIndex = -1;
+  // Conference: a second open camera drawn as picture-in-picture (-1 = off).
+  int pipCameraIndex = -1;
+  // Conference auto-director ("Auto-Regie"): when enabled, the program feed
+  // automatically follows the loudest camera microphone. Manual program
+  // selection stays authoritative while it is off.
+  bool autoDirectorEnabled = false;
+  // Minimum smoothed RMS (0..1) for a camera to count as "someone speaking".
+  float autoDirectorThreshold = 0.02f;
   bool keyerEnabled = false;
+  // Conference mode never keys. It also lets the compositor draw fullscreen
+  // content over the un-keyed camera (meeting keeps the camera on keyer-off).
+  bool conferenceMode = false;
   bool framebusRunning = true;
   bool vcamRawRunning = true;
   int previewClientCount = 0;

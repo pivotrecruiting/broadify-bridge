@@ -95,6 +95,39 @@ export class MeetingHelperClient {
     return this.rpc("camera.select", options);
   }
 
+  /** Conference: open several cameras at once for seamless switching. */
+  async cameraOpenSet(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.open_set", options);
+  }
+
+  /** Conference: cut the program feed to an already-open camera. */
+  async cameraProgramSelect(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.program_select", options);
+  }
+
+  /** Conference: draw an open camera as picture-in-picture (-1 = off). */
+  async cameraPipSet(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.pip_set", options);
+  }
+
+  /** Conference: per-camera microphone level (0..1) of the open cameras. */
+  async cameraAudioLevels(): Promise<Record<string, unknown>> {
+    return this.rpc("camera.audio_levels", {});
+  }
+
+  /** Conference auto-director: follow the loudest camera automatically. */
+  async cameraAutoDirector(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("camera.auto_director", options);
+  }
+
   async recordingMicrophones(): Promise<Record<string, unknown>> {
     return this.rpc("recording.microphones");
   }

@@ -998,6 +998,11 @@ void renderProgramFrameCpu(const Options &options,
     if (mediaLayerIsPip) {
       drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
     }
+    // Conference: fullscreen content (e.g. a PDF) fills the frame over the
+    // un-keyed camera. Meeting keeps the raw camera here (conferenceMode=false).
+    if (snapshot.conferenceMode && mediaLayerIsFullscreen) {
+      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+    }
   }
 
   drawGraphics(output, options.width, options.height, snapshot.graphics);
@@ -1011,6 +1016,7 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
   std::lock_guard<std::mutex> lock(state.mutex);
   CompositorSnapshot snapshot;
   snapshot.keyerEnabled = state.keyerEnabled;
+  snapshot.conferenceMode = state.conferenceMode;
   snapshot.backgroundMode = state.backgroundMode;
   snapshot.speakerLayout = state.speakerLayout;
   snapshot.cornerbug = state.cornerbug;
@@ -1018,6 +1024,73 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
   snapshot.graphics = state.graphics;
   snapshot.cameraRender = state.cameraRender;
   return snapshot;
+}
+
+// Draws a second live camera as a picture-in-picture inset in the bottom-right
+// corner of the finished program frame. Runs on the CPU over the final RGBA
+// output, so it works after either the GPU or CPU main compositing path.
+void drawCameraPipInset(std::vector<uint8_t> &output, uint32_t width,
+                        uint32_t height, const VideoFrame &pip) {
+  if (pip.rgba.empty() || pip.width == 0u || pip.height == 0u) {
+    return;
+  }
+  // ~28% of program width, keeping the PiP camera's aspect ratio.
+  const uint32_t insetW = std::max<uint32_t>(1u, (width * 28u) / 100u);
+  const uint32_t insetH = std::max<uint32_t>(
+      1u, static_cast<uint32_t>((static_cast<uint64_t>(insetW) * pip.height) /
+                                pip.width));
+  const uint32_t margin = std::max<uint32_t>(8u, width / 80u);
+  const uint32_t border = std::max<uint32_t>(2u, width / 480u);
+  if (insetW + margin >= width || insetH + margin >= height) {
+    return;
+  }
+  const uint32_t x0 = width - insetW - margin;
+  const uint32_t y0 = height - insetH - margin;
+
+  // Border frame behind the inset.
+  for (uint32_t y = y0 - border; y < y0 + insetH + border; ++y) {
+    for (uint32_t x = x0 - border; x < x0 + insetW + border; ++x) {
+      blendPixel(output, width, height, static_cast<int>(x),
+                 static_cast<int>(y), 235, 238, 242, 255);
+    }
+  }
+  // Nearest-neighbour downscale of the PiP camera into the inset.
+  for (uint32_t y = 0; y < insetH; ++y) {
+    const uint32_t sy = std::min(
+        pip.height - 1u,
+        static_cast<uint32_t>((static_cast<uint64_t>(y) * pip.height) / insetH));
+    for (uint32_t x = 0; x < insetW; ++x) {
+      const uint32_t sx = std::min(
+          pip.width - 1u,
+          static_cast<uint32_t>((static_cast<uint64_t>(x) * pip.width) / insetW));
+      const size_t s = (static_cast<size_t>(sy) * pip.width + sx) * 4u;
+      blendPixel(output, width, height, static_cast<int>(x0 + x),
+                 static_cast<int>(y0 + y), pip.rgba[s + 0], pip.rgba[s + 1],
+                 pip.rgba[s + 2], 255);
+    }
+  }
+}
+
+// Conference: overlay the content (PDF/media) on the finished program frame,
+// over the un-keyed camera. Runs on the CPU over the final RGBA output, after
+// either GPU compositing path. The front graphics (lower thirds, overlays) are
+// then re-drawn on top so they stay above the content, matching how they sit
+// above the camera. No-op for meeting, where content is a backplate behind the
+// keyed presenter.
+void drawConferenceContentOverlay(std::vector<uint8_t> &output,
+                                  const Options &options,
+                                  const CompositorSnapshot &snapshot,
+                                  const VideoFrame *frontGraphicsFrame) {
+  if (!snapshot.conferenceMode || !snapshot.mediaLayer.enabled) {
+    return;
+  }
+  drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+  // Front graphics (lower thirds, overlays) go back on top of the content so
+  // they stay above it, the same way they sit above the camera. drawGraphicsFrame
+  // is bounds-checked and a no-op when the frame is null/empty.
+  if (frontGraphicsFrame != nullptr && !frontGraphicsFrame->rgba.empty()) {
+    drawGraphicsFrame(output, options.width, options.height, frontGraphicsFrame);
+  }
 }
 
 std::string renderProgramFrame(const Options &options,
@@ -1033,7 +1106,10 @@ std::string renderProgramFrame(const Options &options,
   // back-buffer copy stay on the CPU; the heavy full-frame multi-layer blend
   // moves to the GPU (previously any content forced the full CPU compositor).
   const VideoFrame *effectiveBack = backGraphicsFrame;
-  if (snapshot.mediaLayer.enabled) {
+  // Conference draws content OVER the un-keyed camera, so it is NOT baked into
+  // the back layer here (that would hide it behind the opaque camera). It is
+  // overlaid on the finished frame after compositing instead (see below).
+  if (snapshot.mediaLayer.enabled && !snapshot.conferenceMode) {
     // Rebuild the baked layer only when its inputs change (content page,
     // transform or the back-graphics frame) instead of every frame. The stable
     // timestamp also lets the GPU skip re-uploading the unchanged texture.
@@ -1063,17 +1139,26 @@ std::string renderProgramFrame(const Options &options,
   }
 
   if (canUseGpuCompositor(snapshot)) {
+    // Conference content is overlaid on the CPU after compositing and re-draws
+    // the front graphics on top of the content — so let the GPU skip the front
+    // layer here to avoid a wasted full-frame blend it would only be covered.
+    const VideoFrame *gpuFrontGraphics =
+        (snapshot.conferenceMode && snapshot.mediaLayer.enabled)
+            ? nullptr
+            : frontGraphicsFrame;
     const GpuComposePlan plan = buildGpuPlan(
         options, snapshot, cameraFrame, cameraMask, effectiveBack,
-        frontGraphicsFrame, frameIndex);
+        gpuFrontGraphics, frameIndex);
 #if defined(__APPLE__)
     if (metalCompositorAvailable() && renderProgramFrameMetal(plan, output)) {
+      drawConferenceContentOverlay(output, options, snapshot, frontGraphicsFrame);
       drawGraphics(output, options.width, options.height, snapshot.graphics);
       drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
       return "metal";
     }
 #elif defined(_WIN32)
     if (d3d11CompositorAvailable() && renderProgramFrameD3D11(plan, output)) {
+      drawConferenceContentOverlay(output, options, snapshot, frontGraphicsFrame);
       drawGraphics(output, options.width, options.height, snapshot.graphics);
       drawCornerbug(output, options.width, options.height, snapshot.cornerbug);
       return "d3d11";

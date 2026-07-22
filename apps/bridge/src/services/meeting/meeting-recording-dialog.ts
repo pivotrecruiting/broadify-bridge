@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { platform as osPlatform } from "node:os";
+import { homedir, platform as osPlatform } from "node:os";
+import { join } from "node:path";
 
 /**
  * Shows the native macOS "save file" panel via osascript and returns the chosen
@@ -55,4 +56,24 @@ export async function pickRecordingSavePath(
       },
     );
   });
+}
+
+/**
+ * Builds a default absolute .mp4 recording path for headless triggers (e.g. the
+ * Stream Deck REC key) that cannot open the native save panel. Writes into the
+ * user's standard Movies (macOS/Linux) or Videos (Windows) folder with a
+ * timestamped file name. The result is a well-formed absolute .mp4 path with no
+ * parent traversal, so it passes the relay boundary's isSafeRecordingPath guard.
+ */
+export function buildDefaultRecordingPath(now = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  const stamp =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+  const fileName = `Broadify-Meeting-${stamp}.mp4`;
+  const baseDir =
+    osPlatform() === "win32"
+      ? join(homedir(), "Videos")
+      : join(homedir(), "Movies");
+  return join(baseDir, fileName);
 }

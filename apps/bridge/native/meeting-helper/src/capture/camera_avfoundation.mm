@@ -6,6 +6,7 @@
 #include "util/json_utils.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <Accelerate/Accelerate.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
@@ -15,6 +16,8 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 
@@ -23,7 +26,13 @@ class AvFoundationCameraSource;
 }
 
 @interface BroadifyCameraFrameDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
-- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner;
+- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner
+                  cameraIndex:(int)cameraIndex;
+@end
+
+@interface BroadifyCameraAudioDelegate : NSObject <AVCaptureAudioDataOutputSampleBufferDelegate>
+- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner
+                  cameraIndex:(int)cameraIndex;
 @end
 
 static NSArray<AVCaptureDevice *> *BroadifyDiscoverVideoDevices() {
@@ -101,6 +110,36 @@ bool requestCameraAccessBlockingOnMainThread() {
     granted = accessGranted;
     dispatch_semaphore_signal(semaphore);
   });
+  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  return granted == YES;
+}
+
+// V3 auto-director: microphone access is optional. Returns true only when the
+// user has authorized it, so the audio path is skipped (rather than silently
+// failing) when denied. Prompts once if the status is still undetermined.
+bool ensureMicrophoneAuthorization() {
+  const AVAuthorizationStatus status =
+      [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+  if (status == AVAuthorizationStatusAuthorized) {
+    return true;
+  }
+  if (status != AVAuthorizationStatusNotDetermined) {
+    return false;
+  }
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+  __block BOOL granted = NO;
+  void (^requestBlock)(void) = ^{
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+                             completionHandler:^(BOOL accessGranted) {
+                               granted = accessGranted;
+                               dispatch_semaphore_signal(semaphore);
+                             }];
+  };
+  if ([NSThread isMainThread]) {
+    requestBlock();
+  } else {
+    dispatch_async(dispatch_get_main_queue(), requestBlock);
+  }
   dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
   return granted == YES;
 }
@@ -214,82 +253,59 @@ class AvFoundationCameraSource final : public CameraSource {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    selectedIndex_ = camera->cameraIndex;
+    programIndex_ = camera->cameraIndex;
     lastError_.clear();
     return true;
   }
 
   bool start(int cameraIndex, uint32_t width, uint32_t height, uint32_t fps) override {
+    const int resolvedIndex = cameraIndex >= 0 ? cameraIndex : programIndex_;
+    return startSet({resolvedIndex}, width, height, fps);
+  }
+
+  bool startSet(const std::vector<int> &cameraIndices, uint32_t width,
+                uint32_t height, uint32_t fps) override {
     @autoreleasepool {
       stop();
+      if (cameraIndices.empty()) {
+        setError("No cameras requested.");
+        return false;
+      }
       if (!ensureAuthorization()) {
         setError("Camera permission was not granted.", "denied");
         return false;
       }
 
       const std::vector<CameraInfo> cameras = listCameras();
-      const int resolvedIndex = cameraIndex >= 0 ? cameraIndex : selectedIndex_;
-      const auto camera = std::find_if(cameras.begin(), cameras.end(), [resolvedIndex](const CameraInfo &info) {
-        return info.cameraIndex == resolvedIndex;
-      });
-      if (camera == cameras.end()) {
-        setError("Requested camera index is not available.");
+      std::map<int, std::shared_ptr<CameraStream>> opened;
+      for (int requestedIndex : cameraIndices) {
+        const auto camera = std::find_if(
+            cameras.begin(), cameras.end(),
+            [requestedIndex](const CameraInfo &info) {
+              return info.cameraIndex == requestedIndex;
+            });
+        if (camera == cameras.end()) {
+          setError("Requested camera index is not available.");
+          continue;
+        }
+        auto stream =
+            openStream(camera->cameraIndex, camera->cameraId, width, height, fps);
+        if (stream != nullptr) {
+          opened[camera->cameraIndex] = stream;
+        }
+      }
+
+      if (opened.empty()) {
+        setError("No requested camera could be opened.");
         return false;
       }
-
-      AVCaptureDevice *device = findDeviceByUniqueId(camera->cameraId);
-      if (device == nil) {
-        setError("Requested camera device was not found.");
-        return false;
-      }
-
-      configureCaptureFormat(device, width, height, fps);
-
-      NSError *inputError = nil;
-      AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&inputError];
-      if (input == nil) {
-        setError(inputError != nil ? [[inputError localizedDescription] UTF8String] : "Could not create camera input.");
-        return false;
-      }
-
-      AVCaptureSession *session = [[AVCaptureSession alloc] init];
-      session.sessionPreset = AVCaptureSessionPresetHigh;
-      if (![session canAddInput:input]) {
-        setError("Camera input cannot be added to capture session.");
-        return false;
-      }
-      [session addInput:input];
-      AVCaptureSessionPreset requestedPreset =
-          width <= 1280u && height <= 720u
-              ? AVCaptureSessionPreset1280x720
-              : AVCaptureSessionPreset1920x1080;
-      if ([session canSetSessionPreset:requestedPreset]) {
-        session.sessionPreset = requestedPreset;
-      }
-
-      AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
-      output.alwaysDiscardsLateVideoFrames = YES;
-      output.videoSettings = @{
-        (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
-      };
-      if (![session canAddOutput:output]) {
-        setError("Camera output cannot be added to capture session.");
-        return false;
-      }
-      [session addOutput:output];
-
-      dispatch_queue_t queue = dispatch_queue_create("com.broadify.meeting.camera", DISPATCH_QUEUE_SERIAL);
-      BroadifyCameraFrameDelegate *delegate = [[BroadifyCameraFrameDelegate alloc] initWithOwner:this];
-      [output setSampleBufferDelegate:delegate queue:queue];
 
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        session_ = session;
-        input_ = input;
-        output_ = output;
-        delegate_ = delegate;
-        queue_ = queue;
-        selectedIndex_ = camera->cameraIndex;
+        streams_ = opened;
+        programIndex_ = opened.count(cameraIndices.front())
+                            ? cameraIndices.front()
+                            : opened.begin()->first;
         targetWidth_ = width;
         targetHeight_ = height;
         targetFps_ = fps;
@@ -298,34 +314,67 @@ class AvFoundationCameraSource final : public CameraSource {
         permissionStatus_ = "authorized";
       }
 
-      [session startRunning];
+      for (auto &entry : opened) {
+        [entry.second->session startRunning];
+      }
       return true;
     }
   }
 
   void stop() override {
     @autoreleasepool {
-      AVCaptureSession *session = nil;
-      AVCaptureVideoDataOutput *output = nil;
+      std::map<int, std::shared_ptr<CameraStream>> streams;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        session = session_;
-        output = output_;
+        streams.swap(streams_);
         running_ = false;
-        session_ = nil;
-        input_ = nil;
-        output_ = nil;
-        delegate_ = nil;
-        queue_ = nil;
-        latestFrame_.rgba.clear();
       }
-      if (output != nil) {
-        [output setSampleBufferDelegate:nil queue:nil];
-      }
-      if (session != nil) {
-        [session stopRunning];
+      for (auto &entry : streams) {
+        if (entry.second->output != nil) {
+          [entry.second->output setSampleBufferDelegate:nil queue:nil];
+        }
+        if (entry.second->audioOutput != nil) {
+          [entry.second->audioOutput setSampleBufferDelegate:nil queue:nil];
+        }
+        if (entry.second->session != nil) {
+          [entry.second->session stopRunning];
+        }
       }
     }
+  }
+
+  bool setProgramCamera(int cameraIndex) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (streams_.count(cameraIndex) == 0) {
+      setErrorLocked("Requested program camera is not open.");
+      return false;
+    }
+    // Seamless: all cameras are already running; only the program pointer moves.
+    programIndex_ = cameraIndex;
+    lastError_.clear();
+    return true;
+  }
+
+  std::vector<int> activeCameraSet() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<int> indices;
+    indices.reserve(streams_.size());
+    for (const auto &entry : streams_) {
+      indices.push_back(entry.first);
+    }
+    return indices;
+  }
+
+  bool copyLatestFrameFrom(int cameraIndex, uint64_t lastTimestampNs,
+                           VideoFrame &frame) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = streams_.find(cameraIndex);
+    if (it == streams_.end() || !it->second->hasFrame ||
+        it->second->latestFrame.timestampNs == lastTimestampNs) {
+      return false;
+    }
+    frame = it->second->latestFrame;
+    return true;
   }
 
   bool isRunning() const override {
@@ -335,15 +384,30 @@ class AvFoundationCameraSource final : public CameraSource {
 
   int activeCameraIndex() const override {
     std::lock_guard<std::mutex> lock(mutex_);
-    return running_ ? selectedIndex_ : -1;
+    return running_ ? programIndex_ : -1;
   }
 
   bool copyLatestFrame(VideoFrame &frame) override {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!hasFrame_) {
+    const auto it = streams_.find(programIndex_);
+    if (it == streams_.end() || !it->second->hasFrame) {
       return false;
     }
-    frame = latestFrame_;
+    frame = it->second->latestFrame;
+    return true;
+  }
+
+  // Checks the timestamp before copying: the default implementation copies
+  // the full frame (~3.7 MB) first and only then compares, which wastes a
+  // copy on every poll where no new frame arrived.
+  bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = streams_.find(programIndex_);
+    if (it == streams_.end() || !it->second->hasFrame ||
+        it->second->latestFrame.timestampNs == lastTimestampNs) {
+      return false;
+    }
+    frame = it->second->latestFrame;
     return true;
   }
 
@@ -393,7 +457,7 @@ class AvFoundationCameraSource final : public CameraSource {
     }
   }
 
-  void handleSampleBuffer(CMSampleBufferRef sampleBuffer) {
+  void handleSampleBuffer(int cameraIndex, CMSampleBufferRef sampleBuffer) {
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (imageBuffer == nullptr) {
       return;
@@ -413,24 +477,104 @@ class AvFoundationCameraSource final : public CameraSource {
     frame.height = static_cast<uint32_t>(height);
     frame.timestampNs = nowNs();
     frame.rgba.resize(width * height * 4u);
-    for (size_t y = 0; y < height; ++y) {
-      const uint8_t *row = src + y * stride;
-      uint8_t *dst = frame.rgba.data() + y * width * 4u;
-      for (size_t x = 0; x < width; ++x) {
-        dst[x * 4u + 0u] = row[x * 4u + 2u];
-        dst[x * 4u + 1u] = row[x * 4u + 1u];
-        dst[x * 4u + 2u] = row[x * 4u + 0u];
-        dst[x * 4u + 3u] = row[x * 4u + 3u];
-      }
-    }
+    // SIMD-accelerated BGRA->RGBA swizzle; the scalar per-pixel loop cost
+    // several milliseconds per frame at 30fps.
+    vImage_Buffer sourceBuffer;
+    sourceBuffer.data = const_cast<uint8_t *>(src);
+    sourceBuffer.height = height;
+    sourceBuffer.width = width;
+    sourceBuffer.rowBytes = stride;
+    vImage_Buffer destinationBuffer;
+    destinationBuffer.data = frame.rgba.data();
+    destinationBuffer.height = height;
+    destinationBuffer.width = width;
+    destinationBuffer.rowBytes = width * 4u;
+    const uint8_t kBgraToRgba[4] = {2, 1, 0, 3};
+    const vImage_Error permuteStatus =
+        vImagePermuteChannels_ARGB8888(&sourceBuffer, &destinationBuffer, kBgraToRgba, kvImageNoFlags);
     CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
+    if (permuteStatus != kvImageNoError) {
+      return;
+    }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    latestFrame_ = std::move(frame);
-    hasFrame_ = true;
+    const auto it = streams_.find(cameraIndex);
+    if (it == streams_.end()) {
+      return;  // Stream was torn down between delivery and lock.
+    }
+    it->second->latestFrame = std::move(frame);
+    it->second->hasFrame = true;
+  }
+
+  void handleAudioSample(int cameraIndex, CMSampleBufferRef sampleBuffer) {
+    CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sampleBuffer);
+    if (block == nullptr) {
+      return;
+    }
+    size_t length = 0;
+    char *data = nullptr;
+    if (CMBlockBufferGetDataPointer(block, 0, nullptr, &length, &data) !=
+            kCMBlockBufferNoErr ||
+        data == nullptr || length == 0) {
+      return;
+    }
+
+    // AVCaptureAudioDataOutput delivers linear PCM but the concrete format
+    // varies by device (macOS defaults to 32-bit float; some mics deliver
+    // 16-bit signed int). Read the actual sample layout instead of assuming.
+    CMFormatDescriptionRef format =
+        CMSampleBufferGetFormatDescription(sampleBuffer);
+    const AudioStreamBasicDescription *asbd =
+        format != nullptr
+            ? CMAudioFormatDescriptionGetStreamBasicDescription(format)
+            : nullptr;
+    if (asbd == nullptr) {
+      return;
+    }
+    const bool isFloat =
+        (asbd->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+    const uint32_t bits = asbd->mBitsPerChannel;
+
+    double sumSquares = 0.0;
+    size_t count = 0;
+    if (isFloat && bits == 32) {
+      const float *samples = reinterpret_cast<const float *>(data);
+      count = length / sizeof(float);
+      for (size_t i = 0; i < count; ++i) {
+        sumSquares += static_cast<double>(samples[i]) * samples[i];
+      }
+    } else if (!isFloat && bits == 16) {
+      const int16_t *samples = reinterpret_cast<const int16_t *>(data);
+      count = length / sizeof(int16_t);
+      for (size_t i = 0; i < count; ++i) {
+        const double s = samples[i] / 32768.0;
+        sumSquares += s * s;
+      }
+    } else if (!isFloat && bits == 32) {
+      const int32_t *samples = reinterpret_cast<const int32_t *>(data);
+      count = length / sizeof(int32_t);
+      for (size_t i = 0; i < count; ++i) {
+        const double s = samples[i] / 2147483648.0;
+        sumSquares += s * s;
+      }
+    } else {
+      return;  // Unsupported layout — leave the level unchanged.
+    }
+    const float rms =
+        count > 0 ? static_cast<float>(std::sqrt(sumSquares / count)) : 0.0f;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = streams_.find(cameraIndex);
+    if (it == streams_.end()) {
+      return;
+    }
+    // Exponential smoothing so brief transients do not dominate.
+    it->second->audioLevel = 0.6f * it->second->audioLevel + 0.4f * rms;
   }
 
  private:
+  void setErrorLocked(const std::string &error) { lastError_ = error; }
+
   bool ensureAuthorization() {
     AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
     if (status == AVAuthorizationStatusAuthorized) {
@@ -473,33 +617,188 @@ class AvFoundationCameraSource final : public CameraSource {
     }
   }
 
+  // One open camera. Each holds its own AVFoundation objects and a private
+  // dispatch queue (a shared queue throttled the measured fps from 30 to 21).
+  struct CameraStream {
+    int cameraIndex = -1;
+    AVCaptureSession *session = nil;
+    AVCaptureDeviceInput *input = nil;
+    AVCaptureVideoDataOutput *output = nil;
+    BroadifyCameraFrameDelegate *delegate = nil;
+    dispatch_queue_t queue = nil;
+    VideoFrame latestFrame;
+    bool hasFrame = false;
+    // V3 auto-director: paired microphone level (smoothed RMS, 0..1).
+    AVCaptureDeviceInput *audioInput = nil;
+    AVCaptureAudioDataOutput *audioOutput = nil;
+    BroadifyCameraAudioDelegate *audioDelegate = nil;
+    dispatch_queue_t audioQueue = nil;
+    float audioLevel = 0.0f;
+  };
+
+  // Opens a camera device into a new stream (not yet added to streams_).
+  std::shared_ptr<CameraStream> openStream(int cameraIndex,
+                                           const std::string &cameraId,
+                                           uint32_t width, uint32_t height,
+                                           uint32_t fps) {
+    AVCaptureDevice *device = findDeviceByUniqueId(cameraId);
+    if (device == nil) {
+      setError("Requested camera device was not found.");
+      return nullptr;
+    }
+    configureCaptureFormat(device, width, height, fps);
+
+    NSError *inputError = nil;
+    AVCaptureDeviceInput *input =
+        [AVCaptureDeviceInput deviceInputWithDevice:device error:&inputError];
+    if (input == nil) {
+      setError(inputError != nil
+                   ? [[inputError localizedDescription] UTF8String]
+                   : "Could not create camera input.");
+      return nullptr;
+    }
+
+    AVCaptureSession *session = [[AVCaptureSession alloc] init];
+    session.sessionPreset = AVCaptureSessionPresetHigh;
+    if (![session canAddInput:input]) {
+      setError("Camera input cannot be added to capture session.");
+      return nullptr;
+    }
+    [session addInput:input];
+    AVCaptureSessionPreset requestedPreset =
+        width <= 1280u && height <= 720u ? AVCaptureSessionPreset1280x720
+                                         : AVCaptureSessionPreset1920x1080;
+    if ([session canSetSessionPreset:requestedPreset]) {
+      session.sessionPreset = requestedPreset;
+    }
+
+    AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
+    output.alwaysDiscardsLateVideoFrames = YES;
+    output.videoSettings = @{
+      (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey:
+          @(kCVPixelFormatType_32BGRA)
+    };
+    if (![session canAddOutput:output]) {
+      setError("Camera output cannot be added to capture session.");
+      return nullptr;
+    }
+    [session addOutput:output];
+
+    auto stream = std::make_shared<CameraStream>();
+    stream->cameraIndex = cameraIndex;
+    stream->session = session;
+    stream->input = input;
+    stream->output = output;
+    stream->queue = dispatch_queue_create(
+        [[NSString stringWithFormat:@"com.broadify.meeting.camera.%d",
+                                    cameraIndex] UTF8String],
+        DISPATCH_QUEUE_SERIAL);
+    stream->delegate =
+        [[BroadifyCameraFrameDelegate alloc] initWithOwner:this
+                                               cameraIndex:cameraIndex];
+    [output setSampleBufferDelegate:stream->delegate queue:stream->queue];
+
+    // V3 auto-director: attach the camera's paired microphone (matched by
+    // device name) so we can measure per-camera speech level. Best-effort —
+    // cameras without a microphone simply report a zero level.
+    const bool micAuthorized = ensureMicrophoneAuthorization();
+    AVCaptureDevice *audioDevice =
+        micAuthorized ? findMatchingAudioDevice(device) : nil;
+    if (audioDevice != nil) {
+      NSError *audioError = nil;
+      AVCaptureDeviceInput *audioInput =
+          [AVCaptureDeviceInput deviceInputWithDevice:audioDevice
+                                                error:&audioError];
+      if (audioInput != nil && [session canAddInput:audioInput]) {
+        [session addInput:audioInput];
+        AVCaptureAudioDataOutput *audioOutput =
+            [[AVCaptureAudioDataOutput alloc] init];
+        stream->audioQueue = dispatch_queue_create(
+            [[NSString stringWithFormat:@"com.broadify.meeting.audio.%d",
+                                        cameraIndex] UTF8String],
+            DISPATCH_QUEUE_SERIAL);
+        stream->audioDelegate = [[BroadifyCameraAudioDelegate alloc]
+            initWithOwner:this
+              cameraIndex:cameraIndex];
+        [audioOutput setSampleBufferDelegate:stream->audioDelegate
+                                       queue:stream->audioQueue];
+        if ([session canAddOutput:audioOutput]) {
+          [session addOutput:audioOutput];
+          stream->audioInput = audioInput;
+          stream->audioOutput = audioOutput;
+        }
+      }
+    }
+    return stream;
+  }
+
+  // Finds the microphone paired with a camera: prefer one whose name shares a
+  // meaningful prefix (e.g. "iPhone" camera <-> "Mikrofon von iPhone"), else a
+  // same-manufacturer external mic. Returns nil when nothing matches.
+  AVCaptureDevice *findMatchingAudioDevice(AVCaptureDevice *cameraDevice) {
+    NSString *cameraName = [cameraDevice localizedName];
+    if (cameraName.length == 0) {
+      return nil;
+    }
+    NSArray<AVCaptureDevice *> *audioDevices = [AVCaptureDeviceDiscoverySession
+        discoverySessionWithDeviceTypes:@[
+          AVCaptureDeviceTypeBuiltInMicrophone,
+          AVCaptureDeviceTypeExternalUnknown
+        ]
+                              mediaType:AVMediaTypeAudio
+                               position:AVCaptureDevicePositionUnspecified]
+        .devices;
+    for (AVCaptureDevice *audio in audioDevices) {
+      NSString *audioName = [audio localizedName];
+      // Match on any shared word >= 4 chars (e.g. "iPhone", device brand).
+      for (NSString *word in
+           [cameraName componentsSeparatedByString:@" "]) {
+        if (word.length >= 4 &&
+            [audioName rangeOfString:word
+                             options:NSCaseInsensitiveSearch]
+                    .location != NSNotFound) {
+          return audio;
+        }
+      }
+    }
+    return nil;
+  }
+
+  std::map<int, float> cameraAudioLevels() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::map<int, float> levels;
+    for (const auto &entry : streams_) {
+      levels[entry.first] = entry.second->audioLevel;
+    }
+    return levels;
+  }
+
   mutable std::mutex mutex_;
   bool running_ = false;
-  bool hasFrame_ = false;
-  int selectedIndex_ = 0;
+  int programIndex_ = 0;
   uint32_t targetWidth_ = 1280;
   uint32_t targetHeight_ = 720;
   uint32_t targetFps_ = 30;
   std::string lastError_;
   std::string permissionStatus_ = "unknown";
-  VideoFrame latestFrame_;
-  AVCaptureSession *session_ = nil;
-  AVCaptureDeviceInput *input_ = nil;
-  AVCaptureVideoDataOutput *output_ = nil;
-  BroadifyCameraFrameDelegate *delegate_ = nil;
-  dispatch_queue_t queue_ = nil;
+  // All currently open cameras, keyed by camera index. programIndex_ selects
+  // which one feeds copyLatestFrame (the program feed).
+  std::map<int, std::shared_ptr<CameraStream>> streams_;
 };
 
 }  // namespace broadify::meeting
 
 @implementation BroadifyCameraFrameDelegate {
   broadify::meeting::AvFoundationCameraSource *_owner;
+  int _cameraIndex;
 }
 
-- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner {
+- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner
+                  cameraIndex:(int)cameraIndex {
   self = [super init];
   if (self) {
     _owner = owner;
+    _cameraIndex = cameraIndex;
   }
   return self;
 }
@@ -510,7 +809,34 @@ class AvFoundationCameraSource final : public CameraSource {
   (void)output;
   (void)connection;
   if (_owner != nullptr) {
-    _owner->handleSampleBuffer(sampleBuffer);
+    _owner->handleSampleBuffer(_cameraIndex, sampleBuffer);
+  }
+}
+
+@end
+
+@implementation BroadifyCameraAudioDelegate {
+  broadify::meeting::AvFoundationCameraSource *_owner;
+  int _cameraIndex;
+}
+
+- (instancetype)initWithOwner:(broadify::meeting::AvFoundationCameraSource *)owner
+                  cameraIndex:(int)cameraIndex {
+  self = [super init];
+  if (self) {
+    _owner = owner;
+    _cameraIndex = cameraIndex;
+  }
+  return self;
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+    didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+           fromConnection:(AVCaptureConnection *)connection {
+  (void)output;
+  (void)connection;
+  if (_owner != nullptr) {
+    _owner->handleAudioSample(_cameraIndex, sampleBuffer);
   }
 }
 

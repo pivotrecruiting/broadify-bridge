@@ -10,9 +10,24 @@ import {
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
   MeetingRecordingStartSchema,
+  MeetingCallControlSchema,
+  ConferenceDisplayStartSchema,
 } from "./meeting-command-schemas.js";
+import {
+  executeMeetingCallControl,
+  MeetingCallControlError,
+} from "./meeting-call-control.js";
+import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
+import {
+  conferenceDirectorService,
+  parseDirectorConfigPatch,
+  parseInjectReading,
+} from "../conference/director/conference-director-service.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
-import { pickRecordingSavePath } from "./meeting-recording-dialog.js";
+import {
+  buildDefaultRecordingPath,
+  pickRecordingSavePath,
+} from "./meeting-recording-dialog.js";
 import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
@@ -24,6 +39,7 @@ import {
   meetingFrontGraphicsManager,
 } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
+import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
 
 type MeetingCommandResultT = {
   success: boolean;
@@ -121,8 +137,19 @@ function clearMeetingGraphicsFrameBus(
  * Check whether a command is a meeting command.
  */
 export function isMeetingCommand(command: string): boolean {
-  return command.startsWith("meeting_");
+  return command.startsWith("meeting_") || command.startsWith("conference_");
 }
+
+const conferenceDisplayOutput = new ConferenceDisplayOutput();
+
+// The auto-director cuts the program feed via the meeting helper's seamless
+// camera.program_select. It only fires while the engine is running.
+conferenceDirectorService.setSwitcher(async (cameraIndex) => {
+  const client = meetingHelperManager.getClient();
+  if (client && meetingHelperManager.isRunning()) {
+    await client.cameraProgramSelect({ camera_index: cameraIndex });
+  }
+});
 
 /**
  * Handle a meeting_* relay command by delegating to the engine manager
@@ -202,6 +229,54 @@ export async function handleMeetingCommand(
       return runMeetingRpc(() => requireClient().cameraStop());
     }
 
+    case "meeting_camera_open_set": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_camera_open_set",
+      );
+      return runMeetingRpc(() => requireClient().cameraOpenSet(options));
+    }
+
+    case "meeting_camera_program_select": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_camera_program_select",
+      );
+      const result = await runMeetingRpc(() =>
+        requireClient().cameraProgramSelect(options),
+      );
+      // Keep the auto-director aligned with a manual cut so its next decision
+      // compares against the shot that is actually on program.
+      if (result.success && typeof options.camera_index === "number") {
+        conferenceDirectorService.setCurrentCamera(options.camera_index);
+      }
+      return result;
+    }
+
+    case "meeting_camera_pip_set": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_camera_pip_set",
+      );
+      return runMeetingRpc(() => requireClient().cameraPipSet(options));
+    }
+
+    case "meeting_camera_audio_levels": {
+      return runMeetingRpc(() => requireClient().cameraAudioLevels());
+    }
+
+    case "meeting_camera_auto_director": {
+      const options = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for meeting_camera_auto_director",
+      );
+      return runMeetingRpc(() => requireClient().cameraAutoDirector(options));
+    }
+
     case "meeting_recording_microphones": {
       return runMeetingRpc(() => requireClient().recordingMicrophones());
     }
@@ -234,15 +309,69 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_recording_start",
       );
-      return runMeetingRpc(() => requireClient().recordingStart(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().recordingStart(options),
+      );
+      // Mirror the live recording state on any Stream Deck REC key, regardless
+      // of whether the start was triggered from the webapp or a deck key.
+      if (result.success) {
+        streamDeckManager.setRecordingActive(true);
+      }
+      return result;
     }
 
     case "meeting_recording_stop": {
-      return runMeetingRpc(() => requireClient().recordingStop());
+      const result = await runMeetingRpc(() => requireClient().recordingStop());
+      if (result.success) {
+        streamDeckManager.setRecordingActive(false);
+      }
+      return result;
     }
 
     case "meeting_recording_status": {
       return runMeetingRpc(() => requireClient().recordingStatus());
+    }
+
+    case "meeting_recording_toggle": {
+      // Headless trigger (Stream Deck REC key): no native save panel is
+      // available, so read the live recording state and either stop an active
+      // recording or start one at a default path. Mirrors the deck REC key
+      // regardless of who triggered the change.
+      const status = await runMeetingRpc(() =>
+        requireClient().recordingStatus(),
+      );
+      if (!status.success) {
+        return status;
+      }
+      const recording = (status.data as { recording?: { active?: unknown } })
+        ?.recording;
+      const isActive = recording?.active === true;
+
+      if (isActive) {
+        const result = await runMeetingRpc(() =>
+          requireClient().recordingStop(),
+        );
+        if (result.success) {
+          streamDeckManager.setRecordingActive(false);
+        }
+        return result;
+      }
+
+      // No path can be picked headlessly, so fall back to a timestamped file in
+      // the user's standard videos folder (same target shape the save panel
+      // would return); validated through the same schema as the webapp start.
+      const options = parseRelayPayload(
+        MeetingRecordingStartSchema,
+        { file_path: buildDefaultRecordingPath() },
+        "Invalid payload for meeting_recording_toggle",
+      );
+      const result = await runMeetingRpc(() =>
+        requireClient().recordingStart(options),
+      );
+      if (result.success) {
+        streamDeckManager.setRecordingActive(true);
+      }
+      return result;
     }
 
     case "meeting_keyer_get": {
@@ -360,6 +489,123 @@ export async function handleMeetingCommand(
           fps,
         },
       };
+    }
+
+    case "meeting_call_control": {
+      const { platform, action } = parseRelayPayload(
+        MeetingCallControlSchema,
+        payload ?? {},
+        "Invalid payload for meeting_call_control",
+      );
+      try {
+        // Independent of the meeting engine: controls the external client.
+        return { success: true, data: await executeMeetingCallControl(platform, action) };
+      } catch (error: unknown) {
+        if (error instanceof MeetingCallControlError) {
+          return { success: false, error: error.message, errorCode: error.code };
+        }
+        throw error;
+      }
+    }
+
+    case "conference_display_start": {
+      const target = parseRelayPayload(
+        ConferenceDisplayStartSchema,
+        payload ?? {},
+        "Invalid payload for conference_display_start",
+      );
+      try {
+        await conferenceDisplayOutput.start({
+          matchName: target.match_name,
+          matchWidth: target.match_width,
+          matchHeight: target.match_height,
+        });
+        return { success: true, data: conferenceDisplayOutput.status() };
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Conference display failed to start",
+          data: conferenceDisplayOutput.status(),
+        };
+      }
+    }
+
+    case "conference_display_stop": {
+      await conferenceDisplayOutput.stop();
+      return { success: true, data: conferenceDisplayOutput.status() };
+    }
+
+    case "conference_display_status": {
+      return { success: true, data: conferenceDisplayOutput.status() };
+    }
+
+    case "conference_director_configure": {
+      const patch = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for conference_director_configure",
+      );
+      const config = conferenceDirectorService.configure(
+        parseDirectorConfigPatch(patch),
+      );
+      return {
+        success: true,
+        data: { config, status: conferenceDirectorService.status() },
+      };
+    }
+
+    case "conference_director_start": {
+      const patch = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for conference_director_start",
+      );
+      if (Object.keys(patch).length > 0) {
+        conferenceDirectorService.configure(parseDirectorConfigPatch(patch));
+      }
+      // The webapp passes the live program camera; fall back to the wide shot
+      // (or camera 0) so the first decision compares against a sensible shot.
+      const initialCamera =
+        typeof patch.initial_camera === "number"
+          ? patch.initial_camera
+          : (conferenceDirectorService.status().wide_camera_index as
+              | number
+              | null) ?? 0;
+      try {
+        await conferenceDirectorService.start(initialCamera);
+        return { success: true, data: conferenceDirectorService.status() };
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Conference director failed to start",
+          data: conferenceDirectorService.status(),
+        };
+      }
+    }
+
+    case "conference_director_stop": {
+      await conferenceDirectorService.stop();
+      return { success: true, data: conferenceDirectorService.status() };
+    }
+
+    case "conference_director_status": {
+      return { success: true, data: conferenceDirectorService.status() };
+    }
+
+    case "conference_director_inject": {
+      const raw = parseRelayPayload(
+        MeetingPassthroughSchema,
+        payload ?? {},
+        "Invalid payload for conference_director_inject",
+      );
+      conferenceDirectorService.inject(parseInjectReading(raw));
+      return { success: true, data: conferenceDirectorService.status() };
     }
 
     default:

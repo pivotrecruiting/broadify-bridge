@@ -12,6 +12,7 @@ namespace broadify::meeting {
 
 struct CompositorSnapshot {
   bool keyerEnabled = false;
+  bool conferenceMode = false;
   std::string backgroundMode = "transparent";
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;
@@ -34,6 +35,11 @@ struct GpuCompositorSelfTestResult {
 };
 
 CompositorSnapshot copyCompositorSnapshot(const MeetingState &state);
+
+// Conference: overlay a second live camera as a picture-in-picture inset on a
+// finished program frame (bottom-right). No-op when the PiP frame is empty.
+void drawCameraPipInset(std::vector<uint8_t> &output, uint32_t width,
+                        uint32_t height, const VideoFrame &pip);
 
 std::string renderProgramFrame(const Options &options,
                                const CompositorSnapshot &snapshot,
