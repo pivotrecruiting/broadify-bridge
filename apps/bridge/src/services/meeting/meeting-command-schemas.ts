@@ -109,6 +109,33 @@ export const MeetingCallControlSchema = z.object({
   action: z.enum(["mic_toggle", "speaker_toggle", "hangup"]),
 });
 
+// Cloud-hosted asset fetches: the bridge downloads the file itself because
+// HTTPS webapps cannot POST to http://127.0.0.1 in every browser (Safari
+// blocks active mixed content). URLs are re-validated by the guarded
+// downloader (HTTPS only, public addresses, size caps).
+export const MeetingBackgroundImageFetchSchema = z
+  .object({
+    url: z.string().url().max(2048),
+  })
+  .strict();
+
+export const MeetingMediaFetchSchema = z
+  .object({
+    url: z.string().url().max(2048),
+    name: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/\.(pdf|pptx)$/i, "Only .pdf or .pptx files are supported."),
+  })
+  .strict();
+
+export const MeetingMediaGetSchema = z
+  .object({
+    asset_id: z.string().min(1).max(120),
+  })
+  .strict();
+
 export const ConferenceDisplayStartSchema = z.object({
   match_name: z.string().max(128).optional(),
   match_width: z.number().int().positive().max(16384).optional(),
