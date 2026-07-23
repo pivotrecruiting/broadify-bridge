@@ -13,6 +13,7 @@ export default tseslint.config(
 			'**/dist-react/**',
 			'**/native/**/build/**',
 			'**/node_modules/**',
+			'**/vendor/presentation-runtime/**',
 		],
 	},
 	{

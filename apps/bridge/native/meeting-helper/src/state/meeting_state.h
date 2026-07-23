@@ -35,6 +35,8 @@ struct MediaLayerState {
   double width = 0.34;
   double height = 0.28;
   double rotation = 0.0;
+  double rotationX = 0.0;
+  double rotationY = 0.0;
   std::string rawJson = "{\"enabled\":false,\"mode\":\"pip\",\"x\":0.58,\"y\":0.12,\"width\":0.34,\"height\":0.28,\"rotation\":0}";
 };
 
@@ -57,7 +59,18 @@ struct MeetingState {
   mutable std::mutex mutex;
   bool cameraRunning = false;
   int activeCameraIndex = -1;
+  // Conference: a second open camera drawn as picture-in-picture (-1 = off).
+  int pipCameraIndex = -1;
+  // Conference auto-director ("Auto-Regie"): when enabled, the program feed
+  // automatically follows the loudest camera microphone. Manual program
+  // selection stays authoritative while it is off.
+  bool autoDirectorEnabled = false;
+  // Minimum smoothed RMS (0..1) for a camera to count as "someone speaking".
+  float autoDirectorThreshold = 0.02f;
   bool keyerEnabled = false;
+  // Conference mode never keys. It also lets the compositor draw fullscreen
+  // content over the un-keyed camera (meeting keeps the camera on keyer-off).
+  bool conferenceMode = false;
   bool framebusRunning = true;
   bool vcamRawRunning = true;
   int previewClientCount = 0;
@@ -74,6 +87,8 @@ struct MeetingState {
   uint64_t publishedPreviewFrames = 0;
   uint64_t writtenFramebusFrames = 0;
   std::string backgroundMode = "transparent";
+  // Absolute file path of an uploaded company background image; empty = none.
+  std::string backgroundImagePath;
   std::string activeKeyer = "passthrough";
   std::string requestedKeyerModel = "modnet";
   std::string fallbackReason = "native_keyers_not_configured";

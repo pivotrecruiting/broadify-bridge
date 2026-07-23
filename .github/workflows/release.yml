@@ -29,36 +29,36 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SKIP_DECKLINK_HELPER_BUILD: "1"
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      VCAM_APP_PROVISION_PROFILE: ${{ secrets.VCAM_APP_PROVISION_PROFILE }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
-      AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
-      AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME }}
-      AZURE_CODE_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER_NAME }}
-      DECKLINK_HELPER_URL_ARM64: ${{ secrets.DECKLINK_HELPER_URL_ARM64 }}
-      DECKLINK_HELPER_SHA256_ARM64: ${{ secrets.DECKLINK_HELPER_SHA256_ARM64 }}
-      DECKLINK_HELPER_URL_X64: ${{ secrets.DECKLINK_HELPER_URL_X64 }}
-      DECKLINK_HELPER_SHA256_X64: ${{ secrets.DECKLINK_HELPER_SHA256_X64 }}
-      SDL2_MACOS_URL_ARM64: ${{ secrets.SDL2_MACOS_URL_ARM64 }}
-      SDL2_MACOS_SHA256_ARM64: ${{ secrets.SDL2_MACOS_SHA256_ARM64 }}
-      SDL2_MACOS_URL_X64: ${{ secrets.SDL2_MACOS_URL_X64 }}
-      SDL2_MACOS_SHA256_X64: ${{ secrets.SDL2_MACOS_SHA256_X64 }}
-      PRESENTATION_RUNTIME_URL_ARM64: ${{ secrets.PRESENTATION_RUNTIME_URL_ARM64 }}
-      PRESENTATION_RUNTIME_SHA256_ARM64: ${{ secrets.PRESENTATION_RUNTIME_SHA256_ARM64 }}
+      APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-15' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+      CSC_LINK: ${{ matrix.os == 'macos-15' && secrets.CSC_LINK || '' }}
+      CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-15' && secrets.CSC_KEY_PASSWORD || '' }}
+      APPLE_API_KEY: ${{ matrix.os == 'macos-15' && secrets.APPLE_API_KEY || '' }}
+      APPLE_API_KEY_ID: ${{ matrix.os == 'macos-15' && secrets.APPLE_API_KEY_ID || '' }}
+      APPLE_API_ISSUER: ${{ matrix.os == 'macos-15' && secrets.APPLE_API_ISSUER || '' }}
+      VCAM_APP_PROVISION_PROFILE: ${{ matrix.os == 'macos-15' && secrets.VCAM_APP_PROVISION_PROFILE || '' }}
+      AZURE_TENANT_ID: ${{ matrix.os == 'windows-2022' && secrets.AZURE_TENANT_ID || '' }}
+      AZURE_CLIENT_ID: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CLIENT_ID || '' }}
+      AZURE_CLIENT_SECRET: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CLIENT_SECRET || '' }}
+      AZURE_CODE_SIGNING_ENDPOINT: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CODE_SIGNING_ENDPOINT || '' }}
+      AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME || '' }}
+      AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME || '' }}
+      AZURE_CODE_SIGNING_PUBLISHER_NAME: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CODE_SIGNING_PUBLISHER_NAME || '' }}
+      DECKLINK_HELPER_URL_ARM64: ${{ matrix.os == 'macos-15' && secrets.DECKLINK_HELPER_URL_ARM64 || '' }}
+      DECKLINK_HELPER_SHA256_ARM64: ${{ matrix.os == 'macos-15' && secrets.DECKLINK_HELPER_SHA256_ARM64 || '' }}
+      DECKLINK_HELPER_URL_X64: ${{ matrix.os == 'macos-15' && secrets.DECKLINK_HELPER_URL_X64 || '' }}
+      DECKLINK_HELPER_SHA256_X64: ${{ matrix.os == 'macos-15' && secrets.DECKLINK_HELPER_SHA256_X64 || '' }}
+      SDL2_MACOS_URL_ARM64: ${{ matrix.os == 'macos-15' && secrets.SDL2_MACOS_URL_ARM64 || '' }}
+      SDL2_MACOS_SHA256_ARM64: ${{ matrix.os == 'macos-15' && secrets.SDL2_MACOS_SHA256_ARM64 || '' }}
+      SDL2_MACOS_URL_X64: ${{ matrix.os == 'macos-15' && secrets.SDL2_MACOS_URL_X64 || '' }}
+      SDL2_MACOS_SHA256_X64: ${{ matrix.os == 'macos-15' && secrets.SDL2_MACOS_SHA256_X64 || '' }}
+      PRESENTATION_RUNTIME_URL_ARM64: ${{ matrix.os == 'macos-15' && secrets.PRESENTATION_RUNTIME_URL_ARM64 || '' }}
+      PRESENTATION_RUNTIME_SHA256_ARM64: ${{ matrix.os == 'macos-15' && secrets.PRESENTATION_RUNTIME_SHA256_ARM64 || '' }}
       BRIDGE_RELAY_JWKS_URL: ${{ secrets.BRIDGE_RELAY_JWKS_URL }}
       RELAY_URL: ${{ secrets.RELAY_URL }}
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
-      MODNET_MODEL_URL: ${{ secrets.MODNET_MODEL_URL }}
-      MODNET_COREML_MODEL_URL: ${{ secrets.MODNET_COREML_MODEL_URL }}
+      MODNET_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_MODEL_URL || '' }}
+      MODNET_COREML_MODEL_URL: ${{ matrix.os == 'macos-15' && secrets.MODNET_COREML_MODEL_URL || '' }}
       DISPLAY_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       DECKLINK_HELPER_MACOSX_DEPLOYMENT_TARGET: "13.0"
       MACOS_FLOOR_VERSION: "13.0"
@@ -86,11 +86,13 @@ jobs:
             RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL_RC:-}"
           fi
 
-          if [[ "$CHANNEL" == "rc" ]]; then
-            if [[ -z "$RESOLVED_RELAY_URL" || -z "$RESOLVED_RELAY_JWKS_URL" ]]; then
+          if [[ -z "$RESOLVED_RELAY_URL" || -z "$RESOLVED_RELAY_JWKS_URL" ]]; then
+            if [[ "$CHANNEL" == "rc" ]]; then
               echo "RC releases require RELAY_URL_RC and BRIDGE_RELAY_JWKS_URL_RC secrets." >&2
-              exit 1
+            else
+              echo "Stable releases require RELAY_URL and BRIDGE_RELAY_JWKS_URL secrets." >&2
             fi
+            exit 1
           fi
 
           echo "BROADIFY_UPDATER_CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
@@ -99,6 +101,62 @@ jobs:
           echo "Resolved updater channel: $CHANNEL"
           if [[ -n "$RESOLVED_RELAY_URL" ]]; then
             echo "Resolved relay URL for channel $CHANNEL."
+          fi
+
+      - name: Validate macOS release secrets
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUIRED_VARS=(
+            APPLE_SIGNING_IDENTITY
+            CSC_LINK
+            CSC_KEY_PASSWORD
+            APPLE_API_KEY
+            APPLE_API_KEY_ID
+            APPLE_API_ISSUER
+            VCAM_APP_PROVISION_PROFILE
+            MODNET_COREML_MODEL_URL
+            DECKLINK_HELPER_URL_ARM64
+            DECKLINK_HELPER_SHA256_ARM64
+            PRESENTATION_RUNTIME_URL_ARM64
+            PRESENTATION_RUNTIME_SHA256_ARM64
+          )
+          MISSING=()
+          for var_name in "${REQUIRED_VARS[@]}"; do
+            if [[ -z "${!var_name:-}" ]]; then
+              MISSING+=("$var_name")
+            fi
+          done
+          if (( ${#MISSING[@]} > 0 )); then
+            echo "Missing macOS release secrets: ${MISSING[*]}" >&2
+            exit 1
+          fi
+
+      - name: Validate Windows release secrets
+        if: matrix.os == 'windows-2022'
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUIRED_VARS=(
+            AZURE_TENANT_ID
+            AZURE_CLIENT_ID
+            AZURE_CLIENT_SECRET
+            AZURE_CODE_SIGNING_ENDPOINT
+            AZURE_CODE_SIGNING_ACCOUNT_NAME
+            AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME
+            AZURE_CODE_SIGNING_PUBLISHER_NAME
+            MODNET_MODEL_URL
+          )
+          MISSING=()
+          for var_name in "${REQUIRED_VARS[@]}"; do
+            if [[ -z "${!var_name:-}" ]]; then
+              MISSING+=("$var_name")
+            fi
+          done
+          if (( ${#MISSING[@]} > 0 )); then
+            echo "Missing Windows release secrets: ${MISSING[*]}" >&2
+            exit 1
           fi
 
       - name: Setup Node.js
@@ -276,85 +334,7 @@ jobs:
         if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $version = '1.24.4'
-          $pkg = "microsoft.ml.onnxruntime.directml.$version"
-          $url = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/$version/$pkg.nupkg"
-          $tmp = Join-Path $env:RUNNER_TEMP 'onnxruntime'
-          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-          $zip = Join-Path $tmp "$pkg.zip"
-          $packageRoot = Join-Path $tmp $pkg
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          dotnet nuget verify $zip --all
-          if ($LASTEXITCODE -ne 0) {
-            throw "ONNX Runtime NuGet signature verification failed"
-          }
-          Expand-Archive -Path $zip -DestinationPath $packageRoot -Force
-
-          $directMlVersion = '1.15.4'
-          $directMlPackage = "microsoft.ai.directml.$directMlVersion"
-          $directMlUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/$directMlVersion/$directMlPackage.nupkg"
-          $directMlZip = Join-Path $tmp "$directMlPackage.zip"
-          $directMlRoot = Join-Path $tmp $directMlPackage
-          Invoke-WebRequest -Uri $directMlUrl -OutFile $directMlZip
-          dotnet nuget verify $directMlZip --all
-          if ($LASTEXITCODE -ne 0) {
-            throw "DirectML NuGet signature verification failed"
-          }
-          Expand-Archive -Path $directMlZip -DestinationPath $directMlRoot -Force
-
-          $dest = Join-Path $env:GITHUB_WORKSPACE 'apps\bridge\native\meeting-helper\deps\onnxruntime\windows-x64'
-          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $dest 'include') | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $dest 'lib') | Out-Null
-          Copy-Item -Recurse -Force (Join-Path $packageRoot 'build\native\include\*') (Join-Path $dest 'include')
-          Copy-Item -Force (Join-Path $packageRoot 'runtimes\win-x64\native\*') (Join-Path $dest 'lib')
-          Copy-Item -Force (Join-Path $directMlRoot 'include\DirectML.h') (Join-Path $dest 'include\DirectML.h')
-          Copy-Item -Force (Join-Path $directMlRoot 'bin\x64-win\DirectML.dll') (Join-Path $dest 'lib\DirectML.dll')
-          Set-Content -Path (Join-Path $dest 'VERSION_NUMBER') -Value $version -NoNewline
-
-          if (-not (Test-Path (Join-Path $dest 'include\onnxruntime_cxx_api.h'))) {
-            throw "ONNX Runtime headers missing after extraction under $dest"
-          }
-          if (-not (Test-Path (Join-Path $dest 'lib\onnxruntime.dll'))) {
-            throw "ONNX Runtime DLL missing after extraction under $dest"
-          }
-          foreach ($dependency in @('onnxruntime_providers_shared.dll', 'DirectML.dll')) {
-            if (-not (Test-Path (Join-Path $dest "lib\$dependency"))) {
-              throw "DirectML dependency $dependency missing after extraction under $dest"
-            }
-          }
-          Write-Host "ONNX Runtime DirectML $version with DirectML $directMlVersion installed to $dest"
-
-      - name: Validate Windows Trusted Signing configuration
-        if: matrix.os == 'windows-2022'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          REQUIRED_VARS=(
-            AZURE_TENANT_ID
-            AZURE_CLIENT_ID
-            AZURE_CLIENT_SECRET
-            AZURE_CODE_SIGNING_ENDPOINT
-            AZURE_CODE_SIGNING_ACCOUNT_NAME
-            AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME
-            AZURE_CODE_SIGNING_PUBLISHER_NAME
-          )
-
-          MISSING=()
-          for var_name in "${REQUIRED_VARS[@]}"; do
-            if [[ -z "${!var_name:-}" ]]; then
-              MISSING+=("$var_name")
-            fi
-          done
-
-          if (( ${#MISSING[@]} > 0 )); then
-            echo "Missing Windows Trusted Signing secrets: ${MISSING[*]}" >&2
-            exit 1
-          fi
+          & .\scripts\prepare-windows-meeting-helper-deps.ps1
 
       - name: Diagnose Windows Trusted Signing context
         if: matrix.os == 'windows-2022'
@@ -627,69 +607,11 @@ jobs:
         if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-
           $msi = Get-ChildItem -Path dist -File -Filter '*.msi' | Select-Object -First 1
           if (-not $msi) {
             throw "No MSI artifact found for smoke test."
           }
-
-          $installDir = Join-Path $env:RUNNER_TEMP 'broadify-bridge-msi-smoke'
-          $installLog = Join-Path $env:RUNNER_TEMP 'broadify-bridge-msi-smoke-install.log'
-          $uninstallLog = Join-Path $env:RUNNER_TEMP 'broadify-bridge-msi-smoke-uninstall.log'
-          if (Test-Path $installDir) {
-            Remove-Item -Recurse -Force $installDir
-          }
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-
-          $installArgs = @(
-            '/i', $msi.FullName,
-            '/qn',
-            '/norestart',
-            '/L*v', $installLog,
-            "APPLICATIONFOLDER=$installDir",
-            'ALLUSERS=2',
-            'MSIINSTALLPERUSER=1'
-          )
-          $install = Start-Process msiexec.exe -ArgumentList $installArgs -Wait -PassThru
-          if ($install.ExitCode -notin @(0, 3010)) {
-            throw "MSI smoke install failed with exit code $($install.ExitCode). See $installLog"
-          }
-
-          $expectedPaths = @(
-            (Join-Path $installDir 'resources\native\display-helper\display-helper.exe'),
-            (Join-Path $installDir 'resources\native\display-helper\SDL2.dll'),
-            (Join-Path $installDir 'resources\native\meeting-helper\meeting-helper.exe'),
-            (Join-Path $installDir 'resources\native\meeting-helper\onnxruntime.dll'),
-            (Join-Path $installDir 'resources\native\meeting-helper\onnxruntime_providers_shared.dll'),
-            (Join-Path $installDir 'resources\native\meeting-helper\DirectML.dll'),
-            (Join-Path $installDir 'resources\native\meeting-helper\models\modnet.onnx'),
-            (Join-Path $installDir 'resources\bridge\native\framebus\build\Release\framebus.node')
-          )
-          $mainExe = Get-ChildItem -Path $installDir -File -Filter 'BroadifyBridge*.exe' | Select-Object -First 1
-          if (-not $mainExe) {
-            throw "MSI smoke install did not create a BroadifyBridge*.exe in $installDir"
-          }
-          foreach ($path in $expectedPaths) {
-            if (-not (Test-Path $path)) {
-              throw "MSI smoke install missing expected packaged file: $path"
-            }
-          }
-
-          $msiHelperPath = Join-Path $installDir 'resources\native\display-helper\display-helper.exe'
-          & .\scripts\test-windows-display-helper.ps1 -HelperPath $msiHelperPath -Attempts 3
-
-          $meetingHelperPath = Join-Path $installDir 'resources\native\meeting-helper\meeting-helper.exe'
-          $meetingModelsDir = Join-Path $installDir 'resources\native\meeting-helper\models'
-          & .\scripts\test-windows-meeting-helper.ps1 -HelperPath $meetingHelperPath -ModelsDir $meetingModelsDir
-
-          $uninstallArgs = @('/x', $msi.FullName, '/qn', '/norestart', '/L*v', $uninstallLog)
-          $uninstall = Start-Process msiexec.exe -ArgumentList $uninstallArgs -Wait -PassThru
-          if ($uninstall.ExitCode -notin @(0, 3010, 1605)) {
-            throw "MSI smoke uninstall failed with exit code $($uninstall.ExitCode). See $uninstallLog"
-          }
-
-          Write-Host "MSI smoke install verified in $installDir"
+          & .\scripts\smoke-test-windows-msi.ps1 -InstallerPath $msi.FullName
 
       - name: Smoke test Windows NSIS install
         if: matrix.os == 'windows-2022'

@@ -42,6 +42,12 @@ jest.mock("../graphics/framebus/framebus-client.js", () => ({
   loadFrameBusModule: (...args: unknown[]) => mockLoadFrameBusModule(...args),
 }));
 
+const mockPickRecordingSavePath = jest.fn();
+jest.mock("./meeting-recording-dialog.js", () => ({
+  pickRecordingSavePath: (...args: unknown[]) =>
+    mockPickRecordingSavePath(...args),
+}));
+
 import {
   handleMeetingCommand,
   isMeetingCommand,
@@ -65,6 +71,10 @@ const mockClient = {
   virtualCameraStart: jest.fn(),
   virtualCameraStop: jest.fn(),
   virtualCameraConfigure: jest.fn(),
+  recordingMicrophones: jest.fn(),
+  recordingStart: jest.fn(),
+  recordingStop: jest.fn(),
+  recordingStatus: jest.fn(),
 };
 
 describe("meeting-command-handler", () => {
@@ -427,6 +437,105 @@ describe("meeting-command-handler", () => {
         height: 720,
         fps: 30,
       });
+    });
+  });
+
+  describe("meeting recording commands", () => {
+    it("lists microphones via the client", async () => {
+      mockClient.recordingMicrophones.mockResolvedValue({
+        microphones: [{ device_id: "m1", label: "Mic 1", is_default: true }],
+      });
+
+      const result = await handleMeetingCommand(
+        "meeting_recording_microphones",
+        {},
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({
+        microphones: [{ device_id: "m1", label: "Mic 1", is_default: true }],
+      });
+    });
+
+    it("returns the picked path for meeting_recording_pick_path", async () => {
+      mockPickRecordingSavePath.mockResolvedValue("/Users/x/Movies/rec.mp4");
+
+      const result = await handleMeetingCommand("meeting_recording_pick_path", {
+        default_name: "rec.mp4",
+        locale: "en",
+      });
+
+      expect(mockPickRecordingSavePath).toHaveBeenCalledWith("rec.mp4", "en");
+      expect(result).toEqual({
+        success: true,
+        data: { cancelled: false, file_path: "/Users/x/Movies/rec.mp4" },
+      });
+    });
+
+    it("reports cancellation when the save panel is dismissed", async () => {
+      mockPickRecordingSavePath.mockResolvedValue(null);
+
+      const result = await handleMeetingCommand(
+        "meeting_recording_pick_path",
+        {},
+      );
+
+      expect(result).toEqual({ success: true, data: { cancelled: true } });
+    });
+
+    it("starts recording for a valid absolute .mp4 path", async () => {
+      mockClient.recordingStart.mockResolvedValue({
+        recording: { active: true },
+      });
+
+      const result = await handleMeetingCommand("meeting_recording_start", {
+        file_path: "/Users/x/Movies/rec.mp4",
+        mic_device_id: "m1",
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockClient.recordingStart).toHaveBeenCalledWith({
+        file_path: "/Users/x/Movies/rec.mp4",
+        mic_device_id: "m1",
+      });
+    });
+
+    it.each([
+      ["/Users/x/.zshrc"],
+      ["relative.mp4"],
+      ["/tmp/x.txt"],
+      ["/Users/x/../../etc/hosts.mp4"],
+    ])("rejects unsafe recording path %s before hitting the client", async (
+      filePath,
+    ) => {
+      await expect(
+        handleMeetingCommand("meeting_recording_start", {
+          file_path: filePath,
+        }),
+      ).rejects.toThrow("Invalid payload for meeting_recording_start");
+      expect(mockClient.recordingStart).not.toHaveBeenCalled();
+    });
+
+    it("stops recording via the client", async () => {
+      mockClient.recordingStop.mockResolvedValue({
+        recording: { active: false },
+      });
+
+      const result = await handleMeetingCommand("meeting_recording_stop", {});
+
+      expect(result.success).toBe(true);
+      expect(mockClient.recordingStop).toHaveBeenCalled();
+    });
+
+    it("returns recording status via the client", async () => {
+      mockClient.recordingStatus.mockResolvedValue({
+        recording: { active: false },
+      });
+
+      const result = await handleMeetingCommand("meeting_recording_status", {});
+
+      expect(result.success).toBe(true);
+      expect(mockClient.recordingStatus).toHaveBeenCalled();
     });
   });
 

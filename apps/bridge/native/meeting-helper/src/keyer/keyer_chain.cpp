@@ -9,7 +9,7 @@
 namespace broadify::meeting {
 
 KeyerChain::KeyerChain(const Options &options)
-    : options_{options.modelsDir},
+    : options_{options.modelsDir, options.keyerSelfTest},
       modnet_(std::make_unique<ModnetKeyer>(options_))
 #if defined(__APPLE__)
       ,

@@ -1,6 +1,7 @@
 #include "control/control_server.h"
 
 #include "preview/preview_frame_store.h"
+#include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
@@ -167,6 +168,8 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.mediaLayer.width = extractDoubleField(safeValues, "width", state.mediaLayer.width);
     state.mediaLayer.height = extractDoubleField(safeValues, "height", state.mediaLayer.height);
     state.mediaLayer.rotation = extractDoubleField(safeValues, "rotation", state.mediaLayer.rotation);
+    state.mediaLayer.rotationX = extractDoubleField(safeValues, "rotationX", state.mediaLayer.rotationX);
+    state.mediaLayer.rotationY = extractDoubleField(safeValues, "rotationY", state.mediaLayer.rotationY);
     state.mediaLayer.rawJson = safeValues;
     return;
   }
@@ -187,10 +190,23 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
   }
 }
 
+std::string recordingStatusJson(MeetingRecorder &recorder) {
+  const RecordingStatus s = recorder.status();
+  std::ostringstream out;
+  out << "{\"ok\":true,\"recording\":{"
+      << "\"active\":" << (s.active ? "true" : "false") << ","
+      << "\"file_path\":\"" << jsonEscape(s.filePath) << "\","
+      << "\"elapsed_seconds\":" << s.elapsedSeconds << ","
+      << "\"video_frames\":" << s.videoFrames << ","
+      << "\"last_error\":\"" << jsonEscape(s.lastError) << "\"}}";
+  return out.str();
+}
+
 std::string handleRpc(const std::string &line,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running) {
   const std::string id = extractStringField(line, "id");
@@ -296,6 +312,115 @@ std::string handleRpc(const std::string &line,
     return okResponse(id, "{\"ok\":true}");
   }
 
+  // "camera_indices":[0,1,2] — the first becomes the program feed. The others
+  // stay running so program_select can cut between them with no reopen.
+  if (method == "camera.open_set") {
+    std::vector<int> indices;
+    const std::string key = "\"camera_indices\"";
+    const size_t keyPos = line.find(key);
+    if (keyPos != std::string::npos) {
+      const size_t open = line.find('[', keyPos);
+      const size_t close = open == std::string::npos
+                               ? std::string::npos
+                               : line.find(']', open);
+      if (open != std::string::npos && close != std::string::npos) {
+        const std::string inner = line.substr(open + 1, close - open - 1);
+        std::stringstream ss(inner);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+          try {
+            indices.push_back(std::stoi(token));
+          } catch (...) {
+          }
+        }
+      }
+    }
+    const bool started =
+        camera.startSet(indices, options.width, options.height, options.fps);
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.cameraRunning = started;
+      state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
+      markProgramDirty(state);
+    }
+    if (!started) {
+      const std::string permissionStatus = camera.cameraPermissionStatus();
+      const std::string code =
+          permissionStatus == "denied" || permissionStatus == "restricted"
+              ? "camera_permission_denied"
+              : "camera_start_failed";
+      return errorResponse(id, code, camera.lastError());
+    }
+    const std::vector<int> openSet = camera.activeCameraSet();
+    std::ostringstream result;
+    result << "{\"ok\":true,\"program_index\":" << camera.activeCameraIndex()
+           << ",\"open\":[";
+    for (size_t i = 0; i < openSet.size(); ++i) {
+      result << (i ? "," : "") << openSet[i];
+    }
+    result << "]}";
+    return okResponse(id, result.str());
+  }
+
+  // Conference: cut the program feed to an already-open camera (seamless).
+  if (method == "camera.program_select") {
+    const int cameraIndex = extractIntField(line, "camera_index", 0);
+    if (!camera.setProgramCamera(cameraIndex)) {
+      return errorResponse(id, "camera_program_select_failed",
+                           camera.lastError());
+    }
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.activeCameraIndex = camera.activeCameraIndex();
+    markProgramDirty(state);
+    return okResponse(
+        id, "{\"ok\":true,\"program_index\":" + std::to_string(cameraIndex) +
+                "}");
+  }
+
+  // Conference: draw an open camera as picture-in-picture (-1 = off).
+  if (method == "camera.pip_set") {
+    const int cameraIndex = extractIntField(line, "camera_index", -1);
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.pipCameraIndex = cameraIndex;
+    markProgramDirty(state);
+    return okResponse(
+        id, "{\"ok\":true,\"pip_index\":" + std::to_string(cameraIndex) + "}");
+  }
+
+  // Conference auto-director: per-camera microphone level (0..1) of the open
+  // cameras, for the loudest-speaker switching logic.
+  if (method == "camera.audio_levels") {
+    const std::map<int, float> levels = camera.cameraAudioLevels();
+    std::ostringstream result;
+    result << "{\"ok\":true,\"levels\":{";
+    bool first = true;
+    for (const auto &entry : levels) {
+      result << (first ? "" : ",") << "\"" << entry.first
+             << "\":" << entry.second;
+      first = false;
+    }
+    result << "}}";
+    return okResponse(id, result.str());
+  }
+
+  // Conference auto-director on/off (+ optional speech threshold). The pipeline
+  // loop reads these flags and cuts the program to the loudest camera.
+  if (method == "camera.auto_director") {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.autoDirectorEnabled =
+        extractBoolField(line, "enabled", state.autoDirectorEnabled);
+    const double threshold =
+        extractDoubleField(line, "threshold", state.autoDirectorThreshold);
+    if (threshold > 0.0 && threshold < 1.0) {
+      state.autoDirectorThreshold = static_cast<float>(threshold);
+    }
+    std::ostringstream result;
+    result << "{\"ok\":true,\"auto_director\":"
+           << (state.autoDirectorEnabled ? "true" : "false")
+           << ",\"threshold\":" << state.autoDirectorThreshold << "}";
+    return okResponse(id, result.str());
+  }
+
   if (method == "keyer.get") {
     std::lock_guard<std::mutex> lock(state.mutex);
     std::ostringstream result;
@@ -349,6 +474,7 @@ std::string handleRpc(const std::string &line,
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.keyerEnabled = extractBoolField(line, "enabled", state.keyerEnabled);
+      state.conferenceMode = extractBoolField(line, "conference_mode", state.conferenceMode);
       if (!requestedModel.empty()) {
         state.requestedKeyerModel = requestedModel;
       }
@@ -356,6 +482,8 @@ std::string handleRpc(const std::string &line,
       if (!backgroundMode.empty()) {
         state.backgroundMode = backgroundMode;
       }
+      // Sent with every keyer configure (empty string clears the image).
+      state.backgroundImagePath = extractStringField(line, "background_image_path");
       const std::string qualityMode = extractStringField(line, "quality_mode");
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);
@@ -395,7 +523,7 @@ std::string handleRpc(const std::string &line,
       ++state.keyerRevision;
       markProgramDirty(state);
     }
-    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, options, running);
+    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, recorder, options, running);
   }
 
   if (method == "keyer.reset") {
@@ -407,6 +535,7 @@ std::string handleRpc(const std::string &line,
     state.keyerBackend = "passthrough";
     state.qualityMode = "balanced";
     state.activeQualityMode = "balanced";
+    state.backgroundImagePath.clear();
     state.performanceMode = "balanced";
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
@@ -481,6 +610,48 @@ std::string handleRpc(const std::string &line,
     return okResponse(id, "{\"ok\":true}");
   }
 
+  if (method == "recording.microphones") {
+    const std::vector<MicrophoneInfo> mics = recorder.listMicrophones();
+    std::ostringstream out;
+    out << "{\"ok\":true,\"microphones\":[";
+    for (size_t i = 0; i < mics.size(); ++i) {
+      if (i > 0) {
+        out << ",";
+      }
+      out << "{\"device_id\":\"" << jsonEscape(mics[i].deviceId) << "\","
+          << "\"label\":\"" << jsonEscape(mics[i].label) << "\","
+          << "\"is_default\":" << (mics[i].isDefault ? "true" : "false")
+          << "}";
+    }
+    out << "]}";
+    return okResponse(id, out.str());
+  }
+
+  if (method == "recording.start") {
+    const std::string filePath = extractStringField(line, "file_path");
+    const std::string micDeviceId = extractStringField(line, "mic_device_id");
+    if (filePath.empty()) {
+      return errorResponse(id, "invalid_request",
+                           "recording.start requires file_path.");
+    }
+    const bool started = recorder.start(filePath, micDeviceId, options.width,
+                                        options.height, options.fps);
+    if (!started) {
+      return errorResponse(id, "recording_start_failed",
+                           recorder.status().lastError);
+    }
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
+  if (method == "recording.stop") {
+    recorder.stop();
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
+  if (method == "recording.status") {
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
   return errorResponse(id, "unknown_method", "Unknown meeting-helper method: " + method);
 }
 
@@ -491,6 +662,7 @@ void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening) {
@@ -515,7 +687,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-          const std::string response = handleRpc(line, state, camera, previewFrames, options, running);
+          const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           break;
@@ -531,6 +703,7 @@ void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening) {
@@ -568,7 +741,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-        const std::string response = handleRpc(line, state, camera, previewFrames, options, running);
+        const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
         (void)write(client, response.c_str(), response.size());
         break;
       }

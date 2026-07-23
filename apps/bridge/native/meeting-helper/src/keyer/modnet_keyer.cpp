@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -393,12 +394,17 @@ class ModnetKeyer::Impl {
     // which asks DXGI for the HighPerformance (discrete) GPU adapter, and fall
     // back to the legacy device-0 append (then CPU) if DML2 or a GPU is
     // unavailable. BROADIFY_MEETING_KEYER_DML_LEGACY=1 forces the old device 0.
+    const char *selfTestProvider =
+        std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER");
+    const bool forceCpuProvider =
+        options_.keyerSelfTest && selfTestProvider != nullptr &&
+        std::strcmp(selfTestProvider, "cpu") == 0;
     OrtStatus *dmlStatus = nullptr;
     const char *dmlLegacyEnv = std::getenv("BROADIFY_MEETING_KEYER_DML_LEGACY");
     const bool forceLegacyDevice0 =
         dmlLegacyEnv != nullptr && dmlLegacyEnv[0] == '1';
     const OrtDmlApi *dmlApi = nullptr;
-    if (!forceLegacyDevice0) {
+    if (!forceCpuProvider && !forceLegacyDevice0) {
       OrtStatus *apiStatus = Ort::GetApi().GetExecutionProviderApi(
           "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&dmlApi));
       if (apiStatus != nullptr) {
@@ -406,7 +412,9 @@ class ModnetKeyer::Impl {
         dmlApi = nullptr;
       }
     }
-    if (dmlApi != nullptr) {
+    if (forceCpuProvider) {
+      dmlStatus = nullptr;
+    } else if (dmlApi != nullptr) {
       OrtDmlDeviceOptions deviceOptions{
           OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
       dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
@@ -421,9 +429,9 @@ class ModnetKeyer::Impl {
       dmlStatus =
           OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
     }
-    if (dmlStatus == nullptr) {
+    if (!forceCpuProvider && dmlStatus == nullptr) {
       status_.provider = "directml";
-    } else {
+    } else if (dmlStatus != nullptr) {
       // No DirectML device (no DX12 GPU or driver): fall back to the CPU
       // provider. The sequential / mem-pattern settings above are harmless
       // for CPU execution.

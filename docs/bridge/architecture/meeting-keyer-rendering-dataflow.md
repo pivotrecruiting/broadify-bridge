@@ -234,26 +234,39 @@ Portable native regression test:
 npm run test:meeting-helper-native
 ```
 
-Hardware GPU to CPU parity test:
+Portable GPU to CPU parity test:
 
 ```bash
 npm run test:meeting-helper-gpu
 ```
 
-Accelerated keyer primary-path test:
+Portable keyer inference test:
 
 ```bash
 npm run test:meeting-helper-keyer
 ```
 
-The self-test renders the same keyed frame on CPU and GPU and fails when the
-backend is unavailable, rendering fails, output sizes differ, or any channel
+The compositor self-test renders the same keyed frame on CPU and Metal or
+D3D11 and fails when rendering fails, output sizes differ, or any channel
 differs by more than two levels. It also verifies that generated graphics and a
-cornerbug do not downgrade the integrated compositor from Metal or D3D11.
+cornerbug do not downgrade the integrated compositor.
 
-`dist:win` runs both hardware self-tests before packaging. Windows remains
-release-gated until those tests, a real camera motion test, signing verification,
-and installer smoke tests pass on real Windows GPU hardware.
+On GitHub-hosted Windows runners the portable commands force D3D11 WARP and the
+ONNX CPU provider. This still executes the real shader, model, packaged DLLs,
+MSI installation and NSIS installation without assuming GPU hardware on the
+runner. The self-test-only variables do not change production defaults.
+
+Strict Windows hardware tests use:
+
+```bash
+npm run test:meeting-helper-gpu-hardware
+npm run test:meeting-helper-keyer-hardware
+```
+
+These strict hardware commands can be run manually on a Windows machine with a
+real GPU. GitHub-hosted release jobs use the portable WARP and CPU paths instead.
+macOS release verification additionally hashes the packaged CoreML model and
+executes both self-tests from the final app bundle.
 
 ## Explicitly Deferred Gabriel Scope
 

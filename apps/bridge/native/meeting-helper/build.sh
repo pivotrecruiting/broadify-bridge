@@ -3,11 +3,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${ROOT_DIR}/build"
-MODNET_ENABLED="${MEETING_HELPER_ENABLE_MODNET:-1}"
+MODNET_REQUESTED="${MEETING_HELPER_ENABLE_MODNET:-1}"
+case "${MODNET_REQUESTED}" in
+  0|false|FALSE|off|OFF|no|NO) MODNET_ENABLED="OFF" ;;
+  *) MODNET_ENABLED="ON" ;;
+esac
 
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \
-  -DMEETING_HELPER_ENABLE_MODNET="${MODNET_ENABLED}"
+  -DMEETING_HELPER_ENABLE_MODNET:BOOL="${MODNET_ENABLED}"
+
+CACHE_ENTRY="$(grep '^MEETING_HELPER_ENABLE_MODNET:BOOL=' "${BUILD_DIR}/CMakeCache.txt" || true)"
+EXPECTED_CACHE_ENTRY="MEETING_HELPER_ENABLE_MODNET:BOOL=${MODNET_ENABLED}"
+if [[ "${CACHE_ENTRY}" != "${EXPECTED_CACHE_ENTRY}" ]]; then
+  echo "CMake MODNet configuration mismatch. Expected '${EXPECTED_CACHE_ENTRY}', found '${CACHE_ENTRY}'." >&2
+  exit 1
+fi
+
 cmake --build "${BUILD_DIR}" --config "${CMAKE_BUILD_TYPE:-Release}"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -67,7 +79,7 @@ elif [[ -f "${BUILD_DIR}/meeting-helper" ]]; then
 fi
 
 ONNXRUNTIME_ROOT="${BROADIFY_ONNXRUNTIME_ROOT:-${ROOT_DIR}/deps/onnxruntime/macos-arm64}"
-if [[ "${MODNET_ENABLED}" == "1" ]]; then
+if [[ "${MODNET_ENABLED}" == "ON" ]]; then
   if [[ -f "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.dylib" ]]; then
     cp -f "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.dylib" "${ROOT_DIR}/libonnxruntime.dylib"
     cp -f "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.dylib" "${ROOT_DIR}/libonnxruntime.1.dylib"

@@ -9,6 +9,7 @@ APP_BUNDLE_ID="com.broadify.bridge"
 HELPER_BUNDLE_ID="com.broadify.bridge.meeting-helper"
 HELPER_APP_REL="Contents/Resources/native/meeting-helper/Broadify Bridge Meeting Helper.app"
 HELPER_EXEC_REL="${HELPER_APP_REL}/Contents/MacOS/BroadifyMeetingHelper"
+HELPER_MODELS_REL="Contents/Resources/native/meeting-helper/models"
 PRESENTATION_RUNTIME_REL="Contents/Resources/presentation-runtime/macos-arm64/LibreOffice.app"
 PRESENTATION_RUNTIME_EXEC_REL="${PRESENTATION_RUNTIME_REL}/Contents/MacOS/soffice"
 
@@ -167,6 +168,7 @@ fi
 
 HELPER_APP_PATH="${APP_PATH}/${HELPER_APP_REL}"
 HELPER_EXEC_PATH="${APP_PATH}/${HELPER_EXEC_REL}"
+HELPER_MODELS_PATH="${APP_PATH}/${HELPER_MODELS_REL}"
 PRESENTATION_RUNTIME_PATH="${APP_PATH}/${PRESENTATION_RUNTIME_REL}"
 PRESENTATION_RUNTIME_EXEC_PATH="${APP_PATH}/${PRESENTATION_RUNTIME_EXEC_REL}"
 APP_INFO="${APP_PATH}/Contents/Info.plist"
@@ -180,6 +182,10 @@ echo "[MacSignVerify] Verifying ${APP_PATH}"
 }
 [[ -x "$HELPER_EXEC_PATH" ]] || {
   echo "[MacSignVerify] Missing executable Meeting Helper at ${HELPER_EXEC_PATH}" >&2
+  exit 1
+}
+[[ -d "${HELPER_MODELS_PATH}/MODNet.mlpackage" ]] || {
+  echo "[MacSignVerify] Missing packaged CoreML model at ${HELPER_MODELS_PATH}" >&2
   exit 1
 }
 if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
@@ -230,6 +236,30 @@ if [[ -z "$APP_TEAM_ID" || "$APP_TEAM_ID" != "$HELPER_TEAM_ID" ]]; then
   exit 1
 fi
 echo "[MacSignVerify] Team ID -> ${APP_TEAM_ID}"
+
+node - "${ROOT_DIR}/apps/bridge/native/meeting-helper/models/coreml-manifest.json" \
+  "${HELPER_MODELS_PATH}/MODNet.mlpackage" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const [manifestPath, packagePath] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+for (const file of manifest.files) {
+  const filePath = path.join(packagePath, ...file.path.split("/"));
+  const actual = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(filePath))
+    .digest("hex");
+  if (actual !== file.sha256) {
+    throw new Error(`Packaged CoreML model hash mismatch: ${file.path}`);
+  }
+}
+NODE
+echo "[MacSignVerify] packaged CoreML model hashes verified"
+
+"$HELPER_EXEC_PATH" --self-test
+"$HELPER_EXEC_PATH" --keyer-self-test --models-dir "$HELPER_MODELS_PATH"
+echo "[MacSignVerify] packaged Meeting Helper runtime self-tests passed"
 
 spctl -a -t exec -vv "$APP_PATH"
 echo "[MacSignVerify] spctl accepted app"

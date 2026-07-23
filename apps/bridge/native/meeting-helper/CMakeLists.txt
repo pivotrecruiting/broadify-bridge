@@ -21,13 +21,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(NOT DEFINED MEETING_HELPER_ENABLE_MODNET)
-  if(DEFINED ENV{MEETING_HELPER_ENABLE_MODNET})
-    set(MEETING_HELPER_ENABLE_MODNET "$ENV{MEETING_HELPER_ENABLE_MODNET}" CACHE STRING "Enable ONNX Runtime MODNet")
-  else()
-    set(MEETING_HELPER_ENABLE_MODNET "1" CACHE STRING "Enable ONNX Runtime MODNet")
-  endif()
+if(DEFINED ENV{MEETING_HELPER_ENABLE_MODNET} AND NOT DEFINED MEETING_HELPER_ENABLE_MODNET)
+  set(MEETING_HELPER_ENABLE_MODNET "$ENV{MEETING_HELPER_ENABLE_MODNET}")
 endif()
+option(MEETING_HELPER_ENABLE_MODNET "Enable ONNX Runtime MODNet" ON)
+message(STATUS "Meeting helper MODNet support: ${MEETING_HELPER_ENABLE_MODNET}")
 
 if(APPLE)
   set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/macos-arm64")
@@ -81,6 +79,7 @@ if(APPLE)
     src/keyer/gpu_mask_refine.mm
     src/keyer/vision_keyer.mm
     src/macos/macos_app.mm
+    src/recorder/meeting_recorder.mm
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
@@ -103,10 +102,13 @@ if(APPLE)
   set_source_files_properties(src/macos/macos_app.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
+  set_source_files_properties(src/recorder/meeting_recorder.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
 elseif(WIN32)
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/compose/d3d11_compositor.cpp)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_mediafoundation.cpp src/compose/d3d11_compositor.cpp)
 else()
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
 endif()
 
 if(APPLE)
@@ -122,7 +124,7 @@ target_include_directories(meeting-helper PRIVATE
   ../framebus/include
 )
 
-if(MEETING_HELPER_ENABLE_MODNET STREQUAL "1")
+if(MEETING_HELPER_ENABLE_MODNET)
   find_path(ONNXRUNTIME_INCLUDE_DIR
     NAMES onnxruntime_cxx_api.h
     PATHS "${BROADIFY_ONNXRUNTIME_ROOT}/include"
@@ -149,7 +151,7 @@ endif()
 
 if(WIN32)
   target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(meeting-helper PRIVATE ws2_32 d3d11 d3dcompiler dxgi)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfsensorgroup mfuuid ole32 d3d11 d3dcompiler dxgi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)

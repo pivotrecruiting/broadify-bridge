@@ -4,6 +4,7 @@
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
 #endif
+#include "director/auto_director.h"
 #include "framebus_reader.h"
 #include "framebus_writer.h"
 #include "keyer/keyer_chain.h"
@@ -11,6 +12,7 @@
 #include "keyer/coreml_keyer.h"
 #endif
 #include "pipeline/guided_mask_refine.h"
+#include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
@@ -74,6 +76,9 @@ struct PipelineRuntimeState {
   bool cameraRunning = false;
   bool keyerEnabled = false;
   int activeCameraIndex = -1;
+  int pipCameraIndex = -1;
+  bool autoDirectorEnabled = false;
+  float autoDirectorThreshold = 0.02f;
   bool framebusRunning = false;
   int previewClients = 0;
   int vcamClients = 0;
@@ -896,6 +901,7 @@ void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      MeetingRecorder &recorder,
                       std::atomic<bool> &running) {
   framebus_writer_t *writer = framebus_writer_open(
       options.framebusName.c_str(), options.width, options.height, options.fps, kSlotCount);
@@ -912,6 +918,10 @@ void runFramePipeline(const Options &options,
   std::vector<uint8_t> programFrame;
   VideoFrame latestCameraFrame;
   uint64_t lastCameraTimestampNs = 0u;
+  VideoFrame latestPipFrame;
+  uint64_t lastPipCameraTimestampNs = 0u;
+  // Conference auto-director: persists dwell/hold hysteresis across frames.
+  AutoDirector autoDirector;
   uint64_t lastProgramRevision = 0u;
   uint64_t lastUsedKeyerPublishedNs = 0u;
   uint64_t lastBackGraphicsTimestampNs = 0u;
@@ -931,6 +941,11 @@ void runFramePipeline(const Options &options,
   bool fusedFailureLogged = false;
 #if defined(__APPLE__)
   std::unique_ptr<CoreMLKeyer> fusedCoreMlKeyer;
+  // The synchronous fused path bypasses the async worker, so it must carry its
+  // own previous matte to temporally smooth against and to hold through a brief
+  // matte collapse instead of dropping the subject for a frame.
+  AlphaMask previousFusedMask;
+  int fusedCollapseHoldFrames = 0;
 #endif
   while (running.load()) {
     PipelineRuntimeState runtime;
@@ -941,6 +956,9 @@ void runFramePipeline(const Options &options,
       runtime.cameraRunning = state.cameraRunning;
       runtime.keyerEnabled = state.keyerEnabled;
       runtime.activeCameraIndex = state.activeCameraIndex;
+      runtime.pipCameraIndex = state.pipCameraIndex;
+      runtime.autoDirectorEnabled = state.autoDirectorEnabled;
+      runtime.autoDirectorThreshold = state.autoDirectorThreshold;
       runtime.framebusRunning = state.framebusRunning;
       runtime.previewClients = state.previewClientCount;
       runtime.vcamClients = state.vcamClientCount;
@@ -948,6 +966,22 @@ void runFramePipeline(const Options &options,
       runtime.graphicsDirty = state.graphicsDirty;
       runtime.programRevision = state.programRevision;
       runtime.keyerRevision = state.keyerRevision;
+    }
+
+    // Conference native auto-director ("Auto-Regie"): follow the loudest open
+    // camera's own microphone. Runs before the camera read so a cut takes
+    // effect on this frame. Off (meeting) → the evaluator is reset, never cuts.
+    if (runtime.autoDirectorEnabled && runtime.cameraRunning) {
+      const int decided = autoDirector.evaluate(
+          camera.cameraAudioLevels(), camera.activeCameraIndex(),
+          runtime.autoDirectorThreshold, std::chrono::steady_clock::now());
+      if (decided >= 0 && camera.setProgramCamera(decided)) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.activeCameraIndex = decided;
+        state.programDirty = true;
+      }
+    } else {
+      autoDirector.reset();
     }
 
     if (runtime.keyerRevision != lastKeyerRevision ||
@@ -963,6 +997,8 @@ void runFramePipeline(const Options &options,
       fusedFailureLogged = false;
 #if defined(__APPLE__)
       fusedCoreMlKeyer.reset();
+      previousFusedMask = AlphaMask{};
+      fusedCollapseHoldFrames = 0;
 #endif
     }
 
@@ -1006,6 +1042,21 @@ void runFramePipeline(const Options &options,
       } else if (!runtime.cameraRunning) {
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
+      }
+      // Conference PiP: read a second open camera's newest frame (distinct from
+      // the program camera) so it can be overlaid onto the finished frame.
+      const bool pipActive = runtime.cameraRunning &&
+                             runtime.pipCameraIndex >= 0 &&
+                             runtime.pipCameraIndex != camera.activeCameraIndex();
+      if (pipActive) {
+        camera.copyLatestFrameFrom(runtime.pipCameraIndex,
+                                   lastPipCameraTimestampNs, latestPipFrame);
+        if (!latestPipFrame.rgba.empty()) {
+          lastPipCameraTimestampNs = latestPipFrame.timestampNs;
+        }
+      } else {
+        latestPipFrame = VideoFrame{};
+        lastPipCameraTimestampNs = 0u;
       }
       const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
@@ -1188,6 +1239,27 @@ void runFramePipeline(const Options &options,
         KeyerResult fused = fusedCoreMlKeyer->apply(latestCameraFrame, keyerSettings);
         if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
           fusedMask = std::move(fused.mask);
+          // The raw CoreML matte is emitted straight from the model, so without
+          // stabilization it jitters frame to frame and the edges flicker under
+          // difficult light. The async path already smooths its matte; mirror
+          // that here for the synchronous fused path: hold through a momentary
+          // collapse, then temporal-blend and edge post-process against the last
+          // good matte. Constants and helpers are shared with the async path.
+          constexpr int kMaxFusedCollapseHoldFrames = 12;  // ~0.4s at 30fps
+          if (hasDegenerateForegroundCoverage(fusedMask) &&
+              !previousFusedMask.alpha.empty() &&
+              fusedCollapseHoldFrames < kMaxFusedCollapseHoldFrames) {
+            fusedMask = previousFusedMask;
+            ++fusedCollapseHoldFrames;
+          } else {
+            fusedCollapseHoldFrames = 0;
+            if (keyerSettings.temporalBlendEnabled) {
+              blendAlphaTemporal(fusedMask, previousFusedMask, 0.0);
+            }
+            postprocessAlpha(fusedMask, previousFusedMask, keyerSettings, 0.0,
+                             fused.status.metrics);
+          }
+          previousFusedMask = fusedMask;
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           selectedPair.reset();
@@ -1252,6 +1324,13 @@ void runFramePipeline(const Options &options,
             frontGraphicsFrameForCompositor,
             frameIndex++,
             programFrame);
+        // Conference PiP overlay: drawn on the CPU over the finished RGBA frame,
+        // after either compositing path. Guarded, so meeting mode (no PiP) is
+        // untouched.
+        if (pipActive && !latestPipFrame.rgba.empty()) {
+          drawCameraPipInset(programFrame, options.width, options.height,
+                             latestPipFrame);
+        }
         if (selectedPair != nullptr) {
           lastUsedKeyerPublishedNs = selectedPair->publishedAtNs;
         }
@@ -1266,6 +1345,14 @@ void runFramePipeline(const Options &options,
       } else {
         std::lock_guard<std::mutex> lock(state.mutex);
         ++state.reusedFrames;
+      }
+
+      // Tap the composited program frame for recording. No-op unless a
+      // recording is active; runs every tick so the file keeps a steady
+      // timeline (and holds the last image) even during static periods.
+      if (!programFrame.empty()) {
+        recorder.appendVideoFrame(programFrame.data(), options.width,
+                                  options.height);
       }
 
       shouldWriteFramebus = runtime.framebusRunning && !programFrame.empty() &&

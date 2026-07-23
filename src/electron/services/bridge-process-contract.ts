@@ -130,6 +130,9 @@ export function buildBridgeSpawnEnv(params: {
     ...processEnv,
     NODE_ENV: isDev ? "development" : "production",
     BROADIFY_DESKTOP_APP_VERSION: appVersion,
+    // Lets the bridge server detect a dead desktop app and exit instead of
+    // surviving as a detached orphan (the bridge spawns with detached: true).
+    BRIDGE_PARENT_PID: String(process.pid),
   } as Record<string, string>;
 
   if (relayEnabled) {

@@ -26,6 +26,31 @@ const loadDotenv = () => {
 
 loadDotenv();
 
+// Orphan watchdog: the desktop app passes its PID via env (a ppid comparison
+// is unreliable - the bridge is spawned detached and re-parented). When the
+// desktop app is gone, exit instead of living on as an orphan that keeps the
+// port bound and helper processes (camera!) alive.
+const bridgeParentPid = Number.parseInt(process.env.BRIDGE_PARENT_PID ?? "", 10);
+if (Number.isFinite(bridgeParentPid) && bridgeParentPid > 0) {
+  let parentDeathHandled = false;
+  setInterval(() => {
+    try {
+      process.kill(bridgeParentPid, 0);
+    } catch {
+      if (parentDeathHandled) {
+        return;
+      }
+      parentDeathHandled = true;
+      // Reuse the SIGTERM path so helpers (meeting helper, renderers) are
+      // stopped gracefully; force-exit if that shutdown hangs.
+      process.kill(process.pid, "SIGTERM");
+      setTimeout(() => {
+        process.exit(0);
+      }, 10_000).unref();
+    }
+  }, 2000).unref();
+}
+
 /**
  * Bridge entry point
  * Parses CLI arguments, validates configuration, and starts the server

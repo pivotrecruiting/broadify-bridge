@@ -281,6 +281,7 @@ if (
   );
 }
 
+run("npm", ["run", "build"], dryRun);
 run("npm", ["version", "--no-git-tag-version", nextVersion], dryRun);
 run("git", ["add", "package.json", "package-lock.json"], dryRun);
 run("git", ["commit", "-m", commitMessage], dryRun);

@@ -76,6 +76,14 @@ Branch-Regeln:
 - `release:test` auf `main`, `dev` oder Feature-Branches (baut den getaggten Branch-Stand)
 - `release:live` nur auf `main`
 
+Das NPM-Release-Skript führt vor jeder Versionsänderung lokal `npm run build`
+aus. Schlägt dieser Check fehl, werden weder Version noch Git-Historie
+verändert. Nach einem erfolgreichen Build erstellt das Skript den
+Versions-Commit und den normalen RC- oder Live-Tag und pusht anschließend den
+Branch und den Tag. Der Tag startet den regulären GitHub-Workflow
+`Release Build`, der die plattformspezifischen Installer-, Signing- und
+Helper-Smoke-Tests ausführt.
+
 ## Release-Prozess
 
 ### 1. Version aktualisieren
@@ -112,14 +120,14 @@ Ergebnis:
 
 Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 
-- Build für alle Plattformen (macOS ARM64, Windows x64, Linux x64)
+- Build für die unterstützten Release-Plattformen macOS ARM64 und Windows x64
 - Upload der Artefakte zu GitHub Releases
 - Erstellung eines GitHub Releases mit allen Download-Links
 
 ### 4. Release verifizieren
 
 1. GitHub Repository → Releases
-2. Prüfen, ob alle Plattformen gebaut wurden
+2. Prüfen, ob macOS ARM64 und Windows x64 gebaut wurden
 3. Download-Links testen
 
 ## Build-Artefakte
