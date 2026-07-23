@@ -1,5 +1,5 @@
 import dgram from "node:dgram";
-import { DirectionListener, DirectionReading, DirectionSource } from "./types.js";
+import { DirectionListener, DirectionSource } from "./types.js";
 
 export type SennheiserTcc2Options = {
   /** IP address of the TeamConnect Ceiling 2 array. */

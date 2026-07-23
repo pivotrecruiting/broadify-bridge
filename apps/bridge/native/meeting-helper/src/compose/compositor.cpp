@@ -235,6 +235,35 @@ std::shared_ptr<const RgbaImage> getMediaLayerImage(const MediaLayerState &media
   return cachedImage;
 }
 
+// Cached loader for the uploaded company background image (single slot, same
+// pattern as the media layer image cache). Empty path clears the layer.
+std::shared_ptr<const RgbaImage> getBackgroundImage(const std::string &path) {
+  if (path.empty()) {
+    return nullptr;
+  }
+
+  static std::mutex cacheMutex;
+  static std::string cachedPath;
+  static std::shared_ptr<const RgbaImage> cachedImage;
+
+  std::lock_guard<std::mutex> lock(cacheMutex);
+  if (path == cachedPath) {
+    return cachedImage;
+  }
+
+  std::ifstream file(path, std::ios::binary);
+  cachedPath = path;
+  if (!file) {
+    cachedImage = nullptr;
+    return nullptr;
+  }
+  const std::vector<uint8_t> bytes(
+      (std::istreambuf_iterator<char>(file)),
+      std::istreambuf_iterator<char>());
+  cachedImage = decodeImageBytes(bytes);
+  return cachedImage;
+}
+
 void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &target, const RgbaImage &image) {
   if (target.width <= 0 || target.height <= 0 || image.width == 0 || image.height == 0 || image.rgba.empty()) {
     return;
@@ -882,6 +911,21 @@ GpuComposePlan buildGpuPlan(const Options &options,
   plan.cameraFrame = cameraFrame;
   const Rect fullFrame{0, 0, static_cast<int>(options.width),
                        static_cast<int>(options.height)};
+  // Uploaded company background image, cover-fitted below all layers. The
+  // decode is cached, so the shared_ptr keeps the pixels alive for this frame.
+  const std::shared_ptr<const RgbaImage> backgroundImage =
+      getBackgroundImage(snapshot.backgroundImagePath);
+  if (backgroundImage != nullptr && !backgroundImage->rgba.empty()) {
+    plan.backgroundImage = backgroundImage->rgba.data();
+    plan.backgroundImageWidth = backgroundImage->width;
+    plan.backgroundImageHeight = backgroundImage->height;
+    plan.backgroundImageCacheKey =
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(backgroundImage.get()));
+    VideoFrame mappingFrame;
+    mappingFrame.width = backgroundImage->width;
+    mappingFrame.height = backgroundImage->height;
+    plan.backgroundImageMapping = layerMapping(&mappingFrame, fullFrame, false, false);
+  }
   const bool keyed = snapshot.keyerEnabled && cameraMask != nullptr &&
       !cameraMask->alpha.empty();
   if (snapshot.cameraRender.enabled && keyed && cameraFrame != nullptr &&
@@ -954,6 +998,24 @@ void renderProgramFrameCpu(const Options &options,
                            uint64_t frameIndex,
                            std::vector<uint8_t> &output) {
   fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
+  if (const auto backgroundImage = getBackgroundImage(snapshot.backgroundImagePath)) {
+    // Cover-fit the uploaded company background under all other layers.
+    const SourceRect source = coverSourceRect(
+        backgroundImage->width, backgroundImage->height,
+        static_cast<int>(options.width), static_cast<int>(options.height));
+    for (uint32_t y = 0; y < options.height; ++y) {
+      const uint32_t sy = std::min(backgroundImage->height - 1u,
+          source.y + static_cast<uint32_t>((static_cast<uint64_t>(y) * source.height) / options.height));
+      for (uint32_t x = 0; x < options.width; ++x) {
+        const uint32_t sx = std::min(backgroundImage->width - 1u,
+            source.x + static_cast<uint32_t>((static_cast<uint64_t>(x) * source.width) / options.width));
+        const size_t srcOffset = (static_cast<size_t>(sy) * backgroundImage->width + sx) * 4u;
+        blendPixel(output, options.width, options.height, static_cast<int>(x), static_cast<int>(y),
+                   backgroundImage->rgba[srcOffset + 0], backgroundImage->rgba[srcOffset + 1],
+                   backgroundImage->rgba[srcOffset + 2], backgroundImage->rgba[srcOffset + 3]);
+      }
+    }
+  }
 
   const bool keyedCameraFrame = snapshot.keyerEnabled &&
       cameraMask != nullptr && !cameraMask->alpha.empty();
@@ -1018,6 +1080,7 @@ CompositorSnapshot copyCompositorSnapshot(const MeetingState &state) {
   snapshot.keyerEnabled = state.keyerEnabled;
   snapshot.conferenceMode = state.conferenceMode;
   snapshot.backgroundMode = state.backgroundMode;
+  snapshot.backgroundImagePath = state.backgroundImagePath;
   snapshot.speakerLayout = state.speakerLayout;
   snapshot.cornerbug = state.cornerbug;
   snapshot.mediaLayer = state.mediaLayer;
@@ -1117,15 +1180,55 @@ std::string renderProgramFrame(const Options &options,
     static uint64_t cachedKey = 0u;
     const uint64_t backTs =
         (backGraphicsFrame != nullptr) ? backGraphicsFrame->timestampNs : 0u;
+    // The uploaded company background is baked in as the base of this layer, so
+    // the cache key must also track the background path — otherwise switching
+    // (or clearing) the background would not rebuild the baked frame.
     const uint64_t key =
-        std::hash<std::string>{}(snapshot.mediaLayer.rawJson) * 1099511628211u +
-        backTs;
+        (std::hash<std::string>{}(snapshot.mediaLayer.rawJson) * 1099511628211u +
+         backTs) *
+            1099511628211u +
+        std::hash<std::string>{}(snapshot.backgroundImagePath);
     if (key != cachedKey || cachedBack.width != options.width ||
         cachedBack.height != options.height) {
       cachedBack.width = options.width;
       cachedBack.height = options.height;
       cachedBack.rgba.assign(
           static_cast<size_t>(options.width) * options.height * 4u, 0u);
+      // Bake the uploaded company background as the opaque base FIRST, so PiP
+      // content and back graphics composite over it. Baking it into this layer
+      // (instead of leaving it to the separate GPU background-image pass) keeps
+      // the back plate self-contained: with content enabled the GPU back layer
+      // is present and full-frame, and the standalone background pass would
+      // otherwise be lost, leaving the area around the content black.
+      if (const auto backgroundImage =
+              getBackgroundImage(snapshot.backgroundImagePath)) {
+        const SourceRect source = coverSourceRect(
+            backgroundImage->width, backgroundImage->height,
+            static_cast<int>(options.width),
+            static_cast<int>(options.height));
+        for (uint32_t y = 0; y < options.height; ++y) {
+          const uint32_t sy = std::min(
+              backgroundImage->height - 1u,
+              source.y + static_cast<uint32_t>(
+                             (static_cast<uint64_t>(y) * source.height) /
+                             options.height));
+          for (uint32_t x = 0; x < options.width; ++x) {
+            const uint32_t sx = std::min(
+                backgroundImage->width - 1u,
+                source.x + static_cast<uint32_t>(
+                               (static_cast<uint64_t>(x) * source.width) /
+                               options.width));
+            const size_t srcOffset =
+                (static_cast<size_t>(sy) * backgroundImage->width + sx) * 4u;
+            blendPixel(cachedBack.rgba, options.width, options.height,
+                       static_cast<int>(x), static_cast<int>(y),
+                       backgroundImage->rgba[srcOffset + 0],
+                       backgroundImage->rgba[srcOffset + 1],
+                       backgroundImage->rgba[srcOffset + 2],
+                       backgroundImage->rgba[srcOffset + 3]);
+          }
+        }
+      }
       if (backGraphicsFrame != nullptr && !backGraphicsFrame->rgba.empty()) {
         drawGraphicsFrame(cachedBack.rgba, options.width, options.height,
                           backGraphicsFrame);

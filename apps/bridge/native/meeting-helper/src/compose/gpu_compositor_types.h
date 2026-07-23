@@ -23,6 +23,12 @@ struct GpuComposePlan {
   uint32_t height = 0;
   // 0 dark, 1 gradient, 2 solid_light, 3 checkerboard, 4 transparent.
   int backgroundMode = 0;
+  // Uploaded company background image (cover-fitted below all layers).
+  const uint8_t *backgroundImage = nullptr;
+  uint32_t backgroundImageWidth = 0;
+  uint32_t backgroundImageHeight = 0;
+  uint64_t backgroundImageCacheKey = 0;
+  GpuLayerMapping backgroundImageMapping;
   uint64_t frameIndex = 0;
   const VideoFrame *cameraFrame = nullptr;
   GpuLayerMapping camera;
