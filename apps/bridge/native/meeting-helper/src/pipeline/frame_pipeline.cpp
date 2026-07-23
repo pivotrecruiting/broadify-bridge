@@ -791,6 +791,9 @@ class GraphicsFrameBusReader {
     if (reader_ == nullptr) {
       return hasLatestFrame_;
     }
+    if (lastProgressNs_ == 0u) {
+      lastProgressNs_ = nowNs();
+    }
 
     uint32_t width = 0;
     uint32_t height = 0;
@@ -829,8 +832,21 @@ class GraphicsFrameBusReader {
       latestFrame_.timestampNs = nowNs();
       latestFrame_.rgba = scratch_;
       hasLatestFrame_ = true;
+      lastProgressNs_ = nowNs();
       if (shouldSampleAlpha) {
         logReaderEvent("frame_read", width, height, fps, nonTransparentPixels, maxAlpha);
+      }
+    } else if (result == 0) {
+      // Self-heal a stale mapping: the graphics renderer recreates the shared
+      // memory segment on restart/reconfigure (shm_unlink + create). A reader
+      // that stays mapped to the orphaned segment would silently never see a
+      // frame again, so after a quiet period re-open by name to attach to the
+      // current segment. The cached last frame keeps displaying meanwhile.
+      const uint64_t now = nowNs();
+      if (now - lastProgressNs_ > kStaleReopenNs) {
+        logReaderEvent("stale_reopen", width, height, fps, 0, 0);
+        close();
+        lastProgressNs_ = now;
       }
     }
 
@@ -841,6 +857,10 @@ class GraphicsFrameBusReader {
   }
 
  private:
+  // Re-open a quiet reader after 2s so a renderer restart (which recreates
+  // the shared memory segment) cannot orphan this reader permanently.
+  static constexpr uint64_t kStaleReopenNs = 2'000'000'000ull;
+
   void ensureOpen() {
     if (reader_ != nullptr) {
       return;
@@ -887,6 +907,7 @@ class GraphicsFrameBusReader {
 
   framebus_reader_t *reader_ = nullptr;
   uint64_t lastSeq_ = 0;
+  uint64_t lastProgressNs_ = 0;
   uint64_t lastLoggedSeq_ = 0;
   std::string lastLoggedEvent_;
   std::string name_;
