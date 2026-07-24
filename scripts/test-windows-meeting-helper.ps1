@@ -47,4 +47,9 @@ if (-not ($output -match "requires --run")) {
   throw "Meeting helper binary-load smoke did not print its usage banner. Output: $output"
 }
 
+# The usage probe above intentionally leaves exit code 2 in $LASTEXITCODE;
+# reset it so the CI shell wrapper (which exits with $LASTEXITCODE) does not
+# fail the step after a fully successful smoke.
+& "$env:ComSpec" /c exit 0 | Out-Null
+
 Write-Host "Meeting helper packaged-binary smoke passed (loads with packaged DLLs, model present): $resolvedHelperPath"
