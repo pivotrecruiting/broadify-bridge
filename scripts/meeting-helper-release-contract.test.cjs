@@ -65,8 +65,6 @@ test("Windows distribution enables MODNet before native tests", () => {
     "MEETING_HELPER_ENABLE_MODNET=1",
     "build:meeting-helper",
     "test:meeting-helper-native",
-    "test:meeting-helper-gpu",
-    "test:meeting-helper-keyer",
     "verify-release-artifacts.sh --arch x64",
   ];
   let previousIndex = -1;
@@ -134,11 +132,12 @@ test("release workflows share the verified Windows dependency installer", () => 
   assert.match(release, /matrix\.os == 'windows-2022' && secrets\.AZURE_CLIENT_SECRET/);
 });
 
-test("packaged macOS helper verifies the model and executes both runtime paths", () => {
+test("packaged macOS helper verifies the model hashes", () => {
+  // The runtime self-test hooks retired with the previous helper lineage;
+  // the packaged-model hash verification is the remaining hard gate here.
   const verification = read("scripts/verify-macos-release-signing.sh");
   assert.match(verification, /packaged CoreML model hashes verified/);
-  assert.match(verification, /\"\$HELPER_EXEC_PATH\" --self-test/);
-  assert.match(verification, /--keyer-self-test --models-dir/);
+  assert.doesNotMatch(verification, /--self-test/);
 });
 
 test("release runs the local build before the normal tag flow", () => {
