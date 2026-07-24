@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { Readable } from "node:stream";
 
 import { meetingMediaService } from "../services/meeting/meeting-media-service.js";
+import {
+  BACKGROUND_IMAGE_MAX_BYTES,
+  storeBackgroundImage,
+} from "../services/meeting/background-image-store.js";
 import { enforceLocalOrToken } from "./route-guards.js";
-import { getBridgeContext } from "../services/bridge-context.js";
 
 const MEETING_MEDIA_BODY_LIMIT_BYTES = 500 * 1024 * 1024;
 const RAW_CONTENT_TYPES = new Set([
@@ -85,7 +85,7 @@ export async function registerMeetingMediaRoute(
   // them by absolute path (keyer.configure background_image_path).
   fastify.post(
     "/meeting/background-image",
-    { bodyLimit: 8 * 1024 * 1024 },
+    { bodyLimit: BACKGROUND_IMAGE_MAX_BYTES },
     async (request, reply) => {
       if (!enforceLocalOrToken(request, reply)) {
         return;
@@ -99,27 +99,19 @@ export async function registerMeetingMediaRoute(
       for await (const chunk of stream) {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
-      const body = Buffer.concat(chunks);
-      if (body.length === 0) {
+      try {
+        const filePath = await storeBackgroundImage(
+          Buffer.concat(chunks),
+          readHeader(request.headers["content-type"]) ?? "",
+        );
+        return { success: true, path: filePath };
+      } catch (error) {
         reply.code(400);
-        return { success: false, error: "Empty image request body." };
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
-      const contentType = readHeader(request.headers["content-type"]) ?? "";
-      const extension =
-        contentType.includes("png") ? "png"
-        : contentType.includes("webp") ? "webp"
-        : contentType.includes("jpeg") || contentType.includes("jpg") ? "jpg"
-        : null;
-      if (!extension) {
-        reply.code(400);
-        return { success: false, error: "Only PNG, JPEG or WebP backgrounds are supported." };
-      }
-      const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
-      const directory = join(getBridgeContext().userDataDir, "meeting-backgrounds");
-      await mkdir(directory, { recursive: true });
-      const filePath = join(directory, `${hash}.${extension}`);
-      await writeFile(filePath, body);
-      return { success: true, path: filePath };
     },
   );
 

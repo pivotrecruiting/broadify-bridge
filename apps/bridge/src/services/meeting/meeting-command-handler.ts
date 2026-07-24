@@ -7,14 +7,26 @@ import {
 } from "../relay-command-schemas.js";
 import {
   ConferenceDisplayStartSchema,
+  MeetingBackgroundImageFetchSchema,
   MeetingCallControlSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
   MeetingKeyerConfigureSchema,
+  MeetingMediaFetchSchema,
+  MeetingMediaGetSchema,
   MeetingOutputConfigureSchema,
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
 } from "./meeting-command-schemas.js";
+import { meetingMediaService } from "./meeting-media-service.js";
+import {
+  downloadGuardedBuffer,
+  openGuardedDownload,
+} from "./media-download.js";
+import {
+  BACKGROUND_IMAGE_MAX_BYTES,
+  storeBackgroundImage,
+} from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
 import {
   conferenceDirectorService,
@@ -458,6 +470,60 @@ export async function handleMeetingCommand(
 
     case "meeting_recording_status": {
       return runMeetingRpc(() => requireClient().recordingStatus());
+    }
+
+    // Cloud-fetch commands: HTTPS webapps cannot POST files to the local
+    // bridge in every browser (Safari blocks active mixed content to
+    // 127.0.0.1), so the webapp sends a cloud URL and the bridge downloads
+    // the asset itself through the guarded downloader.
+    case "meeting_background_image_fetch": {
+      const { url } = parseRelayPayload(
+        MeetingBackgroundImageFetchSchema,
+        payload ?? {},
+        "Invalid payload for meeting_background_image_fetch",
+      );
+      const { body, contentType } = await downloadGuardedBuffer(
+        url,
+        BACKGROUND_IMAGE_MAX_BYTES,
+        25_000,
+      );
+      const path = await storeBackgroundImage(body, contentType);
+      return { success: true, data: { path } };
+    }
+
+    case "meeting_media_fetch": {
+      const { url, name } = parseRelayPayload(
+        MeetingMediaFetchSchema,
+        payload ?? {},
+        "Invalid payload for meeting_media_fetch",
+      );
+      const { stream } = await openGuardedDownload(
+        url,
+        500 * 1024 * 1024,
+        110_000,
+      );
+      const asset = await meetingMediaService.saveUpload(name, stream);
+      return { success: true, data: asset };
+    }
+
+    case "meeting_media_list": {
+      return { success: true, data: await meetingMediaService.listAssets() };
+    }
+
+    case "meeting_media_get": {
+      const { asset_id } = parseRelayPayload(
+        MeetingMediaGetSchema,
+        payload ?? {},
+        "Invalid payload for meeting_media_get",
+      );
+      return { success: true, data: await meetingMediaService.getAsset(asset_id) };
+    }
+
+    case "meeting_media_rendering_status": {
+      return {
+        success: true,
+        data: await meetingMediaService.renderingStatus(),
+      };
     }
 
     case "meeting_call_control": {
