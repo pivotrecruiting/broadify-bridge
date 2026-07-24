@@ -36,6 +36,28 @@ std::string formatHr(const char *what, HRESULT hr) {
   return buf;
 }
 
+// MFCreateVirtualCamera exists only on Windows 11 (mfsensorgroup.dll on
+// Windows 10 / Server lacks the export). A static import would make the
+// WHOLE helper fail to load there (STATUS_ENTRYPOINT_NOT_FOUND), killing
+// keying/recording too — so resolve it at runtime and degrade to a clear
+// "virtual camera unsupported" error instead.
+typedef HRESULT(WINAPI *MFCreateVirtualCameraFn)(
+    MFVirtualCameraType type, MFVirtualCameraLifetime lifetime,
+    MFVirtualCameraAccess access, LPCWSTR friendlyName, LPCWSTR sourceId,
+    const GUID *categories, ULONG categoryCount, IMFVirtualCamera **virtualCamera);
+
+MFCreateVirtualCameraFn resolveMFCreateVirtualCamera() {
+  static MFCreateVirtualCameraFn fn = []() -> MFCreateVirtualCameraFn {
+    HMODULE module = LoadLibraryW(L"mfsensorgroup.dll");
+    if (module == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<MFCreateVirtualCameraFn>(
+        GetProcAddress(module, "MFCreateVirtualCamera"));
+  }();
+  return fn;
+}
+
 }  // namespace
 
 bool startVirtualCamera(std::string &errorOut) {
@@ -51,7 +73,16 @@ bool startVirtualCamera(std::string &errorOut) {
     g_mfStarted = true;
   }
 
-  HRESULT hr = MFCreateVirtualCamera(
+  const MFCreateVirtualCameraFn createVirtualCamera = resolveMFCreateVirtualCamera();
+  if (createVirtualCamera == nullptr) {
+    g_lastError =
+        "Virtual camera requires Windows 11 (MFCreateVirtualCamera is not "
+        "available on this Windows version).";
+    errorOut = g_lastError;
+    return false;
+  }
+
+  HRESULT hr = createVirtualCamera(
       MFVirtualCameraType_SoftwareCameraSource, MFVirtualCameraLifetime_Session,
       MFVirtualCameraAccess_CurrentUser, L"Broadify Camera", kSourceId, nullptr,
       0, &g_vcam);

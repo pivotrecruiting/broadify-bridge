@@ -142,7 +142,10 @@ endif()
 
 if(WIN32)
   target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfsensorgroup mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
+  # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
+  # resolved at runtime (Windows 11 only); a static import would prevent the
+  # helper from loading at all on Windows 10 / Server.
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
