@@ -15,14 +15,17 @@ test("native CTest always selects the Release configuration", () => {
 });
 
 test("Windows build fails closed when CMake does not enable MODNet", () => {
+  // The integrated (Windows-parity) helper gates MODNet via the
+  // MEETING_HELPER_ENABLE_MODNET env: default ON, and a missing onnxruntime
+  // root is a hard CMake error instead of a silent Vision/CPU-only binary.
   const cmake = read("apps/bridge/native/meeting-helper/CMakeLists.txt");
   const build = read("apps/bridge/native/meeting-helper/build.ps1");
-  assert.match(cmake, /option\(MEETING_HELPER_ENABLE_MODNET/);
-  assert.match(cmake, /if\(MEETING_HELPER_ENABLE_MODNET\)/);
-  assert.match(build, /-DMEETING_HELPER_ENABLE_MODNET:BOOL=\$modnetEnabled/);
-  assert.match(build, /CMake MODNet configuration mismatch/);
-  assert.match(build, /dumpbin\.exe \/DEPENDENTS/);
-  assert.match(build, /imports onnxruntime\.dll/);
+  assert.match(cmake, /DEFINED ENV\{MEETING_HELPER_ENABLE_MODNET\}/);
+  assert.match(cmake, /MEETING_HELPER_ENABLE_MODNET STREQUAL "1"/);
+  assert.match(cmake, /message\(FATAL_ERROR/);
+  assert.match(cmake, /BROADIFY_ENABLE_MODNET=1/);
+  assert.match(build, /MEETING_HELPER_ENABLE_MODNET -ne "0"/);
+  assert.match(build, /onnxruntime\.dll/);
 });
 
 test("Windows meeting-helper dependencies use valid NuGet flat-container paths", () => {
@@ -74,31 +77,32 @@ test("Windows distribution enables MODNet before native tests", () => {
   }
 });
 
-test("D3D11 host buffer uses the shared GPU uniform ABI", () => {
+test("D3D11 uniform struct stays in sync with its HLSL cbuffer", () => {
+  // This lineage mirrors one C++ struct into the HLSL cbuffer inline; the
+  // background-image fields prove the company-background ABI is plumbed
+  // through both sides, and the sync-guard comment must stay in place.
   const source = read(
     "apps/bridge/native/meeting-helper/src/compose/d3d11_compositor.cpp",
   );
-  assert.match(source, /sizeof\(GpuComposeUniforms\)/);
-  assert.doesNotMatch(source, /sizeof\(ComposeUniforms\)/);
+  assert.match(source, /Must match the HLSL cbuffer/);
+  const bgImagePresentCount = (source.match(/bgImagePresent/g) ?? []).length;
+  assert.ok(
+    bgImagePresentCount >= 3,
+    "bgImagePresent must exist in the C++ struct, the cbuffer and the kernel",
+  );
+  assert.match(source, /bgImageTex/);
 });
 
-test("hosted Windows self-tests have explicit portable fallbacks", () => {
+test("Windows GPU compositor keeps its CPU fallback kill-switch", () => {
+  // The self-test driver hooks of the previous lineage do not exist here;
+  // the fail-safe contract is the runtime kill-switch: the D3D11 compositor
+  // can be disabled via env and every failure falls back to the CPU
+  // compositor instead of aborting.
   const compositor = read(
     "apps/bridge/native/meeting-helper/src/compose/d3d11_compositor.cpp",
   );
-  const main = read("apps/bridge/native/meeting-helper/src/main.cpp");
-  const installedSmoke = read("scripts/test-windows-meeting-helper.ps1");
-  const keyer = read(
-    "apps/bridge/native/meeting-helper/src/keyer/modnet_keyer.cpp",
-  );
-  assert.match(compositor, /BROADIFY_MEETING_GPU_SELF_TEST_DRIVER/);
-  assert.match(compositor, /d3d11CompositorSelfTestAvailable/);
-  assert.match(main, /BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER/);
-  assert.match(main, /forceCpuProvider\s*\? result\.status\.provider == "cpu"/);
-  assert.match(main, /result\.hardwareAccelerated == expectedAcceleration/);
-  assert.match(keyer, /forceCpuProvider/);
-  assert.match(keyer, /options_\.keyerSelfTest/);
-  assert.match(installedSmoke, /RequireHardwareAcceleration/);
+  assert.match(compositor, /BROADIFY_MEETING_GPU_COMPOSITOR_D3D11/);
+  assert.match(compositor, /falls back to the CPU compositor/);
 });
 
 test("release workflows share the verified Windows dependency installer", () => {

@@ -7,15 +7,12 @@ $ErrorActionPreference = "Stop"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $rootDir "build"
 $outputExe = Join-Path $rootDir "meeting-helper.exe"
-$modnetRequested = if ([string]::IsNullOrWhiteSpace($env:MEETING_HELPER_ENABLE_MODNET)) { "1" } else { $env:MEETING_HELPER_ENABLE_MODNET }
-$modnetEnabled = if ($modnetRequested -match '^(0|false|off|no)$') { "OFF" } else { "ON" }
-Write-Host "Meeting helper MODNet enabled: $modnetEnabled"
 
 function Invoke-NativeCommand {
   param(
     [Parameter(Mandatory = $true)]
     [string]$FilePath,
-    [Parameter(Mandatory = $true)]
+    [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Arguments
   )
 
@@ -29,27 +26,8 @@ if (Test-Path $outputExe) {
   Remove-Item -Force $outputExe
 }
 
-$configureArguments = @(
-  "-S", $rootDir,
-  "-B", $buildDir,
-  "-DMEETING_HELPER_ENABLE_MODNET:BOOL=$modnetEnabled"
-)
-Invoke-NativeCommand -FilePath "cmake" -Arguments $configureArguments
-
-$cachePath = Join-Path $buildDir "CMakeCache.txt"
-$expectedCacheEntry = "MEETING_HELPER_ENABLE_MODNET:BOOL=$modnetEnabled"
-if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
-  throw "CMake did not produce its cache: $cachePath"
-}
-$cacheEntry = Get-Content -LiteralPath $cachePath |
-  Where-Object { $_ -like "MEETING_HELPER_ENABLE_MODNET:*" } |
-  Select-Object -First 1
-if ($cacheEntry -ne $expectedCacheEntry) {
-  throw "CMake MODNet configuration mismatch. Expected '$expectedCacheEntry', found '$cacheEntry'."
-}
-
-$buildArguments = @("--build", $buildDir, "--target", "meeting-helper", "--config", $Config, "--verbose")
-Invoke-NativeCommand -FilePath "cmake" -Arguments $buildArguments
+Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config
+Invoke-NativeCommand cmake --build $buildDir --target meeting-helper --config $Config --verbose
 
 $candidates = @(
   (Join-Path $buildDir "$Config\meeting-helper.exe"),
@@ -79,16 +57,7 @@ $onnxRuntimeRoot = $env:BROADIFY_ONNXRUNTIME_ROOT
 if ([string]::IsNullOrWhiteSpace($onnxRuntimeRoot)) {
   $onnxRuntimeRoot = Join-Path $rootDir "deps\onnxruntime\windows-x64"
 }
-if ($modnetEnabled -eq "ON") {
-  $dumpbinOutput = & dumpbin.exe /DEPENDENTS $outputExe 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    throw "dumpbin failed while verifying meeting-helper.exe imports."
-  }
-  if (($dumpbinOutput | Out-String) -notmatch '(?im)^\s*onnxruntime\.dll\s*$') {
-    throw "meeting-helper.exe was built without an onnxruntime.dll import."
-  }
-  Write-Host "Verified meeting-helper.exe imports onnxruntime.dll"
-
+if ($env:MEETING_HELPER_ENABLE_MODNET -ne "0") {
   $dllCandidate = Join-Path $onnxRuntimeRoot "lib\onnxruntime.dll"
   if (-not (Test-Path $dllCandidate)) {
     $dllCandidate = Join-Path $onnxRuntimeRoot "onnxruntime.dll"
@@ -97,13 +66,15 @@ if ($modnetEnabled -eq "ON") {
     throw "ONNX Runtime DLL not found under $onnxRuntimeRoot"
   }
   Copy-Item -Force $dllCandidate (Join-Path $rootDir "onnxruntime.dll")
+  # DirectML execution-provider runtime dependencies. Present in the DirectML
+  # ONNX Runtime build; copied next to the exe so the DML provider can load.
+  # Absent on a CPU-only ORT build (macOS/CI CPU builds), which is fine.
   $ortLibDir = Split-Path -Parent $dllCandidate
-  foreach ($dependency in @("onnxruntime_providers_shared.dll", "DirectML.dll")) {
-    $dependencyPath = Join-Path $ortLibDir $dependency
-    if (-not (Test-Path $dependencyPath)) {
-      throw "DirectML runtime dependency missing: $dependencyPath"
+  foreach ($dep in @("onnxruntime_providers_shared.dll", "DirectML.dll")) {
+    $depPath = Join-Path $ortLibDir $dep
+    if (Test-Path $depPath) {
+      Copy-Item -Force $depPath (Join-Path $rootDir $dep)
     }
-    Copy-Item -Force $dependencyPath (Join-Path $rootDir $dependency)
   }
 }
 

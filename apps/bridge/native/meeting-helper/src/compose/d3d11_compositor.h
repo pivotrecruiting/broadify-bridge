@@ -1,36 +1,30 @@
 #pragma once
 
-#include "compose/gpu_compositor_types.h"
+#include "compose/metal_compositor.h"
 #include "keyer/keyer.h"
 
 namespace broadify::meeting {
 
-// True when the D3D11 GPU compositor is available. It is enabled by default;
-// BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 forces the CPU fallback.
+// True when the D3D11 GPU compositor is available AND explicitly enabled via
+// BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=1 (default OFF while the Windows path
+// is being validated). Callers fall back to the CPU compositor otherwise.
 bool d3d11CompositorAvailable();
 
-// Initializes the compositor for a self-test and permits the explicit WARP
-// driver override. Normal runtime initialization ignores that override.
-bool d3d11CompositorSelfTestAvailable();
-
-// True when the initialized D3D11 compositor uses a hardware device rather
-// than the explicit self-test-only WARP device.
-bool d3d11CompositorHardwareAccelerated();
-
 // Composites the shared GPU compose plan (background + graphics + keyed
-// camera) on the GPU into `output` (RGBA, width*height*4).
+// camera + media layer) on the GPU into `output` (RGBA, width*height*4).
 // Returns false on any failure; callers must then render through the CPU
 // compositor instead.
-bool renderProgramFrameD3D11(const GpuComposePlan &plan,
+bool renderProgramFrameD3D11(const MetalComposePlan &plan,
                              std::vector<uint8_t> &output);
 
-// True when the D3D11 guided mask refine is available. It is enabled by
-// default; BROADIFY_MEETING_GPU_GUIDED=0 forces the portable CPU fallback.
+// True when the D3D11 guided mask refine is available AND explicitly enabled
+// via BROADIFY_MEETING_GPU_GUIDED=1 (default OFF). Independent kill-switch
+// from the compositor so the two stages can be validated separately.
 bool d3d11GuidedRefineAvailable();
 
 // GPU port of guidedRefineMask (guided_mask_refine.cpp): snaps the mask onto
 // the guide frame's luma edges on a <=512-wide working grid and REPLACES the
-// mask with the working-resolution result, with identical semantics to the CPU
+// mask with the working-resolution result — identical semantics to the CPU
 // path. Returns false on any failure; callers must then run the CPU refine.
 bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame);
 

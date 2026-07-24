@@ -117,17 +117,6 @@ export class ShureDirectionSource implements DirectionSource {
       socket.write(
         `< SET TALKER_POSITION_RATE ${padRate(this.reportRateMs)} >\r\n`,
       );
-      // Shure only emits SAMPLEs while a talker is active, so a cold start (or a
-      // reconnect) into a silent room would never arm the silence timer and the
-      // director would never fall back to wide. Seed an inactive reading now so
-      // the silence path is live from the first moment of the connection.
-      this.emit({
-        azimuthDeg: null,
-        active: false,
-        talkerCount: 0,
-        sourceTsMs: Date.now(),
-      });
-      this.armSilenceTimer();
     });
     socket.on("data", (chunk) => this.onData(chunk));
     socket.on("error", (err) => {

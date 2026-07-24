@@ -27,6 +27,14 @@
 #include <unistd.h>
 #endif
 
+#if !defined(__APPLE__)
+// Windows/Linux JPEG encoder for the MJPEG preview (macOS uses ImageIO below).
+// The implementation is compiled into this single translation unit.
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#include "stb_image_write.h"
+#endif
+
 namespace broadify::meeting {
 namespace {
 
@@ -75,7 +83,9 @@ std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
       ? nullptr
       : CGImageDestinationCreateWithData(data, CFSTR("public.jpeg"), 1, nullptr);
   if (destination != nullptr && image != nullptr) {
-    const float qualityValue = 0.95f;
+    // Preview-only stream: 0.7 is visually near-indistinguishable in the
+    // builder preview but substantially cheaper to encode than 0.95.
+    const float qualityValue = 0.7f;
     CFNumberRef quality = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloatType, &qualityValue);
     const void *keys[] = {kCGImageDestinationLossyCompressionQuality};
     const void *values[] = {quality};
@@ -120,8 +130,73 @@ std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
   return jpeg;
 }
 #else
-std::vector<uint8_t> encodeJpeg(const PreviewFrame &) {
-  return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+// stb_image_write memory sink: append encoded bytes to the target vector.
+void appendJpegBytes(void *context, void *data, int size) {
+  auto *out = static_cast<std::vector<uint8_t> *>(context);
+  const auto *bytes = static_cast<const uint8_t *>(data);
+  out->insert(out->end(), bytes, bytes + size);
+}
+
+std::vector<uint8_t> encodeJpeg(const PreviewFrame &frame) {
+  if (frame.rgba.empty() || frame.width == 0u || frame.height == 0u) {
+    return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+  }
+  const auto encodeStart = std::chrono::steady_clock::now();
+  // Downscale the preview 2x (2x2 box average, RGBA -> RGB in one pass) before
+  // encoding. This keeps the MJPEG encode well inside the ~66ms/15fps loop
+  // budget and cuts loopback bandwidth ~4x. Only the preview path is affected;
+  // the program frame, FrameBus and virtual camera keep the full resolution.
+  const bool halve = (frame.width % 2u == 0u) && (frame.height % 2u == 0u);
+  const uint32_t outW = halve ? frame.width / 2u : frame.width;
+  const uint32_t outH = halve ? frame.height / 2u : frame.height;
+  std::vector<uint8_t> rgb(static_cast<size_t>(outW) * outH * 3u);
+  if (halve) {
+    for (uint32_t y = 0u; y < outH; ++y) {
+      for (uint32_t x = 0u; x < outW; ++x) {
+        const uint32_t sx = x * 2u;
+        const uint32_t sy = y * 2u;
+        uint32_t r = 0u, g = 0u, b = 0u;
+        for (uint32_t dy = 0u; dy < 2u; ++dy) {
+          for (uint32_t dx = 0u; dx < 2u; ++dx) {
+            const size_t si = (static_cast<size_t>(sy + dy) * frame.width + (sx + dx)) * 4u;
+            r += frame.rgba[si + 0u];
+            g += frame.rgba[si + 1u];
+            b += frame.rgba[si + 2u];
+          }
+        }
+        const size_t di = (static_cast<size_t>(y) * outW + x) * 3u;
+        rgb[di + 0u] = static_cast<uint8_t>(r / 4u);
+        rgb[di + 1u] = static_cast<uint8_t>(g / 4u);
+        rgb[di + 2u] = static_cast<uint8_t>(b / 4u);
+      }
+    }
+  } else {
+    const size_t pixels = static_cast<size_t>(frame.width) * frame.height;
+    for (size_t i = 0u; i < pixels; ++i) {
+      rgb[i * 3u + 0u] = frame.rgba[i * 4u + 0u];
+      rgb[i * 3u + 1u] = frame.rgba[i * 4u + 1u];
+      rgb[i * 3u + 2u] = frame.rgba[i * 4u + 2u];
+    }
+  }
+  std::vector<uint8_t> jpeg;
+  // Quality 70 matches the macOS ImageIO path (deliberate preview-only choice).
+  const int ok = stbi_write_jpg_to_func(
+      appendJpegBytes, &jpeg,
+      static_cast<int>(outW), static_cast<int>(outH), 3,
+      rgb.data(), 70);
+  const double encodeMs = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - encodeStart).count();
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    std::cout << "{\"type\":\"preview_encode\",\"width\":" << outW
+              << ",\"height\":" << outH
+              << ",\"encode_ms\":" << encodeMs << "}" << std::endl;
+  }
+  if (ok == 0 || jpeg.empty()) {
+    return std::vector<uint8_t>(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+  }
+  return jpeg;
 }
 #endif
 
@@ -269,7 +344,9 @@ void runMjpegServer(uint16_t port,
           !sendAll(client, "\r\n", 2)) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(33));
+      // ~15fps: the builder preview does not need program frame rate, and
+      // JPEG encoding is one of the most expensive per-client costs.
+      std::this_thread::sleep_for(std::chrono::milliseconds(66));
     }
     closeSocketHandle(client);
   }

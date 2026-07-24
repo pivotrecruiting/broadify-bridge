@@ -72,22 +72,11 @@ export class SennheiserTcc2Source implements DirectionSource {
     const socket = dgram.createSocket("udp4");
     this.socket = socket;
     socket.on("message", (msg) => this.onMessage(msg));
-    // Bind can fail (address in use, permissions) or the socket can error
-    // before bind resolves; without a one-shot 'error' reject, start() would
-    // hang forever on a half-open socket. Detach the guard on success.
-    await new Promise<void>((resolve, reject) => {
-      const onBindError = (err: Error) => {
-        this.error = err.message;
-        reject(err);
-      };
-      socket.once("error", onBindError);
-      socket.bind(() => {
-        socket.removeListener("error", onBindError);
-        socket.on("error", (err) => {
-          this.error = err.message;
-        });
-        resolve();
-      });
+    socket.on("error", (err) => {
+      this.error = err.message;
+    });
+    await new Promise<void>((resolve) => {
+      socket.bind(() => resolve());
     });
     this.connected = true;
     this.subscribe();

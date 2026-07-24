@@ -1,5 +1,9 @@
 #include "preview/raw_frame_server.h"
 
+#if defined(__APPLE__)
+#include <Accelerate/Accelerate.h>
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <iostream>
@@ -114,6 +118,24 @@ void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &paylo
 
   uint8_t *dst = payload.data() + kRawFrameHeaderSize;
   const uint8_t *src = frame.rgba.data();
+#if defined(__APPLE__)
+  // SIMD-accelerated RGBA->BGRA swizzle; the scalar loop cost several
+  // milliseconds per frame per virtual-camera client.
+  vImage_Buffer sourceBuffer;
+  sourceBuffer.data = const_cast<uint8_t *>(src);
+  sourceBuffer.height = frame.height;
+  sourceBuffer.width = frame.width;
+  sourceBuffer.rowBytes = static_cast<size_t>(frame.width) * 4u;
+  vImage_Buffer destinationBuffer;
+  destinationBuffer.data = dst;
+  destinationBuffer.height = frame.height;
+  destinationBuffer.width = frame.width;
+  destinationBuffer.rowBytes = static_cast<size_t>(frame.width) * 4u;
+  const uint8_t kRgbaToBgra[4] = {2, 1, 0, 3};
+  if (vImagePermuteChannels_ARGB8888(&sourceBuffer, &destinationBuffer, kRgbaToBgra, kvImageNoFlags) == kvImageNoError) {
+    return;
+  }
+#endif
   const size_t pixelCount = frame.rgba.size() / 4u;
   for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
     const size_t offset = pixel * 4u;
@@ -158,6 +180,13 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &st
   if (!sendAll(client, header.c_str(), header.size())) {
     return;
   }
+
+  // Keep a clear TCP boundary between the HTTP response headers and the first
+  // raw frame header. The macOS CMIO extension reader validates the next bytes
+  // after the HTTP handshake as the BFRG frame header; without a small pause,
+  // header and frame bytes may be coalesced and the extension can lose the
+  // first frame header while parsing HTTP.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
   uint64_t lastSequence = 0u;
   uint64_t sentFrames = 0u;

@@ -9,7 +9,7 @@ import {
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 
-type MeetingProgramSectionT =
+export type MeetingProgramSectionT =
   | "camera"
   | "cornerbug"
   | "graphics"
@@ -48,6 +48,7 @@ export class MeetingHelperClient {
   private readonly socketPath: string;
   private readonly timeoutMs: number;
   private requestSeq = 0;
+  private rpcQueue: Promise<unknown> = Promise.resolve();
 
   constructor(socketPath: string, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS) {
     this.socketPath = socketPath;
@@ -71,6 +72,14 @@ export class MeetingHelperClient {
     return this.rpc("state.get");
   }
 
+  async getPipelineState(): Promise<Record<string, unknown>> {
+    return this.getState();
+  }
+
+  async getPerformance(): Promise<Record<string, unknown>> {
+    return { available: true, source: "meeting-helper" };
+  }
+
   async listCameras(): Promise<unknown> {
     return this.rpc("camera.list");
   }
@@ -87,6 +96,24 @@ export class MeetingHelperClient {
 
   async cameraStop(): Promise<Record<string, unknown>> {
     return this.rpc("camera.stop");
+  }
+
+  async recordingMicrophones(): Promise<Record<string, unknown>> {
+    return this.rpc("recording.microphones");
+  }
+
+  async recordingStart(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("recording.start", options);
+  }
+
+  async recordingStop(): Promise<Record<string, unknown>> {
+    return this.rpc("recording.stop");
+  }
+
+  async recordingStatus(): Promise<Record<string, unknown>> {
+    return this.rpc("recording.status");
   }
 
   async cameraSelect(
@@ -126,24 +153,6 @@ export class MeetingHelperClient {
     options: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     return this.rpc("camera.auto_director", options);
-  }
-
-  async recordingMicrophones(): Promise<Record<string, unknown>> {
-    return this.rpc("recording.microphones");
-  }
-
-  async recordingStart(
-    options: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    return this.rpc("recording.start", options);
-  }
-
-  async recordingStop(): Promise<Record<string, unknown>> {
-    return this.rpc("recording.stop");
-  }
-
-  async recordingStatus(): Promise<Record<string, unknown>> {
-    return this.rpc("recording.status");
   }
 
   async keyerGet(): Promise<Record<string, unknown>> {
@@ -192,6 +201,11 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStatus(): Promise<Record<string, unknown>> {
+    if (process.platform === "win32") {
+      // Windows: the virtual camera is owned by the native meeting-helper
+      // (MFCreateVirtualCamera), not a separate app.
+      return this.rpc("output.vcam.status");
+    }
     return getVcamHelperStatus({
       framebusName: process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME,
     });
@@ -207,6 +221,13 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStart(): Promise<Record<string, unknown>> {
+    if (process.platform === "win32") {
+      // Windows has no separate helper app: start the raw frame output and ask
+      // the meeting-helper to create the "Broadify Camera" (MFCreateVirtualCamera).
+      const framebusOutput = await this.framebusStart();
+      const vcam = await this.rpc("output.vcam.start");
+      return { ...vcam, framebus_output: framebusOutput };
+    }
     const framebusOutput = await this.framebusStart();
     const status = await openVcamHelperApp({
       framebusName: process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME,
@@ -218,6 +239,16 @@ export class MeetingHelperClient {
   }
 
   async virtualCameraStop(): Promise<Record<string, unknown>> {
+    if (process.platform === "win32") {
+      const framebusOutput = await this.framebusStop();
+      const vcam = await this.rpc("output.vcam.stop");
+      return {
+        ...vcam,
+        framebus_output: framebusOutput,
+        message:
+          "Virtual camera output was stopped. Meeting preview and program rendering remain active.",
+      };
+    }
     const framebusOutput = await this.framebusStop();
     return {
       ...(await this.virtualCameraStatus()),
@@ -227,7 +258,32 @@ export class MeetingHelperClient {
     };
   }
 
+  /**
+   * Serialize every RPC through a queue. The Windows control channel is a
+   * single-instance named pipe that accepts exactly one connection at a time;
+   * concurrent connections fail with ENOENT (e.g. getFullStatus firing
+   * getState + framebusStatus in parallel, or the web app sending commands at
+   * once). RPCs are millisecond-scale, so serializing them is negligible on all
+   * platforms and eliminates every present and future collision.
+   */
   private rpc<T = Record<string, unknown>>(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<T> {
+    const result = this.rpcQueue.then(
+      () => this.rpcInternal<T>(method, params),
+      () => this.rpcInternal<T>(method, params),
+    );
+    // Chain the next RPC after this one settles; swallow errors here so one
+    // failed RPC never rejects the shared queue for later callers.
+    this.rpcQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private rpcInternal<T = Record<string, unknown>>(
     method: string,
     params?: Record<string, unknown>,
   ): Promise<T> {

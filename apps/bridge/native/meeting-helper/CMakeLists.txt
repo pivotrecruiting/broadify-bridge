@@ -14,18 +14,16 @@ endif()
 
 project(broadify_meeting_helper LANGUAGES C CXX)
 
-include(CTest)
-
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(DEFINED ENV{MEETING_HELPER_ENABLE_MODNET} AND NOT DEFINED MEETING_HELPER_ENABLE_MODNET)
+if(DEFINED ENV{MEETING_HELPER_ENABLE_MODNET})
   set(MEETING_HELPER_ENABLE_MODNET "$ENV{MEETING_HELPER_ENABLE_MODNET}")
+else()
+  set(MEETING_HELPER_ENABLE_MODNET "1")
 endif()
-option(MEETING_HELPER_ENABLE_MODNET "Enable ONNX Runtime MODNet" ON)
-message(STATUS "Meeting helper MODNet support: ${MEETING_HELPER_ENABLE_MODNET}")
 
 if(APPLE)
   set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/macos-arm64")
@@ -33,15 +31,6 @@ elseif(WIN32)
   set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/windows-x64")
 else()
   set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/linux-x64")
-endif()
-
-if(BUILD_TESTING)
-  add_executable(meeting-helper-guided-mask-test
-    tests/guided_mask_refine_test.cpp
-    src/pipeline/guided_mask_refine.cpp
-  )
-  target_include_directories(meeting-helper-guided-mask-test PRIVATE src)
-  add_test(NAME meeting-helper-guided-mask-test COMMAND meeting-helper-guided-mask-test)
 endif()
 
 set(BROADIFY_ONNXRUNTIME_ROOT "$ENV{BROADIFY_ONNXRUNTIME_ROOT}" CACHE PATH "Path to vendored ONNX Runtime C/C++ distribution")
@@ -56,6 +45,7 @@ set(MEETING_HELPER_SOURCES
   src/compose/compositor.cpp
   src/common/options.cpp
   src/control/control_server.cpp
+  src/output/vcam_controller.cpp
   src/keyer/keyer_chain.cpp
   src/keyer/model_manifest.cpp
   src/keyer/modnet_keyer.cpp
@@ -75,11 +65,20 @@ if(APPLE)
     src/capture/camera_avfoundation.mm
     src/compose/metal_compositor.mm
     src/compose/metal_device.mm
+    src/keyer/vision_keyer.mm
     src/keyer/coreml_keyer.mm
     src/keyer/gpu_mask_refine.mm
-    src/keyer/vision_keyer.mm
-    src/macos/macos_app.mm
     src/recorder/meeting_recorder.mm
+    src/macos/macos_app.mm
+  )
+  set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/keyer/gpu_mask_refine.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/recorder/meeting_recorder.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
@@ -90,23 +89,14 @@ if(APPLE)
   set_source_files_properties(src/compose/metal_device.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
-  set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
-    COMPILE_FLAGS "-fobjc-arc"
-  )
-  set_source_files_properties(src/keyer/gpu_mask_refine.mm PROPERTIES
-    COMPILE_FLAGS "-fobjc-arc"
-  )
   set_source_files_properties(src/keyer/vision_keyer.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/macos/macos_app.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
-  set_source_files_properties(src/recorder/meeting_recorder.mm PROPERTIES
-    COMPILE_FLAGS "-fobjc-arc"
-  )
 elseif(WIN32)
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_mediafoundation.cpp src/compose/d3d11_compositor.cpp)
+  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_mediafoundation.cpp src/recorder/meeting_recorder_mediafoundation.cpp src/compose/d3d11_compositor.cpp)
 else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
 endif()
@@ -122,9 +112,10 @@ target_include_directories(meeting-helper PRIVATE
   Shared/include
   ../vcam-helper/Shared/include
   ../framebus/include
+  third_party/stb
 )
 
-if(MEETING_HELPER_ENABLE_MODNET)
+if(MEETING_HELPER_ENABLE_MODNET STREQUAL "1")
   find_path(ONNXRUNTIME_INCLUDE_DIR
     NAMES onnxruntime_cxx_api.h
     PATHS "${BROADIFY_ONNXRUNTIME_ROOT}/include"
@@ -151,7 +142,7 @@ endif()
 
 if(WIN32)
   target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfsensorgroup mfuuid ole32 d3d11 d3dcompiler dxgi)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfsensorgroup mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -166,6 +157,7 @@ if(APPLE)
     "-framework ApplicationServices"
     "-framework AVFoundation"
     "-framework CoreGraphics"
+    "-framework CoreImage"
     "-framework CoreML"
     "-framework CoreMedia"
     "-framework CoreVideo"

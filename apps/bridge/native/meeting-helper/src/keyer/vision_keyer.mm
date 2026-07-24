@@ -87,8 +87,8 @@ void copyMask(CVPixelBufferRef maskBuffer, uint64_t timestampNs, AlphaMask &outp
 
 // Fraction of the mask that is confident foreground. A low-confidence frame
 // (backlight, bright window, low contrast) can make the stateful sequence
-// handler emit a near-full-frame foreground mask. The whole background stops
-// keying and can then stick in that state until strong motion re-converges it.
+// handler emit a near-full-frame foreground mask — the whole background stops
+// keying — and then "stick" in that state until strong motion re-converges it.
 constexpr double kDegenerateCoverageThreshold = 0.92;
 bool isDegenerateCoverage(const AlphaMask &mask) {
   if (mask.alpha.empty()) {
@@ -172,7 +172,7 @@ class VisionKeyer::Impl {
         // Degenerate-mask watchdog: if this mask is an implausible near-full-frame
         // foreground (the "whole background un-keyed" stick), recreate the
         // sequence handler so the NEXT frame re-inferences from a clean temporal
-        // state instead of staying stuck until the user waves an arm. The
+        // state — instead of staying stuck until the user waves an arm. The
         // current (bad) mask is still returned; the pipeline holds its last good
         // mask rather than publishing this one.
         if (isDegenerateCoverage(result.mask)) {

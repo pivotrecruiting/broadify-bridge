@@ -1,10 +1,10 @@
 #include "compose/d3d11_compositor.h"
-#include "compose/gpu_compositor_uniforms.h"
 
 // D3D11 port of the Metal GPU compositor (metal_compositor.mm): one compute
-// dispatch composites the background mode, graphics, and camera into an RGBA
-// program frame. It is enabled by default; every failure falls back to the CPU
-// compositor. BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 disables it.
+// dispatch composites background (mode/company image), back graphics, the
+// keyed presenter (or cover camera), the media layer and front graphics into
+// an RGBA program frame. Enabled ONLY with BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=1
+// (kill-switch default OFF); every failure falls back to the CPU compositor.
 //
 // The HLSL kernel below is a line-for-line port of the MSL kernel so both
 // backends stay pixel-equivalent; keep them in sync.
@@ -28,6 +28,70 @@ using Microsoft::WRL::ComPtr;
 
 namespace broadify::meeting {
 namespace {
+
+// Must match the HLSL cbuffer below (rows of four 32-bit values).
+struct ComposeUniforms {
+  uint32_t width;
+  uint32_t height;
+  uint32_t backgroundMode;
+  uint32_t frameIndex96;
+
+  uint32_t cameraPresent;
+  uint32_t cameraKeyed;
+  uint32_t cameraMirror;
+  uint32_t backPresent;
+
+  float camScaleX;
+  float camScaleY;
+  float camBiasX;
+  float camBiasY;
+
+  float camMirrorConst;
+  float camTexWidth;
+  float camTexHeight;
+  float backMirrorConst;
+
+  float backScaleX;
+  float backScaleY;
+  float backBiasX;
+  float backBiasY;
+
+  uint32_t frontPresent;
+  float frontScaleX;
+  float frontScaleY;
+  float frontBiasX;
+
+  float frontBiasY;
+  float pad0;
+  float pad1;
+  float pad2;
+
+  uint32_t mediaPresent;
+  uint32_t mediaBelowCamera;
+  uint32_t shadowPresent;
+  uint32_t padM;
+
+  float m00; float m01; float m02; float m10;
+  float m11; float m12; float m20; float m21;
+  float m22; float s00; float s01; float s02;
+  float s10; float s11; float s12; float s20;
+  float s21; float s22; float padM1; float padM2;
+
+  uint32_t maskPresent;
+  uint32_t padK0;
+  uint32_t padK1;
+  uint32_t padK2;
+
+  uint32_t bgImagePresent;
+  float bgImgScaleX;
+  float bgImgScaleY;
+  float bgImgBiasX;
+
+  float bgImgBiasY;
+  float padBG0;
+  float padBG1;
+  float padBG2;
+};
 
 constexpr const char *kComposeShaderSource = R"HLSL(
 cbuffer ComposeUniforms : register(b0) {
@@ -66,6 +130,17 @@ cbuffer ComposeUniforms : register(b0) {
   float pad1;
   float pad2;
 
+  uint mediaPresent;
+  uint mediaBelowCamera;
+  uint shadowPresent;
+  uint padM;
+
+  float m00; float m01; float m02; float m10;
+  float m11; float m12; float m20; float m21;
+  float m22; float s00; float s01; float s02;
+  float s10; float s11; float s12; float s20;
+  float s21; float s22; float padM1; float padM2;
+
   uint maskPresent;
   uint padK0;
   uint padK1;
@@ -85,8 +160,9 @@ cbuffer ComposeUniforms : register(b0) {
 Texture2D<float4> cameraTex : register(t0);
 Texture2D<float4> backTex : register(t1);
 Texture2D<float4> frontTex : register(t2);
-Texture2D<float4> maskTex : register(t3);
-Texture2D<float4> bgImageTex : register(t4);
+Texture2D<float4> mediaTex : register(t3);
+Texture2D<float4> maskTex : register(t4);
+Texture2D<float4> bgImageTex : register(t5);
 SamplerState layerSampler : register(s0);
 RWByteAddressBuffer output : register(u0);
 
@@ -97,9 +173,34 @@ float4 sampleLayer(Texture2D<float4> layer, float2 sourcePx) {
   return layer.SampleLevel(layerSampler, uv, 0);
 }
 
-float3 blendUnorm8(float3 destination, float3 source, float alpha) {
-  const float3 blended = lerp(destination, source, alpha);
-  return floor(saturate(blended) * 255.0 + 1.0e-4) / 255.0;
+// Media (PiP) layer: inverse-homography lookup into the fitted image quad,
+// preceded by the optional planar drop shadow quad.
+float3 blendMedia(float3 rgb, float2 dest) {
+  if (shadowPresent != 0u) {
+    const float sw = s20 * dest.x + s21 * dest.y + s22;
+    if (abs(sw) > 1e-9) {
+      const float su = (s00 * dest.x + s01 * dest.y + s02) / sw;
+      const float sv = (s10 * dest.x + s11 * dest.y + s12) / sw;
+      if (su >= 0.0 && su <= 1.0 && sv >= 0.0 && sv <= 1.0) {
+        rgb = lerp(rgb, float3(0.0, 0.0, 0.0), 46.0 / 255.0);
+      }
+    }
+  }
+  const float w = m20 * dest.x + m21 * dest.y + m22;
+  if (abs(w) < 1e-9) {
+    return rgb;
+  }
+  const float mu = (m00 * dest.x + m01 * dest.y + m02) / w;
+  const float mv = (m10 * dest.x + m11 * dest.y + m12) / w;
+  if (mu < 0.0 || mu > 1.0 || mv < 0.0 || mv > 1.0) {
+    return rgb;
+  }
+  float texW, texH;
+  mediaTex.GetDimensions(texW, texH);
+  const float4 s = sampleLayer(mediaTex, float2(mu, mv) * float2(texW, texH) - 0.5);
+  const float a = s.a;
+  const float3 c = a > 0.001 ? min(s.rgb / a, 1.0) : float3(0.0, 0.0, 0.0);
+  return lerp(rgb, c, a);
 }
 
 [numthreads(8, 8, 1)]
@@ -114,8 +215,8 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
   // Background (matches fillBackground on the CPU path).
   if (backgroundMode == 1u) {  // animated gradient
     const uint wave = (gid.x + gid.y + frameIndex96) % 96u;
-    const float r = clamp(20.0 + floor((120.0 * float(gid.x)) / float(max(width, 1u))) + float(wave / 5u), 0.0, 255.0);
-    const float g = clamp(54.0 + floor((90.0 * float(gid.y)) / float(max(height, 1u))), 0.0, 255.0);
+    const float r = clamp(20.0 + (120.0 * float(gid.x)) / float(max(width, 1u)) + float(wave / 5u), 0.0, 255.0);
+    const float g = clamp(54.0 + (90.0 * float(gid.y)) / float(max(height, 1u)), 0.0, 255.0);
     const float b = clamp(94.0 + float(wave), 0.0, 255.0);
     rgb = float3(r, g, b) / 255.0;
   } else if (backgroundMode == 2u) {
@@ -133,14 +234,18 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
   if (bgImagePresent != 0u) {
     const float2 src = float2(dest.x * bgImgScaleX + bgImgBiasX, dest.y * bgImgScaleY + bgImgBiasY);
     const float4 s = sampleLayer(bgImageTex, src);
-    rgb = blendUnorm8(rgb, s.rgb, s.a);
+    rgb = lerp(rgb, s.rgb, s.a);
   }
 
   // Back graphics (cover-cropped full-frame layer).
   if (backPresent != 0u) {
     const float2 src = float2(dest.x * backScaleX + backBiasX, dest.y * backScaleY + backBiasY);
     const float4 s = sampleLayer(backTex, src);
-    rgb = blendUnorm8(rgb, s.rgb, s.a);
+    rgb = lerp(rgb, s.rgb, s.a);
+  }
+
+  if (mediaPresent != 0u && mediaBelowCamera != 0u) {
+    rgb = blendMedia(rgb, dest);
   }
 
   // Camera layer: keyed presenter (transform anchored to the keyed bottom
@@ -154,23 +259,35 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
       const float4 s = sampleLayer(cameraTex, src);
       float alpha = s.a;
       if (cameraKeyed != 0u) {
-        // The worker already remaps and stabilizes the keyer mask. The compositor
-        // only samples it, matching the CPU path.
+        // Keyer mask (stretched over the camera frame) + the same normalize
+        // curve as the previous CPU alpha pass (cutoffs 18/242, smoothstep).
         alpha = 0.0;
         if (maskPresent != 0u) {
           const float2 uv = (src + 0.5) / float2(camTexWidth, camTexHeight);
-          alpha = maskTex.SampleLevel(layerSampler, uv, 0).r;
+          const float raw = maskTex.SampleLevel(layerSampler, uv, 0).r * 255.0;
+          if (raw > 18.0) {
+            alpha = raw >= 242.0 ? 1.0 : smoothstep(0.0, 1.0, (raw - 18.0) / 224.0);
+          }
+          // Only clip truly negligible alpha; keep the soft hair/edge band that
+          // the old 24.5/255 snap discarded.
+          if (alpha <= 8.0 / 255.0) {
+            alpha = 0.0;
+          }
         }
       }
-      rgb = blendUnorm8(rgb, s.rgb, alpha);
+      rgb = lerp(rgb, s.rgb, alpha);
     }
+  }
+
+  if (mediaPresent != 0u && mediaBelowCamera == 0u) {
+    rgb = blendMedia(rgb, dest);
   }
 
   // Front graphics.
   if (frontPresent != 0u) {
     const float2 src = float2(dest.x * frontScaleX + frontBiasX, dest.y * frontScaleY + frontBiasY);
     const float4 s = sampleLayer(frontTex, src);
-    rgb = blendUnorm8(rgb, s.rgb, s.a);
+    rgb = lerp(rgb, s.rgb, s.a);
   }
 
   const uint index = gid.y * width + gid.x;
@@ -191,7 +308,6 @@ struct LayerTexture {
 struct D3D11Context {
   bool initialized = false;
   bool available = false;
-  bool hardwareAccelerated = false;
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   ComPtr<ID3D11ComputeShader> shader;
@@ -204,6 +320,7 @@ struct D3D11Context {
   LayerTexture camera;
   LayerTexture back;
   LayerTexture front;
+  LayerTexture media;
   LayerTexture mask;
   LayerTexture backgroundImage;
 };
@@ -225,15 +342,15 @@ std::string hresultDetail(HRESULT hr) {
   return buffer;
 }
 
-bool initializeContext(bool selfTest = false) {
+bool initializeContext() {
   D3D11Context &ctx = context();
   if (ctx.initialized) {
     return ctx.available;
   }
   ctx.initialized = true;
 
-  // Default ON: the D3D11 GPU compositor is the Windows production path,
-  // matching the macOS Metal opt-out. Kill-switch: set
+  // Default ON (proven in the field): the D3D11 GPU compositor is the Windows
+  // production path, matching the macOS Metal opt-OUT. Kill-switch: set
   // BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 to fall back to the CPU compositor.
   const char *envToggle = std::getenv("BROADIFY_MEETING_GPU_COMPOSITOR_D3D11");
   if (envToggle != nullptr && std::strcmp(envToggle, "0") == 0) {
@@ -245,26 +362,13 @@ bool initializeContext(bool selfTest = false) {
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
                                       D3D_FEATURE_LEVEL_11_0};
   D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
-  const char *selfTestDriver =
-      std::getenv("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER");
-  const bool forceWarp =
-      selfTest && selfTestDriver != nullptr &&
-      std::strcmp(selfTestDriver, "warp") == 0;
-  const D3D_DRIVER_TYPE driverType =
-      forceWarp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
   HRESULT hr = D3D11CreateDevice(
-      nullptr, driverType, nullptr, 0, levels,
+      nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels,
       static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &ctx.device,
       &got, &ctx.context);
   if (FAILED(hr)) {
-    const std::string driverName = forceWarp ? "WARP" : "hardware";
-    logCompositorEvent("unavailable", "no D3D11 " + driverName +
-                                          " device, " + hresultDetail(hr));
+    logCompositorEvent("unavailable", "no D3D11 hardware device, " + hresultDetail(hr));
     return false;
-  }
-  ctx.hardwareAccelerated = !forceWarp;
-  if (forceWarp) {
-    logCompositorEvent("self_test_warp", "software adapter forced");
   }
 
   ComPtr<ID3DBlob> blob;
@@ -289,7 +393,7 @@ bool initializeContext(bool selfTest = false) {
   }
 
   D3D11_BUFFER_DESC uniformDesc{};
-  uniformDesc.ByteWidth = (sizeof(GpuComposeUniforms) + 15u) & ~15u;
+  uniformDesc.ByteWidth = (sizeof(ComposeUniforms) + 15u) & ~15u;
   uniformDesc.Usage = D3D11_USAGE_DEFAULT;
   uniformDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   hr = ctx.device->CreateBuffer(&uniformDesc, nullptr, &ctx.uniforms);
@@ -411,15 +515,7 @@ bool d3d11CompositorAvailable() {
   return initializeContext();
 }
 
-bool d3d11CompositorSelfTestAvailable() {
-  return initializeContext(true);
-}
-
-bool d3d11CompositorHardwareAccelerated() {
-  return initializeContext() && context().hardwareAccelerated;
-}
-
-bool renderProgramFrameD3D11(const GpuComposePlan &plan,
+bool renderProgramFrameD3D11(const MetalComposePlan &plan,
                              std::vector<uint8_t> &output) {
   if (!initializeContext() || plan.width == 0u || plan.height == 0u) {
     return false;
@@ -430,16 +526,13 @@ bool renderProgramFrameD3D11(const GpuComposePlan &plan,
     return false;
   }
 
-  GpuComposeUniforms uniforms{};
+  ComposeUniforms uniforms{};
   uniforms.width = plan.width;
   uniforms.height = plan.height;
   uniforms.backgroundMode = static_cast<uint32_t>(plan.backgroundMode);
   uniforms.frameIndex96 = static_cast<uint32_t>(plan.frameIndex % 96u);
 
-  if (plan.camera.present && !uploadFrame(ctx.camera, plan.cameraFrame)) {
-    return false;
-  }
-  if (plan.camera.present) {
+  if (plan.camera.present && uploadFrame(ctx.camera, plan.cameraFrame)) {
     uniforms.cameraPresent = 1u;
     uniforms.cameraKeyed = plan.camera.keyed ? 1u : 0u;
     uniforms.cameraMirror = plan.camera.mirror ? 1u : 0u;
@@ -451,20 +544,14 @@ bool renderProgramFrameD3D11(const GpuComposePlan &plan,
     uniforms.camTexWidth = static_cast<float>(plan.cameraFrame->width);
     uniforms.camTexHeight = static_cast<float>(plan.cameraFrame->height);
   }
-  if (plan.backMapping.present && !uploadFrame(ctx.back, plan.backGraphics)) {
-    return false;
-  }
-  if (plan.backMapping.present) {
+  if (plan.backMapping.present && uploadFrame(ctx.back, plan.backGraphics)) {
     uniforms.backPresent = 1u;
     uniforms.backScaleX = plan.backMapping.scaleX;
     uniforms.backScaleY = plan.backMapping.scaleY;
     uniforms.backBiasX = plan.backMapping.biasX;
     uniforms.backBiasY = plan.backMapping.biasY;
   }
-  if (plan.frontMapping.present && !uploadFrame(ctx.front, plan.frontGraphics)) {
-    return false;
-  }
-  if (plan.frontMapping.present) {
+  if (plan.frontMapping.present && uploadFrame(ctx.front, plan.frontGraphics)) {
     uniforms.frontPresent = 1u;
     uniforms.frontScaleX = plan.frontMapping.scaleX;
     uniforms.frontScaleY = plan.frontMapping.scaleY;
@@ -475,43 +562,58 @@ bool renderProgramFrameD3D11(const GpuComposePlan &plan,
       plan.backgroundImageHeight > 0u &&
       uploadLayer(ctx.backgroundImage, plan.backgroundImage,
                   plan.backgroundImageWidth, plan.backgroundImageHeight,
-                  plan.backgroundImageCacheKey, DXGI_FORMAT_R8G8B8A8_UNORM, 4u)) {
+                  plan.backgroundImageCacheKey, DXGI_FORMAT_R8G8B8A8_UNORM,
+                  4u)) {
     uniforms.bgImagePresent = 1u;
     uniforms.bgImgScaleX = plan.backgroundImageMapping.scaleX;
     uniforms.bgImgScaleY = plan.backgroundImageMapping.scaleY;
     uniforms.bgImgBiasX = plan.backgroundImageMapping.biasX;
     uniforms.bgImgBiasY = plan.backgroundImageMapping.biasY;
   }
-  if (plan.camera.keyed) {
-    if (plan.cameraMask == nullptr || plan.maskWidth == 0u || plan.maskHeight == 0u ||
-        !uploadLayer(ctx.mask, plan.cameraMask, plan.maskWidth, plan.maskHeight,
-                     plan.maskTimestampNs, DXGI_FORMAT_R8_UNORM, 1u)) {
-      return false;
-    }
+  if (plan.media.present && plan.media.rgba != nullptr &&
+      uploadLayer(ctx.media, plan.media.rgba, plan.media.width,
+                  plan.media.height, plan.media.cacheKey,
+                  DXGI_FORMAT_R8G8B8A8_UNORM, 4u)) {
+    uniforms.mediaPresent = 1u;
+    uniforms.mediaBelowCamera = plan.media.belowCamera ? 1u : 0u;
+    uniforms.shadowPresent = plan.media.shadowPresent ? 1u : 0u;
+    const float *m = plan.media.invHomography;
+    uniforms.m00 = m[0]; uniforms.m01 = m[1]; uniforms.m02 = m[2];
+    uniforms.m10 = m[3]; uniforms.m11 = m[4]; uniforms.m12 = m[5];
+    uniforms.m20 = m[6]; uniforms.m21 = m[7]; uniforms.m22 = m[8];
+    const float *sh = plan.media.shadowInvHomography;
+    uniforms.s00 = sh[0]; uniforms.s01 = sh[1]; uniforms.s02 = sh[2];
+    uniforms.s10 = sh[3]; uniforms.s11 = sh[4]; uniforms.s12 = sh[5];
+    uniforms.s20 = sh[6]; uniforms.s21 = sh[7]; uniforms.s22 = sh[8];
+  }
+  if (plan.camera.keyed && plan.cameraMask != nullptr && plan.maskWidth > 0u &&
+      plan.maskHeight > 0u &&
+      uploadLayer(ctx.mask, plan.cameraMask, plan.maskWidth, plan.maskHeight,
+                  plan.maskTimestampNs, DXGI_FORMAT_R8_UNORM, 1u)) {
     uniforms.maskPresent = 1u;
   }
 
   ctx.context->UpdateSubresource(ctx.uniforms.Get(), 0, nullptr, &uniforms, 0, 0);
 
-  ID3D11ShaderResourceView *srvs[5] = {
-      ctx.camera.srv.Get(), ctx.back.srv.Get(), ctx.front.srv.Get(),
-      ctx.mask.srv.Get(), ctx.backgroundImage.srv.Get(),
+  ID3D11ShaderResourceView *srvs[6] = {
+      ctx.camera.srv.Get(), ctx.back.srv.Get(),  ctx.front.srv.Get(),
+      ctx.media.srv.Get(),  ctx.mask.srv.Get(),  ctx.backgroundImage.srv.Get(),
   };
   ID3D11Buffer *cbs[1] = {ctx.uniforms.Get()};
   ID3D11SamplerState *samplers[1] = {ctx.sampler.Get()};
   ID3D11UnorderedAccessView *uavs[1] = {ctx.outputUav.Get()};
   ctx.context->CSSetShader(ctx.shader.Get(), nullptr, 0);
   ctx.context->CSSetConstantBuffers(0, 1, cbs);
-  ctx.context->CSSetShaderResources(0, 5, srvs);
+  ctx.context->CSSetShaderResources(0, 6, srvs);
   ctx.context->CSSetSamplers(0, 1, samplers);
   ctx.context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
   ctx.context->Dispatch((plan.width + 7u) / 8u, (plan.height + 7u) / 8u, 1u);
 
   // Unbind so the next frame's UpdateSubresource never hits a bound resource.
   ID3D11UnorderedAccessView *nullUav[1] = {nullptr};
-  ID3D11ShaderResourceView *nullSrvs[5] = {};
+  ID3D11ShaderResourceView *nullSrvs[6] = {};
   ctx.context->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
-  ctx.context->CSSetShaderResources(0, 5, nullSrvs);
+  ctx.context->CSSetShaderResources(0, 6, nullSrvs);
 
   ctx.context->CopyResource(ctx.stagingBuffer.Get(), ctx.outputBuffer.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -530,7 +632,7 @@ bool renderProgramFrameD3D11(const GpuComposePlan &plan,
 // ---------------------------------------------------------------------------
 // GPU guided mask refine (Stufe 3): port of guidedRefineMask in
 // guided_mask_refine.cpp. Same math, same working grid (<=512 wide), same
-// radius/epsilon env overrides. The CPU implementation stays as the
+// radius/epsilon env overrides — the CPU implementation stays as the
 // fallback and the reference for pixel-equivalence.
 // ---------------------------------------------------------------------------
 
@@ -588,7 +690,7 @@ void buildCorr(uint3 gid : SV_DispatchThreadID) {
 }
 
 // Separable box blur with border-correct averaging (divides by the actual
-// in-bounds sample count), identical to the CPU boxBlur.
+// in-bounds sample count) — identical to the CPU boxBlur.
 [numthreads(8, 8, 1)]
 void boxBlur(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= workW || gid.y >= workH) return;

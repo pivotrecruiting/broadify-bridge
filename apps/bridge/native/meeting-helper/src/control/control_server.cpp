@@ -1,5 +1,6 @@
 #include "control/control_server.h"
 
+#include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
@@ -76,10 +77,6 @@ std::string normalizedPerformanceMode(const std::string &performanceMode) {
   return "high_quality";
 }
 
-bool isSupportedKeyerModel(const std::string &model) {
-  return model == "modnet" || model == "vision_person_segmentation";
-}
-
 uint32_t clampedPixelRadius(int value, uint32_t maxValue) {
   return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int>(maxValue)));
 }
@@ -92,6 +89,23 @@ KeyerDegradationSettings normalizedDegradationSettings(KeyerDegradationSettings 
   settings.freshMaskAgeMs = clampedDouble(settings.freshMaskAgeMs, 0.0, 500.0);
   settings.maxMaskAgeMs = clampedDouble(settings.maxMaskAgeMs, settings.freshMaskAgeMs, 2000.0);
   return settings;
+}
+
+// Signature over every keyer.configure-relevant field; used to skip the
+// disruptive status reset (passthrough/pending) when a configure call does
+// not actually change anything (idempotent re-sends from the web app).
+std::string keyerConfigSignature(const MeetingState &state) {
+  std::ostringstream signature;
+  signature << state.keyerEnabled << '|' << state.requestedKeyerModel << '|'
+            << state.backgroundMode << '|' << state.backgroundImagePath << '|'
+            << state.qualityMode << '|' << state.performanceMode << '|'
+            << state.maskErodePx << '|' << state.maskDilatePx << '|'
+            << state.maskFeatherPx << '|' << state.dynamicDilation << '|'
+            << state.temporalBlendEnabled << '|' << state.edgeStabilizationEnabled << '|'
+            << state.edgeStabilizationStrength << '|'
+            << state.degradationSettings.freshMaskAgeMs << '|'
+            << state.degradationSettings.maxMaskAgeMs;
+  return signature.str();
 }
 
 void markProgramDirty(MeetingState &state, bool graphicsDirty = false) {
@@ -168,8 +182,8 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.mediaLayer.width = extractDoubleField(safeValues, "width", state.mediaLayer.width);
     state.mediaLayer.height = extractDoubleField(safeValues, "height", state.mediaLayer.height);
     state.mediaLayer.rotation = extractDoubleField(safeValues, "rotation", state.mediaLayer.rotation);
-    state.mediaLayer.rotationX = extractDoubleField(safeValues, "rotationX", state.mediaLayer.rotationX);
-    state.mediaLayer.rotationY = extractDoubleField(safeValues, "rotationY", state.mediaLayer.rotationY);
+    state.mediaLayer.rotationX = extractDoubleField(safeValues, "rotation_x", state.mediaLayer.rotationX);
+    state.mediaLayer.rotationY = extractDoubleField(safeValues, "rotation_y", state.mediaLayer.rotationY);
     state.mediaLayer.rawJson = safeValues;
     return;
   }
@@ -226,6 +240,7 @@ std::string handleRpc(const std::string &line,
       state.framebusRunning = false;
       state.vcamRawRunning = false;
     }
+    stopVirtualCamera();
     running.store(false);
     return okResponse(id, "{\"ok\":true}");
   }
@@ -237,10 +252,11 @@ std::string handleRpc(const std::string &line,
            << "\"camera_running\":" << (state.cameraRunning ? "true" : "false") << ","
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
+           << "\"pip_camera_index\":" << (state.pipCameraIndex >= 0 ? std::to_string(state.pipCameraIndex) : "null") << ","
+           << "\"auto_director_enabled\":" << (state.autoDirectorEnabled ? "true" : "false") << ","
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
-           << "\"keyer_pipeline_mode\":\"" << jsonEscape(state.keyerPipelineMode) << "\","
-           << "\"compositor\":\"" << jsonEscape(state.compositorBackend) << "\","
+           << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
            << "\"preview_clients\":" << state.previewClientCount << ","
            << "\"vcam_clients\":" << state.vcamClientCount << ","
            << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
@@ -312,6 +328,49 @@ std::string handleRpc(const std::string &line,
     return okResponse(id, "{\"ok\":true}");
   }
 
+  if (method == "recording.microphones") {
+    const std::vector<MicrophoneInfo> mics = recorder.listMicrophones();
+    std::ostringstream out;
+    out << "{\"ok\":true,\"microphones\":[";
+    for (size_t i = 0; i < mics.size(); ++i) {
+      if (i > 0) {
+        out << ",";
+      }
+      out << "{\"device_id\":\"" << jsonEscape(mics[i].deviceId) << "\","
+          << "\"label\":\"" << jsonEscape(mics[i].label) << "\","
+          << "\"is_default\":" << (mics[i].isDefault ? "true" : "false")
+          << "}";
+    }
+    out << "]}";
+    return okResponse(id, out.str());
+  }
+
+  if (method == "recording.start") {
+    const std::string filePath = extractStringField(line, "file_path");
+    const std::string micDeviceId = extractStringField(line, "mic_device_id");
+    if (filePath.empty()) {
+      return errorResponse(id, "invalid_request",
+                           "recording.start requires file_path.");
+    }
+    const bool started = recorder.start(filePath, micDeviceId, options.width,
+                                        options.height, options.fps);
+    if (!started) {
+      return errorResponse(id, "recording_start_failed",
+                           recorder.status().lastError);
+    }
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
+  if (method == "recording.stop") {
+    recorder.stop();
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
+  if (method == "recording.status") {
+    return okResponse(id, recordingStatusJson(recorder));
+  }
+
+  // Conference: open several cameras at once. Payload
   // "camera_indices":[0,1,2] — the first becomes the program feed. The others
   // stay running so program_select can cut between them with no reopen.
   if (method == "camera.open_set") {
@@ -442,6 +501,7 @@ std::string handleRpc(const std::string &line,
            << "\",\"fallback_active\":" << (state.fallbackActive ? "true" : "false")
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
            << ",\"degradation_stage\":\"" << jsonEscape(state.degradationStage)
+           << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)
            << "\",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel)
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
@@ -452,8 +512,6 @@ std::string handleRpc(const std::string &line,
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
            << ",\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode)
-           << "\",\"keyer_pipeline_mode\":\"" << jsonEscape(state.keyerPipelineMode)
-           << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)
            << "\",\"preview_clients\":" << state.previewClientCount
            << ",\"vcam_clients\":" << state.vcamClientCount
            << ",\"program_dirty\":" << (state.programDirty ? "true" : "false")
@@ -467,16 +525,13 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "keyer.configure") {
-    const std::string requestedModel = extractStringField(line, "model");
-    if (!requestedModel.empty() && !isSupportedKeyerModel(requestedModel)) {
-      return errorResponse(id, "invalid_keyer_model", "Unsupported keyer model");
-    }
     {
       std::lock_guard<std::mutex> lock(state.mutex);
+      const std::string signatureBefore = keyerConfigSignature(state);
       state.keyerEnabled = extractBoolField(line, "enabled", state.keyerEnabled);
-      state.conferenceMode = extractBoolField(line, "conference_mode", state.conferenceMode);
-      if (!requestedModel.empty()) {
-        state.requestedKeyerModel = requestedModel;
+      const std::string model = extractStringField(line, "model");
+      if (!model.empty()) {
+        state.requestedKeyerModel = model;
       }
       const std::string backgroundMode = extractStringField(line, "background_mode");
       if (!backgroundMode.empty()) {
@@ -508,20 +563,18 @@ std::string handleRpc(const std::string &line,
       degradation.freshMaskAgeMs = extractDoubleField(line, "fresh_mask_age_ms", degradation.freshMaskAgeMs);
       degradation.maxMaskAgeMs = extractDoubleField(line, "max_mask_age_ms", degradation.maxMaskAgeMs);
       state.degradationSettings = normalizedDegradationSettings(degradation);
-      state.activeKeyer = "passthrough";
-      state.fallbackActive = true;
-      state.fallbackReason = state.keyerEnabled ? state.requestedKeyerModel + "_pending" : "keyer_disabled";
-      state.keyerBackend = "passthrough";
-      state.degradationStage = "fresh";
-      state.staleMaskActive = false;
-      state.keyerPipelineMode = state.keyerEnabled ? "async_live_snap" : "passthrough";
-      state.provider.clear();
-      state.modelPath.clear();
-      state.modelHashOk = false;
-      state.inferenceMs = -1.0;
-      state.keyerMetrics = KeyerMetrics{};
-      ++state.keyerRevision;
-      markProgramDirty(state);
+      if (keyerConfigSignature(state) != signatureBefore) {
+        state.activeKeyer = "passthrough";
+        state.fallbackActive = true;
+        state.fallbackReason = state.keyerEnabled ? state.requestedKeyerModel + "_pending" : "keyer_disabled";
+        state.keyerBackend = "passthrough";
+        state.degradationStage = "fresh";
+        state.staleMaskActive = false;
+        state.provider.clear();
+        state.inferenceMs = -1.0;
+        state.keyerMetrics = KeyerMetrics{};
+        markProgramDirty(state);
+      }
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, recorder, options, running);
   }
@@ -536,7 +589,7 @@ std::string handleRpc(const std::string &line,
     state.qualityMode = "balanced";
     state.activeQualityMode = "balanced";
     state.backgroundImagePath.clear();
-    state.performanceMode = "balanced";
+    state.performanceMode = kDefaultKeyerPerformanceMode;
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
     state.maskFeatherPx = 0u;
@@ -547,13 +600,9 @@ std::string handleRpc(const std::string &line,
     state.degradationSettings = KeyerDegradationSettings{};
     state.degradationStage = "fresh";
     state.staleMaskActive = false;
-    state.keyerPipelineMode = "passthrough";
     state.provider.clear();
-    state.modelPath.clear();
-    state.modelHashOk = false;
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};
-    ++state.keyerRevision;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true,\"active_keyer\":\"passthrough\"}");
   }
@@ -610,46 +659,29 @@ std::string handleRpc(const std::string &line,
     return okResponse(id, "{\"ok\":true}");
   }
 
-  if (method == "recording.microphones") {
-    const std::vector<MicrophoneInfo> mics = recorder.listMicrophones();
-    std::ostringstream out;
-    out << "{\"ok\":true,\"microphones\":[";
-    for (size_t i = 0; i < mics.size(); ++i) {
-      if (i > 0) {
-        out << ",";
-      }
-      out << "{\"device_id\":\"" << jsonEscape(mics[i].deviceId) << "\","
-          << "\"label\":\"" << jsonEscape(mics[i].label) << "\","
-          << "\"is_default\":" << (mics[i].isDefault ? "true" : "false")
-          << "}";
+  if (method == "output.vcam.start") {
+    std::string vcamError;
+    if (startVirtualCamera(vcamError)) {
+      return okResponse(id, "{\"ok\":true,\"active\":true}");
     }
-    out << "]}";
-    return okResponse(id, out.str());
+    return errorResponse(id, "vcam_start_failed", vcamError);
   }
 
-  if (method == "recording.start") {
-    const std::string filePath = extractStringField(line, "file_path");
-    const std::string micDeviceId = extractStringField(line, "mic_device_id");
-    if (filePath.empty()) {
-      return errorResponse(id, "invalid_request",
-                           "recording.start requires file_path.");
-    }
-    const bool started = recorder.start(filePath, micDeviceId, options.width,
-                                        options.height, options.fps);
-    if (!started) {
-      return errorResponse(id, "recording_start_failed",
-                           recorder.status().lastError);
-    }
-    return okResponse(id, recordingStatusJson(recorder));
+  if (method == "output.vcam.stop") {
+    stopVirtualCamera();
+    return okResponse(id, "{\"ok\":true,\"active\":false}");
   }
 
-  if (method == "recording.stop") {
-    recorder.stop();
-    return okResponse(id, recordingStatusJson(recorder));
-  }
-
-  if (method == "recording.status") {
-    return okResponse(id, recordingStatusJson(recorder));
+  if (method == "output.vcam.status") {
+    const VcamStatus vcam = virtualCameraStatus();
+    std::ostringstream result;
+    result << "{\"active\":" << (vcam.active ? "true" : "false")
+           << ",\"supported\":" << (vcam.supported ? "true" : "false")
+           << ",\"last_error\":"
+           << (vcam.lastError.empty() ? "null"
+                                      : "\"" + jsonEscape(vcam.lastError) + "\"")
+           << "}";
+    return okResponse(id, result.str());
   }
 
   return errorResponse(id, "unknown_method", "Unknown meeting-helper method: " + method);
@@ -690,6 +722,10 @@ void runControlServer(const std::string &pipeName,
           const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
+          // Block until the client has read the response; without this,
+          // DisconnectNamedPipe below discards any unread data and the
+          // client sees an empty reply (lost fast-command responses).
+          FlushFileBuffers(pipe);
           break;
         }
       }
