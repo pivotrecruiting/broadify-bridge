@@ -17,6 +17,7 @@ import {
   MeetingOutputConfigureSchema,
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
+  MeetingRecordingStartSchema,
 } from "./meeting-command-schemas.js";
 import { meetingMediaService } from "./meeting-media-service.js";
 import {
@@ -399,7 +400,9 @@ export async function handleMeetingCommand(
         typeof payload?.default_name === "string"
           ? payload.default_name
           : "meeting.mp4";
-      const filePath = await pickRecordingSavePath(defaultName);
+      const locale =
+        typeof payload?.locale === "string" ? payload.locale : "de";
+      const filePath = await pickRecordingSavePath(defaultName, locale);
       if (filePath === null) {
         return { success: true, data: { cancelled: true } };
       }
@@ -408,7 +411,7 @@ export async function handleMeetingCommand(
 
     case "meeting_recording_start": {
       const options = parseRelayPayload(
-        MeetingPassthroughSchema,
+        MeetingRecordingStartSchema,
         payload ?? {},
         "Invalid payload for meeting_recording_start",
       );

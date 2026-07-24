@@ -46,18 +46,7 @@ export function downsampleRgbaBox(
     scaleX < 1 ||
     scaleY < 1
   ) {
-    // Not an integer downscale — e.g. a Windows offscreen capture clamped to
-    // the work area (1920x1032) that must still reach 1920x1080. The integer
-    // box filter can't express this ratio; fall back to a general bilinear
-    // resample instead of throwing (which dropped the frame and flooded the
-    // log every frame, leaving the graphics/background layer black).
-    return resampleRgbaBilinear(
-      buffer,
-      sourceWidth,
-      sourceHeight,
-      targetWidth,
-      targetHeight,
-    );
+    throw new Error("Downsample dimensions must use positive integer scale factors.");
   }
 
   const output = Buffer.alloc(targetWidth * targetHeight * 4);
@@ -84,60 +73,6 @@ export function downsampleRgbaBox(
       output[writeOffset + 1] = Math.round(g / samples);
       output[writeOffset + 2] = Math.round(b / samples);
       output[writeOffset + 3] = Math.round(a / samples);
-    }
-  }
-  return output;
-}
-
-/**
- * General-purpose bilinear RGBA resample to an arbitrary target size. Used as
- * the fallback when the source is not an integer multiple of the target (e.g.
- * a Windows offscreen capture short by the taskbar height). Handles up- and
- * down-scaling and non-integer ratios.
- */
-export function resampleRgbaBilinear(
-  buffer: Buffer,
-  sourceWidth: number,
-  sourceHeight: number,
-  targetWidth: number,
-  targetHeight: number,
-): Buffer {
-  if (sourceWidth === targetWidth && sourceHeight === targetHeight) {
-    return buffer;
-  }
-
-  const output = Buffer.alloc(targetWidth * targetHeight * 4);
-  const xRatio =
-    targetWidth > 1 ? (sourceWidth - 1) / (targetWidth - 1) : 0;
-  const yRatio =
-    targetHeight > 1 ? (sourceHeight - 1) / (targetHeight - 1) : 0;
-
-  for (let targetY = 0; targetY < targetHeight; targetY += 1) {
-    const srcYf = targetY * yRatio;
-    const y0 = Math.floor(srcYf);
-    const y1 = Math.min(y0 + 1, sourceHeight - 1);
-    const wy = srcYf - y0;
-    for (let targetX = 0; targetX < targetWidth; targetX += 1) {
-      const srcXf = targetX * xRatio;
-      const x0 = Math.floor(srcXf);
-      const x1 = Math.min(x0 + 1, sourceWidth - 1);
-      const wx = srcXf - x0;
-
-      const o00 = (y0 * sourceWidth + x0) * 4;
-      const o01 = (y0 * sourceWidth + x1) * 4;
-      const o10 = (y1 * sourceWidth + x0) * 4;
-      const o11 = (y1 * sourceWidth + x1) * 4;
-      const writeOffset = (targetY * targetWidth + targetX) * 4;
-
-      for (let channel = 0; channel < 4; channel += 1) {
-        const top =
-          (buffer[o00 + channel] ?? 0) * (1 - wx) +
-          (buffer[o01 + channel] ?? 0) * wx;
-        const bottom =
-          (buffer[o10 + channel] ?? 0) * (1 - wx) +
-          (buffer[o11 + channel] ?? 0) * wx;
-        output[writeOffset + channel] = Math.round(top * (1 - wy) + bottom * wy);
-      }
     }
   }
   return output;

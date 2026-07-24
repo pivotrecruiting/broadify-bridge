@@ -31,12 +31,16 @@ import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { transformDevicesToOutputs } from "./device-to-output-transform.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 import { powerSocketService } from "./power/power-socket-service.js";
 import {
   streamDeckManager,
   parseStreamDeckConfig,
 } from "./streamdeck/stream-deck-manager.js";
-import { startStreamDeckHardwareWatch } from "./streamdeck/hid-stream-deck.js";
+import {
+  startStreamDeckHardwareWatch,
+  type StreamDeckHardwareWatch,
+} from "./streamdeck/hid-stream-deck.js";
 
 /**
  * Relay command payload.
@@ -175,7 +179,9 @@ export class CommandRouter {
               "[CommandRouter] list_outputs refresh requested",
             );
           }
-          const devices = await deviceCache.getDevices(refresh);
+          const devices = refresh
+            ? await deviceCache.getDevices(true, OUTPUT_DEVICE_MODULE_NAMES)
+            : deviceCache.getCachedDevices(OUTPUT_DEVICE_MODULE_NAMES);
           const outputs = transformDevicesToOutputs(devices);
 
           return {
@@ -672,6 +678,7 @@ export class CommandRouter {
           return { success: true, data: await powerSocketService.test(id) };
         }
 
+
         default:
           return {
             success: false,
@@ -694,15 +701,34 @@ export class CommandRouter {
 // Singleton instance
 export const commandRouter = new CommandRouter();
 
-// A Stream Deck key press executes its bound action through the very same
-// command router a webapp button uses — no duplicated action logic.
-streamDeckManager.setExecutor((command, payload) =>
-  commandRouter.handleCommand(command as RelayCommand, payload),
-);
+let streamDeckWatch: StreamDeckHardwareWatch | null = null;
 
-// Attach a physical Stream Deck when present and hot-swap on plug/unplug; falls
-// back to the virtual device when none is connected (or the Elgato app holds
-// it). Any model works — geometry is read from the device.
-startStreamDeckHardwareWatch(streamDeckManager, (message) =>
-  console.info(`[streamdeck] ${message}`),
-);
+/**
+ * Wires the command router into process-wide services that must not start on
+ * mere module import:
+ *  - the Stream Deck key executor, so a key-down runs its bound relay command
+ *    through the same path a webapp button uses (commandRouter.handleCommand);
+ *  - the USB hot-plug watch that attaches a physical Stream Deck when present
+ *    and hot-swaps on plug/unplug (falling back to the virtual device). Any
+ *    model works — geometry is read from the device.
+ *
+ * Idempotent; called once from the server bootstrap after the bridge context
+ * (and thus the logger) is set.
+ */
+export function initCommandRouter(): void {
+  if (streamDeckWatch) {
+    return;
+  }
+  streamDeckManager.setExecutor((command, payload) =>
+    commandRouter.handleCommand(command as RelayCommand, payload),
+  );
+  streamDeckWatch = startStreamDeckHardwareWatch(streamDeckManager, (message) => {
+    getBridgeContext().logger.info(`[streamdeck] ${message}`);
+  });
+}
+
+/** Stops the Stream Deck hot-plug watch (bridge shutdown). */
+export function stopCommandRouter(): void {
+  streamDeckWatch?.stop();
+  streamDeckWatch = null;
+}

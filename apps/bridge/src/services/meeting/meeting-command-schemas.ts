@@ -119,11 +119,6 @@ export const MeetingRecordingStartSchema = z
   })
   .strict();
 
-export const MeetingCallControlSchema = z.object({
-  platform: z.enum(["teams", "zoom"]),
-  action: z.enum(["mic_toggle", "speaker_toggle", "hangup"]),
-});
-
 // Cloud-hosted asset fetches: the bridge downloads the file itself because
 // HTTPS webapps cannot POST to http://127.0.0.1 in every browser (Safari
 // blocks active mixed content). URLs are re-validated by the guarded
@@ -150,9 +145,3 @@ export const MeetingMediaGetSchema = z
     asset_id: z.string().min(1).max(120),
   })
   .strict();
-
-export const ConferenceDisplayStartSchema = z.object({
-  match_name: z.string().max(128).optional(),
-  match_width: z.number().int().positive().max(16384).optional(),
-  match_height: z.number().int().positive().max(16384).optional(),
-});

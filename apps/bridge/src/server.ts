@@ -23,6 +23,10 @@ import {
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
 import { quitRunningVcamHelperApp } from "./modules/vcam/vcam-helper.js";
+import {
+  initCommandRouter,
+  stopCommandRouter,
+} from "./services/command-router.js";
 import { ensureBridgeLogFile } from "./services/log-file.js";
 import { bindConsoleToLogger } from "./services/console-to-pino.js";
 import { logRuntimeDiagnostics } from "./services/runtime-diagnostics.js";
@@ -172,6 +176,12 @@ export async function createServer(config: BridgeConfigT) {
   });
   server.log.info("[Server] All routes registered");
 
+  // Wire the command router into process-wide services (Stream Deck key
+  // executor + USB hot-plug watch). Kept out of module import side effects so a
+  // bare import does not start a background USB scan loop.
+  initCommandRouter();
+  server.log.info("[Server] Command router initialized");
+
   // Note: Engine connection is now controlled by the Web-App
   // The Web-App handles auto-connect and stores config in localStorage
   // Bridge no longer auto-connects on startup
@@ -269,6 +279,9 @@ export async function startServer(
     }, 7000);
     failSafe.unref();
     try {
+      // Stop the Stream Deck USB hot-plug watch.
+      stopCommandRouter();
+
       // Disconnect relay client
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const relayClient = (server as any).relayClient as

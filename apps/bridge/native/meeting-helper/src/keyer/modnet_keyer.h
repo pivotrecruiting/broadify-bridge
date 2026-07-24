@@ -9,7 +9,6 @@ namespace broadify::meeting {
 
 struct ModnetKeyerOptions {
   std::string modelsDir;
-  bool keyerSelfTest = false;
 };
 
 class ModnetKeyer : public Keyer {
