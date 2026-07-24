@@ -7,10 +7,9 @@ namespace broadify::meeting {
 
 struct Options {
   bool run = false;
-  bool selfTest = false;
-  bool keyerSelfTest = false;
   std::string framebusName = "broadify-meeting-framebus";
   std::string controlSocket;
+  // Bridge PID for the orphan watchdog; -1 = not provided.
   int parentPid = -1;
   std::string modelsDir;
   uint32_t width = 1920;

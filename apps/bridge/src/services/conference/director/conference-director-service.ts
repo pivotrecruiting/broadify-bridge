@@ -158,6 +158,7 @@ export class ConferenceDirectorService {
     }
     const next = this.director.evaluate(reading, this.currentCamera, Date.now());
     if (next !== null && next !== this.currentCamera) {
+      this.currentCamera = next;
       void this.applySwitch(next);
     }
   }
@@ -165,9 +166,6 @@ export class ConferenceDirectorService {
   private async applySwitch(cameraIndex: number): Promise<void> {
     try {
       await this.switcher?.(cameraIndex);
-      // Only adopt the new shot once the cut actually landed; if the switcher
-      // throws (helper down, etc.) currentCamera must not diverge from program.
-      this.currentCamera = cameraIndex;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
     }

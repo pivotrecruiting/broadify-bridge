@@ -1,13 +1,12 @@
 #include "capture/camera_source.h"
 #include "common/options.h"
-#include "compose/compositor.h"
 #include "control/control_server.h"
-#include "keyer/keyer_chain.h"
 #include "pipeline/frame_pipeline.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
 #include "recorder/meeting_recorder.h"
+#include "output/vcam_controller.h"
 #include "state/meeting_state.h"
 #include "util/json_utils.h"
 
@@ -16,24 +15,23 @@
 #endif
 
 #include <atomic>
-#include <cerrno>
 #include <chrono>
 #include <csignal>
-#include <cstdlib>
 #include <cstdio>
-#include <cstring>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <cstdlib>
 #include <thread>
-
+#include <chrono>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dbghelp.h>
 #else
 #include <unistd.h>
 #endif
@@ -47,6 +45,84 @@ void signalHandler(int) {
   g_running.store(false);
 }
 
+#if defined(_WIN32)
+// Crash triage: unhandled SEH exceptions (access violations etc.) write a
+// minidump next to the executable and log the faulting address before the
+// process dies. WER LocalDumps needs admin rights, this does not.
+LONG WINAPI writeCrashDump(EXCEPTION_POINTERS *pointers) {
+  wchar_t modulePath[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+  std::wstring dumpPath(modulePath);
+  const size_t slash = dumpPath.find_last_of(L'\\');
+  dumpPath = dumpPath.substr(0, slash + 1) + L"meeting-helper-crash-" +
+             std::to_wstring(GetCurrentProcessId()) + L".dmp";
+
+  fprintf(stderr,
+          "{\"type\":\"crash\",\"code\":\"0x%08lX\",\"address\":\"%p\"}\n",
+          pointers->ExceptionRecord->ExceptionCode,
+          pointers->ExceptionRecord->ExceptionAddress);
+
+  // Symbolized stack of the crashing thread (PDB sits next to the exe in dev
+  // builds). Best-effort: any failure just leaves the minidump as evidence.
+  if (SymInitialize(GetCurrentProcess(), nullptr, TRUE)) {
+    CONTEXT context = *pointers->ContextRecord;
+    STACKFRAME64 frame{};
+    frame.AddrPC.Offset = context.Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = context.Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = context.Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+    for (int depth = 0; depth < 24; ++depth) {
+      if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(),
+                       GetCurrentThread(), &frame, &context, nullptr,
+                       SymFunctionTableAccess64, SymGetModuleBase64, nullptr) ||
+          frame.AddrPC.Offset == 0) {
+        break;
+      }
+      char symbolBuffer[sizeof(SYMBOL_INFO) + 256] = {};
+      SYMBOL_INFO *symbol = reinterpret_cast<SYMBOL_INFO *>(symbolBuffer);
+      symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+      symbol->MaxNameLen = 255;
+      DWORD64 displacement = 0;
+      HMODULE module = nullptr;
+      char moduleName[MAX_PATH] = "?";
+      if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             reinterpret_cast<LPCSTR>(frame.AddrPC.Offset),
+                             &module)) {
+        GetModuleFileNameA(module, moduleName, MAX_PATH);
+      }
+      if (SymFromAddr(GetCurrentProcess(), frame.AddrPC.Offset, &displacement,
+                      symbol)) {
+        fprintf(stderr, "  #%02d %s!%s+0x%llx\n", depth, moduleName,
+                symbol->Name, static_cast<unsigned long long>(displacement));
+      } else {
+        fprintf(stderr, "  #%02d %s+0x%llx\n", depth, moduleName,
+                static_cast<unsigned long long>(
+                    frame.AddrPC.Offset -
+                    reinterpret_cast<DWORD64>(module)));
+      }
+    }
+  }
+  fflush(stderr);
+
+  HANDLE file = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    MINIDUMP_EXCEPTION_INFORMATION info{};
+    info.ThreadId = GetCurrentThreadId();
+    info.ExceptionPointers = pointers;
+    info.ClientPointers = FALSE;
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file,
+                      MiniDumpWithIndirectlyReferencedMemory, &info, nullptr,
+                      nullptr);
+    CloseHandle(file);
+  }
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 void printEvent(const std::string &json) {
   std::cout << json << std::endl;
 }
@@ -57,103 +133,13 @@ void printEvent(const std::string &json) {
 int main(int argc, char **argv) {
   using namespace broadify::meeting;
 
+#if defined(_WIN32)
+  SetUnhandledExceptionFilter(writeCrashDump);
+#endif
   std::signal(SIGINT, signalHandler);
   std::signal(SIGTERM, signalHandler);
 
   Options options = parseOptions(argc, argv);
-  if (options.selfTest) {
-    const GpuCompositorSelfTestResult result = runGpuCompositorSelfTest();
-#if defined(__APPLE__)
-    const bool expectedAcceleration = true;
-#elif defined(_WIN32)
-    const char *selfTestDriver =
-        std::getenv("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER");
-    const bool expectedAcceleration =
-        selfTestDriver == nullptr || std::strcmp(selfTestDriver, "warp") != 0;
-#else
-    const bool expectedAcceleration = false;
-#endif
-    const bool modeMatches =
-        result.hardwareAccelerated == expectedAcceleration;
-    const bool passed = result.passed && modeMatches;
-    std::cout << "{\"type\":\"meeting_gpu_self_test\",\"backend\":\""
-              << result.backend << "\",\"available\":"
-              << (result.available ? "true" : "false") << ",\"passed\":"
-              << (passed ? "true" : "false")
-              << ",\"hardware_accelerated\":"
-              << (result.hardwareAccelerated ? "true" : "false")
-              << ",\"mode_matches\":"
-              << (modeMatches ? "true" : "false")
-              << ",\"max_channel_delta\":"
-              << result.maxChannelDelta << ",\"max_delta_x\":"
-              << result.maxDeltaX << ",\"max_delta_y\":" << result.maxDeltaY
-              << ",\"max_delta_channel\":" << result.maxDeltaChannel
-              << ",\"max_delta_cpu_value\":"
-              << static_cast<uint32_t>(result.maxDeltaCpuValue)
-              << ",\"max_delta_gpu_value\":"
-              << static_cast<uint32_t>(result.maxDeltaGpuValue) << "}" << std::endl;
-    return passed ? 0 : 3;
-  }
-  if (options.keyerSelfTest) {
-    MeetingState state;
-    {
-      std::lock_guard<std::mutex> lock(state.mutex);
-      state.keyerEnabled = true;
-      state.requestedKeyerModel = "modnet";
-      state.performanceMode = "performance";
-    }
-    VideoFrame frame;
-    frame.width = 640u;
-    frame.height = 360u;
-    frame.timestampNs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
-    frame.rgba.assign(static_cast<size_t>(frame.width) * frame.height * 4u, 255u);
-    for (uint32_t y = 0; y < frame.height; ++y) {
-      for (uint32_t x = 0; x < frame.width; ++x) {
-        const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
-        frame.rgba[offset + 0u] = static_cast<uint8_t>((x * 255u) / frame.width);
-        frame.rgba[offset + 1u] = static_cast<uint8_t>((y * 255u) / frame.height);
-        frame.rgba[offset + 2u] = 96u;
-      }
-    }
-    KeyerChain keyer(options);
-    const KeyerResult result = keyer.process(frame, state);
-#if defined(__APPLE__)
-    const bool acceleratedProvider = result.status.provider == "coreml";
-#elif defined(_WIN32)
-    const bool acceleratedProvider = result.status.provider == "directml";
-    const char *selfTestProvider =
-        std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER");
-    const bool forceCpuProvider =
-        selfTestProvider != nullptr &&
-        std::strcmp(selfTestProvider, "cpu") == 0;
-    const bool acceptedProvider = forceCpuProvider
-        ? result.status.provider == "cpu"
-        : acceleratedProvider;
-#else
-    const bool acceleratedProvider = false;
-#endif
-#if !defined(_WIN32)
-    const bool acceptedProvider = acceleratedProvider;
-#endif
-    const bool passed = acceptedProvider && result.status.modelHashOk &&
-        !result.status.fallbackActive && !result.mask.alpha.empty();
-    std::cout << "{\"type\":\"meeting_keyer_self_test\",\"provider\":\""
-              << result.status.provider << "\",\"active_keyer\":\""
-              << result.status.activeKeyer << "\",\"fallback_active\":"
-              << (result.status.fallbackActive ? "true" : "false")
-              << ",\"hardware_accelerated\":"
-              << (acceleratedProvider ? "true" : "false")
-              << ",\"fallback_reason\":\"" << result.status.fallbackReason
-              << "\",\"model_hash_ok\":"
-              << (result.status.modelHashOk ? "true" : "false")
-              << ",\"mask_width\":" << result.mask.width
-              << ",\"mask_height\":" << result.mask.height
-              << ",\"passed\":" << (passed ? "true" : "false") << "}"
-              << std::endl;
-    return passed ? 0 : 4;
-  }
   if (!options.run) {
     std::cerr << "meeting-helper requires --run" << std::endl;
     return 2;
@@ -164,7 +150,14 @@ int main(int argc, char **argv) {
   }
 
   // stdout is piped to the bridge; ensure lifecycle events flush promptly.
+#if defined(_WIN32)
+  // The Windows UCRT rejects setvbuf with _IOLBF and a zero-sized buffer
+  // (invalid parameter -> fast-fail 0xC0000409). Use unbuffered stdout; the
+  // lifecycle events are low-volume and already flushed per line.
+  setvbuf(stdout, nullptr, _IONBF, 0);
+#else
   setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
 
 #if defined(__APPLE__)
   initializeMacosApplication();
@@ -175,10 +168,39 @@ int main(int argc, char **argv) {
   PreviewFrameStore previewFrames;
   MeetingRecorder recorder;
 
+  std::promise<void> controlListening;
+  std::future<void> controlListeningFuture = controlListening.get_future();
+  // Parent watchdog: if the bridge dies without stopping us (crash, hard
+  // kill, dev Ctrl+C), we get re-parented to PID 1 - shut down instead of
+  // living on as an orphan in the user's process list.
+#if !defined(_WIN32)
+  // The bridge passes its PID via --parent-pid (the helper app is launched
+  // through launchd, so getppid() never points at the bridge). Fall back to
+  // the re-parenting check for direct spawns.
+  const pid_t bridgePid = static_cast<pid_t>(options.parentPid);
+  const pid_t initialParentPid = getppid();
+  std::thread parentWatchdog([bridgePid, initialParentPid]() {
+    while (g_running.load()) {
+      const bool bridgeGone = bridgePid > 0
+          ? (kill(bridgePid, 0) != 0 && errno == ESRCH)
+          : (getppid() != initialParentPid);
+      if (bridgeGone) {
+        g_running.store(false);
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+  });
+  parentWatchdog.detach();
+#endif
+
 #if defined(_WIN32)
+  // Windows parent watchdog: the bridge passes its PID via --parent-pid; when
+  // that process exits (crash, hard kill, dev Ctrl+C) we shut down instead of
+  // lingering as an orphan holding the camera and the virtual camera.
   if (options.parentPid > 0) {
     const DWORD bridgePid = static_cast<DWORD>(options.parentPid);
-    std::thread([bridgePid]() {
+    std::thread parentWatchdog([bridgePid]() {
       HANDLE handle = OpenProcess(SYNCHRONIZE, FALSE, bridgePid);
       if (handle == nullptr) {
         return;
@@ -190,27 +212,11 @@ int main(int argc, char **argv) {
         }
       }
       CloseHandle(handle);
-    }).detach();
+    });
+    parentWatchdog.detach();
   }
-#else
-  const pid_t bridgePid = static_cast<pid_t>(options.parentPid);
-  const pid_t initialParentPid = getppid();
-  std::thread([bridgePid, initialParentPid]() {
-    while (g_running.load()) {
-      const bool bridgeGone = bridgePid > 0
-          ? (kill(bridgePid, 0) != 0 && errno == ESRCH)
-          : (getppid() != initialParentPid);
-      if (bridgeGone) {
-        g_running.store(false);
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-    }
-  }).detach();
 #endif
 
-  std::promise<void> controlListening;
-  std::future<void> controlListeningFuture = controlListening.get_future();
   std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(recorder), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
@@ -247,6 +253,7 @@ int main(int argc, char **argv) {
   }
 #endif
 
+  stopVirtualCamera();
   camera->stop();
   previewFrames.clear();
   {

@@ -249,8 +249,17 @@ int framebus_reader_copy_latest_bgra(framebus_reader_t *reader,
   }
 
   const framebus_header_t *header = reader->header;
-  const size_t row_bytes = (size_t)header->width * 4u;
+  /* Snapshot the geometry once: a concurrent writer reinitializing the header
+   * must never be able to steer this copy out of the mapped region. */
+  const uint32_t width = header->width;
+  const uint32_t height = header->height;
+  const uint32_t slot_count = header->slot_count;
+  const uint32_t slot_stride = header->slot_stride;
+  const size_t row_bytes = (size_t)width * 4u;
   if (dst_stride < row_bytes) {
+    return -1;
+  }
+  if (slot_count == 0 || (size_t)slot_stride < row_bytes * (size_t)height) {
     return -1;
   }
 
@@ -259,14 +268,18 @@ int framebus_reader_copy_latest_bgra(framebus_reader_t *reader,
     return 0;
   }
 
-  const uint32_t slot_index = (uint32_t)((seq - 1) % header->slot_count);
+  const uint32_t slot_index = (uint32_t)((seq - 1) % slot_count);
+  if (FRAMEBUS_HEADER_SIZE + ((size_t)slot_index + 1u) * (size_t)slot_stride >
+      reader->map_size) {
+    return -1;
+  }
   const uint8_t *src =
-      reader->base + FRAMEBUS_HEADER_SIZE + (size_t)slot_index * header->slot_stride;
+      reader->base + FRAMEBUS_HEADER_SIZE + (size_t)slot_index * slot_stride;
 
-  for (uint32_t y = 0; y < header->height; y++) {
+  for (uint32_t y = 0; y < height; y++) {
     const uint8_t *src_row = src + (size_t)y * row_bytes;
     uint8_t *dst_row = dst + (size_t)y * dst_stride;
-    for (uint32_t x = 0; x < header->width; x++) {
+    for (uint32_t x = 0; x < width; x++) {
       const uint8_t r = src_row[x * 4 + 0];
       const uint8_t g = src_row[x * 4 + 1];
       const uint8_t b = src_row[x * 4 + 2];
@@ -280,7 +293,7 @@ int framebus_reader_copy_latest_bgra(framebus_reader_t *reader,
 
   /* Detect a torn read: the writer may have lapped this slot meanwhile. */
   const uint64_t seq_after = load_seq(header);
-  if (seq_after >= seq + header->slot_count) {
+  if (seq_after >= seq + slot_count) {
     return -2;
   }
 
@@ -297,8 +310,16 @@ int framebus_reader_copy_latest_rgba(framebus_reader_t *reader,
   }
 
   const framebus_header_t *header = reader->header;
+  /* Snapshot the geometry once: a concurrent writer reinitializing the header
+   * must never be able to steer this copy out of the mapped region. */
+  const uint32_t height = header->height;
+  const uint32_t slot_count = header->slot_count;
+  const uint32_t slot_stride = header->slot_stride;
   const size_t row_bytes = (size_t)header->width * 4u;
   if (dst_stride < row_bytes) {
+    return -1;
+  }
+  if (slot_count == 0 || (size_t)slot_stride < row_bytes * (size_t)height) {
     return -1;
   }
 
@@ -307,16 +328,20 @@ int framebus_reader_copy_latest_rgba(framebus_reader_t *reader,
     return 0;
   }
 
-  const uint32_t slot_index = (uint32_t)((seq - 1) % header->slot_count);
+  const uint32_t slot_index = (uint32_t)((seq - 1) % slot_count);
+  if (FRAMEBUS_HEADER_SIZE + ((size_t)slot_index + 1u) * (size_t)slot_stride >
+      reader->map_size) {
+    return -1;
+  }
   const uint8_t *src =
-      reader->base + FRAMEBUS_HEADER_SIZE + (size_t)slot_index * header->slot_stride;
+      reader->base + FRAMEBUS_HEADER_SIZE + (size_t)slot_index * slot_stride;
 
-  for (uint32_t y = 0; y < header->height; y++) {
+  for (uint32_t y = 0; y < height; y++) {
     memcpy(dst + (size_t)y * dst_stride, src + (size_t)y * row_bytes, row_bytes);
   }
 
   const uint64_t seq_after = load_seq(header);
-  if (seq_after >= seq + header->slot_count) {
+  if (seq_after >= seq + slot_count) {
     return -2;
   }
 

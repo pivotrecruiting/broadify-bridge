@@ -27,7 +27,7 @@ const logger = pino({
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
-const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
+const FRAMEBUS_READY_RETRY_ATTEMPTS = 8;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
@@ -85,7 +85,6 @@ let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
 let rendererConfigReady = false;
 let rendererConfig: {
-  configId?: string;
   width: number;
   height: number;
   fps: number;
@@ -284,18 +283,11 @@ function maybeSendReady(): void {
   readySent = true;
   sendIpcMessage({
     type: "ready",
-    configId: rendererConfig?.configId,
     width: rendererConfig?.width,
     height: rendererConfig?.height,
     fps: rendererConfig?.fps,
     pixelFormat: rendererConfig?.pixelFormat,
-    framebusName: frameBusWriter?.name ?? rendererConfig?.framebusName,
-    framebusSize: frameBusWriter?.size,
-    framebusSlotCount:
-      typeof frameBusWriter?.header?.slotCount === "number"
-        ? frameBusWriter.header.slotCount
-        : rendererConfig?.framebusSlotCount,
-    rendererConfigGeneration,
+    framebusName: rendererConfig?.framebusName,
   });
 }
 
@@ -338,15 +330,11 @@ function shouldForceRecreateFrameBus(): boolean {
   return !MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
 }
 
-const normalizeNativeFrameRate = (fps: number): number =>
-  Math.min(240, Math.max(1, Math.round(fps)));
-
 function ensureFrameBusWriter(
   width: number,
   height: number,
   fps: number,
 ): boolean {
-  const nativeFrameRate = normalizeNativeFrameRate(fps);
   if (frameBusWriter) {
     const header = frameBusWriter.header;
     const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
@@ -355,7 +343,7 @@ function ensureFrameBusWriter(
     const matches =
       header.width === width &&
       header.height === height &&
-      header.fps === nativeFrameRate &&
+      header.fps === fps &&
       header.slotCount === frameBusSlotCount &&
       header.pixelFormat === desiredPixelFormat;
     if (matches) {
@@ -429,14 +417,13 @@ function ensureFrameBusWriter(
       name: frameBusName,
       width,
       height,
-      fps: nativeFrameRate,
+      fps,
       pixelFormat: Number.isFinite(frameBusPixelFormat)
         ? (frameBusPixelFormat as 1 | 2 | 3)
         : 1,
       slotCount: frameBusSlotCount,
       forceRecreate: shouldForceRecreateFrameBus(),
     });
-    frameBusWriter.writeFrame(Buffer.alloc(width * height * 4, 0));
     logger.info(
       {
         name: frameBusWriter.name,
@@ -483,7 +470,6 @@ function applyRendererConfig(message: unknown): void {
   const configGeneration = rendererConfigGeneration;
   clearFrameBusReadyRetry();
   rendererConfig = {
-    configId: config.configId,
     width: config.width,
     height: config.height,
     fps: config.fps,
@@ -613,37 +599,11 @@ function scheduleFrameBusReadyRetry(
     );
     rendererConfigReady = frameBusReady;
     if (frameBusReady) {
-      logger.info(
-        {
-          attempt: attempts,
-          maxAttempts: FRAMEBUS_READY_RETRY_ATTEMPTS,
-          configGeneration,
-          frameBusName,
-          frameBusSlotCount,
-          frameBusPixelFormat,
-        },
-        "[GraphicsRenderer] FrameBus writer became ready after retry",
-      );
       maybeSendReady();
       return;
     }
 
     if (attempts >= FRAMEBUS_READY_RETRY_ATTEMPTS) {
-      logger.error(
-        {
-          attempts,
-          maxAttempts: FRAMEBUS_READY_RETRY_ATTEMPTS,
-          configGeneration,
-          frameBusName,
-          frameBusSlotCount,
-          frameBusPixelFormat,
-          width: config.width,
-          height: config.height,
-          fps: config.fps,
-          reason: "FrameBus writer not ready",
-        },
-        "[GraphicsRenderer] FrameBus writer readiness exhausted",
-      );
       sendIpcMessage({
         type: "error",
         message: "FrameBus writer not ready",
@@ -778,7 +738,7 @@ async function ensureSingleWindow(
 
     singleWindowFormat = { width, height, fps, renderScale };
 
-    singleWindow.webContents.setFrameRate(normalizeNativeFrameRate(fps));
+    singleWindow.webContents.setFrameRate(fps);
 
     let lastWrittenChecksum = -1;
     let lastWrittenAtMs = 0;

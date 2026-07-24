@@ -1,8 +1,5 @@
 #include "common/options.h"
 
-#include <algorithm>
-#include <array>
-#include <cctype>
 #include <cstdlib>
 #include <limits>
 
@@ -37,38 +34,6 @@ uint16_t parseU16(const char *value, uint16_t fallback) {
   return static_cast<uint16_t>(parsed);
 }
 
-bool isForwardedEnvironmentKey(const std::string &key) {
-  static constexpr std::array<const char *, 14> kAllowedKeys = {
-      "BROADIFY_MEETING_COREML_UNITS",
-      "BROADIFY_MEETING_GPU_COMPOSITOR",
-      "BROADIFY_MEETING_GPU_COMPOSITOR_D3D11",
-      "BROADIFY_MEETING_GPU_EMA",
-      "BROADIFY_MEETING_GPU_EPSILON",
-      "BROADIFY_MEETING_GPU_GUIDED",
-      "BROADIFY_MEETING_GPU_PIPELINE",
-      "BROADIFY_MEETING_GPU_RADIUS",
-      "BROADIFY_MEETING_GPU_REFINE",
-      "BROADIFY_MEETING_GPU_REFINE_WIDTH",
-      "BROADIFY_MEETING_GUIDED_EPSILON",
-      "BROADIFY_MEETING_GUIDED_RADIUS",
-      "BROADIFY_MEETING_GUIDED_REFINE",
-      "BROADIFY_MEETING_KEYER_DML_LEGACY",
-  };
-  return std::find(kAllowedKeys.begin(), kAllowedKeys.end(), key) !=
-      kAllowedKeys.end();
-}
-
-bool isForwardedEnvironmentValue(const std::string &value) {
-  if (value.empty() || value.size() > 64u) {
-    return false;
-  }
-  return std::all_of(value.begin(), value.end(), [](const char character) {
-    const unsigned char byte = static_cast<unsigned char>(character);
-    return std::isalnum(byte) != 0 || character == '.' || character == '_' ||
-        character == '+' || character == '-';
-  });
-}
-
 }  // namespace
 
 Options parseOptions(int argc, char **argv) {
@@ -98,10 +63,6 @@ Options parseOptions(int argc, char **argv) {
     };
     if (arg == "--run") {
       options.run = true;
-    } else if (arg == "--self-test") {
-      options.selfTest = true;
-    } else if (arg == "--keyer-self-test") {
-      options.keyerSelfTest = true;
     } else if (arg == "--framebus-name") {
       options.framebusName = next();
     } else if (arg == "--control-socket") {
@@ -121,19 +82,20 @@ Options parseOptions(int argc, char **argv) {
     } else if (arg == "--vcam-frame-port") {
       options.vcamFramePort = parseU16(next(), options.vcamFramePort);
     } else if (arg == "--env") {
-      const std::string keyValue = next();
-      const size_t separator = keyValue.find('=');
-      if (separator != std::string::npos && separator > 0u) {
-        const std::string key = keyValue.substr(0, separator);
-        const std::string value = keyValue.substr(separator + 1u);
-        if (isForwardedEnvironmentKey(key) &&
-            isForwardedEnvironmentValue(value)) {
+      // Re-export a KEY=VALUE pair into the process environment. macOS launches
+      // the helper via `open`, which strips the caller's environment, so the
+      // bridge forwards dev/keyer overrides (BROADIFY_MEETING_*) this way; the
+      // helper's getenv-based overrides then work under `npm run dev`.
+      const std::string kv = next();
+      const size_t eq = kv.find('=');
+      if (eq != std::string::npos && eq > 0u) {
+        const std::string key = kv.substr(0, eq);
+        const std::string value = kv.substr(eq + 1u);
 #if defined(_WIN32)
-          _putenv_s(key.c_str(), value.c_str());
+        _putenv_s(key.c_str(), value.c_str());
 #else
-          setenv(key.c_str(), value.c_str(), 1);
+        setenv(key.c_str(), value.c_str(), 1);
 #endif
-        }
       }
     }
   }

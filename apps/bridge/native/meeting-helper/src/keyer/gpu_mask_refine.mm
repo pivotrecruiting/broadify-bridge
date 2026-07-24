@@ -80,11 +80,11 @@ class GpuMaskRefiner::Impl {
 
     id<MTLTexture> maskTex = wrapAlpha(alpha);  // CoreML alpha -> r16Float texture
     if (maskTex == nil) return false;
-    id<MTLTexture> cameraTex = uploadCamera(camera);
+    id<MTLTexture> cameraTex = uploadCamera(camera);  // Stage 3 makes this zero-copy
     if (cameraTex == nil) return false;
 
     // The guided-filter regression requires its source (the mask) and guidance
-    // to be the SAME resolution, the mask's native size, which is the model's
+    // to be the SAME resolution — the mask's native size, which is the model's
     // input size (512px or 320px). This MUST track the actual matte, or a 320px
     // model produces a 320 mask against a 512 guide and the filter collapses.
     const uint32_t regW = static_cast<uint32_t>(CVPixelBufferGetWidth(alpha));
@@ -172,6 +172,14 @@ class GpuMaskRefiner::Impl {
       uint32_t outW = 0, outH = 0;
       if (!encodeRefine(alpha, camera, outW, outH)) return false;
       return readback(outMask_, outW, outH, camera.timestampNs, out);
+    }
+  }
+
+  void *refineToTexture(CVPixelBufferRef alpha, const VideoFrame &camera,
+                        uint32_t &outWidth, uint32_t &outHeight) {
+    @autoreleasepool {
+      if (!encodeRefine(alpha, camera, outWidth, outHeight)) return nullptr;
+      return (__bridge void *)outMask_;
     }
   }
 
@@ -268,6 +276,10 @@ GpuMaskRefiner::~GpuMaskRefiner() = default;
 bool GpuMaskRefiner::available() const { return impl_->available(); }
 bool GpuMaskRefiner::refine(CVPixelBufferRef alpha, const VideoFrame &camera, AlphaMask &out) {
   return impl_->refine(alpha, camera, out);
+}
+void *GpuMaskRefiner::refineToTexture(CVPixelBufferRef alpha, const VideoFrame &camera,
+                                      uint32_t &outWidth, uint32_t &outHeight) {
+  return impl_->refineToTexture(alpha, camera, outWidth, outHeight);
 }
 
 }  // namespace broadify::meeting

@@ -26,6 +26,8 @@
   <true/>
   <key>NSCameraUsageDescription</key>
   <string>Broadify Bridge Meeting Helper benötigt Zugriff auf die Kamera, um dein Kamerabild im Meeting-Feature zu erfassen und lokal zu verarbeiten.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Broadify Bridge Meeting Helper benötigt Zugriff auf das Mikrofon, um den Ton für die Meeting-Aufnahme aufzuzeichnen.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key>

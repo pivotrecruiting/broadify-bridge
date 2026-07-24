@@ -1,8 +1,8 @@
 #pragma once
 
 #include "capture/camera_source.h"
-#include "common/options.h"
 #include "keyer/keyer.h"
+#include "common/options.h"
 #include "state/meeting_state.h"
 
 #include <cstdint>
@@ -12,7 +12,6 @@ namespace broadify::meeting {
 
 struct CompositorSnapshot {
   bool keyerEnabled = false;
-  bool conferenceMode = false;
   std::string backgroundMode = "transparent";
   std::string backgroundImagePath;
   SpeakerLayoutState speakerLayout;
@@ -22,35 +21,25 @@ struct CompositorSnapshot {
   CameraRenderState cameraRender;
 };
 
-struct GpuCompositorSelfTestResult {
-  bool available = false;
-  bool passed = false;
-  bool hardwareAccelerated = false;
-  int maxChannelDelta = -1;
-  uint32_t maxDeltaX = 0u;
-  uint32_t maxDeltaY = 0u;
-  uint32_t maxDeltaChannel = 0u;
-  uint8_t maxDeltaCpuValue = 0u;
-  uint8_t maxDeltaGpuValue = 0u;
-  std::string backend = "cpu";
-};
-
 CompositorSnapshot copyCompositorSnapshot(const MeetingState &state);
 
-// Conference: overlay a second live camera as a picture-in-picture inset on a
-// finished program frame (bottom-right). No-op when the PiP frame is empty.
-void drawCameraPipInset(std::vector<uint8_t> &output, uint32_t width,
-                        uint32_t height, const VideoFrame &pip);
+// Which backend rendered the most recent program frame ("cpu", "d3d11",
+// "metal"). Written by the program-loop thread inside renderProgramFrame.
+const char *lastCompositorBackend();
 
-std::string renderProgramFrame(const Options &options,
-                               const CompositorSnapshot &snapshot,
-                               const VideoFrame *cameraFrame,
-                               const AlphaMask *cameraMask,
-                               const VideoFrame *backGraphicsFrame,
-                               const VideoFrame *frontGraphicsFrame,
-                               uint64_t frameIndex,
-                               std::vector<uint8_t> &output);
-
-GpuCompositorSelfTestResult runGpuCompositorSelfTest();
+// cameraMask: alpha mask belonging to cameraFrame (nullptr for passthrough).
+// The mask is applied during compositing (GPU shader or CPU fallback);
+// camera frames arrive unkeyed.
+// cameraPipFrame: an optional second live camera drawn as a picture-in-picture
+// inset (nullptr = no camera PiP). Conference uses it for a second angle.
+void renderProgramFrame(const Options &options,
+                        const CompositorSnapshot &snapshot,
+                        const VideoFrame *cameraFrame,
+                        const AlphaMask *cameraMask,
+                        const VideoFrame *backGraphicsFrame,
+                        const VideoFrame *frontGraphicsFrame,
+                        const VideoFrame *cameraPipFrame,
+                        uint64_t frameIndex,
+                        std::vector<uint8_t> &output);
 
 }  // namespace broadify::meeting
