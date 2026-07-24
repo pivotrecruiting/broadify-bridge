@@ -203,6 +203,11 @@ const mockAppOn = jest.fn((event: string, handler: () => void) => {
 });
 
 jest.mock("electron", () => ({
+  powerSaveBlocker: {
+    start: jest.fn().mockReturnValue(1),
+    stop: jest.fn(),
+    isStarted: jest.fn().mockReturnValue(true),
+  },
   app: {
     getPath: jest.fn().mockReturnValue("/tmp/userData"),
     getAppPath: jest.fn().mockReturnValue("/app"),

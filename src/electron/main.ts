@@ -1,5 +1,5 @@
 import "./app-bootstrap.js";
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, powerSaveBlocker, shell } from "electron";
 import {
   getArgMap,
   resolveRendererEntry,
@@ -96,6 +96,7 @@ Sentry.init({
 const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 let healthCheckCleanup: (() => void) | null = null;
+let powerSaveBlockerId: number | null = null;
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -710,6 +711,21 @@ if (!isRendererProcess) {
 
         // Start health check polling if bridge started successfully
         if (result.success) {
+          // The bridge is a background service: without this, macOS App Nap /
+          // Windows efficiency mode throttle the hidden app's timers, which
+          // silences the relay heartbeat and drops the cloud connection
+          // whenever the window is not in front.
+          if (
+            powerSaveBlockerId === null ||
+            !powerSaveBlocker.isStarted(powerSaveBlockerId)
+          ) {
+            powerSaveBlockerId = powerSaveBlocker.start(
+              "prevent-app-suspension",
+            );
+            console.log(
+              `[Bridge] Power save blocker started (id ${powerSaveBlockerId})`,
+            );
+          }
           // console.log(
           //   "[Bridge] Bridge started successfully, sending initial status update"
           // );
@@ -798,6 +814,13 @@ if (!isRendererProcess) {
       });
 
       ipcMainHandle("bridgeStop", async () => {
+        if (
+          powerSaveBlockerId !== null &&
+          powerSaveBlocker.isStarted(powerSaveBlockerId)
+        ) {
+          powerSaveBlocker.stop(powerSaveBlockerId);
+          powerSaveBlockerId = null;
+        }
         // Stop health check
         if (healthCheckCleanup) {
           healthCheckCleanup();
