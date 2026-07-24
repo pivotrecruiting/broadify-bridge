@@ -5,6 +5,9 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ModelsDir,
 
+  # Kept for caller compatibility; the integrated (Windows-parity) helper has
+  # no runtime self-test entry, so hardware acceleration cannot be asserted
+  # here anymore. Runtime health is covered by ctest + the RC test cycle.
   [switch]$RequireHardwareAcceleration
 )
 
@@ -27,31 +30,21 @@ foreach ($path in $requiredFiles) {
   }
 }
 
-$previousGpuSelfTestDriver = [Environment]::GetEnvironmentVariable("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER", "Process")
-$previousKeyerSelfTestProvider = [Environment]::GetEnvironmentVariable("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER", "Process")
-
-if (-not $RequireHardwareAcceleration) {
-  $env:BROADIFY_MEETING_GPU_SELF_TEST_DRIVER = "warp"
-  $env:BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER = "cpu"
-} else {
-  Remove-Item Env:BROADIFY_MEETING_GPU_SELF_TEST_DRIVER -ErrorAction SilentlyContinue
-  Remove-Item Env:BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER -ErrorAction SilentlyContinue
+$modelSize = (Get-Item -LiteralPath (Join-Path $resolvedModelsDir "modnet.onnx")).Length
+if ($modelSize -lt 1MB) {
+  throw "Packaged modnet.onnx looks truncated ($modelSize bytes)."
 }
 
-try {
-  & $resolvedHelperPath --self-test
-  if ($LASTEXITCODE -ne 0) {
-    throw "Meeting helper GPU self-test failed with exit code $LASTEXITCODE."
-  }
-
-  & $resolvedHelperPath --keyer-self-test --models-dir $resolvedModelsDir
-  if ($LASTEXITCODE -ne 0) {
-    throw "Meeting helper keyer self-test failed with exit code $LASTEXITCODE."
-  }
-} finally {
-  [Environment]::SetEnvironmentVariable("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER", $previousGpuSelfTestDriver, "Process")
-  [Environment]::SetEnvironmentVariable("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER", $previousKeyerSelfTestProvider, "Process")
+# Binary-load smoke: launching the helper without --run makes it print its
+# usage error and exit with code 2. Reaching that point proves the PE loads
+# and all import DLLs (onnxruntime, DirectML, ...) resolve from the packaged
+# layout — a missing/misplaced DLL aborts with a loader error instead.
+$output = & $resolvedHelperPath 2>&1
+if ($LASTEXITCODE -ne 2) {
+  throw "Meeting helper binary-load smoke expected usage exit code 2, got $LASTEXITCODE. Output: $output"
+}
+if (-not ($output -match "requires --run")) {
+  throw "Meeting helper binary-load smoke did not print its usage banner. Output: $output"
 }
 
-$mode = if ($RequireHardwareAcceleration) { "hardware" } else { "portable CI" }
-Write-Host "Meeting helper GPU and keyer smoke tests passed ($mode): $resolvedHelperPath"
+Write-Host "Meeting helper packaged-binary smoke passed (loads with packaged DLLs, model present): $resolvedHelperPath"
