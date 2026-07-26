@@ -486,6 +486,32 @@ describe("main", () => {
       expect(mockStart).toHaveBeenCalled();
     });
 
+    it("prevents app suspension while the bridge runs", async () => {
+      await readyHandlers[0]();
+      const startIndex = mockIpcMainHandle.mock.calls.findIndex(
+        (call: unknown[]) => call[0] === "bridgeStart",
+      );
+      const stopIndex = mockIpcMainHandle.mock.calls.findIndex(
+        (call: unknown[]) => call[0] === "bridgeStop",
+      );
+      const startHandler = mockIpcMainHandle.mock.calls[startIndex][1];
+      const stopHandler = mockIpcMainHandle.mock.calls[stopIndex][1];
+      const { powerSaveBlocker } = await import("electron");
+
+      await startHandler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+
+      expect(powerSaveBlocker.start).toHaveBeenCalledTimes(1);
+      expect(powerSaveBlocker.start).toHaveBeenCalledWith("prevent-app-suspension");
+
+      await stopHandler();
+
+      expect(powerSaveBlocker.stop).toHaveBeenCalledWith(1);
+    });
+
     it("bridgeStart success invokes health check callback with status", async () => {
       mockGetPairingInfo.mockReturnValueOnce({
         code: "999888",

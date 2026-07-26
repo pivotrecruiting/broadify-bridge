@@ -502,7 +502,7 @@ export async function handleMeetingCommand(
       );
       const { stream } = await openGuardedDownload(
         url,
-        500 * 1024 * 1024,
+        100 * 1024 * 1024,
         110_000,
       );
       const asset = await meetingMediaService.saveUpload(name, stream);
