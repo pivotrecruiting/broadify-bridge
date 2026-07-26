@@ -20,9 +20,10 @@ import {
   MeetingRecordingStartSchema,
 } from "./meeting-command-schemas.js";
 import { meetingMediaService } from "./meeting-media-service.js";
+import { Readable } from "node:stream";
 import {
   downloadGuardedBuffer,
-  openGuardedDownload,
+  validatePresentationBytes,
 } from "./media-download.js";
 import {
   BACKGROUND_IMAGE_MAX_BYTES,
@@ -500,12 +501,18 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_media_fetch",
       );
-      const { stream } = await openGuardedDownload(
+      // Buffered (100 MB cap, matching the webapp transfer limit) so the file
+      // signature can be verified BEFORE anything reaches the renderer.
+      const { body } = await downloadGuardedBuffer(
         url,
-        500 * 1024 * 1024,
+        100 * 1024 * 1024,
         110_000,
       );
-      const asset = await meetingMediaService.saveUpload(name, stream);
+      validatePresentationBytes(body, name);
+      const asset = await meetingMediaService.saveUpload(
+        name,
+        Readable.from(body),
+      );
       return { success: true, data: asset };
     }
 

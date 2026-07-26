@@ -1617,3 +1617,82 @@ describe("RelayClient", () => {
     );
   });
 });
+
+describe("RelayClient keepalive", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const keepaliveCount = (socket: FakeWebSocket): number =>
+    socket.sent.filter((raw) => {
+      try {
+        const message = JSON.parse(raw);
+        return (
+          message.type === "bridge_event" && message.event === "keepalive"
+        );
+      } catch {
+        return false;
+      }
+    }).length;
+
+  const createClient = (socket: FakeWebSocket) =>
+    new RelayClient("bridge-1", "ws://relay.test", createLogger(), "Studio A", {
+      createWebSocket: () => socket,
+      getVersion: () => "1.2.3",
+      getEnrollmentPublicKey: async () => ({
+        keyId: "bridge-key-1",
+        algorithm: "ed25519",
+        publicKeyPem: "pem",
+      }),
+      setIntervalFn: setInterval,
+      clearIntervalFn: clearInterval,
+      // The WS heartbeat would terminate the pong-less fake socket before the
+      // second keepalive tick; it has its own coverage elsewhere.
+      relayHeartbeatMaxMisses: 1000,
+    });
+
+  it("sends exactly one keepalive event 25s after bridge_auth_ok", async () => {
+    const socket = new FakeWebSocket();
+    const client = createClient(socket);
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.receiveJson({ type: "bridge_auth_ok" });
+    await flushAsync();
+
+    expect(keepaliveCount(socket)).toBe(0);
+    jest.advanceTimersByTime(25_000);
+    await flushAsync();
+    expect(keepaliveCount(socket)).toBe(1);
+    jest.advanceTimersByTime(25_000);
+    await flushAsync();
+    expect(keepaliveCount(socket)).toBe(2);
+  });
+
+  it("stops keepalives after the socket closes", async () => {
+    const socket = new FakeWebSocket();
+    const client = createClient(socket);
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.receiveJson({ type: "bridge_auth_ok" });
+    await flushAsync();
+
+    jest.advanceTimersByTime(25_000);
+    await flushAsync();
+    const sentWhileConnected = keepaliveCount(socket);
+    expect(sentWhileConnected).toBe(1);
+
+    socket.close();
+    await flushAsync();
+    jest.advanceTimersByTime(100_000);
+    await flushAsync();
+    expect(keepaliveCount(socket)).toBe(sentWhileConnected);
+  });
+});

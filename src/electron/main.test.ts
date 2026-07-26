@@ -486,6 +486,57 @@ describe("main", () => {
       expect(mockStart).toHaveBeenCalled();
     });
 
+    it("bridgeStart starts the power save blocker exactly once", async () => {
+      const { powerSaveBlocker } = jest.requireMock("electron");
+      powerSaveBlocker.start.mockClear();
+      powerSaveBlocker.isStarted.mockReturnValue(false);
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(powerSaveBlocker.start).toHaveBeenCalledTimes(1);
+      expect(powerSaveBlocker.start).toHaveBeenCalledWith(
+        "prevent-app-suspension",
+      );
+
+      // Second start while the blocker is active must not stack blockers.
+      powerSaveBlocker.isStarted.mockReturnValue(true);
+      await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(powerSaveBlocker.start).toHaveBeenCalledTimes(1);
+    });
+
+    it("bridgeStop stops the power save blocker", async () => {
+      const { powerSaveBlocker } = jest.requireMock("electron");
+      powerSaveBlocker.start.mockClear();
+      powerSaveBlocker.stop.mockClear();
+      powerSaveBlocker.isStarted.mockReturnValue(false);
+      await readyHandlers[0]();
+      const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      await mockIpcMainHandle.mock.calls[startIdx][1](undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      powerSaveBlocker.isStarted.mockReturnValue(true);
+      const stopIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStop",
+      );
+      await mockIpcMainHandle.mock.calls[stopIdx][1](undefined);
+      expect(powerSaveBlocker.stop).toHaveBeenCalled();
+    });
+
     it("bridgeStart success invokes health check callback with status", async () => {
       mockGetPairingInfo.mockReturnValueOnce({
         code: "999888",

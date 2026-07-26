@@ -226,3 +226,35 @@ function readSingleHeader(value: string | string[] | undefined): string | null {
   }
   return value ?? null;
 }
+
+/**
+ * Content sniffing for downloaded presentations: the URL and name arrive via
+ * a relay command, so require real file signatures before the renderer ever
+ * sees the bytes. Encrypted OOXML (OLE/CFB container) does not start with the
+ * ZIP magic and is rejected here.
+ */
+export function validatePresentationBytes(
+  bytes: Buffer,
+  fileName: string,
+): void {
+  if (/\.pdf$/i.test(fileName)) {
+    if (!bytes.subarray(0, 1024).toString("latin1").includes("%PDF-")) {
+      throw new Error("Downloaded file is not a valid PDF.");
+    }
+    return;
+  }
+  const isZip =
+    bytes.length > 4 &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    bytes[2] === 0x03 &&
+    bytes[3] === 0x04;
+  const asLatin1 = bytes.toString("latin1");
+  if (
+    !isZip ||
+    !asLatin1.includes("[Content_Types].xml") ||
+    !asLatin1.includes("ppt/presentation.xml")
+  ) {
+    throw new Error("Downloaded file is not a valid PPTX presentation.");
+  }
+}

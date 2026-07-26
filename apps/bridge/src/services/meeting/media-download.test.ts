@@ -72,3 +72,35 @@ describe("media-download SSRF guard", () => {
     expect(() => parseGuardedUrl("not a url")).toThrow("Invalid download URL");
   });
 });
+
+describe("validatePresentationBytes", () => {
+  const { validatePresentationBytes } = jest.requireActual("./media-download.js");
+
+  it("accepts a real PDF and a real PPTX structure", () => {
+    expect(() =>
+      validatePresentationBytes(Buffer.from("%PDF-1.7\n..."), "a.pdf"),
+    ).not.toThrow();
+    const pptx = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("..[Content_Types].xml..ppt/presentation.xml..", "latin1"),
+    ]);
+    expect(() => validatePresentationBytes(pptx, "a.pptx")).not.toThrow();
+  });
+
+  it("rejects renamed/invalid/encrypted files before the renderer", () => {
+    expect(() =>
+      validatePresentationBytes(Buffer.from("MZ..exe.."), "fake.pdf"),
+    ).toThrow("not a valid PDF");
+    const zipNoPptx = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("word/document.xml", "latin1"),
+    ]);
+    expect(() => validatePresentationBytes(zipNoPptx, "fake.pptx")).toThrow(
+      "not a valid PPTX",
+    );
+    const oleEncrypted = Buffer.from([0xd0, 0xcf, 0x11, 0xe0]);
+    expect(() =>
+      validatePresentationBytes(oleEncrypted, "enc.pptx"),
+    ).toThrow("not a valid PPTX");
+  });
+});
