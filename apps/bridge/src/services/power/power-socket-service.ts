@@ -1,21 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { getBridgeContext, type LoggerLikeT } from "../bridge-context.js";
-
-const getLogger = (): LoggerLikeT => {
-  try {
-    return getBridgeContext().logger;
-  } catch {
-    return {
-      info: () => {},
-      warn: () => {},
-      error: () => {},
-    };
-  }
-};
+import { getBridgeContext } from "../bridge-context.js";
 
 const STORE_DIR = "power";
 const STORE_FILE = "sockets.json";
@@ -106,88 +92,6 @@ function isHttpUrl(value: string): boolean {
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
-  }
-}
-
-/**
- * True if a literal IPv4 falls in a range we must never reach from operator-
- * supplied plug URLs: loopback (127.0.0.0/8) and link-local / cloud-metadata
- * (169.254.0.0/16, incl. 169.254.169.254). Private LAN ranges stay allowed.
- */
-function isBlockedIpv4(ip: string): boolean {
-  const octets = ip.split(".").map((part) => Number.parseInt(part, 10));
-  if (
-    octets.length !== 4 ||
-    octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)
-  ) {
-    return true; // malformed → refuse rather than risk it
-  }
-  const [a, b] = octets;
-  if (a === 127) {
-    return true; // 127.0.0.0/8 loopback
-  }
-  if (a === 169 && b === 254) {
-    return true; // 169.254.0.0/16 link-local + cloud metadata
-  }
-  return false;
-}
-
-/** True if a literal IP (v4 or v6) is loopback/link-local and must be blocked. */
-function isBlockedIp(ip: string): boolean {
-  const family = isIP(ip);
-  if (family === 4) {
-    return isBlockedIpv4(ip);
-  }
-  if (family === 6) {
-    const lower = ip.toLowerCase();
-    if (lower === "::1") {
-      return true; // loopback
-    }
-    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) {
-      return isBlockedIpv4(mapped[1]); // IPv4-mapped IPv6
-    }
-    if (/^fe[89ab]/.test(lower)) {
-      return true; // fe80::/10 link-local
-    }
-    return false;
-  }
-  return false; // not a literal IP — caller resolves DNS first
-}
-
-/**
- * Guards an operator-supplied plug URL before we fetch it. The legitimate scope
- * is LAN smart plugs, so we hard-block loopback, link-local and cloud-metadata
- * targets. DNS names are resolved and the *resolved* IP is checked, closing the
- * DNS-rebinding hole. Throws with a clear message when the host is disallowed.
- */
-async function assertAllowedPlugHost(url: string): Promise<void> {
-  let rawHost: string;
-  try {
-    rawHost = new URL(url).hostname;
-  } catch {
-    throw new Error("Invalid target URL.");
-  }
-  const host = rawHost.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
-  const lower = host.toLowerCase();
-  if (lower === "localhost" || lower.endsWith(".localhost")) {
-    throw new Error(`Refusing to reach loopback host: ${host}`);
-  }
-  if (isIP(host)) {
-    if (isBlockedIp(host)) {
-      throw new Error(`Refusing to reach non-LAN address: ${host}`);
-    }
-    return;
-  }
-  // DNS name: resolve and validate the actual IP to prevent DNS rebinding.
-  let resolved: string;
-  try {
-    resolved = (await lookup(host)).address;
-  } catch {
-    return; // let fetch surface the real network error
-  }
-  if (isBlockedIp(resolved)) {
-    throw new Error(`Refusing to reach non-LAN address: ${host} → ${resolved}`);
   }
 }
 
@@ -329,24 +233,13 @@ export class PowerSocketService {
     url: string,
     method: PowerHttpMethodT,
   ): Promise<{ ok: boolean; statusCode: number | null; error: string | null }> {
-    try {
-      await assertAllowedPlugHost(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      getLogger().warn(
-        `[PowerSocket] Blocked outbound request to disallowed host: ${message}`,
-      );
-      return { ok: false, statusCode: null, error: message };
-    }
-
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         method,
         signal: controller.signal,
-        // "manual" keeps a redirect from bouncing us to an internal target.
-        redirect: "manual",
+        redirect: "follow",
       });
       return {
         ok: response.ok,
@@ -394,28 +287,8 @@ export class PowerSocketService {
             autostart: socket.autostart ?? true,
           }))
         : [];
-    } catch (error) {
+    } catch {
       this.sockets = [];
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return; // no file yet — first run, nothing to recover
-      }
-      // The file exists but is unreadable/corrupt. Preserve it instead of
-      // silently dropping every saved socket, and surface it in the logs.
-      const message = error instanceof Error ? error.message : String(error);
-      try {
-        await rename(file, `${file}.corrupt`);
-        getLogger().warn(
-          `[PowerSocket] ${STORE_FILE} was unreadable and was moved to ${STORE_FILE}.corrupt: ${message}`,
-        );
-      } catch (renameError) {
-        const renameMessage =
-          renameError instanceof Error
-            ? renameError.message
-            : String(renameError);
-        getLogger().warn(
-          `[PowerSocket] ${STORE_FILE} was unreadable and could not be preserved (${renameMessage}); original error: ${message}`,
-        );
-      }
     }
   }
 
@@ -430,17 +303,9 @@ export class PowerSocketService {
         sockets: this.sockets ?? [],
         updatedAt: new Date().toISOString(),
       };
-      // Write to a temp file then atomically rename, so a crash mid-write can
-      // never leave a truncated/corrupt sockets.json behind.
-      const tmp = `${file}.tmp`;
-      await writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
-      await rename(tmp, file);
-    } catch (error) {
+      await writeFile(file, JSON.stringify(data, null, 2), "utf8");
+    } catch {
       // Persistence is best-effort; the in-memory list stays authoritative.
-      const message = error instanceof Error ? error.message : String(error);
-      getLogger().warn(
-        `[PowerSocket] Failed to persist ${STORE_FILE}: ${message}`,
-      );
     }
   }
 }

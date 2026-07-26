@@ -22,6 +22,7 @@ import {
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
+import { quitRunningVcamHelperApp } from "./modules/vcam/vcam-helper.js";
 import {
   initCommandRouter,
   stopCommandRouter,
@@ -255,9 +256,28 @@ export async function startServer(
     }
   }
 
-  // Graceful shutdown
+  // Graceful shutdown. Every step is time-boxed and the process exit is
+  // guaranteed by a hard safety timer: a hanging step (open WebSockets, a
+  // stuck helper) must never keep the bridge alive after the app quit it —
+  // that orphans the whole child-process tree.
+  const withTimeout = (step: string, work: Promise<unknown>, timeoutMs: number) =>
+    Promise.race([
+      work,
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          server.log.warn(`[Shutdown] ${step} timed out after ${timeoutMs}ms; continuing`);
+          resolve();
+        }, timeoutMs),
+      ),
+    ]);
+
   const shutdown = async (signal: string) => {
     server.log.info(`Received ${signal}, shutting down gracefully...`);
+    const failSafe = setTimeout(() => {
+      server.log.warn("[Shutdown] Fail-safe exit");
+      process.exit(0);
+    }, 7000);
+    failSafe.unref();
     try {
       // Stop the Stream Deck USB hot-plug watch.
       stopCommandRouter();
@@ -269,12 +289,12 @@ export async function startServer(
         | undefined;
       if (relayClient) {
         server.log.info("[Server] Disconnecting relay client...");
-        await relayClient.disconnect();
+        await withTimeout("relay disconnect", relayClient.disconnect(), 2000);
       }
 
       server.log.info("[Graphics] Shutting down renderer...");
       try {
-        await graphicsManager.shutdown();
+        await withTimeout("graphics shutdown", graphicsManager.shutdown(), 3000);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         server.log.warn(
@@ -284,7 +304,7 @@ export async function startServer(
 
       server.log.info("[Meeting] Shutting down meeting engine...");
       try {
-        await meetingHelperManager.stop();
+        await withTimeout("meeting shutdown", meetingHelperManager.stop(), 3000);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         server.log.warn(
@@ -292,7 +312,14 @@ export async function startServer(
         );
       }
 
-      await server.close();
+      // The standalone virtual-camera app must not outlive the bridge.
+      try {
+        quitRunningVcamHelperApp();
+      } catch {
+        // Best effort; the app may not be running.
+      }
+
+      await withTimeout("server close", server.close(), 2000);
       server.log.info("Server closed");
       process.exit(0);
     } catch (err) {

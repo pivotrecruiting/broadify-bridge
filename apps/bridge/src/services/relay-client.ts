@@ -500,6 +500,7 @@ export class RelayClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private relayHeartbeatTimer: NodeJS.Timeout | null = null;
   private relayLivenessTimer: NodeJS.Timeout | null = null;
+  private relayKeepaliveTimer: NodeJS.Timeout | null = null;
   private relayMissedHeartbeats = 0;
   private isConnecting = false;
   private isShuttingDown = false;
@@ -1075,7 +1076,31 @@ export class RelayClient {
       clearIntervalFn(this.relayHeartbeatTimer);
       this.relayHeartbeatTimer = null;
     }
+    if (this.relayKeepaliveTimer) {
+      clearIntervalFn(this.relayKeepaliveTimer);
+      this.relayKeepaliveTimer = null;
+    }
     this.relayMissedHeartbeats = 0;
+  }
+
+  // Application-level keepalive on top of the WS ping heartbeat: a tiny
+  // bridge_event every 25s guarantees real traffic on EVERY hop (relay app,
+  // edge proxies), so neither an idle-suspending relay host nor a proxy idle
+  // timeout can silently kill an otherwise healthy connection. Subscribed
+  // webapp clients ignore the unknown event name.
+  private startRelayKeepalive(): void {
+    const setIntervalFn = this.deps.setIntervalFn ?? setInterval;
+    const clearIntervalFn = this.deps.clearIntervalFn ?? clearInterval;
+    if (this.relayKeepaliveTimer) {
+      clearIntervalFn(this.relayKeepaliveTimer);
+    }
+    this.relayKeepaliveTimer = setIntervalFn(() => {
+      if (!this.isConnected()) {
+        return;
+      }
+      this.sendBridgeEvent({ event: "keepalive" });
+    }, 25_000);
+    this.relayKeepaliveTimer.unref?.();
   }
 
   private resetRelayLivenessWatchdog(): void {
@@ -1276,6 +1301,7 @@ export class RelayClient {
         await this.handleBridgeAuthChallenge(message);
       } else if (message.type === "bridge_auth_ok") {
         this.logger.info("Relay bridge auth successful");
+        this.startRelayKeepalive();
         void this.publishResyncSnapshots("bridge_auth_ok");
       } else if (message.type === "bridge_auth_error") {
         this.logger.warn(`Relay bridge auth failed: ${message.error}`);

@@ -1,11 +1,10 @@
 #include "keyer/coreml_keyer.h"
 #include "keyer/gpu_mask_refine.h"
-#include "keyer/model_manifest.h"
-#include "util/sha256.h"
+
 #include <algorithm>
+#include <memory>
 #include <chrono>
 #include <cstdlib>
-#include <memory>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -21,12 +20,6 @@ namespace {
 // The converted MODNet.mlpackage is fixed at this square input; the model bakes
 // in the (x/127.5 - 1) normalization and outputs a [0,1] grayscale-float16 matte.
 constexpr uint32_t kModelSize = 512u;
-constexpr const char *kManifestSha256 =
-    "8b6a58da5d94fa96f129ed471c7d11297cbcc2c8b3e0f540276e0edd10068a91";
-constexpr const char *kModelSha256 =
-    "aa5716096125bd4573f02b82da789147c2ee5505285ac3b857dbfaa11f34ec43";
-constexpr const char *kWeightsSha256 =
-    "4fea2648996b6db19ba818594ad04a700b8a55ca4eca461240694a71f6c5ad25";
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
@@ -43,11 +36,12 @@ MLComputeUnits computeUnitsFromEnv() {
   return MLComputeUnitsAll;  // default: CPU+GPU+ANE, Core ML picks
 }
 
+// Refine the mask on the GPU (MPSImageGuidedFilter) instead of the CPU
+// joint-bilateral pass. Default ON. Kill-switch: BROADIFY_MEETING_GPU_REFINE=0.
 bool gpuRefineEnabled() {
   const char *raw = std::getenv("BROADIFY_MEETING_GPU_REFINE");
   return raw == nullptr || raw[0] != '0';
 }
-
 #endif
 
 }  // namespace
@@ -162,6 +156,50 @@ class CoreMLKeyer::Impl {
 #endif
   }
 
+  void *predictMaskTexture(const VideoFrame &input, uint32_t &width, uint32_t &height) {
+    width = 0;
+    height = 0;
+#if defined(__APPLE__)
+    if (@available(macOS 13.0, *)) {
+      if (!ensureLoaded()) return nullptr;
+      @autoreleasepool {
+        if (input.rgba.empty() || input.width == 0u || input.height == 0u) {
+          return nullptr;
+        }
+        if (!fillPixelBuffer(input)) return nullptr;
+        MLFeatureValue *imageValue =
+            [MLFeatureValue featureValueWithPixelBuffer:pixelBuffer_];
+        NSError *error = nil;
+        MLDictionaryFeatureProvider *provider = [[MLDictionaryFeatureProvider alloc]
+            initWithDictionary:@{inputName_ : imageValue}
+                         error:&error];
+        if (provider == nil) return nullptr;
+        id<MLFeatureProvider> prediction =
+            [model_ predictionFromFeatures:provider error:&error];
+        if (prediction == nil) return nullptr;
+        MLFeatureValue *alphaValue = [prediction featureValueForName:outputName_];
+        CVPixelBufferRef maskBuffer =
+            alphaValue != nil ? [alphaValue imageBufferValue] : nullptr;
+        if (maskBuffer == nullptr) return nullptr;
+        if (refiner_ == nullptr) {
+          refiner_ = std::make_unique<GpuMaskRefiner>();
+        }
+        if (!refiner_->available()) return nullptr;
+        status_.activeKeyer = "coreml_modnet";
+        status_.fallbackActive = false;
+        status_.fallbackReason.clear();
+        // Alpha CVPixelBuffer stays inside this scope; only the persistent
+        // refined-mask texture handle leaves.
+        return refiner_->refineToTexture(maskBuffer, input, width, height);
+      }
+    }
+    return nullptr;
+#else
+    (void)input;
+    return nullptr;
+#endif
+  }
+
 #if defined(__APPLE__)
  private:
   bool ensureLoaded() {
@@ -172,21 +210,18 @@ class CoreMLKeyer::Impl {
     if (@available(macOS 13.0, *)) {
       @autoreleasepool {
         NSString *dir = [NSString stringWithUTF8String:modelsDir_.c_str()];
-        NSString *path = [dir stringByAppendingPathComponent:@"MODNet.mlpackage"];
+        // The model file is selectable so a smaller/faster model (e.g. 320px for
+        // 30 fps) can be A/B tested against the default 512px one. The input size
+        // is queried from whichever model loads, so the rest of the path adapts.
+        const char *modelEnv = std::getenv("BROADIFY_MEETING_COREML_MODEL");
+        NSString *modelFile = (modelEnv != nullptr && modelEnv[0] != '\0')
+                                  ? [NSString stringWithUTF8String:modelEnv]
+                                  : @"MODNet.mlpackage";
+        NSString *path = [dir stringByAppendingPathComponent:modelFile];
         status_.modelPath = std::string([path UTF8String]);
         NSURL *url = [NSURL fileURLWithPath:path];
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
           setFallback("model_missing");
-          return false;
-        }
-        const std::string packagePath([path UTF8String]);
-        const bool hashesMatch =
-            sha256FileHex(joinModelPath(packagePath, "Manifest.json")) == kManifestSha256 &&
-            sha256FileHex(joinModelPath(packagePath, "Data/com.apple.CoreML/model.mlmodel")) == kModelSha256 &&
-            sha256FileHex(joinModelPath(packagePath, "Data/com.apple.CoreML/weights/weight.bin")) == kWeightsSha256;
-        status_.modelHashOk = hashesMatch;
-        if (!hashesMatch) {
-          setFallback("model_hash_mismatch");
           return false;
         }
         NSError *error = nil;
@@ -346,6 +381,10 @@ CoreMLKeyer::~CoreMLKeyer() = default;
 
 KeyerResult CoreMLKeyer::apply(const VideoFrame &input, const KeyerSettings &settings) {
   return impl_->apply(input, settings);
+}
+
+void *CoreMLKeyer::predictMaskTexture(const VideoFrame &input, uint32_t &width, uint32_t &height) {
+  return impl_->predictMaskTexture(input, width, height);
 }
 
 }  // namespace broadify::meeting

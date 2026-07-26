@@ -9,7 +9,6 @@ import type {
 } from "@elgato-stream-deck/node";
 import type { StreamDeckManager } from "./stream-deck-manager.js";
 import { VirtualStreamDeck } from "./virtual-stream-deck.js";
-import { getBridgeContext, type LoggerLikeT } from "../bridge-context.js";
 import {
   StreamDeckDevice,
   StreamDeckKeyListener,
@@ -18,15 +17,6 @@ import {
 
 const DEFAULT_KEY_SIZE = 72;
 const HOTPLUG_SCAN_INTERVAL_MS = 2000;
-
-/** Bridge pino logger, falling back to console before the context is set. */
-function log(): LoggerLikeT {
-  try {
-    return getBridgeContext().logger;
-  } catch {
-    return console;
-  }
-}
 
 type ButtonFeedback = StreamDeckButtonControlDefinition["feedbackType"];
 
@@ -130,7 +120,7 @@ export class HidStreamDeck implements StreamDeckDevice {
       buttons.map((button) => [button.index, button.feedbackType]),
     );
     const serial = await deck.getSerialNumber().catch(() => null);
-    log().info(
+    console.info(
       `[streamdeck] opened ${deck.MODEL}: grid ${columns}x${rows}, key ${keyWidth}x${keyHeight}px, buttons=${buttons.length}, feedback=[${buttons
         .map((b) => `${b.index}:${b.feedbackType}`)
         .join(" ")}]`,
@@ -162,9 +152,9 @@ export class HidStreamDeck implements StreamDeckDevice {
       }
       // feedback "none" (e.g. Stream Deck Pedal): no display to update.
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      log().error(
-        `[streamdeck] setKeyImage(key=${keyIndex}, feedback=${feedback}, bytes=${rgba.length}) failed: ${reason}`,
+      console.error(
+        `[streamdeck] setKeyImage(key=${keyIndex}, feedback=${feedback}, bytes=${rgba.length}) failed:`,
+        error instanceof Error ? error.message : error,
       );
     }
   }

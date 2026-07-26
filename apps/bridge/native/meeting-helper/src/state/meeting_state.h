@@ -7,6 +7,11 @@
 
 namespace broadify::meeting {
 
+// Zero-config default: "balanced" is the auto profile — the keyer chain picks
+// the best Vision tier the machine sustains and steps down on its own. Users
+// should never need to tune keyer performance manually.
+inline constexpr const char *kDefaultKeyerPerformanceMode = "balanced";
+
 struct SpeakerLayoutState {
   bool enabled = false;
   std::string layout = "right";
@@ -34,6 +39,8 @@ struct MediaLayerState {
   double y = 0.12;
   double width = 0.34;
   double height = 0.28;
+  // Rotation in degrees; matches the builder preview's CSS
+  // rotateX() rotateY() rotateZ() order without perspective (orthographic).
   double rotation = 0.0;
   double rotationX = 0.0;
   double rotationY = 0.0;
@@ -62,15 +69,14 @@ struct MeetingState {
   // Conference: a second open camera drawn as picture-in-picture (-1 = off).
   int pipCameraIndex = -1;
   // Conference auto-director ("Auto-Regie"): when enabled, the program feed
-  // automatically follows the loudest camera microphone. Manual program
-  // selection stays authoritative while it is off.
+  // automatically follows the loudest camera microphone, with hysteresis so a
+  // brief cough or door slam does not trigger a cut. Manual program selection
+  // stays available and simply competes with the next auto evaluation.
   bool autoDirectorEnabled = false;
-  // Minimum smoothed RMS (0..1) for a camera to count as "someone speaking".
+  // Minimum smoothed RMS (0..1) for a camera to be considered "someone
+  // speaking". Below this the auto-director holds the current program.
   float autoDirectorThreshold = 0.02f;
   bool keyerEnabled = false;
-  // Conference mode never keys. It also lets the compositor draw fullscreen
-  // content over the un-keyed camera (meeting keeps the camera on keyer-off).
-  bool conferenceMode = false;
   bool framebusRunning = true;
   bool vcamRawRunning = true;
   int previewClientCount = 0;
@@ -78,10 +84,7 @@ struct MeetingState {
   bool graphicsDirty = true;
   bool programDirty = true;
   std::string pipelineMode = "idle";
-  std::string keyerPipelineMode = "passthrough";
-  std::string compositorBackend = "cpu";
   uint64_t programRevision = 1;
-  uint64_t keyerRevision = 1;
   uint64_t renderedFrames = 0;
   uint64_t reusedFrames = 0;
   uint64_t publishedPreviewFrames = 0;
@@ -90,12 +93,19 @@ struct MeetingState {
   // Absolute file path of an uploaded company background image; empty = none.
   std::string backgroundImagePath;
   std::string activeKeyer = "passthrough";
+  // Default backend: Apple Vision runs hardware-accelerated on every Mac and
+  // needs no model download; MODNet stays available as an opt-in high-quality
+  // backend (and remains the default where Vision is unavailable).
+#if defined(__APPLE__)
+  std::string requestedKeyerModel = "vision_person_segmentation";
+#else
   std::string requestedKeyerModel = "modnet";
+#endif
   std::string fallbackReason = "native_keyers_not_configured";
   std::string keyerBackend = "passthrough";
   std::string qualityMode = "balanced";
   std::string activeQualityMode = "balanced";
-  std::string performanceMode = "balanced";
+  std::string performanceMode = kDefaultKeyerPerformanceMode;
   double maskErodePx = 0.0;
   uint32_t maskDilatePx = 0;
   uint32_t maskFeatherPx = 0;
@@ -105,6 +115,8 @@ struct MeetingState {
   double edgeStabilizationStrength = 0.35;
   KeyerDegradationSettings degradationSettings;
   std::string degradationStage = "fresh";
+  // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
+  std::string compositorBackend = "cpu";
   bool staleMaskActive = false;
   std::string provider;
   std::string modelPath;

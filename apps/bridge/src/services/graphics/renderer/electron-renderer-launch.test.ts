@@ -80,11 +80,31 @@ describe("electron-renderer-launch", () => {
       }
     });
 
-    it("returns process.execPath when ELECTRON_RUN_AS_NODE is 1", () => {
+    it("returns process.execPath when ELECTRON_RUN_AS_NODE is 1 and execPath is not plain node", () => {
       process.env.ELECTRON_RUN_AS_NODE = "1";
+      Object.defineProperty(process, "execPath", {
+        value: "/Applications/Broadify Bridge.app/Contents/MacOS/Broadify Bridge",
+        configurable: true,
+      });
       const result = resolveElectronBinary();
       expect(result).toBe(process.execPath);
       expect(mockExistsSync).not.toHaveBeenCalled();
+    });
+
+    it("does not trust ELECTRON_RUN_AS_NODE when execPath is a plain node binary", () => {
+      // VSCode-spawned terminals leak ELECTRON_RUN_AS_NODE=1 into plain node
+      // dev runs; trusting it would spawn node with Electron flags and break
+      // the graphics renderer.
+      process.env.ELECTRON_RUN_AS_NODE = "1";
+      Object.defineProperty(process, "execPath", {
+        value: "/usr/local/bin/node",
+        configurable: true,
+      });
+      const resolvedPath = "/project/root/node_modules/.bin/electron";
+      mockResolve.mockReturnValue(resolvedPath);
+      mockExistsSync.mockImplementation((p: string) => p === resolvedPath);
+      const result = resolveElectronBinary();
+      expect(result).toBe(resolvedPath);
     });
 
     it("returns process.execPath when execPath contains electron", () => {

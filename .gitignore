@@ -57,6 +57,9 @@ apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/
 apps/bridge/native/meeting-helper/libonnxruntime.dylib
 apps/bridge/native/meeting-helper/libonnxruntime.1.dylib
 apps/bridge/native/meeting-helper/onnxruntime.dll
+apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll
+apps/bridge/native/meeting-helper/DirectML.dll
+apps/bridge/native/meeting-helper/deps/onnxruntime/windows-x64-cpu-1.26.0.bak/
 apps/bridge/native/meeting-helper/models/*.onnx
 apps/bridge/native/meeting-helper/models/*.task
 apps/bridge/native/meeting-helper/models/*.mlpackage/

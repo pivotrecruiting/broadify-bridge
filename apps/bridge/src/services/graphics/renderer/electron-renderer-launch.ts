@@ -38,12 +38,37 @@ export function describeBinary(filePath: string): string {
  * @returns Absolute binary path or null when unavailable.
  */
 export function resolveElectronBinary(): string | null {
-  if (process.env.ELECTRON_RUN_AS_NODE === "1") {
+  // ELECTRON_RUN_AS_NODE=1 signals "this process is an Electron binary in
+  // node mode" (packaged app). VSCode-spawned terminals leak this variable
+  // into plain `node` dev runs, where trusting it would spawn node with
+  // Electron flags — the renderer then dies and graphics silently fall back
+  // to the stub. Only trust it when execPath is not a bare node binary.
+  const execPathBasename = path.basename(process.execPath).toLowerCase();
+  const execPathIsPlainNode = execPathBasename === "node" || execPathBasename === "node.exe";
+  if (process.env.ELECTRON_RUN_AS_NODE === "1" && !execPathIsPlainNode) {
     return process.execPath;
   }
 
   if (process.execPath.toLowerCase().includes("electron")) {
     return process.execPath;
+  }
+
+  // Node >=20 refuses to spawn .cmd shims without shell:true
+  // (CVE-2024-27980), so on Windows the real electron.exe must be used
+  // instead of the node_modules/.bin wrapper.
+  if (process.platform === "win32") {
+    const exeCandidate = path.resolve(
+      process.cwd(),
+      "..",
+      "..",
+      "node_modules",
+      "electron",
+      "dist",
+      "electron.exe",
+    );
+    if (fs.existsSync(exeCandidate)) {
+      return exeCandidate;
+    }
   }
 
   const binaryName =

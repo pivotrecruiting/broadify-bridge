@@ -19,48 +19,69 @@ The current implementation is native-only:
 - exposes all stable control methods with structured responses,
 - stores and renders `speaker_layout`, `cornerbug`, `media_layer` and
   `graphics` program sections,
-- runs native CoreML MODNet with Apple Vision fallback on macOS,
-- runs MODNet through ONNX Runtime DirectML with CPU fallback on Windows,
-- uses Metal or D3D11 composition with atomic CPU fallback,
-- exits through a parent-process watchdog when the Bridge terminates,
+- runs MODNet through ONNX Runtime as the primary keyer,
 - keeps call-control and legacy prototype features disabled.
 
-Recording, multi-camera, conference and call-control features are intentionally
-outside this helper scope.
+MediaPipe and Windows Media Foundation are added later without reintroducing
+Python.
 
 ## MODNet Dependencies
 
-The macOS release uses the verified CoreML package:
+The macOS build expects vendored ONNX Runtime here:
 
 ```text
-apps/bridge/native/meeting-helper/models/MODNet.mlpackage/
+apps/bridge/native/meeting-helper/deps/onnxruntime/macos-arm64/
+├── include/onnxruntime_cxx_api.h
+└── lib/libonnxruntime.dylib
 ```
 
-Prepare it from an approved artifact source:
+### Windows ONNX Runtime (DirectML)
 
-```bash
-MODNET_COREML_MODEL_SOURCE=/path/to/model-parent npm run prepare:modnet-coreml-model
-```
-
-The Windows build expects the DirectML NuGet runtime layout under:
+The Windows build vendors the DirectML-enabled ONNX Runtime here:
 
 ```text
 apps/bridge/native/meeting-helper/deps/onnxruntime/windows-x64/
-├── include/onnxruntime_cxx_api.h
-└── lib/
-    ├── onnxruntime.lib
-    ├── onnxruntime.dll
-    ├── onnxruntime_providers_shared.dll
-    └── DirectML.dll
+├── include/  (onnxruntime_cxx_api.h, dml_provider_factory.h, …)
+└── lib/  onnxruntime.dll · onnxruntime.lib · onnxruntime_providers_shared.dll · DirectML.dll
 ```
 
-Windows also requires the hash-verified model at
-`models/modnet.onnx`. For a local compiler-only build without ONNX Runtime,
-set the environment variable before using the Windows build script:
+The Windows keyer runs the **DirectML** execution provider (GPU offload) with an
+automatic CPU fallback. The active provider is reported in `keyer.get` /
+`state.get` (`provider: "directml" | "cpu"`) for support diagnostics.
 
-```powershell
-$env:MEETING_HELPER_ENABLE_MODNET = '0'
-powershell -NoProfile -ExecutionPolicy Bypass -File apps\bridge\native\meeting-helper\build.ps1
+**Version divergence (temporary).** Windows uses ONNX Runtime **1.24.4 (DirectML
+build)**; macOS uses **1.26.0 (CPU/CoreML build)**. There is no official 1.26.0
+DirectML distribution — the `Microsoft.ML.OnnxRuntime.DirectML` NuGet series ends
+at 1.24.4, and the GitHub 1.26.0 release ships only CPU + CUDA (NVIDIA) builds.
+The previous CPU-only 1.26.0 build is kept as a backup at
+`deps/onnxruntime/windows-x64-cpu-1.26.0.bak/`.
+
+Vendored packages (both signed by Microsoft, Authenticode `Valid`):
+
+| Package | Version | nupkg SHA-256 |
+| --- | --- | --- |
+| `Microsoft.ML.OnnxRuntime.DirectML` | 1.24.4 | `57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681` |
+| `Microsoft.AI.DirectML` (DirectML.dll) | 1.15.4 | `4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9` |
+
+**TODO:** unify Windows and macOS on one ONNX Runtime version once an official
+DirectML build for that version is published.
+
+The model must be placed here:
+
+```text
+apps/bridge/native/meeting-helper/models/modnet.onnx
+```
+
+Update `models/manifest.json` with the concrete SHA-256:
+
+```bash
+bash scripts/hash-meeting-model.sh modnet.onnx
+```
+
+Builds fail when MODNet artifacts are missing. For a local non-keying build:
+
+```bash
+MEETING_HELPER_ENABLE_MODNET=0 bash apps/bridge/native/meeting-helper/build.sh
 ```
 
 ## Build
@@ -76,14 +97,3 @@ Windows:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File apps\bridge\native\meeting-helper\build.ps1
 ```
-
-## Verification
-
-```bash
-npm run test:meeting-helper-native
-npm run test:meeting-helper-gpu
-npm run test:meeting-helper-keyer
-```
-
-The GPU and keyer self-tests require access to the real Metal, CoreML, D3D11,
-or DirectML backend selected for the platform.

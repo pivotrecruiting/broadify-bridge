@@ -291,8 +291,19 @@ napi_value ReaderReadLatest(napi_env env, napi_callback_info info) {
   const uint32_t slot_index = static_cast<uint32_t>((seq - 1) % handle->header->slot_count);
   uint8_t* slot_ptr = handle->slots + (static_cast<size_t>(slot_index) * handle->header->slot_stride);
 
+  // Copy the slot into a managed buffer rather than exposing it as an external
+  // buffer: modern Electron/Node builds ship with the V8 sandbox enabled, where
+  // napi_create_external_buffer is rejected (napi_no_external_buffers_allowed)
+  // and silently yields a non-buffer value -> readers saw a black frame. A copy
+  // is cheap at display rates and also avoids the reader observing a slot that
+  // the writer overwrites mid-read.
   napi_value buffer;
-  napi_create_external_buffer(env, handle->header->frame_size, slot_ptr, nullptr, nullptr, &buffer);
+  void* buffer_data = nullptr;
+  napi_status buffer_status = napi_create_buffer_copy(
+      env, handle->header->frame_size, slot_ptr, &buffer_data, &buffer);
+  if (buffer_status != napi_ok) {
+    return ThrowError(env, "Failed to allocate frame buffer");
+  }
 
   napi_value result;
   napi_create_object(env, &result);
@@ -408,9 +419,14 @@ napi_value CreateWriter(napi_env env, napi_callback_info info) {
     return ThrowError(env, "Failed to create shared memory");
   }
 
-  // Windows named file mappings cannot be force-unlinked while opened by another process.
-  // We always reinitialize the header to ensure deterministic writer state.
-  (void)force_recreate;
+  // Windows named file mappings cannot be force-unlinked while opened by
+  // another process. Reinitializing the header of an EXISTING section races
+  // attached readers/writers (another process may be mid-copy while the
+  // fields are rewritten -> torn slot geometry -> access violation), so an
+  // existing section is reused and validated like on Unix. Only a brand-new
+  // section, or an explicit forceRecreate, gets its header (re)initialized.
+  const bool section_already_exists = GetLastError() == ERROR_ALREADY_EXISTS;
+  initialize_header = force_recreate || !section_already_exists;
 
   void* base = MapViewOfFile(map_handle, FILE_MAP_ALL_ACCESS, 0, 0, total_size);
   if (!base) {

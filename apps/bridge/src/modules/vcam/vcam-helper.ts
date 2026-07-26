@@ -218,7 +218,11 @@ export function resolveVcamHelperAppPath(): string | null {
   return null;
 }
 
-function quitRunningVcamHelperApp(): void {
+/**
+ * Quits the standalone virtual-camera app; used on install/replace and on
+ * bridge shutdown so it does not outlive the bridge.
+ */
+export function quitRunningVcamHelperApp(): void {
   if (platform() !== "darwin") {
     return;
   }

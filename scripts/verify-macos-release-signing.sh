@@ -257,9 +257,9 @@ for (const file of manifest.files) {
 NODE
 echo "[MacSignVerify] packaged CoreML model hashes verified"
 
-"$HELPER_EXEC_PATH" --self-test
-"$HELPER_EXEC_PATH" --keyer-self-test --models-dir "$HELPER_MODELS_PATH"
-echo "[MacSignVerify] packaged Meeting Helper runtime self-tests passed"
+# NOTE: the integrated (Windows-parity) helper has no runtime self-test entry; the
+# runtime self-test hooks retired with the previous lineage. Model hashes are
+# verified above; runtime health is covered by ctest + the RC test cycle.
 
 spctl -a -t exec -vv "$APP_PATH"
 echo "[MacSignVerify] spctl accepted app"
