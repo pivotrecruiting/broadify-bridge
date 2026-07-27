@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import { createCanvas, DOMMatrix, ImageData, Path2D } from "@napi-rs/canvas";
 
 import { getBridgeContext } from "../bridge-context.js";
+import { matchesPresentationFileSignature } from "./presentation-file-validation.js";
 
 export type MeetingMediaRenderStatusT =
   | "queued"
@@ -222,6 +223,9 @@ class MeetingMediaService {
 
     try {
       await this.writeUpload(payload, temporaryPath);
+      if (!(await matchesPresentationFileSignature(temporaryPath, sourceFormat))) {
+        throw new Error("Presentation file content does not match its file type.");
+      }
       await rename(temporaryPath, originalPath);
     } catch (error) {
       await rm(assetDir, { recursive: true, force: true });

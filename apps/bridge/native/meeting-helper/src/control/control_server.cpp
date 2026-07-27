@@ -163,7 +163,20 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.cornerbug.x = extractDoubleField(safeValues, "x", state.cornerbug.x);
     state.cornerbug.y = extractDoubleField(safeValues, "y", state.cornerbug.y);
     state.cornerbug.size = extractDoubleField(safeValues, "size", state.cornerbug.size);
-    state.cornerbug.rawJson = safeValues;
+    // Presence-guarded logo image: while the webapp re-fetches the logo's
+    // data URL (signed URLs refresh after reconnects) it omits the field —
+    // carry the current image over instead of wiping the on-air logo. An
+    // explicit null/empty image_data_url still clears it. Data URLs contain
+    // no quotes, so splicing the old value into the new JSON is safe.
+    std::string nextRawJson = safeValues;
+    if (nextRawJson.find("\"image_data_url\"") == std::string::npos) {
+      const std::string previousImage =
+          extractStringField(state.cornerbug.rawJson, "image_data_url");
+      if (!previousImage.empty() && nextRawJson.size() >= 2 && nextRawJson.front() == '{') {
+        nextRawJson.insert(1, "\"image_data_url\":\"" + previousImage + "\",");
+      }
+    }
+    state.cornerbug.rawJson = nextRawJson;
     return;
   }
   if (section == "media_layer") {
@@ -538,7 +551,14 @@ std::string handleRpc(const std::string &line,
         state.backgroundMode = backgroundMode;
       }
       // Sent with every keyer configure (empty string clears the image).
-      state.backgroundImagePath = extractStringField(line, "background_image_path");
+      // Presence-guarded: several callers (builder live-test start, the
+      // connections/buttons pages, conference safety nets) send keyer patches
+      // WITHOUT this field — that must keep the current background, otherwise
+      // every such patch silently wipes it back to default. Only an explicit
+      // empty string clears the image.
+      if (line.find("\"background_image_path\"") != std::string::npos) {
+        state.backgroundImagePath = extractStringField(line, "background_image_path");
+      }
       const std::string qualityMode = extractStringField(line, "quality_mode");
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);

@@ -1074,6 +1074,55 @@ describe("RelayClient", () => {
     );
   });
 
+  it("sends keepalives after auth and stops them on disconnect", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const handleCommand = jest.fn().mockResolvedValue({
+      success: true,
+      data: {},
+    });
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "bridge_auth_ok",
+      bridgeId: "bridge-1",
+    });
+    await flushAsync();
+    socket.sent = [];
+
+    await jest.advanceTimersByTimeAsync(24_999);
+    expect(
+      socket.sent.map((entry) => JSON.parse(entry)).filter((entry) => entry.event === "keepalive"),
+    ).toHaveLength(0);
+
+    await jest.advanceTimersByTimeAsync(1);
+    expect(
+      socket.sent.map((entry) => JSON.parse(entry)).filter((entry) => entry.event === "keepalive"),
+    ).toEqual([
+      expect.objectContaining({
+        type: "bridge_event",
+        bridgeId: "bridge-1",
+        event: "keepalive",
+      }),
+    ]);
+
+    await client.disconnect();
+    const sentAfterDisconnect = socket.sent.length;
+    await jest.advanceTimersByTimeAsync(25_000);
+    expect(socket.sent).toHaveLength(sentAfterDisconnect);
+  });
+
   it("does not connect when already connecting", async () => {
     const socket = new FakeWebSocket();
     const createWebSocket = jest.fn(() => socket);

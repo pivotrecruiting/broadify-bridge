@@ -860,19 +860,13 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
   }
   const auto image = getMediaLayerImage(mediaLayer);
   if (image != nullptr) {
-    // The rectangular drop shadow only matches a planar panel; behind an
-    // X/Y-rotated (perspective) panel it reads as a frontal "ghost", so it
-    // is skipped there.
-    if (std::abs(mediaLayer.rotationX) < 0.001 && std::abs(mediaLayer.rotationY) < 0.001) {
-      fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 10, rect.width, rect.height}, mediaLayer.rotation, 0, 0, 0, 46);
-    }
+    // Content renders as the pure fitted image — no drop shadow and no
+    // backdrop panel. Both read as a translucent "mask" behind the
+    // presentation and were explicitly removed as a product decision.
     drawImageFitRotated(frame, width, height, rect, *image, mediaLayer.rotationX, mediaLayer.rotationY, mediaLayer.rotation);
-    return;
   }
-
-  drawGlassRect(frame, width, height, rect, mediaLayer.rotation);
-  fillRotatedRect(frame, width, height, {rect.x + 12, rect.y + 12, std::max(0, rect.width - 24), 4}, mediaLayer.rotation, 255, 255, 255, 108);
-  fillRotatedRect(frame, width, height, {rect.x + 12, rect.y + rect.height - 18, std::max(0, (rect.width - 24) * 2 / 3), 6}, mediaLayer.rotation, 255, 255, 255, 78);
+  // No image yet (still rendering/none selected): draw nothing. The former
+  // glass placeholder panel read as a broken overlay in the program output.
 }
 
 void drawGraphicsFrame(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const VideoFrame *graphicsFrame) {
@@ -925,11 +919,9 @@ void drawCornerbug(std::vector<uint8_t> &frame, uint32_t width, uint32_t height,
   };
   if (const std::shared_ptr<const RgbaImage> image = getCornerbugImage(cornerbug)) {
     drawImageFit(frame, width, height, rect, *image);
-    return;
   }
-  drawGlassRect(frame, width, height, rect);
-  fillRect(frame, width, height, {rect.x + size / 5, rect.y + size / 5, size * 3 / 5, size * 3 / 5}, 255, 255, 255, 72);
-  fillRect(frame, width, height, {rect.x + size / 3, rect.y + size / 3, size / 3, size / 3}, 255, 255, 255, 52);
+  // No image (none selected / still loading / decode failed): draw nothing.
+  // The former glass placeholder squares read as a broken overlay on air.
 }
 
 // CPU fallback for scenes the GPU compositor does not cover: applies the
@@ -1348,14 +1340,13 @@ bool tryRenderProgramFrameGpu(const Options &options,
     plan.frontMapping = coverMapping(*frontGraphicsFrame, plan.width, plan.height);
   }
 
-  // Media (PiP/fullscreen) layer on the GPU; the glass placeholder (no image
-  // yet) still falls back to the CPU path.
+  // Media (PiP/fullscreen) layer on the GPU. Without a rendered image the
+  // layer simply stays absent — no placeholder panel and no CPU fallback.
   std::shared_ptr<const RgbaImage> mediaImage;
   if (snapshot.mediaLayer.enabled) {
     mediaImage = getMediaLayerImage(snapshot.mediaLayer);
-    if (mediaImage == nullptr) {
-      return false;
-    }
+  }
+  if (mediaImage != nullptr) {
     Rect rect;
     if (snapshot.mediaLayer.mode == "fullscreen") {
       rect = {0, 0, static_cast<int>(plan.width), static_cast<int>(plan.height)};
@@ -1375,21 +1366,9 @@ bool tryRenderProgramFrameGpu(const Options &options,
         !quadInverseHomography(quadX, quadY, plan.media.invHomography)) {
       return false;
     }
-    const bool depthRotated =
-        std::abs(snapshot.mediaLayer.rotationX) >= 0.001 || std::abs(snapshot.mediaLayer.rotationY) >= 0.001;
-    if (!depthRotated) {
-      // Planar drop shadow: the target rect rotated around its center by Z,
-      // offset by (8, 10) - same as the CPU path.
-      const Rect shadowRect{rect.x + 8, rect.y + 10, rect.width, rect.height};
-      double shadowX[4];
-      double shadowY[4];
-      if (projectedMediaQuad(shadowRect, static_cast<uint32_t>(shadowRect.width),
-                             static_cast<uint32_t>(shadowRect.height), 0.0, 0.0,
-                             snapshot.mediaLayer.rotation, shadowX, shadowY) &&
-          quadInverseHomography(shadowX, shadowY, plan.media.shadowInvHomography)) {
-        plan.media.shadowPresent = true;
-      }
-    }
+    // Intentionally NO drop shadow quad (shadowPresent stays false): the
+    // presentation renders as the pure image, matching the CPU path. The
+    // shader keeps its shadow branch for ABI stability; it just never fires.
     plan.media.present = true;
     plan.media.rgba = mediaImage->rgba.data();
     plan.media.width = mediaImage->width;
