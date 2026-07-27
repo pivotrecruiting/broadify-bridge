@@ -17,7 +17,11 @@ import {
   isIpcBufferWithinLimit,
 } from "./renderer-ipc-framing.js";
 import { AsyncSerialQueue } from "./async-serial-queue.js";
-import { bgraToRgba, downsampleRgbaBox } from "./graphics-pixel-utils.js";
+import {
+  bgraToRgba,
+  downsampleRgbaBox,
+  resampleRgbaBilinear,
+} from "./graphics-pixel-utils.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -164,7 +168,27 @@ function normalizeCapturedRgbaFrame(
   if (sourceWidth === targetWidth && sourceHeight === targetHeight) {
     return rgbaBuffer;
   }
-  return downsampleRgbaBox(
+  const scaleX = sourceWidth / targetWidth;
+  const scaleY = sourceHeight / targetHeight;
+  if (
+    Number.isInteger(scaleX) &&
+    Number.isInteger(scaleY) &&
+    scaleX >= 1 &&
+    scaleY >= 1
+  ) {
+    return downsampleRgbaBox(
+      rgbaBuffer,
+      sourceWidth,
+      sourceHeight,
+      targetWidth,
+      targetHeight,
+    );
+  }
+  // Non-integer capture sizes happen when Windows clamps the offscreen
+  // window to the work area (e.g. 1920x1032 next to a 48px taskbar). The
+  // integer box path used to throw here, so every graphics frame was
+  // dropped and presets never appeared. Resample instead of failing.
+  return resampleRgbaBilinear(
     rgbaBuffer,
     sourceWidth,
     sourceHeight,
