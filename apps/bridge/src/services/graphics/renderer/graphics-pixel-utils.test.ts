@@ -1,4 +1,4 @@
-import { bgraToRgba, downsampleRgbaBox } from "./graphics-pixel-utils.js";
+import { bgraToRgba, downsampleRgbaBox, resampleRgbaBilinear } from "./graphics-pixel-utils.js";
 
 describe("graphics-pixel-utils", () => {
   describe("bgraToRgba", () => {
@@ -61,5 +61,29 @@ describe("graphics-pixel-utils", () => {
         downsampleRgbaBox(Buffer.alloc(3 * 2 * 4), 3, 2, 2, 1)
       ).toThrow("positive integer scale factors");
     });
+  });
+});
+
+describe("resampleRgbaBilinear", () => {
+  it("resamples the Windows work-area capture (1920x1032) to 1080p with visible pixels", () => {
+    const sourceWidth = 1920;
+    const sourceHeight = 1032;
+    const source = Buffer.alloc(sourceWidth * sourceHeight * 4);
+    // Solid red, fully opaque.
+    for (let offset = 0; offset < source.length; offset += 4) {
+      source[offset] = 200;
+      source[offset + 3] = 255;
+    }
+    const output = resampleRgbaBilinear(source, sourceWidth, sourceHeight, 1920, 1080);
+    expect(output.length).toBe(1920 * 1080 * 4);
+    const middle = (540 * 1920 + 960) * 4;
+    expect(output[middle]).toBe(200);
+    expect(output[middle + 3]).toBe(255);
+  });
+
+  it("keeps fully transparent frames transparent", () => {
+    const source = Buffer.alloc(64 * 60 * 4);
+    const output = resampleRgbaBilinear(source, 64, 60, 64, 64);
+    expect(output.every((value) => value === 0)).toBe(true);
   });
 });
