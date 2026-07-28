@@ -809,6 +809,113 @@ describe("RelayClient", () => {
     await flushAsync();
   });
 
+  it("runs side-effect commands with different concurrency keys independently", async () => {
+    // The audit's K-02 scenario: an open save dialog (meeting.recording.dialog,
+    // up to 130s) must not block a camera/PiP toggle (meeting.camera).
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const dialog = createDeferred<{ success: true; data: { picked: boolean } }>();
+    const handleCommand = jest.fn((command) => {
+      if (command === "meeting_recording_pick_path") {
+        return dialog.promise;
+      }
+      return Promise.resolve({ success: true, data: { toggled: true } });
+    });
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-dialog",
+      command: "meeting_recording_pick_path",
+      payload: {},
+    });
+    socket.receiveJson({
+      type: "command",
+      requestId: "req-pip",
+      command: "meeting_camera_pip_set",
+      payload: { enabled: true },
+    });
+    await flushAsync();
+
+    // The PiP command completes while the dialog command is still pending.
+    expect(handleCommand).toHaveBeenCalledTimes(2);
+    const sentTypes = socket.sent.map((raw) => {
+      const message = JSON.parse(raw) as { type: string; requestId?: string };
+      return `${message.type}:${message.requestId ?? ""}`;
+    });
+    expect(sentTypes).toContain("command_result:req-pip");
+    expect(sentTypes).not.toContain("command_result:req-dialog");
+
+    dialog.resolve({ success: true, data: { picked: true } });
+    await flushAsync();
+  });
+
+  it("rejects side-effect commands beyond the per-key queue depth with queue_overflow", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const blocker = createDeferred<{ success: true; data: { macroId: number } }>();
+    const handleCommand = jest.fn(() => blocker.promise);
+    const client = new RelayClient("bridge-1", "ws://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+      verifySignedCommand: async () => undefined,
+      isRelayCommand: () => true,
+      handleCommand,
+    });
+
+    await client.connect();
+    socket.open();
+    await flushAsync();
+    socket.sent = [];
+
+    // 1 active + 8 queued fill the lane; the 10th command must be rejected.
+    for (let index = 0; index < 10; index += 1) {
+      socket.receiveJson({
+        type: "command",
+        requestId: `req-flood-${index}`,
+        command: "engine_run_macro",
+        payload: { macroId: index },
+      });
+    }
+    await flushAsync();
+
+    expect(handleCommand).toHaveBeenCalledTimes(1);
+    const overflowResult = socket.sent
+      .map((raw) => JSON.parse(raw) as {
+        type: string;
+        requestId?: string;
+        success?: boolean;
+        code?: string;
+      })
+      .find(
+        (message) =>
+          message.type === "command_result" &&
+          message.requestId === "req-flood-9",
+      );
+    expect(overflowResult).toMatchObject({
+      success: false,
+      code: "queue_overflow",
+    });
+
+    blocker.resolve({ success: true, data: { macroId: 0 } });
+    await flushAsync();
+  });
+
   it("allows read-only commands to run while a side-effecting command is pending", async () => {
     const socket = new FakeWebSocket();
     const logger = createLogger();

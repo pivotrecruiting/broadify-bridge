@@ -26,6 +26,29 @@ const loadDotenv = () => {
 
 loadDotenv();
 
+// Last-resort handlers: without these, a single unhandled rejection kills the
+// bridge with no log line and no helper cleanup (Node >= 15 hard-exits). Log,
+// then reuse the SIGTERM path so the graceful shutdown in server.ts runs and
+// helpers (camera, recorder!) are stopped; force-exit if that hangs.
+let fatalErrorHandled = false;
+const handleFatalError = (kind: string, error: unknown): void => {
+  console.error(`[Bridge] ${kind}:`, error);
+  if (fatalErrorHandled) {
+    return;
+  }
+  fatalErrorHandled = true;
+  process.kill(process.pid, "SIGTERM");
+  setTimeout(() => {
+    process.exit(1);
+  }, 30_000).unref();
+};
+process.on("uncaughtException", (error) => {
+  handleFatalError("uncaughtException", error);
+});
+process.on("unhandledRejection", (reason) => {
+  handleFatalError("unhandledRejection", reason);
+});
+
 // Orphan watchdog: the desktop app passes its PID via env (a ppid comparison
 // is unreliable - the bridge is spawned detached and re-parented). When the
 // desktop app is gone, exit instead of living on as an orphan that keeps the
@@ -42,11 +65,12 @@ if (Number.isFinite(bridgeParentPid) && bridgeParentPid > 0) {
       }
       parentDeathHandled = true;
       // Reuse the SIGTERM path so helpers (meeting helper, renderers) are
-      // stopped gracefully; force-exit if that shutdown hangs.
+      // stopped gracefully; force-exit if that shutdown hangs. The budget
+      // must cover MP4 finalization on death-while-recording (~20s).
       process.kill(process.pid, "SIGTERM");
       setTimeout(() => {
         process.exit(0);
-      }, 10_000).unref();
+      }, 30_000).unref();
     }
   }, 2000).unref();
 }

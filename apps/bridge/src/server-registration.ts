@@ -1,3 +1,5 @@
+import { isAllowedOrigin } from "./routes/origin-allowlist.js";
+
 import type { RelayClient } from "./services/relay-client.js";
 import type { BridgeConfigT } from "./config.js";
 
@@ -35,8 +37,17 @@ export async function registerServerPlugins(
   server: RegisterServerT,
   deps: PluginDepsT,
 ): Promise<void> {
+  // Reflect only allowlisted origins (never `origin: true`): together with
+  // the request guard this keeps arbitrary web pages from reading responses
+  // of the loopback-trusted API. Requests without an Origin header (native
+  // clients, curl, passive <img>) are unaffected by CORS.
   await server.register(deps.corsPlugin, {
-    origin: true,
+    origin: (
+      origin: string | undefined,
+      callback: (error: Error | null, allow: boolean) => void,
+    ) => {
+      callback(null, isAllowedOrigin(origin ?? undefined));
+    },
   });
 
   await server.register(deps.websocketPlugin, {

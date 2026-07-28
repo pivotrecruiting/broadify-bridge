@@ -84,6 +84,72 @@ describe("getAuthFailure", () => {
     );
     expect(failure).toBeNull();
   });
+
+  it("rejects loopback requests from a foreign origin", () => {
+    delete process.env.BRIDGE_API_TOKEN;
+    const failure = getAuthFailure(
+      makeRequest("127.0.0.1", {
+        origin: "https://evil.example",
+        host: "127.0.0.1:8787",
+      }),
+    );
+    expect(failure).toEqual({ status: 403, message: "Origin not allowed" });
+  });
+
+  it("allows loopback requests from an allowlisted origin", () => {
+    delete process.env.BRIDGE_API_TOKEN;
+    const failure = getAuthFailure(
+      makeRequest("127.0.0.1", {
+        origin: "https://app.broadify.de",
+        host: "localhost:8787",
+      }),
+    );
+    expect(failure).toBeNull();
+  });
+
+  it("allows loopback requests without an origin header (native clients)", () => {
+    delete process.env.BRIDGE_API_TOKEN;
+    const failure = getAuthFailure(
+      makeRequest("127.0.0.1", { host: "127.0.0.1:8787" }),
+    );
+    expect(failure).toBeNull();
+  });
+
+  it("allows extra origins from BRIDGE_ALLOWED_ORIGINS", () => {
+    delete process.env.BRIDGE_API_TOKEN;
+    const previous = process.env.BRIDGE_ALLOWED_ORIGINS;
+    process.env.BRIDGE_ALLOWED_ORIGINS = "http://localhost:3555";
+    try {
+      const failure = getAuthFailure(
+        makeRequest("127.0.0.1", {
+          origin: "http://localhost:3555",
+          host: "localhost:8787",
+        }),
+      );
+      expect(failure).toBeNull();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.BRIDGE_ALLOWED_ORIGINS;
+      } else {
+        process.env.BRIDGE_ALLOWED_ORIGINS = previous;
+      }
+    }
+  });
+
+  it("rejects loopback requests with a foreign Host header (DNS rebinding)", () => {
+    delete process.env.BRIDGE_API_TOKEN;
+    const failure = getAuthFailure(
+      makeRequest("127.0.0.1", { host: "attacker.example:8787" }),
+    );
+    expect(failure).toEqual({ status: 403, message: "Host not allowed" });
+  });
+
+  it("accepts local Host headers including bracketed IPv6", () => {
+    delete process.env.BRIDGE_API_TOKEN;
+    for (const host of ["localhost:8787", "127.0.0.1", "[::1]:8787"]) {
+      expect(getAuthFailure(makeRequest("127.0.0.1", { host }))).toBeNull();
+    }
+  });
 });
 
 describe("enforceLocalOrToken", () => {

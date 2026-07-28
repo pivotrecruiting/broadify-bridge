@@ -35,6 +35,19 @@ const RELAY_WS_IDLE_TIMEOUT_MS =
   Number(process.env.BRIDGE_RELAY_WS_IDLE_TIMEOUT_MS) || 90000;
 const RELAY_READ_ONLY_COMMAND_CONCURRENCY =
   Number(process.env.BRIDGE_RELAY_READ_ONLY_COMMAND_CONCURRENCY) || 4;
+// Backstop against unbounded pileups behind a stuck command; commands beyond
+// this depth per concurrency key are rejected with `queue_overflow` instead
+// of waiting into their relay timeout.
+const MAX_SIDE_EFFECT_QUEUE_DEPTH = 8;
+
+export class RelayCommandQueueOverflowError extends Error {
+  readonly code = "queue_overflow";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "RelayCommandQueueOverflowError";
+  }
+}
 
 const RELAY_PUBLIC_KEY_PEM =
   process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY ||
@@ -488,8 +501,14 @@ export class RelayClient {
   >();
   private readonly readOnlyCommandQueue: Array<() => void> = [];
   private activeReadOnlyCommands = 0;
-  private readonly sideEffectCommandQueue: Array<() => void> = [];
-  private sideEffectCommandActive = false;
+  // One serial lane per policy concurrencyKey. A single global lane meant a
+  // long-running dialog/download command (up to 130s) blocked every other
+  // control action - camera switch, PiP, keyer, mute - into relay timeouts.
+  // Same key stays strictly serial; different keys run independently.
+  private readonly sideEffectLanesByKey = new Map<
+    string,
+    { active: boolean; queue: Array<() => void> }
+  >();
   private readonly activeOperationsByConcurrencyKey = new Map<
     string,
     ActiveOperationEntry
@@ -674,29 +693,56 @@ export class RelayClient {
     });
   }
 
+  private getSideEffectLane(concurrencyKey: string): {
+    active: boolean;
+    queue: Array<() => void>;
+  } {
+    let lane = this.sideEffectLanesByKey.get(concurrencyKey);
+    if (!lane) {
+      lane = { active: false, queue: [] };
+      this.sideEffectLanesByKey.set(concurrencyKey, lane);
+    }
+    return lane;
+  }
+
   private enqueueSideEffectCommand<T>(
+    concurrencyKey: string,
     operation: () => Promise<T>,
     onStart: () => void,
   ): Promise<T> {
+    const lane = this.getSideEffectLane(concurrencyKey);
     return new Promise<T>((resolve, reject) => {
       const run = () => {
-        this.sideEffectCommandActive = true;
+        lane.active = true;
         onStart();
         operation()
           .then(resolve, reject)
           .finally(() => {
-            this.sideEffectCommandActive = false;
-            const next = this.sideEffectCommandQueue.shift();
-            next?.();
+            lane.active = false;
+            const next = lane.queue.shift();
+            if (next) {
+              next();
+            } else {
+              this.sideEffectLanesByKey.delete(concurrencyKey);
+            }
           });
       };
 
-      if (!this.sideEffectCommandActive) {
+      if (!lane.active) {
         run();
         return;
       }
 
-      this.sideEffectCommandQueue.push(run);
+      if (lane.queue.length >= MAX_SIDE_EFFECT_QUEUE_DEPTH) {
+        reject(
+          new RelayCommandQueueOverflowError(
+            `Command queue for '${concurrencyKey}' is full (${MAX_SIDE_EFFECT_QUEUE_DEPTH} waiting).`,
+          ),
+        );
+        return;
+      }
+
+      lane.queue.push(run);
     });
   }
 
@@ -765,9 +811,13 @@ export class RelayClient {
     const policy = getRelayCommandPolicy(command);
     const operation = () =>
       this.executeCommandWithSlaLogging(command, requestId, payload);
+    const sideEffectLane =
+      policy.executionMode === "side_effect"
+        ? this.sideEffectLanesByKey.get(policy.concurrencyKey)
+        : undefined;
     const queuePosition =
       policy.executionMode === "side_effect"
-        ? this.sideEffectCommandQueue.length + (this.sideEffectCommandActive ? 1 : 0)
+        ? (sideEffectLane?.queue.length ?? 0) + (sideEffectLane?.active ? 1 : 0)
         : Math.max(
             0,
             this.activeReadOnlyCommands -
@@ -798,7 +848,11 @@ export class RelayClient {
     };
 
     if (policy.executionMode === "side_effect") {
-      return this.enqueueSideEffectCommand(operation, onStart);
+      return this.enqueueSideEffectCommand(
+        policy.concurrencyKey,
+        operation,
+        onStart,
+      );
     }
 
     return this.enqueueReadOnlyCommand(operation, onStart);
@@ -836,6 +890,10 @@ export class RelayClient {
         requestId,
         success: false,
         error: errorMessage,
+        code:
+          error instanceof RelayCommandQueueOverflowError
+            ? error.code
+            : undefined,
       };
     }
 
