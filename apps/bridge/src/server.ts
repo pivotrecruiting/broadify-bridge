@@ -329,9 +329,15 @@ export async function startServer(
 
       await withTimeout("server close", server.close(), 2000);
       server.log.info("Server closed");
+      // Disarm the fail-safe before exiting: in production this is moot, but
+      // under jest process.exit is mocked and returns - the armed timer then
+      // fires minutes later inside an unrelated test and kills the whole run
+      // with a silent exit(0).
+      clearTimeout(failSafe);
       process.exit(0);
     } catch (err) {
       server.log.error(err);
+      clearTimeout(failSafe);
       process.exit(1);
     }
   };
