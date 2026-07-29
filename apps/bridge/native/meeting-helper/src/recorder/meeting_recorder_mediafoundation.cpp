@@ -415,12 +415,17 @@ bool MeetingRecorder::start(const std::string &filePath,
     return false;
   }
 
-  // --- Sink writer (MP4 container from the .mp4 extension).
+  // --- Sink writer. Fragmented MP4 instead of the plain container: without
+  // fragments the moov atom is written only in Finalize(), so a hard kill
+  // mid-recording leaves an unplayable file. With fMP4 everything up to the
+  // last fragment survives a crash.
   ComPtr<IMFAttributes> writerAttributes;
-  MFCreateAttributes(&writerAttributes, 2);
+  MFCreateAttributes(&writerAttributes, 3);
   if (writerAttributes) {
     writerAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
     writerAttributes->SetUINT32(MF_SINK_WRITER_DISABLE_THROTTLING, TRUE);
+    writerAttributes->SetGUID(MF_TRANSCODE_CONTAINERTYPE,
+                              MFTranscodeContainerType_FMPEG4);
   }
   ComPtr<IMFSinkWriter> writer;
   hr = MFCreateSinkWriterFromURL(widePath.c_str(), nullptr,

@@ -266,6 +266,11 @@ int main(int argc, char **argv) {
   if (frames.joinable()) {
     frames.join();
   }
+  // Finalize an in-flight recording before exiting: std::_Exit below skips
+  // destructors, and an unfinalized MP4 (no moov atom) is unplayable. This
+  // runs after the frame pipeline has stopped, so no appendVideoFrame can
+  // race the writer teardown. stop() is a no-op when nothing is recording.
+  recorder.stop();
   // The preview/vcam/control servers block in accept() and never observe
   // g_running; joining them would hang forever (the historical reason this
   // helper survived every shutdown). Their sockets are closed by the OS.

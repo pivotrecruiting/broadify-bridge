@@ -518,7 +518,7 @@ describe("server", () => {
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
-    it("falls back to 0.0.0.0 on EADDRNOTAVAIL and logs", async () => {
+    it("falls back to loopback (never 0.0.0.0) on EADDRNOTAVAIL and logs", async () => {
       mockListen
         .mockRejectedValueOnce({ code: "EADDRNOTAVAIL" })
         .mockResolvedValueOnce(undefined);
@@ -533,14 +533,14 @@ describe("server", () => {
       await startServer(server, config);
 
       expect(mockLog.warn).toHaveBeenCalledWith(
-        "Address 192.168.1.100 not available, falling back to 0.0.0.0"
+        "Address 192.168.1.100 not available, falling back to 127.0.0.1 (loopback only)"
       );
       expect(mockListen).toHaveBeenLastCalledWith({
-        host: "0.0.0.0",
+        host: "127.0.0.1",
         port: 8787,
       });
       expect(mockLog.info).toHaveBeenCalledWith(
-        "Bridge server listening on http://0.0.0.0:8787 (fallback)"
+        "Bridge server listening on http://127.0.0.1:8787 (fallback)"
       );
     });
 
@@ -593,7 +593,7 @@ describe("server", () => {
       await startServer(server, config);
 
       expect(mockLog.error).toHaveBeenCalledWith(
-        "Fallback to 0.0.0.0 also failed:",
+        "Fallback to 127.0.0.1 also failed:",
         fallbackErr
       );
       expect(exitSpy).toHaveBeenCalledWith(1);

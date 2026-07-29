@@ -298,7 +298,10 @@ export class BridgeProcessManager {
     }
 
     try {
-      await stopChildProcessGracefully(this.bridgeProcess);
+      // 25s before SIGKILL: the bridge's graceful shutdown finalizes an
+      // in-flight recording (up to ~20s); SIGKILLing the process group any
+      // earlier would destroy the MP4 mid-finalization.
+      await stopChildProcessGracefully(this.bridgeProcess, 25000);
       quitVcamHelperApp();
 
       // Close log stream if open

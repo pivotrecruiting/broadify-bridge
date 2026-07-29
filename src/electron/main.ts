@@ -55,7 +55,10 @@ const DISABLED_CHROMIUM_FEATURES = [
   "WebGPU",
   "WebGPUDeveloperFeatures",
 ];
-const APP_SHUTDOWN_TIMEOUT_MS = 8000;
+// Must exceed the bridge's own graceful-shutdown budget (~22s meeting stop:
+// an in-flight recording is finalized before the helper is killed). Without a
+// recording the whole chain completes in about a second.
+const APP_SHUTDOWN_TIMEOUT_MS = 30000;
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
@@ -513,6 +516,29 @@ async function shutdownAndExit(): Promise<void> {
     appShutdownCompleted = true;
     app.exit(0);
   }
+}
+
+// Last-resort handlers: without these, one unhandled rejection kills the main
+// process with no log entry and no bridge/helper cleanup (Node >= 15 hard-
+// exits), leaving the camera and ports held by orphans. Sentry captures the
+// error via its own hooks; we log and run the ordered shutdown.
+if (!isRendererProcess) {
+  let fatalErrorHandled = false;
+  const handleFatalError = (kind: string, error: unknown): void => {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    logAppError(`[Main] ${kind}: ${message}`);
+    if (fatalErrorHandled) {
+      return;
+    }
+    fatalErrorHandled = true;
+    void shutdownAndExit();
+  };
+  process.on("uncaughtException", (error) => {
+    handleFatalError("uncaughtException", error);
+  });
+  process.on("unhandledRejection", (reason) => {
+    handleFatalError("unhandledRejection", reason);
+  });
 }
 
 // Single Instance Lock: Prevent multiple instances of the app

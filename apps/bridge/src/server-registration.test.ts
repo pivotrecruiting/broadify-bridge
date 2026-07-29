@@ -21,7 +21,7 @@ describe("registerServerPlugins", () => {
     expect(calls).toEqual([
       {
         plugin: corsPlugin,
-        options: { origin: true },
+        options: { origin: expect.any(Function) },
       },
       {
         plugin: websocketPlugin,
@@ -32,6 +32,27 @@ describe("registerServerPlugins", () => {
         },
       },
     ]);
+
+    // The origin callback must reflect only allowlisted origins - never act
+    // like `origin: true` (which reflects any page and enables local CSRF).
+    const corsOptions = calls[0]?.options as {
+      origin: (
+        origin: string | undefined,
+        callback: (error: Error | null, allow: boolean) => void,
+      ) => void;
+    };
+    const evaluateOrigin = (origin: string | undefined): boolean => {
+      let allowed = false;
+      corsOptions.origin(origin, (_error, allow) => {
+        allowed = allow;
+      });
+      return allowed;
+    };
+
+    expect(evaluateOrigin("https://app.broadify.de")).toBe(true);
+    expect(evaluateOrigin("http://localhost:3000")).toBe(true);
+    expect(evaluateOrigin(undefined)).toBe(true);
+    expect(evaluateOrigin("https://evil.example")).toBe(false);
   });
 });
 

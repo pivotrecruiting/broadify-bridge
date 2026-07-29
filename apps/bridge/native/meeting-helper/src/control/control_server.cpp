@@ -254,6 +254,11 @@ std::string handleRpc(const std::string &line,
       state.vcamRawRunning = false;
     }
     stopVirtualCamera();
+    // Finalize an in-flight recording while the RPC caller is still waiting:
+    // the main() exit path also stops the recorder, but only after this
+    // response has been sent and the bridge may already be killing us. stop()
+    // is a no-op when nothing is recording.
+    recorder.stop();
     running.store(false);
     return okResponse(id, "{\"ok\":true}");
   }

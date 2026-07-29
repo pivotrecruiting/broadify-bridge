@@ -37,6 +37,33 @@ const STORE_FILE = "mapping.json";
 /** Commands whose keys render state-dependent (see renderCurrentPage). */
 const RECORDING_TOGGLE_COMMAND = "meeting_recording_toggle";
 
+/** How long a failed key shows its error style before the page re-renders. */
+const ERROR_FLASH_MS = 1500;
+
+/**
+ * The command router never throws - it returns `{success: false, error}`.
+ * Extract that failure; `null` means the command succeeded (or the result
+ * shape is unknown, which we treat as success rather than false-alarming).
+ */
+export function extractCommandFailure(result: unknown): string | null {
+  if (
+    typeof result === "object" &&
+    result !== null &&
+    "success" in result &&
+    (result as { success?: unknown }).success === false
+  ) {
+    const failure = result as { error?: unknown; errorCode?: unknown };
+    if (typeof failure.error === "string" && failure.error.length > 0) {
+      return failure.error;
+    }
+    if (typeof failure.errorCode === "string" && failure.errorCode.length > 0) {
+      return failure.errorCode;
+    }
+    return "command_failed";
+  }
+  return null;
+}
+
 export class StreamDeckManager {
   private device: StreamDeckDevice | null = null;
   private pages: StreamDeckPage[] = [{ keys: {} }];
@@ -184,10 +211,66 @@ export class StreamDeckManager {
       return;
     }
     try {
-      await this.executor?.(binding.command, binding.payload);
+      const result = await this.executor?.(binding.command, binding.payload);
+      const failure = extractCommandFailure(result);
+      if (failure !== null) {
+        this.reportKeyFailure(keyIndex, binding.command, failure);
+      }
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      // Defensive: the router returns {success:false} instead of throwing, but
+      // a future executor might not.
+      const message = error instanceof Error ? error.message : String(error);
+      this.reportKeyFailure(keyIndex, binding.command, message);
     }
+  }
+
+  /**
+   * A silently failing key is the worst live failure mode: the operator
+   * presses again and again with no idea why nothing happens. Persist the
+   * error for the config UI (`status().last_error`), log it, tell the webapp
+   * (streamdeck_error event) and flash the key itself.
+   */
+  private reportKeyFailure(
+    keyIndex: number,
+    command: string,
+    failure: string,
+  ): void {
+    this.lastError = `${command}: ${failure}`;
+    try {
+      getBridgeContext().logger.warn(
+        `[StreamDeck] Key ${keyIndex} command failed: ${command}: ${failure}`,
+      );
+      getBridgeContext().publishBridgeEvent?.({
+        event: "streamdeck_error",
+        data: { key_index: keyIndex, command, error: failure },
+      });
+    } catch {
+      // Context not initialized (standalone tests) - lastError is still set.
+    }
+    void this.flashKeyError(keyIndex);
+  }
+
+  /** Briefly renders the key in an error style, then restores the page. */
+  private async flashKeyError(keyIndex: number): Promise<void> {
+    const device = this.device;
+    if (!device) {
+      return;
+    }
+    try {
+      const layout = device.getLayout();
+      const rgba = await renderKeyImage(
+        { label: "✕", bgColor: "#7f1d1d", textColor: "#ffffff" },
+        layout.keyWidth,
+        layout.keyHeight,
+      );
+      await device.setKeyImage(keyIndex, rgba);
+    } catch {
+      // Rendering the error state must never mask the original failure.
+    }
+    const restore = setTimeout(() => {
+      void this.renderCurrentPage();
+    }, ERROR_FLASH_MS);
+    restore.unref?.();
   }
 
   /**

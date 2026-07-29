@@ -224,19 +224,22 @@ export async function startServer(
       process.exit(1);
     }
 
-    // If address not available and not already using 0.0.0.0, try fallback
+    // If the configured address is unavailable, fall back to loopback only.
+    // Never widen to 0.0.0.0 on our own: binding all interfaces because a
+    // NIC was briefly missing silently exposes the API beyond what the user
+    // chose (fail-closed, not fail-open).
     if (
       error?.code === "EADDRNOTAVAIL" &&
       config.host !== "0.0.0.0" &&
       config.host !== "127.0.0.1"
     ) {
       server.log.warn(
-        `Address ${config.host} not available, falling back to 0.0.0.0`
+        `Address ${config.host} not available, falling back to 127.0.0.1 (loopback only)`
       );
       try {
-        await server.listen({ host: "0.0.0.0", port: config.port });
+        await server.listen({ host: "127.0.0.1", port: config.port });
         server.log.info(
-          `Bridge server listening on http://0.0.0.0:${config.port} (fallback)`
+          `Bridge server listening on http://127.0.0.1:${config.port} (fallback)`
         );
       } catch (fallbackErr: unknown) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -246,7 +249,7 @@ export async function startServer(
             `Port ${config.port} is already in use. Please choose a different port.`
           );
         } else {
-          server.log.error("Fallback to 0.0.0.0 also failed:", fallbackError);
+          server.log.error("Fallback to 127.0.0.1 also failed:", fallbackError);
         }
         process.exit(1);
       }
@@ -273,10 +276,12 @@ export async function startServer(
 
   const shutdown = async (signal: string) => {
     server.log.info(`Received ${signal}, shutting down gracefully...`);
+    // Budget must cover MP4 finalization on quit-while-recording: the meeting
+    // stop step below waits up to ~20s for recording.stop + control.shutdown.
     const failSafe = setTimeout(() => {
       server.log.warn("[Shutdown] Fail-safe exit");
       process.exit(0);
-    }, 7000);
+    }, 30000);
     failSafe.unref();
     try {
       // Stop the Stream Deck USB hot-plug watch.
@@ -304,7 +309,10 @@ export async function startServer(
 
       server.log.info("[Meeting] Shutting down meeting engine...");
       try {
-        await withTimeout("meeting shutdown", meetingHelperManager.stop(), 3000);
+        // Long budget on purpose: stop() finalizes an in-flight recording
+        // (recording.stop can take ~15s on long files) before killing the
+        // helper. Without a recording this completes in well under a second.
+        await withTimeout("meeting shutdown", meetingHelperManager.stop(), 22000);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         server.log.warn(
@@ -321,9 +329,15 @@ export async function startServer(
 
       await withTimeout("server close", server.close(), 2000);
       server.log.info("Server closed");
+      // Disarm the fail-safe before exiting: in production this is moot, but
+      // under jest process.exit is mocked and returns - the armed timer then
+      // fires minutes later inside an unrelated test and kills the whole run
+      // with a silent exit(0).
+      clearTimeout(failSafe);
       process.exit(0);
     } catch (err) {
       server.log.error(err);
+      clearTimeout(failSafe);
       process.exit(1);
     }
   };
