@@ -22,6 +22,9 @@ jest.mock("./meeting-helper-manager.js", () => ({
     start: (...args: unknown[]) => mockStart(...args),
     stop: (...args: unknown[]) => mockStop(...args),
     getFullStatus: (...args: unknown[]) => mockGetFullStatus(...args),
+    noteCameraCall: () => undefined,
+    noteCameraStopped: () => undefined,
+    noteKeyerConfigured: () => undefined,
   },
 }));
 

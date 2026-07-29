@@ -204,6 +204,10 @@ bool MeetingRecorder::start(const std::string &filePath,
                              : "writer_create_failed";
       return false;
     }
+    // Crash safety: without fragments the moov atom is written only in
+    // finishWriting, so a hard kill mid-recording leaves an unplayable file.
+    // With periodic fragments everything up to the last fragment survives.
+    writer.movieFragmentInterval = CMTimeMake(4, 1);
 
     // ~0.2 bits/pixel is visually clean for screen+camera content; cap so 4K
     // never balloons.

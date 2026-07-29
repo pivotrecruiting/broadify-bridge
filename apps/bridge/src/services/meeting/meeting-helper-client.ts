@@ -5,6 +5,7 @@ import {
   getVcamHelperStatus,
   openVcamHelperApp,
 } from "../../modules/vcam/vcam-helper.js";
+import { MEETING_HELPER_RPC_TIMEOUTS_MS } from "./meeting-helper-timeouts.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
@@ -270,9 +271,12 @@ export class MeetingHelperClient {
     method: string,
     params?: Record<string, unknown>,
   ): Promise<T> {
+    // Slow-by-design RPCs (permission prompts, MP4 finalization, model load)
+    // get their own budget; everything else keeps the constructor default.
+    const timeoutMs = MEETING_HELPER_RPC_TIMEOUTS_MS[method] ?? this.timeoutMs;
     const result = this.rpcQueue.then(
-      () => this.rpcInternal<T>(method, params),
-      () => this.rpcInternal<T>(method, params),
+      () => this.rpcInternal<T>(method, params, timeoutMs),
+      () => this.rpcInternal<T>(method, params, timeoutMs),
     );
     // Chain the next RPC after this one settles; swallow errors here so one
     // failed RPC never rejects the shared queue for later callers.
@@ -285,7 +289,8 @@ export class MeetingHelperClient {
 
   private rpcInternal<T = Record<string, unknown>>(
     method: string,
-    params?: Record<string, unknown>,
+    params: Record<string, unknown> | undefined,
+    timeoutMs: number,
   ): Promise<T> {
     const id = `req-${++this.requestSeq}`;
     const payload = JSON.stringify({ id, method, params: params ?? {} }) + "\n";
@@ -314,10 +319,10 @@ export class MeetingHelperClient {
         settleReject(
           new MeetingHelperRequestError(
             "timeout",
-            `Meeting helper request timed out after ${this.timeoutMs}ms`,
+            `Meeting helper request timed out after ${timeoutMs}ms`,
           ),
         );
-      }, this.timeoutMs);
+      }, timeoutMs);
 
       socket.on("connect", () => {
         socket.write(payload);

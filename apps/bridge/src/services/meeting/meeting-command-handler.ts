@@ -332,7 +332,13 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_select",
       );
-      return runMeetingRpc(() => requireClient().cameraSelect(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().cameraSelect(options),
+      );
+      if (result.success) {
+        meetingHelperManager.noteCameraCall("cameraSelect", options);
+      }
+      return result;
     }
 
     case "meeting_camera_start": {
@@ -341,11 +347,21 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_start",
       );
-      return runMeetingRpc(() => requireClient().cameraStart(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().cameraStart(options),
+      );
+      if (result.success) {
+        meetingHelperManager.noteCameraCall("cameraStart", options);
+      }
+      return result;
     }
 
     case "meeting_camera_stop": {
-      return runMeetingRpc(() => requireClient().cameraStop());
+      const result = await runMeetingRpc(() => requireClient().cameraStop());
+      if (result.success) {
+        meetingHelperManager.noteCameraStopped();
+      }
+      return result;
     }
 
     case "meeting_camera_open_set": {
@@ -354,7 +370,13 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_open_set",
       );
-      return runMeetingRpc(() => requireClient().cameraOpenSet(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().cameraOpenSet(options),
+      );
+      if (result.success) {
+        meetingHelperManager.noteCameraCall("cameraOpenSet", options);
+      }
+      return result;
     }
 
     case "meeting_camera_program_select": {
@@ -363,7 +385,13 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_program_select",
       );
-      return runMeetingRpc(() => requireClient().cameraProgramSelect(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().cameraProgramSelect(options),
+      );
+      if (result.success) {
+        meetingHelperManager.noteCameraCall("cameraProgramSelect", options);
+      }
+      return result;
     }
 
     case "meeting_camera_pip_set": {
@@ -372,7 +400,13 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_pip_set",
       );
-      return runMeetingRpc(() => requireClient().cameraPipSet(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().cameraPipSet(options),
+      );
+      if (result.success) {
+        meetingHelperManager.noteCameraCall("cameraPipSet", options);
+      }
+      return result;
     }
 
     case "meeting_camera_audio_levels": {
@@ -385,7 +419,13 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_camera_auto_director",
       );
-      return runMeetingRpc(() => requireClient().cameraAutoDirector(options));
+      const result = await runMeetingRpc(() =>
+        requireClient().cameraAutoDirector(options),
+      );
+      if (result.success) {
+        meetingHelperManager.noteCameraCall("cameraAutoDirector", options);
+      }
+      return result;
     }
 
     case "meeting_recording_microphones": {
@@ -656,10 +696,9 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_keyer_configure",
       );
-      return {
-        success: true,
-        data: await requireClient().keyerConfigure(patch),
-      };
+      const data = await requireClient().keyerConfigure(patch);
+      meetingHelperManager.noteKeyerConfigured(patch);
+      return { success: true, data };
     }
 
     case "meeting_keyer_reset": {

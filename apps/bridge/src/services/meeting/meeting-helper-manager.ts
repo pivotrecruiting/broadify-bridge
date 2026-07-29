@@ -13,6 +13,7 @@ import {
   type VcamHelperStatusT,
 } from "../../modules/vcam/vcam-helper.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
 import { MeetingHelperClient } from "./meeting-helper-client.js";
 import {
   publishMeetingErrorEvent,
@@ -33,6 +34,13 @@ const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
 const CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS = 120;
 const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
 const STALE_HELPER_PORT_RELEASE_TIMEOUT_MS = 1000;
+// Bounded self-healing after a helper crash: without it, camera, keyer,
+// virtual camera and program output stay dead while the bridge looks healthy.
+const HELPER_RESTART_MAX_ATTEMPTS = 3;
+const HELPER_RESTART_BASE_DELAY_MS = 1000;
+// A helper that stayed up this long is considered healthy again; the attempt
+// counter resets so one crash per day never exhausts the limit.
+const HELPER_RESTART_HEALTHY_UPTIME_MS = 60_000;
 const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_COREML_UNITS",
   "BROADIFY_MEETING_GPU_COMPOSITOR",
@@ -62,6 +70,19 @@ type MeetingHelperStartOptionsT = {
   height?: number;
   fps?: number;
 };
+
+/** Camera RPCs replayed after a crash restart, in this order. */
+const RESTORABLE_CAMERA_METHOD_ORDER = [
+  "cameraOpenSet",
+  "cameraStart",
+  "cameraSelect",
+  "cameraProgramSelect",
+  "cameraPipSet",
+  "cameraAutoDirector",
+] as const;
+
+export type RestorableCameraMethodT =
+  (typeof RESTORABLE_CAMERA_METHOD_ORDER)[number];
 
 type MeetingHelperManagerStatusT = {
   state: MeetingHelperLifecycleStateT;
@@ -493,9 +514,77 @@ export class MeetingHelperManager {
   private readyRejecter: ((error: Error) => void) | null = null;
   private helperIdentity: MeetingHelperIdentityT | null = null;
   private lastRuntimeBackendStatus: string | null = null;
+  private lastStartOptions: MeetingHelperStartOptionsT = {};
+  private restartAttempts = 0;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private lastRunningSince: number | null = null;
+  private stopping = false;
+  // Last successful camera calls and merged keyer patches, replayed after a
+  // crash restart so the program does not come back without its camera. The
+  // webapp's full push restores program sections, but nothing else re-opens
+  // the camera devices.
+  private readonly restorableCameraCalls = new Map<
+    RestorableCameraMethodT,
+    Record<string, unknown>
+  >();
+  private keyerRestoreConfig: Record<string, unknown> | null = null;
 
   getClient(): MeetingHelperClient | null {
     return this.client;
+  }
+
+  /** Record a successful camera call for replay after a crash restart. */
+  noteCameraCall(
+    method: RestorableCameraMethodT,
+    options: Record<string, unknown>,
+  ): void {
+    this.restorableCameraCalls.set(method, options);
+  }
+
+  noteCameraStopped(): void {
+    this.restorableCameraCalls.clear();
+  }
+
+  /** Merge a successful keyer patch into the replayable keyer config. */
+  noteKeyerConfigured(patch: Record<string, unknown>): void {
+    this.keyerRestoreConfig = { ...(this.keyerRestoreConfig ?? {}), ...patch };
+  }
+
+  /**
+   * Replay the last known camera/keyer configuration into a freshly
+   * restarted helper. Best effort: a failed replay is logged, not fatal -
+   * the operator can still fix it manually, which without this would be the
+   * only option.
+   */
+  private async restoreRuntimeConfig(): Promise<void> {
+    const client = this.client;
+    if (!client) {
+      return;
+    }
+    for (const method of RESTORABLE_CAMERA_METHOD_ORDER) {
+      const options = this.restorableCameraCalls.get(method);
+      if (!options) {
+        continue;
+      }
+      try {
+        await client[method](options);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        getLogger().warn(
+          `[Meeting] Restore of ${method} after helper restart failed: ${message}`,
+        );
+      }
+    }
+    if (this.keyerRestoreConfig) {
+      try {
+        await client.keyerConfigure(this.keyerRestoreConfig);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        getLogger().warn(
+          `[Meeting] Restore of keyer config after helper restart failed: ${message}`,
+        );
+      }
+    }
   }
 
   getFramebusName(): string {
@@ -522,6 +611,10 @@ export class MeetingHelperManager {
   async start(
     options: MeetingHelperStartOptionsT = {},
   ): Promise<MeetingHelperManagerStatusT> {
+    // A user-initiated start supersedes any crash-recovery in flight.
+    this.clearRestartTimer();
+    this.restartAttempts = 0;
+    this.lastStartOptions = options;
     if (this.state === "running") {
       return this.getStatus();
     }
@@ -535,9 +628,24 @@ export class MeetingHelperManager {
   }
 
   async stop(): Promise<MeetingHelperManagerStatusT> {
+    // Intentional stop: no crash-recovery restart for the resulting exit,
+    // and nothing to replay for the next session.
+    this.stopping = true;
+    this.clearRestartTimer();
+    this.restartAttempts = 0;
+    this.restorableCameraCalls.clear();
+    this.keyerRestoreConfig = null;
     this.stopStatusPolling();
     const client = this.client;
     if (client) {
+      // Finalize an in-flight recording before shutting the helper down: a
+      // killed writer leaves an MP4 without its moov atom, i.e. an unplayable
+      // file. recording.stop is a fast no-op when nothing is recording.
+      try {
+        await client.recordingStop();
+      } catch {
+        // Best effort - the helper-side shutdown handler finalizes too.
+      }
       try {
         await client.shutdown();
         await sleep(150);
@@ -550,6 +658,7 @@ export class MeetingHelperManager {
     this.port = null;
     this.state = "stopped";
     this.lastRuntimeBackendStatus = null;
+    this.stopping = false;
     await this.publishStatus("engine_stopped", true);
     return this.getStatus();
   }
@@ -739,6 +848,7 @@ export class MeetingHelperManager {
 
       this.client = client;
       this.state = "running";
+      this.lastRunningSince = Date.now();
       this.startStatusPolling();
       this.requestCameraPermissionPreflight(client, logger);
       await this.publishStatus("engine_started", true);
@@ -970,15 +1080,97 @@ export class MeetingHelperManager {
     this.lastRuntimeBackendStatus = null;
     this.readyRejecter?.(new Error(`Meeting helper exited with code ${code}`));
     const wasRunning = this.state === "running";
+    // Any exit we did not initiate ourselves is a crash - the helper never
+    // quits on its own. The exit code is useless for this decision: on macOS
+    // the child is the LaunchServices `open` wrapper, which reports code 0
+    // even when the helper behind it was SIGKILLed.
+    const crashed = wasRunning && !this.stopping;
     if (this.state !== "stopped") {
-      this.state = code === 0 || code === null ? "stopped" : "error";
-      if (this.state === "error") {
-        this.lastError = `Meeting helper exited with code ${code}`;
+      if (crashed) {
+        this.state = "error";
+        this.lastError = `Meeting helper exited unexpectedly (code ${code})`;
+      } else {
+        this.state = code === 0 || code === null ? "stopped" : "error";
+        if (this.state === "error") {
+          this.lastError = `Meeting helper exited with code ${code}`;
+        }
       }
     }
     if (wasRunning) {
+      // The recorder died with the helper; without this reset the Stream Deck
+      // keeps showing "REC" forever.
+      streamDeckManager.setRecordingActive(false);
       void this.publishStatus("engine_exited", true);
     }
+    if (crashed) {
+      // Uptime above the threshold means the previous restarts worked out;
+      // start counting from zero for this new, unrelated crash.
+      const uptimeMs =
+        this.lastRunningSince !== null ? Date.now() - this.lastRunningSince : 0;
+      if (uptimeMs >= HELPER_RESTART_HEALTHY_UPTIME_MS) {
+        this.restartAttempts = 0;
+      }
+      this.scheduleRestart();
+    }
+  }
+
+  private clearRestartTimer(): void {
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+  }
+
+  /**
+   * Bounded crash recovery: up to HELPER_RESTART_MAX_ATTEMPTS respawns with
+   * exponential backoff. The webapp observes the resulting engine_restarted
+   * status event and re-pushes its program/keyer configuration (its full push
+   * fires on the engine-running transition). A user-initiated start() or
+   * stop() cancels any pending attempt.
+   */
+  private scheduleRestart(): void {
+    if (this.restartTimer) {
+      return;
+    }
+    if (this.restartAttempts >= HELPER_RESTART_MAX_ATTEMPTS) {
+      const message = `Meeting helper crashed and did not recover after ${HELPER_RESTART_MAX_ATTEMPTS} restart attempts.`;
+      this.lastError = message;
+      getLogger().error(`[Meeting] ${message}`);
+      publishMeetingErrorEvent("helper_restart_exhausted", message);
+      return;
+    }
+    this.restartAttempts += 1;
+    const delayMs =
+      HELPER_RESTART_BASE_DELAY_MS * 2 ** (this.restartAttempts - 1);
+    getLogger().warn(
+      `[Meeting] Helper crashed; restart attempt ${this.restartAttempts}/${HELPER_RESTART_MAX_ATTEMPTS} in ${delayMs}ms`,
+    );
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (this.state !== "error" || this.startPromise || this.stopping) {
+        return;
+      }
+      this.startPromise = this.startInternal(this.lastStartOptions)
+        .then(async (status) => {
+          if (status.state === "running") {
+            getLogger().info(
+              `[Meeting] Helper restarted after crash (attempt ${this.restartAttempts})`,
+            );
+            await this.restoreRuntimeConfig();
+            await this.publishStatus("engine_restarted", true);
+          } else {
+            this.scheduleRestart();
+          }
+          return status;
+        })
+        .finally(() => {
+          this.startPromise = null;
+        });
+      void this.startPromise.catch(() => {
+        this.scheduleRestart();
+      });
+    }, delayMs);
+    this.restartTimer.unref?.();
   }
 
   private killProcess(): void {
