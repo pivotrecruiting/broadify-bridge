@@ -689,6 +689,17 @@ export class CommandRouter {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       const errorCode = error instanceof GraphicsError ? error.code : undefined;
+      // Without this log line a handler crash is invisible on the bridge: the
+      // caller gets a generic failure message while the server log shows
+      // nothing - support cannot reconstruct the incident.
+      try {
+        const stack = error instanceof Error && error.stack ? `\n${error.stack}` : "";
+        getBridgeContext().logger.error(
+          `[CommandRouter] Unhandled error in '${command}': ${errorMessage}${stack}`,
+        );
+      } catch {
+        // Context not initialized (standalone tests).
+      }
       return {
         success: false,
         error: errorMessage,
