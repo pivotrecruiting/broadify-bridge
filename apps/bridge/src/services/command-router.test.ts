@@ -984,5 +984,30 @@ describe("command-router", () => {
       expect(result.error).toContain("Invalid output config");
       expect(result.errorCode).toBe("output_config_error");
     });
+
+    it("grants a streamdeck action claim exactly once", async () => {
+      const first = await commandRouter.handleCommand(
+        "streamdeck_action_claim",
+        { action_id: "router-claim-1" },
+      );
+      expect(first).toEqual({ success: true, data: { granted: true } });
+
+      // The denial is a normal result, not an error - other devices lost the
+      // race but must not surface a failure to the operator.
+      const second = await commandRouter.handleCommand(
+        "streamdeck_action_claim",
+        { action_id: "router-claim-1" },
+      );
+      expect(second).toEqual({ success: true, data: { granted: false } });
+    });
+
+    it("returns validation error for invalid streamdeck_action_claim payload", async () => {
+      const result = await commandRouter.handleCommand(
+        "streamdeck_action_claim",
+        { action_id: "" },
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid payload");
+    });
   });
 });

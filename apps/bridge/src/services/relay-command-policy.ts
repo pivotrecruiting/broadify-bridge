@@ -150,6 +150,9 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   streamdeck_configure: sideEffect("streamdeck_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
   streamdeck_set_page: sideEffect("streamdeck_set_page", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
   streamdeck_press: sideEffect("streamdeck_press", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
+  // Claim arbitration for webapp-delegated deck actions: serial execution on the
+  // "streamdeck" concurrency key is what makes first-claim-wins race-free.
+  streamdeck_action_claim: sideEffect("streamdeck_action_claim", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", []),
   power_socket_list: readOnly("power_socket_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["power.sockets"]),
   power_socket_save: sideEffect("power_socket_save", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"]),
   power_socket_delete: sideEffect("power_socket_delete", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"]),

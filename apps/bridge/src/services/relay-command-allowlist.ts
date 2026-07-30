@@ -71,6 +71,7 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "streamdeck_configure",
   "streamdeck_set_page",
   "streamdeck_press",
+  "streamdeck_action_claim",
   "power_socket_list",
   "power_socket_save",
   "power_socket_delete",
