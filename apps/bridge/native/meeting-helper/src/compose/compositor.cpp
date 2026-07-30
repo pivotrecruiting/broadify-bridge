@@ -647,19 +647,6 @@ void fillRotatedRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t heigh
   }
 }
 
-void drawGlassRect(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &rect, double rotationDeg = 0.0) {
-  if (rect.width <= 0 || rect.height <= 0) {
-    return;
-  }
-
-  fillRotatedRect(frame, width, height, {rect.x + 8, rect.y + 10, rect.width, rect.height}, rotationDeg, 0, 0, 0, 46);
-  fillRotatedRect(frame, width, height, rect, rotationDeg, 255, 255, 255, 36);
-  fillRotatedRect(frame, width, height, {rect.x + 1, rect.y + 1, std::max(0, rect.width - 2), 2}, rotationDeg, 255, 255, 255, 92);
-  fillRotatedRect(frame, width, height, {rect.x + 1, rect.y + 1, 2, std::max(0, rect.height - 2)}, rotationDeg, 255, 255, 255, 54);
-  fillRotatedRect(frame, width, height, {rect.x + rect.width - 3, rect.y + 1, 2, std::max(0, rect.height - 2)}, rotationDeg, 255, 255, 255, 24);
-  fillRotatedRect(frame, width, height, {rect.x + 1, rect.y + rect.height - 3, std::max(0, rect.width - 2), 2}, rotationDeg, 255, 255, 255, 24);
-}
-
 void fillGradientBackground(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, uint64_t frameIndex) {
   frame.resize(static_cast<size_t>(width) * height * 4u);
   std::vector<uint8_t> redBase(width);
@@ -731,40 +718,6 @@ void fillBackground(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
   }
 
   frame = cachedPixels;
-}
-
-Rect cameraRect(uint32_t width, uint32_t height, const SpeakerLayoutState &speakerLayout) {
-  if (!speakerLayout.enabled) {
-    return {0, 0, static_cast<int>(width), static_cast<int>(height)};
-  }
-  const double scale = std::clamp(speakerLayout.scale, 0.4, 1.5);
-  const int frameWidth = static_cast<int>(width);
-  const int frameHeight = static_cast<int>(height);
-  const int marginX = 0;
-  const int marginBottom = 0;
-  const double speakerAspect = 16.0 / 9.0;
-  int rectHeight = static_cast<int>(height * 0.50 * scale);
-  int rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
-  const int maxRectWidth = std::max(1, frameWidth - marginX * 2);
-  const int maxRectHeight = std::max(1, frameHeight - marginBottom);
-  if (rectWidth > maxRectWidth) {
-    rectWidth = maxRectWidth;
-    rectHeight = static_cast<int>(std::round(rectWidth / speakerAspect));
-  }
-  if (rectHeight > maxRectHeight) {
-    rectHeight = maxRectHeight;
-    rectWidth = static_cast<int>(std::round(rectHeight * speakerAspect));
-  }
-  const int edgeCrop = static_cast<int>(std::round(rectWidth * 0.28));
-  int x = frameWidth - rectWidth - marginX + edgeCrop;
-  if (speakerLayout.layout == "left") {
-    x = marginX - edgeCrop;
-  } else if (speakerLayout.layout == "center") {
-    x = (frameWidth - rectWidth) / 2;
-  }
-  x = std::clamp(x, -edgeCrop, std::max(0, frameWidth - rectWidth) + edgeCrop);
-  const int y = std::clamp(frameHeight - rectHeight - marginBottom, 0, std::max(0, frameHeight - rectHeight));
-  return {x, y, rectWidth, rectHeight};
 }
 
 SourceRect coverSourceRect(uint32_t sourceWidth, uint32_t sourceHeight, int targetWidth, int targetHeight) {
@@ -1591,7 +1544,10 @@ void renderProgramFrame(const Options &options,
     }
   } else {
     // Keyer OFF or Keyer fallback/passthrough:
-    // Camera is the base layer and must always stay full-frame.
+    // Camera is the base layer and must always stay full-frame. Media (PiP
+    // AND fullscreen) draws above it - same order as the GPU compositors,
+    // whose plan sets media.belowCamera = keyedCameraFrame (KEY-01: the CPU
+    // path used to skip fullscreen media entirely in this branch).
     if (snapshot.cameraRender.enabled) {
       drawCamera(
           output,
@@ -1601,7 +1557,7 @@ void renderProgramFrame(const Options &options,
           cameraFrame,
           snapshot.cameraRender.mirror);
     }
-    if (mediaLayerIsPip) {
+    if (mediaLayerIsPip || mediaLayerIsFullscreen) {
       drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
     }
   }
