@@ -106,13 +106,29 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private recovering = false;
   private lifecycleState: GraphicsRendererLifecycleStateT = "ready";
   private recoveryAttemptTimes: number[] = [];
+  private initializePromise: Promise<void> | null = null;
 
   /**
-   * Initialize the renderer process and IPC channel.
+   * Initialize the renderer process and IPC channel. Concurrent callers join
+   * the in-flight initialization instead of racing past the `child` guard and
+   * spawning a second renderer (WP-2.7).
    *
    * @returns Promise resolved once the IPC handshake is complete.
    */
   async initialize(): Promise<void> {
+    if (this.child) {
+      return;
+    }
+    if (this.initializePromise) {
+      return this.initializePromise;
+    }
+    this.initializePromise = this.initializeInternal().finally(() => {
+      this.initializePromise = null;
+    });
+    return this.initializePromise;
+  }
+
+  private async initializeInternal(): Promise<void> {
     if (this.child) {
       return;
     }
@@ -400,6 +416,12 @@ export class ElectronRendererClient implements GraphicsRenderer {
    */
   async shutdown(): Promise<void> {
     if (!this.child) {
+      if (this.recovering) {
+        // A recovery is mid-flight with no child yet: mark the shutdown so
+        // the recovery aborts instead of respawning a renderer afterwards.
+        this.isShuttingDown = true;
+        await this.stopIpcServer();
+      }
       return;
     }
 
@@ -579,6 +601,17 @@ export class ElectronRendererClient implements GraphicsRenderer {
 
     try {
       await ipcServerStopped;
+      // Abort if a shutdown was requested while this recovery was in flight
+      // (WP-2.7): shutdown() finds no child during recovery, so without this
+      // check the recovery would respawn a renderer AFTER shutdown completed.
+      if (this.isShuttingDown) {
+        this.logStructured(
+          "info",
+          { component: "graphics-renderer", recoveryId, reason, attempt },
+          "[GraphicsRenderer] Recovery aborted: shutdown requested",
+        );
+        return;
+      }
       const cleanupResult = await this.cleanupRendererCaches();
       this.logStructured(
         "info",

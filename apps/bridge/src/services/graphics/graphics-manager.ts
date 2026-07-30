@@ -148,6 +148,7 @@ export class GraphicsManager {
   private renderer: GraphicsRenderer;
   private outputAdapter: GraphicsOutputAdapter;
   private initialized = false;
+  private initializePromise: Promise<void> | null = null;
   private layers = new Map<string, GraphicsLayerStateT>();
   private categoryToLayer = new Map<GraphicsCategoryT, string>();
   private outputConfig: GraphicsOutputConfigT | null = null;
@@ -251,11 +252,22 @@ export class GraphicsManager {
     if (this.initialized) {
       return;
     }
-    await this.runtimeInitService.initialize();
-    this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
-    this.lastOutputError = null;
-
-    this.initialized = true;
+    // Concurrent callers join the in-flight run: the `initialized` flag alone
+    // let two racing calls both pass the check and initialize twice (WP-2.7).
+    if (this.initializePromise) {
+      return this.initializePromise;
+    }
+    this.initializePromise = (async () => {
+      try {
+        await this.runtimeInitService.initialize();
+        this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
+        this.lastOutputError = null;
+        this.initialized = true;
+      } finally {
+        this.initializePromise = null;
+      }
+    })();
+    return this.initializePromise;
   }
 
   /**
