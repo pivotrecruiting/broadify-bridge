@@ -666,18 +666,24 @@ export class MeetingHelperManager {
   async getFullStatus(): Promise<Record<string, unknown>> {
     const manager = this.getStatus();
     if (!this.client || this.state !== "running") {
-      return { manager, engine: null };
+      return { manager, engine: null, recording: null };
     }
     try {
-      const [engineState, framebus, keyer] = await Promise.all([
+      const [engineState, framebus, keyer, recordingResult] = await Promise.all([
         this.client.getState(),
         this.client.framebusStatus(),
         this.client.keyerGet(),
+        // Best effort: a failing recording.status must not take down the whole
+        // snapshot (and older helpers may not implement the RPC).
+        this.client.recordingStatus().catch(() => null),
       ]);
-      return { manager, engine: engineState, framebus, keyer };
+      const recordingRaw = recordingResult?.recording;
+      const recording =
+        recordingRaw && typeof recordingRaw === "object" ? recordingRaw : null;
+      return { manager, engine: engineState, framebus, keyer, recording };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      return { manager, engine: null, engineError: message };
+      return { manager, engine: null, engineError: message, recording: null };
     }
   }
 
@@ -1042,8 +1048,26 @@ export class MeetingHelperManager {
     }
   }
 
+  /**
+   * Re-publishes the full status after a recording start/stop so every
+   * consumer (webapp push, resync snapshot, deck REC mirror) sees the same
+   * authoritative snapshot (audit SD-04/WP-2.4).
+   */
+  notifyRecordingChanged(): void {
+    void this.publishStatus("recording_changed", true);
+  }
+
   private async publishStatus(reason: string, force: boolean): Promise<void> {
     const status = await this.getFullStatus();
+    // Single writer for the deck's REC mirror: derived from the same snapshot
+    // every other consumer sees, so the key can no longer diverge from the
+    // real recorder state (idempotent - only re-renders on change).
+    const recording = status.recording;
+    streamDeckManager.setRecordingActive(
+      !!recording &&
+        typeof recording === "object" &&
+        (recording as Record<string, unknown>).active === true,
+    );
     const keyer = status.keyer;
     if (keyer && typeof keyer === "object") {
       const runtimeStatus = (keyer as Record<string, unknown>).status;
@@ -1097,9 +1121,8 @@ export class MeetingHelperManager {
       }
     }
     if (wasRunning) {
-      // The recorder died with the helper; without this reset the Stream Deck
-      // keeps showing "REC" forever.
-      streamDeckManager.setRecordingActive(false);
+      // The recorder died with the helper; publishStatus derives the deck's
+      // REC mirror from the (now empty) snapshot and resets it.
       void this.publishStatus("engine_exited", true);
     }
     if (crashed) {
