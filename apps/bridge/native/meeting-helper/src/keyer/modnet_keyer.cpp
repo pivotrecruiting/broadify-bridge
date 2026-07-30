@@ -249,10 +249,16 @@ class ModnetKeyer::Impl {
     if (loaded_) {
       return true;
     }
-    if (loadAttempted_) {
+    // Retry with backoff instead of a process-lifetime latch (K-03): a
+    // transient failure (model appearing late after an install/update) used to
+    // disable the DirectML keyer until the next helper restart. Between
+    // attempts apply() returns the fallback status quickly.
+    const auto now = std::chrono::steady_clock::now();
+    if (lastLoadAttemptAt_ != std::chrono::steady_clock::time_point{} &&
+        now - lastLoadAttemptAt_ < kModelLoadRetryInterval) {
       return false;
     }
-    loadAttempted_ = true;
+    lastLoadAttemptAt_ = now;
 
     const ModelManifestEntry entry = findModelManifestEntry(options_.modelsDir, "modnet");
     if (entry.file.empty()) {
@@ -519,10 +525,14 @@ class ModnetKeyer::Impl {
     status_.inferenceMs = -1.0;
   }
 
+  // Model (re)load attempts are throttled: session creation + hashing are
+  // expensive, so a persistent failure must not stall the program loop.
+  static constexpr std::chrono::seconds kModelLoadRetryInterval{30};
+
   ModnetKeyerOptions options_;
   KeyerStatus status_;
   bool loaded_ = false;
-  bool loadAttempted_ = false;
+  std::chrono::steady_clock::time_point lastLoadAttemptAt_{};
   uint32_t inputWidth_ = kFallbackInputSize;
   uint32_t inputHeight_ = kFallbackInputSize;
   bool modelDynamic_ = false;

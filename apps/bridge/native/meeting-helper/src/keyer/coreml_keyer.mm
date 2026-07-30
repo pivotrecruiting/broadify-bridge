@@ -204,8 +204,16 @@ class CoreMLKeyer::Impl {
  private:
   bool ensureLoaded() {
     if (loaded_) return true;
-    if (loadAttempted_) return false;
-    loadAttempted_ = true;
+    // Retry with backoff instead of a process-lifetime latch (K-03): a
+    // transient failure (models dir appearing late after an install/update,
+    // disk hiccup) used to disable the CoreML keyer until the next helper
+    // restart. Between attempts apply() returns the fallback status quickly.
+    const auto now = std::chrono::steady_clock::now();
+    if (lastLoadAttemptAt_ != std::chrono::steady_clock::time_point{} &&
+        now - lastLoadAttemptAt_ < kModelLoadRetryInterval) {
+      return false;
+    }
+    lastLoadAttemptAt_ = now;
 
     if (@available(macOS 13.0, *)) {
       @autoreleasepool {
@@ -358,10 +366,14 @@ class CoreMLKeyer::Impl {
     status_.inferenceMs = -1.0;
   }
 
+  // Model (re)load attempts are throttled: compileModelAtURL is expensive, so
+  // a persistent failure must not stall the program loop every frame.
+  static constexpr std::chrono::seconds kModelLoadRetryInterval{30};
+
   std::string modelsDir_;
   KeyerStatus status_;
   bool loaded_ = false;
-  bool loadAttempted_ = false;
+  std::chrono::steady_clock::time_point lastLoadAttemptAt_{};
 #if defined(__APPLE__)
   MLModel *model_ = nil;
   NSString *inputName_ = nil;
