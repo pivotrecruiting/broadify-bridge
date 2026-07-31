@@ -29,6 +29,20 @@ describe("vcam-helper", () => {
   const originalMarker = process.env.BROADIFY_VCAM_EXTENSION_INSTALLED;
   const originalHelperPath = process.env.BRIDGE_VCAM_HELPER_PATH;
 
+  beforeEach(() => {
+    // Argument-dispatching default: queued mockReturnValueOnce values still
+    // serve the first call (systemextensionsctl list), while the quarantine
+    // probe added for the App-Translocation fix defaults to "not quarantined"
+    // (a missing xattr makes the real binary exit non-zero).
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        throw new Error("No such xattr: com.apple.quarantine");
+      }
+      return "";
+    });
+  });
+
   afterEach(() => {
     mockExecFileSync.mockReset();
     mockSpawn.mockReset();
@@ -241,6 +255,177 @@ describe("vcam-helper", () => {
       return;
     }
     expect(resolveVcamHelperAppPath()).toBe(candidate);
+  });
+
+  it("reports helper_app_quarantined when the inactive app carries the quarantine xattr", () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (process.platform !== "darwin" || !hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        return [
+          "1 extension(s)",
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated waiting for user]",
+        ].join("\n");
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        return "0081;00000000;Safari;";
+      }
+      return "";
+    });
+
+    const status = getVcamHelperStatus();
+
+    expect(status.available).toBe(false);
+    expect(status.requiresUserApproval).toBe(true);
+    expect(status.code).toBe("helper_app_quarantined");
+    expect(status.message).toContain("App-Translocated");
+  });
+
+  it("ignores a leftover quarantine xattr once the extension is active", () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (process.platform !== "darwin" || !hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        return "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated enabled]";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        return "0081;00000000;Safari;";
+      }
+      return "";
+    });
+
+    const status = getVcamHelperStatus();
+
+    expect(status.available).toBe(true);
+    expect(status.code).toBeUndefined();
+  });
+
+  it("self-heals a quarantined install before opening the helper app", async () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (process.platform !== "darwin" || !hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    let quarantined = true;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        return "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated waiting for user]";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        if (!quarantined) {
+          throw new Error("No such xattr: com.apple.quarantine");
+        }
+        return "0081;00000000;Safari;";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-dr") {
+        quarantined = false;
+        return "";
+      }
+      return "";
+    });
+    mockSpawn.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: jest.Mock };
+      (child as { unref: jest.Mock }).unref = jest.fn();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    });
+
+    const status = await openVcamHelperApp();
+
+    const xattrStripCall = mockExecFileSync.mock.calls.find(
+      ([command, args]) =>
+        command === "/usr/bin/xattr" && (args as string[])[0] === "-dr",
+    );
+    expect(xattrStripCall).toBeDefined();
+    expect((xattrStripCall?.[1] as string[])[2]).toBe(installed);
+    expect(mockSpawn).toHaveBeenCalledWith("open", [installed], expect.any(Object));
+    expect(status.code).toBe("activation_requested");
+  });
+
+  it("still opens the helper app when the quarantine strip fails", async () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (process.platform !== "darwin" || !hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        return "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated waiting for user]";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        return "0081;00000000;Safari;";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-dr") {
+        throw new Error("Operation not permitted");
+      }
+      return "";
+    });
+    mockSpawn.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: jest.Mock };
+      (child as { unref: jest.Mock }).unref = jest.fn();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    });
+
+    const status = await openVcamHelperApp();
+
+    expect(mockSpawn).toHaveBeenCalledWith("open", [installed], expect.any(Object));
+    expect(status.launchRequested).toBe(true);
+  });
+
+  it("strips the quarantine xattr right after installing the embedded app", async () => {
+    if (process.platform !== "darwin") {
+      return;
+    }
+
+    const fs = require("node:fs");
+    const resourcesPath = "/tmp/broadify-test-resources";
+    const existsSpy = jest
+      .spyOn(fs, "existsSync")
+      .mockImplementation(
+        (target: unknown) => !String(target).startsWith("/Applications/BroadifyVCam.app"),
+      );
+    Object.defineProperty(process, "resourcesPath", {
+      value: resourcesPath,
+      configurable: true,
+    });
+    mockSpawn.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: jest.Mock };
+      (child as { unref: jest.Mock }).unref = jest.fn();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    });
+
+    try {
+      await openVcamHelperApp();
+
+      const calls = mockExecFileSync.mock.calls;
+      const dittoIndex = calls.findIndex(([command]) => command === "/usr/bin/ditto");
+      const stripIndex = calls.findIndex(
+        ([command, args]) =>
+          command === "/usr/bin/xattr" && (args as string[])[0] === "-dr",
+      );
+      expect(dittoIndex).toBeGreaterThanOrEqual(0);
+      expect(stripIndex).toBeGreaterThan(dittoIndex);
+      expect((calls[stripIndex][1] as string[])[2]).toBe("/Applications/BroadifyVCam.app");
+    } finally {
+      existsSpy.mockRestore();
+      delete (process as { resourcesPath?: string }).resourcesPath;
+    }
   });
 
   it("exports the embedded system extension bundle path", () => {
