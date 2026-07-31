@@ -522,6 +522,40 @@ describe("meeting-command-handler", () => {
       expect(mockClient.recordingStart).not.toHaveBeenCalled();
     });
 
+    it("promotes known recorder failure tokens to the errorCode", async () => {
+      mockClient.recordingStart.mockRejectedValue(
+        new MeetingHelperRequestError(
+          "recording_start_failed",
+          "microphone_permission_denied",
+        ),
+      );
+
+      const result = await handleMeetingCommand("meeting_recording_start", {
+        file_path: "/Users/x/Movies/rec.mp4",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("microphone_permission_denied");
+      expect(result.errorCode).toBe("microphone_permission_denied");
+      expect(mockNotifyRecordingChanged).not.toHaveBeenCalled();
+    });
+
+    it("keeps unknown recorder failures on the generic RPC code", async () => {
+      mockClient.recordingStart.mockRejectedValue(
+        new MeetingHelperRequestError(
+          "recording_start_failed",
+          "something unexpected happened",
+        ),
+      );
+
+      const result = await handleMeetingCommand("meeting_recording_start", {
+        file_path: "/Users/x/Movies/rec.mp4",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.errorCode).toBe("recording_start_failed");
+    });
+
     it("stops recording via the client", async () => {
       mockClient.recordingStop.mockResolvedValue({
         recording: { active: false },
