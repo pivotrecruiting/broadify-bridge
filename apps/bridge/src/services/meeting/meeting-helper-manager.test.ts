@@ -156,6 +156,7 @@ describe("meeting-helper-manager", () => {
       expect(status).toEqual({
         manager: expect.objectContaining({ state: "stopped" }),
         engine: null,
+        recording: null,
       });
     });
 
@@ -167,6 +168,33 @@ describe("meeting-helper-manager", () => {
         expect.objectContaining({
           event: "meeting_status",
         }),
+      );
+    });
+
+    it("derives the deck REC mirror from the published snapshot (WP-2.4)", async () => {
+      const { streamDeckManager } =
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        require("../streamdeck/stream-deck-manager.js");
+      const recSpy = jest.spyOn(streamDeckManager, "setRecordingActive");
+      try {
+        const manager = new MeetingHelperManager();
+        await manager.stop();
+
+        // Engine down -> snapshot has recording: null -> the single writer
+        // resets the key. No other code path may touch setRecordingActive.
+        expect(recSpy).toHaveBeenCalledWith(false);
+      } finally {
+        recSpy.mockRestore();
+      }
+    });
+
+    it("notifyRecordingChanged force-publishes a status snapshot", async () => {
+      const manager = new MeetingHelperManager();
+      manager.notifyRecordingChanged();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "meeting_status" }),
       );
     });
   });

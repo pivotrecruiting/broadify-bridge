@@ -51,7 +51,6 @@ import {
   meetingFrontGraphicsManager,
 } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
-import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
 
 /** Reads `recording.active` out of a recording.* RPC result, default false. */
 function isRecordingActive(data: unknown): boolean {
@@ -458,8 +457,10 @@ export async function handleMeetingCommand(
       const result = await runMeetingRpc(() =>
         requireClient().recordingStart(options),
       );
-      if (result.success && isRecordingActive(result.data)) {
-        streamDeckManager.setRecordingActive(true);
+      if (result.success) {
+        // The status publisher is the single writer of the deck's REC mirror
+        // and of the pushed meeting_status snapshot (audit SD-04/WP-2.4).
+        meetingHelperManager.notifyRecordingChanged();
       }
       return result;
     }
@@ -467,7 +468,7 @@ export async function handleMeetingCommand(
     case "meeting_recording_stop": {
       const result = await runMeetingRpc(() => requireClient().recordingStop());
       if (result.success) {
-        streamDeckManager.setRecordingActive(false);
+        meetingHelperManager.notifyRecordingChanged();
       }
       return result;
     }
@@ -482,7 +483,7 @@ export async function handleMeetingCommand(
       if (active) {
         const stopped = await runMeetingRpc(() => client.recordingStop());
         if (stopped.success) {
-          streamDeckManager.setRecordingActive(false);
+          meetingHelperManager.notifyRecordingChanged();
         }
         return stopped;
       }
@@ -506,7 +507,7 @@ export async function handleMeetingCommand(
         }),
       );
       if (started.success) {
-        streamDeckManager.setRecordingActive(true);
+        meetingHelperManager.notifyRecordingChanged();
       }
       return started;
     }
