@@ -23,5 +23,14 @@
     <true/>
     <key>com.apple.security.device.camera</key>
     <true/>
+    <!--
+      audio-input is required by the bundled meeting helper: electron-builder
+      re-signs every nested bundle with THIS file (there is no runtime
+      inheritance), so a key missing here is stripped from the helper even
+      though its own entitlements file declares it. Guarded by the superset
+      assertion in scripts/meeting-helper-release-contract.test.cjs.
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
   </dict>
 </plist>

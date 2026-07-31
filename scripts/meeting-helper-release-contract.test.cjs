@@ -132,6 +132,37 @@ test("release workflows share the verified Windows dependency installer", () => 
   assert.match(release, /matrix\.os == 'windows-2022' && secrets\.AZURE_CLIENT_SECRET/);
 });
 
+test("packaged inherit entitlements are a superset of the meeting helper entitlements", () => {
+  // electron-builder re-signs every nested bundle (the meeting helper is not
+  // in mac.signIgnore) with build/entitlements.mac.inherit.plist. There is no
+  // runtime inheritance: any key missing there is stripped from the helper at
+  // packaging time even though the helper's own entitlements declare it —
+  // exactly how the microphone entitlement got lost once. Keep the inherit
+  // plist a superset of both helper entitlement variants.
+  const entitlementKeys = (relativePath) =>
+    [...read(relativePath).matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1]);
+  const inheritKeys = new Set(
+    entitlementKeys("build/entitlements.mac.inherit.plist"),
+  );
+  for (const variant of [
+    "apps/bridge/native/meeting-helper/macos/BroadifyMeetingHelper.entitlements",
+    "apps/bridge/native/meeting-helper/macos/BroadifyMeetingHelper.modnet.entitlements",
+  ]) {
+    for (const key of entitlementKeys(variant)) {
+      assert.ok(
+        inheritKeys.has(key),
+        `${key} from ${variant} is missing in build/entitlements.mac.inherit.plist`,
+      );
+    }
+  }
+});
+
+test("release signing gate checks the helper microphone contract", () => {
+  const verification = read("scripts/verify-macos-release-signing.sh");
+  assert.match(verification, /com\.apple\.security\.device\.audio-input/);
+  assert.match(verification, /NSMicrophoneUsageDescription/);
+});
+
 test("packaged macOS helper verifies the model hashes", () => {
   // The runtime self-test hooks retired with the previous helper lineage;
   // the packaged-model hash verification is the remaining hard gate here.

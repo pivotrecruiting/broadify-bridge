@@ -214,6 +214,11 @@ if ! plist_value "$HELPER_INFO" "NSCameraUsageDescription" >/dev/null; then
   exit 1
 fi
 echo "[MacSignVerify] NSCameraUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSMicrophoneUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSMicrophoneUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSMicrophoneUsageDescription present"
 
 verify_codesign "$HELPER_APP_PATH" "deep"
 verify_codesign "$HELPER_EXEC_PATH" "nodeep"
@@ -228,6 +233,7 @@ require_valid_entitlements "$APP_PATH"
 require_entitlement_key "$APP_PATH" "com.apple.security.network.client"
 require_entitlement_key "$APP_PATH" "com.apple.security.network.server"
 require_entitlement_key "$HELPER_EXEC_PATH" "com.apple.security.device.camera"
+require_entitlement_key "$HELPER_EXEC_PATH" "com.apple.security.device.audio-input"
 
 APP_TEAM_ID="$(team_id "$APP_PATH")"
 HELPER_TEAM_ID="$(team_id "$HELPER_EXEC_PATH")"
