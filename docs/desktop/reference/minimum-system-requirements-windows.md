@@ -38,7 +38,7 @@ Stand: 2026-04-20
 
 ### Standardbetrieb
 
-- Windows 10 oder Windows 11
+- Windows 10 oder Windows 11 (die virtuelle Kamera „Broadify Camera“ benoetigt Windows 11 — die zugrunde liegende Microsoft-API `MFCreateVirtualCamera` existiert auf Windows 10 nicht)
 - 8 GB RAM
 - 1 GB freier Speicher
 - stabile Netzwerkverbindung

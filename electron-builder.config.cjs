@@ -140,6 +140,12 @@ if (config.win) {
       to: "native/meeting-helper/DirectML.dll",
     },
     {
+      // Windows virtual-camera media source; registered by the NSIS installer
+      // (build/windows-installer.nsh) so the Frame Server can load it.
+      from: "apps/bridge/native/vcam-helper/windows/broadify-vcam.dll",
+      to: "native/vcam-helper/broadify-vcam.dll",
+    },
+    {
       // MODNet ONNX model ships on Windows. macOS uses the native CoreML model
       // when available and falls back to Apple Vision.
       from: "apps/bridge/native/meeting-helper/models",

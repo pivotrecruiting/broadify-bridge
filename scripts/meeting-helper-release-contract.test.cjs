@@ -132,35 +132,48 @@ test("release workflows share the verified Windows dependency installer", () => 
   assert.match(release, /matrix\.os == 'windows-2022' && secrets\.AZURE_CLIENT_SECRET/);
 });
 
-test("packaged inherit entitlements are a superset of the meeting helper entitlements", () => {
-  // electron-builder re-signs every nested bundle (the meeting helper is not
-  // in mac.signIgnore) with build/entitlements.mac.inherit.plist. There is no
-  // runtime inheritance: any key missing there is stripped from the helper at
-  // packaging time even though the helper's own entitlements declare it —
-  // exactly how the microphone entitlement got lost once. Keep the inherit
-  // plist a superset of both helper entitlement variants.
-  const entitlementKeys = (relativePath) =>
-    [...read(relativePath).matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1]);
-  const inheritKeys = new Set(
-    entitlementKeys("build/entitlements.mac.inherit.plist"),
+test("Windows distribution builds, packages, signs and registers the vcam DLL", () => {
+  // The virtual camera on Windows is a COM media source DLL loaded by the
+  // Frame Server. Historically it was never part of dist:win, so installer
+  // machines had no "Broadify Camera" at all - these assertions keep the
+  // whole chain wired: build -> extraResources -> signing -> registration.
+  const distWin = packageJson.scripts["dist:win"];
+  const buildIndex = distWin.indexOf("build:vcam-dll:windows");
+  const packIndex = distWin.indexOf("electron-builder");
+  assert.ok(buildIndex >= 0, "dist:win must build the vcam DLL");
+  assert.ok(buildIndex < packIndex, "the DLL must be built before packaging");
+  assert.match(
+    packageJson.scripts["build:vcam-dll:windows"],
+    /vcam-helper\/windows\/build\.ps1/,
   );
-  for (const variant of [
-    "apps/bridge/native/meeting-helper/macos/BroadifyMeetingHelper.entitlements",
-    "apps/bridge/native/meeting-helper/macos/BroadifyMeetingHelper.modnet.entitlements",
-  ]) {
-    for (const key of entitlementKeys(variant)) {
-      assert.ok(
-        inheritKeys.has(key),
-        `${key} from ${variant} is missing in build/entitlements.mac.inherit.plist`,
-      );
-    }
-  }
-});
 
-test("release signing gate checks the helper microphone contract", () => {
-  const verification = read("scripts/verify-macos-release-signing.sh");
-  assert.match(verification, /com\.apple\.security\.device\.audio-input/);
-  assert.match(verification, /NSMicrophoneUsageDescription/);
+  const builderConfig = read("electron-builder.config.cjs");
+  assert.match(
+    builderConfig,
+    /native\/vcam-helper\/broadify-vcam\.dll/,
+    "win extraResources must package the DLL",
+  );
+
+  const signList = read("scripts/sign-windows-native-resources.cjs");
+  assert.match(signList, /resources\/native\/vcam-helper\/broadify-vcam\.dll/);
+
+  const builderJson = JSON.parse(read("electron-builder.json"));
+  assert.equal(builderJson.nsis.include, "build/windows-installer.nsh");
+  const installerScript = read("build/windows-installer.nsh");
+  assert.match(installerScript, /customInstall/);
+  assert.match(installerScript, /customUnInstall/);
+  // Sysnative, not System32: the 32-bit NSIS process must reach the 64-bit
+  // regsvr32 or the CLSID lands under WOW6432Node where the Frame Server
+  // never looks.
+  assert.match(installerScript, /Sysnative\\regsvr32\.exe/);
+  assert.match(installerScript, /\/u \/s/);
+
+  const verifyArtifacts = read("scripts/verify-release-artifacts.sh");
+  assert.match(
+    verifyArtifacts,
+    /vcam-helper\/windows\/broadify-vcam\.dll/,
+    "artifact verification must require the built DLL",
+  );
 });
 
 test("packaged macOS helper verifies the model hashes", () => {

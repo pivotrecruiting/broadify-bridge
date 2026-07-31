@@ -183,6 +183,7 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/DirectML.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/modnet.onnx")
+  REQUIRED_FILES+=("apps/bridge/native/vcam-helper/windows/broadify-vcam.dll")
   EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
 else

@@ -348,8 +348,12 @@ In Prioritätsreihenfolge:
 5. **Call-Control:** Teams/Zoom-Shortcuts für Windows.
 6. **GPU-Compositing (D3D):** für echte Mac-Parität bei Latenz/CPU — optional.
 7. **Installer/Signing:** `npm run dist:win` (electron-builder, NSIS/MSI). Signing via
-   **Azure Trusted Signing** (env-gated). Achtung: `dist:win` baut die **vcam.dll nicht
-   mit** — die wird separat via `deploy-vcam.ps1` registriert.
+   **Azure Trusted Signing** (env-gated). Seit dem VCam-Paketierungs-Fix baut `dist:win`
+   die **broadify-vcam.dll mit** (`build:vcam-dll:windows`), packt sie nach
+   `resources/native/vcam-helper/`, signiert sie und der NSIS-Installer registriert sie
+   per `regsvr32` (elevierte "Fuer alle Benutzer"-Installation noetig; per-User-Installs
+   und der MSI-Pfad registrieren NICHT — dort weiterhin `deploy-vcam.ps1` als Admin).
+   `deploy-vcam.ps1` bleibt der Dev-Workflow fuer lokale Builds.
 
 ---
 
