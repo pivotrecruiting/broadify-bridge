@@ -15,6 +15,7 @@
 		8536EB750591052B8742F1A4 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 981A36CFFEC7560BE78BAEC5 /* main.swift */; };
 		8E73BB7F3AA9FD96D6675EED /* RawFrameStreamReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 170A930A59955F21C04CEE5E /* RawFrameStreamReader.swift */; };
 		A4D6721AD35E47A4ED85E160 /* BroadifyVCamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */; };
+		B0CA8A37FC8795828A0AF7C4 /* BundleLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6F5779BCA652AD14F7BDF45 /* BundleLocation.swift */; };
 		C88BB60D507B42A2FD70E8FE /* SystemExtensionSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B239BA6F7191884BD305682 /* SystemExtensionSettings.swift */; };
 /* End PBXBuildFile section */
 
@@ -53,6 +54,7 @@
 		7973FE4D6874F16B71437255 /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
 		981A36CFFEC7560BE78BAEC5 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A5061AF9F24929E5B4D66F23 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		A6F5779BCA652AD14F7BDF45 /* BundleLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleLocation.swift; sourceTree = "<group>"; };
 		ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadifyVCamApp.swift; sourceTree = "<group>"; };
 		CB5C825A1E5CFCEC28077981 /* BroadifyVCamExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BroadifyVCamExtension.entitlements; sourceTree = "<group>"; };
 		CB9AB8D70808A609C073D44A /* BroadifyVCam.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BroadifyVCam.entitlements; sourceTree = "<group>"; };
@@ -93,6 +95,7 @@
 			children = (
 				CB9AB8D70808A609C073D44A /* BroadifyVCam.entitlements */,
 				ACBA20A5097A02AF7D0E8B09 /* BroadifyVCamApp.swift */,
+				A6F5779BCA652AD14F7BDF45 /* BundleLocation.swift */,
 				67416A2B2524DABF3A5F955F /* ContentView.swift */,
 				A5061AF9F24929E5B4D66F23 /* Info.plist */,
 				4B239BA6F7191884BD305682 /* SystemExtensionSettings.swift */,
@@ -219,6 +222,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A4D6721AD35E47A4ED85E160 /* BroadifyVCamApp.swift in Sources */,
+				B0CA8A37FC8795828A0AF7C4 /* BundleLocation.swift in Sources */,
 				77DFBEE2A9DB29EE73D4A466 /* ContentView.swift in Sources */,
 				C88BB60D507B42A2FD70E8FE /* SystemExtensionSettings.swift in Sources */,
 			);
