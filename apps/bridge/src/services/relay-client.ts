@@ -1044,6 +1044,11 @@ export class RelayClient {
       { command: "engine_get_status", event: "engine_status_snapshot" },
       { command: "list_outputs", event: "outputs_snapshot" },
       { command: "graphics_list", event: "graphics_snapshot" },
+      // Meeting + deck state joined the resync set with WP-2.4: after a relay
+      // reconnect the webapp otherwise kept a stale recording/program view.
+      // The webapp already listens for "meeting_status_snapshot".
+      { command: "meeting_get_state", event: "meeting_status_snapshot" },
+      { command: "streamdeck_status", event: "streamdeck_status_snapshot" },
     ];
 
     for (const snapshot of snapshotCommands) {

@@ -34,6 +34,10 @@ namespace {
 
 constexpr uint64_t kHnsPerSecond = 10'000'000ull;
 
+// Minimum free disk space to start a recording (REC-02): well above what a
+// few minutes of 1080p H.264 needs, far below any realistic working drive.
+constexpr uint64_t kMinFreeDiskBytes = 500ull * 1024ull * 1024ull;
+
 double secondsSince(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
       .count();
@@ -123,7 +127,14 @@ struct MeetingRecorder::Impl {
   mutable std::mutex mutex;
 
   bool active = false;
+  // True while start() builds the pipeline OUTSIDE the lock (K-04): guards
+  // against a second concurrent start without serializing the hot path.
+  bool starting = false;
   std::string filePath;
+  // The sink writer targets filePath + ".part" until Finalize succeeds
+  // (REC-03): the final path never names a half-written file, and an existing
+  // recording is never deleted before the new one is complete.
+  std::string partPath;
   std::string lastError;
   uint32_t width = 0;
   uint32_t height = 0;
@@ -214,7 +225,13 @@ class MicReaderCallback : public IMFSourceReaderCallback {
 
     if (sample != nullptr && timestampHns >= sessionStartHns) {
       sample->SetSampleTime(timestampHns - sessionStartHns);
-      writer->WriteSample(audioStream, sample);
+      const HRESULT writeHr = writer->WriteSample(audioStream, sample);
+      if (FAILED(writeHr)) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->lastError.empty()) {
+          impl_->lastError = hresultError("writer_failed", writeHr);
+        }
+      }
     }
 
     const HRESULT next = reader->ReadSample(
@@ -340,28 +357,59 @@ std::vector<MicrophoneInfo> MeetingRecorder::listMicrophones() const {
 bool MeetingRecorder::start(const std::string &filePath,
                             const std::string &micDeviceId, uint32_t width,
                             uint32_t height, uint32_t fps) {
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (impl_->active) {
-    impl_->lastError = "already_recording";
-    return false;
+  // K-04: setup runs WITHOUT the mutex. appendVideoFrame is called from the
+  // program loop every tick on this same mutex - holding it across device
+  // source creation froze VCam/FrameBus/SDI/preview for the whole init. The
+  // lock is only taken to claim the start and to publish the pipeline.
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->active || impl_->starting) {
+      impl_->lastError = "already_recording";
+      return false;
+    }
+    if (width == 0 || height == 0 || filePath.empty()) {
+      impl_->lastError = "invalid_arguments";
+      return false;
+    }
+    impl_->starting = true;
   }
-  if (width == 0 || height == 0 || filePath.empty()) {
-    impl_->lastError = "invalid_arguments";
+  const auto fail = [this](std::string error) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->lastError = std::move(error);
+    impl_->starting = false;
     return false;
-  }
+  };
 
   ComApartment com;
   const uint32_t safeFps = fps > 0 ? fps : 30;
 
-  const std::wstring widePath = utf8ToWide(filePath);
-  if (widePath.empty()) {
-    impl_->lastError = "invalid_arguments";
-    return false;
+  // REC-03: record into a ".part" sidecar and only rename to the final path
+  // after a successful Finalize. The old code deleted the target up front, so
+  // a crash left neither the old nor a playable new file.
+  const std::string partPathUtf8 = filePath + ".part";
+  const std::wstring widePartPath = utf8ToWide(partPathUtf8);
+  const std::wstring wideFinalPath = utf8ToWide(filePath);
+  if (widePartPath.empty() || wideFinalPath.empty()) {
+    return fail("invalid_arguments");
   }
-  DeleteFileW(widePath.c_str());
+
+  // REC-02: refuse to start on a nearly full disk instead of failing
+  // opaquely minutes into the recording.
+  {
+    const size_t slash = filePath.find_last_of("/\\");
+    const std::wstring wideDir = utf8ToWide(
+        slash == std::string::npos ? std::string(".") : filePath.substr(0, slash));
+    ULARGE_INTEGER freeBytes{};
+    if (!wideDir.empty() &&
+        GetDiskFreeSpaceExW(wideDir.c_str(), &freeBytes, nullptr, nullptr) &&
+        freeBytes.QuadPart < kMinFreeDiskBytes) {
+      return fail("disk_full");
+    }
+  }
 
   // --- Microphone source first: its failure modes (permission, missing
-  // device) should not leave a half-created output file behind.
+  // device) must not leave a half-created output file behind - the sink
+  // writer (and its .part file) is only created after the mic succeeds.
   ComPtr<IMFAttributes> deviceAttributes;
   HRESULT hr = MFCreateAttributes(&deviceAttributes, 2);
   if (SUCCEEDED(hr)) {
@@ -382,11 +430,10 @@ bool MeetingRecorder::start(const std::string &filePath,
     hr = MFCreateDeviceSource(deviceAttributes.Get(), &micSource);
   }
   if (FAILED(hr)) {
-    impl_->lastError = (hr == E_ACCESSDENIED ||
-                        hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED))
-                           ? "microphone_permission_denied"
-                           : hresultError("microphone_not_found", hr);
-    return false;
+    return fail((hr == E_ACCESSDENIED ||
+                 hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED))
+                    ? "microphone_permission_denied"
+                    : hresultError("microphone_not_found", hr));
   }
 
   ComPtr<IUnknown> callback;
@@ -405,14 +452,12 @@ bool MeetingRecorder::start(const std::string &filePath,
   }
   if (FAILED(hr)) {
     micSource->Shutdown();
-    impl_->lastError = hresultError("microphone_input_failed", hr);
-    return false;
+    return fail(hresultError("microphone_input_failed", hr));
   }
   AudioFormat audioFormat;
   if (!configureMicPcmOutput(micReader.Get(), &audioFormat)) {
     micSource->Shutdown();
-    impl_->lastError = "microphone_format_unsupported";
-    return false;
+    return fail("microphone_format_unsupported");
   }
 
   // --- Sink writer. Fragmented MP4 instead of the plain container: without
@@ -428,12 +473,12 @@ bool MeetingRecorder::start(const std::string &filePath,
                               MFTranscodeContainerType_FMPEG4);
   }
   ComPtr<IMFSinkWriter> writer;
-  hr = MFCreateSinkWriterFromURL(widePath.c_str(), nullptr,
+  DeleteFileW(widePartPath.c_str());  // leftover sidecar from a crashed run
+  hr = MFCreateSinkWriterFromURL(widePartPath.c_str(), nullptr,
                                  writerAttributes.Get(), &writer);
   if (FAILED(hr)) {
     micSource->Shutdown();
-    impl_->lastError = hresultError("writer_create_failed", hr);
-    return false;
+    return fail(hresultError("writer_create_failed", hr));
   }
 
   // Video output: H.264 at ~0.2 bits/pixel (visually clean for screen+camera
@@ -461,8 +506,7 @@ bool MeetingRecorder::start(const std::string &filePath,
   hr = writer->AddStream(videoOut.Get(), &videoStream);
   if (FAILED(hr)) {
     micSource->Shutdown();
-    impl_->lastError = hresultError("video_input_rejected", hr);
-    return false;
+    return fail(hresultError("video_input_rejected", hr));
   }
 
   // Video input: top-down BGRA (positive default stride); the sink writer
@@ -479,8 +523,7 @@ bool MeetingRecorder::start(const std::string &filePath,
   hr = writer->SetInputMediaType(videoStream, videoIn.Get(), nullptr);
   if (FAILED(hr)) {
     micSource->Shutdown();
-    impl_->lastError = hresultError("video_input_rejected", hr);
-    return false;
+    return fail(hresultError("video_input_rejected", hr));
   }
 
   // Audio output: AAC 128kbit at the negotiated PCM rate/channels.
@@ -496,8 +539,7 @@ bool MeetingRecorder::start(const std::string &filePath,
   hr = writer->AddStream(audioOut.Get(), &audioStream);
   if (FAILED(hr)) {
     micSource->Shutdown();
-    impl_->lastError = hresultError("audio_input_rejected", hr);
-    return false;
+    return fail(hresultError("audio_input_rejected", hr));
   }
   ComPtr<IMFMediaType> audioIn;
   MFCreateMediaType(&audioIn);
@@ -512,15 +554,13 @@ bool MeetingRecorder::start(const std::string &filePath,
   hr = writer->SetInputMediaType(audioStream, audioIn.Get(), nullptr);
   if (FAILED(hr)) {
     micSource->Shutdown();
-    impl_->lastError = hresultError("audio_input_rejected", hr);
-    return false;
+    return fail(hresultError("audio_input_rejected", hr));
   }
 
   hr = writer->BeginWriting();
   if (FAILED(hr)) {
     micSource->Shutdown();
-    impl_->lastError = hresultError("start_writing_failed", hr);
-    return false;
+    return fail(hresultError("start_writing_failed", hr));
   }
 
   // Prime the audio stream with 10ms of silence at t=0. A capture device
@@ -548,23 +588,29 @@ bool MeetingRecorder::start(const std::string &filePath,
     }
   }
 
-  impl_->writer = writer;
-  impl_->videoStream = videoStream;
-  impl_->audioStream = audioStream;
-  impl_->sessionStartHns = MFGetSystemTime();
-  impl_->micSource = micSource;
-  impl_->micReader = micReader;
-  impl_->micCallback = callback;
-  impl_->audioDrained = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  impl_->filePath = filePath;
-  impl_->width = width;
-  impl_->height = height;
-  impl_->fps = safeFps;
-  impl_->videoFrames = 0;
-  impl_->startedAt = std::chrono::steady_clock::now();
-  impl_->lastError.clear();
-  impl_->active = true;
-  impl_->audioRunning.store(true);
+  // Publish the finished pipeline under a short lock (K-04).
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->writer = writer;
+    impl_->videoStream = videoStream;
+    impl_->audioStream = audioStream;
+    impl_->sessionStartHns = MFGetSystemTime();
+    impl_->micSource = micSource;
+    impl_->micReader = micReader;
+    impl_->micCallback = callback;
+    impl_->audioDrained = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    impl_->filePath = filePath;
+    impl_->partPath = partPathUtf8;
+    impl_->width = width;
+    impl_->height = height;
+    impl_->fps = safeFps;
+    impl_->videoFrames = 0;
+    impl_->startedAt = std::chrono::steady_clock::now();
+    impl_->lastError.clear();
+    impl_->starting = false;
+    impl_->active = true;
+    impl_->audioRunning.store(true);
+  }
 
   // Kick off the async pump; the callback keeps re-requesting samples.
   hr = micReader->ReadSample(
@@ -616,8 +662,15 @@ void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
   sample->SetSampleTime(MFGetSystemTime() - impl_->sessionStartHns);
   sample->SetSampleDuration(
       static_cast<LONGLONG>(kHnsPerSecond / impl_->fps));
-  if (SUCCEEDED(impl_->writer->WriteSample(impl_->videoStream, sample.Get()))) {
+  const HRESULT writeHr =
+      impl_->writer->WriteSample(impl_->videoStream, sample.Get());
+  if (SUCCEEDED(writeHr)) {
     ++impl_->videoFrames;
+  } else if (impl_->lastError.empty()) {
+    // REC-02: a failing sink writer (disk full, I/O error) used to be
+    // silently ignored - the recording looked healthy while writing nothing.
+    // Surface it once via recording.status (which streams to the webapp).
+    impl_->lastError = hresultError("writer_failed", writeHr);
   }
 }
 
@@ -627,6 +680,8 @@ void MeetingRecorder::stop() {
   ComPtr<IMFMediaSource> micSource;
   ComPtr<IUnknown> micCallback;
   HANDLE drained = nullptr;
+  std::string finalPath;
+  std::string partPath;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (!impl_->active) {
@@ -634,6 +689,8 @@ void MeetingRecorder::stop() {
     }
     impl_->active = false;
     impl_->audioRunning.store(false);
+    finalPath = impl_->filePath;
+    partPath = impl_->partPath;
     writer = impl_->writer;
     micReader = impl_->micReader;
     micSource = impl_->micSource;
@@ -681,6 +738,20 @@ void MeetingRecorder::stop() {
     if (FAILED(hr)) {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       impl_->lastError = hresultError("finish_failed", hr);
+    } else if (!partPath.empty() && !finalPath.empty()) {
+      // REC-03: only a fully finalized file gets the real name. On failure or
+      // crash the ".part" sidecar remains (its fMP4 fragments stay playable)
+      // and never masquerades as a finished recording.
+      const std::wstring from = utf8ToWide(partPath);
+      const std::wstring to = utf8ToWide(finalPath);
+      if (!from.empty() && !to.empty() &&
+          !MoveFileExW(from.c_str(), to.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->lastError.empty()) {
+          impl_->lastError = "rename_failed";
+        }
+      }
     }
   }
 }

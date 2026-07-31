@@ -3,6 +3,7 @@ const mockIsRunning = jest.fn();
 const mockStart = jest.fn();
 const mockStop = jest.fn();
 const mockGetFullStatus = jest.fn();
+const mockNotifyRecordingChanged = jest.fn();
 const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
 const mockMeetingFrontGraphicsConfigureOutputs = jest.fn();
 const mockFrameBusWriteFrame = jest.fn();
@@ -25,6 +26,8 @@ jest.mock("./meeting-helper-manager.js", () => ({
     noteCameraCall: () => undefined,
     noteCameraStopped: () => undefined,
     noteKeyerConfigured: () => undefined,
+    notifyRecordingChanged: (...args: unknown[]) =>
+      mockNotifyRecordingChanged(...args),
   },
 }));
 
@@ -528,6 +531,9 @@ describe("meeting-command-handler", () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.recordingStop).toHaveBeenCalled();
+      // The deck REC mirror and the pushed status snapshot are updated by the
+      // manager's status publisher, not by the handler directly (WP-2.4).
+      expect(mockNotifyRecordingChanged).toHaveBeenCalled();
     });
 
     it("returns recording status via the client", async () => {

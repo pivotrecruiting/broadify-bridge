@@ -108,12 +108,6 @@ constexpr float kEmaWeightMotion = 0.9f;    // moving subject -> low latency
 constexpr double kEmaMotionLow = 6.0;       // meanDiff below this = static
 constexpr double kEmaMotionHigh = 30.0;     // meanDiff above this = clear motion
 
-struct MaskSample {
-  size_t lower = 0u;
-  size_t upper = 0u;
-  uint32_t upperWeight = 0u;
-};
-
 // True full-frame temporal EMA: mask = w*current + (1-w)*previous. Unlike the
 // edge-gated blend it mixes the whole frame, so it both suppresses flicker and
 // restores regions the current frame dropped. Resamples the previous mask
@@ -192,6 +186,59 @@ double computeMaskCoverage(const AlphaMask &mask) {
   }
   return static_cast<double>(foreground) / static_cast<double>(mask.alpha.size());
 }
+
+// Temporal stabilization for the fused (mask-age-0) matte, shared by the
+// macOS and Windows fused paths (KEY-03 - this used to live only in the
+// Windows branch). The collapse guard bridges model dropouts for a bounded
+// number of frames ("person briefly gone" stays invisible); the optional
+// motion-adaptive EMA smooths per-frame confidence flicker. macOS passes
+// applyEma=false so its tuned raw-matte look stays unchanged while still
+// gaining the dropout protection. Only called from the program-loop thread.
+void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
+  static AlphaMask prevFusedMask;
+  static double prevFusedCoverage = 0.0;
+  static int fusedCollapseHold = 0;
+  constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
+  const double fusedCoverage = computeMaskCoverage(fusedMask);
+  const bool fusedCollapsed =
+      fusedCoverage < kMinForegroundCoverage ||
+      fusedCoverage > kMaxForegroundCoverage ||
+      (prevFusedCoverage > kHealthyCoverage &&
+       fusedCoverage < prevFusedCoverage * kCollapseDropRatio);
+  if (fusedCollapsed && !prevFusedMask.alpha.empty() &&
+      fusedCollapseHold < kMaxFusedCollapseHold) {
+    fusedMask = prevFusedMask;
+    ++fusedCollapseHold;
+    return;
+  }
+  fusedCollapseHold = 0;
+  if (applyEma && !prevFusedMask.alpha.empty() &&
+      fusedCoverage >= kMinForegroundCoverage &&
+      fusedCoverage <= kMaxForegroundCoverage) {
+    // Lighter EMA than the async path: the fused matte is age-0, so it needs
+    // less smoothing -> less body trail while still killing the per-frame
+    // flicker. Env-tunable to dial the flicker/ghost trade-off without a
+    // rebuild (higher = crisper/less ghost).
+    static const float fusedEmaStatic = [] {
+      const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_STATIC");
+      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.72f;
+    }();
+    static const float fusedEmaMotion = [] {
+      const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_MOTION");
+      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.96f;
+    }();
+    blendAlphaEma(fusedMask, prevFusedMask, fusedEmaStatic, fusedEmaMotion);
+  }
+  prevFusedMask = fusedMask;
+  prevFusedCoverage = fusedCoverage;
+}
+
+// Set by the fused keyer blocks in the program loop: true while the fused GPU
+// keyer reports fallback (model missing/compile failed/...). While degraded,
+// the loop feeds the async worker again so the Vision/async fallback actually
+// receives frames - previously the submit guard starved it and a fused
+// failure froze the keyer silently (K-03). Program-loop thread only.
+bool g_fusedKeyerDegraded = false;
 
 // Live-frame edge-snap toggle (default ON). The keyer publishes a mask paired
 // with the OLD frame it was computed on; compositing that old frame is the
@@ -947,106 +994,6 @@ void postprocessAlpha(AlphaMask &mask,
   metrics.maskPostprocessMs = elapsedMs(start, end);
 }
 
-uint8_t sampleMaskBilinear(const AlphaMask &mask,
-                           const std::vector<MaskSample> &xSamples,
-                           const std::vector<MaskSample> &ySamples,
-                           uint32_t x,
-                           uint32_t y) {
-  const MaskSample &sampleY = ySamples[y];
-  const uint32_t yWeight = sampleY.upperWeight;
-  const uint32_t inverseYWeight = 256u - yWeight;
-  const uint8_t *row0 = mask.alpha.data() + sampleY.lower * mask.width;
-  const uint8_t *row1 = mask.alpha.data() + sampleY.upper * mask.width;
-  const MaskSample &sampleX = xSamples[x];
-  const uint32_t xWeight = sampleX.upperWeight;
-  const uint32_t inverseXWeight = 256u - xWeight;
-  const uint32_t top =
-      static_cast<uint32_t>(row0[sampleX.lower]) * inverseXWeight +
-      static_cast<uint32_t>(row0[sampleX.upper]) * xWeight;
-  const uint32_t bottom =
-      static_cast<uint32_t>(row1[sampleX.lower]) * inverseXWeight +
-      static_cast<uint32_t>(row1[sampleX.upper]) * xWeight;
-  const uint32_t alpha = (top * inverseYWeight + bottom * yWeight + 32768u) >> 16u;
-  return static_cast<uint8_t>(std::min(alpha, 255u));
-}
-
-void buildMaskSamples(uint32_t frameWidth,
-                      uint32_t frameHeight,
-                      const AlphaMask &mask,
-                      std::vector<MaskSample> &xSamples,
-                      std::vector<MaskSample> &ySamples) {
-  xSamples.assign(frameWidth, MaskSample{});
-  ySamples.assign(frameHeight, MaskSample{});
-  for (uint32_t x = 0; x < frameWidth; ++x) {
-    const double sourceX = frameWidth > 1u
-        ? (static_cast<double>(x) * static_cast<double>(mask.width - 1u)) / static_cast<double>(frameWidth - 1u)
-        : 0.0;
-    const size_t lower = static_cast<size_t>(std::floor(sourceX));
-    xSamples[x].lower = lower;
-    xSamples[x].upper = std::min<size_t>(mask.width - 1u, lower + 1u);
-    xSamples[x].upperWeight = static_cast<uint32_t>(std::round((sourceX - static_cast<double>(lower)) * 256.0));
-  }
-  for (uint32_t y = 0; y < frameHeight; ++y) {
-    const double sourceY = frameHeight > 1u
-        ? (static_cast<double>(y) * static_cast<double>(mask.height - 1u)) / static_cast<double>(frameHeight - 1u)
-        : 0.0;
-    const size_t lower = static_cast<size_t>(std::floor(sourceY));
-    ySamples[y].lower = lower;
-    ySamples[y].upper = std::min<size_t>(mask.height - 1u, lower + 1u);
-    ySamples[y].upperWeight = static_cast<uint32_t>(std::round((sourceY - static_cast<double>(lower)) * 256.0));
-  }
-}
-
-
-uint8_t normalizeKeyedLayerAlpha(uint8_t alpha) {
-  constexpr uint8_t kTransparentCutoff = 18u;
-  constexpr uint8_t kOpaqueCutoff = 242u;
-
-  if (alpha <= kTransparentCutoff) {
-    return 0u;
-  }
-  if (alpha >= kOpaqueCutoff) {
-    return 255u;
-  }
-
-  const float normalized = static_cast<float>(alpha - kTransparentCutoff) /
-      static_cast<float>(kOpaqueCutoff - kTransparentCutoff);
-  return static_cast<uint8_t>(std::round(smoothstep(0.0f, 1.0f, normalized) * 255.0f));
-}
-
-// Applies the alpha mask onto the frame in place. Runs on the keyer worker
-// thread once per published mask, so the program loop composites pre-keyed
-// frames without a full-resolution alpha pass (and frame copy) per program
-// frame.
-void applyAlphaMaskToFrame(VideoFrame &frame, const AlphaMask &mask) {
-  if (frame.rgba.empty() ||
-      mask.alpha.empty() ||
-      frame.width == 0u ||
-      frame.height == 0u ||
-      mask.width == 0u ||
-      mask.height == 0u) {
-    return;
-  }
-
-  std::vector<MaskSample> xSamples(frame.width);
-  std::vector<MaskSample> ySamples(frame.height);
-  buildMaskSamples(frame.width, frame.height, mask, xSamples, ySamples);
-
-  for (uint32_t y = 0; y < frame.height; ++y) {
-    for (uint32_t x = 0; x < frame.width; ++x) {
-      const size_t frameOffset = (static_cast<size_t>(y) * frame.width + x) * 4u;
-      const uint8_t sampledAlpha = sampleMaskBilinear(mask, xSamples, ySamples, x, y);
-      const uint8_t normalizedAlpha = normalizeKeyedLayerAlpha(sampledAlpha);
-      frame.rgba[frameOffset + 3u] = normalizedAlpha;
-      if (normalizedAlpha == 0u) {
-        frame.rgba[frameOffset + 0u] = 0u;
-        frame.rgba[frameOffset + 1u] = 0u;
-        frame.rgba[frameOffset + 2u] = 0u;
-      }
-    }
-  }
-}
-
 class AsyncKeyerWorker {
  public:
   AsyncKeyerWorker(const Options &options, MeetingState &state, std::atomic<bool> &running)
@@ -1588,8 +1535,11 @@ void runFramePipeline(const Options &options,
         keyerSettings.performanceMode = state.performanceMode;
       }
       // The fused path keys synchronously below; don't also run the async worker
-      // (that would run CoreML twice per frame).
-      if (hasNewCameraFrame && keyerEnabled && !gpuPipelineEnabled()) {
+      // (that would run the model twice per frame). While the fused keyer is
+      // degraded, the async worker takes over - it must receive frames or the
+      // fallback can never produce a mask (K-03).
+      if (hasNewCameraFrame && keyerEnabled &&
+          (!gpuPipelineEnabled() || g_fusedKeyerDegraded)) {
         keyerWorker.submit(latestCameraFrame);
       }
       if (hasCameraFrame) {
@@ -1786,10 +1736,15 @@ void runFramePipeline(const Options &options,
             sharpenAlphaEdge(liveRefinedMask);
           }
           if (!liveRefinedMask.alpha.empty()) {
-            maskForCompositor = &liveRefinedMask;
             if (fresherFrame) {
+              // KEY-02: the refined mask belongs to the CURRENT frame now.
+              // The GPU compositors cache mask uploads by timestampNs
+              // (metal_compositor / d3d11_compositor) - with the old paired
+              // stamp they would keep compositing the stale texture.
+              liveRefinedMask.timestampNs = latestCameraFrame.timestampNs;
               frameForCompositor = &latestCameraFrame;
             }
+            maskForCompositor = &liveRefinedMask;
           }
         }
       }
@@ -1804,7 +1759,11 @@ void runFramePipeline(const Options &options,
         static CoreMLKeyer fusedKeyer(options.modelsDir);
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
         if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
+          g_fusedKeyerDegraded = false;
           fusedMask = std::move(fused.mask);
+          // Dropout guard only (no EMA): keeps the tuned macOS look, but a
+          // model dropout no longer blanks the presenter for a frame (KEY-03).
+          stabilizeFusedMask(fusedMask, /*applyEma=*/false);
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           shouldRenderProgram = true;
@@ -1814,6 +1773,12 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.maskAgeAvgMs = 0.0;
           state.degradationStage = "fused";
           state.staleMaskActive = false;
+        } else {
+          // Publish the failure instead of freezing silently (K-03): the
+          // status stream now reports fallback_active + reason, and the async
+          // Vision fallback starts receiving frames (submit guard above).
+          g_fusedKeyerDegraded = true;
+          updateMeetingKeyerStatus(state, fused.status);
         }
       }
 #elif defined(_WIN32)
@@ -1827,6 +1792,7 @@ void runFramePipeline(const Options &options,
         static ModnetKeyer fusedKeyer(ModnetKeyerOptions{options.modelsDir});
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
         if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
+          g_fusedKeyerDegraded = false;
           fusedMask = std::move(fused.mask);
           // Temporal stabilization FIRST, on the raw matte: the motion-adaptive
           // EMA smooths the per-frame confidence jitter and the collapse guard
@@ -1834,45 +1800,7 @@ void runFramePipeline(const Options &options,
           // refine BELOW then re-snaps the edge to the CURRENT frame, so the EMA
           // never softens the visible boundary -> stable body AND crisp edge
           // (mirrors the async worker's EMA -> live-snap order).
-          static AlphaMask prevFusedMask;
-          static double prevFusedCoverage = 0.0;
-          static int fusedCollapseHold = 0;
-          constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
-          const double fusedCoverage = computeMaskCoverage(fusedMask);
-          const bool fusedCollapsed =
-              fusedCoverage < kMinForegroundCoverage ||
-              fusedCoverage > kMaxForegroundCoverage ||
-              (prevFusedCoverage > kHealthyCoverage &&
-               fusedCoverage < prevFusedCoverage * kCollapseDropRatio);
-          if (fusedCollapsed && !prevFusedMask.alpha.empty() &&
-              fusedCollapseHold < kMaxFusedCollapseHold) {
-            fusedMask = prevFusedMask;
-            ++fusedCollapseHold;
-          } else {
-            fusedCollapseHold = 0;
-            if (!prevFusedMask.alpha.empty() &&
-                fusedCoverage >= kMinForegroundCoverage &&
-                fusedCoverage <= kMaxForegroundCoverage) {
-              // Lighter EMA than the async path: the fused matte is age-0, so it
-              // needs less smoothing -> less body trail while still killing the
-              // per-frame flicker. Env-tunable to dial the flicker/ghost
-              // trade-off without a rebuild (higher = crisper/less ghost).
-              static const float fusedEmaStatic = [] {
-                const char *raw =
-                    std::getenv("BROADIFY_MEETING_FUSED_EMA_STATIC");
-                return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.72f;
-              }();
-              static const float fusedEmaMotion = [] {
-                const char *raw =
-                    std::getenv("BROADIFY_MEETING_FUSED_EMA_MOTION");
-                return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.96f;
-              }();
-              blendAlphaEma(fusedMask, prevFusedMask, fusedEmaStatic,
-                            fusedEmaMotion);
-            }
-            prevFusedMask = fusedMask;
-            prevFusedCoverage = fusedCoverage;
-          }
+          stabilizeFusedMask(fusedMask, /*applyEma=*/true);
           // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
           // CURRENT frame so the visible boundary stays crisp on motion.
           if (!(d3d11GuidedRefineAvailable() &&
@@ -1888,6 +1816,12 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.maskAgeAvgMs = 0.0;
           state.degradationStage = "fused";
           state.staleMaskActive = false;
+        } else {
+          // Publish the failure instead of freezing silently (K-03): the
+          // status stream now reports fallback_active + reason, and the async
+          // fallback path starts receiving frames (submit guard above).
+          g_fusedKeyerDegraded = true;
+          updateMeetingKeyerStatus(state, fused.status);
         }
       }
 #else

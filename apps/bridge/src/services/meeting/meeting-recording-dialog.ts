@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
 
@@ -79,5 +80,13 @@ export function buildDefaultRecordingPath(now = new Date()): string {
     osPlatform() === "win32"
       ? join(homedir(), "Videos")
       : join(homedir(), "Movies");
+  try {
+    // The target folder may not exist (fresh Windows profile without a Videos
+    // dir): the recorder does not create directories, so recording.start
+    // would fail opaquely.
+    mkdirSync(baseDir, { recursive: true });
+  } catch {
+    // Best effort - the recorder reports the real error if writing fails.
+  }
   return join(baseDir, fileName);
 }

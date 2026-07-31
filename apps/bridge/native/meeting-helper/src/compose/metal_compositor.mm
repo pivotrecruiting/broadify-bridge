@@ -475,7 +475,9 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
       mediaFrame.width = plan.media.width;
       mediaFrame.height = plan.media.height;
       mediaFrame.timestampNs = plan.media.cacheKey;
-      // Borrow the pixel data without copying; uploadLayer only reads it.
+      // NOTE: assign() COPIES the full pixel buffer (up to ~8 MB per layer per
+      // frame). A true zero-copy upload (shared MTLBuffer/IOSurface) is the
+      // planned WP-4.5 optimization; the D3D11 compositor already avoids it.
       mediaFrame.rgba.assign(plan.media.rgba, plan.media.rgba + static_cast<size_t>(plan.media.width) * plan.media.height * 4u);
       if (uploadLayer(ctx.media, &mediaFrame)) {
         uniforms.mediaPresent = 1u;
