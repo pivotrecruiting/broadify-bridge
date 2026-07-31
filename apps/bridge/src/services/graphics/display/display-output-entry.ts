@@ -704,6 +704,26 @@ app.on("window-all-closed", () => {
   app.quit();
 });
 
+// Orphan watchdog (WP-2.7): the bridge passes its PID via env (a ppid
+// comparison is unreliable - electron wrappers re-parent right after spawn).
+// conference-display-output.ts has always SET this env var; nothing here read
+// it, so a crashed bridge left a fullscreen output window on the projector.
+const bridgeParentPid = Number.parseInt(process.env.BRIDGE_PARENT_PID ?? "", 10);
+if (Number.isFinite(bridgeParentPid) && bridgeParentPid > 0) {
+  setInterval(() => {
+    try {
+      process.kill(bridgeParentPid, 0);
+    } catch {
+      stopFrameBusReader();
+      app.quit();
+      // app.quit can hang on a wedged GPU window; the orphan must still die.
+      setTimeout(() => {
+        process.exit(0);
+      }, 5000).unref();
+    }
+  }, 2000).unref();
+}
+
 function startFrameBusReaderWithRetry(attempt: number): void {
   const started = startFrameBusReader();
   if (started) {

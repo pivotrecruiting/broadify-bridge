@@ -818,7 +818,10 @@ export class MeetingHelperManager {
         this.handleStdoutChunk(chunk, logger);
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        logger.debug?.(`[MeetingHelper] ${chunk.toString().trimEnd()}`);
+        // warn, not debug: stderr is where the C++ helper prints crashes and
+        // assertion failures - at debug level they were invisible in
+        // production logs (WP-2.7).
+        logger.warn(`[MeetingHelper] ${chunk.toString().trimEnd()}`);
       });
       child.on("exit", (code, signal) => {
         logger.info(
