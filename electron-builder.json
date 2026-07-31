@@ -87,7 +87,8 @@
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
-    "runAfterFinish": false
+    "runAfterFinish": false,
+    "include": "build/windows-installer.nsh"
   },
   "msi": {
     "oneClick": false,

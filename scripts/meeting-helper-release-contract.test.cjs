@@ -132,6 +132,50 @@ test("release workflows share the verified Windows dependency installer", () => 
   assert.match(release, /matrix\.os == 'windows-2022' && secrets\.AZURE_CLIENT_SECRET/);
 });
 
+test("Windows distribution builds, packages, signs and registers the vcam DLL", () => {
+  // The virtual camera on Windows is a COM media source DLL loaded by the
+  // Frame Server. Historically it was never part of dist:win, so installer
+  // machines had no "Broadify Camera" at all - these assertions keep the
+  // whole chain wired: build -> extraResources -> signing -> registration.
+  const distWin = packageJson.scripts["dist:win"];
+  const buildIndex = distWin.indexOf("build:vcam-dll:windows");
+  const packIndex = distWin.indexOf("electron-builder");
+  assert.ok(buildIndex >= 0, "dist:win must build the vcam DLL");
+  assert.ok(buildIndex < packIndex, "the DLL must be built before packaging");
+  assert.match(
+    packageJson.scripts["build:vcam-dll:windows"],
+    /vcam-helper\/windows\/build\.ps1/,
+  );
+
+  const builderConfig = read("electron-builder.config.cjs");
+  assert.match(
+    builderConfig,
+    /native\/vcam-helper\/broadify-vcam\.dll/,
+    "win extraResources must package the DLL",
+  );
+
+  const signList = read("scripts/sign-windows-native-resources.cjs");
+  assert.match(signList, /resources\/native\/vcam-helper\/broadify-vcam\.dll/);
+
+  const builderJson = JSON.parse(read("electron-builder.json"));
+  assert.equal(builderJson.nsis.include, "build/windows-installer.nsh");
+  const installerScript = read("build/windows-installer.nsh");
+  assert.match(installerScript, /customInstall/);
+  assert.match(installerScript, /customUnInstall/);
+  // Sysnative, not System32: the 32-bit NSIS process must reach the 64-bit
+  // regsvr32 or the CLSID lands under WOW6432Node where the Frame Server
+  // never looks.
+  assert.match(installerScript, /Sysnative\\regsvr32\.exe/);
+  assert.match(installerScript, /\/u \/s/);
+
+  const verifyArtifacts = read("scripts/verify-release-artifacts.sh");
+  assert.match(
+    verifyArtifacts,
+    /vcam-helper\/windows\/broadify-vcam\.dll/,
+    "artifact verification must require the built DLL",
+  );
+});
+
 test("packaged macOS helper verifies the model hashes", () => {
   // The runtime self-test hooks retired with the previous helper lineage;
   // the packaged-model hash verification is the remaining hard gate here.
