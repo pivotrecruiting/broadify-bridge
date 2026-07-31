@@ -104,7 +104,43 @@ function shouldInstallEmbeddedVcamApp(embeddedAppPath: string): boolean {
   return shouldAutoUpgradeEmbeddedVcamApp(embeddedVersion, installedVersion);
 }
 
-function installEmbeddedVcamAppToApplications(): { installed: boolean; error?: string } {
+/**
+ * Returns whether the app bundle carries the Gatekeeper quarantine attribute.
+ * A quarantined bundle launches App-Translocated (from a read-only random
+ * mount), and macOS then refuses the system-extension activation with
+ * OSSystemExtensionError code 3 (unsupportedParentBundleLocation).
+ */
+export function isVcamAppQuarantined(appPath: string): boolean {
+  if (platform() !== "darwin" || !existsSync(appPath)) {
+    return false;
+  }
+  try {
+    execFileSync("/usr/bin/xattr", ["-p", "com.apple.quarantine", appPath], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeVcamQuarantineAttribute(appPath: string): { removed: boolean; error?: string } {
+  try {
+    execFileSync("/usr/bin/xattr", ["-dr", "com.apple.quarantine", appPath], {
+      stdio: "ignore",
+    });
+    return { removed: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { removed: false, error: message };
+  }
+}
+
+function installEmbeddedVcamAppToApplications(): {
+  installed: boolean;
+  error?: string;
+  warning?: string;
+} {
   const embeddedAppPath = resolveEmbeddedVcamHelperAppPath();
   if (!embeddedAppPath || !shouldInstallEmbeddedVcamApp(embeddedAppPath)) {
     return { installed: false };
@@ -115,7 +151,15 @@ function installEmbeddedVcamAppToApplications(): { installed: boolean; error?: s
     execFileSync("/usr/bin/ditto", [embeddedAppPath, DEFAULT_MACOS_VCAM_APP_PATH], {
       stdio: "ignore",
     });
-    return { installed: true };
+    // ditto copies xattrs verbatim, including com.apple.quarantine from a
+    // downloaded bridge bundle. A quarantined copy under /Applications still
+    // launches App-Translocated, so strip the flag right after installing.
+    // A failed strip is a warning, not a hard failure: the copy is complete
+    // and the status path reports remaining quarantine to the user.
+    const quarantine = removeVcamQuarantineAttribute(DEFAULT_MACOS_VCAM_APP_PATH);
+    return quarantine.error
+      ? { installed: true, warning: `Could not clear quarantine: ${quarantine.error}` }
+      : { installed: true };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return { installed: false, error: message };
@@ -366,6 +410,31 @@ export function getVcamHelperStatus(
     };
   }
 
+  // Checked only while the extension is NOT active: after a successful
+  // Gatekeeper approval macOS can leave a defanged quarantine attribute
+  // behind, which is harmless once the extension runs.
+  if (
+    helperAppPath !== null &&
+    isApplicationsVcamAppPath(helperAppPath) &&
+    isVcamAppQuarantined(helperAppPath)
+  ) {
+    return {
+      platform: currentPlatform,
+      platformSupported,
+      available: false,
+      installed,
+      running: false,
+      backend: "coremediaio_camera_extension",
+      framebusName,
+      helperAppPath,
+      requiresUserApproval: true,
+      code: "helper_app_quarantined",
+      message:
+        "BroadifyVCam.app at /Applications is quarantined by macOS Gatekeeper, so it launches App-Translocated and the camera extension cannot activate. " +
+        "Start the virtual camera again to repair this automatically.",
+    };
+  }
+
   if (activationState.waitingForUninstallAfterReboot) {
     return {
       platform: currentPlatform,
@@ -438,6 +507,17 @@ export async function openVcamHelperApp(
     // macOS reuses an already running parent app. Quit stale copies first so
     // activation always uses the embedded extension from the resolved bundle.
     quitRunningVcamHelperApp();
+
+    // Self-heal existing installs: the install step above is skipped when a
+    // valid bundle already sits in /Applications, so a copy quarantined by an
+    // older bridge (ditto used to preserve the xattr) must be repaired here —
+    // otherwise it relaunches App-Translocated forever.
+    if (
+      isApplicationsVcamAppPath(helperAppPath) &&
+      isVcamAppQuarantined(helperAppPath)
+    ) {
+      removeVcamQuarantineAttribute(helperAppPath);
+    }
 
     await new Promise<void>((resolve, reject) => {
       const child: ChildProcess = spawn("open", [helperAppPath], {

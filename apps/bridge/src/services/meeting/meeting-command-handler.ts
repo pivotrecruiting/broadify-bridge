@@ -178,6 +178,36 @@ async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCom
   }
 }
 
+/**
+ * Native recorder failure tokens the webapp maps to localized messages. The
+ * helper reports them as the error MESSAGE under the generic RPC code
+ * `recording_start_failed`; promoting a known token to the errorCode gives the
+ * webapp a stable machine-readable code without a helper rebuild.
+ */
+const RECORDING_ERROR_TOKENS = new Set([
+  "microphone_permission_denied",
+  "microphone_not_found",
+  "microphone_input_failed",
+  "microphone_input_rejected",
+  "disk_full",
+  "writer_create_failed",
+  "already_recording",
+  "invalid_arguments",
+]);
+
+function normalizeRecordingErrorCode(
+  result: MeetingCommandResultT,
+): MeetingCommandResultT {
+  if (
+    !result.success &&
+    typeof result.error === "string" &&
+    RECORDING_ERROR_TOKENS.has(result.error)
+  ) {
+    return { ...result, errorCode: result.error };
+  }
+  return result;
+}
+
 async function listCamerasWithPermissionGate(): Promise<unknown> {
   const client = requireClient();
   const state = await client.getState();
@@ -462,7 +492,7 @@ export async function handleMeetingCommand(
         // and of the pushed meeting_status snapshot (audit SD-04/WP-2.4).
         meetingHelperManager.notifyRecordingChanged();
       }
-      return result;
+      return normalizeRecordingErrorCode(result);
     }
 
     case "meeting_recording_stop": {
@@ -509,7 +539,7 @@ export async function handleMeetingCommand(
       if (started.success) {
         meetingHelperManager.notifyRecordingChanged();
       }
-      return started;
+      return normalizeRecordingErrorCode(started);
     }
 
     case "meeting_recording_status": {

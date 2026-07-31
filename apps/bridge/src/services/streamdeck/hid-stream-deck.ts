@@ -156,6 +156,9 @@ export class HidStreamDeck implements StreamDeckDevice {
         `[streamdeck] setKeyImage(key=${keyIndex}, feedback=${feedback}, bytes=${rgba.length}) failed:`,
         error instanceof Error ? error.message : error,
       );
+      // Rethrow so the per-key catch in the manager records last_error —
+      // swallowing here left real HID failures invisible to the error surfacing.
+      throw error;
     }
   }
 

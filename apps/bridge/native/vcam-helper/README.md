@@ -26,8 +26,9 @@ die aktivierte SystemExtension nicht der zuverlaessige Transport.
   Wechselt zwischen 1-FPS-Idle und 30-FPS-Live-Timer. Ohne aktive Engine wird
   ein gecachter "No Signal"-Frame gesendet, damit die Kamera auswählbar bleibt.
 - `BroadifyVCam/` — Container-App (SwiftUI-Stub), aktiviert/deaktiviert die
-  System Extension über `OSSystemExtensionManager` und fordert die Aktivierung
-  beim Start automatisch an.
+  System Extension über `OSSystemExtensionManager`. Beim Start prüft sie nur
+  den App-Standort (App-Translocation-Banner); die Aktivierung wird bewusst
+  nicht automatisch angefordert, sondern über den Button ausgelöst.
 - `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen)-Definition.
 
 Die WebApp-Preview nutzt den internen MJPEG-Preview-Store des Meeting-Helpers;
@@ -77,8 +78,15 @@ systemextensionsctl developer on   # erfordert Neustart von SIP-Einstellungen gg
 ## Aktivierung
 
 1. Gebaute `BroadifyVCam.app` nach `/Applications` kopieren (System Extensions
-   werden nur aus `/Applications` aktiviert).
-2. App starten. Der Aktivierungsdialog sollte automatisch erscheinen.
+   werden nur aus `/Applications` aktiviert). Wichtig: nie direkt aus einem
+   DMG, dem Downloads-Ordner oder dem Bridge-Ressourcenordner starten —
+   Gatekeeper führt die App dann App-Transloziert aus und macOS lehnt die
+   Aktivierung mit `OSSystemExtensionError code 3` ab. Der Bridge-Installpfad
+   entfernt das Quarantäne-Attribut automatisch; bei Handinstallation:
+   `xattr -dr com.apple.quarantine /Applications/BroadifyVCam.app`.
+2. App aus `/Applications` starten und auf "Activate extension" klicken. Läuft
+   die App vom falschen Ort, zeigt sie stattdessen einen Hinweis mit
+   "Show in Finder".
 3. macOS-Dialog bestätigen, dann in **System Settings → General → Login Items & Extensions → Camera Extensions** `broadify Virtual Camera` aktivieren.
    Die Container-App kann diese Seite per Button **Open System Settings** direkt öffnen.
    Eine reine In-App-Freigabe ist von Apple für System Extensions nicht erlaubt.

@@ -8,6 +8,7 @@ const WINDOWS_NATIVE_RESOURCES = Object.freeze([
   "resources/native/meeting-helper/onnxruntime.dll",
   "resources/native/meeting-helper/onnxruntime_providers_shared.dll",
   "resources/native/meeting-helper/DirectML.dll",
+  "resources/native/vcam-helper/broadify-vcam.dll",
 ]);
 
 function getWindowsNativeResourcePaths(appOutDir) {

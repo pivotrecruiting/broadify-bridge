@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SystemExtensions
 import Foundation
@@ -31,6 +32,23 @@ struct ContentView: View {
                 }
             }
 
+            if manager.needsMoveToApplications {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(
+                        "macOS blocked the camera extension because BroadifyVCam is not "
+                            + "running from the Applications folder (App Translocation). "
+                            + "Move BroadifyVCam.app to /Applications using Finder, then "
+                            + "launch it from there and try again."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+                    }
+                }
+            }
+
             if manager.awaitingUserApproval {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(
@@ -55,6 +73,9 @@ struct ContentView: View {
             Spacer()
         }
         .padding(24)
+        .onAppear {
+            manager.refreshLaunchState()
+        }
     }
 }
 
@@ -65,6 +86,7 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
     @Published var statusText = "Ready."
     @Published var isRequestingActivation = false
     @Published var awaitingUserApproval = false
+    @Published var needsMoveToApplications = false
 
     private let logger = Logger(subsystem: "com.broadify.vcam", category: "system-extension")
 
@@ -79,7 +101,30 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
             .path
     }
 
+    /// Computes the launch banner state; called from onAppear. Deliberately no
+    /// automatic activation request here — that would loop the approval prompt
+    /// on every launch.
+    func refreshLaunchState() {
+        needsMoveToApplications = BundleLocation.needsMoveToApplications
+        if needsMoveToApplications {
+            logger.warning(
+                "App runs outside /Applications (translocated=\(BundleLocation.isTranslocated)) appBundle=\(Bundle.main.bundlePath, privacy: .public)"
+            )
+        }
+    }
+
     func activate() {
+        // Guard before submitting: with the app translocated or outside
+        // /Applications the request is guaranteed to fail with
+        // OSSystemExtensionError code 3, so guide the user instead.
+        refreshLaunchState()
+        if needsMoveToApplications {
+            statusText =
+                "Cannot activate from \(Bundle.main.bundlePath). "
+                + "Move BroadifyVCam.app to /Applications and launch it from there."
+            return
+        }
+
         isRequestingActivation = true
         awaitingUserApproval = false
         let request = OSSystemExtensionRequest.activationRequest(
@@ -169,6 +214,23 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
                 + "Exists on disk: \(extensionExists ? "yes" : "no")."
             logger.error(
                 "Extension request failed because embedded extension was not found appBundle=\(Bundle.main.bundlePath, privacy: .public) embeddedExtension=\(self.expectedEmbeddedExtensionPath, privacy: .public) exists=\(extensionExists)"
+            )
+            return
+        }
+
+        // Defense-in-depth for the pre-submit guard in activate(): macOS
+        // rejects activation from outside /Applications (App Translocation).
+        if let nsError = error as NSError?,
+           nsError.domain == OSSystemExtensionErrorDomain,
+           nsError.code == OSSystemExtensionError.unsupportedParentBundleLocation.rawValue {
+            needsMoveToApplications = true
+            statusText =
+                "macOS blocked the camera extension because BroadifyVCam is not running "
+                + "from the Applications folder (App Translocation). "
+                + "Move BroadifyVCam.app to /Applications using Finder, then launch it "
+                + "from there and try again. Current location: \(Bundle.main.bundlePath)."
+            logger.error(
+                "Extension request failed with unsupportedParentBundleLocation appBundle=\(Bundle.main.bundlePath, privacy: .public)"
             )
             return
         }

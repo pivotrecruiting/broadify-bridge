@@ -150,9 +150,14 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   streamdeck_configure: sideEffect("streamdeck_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
   streamdeck_set_page: sideEffect("streamdeck_set_page", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
   streamdeck_press: sideEffect("streamdeck_press", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", ["streamdeck"]),
-  // Claim arbitration for webapp-delegated deck actions: serial execution on the
-  // "streamdeck" concurrency key is what makes first-claim-wins race-free.
-  streamdeck_action_claim: sideEffect("streamdeck_action_claim", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck", []),
+  // Claim arbitration + result ack for webapp-delegated deck actions. They run
+  // on their own "streamdeck_action" lane so a slow streamdeck_configure (full
+  // page re-render) can never stall a claim past the webapp's claim timeout.
+  // First-claim-wins itself is race-free because claimWebappAction is a
+  // synchronous check-and-set on the single-threaded bridge.
+  streamdeck_action_claim: sideEffect("streamdeck_action_claim", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck_action", []),
+  // A result replay after reconnect would ack a long-gone action: never replay.
+  streamdeck_action_result: sideEffect("streamdeck_action_result", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "streamdeck_action", [], "never"),
   power_socket_list: readOnly("power_socket_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["power.sockets"]),
   power_socket_save: sideEffect("power_socket_save", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"]),
   power_socket_delete: sideEffect("power_socket_delete", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"]),

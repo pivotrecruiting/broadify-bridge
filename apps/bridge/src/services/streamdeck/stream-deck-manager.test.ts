@@ -182,10 +182,14 @@ describe("StreamDeckManager webapp action claims", () => {
       .map((message) => message.data.action_id ?? "");
 
   it("stamps every published webapp action with a unique action_id", async () => {
-    const { device } = await createManagerWithWebappBinding();
+    const { manager, device } = await createManagerWithWebappBinding();
 
     device.press(0);
     await flushAsync();
+    // The key is in flight until its action resolves - complete it first.
+    const [firstId] = publishedActionIds();
+    expect(manager.claimWebappAction(firstId)).toBe(true);
+    manager.resolveWebappAction(firstId, true);
     device.press(0);
     await flushAsync();
 
@@ -205,36 +209,113 @@ describe("StreamDeckManager webapp action claims", () => {
     expect(manager.claimWebappAction(actionId)).toBe(false);
   });
 
-  it("grants claims for unknown action ids (bridge-restart tolerance)", async () => {
+  it("denies claims for unknown action ids (a stale tab must never execute)", async () => {
     const { manager } = await createManagerWithWebappBinding();
 
-    expect(manager.claimWebappAction("issued-before-restart")).toBe(true);
+    expect(manager.claimWebappAction("issued-before-restart")).toBe(false);
   });
 
-  it("frees claims after the TTL", async () => {
+  it("ignores further presses on a key while its action is in flight", async () => {
+    const { manager, device } = await createManagerWithWebappBinding();
+
+    device.press(0);
+    await flushAsync();
+    device.press(0);
+    await flushAsync();
+    expect(publishedActionIds()).toHaveLength(1);
+
+    const [actionId] = publishedActionIds();
+    expect(manager.claimWebappAction(actionId)).toBe(true);
+    manager.resolveWebappAction(actionId, true);
+    device.press(0);
+    await flushAsync();
+    expect(publishedActionIds()).toHaveLength(2);
+  });
+
+  it("flashes the key when no tab claims the action within the window", async () => {
     jest.useFakeTimers();
     try {
-      const manager = new StreamDeckManager();
-      expect(manager.claimWebappAction("action-ttl")).toBe(true);
-      expect(manager.claimWebappAction("action-ttl")).toBe(false);
+      const { manager, device } = await createManagerWithWebappBinding();
+      device.press(0);
+      await flushAsync();
+      const [actionId] = publishedActionIds();
 
-      jest.advanceTimersByTime(31_000);
+      jest.advanceTimersByTime(5_100);
 
-      expect(manager.claimWebappAction("action-ttl")).toBe(true);
+      expect(publishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "streamdeck_error",
+          data: expect.objectContaining({
+            error: expect.stringContaining("not_claimed"),
+          }),
+        }),
+      );
+      // The expired action is gone: a late claim is denied.
+      expect(manager.claimWebappAction(actionId)).toBe(false);
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it("caps remembered claims by evicting the oldest entry", async () => {
-    const manager = new StreamDeckManager();
-    for (let index = 0; index < 256; index += 1) {
-      expect(manager.claimWebappAction(`action-${index}`)).toBe(true);
-    }
+  it("flashes the key when a claimed action never reports a result", async () => {
+    jest.useFakeTimers();
+    try {
+      const { manager, device } = await createManagerWithWebappBinding();
+      device.press(0);
+      await flushAsync();
+      const [actionId] = publishedActionIds();
+      expect(manager.claimWebappAction(actionId)).toBe(true);
 
-    // The 257th claim evicts "action-0"; the newest entries stay claimed.
-    expect(manager.claimWebappAction("action-overflow")).toBe(true);
-    expect(manager.claimWebappAction("action-0")).toBe(true);
-    expect(manager.claimWebappAction("action-255")).toBe(false);
+      jest.advanceTimersByTime(15_100);
+
+      expect(publishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "streamdeck_error",
+          data: expect.objectContaining({
+            error: expect.stringContaining("no_result"),
+          }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("reports a failed webapp result on the key and acknowledges idempotently", async () => {
+    const { manager, device } = await createManagerWithWebappBinding();
+    device.press(0);
+    await flushAsync();
+    const [actionId] = publishedActionIds();
+    expect(manager.claimWebappAction(actionId)).toBe(true);
+
+    expect(manager.resolveWebappAction(actionId, false, "preset_missing")).toEqual({
+      acknowledged: true,
+    });
+    expect(manager.status().last_error).toBe(
+      "webapp:graphics_preset: preset_missing",
+    );
+    expect(publishBridgeEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "streamdeck_error" }),
+    );
+
+    // A second result for the same id is a no-op.
+    expect(manager.resolveWebappAction(actionId, false, "again")).toEqual({
+      acknowledged: false,
+    });
+  });
+
+  it("flashes the key immediately when no relay connection exists", async () => {
+    setBridgeContext({
+      userDataDir: "/tmp/streamdeck-test-does-not-exist",
+      logger,
+      logPath: "/tmp/streamdeck-test.log",
+      publishBridgeEvent: undefined,
+    });
+    const { manager, device } = await createManagerWithWebappBinding();
+
+    device.press(0);
+    await flushAsync();
+
+    expect(manager.status().last_error).toContain("not_delivered");
   });
 });
