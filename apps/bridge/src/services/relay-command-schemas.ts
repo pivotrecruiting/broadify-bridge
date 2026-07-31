@@ -86,6 +86,14 @@ export const StreamDeckActionClaimSchema = z
   })
   .strict();
 
+export const StreamDeckActionResultSchema = z
+  .object({
+    action_id: z.string().trim().min(1).max(64),
+    ok: z.boolean(),
+    error: z.string().max(300).optional(),
+  })
+  .strict();
+
 /**
  * Parse a relay payload with a schema and normalize errors.
  */

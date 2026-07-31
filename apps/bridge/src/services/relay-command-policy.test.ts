@@ -19,7 +19,10 @@ describe("relay-command-policy", () => {
 
   // Pure arbitration commands mutate no cache-relevant state, so an empty
   // invalidation list is complete metadata for them, not an omission.
-  const EMPTY_INVALIDATION_ALLOWED = new Set(["streamdeck_action_claim"]);
+  const EMPTY_INVALIDATION_ALLOWED = new Set([
+    "streamdeck_action_claim",
+    "streamdeck_action_result",
+  ]);
 
   it("requires complete concurrency, invalidation and response metadata", () => {
     for (const policy of getRelayCommandPolicies()) {
