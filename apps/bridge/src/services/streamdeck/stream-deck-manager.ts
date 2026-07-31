@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getBridgeContext } from "../bridge-context.js";
@@ -41,6 +42,15 @@ const RECORDING_TOGGLE_COMMAND = "meeting_recording_toggle";
 const ERROR_FLASH_MS = 1500;
 
 /**
+ * How long a granted webapp-action claim blocks further claims. Matches the
+ * relay command replay window so a late duplicate claim can never win.
+ */
+const WEBAPP_ACTION_CLAIM_TTL_MS = 30_000;
+
+/** Hard cap on remembered claims - a bound, not a tuning knob. */
+const WEBAPP_ACTION_CLAIM_MAX_ENTRIES = 256;
+
+/**
  * The command router never throws - it returns `{success: false, error}`.
  * Extract that failure; `null` means the command succeeded (or the result
  * shape is unknown, which we treat as success rather than false-alarming).
@@ -73,6 +83,8 @@ export class StreamDeckManager {
   private lastError: string | null = null;
   private started = false;
   private recordingActive = false;
+  /** Granted webapp-action claims: action_id -> grant timestamp (ms). */
+  private claimedWebappActions = new Map<string, number>();
 
   /** Provides the action executor (the command router). Call once at wiring. */
   setExecutor(executor: CommandExecutor): void {
@@ -295,6 +307,11 @@ export class StreamDeckManager {
   /**
    * Forwards a webapp-routed action (e.g. a graphics preset) to the open webapp
    * over the relay, so it runs with live state. No-op if no relay is connected.
+   *
+   * The event is a broadcast: every subscribed browser receives it. Each
+   * browser's leader tab calls `streamdeck_action_claim` with the stamped
+   * `action_id` before executing, and {@link claimWebappAction} grants exactly
+   * one - that is what keeps a key press from running once per device.
    */
   private publishWebappAction(
     action: string,
@@ -303,11 +320,39 @@ export class StreamDeckManager {
     try {
       getBridgeContext().publishBridgeEvent?.({
         event: "streamdeck_action",
-        data: { action, payload: payload ?? null },
+        data: { action, payload: payload ?? null, action_id: randomUUID() },
       });
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  /**
+   * First-claim-wins arbitration for a broadcast webapp action. Returns whether
+   * the caller may execute the action. Unknown ids are granted (the map is
+   * in-memory, so a bridge restart must not turn keys dead), which also means a
+   * claim for a never-issued id succeeds - harmless, since only deck events
+   * carry action ids. Callers run serialized on the "streamdeck" concurrency
+   * key, so check-and-set needs no further locking.
+   */
+  claimWebappAction(actionId: string): boolean {
+    const now = Date.now();
+    for (const [id, claimedAt] of this.claimedWebappActions) {
+      if (now - claimedAt > WEBAPP_ACTION_CLAIM_TTL_MS) {
+        this.claimedWebappActions.delete(id);
+      }
+    }
+    if (this.claimedWebappActions.has(actionId)) {
+      return false;
+    }
+    if (this.claimedWebappActions.size >= WEBAPP_ACTION_CLAIM_MAX_ENTRIES) {
+      const oldest = this.claimedWebappActions.keys().next().value;
+      if (oldest !== undefined) {
+        this.claimedWebappActions.delete(oldest);
+      }
+    }
+    this.claimedWebappActions.set(actionId, now);
+    return true;
   }
 
   private async handleInternal(

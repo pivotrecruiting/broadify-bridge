@@ -80,6 +80,12 @@ export const CanonXCPresetRecallSchema = z
   })
   .strict();
 
+export const StreamDeckActionClaimSchema = z
+  .object({
+    action_id: z.string().trim().min(1).max(64),
+  })
+  .strict();
+
 /**
  * Parse a relay payload with a schema and normalize errors.
  */

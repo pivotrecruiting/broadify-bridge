@@ -11,6 +11,7 @@ import {
   ListOutputsSchema,
   MacroIdSchema,
   PairingCodeSchema,
+  StreamDeckActionClaimSchema,
   VmixActionSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
@@ -617,6 +618,20 @@ export class CommandRouter {
             streamDeckManager.press(keyIndex);
           }
           return { success: true, data: streamDeckManager.status() };
+        }
+
+        case "streamdeck_action_claim": {
+          const { action_id: actionId } = parseRelayPayload(
+            StreamDeckActionClaimSchema,
+            payload ?? {},
+            "Invalid payload for streamdeck_action_claim",
+          );
+          // A denied claim is a normal outcome (another device was first),
+          // not an error - it must never trigger error toasts or retries.
+          return {
+            success: true,
+            data: { granted: streamDeckManager.claimWebappAction(actionId) },
+          };
         }
 
         case "power_socket_list": {
