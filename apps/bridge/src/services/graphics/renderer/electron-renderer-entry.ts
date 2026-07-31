@@ -449,7 +449,7 @@ function ensureFrameBusWriter(
       );
       return false;
     }
-    frameBusWriter = frameBusModule.createWriter({
+    const writerOptions = {
       name: frameBusName,
       width,
       height,
@@ -459,7 +459,30 @@ function ensureFrameBusWriter(
         : 1,
       slotCount: frameBusSlotCount,
       forceRecreate: shouldForceRecreateFrameBus(),
-    });
+    };
+    try {
+      frameBusWriter = frameBusModule.createWriter(writerOptions);
+    } catch (createError) {
+      const createMessage =
+        createError instanceof Error ? createError.message : String(createError);
+      // Self-heal (Befund #5): POSIX shared memory survives every process
+      // until reboot, so a stale region from another build (dev vs. packaged
+      // app with different geometry) used to fail "incompatible header/size"
+      // forever - the only cure was a reboot. An incompatible region is by
+      // definition useless to every consumer of OUR geometry, so recreating
+      // it cannot break a valid reader.
+      if (!/incompatible (header|size)/i.test(createMessage)) {
+        throw createError;
+      }
+      logger.warn(
+        { frameBusName, createMessage },
+        "[GraphicsRenderer] Stale incompatible FrameBus region found; recreating",
+      );
+      frameBusWriter = frameBusModule.createWriter({
+        ...writerOptions,
+        forceRecreate: true,
+      });
+    }
     frameBusWriter.writeFrame(Buffer.alloc(width * height * 4, 0));
     logger.info(
       {
