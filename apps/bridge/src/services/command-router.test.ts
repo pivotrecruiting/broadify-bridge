@@ -985,26 +985,37 @@ describe("command-router", () => {
       expect(result.errorCode).toBe("output_config_error");
     });
 
-    it("grants a streamdeck action claim exactly once", async () => {
-      const first = await commandRouter.handleCommand(
+    it("denies claims for ids the bridge never issued", async () => {
+      // Exactly-once arbitration over issued ids is covered in the manager
+      // tests; the router contract is: unknown id -> normal denial, no error.
+      const result = await commandRouter.handleCommand(
         "streamdeck_action_claim",
         { action_id: "router-claim-1" },
       );
-      expect(first).toEqual({ success: true, data: { granted: true } });
+      expect(result).toEqual({ success: true, data: { granted: false } });
+    });
 
-      // The denial is a normal result, not an error - other devices lost the
-      // race but must not surface a failure to the operator.
-      const second = await commandRouter.handleCommand(
-        "streamdeck_action_claim",
-        { action_id: "router-claim-1" },
+    it("acknowledges results for unknown action ids as no-ops", async () => {
+      const result = await commandRouter.handleCommand(
+        "streamdeck_action_result",
+        { action_id: "router-result-1", ok: false, error: "preset_missing" },
       );
-      expect(second).toEqual({ success: true, data: { granted: false } });
+      expect(result).toEqual({ success: true, data: { acknowledged: false } });
     });
 
     it("returns validation error for invalid streamdeck_action_claim payload", async () => {
       const result = await commandRouter.handleCommand(
         "streamdeck_action_claim",
         { action_id: "" },
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid payload");
+    });
+
+    it("returns validation error for invalid streamdeck_action_result payload", async () => {
+      const result = await commandRouter.handleCommand(
+        "streamdeck_action_result",
+        { action_id: "x", ok: "yes" },
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain("Invalid payload");

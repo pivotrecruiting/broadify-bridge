@@ -95,13 +95,16 @@ type MeetingHelperManagerStatusT = {
   lastError: string | null;
 };
 
+type EntitlementStatusT = "not_checked" | "present" | "missing" | "invalid";
+
 type MeetingHelperIdentityT = {
   path: string;
   appPath: string | null;
   bundleId: string | null;
   teamId: string | null;
   codeSignatureStatus: "not_checked" | "valid" | "invalid" | "missing";
-  cameraEntitlementStatus: "not_checked" | "present" | "missing" | "invalid";
+  cameraEntitlementStatus: EntitlementStatusT;
+  microphoneEntitlementStatus: EntitlementStatusT;
   tccIdentity: string | null;
 };
 
@@ -231,23 +234,32 @@ function inspectCodesignStatus(targetPath: string): MeetingHelperIdentityT["code
   }
 }
 
-function inspectCameraEntitlementStatus(
-  targetPath: string,
-): MeetingHelperIdentityT["cameraEntitlementStatus"] {
+// Both device entitlements are read from a single codesign spawn: under
+// hardened runtime a missing key means macOS denies the device silently, so
+// the statuses feed startup warnings.
+export function inspectDeviceEntitlementStatuses(targetPath: string): {
+  camera: EntitlementStatusT;
+  microphone: EntitlementStatusT;
+} {
   if (!existsSync(targetPath)) {
-    return "missing";
+    return { camera: "missing", microphone: "missing" };
   }
   if (platform() !== "darwin") {
-    return "not_checked";
+    return { camera: "not_checked", microphone: "not_checked" };
   }
   const result = spawnSync("codesign", ["-d", "--entitlements", ":-", targetPath], {
     encoding: "utf8",
   });
   if (result.status !== 0) {
-    return "invalid";
+    return { camera: "invalid", microphone: "invalid" };
   }
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  return output.includes("com.apple.security.device.camera") ? "present" : "missing";
+  const statusOf = (key: string): EntitlementStatusT =>
+    output.includes(key) ? "present" : "missing";
+  return {
+    camera: statusOf("com.apple.security.device.camera"),
+    microphone: statusOf("com.apple.security.device.audio-input"),
+  };
 }
 
 function inspectMeetingHelperIdentity(helperPath: string): MeetingHelperIdentityT {
@@ -259,6 +271,7 @@ function inspectMeetingHelperIdentity(helperPath: string): MeetingHelperIdentity
       teamId: null,
       codeSignatureStatus: existsSync(helperPath) ? "not_checked" : "missing",
       cameraEntitlementStatus: existsSync(helperPath) ? "not_checked" : "missing",
+      microphoneEntitlementStatus: existsSync(helperPath) ? "not_checked" : "missing",
       tccIdentity: null,
     };
   }
@@ -271,13 +284,15 @@ function inspectMeetingHelperIdentity(helperPath: string): MeetingHelperIdentity
   const infoPath = appPath ? join(appPath, "Contents", "Info.plist") : null;
   const bundleId = infoPath ? readPlistValue(infoPath, "CFBundleIdentifier") : null;
 
+  const deviceEntitlements = inspectDeviceEntitlementStatuses(helperPath);
   return {
     path: helperPath,
     appPath,
     bundleId,
     teamId: readCodesignTeamId(helperPath),
     codeSignatureStatus: inspectCodesignStatus(helperPath),
-    cameraEntitlementStatus: inspectCameraEntitlementStatus(helperPath),
+    cameraEntitlementStatus: deviceEntitlements.camera,
+    microphoneEntitlementStatus: deviceEntitlements.microphone,
     tccIdentity: bundleId ?? null,
   };
 }
@@ -702,7 +717,7 @@ export class MeetingHelperManager {
     }
     this.helperIdentity = inspectMeetingHelperIdentity(helperPath);
     logger.info(
-      `[Meeting] Helper identity: bundleId=${this.helperIdentity.bundleId ?? "none"} tccIdentity=${this.helperIdentity.tccIdentity ?? "none"} codeSignature=${this.helperIdentity.codeSignatureStatus} cameraEntitlement=${this.helperIdentity.cameraEntitlementStatus} teamId=${this.helperIdentity.teamId ?? "none"}`,
+      `[Meeting] Helper identity: bundleId=${this.helperIdentity.bundleId ?? "none"} tccIdentity=${this.helperIdentity.tccIdentity ?? "none"} codeSignature=${this.helperIdentity.codeSignatureStatus} cameraEntitlement=${this.helperIdentity.cameraEntitlementStatus} microphoneEntitlement=${this.helperIdentity.microphoneEntitlementStatus} teamId=${this.helperIdentity.teamId ?? "none"}`,
     );
     if (
       platform() === "darwin" &&
@@ -716,18 +731,26 @@ export class MeetingHelperManager {
         "Meeting helper code signature is invalid; macOS camera permission cannot be requested reliably.",
       );
     }
-    if (
-      platform() === "darwin" &&
-      this.helperIdentity.cameraEntitlementStatus !== "present"
-    ) {
+    const warnOnMissingEntitlement = (
+      device: "camera" | "microphone",
+      status: EntitlementStatusT,
+    ): void => {
+      if (platform() !== "darwin" || status === "present") {
+        return;
+      }
       logger.warn(
-        `[Meeting] Helper camera entitlement is ${this.helperIdentity.cameraEntitlementStatus}; macOS may deny camera access without showing a permission prompt.`,
+        `[Meeting] Helper ${device} entitlement is ${status}; macOS may deny ${device} access without showing a permission prompt.`,
       );
       publishMeetingErrorEvent(
-        "helper_camera_entitlement_missing",
-        "Meeting helper is missing the macOS camera entitlement; camera permission cannot be requested reliably.",
+        `helper_${device}_entitlement_missing`,
+        `Meeting helper is missing the macOS ${device} entitlement; ${device} permission cannot be requested reliably.`,
       );
-    }
+    };
+    warnOnMissingEntitlement("camera", this.helperIdentity.cameraEntitlementStatus);
+    warnOnMissingEntitlement(
+      "microphone",
+      this.helperIdentity.microphoneEntitlementStatus,
+    );
     const modelsDir = resolveMeetingModelsDir(helperPath);
     const requiredModelPath =
       platform() === "darwin"

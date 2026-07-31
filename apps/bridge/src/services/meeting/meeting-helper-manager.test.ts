@@ -3,6 +3,7 @@ import { setBridgeContext } from "../bridge-context.js";
 import {
   __setMeetingHelperPathForTesting,
   findFreePort,
+  inspectDeviceEntitlementStatuses,
   MeetingHelperManager,
   resolveMeetingHelperPath,
   resolveMeetingHelperForwardedEnvArgs,
@@ -30,6 +31,67 @@ describe("meeting-helper-manager", () => {
       logPath: "/tmp/bridge.log",
       logger: mockLogger,
       publishBridgeEvent: mockPublishBridgeEvent,
+    });
+  });
+
+  describe("inspectDeviceEntitlementStatuses", () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const childProcess = require("node:child_process");
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it("reads both device entitlements from a single codesign spawn", () => {
+      jest.spyOn(os, "platform").mockReturnValue("darwin");
+      jest.spyOn(fs, "existsSync").mockReturnValue(true);
+      const spawnSpy = jest
+        .spyOn(childProcess, "spawnSync")
+        .mockReturnValue({
+          status: 0,
+          stdout:
+            "<key>com.apple.security.device.camera</key><true/>",
+          stderr: "",
+        } as never);
+
+      expect(inspectDeviceEntitlementStatuses("/tmp/helper")).toEqual({
+        camera: "present",
+        microphone: "missing",
+      });
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports present for both keys when the packaged helper keeps them", () => {
+      jest.spyOn(os, "platform").mockReturnValue("darwin");
+      jest.spyOn(fs, "existsSync").mockReturnValue(true);
+      jest.spyOn(childProcess, "spawnSync").mockReturnValue({
+        status: 0,
+        stdout:
+          "<key>com.apple.security.device.camera</key><true/>" +
+          "<key>com.apple.security.device.audio-input</key><true/>",
+        stderr: "",
+      } as never);
+
+      expect(inspectDeviceEntitlementStatuses("/tmp/helper")).toEqual({
+        camera: "present",
+        microphone: "present",
+      });
+    });
+
+    it("flags unreadable entitlements as invalid for both devices", () => {
+      jest.spyOn(os, "platform").mockReturnValue("darwin");
+      jest.spyOn(fs, "existsSync").mockReturnValue(true);
+      jest.spyOn(childProcess, "spawnSync").mockReturnValue({
+        status: 1,
+        stdout: "",
+        stderr: "code object is not signed at all",
+      } as never);
+
+      expect(inspectDeviceEntitlementStatuses("/tmp/helper")).toEqual({
+        camera: "invalid",
+        microphone: "invalid",
+      });
     });
   });
 

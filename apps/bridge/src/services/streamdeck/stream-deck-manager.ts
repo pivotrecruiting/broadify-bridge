@@ -42,13 +42,35 @@ const RECORDING_TOGGLE_COMMAND = "meeting_recording_toggle";
 const ERROR_FLASH_MS = 1500;
 
 /**
- * How long a granted webapp-action claim blocks further claims. Matches the
- * relay command replay window so a late duplicate claim can never win.
+ * How long the bridge waits for any browser tab to claim a published webapp
+ * action. No claim within this window means no webapp with a mounted meeting
+ * page picked the action up — the key flashes red instead of dying silently.
  */
-const WEBAPP_ACTION_CLAIM_TTL_MS = 30_000;
+const WEBAPP_ACTION_CLAIM_WINDOW_MS = 5_000;
 
-/** Hard cap on remembered claims - a bound, not a tuning knob. */
+/**
+ * Transport jitter allowed on top of the claim window before an id counts as
+ * stale: a throttled background tab that claims minutes later must be denied,
+ * not granted (it would execute the action long after the key press).
+ */
+const WEBAPP_ACTION_CLAIM_JITTER_MS = 2_000;
+
+/**
+ * How long the bridge waits for the executing tab's streamdeck_action_result
+ * after a granted claim before reporting the key as failed.
+ */
+const WEBAPP_ACTION_RESULT_WINDOW_MS = 15_000;
+
+/** Hard cap on tracked pending actions - a bound, not a tuning knob. */
 const WEBAPP_ACTION_CLAIM_MAX_ENTRIES = 256;
+
+type PendingWebappActionT = {
+  keyIndex: number;
+  command: string;
+  issuedAt: number;
+  state: "issued" | "claimed";
+  timer: NodeJS.Timeout;
+};
 
 /**
  * The command router never throws - it returns `{success: false, error}`.
@@ -82,9 +104,12 @@ export class StreamDeckManager {
   private executor: CommandExecutor | null = null;
   private lastError: string | null = null;
   private started = false;
+  private startPromise: Promise<void> | null = null;
   private recordingActive = false;
-  /** Granted webapp-action claims: action_id -> grant timestamp (ms). */
-  private claimedWebappActions = new Map<string, number>();
+  /** Published webapp actions awaiting their claim and result. */
+  private pendingWebappActions = new Map<string, PendingWebappActionT>();
+  /** Keys with an action in flight; further presses are ignored until done. */
+  private inFlightKeys = new Set<number>();
 
   /** Provides the action executor (the command router). Call once at wiring. */
   setExecutor(executor: CommandExecutor): void {
@@ -101,14 +126,30 @@ export class StreamDeckManager {
     this.started = true;
   }
 
-  /** Starts once (attaches a virtual device + loads mapping) if not already running. */
+  /**
+   * Starts once (attaches a virtual device + loads mapping) if not already
+   * running. Re-entrant: concurrent callers (hot-plug scan + relay resync)
+   * share one start — a second start() used to swap an already attached HID
+   * deck for a virtual one, leaving the real deck dark until replug.
+   */
   async ensureStarted(): Promise<void> {
-    if (!this.started) {
-      await this.start();
+    if (this.started) {
+      return;
     }
+    if (!this.startPromise) {
+      this.startPromise = this.start().finally(() => {
+        this.startPromise = null;
+      });
+    }
+    await this.startPromise;
   }
 
   async stop(): Promise<void> {
+    for (const pending of this.pendingWebappActions.values()) {
+      clearTimeout(pending.timer);
+    }
+    this.pendingWebappActions.clear();
+    this.inFlightKeys.clear();
     if (this.device) {
       await this.device.close();
       this.device = null;
@@ -213,15 +254,24 @@ export class StreamDeckManager {
       await this.handleInternal(binding.command, binding.payload);
       return;
     }
+    // Key spam guard: while an action is in flight (awaiting its executor or
+    // the webapp result), further presses on the same key are dropped —
+    // otherwise a seemingly dead key spawns N parallel commands.
+    if (this.inFlightKeys.has(keyIndex)) {
+      return;
+    }
     // Notify the webapp so a matching on-screen button can flash "pressed".
     this.publishKeyPressed(binding.command, binding.payload);
     if (binding.command.startsWith(STREAMDECK_WEBAPP_PREFIX)) {
       this.publishWebappAction(
+        keyIndex,
+        binding.command,
         binding.command.slice(STREAMDECK_WEBAPP_PREFIX.length),
         binding.payload,
       );
       return;
     }
+    this.inFlightKeys.add(keyIndex);
     try {
       const result = await this.executor?.(binding.command, binding.payload);
       const failure = extractCommandFailure(result);
@@ -233,6 +283,8 @@ export class StreamDeckManager {
       // a future executor might not.
       const message = error instanceof Error ? error.message : String(error);
       this.reportKeyFailure(keyIndex, binding.command, message);
+    } finally {
+      this.inFlightKeys.delete(keyIndex);
     }
   }
 
@@ -276,8 +328,12 @@ export class StreamDeckManager {
         layout.keyHeight,
       );
       await device.setKeyImage(keyIndex, rgba);
-    } catch {
-      // Rendering the error state must never mask the original failure.
+    } catch (error) {
+      // Rendering the error state must never mask the original failure, but
+      // it must not vanish either — on real HID hardware this is the last
+      // place a broken render surfaces.
+      this.lastError =
+        error instanceof Error ? error.message : String(error);
     }
     const restore = setTimeout(() => {
       void this.renderCurrentPage();
@@ -306,53 +362,150 @@ export class StreamDeckManager {
 
   /**
    * Forwards a webapp-routed action (e.g. a graphics preset) to the open webapp
-   * over the relay, so it runs with live state. No-op if no relay is connected.
+   * over the relay, so it runs with live state.
    *
-   * The event is a broadcast: every subscribed browser receives it. Each
-   * browser's leader tab calls `streamdeck_action_claim` with the stamped
-   * `action_id` before executing, and {@link claimWebappAction} grants exactly
-   * one - that is what keeps a key press from running once per device.
+   * Delivery is acknowledged end to end: the action is registered as pending,
+   * the executing tab must claim it ({@link claimWebappAction}) within the
+   * claim window and report back via `streamdeck_action_result`
+   * ({@link resolveWebappAction}) within the result window — any gap flashes
+   * the key red instead of failing silently.
    */
   private publishWebappAction(
+    keyIndex: number,
+    command: string,
     action: string,
     payload?: Record<string, unknown>,
   ): void {
+    const actionId = randomUUID();
+    let publishBridgeEvent;
     try {
-      getBridgeContext().publishBridgeEvent?.({
+      publishBridgeEvent = getBridgeContext().publishBridgeEvent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.reportKeyFailure(keyIndex, command, message);
+      return;
+    }
+    if (!publishBridgeEvent) {
+      this.reportKeyFailure(
+        keyIndex,
+        command,
+        "not_delivered: no relay connection to reach a webapp",
+      );
+      return;
+    }
+    this.registerPendingWebappAction(actionId, keyIndex, command);
+    try {
+      publishBridgeEvent({
         event: "streamdeck_action",
-        data: { action, payload: payload ?? null, action_id: randomUUID() },
+        data: { action, payload: payload ?? null, action_id: actionId },
       });
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      this.clearPendingWebappAction(actionId);
+      this.reportKeyFailure(keyIndex, command, message);
     }
   }
 
+  private registerPendingWebappAction(
+    actionId: string,
+    keyIndex: number,
+    command: string,
+  ): void {
+    if (this.pendingWebappActions.size >= WEBAPP_ACTION_CLAIM_MAX_ENTRIES) {
+      const oldest = this.pendingWebappActions.keys().next().value;
+      if (oldest !== undefined) {
+        this.clearPendingWebappAction(oldest);
+      }
+    }
+    const timer = setTimeout(() => {
+      this.expirePendingWebappAction(actionId);
+    }, WEBAPP_ACTION_CLAIM_WINDOW_MS);
+    timer.unref?.();
+    this.inFlightKeys.add(keyIndex);
+    this.pendingWebappActions.set(actionId, {
+      keyIndex,
+      command,
+      issuedAt: Date.now(),
+      state: "issued",
+      timer,
+    });
+  }
+
+  private clearPendingWebappAction(actionId: string): void {
+    const pending = this.pendingWebappActions.get(actionId);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingWebappActions.delete(actionId);
+    this.inFlightKeys.delete(pending.keyIndex);
+  }
+
+  private expirePendingWebappAction(actionId: string): void {
+    const pending = this.pendingWebappActions.get(actionId);
+    if (!pending) {
+      return;
+    }
+    const failure =
+      pending.state === "issued"
+        ? "not_claimed: no webapp tab with a mounted meeting page picked up the action"
+        : "no_result: the webapp claimed the action but never reported a result";
+    this.clearPendingWebappAction(actionId);
+    this.reportKeyFailure(pending.keyIndex, pending.command, failure);
+  }
+
   /**
-   * First-claim-wins arbitration for a broadcast webapp action. Returns whether
-   * the caller may execute the action. Unknown ids are granted (the map is
-   * in-memory, so a bridge restart must not turn keys dead), which also means a
-   * claim for a never-issued id succeeds - harmless, since only deck events
-   * carry action ids. Callers run serialized on the "streamdeck" concurrency
-   * key, so check-and-set needs no further locking.
+   * First-claim-wins arbitration for a broadcast webapp action. Grants only
+   * ids the bridge itself issued, that are unclaimed and still fresh: an
+   * unknown or expired id is denied so a throttled background tab can never
+   * execute an action minutes after the key press (it would also fail the
+   * pending bookkeeping). After a bridge restart there are no pending presses,
+   * so denying unknown ids is correct. Callers run serialized on the relay
+   * concurrency lane, so check-and-set needs no further locking.
    */
   claimWebappAction(actionId: string): boolean {
-    const now = Date.now();
-    for (const [id, claimedAt] of this.claimedWebappActions) {
-      if (now - claimedAt > WEBAPP_ACTION_CLAIM_TTL_MS) {
-        this.claimedWebappActions.delete(id);
-      }
-    }
-    if (this.claimedWebappActions.has(actionId)) {
+    const pending = this.pendingWebappActions.get(actionId);
+    if (!pending || pending.state !== "issued") {
       return false;
     }
-    if (this.claimedWebappActions.size >= WEBAPP_ACTION_CLAIM_MAX_ENTRIES) {
-      const oldest = this.claimedWebappActions.keys().next().value;
-      if (oldest !== undefined) {
-        this.claimedWebappActions.delete(oldest);
-      }
+    const age = Date.now() - pending.issuedAt;
+    if (age > WEBAPP_ACTION_CLAIM_WINDOW_MS + WEBAPP_ACTION_CLAIM_JITTER_MS) {
+      this.expirePendingWebappAction(actionId);
+      return false;
     }
-    this.claimedWebappActions.set(actionId, now);
+    pending.state = "claimed";
+    clearTimeout(pending.timer);
+    const timer = setTimeout(() => {
+      this.expirePendingWebappAction(actionId);
+    }, WEBAPP_ACTION_RESULT_WINDOW_MS);
+    timer.unref?.();
+    pending.timer = timer;
     return true;
+  }
+
+  /**
+   * Completes a pending webapp action with the executing tab's result. Unknown
+   * ids are acknowledged as no-ops (idempotent: the result may arrive after
+   * the result window already expired the action).
+   */
+  resolveWebappAction(
+    actionId: string,
+    ok: boolean,
+    error?: string,
+  ): { acknowledged: boolean } {
+    const pending = this.pendingWebappActions.get(actionId);
+    if (!pending) {
+      return { acknowledged: false };
+    }
+    this.clearPendingWebappAction(actionId);
+    if (!ok) {
+      this.reportKeyFailure(
+        pending.keyIndex,
+        pending.command,
+        error && error.length > 0 ? error : "webapp_action_failed",
+      );
+    }
+    return { acknowledged: true };
   }
 
   private async handleInternal(
