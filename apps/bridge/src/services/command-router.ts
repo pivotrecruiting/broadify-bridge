@@ -12,6 +12,7 @@ import {
   MacroIdSchema,
   PairingCodeSchema,
   StreamDeckActionClaimSchema,
+  StreamDeckActionResultSchema,
   VmixActionSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
@@ -631,6 +632,22 @@ export class CommandRouter {
           return {
             success: true,
             data: { granted: streamDeckManager.claimWebappAction(actionId) },
+          };
+        }
+
+        case "streamdeck_action_result": {
+          const input = parseRelayPayload(
+            StreamDeckActionResultSchema,
+            payload ?? {},
+            "Invalid payload for streamdeck_action_result",
+          );
+          return {
+            success: true,
+            data: streamDeckManager.resolveWebappAction(
+              input.action_id,
+              input.ok,
+              input.error,
+            ),
           };
         }
 
