@@ -4,6 +4,8 @@
 #include <mutex>
 
 #if defined(__APPLE__)
+#include <sys/statvfs.h>
+
 #import <Accelerate/Accelerate.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
@@ -15,6 +17,10 @@ namespace broadify::meeting {
 #if defined(__APPLE__)
 
 namespace {
+
+// Minimum free disk space to start a recording (REC-02): well above what a
+// few minutes of 1080p H.264 needs, far below any realistic working drive.
+constexpr uint64_t kMinFreeDiskBytes = 500ull * 1024ull * 1024ull;
 
 double secondsSince(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
@@ -69,7 +75,14 @@ struct MeetingRecorder::Impl {
   mutable std::mutex mutex;
 
   bool active = false;
+  // True while start() builds the pipeline OUTSIDE the lock (K-04): guards
+  // against a second concurrent start without serializing the hot path.
+  bool starting = false;
   std::string filePath;
+  // The writer targets filePath + ".part" until finishWriting succeeds
+  // (REC-03): the final path never names a half-written file, and an existing
+  // recording is never deleted before the new one is complete.
+  std::string partPath;
   std::string lastError;
   uint32_t width = 0;
   uint32_t height = 0;
@@ -98,6 +111,7 @@ struct MeetingRecorder::Impl {
     delegate = nil;
     audioQueue = nil;
     sessionStart = kCMTimeInvalid;
+    partPath.clear();
   }
 };
 
@@ -171,27 +185,60 @@ std::vector<MicrophoneInfo> MeetingRecorder::listMicrophones() const {
 bool MeetingRecorder::start(const std::string &filePath,
                             const std::string &micDeviceId, uint32_t width,
                             uint32_t height, uint32_t fps) {
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (impl_->active) {
-    impl_->lastError = "already_recording";
-    return false;
+  // K-04: setup runs WITHOUT the mutex. appendVideoFrame is called from the
+  // program loop every tick on this same mutex - holding it across the
+  // microphone permission wait (up to 10 s) froze VCam/FrameBus/SDI/preview
+  // for the whole init. The lock is only taken to claim the start and to
+  // publish the finished pipeline.
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->active || impl_->starting) {
+      impl_->lastError = "already_recording";
+      return false;
+    }
+    if (width == 0 || height == 0 || filePath.empty()) {
+      impl_->lastError = "invalid_arguments";
+      return false;
+    }
+    impl_->starting = true;
   }
-  if (width == 0 || height == 0 || filePath.empty()) {
-    impl_->lastError = "invalid_arguments";
+  const auto fail = [this](const std::string &error) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->lastError = error;
+    impl_->starting = false;
     return false;
-  }
+  };
 
   @autoreleasepool {
     if (!ensureMicrophoneAccess()) {
-      impl_->lastError = "microphone_permission_denied";
-      return false;
+      return fail("microphone_permission_denied");
     }
 
-    NSString *path = [NSString stringWithUTF8String:filePath.c_str()];
-    NSURL *url = [NSURL fileURLWithPath:path];
+    // REC-02: refuse to start on a nearly full disk instead of failing
+    // opaquely minutes into the recording.
+    const std::string directory = [&] {
+      const size_t slash = filePath.find_last_of('/');
+      return slash == std::string::npos ? std::string(".")
+                                        : filePath.substr(0, slash);
+    }();
+    struct statvfs vfs {};
+    if (statvfs(directory.c_str(), &vfs) == 0) {
+      const uint64_t freeBytes =
+          static_cast<uint64_t>(vfs.f_bavail) * vfs.f_frsize;
+      if (freeBytes < kMinFreeDiskBytes) {
+        return fail("disk_full");
+      }
+    }
+
+    // REC-03: record into a ".part" sidecar and only rename to the final path
+    // after a successful finish. The old code deleted the target up front, so
+    // a crash left neither the old nor a playable new file.
+    const std::string partPathUtf8 = filePath + ".part";
+    NSString *partPath = [NSString stringWithUTF8String:partPathUtf8.c_str()];
+    NSURL *url = [NSURL fileURLWithPath:partPath];
     NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:path]) {
-      [fm removeItemAtPath:path error:nil];
+    if ([fm fileExistsAtPath:partPath]) {
+      [fm removeItemAtPath:partPath error:nil];
     }
 
     NSError *writerError = nil;
@@ -199,10 +246,9 @@ bool MeetingRecorder::start(const std::string &filePath,
                                                      fileType:AVFileTypeMPEG4
                                                         error:&writerError];
     if (writer == nil) {
-      impl_->lastError = writerError != nil
-                             ? [[writerError localizedDescription] UTF8String]
-                             : "writer_create_failed";
-      return false;
+      return fail(writerError != nil
+                      ? [[writerError localizedDescription] UTF8String]
+                      : "writer_create_failed");
     }
     // Crash safety: without fragments the moov atom is written only in
     // finishWriting, so a hard kill mid-recording leaves an unplayable file.
@@ -247,8 +293,7 @@ bool MeetingRecorder::start(const std::string &filePath,
     if ([writer canAddInput:videoInput]) {
       [writer addInput:videoInput];
     } else {
-      impl_->lastError = "video_input_rejected";
-      return false;
+      return fail("video_input_rejected");
     }
 
     NSDictionary *audioSettings = @{
@@ -264,44 +309,38 @@ bool MeetingRecorder::start(const std::string &filePath,
     if ([writer canAddInput:audioInput]) {
       [writer addInput:audioInput];
     } else {
-      impl_->lastError = "audio_input_rejected";
-      return false;
+      return fail("audio_input_rejected");
     }
 
     // Microphone capture session.
     AVCaptureDevice *micDevice = resolveMicrophone(micDeviceId);
     if (micDevice == nil) {
-      impl_->lastError = "microphone_not_found";
-      return false;
+      return fail("microphone_not_found");
     }
     NSError *micError = nil;
     AVCaptureDeviceInput *micInput =
         [AVCaptureDeviceInput deviceInputWithDevice:micDevice error:&micError];
     if (micInput == nil) {
-      impl_->lastError = micError != nil
-                             ? [[micError localizedDescription] UTF8String]
-                             : "microphone_input_failed";
-      return false;
+      return fail(micError != nil
+                      ? [[micError localizedDescription] UTF8String]
+                      : "microphone_input_failed");
     }
     AVCaptureSession *micSession = [[AVCaptureSession alloc] init];
     if (![micSession canAddInput:micInput]) {
-      impl_->lastError = "microphone_input_rejected";
-      return false;
+      return fail("microphone_input_rejected");
     }
     [micSession addInput:micInput];
     AVCaptureAudioDataOutput *audioOutput =
         [[AVCaptureAudioDataOutput alloc] init];
     if (![micSession canAddOutput:audioOutput]) {
-      impl_->lastError = "microphone_output_rejected";
-      return false;
+      return fail("microphone_output_rejected");
     }
     [micSession addOutput:audioOutput];
 
     if (![writer startWriting]) {
-      impl_->lastError = writer.error != nil
-                             ? [[writer.error localizedDescription] UTF8String]
-                             : "start_writing_failed";
-      return false;
+      return fail(writer.error != nil
+                      ? [[writer.error localizedDescription] UTF8String]
+                      : "start_writing_failed");
     }
     const CMTime sessionStart = CMClockGetTime(CMClockGetHostTimeClock());
     [writer startSessionAtSourceTime:sessionStart];
@@ -314,6 +353,8 @@ bool MeetingRecorder::start(const std::string &filePath,
     [audioOutput setSampleBufferDelegate:delegate queue:audioQueue];
     [micSession startRunning];
 
+    // Publish the finished pipeline under a short lock (K-04).
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->writer = writer;
     impl_->videoInput = videoInput;
     impl_->videoAdaptor = adaptor;
@@ -324,12 +365,14 @@ bool MeetingRecorder::start(const std::string &filePath,
     impl_->delegate = delegate;
     impl_->audioQueue = audioQueue;
     impl_->filePath = filePath;
+    impl_->partPath = partPathUtf8;
     impl_->width = width;
     impl_->height = height;
     impl_->fps = safeFps;
     impl_->videoFrames = 0;
     impl_->startedAt = std::chrono::steady_clock::now();
     impl_->lastError.clear();
+    impl_->starting = false;
     impl_->active = true;
   }
   return true;
@@ -374,6 +417,16 @@ void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
     if ([impl_->videoAdaptor appendPixelBuffer:pixelBuffer
                           withPresentationTime:presentationTime]) {
       ++impl_->videoFrames;
+    } else if (impl_->writer.status == AVAssetWriterStatusFailed &&
+               impl_->lastError.empty()) {
+      // REC-02: a failed writer (disk full, I/O error) used to be silently
+      // ignored - the recording looked healthy while writing nothing. Surface
+      // it once via recording.status (which streams to the webapp).
+      impl_->lastError = impl_->writer.error != nil
+                             ? ([[impl_->writer.error localizedDescription]
+                                    UTF8String]
+                                    ?: "writer_failed")
+                             : "writer_failed";
     }
     CVPixelBufferRelease(pixelBuffer);
   }
@@ -387,6 +440,8 @@ void MeetingRecorder::stop() {
   AVAssetWriter *writer = nil;
   AVAssetWriterInput *videoInput = nil;
   AVAssetWriterInput *audioInput = nil;
+  std::string finalPath;
+  std::string partPath;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (!impl_->active) {
@@ -398,6 +453,8 @@ void MeetingRecorder::stop() {
     writer = impl_->writer;
     videoInput = impl_->videoInput;
     audioInput = impl_->audioInput;
+    finalPath = impl_->filePath;
+    partPath = impl_->partPath;
   }
 
   @autoreleasepool {
@@ -424,6 +481,24 @@ void MeetingRecorder::stop() {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->lastError = [[writer.error localizedDescription] UTF8String]
                                ?: "finish_failed";
+      } else if (writer.status == AVAssetWriterStatusCompleted &&
+                 !partPath.empty() && !finalPath.empty()) {
+        // REC-03: only a fully finalized file gets the real name. On failure
+        // or crash the ".part" sidecar remains (its fMP4 fragments stay
+        // playable) and never masquerades as a finished recording.
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *from = [NSString stringWithUTF8String:partPath.c_str()];
+        NSString *to = [NSString stringWithUTF8String:finalPath.c_str()];
+        [fm removeItemAtPath:to error:nil];
+        NSError *renameError = nil;
+        if (![fm moveItemAtPath:from toPath:to error:&renameError]) {
+          std::lock_guard<std::mutex> lock(impl_->mutex);
+          impl_->lastError =
+              renameError != nil
+                  ? ([[renameError localizedDescription] UTF8String]
+                         ?: "rename_failed")
+                  : "rename_failed";
+        }
       }
     }
   }
