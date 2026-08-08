@@ -1,5 +1,6 @@
 param(
-  [string]$OnnxRuntimeVersion = "1.24.4",
+  # Must match the vendored deps/onnxruntime VERSION_NUMBER (1.26.0).
+  [string]$OnnxRuntimeVersion = "1.26.0",
   [string]$DirectMLVersion = "1.15.4",
   [string]$Destination
 )

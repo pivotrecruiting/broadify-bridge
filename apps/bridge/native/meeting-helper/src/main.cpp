@@ -1,6 +1,7 @@
 #include "capture/camera_source.h"
 #include "common/options.h"
 #include "control/control_server.h"
+#include "keyer/modnet_keyer.h"
 #include "pipeline/frame_pipeline.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
@@ -14,10 +15,14 @@
 #include "macos/macos_app.h"
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <numeric>
+#include <vector>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -127,6 +132,103 @@ void printEvent(const std::string &json) {
   std::cout << json << std::endl;
 }
 
+#if BROADIFY_ENABLE_MODNET
+// Deterministic synthetic 1280x720 RGBA frame for the keyer self-test: a
+// horizontal luminance gradient with a bright ellipse roughly where a head
+// and torso would sit, so MODNet has foreground structure to segment.
+VideoFrame makeKeyerSelfTestFrame() {
+  VideoFrame frame;
+  frame.width = 1280u;
+  frame.height = 720u;
+  frame.timestampNs = 1u;
+  frame.rgba.resize(static_cast<size_t>(frame.width) * frame.height * 4u);
+  const double centerX = 640.0;
+  const double centerY = 430.0;
+  const double radiusX = 200.0;
+  const double radiusY = 280.0;
+  for (uint32_t y = 0; y < frame.height; ++y) {
+    for (uint32_t x = 0; x < frame.width; ++x) {
+      const uint8_t gradient =
+          static_cast<uint8_t>((static_cast<uint32_t>(x) * 160u) / frame.width);
+      const double dx = (static_cast<double>(x) - centerX) / radiusX;
+      const double dy = (static_cast<double>(y) - centerY) / radiusY;
+      const bool insideEllipse = dx * dx + dy * dy <= 1.0;
+      const size_t offset = (static_cast<size_t>(y) * frame.width + x) * 4u;
+      frame.rgba[offset + 0u] = insideEllipse ? 235u : gradient;
+      frame.rgba[offset + 1u] = insideEllipse ? 210u : gradient;
+      frame.rgba[offset + 2u] = insideEllipse ? 190u : gradient;
+      frame.rgba[offset + 3u] = 255u;
+    }
+  }
+  return frame;
+}
+
+// Standalone keyer benchmark (--keyer-self-test): per input-size mode, run
+// N timed MODNet inferences on the synthetic frame and print one JSON line
+// with mean/p95 latency. Exit 0 when the model loaded and produced masks for
+// every mode; 1 on any load/inference failure (fallbackActive counts as
+// failure - a missing model must fail the self-test, not pass silently).
+int runKeyerSelfTest(const Options &options) {
+  constexpr int kRunsPerMode = 20;
+  struct SizeMode {
+    const char *performanceMode;
+    uint32_t inputSize;
+  };
+  constexpr SizeMode kModes[] = {
+      {"high_quality", 512u}, {"balanced", 320u}, {"performance", 256u}};
+  const VideoFrame frame = makeKeyerSelfTestFrame();
+  bool ok = true;
+  for (const SizeMode &mode : kModes) {
+    // Fresh keyer per mode: macOS freezes the CoreML input shape when the
+    // session is created, so a shared instance could not switch sizes.
+    ModnetKeyer keyer(ModnetKeyerOptions{options.modelsDir});
+    KeyerSettings settings;
+    settings.performanceMode = mode.performanceMode;
+    std::vector<double> sampleMs;
+    sampleMs.reserve(kRunsPerMode);
+    KeyerStatus lastStatus;
+    for (int run = 0; run < kRunsPerMode; ++run) {
+      const KeyerResult result = keyer.apply(frame, settings);
+      lastStatus = result.status;
+      if (result.status.fallbackActive || result.mask.alpha.empty()) {
+        // Load retries are throttled (30s backoff), further runs are futile.
+        break;
+      }
+      sampleMs.push_back(result.status.inferenceMs);
+    }
+    if (sampleMs.empty()) {
+      ok = false;
+      std::ostringstream line;
+      line << "{\"type\":\"keyer_self_test\",\"provider\":\""
+           << jsonEscape(lastStatus.provider)
+           << "\",\"input_size\":" << mode.inputSize << ",\"error\":\""
+           << jsonEscape(lastStatus.fallbackReason) << "\"}";
+      printEvent(line.str());
+      continue;
+    }
+    const double meanMs =
+        std::accumulate(sampleMs.begin(), sampleMs.end(), 0.0) /
+        static_cast<double>(sampleMs.size());
+    std::vector<double> sorted = sampleMs;
+    std::sort(sorted.begin(), sorted.end());
+    const size_t p95Index = static_cast<size_t>(
+        std::ceil(0.95 * static_cast<double>(sorted.size()))) - 1u;
+    std::ostringstream line;
+    line << "{\"type\":\"keyer_self_test\",\"provider\":\""
+         << jsonEscape(lastStatus.provider)
+         << "\",\"input_size\":" << mode.inputSize
+         << ",\"mean_ms\":" << meanMs << ",\"p95_ms\":" << sorted[p95Index]
+         << ",\"probe_inference_ms\":" << lastStatus.probeInferenceMs << "}";
+    printEvent(line.str());
+  }
+  std::ostringstream summary;
+  summary << "{\"type\":\"keyer_self_test_summary\",\"ok\":"
+          << (ok ? "true" : "false") << "}";
+  printEvent(summary.str());
+  return ok ? 0 : 1;
+}
+#endif  // BROADIFY_ENABLE_MODNET
+
 }  // namespace
 }  // namespace broadify::meeting
 
@@ -140,6 +242,20 @@ int main(int argc, char **argv) {
   std::signal(SIGTERM, signalHandler);
 
   Options options = parseOptions(argc, argv);
+  if (options.keyerSelfTest) {
+    // Standalone benchmark used by scripts/test-meeting-helper.cjs (keyer /
+    // keyer-hardware modes): no --run / --control-socket required.
+#if BROADIFY_ENABLE_MODNET
+    return runKeyerSelfTest(options);
+#else
+    // Built without ONNX Runtime (the default macOS build): report and fail
+    // so CI never mistakes a keyer-less binary for a passing self-test.
+    printEvent(
+        "{\"type\":\"keyer_self_test_summary\",\"ok\":false,"
+        "\"reason\":\"onnxruntime_disabled\"}");
+    return 1;
+#endif
+  }
   if (!options.run) {
     std::cerr << "meeting-helper requires --run" << std::endl;
     return 2;

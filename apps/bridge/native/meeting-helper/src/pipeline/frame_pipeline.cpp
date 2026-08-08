@@ -6,8 +6,11 @@
 #include "framebus_writer.h"
 #include "keyer/coreml_keyer.h"
 #include "keyer/keyer_chain.h"
+#include "keyer/keyer_governor.h"
 #include "keyer/modnet_keyer.h"
+#include "pipeline/framebus_reader_log_gate.h"
 #include "pipeline/guided_mask_refine.h"
+#include "pipeline/keyer_cadence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
 #endif
@@ -285,6 +288,87 @@ bool gpuPipelineEnabled() {
   return false;
 #endif
 }
+
+#if defined(_WIN32)
+// Auto-degradation governor kill-switch (default ON). Set
+// BROADIFY_MEETING_AUTO_DEGRADE=0 to keep the pre-governor behavior: the fused
+// input resolution follows the webapp performance mode and the fused path
+// never self-demotes to async/off. Read once, like gpuPipelineEnabled.
+bool autoDegradeEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_AUTO_DEGRADE");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+}
+
+// BROADIFY_MEETING_KEYER_CADENCE: unset/"auto" -> auto-derive the fused
+// inference interval N from the smoothed inference cost; "0" -> cadence inert
+// (infer every frame); integer N >= 1 -> pin N (1 = every frame).
+struct FusedCadenceEnv {
+  bool enabled = true;
+  int pinnedN = 0;
+};
+
+FusedCadenceEnv fusedCadenceEnv() {
+  static const FusedCadenceEnv parsed = [] {
+    FusedCadenceEnv env;
+    const char *raw = std::getenv("BROADIFY_MEETING_KEYER_CADENCE");
+    if (raw == nullptr || raw[0] == '\0' || std::string(raw) == "auto") {
+      return env;
+    }
+    const int value = std::atoi(raw);
+    if (value <= 0) {
+      env.enabled = false;
+      return env;
+    }
+    env.pinnedN = std::min(value, 30);
+    return env;
+  }();
+  return parsed;
+}
+
+// BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS: testing override for the governor's
+// step-down threshold (replaces stepDownFactor * frame budget when > 0).
+double keyerMaxInferenceOverrideMs() {
+  static const double value = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS");
+    return raw != nullptr ? std::atof(raw) : 0.0;
+  }();
+  return value;
+}
+
+// Same validation as readKeyerPerformanceOverride in keyer_chain.cpp: when the
+// resolution is pinned via env for A/B testing, the governor must not fight it
+// (it keeps sampling, but stops driving performanceMode).
+bool fusedKeyerPerformanceOverrideActive() {
+  static const bool active = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_KEYER_PERFORMANCE");
+    if (raw == nullptr) {
+      return false;
+    }
+    const std::string v(raw);
+    return v == "high_quality" || v == "balanced" || v == "performance";
+  }();
+  return active;
+}
+
+KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
+  KeyerGovernorConfig config;
+  config.frameBudgetMs = 1000.0 / static_cast<double>(fps == 0u ? 30u : fps);
+  config.stepDownOverrideMs = keyerMaxInferenceOverrideMs();
+  return config;
+}
+
+FusedCadenceConfig makeFusedCadenceConfig(uint32_t fps) {
+  FusedCadenceConfig config;
+  config.frameBudgetMs = 1000.0 / static_cast<double>(fps == 0u ? 30u : fps);
+  const FusedCadenceEnv env = fusedCadenceEnv();
+  config.enabled = env.enabled;
+  config.pinnedN = env.pinnedN;
+  return config;
+}
+#endif  // _WIN32
 
 // Edge-live mode (default OFF = the proven path). When ON, MODNet's edge cleanup
 // moves OUT of the keyer worker (where the joint-bilateral refine ages the mask)
@@ -1357,11 +1441,11 @@ class GraphicsFrameBusReader {
                       uint32_t fps,
                       uint64_t nonTransparentPixels,
                       uint32_t maxAlpha) {
-    if (lastLoggedSeq_ == lastSeq_ && std::string(event) == lastLoggedEvent_) {
+    // The gate suppresses the repeating idle stale-reopen cycle and rate
+    // limits identical events; seq changes always pass through.
+    if (!logGate_.shouldLog(event, lastSeq_, width, height, nowNs())) {
       return;
     }
-    lastLoggedSeq_ = lastSeq_;
-    lastLoggedEvent_ = event;
     std::cout << "{\"type\":\"meeting_graphics_framebus\",\"event\":\"" << event
               << "\",\"name\":\"" << name_
               << "\",\"seq\":" << lastSeq_
@@ -1376,8 +1460,7 @@ class GraphicsFrameBusReader {
   framebus_reader_t *reader_ = nullptr;
   uint64_t lastSeq_ = 0;
   uint64_t lastProgressNs_ = 0;
-  uint64_t lastLoggedSeq_ = 0;
-  std::string lastLoggedEvent_;
+  FramebusReaderLogGate logGate_;
   std::string name_;
   bool hasLatestFrame_ = false;
   VideoFrame latestFrame_;
@@ -1782,46 +1865,179 @@ void runFramePipeline(const Options &options,
         }
       }
 #elif defined(_WIN32)
-      if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
-          !latestCameraFrame.rgba.empty()) {
-        // Synchronous DirectML keyer on the CURRENT frame -> mask age 0. The raw
-        // MODNet matte carries no refine, so snap its edge onto the current
-        // frame with the same GPU guided filter the live-snap path uses (CPU
-        // guided as fallback). The async worker self-parks (submit guard above),
-        // so this dedicated instance is the only live DirectML session.
-        static ModnetKeyer fusedKeyer(ModnetKeyerOptions{options.modelsDir});
-        KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
-        if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
-          g_fusedKeyerDegraded = false;
-          fusedMask = std::move(fused.mask);
-          // Temporal stabilization FIRST, on the raw matte: the motion-adaptive
-          // EMA smooths the per-frame confidence jitter and the collapse guard
-          // holds through MODNet dropouts (no "person briefly gone"). The guided
-          // refine BELOW then re-snaps the edge to the CURRENT frame, so the EMA
-          // never softens the visible boundary -> stable body AND crisp edge
-          // (mirrors the async worker's EMA -> live-snap order).
-          stabilizeFusedMask(fusedMask, /*applyEma=*/true);
-          // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
-          // CURRENT frame so the visible boundary stays crisp on motion.
-          if (!(d3d11GuidedRefineAvailable() &&
-                guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
-            guidedRefineMask(fusedMask, latestCameraFrame);
+      {
+        // Auto-degradation governor + inference cadence for the fused path.
+        // Program-loop-thread-only statics, like the fused keyer itself.
+        // Retained between frames: the post-stabilize / pre-guided-refine
+        // matte of the last real inference, its source frame timestamp, and a
+        // luma thumbnail of that frame (motion reference for the cadence).
+        static KeyerAutoGovernor fusedGovernor(makeFusedGovernorConfig(targetFps));
+        static FusedCadenceController fusedCadence(makeFusedCadenceConfig(targetFps));
+        static AlphaMask lastFusedRawMask;
+        static uint64_t lastFusedInferredTsNs = 0u;
+        static LumaThumb lastFusedInferredLuma;
+        static LumaThumb currentFrameLuma;
+        std::string fusedPipelineModeLabel;
+        if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+            !latestCameraFrame.rgba.empty()) {
+          // Synchronous DirectML keyer on the CURRENT frame -> mask age 0. The raw
+          // MODNet matte carries no refine, so snap its edge onto the current
+          // frame with the same GPU guided filter the live-snap path uses (CPU
+          // guided as fallback). The async worker self-parks (submit guard above),
+          // so this dedicated instance is the only live DirectML session.
+          static ModnetKeyer fusedKeyer(ModnetKeyerOptions{options.modelsDir});
+          const auto fusedNow = std::chrono::steady_clock::now();
+          const bool governorAutoEnabled = autoDegradeEnabled();
+          if (governorAutoEnabled) {
+            fusedGovernor.maybeReprobe(fusedNow);
+            // Seed once from the session-build warmup probe (median steady
+            // inference cost at the 512 shape); available after the first
+            // apply() loaded the session, so seeding lands one frame later.
+            if (!fusedGovernor.seeded()) {
+              const double probeMs = fusedKeyer.status().probeInferenceMs;
+              if (probeMs > 0.0) {
+                fusedGovernor.seedProbe(probeMs);
+              }
+            }
+            // The governor drives the fused input resolution; the env
+            // performance pin (A/B testing) wins. ModnetKeyer rebuilds its
+            // DML session safely on a size change.
+            if (!fusedKeyerPerformanceOverrideActive()) {
+              keyerSettings.performanceMode = fusedGovernor.performanceModeForTier();
+            }
           }
-          frameForCompositor = &latestCameraFrame;
-          maskForCompositor = &fusedMask;
-          shouldRenderProgram = true;
-          updateMeetingKeyerStatus(state, fused.status);
+          if (governorAutoEnabled && fusedGovernor.wantsOff()) {
+            // Even async 256 inference is uselessly slow on this machine:
+            // stop keying entirely and say so. The async worker is starved
+            // (g_fusedKeyerDegraded stays false -> submit guard blocks) and
+            // cleared like the keyer-disabled path, so no stale mask lingers.
+            g_fusedKeyerDegraded = false;
+            keyerWorker.clear();
+            maskAgeAverage.clear();
+            selectedPair.reset();
+            frameForCompositor = &latestCameraFrame;
+            maskForCompositor = nullptr;
+            KeyerStatus offStatus;
+            offStatus.activeKeyer = "passthrough";
+            offStatus.backend = "modnet";
+            offStatus.qualityMode = keyerSettings.qualityMode;
+            offStatus.fallbackActive = true;
+            offStatus.fallbackReason = "gpu_too_slow";
+            updateMeetingKeyerStatus(state, offStatus);
+            {
+              std::lock_guard<std::mutex> lock(state.mutex);
+              state.degradationStage = "passthrough";
+              state.staleMaskActive = false;
+              state.keyerMetrics.maskAgeAvgMs = -1.0;
+            }
+            fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
+          } else if (governorAutoEnabled && fusedGovernor.wantsAsyncLite()) {
+            // Fused inference cannot hold frame rate even at 256: hand the
+            // keyer to the async worker (mask reuse keeps the program at
+            // frame rate) via the existing degradation mechanism. The flag
+            // clears automatically once a re-probe steps back up and the
+            // fused path runs (and succeeds) again.
+            g_fusedKeyerDegraded = true;
+            fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
+          } else {
+            downsampleLumaThumb(latestCameraFrame.rgba.data(),
+                                latestCameraFrame.width,
+                                latestCameraFrame.height, currentFrameLuma);
+            const bool hasValidRetainedMask =
+                lastFusedInferredTsNs != 0u && !lastFusedRawMask.alpha.empty();
+            const double motionScore =
+                hasValidRetainedMask && lastFusedInferredLuma.valid()
+                    ? meanAbsLumaDiff(currentFrameLuma, lastFusedInferredLuma)
+                    : 0.0;
+            const CadenceDecision cadenceDecision = fusedCadence.decide(
+                latestCameraFrame.timestampNs, motionScore,
+                hasValidRetainedMask, fusedNow);
+            if (cadenceDecision.runInference) {
+              KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
+              if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
+                g_fusedKeyerDegraded = false;
+                fusedMask = std::move(fused.mask);
+                // Temporal stabilization FIRST, on the raw matte: the motion-adaptive
+                // EMA smooths the per-frame confidence jitter and the collapse guard
+                // holds through MODNet dropouts (no "person briefly gone"). The guided
+                // refine BELOW then re-snaps the edge to the CURRENT frame, so the EMA
+                // never softens the visible boundary -> stable body AND crisp edge
+                // (mirrors the async worker's EMA -> live-snap order).
+                stabilizeFusedMask(fusedMask, /*applyEma=*/true);
+                // Retain the stabilized matte BEFORE the guided refine ties
+                // its edge to this specific frame; cadence-reused frames
+                // re-run the refine against their own (current) frame.
+                lastFusedRawMask = fusedMask;
+                lastFusedInferredTsNs = latestCameraFrame.timestampNs;
+                lastFusedInferredLuma = currentFrameLuma;
+                // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
+                // CURRENT frame so the visible boundary stays crisp on motion.
+                if (!(d3d11GuidedRefineAvailable() &&
+                      guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+                  guidedRefineMask(fusedMask, latestCameraFrame);
+                }
+                frameForCompositor = &latestCameraFrame;
+                maskForCompositor = &fusedMask;
+                shouldRenderProgram = true;
+                updateMeetingKeyerStatus(state, fused.status);
+                if (governorAutoEnabled) {
+                  fusedGovernor.addSample(fused.status.inferenceMs, fusedNow);
+                }
+                fusedCadence.onInferenceCompleted(
+                    latestCameraFrame.timestampNs, fused.status.inferenceMs,
+                    fusedNow);
+                fusedPipelineModeLabel =
+                    fusedCadence.currentN() > 1 ? "fused_cadence" : "fused";
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.keyerMetrics.maskAgeMs = 0.0;
+                state.keyerMetrics.maskAgeAvgMs = 0.0;
+                state.degradationStage = "fused";
+                state.staleMaskActive = false;
+              } else {
+                // Publish the failure instead of freezing silently (K-03): the
+                // status stream now reports fallback_active + reason, and the async
+                // fallback path starts receiving frames (submit guard above).
+                g_fusedKeyerDegraded = true;
+                updateMeetingKeyerStatus(state, fused.status);
+              }
+            } else {
+              // Cadence skip: reuse the retained raw matte, but still run the
+              // per-frame guided refine so the visible edge is snapped to the
+              // CURRENT frame. Booked honestly: the mask body is
+              // maskAgeMs old ("fused_reused"), only the edge is fresh.
+              fusedMask = lastFusedRawMask;
+              if (!(d3d11GuidedRefineAvailable() &&
+                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+                guidedRefineMask(fusedMask, latestCameraFrame);
+              }
+              // The GPU compositors cache mask uploads by timestampNs; the
+              // refined mask belongs to the CURRENT frame now (KEY-02).
+              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+              frameForCompositor = &latestCameraFrame;
+              maskForCompositor = &fusedMask;
+              shouldRenderProgram = true;
+              fusedPipelineModeLabel =
+                  fusedCadence.currentN() > 1 ? "fused_cadence" : "fused";
+              std::lock_guard<std::mutex> lock(state.mutex);
+              state.keyerMetrics.maskAgeMs = cadenceDecision.maskAgeMs;
+              state.degradationStage = "fused_reused";
+              state.staleMaskActive = cadenceDecision.maskAgeMs >=
+                                      keyerSettings.degradation.freshMaskAgeMs;
+            }
+          }
+        } else if (!snapshot.keyerEnabled) {
+          // User disabled the keyer: forget the learned degradation state so
+          // a re-enable starts from a clean probe (spec'd reset point). Not
+          // reset on camera hiccups - those must not wipe governor learning.
+          fusedGovernor.reset();
+          fusedCadence.reset();
+          lastFusedRawMask = AlphaMask{};
+          lastFusedInferredTsNs = 0u;
+          lastFusedInferredLuma = LumaThumb{};
+        }
+        {
           std::lock_guard<std::mutex> lock(state.mutex);
-          state.keyerMetrics.maskAgeMs = 0.0;
-          state.keyerMetrics.maskAgeAvgMs = 0.0;
-          state.degradationStage = "fused";
-          state.staleMaskActive = false;
-        } else {
-          // Publish the failure instead of freezing silently (K-03): the
-          // status stream now reports fallback_active + reason, and the async
-          // fallback path starts receiving frames (submit guard above).
-          g_fusedKeyerDegraded = true;
-          updateMeetingKeyerStatus(state, fused.status);
+          state.keyerPipelineMode = fusedPipelineModeLabel;
         }
       }
 #else

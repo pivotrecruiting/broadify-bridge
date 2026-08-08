@@ -25,6 +25,17 @@ else()
   set(MEETING_HELPER_ENABLE_MODNET "1")
 endif()
 
+# Native unit tests (ctest). Default ON; overridable via the environment like
+# MEETING_HELPER_ENABLE_MODNET. The tests are stdlib-only and never require
+# ONNX Runtime, Metal or MediaFoundation.
+if(DEFINED ENV{MEETING_HELPER_BUILD_TESTS})
+  set(MEETING_HELPER_BUILD_TESTS "$ENV{MEETING_HELPER_BUILD_TESTS}")
+else()
+  set(MEETING_HELPER_BUILD_TESTS "1")
+endif()
+
+enable_testing()
+
 if(APPLE)
   set(DEFAULT_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/onnxruntime/macos-arm64")
 elseif(WIN32)
@@ -47,11 +58,14 @@ set(MEETING_HELPER_SOURCES
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
   src/keyer/keyer_chain.cpp
+  src/keyer/keyer_governor.cpp
   src/keyer/model_manifest.cpp
   src/keyer/modnet_keyer.cpp
   src/main.cpp
   src/pipeline/frame_pipeline.cpp
+  src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
+  src/pipeline/keyer_cadence.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
   src/preview/raw_frame_server.cpp
@@ -178,4 +192,38 @@ if(APPLE)
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.broadify.bridge.meeting-helper"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist"
   )
+endif()
+
+if(MEETING_HELPER_BUILD_TESTS)
+  # Each test links ONLY the production sources it exercises, so the test
+  # binaries stay dependency-free (no ONNX/Metal/MediaFoundation) and build on
+  # every platform regardless of MEETING_HELPER_ENABLE_MODNET.
+  add_executable(guided_mask_refine_test
+    tests/guided_mask_refine_test.cpp
+    src/pipeline/guided_mask_refine.cpp
+  )
+  add_executable(framebus_reader_log_gate_test
+    tests/framebus_reader_log_gate_test.cpp
+    src/pipeline/framebus_reader_log_gate.cpp
+  )
+  add_executable(keyer_governor_test
+    tests/keyer_governor_test.cpp
+    src/keyer/keyer_governor.cpp
+  )
+  add_executable(keyer_cadence_test
+    tests/keyer_cadence_test.cpp
+    src/pipeline/keyer_cadence.cpp
+  )
+  foreach(helper_test
+    guided_mask_refine_test
+    framebus_reader_log_gate_test
+    keyer_governor_test
+    keyer_cadence_test
+  )
+    target_include_directories(${helper_test} PRIVATE src)
+    if(WIN32)
+      target_compile_definitions(${helper_test} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+    add_test(NAME ${helper_test} COMMAND ${helper_test})
+  endforeach()
 endif()

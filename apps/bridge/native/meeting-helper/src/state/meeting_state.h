@@ -115,6 +115,11 @@ struct MeetingState {
   double edgeStabilizationStrength = 0.35;
   KeyerDegradationSettings degradationSettings;
   std::string degradationStage = "fresh";
+  // Windows fused-path pipeline mode set by the auto-degradation governor
+  // wiring: "fused" | "fused_cadence" | "async_lite" | "off". Empty = not
+  // reported (macOS, fused path inactive, legacy failure fallback); the
+  // bridge reads it as "keyer_pipeline_mode" from keyer.get.
+  std::string keyerPipelineMode;
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
   bool staleMaskActive = false;

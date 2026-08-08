@@ -275,6 +275,10 @@ export async function startServer(
     ]);
 
   const shutdown = async (signal: string) => {
+    // FIRST: the process-group SIGTERM may kill the meeting helper before the
+    // meeting stop step below runs; without this its exit would be classified
+    // as a crash and a restart would be armed mid-shutdown.
+    meetingHelperManager.beginShutdown();
     server.log.info(`Received ${signal}, shutting down gracefully...`);
     // Budget must cover MP4 finalization on quit-while-recording: the meeting
     // stop step below waits up to ~20s for recording.stop + control.shutdown.

@@ -20,6 +20,13 @@ Erstellt und startet den Fastify‑Server, initialisiert Logger/Context, Device�
 - Optional: startet Relay‑Client
 - Registriert CORS/WebSocket Plugins
 
+## Shutdown-Reihenfolge
+- `meetingHelperManager.beginShutdown()` ist das ERSTE Statement im
+  Shutdown-Handler (vor Logging und allen Stop-Schritten): Das
+  Prozessgruppen-SIGTERM kann den Meeting-Helper töten, bevor der
+  Meeting-Stop-Schritt läuft; ohne das Flag würde dieser Exit als Crash
+  klassifiziert und mitten im Shutdown ein Restart-Timer gestellt.
+
 ## Fehlerfälle
 - Port belegt (`EADDRINUSE`)
 - Host nicht verfügbar (`EADDRNOTAVAIL`)

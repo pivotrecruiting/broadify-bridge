@@ -88,6 +88,17 @@ Renderer‑Entry: `apps/bridge/src/services/graphics/renderer/electron-renderer-
 - `paint`‑Event liefert BGRA → RGBA
 - Schreibt Frames in FrameBus; keine Frame-Payload über IPC
 
+### Writer-Heartbeat & Reader-Reattach
+Bei statischem Content feuern keine `paint`-Events und die FrameBus-Sequenz
+parkt. Reader (z. B. der `GraphicsFrameBusReader` des Meeting-Helpers) werten
+eine geparkte Sequenz nach 2 s als stale Mapping und schließen/reattachen das
+Segment zyklisch (Idle-Reattach-Self-Heal; ein Log-Gate im Helper unterdrückt
+den sich wiederholenden Idle-Zyklus im Log). Der Renderer verhindert das:
+ein 1-s-Heartbeat (`framebus-heartbeat.ts`) re-publiziert den zuletzt
+geschriebenen Frame mit **unverändertem** Timestamp – die Sequenz läuft
+weiter (Reader bleiben attached), Konsumenten erkennen neue Frames aber per
+Timestamp und rendern nichts erneut.
+
 ## Output‑Adapter
 - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`
