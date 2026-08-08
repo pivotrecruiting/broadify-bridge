@@ -84,10 +84,15 @@ bool shouldUseOpenVino(const MattingBackendOptions &options,
   if (options.forcedBackend == MattingBackendKind::OpenVinoModnet) {
     return true;
   }
-  // Auto: only when an Intel GPU or NPU is present. A CPU-only OpenVINO would
-  // just duplicate the ONNX Runtime CPU fallback with a second runtime.
+  // Auto: only when an NPU is present. Measured on a UHD 630 (Gen9), FP32
+  // OpenVINO-GPU is ~40% slower than DirectML on the same silicon (416ms vs
+  // 300ms @512), and on hybrid systems an "Intel GPU present" trigger would
+  // steal the keyer from a fast discrete DML adapter (26.5ms on a GTX 1660 Ti
+  // in the same laptop). Intel-GPU-only machines therefore stay on DirectML
+  // until the INT8 IR proves faster; BROADIFY_MEETING_KEYER_BACKEND can still
+  // force OpenVINO for measurements.
   for (const std::string &device : availableDevices) {
-    if (hasPrefix(device, "GPU") || hasPrefix(device, "NPU")) {
+    if (hasPrefix(device, "NPU")) {
       return true;
     }
   }

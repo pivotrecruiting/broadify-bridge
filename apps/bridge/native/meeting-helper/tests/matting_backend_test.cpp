@@ -75,16 +75,18 @@ int main() {
   }
 
   {
-    // Auto policy: an Intel GPU or NPU must be present.
+    // Auto policy: only an NPU triggers OpenVINO. An Intel GPU alone must NOT
+    // (measured slower than DirectML in FP32, and on hybrid systems it would
+    // steal the keyer from a fast discrete DML adapter).
     ok &= expect(!shouldUseOpenVino(optionsWith(MattingBackendKind::Auto, false),
                                     true, cpuOnly),
                  "auto stays on modnet with CPU-only devices");
-    ok &= expect(shouldUseOpenVino(optionsWith(MattingBackendKind::Auto, false),
-                                   true, cpuAndGpu),
-                 "auto selects OpenVINO with a GPU device");
-    ok &= expect(shouldUseOpenVino(optionsWith(MattingBackendKind::Auto, false),
-                                   true, cpuAndEnumeratedGpus),
-                 "auto selects OpenVINO with enumerated GPU.N devices");
+    ok &= expect(!shouldUseOpenVino(optionsWith(MattingBackendKind::Auto, false),
+                                    true, cpuAndGpu),
+                 "auto stays on modnet with an Intel GPU but no NPU");
+    ok &= expect(!shouldUseOpenVino(optionsWith(MattingBackendKind::Auto, false),
+                                    true, cpuAndEnumeratedGpus),
+                 "auto stays on modnet with enumerated GPU.N devices only");
     ok &= expect(shouldUseOpenVino(optionsWith(MattingBackendKind::Auto, false),
                                    true, cpuAndNpu),
                  "auto selects OpenVINO with an NPU device");

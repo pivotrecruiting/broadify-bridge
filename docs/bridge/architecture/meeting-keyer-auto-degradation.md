@@ -116,7 +116,13 @@ sites always run the same backend:
 
 Selection policy (evaluated once at keyer creation): OpenVINO is used when it
 is compiled in AND not kill-switched AND (forced via env OR
-`ov::Core::get_available_devices()` reports an Intel `GPU*`/`NPU*` device).
+`ov::Core::get_available_devices()` reports an `NPU*` device). An Intel GPU
+alone deliberately does NOT trigger the auto-selection: measured on a UHD 630
+(Gen9), FP32 OpenVINO-GPU is ~40% slower than DirectML on the same silicon,
+and on hybrid laptops (Intel iGPU + discrete GPU) the trigger would steal the
+keyer from a fast discrete DML adapter. Intel-GPU-only machines stay on
+DirectML until the INT8 IR proves faster; use
+`BROADIFY_MEETING_KEYER_BACKEND=openvino_modnet` for measurements.
 Everything else - including macOS - gets `ModnetKeyer`. If the OpenVINO probe
 throws, the keyer construction fails, or the backend later cannot load its
 model (or fails inference repeatedly), one structured
@@ -132,14 +138,20 @@ compiles persist across helper restarts. An optional INT8 IR
 `scripts/quantize-modnet-openvino.py`, manifest-verified) is preferred over
 the FP32 ONNX when present.
 
-Measured baseline (512 input, why this backend exists):
+Measured baseline (512 input, 2026-08-08, hybrid laptop GTX 1660 Ti + UHD 630):
 
 | Hardware / path | 512 inference |
 | --- | --- |
 | GTX 1660 Ti via DirectML | 26.5 ms |
-| Intel UHD 630 via DirectML | ~280 ms (256: ~80 ms -> governor lands at async-lite) |
+| Intel UHD 630 via DirectML | ~280-300 ms (256: ~80-113 ms -> governor lands at async-lite) |
+| Intel UHD 630 via OpenVINO-GPU (FP32 ONNX) | ~416 ms (256: ~126 ms) - slower than DML on Gen9, hence the NPU-only auto policy |
 | CPU (ORT) | ~195 ms |
-| Intel GPU/NPU via OpenVINO (target) | 30-60 ms -> fused parity on office laptops |
+| NPU / Arc-class iGPU via OpenVINO + INT8 IR (target) | 30-60 ms -> fused parity on office laptops; to be measured on Core-Ultra hardware |
+
+Measurement gotcha: which adapter DirectML gets depends on how the process is
+launched on hybrid-graphics laptops (Windows assigns the power-saving GPU to
+directly launched unknown exes; the same binary spawned via node/the bridge
+got the discrete GPU). Compare backends only within the same launch method.
 
 ## Environment Matrix
 
