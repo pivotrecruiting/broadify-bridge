@@ -139,6 +139,29 @@ if (config.win) {
       from: "apps/bridge/native/meeting-helper/DirectML.dll",
       to: "native/meeting-helper/DirectML.dll",
     },
+    // OpenVINO runtime (Windows matting backend on Intel GPU/NPU). Shipped
+    // exactly like the onnxruntime DLLs above: build.ps1 copies them next to
+    // the helper exe, extraResources packages them, the afterSign hook signs
+    // the DLLs. Keep in sync with scripts/prepare-windows-openvino-deps.ps1,
+    // scripts/sign-windows-native-resources.cjs and the Windows smoke tests.
+    ...[
+      "openvino.dll",
+      "openvino_auto_batch_plugin.dll",
+      "openvino_auto_plugin.dll",
+      "openvino_hetero_plugin.dll",
+      "openvino_intel_cpu_plugin.dll",
+      "openvino_intel_gpu_plugin.dll",
+      "openvino_intel_npu_plugin.dll",
+      "openvino_ir_frontend.dll",
+      "openvino_onnx_frontend.dll",
+      "cache.json",
+      "tbb12.dll",
+      "tbbbind_2_5.dll",
+      "tbbmalloc.dll",
+    ].map((file) => ({
+      from: `apps/bridge/native/meeting-helper/${file}`,
+      to: `native/meeting-helper/${file}`,
+    })),
     {
       // Windows virtual-camera media source; registered by the NSIS installer
       // (build/windows-installer.nsh) so the Frame Server can load it.

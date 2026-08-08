@@ -182,6 +182,21 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/onnxruntime.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/DirectML.dll")
+  # OpenVINO matting backend runtime (dist:win builds with
+  # MEETING_HELPER_ENABLE_OPENVINO=1; build.ps1 copies these next to the exe).
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_auto_batch_plugin.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_auto_plugin.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_hetero_plugin.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_intel_cpu_plugin.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_intel_gpu_plugin.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_intel_npu_plugin.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_ir_frontend.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/openvino_onnx_frontend.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/cache.json")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/tbb12.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/tbbbind_2_5.dll")
+  REQUIRED_FILES+=("apps/bridge/native/meeting-helper/tbbmalloc.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/modnet.onnx")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/windows/broadify-vcam.dll")
   EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
@@ -333,6 +348,12 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   check_architecture "apps/bridge/native/meeting-helper/onnxruntime.dll"
   check_architecture "apps/bridge/native/meeting-helper/onnxruntime_providers_shared.dll"
   check_architecture "apps/bridge/native/meeting-helper/DirectML.dll"
+  check_architecture "apps/bridge/native/meeting-helper/openvino.dll"
+  check_architecture "apps/bridge/native/meeting-helper/openvino_intel_cpu_plugin.dll"
+  check_architecture "apps/bridge/native/meeting-helper/openvino_intel_gpu_plugin.dll"
+  check_architecture "apps/bridge/native/meeting-helper/openvino_intel_npu_plugin.dll"
+  check_architecture "apps/bridge/native/meeting-helper/openvino_onnx_frontend.dll"
+  check_architecture "apps/bridge/native/meeting-helper/tbb12.dll"
   check_modnet_manifest_hash
 else
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper"

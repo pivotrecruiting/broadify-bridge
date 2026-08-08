@@ -75,6 +75,80 @@ test("Windows distribution enables MODNet before native tests", () => {
   }
 });
 
+// The OpenVINO runtime set shipped next to meeting-helper.exe. Must stay in
+// sync across the deps script, the helper build, packaging, signing and the
+// smoke tests - these assertions are that sync guard.
+const OPENVINO_RUNTIME_FILES = [
+  "openvino.dll",
+  "openvino_auto_batch_plugin.dll",
+  "openvino_auto_plugin.dll",
+  "openvino_hetero_plugin.dll",
+  "openvino_intel_cpu_plugin.dll",
+  "openvino_intel_gpu_plugin.dll",
+  "openvino_intel_npu_plugin.dll",
+  "openvino_ir_frontend.dll",
+  "openvino_onnx_frontend.dll",
+  "cache.json",
+  "tbb12.dll",
+  "tbbbind_2_5.dll",
+  "tbbmalloc.dll",
+];
+
+test("Windows distribution builds, ships and signs the OpenVINO backend", () => {
+  // Build flag: dist:win must enable OpenVINO, and CMake must fail closed
+  // when the vendored runtime is missing (same contract as MODNet/ORT).
+  const distWin = packageJson.scripts["dist:win"];
+  assert.match(distWin, /MEETING_HELPER_ENABLE_OPENVINO=1/);
+  const cmake = read("apps/bridge/native/meeting-helper/CMakeLists.txt");
+  assert.match(cmake, /DEFINED ENV\{MEETING_HELPER_ENABLE_OPENVINO\}/);
+  assert.match(cmake, /BROADIFY_ENABLE_OPENVINO=1/);
+  assert.match(cmake, /BROADIFY_ENABLE_OPENVINO=0/);
+  assert.match(cmake, /prepare-windows-openvino-deps\.ps1/);
+
+  // Runtime file set: helper build copies it, extraResources packages it,
+  // the signing hook signs the DLLs, the smoke tests assert it on disk.
+  const build = read("apps/bridge/native/meeting-helper/build.ps1");
+  const builderConfig = read("electron-builder.config.cjs");
+  const signList = read("scripts/sign-windows-native-resources.cjs");
+  const smokeMsi = read("scripts/smoke-test-windows-msi.ps1");
+  const helperSmoke = read("scripts/test-windows-meeting-helper.ps1");
+  const verifyArtifacts = read("scripts/verify-release-artifacts.sh");
+  for (const file of OPENVINO_RUNTIME_FILES) {
+    assert.ok(build.includes(file), `build.ps1 must copy ${file}`);
+    assert.ok(builderConfig.includes(file), `extraResources must package ${file}`);
+    assert.ok(smokeMsi.includes(file), `MSI smoke must expect ${file}`);
+    assert.ok(helperSmoke.includes(file), `helper smoke must require ${file}`);
+    assert.ok(verifyArtifacts.includes(file), `artifact verification must require ${file}`);
+    if (file.endsWith(".dll")) {
+      assert.ok(
+        signList.includes(`resources/native/meeting-helper/${file}`),
+        `signing list must contain ${file}`,
+      );
+    }
+  }
+  // cache.json is data and must NOT be in the signing list.
+  assert.ok(
+    !signList.includes("resources/native/meeting-helper/cache.json"),
+    "cache.json must not be signed",
+  );
+});
+
+test("Windows OpenVINO dependencies are pinned and hash-verified", () => {
+  const dependencyScript = read("scripts/prepare-windows-openvino-deps.ps1");
+  // Official archive host with the documented layout, exact build pinned.
+  assert.match(
+    dependencyScript,
+    /storage\.openvinotoolkit\.org\/repositories\/openvino\/packages/,
+  );
+  assert.match(dependencyScript, /\$OpenVinoBuild = "2025\.4\.2\.\d+\.[0-9a-f]+"/);
+  // SHA256 pin: a 64-hex default plus a hard verification of the download.
+  assert.match(dependencyScript, /\$OpenVinoSha256 = "[0-9a-f]{64}"/);
+  assert.match(dependencyScript, /Get-FileHash -Algorithm SHA256/);
+  assert.match(dependencyScript, /SHA256 mismatch/);
+  // An empty hash parameter must be rejected, never downloaded unverified.
+  assert.match(dependencyScript, /IsNullOrWhiteSpace\(\$OpenVinoSha256\)/);
+});
+
 test("D3D11 uniform struct stays in sync with its HLSL cbuffer", () => {
   // This lineage mirrors one C++ struct into the HLSL cbuffer inline; the
   // background-image fields prove the company-background ABI is plumbed
@@ -108,6 +182,7 @@ test("release workflows share the verified Windows dependency installer", () => 
   const testRelease = read(".github/workflows/test-release.yml");
   for (const workflow of [release, testRelease]) {
     assert.match(workflow, /prepare-windows-meeting-helper-deps\.ps1/);
+    assert.match(workflow, /prepare-windows-openvino-deps\.ps1/);
     assert.match(workflow, /smoke-test-windows-msi\.ps1/);
   }
   assert.doesNotMatch(

@@ -25,6 +25,32 @@ Windows:
 powershell -NoProfile -ExecutionPolicy Bypass -File apps\bridge\native\meeting-helper\build.ps1
 ```
 
+### OpenVINO-Backend (Windows, optional)
+
+Das OpenVINO-Matting-Backend (MODNet auf Intel GPU/NPU, siehe
+`docs/bridge/architecture/meeting-keyer-auto-degradation.md`, Abschnitt
+"Matting Backends") ist ein Build-Opt-in; `dist:win` aktiviert es immer.
+
+```powershell
+# 1. Vendored Runtime holen (gepinnte Version + SHA256-Verifikation):
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\prepare-windows-openvino-deps.ps1
+
+# 2. Helper mit OpenVINO bauen (kopiert die Runtime-DLLs neben die exe):
+$env:MEETING_HELPER_ENABLE_OPENVINO = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File apps\bridge\native\meeting-helper\build.ps1
+```
+
+A/B-Benchmark DirectML vs. OpenVINO in einem Kommando (der Self-Test
+benchmarkt bei einkompiliertem OpenVINO BEIDE Backends, Felder `backend` +
+`provider` unterscheiden die Sektionen):
+
+```powershell
+apps\bridge\native\meeting-helper\meeting-helper.exe --keyer-self-test --models-dir apps\bridge\native\meeting-helper\models
+# oder: npm run test:meeting-helper-keyer-hardware
+```
+
+INT8-IR (optional, offline): `scripts/quantize-modnet-openvino.md`.
+
 ## Runtime-Vertrag
 
 Die Bridge spawnt:
@@ -68,6 +94,9 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_AUTO_DEGRADE=0` | Auto-Degradation-Governor (Windows fused) deaktivieren |
 | `BROADIFY_MEETING_KEYER_CADENCE` | Inferenz-Kadenz: `auto`/`0`/`N` (siehe `meeting-keyer-auto-degradation.md`) |
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | Test-Override fuer die Step-Down-Schwelle des Governors |
+| `BROADIFY_MEETING_KEYER_BACKEND` | `modnet`/`openvino_modnet` erzwingt das Matting-Backend (Windows-Factory) |
+| `BROADIFY_MEETING_KEYER_OPENVINO=0` | OpenVINO-Kill-Switch: immer ONNX Runtime/DirectML |
+| `BROADIFY_MEETING_OPENVINO_DEVICE` | `AUTO` (Default, expandiert zu `AUTO:NPU,GPU,CPU`)/`NPU`/`GPU`/`CPU` |
 
 Beim Start des macOS-App-Bundles reicht die Bridge ausschließlich diese
 dokumentierten `BROADIFY_MEETING_*`-Variablen als validierte `--env`-Argumente

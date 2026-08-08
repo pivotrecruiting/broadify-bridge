@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #if defined(__APPLE__)
 #include "keyer/coreml_keyer.h"
@@ -15,13 +16,18 @@ namespace {
 // Backend override (BROADIFY_MEETING_KEYER_BACKEND=modnet|vision_person_segmentation).
 // Forces the keyer backend regardless of what the webapp requested — used to A/B
 // the MODNet matting backend against Apple Vision on macOS without touching the
-// UI. Empty/unset keeps the requested backend.
+// UI. Empty/unset keeps the requested backend. "openvino_modnet" (the Windows
+// OpenVINO force, consumed by the matting backend factory reading the same
+// env) dispatches through the MODNet path here.
 std::string readKeyerBackendOverride() {
   const char *value = std::getenv("BROADIFY_MEETING_KEYER_BACKEND");
   if (value == nullptr) {
     return "";
   }
   const std::string v(value);
+  if (v == "openvino_modnet") {
+    return "modnet";
+  }
   return (v == "modnet" || v == "vision_person_segmentation" ||
           v == "coreml_modnet")
              ? v
@@ -77,7 +83,10 @@ std::string readKeyerQualityOverride() {
 
 KeyerChain::KeyerChain(const Options &options)
     : options_{options.modelsDir},
-      modnet_(std::make_unique<ModnetKeyer>(options_))
+      // Backend factory: the same createMattingKeyer call as the Windows
+      // fused keyer in frame_pipeline.cpp, so both sites run the same
+      // backend (ONNX Runtime, or OpenVINO where compiled in and selected).
+      modnet_(createMattingKeyer(makeMattingBackendOptionsFromEnv(options_.modelsDir)))
 #if defined(__APPLE__)
       ,
       vision_(std::make_unique<VisionKeyer>()),

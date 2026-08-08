@@ -7,6 +7,7 @@
 #include "keyer/coreml_keyer.h"
 #include "keyer/keyer_chain.h"
 #include "keyer/keyer_governor.h"
+#include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #include "pipeline/framebus_reader_log_gate.h"
 #include "pipeline/guided_mask_refine.h"
@@ -1880,12 +1881,16 @@ void runFramePipeline(const Options &options,
         std::string fusedPipelineModeLabel;
         if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
-          // Synchronous DirectML keyer on the CURRENT frame -> mask age 0. The raw
+          // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
           // MODNet matte carries no refine, so snap its edge onto the current
           // frame with the same GPU guided filter the live-snap path uses (CPU
           // guided as fallback). The async worker self-parks (submit guard above),
-          // so this dedicated instance is the only live DirectML session.
-          static ModnetKeyer fusedKeyer(ModnetKeyerOptions{options.modelsDir});
+          // so this dedicated instance is the only live inference session.
+          // Backend via the matting factory (DirectML MODNet, or OpenVINO on
+          // Intel GPU/NPU when compiled in) - the SAME factory as KeyerChain's
+          // async keyer, so both sites always run the same backend.
+          static const std::unique_ptr<MattingKeyer> fusedKeyer =
+              createMattingKeyer(makeMattingBackendOptionsFromEnv(options.modelsDir));
           const auto fusedNow = std::chrono::steady_clock::now();
           const bool governorAutoEnabled = autoDegradeEnabled();
           if (governorAutoEnabled) {
@@ -1894,7 +1899,7 @@ void runFramePipeline(const Options &options,
             // inference cost at the 512 shape); available after the first
             // apply() loaded the session, so seeding lands one frame later.
             if (!fusedGovernor.seeded()) {
-              const double probeMs = fusedKeyer.status().probeInferenceMs;
+              const double probeMs = fusedKeyer->status().probeInferenceMs;
               if (probeMs > 0.0) {
                 fusedGovernor.seedProbe(probeMs);
               }
@@ -1953,7 +1958,7 @@ void runFramePipeline(const Options &options,
                 latestCameraFrame.timestampNs, motionScore,
                 hasValidRetainedMask, fusedNow);
             if (cadenceDecision.runInference) {
-              KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
+              KeyerResult fused = fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 g_fusedKeyerDegraded = false;
                 fusedMask = std::move(fused.mask);

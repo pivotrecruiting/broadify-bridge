@@ -21,6 +21,22 @@ $requiredFiles = @(
   (Join-Path $helperDirectory "onnxruntime.dll"),
   (Join-Path $helperDirectory "onnxruntime_providers_shared.dll"),
   (Join-Path $helperDirectory "DirectML.dll"),
+  # OpenVINO matting backend runtime: openvino.dll is a static import of the
+  # helper exe (the binary-load smoke below fails without it); the plugins,
+  # frontends and TBB are loaded at run time from the same directory.
+  (Join-Path $helperDirectory "openvino.dll"),
+  (Join-Path $helperDirectory "openvino_auto_batch_plugin.dll"),
+  (Join-Path $helperDirectory "openvino_auto_plugin.dll"),
+  (Join-Path $helperDirectory "openvino_hetero_plugin.dll"),
+  (Join-Path $helperDirectory "openvino_intel_cpu_plugin.dll"),
+  (Join-Path $helperDirectory "openvino_intel_gpu_plugin.dll"),
+  (Join-Path $helperDirectory "openvino_intel_npu_plugin.dll"),
+  (Join-Path $helperDirectory "openvino_ir_frontend.dll"),
+  (Join-Path $helperDirectory "openvino_onnx_frontend.dll"),
+  (Join-Path $helperDirectory "cache.json"),
+  (Join-Path $helperDirectory "tbb12.dll"),
+  (Join-Path $helperDirectory "tbbbind_2_5.dll"),
+  (Join-Path $helperDirectory "tbbmalloc.dll"),
   (Join-Path $resolvedModelsDir "modnet.onnx")
 )
 

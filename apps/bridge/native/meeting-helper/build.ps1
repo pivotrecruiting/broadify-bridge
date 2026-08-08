@@ -78,4 +78,41 @@ if ($env:MEETING_HELPER_ENABLE_MODNET -ne "0") {
   }
 }
 
+if ($env:MEETING_HELPER_ENABLE_OPENVINO -eq "1") {
+  # OpenVINO runtime set next to the exe (same mechanism as the ONNX Runtime
+  # DLLs above; electron-builder packages them from here). Keep the list in
+  # sync with scripts/prepare-windows-openvino-deps.ps1,
+  # electron-builder.config.cjs, scripts/sign-windows-native-resources.cjs
+  # and the Windows smoke tests. Fail closed: the exe links openvino.dll, so
+  # a missing runtime file must abort the build, not surface as a loader
+  # error on customer machines.
+  $openVinoRoot = $env:BROADIFY_OPENVINO_ROOT
+  if ([string]::IsNullOrWhiteSpace($openVinoRoot)) {
+    $openVinoRoot = Join-Path $rootDir "deps\openvino\windows-x64"
+  }
+  $openVinoBin = Join-Path $openVinoRoot "bin"
+  $openVinoFiles = @(
+    "openvino.dll",
+    "openvino_auto_batch_plugin.dll",
+    "openvino_auto_plugin.dll",
+    "openvino_hetero_plugin.dll",
+    "openvino_intel_cpu_plugin.dll",
+    "openvino_intel_gpu_plugin.dll",
+    "openvino_intel_npu_plugin.dll",
+    "openvino_ir_frontend.dll",
+    "openvino_onnx_frontend.dll",
+    "cache.json",
+    "tbb12.dll",
+    "tbbbind_2_5.dll",
+    "tbbmalloc.dll"
+  )
+  foreach ($file in $openVinoFiles) {
+    $sourcePath = Join-Path $openVinoBin $file
+    if (-not (Test-Path $sourcePath)) {
+      throw "OpenVINO runtime file not found: $sourcePath (run scripts/prepare-windows-openvino-deps.ps1)"
+    }
+    Copy-Item -Force $sourcePath (Join-Path $rootDir $file)
+  }
+}
+
 Write-Host "Built $outputExe"

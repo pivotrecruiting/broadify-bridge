@@ -96,6 +96,51 @@ inactive):
 | `async_lite` | governor handed the keyer to the async worker (`Lite256`) |
 | `off` | governor stopped keying (`gpu_too_slow` passthrough) |
 
+## Matting Backends (Windows)
+
+The fused path (and KeyerChain's async keyer) obtain their MODNet keyer from
+one factory, `src/keyer/matting_backend.cpp` (`createMattingKeyer`), so both
+sites always run the same backend:
+
+- `ModnetKeyer` (`src/keyer/modnet_keyer.cpp`): ONNX Runtime, DirectML EP on
+  the best DXGI GPU, CPU fallback. The default everywhere.
+- `OpenVinoKeyer` (`src/keyer/openvino_keyer.cpp`): OpenVINO runtime on Intel
+  GPU/NPU. Windows-only and opt-in at build time
+  (`MEETING_HELPER_ENABLE_OPENVINO=1` -> `BROADIFY_ENABLE_OPENVINO`); dist:win
+  ships it. Both backends share the exact pre-/post-processing
+  (`src/keyer/matting_common.cpp`), fill the same `KeyerStatus` contract
+  (`backend` stays `modnet`; `provider` reports `openvino-npu` /
+  `openvino-gpu` / `openvino-cpu` from the actually selected device) and feed
+  the governor the same 3-run warmup-median `probeInferenceMs` at the 512
+  shape.
+
+Selection policy (evaluated once at keyer creation): OpenVINO is used when it
+is compiled in AND not kill-switched AND (forced via env OR
+`ov::Core::get_available_devices()` reports an Intel `GPU*`/`NPU*` device).
+Everything else - including macOS - gets `ModnetKeyer`. If the OpenVINO probe
+throws, the keyer construction fails, or the backend later cannot load its
+model (or fails inference repeatedly), one structured
+`matting_backend_fallback` line is logged and the ONNX Runtime backend takes
+over permanently for the process.
+
+Like the DirectML path, OpenVINO compiles one static-shape model per input
+size (512/320/256; NPU requires static shapes) and caches compiled models per
+size; `ov::cache_dir` points at
+`%LOCALAPPDATA%\Broadify\meeting-helper\openvino-cache` so GPU/NPU blob
+compiles persist across helper restarts. An optional INT8 IR
+(`models/modnet-ov-int8.xml/.bin`, produced offline via
+`scripts/quantize-modnet-openvino.py`, manifest-verified) is preferred over
+the FP32 ONNX when present.
+
+Measured baseline (512 input, why this backend exists):
+
+| Hardware / path | 512 inference |
+| --- | --- |
+| GTX 1660 Ti via DirectML | 26.5 ms |
+| Intel UHD 630 via DirectML | ~280 ms (256: ~80 ms -> governor lands at async-lite) |
+| CPU (ORT) | ~195 ms |
+| Intel GPU/NPU via OpenVINO (target) | 30-60 ms -> fused parity on office laptops |
+
 ## Environment Matrix
 
 All variables are forwarded by the bridge (allowlist in
@@ -109,17 +154,26 @@ All variables are forwarded by the bridge (allowlist in
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | Testing override for the governor's step-down threshold |
 | `BROADIFY_MEETING_KEYER_PERFORMANCE` | Pins the input resolution (A/B testing); the governor keeps sampling but stops driving `performanceMode` |
 | `BROADIFY_MEETING_GPU_PIPELINE=0` | Disables the fused path entirely (async worker path only) |
+| `BROADIFY_MEETING_KEYER_BACKEND` | `modnet` / `openvino_modnet` force the matting backend (read once by the factory) |
+| `BROADIFY_MEETING_KEYER_OPENVINO=0` | OpenVINO kill switch: always the ONNX Runtime backend, even when forced |
+| `BROADIFY_MEETING_OPENVINO_DEVICE` | `AUTO` (default; expands to OpenVINO `AUTO:NPU,GPU,CPU`) / `NPU` / `GPU` / `CPU` |
 
 ## Measurement Protocol
 
 - `--keyer-self-test` (helper flag, used by
   `npm run test:meeting-helper-keyer[-hardware]`): 20 timed inferences per
   input size (512/320/256) on a deterministic synthetic frame; prints one
-  JSON line per size with `mean_ms`, `p95_ms`, `probe_inference_ms` and a
-  final `keyer_self_test_summary`. Exit 0 only when the model loaded and
-  produced masks. `BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu` skips the
-  CoreML/DirectML providers for hardware-independent CI timings.
+  JSON line per size with `backend`, `mean_ms`, `p95_ms`,
+  `probe_inference_ms` and a final `keyer_self_test_summary`. With OpenVINO
+  compiled in it benchmarks BOTH backends (sections `modnet` and
+  `openvino_modnet`, distinguished additionally by the `provider` field) -
+  the one-command DirectML-vs-OpenVINO A/B. Exit 0 only when every
+  benchmarked backend loaded and produced masks.
+  `BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu` skips the CoreML/DirectML
+  providers and pins the OpenVINO device to CPU for hardware-independent CI
+  timings.
 - Live: `keyer.get` exposes `inference_ms`, the mask-stage metrics,
   `degradation_stage`, `stale_mask_active` and `keyer_pipeline_mode`.
-- Unit tests: `keyer_governor_test` and `keyer_cadence_test` run via ctest
-  (`npm run test:meeting-helper-native`).
+- Unit tests: `keyer_governor_test`, `keyer_cadence_test` and
+  `matting_backend_test` (backend selection policy + env parsing + factory
+  fallback wiring) run via ctest (`npm run test:meeting-helper-native`).

@@ -1,5 +1,6 @@
 #include "keyer/modnet_keyer.h"
 
+#include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
 #include "util/sha256.h"
 
@@ -31,11 +32,9 @@ namespace {
 
 constexpr uint32_t kFallbackInputSize = 512;
 constexpr uint32_t kMaxCpuInferenceThreads = 4;
-// MODNet normalizes input as (value/255 - 0.5)/0.5 -> range [-1,1] (mean/std
-// 0.5 per channel), NOT ImageNet mean/std. Using ImageNet stats here silently
-// degrades the matte. Channel order is RGB (our frames are already RGBA), NCHW.
-constexpr float kMean[3] = {0.5f, 0.5f, 0.5f};
-constexpr float kStd[3] = {0.5f, 0.5f, 0.5f};
+// Input normalization and mask readback live in matting_common.cpp: they are
+// shared verbatim with the OpenVINO backend so both produce identical tensors
+// and masks for the same frame.
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
@@ -52,31 +51,6 @@ uint32_t dimensionOrFallback(int64_t value) {
     return static_cast<uint32_t>(value);
   }
   return kFallbackInputSize;
-}
-
-// Square MODNet input resolution derived from the performance mode. The model
-// accepts dynamic input dimensions, so lowering this is the primary lever for
-// inference latency on weak GPUs/CPUs. Masks below 400px are edge-refined by
-// the joint-bilateral upsampler in the frame pipeline, which recovers detail.
-constexpr uint32_t kModnetInputHighQuality = 512u;
-constexpr uint32_t kModnetInputBalanced = 320u;
-constexpr uint32_t kModnetInputPerformance = 256u;
-
-uint32_t modnetInputSizeForMode(const std::string &performanceMode) {
-  if (performanceMode == "performance") {
-    return kModnetInputPerformance;
-  }
-  if (performanceMode == "balanced") {
-    return kModnetInputBalanced;
-  }
-  return kModnetInputHighQuality;  // high_quality / unknown -> full resolution
-}
-
-size_t clampIndex(size_t value, size_t upperExclusive) {
-  if (upperExclusive == 0u) {
-    return 0u;
-  }
-  return std::min(value, upperExclusive - 1u);
 }
 
 int inferenceThreadCount() {
@@ -196,7 +170,7 @@ class ModnetKeyer::Impl {
     }
 #endif
     const auto tensorStart = std::chrono::steady_clock::now();
-    makeInputTensor(input, tensor_);
+    buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_);
     const auto tensorEnd = std::chrono::steady_clock::now();
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -228,7 +202,7 @@ class ModnetKeyer::Impl {
         maskWidth = dimensionOrFallback(outputShape[outputShape.size() - 1u]);
       }
       const auto maskStart = std::chrono::steady_clock::now();
-      copyAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
+      copyModnetAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
       sessionRunSize_ = inputWidth_;
@@ -515,42 +489,6 @@ class ModnetKeyer::Impl {
     }
   }
 #endif
-
-  void makeInputTensor(const VideoFrame &input, std::vector<float> &tensor) const {
-    tensor.resize(static_cast<size_t>(3u) * inputWidth_ * inputHeight_);
-    const size_t channelSize = static_cast<size_t>(inputWidth_) * inputHeight_;
-    for (uint32_t y = 0; y < inputHeight_; ++y) {
-      const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * input.height) / inputHeight_);
-      for (uint32_t x = 0; x < inputWidth_; ++x) {
-        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * input.width) / inputWidth_);
-        const size_t srcOffset = (static_cast<size_t>(sy) * input.width + sx) * 4u;
-        const size_t dstOffset = static_cast<size_t>(y) * inputWidth_ + x;
-        const float r = static_cast<float>(input.rgba[srcOffset + 0u]) / 255.0f;
-        const float g = static_cast<float>(input.rgba[srcOffset + 1u]) / 255.0f;
-        const float b = static_cast<float>(input.rgba[srcOffset + 2u]) / 255.0f;
-        tensor[dstOffset] = (r - kMean[0]) / kStd[0];
-        tensor[channelSize + dstOffset] = (g - kMean[1]) / kStd[1];
-        tensor[channelSize * 2u + dstOffset] = (b - kMean[2]) / kStd[2];
-      }
-    }
-  }
-
-  void copyAlphaMask(const float *mask, uint32_t maskWidth, uint32_t maskHeight, uint64_t timestampNs, AlphaMask &outputMask) const {
-    if (mask == nullptr || maskWidth == 0u || maskHeight == 0u) {
-      return;
-    }
-    outputMask.width = maskWidth;
-    outputMask.height = maskHeight;
-    outputMask.timestampNs = timestampNs;
-    outputMask.alpha.assign(static_cast<size_t>(maskWidth) * maskHeight, 0u);
-    for (uint32_t y = 0; y < maskHeight; ++y) {
-      for (uint32_t x = 0; x < maskWidth; ++x) {
-        const size_t offset = static_cast<size_t>(y) * maskWidth + x;
-        const float alpha = std::clamp(mask[offset], 0.0f, 1.0f);
-        outputMask.alpha[offset] = static_cast<uint8_t>(std::round(alpha * 255.0f));
-      }
-    }
-  }
 
   void setFallback(const std::string &reason) {
     status_.activeKeyer = "passthrough";
