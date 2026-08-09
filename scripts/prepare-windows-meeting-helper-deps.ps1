@@ -23,9 +23,12 @@ if ([string]::IsNullOrWhiteSpace($Destination)) {
 $vendoredVersionFile = Join-Path $Destination "VERSION_NUMBER"
 if (Test-Path -LiteralPath $vendoredVersionFile -PathType Leaf) {
   $vendoredVersion = (Get-Content -LiteralPath $vendoredVersionFile -Raw).Trim()
+  # NOTE: include\DirectML.h is deliberately NOT in this list - the vendored
+  # git tree never carried it and the helper build does not need it (the DML
+  # EP is reached via dml_provider_factory.h + DirectML.dll). The download
+  # path below still provisions it for completeness.
   $vendoredComplete = @(
     (Join-Path $Destination "include\onnxruntime_cxx_api.h"),
-    (Join-Path $Destination "include\DirectML.h"),
     (Join-Path $Destination "lib\onnxruntime.lib"),
     (Join-Path $Destination "lib\onnxruntime.dll"),
     (Join-Path $Destination "lib\onnxruntime_providers_shared.dll"),
