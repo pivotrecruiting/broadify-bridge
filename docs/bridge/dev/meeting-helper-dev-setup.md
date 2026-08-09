@@ -65,6 +65,9 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_GUIDED_RADIUS` | Radius des portablen Guided Filters |
 | `BROADIFY_MEETING_GUIDED_EPSILON` | Epsilon des portablen Guided Filters |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY=1` | DirectML Device 0 erzwingen |
+| `BROADIFY_MEETING_AUTO_DEGRADE=0` | Auto-Degradation-Governor (Windows fused) deaktivieren |
+| `BROADIFY_MEETING_KEYER_CADENCE` | Inferenz-Kadenz: `auto`/`0`/`N` (siehe `meeting-keyer-auto-degradation.md`) |
+| `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | Test-Override fuer die Step-Down-Schwelle des Governors |
 
 Beim Start des macOS-App-Bundles reicht die Bridge ausschließlich diese
 dokumentierten `BROADIFY_MEETING_*`-Variablen als validierte `--env`-Argumente
@@ -269,6 +272,30 @@ npm run test:meeting-helper-native
 npm run test:meeting-helper-gpu
 npm run test:meeting-helper-keyer
 ```
+
+`test:meeting-helper-native` baut das Helper-Build-Verzeichnis und fuehrt die
+ctest-Suite aus (stdlib-only, keine ONNX-/Metal-/MediaFoundation-Abhaengigkeit):
+`guided_mask_refine_test`, `framebus_reader_log_gate_test`,
+`keyer_governor_test`, `keyer_cadence_test`. Abschaltbar ueber
+`MEETING_HELPER_BUILD_TESTS=0` (Default an, analog zu
+`MEETING_HELPER_ENABLE_MODNET`).
+
+`test:meeting-helper-keyer` ruft den Helper mit `--keyer-self-test` auf:
+20 getimte MODNet-Inferenzen pro Input-Groesse (512/320/256) auf einem
+deterministischen synthetischen Frame, eine JSON-Zeile pro Groesse
+(`mean_ms`, `p95_ms`, `probe_inference_ms`) plus `keyer_self_test_summary`.
+Exit 0 nur, wenn das Modell geladen und Masken erzeugt wurden; ein Build ohne
+ONNX Runtime meldet `{"ok":false,"reason":"onnxruntime_disabled"}` und Exit 1.
+Direktaufruf:
+
+```bash
+"apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" \
+  --keyer-self-test --models-dir apps/bridge/native/meeting-helper/models
+```
+
+`BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu` erzwingt dabei den reinen
+CPU-Provider (CI-Timings ohne GPU); die `-hardware`-Varianten lassen die
+Variable weg.
 
 ## Nicht Mehr Vorhanden
 

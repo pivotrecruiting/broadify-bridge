@@ -87,6 +87,21 @@ int inferenceThreadCount() {
   return static_cast<int>(std::clamp(detectedThreads, 2u, kMaxCpuInferenceThreads));
 }
 
+#if BROADIFY_ENABLE_MODNET
+// Self-test provider override, read once: when
+// BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu the CoreML/DirectML execution
+// providers are NOT appended, so ORT runs pure CPU. Used by
+// scripts/test-meeting-helper.cjs (keyer mode) for hardware-independent CI
+// timings; it affects nothing but the EP selection in createSession.
+bool selfTestForcesCpuProvider() {
+  static const bool forced = []() {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER");
+    return value != nullptr && std::string(value) == "cpu";
+  }();
+  return forced;
+}
+#endif
+
 #if BROADIFY_ENABLE_MODNET && defined(_WIN32)
 std::wstring utf8ToWidePath(const std::string &path) {
   if (path.empty()) {
@@ -316,8 +331,13 @@ class ModnetKeyer::Impl {
       // Warm up the freshly created session so the FIRST visible inference does
       // not pay the DirectML shape-compile stall (documented above, ~145ms up
       // to ~2.4s) -- that stall is what makes the keyer flicker/jump for the
-      // first seconds after the engine starts. A single zero-input Run compiles
-      // the kernels now. Non-fatal: on failure the first real frame just pays it.
+      // first seconds after the engine starts. The first zero-input Run
+      // compiles the kernels; two extra timed runs then measure steady-state
+      // cost, and the median of all three (run 1 carries the compile stall,
+      // so the median lands on a steady run) seeds the fused auto-degradation
+      // governor via probeInferenceMs. The two extra runs are a one-time cost
+      // per session build (including a reload after a transient failure) --
+      // acceptable. Non-fatal: on failure the first real frame just pays it.
       if (inputWidth_ > 0u && inputHeight_ > 0u) {
         try {
           std::vector<float> warmupTensor(
@@ -330,9 +350,17 @@ class ModnetKeyer::Impl {
           Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
               memoryInfo, warmupTensor.data(), warmupTensor.size(),
               warmupShape.data(), warmupShape.size());
-          session_->Run(Ort::RunOptions{nullptr}, inputNames_.data(),
-                        &warmupInput, 1, outputNames_.data(), 1);
-          sessionRunSize_ = inputWidth_;
+          std::array<double, 3> warmupRunMs = {0.0, 0.0, 0.0};
+          for (size_t warmupRun = 0; warmupRun < warmupRunMs.size(); ++warmupRun) {
+            const auto runStart = std::chrono::steady_clock::now();
+            session_->Run(Ort::RunOptions{nullptr}, inputNames_.data(),
+                          &warmupInput, 1, outputNames_.data(), 1);
+            warmupRunMs[warmupRun] =
+                elapsedMs(runStart, std::chrono::steady_clock::now());
+            sessionRunSize_ = inputWidth_;
+          }
+          std::sort(warmupRunMs.begin(), warmupRunMs.end());
+          status_.probeInferenceMs = warmupRunMs[1];
         } catch (...) {
           // Warmup is best-effort; ignore failures.
         }
@@ -375,15 +403,19 @@ class ModnetKeyer::Impl {
         "height", static_cast<int64_t>(inputHeight_));
     sessionOptions.AddFreeDimensionOverrideByName(
         "width", static_cast<int64_t>(inputWidth_));
-    const uint32_t coreMlFlags =
-        COREML_FLAG_CREATE_MLPROGRAM |
-        COREML_FLAG_ENABLE_ON_SUBGRAPH |
-        COREML_FLAG_ONLY_ALLOW_STATIC_INPUT_SHAPES;
-    OrtStatus *coreMlStatus = OrtSessionOptionsAppendExecutionProvider_CoreML(sessionOptions, coreMlFlags);
-    if (coreMlStatus == nullptr) {
-      status_.provider = "coreml";
-    } else {
-      Ort::GetApi().ReleaseStatus(coreMlStatus);
+    // Skipped when the self-test forces the CPU provider (see
+    // selfTestForcesCpuProvider above); status_.provider then stays "cpu".
+    if (!selfTestForcesCpuProvider()) {
+      const uint32_t coreMlFlags =
+          COREML_FLAG_CREATE_MLPROGRAM |
+          COREML_FLAG_ENABLE_ON_SUBGRAPH |
+          COREML_FLAG_ONLY_ALLOW_STATIC_INPUT_SHAPES;
+      OrtStatus *coreMlStatus = OrtSessionOptionsAppendExecutionProvider_CoreML(sessionOptions, coreMlFlags);
+      if (coreMlStatus == nullptr) {
+        status_.provider = "coreml";
+      } else {
+        Ort::GetApi().ReleaseStatus(coreMlStatus);
+      }
     }
 #elif defined(_WIN32)
     status_.provider = "cpu";
@@ -399,41 +431,45 @@ class ModnetKeyer::Impl {
     // which asks DXGI for the HighPerformance (discrete) GPU adapter, and fall
     // back to the legacy device-0 append (then CPU) if DML2 or a GPU is
     // unavailable. BROADIFY_MEETING_KEYER_DML_LEGACY=1 forces the old device 0.
-    OrtStatus *dmlStatus = nullptr;
-    const char *dmlLegacyEnv = std::getenv("BROADIFY_MEETING_KEYER_DML_LEGACY");
-    const bool forceLegacyDevice0 =
-        dmlLegacyEnv != nullptr && dmlLegacyEnv[0] == '1';
-    const OrtDmlApi *dmlApi = nullptr;
-    if (!forceLegacyDevice0) {
-      OrtStatus *apiStatus = Ort::GetApi().GetExecutionProviderApi(
-          "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&dmlApi));
-      if (apiStatus != nullptr) {
-        Ort::GetApi().ReleaseStatus(apiStatus);
-        dmlApi = nullptr;
+    // Skipped when the self-test forces the CPU provider (see
+    // selfTestForcesCpuProvider above); status_.provider then stays "cpu".
+    // The sequential / mem-pattern settings above are harmless for CPU.
+    if (!selfTestForcesCpuProvider()) {
+      OrtStatus *dmlStatus = nullptr;
+      const char *dmlLegacyEnv = std::getenv("BROADIFY_MEETING_KEYER_DML_LEGACY");
+      const bool forceLegacyDevice0 =
+          dmlLegacyEnv != nullptr && dmlLegacyEnv[0] == '1';
+      const OrtDmlApi *dmlApi = nullptr;
+      if (!forceLegacyDevice0) {
+        OrtStatus *apiStatus = Ort::GetApi().GetExecutionProviderApi(
+            "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&dmlApi));
+        if (apiStatus != nullptr) {
+          Ort::GetApi().ReleaseStatus(apiStatus);
+          dmlApi = nullptr;
+        }
       }
-    }
-    if (dmlApi != nullptr) {
-      OrtDmlDeviceOptions deviceOptions{
-          OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
-      dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
-          sessionOptions, &deviceOptions);
-      if (dmlStatus != nullptr) {
-        // HighPerformance append failed: fall back to the legacy device 0.
-        Ort::GetApi().ReleaseStatus(dmlStatus);
+      if (dmlApi != nullptr) {
+        OrtDmlDeviceOptions deviceOptions{
+            OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
+        dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
+            sessionOptions, &deviceOptions);
+        if (dmlStatus != nullptr) {
+          // HighPerformance append failed: fall back to the legacy device 0.
+          Ort::GetApi().ReleaseStatus(dmlStatus);
+          dmlStatus =
+              OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
+        }
+      } else {
         dmlStatus =
             OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
       }
-    } else {
-      dmlStatus =
-          OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
-    }
-    if (dmlStatus == nullptr) {
-      status_.provider = "directml";
-    } else {
-      // No DirectML device (no DX12 GPU or driver): fall back to the CPU
-      // provider. The sequential / mem-pattern settings above are harmless
-      // for CPU execution.
-      Ort::GetApi().ReleaseStatus(dmlStatus);
+      if (dmlStatus == nullptr) {
+        status_.provider = "directml";
+      } else {
+        // No DirectML device (no DX12 GPU or driver): fall back to the CPU
+        // provider.
+        Ort::GetApi().ReleaseStatus(dmlStatus);
+      }
     }
 #else
     status_.provider = "cpu";

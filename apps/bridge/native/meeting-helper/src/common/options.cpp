@@ -63,6 +63,8 @@ Options parseOptions(int argc, char **argv) {
     };
     if (arg == "--run") {
       options.run = true;
+    } else if (arg == "--keyer-self-test") {
+      options.keyerSelfTest = true;
     } else if (arg == "--framebus-name") {
       options.framebusName = next();
     } else if (arg == "--control-socket") {

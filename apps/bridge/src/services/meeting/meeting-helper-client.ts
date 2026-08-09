@@ -6,6 +6,7 @@ import {
   openVcamHelperApp,
 } from "../../modules/vcam/vcam-helper.js";
 import { MEETING_HELPER_RPC_TIMEOUTS_MS } from "./meeting-helper-timeouts.js";
+import { runVcamStartWithRegistrationSelfHeal } from "./vcam-registration-self-heal.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
@@ -225,8 +226,12 @@ export class MeetingHelperClient {
     if (process.platform === "win32") {
       // Windows has no separate helper app: start the raw frame output and ask
       // the meeting-helper to create the "Broadify Camera" (MFCreateVirtualCamera).
+      // A REGDB_E_CLASSNOTREG failure triggers a one-shot elevated regsvr32
+      // self-heal (MSI registration gap) before giving up.
       const framebusOutput = await this.framebusStart();
-      const vcam = await this.rpc("output.vcam.start");
+      const vcam = await runVcamStartWithRegistrationSelfHeal(() =>
+        this.rpc("output.vcam.start"),
+      );
       return { ...vcam, framebus_output: framebusOutput };
     }
     const framebusOutput = await this.framebusStart();

@@ -51,6 +51,10 @@ struct KeyerStatus {
   std::string provider;
   std::string modelPath;
   double inferenceMs = -1.0;
+  // Median of the timed Windows warmup runs at session build: a steady-state
+  // inference-cost sample used to seed the fused auto-degradation governor.
+  // 0.0 = no probe ran (macOS, ONNX disabled, load failure).
+  double probeInferenceMs = 0.0;
   bool modelHashOk = false;
   KeyerMetrics metrics;
 };

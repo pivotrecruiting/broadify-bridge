@@ -40,6 +40,7 @@ try {
     (Join-Path $installDir "resources\native\meeting-helper\onnxruntime_providers_shared.dll"),
     (Join-Path $installDir "resources\native\meeting-helper\DirectML.dll"),
     (Join-Path $installDir "resources\native\meeting-helper\models\modnet.onnx"),
+    (Join-Path $installDir "resources\native\vcam-helper\broadify-vcam.dll"),
     (Join-Path $installDir "resources\bridge\native\framebus\build\Release\framebus.node")
   )
   $mainExe = Get-ChildItem -Path $installDir -File -Filter "BroadifyBridge*.exe" |
@@ -59,6 +60,26 @@ try {
   $meetingHelperPath = Join-Path $installDir "resources\native\meeting-helper\meeting-helper.exe"
   $meetingModelsDir = Join-Path $installDir "resources\native\meeting-helper\models"
   & (Join-Path $PSScriptRoot "test-windows-meeting-helper.ps1") -HelperPath $meetingHelperPath -ModelsDir $meetingModelsDir
+
+  # Virtual-camera COM registration: the elevated runner registers the
+  # packaged DLL, asserts the CLSID (must match
+  # native/vcam-helper/windows/vcam_guid.h) landed under HKLM, then cleans up.
+  $vcamDllPath = Join-Path $installDir "resources\native\vcam-helper\broadify-vcam.dll"
+  $vcamClsidKey = "HKLM:\Software\Classes\CLSID\{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}"
+  $vcamRegister = Start-Process regsvr32.exe -ArgumentList @("/s", "`"$vcamDllPath`"") -Wait -PassThru
+  if ($vcamRegister.ExitCode -ne 0) {
+    throw "regsvr32 /s failed for $vcamDllPath with exit code $($vcamRegister.ExitCode)"
+  }
+  try {
+    if (-not (Test-Path -LiteralPath $vcamClsidKey)) {
+      throw "VCam CLSID key missing after regsvr32: $vcamClsidKey"
+    }
+  } finally {
+    $vcamUnregister = Start-Process regsvr32.exe -ArgumentList @("/u", "/s", "`"$vcamDllPath`"") -Wait -PassThru
+    if ($vcamUnregister.ExitCode -ne 0) {
+      throw "regsvr32 /u /s failed for $vcamDllPath with exit code $($vcamUnregister.ExitCode)"
+    }
+  }
 
   Write-Host "MSI smoke install verified in $installDir"
 } finally {
