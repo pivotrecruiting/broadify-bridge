@@ -135,6 +135,16 @@ KeyerResult KeyerChain::process(const VideoFrame &input, const MeetingState &sta
   if (!performanceOverride.empty()) {
     settings.performanceMode = performanceOverride;
   }
+  // Governor floor (Windows async-lite): younger masks beat the small edge
+  // detail of the larger input while masks are being reused across frames.
+  // The explicit env pin above keeps priority for A/B measurements.
+  if (performanceOverride.empty() &&
+      governorPerformanceFloor_.load(std::memory_order_relaxed) &&
+      settings.performanceMode != "performance") {
+    settings.performanceMode = "performance";
+    settings.maxInputWidth = 640u;
+    settings.maxInputHeight = 360u;
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (!enabled) {

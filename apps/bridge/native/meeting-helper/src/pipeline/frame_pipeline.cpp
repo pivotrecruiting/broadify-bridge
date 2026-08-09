@@ -1115,6 +1115,11 @@ class AsyncKeyerWorker {
     return latestPair_;
   }
 
+  // Governor floor pass-through (Windows async-lite): see KeyerChain.
+  void setGovernorPerformanceFloor(bool active) {
+    keyerChain_.setGovernorPerformanceFloor(active);
+  }
+
   void clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++generation_;
@@ -1965,6 +1970,12 @@ void runFramePipeline(const Options &options,
               keyerSettings.performanceMode = fusedGovernor.performanceModeForTier();
             }
           }
+          // While the governor parks the keyer in async-lite, pin the fast
+          // profile on the worker's chain: at ~11 reused masks/s the mask AGE
+          // dominates perceived ghosting, so the younger 256-class mask beats
+          // the finer 320 one. Cleared automatically outside the lite tier.
+          keyerWorker.setGovernorPerformanceFloor(
+              governorAutoEnabled && fusedGovernor.wantsAsyncLite());
           if (governorAutoEnabled && fusedGovernor.wantsOff()) {
             // Even async 256 inference is uselessly slow on this machine:
             // stop keying entirely and say so. The async worker is starved
