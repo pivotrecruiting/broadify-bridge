@@ -1,6 +1,8 @@
 param(
-  # Must match the vendored deps/onnxruntime VERSION_NUMBER (1.26.0).
-  [string]$OnnxRuntimeVersion = "1.26.0",
+  # The Microsoft.ML.OnnxRuntime.DirectML NuGet series ends at 1.24.4; newer
+  # ONNX Runtime releases ship no DirectML build. macOS intentionally diverges
+  # at 1.26.0 (see meeting-helper README, "Version divergence").
+  [string]$OnnxRuntimeVersion = "1.24.4",
   [string]$DirectMLVersion = "1.15.4",
   [string]$Destination
 )
