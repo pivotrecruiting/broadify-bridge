@@ -24,6 +24,11 @@ namespace {
 // native/vcam-helper/windows/vcam_guid.h).
 constexpr wchar_t kSourceId[] = L"{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}";
 
+// REGDB_E_CLASSNOTREG. mfsensorgroup is not linked and the symbolic constant
+// lives in winerror-adjacent headers we do not want to depend on here, so use
+// the raw HRESULT value.
+constexpr HRESULT kClassNotRegistered = static_cast<HRESULT>(0x80040154L);
+
 std::mutex g_mutex;
 IMFVirtualCamera *g_vcam = nullptr;
 bool g_mfStarted = false;
@@ -98,6 +103,12 @@ bool startVirtualCamera(std::string &errorOut) {
   hr = g_vcam->Start(nullptr);
   if (FAILED(hr)) {
     g_lastError = formatHr("IMFVirtualCamera::Start", hr);
+    if (hr == kClassNotRegistered) {
+      // Same hint as the create path: Start also fails with
+      // REGDB_E_CLASSNOTREG when the vcam media source DLL is missing from
+      // the registry (e.g. the MSI skipped elevation).
+      g_lastError += " (is broadify-vcam.dll registered? regsvr32 requires elevation)";
+    }
     errorOut = g_lastError;
     g_vcam->Remove();
     g_vcam->Release();

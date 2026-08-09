@@ -40,7 +40,9 @@ Status responses add these fields without changing existing fields:
 - `status.provider`: `coreml`, `vision_sequence`, `directml`, or `cpu`.
 - `status.compositor`: `metal`, `d3d11`, or `cpu`.
 - `status.keyer_pipeline_mode`: `fused_coreml`, `async_fallback`,
-  `async_live_snap`, or `passthrough`.
+  `async_live_snap`, or `passthrough`; the Windows fused path additionally
+  reports `fused`, `fused_cadence`, `async_lite`, or `off` (see
+  `meeting-keyer-auto-degradation.md`).
 - `status.pipeline_mode`: retains the existing helper lifecycle meaning.
 - Detailed mask stage metrics expose remap, stabilization, close/dilate,
   feather, temporal, and total postprocess time.
@@ -100,6 +102,18 @@ The Windows package must place these files next to `meeting-helper.exe`:
 
 All three DLLs are included in package, signing, signature verification,
 diagnostic collection, and installer smoke checks.
+
+### Windows Auto-Degradation And Cadence
+
+The fused DirectML path is governed by `KeyerAutoGovernor`
+(`keyer_governor.cpp`) and `FusedCadenceController` (`keyer_cadence.cpp`):
+the governor picks the inference tier (512/320/256, async hand-off, or off)
+from a warmup probe plus smoothed inference cost, the cadence runs the model
+every Nth frame and reuses the retained matte in between (the guided edge
+refine still runs per frame, mask age stays honest). The resulting mode is
+published as `keyer_pipeline_mode` (`fused`, `fused_cadence`, `async_lite`,
+`off`). Ladder, thresholds, and the environment matrix are documented in
+`meeting-keyer-auto-degradation.md`.
 
 ## Fused CoreML Pipeline
 

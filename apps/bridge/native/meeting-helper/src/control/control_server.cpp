@@ -530,7 +530,8 @@ std::string handleRpc(const std::string &line,
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
            << ",\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode)
-           << "\",\"preview_clients\":" << state.previewClientCount
+           << "\",\"keyer_pipeline_mode\":" << (state.keyerPipelineMode.empty() ? "null" : "\"" + jsonEscape(state.keyerPipelineMode) + "\"")
+           << ",\"preview_clients\":" << state.previewClientCount
            << ",\"vcam_clients\":" << state.vcamClientCount
            << ",\"program_dirty\":" << (state.programDirty ? "true" : "false")
            << ",\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false")

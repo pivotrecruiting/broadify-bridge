@@ -250,6 +250,53 @@ describe("meeting-helper-manager", () => {
       }
     });
 
+    describe("shutdown race (B1.4)", () => {
+      type ManagerInternalsT = {
+        state: string;
+        restartTimer: NodeJS.Timeout | null;
+        handleProcessExit: (code: number | null) => void;
+      };
+
+      const simulateExitWhileRunning = (
+        manager: MeetingHelperManager,
+      ): ManagerInternalsT => {
+        const internals = manager as unknown as ManagerInternalsT;
+        internals.state = "running";
+        internals.handleProcessExit(null);
+        return internals;
+      };
+
+      it("still schedules a crash restart when the helper exits while running", () => {
+        // "Before" guard for the fix below: without beginShutdown() an
+        // unexpected exit keeps the existing crash-recovery behavior.
+        const manager = new MeetingHelperManager();
+        const internals = simulateExitWhileRunning(manager);
+
+        expect(internals.state).toBe("error");
+        expect(internals.restartTimer).not.toBeNull();
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("restart attempt 1/3"),
+        );
+
+        // Disarm the pending restart so it cannot fire into other tests.
+        manager.beginShutdown();
+        expect(internals.restartTimer).toBeNull();
+      });
+
+      it("does not classify the exit as a crash after beginShutdown()", () => {
+        const manager = new MeetingHelperManager();
+        manager.beginShutdown();
+        const internals = simulateExitWhileRunning(manager);
+
+        // Exit code null is a normal termination during shutdown.
+        expect(internals.state).toBe("stopped");
+        expect(internals.restartTimer).toBeNull();
+        expect(mockLogger.warn).not.toHaveBeenCalledWith(
+          expect.stringContaining("restart attempt"),
+        );
+      });
+    });
+
     it("notifyRecordingChanged force-publishes a status snapshot", async () => {
       const manager = new MeetingHelperManager();
       manager.notifyRecordingChanged();

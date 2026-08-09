@@ -1,5 +1,6 @@
 #include "keyer/modnet_keyer.h"
 
+#include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
 #include "util/sha256.h"
 
@@ -31,11 +32,9 @@ namespace {
 
 constexpr uint32_t kFallbackInputSize = 512;
 constexpr uint32_t kMaxCpuInferenceThreads = 4;
-// MODNet normalizes input as (value/255 - 0.5)/0.5 -> range [-1,1] (mean/std
-// 0.5 per channel), NOT ImageNet mean/std. Using ImageNet stats here silently
-// degrades the matte. Channel order is RGB (our frames are already RGBA), NCHW.
-constexpr float kMean[3] = {0.5f, 0.5f, 0.5f};
-constexpr float kStd[3] = {0.5f, 0.5f, 0.5f};
+// Input normalization and mask readback live in matting_common.cpp: they are
+// shared verbatim with the OpenVINO backend so both produce identical tensors
+// and masks for the same frame.
 
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
@@ -54,31 +53,6 @@ uint32_t dimensionOrFallback(int64_t value) {
   return kFallbackInputSize;
 }
 
-// Square MODNet input resolution derived from the performance mode. The model
-// accepts dynamic input dimensions, so lowering this is the primary lever for
-// inference latency on weak GPUs/CPUs. Masks below 400px are edge-refined by
-// the joint-bilateral upsampler in the frame pipeline, which recovers detail.
-constexpr uint32_t kModnetInputHighQuality = 512u;
-constexpr uint32_t kModnetInputBalanced = 320u;
-constexpr uint32_t kModnetInputPerformance = 256u;
-
-uint32_t modnetInputSizeForMode(const std::string &performanceMode) {
-  if (performanceMode == "performance") {
-    return kModnetInputPerformance;
-  }
-  if (performanceMode == "balanced") {
-    return kModnetInputBalanced;
-  }
-  return kModnetInputHighQuality;  // high_quality / unknown -> full resolution
-}
-
-size_t clampIndex(size_t value, size_t upperExclusive) {
-  if (upperExclusive == 0u) {
-    return 0u;
-  }
-  return std::min(value, upperExclusive - 1u);
-}
-
 int inferenceThreadCount() {
   const uint32_t detectedThreads = std::thread::hardware_concurrency();
   if (detectedThreads == 0u) {
@@ -86,6 +60,21 @@ int inferenceThreadCount() {
   }
   return static_cast<int>(std::clamp(detectedThreads, 2u, kMaxCpuInferenceThreads));
 }
+
+#if BROADIFY_ENABLE_MODNET
+// Self-test provider override, read once: when
+// BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu the CoreML/DirectML execution
+// providers are NOT appended, so ORT runs pure CPU. Used by
+// scripts/test-meeting-helper.cjs (keyer mode) for hardware-independent CI
+// timings; it affects nothing but the EP selection in createSession.
+bool selfTestForcesCpuProvider() {
+  static const bool forced = []() {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER");
+    return value != nullptr && std::string(value) == "cpu";
+  }();
+  return forced;
+}
+#endif
 
 #if BROADIFY_ENABLE_MODNET && defined(_WIN32)
 std::wstring utf8ToWidePath(const std::string &path) {
@@ -181,7 +170,7 @@ class ModnetKeyer::Impl {
     }
 #endif
     const auto tensorStart = std::chrono::steady_clock::now();
-    makeInputTensor(input, tensor_);
+    buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_);
     const auto tensorEnd = std::chrono::steady_clock::now();
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -213,7 +202,7 @@ class ModnetKeyer::Impl {
         maskWidth = dimensionOrFallback(outputShape[outputShape.size() - 1u]);
       }
       const auto maskStart = std::chrono::steady_clock::now();
-      copyAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
+      copyModnetAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
       sessionRunSize_ = inputWidth_;
@@ -316,8 +305,13 @@ class ModnetKeyer::Impl {
       // Warm up the freshly created session so the FIRST visible inference does
       // not pay the DirectML shape-compile stall (documented above, ~145ms up
       // to ~2.4s) -- that stall is what makes the keyer flicker/jump for the
-      // first seconds after the engine starts. A single zero-input Run compiles
-      // the kernels now. Non-fatal: on failure the first real frame just pays it.
+      // first seconds after the engine starts. The first zero-input Run
+      // compiles the kernels; two extra timed runs then measure steady-state
+      // cost, and the median of all three (run 1 carries the compile stall,
+      // so the median lands on a steady run) seeds the fused auto-degradation
+      // governor via probeInferenceMs. The two extra runs are a one-time cost
+      // per session build (including a reload after a transient failure) --
+      // acceptable. Non-fatal: on failure the first real frame just pays it.
       if (inputWidth_ > 0u && inputHeight_ > 0u) {
         try {
           std::vector<float> warmupTensor(
@@ -330,9 +324,17 @@ class ModnetKeyer::Impl {
           Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
               memoryInfo, warmupTensor.data(), warmupTensor.size(),
               warmupShape.data(), warmupShape.size());
-          session_->Run(Ort::RunOptions{nullptr}, inputNames_.data(),
-                        &warmupInput, 1, outputNames_.data(), 1);
-          sessionRunSize_ = inputWidth_;
+          std::array<double, 3> warmupRunMs = {0.0, 0.0, 0.0};
+          for (size_t warmupRun = 0; warmupRun < warmupRunMs.size(); ++warmupRun) {
+            const auto runStart = std::chrono::steady_clock::now();
+            session_->Run(Ort::RunOptions{nullptr}, inputNames_.data(),
+                          &warmupInput, 1, outputNames_.data(), 1);
+            warmupRunMs[warmupRun] =
+                elapsedMs(runStart, std::chrono::steady_clock::now());
+            sessionRunSize_ = inputWidth_;
+          }
+          std::sort(warmupRunMs.begin(), warmupRunMs.end());
+          status_.probeInferenceMs = warmupRunMs[1];
         } catch (...) {
           // Warmup is best-effort; ignore failures.
         }
@@ -375,15 +377,19 @@ class ModnetKeyer::Impl {
         "height", static_cast<int64_t>(inputHeight_));
     sessionOptions.AddFreeDimensionOverrideByName(
         "width", static_cast<int64_t>(inputWidth_));
-    const uint32_t coreMlFlags =
-        COREML_FLAG_CREATE_MLPROGRAM |
-        COREML_FLAG_ENABLE_ON_SUBGRAPH |
-        COREML_FLAG_ONLY_ALLOW_STATIC_INPUT_SHAPES;
-    OrtStatus *coreMlStatus = OrtSessionOptionsAppendExecutionProvider_CoreML(sessionOptions, coreMlFlags);
-    if (coreMlStatus == nullptr) {
-      status_.provider = "coreml";
-    } else {
-      Ort::GetApi().ReleaseStatus(coreMlStatus);
+    // Skipped when the self-test forces the CPU provider (see
+    // selfTestForcesCpuProvider above); status_.provider then stays "cpu".
+    if (!selfTestForcesCpuProvider()) {
+      const uint32_t coreMlFlags =
+          COREML_FLAG_CREATE_MLPROGRAM |
+          COREML_FLAG_ENABLE_ON_SUBGRAPH |
+          COREML_FLAG_ONLY_ALLOW_STATIC_INPUT_SHAPES;
+      OrtStatus *coreMlStatus = OrtSessionOptionsAppendExecutionProvider_CoreML(sessionOptions, coreMlFlags);
+      if (coreMlStatus == nullptr) {
+        status_.provider = "coreml";
+      } else {
+        Ort::GetApi().ReleaseStatus(coreMlStatus);
+      }
     }
 #elif defined(_WIN32)
     status_.provider = "cpu";
@@ -399,41 +405,45 @@ class ModnetKeyer::Impl {
     // which asks DXGI for the HighPerformance (discrete) GPU adapter, and fall
     // back to the legacy device-0 append (then CPU) if DML2 or a GPU is
     // unavailable. BROADIFY_MEETING_KEYER_DML_LEGACY=1 forces the old device 0.
-    OrtStatus *dmlStatus = nullptr;
-    const char *dmlLegacyEnv = std::getenv("BROADIFY_MEETING_KEYER_DML_LEGACY");
-    const bool forceLegacyDevice0 =
-        dmlLegacyEnv != nullptr && dmlLegacyEnv[0] == '1';
-    const OrtDmlApi *dmlApi = nullptr;
-    if (!forceLegacyDevice0) {
-      OrtStatus *apiStatus = Ort::GetApi().GetExecutionProviderApi(
-          "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&dmlApi));
-      if (apiStatus != nullptr) {
-        Ort::GetApi().ReleaseStatus(apiStatus);
-        dmlApi = nullptr;
+    // Skipped when the self-test forces the CPU provider (see
+    // selfTestForcesCpuProvider above); status_.provider then stays "cpu".
+    // The sequential / mem-pattern settings above are harmless for CPU.
+    if (!selfTestForcesCpuProvider()) {
+      OrtStatus *dmlStatus = nullptr;
+      const char *dmlLegacyEnv = std::getenv("BROADIFY_MEETING_KEYER_DML_LEGACY");
+      const bool forceLegacyDevice0 =
+          dmlLegacyEnv != nullptr && dmlLegacyEnv[0] == '1';
+      const OrtDmlApi *dmlApi = nullptr;
+      if (!forceLegacyDevice0) {
+        OrtStatus *apiStatus = Ort::GetApi().GetExecutionProviderApi(
+            "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&dmlApi));
+        if (apiStatus != nullptr) {
+          Ort::GetApi().ReleaseStatus(apiStatus);
+          dmlApi = nullptr;
+        }
       }
-    }
-    if (dmlApi != nullptr) {
-      OrtDmlDeviceOptions deviceOptions{
-          OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
-      dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
-          sessionOptions, &deviceOptions);
-      if (dmlStatus != nullptr) {
-        // HighPerformance append failed: fall back to the legacy device 0.
-        Ort::GetApi().ReleaseStatus(dmlStatus);
+      if (dmlApi != nullptr) {
+        OrtDmlDeviceOptions deviceOptions{
+            OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
+        dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
+            sessionOptions, &deviceOptions);
+        if (dmlStatus != nullptr) {
+          // HighPerformance append failed: fall back to the legacy device 0.
+          Ort::GetApi().ReleaseStatus(dmlStatus);
+          dmlStatus =
+              OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
+        }
+      } else {
         dmlStatus =
             OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
       }
-    } else {
-      dmlStatus =
-          OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
-    }
-    if (dmlStatus == nullptr) {
-      status_.provider = "directml";
-    } else {
-      // No DirectML device (no DX12 GPU or driver): fall back to the CPU
-      // provider. The sequential / mem-pattern settings above are harmless
-      // for CPU execution.
-      Ort::GetApi().ReleaseStatus(dmlStatus);
+      if (dmlStatus == nullptr) {
+        status_.provider = "directml";
+      } else {
+        // No DirectML device (no DX12 GPU or driver): fall back to the CPU
+        // provider.
+        Ort::GetApi().ReleaseStatus(dmlStatus);
+      }
     }
 #else
     status_.provider = "cpu";
@@ -479,42 +489,6 @@ class ModnetKeyer::Impl {
     }
   }
 #endif
-
-  void makeInputTensor(const VideoFrame &input, std::vector<float> &tensor) const {
-    tensor.resize(static_cast<size_t>(3u) * inputWidth_ * inputHeight_);
-    const size_t channelSize = static_cast<size_t>(inputWidth_) * inputHeight_;
-    for (uint32_t y = 0; y < inputHeight_; ++y) {
-      const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * input.height) / inputHeight_);
-      for (uint32_t x = 0; x < inputWidth_; ++x) {
-        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * input.width) / inputWidth_);
-        const size_t srcOffset = (static_cast<size_t>(sy) * input.width + sx) * 4u;
-        const size_t dstOffset = static_cast<size_t>(y) * inputWidth_ + x;
-        const float r = static_cast<float>(input.rgba[srcOffset + 0u]) / 255.0f;
-        const float g = static_cast<float>(input.rgba[srcOffset + 1u]) / 255.0f;
-        const float b = static_cast<float>(input.rgba[srcOffset + 2u]) / 255.0f;
-        tensor[dstOffset] = (r - kMean[0]) / kStd[0];
-        tensor[channelSize + dstOffset] = (g - kMean[1]) / kStd[1];
-        tensor[channelSize * 2u + dstOffset] = (b - kMean[2]) / kStd[2];
-      }
-    }
-  }
-
-  void copyAlphaMask(const float *mask, uint32_t maskWidth, uint32_t maskHeight, uint64_t timestampNs, AlphaMask &outputMask) const {
-    if (mask == nullptr || maskWidth == 0u || maskHeight == 0u) {
-      return;
-    }
-    outputMask.width = maskWidth;
-    outputMask.height = maskHeight;
-    outputMask.timestampNs = timestampNs;
-    outputMask.alpha.assign(static_cast<size_t>(maskWidth) * maskHeight, 0u);
-    for (uint32_t y = 0; y < maskHeight; ++y) {
-      for (uint32_t x = 0; x < maskWidth; ++x) {
-        const size_t offset = static_cast<size_t>(y) * maskWidth + x;
-        const float alpha = std::clamp(mask[offset], 0.0f, 1.0f);
-        outputMask.alpha[offset] = static_cast<uint8_t>(std::round(alpha * 255.0f));
-      }
-    }
-  }
 
   void setFallback(const std::string &reason) {
     status_.activeKeyer = "passthrough";

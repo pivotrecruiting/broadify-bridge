@@ -298,6 +298,12 @@ jobs:
         run: |
           & .\scripts\prepare-windows-meeting-helper-deps.ps1
 
+      - name: Install OpenVINO runtime (Windows, for meeting-helper OpenVINO backend)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          & .\scripts\prepare-windows-openvino-deps.ps1
+
       - name: Cache MODNet model (meeting-helper, Windows only)
         if: matrix.os == 'windows-2022'
         uses: actions/cache@v4

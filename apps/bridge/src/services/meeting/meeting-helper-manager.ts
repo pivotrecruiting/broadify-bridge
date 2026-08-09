@@ -42,6 +42,7 @@ const HELPER_RESTART_BASE_DELAY_MS = 1000;
 // counter resets so one crash per day never exhausts the limit.
 const HELPER_RESTART_HEALTHY_UPTIME_MS = 60_000;
 const MEETING_HELPER_FORWARDED_ENV_KEYS = [
+  "BROADIFY_MEETING_AUTO_DEGRADE",
   "BROADIFY_MEETING_COREML_UNITS",
   "BROADIFY_MEETING_GPU_COMPOSITOR",
   "BROADIFY_MEETING_GPU_COMPOSITOR_D3D11",
@@ -55,7 +56,12 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_GUIDED_EPSILON",
   "BROADIFY_MEETING_GUIDED_RADIUS",
   "BROADIFY_MEETING_GUIDED_REFINE",
+  "BROADIFY_MEETING_KEYER_BACKEND",
+  "BROADIFY_MEETING_KEYER_CADENCE",
   "BROADIFY_MEETING_KEYER_DML_LEGACY",
+  "BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS",
+  "BROADIFY_MEETING_KEYER_OPENVINO",
+  "BROADIFY_MEETING_OPENVINO_DEVICE",
 ] as const;
 const MEETING_HELPER_ENV_VALUE_PATTERN = /^[A-Za-z0-9._+-]{1,64}$/;
 
@@ -534,6 +540,11 @@ export class MeetingHelperManager {
   private restartTimer: NodeJS.Timeout | null = null;
   private lastRunningSince: number | null = null;
   private stopping = false;
+  // Set once the bridge itself is shutting down. The helper usually dies from
+  // the process-group SIGTERM BEFORE server.ts reaches stop() (which sets
+  // `stopping`), so without this flag that exit is misclassified as a crash
+  // and a restart timer is armed mid-shutdown.
+  private shutdownRequested = false;
   // Last successful camera calls and merged keyer patches, replayed after a
   // crash restart so the program does not come back without its camera. The
   // webapp's full push restores program sections, but nothing else re-opens
@@ -640,6 +651,16 @@ export class MeetingHelperManager {
       this.startPromise = null;
     });
     return this.startPromise;
+  }
+
+  /**
+   * Mark the whole bridge as shutting down. Must be called FIRST in the
+   * server shutdown path: from here on a helper exit is never treated as a
+   * crash and no restart is scheduled.
+   */
+  beginShutdown(): void {
+    this.shutdownRequested = true;
+    this.clearRestartTimer();
   }
 
   async stop(): Promise<MeetingHelperManagerStatusT> {
@@ -1134,7 +1155,7 @@ export class MeetingHelperManager {
     // quits on its own. The exit code is useless for this decision: on macOS
     // the child is the LaunchServices `open` wrapper, which reports code 0
     // even when the helper behind it was SIGKILLed.
-    const crashed = wasRunning && !this.stopping;
+    const crashed = wasRunning && !this.stopping && !this.shutdownRequested;
     if (this.state !== "stopped") {
       if (crashed) {
         this.state = "error";
@@ -1178,7 +1199,7 @@ export class MeetingHelperManager {
    * stop() cancels any pending attempt.
    */
   private scheduleRestart(): void {
-    if (this.restartTimer) {
+    if (this.restartTimer || this.shutdownRequested) {
       return;
     }
     if (this.restartAttempts >= HELPER_RESTART_MAX_ATTEMPTS) {
@@ -1196,7 +1217,12 @@ export class MeetingHelperManager {
     );
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      if (this.state !== "error" || this.startPromise || this.stopping) {
+      if (
+        this.state !== "error" ||
+        this.startPromise ||
+        this.stopping ||
+        this.shutdownRequested
+      ) {
         return;
       }
       this.startPromise = this.startInternal(this.lastStartOptions)

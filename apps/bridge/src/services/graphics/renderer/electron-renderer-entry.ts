@@ -18,6 +18,10 @@ import {
 } from "./renderer-ipc-framing.js";
 import { AsyncSerialQueue } from "./async-serial-queue.js";
 import {
+  FRAMEBUS_HEARTBEAT_INTERVAL_MS,
+  shouldRepublishHeartbeatFrame,
+} from "./framebus-heartbeat.js";
+import {
   bgraToRgba,
   downsampleRgbaBox,
   resampleRgbaBilinear,
@@ -147,6 +151,64 @@ let frameBusWriter: FrameBusWriterT | null = null;
 let frameBusInitAttempted = false;
 let frameBusReadyRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let rendererConfigGeneration = 0;
+// Writer heartbeat: retain the most recently written frame (one buffer) so a
+// 1s timer can re-publish it while no paints happen. Without this the seq
+// parks on static content and FrameBus readers cycle stale reopens forever.
+let frameBusHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let lastWrittenFrameBuffer: Buffer | null = null;
+let lastWrittenFrameTimestampNs = 0n;
+let lastWrittenFrameAtMs = 0;
+
+/** Record a FrameBus write and keep the heartbeat running while frames flow. */
+function noteFrameBusFrameWritten(buffer: Buffer, timestampNs: bigint): void {
+  lastWrittenFrameBuffer = buffer;
+  lastWrittenFrameTimestampNs = timestampNs;
+  lastWrittenFrameAtMs = Date.now();
+  startFrameBusHeartbeat();
+}
+
+function startFrameBusHeartbeat(): void {
+  if (frameBusHeartbeatTimer) {
+    return;
+  }
+  frameBusHeartbeatTimer = setInterval(() => {
+    if (
+      !shouldRepublishHeartbeatFrame(
+        frameBusWriter !== null,
+        lastWrittenFrameBuffer !== null,
+        Date.now(),
+        lastWrittenFrameAtMs,
+      )
+    ) {
+      return;
+    }
+    try {
+      // Re-publish with the ORIGINAL timestamp: consumers detect new frames
+      // by timestamp, so this advances the FrameBus seq (keeping readers
+      // attached) without triggering extra downstream renders.
+      frameBusWriter?.writeFrame(
+        lastWrittenFrameBuffer as Buffer,
+        lastWrittenFrameTimestampNs,
+      );
+      lastWrittenFrameAtMs = Date.now();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn({ message }, "[GraphicsRenderer] FrameBus heartbeat write failed");
+    }
+  }, FRAMEBUS_HEARTBEAT_INTERVAL_MS);
+  frameBusHeartbeatTimer.unref?.();
+}
+
+/** Stop the heartbeat and drop the retained frame (writer teardown/recreate). */
+function stopFrameBusHeartbeat(): void {
+  if (frameBusHeartbeatTimer) {
+    clearInterval(frameBusHeartbeatTimer);
+    frameBusHeartbeatTimer = null;
+  }
+  lastWrittenFrameBuffer = null;
+  lastWrittenFrameTimestampNs = 0n;
+  lastWrittenFrameAtMs = 0;
+}
 
 const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
 
@@ -392,6 +454,8 @@ function ensureFrameBusWriter(
     }
     frameBusWriter = null;
     frameBusInitAttempted = false;
+    // The retained frame belongs to the old writer geometry.
+    stopFrameBusHeartbeat();
   }
   if (frameBusInitAttempted) {
     logFrameBusOnce(
@@ -483,7 +547,12 @@ function ensureFrameBusWriter(
         forceRecreate: true,
       });
     }
-    frameBusWriter.writeFrame(Buffer.alloc(width * height * 4, 0));
+    const initBuffer = Buffer.alloc(width * height * 4, 0);
+    const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
+    frameBusWriter.writeFrame(initBuffer, initTimestampNs);
+    // Retain the init frame too: if no paint ever fires (idle renderer), the
+    // heartbeat still keeps the seq advancing for readers.
+    noteFrameBusFrameWritten(initBuffer, initTimestampNs);
     logger.info(
       {
         name: frameBusWriter.name,
@@ -910,7 +979,9 @@ async function ensureSingleWindow(
       lastWrittenAtMs = writeNowMs;
 
       try {
-        frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
+        const frameTimestampNs = BigInt(writeNowMs) * 1_000_000n;
+        frameBusWriter.writeFrame(buffer, frameTimestampNs);
+        noteFrameBusFrameWritten(buffer, frameTimestampNs);
         if (!firstFrameBusWriteLogged) {
           firstFrameBusWriteLogged = true;
           logger.info(
@@ -1020,7 +1091,9 @@ function writeTransparentFrame(reason: string): void {
   }
   const buffer = Buffer.alloc(width * height * 4, 0);
   try {
-    frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
+    const timestampNs = BigInt(Date.now()) * 1_000_000n;
+    frameBusWriter.writeFrame(buffer, timestampNs);
+    noteFrameBusFrameWritten(buffer, timestampNs);
     logger.info(
       {
         reason,
@@ -1125,7 +1198,9 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
       }
     }
 
-    frameBusWriter.writeFrame(buffer, BigInt(Date.now()) * 1_000_000n);
+    const timestampNs = BigInt(Date.now()) * 1_000_000n;
+    frameBusWriter.writeFrame(buffer, timestampNs);
+    noteFrameBusFrameWritten(buffer, timestampNs);
     logger.info(
       {
         reason,
@@ -1426,6 +1501,7 @@ async function handleMessage(message: unknown): Promise<void> {
 
   if (msg.type === "shutdown") {
     clearFrameBusReadyRetry();
+    stopFrameBusHeartbeat();
     singleLayerSnapshots.clear();
     await destroySingleWindow();
     if (frameBusWriter) {

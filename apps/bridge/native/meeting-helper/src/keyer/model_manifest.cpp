@@ -69,6 +69,9 @@ ModelManifestEntry findModelManifestEntry(const std::string &modelsDir, const st
   entry.name = extractStringField(object, "name");
   entry.file = extractStringField(object, "file");
   entry.sha256 = extractStringField(object, "sha256");
+  // Optional two-file (OpenVINO IR) companion; tolerated absent.
+  entry.binFile = extractStringField(object, "bin_file");
+  entry.binSha256 = extractStringField(object, "bin_sha256");
   entry.required = extractBoolField(object, "required", false);
   return entry;
 }
