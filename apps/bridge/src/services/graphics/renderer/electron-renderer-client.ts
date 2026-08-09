@@ -28,6 +28,7 @@ import type {
   GraphicsRendererLifecycleStateT,
   GraphicsTemplateBindingsT,
 } from "./graphics-renderer.js";
+import { normalizeFrameBusNameForCompare } from "./framebus-writer-match.js";
 
 type RendererAssetMapT = Record<string, { filePath: string; mime: string }>;
 
@@ -57,12 +58,6 @@ type RendererReadyAckT = {
   framebusSlotCount?: number;
   rendererConfigGeneration?: number;
 };
-
-const normalizeFrameBusNameForCompare = (name: string): string =>
-  name
-    .trim()
-    .replace(/^\/+/, "")
-    .replace(/^(?:local|global)\\+/i, "");
 
 /**
  * Electron-based offscreen renderer client.

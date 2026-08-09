@@ -59,6 +59,14 @@ struct KeyerGovernorConfig {
   // step-up counts as a wrong estimate and doubles the corresponding backoff
   // (~1s at 30fps, Apple: 30).
   uint64_t stableSamples = 30u;
+  // Warm-handover deferral (make-before-break step-up): when true, an
+  // estimate-approved Lite256 -> Performance256 step-up does NOT change the
+  // tier; the governor latches liteStepUpPending() instead and the caller
+  // warms the fused session in the background, then commits via
+  // commitLiteStepUp() (or cancels via cancelLiteStepUp() on warmup failure —
+  // the wrong-estimate treatment). Default false = the historical immediate
+  // step-up (also the BROADIFY_MEETING_WARM_HANDOVER=0 kill-switch path).
+  bool deferLiteStepUp = false;
 };
 
 // Auto-degradation governor for the Windows fused keyer path. Pure logic,
@@ -109,6 +117,22 @@ class KeyerAutoGovernor {
   // Lite -> Off guard).
   void addSample(double inferenceMs, TimePoint now);
 
+  // Deferred Lite256 -> Performance256 step-up (config.deferLiteStepUp).
+  // Pending means: the estimate approved the step-up, the tier stays Lite256
+  // until the caller's warmup resolves. Cleared by any step-down, seed or
+  // reset.
+  bool liteStepUpPending() const { return liteStepUpPending_; }
+  // Commits the deferred step-up after a successful warmup: the tier moves to
+  // Performance256 with the exact semantics of the immediate step-up
+  // (EMA/sample reset, dwell clock restart, wrong-estimate watch armed).
+  // No-op unless pending and still at Lite256.
+  void commitLiteStepUp(TimePoint now);
+  // Cancels the deferred step-up after a failed warmup. Treated like a wrong
+  // estimate: the fused step-up holdoff doubles (capped, never reset within
+  // the session) and the dwell clock restarts, so the next attempt backs off.
+  // The Lite EMA/samples survive — they are real async measurements.
+  void cancelLiteStepUp(TimePoint now);
+
   GovernorTier tier() const { return tier_; }
   // MODNet performanceMode string for the current tier. Lite256/Off also map
   // to "performance": if the fused path runs anyway, smallest input applies.
@@ -146,6 +170,7 @@ class KeyerAutoGovernor {
   KeyerGovernorConfig config_{};
   GovernorTier tier_ = GovernorTier::Full512;
   bool seeded_ = false;
+  bool liteStepUpPending_ = false;
   double emaMs_ = -1.0;
   uint64_t samples_ = 0u;
   StepUpWatch stepUpWatch_ = StepUpWatch::None;

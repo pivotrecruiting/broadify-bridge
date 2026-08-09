@@ -81,6 +81,7 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/keyer_cadence.cpp
   src/pipeline/mask_retention.cpp
   src/pipeline/subject_presence.cpp
+  src/pipeline/tier_handover.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
   src/preview/raw_frame_server.cpp
@@ -271,6 +272,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/subject_presence_test.cpp
     src/pipeline/subject_presence.cpp
   )
+  add_executable(tier_handover_test
+    tests/tier_handover_test.cpp
+    src/pipeline/tier_handover.cpp
+  )
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -292,6 +297,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     keyer_cadence_test
     mask_retention_test
     subject_presence_test
+    tier_handover_test
     matting_backend_test
   )
     target_include_directories(${helper_test} PRIVATE src)

@@ -433,5 +433,12 @@ int main(int argc, char **argv) {
   vcamRaw.detach();
   control.detach();
   printEvent("{\"type\":\"shutdown\"}");
+  // std::_Exit also skips ALL static destructors — the frame pipeline's
+  // FusedWarmupThreadHolder (frame_pipeline.cpp) DEPENDS on that: a fused
+  // warmup thread still running at exit is detached and may still be using
+  // the static fused keyer. Replacing std::_Exit with a normal return from
+  // main would run those static destructors under the detached thread — a
+  // shutdown use-after-free. Keep std::_Exit (or first join the warmup
+  // thread via its busy flag) when changing this shutdown path.
   std::_Exit(0);
 }

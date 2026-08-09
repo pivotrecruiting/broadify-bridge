@@ -4,6 +4,7 @@ import {
   applyFrameBusEnv,
   buildFrameBusConfig,
   type FrameBusConfigT,
+  type FrameBusOverridesT,
 } from "./framebus/framebus-config.js";
 
 /**
@@ -11,11 +12,13 @@ import {
  *
  * @param config Target output configuration.
  * @param previous Previous FrameBus config.
+ * @param overrides Optional explicit per-manager overrides (win over env).
  * @returns Resolved FrameBus config.
  */
 export function resolveFrameBusConfig(
   config: GraphicsOutputConfigT,
-  previous: FrameBusConfigT | null
+  previous: FrameBusConfigT | null,
+  overrides?: FrameBusOverridesT
 ): FrameBusConfigT {
   const requestedPixelFormat =
     process.env.BRIDGE_FRAME_PIXEL_FORMAT ??
@@ -26,7 +29,7 @@ export function resolveFrameBusConfig(
     );
   }
 
-  return buildFrameBusConfig(config, previous);
+  return buildFrameBusConfig(config, previous, overrides);
 }
 
 /**
@@ -70,13 +73,15 @@ export function logFrameBusConfigChange(
  *
  * @param config Target output configuration.
  * @param previous Previous FrameBus config.
+ * @param overrides Optional explicit per-manager overrides (win over env).
  * @returns Applied FrameBus config.
  */
 export function applyFrameBusSessionConfig(
   config: GraphicsOutputConfigT,
-  previous: FrameBusConfigT | null
+  previous: FrameBusConfigT | null,
+  overrides?: FrameBusOverridesT
 ): FrameBusConfigT {
-  const next = resolveFrameBusConfig(config, previous);
+  const next = resolveFrameBusConfig(config, previous, overrides);
   applyFrameBusEnv(next);
   logFrameBusConfigChange(previous, next);
   return next;

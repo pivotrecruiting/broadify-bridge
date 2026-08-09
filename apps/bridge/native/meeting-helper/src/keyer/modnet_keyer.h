@@ -19,6 +19,11 @@ class ModnetKeyer : public MattingKeyer {
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override;
   KeyerStatus status() const override;
+  // Warm-handover entry (see MattingKeyer): builds/warms the session for the
+  // mode's input size on the calling thread. Thread-safe against apply() and
+  // status() via an internal mutex (the fused pipeline calls it from a
+  // background thread while the async worker owns the keyer path).
+  bool warmupForPerformanceMode(const std::string &performanceMode) override;
 
  private:
   class Impl;

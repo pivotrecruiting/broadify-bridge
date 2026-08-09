@@ -3510,4 +3510,129 @@ describe("electron-renderer-entry", () => {
       );
     }
   });
+
+  it("recreates the FrameBus writer when a reconfigure targets a same-geometry bus with a different name", async () => {
+    // Before-red proof for the meeting dual-renderer bus-name race: with the
+    // old geometry-only compare, the second configure (identical geometry,
+    // different bus name) silently reused the writer on the OLD bus, so
+    // createWriter was called once, nothing was closed, and the ready ack
+    // carried the stale name (client gate drop -> 15s config-ready timeout).
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    const closeMock = jest.fn();
+    const createWriterMock = jest
+      .fn()
+      .mockImplementation((opts: { name: string }) => ({
+        // Native writers report the POSIX form of the requested name.
+        name: `/${opts.name}`,
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 3,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: closeMock,
+      }));
+    mockLoadFrameBusModule.mockReturnValue({ createWriter: createWriterMock });
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const baseConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusSlotCount: 3,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    const backConfig = {
+      ...baseConfig,
+      configId: "cfg-back",
+      framebusName: "bfy-meet-gfx-back",
+    };
+    const frontConfig = {
+      ...baseConfig,
+      configId: "cfg-front",
+      framebusName: "bfy-meet-gfx-front",
+    };
+    mockSafeParse
+      .mockReturnValueOnce({ success: true, data: backConfig })
+      .mockReturnValueOnce({ success: true, data: frontConfig });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...backConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...frontConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    const readyHandler = mockApp.on.mock.calls.find(
+      ([event]) => event === "ready"
+    )?.[1] as (() => void) | undefined;
+    readyHandler?.();
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // The name mismatch must recreate the writer for the NEW bus and close
+    // the old one — never silently keep writing to the old bus.
+    expect(createWriterMock).toHaveBeenCalledTimes(2);
+    expect(createWriterMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ name: "bfy-meet-gfx-back" })
+    );
+    expect(createWriterMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ name: "bfy-meet-gfx-front" })
+    );
+    expect(closeMock).toHaveBeenCalledTimes(1);
+
+    // The ready ack for the second configure must carry the NEW bus name
+    // (the client's ready gate compares it against the configured name).
+    const readyAcks = mockEncodeIpcPacket.mock.calls
+      .map(
+        (call) =>
+          call[0] as { type?: string; framebusName?: string; configId?: string }
+      )
+      .filter((header) => header.type === "ready");
+    expect(readyAcks.length).toBeGreaterThanOrEqual(2);
+    const lastReady = readyAcks[readyAcks.length - 1];
+    expect(lastReady.configId).toBe("cfg-front");
+    expect(lastReady.framebusName).toBe("/bfy-meet-gfx-front");
+  });
 });
