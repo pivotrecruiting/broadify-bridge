@@ -63,6 +63,11 @@ struct AlphaMask {
   uint32_t width = 0;
   uint32_t height = 0;
   uint64_t timestampNs = 0;
+  // Confirmed-empty subject (Option A): the (all-zero) mask is VALID - the
+  // person verifiably left the frame - and the compositor must keep the keyed
+  // composite (background stays up) instead of falling back to the un-keyed
+  // camera. Helper-local ABI; default false = legacy behavior.
+  bool emptyValid = false;
   std::vector<uint8_t> alpha;
 };
 

@@ -27,18 +27,29 @@ if (Test-Path -LiteralPath $vendoredVersionFile -PathType Leaf) {
   # git tree never carried it and the helper build does not need it (the DML
   # EP is reached via dml_provider_factory.h + DirectML.dll). The download
   # path below still provisions it for completeness.
-  $vendoredComplete = @(
+  $vendoredRequiredFiles = @(
     (Join-Path $Destination "include\onnxruntime_cxx_api.h"),
     (Join-Path $Destination "lib\onnxruntime.lib"),
     (Join-Path $Destination "lib\onnxruntime.dll"),
     (Join-Path $Destination "lib\onnxruntime_providers_shared.dll"),
     (Join-Path $Destination "lib\DirectML.dll")
-  ) | ForEach-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Where-Object { -not $_ } | Measure-Object
-  if ($vendoredVersion -eq $OnnxRuntimeVersion -and $vendoredComplete.Count -eq 0) {
-    Write-Host "ONNX Runtime $OnnxRuntimeVersion already vendored at $Destination - skipping download."
-    exit 0
+  )
+  $missingVendoredFiles = @($vendoredRequiredFiles | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+  if ($vendoredVersion -eq $OnnxRuntimeVersion) {
+    if ($missingVendoredFiles.Count -eq 0) {
+      Write-Host "ONNX Runtime $OnnxRuntimeVersion already vendored at $Destination - skipping download."
+      exit 0
+    }
+    # Version matches but files are gone: NuGet cannot repair this - the
+    # vendored version is not published there, so the download below would
+    # die with a misleading BlobNotFound. Fail fast with the real problem.
+    throw ("vendored ONNX Runtime tree at $Destination is incomplete (missing: " +
+      ($missingVendoredFiles -join ", ") +
+      "); restore it from git - version $OnnxRuntimeVersion is not available on NuGet.")
   }
-  Write-Host "Vendored ONNX Runtime '$vendoredVersion' incomplete or != '$OnnxRuntimeVersion' - re-provisioning from NuGet."
+  # Version mismatch: a genuinely different version may exist on NuGet, so
+  # keep the re-provisioning fall-through.
+  Write-Host "Vendored ONNX Runtime '$vendoredVersion' != '$OnnxRuntimeVersion' - re-provisioning from NuGet."
 }
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("broadify-onnxruntime-" + [guid]::NewGuid().ToString("N"))

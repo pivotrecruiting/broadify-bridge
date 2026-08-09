@@ -12,6 +12,7 @@
 #include "pipeline/framebus_reader_log_gate.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
+#include "pipeline/subject_presence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
 #include "pipeline/mask_retention.h"
@@ -192,6 +193,63 @@ double computeMaskCoverage(const AlphaMask &mask) {
   return static_cast<double>(foreground) / static_cast<double>(mask.alpha.size());
 }
 
+// Empty-subject handling kill-switch (default ON). When enabled, a coverage
+// collapse that persists across acceptAfterMs of SUCCESSFUL inference is
+// accepted as "the person left the frame": the empty mask is passed through
+// flagged as valid so the composited background stays up (Option A). Set
+// BROADIFY_MEETING_EMPTY_SUBJECT=0 to restore the previous behavior
+// end-to-end (hold/oscillate; compositor falls back to the un-keyed camera).
+// Read once, like gpuPipelineEnabled.
+bool emptySubjectEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_EMPTY_SUBJECT");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+}
+
+SubjectPresenceConfig subjectPresenceConfigFromEnv() {
+  SubjectPresenceConfig config;
+  config.enabled = emptySubjectEnabled();
+  return config;
+}
+
+// Presence tracker for the fused (synchronous) keyer paths. Program-loop
+// thread only, like the other fused statics; reset together with the fused
+// path state on Windows path transitions.
+SubjectPresenceTracker &fusedSubjectPresenceTracker() {
+  static SubjectPresenceTracker tracker(subjectPresenceConfigFromEnv());
+  return tracker;
+}
+
+double steadyNowMs() {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Mutable temporal state of stabilizeFusedMask, hoisted out of the function
+// so keyer path transitions can reset it: as function-locals these survived
+// tier transitions, letting the collapse guard compare against - and
+// substitute, for up to kMaxFusedCollapseHold frames - a minutes-old mask
+// after e.g. a lite->fused step-up. Program-loop thread only, like the other
+// fused statics.
+struct FusedStabilizerState {
+  AlphaMask prevMask;
+  double prevCoverage = 0.0;
+  int collapseHold = 0;
+  void reset() {
+    prevMask = AlphaMask{};
+    prevCoverage = 0.0;
+    collapseHold = 0;
+  }
+};
+
+FusedStabilizerState &fusedStabilizerState() {
+  static FusedStabilizerState state;
+  return state;
+}
+
 // Temporal stabilization for the fused (mask-age-0) matte, shared by the
 // macOS and Windows fused paths (KEY-03 - this used to live only in the
 // Windows branch). The collapse guard bridges model dropouts for a bounded
@@ -200,11 +258,28 @@ double computeMaskCoverage(const AlphaMask &mask) {
 // applyEma=false so its tuned raw-matte look stays unchanged while still
 // gaining the dropout protection. Only called from the program-loop thread.
 void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
-  static AlphaMask prevFusedMask;
-  static double prevFusedCoverage = 0.0;
-  static int fusedCollapseHold = 0;
+  AlphaMask &prevFusedMask = fusedStabilizerState().prevMask;
+  double &prevFusedCoverage = fusedStabilizerState().prevCoverage;
+  int &fusedCollapseHold = fusedStabilizerState().collapseHold;
   constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
   const double fusedCoverage = computeMaskCoverage(fusedMask);
+  // Subject-presence tracking (Option A): only ever called on SUCCESSFUL
+  // fused inference, so every feed counts towards the empty streak. When the
+  // person verifiably left (confirmed over acceptAfterMs), pass the empty
+  // matte through flagged as valid instead of the bounded hold expiring into
+  // an anchor-less mask (which flapped to the un-keyed camera). Shared with
+  // macOS BY DESIGN: the same latent bug exists there - macOS only ever
+  // "worked" via residual matte noise keeping the anchor alive.
+  const SubjectPresence presence = fusedSubjectPresenceTracker().feed(
+      fusedCoverage, /*inferenceSucceeded=*/true, steadyNowMs());
+  if (presence == SubjectPresence::ConfirmedEmpty &&
+      fusedCoverage < kMinForegroundCoverage) {
+    fusedMask.emptyValid = true;
+    fusedCollapseHold = 0;
+    prevFusedMask = fusedMask;
+    prevFusedCoverage = fusedCoverage;
+    return;
+  }
   const bool fusedCollapsed =
       fusedCoverage < kMinForegroundCoverage ||
       fusedCoverage > kMaxForegroundCoverage ||
@@ -302,6 +377,29 @@ bool autoDegradeEnabled() {
     return raw == nullptr || raw[0] != '0';
   }();
   return enabled;
+}
+
+// Fused-path postprocess parity (default ON): run the same user-facing mask
+// postprocess chain the async worker applies (morphological close ->
+// smoothstep remap -> edge stabilization -> erode/dilate -> feather), so
+// mask_erode_px / mask_dilate_px / mask_feather_px / dynamic_dilation /
+// edge_stabilization_* stop being silently ignored on the fused path (they
+// were only ever applied inside the worker's postprocessAlpha call - the
+// cause of the flickery coarse edges at fused@256). Kill-switch:
+// BROADIFY_MEETING_FUSED_POSTPROCESS=0 restores the previous fused output.
+// Read once, like gpuPipelineEnabled.
+bool fusedPostprocessEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_FUSED_POSTPROCESS");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+}
+
+// fused and fused_cadence are the SAME active path for transition-reset
+// purposes (the cadence merely skips inferences within the fused path).
+std::string canonicalKeyerPathLabel(const std::string &label) {
+  return label == "fused_cadence" ? std::string("fused") : label;
 }
 
 // BROADIFY_MEETING_KEYER_CADENCE: unset/"auto" -> auto-derive the fused
@@ -419,6 +517,12 @@ struct PairedKeyerFrame {
   VideoFrame frame;
   AlphaMask mask;
   uint64_t publishedAtNs = 0u;
+  // Inference cost of the pass that produced this mask, captured at publish
+  // time under the worker mutex. Governor samples read THIS instead of the
+  // shared state.inferenceMs, which is written after the pair is published
+  // and can still hold a stale pre-demotion value for the first sample.
+  // <= 0 means unknown (no sample is fed).
+  double inferenceMs = -1.0;
 };
 
 struct KeyerRuntimeStats {
@@ -1126,6 +1230,7 @@ class AsyncKeyerWorker {
     hasPendingFrame_ = false;
     latestPair_.reset();
     lastPublishedCoverage_ = 0.0;
+    presenceTracker_.reset();
     droppedFrames_ = 0;
     skippedFrames_ = 0;
     keyerRate_ = RateMeter{};
@@ -1259,11 +1364,33 @@ class AsyncKeyerWorker {
               rawCoverage > kMaxForegroundCoverage ||
               (lastPublishedCoverage_ > kHealthyCoverage &&
                rawCoverage < lastPublishedCoverage_ * kCollapseDropRatio);
-          if (!keyed.mask.alpha.empty() && !collapsed) {
+          // Subject-presence tracking (Option A): a coverage collapse that
+          // persists across acceptAfterMs of SUCCESSFUL inference is a person
+          // who actually left the frame, not a dropout. PUBLISH that (empty)
+          // mask flagged as valid - with fresh publish stamps the retention
+          // stays in Apply and the compositor keeps the background up -
+          // instead of holding the last pair forever (which ended in
+          // stale_hold/passthrough, i.e. "the keyer turns off"). Inference
+          // failures (empty result mask) never advance the streak, so the
+          // dropout hold stays intact. Over-full and sudden-drop masks stay
+          // dropouts (coverage above the floor resets the streak). Shared
+          // with macOS BY DESIGN: there this worker only matters when CoreML
+          // failed, where background-only is the desired Option-A behavior
+          // as well.
+          const SubjectPresence presence = presenceTracker_.feed(
+              rawCoverage, !keyed.mask.alpha.empty(),
+              std::chrono::duration<double, std::milli>(now.time_since_epoch())
+                  .count());
+          const bool confirmedEmpty =
+              presence == SubjectPresence::ConfirmedEmpty &&
+              rawCoverage < kMinForegroundCoverage;
+          if (!keyed.mask.alpha.empty() && (!collapsed || confirmedEmpty)) {
+            keyed.mask.emptyValid = confirmedEmpty;
             auto pair = std::make_shared<PairedKeyerFrame>();
             pair->frame = std::move(frame);
             pair->mask = std::move(keyed.mask);
             pair->publishedAtNs = publishNs;
+            pair->inferenceMs = keyed.status.inferenceMs;
             latestPair_ = std::move(pair);
             lastPublishedCoverage_ = rawCoverage;
           } else if (latestPair_ == nullptr) {
@@ -1319,6 +1446,9 @@ class AsyncKeyerWorker {
   VideoFrame pendingFrame_;
   std::shared_ptr<const PairedKeyerFrame> latestPair_;
   double lastPublishedCoverage_ = 0.0;
+  // Fed and reset under mutex_ only (feed in the publish section, reset in
+  // clear()), so the program loop's clear() cannot race the worker thread.
+  SubjectPresenceTracker presenceTracker_{subjectPresenceConfigFromEnv()};
   uint64_t generation_ = 0;
   uint64_t pendingGeneration_ = 0;
   uint64_t droppedFrames_ = 0;
@@ -1636,13 +1766,26 @@ void runFramePipeline(const Options &options,
       // (that would run the model twice per frame). While the fused keyer is
       // degraded, the async worker takes over - it must receive frames or the
       // fallback can never produce a mask (K-03).
-      if (hasNewCameraFrame && keyerEnabled &&
-          (!gpuPipelineEnabled() || g_fusedKeyerDegraded)) {
+      const bool asyncPathActive = !gpuPipelineEnabled() || g_fusedKeyerDegraded;
+      if (hasNewCameraFrame && keyerEnabled && asyncPathActive) {
         keyerWorker.submit(latestCameraFrame);
       }
       if (hasCameraFrame) {
         if (snapshot.keyerEnabled) {
-          if (const std::shared_ptr<const PairedKeyerFrame> latestPair = keyerWorker.copyLatest()) {
+          if (!asyncPathActive) {
+            // The fused path owns the keyer this frame (same predicate as the
+            // submit guard above): never consume or REPORT the parked async
+            // worker's pair. Before this gate, the worker's last pair aged
+            // unbounded across a lite->fused step-up and this block kept
+            // overwriting the fused telemetry (mask age, keyer fps,
+            // degradation stage, publish-to-program) every frame - the UI
+            // sampled the stale values in the window before the blocking
+            // fused inference corrected them. The fused block below sets the
+            // compositor inputs; the un-keyed live camera is the safe default
+            // should it fail this very frame. BROADIFY_MEETING_GPU_PIPELINE=0
+            // restores the pure async behavior.
+            frameForCompositor = &latestCameraFrame;
+          } else if (const std::shared_ptr<const PairedKeyerFrame> latestPair = keyerWorker.copyLatest()) {
             double maskAgeMs = 0.0;
             if (latestCameraFrame.timestampNs >= latestPair->frame.timestampNs) {
               maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair->frame.timestampNs) / 1000000.0;
@@ -1678,7 +1821,13 @@ void runFramePipeline(const Options &options,
               state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
               state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
               state.keyerMetrics.keyerFps = keyerStats.keyerFps;
-              if (pairIsUsable) {
+              if (pairIsUsable && latestPair->mask.emptyValid) {
+                // Confirmed-empty subject (Option A): the background stays
+                // composited on purpose - never report this as
+                // passthrough/stale_hold.
+                state.degradationStage = "no_subject";
+                state.staleMaskActive = false;
+              } else if (pairIsUsable) {
 #if defined(_WIN32)
                 if (retention == MaskRetentionDecision::StaleHold) {
                   state.degradationStage = "stale_hold";
@@ -1755,7 +1904,10 @@ void runFramePipeline(const Options &options,
       if (hasNewFrontGraphicsFrame) {
         lastFrontGraphicsTimestampNs = frontGraphicsFrameForCompositor->timestampNs;
       }
-      if (hasCameraFrame && snapshot.keyerEnabled) {
+      // Same-frame re-evaluation only while the async path is the active
+      // source (see the gate above): while fused owns the keyer this block
+      // must neither consume the parked worker's pair nor write telemetry.
+      if (hasCameraFrame && snapshot.keyerEnabled && asyncPathActive) {
         const std::shared_ptr<const PairedKeyerFrame> latestPair = keyerWorker.copyLatest();
         if (latestPair != nullptr &&
             (selectedPair == nullptr || latestPair->publishedAtNs > selectedPair->publishedAtNs)) {
@@ -1795,7 +1947,11 @@ void runFramePipeline(const Options &options,
             state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
             state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
             state.keyerMetrics.keyerFps = keyerStats.keyerFps;
-            if (pairIsUsable) {
+            if (pairIsUsable && latestPair->mask.emptyValid) {
+              // Confirmed-empty subject (Option A): see the first block.
+              state.degradationStage = "no_subject";
+              state.staleMaskActive = false;
+            } else if (pairIsUsable) {
 #if defined(_WIN32)
               if (retention == MaskRetentionDecision::StaleHold) {
                 state.degradationStage = "stale_hold";
@@ -1844,9 +2000,11 @@ void runFramePipeline(const Options &options,
       AlphaMask liveRefinedMask;
       const AlphaMask *maskForCompositor =
           selectedPair != nullptr ? &selectedPair->mask : nullptr;
+      // Confirmed-empty masks skip the snap entirely (refining zeros is
+      // wasted work); the pair's flagged zero mask goes to the compositor.
       if (selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
           !latestCameraFrame.rgba.empty() && !selectedPair->mask.alpha.empty() &&
-          guidedRefineAvailable()) {
+          !selectedPair->mask.emptyValid && guidedRefineAvailable()) {
         const bool fresherFrame =
             latestCameraFrame.timestampNs > selectedPair->frame.timestampNs;
         // Edge-live carries no worker-side refine, so it must clean the edge on
@@ -1937,7 +2095,44 @@ void runFramePipeline(const Options &options,
         static uint64_t lastFusedInferredTsNs = 0u;
         static LumaThumb lastFusedInferredLuma;
         static LumaThumb currentFrameLuma;
+        // Last PUBLISHED (post-postprocess) fused mask: the previous-mask
+        // input for the fused postprocess parity (stabilizeAlphaEdges needs
+        // temporal continuity). Reset wherever lastFusedRawMask is reset.
+        static AlphaMask lastFusedPublishedMask;
+        // Path-transition reset: invoked whenever the ACTIVE keyer path
+        // changes between fused (fused_cadence counts as fused), async_lite
+        // and off. Clears everything the previous path owned, so the new
+        // path can never serve or report the old path's stale masks/metrics
+        // (before this, a lite->fused step-up left the worker's last pair in
+        // place and the async telemetry block kept reporting its unbounded
+        // age). Metrics fields the new path does not own are parked at -1
+        // (counters at 0) until it writes them. Governor learning
+        // (tier/backoffs) survives on purpose - it caused the transition.
+        const auto resetKeyerPathState = [&]() {
+          keyerWorker.clear();
+          maskAgeAverage.clear();
+          asyncMaskRetention.reset();
+          fusedCadence.reset();
+          lastFusedRawMask = AlphaMask{};
+          lastFusedInferredTsNs = 0u;
+          lastFusedInferredLuma = LumaThumb{};
+          lastFusedPublishedMask = AlphaMask{};
+          fusedSubjectPresenceTracker().reset();
+          fusedStabilizerState().reset();
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.keyerMetrics.keyerPublishToProgramMs = -1.0;
+          state.keyerMetrics.maskAgeAvgMs = -1.0;
+          state.keyerMetrics.keyerFps = -1.0;
+          state.keyerMetrics.keyerProcessingMs = -1.0;
+          state.keyerMetrics.keyerInputAgeMs = -1.0;
+          state.keyerMetrics.droppedFramesPerSec = -1.0;
+          state.keyerMetrics.droppedFrames = 0u;
+          state.keyerMetrics.skippedFrames = 0u;
+        };
         std::string fusedPipelineModeLabel;
+        // Effective performance mode driving the keyer this frame (empty on
+        // guard-skip frames; sticky in state like the pipeline label).
+        std::string fusedActiveMode;
         if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
@@ -1976,6 +2171,10 @@ void runFramePipeline(const Options &options,
           // the finer 320 one. Cleared automatically outside the lite tier.
           keyerWorker.setGovernorPerformanceFloor(
               governorAutoEnabled && fusedGovernor.wantsAsyncLite());
+          // What actually drives the keyer now: the governor's tier (which is
+          // also the async-lite floor, "performance"), or the webapp mode
+          // when auto-degradation is off / the env pin is active.
+          fusedActiveMode = keyerSettings.performanceMode;
           if (governorAutoEnabled && fusedGovernor.wantsOff()) {
             // Even async 256 inference is uselessly slow on this machine:
             // stop keying entirely and say so. The async worker is starved
@@ -2013,20 +2212,19 @@ void runFramePipeline(const Options &options,
             // governor: the Lite256 EMA is what the estimate-based step-up
             // (and the Lite -> Off guard) judges — the LIVE cost under GPU
             // contention, not the isolated benchmark. One sample per
-            // published pair (deduped by the monotonic publish stamp).
+            // published pair (deduped by the monotonic publish stamp). The
+            // cost travels ON the pair: reading state.inferenceMs here could
+            // pair a fresh publish stamp with a stale pre-demotion value,
+            // because the worker publishes the pair before it writes the
+            // matching status.
             static uint64_t lastAsyncSampledPublishNs = 0u;
             if (const std::shared_ptr<const PairedKeyerFrame> litePair =
                     keyerWorker.copyLatest()) {
               if (litePair->publishedAtNs != 0u &&
                   litePair->publishedAtNs != lastAsyncSampledPublishNs) {
                 lastAsyncSampledPublishNs = litePair->publishedAtNs;
-                double asyncInferenceMs = -1.0;
-                {
-                  std::lock_guard<std::mutex> lock(state.mutex);
-                  asyncInferenceMs = state.inferenceMs;
-                }
-                if (asyncInferenceMs > 0.0) {
-                  fusedGovernor.addSample(asyncInferenceMs, fusedNow);
+                if (litePair->inferenceMs > 0.0) {
+                  fusedGovernor.addSample(litePair->inferenceMs, fusedNow);
                 }
               }
             }
@@ -2068,6 +2266,18 @@ void runFramePipeline(const Options &options,
                       guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                   guidedRefineMask(fusedMask, latestCameraFrame);
                 }
+                // Postprocess parity with the async worker: apply the
+                // user-facing erode/dilate/feather/edge-stabilization chain
+                // to the fused matte too (it was silently ignored here).
+                // Runs at the guided-refine working resolution (512x288,
+                // ~1-3 ms, fits the 33.3 ms grid at fused@256). maskAgeMs=0:
+                // this matte was inferred from the CURRENT frame. Skipped
+                // for confirmed-empty mattes (nothing to shape).
+                if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
+                  postprocessAlpha(fusedMask, lastFusedPublishedMask,
+                                   keyerSettings, 0.0, fused.status.metrics);
+                  lastFusedPublishedMask = fusedMask;
+                }
                 frameForCompositor = &latestCameraFrame;
                 maskForCompositor = &fusedMask;
                 shouldRenderProgram = true;
@@ -2083,7 +2293,11 @@ void runFramePipeline(const Options &options,
                 std::lock_guard<std::mutex> lock(state.mutex);
                 state.keyerMetrics.maskAgeMs = 0.0;
                 state.keyerMetrics.maskAgeAvgMs = 0.0;
-                state.degradationStage = "fused";
+                // The fused path owns this field and has no publish hop;
+                // never let the preserved-merge carry the async value.
+                state.keyerMetrics.keyerPublishToProgramMs = -1.0;
+                state.degradationStage =
+                    fusedMask.emptyValid ? "no_subject" : "fused";
                 state.staleMaskActive = false;
               } else {
                 // Publish the failure instead of freezing silently (K-03): the
@@ -2091,6 +2305,10 @@ void runFramePipeline(const Options &options,
                 // fallback path starts receiving frames (submit guard above).
                 g_fusedKeyerDegraded = true;
                 updateMeetingKeyerStatus(state, fused.status);
+                // The async fallback is the active source until a retry
+                // succeeds - report that instead of blanking the pipeline
+                // mode to null.
+                fusedPipelineModeLabel = "async_lite";
               }
             } else {
               // Cadence skip: reuse the retained raw matte, but still run the
@@ -2105,6 +2323,18 @@ void runFramePipeline(const Options &options,
               // The GPU compositors cache mask uploads by timestampNs; the
               // refined mask belongs to the CURRENT frame now (KEY-02).
               fusedMask.timestampNs = latestCameraFrame.timestampNs;
+              // Postprocess parity on reused frames too, with the HONEST
+              // mask age: dynamic dilation widens and the edge stabilization
+              // age-fades exactly like the async path would for a mask this
+              // old. Runs after the timestamp rebase so the temporal chain
+              // sees monotonic stamps.
+              KeyerMetrics reusedPostprocessMetrics;
+              if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
+                postprocessAlpha(fusedMask, lastFusedPublishedMask,
+                                 keyerSettings, cadenceDecision.maskAgeMs,
+                                 reusedPostprocessMetrics);
+                lastFusedPublishedMask = fusedMask;
+              }
               frameForCompositor = &latestCameraFrame;
               maskForCompositor = &fusedMask;
               shouldRenderProgram = true;
@@ -2112,9 +2342,17 @@ void runFramePipeline(const Options &options,
                   fusedCadence.currentN() > 1 ? "fused_cadence" : "fused";
               std::lock_guard<std::mutex> lock(state.mutex);
               state.keyerMetrics.maskAgeMs = cadenceDecision.maskAgeMs;
-              state.degradationStage = "fused_reused";
-              state.staleMaskActive = cadenceDecision.maskAgeMs >=
-                                      keyerSettings.degradation.freshMaskAgeMs;
+              // Owned by the fused path (see the inference branch).
+              state.keyerMetrics.keyerPublishToProgramMs = -1.0;
+              if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
+                state.keyerMetrics.maskPostprocessMs =
+                    reusedPostprocessMetrics.maskPostprocessMs;
+              }
+              state.degradationStage =
+                  fusedMask.emptyValid ? "no_subject" : "fused_reused";
+              state.staleMaskActive = !fusedMask.emptyValid &&
+                                      cadenceDecision.maskAgeMs >=
+                                          keyerSettings.degradation.freshMaskAgeMs;
             }
           }
         } else if (!snapshot.keyerEnabled) {
@@ -2126,10 +2364,39 @@ void runFramePipeline(const Options &options,
           lastFusedRawMask = AlphaMask{};
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
+          lastFusedPublishedMask = AlphaMask{};
+          fusedSubjectPresenceTracker().reset();
+          fusedStabilizerState().reset();
+        }
+        // The reported pipeline mode must never blank while the section is
+        // active: the guard can skip on camera hiccups (and the failure
+        // branch used to leave it empty), which flapped keyer_pipeline_mode
+        // to null mid-session. Keep the last reported mode sticky instead;
+        // a disabled keyer genuinely clears it (null = not reported).
+        static std::string lastReportedPipelineMode;
+        if (fusedPipelineModeLabel.empty() && snapshot.keyerEnabled) {
+          fusedPipelineModeLabel = lastReportedPipelineMode;
+        }
+        if (!snapshot.keyerEnabled) {
+          lastReportedPipelineMode.clear();
+        } else if (!fusedPipelineModeLabel.empty()) {
+          const bool pathChanged =
+              !lastReportedPipelineMode.empty() &&
+              canonicalKeyerPathLabel(fusedPipelineModeLabel) !=
+                  canonicalKeyerPathLabel(lastReportedPipelineMode);
+          if (pathChanged) {
+            resetKeyerPathState();
+          }
+          lastReportedPipelineMode = fusedPipelineModeLabel;
         }
         {
           std::lock_guard<std::mutex> lock(state.mutex);
           state.keyerPipelineMode = fusedPipelineModeLabel;
+          if (!snapshot.keyerEnabled) {
+            state.activePerformanceMode.clear();
+          } else if (!fusedActiveMode.empty()) {
+            state.activePerformanceMode = fusedActiveMode;
+          }
         }
       }
 #else

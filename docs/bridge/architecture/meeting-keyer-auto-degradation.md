@@ -123,6 +123,112 @@ than that visibly turned keying OFF and ON around the gate.
   passthrough immediately. The worker-side mask-collapse guards are untouched
   and keep suppressing broken masks before they ever publish.
 
+## Fused Postprocess Parity (2026-08-09)
+
+Historical gap: the user-facing mask settings (`mask_erode_px`,
+`mask_dilate_px`, `mask_feather_px`, `dynamic_dilation`,
+`edge_stabilization_*`) were only ever applied inside the async worker's
+`postprocessAlpha` chain. The fused path applied ONLY the collapse guard/EMA
+(`stabilizeFusedMask`) plus the guided edge refine – the settings were
+silently ignored, which is why fused@256 produced flickery, coarse edges the
+async path never showed.
+
+The Windows fused path now runs the identical `postprocessAlpha` chain
+(morphological close -> smoothstep remap -> age-faded edge stabilization ->
+erode -> dynamic dilate -> feather) AFTER the guided refine, on both real
+inference frames (`maskAgeMs` 0) and cadence-reused frames (honest
+`maskAgeMs`, so dynamic dilation and the edge-stabilization age fade behave
+exactly like the async path). It runs at the guided-refine working
+resolution (512x288, ~1-3 ms) and books its cost in
+`metrics.mask_postprocess_ms`. Temporal continuity comes from the retained
+last published (post-postprocess) fused mask; `blendAlphaTemporal` and the
+worker's pre-refine bilateral are deliberately NOT applied (superseded by
+the fused EMA and the guided refine respectively). The macOS fused block is
+unchanged. Kill-switch: `BROADIFY_MEETING_FUSED_POSTPROCESS=0`.
+
+## Path-Transition Reset Matrix (2026-08-09)
+
+Telemetry/consumption ownership used to leak across path transitions: after
+an `async_lite -> fused` step-up nothing cleared the worker's last pair, so
+the async telemetry block kept reporting its unbounded age (38000+ ms
+`mask_age_ms`, `keyer_fps` 0, stage `passthrough`) every frame while the
+fused path was healthy – and `keyer_publish_to_program_ms` stayed
+permanently stale in fused mode because only the async block ever wrote it
+(and `updateMeetingKeyerStatus` preserves it across merges).
+
+Fixes:
+
+- The async consumption/telemetry blocks are gated on the async path being
+  the ACTIVE source (the same predicate as the submit guard:
+  `!gpuPipelineEnabled() || fused degraded`). While fused owns the keyer, the
+  parked worker's pair is neither composited nor reported. Shared with macOS
+  (the same race existed there); `BROADIFY_MEETING_GPU_PIPELINE=0` restores
+  the pure async behavior.
+- On ANY active-path change between `fused` (`fused_cadence` counts as
+  fused), `async_lite` and `off`, a transition reset clears: async worker
+  (incl. published pair and rate meters), mask-age average, mask retention,
+  cadence, the retained fused mattes and the subject-presence tracker.
+  Metrics fields the new path does not own are parked at -1 (counters at 0).
+  Governor learning (tier, backoffs) survives – it caused the transition.
+- The fused path owns `keyer_publish_to_program_ms` and writes -1 (no
+  publish hop exists in fused mode).
+- `keyer_pipeline_mode` never blanks while the section is active: the fused
+  inference-failure branch reports `async_lite` (the fallback is the active
+  source until a retry succeeds) and camera-hiccup frames keep the last
+  reported mode sticky. Only a disabled keyer clears it to `null`.
+- New additive status field `active_performance_mode` (`keyer.get`, next to
+  the requested `performance_mode`): the mode actually driving the keyer –
+  the governor's tier on the fused path, the async-lite floor
+  (`performance`), or the webapp mode when auto-degradation is off. `null`
+  on macOS / keyer disabled. The webapp metrics mapper reads only known
+  keys, so the extra field is ignored safely until the UI adopts it.
+
+## Empty-Subject Handling (`no_subject`, Option A, 2026-08-09)
+
+When the person leaves the frame, the background now STAYS composited
+instead of the keyer visibly "turning off". Previous mechanism: an all-zero
+mask has no anchor pixel, so the shared plan builder fell back to the
+un-keyed cover camera (`plan.camera.keyed=false`); on Windows the async
+worker additionally held the last pair forever on collapse, ending in
+`stale_hold`/`passthrough`. macOS only ever appeared to work because
+residual matte noise kept the anchor alive – by accident, not by design.
+
+- `SubjectPresenceTracker` (`src/pipeline/subject_presence.cpp`, pure logic,
+  injected time): coverage >= 0.003 (`emptyAcceptCoverage`, deliberately
+  below `kMinForegroundCoverage` 0.006) = present and resets the streak;
+  below it, SUCCESSFUL inferences accumulate wall time; >= 400 ms
+  (`acceptAfterMs`, cadence-independent) confirms the absence. Inference
+  failures never advance the streak, so dropout protection is intact.
+- Fused path (`stabilizeFusedMask`, shared macOS+Windows BY DESIGN): while
+  the streak is unconfirmed the bounded collapse hold applies as before; on
+  `ConfirmedEmpty` the empty matte passes through flagged
+  `emptyValid`. Re-entry: the first confident frame resets to present.
+- Async worker: on `ConfirmedEmpty` the (empty) pair is PUBLISHED with fresh
+  stamps – retention stays in Apply (mask age ~0), no stale_hold/
+  passthrough – instead of holding the last pair forever. Over-full and
+  sudden-drop masks remain dropouts. Shared with macOS: there the worker
+  only runs when CoreML failed, where background-only is equally desired.
+- Compositor (shared plan builder + `MetalComposePlan.maskEmptyValid`): a
+  flagged mask keeps `camera.keyed=true` in the anchor-less branch, the zero
+  mask uploads and both shaders resolve it to alpha 0 -> background-only.
+  Without the flag (model garbage) the un-keyed fallback stays. The CPU
+  compositor already rendered background-only for anchor-less masks.
+- Status: composing a confirmed-empty mask reports `degradation_stage`
+  `no_subject` (never `passthrough`/`stale_hold`) on the async path and on
+  the Windows fused path.
+- Kill-switch: `BROADIFY_MEETING_EMPTY_SUBJECT=0` makes the trackers inert
+  (never `ConfirmedEmpty`) – the previous behavior end-to-end.
+
+## Ladder Verdict (2026-08-09)
+
+On the measured field machines ({17, 40, 70} ms live 512-class inference),
+fused@256 is the only clean fused rung: 320 with N=2 cadence was evaluated
+and rejected – it produces bunched 8/65 ms frame pairs (visible judder
+instead of a steady grid) and its live EMA sits above the step-down
+threshold anyway, so the governor demotes it. The cadence stays as a safety
+valve (motion-forced refresh, mask-age cap), not as a way to hold an
+over-budget resolution.
+
 ## Status Field `keyer_pipeline_mode`
 
 `keyer.get` reports the fused-path mode (bridge passes it through as
@@ -133,7 +239,7 @@ inactive):
 | --- | --- |
 | `fused` | fused synchronous inference, N = 1 |
 | `fused_cadence` | fused with frame-skipping cadence, N > 1 |
-| `async_lite` | governor handed the keyer to the async worker (`Lite256`) |
+| `async_lite` | governor handed the keyer to the async worker (`Lite256`), or the fused inference failed and the async fallback is active |
 | `off` | governor stopped keying (`gpu_too_slow` passthrough) |
 
 ## Matting Backends (Windows)
@@ -215,6 +321,8 @@ All variables are forwarded by the bridge (allowlist in
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | Testing override for the governor's step-down threshold |
 | `BROADIFY_MEETING_KEYER_PERFORMANCE` | Pins the input resolution (A/B testing); the governor keeps sampling but stops driving `performanceMode` |
 | `BROADIFY_MEETING_GPU_PIPELINE=0` | Disables the fused path entirely (async worker path only) |
+| `BROADIFY_MEETING_FUSED_POSTPROCESS=0` | Fused postprocess parity kill switch: the fused matte skips the erode/dilate/feather/edge-stabilization chain again |
+| `BROADIFY_MEETING_EMPTY_SUBJECT=0` | Empty-subject (Option A) kill switch: an absent person is never confirmed; collapse-hold/anchor-fallback behavior as before |
 | `BROADIFY_MEETING_KEYER_BACKEND` | `modnet` / `openvino_modnet` force the matting backend (read once by the factory) |
 | `BROADIFY_MEETING_KEYER_OPENVINO=0` | OpenVINO kill switch: always the ONNX Runtime backend, even when forced |
 | `BROADIFY_MEETING_OPENVINO_DEVICE` | `AUTO` (default; expands to OpenVINO `AUTO:NPU,GPU,CPU`) / `NPU` / `GPU` / `CPU` |
@@ -238,6 +346,8 @@ All variables are forwarded by the bridge (allowlist in
 - Unit tests: `keyer_governor_test` (incl. the 2026-08-09 field-regression
   scenario: async EMA 62 ms at a 33.3 ms budget must stay `async_lite` with
   zero transitions), `keyer_cadence_test`, `mask_retention_test` (adaptive
-  gate, stale-hold window, hard-cap hysteresis) and `matting_backend_test`
-  (backend selection policy + env parsing + factory fallback wiring) run via
-  ctest (`npm run test:meeting-helper-native`).
+  gate, stale-hold window, hard-cap hysteresis), `subject_presence_test`
+  (streak accumulation, dropout-vs-empty distinction, cadence-independent
+  time-based acceptance, re-entry reset, inert kill-switch config) and
+  `matting_backend_test` (backend selection policy + env parsing + factory
+  fallback wiring) run via ctest (`npm run test:meeting-helper-native`).
