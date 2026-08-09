@@ -1,7 +1,11 @@
 #include "capture/camera_source.h"
 #include "common/options.h"
 #include "control/control_server.h"
+#include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
+#if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
+#include "keyer/openvino_keyer.h"
+#endif
 #include "pipeline/frame_pipeline.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
@@ -21,6 +25,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <functional>
 #include <numeric>
 #include <vector>
 #include <future>
@@ -163,12 +168,15 @@ VideoFrame makeKeyerSelfTestFrame() {
   return frame;
 }
 
-// Standalone keyer benchmark (--keyer-self-test): per input-size mode, run
-// N timed MODNet inferences on the synthetic frame and print one JSON line
-// with mean/p95 latency. Exit 0 when the model loaded and produced masks for
-// every mode; 1 on any load/inference failure (fallbackActive counts as
-// failure - a missing model must fail the self-test, not pass silently).
-int runKeyerSelfTest(const Options &options) {
+// Benchmarks one matting backend across the three input-size modes: run N
+// timed inferences on the synthetic frame and print one JSON line per mode
+// with mean/p95 latency (the "backend" and "provider" fields distinguish the
+// sections). Returns false on any load/inference failure (fallbackActive
+// counts as failure - a missing model must fail the self-test, not pass
+// silently).
+bool benchmarkKeyerBackend(
+    const char *backendName, const VideoFrame &frame,
+    const std::function<std::unique_ptr<Keyer>()> &makeKeyer) {
   constexpr int kRunsPerMode = 20;
   struct SizeMode {
     const char *performanceMode;
@@ -176,19 +184,18 @@ int runKeyerSelfTest(const Options &options) {
   };
   constexpr SizeMode kModes[] = {
       {"high_quality", 512u}, {"balanced", 320u}, {"performance", 256u}};
-  const VideoFrame frame = makeKeyerSelfTestFrame();
   bool ok = true;
   for (const SizeMode &mode : kModes) {
     // Fresh keyer per mode: macOS freezes the CoreML input shape when the
     // session is created, so a shared instance could not switch sizes.
-    ModnetKeyer keyer(ModnetKeyerOptions{options.modelsDir});
+    std::unique_ptr<Keyer> keyer = makeKeyer();
     KeyerSettings settings;
     settings.performanceMode = mode.performanceMode;
     std::vector<double> sampleMs;
     sampleMs.reserve(kRunsPerMode);
     KeyerStatus lastStatus;
     for (int run = 0; run < kRunsPerMode; ++run) {
-      const KeyerResult result = keyer.apply(frame, settings);
+      const KeyerResult result = keyer->apply(frame, settings);
       lastStatus = result.status;
       if (result.status.fallbackActive || result.mask.alpha.empty()) {
         // Load retries are throttled (30s backoff), further runs are futile.
@@ -199,8 +206,8 @@ int runKeyerSelfTest(const Options &options) {
     if (sampleMs.empty()) {
       ok = false;
       std::ostringstream line;
-      line << "{\"type\":\"keyer_self_test\",\"provider\":\""
-           << jsonEscape(lastStatus.provider)
+      line << "{\"type\":\"keyer_self_test\",\"backend\":\"" << backendName
+           << "\",\"provider\":\"" << jsonEscape(lastStatus.provider)
            << "\",\"input_size\":" << mode.inputSize << ",\"error\":\""
            << jsonEscape(lastStatus.fallbackReason) << "\"}";
       printEvent(line.str());
@@ -214,13 +221,45 @@ int runKeyerSelfTest(const Options &options) {
     const size_t p95Index = static_cast<size_t>(
         std::ceil(0.95 * static_cast<double>(sorted.size()))) - 1u;
     std::ostringstream line;
-    line << "{\"type\":\"keyer_self_test\",\"provider\":\""
-         << jsonEscape(lastStatus.provider)
+    line << "{\"type\":\"keyer_self_test\",\"backend\":\"" << backendName
+         << "\",\"provider\":\"" << jsonEscape(lastStatus.provider)
          << "\",\"input_size\":" << mode.inputSize
          << ",\"mean_ms\":" << meanMs << ",\"p95_ms\":" << sorted[p95Index]
          << ",\"probe_inference_ms\":" << lastStatus.probeInferenceMs << "}";
     printEvent(line.str());
   }
+  return ok;
+}
+
+// Standalone keyer benchmark (--keyer-self-test). Always benchmarks the ONNX
+// Runtime MODNet backend; with OpenVINO compiled in it benchmarks that
+// backend as well, giving the A/B comparison (e.g. DirectML vs OpenVINO on an
+// Intel iGPU) in one command. Exit 0 only when every benchmarked backend
+// loaded and produced masks for every mode.
+int runKeyerSelfTest(const Options &options) {
+  const VideoFrame frame = makeKeyerSelfTestFrame();
+  bool ok = benchmarkKeyerBackend("modnet", frame, [&options]() {
+    return std::make_unique<ModnetKeyer>(ModnetKeyerOptions{options.modelsDir});
+  });
+#if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
+  {
+    // OpenVINO A/B section. BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu
+    // (the hardware-independent CI mode) pins the CPU device, mirroring how
+    // the same env strips the DirectML provider above.
+    std::string device = makeMattingBackendOptionsFromEnv(options.modelsDir).openVinoDevice;
+    const char *selfTestProvider =
+        std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER");
+    if (selfTestProvider != nullptr && std::string(selfTestProvider) == "cpu") {
+      device = "CPU";
+    }
+    const bool openVinoOk =
+        benchmarkKeyerBackend("openvino_modnet", frame, [&options, &device]() {
+          return std::make_unique<OpenVinoKeyer>(
+              OpenVinoKeyerOptions{options.modelsDir, device});
+        });
+    ok = ok && openVinoOk;
+  }
+#endif
   std::ostringstream summary;
   summary << "{\"type\":\"keyer_self_test_summary\",\"ok\":"
           << (ok ? "true" : "false") << "}";

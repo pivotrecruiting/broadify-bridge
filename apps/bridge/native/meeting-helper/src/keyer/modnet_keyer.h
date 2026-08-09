@@ -1,6 +1,7 @@
 #pragma once
 
 #include "keyer/keyer.h"
+#include "keyer/matting_backend.h"
 
 #include <memory>
 #include <string>
@@ -11,13 +12,13 @@ struct ModnetKeyerOptions {
   std::string modelsDir;
 };
 
-class ModnetKeyer : public Keyer {
+class ModnetKeyer : public MattingKeyer {
  public:
   explicit ModnetKeyer(ModnetKeyerOptions options);
   ~ModnetKeyer() override;
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override;
-  KeyerStatus status() const;
+  KeyerStatus status() const override;
 
  private:
   class Impl;
