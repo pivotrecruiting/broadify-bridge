@@ -7,6 +7,7 @@ namespace {
 
 // Relative inference cost of the lower tiers vs the 512 probe, assuming the
 // cost scales ~linearly with input pixel area: (320/512)^2 and (256/512)^2.
+// Field-validated within ~10% (2026-08: 512/320/256 live measurements).
 constexpr double kAreaScale320 = 0.390625;
 constexpr double kAreaScale256 = 0.25;
 
@@ -40,15 +41,49 @@ GovernorTier tierAbove(GovernorTier tier) {
   return GovernorTier::Full512;
 }
 
+// Cost ratio of the tier above the given one relative to it (input pixel-area
+// scaling). Lite256 -> Performance256 keeps the input size, so the async EMA
+// carries over 1:1.
+double stepUpAreaRatio(GovernorTier tier) {
+  switch (tier) {
+    case GovernorTier::Balanced320:
+      return 1.0 / kAreaScale320;               // 320 -> 512: x2.56
+    case GovernorTier::Performance256:
+      return kAreaScale320 / kAreaScale256;     // 256 -> 320: x1.5625
+    case GovernorTier::Lite256:
+      return 1.0;                               // async 256 -> fused 256
+    case GovernorTier::Full512:
+    case GovernorTier::Off:
+      return 1.0;                               // no estimate-based step-up
+  }
+  return 1.0;
+}
+
 }  // namespace
 
 KeyerAutoGovernor::KeyerAutoGovernor(const KeyerGovernorConfig &config)
-    : config_(config), reprobeInterval_(config.reprobeBaseInterval) {}
+    : config_(config),
+      stepUpHoldoff_(config.stepUpMinStableTime),
+      reprobeInterval_(config.reprobeBaseInterval) {}
 
 double KeyerAutoGovernor::stepDownThresholdMs() const {
   return config_.stepDownOverrideMs > 0.0
              ? config_.stepDownOverrideMs
              : config_.stepDownFactor * config_.frameBudgetMs;
+}
+
+double KeyerAutoGovernor::stepUpThresholdMs() const {
+  const double base = config_.stepDownOverrideMs > 0.0
+                          ? config_.stepDownOverrideMs
+                          : config_.frameBudgetMs;
+  return config_.stepUpFactor * base;
+}
+
+double KeyerAutoGovernor::estimatedStepUpMs() const {
+  if (emaMs_ <= 0.0) {
+    return -1.0;
+  }
+  return emaMs_ * stepUpAreaRatio(tier_);
 }
 
 void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
@@ -71,40 +106,55 @@ void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
   } else {
     tier_ = GovernorTier::Off;
   }
-  // The re-probe clock starts on the first maybeReprobe() call (seedProbe has
+  // The step-up clock starts on the first maybeStepUp() call (seedProbe has
   // no injected time on purpose - the probe median is not an event time).
   degradeClockStarted_ = false;
-  probing_ = false;
+  stepUpWatch_ = StepUpWatch::None;
 }
 
-void KeyerAutoGovernor::maybeReprobe(TimePoint now) {
-  if (tier_ == GovernorTier::Full512 || probing_) {
+void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
+  if (tier_ == GovernorTier::Full512) {
     return;
   }
   if (!degradeClockStarted_) {
-    // First observation after a seed: start the backoff clock now.
+    // First observation after a seed: start the holdoff clock now.
     degradedAt_ = now;
     degradeClockStarted_ = true;
     return;
   }
-  if (now - degradedAt_ < reprobeInterval_) {
+  if (tier_ == GovernorTier::Off) {
+    // Off -> Lite256 stays purely time-based: the async tier cannot block the
+    // program loop, and Off produces no samples to estimate from. Every
+    // Lite -> Off relapse doubled the backoff (stepDown), and it never resets
+    // within a session, so a hopeless machine converges to rare retries.
+    if (now - degradedAt_ < reprobeInterval_) {
+      return;
+    }
+    tier_ = GovernorTier::Lite256;
+    emaMs_ = -1.0;
+    samples_ = 0u;
+    degradedAt_ = now;
+    stepUpWatch_ = StepUpWatch::OffReentry;
     return;
   }
-  const GovernorTier target = tierAbove(tier_);
+  // Estimate-based step-up: NO live probe. Climb only when the higher tier's
+  // predicted cost fits the budget with strong margin, after enough samples
+  // and dwell time at the current tier.
+  if (now - degradedAt_ < stepUpHoldoff_) {
+    return;
+  }
+  if (samples_ < config_.minSamples) {
+    return;
+  }
+  const double estimated = estimatedStepUpMs();
+  if (estimated < 0.0 || estimated > stepUpThresholdMs()) {
+    return;
+  }
+  tier_ = tierAbove(tier_);
   emaMs_ = -1.0;
   samples_ = 0u;
   degradedAt_ = now;
-  if (tier_ == GovernorTier::Off) {
-    // Off -> Lite256 is accepted without a probe: the async tier produces no
-    // fused samples to judge it, and it cannot block the program loop. The
-    // (possibly doubled) backoff is kept - climbing further still needs a
-    // real probe.
-    tier_ = target;
-    probing_ = false;
-    return;
-  }
-  tier_ = target;
-  probing_ = true;
+  stepUpWatch_ = StepUpWatch::Fused;
 }
 
 void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
@@ -115,45 +165,50 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
                         : config_.emaWeight * inferenceMs +
                               (1.0 - config_.emaWeight) * emaMs_;
   ++samples_;
-  const double threshold = stepDownThresholdMs();
-  const bool regularExceed = samples_ >= config_.minSamples && emaMs_ > threshold;
-  const bool fastExceed = samples_ >= config_.fastStartMinSamples &&
-                          emaMs_ > config_.fastStartFactor * threshold;
   if (tier_ == GovernorTier::Lite256) {
     // Bottom active tier: over-budget is expected here (that is why the async
     // worker owns the keyer); only "even async is useless" matters.
     if (samples_ >= config_.minSamples && emaMs_ > config_.offInferenceMs) {
       stepDown(GovernorTier::Off, now);
+      return;
     }
-    return;
+  } else {
+    const double threshold = stepDownThresholdMs();
+    const bool regularExceed =
+        samples_ >= config_.minSamples && emaMs_ > threshold;
+    const bool fastExceed = samples_ >= config_.fastStartMinSamples &&
+                            emaMs_ > config_.fastStartFactor * threshold;
+    if (regularExceed || fastExceed) {
+      stepDown(tierBelow(tier_), now);
+      return;
+    }
   }
-  if (regularExceed || fastExceed) {
-    stepDown(tierBelow(tier_), now);
-    return;
-  }
-  if (probing_ && samples_ >= config_.stableSamples) {
-    // The probe held: this tier is sustainable, so retries stay prompt. The
-    // clock restarts so the next climb waits a full base interval.
-    reprobeInterval_ = config_.reprobeBaseInterval;
-    probing_ = false;
-    degradedAt_ = now;
+  if (stepUpWatch_ != StepUpWatch::None && samples_ >= config_.stableSamples) {
+    // The stepped-up tier held for a full window: the estimate was right.
+    stepUpWatch_ = StepUpWatch::None;
   }
 }
 
 void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
+  if (stepUpWatch_ != StepUpWatch::None) {
+    // A step-down within stableSamples of the last step-up means the estimate
+    // proved wrong: double the backoff of THAT step-up path, persistently for
+    // the session (never reset downward), so the visible wobble cannot repeat
+    // at a fixed period.
+    if (stepUpWatch_ == StepUpWatch::OffReentry) {
+      reprobeInterval_ = std::min<std::chrono::steady_clock::duration>(
+          reprobeInterval_ * 2, config_.reprobeMaxInterval);
+    } else {
+      stepUpHoldoff_ = std::min<std::chrono::steady_clock::duration>(
+          stepUpHoldoff_ * 2, config_.reprobeMaxInterval);
+    }
+    stepUpWatch_ = StepUpWatch::None;
+  }
   tier_ = target;
   emaMs_ = -1.0;
   samples_ = 0u;
   degradedAt_ = now;
   degradeClockStarted_ = true;
-  if (probing_) {
-    // The probe failed - this machine still cannot hold the better tier, so
-    // wait longer before the next retry (doubling, capped) to stop periodic
-    // quality wobble (mirrors the Apple governor).
-    reprobeInterval_ = std::min<std::chrono::steady_clock::duration>(
-        reprobeInterval_ * 2, config_.reprobeMaxInterval);
-    probing_ = false;
-  }
 }
 
 const char *KeyerAutoGovernor::performanceModeForTier() const {
@@ -186,9 +241,11 @@ void KeyerAutoGovernor::reset() {
   seeded_ = false;
   emaMs_ = -1.0;
   samples_ = 0u;
-  probing_ = false;
+  stepUpWatch_ = StepUpWatch::None;
   degradeClockStarted_ = false;
   degradedAt_ = TimePoint{};
+  // Session boundary (user toggled the keyer): learned backoffs restart.
+  stepUpHoldoff_ = config_.stepUpMinStableTime;
   reprobeInterval_ = config_.reprobeBaseInterval;
 }
 

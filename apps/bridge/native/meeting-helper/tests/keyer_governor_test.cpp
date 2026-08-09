@@ -112,8 +112,102 @@ int main() {
   }
 
   {
-    // Off threshold: at Lite256 a smoothed cost above offInferenceMs (120ms)
-    // turns the keyer off after a full sample window.
+    // FIELD REGRESSION (RC live test 2026-08-09, hybrid GTX 1660 Ti + UHD
+    // 630, DirectML under GPU contention): live async inference EMA 62ms at a
+    // 33.3ms budget. The old live-probe step-up climbed every backoff
+    // interval and fell straight back — user-visible mode flapping
+    // (fused_cadence -> async_lite -> fused -> ...). The estimate policy must
+    // pin the tier: 62ms estimate > 0.7 * 33.3ms = 23.3ms, and 62ms <
+    // offInferenceMs, so async_lite FOREVER — zero transitions across 35
+    // simulated minutes of samples and elapsed time.
+    KeyerAutoGovernor governor(testConfig());
+    governor.seedProbe(248.0);  // 248*0.25=62 -> seeds Lite256
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "field seed lands at Lite256");
+    int transitions = 0;
+    GovernorTier previous = governor.tier();
+    for (int second = 1; second <= 2100; ++second) {  // 35 minutes
+      governor.maybeStepUp(at(second));
+      // ~15 async masks/s in the field; a few samples per second keep the
+      // EMA saturated without slowing the test down.
+      feed(governor, 62.0, 4, at(second));
+      if (governor.tier() != previous) {
+        ++transitions;
+        previous = governor.tier();
+      }
+    }
+    ok &= expect(transitions == 0, "field case: zero tier transitions");
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "field case stays async_lite forever");
+    ok &= expect(std::string(governor.pipelineModeLabel(false)) == "async_lite",
+                 "field case label stays async_lite");
+  }
+
+  {
+    // Genuinely fast machine: async EMA 15ms at Lite256. The estimate (same
+    // input size, 15ms <= 23.3ms) steps up exactly once — after minSamples
+    // AND the 10s dwell — and Performance256 then holds (Balanced320 estimate
+    // 15 * 1.5625 = 23.4ms > 23.3ms, and 15ms is far under the step-down
+    // threshold), with no further transition over 10 simulated minutes.
+    KeyerAutoGovernor governor(testConfig());
+    governor.seedProbe(400.0);  // 400*0.25=100 <= 120 -> Lite256
+    ok &= expect(governor.tier() == GovernorTier::Lite256, "seeded at Lite256");
+    governor.maybeStepUp(at(1));  // starts the dwell clock
+    feed(governor, 15.0, 5, at(1));
+    governor.maybeStepUp(at(5));  // 5 samples: blocked by minSamples
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "no step-up before minSamples");
+    feed(governor, 15.0, 5, at(5));
+    governor.maybeStepUp(at(6));  // 10 samples, but only 5s dwell: blocked
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "no step-up before the dwell time");
+    int transitions = 0;
+    GovernorTier previous = governor.tier();
+    for (int second = 7; second <= 600; ++second) {
+      governor.maybeStepUp(at(second));
+      feed(governor, 15.0, 4, at(second));
+      if (governor.tier() != previous) {
+        ++transitions;
+        previous = governor.tier();
+      }
+    }
+    ok &= expect(transitions == 1, "fast machine steps up exactly once");
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "fast machine lands at Performance256 and stays");
+    ok &= expect(!governor.wantsAsyncLite(), "fused tier after step-up");
+  }
+
+  {
+    // Wrong estimate: the async EMA promised a fit, but the real fused cost
+    // is 60ms. One step-down (within stableSamples of the step-up) doubles
+    // the step-up holdoff persistently; the next attempt must wait the
+    // doubled interval.
+    KeyerAutoGovernor governor(testConfig());
+    governor.seedProbe(400.0);  // Lite256
+    governor.maybeStepUp(at(1));  // starts the dwell clock
+    feed(governor, 15.0, 10, at(1));
+    governor.maybeStepUp(at(11));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "estimate-based step-up fires");
+    feed(governor, 60.0, 10, at(12));  // reality: over budget -> step down
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "wrong estimate steps down once");
+    ok &= expect(governor.stepUpHoldoff() == std::chrono::seconds(20),
+                 "wrong estimate doubles the step-up holdoff");
+    feed(governor, 15.0, 19, at(13));
+    governor.maybeStepUp(at(22));  // 10s since step-down: blocked (20s now)
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "doubled holdoff blocks the old 10s retry");
+    governor.maybeStepUp(at(32));  // 20s since step-down: allowed
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "step-up retries after the doubled holdoff");
+  }
+
+  {
+    // Off threshold and Off -> Lite256 re-entry: at Lite256 a smoothed cost
+    // above offInferenceMs (120ms) turns the keyer off after a full sample
+    // window; re-entry is time-based, and a relapse doubles the (never-reset)
+    // re-entry backoff.
     KeyerAutoGovernor governor(testConfig());
     governor.seedProbe(194.0);
     ok &= expect(governor.tier() == GovernorTier::Lite256, "seeded at Lite256");
@@ -125,60 +219,49 @@ int main() {
     // Off ignores further samples.
     feed(governor, 10.0, 30, at(2));
     ok &= expect(governor.tier() == GovernorTier::Off, "Off ignores samples");
-    // Off re-probes to Lite256 after the backoff, accepted without a probe.
-    governor.maybeReprobe(at(100));  // backoff started at the off transition
+    // Off re-enters Lite256 after the backoff, no probe needed.
+    governor.maybeStepUp(at(100));  // backoff started at the off transition
     ok &= expect(governor.tier() == GovernorTier::Lite256,
                  "Off climbs back to Lite256 after backoff");
-    ok &= expect(!governor.probing(), "Off -> Lite256 needs no probe");
-  }
-
-  {
-    // Re-probe: backoff doubles on a failed probe and resets once one holds.
-    KeyerAutoGovernor governor(testConfig());
-    feed(governor, 40.0, 10, at(0));  // degrade Full512 -> Balanced320 at t=0
-    ok &= expect(governor.tier() == GovernorTier::Balanced320, "degraded");
-    governor.maybeReprobe(at(30));
-    ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                 "no re-probe before the base interval");
-    governor.maybeReprobe(at(60));
-    ok &= expect(governor.tier() == GovernorTier::Full512, "re-probe climbs a tier");
-    ok &= expect(governor.probing(), "climb is a probe");
-    feed(governor, 40.0, 10, at(61));  // probe fails
-    ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                 "failed probe falls back");
+    // The re-entry relapses within stableSamples -> the re-entry backoff
+    // doubles and never resets for the session.
+    feed(governor, 130.0, 10, at(105));
+    ok &= expect(governor.tier() == GovernorTier::Off, "re-entry relapses to Off");
     ok &= expect(governor.reprobeInterval() == std::chrono::seconds(120),
-                 "failed probe doubles the backoff");
-    governor.maybeReprobe(at(61 + 60));
-    ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                 "doubled backoff blocks the 60s retry");
-    governor.maybeReprobe(at(61 + 120));
-    ok &= expect(governor.tier() == GovernorTier::Full512,
-                 "re-probe fires after the doubled backoff");
-    feed(governor, 20.0, 30, at(182));  // probe holds for stableSamples
-    ok &= expect(governor.tier() == GovernorTier::Full512, "held probe keeps tier");
-    ok &= expect(!governor.probing(), "held probe ends probing");
-    ok &= expect(governor.reprobeInterval() == std::chrono::seconds(60),
-                 "held probe resets the backoff to base");
+                 "relapse doubles the re-entry backoff");
+    governor.maybeStepUp(at(105 + 60));
+    ok &= expect(governor.tier() == GovernorTier::Off,
+                 "doubled backoff blocks the 60s re-entry");
+    governor.maybeStepUp(at(105 + 120));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "re-entry fires after the doubled backoff");
   }
 
   {
-    // Backoff is capped at the max interval.
+    // The step-up holdoff is capped at reprobeMaxInterval.
     KeyerGovernorConfig config = testConfig();
-    config.reprobeMaxInterval = std::chrono::seconds(120);
+    config.reprobeMaxInterval = std::chrono::seconds(30);
     KeyerAutoGovernor governor(config);
-    feed(governor, 40.0, 10, at(0));
+    governor.seedProbe(400.0);  // Lite256
     int now = 0;
+    governor.maybeStepUp(at(now));  // starts the dwell clock
     for (int round = 0; round < 4; ++round) {
-      now += 600;
-      governor.maybeReprobe(at(now));
-      feed(governor, 40.0, 10, at(now));  // every probe fails
+      feed(governor, 15.0, 10, at(now));  // async promises a fit
+      now += 700;                         // beyond any holdoff
+      governor.maybeStepUp(at(now));
+      ok &= expect(governor.tier() == GovernorTier::Performance256,
+                   "capped-holdoff round steps up");
+      feed(governor, 60.0, 10, at(now));  // reality disagrees -> down
+      ok &= expect(governor.tier() == GovernorTier::Lite256,
+                   "capped-holdoff round steps down");
     }
-    ok &= expect(governor.reprobeInterval() == std::chrono::seconds(120),
-                 "backoff is capped at reprobeMaxInterval");
+    ok &= expect(governor.stepUpHoldoff() == std::chrono::seconds(30),
+                 "step-up holdoff is capped at reprobeMaxInterval");
   }
 
   {
-    // Testing override replaces the step-down threshold.
+    // Testing override replaces the step-down threshold (and scales the
+    // step-up threshold base with it).
     KeyerGovernorConfig config = testConfig();
     config.stepDownOverrideMs = 50.0;
     KeyerAutoGovernor governor(config);
@@ -191,7 +274,7 @@ int main() {
   }
 
   {
-    // reset() returns to a clean, unseeded Full512.
+    // reset() returns to a clean, unseeded Full512 with base backoffs.
     KeyerAutoGovernor governor(testConfig());
     governor.seedProbe(500.0);
     ok &= expect(governor.seeded(), "seeded before reset");
@@ -201,7 +284,9 @@ int main() {
     ok &= expect(!governor.wantsOff() && !governor.wantsAsyncLite(),
                  "reset clears degradation");
     ok &= expect(governor.reprobeInterval() == std::chrono::seconds(60),
-                 "reset restores the base backoff");
+                 "reset restores the base re-entry backoff");
+    ok &= expect(governor.stepUpHoldoff() == std::chrono::seconds(10),
+                 "reset restores the base step-up holdoff");
   }
 
   {

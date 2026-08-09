@@ -14,6 +14,7 @@
 #include "pipeline/keyer_cadence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
+#include "pipeline/mask_retention.h"
 #endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
@@ -1503,6 +1504,14 @@ void runFramePipeline(const Options &options,
   GraphicsFrameBusReader frontGraphicsReader(kMeetingFrontGraphicsFrameBusName);
   RateMeter programRate;
   RollingAverage maskAgeAverage;
+#if defined(_WIN32)
+  // Async/lite mask retention (field fix 2026-08-09): the mask-age gate
+  // adapts to the real publish cadence and holds a stale mask (age-faded)
+  // instead of hard-expiring it, so a slow-but-healthy keyer no longer flaps
+  // between keyed and un-keyed frames. Windows-scoped: macOS keeps the tuned
+  // hard-expiry behavior byte-identically.
+  MaskRetention asyncMaskRetention;
+#endif
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
   while (running.load()) {
@@ -1634,7 +1643,17 @@ void runFramePipeline(const Options &options,
               maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair->frame.timestampNs) / 1000000.0;
             }
             maskAgeAverage.add(maskAgeMs);
+#if defined(_WIN32)
+            // Adaptive retention instead of hard expiry: a mask over the gate
+            // is HELD (stale_hold, age-faded) until the hard cap, so the keyer
+            // no longer visibly turns off/on around the age gate.
+            const MaskRetentionDecision retention = asyncMaskRetention.decide(
+                latestCameraFrame.timestampNs, latestPair->publishedAtNs,
+                maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs));
+            const bool pairIsUsable = retention != MaskRetentionDecision::Passthrough;
+#else
             const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
+#endif
             if (pairIsUsable) {
               selectedPair = latestPair;
               frameForCompositor = &selectedPair->frame;
@@ -1655,8 +1674,18 @@ void runFramePipeline(const Options &options,
               state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
               state.keyerMetrics.keyerFps = keyerStats.keyerFps;
               if (pairIsUsable) {
+#if defined(_WIN32)
+                if (retention == MaskRetentionDecision::StaleHold) {
+                  state.degradationStage = "stale_hold";
+                  state.staleMaskActive = true;
+                } else {
+                  state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                  state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
+                }
+#else
                 state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
                 state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
+#endif
               } else {
                 state.degradationStage = "passthrough";
                 state.staleMaskActive = true;
@@ -1678,6 +1707,9 @@ void runFramePipeline(const Options &options,
         } else {
           keyerWorker.clear();
           maskAgeAverage.clear();
+#if defined(_WIN32)
+          asyncMaskRetention.reset();
+#endif
           frameForCompositor = &latestCameraFrame;
           {
             std::lock_guard<std::mutex> lock(state.mutex);
@@ -1689,6 +1721,9 @@ void runFramePipeline(const Options &options,
       } else {
         keyerWorker.clear();
         maskAgeAverage.clear();
+#if defined(_WIN32)
+        asyncMaskRetention.reset();
+#endif
         {
           std::lock_guard<std::mutex> lock(state.mutex);
           state.degradationStage = "passthrough";
@@ -1724,7 +1759,16 @@ void runFramePipeline(const Options &options,
             maskAgeMs = static_cast<double>(latestCameraFrame.timestampNs - latestPair->frame.timestampNs) / 1000000.0;
           }
           maskAgeAverage.add(maskAgeMs);
+#if defined(_WIN32)
+          // Same-frame re-evaluation with the fresher pair; the retention
+          // helper dedupes the passthrough streak by frame timestamp.
+          const MaskRetentionDecision retention = asyncMaskRetention.decide(
+              latestCameraFrame.timestampNs, latestPair->publishedAtNs,
+              maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs));
+          const bool pairIsUsable = retention != MaskRetentionDecision::Passthrough;
+#else
           const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
+#endif
           if (pairIsUsable) {
             selectedPair = latestPair;
             frameForCompositor = &selectedPair->frame;
@@ -1747,8 +1791,18 @@ void runFramePipeline(const Options &options,
             state.keyerMetrics.droppedFramesPerSec = keyerStats.droppedFramesPerSec;
             state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             if (pairIsUsable) {
+#if defined(_WIN32)
+              if (retention == MaskRetentionDecision::StaleHold) {
+                state.degradationStage = "stale_hold";
+                state.staleMaskActive = true;
+              } else {
+                state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
+              }
+#else
               state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
               state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
+#endif
             } else {
               state.degradationStage = "passthrough";
               state.staleMaskActive = true;
@@ -1894,7 +1948,7 @@ void runFramePipeline(const Options &options,
           const auto fusedNow = std::chrono::steady_clock::now();
           const bool governorAutoEnabled = autoDegradeEnabled();
           if (governorAutoEnabled) {
-            fusedGovernor.maybeReprobe(fusedNow);
+            fusedGovernor.maybeStepUp(fusedNow);
             // Seed once from the session-build warmup probe (median steady
             // inference cost at the 512 shape); available after the first
             // apply() loaded the session, so seeding lands one frame later.
@@ -1919,6 +1973,7 @@ void runFramePipeline(const Options &options,
             g_fusedKeyerDegraded = false;
             keyerWorker.clear();
             maskAgeAverage.clear();
+            asyncMaskRetention.reset();
             selectedPair.reset();
             frameForCompositor = &latestCameraFrame;
             maskForCompositor = nullptr;
@@ -1940,9 +1995,30 @@ void runFramePipeline(const Options &options,
             // Fused inference cannot hold frame rate even at 256: hand the
             // keyer to the async worker (mask reuse keeps the program at
             // frame rate) via the existing degradation mechanism. The flag
-            // clears automatically once a re-probe steps back up and the
-            // fused path runs (and succeeds) again.
+            // clears automatically once an estimate-based step-up leaves the
+            // tier and the fused path runs (and succeeds) again.
             g_fusedKeyerDegraded = true;
+            // Feed the async worker's measured inference cost into the
+            // governor: the Lite256 EMA is what the estimate-based step-up
+            // (and the Lite -> Off guard) judges — the LIVE cost under GPU
+            // contention, not the isolated benchmark. One sample per
+            // published pair (deduped by the monotonic publish stamp).
+            static uint64_t lastAsyncSampledPublishNs = 0u;
+            if (const std::shared_ptr<const PairedKeyerFrame> litePair =
+                    keyerWorker.copyLatest()) {
+              if (litePair->publishedAtNs != 0u &&
+                  litePair->publishedAtNs != lastAsyncSampledPublishNs) {
+                lastAsyncSampledPublishNs = litePair->publishedAtNs;
+                double asyncInferenceMs = -1.0;
+                {
+                  std::lock_guard<std::mutex> lock(state.mutex);
+                  asyncInferenceMs = state.inferenceMs;
+                }
+                if (asyncInferenceMs > 0.0) {
+                  fusedGovernor.addSample(asyncInferenceMs, fusedNow);
+                }
+              }
+            }
             fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
           } else {
             downsampleLumaThumb(latestCameraFrame.rgba.data(),

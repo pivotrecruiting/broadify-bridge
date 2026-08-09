@@ -79,6 +79,7 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
   src/pipeline/keyer_cadence.cpp
+  src/pipeline/mask_retention.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
   src/preview/raw_frame_server.cpp
@@ -261,6 +262,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/keyer_cadence_test.cpp
     src/pipeline/keyer_cadence.cpp
   )
+  add_executable(mask_retention_test
+    tests/mask_retention_test.cpp
+    src/pipeline/mask_retention.cpp
+  )
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -280,6 +285,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     framebus_reader_log_gate_test
     keyer_governor_test
     keyer_cadence_test
+    mask_retention_test
     matting_backend_test
   )
     target_include_directories(${helper_test} PRIVATE src)
