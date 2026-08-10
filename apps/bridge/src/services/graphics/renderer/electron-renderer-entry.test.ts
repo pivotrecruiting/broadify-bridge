@@ -3517,6 +3517,15 @@ describe("electron-renderer-entry", () => {
     // different bus name) silently reused the writer on the OLD bus, so
     // createWriter was called once, nothing was closed, and the ready ack
     // carried the stale name (client gate drop -> 15s config-ready timeout).
+    //
+    // Drain stray REAL timers first: earlier tests in this file arm 120/300/
+    // 700ms captured-frame timers without clearing them. Their module
+    // instances' mock writers report fixed names ("trimmed", "test"), so
+    // under the name-aware writer compare a late-firing stray timer triggers
+    // a recreate against THIS test's shared factory mock and inflates the
+    // createWriter call count — reproducibly on slow CI runners only.
+    // Production has a single module instance; this is test hygiene.
+    await new Promise((resolve) => setTimeout(resolve, 750));
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
     const closeMock = jest.fn();
     const createWriterMock = jest
