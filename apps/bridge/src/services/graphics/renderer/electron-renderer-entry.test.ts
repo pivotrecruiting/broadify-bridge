@@ -138,6 +138,17 @@ jest.mock("./graphics-pixel-utils.js", () => ({
 describe("electron-renderer-entry", () => {
   const originalEnv = process.env;
 
+  // Real-timer hygiene: the module under test arms real timers (captured-frame
+  // retries at 120/300/700ms, the 1s FrameBus heartbeat) that individual tests
+  // historically never cleared. Each test imports a FRESH module instance, but
+  // stale instances' timers keep firing into later tests and reach the shared
+  // factory mocks - under the name-aware writer compare that recreates writers
+  // and inflates call counts, flakily on slow CI runners. Track every timer a
+  // test arms and clear them all afterwards.
+  const trackedTimerHandles: Array<ReturnType<typeof setTimeout>> = [];
+  const realSetTimeout = global.setTimeout;
+  const realSetInterval = global.setInterval;
+
   beforeAll(() => {
     process.setMaxListeners(80);
   });
@@ -145,6 +156,28 @@ describe("electron-renderer-entry", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.resetModules();
+    const trackingSetTimeout = ((
+      fn: Parameters<typeof setTimeout>[0],
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = realSetTimeout(fn, ms, ...(args as []));
+      trackedTimerHandles.push(handle);
+      return handle;
+    }) as typeof setTimeout;
+    trackingSetTimeout.__promisify__ = realSetTimeout.__promisify__;
+    global.setTimeout = trackingSetTimeout;
+    const trackingSetInterval = ((
+      fn: Parameters<typeof setInterval>[0],
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = realSetInterval(fn, ms, ...(args as []));
+      trackedTimerHandles.push(handle);
+      return handle;
+    }) as typeof setInterval;
+    trackingSetInterval.__promisify__ = realSetInterval.__promisify__;
+    global.setInterval = trackingSetInterval;
     enqueueSerialPending = Promise.resolve();
     lastDidFinishLoadHandler = null;
     paintHandlers.length = 0;
@@ -167,6 +200,13 @@ describe("electron-renderer-entry", () => {
 
   afterEach(() => {
     jest.useRealTimers();
+    global.setTimeout = realSetTimeout;
+    global.setInterval = realSetInterval;
+    for (const handle of trackedTimerHandles) {
+      clearTimeout(handle);
+      clearInterval(handle as unknown as ReturnType<typeof setInterval>);
+    }
+    trackedTimerHandles.length = 0;
   });
 
   it("loads without throwing when IPC port is unset", async () => {
@@ -3517,15 +3557,6 @@ describe("electron-renderer-entry", () => {
     // different bus name) silently reused the writer on the OLD bus, so
     // createWriter was called once, nothing was closed, and the ready ack
     // carried the stale name (client gate drop -> 15s config-ready timeout).
-    //
-    // Drain stray REAL timers first: earlier tests in this file arm 120/300/
-    // 700ms captured-frame timers without clearing them. Their module
-    // instances' mock writers report fixed names ("trimmed", "test"), so
-    // under the name-aware writer compare a late-firing stray timer triggers
-    // a recreate against THIS test's shared factory mock and inflates the
-    // createWriter call count — reproducibly on slow CI runners only.
-    // Production has a single module instance; this is test hygiene.
-    await new Promise((resolve) => setTimeout(resolve, 750));
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
     const closeMock = jest.fn();
     const createWriterMock = jest
