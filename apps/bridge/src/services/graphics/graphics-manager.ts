@@ -412,6 +412,16 @@ export class GraphicsManager {
   }
 
   /**
+   * Force the renderer to re-send its configuration and re-attach its
+   * FrameBus writer on the next configureOutputs. Must be called after the
+   * bus region was force-recreated outside the renderer (meeting engine
+   * start), otherwise the renderer keeps writing into the unlinked region.
+   */
+  invalidateRendererFrameBusAttachment(): void {
+    this.renderer.invalidateFrameBusAttachment?.();
+  }
+
+  /**
    * Create or update a graphics layer.
    *
    * @param payload Untrusted graphics layer payload.

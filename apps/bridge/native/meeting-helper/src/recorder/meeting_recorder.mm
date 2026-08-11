@@ -2,11 +2,11 @@
 
 #if defined(__APPLE__)
 #include "recorder/recorder_writer_factory.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #endif
 
 #include <chrono>
-#include <iostream>
 #include <mutex>
 
 #if defined(__APPLE__)
@@ -33,13 +33,14 @@ double secondsSince(std::chrono::steady_clock::time_point start) {
       .count();
 }
 
-// One JSON line per recorder incident on stdout - the bridge forwards
-// "meeting_recorder" events into its process log, so a writer death is
-// pinpointed the moment it happens instead of surfacing minutes later as an
-// opaque status string at stop.
+// One JSON line per recorder incident, so a writer death is pinpointed the
+// moment it happens instead of surfacing minutes later as an opaque status
+// string at stop. Goes through the helper event log (stdout + sidecar file -
+// stdout alone is invisible on macOS, where the bridge launches via `open`).
 void logRecorderEvent(const char *event, const std::string &detail) {
-  std::cout << "{\"type\":\"meeting_recorder\",\"event\":\"" << event
-            << "\",\"detail\":\"" << jsonEscape(detail) << "\"}" << std::endl;
+  emitHelperEvent("{\"type\":\"meeting_recorder\",\"event\":\"" +
+                  std::string(event) + "\",\"detail\":\"" + jsonEscape(detail) +
+                  "\"}");
 }
 
 // Full NSError description (domain, code, userInfo with any underlying error)

@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -507,6 +507,32 @@ async function waitForHelperPing(
   return false;
 }
 
+/**
+ * Sidecar file the helper mirrors its JSON events into. On macOS the helper
+ * is launched through /usr/bin/open, which swallows stdio - this file is the
+ * only surviving channel, and its tail is dumped into the bridge log when the
+ * helper dies (see handleProcessExit).
+ */
+function resolveHelperEventLogPath(): string {
+  try {
+    return join(getBridgeContext().userDataDir, "meeting-helper-events.log");
+  } catch {
+    return join(tmpdir(), "broadify-meeting-helper-events.log");
+  }
+}
+
+function readHelperEventLogTail(maxBytes = 4096): string | null {
+  try {
+    const path = resolveHelperEventLogPath();
+    const content = readFileSync(path, "utf8");
+    const tail = content.length > maxBytes ? content.slice(-maxBytes) : content;
+    const trimmed = tail.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
 function resolveControlSocketPath(): string {
   const envPath = process.env[CONTROL_SOCKET_ENV];
   if (envPath) {
@@ -826,6 +852,8 @@ export class MeetingHelperManager {
         String(fps),
         "--models-dir",
         modelsDir,
+        "--event-log",
+        resolveHelperEventLogPath(),
         ...resolveMeetingHelperForwardedEnvArgs(),
       ];
 
@@ -839,6 +867,7 @@ export class MeetingHelperManager {
         MEETING_FRAME_HEIGHT: String(height),
         MEETING_FRAME_FPS: String(fps),
         MEETING_MODELS_DIR: modelsDir,
+        MEETING_EVENT_LOG: resolveHelperEventLogPath(),
         MEETING_VCAM_NATIVE_AVAILABLE: isVcamExtensionAvailable() ? "1" : "0",
       };
 
@@ -1178,6 +1207,14 @@ export class MeetingHelperManager {
       // The recorder died with the helper; publishStatus derives the deck's
       // REC mirror from the (now empty) snapshot and resets it.
       void this.publishStatus("engine_exited", true);
+    }
+    if (crashed) {
+      // The exit code above comes from the `open` wrapper on macOS and is
+      // meaningless; the helper's own event log names what actually happened.
+      const eventTail = readHelperEventLogTail();
+      getLogger().warn(
+        `[Meeting] Helper event log tail: ${eventTail ?? "(no events recorded - hard kill or crash before any event)"}`,
+      );
     }
     if (crashed) {
       // Uptime above the threshold means the previous restarts worked out;

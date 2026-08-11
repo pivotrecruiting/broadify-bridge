@@ -54,8 +54,12 @@ than ~8 s died at a fragment commit while the same configuration survives
 isolated stress runs — the pre-fragment configuration has hours of successful
 field recordings. Recorder incidents (`writer_failed`, `finish_failed`,
 `finalize_timeout`, `rename_failed`, `completed`) are emitted as
-`{"type":"meeting_recorder",...}` stdout lines and forwarded into the bridge
-process log by `meeting-helper-manager.ts`.
+`{"type":"meeting_recorder",...}` events through the helper event log
+(`util/helper_event_log`): stdout plus the `--event-log` sidecar file
+(`meeting-helper-events.log` in the bridge user-data dir). The sidecar matters
+on macOS, where the `open`-based launch swallows helper stdio; the bridge
+forwards stdout lines when it can (`meeting-helper-manager.ts`) and dumps the
+sidecar tail into its process log whenever the helper dies unexpectedly.
 
 ## WebApp
 

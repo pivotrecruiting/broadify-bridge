@@ -68,6 +68,13 @@ export interface GraphicsRenderer {
    */
   configureSession(config: GraphicsRendererConfigT): Promise<void>;
   /**
+   * Force the next configureSession to re-send the renderer configuration and
+   * re-attach the FrameBus writer by name even when nothing changed. Called
+   * after the bus region was force-recreated outside the renderer. Optional:
+   * renderers without a persistent bus attachment ignore it.
+   */
+  invalidateFrameBusAttachment?(): void;
+  /**
    * Provide asset map to renderer for local loading.
    *
    * @param assets Map of assetId to file path and mime type.

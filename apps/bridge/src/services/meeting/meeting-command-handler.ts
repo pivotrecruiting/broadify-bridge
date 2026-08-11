@@ -325,7 +325,21 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_engine_start",
       );
+      if (meetingHelperManager.isRunning()) {
+        // Idempotent re-start (e.g. a second webapp client's autostart while
+        // the engine is live): do NOT clear the graphics FrameBus - the
+        // force-recreate would yank the regions out from under the running
+        // helper and every renderer, killing on-air graphics.
+        return { success: true, data: meetingHelperManager.getStatus() };
+      }
       clearMeetingGraphicsFrameBus(options, "engine_start");
+      // The clear force-recreated the bus regions. Any already-running
+      // renderer still maps the unlinked old regions - without an explicit
+      // re-attach every graphics frame it writes from now on is invisible to
+      // the fresh helper (observed live: presets gone after the 2nd engine
+      // start in one bridge run).
+      meetingBackGraphicsManager.invalidateRendererFrameBusAttachment();
+      meetingFrontGraphicsManager.invalidateRendererFrameBusAttachment();
       // Reset through the queue so an in-flight configure cannot overwrite
       // the reset with its stale key afterwards.
       graphicsOutputsQueue = graphicsOutputsQueue

@@ -1413,6 +1413,114 @@ describe("electron-renderer-entry", () => {
     );
   });
 
+  it("drops and re-attaches the FrameBus writer when framebusReattach is set", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const baseConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 16588928,
+      backgroundMode: "transparent" as const,
+    };
+    // Same name and geometry twice: without the reattach flag the writer-match
+    // gate keeps the first writer, which maps the force-recreated (unlinked)
+    // region - exactly the orphan that made meeting presets invisible after a
+    // second engine start.
+    mockSafeParse
+      .mockReturnValueOnce({
+        success: true,
+        data: { ...baseConfig, framebusReattach: false },
+      })
+      .mockReturnValueOnce({
+        success: true,
+        data: { ...baseConfig, framebusReattach: true },
+      });
+    const firstClose = jest.fn();
+    const secondClose = jest.fn();
+    const writerHeader = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      slotCount: 2,
+      pixelFormat: 1,
+    };
+    const createWriter = jest
+      .fn()
+      .mockReturnValueOnce({
+        name: "/test-shm",
+        size: 16588928,
+        header: writerHeader,
+        writeFrame: jest.fn(),
+        close: firstClose,
+      })
+      .mockReturnValueOnce({
+        name: "/test-shm",
+        size: 16588928,
+        header: writerHeader,
+        writeFrame: jest.fn(),
+        close: secondClose,
+      });
+    mockLoadFrameBusModule.mockReturnValue({ createWriter });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...baseConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(1),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...baseConfig,
+          framebusReattach: true,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(createWriter).toHaveBeenCalledTimes(2);
+    expect(firstClose).toHaveBeenCalledTimes(1);
+    expect(secondClose).not.toHaveBeenCalled();
+    expect(mockPinoInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ frameBusName: "/test-shm" }),
+      "[GraphicsRenderer] FrameBus writer dropped for reattach"
+    );
+  });
+
   it("sends error IPC when FrameBus writer is still not ready after retries", async () => {
     jest.useFakeTimers();
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";

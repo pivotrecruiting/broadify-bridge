@@ -664,6 +664,22 @@ function applyRendererConfig(message: unknown): void {
   }
 
   frameBusInitAttempted = false;
+  if (config.framebusReattach && frameBusWriter) {
+    // The bridge force-recreated the bus region (e.g. meeting engine start).
+    // Our writer still maps the unlinked old region - name and geometry match,
+    // so ensureFrameBusWriter would happily keep it and every frame would go
+    // nowhere. Drop it and attach to the current region by name.
+    logger.info(
+      { frameBusName: frameBusWriter.name },
+      "[GraphicsRenderer] FrameBus writer dropped for reattach",
+    );
+    try {
+      frameBusWriter.close();
+    } catch {
+      // Already closed/invalid - a fresh attachment follows either way.
+    }
+    frameBusWriter = null;
+  }
   logger.info(
     {
       width: config.width,
@@ -673,6 +689,7 @@ function applyRendererConfig(message: unknown): void {
       framebusName: config.framebusName,
       framebusSlotCount: config.framebusSlotCount,
       framebusSize: config.framebusSize,
+      framebusReattach: config.framebusReattach,
       derivedFrameBusName: frameBusName,
       derivedFrameBusSlotCount: frameBusSlotCount,
       derivedFrameBusPixelFormat: frameBusPixelFormat,
@@ -688,6 +705,12 @@ function applyRendererConfig(message: unknown): void {
     config.height,
     config.fps,
   );
+  if (config.framebusReattach && frameBusReady && singleWindow) {
+    // Repaint the existing layers into the fresh region: with static content
+    // no paint event fires, and the heartbeat would republish only the zeroed
+    // init frame of the new attachment.
+    scheduleCapturedWindowFrames("framebus_reattach");
+  }
 
   readySent = false;
   rendererConfigReady = frameBusReady;

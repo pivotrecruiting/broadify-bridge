@@ -32,6 +32,14 @@ export const RendererConfigureSchema = z
       .optional()
       .default("transparent"),
     clearColor: ClearColorSchema.optional(),
+    /**
+     * Force the renderer to drop its FrameBus writer and attach freshly by
+     * name, even when name and geometry are unchanged. Required after the
+     * bridge force-recreated the bus region (meeting engine start): the old
+     * writer keeps a mapping onto the unlinked region and every frame it
+     * writes is invisible to readers of the new region.
+     */
+    framebusReattach: z.boolean().optional().default(false),
   })
   .strict();
 

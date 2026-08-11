@@ -2,13 +2,29 @@
 
 #if defined(__APPLE__)
 
+#include "util/helper_event_log.h"
+
 #import <AppKit/AppKit.h>
+
+// AppKit-initiated termination (Cmd-Q, Apple quit events, logout) bypasses
+// the main() teardown entirely and used to exit(0) without a trace. The
+// delegate at least names the path before AppKit ends the process.
+@interface BroadifyHelperAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation BroadifyHelperAppDelegate
+- (void)applicationWillTerminate:(NSNotification *)notification {
+  broadify::meeting::emitHelperEvent(
+      "{\"type\":\"shutdown\",\"reason\":\"appkit_terminate\"}");
+}
+@end
 
 namespace broadify::meeting {
 
 namespace {
 
 NSWindow *g_promptWindow = nil;
+BroadifyHelperAppDelegate *g_appDelegate = nil;
 
 }  // namespace
 
@@ -16,6 +32,10 @@ void initializeMacosApplication() {
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    if (g_appDelegate == nil) {
+      g_appDelegate = [[BroadifyHelperAppDelegate alloc] init];
+      [NSApp setDelegate:g_appDelegate];
+    }
   }
 }
 

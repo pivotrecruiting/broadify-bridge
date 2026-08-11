@@ -87,6 +87,7 @@ set(MEETING_HELPER_SOURCES
   src/preview/raw_frame_server.cpp
   src/util/sha256.cpp
   src/util/json_utils.cpp
+  src/util/helper_event_log.cpp
 )
 
 if(APPLE)

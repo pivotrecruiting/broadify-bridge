@@ -85,6 +85,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private rendererConfigured = false;
+  private pendingFrameBusReattach = false;
   private sessionConfig: GraphicsRendererConfigT | null = null;
   private lastSentConfigKey: string | null = null;
   private pendingConfigId: string | null = null;
@@ -703,6 +704,19 @@ export class ElectronRendererClient implements GraphicsRenderer {
     }
   }
 
+  /**
+   * Force the next renderer_configure to be sent even for an unchanged config
+   * and make the renderer drop + re-attach its FrameBus writer by name. Must
+   * be called whenever the bus region is force-recreated outside the renderer
+   * (meeting engine start): the renderer's existing writer keeps a mapping
+   * onto the unlinked old region and its frames become invisible to readers.
+   */
+  invalidateFrameBusAttachment(): void {
+    this.pendingFrameBusReattach = true;
+    this.rendererConfigured = false;
+    this.lastSentConfigKey = null;
+  }
+
   private async ensureRendererConfigured(): Promise<void> {
     if (!this.sessionConfig) {
       return;
@@ -790,7 +804,9 @@ export class ElectronRendererClient implements GraphicsRenderer {
       framebusSize: config.framebusSize,
       backgroundMode: config.backgroundMode,
       clearColor: config.clearColor,
+      framebusReattach: this.pendingFrameBusReattach,
     });
+    this.pendingFrameBusReattach = false;
     this.rendererConfigured = false;
 
     if (this.configReadyPromise) {
