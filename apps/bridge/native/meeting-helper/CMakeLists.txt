@@ -99,6 +99,7 @@ if(APPLE)
     src/keyer/coreml_keyer.mm
     src/keyer/gpu_mask_refine.mm
     src/recorder/meeting_recorder.mm
+    src/recorder/recorder_writer_factory.mm
     src/macos/macos_app.mm
   )
   set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
@@ -108,6 +109,9 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/recorder/meeting_recorder.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/recorder/recorder_writer_factory.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
@@ -306,4 +310,25 @@ if(MEETING_HELPER_BUILD_TESTS)
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
   endforeach()
+
+  if(APPLE)
+    # Exercises the production AVAssetWriter configuration across fragment
+    # boundaries with accelerated media timestamps; needs no camera or
+    # microphone access, so it runs headless under ctest.
+    add_executable(meeting_recorder_writer_test
+      tests/meeting_recorder_writer_test.mm
+      src/recorder/recorder_writer_factory.mm
+    )
+    set_source_files_properties(tests/meeting_recorder_writer_test.mm PROPERTIES
+      COMPILE_FLAGS "-fobjc-arc"
+    )
+    target_include_directories(meeting_recorder_writer_test PRIVATE src)
+    target_link_libraries(meeting_recorder_writer_test PRIVATE
+      "-framework AVFoundation"
+      "-framework CoreMedia"
+      "-framework CoreVideo"
+      "-framework Foundation"
+    )
+    add_test(NAME meeting_recorder_writer_test COMMAND meeting_recorder_writer_test)
+  endif()
 endif()

@@ -977,6 +977,9 @@ export class MeetingHelperManager {
       if (parsed.type === "meeting_keyer_pipeline") {
         logger.info(`[MeetingHelper] ${line}`);
       }
+      if (parsed.type === "meeting_recorder") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
       if (parsed.type === "ready") {
         this.readyResolver?.(parsed as ReadyEventT);
       }

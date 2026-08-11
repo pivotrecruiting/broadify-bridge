@@ -20,7 +20,11 @@ export async function pickRecordingSavePath(
   locale = "de",
 ): Promise<string | null> {
   if (osPlatform() !== "darwin") {
-    return null;
+    // No native save panel is wired up outside macOS; returning null here made
+    // the webapp treat every Windows recording as "cancelled", so recording
+    // could never start. Fall back to the timestamped default path in the
+    // user's standard videos folder instead of failing.
+    return buildDefaultRecordingPath();
   }
   const safeName = defaultName.replace(/["\\]/g, "");
   // Match the webapp UI language; strings the OS panel shows must stay
