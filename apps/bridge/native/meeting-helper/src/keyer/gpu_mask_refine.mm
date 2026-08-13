@@ -39,7 +39,9 @@ class GpuMaskRefiner::Impl {
     textureCache_ = sharedMetalTextureCache();
     if (device_ == nil || queue_ == nil || textureCache_ == nullptr) return;
     if (@available(macOS 10.13, *)) {
-      const int diameter = 2 * envInt("BROADIFY_MEETING_GPU_RADIUS", 4, 1, 32) + 1;
+      // Radius 3 (was 4): narrower guided-filter window = tighter edge with a
+      // visibly smaller halo, confirmed in the 2026-08-13 field-tuning session.
+      const int diameter = 2 * envInt("BROADIFY_MEETING_GPU_RADIUS", 3, 1, 32) + 1;
       guided_ = [[MPSImageGuidedFilter alloc] initWithDevice:device_
                                               kernelDiameter:diameter];
       guided_.epsilon = static_cast<float>(
@@ -52,9 +54,10 @@ class GpuMaskRefiner::Impl {
     // Temporal EMA on the guided-filter coefficients (Apple's recommended way to
     // kill edge flicker without smearing moving edges or softening the matte).
     // The value is the new-frame weight: 1.0 disables it, lower = steadier but
-    // laggier. Applied between regression and reconstruction. Default OFF so the
-    // confirmed 512px look is unchanged; opt in for smaller models via the env.
-    const double ema = envDouble("BROADIFY_MEETING_GPU_EMA", 1.0);
+    // laggier. Applied between regression and reconstruction. Default 0.5 since
+    // the 2026-08-13 field-tuning session: calms the edge flicker with no
+    // visible motion trail (verified live); env still overrides both ways.
+    const double ema = envDouble("BROADIFY_MEETING_GPU_EMA", 0.5);
     emaAlpha_ = static_cast<float>(std::clamp(ema, 0.05, 1.0));
     emaEnabled_ = emaAlpha_ < 0.999f;
     ready_ = guided_ != nil && scale_ != nil;
