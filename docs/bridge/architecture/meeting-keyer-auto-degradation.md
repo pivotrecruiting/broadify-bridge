@@ -183,6 +183,55 @@ Fixes:
   on macOS / keyer disabled. The webapp metrics mapper reads only known
   keys, so the extra field is ignored safely until the UI adopts it.
 
+## Warm Handover (make-before-break tier transitions, 2026-08-09)
+
+Field symptom: "keyer visibly off for seconds a few minutes into the
+session". Root cause: tier transitions cut over IMMEDIATELY, but the
+DirectML session build for a new input shape is expensive — measured 0.25 s
+on an idle discrete GPU and up to ~12 s on an iGPU under load:
+
+- `async_lite -> fused` step-up: the transition reset parked the worker at
+  once, while the first fused `apply()` still had to build/warm the session
+  for the target size INSIDE the blocking program loop — seconds of un-keyed
+  output.
+- `fused -> async_lite` step-down: the worker's chain builds its session on
+  the first submitted frame, so the program was un-keyed until the worker's
+  first published pair.
+
+Both directions are now make-before-break, coordinated by
+`src/pipeline/tier_handover.cpp` (`TierHandover`, pure logic, injected time,
+ctest-covered) wired into the Windows fused section of
+`frame_pipeline.cpp`:
+
+- Step-UP: with `KeyerGovernorConfig.deferLiteStepUp`, an estimate-approved
+  `Lite256 -> Performance256` step-up does NOT change the tier; the governor
+  latches `liteStepUpPending()`. The pipeline then runs a one-shot
+  background thread (single-flight via an atomic busy flag; joined only
+  after the thread body finished, so the program loop never blocks on a
+  running build) that calls `MattingKeyer::warmupForPerformanceMode` — a new
+  thread-safe entry that builds/shape-warms the session for the target mode
+  under the keyer's internal mutex without producing a mask. The fused
+  instance is verifiably idle in the Lite tier (its `apply()` only runs in
+  the fused branch), so the warmup thread has it to itself. On success the
+  pipeline commits the deferred step-up (`commitLiteStepUp` — exact
+  immediate-step-up semantics incl. the wrong-estimate watch) and the fused
+  branch takes over with a warm session; on failure `cancelLiteStepUp`
+  applies the wrong-estimate treatment (persistent step-up holdoff doubling
+  + dwell restart).
+- Step-DOWN: on the first async-lite frame after a fused epoch,
+  `g_fusedKeyerDegraded` goes true as before (the worker starts receiving
+  frames), but the fused keyer KEEPS keying each frame (same chain: EMA
+  stabilize -> guided refine -> postprocess parity; label stays `fused`;
+  its inference cost is NOT sampled into the Lite EMA) until the worker's
+  first pair published after the transition start arrives — then the
+  standard path-transition reset runs, with the worker's fresh pair
+  PRESERVED (clearing it would re-open the gap the overlap just bridged).
+  Bounded: after 5 s without a published pair the cutover happens anyway
+  with today's full reset. A fused inference failure during the overlap also
+  cuts over immediately.
+- Kill-switch: `BROADIFY_MEETING_WARM_HANDOVER=0` restores the immediate
+  cutover in both directions (bridge forwards the env var).
+
 ## Empty-Subject Handling (`no_subject`, Option A, 2026-08-09)
 
 When the person leaves the frame, the background now STAYS composited

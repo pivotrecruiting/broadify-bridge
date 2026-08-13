@@ -35,6 +35,21 @@ struct MattingBackendOptions {
 class MattingKeyer : public Keyer {
  public:
   virtual KeyerStatus status() const = 0;
+
+  // Warm-handover entry (make-before-break tier step-up): ensure the
+  // inference session for the given performance mode ("high_quality" |
+  // "balanced" | "performance") is built and shape-warmed WITHOUT producing a
+  // mask, so the first visible apply() at that mode does not pay the
+  // session-build stall (DirectML: 0.25s idle dGPU up to ~12s iGPU under
+  // load). Called from a background warmup thread while the async worker owns
+  // the keyer path; implementations must be thread-safe against their other
+  // entry points. Default: succeed without doing work — backends whose
+  // apply() pays no per-shape build cost need no warmup (a step-up then
+  // behaves exactly as before the warm handover existed).
+  virtual bool warmupForPerformanceMode(const std::string &performanceMode) {
+    (void)performanceMode;
+    return true;
+  }
 };
 
 // Pure selection policy, separated from the factory so the dependency-free

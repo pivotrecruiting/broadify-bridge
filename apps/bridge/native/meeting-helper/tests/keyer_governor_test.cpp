@@ -260,6 +260,96 @@ int main() {
   }
 
   {
+    // Warm-handover deferral (before-red vs the immediate step-up): with
+    // deferLiteStepUp the estimate-approved Lite256 -> Performance256 step-up
+    // must NOT change the tier — it latches liteStepUpPending() until the
+    // caller's background warmup commits it. Without the flag (the default
+    // and the kill-switch path) the same inputs flip the tier immediately.
+    KeyerGovernorConfig deferred = testConfig();
+    deferred.deferLiteStepUp = true;
+    KeyerAutoGovernor governor(deferred);
+    governor.seedProbe(400.0);  // Lite256
+    governor.maybeStepUp(at(1));  // starts the dwell clock
+    feed(governor, 15.0, 10, at(1));
+    governor.maybeStepUp(at(12));  // estimate fits, dwell elapsed
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "deferred step-up keeps the tier at Lite256");
+    ok &= expect(governor.liteStepUpPending(), "deferred step-up is pending");
+    ok &= expect(governor.wantsAsyncLite(),
+                 "async stays the active path while warming");
+    governor.maybeStepUp(at(13));  // pending latches; no re-evaluation churn
+    ok &= expect(governor.liteStepUpPending() &&
+                     governor.tier() == GovernorTier::Lite256,
+                 "pending stays latched across frames");
+    // Warmup succeeded -> commit performs the exact immediate-step-up
+    // semantics (tier, sample reset, wrong-estimate watch).
+    governor.commitLiteStepUp(at(14));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "commit moves to Performance256");
+    ok &= expect(!governor.liteStepUpPending(), "commit clears pending");
+    feed(governor, 60.0, 10, at(15));  // reality: over budget -> relapse
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "post-commit relapse steps down");
+    ok &= expect(governor.stepUpHoldoff() == std::chrono::seconds(20),
+                 "post-commit relapse doubles the holdoff (watch armed)");
+
+    // Same inputs WITHOUT deferral: the tier flips immediately (documents
+    // the old behavior the kill-switch restores).
+    KeyerAutoGovernor immediate(testConfig());
+    immediate.seedProbe(400.0);
+    immediate.maybeStepUp(at(1));
+    feed(immediate, 15.0, 10, at(1));
+    immediate.maybeStepUp(at(12));
+    ok &= expect(immediate.tier() == GovernorTier::Performance256,
+                 "without deferral the step-up is immediate");
+    ok &= expect(!immediate.liteStepUpPending(),
+                 "immediate step-up never reports pending");
+  }
+
+  {
+    // Warmup failure -> cancelLiteStepUp is the wrong-estimate treatment:
+    // stays at Lite256, doubles the step-up holdoff persistently, restarts
+    // the dwell clock so the next attempt waits the doubled interval.
+    KeyerGovernorConfig deferred = testConfig();
+    deferred.deferLiteStepUp = true;
+    KeyerAutoGovernor governor(deferred);
+    governor.seedProbe(400.0);  // Lite256
+    governor.maybeStepUp(at(1));
+    feed(governor, 15.0, 10, at(1));
+    governor.maybeStepUp(at(12));
+    ok &= expect(governor.liteStepUpPending(), "pending before the failure");
+    governor.cancelLiteStepUp(at(13));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "cancel stays at Lite256");
+    ok &= expect(!governor.liteStepUpPending(), "cancel clears pending");
+    ok &= expect(governor.stepUpHoldoff() == std::chrono::seconds(20),
+                 "cancel doubles the step-up holdoff");
+    feed(governor, 15.0, 10, at(14));
+    governor.maybeStepUp(at(13 + 10));  // old 10s holdoff: blocked now
+    ok &= expect(!governor.liteStepUpPending() &&
+                     governor.tier() == GovernorTier::Lite256,
+                 "doubled holdoff blocks the old retry interval");
+    governor.maybeStepUp(at(13 + 21));  // doubled holdoff elapsed
+    ok &= expect(governor.liteStepUpPending(),
+                 "retry re-pends after the doubled holdoff");
+
+    // A step-down while pending (async EMA blew past the off guard during
+    // the warmup) invalidates the pending step-up.
+    KeyerAutoGovernor blown(deferred);
+    blown.seedProbe(400.0);
+    blown.maybeStepUp(at(1));
+    feed(blown, 15.0, 10, at(1));
+    blown.maybeStepUp(at(12));
+    ok &= expect(blown.liteStepUpPending(), "pending before the off guard");
+    feed(blown, 200.0, 10, at(13));  // EMA > offInferenceMs -> Off
+    ok &= expect(blown.tier() == GovernorTier::Off, "off guard fires");
+    ok &= expect(!blown.liteStepUpPending(), "step-down clears pending");
+    blown.commitLiteStepUp(at(14));  // late warmup success must be a no-op
+    ok &= expect(blown.tier() == GovernorTier::Off,
+                 "late commit after step-down is a no-op");
+  }
+
+  {
     // Testing override replaces the step-down threshold (and scales the
     // step-up threshold base with it).
     KeyerGovernorConfig config = testConfig();

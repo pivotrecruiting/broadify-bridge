@@ -114,6 +114,7 @@ type RendererConfigureCommandT = {
   framebusName: string;
   framebusSlotCount: number;
   framebusSize: number;
+  framebusReattach?: boolean;
 };
 
 function attachMockSocketErrorHandler(socket: net.Socket): void {
@@ -313,6 +314,48 @@ describe("ElectronRendererClient", () => {
       const command = await commandPromise;
       sendRendererReadyAck(command);
       await expect(configurePromise).resolves.toBeUndefined();
+      clientSocket?.destroy();
+      clientSocket = null;
+      const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
+      if (mockChild) {
+        (mockChild as { exitCode: number | null }).exitCode = 0;
+        (mockChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      }
+      await c.shutdown();
+    });
+
+    it("re-sends renderer_configure with framebusReattach after invalidateFrameBusAttachment", async () => {
+      const c = await initializeClientWithHandshake();
+      const config = {
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        pixelFormat: 1,
+        framebusName: "bfy-meet-gfx-front",
+        framebusSlotCount: 3,
+        framebusSize: 24883328,
+        backgroundMode: "transparent" as const,
+      };
+      const firstCommandPromise = readRendererConfigureCommand();
+      const firstConfigure = c.configureSession(config);
+      const firstCommand = await firstCommandPromise;
+      expect(firstCommand.framebusReattach).toBe(false);
+      sendRendererReadyAck(firstCommand);
+      await expect(firstConfigure).resolves.toBeUndefined();
+
+      // Unchanged config is deduped - no second renderer_configure on the wire.
+      await expect(c.configureSession(config)).resolves.toBeUndefined();
+
+      // After the bus region was force-recreated (meeting engine start) the
+      // invalidate must defeat the dedupe AND mark the config as a reattach.
+      c.invalidateFrameBusAttachment();
+      const secondCommandPromise = readRendererConfigureCommand();
+      const secondConfigure = c.configureSession(config);
+      const secondCommand = await secondCommandPromise;
+      expect(secondCommand.framebusReattach).toBe(true);
+      sendRendererReadyAck(secondCommand);
+      await expect(secondConfigure).resolves.toBeUndefined();
+
       clientSocket?.destroy();
       clientSocket = null;
       const mockChild = mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;

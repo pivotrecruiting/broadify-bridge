@@ -47,6 +47,7 @@ import {
 import {
   MEETING_GRAPHICS_BACK_FRAMEBUS_NAME,
   MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
+  MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT,
   meetingBackGraphicsManager,
   meetingFrontGraphicsManager,
 } from "./meeting-graphics-manager.js";
@@ -78,7 +79,7 @@ const MEETING_GRAPHICS_FRAMEBUS_NAMES = [
   MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
 ];
 const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1920, height: 1080, fps: 30 };
-const MEETING_GRAPHICS_SLOT_COUNT = 3;
+const MEETING_GRAPHICS_SLOT_COUNT = MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT;
 const MEETING_GRAPHICS_PIXEL_FORMAT = 1;
 
 function requireClient(): MeetingHelperClient {
@@ -129,8 +130,17 @@ function configureMeetingGraphicsOutputs(
     if (lastConfiguredGraphicsOutputsKey === configKey) {
       return;
     }
+    // Belt & braces: the managers now carry their bus name/slotCount as
+    // explicit constructor overrides (meeting-graphics-manager.ts), which win
+    // over these env vars in every resolve. The env sets are kept anyway
+    // because other meeting-path consumers still read the ambient env on
+    // spawn (e.g. the renderer child's initial BRIDGE_FRAMEBUS_NAME before
+    // its first renderer_configure) — removing them is a follow-up once those
+    // consumers are audited one by one.
     process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
-    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
+      MEETING_GRAPHICS_SLOT_COUNT,
+    );
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
     await meetingBackGraphicsManager.configureOutputs({
       outputKey: "framebus",
@@ -140,7 +150,9 @@ function configureMeetingGraphicsOutputs(
       colorspace: "rec709",
     });
     process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
-    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "3";
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
+      MEETING_GRAPHICS_SLOT_COUNT,
+    );
     process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
     await meetingFrontGraphicsManager.configureOutputs({
       outputKey: "framebus",
@@ -313,7 +325,21 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_engine_start",
       );
+      if (meetingHelperManager.isRunning()) {
+        // Idempotent re-start (e.g. a second webapp client's autostart while
+        // the engine is live): do NOT clear the graphics FrameBus - the
+        // force-recreate would yank the regions out from under the running
+        // helper and every renderer, killing on-air graphics.
+        return { success: true, data: meetingHelperManager.getStatus() };
+      }
       clearMeetingGraphicsFrameBus(options, "engine_start");
+      // The clear force-recreated the bus regions. Any already-running
+      // renderer still maps the unlinked old regions - without an explicit
+      // re-attach every graphics frame it writes from now on is invisible to
+      // the fresh helper (observed live: presets gone after the 2nd engine
+      // start in one bridge run).
+      meetingBackGraphicsManager.invalidateRendererFrameBusAttachment();
+      meetingFrontGraphicsManager.invalidateRendererFrameBusAttachment();
       // Reset through the queue so an in-flight configure cannot overwrite
       // the reset with its stale key afterwards.
       graphicsOutputsQueue = graphicsOutputsQueue

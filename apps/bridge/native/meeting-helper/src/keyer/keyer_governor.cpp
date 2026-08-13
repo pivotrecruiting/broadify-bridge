@@ -110,10 +110,16 @@ void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
   // no injected time on purpose - the probe median is not an event time).
   degradeClockStarted_ = false;
   stepUpWatch_ = StepUpWatch::None;
+  liteStepUpPending_ = false;
 }
 
 void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
   if (tier_ == GovernorTier::Full512) {
+    return;
+  }
+  if (liteStepUpPending_) {
+    // A deferred step-up is already awaiting its warmup result; nothing to
+    // re-evaluate until the caller commits or cancels it.
     return;
   }
   if (!degradeClockStarted_) {
@@ -150,11 +156,49 @@ void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
   if (estimated < 0.0 || estimated > stepUpThresholdMs()) {
     return;
   }
+  if (config_.deferLiteStepUp && tier_ == GovernorTier::Lite256) {
+    // Warm handover: do NOT transition yet. The caller warms the fused
+    // session in the background (async stays on air) and then commits or
+    // cancels. Latched so the decision does not flap while warming.
+    liteStepUpPending_ = true;
+    return;
+  }
   tier_ = tierAbove(tier_);
   emaMs_ = -1.0;
   samples_ = 0u;
   degradedAt_ = now;
   stepUpWatch_ = StepUpWatch::Fused;
+}
+
+void KeyerAutoGovernor::commitLiteStepUp(TimePoint now) {
+  if (!liteStepUpPending_ || tier_ != GovernorTier::Lite256) {
+    liteStepUpPending_ = false;
+    return;
+  }
+  liteStepUpPending_ = false;
+  // Exact semantics of the immediate Lite256 step-up above.
+  tier_ = GovernorTier::Performance256;
+  emaMs_ = -1.0;
+  samples_ = 0u;
+  degradedAt_ = now;
+  degradeClockStarted_ = true;
+  stepUpWatch_ = StepUpWatch::Fused;
+}
+
+void KeyerAutoGovernor::cancelLiteStepUp(TimePoint now) {
+  const bool wasPending = liteStepUpPending_ && tier_ == GovernorTier::Lite256;
+  liteStepUpPending_ = false;
+  if (!wasPending) {
+    return;
+  }
+  // Warmup failure == the estimate proved wrong before we ever cut over:
+  // apply the same persistent backoff doubling a post-step-up relapse would,
+  // and restart the dwell clock so the doubled holdoff actually gates the
+  // next attempt (EMA/samples survive — they are real async measurements).
+  stepUpHoldoff_ = std::min<std::chrono::steady_clock::duration>(
+      stepUpHoldoff_ * 2, config_.reprobeMaxInterval);
+  degradedAt_ = now;
+  degradeClockStarted_ = true;
 }
 
 void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
@@ -190,6 +234,8 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
 }
 
 void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
+  // Any step-down invalidates a deferred (not yet committed) step-up.
+  liteStepUpPending_ = false;
   if (stepUpWatch_ != StepUpWatch::None) {
     // A step-down within stableSamples of the last step-up means the estimate
     // proved wrong: double the backoff of THAT step-up path, persistently for
@@ -239,6 +285,7 @@ const char *KeyerAutoGovernor::pipelineModeLabel(bool cadenceActive) const {
 void KeyerAutoGovernor::reset() {
   tier_ = GovernorTier::Full512;
   seeded_ = false;
+  liteStepUpPending_ = false;
   emaMs_ = -1.0;
   samples_ = 0u;
   stepUpWatch_ = StepUpWatch::None;

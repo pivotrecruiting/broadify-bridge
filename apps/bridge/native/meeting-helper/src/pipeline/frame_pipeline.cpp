@@ -16,12 +16,14 @@
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
 #include "pipeline/mask_retention.h"
+#include "pipeline/tier_handover.h"
 #endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -320,6 +322,17 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
 // failure froze the keyer silently (K-03). Program-loop thread only.
 bool g_fusedKeyerDegraded = false;
 
+// True while the Windows fused path is bridging a step-down Overlap (the
+// fused keyer stays ON AIR while the async worker warms up). Mirrored from
+// TierHandover::phase() at the end of the fused section each frame; the async
+// telemetry blocks run EARLIER in the loop iteration (and cannot see the
+// fused section's static handover), so they read the previous frame's phase
+// here and skip their per-frame telemetry writes while it is set — otherwise
+// UI polls could sample degradationStage "passthrough"/keyerFps from the
+// warming worker while the fused keyer is what actually composites.
+// Program-loop thread only, like g_fusedKeyerDegraded.
+bool g_fusedStepDownOverlapActive = false;
+
 // Live-frame edge-snap toggle (default ON). The keyer publishes a mask paired
 // with the OLD frame it was computed on; compositing that old frame is the
 // source of the visible latency on motion. When enabled, the program loop
@@ -374,6 +387,23 @@ bool gpuPipelineEnabled() {
 bool autoDegradeEnabled() {
   static const bool enabled = [] {
     const char *raw = std::getenv("BROADIFY_MEETING_AUTO_DEGRADE");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+}
+
+// Warm handover on governor tier transitions (default ON). Make-before-break
+// between the fused synchronous keyer and the async worker: a step-up warms
+// the fused DirectML session on a background thread before the cutover, and a
+// step-down keeps the fused keyer on air until the worker publishes its first
+// pair. Motivation: the DirectML session build for a new shape costs 0.25s on
+// an idle dGPU and up to ~12s on an iGPU under load — with immediate cutover
+// that was seconds of un-keyed program output on every tier transition.
+// Kill-switch: BROADIFY_MEETING_WARM_HANDOVER=0 restores the immediate
+// cutover. Read once, like gpuPipelineEnabled.
+bool warmHandoverEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_WARM_HANDOVER");
     return raw == nullptr || raw[0] != '0';
   }();
   return enabled;
@@ -457,6 +487,10 @@ KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
   KeyerGovernorConfig config;
   config.frameBudgetMs = 1000.0 / static_cast<double>(fps == 0u ? 30u : fps);
   config.stepDownOverrideMs = keyerMaxInferenceOverrideMs();
+  // Warm handover: defer the Lite256 -> Performance256 step-up until the
+  // background session warmup succeeded (make-before-break). With the
+  // kill-switch off this stays the historical immediate step-up.
+  config.deferLiteStepUp = warmHandoverEnabled();
   return config;
 }
 
@@ -1809,7 +1843,14 @@ void runFramePipeline(const Options &options,
               frameForCompositor = &latestCameraFrame;
             }
             const KeyerRuntimeStats keyerStats = keyerWorker.stats();
-            {
+            // Step-down overlap mute: while the fused keyer bridges the
+            // overlap (previous frame's phase, see the flag), the fused
+            // section owns the published telemetry — these per-frame writes
+            // would interleave warming-worker values (stage "passthrough",
+            // near-zero keyerFps) into what UI polls sample. Submit and
+            // copyLatest above still ran, so the worker keeps warming and
+            // the cutover's first-pair detection is unaffected.
+            if (!g_fusedStepDownOverlapActive) {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.keyerMetrics.maskAgeMs = maskAgeMs;
               state.keyerMetrics.maskAgeAvgMs = maskAgeAverage.value();
@@ -1848,7 +1889,10 @@ void runFramePipeline(const Options &options,
           } else {
             frameForCompositor = &latestCameraFrame;
             const KeyerRuntimeStats keyerStats = keyerWorker.stats();
-            {
+            // Same step-down overlap mute as the pair branch above: the
+            // worker has no pair yet exactly BECAUSE it is still warming —
+            // reporting "passthrough" here while fused is on air is the bug.
+            if (!g_fusedStepDownOverlapActive) {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.degradationStage = "passthrough";
               state.staleMaskActive = false;
@@ -1935,7 +1979,10 @@ void runFramePipeline(const Options &options,
           }
           const KeyerRuntimeStats keyerStats = keyerWorker.stats();
           const uint64_t programUseNs = nowNs();
-          {
+          // Step-down overlap mute, same as the first async block: the pair
+          // selection above still runs (cutover freshness), only the
+          // published telemetry stays with the fused on-air path.
+          if (!g_fusedStepDownOverlapActive) {
             std::lock_guard<std::mutex> lock(state.mutex);
             state.keyerMetrics.maskAgeMs = maskAgeMs;
             state.keyerMetrics.maskAgeAvgMs = maskAgeAverage.value();
@@ -2099,6 +2146,43 @@ void runFramePipeline(const Options &options,
         // input for the fused postprocess parity (stabilizeAlphaEdges needs
         // temporal continuity). Reset wherever lastFusedRawMask is reset.
         static AlphaMask lastFusedPublishedMask;
+        // Warm-handover state (make-before-break tier transitions, see
+        // warmHandoverEnabled). The handover machine and the thread holder
+        // are program-thread-only; the warmup worker thread communicates
+        // exclusively through the two atomics below.
+        static TierHandover fusedHandover;
+        // Holder instead of a bare static std::thread: a warmup still running
+        // at process exit would make ~thread() call std::terminate. Detaching
+        // at static destruction lets the process exit cleanly; the thread
+        // only touches process-lifetime statics (fused keyer + atomics).
+        // COUPLING: this safety relies on main.cpp shutting down via
+        // std::_Exit(0), which skips ALL static destructors — including the
+        // static fusedKeyer below that a still-detached warmup thread may be
+        // using. Replacing std::_Exit with a normal return from main would
+        // destroy the fused keyer under that running thread (shutdown
+        // use-after-free); see the matching comment at the _Exit call site.
+        struct FusedWarmupThreadHolder {
+          std::thread thread;
+          ~FusedWarmupThreadHolder() {
+            if (thread.joinable()) {
+              thread.detach();
+            }
+          }
+        };
+        static FusedWarmupThreadHolder fusedWarmupThreadHolder;
+        std::thread &fusedWarmupThread = fusedWarmupThreadHolder.thread;
+        // true from just before the warmup thread spawns until the LAST
+        // statement of its body; the program thread joins ONLY while false,
+        // so join() always returns immediately and a running session build
+        // (up to ~12s) can never block the program loop.
+        static std::atomic<bool> fusedWarmupBusy{false};
+        // 1 = warmup succeeded, -1 = failed, 0 = none/in flight. Written by
+        // the warmup thread before it clears the busy flag.
+        static std::atomic<int> fusedWarmupOutcome{0};
+        // Path label reported last frame. Hoisted from the sticky-label block
+        // below so the step-down overlap detection can read which path was on
+        // air before the governor demoted.
+        static std::string lastReportedPipelineMode;
         // Path-transition reset: invoked whenever the ACTIVE keyer path
         // changes between fused (fused_cadence counts as fused), async_lite
         // and off. Clears everything the previous path owned, so the new
@@ -2108,8 +2192,15 @@ void runFramePipeline(const Options &options,
         // age). Metrics fields the new path does not own are parked at -1
         // (counters at 0) until it writes them. Governor learning
         // (tier/backoffs) survives on purpose - it caused the transition.
-        const auto resetKeyerPathState = [&]() {
-          keyerWorker.clear();
+        // preserveWorkerPair: set on a clean make-before-break cutover
+        // (fused -> async_lite with the worker's first pair already
+        // published). That pair IS the new path's first output — clearing it
+        // would re-open the exact un-keyed gap the overlap just bridged, so
+        // only the fused-side and telemetry state is reset then.
+        const auto resetKeyerPathState = [&](bool preserveWorkerPair = false) {
+          if (!preserveWorkerPair) {
+            keyerWorker.clear();
+          }
           maskAgeAverage.clear();
           asyncMaskRetention.reset();
           fusedCadence.reset();
@@ -2133,6 +2224,9 @@ void runFramePipeline(const Options &options,
         // Effective performance mode driving the keyer this frame (empty on
         // guard-skip frames; sticky in state like the pipeline label).
         std::string fusedActiveMode;
+        // Set on the frame a step-down overlap cuts over with a fresh worker
+        // pair: the path-transition reset below then keeps the worker state.
+        bool preserveWorkerOnCutover = false;
         if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
@@ -2152,7 +2246,18 @@ void runFramePipeline(const Options &options,
             // Seed once from the session-build warmup probe (median steady
             // inference cost at the 512 shape); available after the first
             // apply() loaded the session, so seeding lands one frame later.
-            if (!fusedGovernor.seeded()) {
+            // Skipped while a warm-handover warmup is in flight: status()
+            // takes the keyer mutex the warmup thread holds for the whole
+            // session build — polling it here would block the program loop
+            // for exactly the stall the warm handover exists to avoid.
+            // fusedWarmupBusy — not the handover phase — is the true "the
+            // warmup thread may still hold the keyer mutex" signal: a keyer
+            // disable during warmup resets the handover to Idle (and the
+            // governor, un-seeding it) while the thread keeps building the
+            // session, so the phase check alone is not airtight.
+            if (!fusedGovernor.seeded() &&
+                fusedHandover.phase() != TierHandover::Phase::Warming &&
+                !fusedWarmupBusy.load(std::memory_order_acquire)) {
               const double probeMs = fusedKeyer->status().probeInferenceMs;
               if (probeMs > 0.0) {
                 fusedGovernor.seedProbe(probeMs);
@@ -2165,6 +2270,88 @@ void runFramePipeline(const Options &options,
               keyerSettings.performanceMode = fusedGovernor.performanceModeForTier();
             }
           }
+          // Warm-handover step-up management (make-before-break): poll the
+          // one-shot warmup thread, commit/cancel the governor's deferred
+          // Lite -> fused step-up, and start a new warmup when the governor
+          // approved one. While warming, the tier stays Lite256 and the async
+          // worker stays on air untouched.
+          if (governorAutoEnabled && warmHandoverEnabled()) {
+            if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
+                fusedWarmupThread.joinable()) {
+              // The thread body finished (busy is cleared last): join returns
+              // immediately and the outcome is stable.
+              fusedWarmupThread.join();
+              if (fusedHandover.phase() == TierHandover::Phase::Warming) {
+                fusedHandover.completeWarmup(
+                    fusedWarmupOutcome.load(std::memory_order_relaxed) == 1);
+              }
+              fusedWarmupOutcome.store(0, std::memory_order_relaxed);
+            }
+            if (fusedHandover.consumeWarmupSuccess()) {
+              // Perform the existing transition on the program thread: the
+              // tier commit routes this very frame into the fused branch,
+              // whose apply() now finds a warm session; the label change then
+              // triggers the standard path-transition reset below.
+              fusedGovernor.commitLiteStepUp(fusedNow);
+            } else if (fusedHandover.consumeWarmupFailure()) {
+              // Treat like a wrong estimate: step-up holdoff doubling + dwell
+              // restart (the governor's existing backoff semantics).
+              fusedGovernor.cancelLiteStepUp(fusedNow);
+            }
+            if (fusedGovernor.liteStepUpPending() &&
+                fusedHandover.phase() == TierHandover::Phase::Idle &&
+                !fusedWarmupBusy.load(std::memory_order_acquire) &&
+                !fusedWarmupThread.joinable()) {
+              // Warm the mode the fused tier will actually run: after a Lite
+              // step-up the governor drives "performance"; an env performance
+              // pin wins (the governor does not drive the mode then). The
+              // fused keyer instance is idle in the Lite tier (apply() only
+              // runs in the fused branch below), so the warmup thread has the
+              // instance to itself under the keyer's internal mutex.
+              const std::string warmupMode =
+                  fusedKeyerPerformanceOverrideActive()
+                      ? keyerSettings.performanceMode
+                      : std::string("performance");
+              fusedHandover.beginWarmup(fusedNow);
+              fusedWarmupOutcome.store(0, std::memory_order_relaxed);
+              fusedWarmupBusy.store(true, std::memory_order_release);
+              MattingKeyer *const keyerForWarmup = fusedKeyer.get();
+              try {
+                fusedWarmupThread =
+                    std::thread([keyerForWarmup, warmupMode]() {
+                      bool warmupOk = false;
+                      try {
+                        warmupOk =
+                            keyerForWarmup->warmupForPerformanceMode(warmupMode);
+                      } catch (...) {
+                        warmupOk = false;
+                      }
+                      fusedWarmupOutcome.store(warmupOk ? 1 : -1,
+                                               std::memory_order_relaxed);
+                      // MUST stay the last statement: the program thread only
+                      // joins after observing busy == false.
+                      fusedWarmupBusy.store(false, std::memory_order_release);
+                    });
+              } catch (...) {
+                // Thread creation failed: treat as a failed warmup (the
+                // wrong-estimate path fires on the next frame).
+                fusedWarmupBusy.store(false, std::memory_order_release);
+                fusedHandover.completeWarmup(false);
+              }
+            }
+          }
+          // The busy flag — not the handover phase — signals "the warmup
+          // thread may still hold the fused keyer's mutex": a keyer disable
+          // during an in-flight warmup resets the handover to Idle (and the
+          // governor entirely) while the session build keeps running for up
+          // to ~12 s. While set, any status()/apply() on the fused keyer
+          // could block the program loop for the rest of that build, so the
+          // frame is served exactly like a Warming frame below: async path
+          // on air, no fused keyer calls. Read AFTER the join-poll above, so
+          // a finished thread is reclaimed (and the flag observed cleared)
+          // on this very frame.
+          const bool fusedWarmupInFlight =
+              fusedWarmupBusy.load(std::memory_order_acquire);
           // While the governor parks the keyer in async-lite, pin the fast
           // profile on the worker's chain: at ~11 reused masks/s the mask AGE
           // dominates perceived ghosting, so the younger 256-class mask beats
@@ -2181,6 +2368,13 @@ void runFramePipeline(const Options &options,
             // (g_fusedKeyerDegraded stays false -> submit guard blocks) and
             // cleared like the keyer-disabled path, so no stale mask lingers.
             g_fusedKeyerDegraded = false;
+            // A Lite -> Off step-down aborts any step-down overlap in flight
+            // (a Warming phase is left to the poll block above; its outcome
+            // commits as a no-op because the step-down cleared the pending
+            // step-up in the governor).
+            if (fusedHandover.phase() == TierHandover::Phase::Overlap) {
+              fusedHandover.finishOverlap();
+            }
             keyerWorker.clear();
             maskAgeAverage.clear();
             asyncMaskRetention.reset();
@@ -2218,8 +2412,10 @@ void runFramePipeline(const Options &options,
             // because the worker publishes the pair before it writes the
             // matching status.
             static uint64_t lastAsyncSampledPublishNs = 0u;
+            uint64_t latestLitePublishNs = 0u;
             if (const std::shared_ptr<const PairedKeyerFrame> litePair =
                     keyerWorker.copyLatest()) {
+              latestLitePublishNs = litePair->publishedAtNs;
               if (litePair->publishedAtNs != 0u &&
                   litePair->publishedAtNs != lastAsyncSampledPublishNs) {
                 lastAsyncSampledPublishNs = litePair->publishedAtNs;
@@ -2228,7 +2424,104 @@ void runFramePipeline(const Options &options,
                 }
               }
             }
-            fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
+            // Make-before-break step-down: on the first async-lite frame
+            // after a fused epoch, keep the fused keyer ON AIR until the
+            // worker publishes its first pair (bounded overlap), then cut
+            // over. Overlap frames keep reporting "fused" — honest (fused is
+            // what composites) and it defers the sticky path-transition
+            // reset below to the exact cutover frame.
+            // !fusedWarmupInFlight: never start a bridge whose apply() could
+            // block on the keyer mutex a leftover warmup thread holds
+            // (unreachable by construction today — busy implies the fused
+            // path did not run last frame — but kept airtight).
+            if (warmHandoverEnabled() && !fusedWarmupInFlight &&
+                fusedHandover.phase() == TierHandover::Phase::Idle &&
+                canonicalKeyerPathLabel(lastReportedPipelineMode) == "fused") {
+              fusedHandover.beginOverlap(nowNs(), fusedNow);
+            }
+            bool overlapBridgesThisFrame = false;
+            if (fusedHandover.phase() == TierHandover::Phase::Overlap) {
+              if (fusedHandover.cutoverDue(latestLitePublishNs, fusedNow)) {
+                // Cut over now. A fresh pair means the worker state is the
+                // NEW path's first output and must survive the transition
+                // reset; the timeout path keeps today's full reset.
+                preserveWorkerOnCutover =
+                    fusedHandover.pairArrivedSinceOverlapStart(
+                        latestLitePublishNs);
+                fusedHandover.finishOverlap();
+              } else {
+                overlapBridgesThisFrame = true;
+              }
+            }
+            if (overlapBridgesThisFrame) {
+              // Same chain as the fused branch (EMA stabilize -> guided
+              // refine -> postprocess parity) while the async worker warms up
+              // in parallel; g_fusedKeyerDegraded stays true so the worker
+              // keeps receiving frames. The inference cost is NOT fed to the
+              // governor: the Lite EMA must track the ASYNC worker's cost
+              // (basis of the next step-up estimate), not the known-over-
+              // budget fused cost that caused this demotion. The tier is
+              // Lite256, so keyerSettings.performanceMode is "performance" =
+              // the same 256 input the demoted fused tier ran -> apply()
+              // never rebuilds the session here.
+              KeyerResult fused =
+                  fusedKeyer->apply(latestCameraFrame, keyerSettings);
+              if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
+                fusedMask = std::move(fused.mask);
+                stabilizeFusedMask(fusedMask, /*applyEma=*/true);
+                if (!(d3d11GuidedRefineAvailable() &&
+                      guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+                  guidedRefineMask(fusedMask, latestCameraFrame);
+                }
+                if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
+                  postprocessAlpha(fusedMask, lastFusedPublishedMask,
+                                   keyerSettings, 0.0, fused.status.metrics);
+                  lastFusedPublishedMask = fusedMask;
+                }
+                frameForCompositor = &latestCameraFrame;
+                maskForCompositor = &fusedMask;
+                shouldRenderProgram = true;
+                updateMeetingKeyerStatus(state, fused.status);
+                fusedPipelineModeLabel = "fused";
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.keyerMetrics.maskAgeMs = 0.0;
+                state.keyerMetrics.maskAgeAvgMs = 0.0;
+                state.keyerMetrics.keyerPublishToProgramMs = -1.0;
+                // Async-owned rate: park it while fused bridges the overlap.
+                // The async telemetry blocks are muted during Overlap (see
+                // g_fusedStepDownOverlapActive), so nothing else keeps this
+                // honest — a stale near-zero fps next to stage "fused" is
+                // exactly the mixed sample this guards against.
+                state.keyerMetrics.keyerFps = -1.0;
+                state.degradationStage =
+                    fusedMask.emptyValid ? "no_subject" : "fused";
+                state.staleMaskActive = false;
+              } else {
+                // The fused keyer cannot bridge the overlap (inference
+                // failed): cut over immediately — today's behavior — and let
+                // the async block's output stand.
+                fusedHandover.finishOverlap();
+                updateMeetingKeyerStatus(state, fused.status);
+                fusedPipelineModeLabel =
+                    fusedGovernor.pipelineModeLabel(false);
+              }
+            } else {
+              fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
+            }
+          } else if (fusedWarmupInFlight) {
+            // Fused-branch entry gate (see fusedWarmupInFlight above): the
+            // governor no longer wants async-lite (typically: it was reset by
+            // a keyer disable while a warmup was in flight), but the first
+            // fused apply() would block on the keyer mutex the leftover
+            // warmup thread may still hold. Serve like a Warming frame: the
+            // async worker stays on air (degraded flag keeps feeding it) and
+            // the label reports the path that actually composites. No
+            // governor samples are fed here — the freshly reset governor
+            // must keep its probe seeding (addSample would permanently
+            // disable seedProbe). Clears itself: the join-poll above reclaims
+            // the thread the frame after its body finishes.
+            g_fusedKeyerDegraded = true;
+            fusedPipelineModeLabel = "async_lite";
           } else {
             downsampleLumaThumb(latestCameraFrame.rgba.data(),
                                 latestCameraFrame.width,
@@ -2367,13 +2660,26 @@ void runFramePipeline(const Options &options,
           lastFusedPublishedMask = AlphaMask{};
           fusedSubjectPresenceTracker().reset();
           fusedStabilizerState().reset();
+          // Warm-handover cleanup: abort any transition; join the warmup
+          // thread only when its body already finished (join is immediate
+          // then). A still-running session build is left to complete in the
+          // background — joining it here would block the program loop for
+          // seconds; the busy flag keeps guarding single-flight reuse and
+          // its late outcome is discarded (governor reset cleared pending).
+          fusedHandover.reset();
+          if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
+              fusedWarmupThread.joinable()) {
+            fusedWarmupThread.join();
+            fusedWarmupOutcome.store(0, std::memory_order_relaxed);
+          }
         }
         // The reported pipeline mode must never blank while the section is
         // active: the guard can skip on camera hiccups (and the failure
         // branch used to leave it empty), which flapped keyer_pipeline_mode
         // to null mid-session. Keep the last reported mode sticky instead;
         // a disabled keyer genuinely clears it (null = not reported).
-        static std::string lastReportedPipelineMode;
+        // (lastReportedPipelineMode is declared with the fused statics above
+        // — the step-down overlap detection reads it.)
         if (fusedPipelineModeLabel.empty() && snapshot.keyerEnabled) {
           fusedPipelineModeLabel = lastReportedPipelineMode;
         }
@@ -2385,7 +2691,7 @@ void runFramePipeline(const Options &options,
               canonicalKeyerPathLabel(fusedPipelineModeLabel) !=
                   canonicalKeyerPathLabel(lastReportedPipelineMode);
           if (pathChanged) {
-            resetKeyerPathState();
+            resetKeyerPathState(preserveWorkerOnCutover);
           }
           lastReportedPipelineMode = fusedPipelineModeLabel;
         }
@@ -2398,6 +2704,12 @@ void runFramePipeline(const Options &options,
             state.activePerformanceMode = fusedActiveMode;
           }
         }
+        // Mirror the overlap phase for the async telemetry blocks: they run
+        // BEFORE this section in the next loop iteration and cannot see the
+        // static fusedHandover, so they read the previous frame's phase via
+        // this flag and mute their telemetry writes while it is set.
+        g_fusedStepDownOverlapActive =
+            fusedHandover.phase() == TierHandover::Phase::Overlap;
       }
 #else
       (void)fusedMask;

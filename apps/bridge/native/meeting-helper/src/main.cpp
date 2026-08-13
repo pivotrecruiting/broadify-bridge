@@ -13,6 +13,7 @@
 #include "recorder/meeting_recorder.h"
 #include "output/vcam_controller.h"
 #include "state/meeting_state.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
 
 #if defined(__APPLE__)
@@ -50,8 +51,12 @@ namespace broadify::meeting {
 namespace {
 
 std::atomic<bool> g_running{true};
+// Which signal (if any) ended the main loop; read by the shutdown event so a
+// SIGTERM-driven exit is distinguishable from a control_shutdown RPC.
+std::atomic<int> g_exitSignal{0};
 
-void signalHandler(int) {
+void signalHandler(int sig) {
+  g_exitSignal.store(sig);
   g_running.store(false);
 }
 
@@ -134,7 +139,9 @@ LONG WINAPI writeCrashDump(EXCEPTION_POINTERS *pointers) {
 #endif
 
 void printEvent(const std::string &json) {
-  std::cout << json << std::endl;
+  // Mirrored into the --event-log sidecar: on macOS the `open`-based launch
+  // swallows stdout, so the sidecar is what the bridge can actually read.
+  emitHelperEvent(json);
 }
 
 #if BROADIFY_ENABLE_MODNET
@@ -279,8 +286,16 @@ int main(int argc, char **argv) {
 #endif
   std::signal(SIGINT, signalHandler);
   std::signal(SIGTERM, signalHandler);
+#if !defined(_WIN32)
+  // A control-socket reply hitting a bridge-side-destroyed socket (RPC
+  // timeout) raised SIGPIPE and killed the helper silently mid-meeting - the
+  // control socket is the only one without SO_NOSIGPIPE. Ignore globally;
+  // writes then fail with EPIPE and are logged instead of ending the process.
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
 
   Options options = parseOptions(argc, argv);
+  setHelperEventLogPath(options.eventLogPath);
   if (options.keyerSelfTest) {
     // Standalone benchmark used by scripts/test-meeting-helper.cjs (keyer /
     // keyer-hardware modes): no --run / --control-socket required.
@@ -340,6 +355,7 @@ int main(int argc, char **argv) {
           ? (kill(bridgePid, 0) != 0 && errno == ESRCH)
           : (getppid() != initialParentPid);
       if (bridgeGone) {
+        noteHelperExitReason("parent_exited");
         g_running.store(false);
         break;
       }
@@ -432,6 +448,20 @@ int main(int argc, char **argv) {
   preview.detach();
   vcamRaw.detach();
   control.detach();
-  printEvent("{\"type\":\"shutdown\"}");
+  // Name the exit path: silent code-0 exits were undiagnosable (the `open`
+  // wrapper always reports 0 to the bridge whatever ended the app).
+  std::string exitReason = helperExitReason();
+  if (exitReason.empty()) {
+    const int sig = g_exitSignal.load();
+    exitReason = sig != 0 ? "signal_" + std::to_string(sig) : "main_loop_end";
+  }
+  printEvent("{\"type\":\"shutdown\",\"reason\":\"" + exitReason + "\"}");
+  // std::_Exit also skips ALL static destructors — the frame pipeline's
+  // FusedWarmupThreadHolder (frame_pipeline.cpp) DEPENDS on that: a fused
+  // warmup thread still running at exit is detached and may still be using
+  // the static fused keyer. Replacing std::_Exit with a normal return from
+  // main would run those static destructors under the detached thread — a
+  // shutdown use-after-free. Keep std::_Exit (or first join the warmup
+  // thread via its busy flag) when changing this shutdown path.
   std::_Exit(0);
 }

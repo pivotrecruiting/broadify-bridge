@@ -15,6 +15,9 @@ struct Options {
   // Bridge PID for the orphan watchdog; -1 = not provided.
   int parentPid = -1;
   std::string modelsDir;
+  // Sidecar file mirroring helper JSON events; empty disables. On macOS the
+  // `open`-based launch swallows stdio, so this is the surviving channel.
+  std::string eventLogPath;
   uint32_t width = 1920;
   uint32_t height = 1080;
   uint32_t fps = 30;

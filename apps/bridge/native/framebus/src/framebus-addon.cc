@@ -190,9 +190,13 @@ void FinalizeHandle(napi_env env, void* data, void* hint) {
   if (handle->fd >= 0) {
     close(handle->fd);
   }
-  if (handle->is_writer && !handle->name.empty()) {
-    shm_unlink(handle->name.c_str());
-  }
+  // Deliberately NO shm_unlink: closing a writer only detaches it. Regions
+  // must outlive any single writer - readers stay attached across writer
+  // restarts, and the meeting engine start recycles regions by creating a
+  // forceRecreate writer and closing it immediately; an unlink here would
+  // delete that fresh region on the spot. (An earlier unlink attempt passed
+  // the un-normalized name and so was always a silent no-op on macOS - the
+  // shipped semantic has always been "persist until force-recreated".)
 #endif
   delete handle;
 }

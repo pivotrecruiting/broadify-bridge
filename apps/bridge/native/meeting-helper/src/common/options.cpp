@@ -47,6 +47,9 @@ Options parseOptions(int argc, char **argv) {
   if (const char *value = getenvOrNull("MEETING_MODELS_DIR")) {
     options.modelsDir = value;
   }
+  if (const char *value = getenvOrNull("MEETING_EVENT_LOG")) {
+    options.eventLogPath = value;
+  }
   options.width = parseU32(getenvOrNull("MEETING_FRAME_WIDTH"), options.width);
   options.height = parseU32(getenvOrNull("MEETING_FRAME_HEIGHT"), options.height);
   options.fps = parseU32(getenvOrNull("MEETING_FRAME_FPS"), options.fps);
@@ -73,6 +76,8 @@ Options parseOptions(int argc, char **argv) {
       options.parentPid = static_cast<int>(parseU32(next(), 0u));
     } else if (arg == "--models-dir") {
       options.modelsDir = next();
+    } else if (arg == "--event-log") {
+      options.eventLogPath = next();
     } else if (arg == "--width") {
       options.width = parseU32(next(), options.width);
     } else if (arg == "--height") {

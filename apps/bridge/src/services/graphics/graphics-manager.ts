@@ -28,7 +28,10 @@ import type {
 } from "./renderer/graphics-renderer.js";
 import { deriveTemplateBindings } from "./template-bindings.js";
 import { createTestPatternPayload } from "./test-pattern.js";
-import { type FrameBusConfigT } from "./framebus/framebus-config.js";
+import {
+  type FrameBusConfigT,
+  type FrameBusOverridesT,
+} from "./framebus/framebus-config.js";
 import { GraphicsError, type GraphicsErrorCodeT } from "./graphics-errors.js";
 import type {
   GraphicsActivePresetT,
@@ -87,6 +90,14 @@ type ValidateOutputFormatT = (
 
 type GraphicsManagerDepsT = {
   createRenderer?: () => GraphicsRenderer;
+  /**
+   * Explicit FrameBus name/slotCount for this manager instance. Wins over the
+   * process-global BRIDGE_FRAMEBUS_* env vars in every resolve (configure,
+   * persisted-config restore, rollback), so the dual meeting renderers can
+   * never pick up the ambient name of the other bus. The Studio singleton
+   * passes nothing here and keeps the env path bit-identical.
+   */
+  frameBusOverrides?: FrameBusOverridesT;
   runtimeInitService?: GraphicsRuntimeInitServiceLikeT;
   outputTransitionService?: GraphicsOutputTransitionServiceLikeT;
   selectOutputAdapter?: (
@@ -200,7 +211,8 @@ export class GraphicsManager {
         selectOutputAdapter,
         persistConfig: (config) => outputConfigStore.setConfig(config),
         clearPersistedConfig: () => outputConfigStore.clear(),
-        resolveFrameBusConfig,
+        resolveFrameBusConfig: (config, previous) =>
+          resolveFrameBusConfig(config, previous, this.deps.frameBusOverrides),
         buildRendererConfig: (config, frameBusConfig) =>
           this.buildRendererConfig(config, frameBusConfig),
         logFrameBusConfigChange,
@@ -225,6 +237,7 @@ export class GraphicsManager {
           this.frameBusConfig = applyFrameBusSessionConfig(
             config,
             this.frameBusConfig,
+            this.deps.frameBusOverrides,
           );
         },
         buildRendererConfig: (config) => this.buildRendererConfig(config),
@@ -396,6 +409,16 @@ export class GraphicsManager {
     }
 
     this.initialized = false;
+  }
+
+  /**
+   * Force the renderer to re-send its configuration and re-attach its
+   * FrameBus writer on the next configureOutputs. Must be called after the
+   * bus region was force-recreated outside the renderer (meeting engine
+   * start), otherwise the renderer keeps writing into the unlinked region.
+   */
+  invalidateRendererFrameBusAttachment(): void {
+    this.renderer.invalidateFrameBusAttachment?.();
   }
 
   /**

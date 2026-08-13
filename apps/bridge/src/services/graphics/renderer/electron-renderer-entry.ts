@@ -26,6 +26,7 @@ import {
   downsampleRgbaBox,
   resampleRgbaBilinear,
 } from "./graphics-pixel-utils.js";
+import { frameBusWriterMatchesTarget } from "./framebus-writer-match.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -438,12 +439,22 @@ function ensureFrameBusWriter(
     const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
       ? frameBusPixelFormat
       : 1;
-    const matches =
-      header.width === width &&
-      header.height === height &&
-      header.fps === nativeFrameRate &&
-      header.slotCount === frameBusSlotCount &&
-      header.pixelFormat === desiredPixelFormat;
+    // Geometry AND bus name must match (framebus-writer-match.ts): the two
+    // meeting renderers share identical geometry, so without the name clause
+    // a writer on "/bfy-meet-gfx-back" silently no-op'ed a configure for
+    // "bfy-meet-gfx-front" and the ready ack carried the stale name (client
+    // gate drop -> 15s config-ready timeout). Studio never changes the bus
+    // name mid-session, so this is a zero-delta there.
+    const matches = frameBusWriterMatchesTarget({
+      header,
+      writerName: frameBusWriter.name,
+      targetName: frameBusName,
+      width,
+      height,
+      fps: nativeFrameRate,
+      slotCount: frameBusSlotCount,
+      pixelFormat: desiredPixelFormat,
+    });
     if (matches) {
       return true;
     }
@@ -454,7 +465,7 @@ function ensureFrameBusWriter(
     }
     frameBusWriter = null;
     frameBusInitAttempted = false;
-    // The retained frame belongs to the old writer geometry.
+    // The retained frame belongs to the old writer (geometry or bus name).
     stopFrameBusHeartbeat();
   }
   if (frameBusInitAttempted) {
@@ -653,6 +664,22 @@ function applyRendererConfig(message: unknown): void {
   }
 
   frameBusInitAttempted = false;
+  if (config.framebusReattach && frameBusWriter) {
+    // The bridge force-recreated the bus region (e.g. meeting engine start).
+    // Our writer still maps the unlinked old region - name and geometry match,
+    // so ensureFrameBusWriter would happily keep it and every frame would go
+    // nowhere. Drop it and attach to the current region by name.
+    logger.info(
+      { frameBusName: frameBusWriter.name },
+      "[GraphicsRenderer] FrameBus writer dropped for reattach",
+    );
+    try {
+      frameBusWriter.close();
+    } catch {
+      // Already closed/invalid - a fresh attachment follows either way.
+    }
+    frameBusWriter = null;
+  }
   logger.info(
     {
       width: config.width,
@@ -662,6 +689,7 @@ function applyRendererConfig(message: unknown): void {
       framebusName: config.framebusName,
       framebusSlotCount: config.framebusSlotCount,
       framebusSize: config.framebusSize,
+      framebusReattach: config.framebusReattach,
       derivedFrameBusName: frameBusName,
       derivedFrameBusSlotCount: frameBusSlotCount,
       derivedFrameBusPixelFormat: frameBusPixelFormat,
@@ -677,6 +705,12 @@ function applyRendererConfig(message: unknown): void {
     config.height,
     config.fps,
   );
+  if (config.framebusReattach && frameBusReady && singleWindow) {
+    // Repaint the existing layers into the fresh region: with static content
+    // no paint event fires, and the heartbeat would republish only the zeroed
+    // init frame of the new attachment.
+    scheduleCapturedWindowFrames("framebus_reattach");
+  }
 
   readySent = false;
   rendererConfigReady = frameBusReady;
@@ -986,7 +1020,13 @@ async function ensureSingleWindow(
           firstFrameBusWriteLogged = true;
           logger.info(
             {
-              frameBusName,
+              // Log the ACTUAL write target (writer name), not the module
+              // state: the two diverging is exactly the bus-name race this
+              // renderer had, and the old log line hid it from diagnosis.
+              frameBusName: frameBusWriter.name,
+              ...(frameBusWriter.name !== frameBusName
+                ? { configuredFrameBusName: frameBusName }
+                : {}),
               width,
               height,
               renderWidth: imageSize.width,
@@ -1097,7 +1137,11 @@ function writeTransparentFrame(reason: string): void {
     logger.info(
       {
         reason,
-        frameBusName,
+        // Actual write target (see the first-write log for the rationale).
+        frameBusName: frameBusWriter.name,
+        ...(frameBusWriter.name !== frameBusName
+          ? { configuredFrameBusName: frameBusName }
+          : {}),
         width,
         height,
         fps,
@@ -1204,7 +1248,11 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
     logger.info(
       {
         reason,
-        frameBusName,
+        // Actual write target (see the first-write log for the rationale).
+        frameBusName: frameBusWriter.name,
+        ...(frameBusWriter.name !== frameBusName
+          ? { configuredFrameBusName: frameBusName }
+          : {}),
         width,
         height,
         fps,

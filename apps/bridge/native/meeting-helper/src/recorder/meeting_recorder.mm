@@ -1,5 +1,11 @@
 #include "recorder/meeting_recorder.h"
 
+#if defined(__APPLE__)
+#include "recorder/recorder_writer_factory.h"
+#include "util/helper_event_log.h"
+#include "util/json_utils.h"
+#endif
+
 #include <chrono>
 #include <mutex>
 
@@ -25,6 +31,27 @@ constexpr uint64_t kMinFreeDiskBytes = 500ull * 1024ull * 1024ull;
 double secondsSince(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
       .count();
+}
+
+// One JSON line per recorder incident, so a writer death is pinpointed the
+// moment it happens instead of surfacing minutes later as an opaque status
+// string at stop. Goes through the helper event log (stdout + sidecar file -
+// stdout alone is invisible on macOS, where the bridge launches via `open`).
+void logRecorderEvent(const char *event, const std::string &detail) {
+  emitHelperEvent("{\"type\":\"meeting_recorder\",\"event\":\"" +
+                  std::string(event) + "\",\"detail\":\"" + jsonEscape(detail) +
+                  "\"}");
+}
+
+// Full NSError description (domain, code, userInfo with any underlying error)
+// for the log; localizedDescription alone collapses to phrases like "The
+// operation could not be completed".
+std::string describeError(NSError *error, const char *fallback) {
+  if (error == nil) {
+    return fallback;
+  }
+  const char *description = [[error description] UTF8String];
+  return description != nullptr ? description : fallback;
 }
 
 // Blocks briefly to resolve microphone authorization. Returns true only when
@@ -230,87 +257,26 @@ bool MeetingRecorder::start(const std::string &filePath,
       }
     }
 
-    // REC-03: record into a ".part" sidecar and only rename to the final path
-    // after a successful finish. The old code deleted the target up front, so
-    // a crash left neither the old nor a playable new file.
-    const std::string partPathUtf8 = filePath + ".part";
+    // REC-03: record into a sidecar and only rename to the final path after a
+    // successful finish. The old code deleted the target up front, so a crash
+    // left neither the old nor a playable new file.
+    const std::string partPathUtf8 = recorderSidecarPath(filePath);
     NSString *partPath = [NSString stringWithUTF8String:partPathUtf8.c_str()];
-    NSURL *url = [NSURL fileURLWithPath:partPath];
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:partPath]) {
       [fm removeItemAtPath:partPath error:nil];
     }
 
-    NSError *writerError = nil;
-    AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:url
-                                                     fileType:AVFileTypeMPEG4
-                                                        error:&writerError];
-    if (writer == nil) {
-      return fail(writerError != nil
-                      ? [[writerError localizedDescription] UTF8String]
-                      : "writer_create_failed");
+    RecorderWriterBundle bundle =
+        makeRecorderWriter(partPathUtf8, width, height, fps);
+    if (bundle.writer == nil) {
+      return fail(bundle.error);
     }
-    // Crash safety: without fragments the moov atom is written only in
-    // finishWriting, so a hard kill mid-recording leaves an unplayable file.
-    // With periodic fragments everything up to the last fragment survives.
-    writer.movieFragmentInterval = CMTimeMake(4, 1);
-
-    // ~0.2 bits/pixel is visually clean for screen+camera content; cap so 4K
-    // never balloons.
-    const uint64_t pixels = static_cast<uint64_t>(width) * height;
+    AVAssetWriter *writer = bundle.writer;
+    AVAssetWriterInput *videoInput = bundle.videoInput;
+    AVAssetWriterInputPixelBufferAdaptor *adaptor = bundle.videoAdaptor;
+    AVAssetWriterInput *audioInput = bundle.audioInput;
     const uint32_t safeFps = fps > 0 ? fps : 30;
-    uint64_t bitrate = pixels * safeFps / 5;  // 0.2 bpp
-    if (bitrate > 24000000ull) {
-      bitrate = 24000000ull;
-    }
-    if (bitrate < 2000000ull) {
-      bitrate = 2000000ull;
-    }
-    NSDictionary *videoSettings = @{
-      AVVideoCodecKey : AVVideoCodecTypeH264,
-      AVVideoWidthKey : @(width),
-      AVVideoHeightKey : @(height),
-      AVVideoCompressionPropertiesKey : @{
-        AVVideoAverageBitRateKey : @(bitrate),
-        AVVideoMaxKeyFrameIntervalKey : @(safeFps * 2),
-        AVVideoProfileLevelKey : AVVideoProfileLevelH264HighAutoLevel,
-      },
-    };
-    AVAssetWriterInput *videoInput =
-        [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
-                                           outputSettings:videoSettings];
-    videoInput.expectsMediaDataInRealTime = YES;
-    NSDictionary *pixelAttrs = @{
-      (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
-      (id)kCVPixelBufferWidthKey : @(width),
-      (id)kCVPixelBufferHeightKey : @(height),
-      (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
-    };
-    AVAssetWriterInputPixelBufferAdaptor *adaptor =
-        [AVAssetWriterInputPixelBufferAdaptor
-            assetWriterInputPixelBufferAdaptorWithAssetWriterInput:videoInput
-                                       sourcePixelBufferAttributes:pixelAttrs];
-    if ([writer canAddInput:videoInput]) {
-      [writer addInput:videoInput];
-    } else {
-      return fail("video_input_rejected");
-    }
-
-    NSDictionary *audioSettings = @{
-      AVFormatIDKey : @(kAudioFormatMPEG4AAC),
-      AVSampleRateKey : @(48000),
-      AVNumberOfChannelsKey : @(1),
-      AVEncoderBitRateKey : @(128000),
-    };
-    AVAssetWriterInput *audioInput =
-        [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
-                                           outputSettings:audioSettings];
-    audioInput.expectsMediaDataInRealTime = YES;
-    if ([writer canAddInput:audioInput]) {
-      [writer addInput:audioInput];
-    } else {
-      return fail("audio_input_rejected");
-    }
 
     // Microphone capture session.
     AVCaptureDevice *micDevice = resolveMicrophone(micDeviceId);
@@ -427,6 +393,10 @@ void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
                                     UTF8String]
                                     ?: "writer_failed")
                              : "writer_failed";
+      logRecorderEvent(
+          "writer_failed",
+          describeError(impl_->writer.error, "writer_failed") +
+              " after " + std::to_string(impl_->videoFrames) + " frames");
     }
     CVPixelBufferRelease(pixelBuffer);
   }
@@ -475,9 +445,24 @@ void MeetingRecorder::stop() {
       [writer finishWritingWithCompletionHandler:^{
         dispatch_semaphore_signal(sem);
       }];
-      dispatch_semaphore_wait(
+      const long finishTimedOut = dispatch_semaphore_wait(
           sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)));
+      if (finishTimedOut != 0 &&
+          writer.status != AVAssetWriterStatusCompleted) {
+        // Previously this fell through silently: no rename, no error - the
+        // recording just vanished. Report it like any other finalize failure.
+        logRecorderEvent("finalize_timeout",
+                         "finishWriting exceeded 15s (" +
+                             std::string("status=") +
+                             std::to_string((long)writer.status) + ")");
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->lastError.empty()) {
+          impl_->lastError = "finalize_timeout";
+        }
+      }
       if (writer.status == AVAssetWriterStatusFailed && writer.error != nil) {
+        logRecorderEvent("finish_failed",
+                         describeError(writer.error, "finish_failed"));
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->lastError = [[writer.error localizedDescription] UTF8String]
                                ?: "finish_failed";
@@ -492,12 +477,16 @@ void MeetingRecorder::stop() {
         [fm removeItemAtPath:to error:nil];
         NSError *renameError = nil;
         if (![fm moveItemAtPath:from toPath:to error:&renameError]) {
+          logRecorderEvent("rename_failed",
+                           describeError(renameError, "rename_failed"));
           std::lock_guard<std::mutex> lock(impl_->mutex);
           impl_->lastError =
               renameError != nil
                   ? ([[renameError localizedDescription] UTF8String]
                          ?: "rename_failed")
                   : "rename_failed";
+        } else {
+          logRecorderEvent("completed", finalPath);
         }
       }
     }
