@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <thread>
 #include <utility>
@@ -113,6 +114,10 @@ class ModnetKeyer::Impl {
   }
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) {
+    // Serializes against warmupForPerformanceMode (warm-handover thread) and
+    // status(). Uncontended in steady state: the fused pipeline only ever
+    // warms up while the async worker owns the path (this instance is idle).
+    std::lock_guard<std::mutex> lock(mutex_);
     KeyerResult result;
 #if defined(__APPLE__)
     // Choose the CoreML input size from the performance mode BEFORE the session
@@ -230,7 +235,55 @@ class ModnetKeyer::Impl {
   }
 
   KeyerStatus status() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return status_;
+  }
+
+  // Warm-handover entry: build/warm the session for the mode's input size on
+  // the CALLING thread (a background warmup thread while the async worker
+  // owns the keyer path), so the next apply() at that mode finds a ready
+  // session. Reuses ensureLoaded()/rebuildSessionForSize() under the keyer
+  // mutex — the same internals apply() uses, so the state transitions are
+  // identical to a first visible inference at the new size.
+  bool warmupForPerformanceMode(const std::string &performanceMode) {
+    std::lock_guard<std::mutex> lock(mutex_);
+#if BROADIFY_ENABLE_MODNET
+#if defined(__APPLE__)
+    // macOS freezes the CoreML session shape at load; per-mode rebuilds do
+    // not exist there (and the warm handover is Windows-only anyway).
+    (void)performanceMode;
+    return ensureLoaded();
+#else
+    if (!ensureLoaded()) {
+      return false;
+    }
+    if (!modelDynamic_) {
+      // Static model: one shape only, already warmed by ensureLoaded().
+      return true;
+    }
+    const uint32_t requested = modnetInputSizeForMode(performanceMode);
+    if (sessionRunSize_ == 0u || requested == sessionRunSize_) {
+      // ensureLoaded's warmup already ran the session at its initial shape;
+      // sessionRunSize_ == 0 only happens when that warmup failed — the next
+      // apply() pays the compile as before (best-effort, like ensureLoaded).
+      return true;
+    }
+    if (requested == failedRebuildSize_) {
+      return false;
+    }
+    if (rebuildSessionForSize(requested)) {
+      failedRebuildSize_ = 0u;
+      inputWidth_ = requested;
+      inputHeight_ = requested;
+      return true;
+    }
+    failedRebuildSize_ = requested;
+    return false;
+#endif
+#else
+    (void)performanceMode;
+    return false;
+#endif
   }
 
  private:
@@ -504,6 +557,9 @@ class ModnetKeyer::Impl {
   static constexpr std::chrono::seconds kModelLoadRetryInterval{30};
 
   ModnetKeyerOptions options_;
+  // Guards every member against the warm-handover warmup thread (apply,
+  // status and warmupForPerformanceMode all take it for their full body).
+  mutable std::mutex mutex_;
   KeyerStatus status_;
   bool loaded_ = false;
   std::chrono::steady_clock::time_point lastLoadAttemptAt_{};
@@ -536,6 +592,10 @@ KeyerResult ModnetKeyer::apply(const VideoFrame &input, const KeyerSettings &set
 
 KeyerStatus ModnetKeyer::status() const {
   return impl_->status();
+}
+
+bool ModnetKeyer::warmupForPerformanceMode(const std::string &performanceMode) {
+  return impl_->warmupForPerformanceMode(performanceMode);
 }
 
 }  // namespace broadify::meeting

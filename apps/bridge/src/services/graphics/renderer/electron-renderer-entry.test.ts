@@ -138,6 +138,17 @@ jest.mock("./graphics-pixel-utils.js", () => ({
 describe("electron-renderer-entry", () => {
   const originalEnv = process.env;
 
+  // Real-timer hygiene: the module under test arms real timers (captured-frame
+  // retries at 120/300/700ms, the 1s FrameBus heartbeat) that individual tests
+  // historically never cleared. Each test imports a FRESH module instance, but
+  // stale instances' timers keep firing into later tests and reach the shared
+  // factory mocks - under the name-aware writer compare that recreates writers
+  // and inflates call counts, flakily on slow CI runners. Track every timer a
+  // test arms and clear them all afterwards.
+  const trackedTimerHandles: Array<ReturnType<typeof setTimeout>> = [];
+  const realSetTimeout = global.setTimeout;
+  const realSetInterval = global.setInterval;
+
   beforeAll(() => {
     process.setMaxListeners(80);
   });
@@ -145,6 +156,28 @@ describe("electron-renderer-entry", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.resetModules();
+    const trackingSetTimeout = ((
+      fn: Parameters<typeof setTimeout>[0],
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = realSetTimeout(fn, ms, ...(args as []));
+      trackedTimerHandles.push(handle);
+      return handle;
+    }) as typeof setTimeout;
+    trackingSetTimeout.__promisify__ = realSetTimeout.__promisify__;
+    global.setTimeout = trackingSetTimeout;
+    const trackingSetInterval = ((
+      fn: Parameters<typeof setInterval>[0],
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = realSetInterval(fn, ms, ...(args as []));
+      trackedTimerHandles.push(handle);
+      return handle;
+    }) as typeof setInterval;
+    trackingSetInterval.__promisify__ = realSetInterval.__promisify__;
+    global.setInterval = trackingSetInterval;
     enqueueSerialPending = Promise.resolve();
     lastDidFinishLoadHandler = null;
     paintHandlers.length = 0;
@@ -167,6 +200,13 @@ describe("electron-renderer-entry", () => {
 
   afterEach(() => {
     jest.useRealTimers();
+    global.setTimeout = realSetTimeout;
+    global.setInterval = realSetInterval;
+    for (const handle of trackedTimerHandles) {
+      clearTimeout(handle);
+      clearInterval(handle as unknown as ReturnType<typeof setInterval>);
+    }
+    trackedTimerHandles.length = 0;
   });
 
   it("loads without throwing when IPC port is unset", async () => {
@@ -1370,6 +1410,114 @@ describe("electron-renderer-entry", () => {
         frameBusSlotCount: 2,
       }),
       "[GraphicsRenderer] FrameBus writer became ready after retry"
+    );
+  });
+
+  it("drops and re-attaches the FrameBus writer when framebusReattach is set", async () => {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const baseConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 16588928,
+      backgroundMode: "transparent" as const,
+    };
+    // Same name and geometry twice: without the reattach flag the writer-match
+    // gate keeps the first writer, which maps the force-recreated (unlinked)
+    // region - exactly the orphan that made meeting presets invisible after a
+    // second engine start.
+    mockSafeParse
+      .mockReturnValueOnce({
+        success: true,
+        data: { ...baseConfig, framebusReattach: false },
+      })
+      .mockReturnValueOnce({
+        success: true,
+        data: { ...baseConfig, framebusReattach: true },
+      });
+    const firstClose = jest.fn();
+    const secondClose = jest.fn();
+    const writerHeader = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      slotCount: 2,
+      pixelFormat: 1,
+    };
+    const createWriter = jest
+      .fn()
+      .mockReturnValueOnce({
+        name: "/test-shm",
+        size: 16588928,
+        header: writerHeader,
+        writeFrame: jest.fn(),
+        close: firstClose,
+      })
+      .mockReturnValueOnce({
+        name: "/test-shm",
+        size: 16588928,
+        header: writerHeader,
+        writeFrame: jest.fn(),
+        close: secondClose,
+      });
+    mockLoadFrameBusModule.mockReturnValue({ createWriter });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...baseConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(1),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...baseConfig,
+          framebusReattach: true,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(createWriter).toHaveBeenCalledTimes(2);
+    expect(firstClose).toHaveBeenCalledTimes(1);
+    expect(secondClose).not.toHaveBeenCalled();
+    expect(mockPinoInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ frameBusName: "/test-shm" }),
+      "[GraphicsRenderer] FrameBus writer dropped for reattach"
     );
   });
 
@@ -3509,5 +3657,130 @@ describe("electron-renderer-entry", () => {
         "[GraphicsRenderer] Source frame buffer length mismatch (single)"
       );
     }
+  });
+
+  it("recreates the FrameBus writer when a reconfigure targets a same-geometry bus with a different name", async () => {
+    // Before-red proof for the meeting dual-renderer bus-name race: with the
+    // old geometry-only compare, the second configure (identical geometry,
+    // different bus name) silently reused the writer on the OLD bus, so
+    // createWriter was called once, nothing was closed, and the ready ack
+    // carried the stale name (client gate drop -> 15s config-ready timeout).
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    const closeMock = jest.fn();
+    const createWriterMock = jest
+      .fn()
+      .mockImplementation((opts: { name: string }) => ({
+        // Native writers report the POSIX form of the requested name.
+        name: `/${opts.name}`,
+        size: 0,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 3,
+          pixelFormat: 1,
+        },
+        writeFrame: jest.fn(),
+        close: closeMock,
+      }));
+    mockLoadFrameBusModule.mockReturnValue({ createWriter: createWriterMock });
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    const baseConfig = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusSlotCount: 3,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    const backConfig = {
+      ...baseConfig,
+      configId: "cfg-back",
+      framebusName: "bfy-meet-gfx-back",
+    };
+    const frontConfig = {
+      ...baseConfig,
+      configId: "cfg-front",
+      framebusName: "bfy-meet-gfx-front",
+    };
+    mockSafeParse
+      .mockReturnValueOnce({ success: true, data: backConfig })
+      .mockReturnValueOnce({ success: true, data: frontConfig });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...backConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "renderer_configure",
+          token: "test-token",
+          ...frontConfig,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    const readyHandler = mockApp.on.mock.calls.find(
+      ([event]) => event === "ready"
+    )?.[1] as (() => void) | undefined;
+    readyHandler?.();
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // The name mismatch must recreate the writer for the NEW bus and close
+    // the old one — never silently keep writing to the old bus.
+    expect(createWriterMock).toHaveBeenCalledTimes(2);
+    expect(createWriterMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ name: "bfy-meet-gfx-back" })
+    );
+    expect(createWriterMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ name: "bfy-meet-gfx-front" })
+    );
+    expect(closeMock).toHaveBeenCalledTimes(1);
+
+    // The ready ack for the second configure must carry the NEW bus name
+    // (the client's ready gate compares it against the configured name).
+    const readyAcks = mockEncodeIpcPacket.mock.calls
+      .map(
+        (call) =>
+          call[0] as { type?: string; framebusName?: string; configId?: string }
+      )
+      .filter((header) => header.type === "ready");
+    expect(readyAcks.length).toBeGreaterThanOrEqual(2);
+    const lastReady = readyAcks[readyAcks.length - 1];
+    expect(lastReady.configId).toBe("cfg-front");
+    expect(lastReady.framebusName).toBe("/bfy-meet-gfx-front");
   });
 });

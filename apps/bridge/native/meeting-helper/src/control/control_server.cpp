@@ -3,10 +3,12 @@
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
 #include "recorder/meeting_recorder.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -259,6 +261,7 @@ std::string handleRpc(const std::string &line,
     // response has been sent and the bridge may already be killing us. stop()
     // is a no-op when nothing is recording.
     recorder.stop();
+    noteHelperExitReason("control_shutdown");
     running.store(false);
     return okResponse(id, "{\"ok\":true}");
   }
@@ -525,7 +528,8 @@ std::string handleRpc(const std::string &line,
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
            << "\",\"quality_mode\":\"" << jsonEscape(state.activeQualityMode)
            << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
-           << "\",\"provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"")
+           << "\",\"active_performance_mode\":" << (state.activePerformanceMode.empty() ? "null" : "\"" + jsonEscape(state.activePerformanceMode) + "\"")
+           << ",\"provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"")
            << ",\"inference_ms\":" << (state.inferenceMs >= 0.0 ? std::to_string(state.inferenceMs) : "null")
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
@@ -804,7 +808,14 @@ void runControlServer(const std::string &socketPath,
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
         const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
-        (void)write(client, response.c_str(), response.size());
+        if (write(client, response.c_str(), response.size()) < 0) {
+          // The bridge destroyed its socket first (RPC timeout). Before
+          // SIGPIPE was ignored this write ended the whole process silently;
+          // now it is a visible, non-fatal incident.
+          emitHelperEvent(
+              "{\"type\":\"control_write_failed\",\"errno\":" +
+              std::to_string(errno) + "}");
+        }
         break;
       }
     }

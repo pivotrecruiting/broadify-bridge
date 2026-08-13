@@ -5,6 +5,7 @@
 #include "keyer/modnet_keyer.h"
 #include "state/meeting_state.h"
 
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <memory>
@@ -18,7 +19,15 @@ class KeyerChain {
   KeyerResult process(const VideoFrame &input, const MeetingState &state);
   KeyerStatus status() const;
 
+  // Windows async-lite: while the auto-degradation governor parks the keyer
+  // in the lite tier, pin the fast profile so reused masks stay as young as
+  // possible. The BROADIFY_MEETING_KEYER_PERFORMANCE env pin still wins.
+  void setGovernorPerformanceFloor(bool active) {
+    governorPerformanceFloor_.store(active, std::memory_order_relaxed);
+  }
+
  private:
+  std::atomic<bool> governorPerformanceFloor_{false};
   mutable std::mutex mutex_;
   ModnetKeyerOptions options_;
   std::unique_ptr<Keyer> modnet_;

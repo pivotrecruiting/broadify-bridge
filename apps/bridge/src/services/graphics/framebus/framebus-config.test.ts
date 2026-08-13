@@ -104,6 +104,57 @@ describe("framebus-config", () => {
       expect(config.pixelFormat).toBe(1);
     });
 
+    it("explicit name override wins over env, previous, and generation", () => {
+      // The env var is process-global state mutated around awaits; the
+      // override is how the dual meeting managers pin their fixed bus name.
+      process.env.BRIDGE_FRAMEBUS_NAME = "bfy-meet-gfx-back";
+      const previous: FrameBusConfigT = {
+        name: "previous-bus",
+        slotCount: 2,
+        pixelFormat: 1,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        frameSize: 0,
+        slotStride: 0,
+        headerSize: 128,
+        size: 0,
+      };
+      const config = buildFrameBusConfig(createOutputConfig(), previous, {
+        name: "bfy-meet-gfx-front",
+      });
+      expect(config.name).toBe("bfy-meet-gfx-front");
+    });
+
+    it("explicit slotCount override wins over env", () => {
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "2";
+      const config = buildFrameBusConfig(createOutputConfig(), null, {
+        slotCount: 3,
+      });
+      expect(config.slotCount).toBe(3);
+    });
+
+    it("invalid override values fall back to the env path", () => {
+      process.env.BRIDGE_FRAMEBUS_NAME = "env-bus";
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+      const config = buildFrameBusConfig(createOutputConfig(), null, {
+        name: "   ",
+        slotCount: 1,
+      });
+      expect(config.name).toBe("env-bus");
+      expect(config.slotCount).toBe(4);
+    });
+
+    it("without overrides the env path stays bit-identical (Studio)", () => {
+      process.env.BRIDGE_FRAMEBUS_NAME = "studio-bus";
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+      const withUndefined = buildFrameBusConfig(createOutputConfig(), null, undefined);
+      const withoutParam = buildFrameBusConfig(createOutputConfig(), null);
+      expect(withUndefined).toEqual(withoutParam);
+      expect(withUndefined.name).toBe("studio-bus");
+      expect(withUndefined.slotCount).toBe(4);
+    });
+
     it("uses previous slotCount when env invalid", () => {
       const previous: FrameBusConfigT = {
         name: "prev",

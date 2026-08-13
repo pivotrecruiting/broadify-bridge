@@ -36,6 +36,7 @@ import {
   detectNetworkInterfaces,
   resolveBindAddress,
 } from "./services/network-interface-detector.js";
+import { triggerLocalNetworkPermissionPrompt } from "./services/local-network-prompt.js";
 import type {
   BridgeConfig,
   BridgeStatus,
@@ -572,6 +573,7 @@ if (!isRendererProcess) {
       const preloadPath = getPreloadPath();
       const uiPath = getUIPath();
       logDesktopStartupDiagnostics({ preloadPath, uiPath });
+      triggerLocalNetworkPermissionPrompt();
 
       mainWindow = new BrowserWindow({
         webPreferences: {

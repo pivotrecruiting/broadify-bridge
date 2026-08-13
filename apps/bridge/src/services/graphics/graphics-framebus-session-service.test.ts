@@ -62,9 +62,23 @@ describe("graphics-framebus-session-service", () => {
       const result = resolveFrameBusConfig(baseOutputConfig, null);
 
       expect(result).toEqual(custom);
+      // Third arg: optional per-manager overrides (undefined = env path).
       expect(mockBuildFrameBusConfig).toHaveBeenCalledWith(
         baseOutputConfig,
-        null
+        null,
+        undefined
+      );
+    });
+
+    it("threads explicit FrameBus overrides through to buildFrameBusConfig", () => {
+      const overrides = { name: "bfy-meet-gfx-front", slotCount: 3 };
+
+      resolveFrameBusConfig(baseOutputConfig, null, overrides);
+
+      expect(mockBuildFrameBusConfig).toHaveBeenCalledWith(
+        baseOutputConfig,
+        null,
+        overrides
       );
     });
 

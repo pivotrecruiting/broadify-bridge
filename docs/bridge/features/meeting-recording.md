@@ -36,7 +36,30 @@ last_error }` (snake_case, as produced by the helper).
 `meeting_recording_pick_path` opens the native macOS save panel on the bridge
 machine via osascript (`meeting-recording-dialog.ts`); the file is written
 locally by the helper, so the location cannot be chosen in the browser. On
-non-macOS platforms it returns `null` and the command reports `cancelled`.
+non-macOS platforms (no native save panel wired up) it falls back to
+`buildDefaultRecordingPath()` — a timestamped file in the user's standard
+Videos/Movies folder — instead of returning `null`, which the webapp would
+treat as a user cancel and silently never start.
+
+## File lifecycle (macOS)
+
+The writer targets `<final>.mp4.part` and the sidecar is renamed to the final
+path only after `finishWriting` reports Completed (REC-03) — a crash or
+finalize failure never leaves a half-written file under the chosen name. The
+writer is built by `recorder_writer_factory.mm` (shared with
+`meeting_recorder_writer_test` so ctest exercises the exact shipped
+configuration). Periodic movie fragments (`movieFragmentInterval`, added Jul
+2026 for crash safety) were removed in Aug 2026: every real recording longer
+than ~8 s died at a fragment commit while the same configuration survives
+isolated stress runs — the pre-fragment configuration has hours of successful
+field recordings. Recorder incidents (`writer_failed`, `finish_failed`,
+`finalize_timeout`, `rename_failed`, `completed`) are emitted as
+`{"type":"meeting_recorder",...}` events through the helper event log
+(`util/helper_event_log`): stdout plus the `--event-log` sidecar file
+(`meeting-helper-events.log` in the bridge user-data dir). The sidecar matters
+on macOS, where the `open`-based launch swallows helper stdio; the bridge
+forwards stdout lines when it can (`meeting-helper-manager.ts`) and dumps the
+sidecar tail into its process log whenever the helper dies unexpectedly.
 
 ## WebApp
 
@@ -47,8 +70,8 @@ live in `lib/bridge-command-timeouts.ts` (pick_path 135 s for the user-facing
 dialog, start 40 s) and must stay above the bridge policy timeouts (130 s /
 35 s).
 
-## Not adopted
+## Stream Deck
 
-The prototype's `meeting_recording_toggle` (one-key start/stop with a fixed
-`~/Videos/Broadify Recordings/` target) belongs to the Stream Deck feature and
-is intentionally not ported.
+`meeting_recording_toggle` (one-key start/stop with a default recording path,
+no save dialog) exists for the Stream Deck REC key and shares the same helper
+recorder.

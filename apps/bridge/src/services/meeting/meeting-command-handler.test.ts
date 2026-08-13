@@ -1,11 +1,14 @@
 const mockGetClient = jest.fn();
 const mockIsRunning = jest.fn();
+const mockGetStatus = jest.fn();
 const mockStart = jest.fn();
 const mockStop = jest.fn();
 const mockGetFullStatus = jest.fn();
 const mockNotifyRecordingChanged = jest.fn();
 const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
 const mockMeetingFrontGraphicsConfigureOutputs = jest.fn();
+const mockMeetingBackGraphicsInvalidate = jest.fn();
+const mockMeetingFrontGraphicsInvalidate = jest.fn();
 const mockFrameBusWriteFrame = jest.fn();
 const mockFrameBusClose = jest.fn();
 const mockFrameBusCreateWriter = jest.fn(() => ({
@@ -20,6 +23,7 @@ jest.mock("./meeting-helper-manager.js", () => ({
   meetingHelperManager: {
     getClient: (...args: unknown[]) => mockGetClient(...args),
     isRunning: (...args: unknown[]) => mockIsRunning(...args),
+    getStatus: (...args: unknown[]) => mockGetStatus(...args),
     start: (...args: unknown[]) => mockStart(...args),
     stop: (...args: unknown[]) => mockStop(...args),
     getFullStatus: (...args: unknown[]) => mockGetFullStatus(...args),
@@ -37,10 +41,14 @@ jest.mock("./meeting-graphics-manager.js", () => ({
   meetingBackGraphicsManager: {
     configureOutputs: (...args: unknown[]) =>
       mockMeetingBackGraphicsConfigureOutputs(...args),
+    invalidateRendererFrameBusAttachment: (...args: unknown[]) =>
+      mockMeetingBackGraphicsInvalidate(...args),
   },
   meetingFrontGraphicsManager: {
     configureOutputs: (...args: unknown[]) =>
       mockMeetingFrontGraphicsConfigureOutputs(...args),
+    invalidateRendererFrameBusAttachment: (...args: unknown[]) =>
+      mockMeetingFrontGraphicsInvalidate(...args),
   },
 }));
 
@@ -120,6 +128,7 @@ describe("meeting-command-handler", () => {
 
   describe("meeting_engine_start", () => {
     it("starts the engine and returns status", async () => {
+      mockIsRunning.mockReturnValue(false);
       mockStart.mockResolvedValue({ state: "running", port: 9100 });
 
       const result = await handleMeetingCommand("meeting_engine_start", {
@@ -129,9 +138,32 @@ describe("meeting-command-handler", () => {
 
       expect(mockStart).toHaveBeenCalledWith({ width: 1280, height: 720 });
       expect(result.success).toBe(true);
+      // The bus regions were force-recreated for this start: already-running
+      // renderers must be told to drop their (now orphaned) writers, or every
+      // graphics frame they write stays invisible to the fresh helper.
+      expect(mockMeetingBackGraphicsInvalidate).toHaveBeenCalledTimes(1);
+      expect(mockMeetingFrontGraphicsInvalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it("is idempotent while running: no FrameBus clear, no renderer invalidate", async () => {
+      // isRunning=true from the global beforeEach; pin it for clarity.
+      mockIsRunning.mockReturnValue(true);
+      mockGetStatus.mockReturnValue({ state: "running" });
+
+      const result = await handleMeetingCommand("meeting_engine_start", {});
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ state: "running" });
+      expect(mockStart).not.toHaveBeenCalled();
+      // A second client's autostart must never force-recreate the graphics
+      // regions under the live helper.
+      expect(mockFrameBusCreateWriter).not.toHaveBeenCalled();
+      expect(mockMeetingBackGraphicsInvalidate).not.toHaveBeenCalled();
+      expect(mockMeetingFrontGraphicsInvalidate).not.toHaveBeenCalled();
     });
 
     it("fails when the engine does not reach running state", async () => {
+      mockIsRunning.mockReturnValue(false);
       mockStart.mockResolvedValue({
         state: "error",
         lastError: "spawn failed",

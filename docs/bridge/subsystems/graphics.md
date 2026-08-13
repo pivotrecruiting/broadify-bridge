@@ -99,6 +99,23 @@ geschriebenen Frame mit **unverändertem** Timestamp – die Sequenz läuft
 weiter (Reader bleiben attached), Konsumenten erkennen neue Frames aber per
 Timestamp und rendern nichts erneut.
 
+### Writer-Reattach nach Bus-Neuanlage (Meeting-Engine-Start)
+`meeting_engine_start` legt die Meeting-Grafik-Regionen (`bfy-meet-gfx-back`/
+`-front`) per `forceRecreate` neu an. Ein bereits laufender Renderer hält dann
+ein Mapping auf die alte (unlinkte) Region – Name und Geometrie stimmen
+weiterhin, jeder Frame wäre für Leser der neuen Region unsichtbar. Deshalb:
+`meeting-command-handler` ruft nach dem Clear
+`invalidateRendererFrameBusAttachment()` auf beiden Meeting-Managern; das
+nächste `renderer_configure` trägt `framebusReattach: true`, worauf der
+Renderer-Entry seinen Writer schließt, per Name neu attached und die
+bestehenden Layer neu in die frische Region zeichnet
+(`scheduleCapturedWindowFrames("framebus_reattach")`). Läuft die Engine
+bereits, ist `meeting_engine_start` idempotent (kein Clear, kein Invalidate) –
+der Autostart eines zweiten Webapp-Clients darf die Regionen nicht unter dem
+lebenden Helper neu anlegen. POSIX-Regionen werden beim Writer-`close()`
+bewusst NICHT unlinkt (Leser bleiben attached; Recycling ausschließlich über
+den forceRecreate-Clear).
+
 ## Output‑Adapter
 - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`

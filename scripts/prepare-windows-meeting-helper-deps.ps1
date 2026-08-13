@@ -1,8 +1,10 @@
 param(
-  # The Microsoft.ML.OnnxRuntime.DirectML NuGet series ends at 1.24.4; newer
-  # ONNX Runtime releases ship no DirectML build. macOS intentionally diverges
-  # at 1.26.0 (see meeting-helper README, "Version divergence").
-  [string]$OnnxRuntimeVersion = "1.24.4",
+  # Must match the vendored deps/onnxruntime VERSION_NUMBER (1.26.0). NOTE:
+  # NuGet's Microsoft.ML.OnnxRuntime.DirectML currently tops out at 1.24.4 —
+  # the vendored 1.26.0 tree did not come from NuGet, so a fresh download of
+  # the default version is expected to fail. The vendored tree in git is the
+  # source of truth; this script short-circuits when it is already present.
+  [string]$OnnxRuntimeVersion = "1.26.0",
   [string]$DirectMLVersion = "1.15.4",
   [string]$Destination
 )
@@ -12,6 +14,42 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Destination)) {
   $Destination = Join-Path $repoRoot "apps\bridge\native\meeting-helper\deps\onnxruntime\windows-x64"
+}
+
+# Short-circuit: the deps are vendored in git since v0.23. Re-downloading on
+# every CI run is wasteful and breaks outright when the requested version is
+# not on NuGet (BlobNotFound for 1.26.0). Skip when the vendored tree already
+# matches the requested version and is complete.
+$vendoredVersionFile = Join-Path $Destination "VERSION_NUMBER"
+if (Test-Path -LiteralPath $vendoredVersionFile -PathType Leaf) {
+  $vendoredVersion = (Get-Content -LiteralPath $vendoredVersionFile -Raw).Trim()
+  # NOTE: include\DirectML.h is deliberately NOT in this list - the vendored
+  # git tree never carried it and the helper build does not need it (the DML
+  # EP is reached via dml_provider_factory.h + DirectML.dll). The download
+  # path below still provisions it for completeness.
+  $vendoredRequiredFiles = @(
+    (Join-Path $Destination "include\onnxruntime_cxx_api.h"),
+    (Join-Path $Destination "lib\onnxruntime.lib"),
+    (Join-Path $Destination "lib\onnxruntime.dll"),
+    (Join-Path $Destination "lib\onnxruntime_providers_shared.dll"),
+    (Join-Path $Destination "lib\DirectML.dll")
+  )
+  $missingVendoredFiles = @($vendoredRequiredFiles | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+  if ($vendoredVersion -eq $OnnxRuntimeVersion) {
+    if ($missingVendoredFiles.Count -eq 0) {
+      Write-Host "ONNX Runtime $OnnxRuntimeVersion already vendored at $Destination - skipping download."
+      exit 0
+    }
+    # Version matches but files are gone: NuGet cannot repair this - the
+    # vendored version is not published there, so the download below would
+    # die with a misleading BlobNotFound. Fail fast with the real problem.
+    throw ("vendored ONNX Runtime tree at $Destination is incomplete (missing: " +
+      ($missingVendoredFiles -join ", ") +
+      "); restore it from git - version $OnnxRuntimeVersion is not available on NuGet.")
+  }
+  # Version mismatch: a genuinely different version may exist on NuGet, so
+  # keep the re-provisioning fall-through.
+  Write-Host "Vendored ONNX Runtime '$vendoredVersion' != '$OnnxRuntimeVersion' - re-provisioning from NuGet."
 }
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("broadify-onnxruntime-" + [guid]::NewGuid().ToString("N"))

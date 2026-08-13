@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -44,6 +44,8 @@ const HELPER_RESTART_HEALTHY_UPTIME_MS = 60_000;
 const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_AUTO_DEGRADE",
   "BROADIFY_MEETING_COREML_UNITS",
+  "BROADIFY_MEETING_EMPTY_SUBJECT",
+  "BROADIFY_MEETING_FUSED_POSTPROCESS",
   "BROADIFY_MEETING_GPU_COMPOSITOR",
   "BROADIFY_MEETING_GPU_COMPOSITOR_D3D11",
   "BROADIFY_MEETING_GPU_EMA",
@@ -61,7 +63,9 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_KEYER_DML_LEGACY",
   "BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS",
   "BROADIFY_MEETING_KEYER_OPENVINO",
+  "BROADIFY_MEETING_KEYER_PERFORMANCE",
   "BROADIFY_MEETING_OPENVINO_DEVICE",
+  "BROADIFY_MEETING_WARM_HANDOVER",
 ] as const;
 const MEETING_HELPER_ENV_VALUE_PATTERN = /^[A-Za-z0-9._+-]{1,64}$/;
 
@@ -503,6 +507,32 @@ async function waitForHelperPing(
   return false;
 }
 
+/**
+ * Sidecar file the helper mirrors its JSON events into. On macOS the helper
+ * is launched through /usr/bin/open, which swallows stdio - this file is the
+ * only surviving channel, and its tail is dumped into the bridge log when the
+ * helper dies (see handleProcessExit).
+ */
+function resolveHelperEventLogPath(): string {
+  try {
+    return join(getBridgeContext().userDataDir, "meeting-helper-events.log");
+  } catch {
+    return join(tmpdir(), "broadify-meeting-helper-events.log");
+  }
+}
+
+function readHelperEventLogTail(maxBytes = 4096): string | null {
+  try {
+    const path = resolveHelperEventLogPath();
+    const content = readFileSync(path, "utf8");
+    const tail = content.length > maxBytes ? content.slice(-maxBytes) : content;
+    const trimmed = tail.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
 function resolveControlSocketPath(): string {
   const envPath = process.env[CONTROL_SOCKET_ENV];
   if (envPath) {
@@ -822,6 +852,8 @@ export class MeetingHelperManager {
         String(fps),
         "--models-dir",
         modelsDir,
+        "--event-log",
+        resolveHelperEventLogPath(),
         ...resolveMeetingHelperForwardedEnvArgs(),
       ];
 
@@ -835,6 +867,7 @@ export class MeetingHelperManager {
         MEETING_FRAME_HEIGHT: String(height),
         MEETING_FRAME_FPS: String(fps),
         MEETING_MODELS_DIR: modelsDir,
+        MEETING_EVENT_LOG: resolveHelperEventLogPath(),
         MEETING_VCAM_NATIVE_AVAILABLE: isVcamExtensionAvailable() ? "1" : "0",
       };
 
@@ -971,6 +1004,9 @@ export class MeetingHelperManager {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "meeting_keyer_pipeline") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (parsed.type === "meeting_recorder") {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "ready") {
@@ -1171,6 +1207,14 @@ export class MeetingHelperManager {
       // The recorder died with the helper; publishStatus derives the deck's
       // REC mirror from the (now empty) snapshot and resets it.
       void this.publishStatus("engine_exited", true);
+    }
+    if (crashed) {
+      // The exit code above comes from the `open` wrapper on macOS and is
+      // meaningless; the helper's own event log names what actually happened.
+      const eventTail = readHelperEventLogTail();
+      getLogger().warn(
+        `[Meeting] Helper event log tail: ${eventTail ?? "(no events recorded - hard kill or crash before any event)"}`,
+      );
     }
     if (crashed) {
       // Uptime above the threshold means the previous restarts worked out;

@@ -31,7 +31,7 @@ export function BridgeControlButton({
             onClick={onStart}
             disabled={disabled || isStarting}
           >
-            {isStarting ? "Starting..." : "Launch GUI"}
+            {isStarting ? "Starting..." : "Start"}
           </Button>
         ) : (
           <Button

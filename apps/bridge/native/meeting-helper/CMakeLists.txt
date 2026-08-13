@@ -79,11 +79,15 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
   src/pipeline/keyer_cadence.cpp
+  src/pipeline/mask_retention.cpp
+  src/pipeline/subject_presence.cpp
+  src/pipeline/tier_handover.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
   src/preview/raw_frame_server.cpp
   src/util/sha256.cpp
   src/util/json_utils.cpp
+  src/util/helper_event_log.cpp
 )
 
 if(APPLE)
@@ -96,6 +100,7 @@ if(APPLE)
     src/keyer/coreml_keyer.mm
     src/keyer/gpu_mask_refine.mm
     src/recorder/meeting_recorder.mm
+    src/recorder/recorder_writer_factory.mm
     src/macos/macos_app.mm
   )
   set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
@@ -105,6 +110,9 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/recorder/meeting_recorder.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/recorder/recorder_writer_factory.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
@@ -261,6 +269,18 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/keyer_cadence_test.cpp
     src/pipeline/keyer_cadence.cpp
   )
+  add_executable(mask_retention_test
+    tests/mask_retention_test.cpp
+    src/pipeline/mask_retention.cpp
+  )
+  add_executable(subject_presence_test
+    tests/subject_presence_test.cpp
+    src/pipeline/subject_presence.cpp
+  )
+  add_executable(tier_handover_test
+    tests/tier_handover_test.cpp
+    src/pipeline/tier_handover.cpp
+  )
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -280,6 +300,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     framebus_reader_log_gate_test
     keyer_governor_test
     keyer_cadence_test
+    mask_retention_test
+    subject_presence_test
+    tier_handover_test
     matting_backend_test
   )
     target_include_directories(${helper_test} PRIVATE src)
@@ -288,4 +311,25 @@ if(MEETING_HELPER_BUILD_TESTS)
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
   endforeach()
+
+  if(APPLE)
+    # Exercises the production AVAssetWriter configuration across fragment
+    # boundaries with accelerated media timestamps; needs no camera or
+    # microphone access, so it runs headless under ctest.
+    add_executable(meeting_recorder_writer_test
+      tests/meeting_recorder_writer_test.mm
+      src/recorder/recorder_writer_factory.mm
+    )
+    set_source_files_properties(tests/meeting_recorder_writer_test.mm PROPERTIES
+      COMPILE_FLAGS "-fobjc-arc"
+    )
+    target_include_directories(meeting_recorder_writer_test PRIVATE src)
+    target_link_libraries(meeting_recorder_writer_test PRIVATE
+      "-framework AVFoundation"
+      "-framework CoreMedia"
+      "-framework CoreVideo"
+      "-framework Foundation"
+    )
+    add_test(NAME meeting_recorder_writer_test COMMAND meeting_recorder_writer_test)
+  endif()
 endif()

@@ -62,6 +62,15 @@ class FallbackMattingKeyer final : public MattingKeyer {
     return primary_ ? primary_->status() : fallback_->status();
   }
 
+  bool warmupForPerformanceMode(const std::string &performanceMode) override {
+    // Forward to the currently active backend. primary_ is only ever reset
+    // inside apply(), which never runs concurrently with a warmup (the fused
+    // instance is idle while the async worker owns the path), so this read
+    // is safe from the warmup thread.
+    return primary_ ? primary_->warmupForPerformanceMode(performanceMode)
+                    : fallback_->warmupForPerformanceMode(performanceMode);
+  }
+
  private:
   static constexpr int kMaxConsecutiveInferenceFailures = 3;
   std::unique_ptr<MattingKeyer> primary_;

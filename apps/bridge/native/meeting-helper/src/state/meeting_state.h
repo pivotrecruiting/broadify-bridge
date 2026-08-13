@@ -120,6 +120,12 @@ struct MeetingState {
   // reported (macOS, fused path inactive, legacy failure fallback); the
   // bridge reads it as "keyer_pipeline_mode" from keyer.get.
   std::string keyerPipelineMode;
+  // Effective performance mode actually driving the keyer right now: the
+  // governor's active tier on the Windows fused path (also the async-lite
+  // floor), or the webapp-selected mode when auto-degradation is off. Empty =
+  // not reported (macOS, keyer disabled); serialized additively as
+  // "active_performance_mode" next to the requested "performance_mode".
+  std::string activePerformanceMode;
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
   bool staleMaskActive = false;
