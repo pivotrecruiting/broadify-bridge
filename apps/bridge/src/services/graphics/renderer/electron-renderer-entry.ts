@@ -1285,8 +1285,24 @@ function scheduleCapturedWindowFrames(reason: string): void {
 function registerAssetProtocol(): void {
   protocol.registerFileProtocol("asset", (request, callback) => {
     try {
-      const assetId = request.url.replace("asset://", "");
-      const asset = assetMap.get(assetId);
+      // asset:// is registered as a standard scheme, so Chromium canonicalizes
+      // "asset://img-x" to "asset://img-x/" (host + root path) and lowercases
+      // the host — plain scheme stripping misses the map for every real
+      // request. Strip the trailing slash and fall back to a case-insensitive
+      // match for ids that contain uppercase characters.
+      const assetId = decodeURIComponent(
+        request.url.replace(/^asset:\/\//i, "").replace(/\/+$/, "")
+      );
+      let asset = assetMap.get(assetId);
+      if (!asset) {
+        const lowerAssetId = assetId.toLowerCase();
+        for (const [key, value] of assetMap) {
+          if (key.toLowerCase() === lowerAssetId) {
+            asset = value;
+            break;
+          }
+        }
+      }
       if (!asset) {
         callback({ error: -6 });
         return;
