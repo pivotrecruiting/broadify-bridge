@@ -1996,6 +1996,23 @@ describe("electron-renderer-entry", () => {
       path: "/path/1.png",
       mimeType: "image/png",
     });
+
+    // Real Chromium requests arrive CANONICALIZED: asset:// is a standard
+    // scheme, so the id becomes a host with a trailing root path ("/") and is
+    // lowercased. Both forms must resolve to the same asset.
+    const canonicalCb = jest.fn();
+    assetHandler({ url: "asset://asset-1/" }, canonicalCb);
+    expect(canonicalCb).toHaveBeenCalledWith({
+      path: "/path/1.png",
+      mimeType: "image/png",
+    });
+
+    const lowercasedCb = jest.fn();
+    assetHandler({ url: "asset://ASSET-1/" }, lowercasedCb);
+    expect(lowercasedCb).toHaveBeenCalledWith({
+      path: "/path/1.png",
+      mimeType: "image/png",
+    });
   });
 
   it("create_layer creates window and calls executeJavaScript with __createLayer and invalidate", async () => {
