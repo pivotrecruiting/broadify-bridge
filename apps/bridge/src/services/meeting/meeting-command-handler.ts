@@ -35,6 +35,7 @@ import {
   parseInjectReading,
 } from "../conference/director/conference-director-service.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
+import { mapVcamStartError } from "./vcam-error-mapper.js";
 import {
   executeMeetingCallControl,
   MeetingCallControlError,
@@ -803,15 +804,19 @@ export async function handleMeetingCommand(
         };
       }
       if (action === "start") {
-        return { success: true, data: await client.virtualCameraStart() };
+        // The only meeting RPC that previously bypassed runMeetingRpc: raw
+        // COM HRESULT strings reached the UI as unhandled command errors.
+        const result = await runMeetingRpc(() => client.virtualCameraStart());
+        if (!result.success && result.error) {
+          const mapped = mapVcamStartError(result.error);
+          return { ...result, error: mapped.error, errorCode: mapped.errorCode };
+        }
+        return result;
       }
       if (action === "stop") {
-        return { success: true, data: await client.virtualCameraStop() };
+        return runMeetingRpc(() => client.virtualCameraStop());
       }
-      return {
-        success: true,
-        data: await client.virtualCameraConfigure(settings ?? {}),
-      };
+      return runMeetingRpc(() => client.virtualCameraConfigure(settings ?? {}));
     }
 
     case "meeting_graphics_configure_outputs": {
