@@ -599,6 +599,13 @@ if (!isRendererProcess) {
       appUpdaterService.initialize((status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           ipcWebContentsSend("updaterStatus", mainWindow.webContents, status);
+      // Installing an update needs a NORMAL quit (Squirrel/NSIS drive it).
+      // Tear children down first, then release the quit guard so the
+      // close/before-quit handlers stand down for the installer.
+      appUpdaterService.setInstallPreparationHook(async () => {
+        await runAppShutdownCleanup();
+        appShutdownCompleted = true;
+      });
         }
       });
 
