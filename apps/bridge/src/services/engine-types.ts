@@ -57,6 +57,7 @@ export type MacroExecutionT = {
 export type EngineStateT = {
   status: EngineStatusT;
   type?: "atem" | "tricaster" | "vmix";
+  transport?: "network" | "usb";
   ip?: string;
   port?: number;
   macros: MacroT[];
