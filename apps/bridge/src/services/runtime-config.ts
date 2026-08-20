@@ -11,8 +11,9 @@ export interface RuntimeConfig {
   };
   engine?: {
     type: "atem" | "tricaster" | "vmix";
-    ip: string;
-    port: number;
+    transport?: "network" | "usb";
+    ip?: string;
+    port?: number;
   };
 }
 

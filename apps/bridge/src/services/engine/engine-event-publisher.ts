@@ -23,6 +23,7 @@ export function publishEngineStatusEvent(
       reason,
       status: state.status,
       type: state.type,
+      transport: state.transport ?? null,
       ip: state.ip,
       port: state.port,
       macros: state.macros,

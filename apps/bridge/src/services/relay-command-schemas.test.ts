@@ -116,6 +116,39 @@ describe("relay-command-schemas", () => {
       });
       expect(result.success).toBe(false);
     });
+
+    it("accepts usb transport for atem without ip/port", () => {
+      const result = EngineConnectSchema.safeParse({
+        type: "atem",
+        transport: "usb",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects usb transport for non-atem types", () => {
+      const result = EngineConnectSchema.safeParse({
+        type: "tricaster",
+        transport: "usb",
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects network transport without ip/port", () => {
+      const result = EngineConnectSchema.safeParse({
+        type: "atem",
+        transport: "network",
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("still rejects unknown keys (strict)", () => {
+      const result = EngineConnectSchema.safeParse({
+        type: "atem",
+        transport: "usb",
+        bogus: true,
+      });
+      expect(result.success).toBe(false);
+    });
   });
 
   describe("MacroIdSchema", () => {

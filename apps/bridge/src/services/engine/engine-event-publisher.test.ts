@@ -58,6 +58,7 @@ describe("engine-event-publisher", () => {
         reason: "macro_execution_changed",
         status: "connected",
         type: "atem",
+        transport: null,
         ip: "10.0.0.10",
         port: 9910,
         macros: state.macros,
