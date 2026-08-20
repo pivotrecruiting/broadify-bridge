@@ -9,6 +9,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# The ATEM COM runtime is 64-bit only; a 32-bit build silently fails at
+# CoCreateInstance (looks like "ATEM software not installed"). Fail fast.
+if ($env:VSCMD_ARG_TGT_ARCH -and $env:VSCMD_ARG_TGT_ARCH -ne "x64") {
+  throw "This helper must be built for x64 (current target: $($env:VSCMD_ARG_TGT_ARCH)). Use the 'x64 Native Tools' prompt or Launch-VsDevShell -Arch amd64."
+}
+if (-not $env:VSCMD_ARG_TGT_ARCH) {
+  Write-Warning "VSCMD_ARG_TGT_ARCH is not set - make sure this shell targets x64."
+}
+
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $rootDir "build-win"
 $outputExe = Join-Path $rootDir "atem-usb-helper.exe"
