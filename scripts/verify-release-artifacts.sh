@@ -159,7 +159,7 @@ NODE
 if [[ "$UNAME_S" == "Darwin" ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/display-helper")
   REQUIRED_FILES+=("apps/bridge/native/decklink-helper/decklink-helper")
-  if [[ "${SKIP_ATEM_USB_HELPER_BUILD:-}" != "1" ]]; then
+  if [[ "${SKIP_ATEM_USB_HELPER_BUILD:-}" != "1" || "${SKIP_ATEM_USB_HELPER_DOWNLOAD:-}" != "1" ]]; then
     REQUIRED_FILES+=("apps/bridge/native/atem-usb-helper/atem-usb-helper")
     EXECUTABLE_FILES+=("apps/bridge/native/atem-usb-helper/atem-usb-helper")
   fi
@@ -181,7 +181,7 @@ if [[ "$UNAME_S" == "Darwin" ]]; then
   fi
 elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
-  if [[ "${SKIP_ATEM_USB_HELPER_BUILD:-}" != "1" ]]; then
+  if [[ "${SKIP_ATEM_USB_HELPER_BUILD:-}" != "1" || "${SKIP_ATEM_USB_HELPER_DOWNLOAD:-}" != "1" ]]; then
     REQUIRED_FILES+=("apps/bridge/native/atem-usb-helper/atem-usb-helper.exe")
   fi
   REQUIRED_FILES+=("apps/bridge/native/display-helper/SDL2.dll")

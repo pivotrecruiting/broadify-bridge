@@ -9,6 +9,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($env:SKIP_ATEM_USB_HELPER_BUILD -eq "1") {
+  Write-Host "Skipping ATEM USB helper build (SKIP_ATEM_USB_HELPER_BUILD=1)."
+  exit 0
+}
+
 # The ATEM COM runtime is 64-bit only; a 32-bit build silently fails at
 # CoCreateInstance (looks like "ATEM software not installed"). Fail fast.
 if ($env:VSCMD_ARG_TGT_ARCH -and $env:VSCMD_ARG_TGT_ARCH -ne "x64") {

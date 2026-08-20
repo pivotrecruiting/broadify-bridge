@@ -81,3 +81,6 @@ xcuserdata/
 apps/bridge/native/atem-usb-helper/atem-usb-helper
 apps/bridge/native/atem-usb-helper/atem-usb-helper.exe
 apps/bridge/native/atem-usb-helper/build-win/
+
+# DeckLink helper binary (built via build.sh or downloaded as release asset)
+apps/bridge/native/decklink-helper/decklink-helper
