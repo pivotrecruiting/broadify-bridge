@@ -80,3 +80,4 @@ xcuserdata/
 # Native ATEM USB helper binary (built via build.sh)
 apps/bridge/native/atem-usb-helper/atem-usb-helper
 apps/bridge/native/atem-usb-helper/atem-usb-helper.exe
+apps/bridge/native/atem-usb-helper/build-win/

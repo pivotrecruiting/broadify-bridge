@@ -37,12 +37,26 @@ Stable error identifiers: `atem_software_not_installed`,
 `no_usb_switcher_found`, `incompatible_firmware`, `corrupt_data`,
 `state_sync_failed`, `state_sync_timed_out`.
 
-## Build (macOS)
+## Build
+
+macOS:
 
 ```bash
 ./build.sh                       # uses the installed ATEM Developer SDK
 ATEM_SDK_ROOT=/path/to/SDK ./build.sh
 ```
+
+Windows (Developer PowerShell for VS — `cl` + `midl` on PATH; the COM
+interface header is midl-generated from the SDK's `BMDSwitcherAPI.idl`):
+
+```powershell
+.\build.ps1                      # uses the installed ATEM Developer SDK
+$env:ATEM_SDK_ROOT = "D:\SDKs\ATEM\Windows"; .\build.ps1
+```
+
+On Windows the graceful-degradation path is COM-based: without the ATEM
+software installed, `CoCreateInstance` fails (`REGDB_E_CLASSNOTREG`) and the
+helper reports `atem_software_not_installed` exactly like on macOS.
 
 ### `--run` (long-lived session for the bridge adapter)
 
@@ -79,5 +93,5 @@ Threading contract: SDK callbacks arrive on SDK threads; stdout writes are
 mutex-serialized; session state is torn down only by explicit
 `disconnect`/`shutdown` (callbacks never release SDK objects).
 
-The Windows build (COM/midl) and the bridge-side `AtemUsbAdapter` consuming
-this mode follow in later steps.
+The bridge-side `AtemUsbAdapter` consumes this mode (transport "usb" in the
+engine connect contract).

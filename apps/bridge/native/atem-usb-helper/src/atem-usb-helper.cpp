@@ -1,5 +1,5 @@
 /*
-  ATEM USB Helper (macOS)
+  ATEM USB Helper (macOS + Windows)
 
   Bridges the official Blackmagic ATEM Switchers SDK for USB-attached
   switchers. All SDK calls live in this helper process so that SDK crashes
@@ -16,22 +16,34 @@
                 events:   ready, connected, macros, macro_state,
                           disconnected, error
 
-  The SDK runtime is loaded at runtime by BMDSwitcherAPIDispatch from
-  /Library/Application Support/Blackmagic Design/Switchers/. When the ATEM
-  software is not installed, the helper reports sdk_available=false /
-  atem_software_not_installed instead of failing to launch.
+  Platform notes:
+  - macOS: SDK runtime loaded at runtime by BMDSwitcherAPIDispatch from
+    /Library/Application Support/Blackmagic Design/Switchers/. Missing ATEM
+    software degrades to sdk_available=false / atem_software_not_installed.
+  - Windows: real COM. CoCreateInstance fails with REGDB_E_CLASSNOTREG when
+    the ATEM software is not installed -> same graceful degradation. The
+    interface header is midl-generated from the SDK's BMDSwitcherAPI.idl at
+    build time (see build.ps1).
 
   Threading: SDK callbacks arrive on SDK-owned threads, stdin commands on a
   dedicated reader thread; stdout writes are serialized by a mutex and all
-  session state is guarded by a session mutex. The main thread runs a
-  CFRunLoop so SDK callback delivery never depends on our command loop.
+  session state is guarded by a session mutex. Session teardown happens only
+  via explicit commands, never from callback threads.
 */
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <objbase.h>
+#include "BMDSwitcherAPI_h.h"
+#else
 #include <BMDSwitcherAPI.h>
 #include <CoreFoundation/CFPlugInCOM.h>
 #include <CoreFoundation/CoreFoundation.h>
+#endif
 
 #include <atomic>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -41,9 +53,20 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#define HELPER_STDMETHOD STDMETHODCALLTYPE
+#else
+#define HELPER_STDMETHOD
+#endif
+
 namespace {
 
+#if defined(_WIN32)
+using PlatformStringT = BSTR;
+#else
+using PlatformStringT = CFStringRef;
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
+#endif
 
 std::mutex gStdoutMutex;
 
@@ -52,19 +75,70 @@ void emitLine(const std::string &json) {
   std::cout << json << std::endl;
 }
 
-std::string cfStringToStdString(CFStringRef cfString) {
-  if (!cfString) {
+std::string platformStringToStdString(PlatformStringT value) {
+  if (!value) {
     return "";
   }
-  CFIndex length = CFStringGetLength(cfString);
+#if defined(_WIN32)
+  const int length = static_cast<int>(SysStringLen(value));
+  if (length == 0) {
+    return "";
+  }
+  const int utf8Size = WideCharToMultiByte(CP_UTF8, 0, value, length, nullptr, 0, nullptr, nullptr);
+  if (utf8Size <= 0) {
+    return "";
+  }
+  std::string result(static_cast<size_t>(utf8Size), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, value, length, result.data(), utf8Size, nullptr, nullptr);
+  return result;
+#else
+  CFIndex length = CFStringGetLength(value);
   CFIndex maxSize =
       CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
   std::string result(maxSize, '\0');
-  if (CFStringGetCString(cfString, result.data(), maxSize, kCFStringEncodingUTF8)) {
+  if (CFStringGetCString(value, result.data(), maxSize, kCFStringEncodingUTF8)) {
     result.resize(std::strlen(result.c_str()));
     return result;
   }
   return "";
+#endif
+}
+
+void releasePlatformString(PlatformStringT value) {
+  if (!value) {
+    return;
+  }
+#if defined(_WIN32)
+  SysFreeString(value);
+#else
+  CFRelease(value);
+#endif
+}
+
+/** Creates the SDK discovery object; nullptr = ATEM software not installed. */
+IBMDSwitcherDiscovery *createSwitcherDiscovery() {
+#if defined(_WIN32)
+  IBMDSwitcherDiscovery *discovery = nullptr;
+  const HRESULT result = CoCreateInstance(
+      CLSID_CBMDSwitcherDiscovery, nullptr, CLSCTX_ALL,
+      IID_IBMDSwitcherDiscovery, reinterpret_cast<void **>(&discovery));
+  return SUCCEEDED(result) ? discovery : nullptr;
+#else
+  return CreateBMDSwitcherDiscoveryInstance();
+#endif
+}
+
+/** USB-only connect: empty device address per the ATEM SDK manual. */
+HRESULT connectViaUsb(IBMDSwitcherDiscovery *discovery, IBMDSwitcher **switcher,
+                      BMDSwitcherConnectToFailure *failReason) {
+#if defined(_WIN32)
+  BSTR emptyAddress = SysAllocString(L"");
+  const HRESULT result = discovery->ConnectTo(emptyAddress, switcher, failReason);
+  SysFreeString(emptyAddress);
+  return result;
+#else
+  return discovery->ConnectTo(CFSTR(""), switcher, failReason);
+#endif
 }
 
 std::string jsonEscape(const std::string &value) {
@@ -152,19 +226,25 @@ void emitError(const std::string &error, const std::string &detail = "") {
 }
 
 // Shared IUnknown boilerplate for the three SDK callback delegates below
-// (mirrors the DeckLink helper's callback classes).
+// (mirrors the DeckLink helper's callback classes; real COM on Windows).
 template <typename InterfaceT>
 class CallbackBase : public InterfaceT {
  public:
   explicit CallbackBase(REFIID interfaceIid) : refCount_(1), interfaceIid_(interfaceIid) {}
   virtual ~CallbackBase() = default;
 
-  HRESULT QueryInterface(REFIID iid, void **ppv) override {
+  HRESULT HELPER_STDMETHOD QueryInterface(REFIID iid, void **ppv) override {
     if (!ppv) {
       return E_POINTER;
     }
-    if (std::memcmp(&iid, &kIID_IUnknown, sizeof(REFIID)) == 0 ||
-        std::memcmp(&iid, &interfaceIid_, sizeof(REFIID)) == 0) {
+#if defined(_WIN32)
+    const bool matches = IsEqualIID(iid, IID_IUnknown) || IsEqualIID(iid, interfaceIid_);
+#else
+    const bool matches =
+        std::memcmp(&iid, &kIID_IUnknown, sizeof(REFIID)) == 0 ||
+        std::memcmp(&iid, &interfaceIid_, sizeof(REFIID)) == 0;
+#endif
+    if (matches) {
       *ppv = this;
       AddRef();
       return S_OK;
@@ -173,9 +253,9 @@ class CallbackBase : public InterfaceT {
     return E_NOINTERFACE;
   }
 
-  ULONG AddRef() override { return ++refCount_; }
+  ULONG HELPER_STDMETHOD AddRef() override { return ++refCount_; }
 
-  ULONG Release() override {
+  ULONG HELPER_STDMETHOD Release() override {
     const ULONG remaining = --refCount_;
     if (remaining == 0) {
       delete this;
@@ -185,7 +265,11 @@ class CallbackBase : public InterfaceT {
 
  private:
   std::atomic<ULONG> refCount_;
+#if defined(_WIN32)
+  IID interfaceIid_;
+#else
   REFIID interfaceIid_;
+#endif
 };
 
 class SwitcherMonitor : public CallbackBase<IBMDSwitcherCallback> {
@@ -193,7 +277,8 @@ class SwitcherMonitor : public CallbackBase<IBMDSwitcherCallback> {
   explicit SwitcherMonitor(std::function<void()> onDisconnected)
       : CallbackBase(IID_IBMDSwitcherCallback), onDisconnected_(std::move(onDisconnected)) {}
 
-  HRESULT Notify(BMDSwitcherEventType eventType, BMDSwitcherVideoMode) override {
+  HRESULT HELPER_STDMETHOD Notify(BMDSwitcherEventType eventType,
+                                  BMDSwitcherVideoMode) override {
     if (eventType == bmdSwitcherEventTypeDisconnected && onDisconnected_) {
       onDisconnected_();
     }
@@ -209,7 +294,8 @@ class MacroPoolMonitor : public CallbackBase<IBMDSwitcherMacroPoolCallback> {
   explicit MacroPoolMonitor(std::function<void()> onPoolChanged)
       : CallbackBase(IID_IBMDSwitcherMacroPoolCallback), onPoolChanged_(std::move(onPoolChanged)) {}
 
-  HRESULT Notify(BMDSwitcherMacroPoolEventType, uint32_t, IBMDSwitcherTransferMacro *) override {
+  HRESULT HELPER_STDMETHOD Notify(BMDSwitcherMacroPoolEventType, uint32_t,
+                                  IBMDSwitcherTransferMacro *) override {
     if (onPoolChanged_) {
       onPoolChanged_();
     }
@@ -226,7 +312,7 @@ class MacroControlMonitor : public CallbackBase<IBMDSwitcherMacroControlCallback
       : CallbackBase(IID_IBMDSwitcherMacroControlCallback),
         onRunStatusChanged_(std::move(onRunStatusChanged)) {}
 
-  HRESULT Notify(BMDSwitcherMacroControlEventType eventType) override {
+  HRESULT HELPER_STDMETHOD Notify(BMDSwitcherMacroControlEventType eventType) override {
     if (eventType == bmdSwitcherMacroControlEventTypeRunStatusChanged && onRunStatusChanged_) {
       onRunStatusChanged_();
     }
@@ -252,15 +338,14 @@ class RunSession {
       return;
     }
     if (discovery_ == nullptr) {
-      discovery_ = CreateBMDSwitcherDiscoveryInstance();
+      discovery_ = createSwitcherDiscovery();
     }
     if (discovery_ == nullptr) {
       emitError("atem_software_not_installed");
       return;
     }
     BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
-    // Empty device address = USB-only connect (ATEM SDK manual, ConnectTo).
-    if (discovery_->ConnectTo(CFSTR(""), &switcher_, &failReason) != S_OK ||
+    if (connectViaUsb(discovery_, &switcher_, &failReason) != S_OK ||
         switcher_ == nullptr) {
       switcher_ = nullptr;
       emitError(connectFailureToError(failReason));
@@ -288,10 +373,10 @@ class RunSession {
 
     connectedFlag_.store(true);
     std::string productName;
-    CFStringRef productNameRef = nullptr;
+    PlatformStringT productNameRef = nullptr;
     if (switcher_->GetProductName(&productNameRef) == S_OK && productNameRef) {
-      productName = cfStringToStdString(productNameRef);
-      CFRelease(productNameRef);
+      productName = platformStringToStdString(productNameRef);
+      releasePlatformString(productNameRef);
     }
     emitLine("{\"type\":\"connected\",\"product_name\":\"" + jsonEscape(productName) + "\"}");
     emitMacrosUnlocked();
@@ -316,8 +401,8 @@ class RunSession {
     if (!requireConnected() || macroControl_ == nullptr || macroPool_ == nullptr) {
       return;
     }
-    bool valid = false;
-    if (macroPool_->IsValid(index, &valid) != S_OK || !valid) {
+    bool isValid = false;
+    if (!macroIsValid(index, isValid) || !isValid) {
       emitError("invalid_macro_index");
       return;
     }
@@ -342,6 +427,24 @@ class RunSession {
       emitError("not_connected");
       return false;
     }
+    return true;
+  }
+
+  // The Windows IDL surfaces booleans as BOOL, macOS as bool.
+  bool macroIsValid(uint32_t index, bool &isValid) {
+#if defined(_WIN32)
+    BOOL valid = FALSE;
+    if (macroPool_->IsValid(index, &valid) != S_OK) {
+      return false;
+    }
+    isValid = valid != FALSE;
+#else
+    bool valid = false;
+    if (macroPool_->IsValid(index, &valid) != S_OK) {
+      return false;
+    }
+    isValid = valid;
+#endif
     return true;
   }
 
@@ -389,21 +492,21 @@ class RunSession {
     out << "{\"type\":\"macros\",\"macros\":[";
     bool first = true;
     for (uint32_t i = 0; i < maxCount; ++i) {
-      bool valid = false;
-      if (macroPool_->IsValid(i, &valid) != S_OK || !valid) {
+      bool isValid = false;
+      if (!macroIsValid(i, isValid) || !isValid) {
         continue;
       }
       std::string name;
       std::string description;
-      CFStringRef nameRef = nullptr;
+      PlatformStringT nameRef = nullptr;
       if (macroPool_->GetName(i, &nameRef) == S_OK && nameRef) {
-        name = cfStringToStdString(nameRef);
-        CFRelease(nameRef);
+        name = platformStringToStdString(nameRef);
+        releasePlatformString(nameRef);
       }
-      CFStringRef descriptionRef = nullptr;
+      PlatformStringT descriptionRef = nullptr;
       if (macroPool_->GetDescription(i, &descriptionRef) == S_OK && descriptionRef) {
-        description = cfStringToStdString(descriptionRef);
-        CFRelease(descriptionRef);
+        description = platformStringToStdString(descriptionRef);
+        releasePlatformString(descriptionRef);
       }
       if (!first) {
         out << ",";
@@ -421,8 +524,12 @@ class RunSession {
       return;
     }
     BMDSwitcherMacroRunStatus status = bmdSwitcherMacroRunStatusIdle;
-    bool loop = false;
     uint32_t index = 0;
+#if defined(_WIN32)
+    BOOL loop = FALSE;
+#else
+    bool loop = false;
+#endif
     if (macroControl_->GetRunStatus(&status, &loop, &index) != S_OK) {
       return;
     }
@@ -450,7 +557,7 @@ class RunSession {
 };
 
 int runProbe() {
-  IBMDSwitcherDiscovery *discovery = CreateBMDSwitcherDiscoveryInstance();
+  IBMDSwitcherDiscovery *discovery = createSwitcherDiscovery();
   if (discovery == nullptr) {
     std::cout << "{\"mode\":\"probe\",\"sdk_available\":false,\"connected\":false,"
               << "\"error\":\"atem_software_not_installed\"}" << std::endl;
@@ -459,7 +566,7 @@ int runProbe() {
 
   IBMDSwitcher *switcher = nullptr;
   BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
-  HRESULT result = discovery->ConnectTo(CFSTR(""), &switcher, &failReason);
+  const HRESULT result = connectViaUsb(discovery, &switcher, &failReason);
   if (result != S_OK || switcher == nullptr) {
     std::cout << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":false,"
               << "\"error\":\"" << connectFailureToError(failReason) << "\"}"
@@ -469,10 +576,10 @@ int runProbe() {
   }
 
   std::string productName;
-  CFStringRef productNameRef = nullptr;
+  PlatformStringT productNameRef = nullptr;
   if (switcher->GetProductName(&productNameRef) == S_OK && productNameRef) {
-    productName = cfStringToStdString(productNameRef);
-    CFRelease(productNameRef);
+    productName = platformStringToStdString(productNameRef);
+    releasePlatformString(productNameRef);
   }
 
   uint32_t macroSlots = 0;
@@ -483,10 +590,17 @@ int runProbe() {
       macroPool != nullptr) {
     macroPool->GetMaxCount(&macroSlots);
     for (uint32_t i = 0; i < macroSlots; ++i) {
+#if defined(_WIN32)
+      BOOL valid = FALSE;
+      if (macroPool->IsValid(i, &valid) == S_OK && valid) {
+        ++validMacros;
+      }
+#else
       bool valid = false;
       if (macroPool->IsValid(i, &valid) == S_OK && valid) {
         ++validMacros;
       }
+#endif
     }
     macroPool->Release();
   }
@@ -506,6 +620,10 @@ int runSessionLoop() {
   emitLine("{\"type\":\"ready\"}");
 
   std::thread readerThread([&session]() {
+#if defined(_WIN32)
+    // MTA: every thread issuing COM calls initializes COM for itself.
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+#endif
     std::string line;
     while (std::getline(std::cin, line)) {
       const std::string command = extractJsonString(line, "command");
@@ -530,13 +648,20 @@ int runSessionLoop() {
         emitError("unknown_command", command);
       }
     }
-    // stdin closed or shutdown requested: leave the run loop so main exits.
+    // stdin closed or shutdown requested: tear down and let main exit.
     session.disconnect();
+#if defined(_WIN32)
+    CoUninitialize();
+#else
     CFRunLoopStop(CFRunLoopGetMain());
+#endif
   });
 
-  // SDK callback delivery must not depend on the command loop.
+#if !defined(_WIN32)
+  // macOS: keep a runloop available so SDK callback delivery never depends
+  // on our command loop. (Windows MTA callbacks arrive on RPC threads.)
   CFRunLoopRun();
+#endif
   readerThread.join();
   return 0;
 }
@@ -548,12 +673,22 @@ void printUsage() {
 }  // namespace
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+  if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
+    emitError("com_init_failed");
+    return 1;
+  }
+#endif
+  int exitCode = 2;
   if (argc >= 2 && std::strcmp(argv[1], "--probe") == 0) {
-    return runProbe();
+    exitCode = runProbe();
+  } else if (argc >= 2 && std::strcmp(argv[1], "--run") == 0) {
+    exitCode = runSessionLoop();
+  } else {
+    printUsage();
   }
-  if (argc >= 2 && std::strcmp(argv[1], "--run") == 0) {
-    return runSessionLoop();
-  }
-  printUsage();
-  return 2;
+#if defined(_WIN32)
+  CoUninitialize();
+#endif
+  return exitCode;
 }
