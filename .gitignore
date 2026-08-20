@@ -76,3 +76,7 @@ scripts/.relay-caller-keys/
 # Xcode user-specific data
 xcuserdata/
 *.xcuserstate
+
+# Native ATEM USB helper binary (built via build.sh)
+apps/bridge/native/atem-usb-helper/atem-usb-helper
+apps/bridge/native/atem-usb-helper/atem-usb-helper.exe
