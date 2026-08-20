@@ -36,6 +36,7 @@ import {
 } from "../conference/director/conference-director-service.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
 import { mapVcamStartError } from "./vcam-error-mapper.js";
+import { publishMeetingErrorEvent } from "./meeting-event-publisher.js";
 import {
   executeMeetingCallControl,
   MeetingCallControlError,
@@ -174,6 +175,33 @@ function configureMeetingGraphicsOutputs(
       }
     });
   return { completion: run, alreadySatisfiedOrPending };
+}
+
+/**
+ * Best-effort virtual-camera arm after a successful engine start. Runs in
+ * the background; failures are published as meeting error events with the
+ * stable vcam error codes so the UI can show actionable guidance without
+ * blocking the engine start itself.
+ */
+function autoArmVirtualCamera(): void {
+  void (async () => {
+    try {
+      const client = requireClient();
+      await client.virtualCameraStart();
+      console.info("[meeting] virtual camera auto-armed with engine start");
+    } catch (error: unknown) {
+      // A background arm must never take the process down — not even when
+      // the event publisher itself is unavailable (tests, early shutdown).
+      try {
+        const rawMessage = error instanceof Error ? error.message : String(error);
+        const mapped = mapVcamStartError(rawMessage);
+        publishMeetingErrorEvent(mapped.errorCode, mapped.error);
+        console.warn(`[meeting] virtual camera auto-arm failed: ${mapped.error}`);
+      } catch {
+        console.warn("[meeting] virtual camera auto-arm failed (unreportable)");
+      }
+    }
+  })();
 }
 
 async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCommandResultT> {
@@ -361,6 +389,11 @@ export async function handleMeetingCommand(
       // background later only costs a layer send instead of a cold start.
       // Format must match what the web app sends (MEETING_GRAPHICS_FORMAT,
       // 1920x1080@30) so the later configure call is a cache hit.
+      // Auto-arm the virtual camera with the engine so "Broadify Camera"
+      // exists in Teams/Zoom without the live-test click. Fire-and-forget:
+      // failures surface as meeting error events with the stable vcam codes
+      // (W1) instead of failing the engine start.
+      autoArmVirtualCamera();
       configureMeetingGraphicsOutputs(1920, 1080, 30).completion.catch((error: unknown) => {
         console.warn(
           `[meeting] graphics renderer pre-warm failed: ${error instanceof Error ? error.message : String(error)}`,
