@@ -75,6 +75,7 @@ struct ContentView: View {
         .padding(24)
         .onAppear {
             manager.refreshLaunchState()
+            manager.activateFromLaunchArgumentIfRequested()
         }
     }
 }
@@ -111,6 +112,21 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
                 "App runs outside /Applications (translocated=\(BundleLocation.isTranslocated)) appBundle=\(Bundle.main.bundlePath, privacy: .public)"
             )
         }
+    }
+
+    private var launchArgumentHandled = false
+
+    /// Bridge-driven activation: when launched with --activate (the bridge
+    /// passes it on every virtual-camera start attempt), submit the
+    /// activation request without requiring a click in this window. Guarded
+    /// to once per process so normal manual launches never loop the
+    /// approval prompt (see refreshLaunchState comment).
+    func activateFromLaunchArgumentIfRequested() {
+        guard !launchArgumentHandled else { return }
+        launchArgumentHandled = true
+        guard CommandLine.arguments.contains("--activate") else { return }
+        logger.info("Activation requested via --activate launch argument")
+        activate()
     }
 
     func activate() {

@@ -520,10 +520,16 @@ export async function openVcamHelperApp(
     }
 
     await new Promise<void>((resolve, reject) => {
-      const child: ChildProcess = spawn("open", [helperAppPath], {
-        detached: true,
-        stdio: "ignore",
-      });
+      // --args --activate: the helper app submits the activation request
+      // itself on launch (bridge-driven; no manual click in its window).
+      const child: ChildProcess = spawn(
+        "open",
+        [helperAppPath, "--args", "--activate"],
+        {
+          detached: true,
+          stdio: "ignore",
+        },
+      );
       child.once("error", reject);
       child.once("close", (code, signal) => {
         if (code !== 0) {
@@ -550,6 +556,24 @@ export async function openVcamHelperApp(
     };
   }
 
+  // The helper submits the activation request on launch (--activate). Give
+  // the extension a short window to become active — on already-approved
+  // machines and version upgrades this completes without any user action —
+  // and only then fall back to the approval guidance.
+  const activated = await waitForVcamActivation(
+    vcamActivationPollAttempts,
+    vcamActivationPollIntervalMs,
+  );
+  if (activated) {
+    return {
+      ...getVcamHelperStatus(options),
+      launchRequested: true,
+      requiresUserApproval: false,
+      code: "activation_completed",
+      message: "Virtual camera extension is active.",
+    };
+  }
+
   return {
     ...getVcamHelperStatus(options),
     launchRequested: true,
@@ -557,4 +581,37 @@ export async function openVcamHelperApp(
     code: "activation_requested",
     message: "BroadifyVCam.app was opened. Approve the camera extension in System Settings.",
   };
+}
+
+let vcamActivationPollAttempts = 5;
+let vcamActivationPollIntervalMs = 1_500;
+
+/**
+ * Test-only: shrink the post-launch activation polling. Call with null to
+ * reset (same pattern as the DeckLink helper path override).
+ * @internal
+ */
+export function __setVcamActivationPollForTesting(
+  attempts: number | null,
+  intervalMs: number | null,
+): void {
+  vcamActivationPollAttempts = attempts ?? 5;
+  vcamActivationPollIntervalMs = intervalMs ?? 1_500;
+}
+
+async function waitForVcamActivation(
+  attempts: number,
+  intervalMs: number,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, intervalMs);
+      timer.unref?.();
+    });
+    const state = getSystemExtensionActivationState();
+    if (state.activated) {
+      return true;
+    }
+  }
+  return false;
 }
