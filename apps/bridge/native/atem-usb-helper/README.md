@@ -21,6 +21,8 @@ can offer `transport: "usb"` next to the existing network transport
 
 ## Modes
 
+### `--probe` (one-shot diagnostics)
+
 ```bash
 ./atem-usb-helper --probe
 ```
@@ -42,6 +44,40 @@ Stable error identifiers: `atem_software_not_installed`,
 ATEM_SDK_ROOT=/path/to/SDK ./build.sh
 ```
 
-A long-lived `--run` mode (NDJSON commands/events for connect, macro run/stop
-and state change events) plus the Windows build follow in later steps; the
-bridge-side `AtemUsbAdapter` consumes that mode.
+### `--run` (long-lived session for the bridge adapter)
+
+One JSON command per line on stdin, one JSON event per line on stdout
+(SDK logs go to stderr; stdout stays machine-readable).
+
+Commands:
+
+```json
+{"command":"connect"}
+{"command":"disconnect"}
+{"command":"list_macros"}
+{"command":"macro_run","index":3}
+{"command":"macro_stop"}
+{"command":"shutdown"}
+```
+
+Events:
+
+- `{"type":"ready"}` — emitted once at startup.
+- `{"type":"connected","product_name":"ATEM Mini Extreme"}`
+- `{"type":"macros","macros":[{"id":0,"name":"...","description":"..."}]}` —
+  after connect, on `list_macros`, and on every macro-pool change.
+- `{"type":"macro_state","status":"idle|running|waiting","loop":false,"index":0}` —
+  after connect and on every run-status change (`index` 65535 = none).
+- `{"type":"disconnected"}` — on explicit disconnect and when the switcher
+  drops off USB.
+- `{"type":"error","error":"<identifier>","detail":"..."}` — identifiers:
+  the connect errors above plus `already_connected`, `not_connected`,
+  `invalid_macro_index`, `missing_macro_index`, `macro_run_failed`,
+  `macro_stop_failed`, `unknown_command`.
+
+Threading contract: SDK callbacks arrive on SDK threads; stdout writes are
+mutex-serialized; session state is torn down only by explicit
+`disconnect`/`shutdown` (callbacks never release SDK objects).
+
+The Windows build (COM/midl) and the bridge-side `AtemUsbAdapter` consuming
+this mode follow in later steps.
