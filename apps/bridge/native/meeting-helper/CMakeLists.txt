@@ -87,6 +87,7 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/tier_handover.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
+  src/preview/raw_frame_record.cpp
   src/preview/raw_frame_server.cpp
   src/preview/raw_frame_stream_header.cpp
   src/util/sha256.cpp
@@ -315,8 +316,13 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/raw_frame_stream_header_test.cpp
     src/preview/raw_frame_stream_header.cpp
   )
+  add_executable(raw_frame_record_test
+    tests/raw_frame_record_test.cpp
+    src/preview/raw_frame_record.cpp
+  )
   add_executable(raw_frame_server_test
     tests/raw_frame_server_test.cpp
+    src/preview/raw_frame_record.cpp
     src/preview/raw_frame_server.cpp
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
@@ -366,6 +372,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     matting_backend_test
     control_server_test
     raw_frame_stream_header_test
+    raw_frame_record_test
     raw_frame_server_test
   )
     target_include_directories(${helper_test} PRIVATE src)

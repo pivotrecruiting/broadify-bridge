@@ -18,8 +18,9 @@ struct KeyerGovernorConfig {
   // blocks the program loop below target fps.
   double frameBudgetMs = 1000.0 / 30.0;
   // Step down when the smoothed inference cost exceeds
-  // stepDownFactor * frameBudgetMs (mirrors the Apple governor's 34ms@30fps).
-  double stepDownFactor = 1.0;
+  // stepDownFactor * frameBudgetMs. Windows keeps half the frame for capture,
+  // compose, preview and raw-frame IO.
+  double stepDownFactor = 0.5;
   // Testing override for the step-down threshold: when > 0 it replaces
   // stepDownFactor * frameBudgetMs (BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS).
   // It also becomes the base of the step-up threshold, so the hysteresis band

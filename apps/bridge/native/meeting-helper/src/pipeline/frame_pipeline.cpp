@@ -486,6 +486,14 @@ bool fusedKeyerPerformanceOverrideActive() {
   return active;
 }
 
+bool fusedPipelineDepthEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_FUSED_PIPELINE_DEPTH");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+}
+
 KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
   KeyerGovernorConfig config;
   config.frameBudgetMs = 1000.0 / static_cast<double>(fps == 0u ? 30u : fps);
@@ -2595,9 +2603,13 @@ void runFramePipeline(const Options &options,
                 hasValidRetainedMask && lastFusedInferredLuma.valid()
                     ? meanAbsLumaDiff(currentFrameLuma, lastFusedInferredLuma)
                     : 0.0;
-            const CadenceDecision cadenceDecision = fusedCadence.decide(
+            CadenceDecision cadenceDecision = fusedCadence.decide(
                 latestCameraFrame.timestampNs, motionScore,
                 hasValidRetainedMask, fusedNow);
+            if (!fusedPipelineDepthEnabled()) {
+              cadenceDecision.runInference = true;
+              cadenceDecision.maskAgeMs = 0.0;
+            }
             if (cadenceDecision.runInference) {
               KeyerResult fused = fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {

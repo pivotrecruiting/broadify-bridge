@@ -25,8 +25,11 @@ namespace broadify::vcam {
 namespace {
 
 constexpr uint32_t kRawFrameMagic = 0x47524642u;  // "BFRG" little endian.
+constexpr uint32_t kRawFrameVersion1 = 1u;
+constexpr uint32_t kRawFrameVersion2 = 2u;
 constexpr uint32_t kRawFramePixelFormatBgra8 = 2u;
-constexpr size_t kRecordHeaderSize = 32u;
+constexpr size_t kRecordHeaderV1Size = 32u;
+constexpr size_t kRecordHeaderV2Size = 40u;
 constexpr uint32_t kMaxDimension = 7680u;  // guard against corrupt headers.
 constexpr uint64_t kStaleWindowMs = 2000u;
 constexpr uint64_t kVeryStaleWindowMs = 10000u;
@@ -330,15 +333,25 @@ void RawFrameClient::runLoop() {
       VcamLog("RawFrameClient: connected to 127.0.0.1:%u (stream consumer active)", port_);
       backoffMs = kBackoffStartMs;
 
-      uint8_t header[kRecordHeaderSize];
+      uint8_t header[kRecordHeaderV2Size];
       std::vector<uint8_t> payload;
       uint64_t lastStaleLogWindowMs = 0;
       while (running_.load()) {
-        if (!recvExact(socket, header, kRecordHeaderSize, running_)) {
+        if (!recvExact(socket, header, kRecordHeaderV1Size, running_)) {
           break;
         }
         if (readU32Le(header) != kRawFrameMagic) {
           VcamLog("RawFrameClient: bad magic, resyncing");
+          break;
+        }
+        const uint32_t version = readU32Le(header + 4);
+        if (version != kRawFrameVersion1 && version != kRawFrameVersion2) {
+          VcamLog("RawFrameClient: unsupported BFRG version %u", version);
+          break;
+        }
+        if (version == kRawFrameVersion2 &&
+            !recvExact(socket, header + kRecordHeaderV1Size,
+                       kRecordHeaderV2Size - kRecordHeaderV1Size, running_)) {
           break;
         }
         const uint32_t width = readU32Le(header + 8);
@@ -346,6 +359,8 @@ void RawFrameClient::runLoop() {
         const uint32_t pixelFormat = readU32Le(header + 16);
         const uint32_t frameSize = readU32Le(header + 20);
         const uint64_t sequence = readU64Le(header + 24);
+        const uint64_t captureNs =
+            version == kRawFrameVersion2 ? readU64Le(header + 32) : 0;
         if (width == 0 || height == 0 || width > kMaxDimension ||
             height > kMaxDimension || pixelFormat != kRawFramePixelFormatBgra8 ||
             frameSize != width * height * 4u) {
@@ -363,6 +378,7 @@ void RawFrameClient::runLoop() {
         latest_.width = width;
         latest_.height = height;
         latest_.sequence = sequence;
+        latest_.captureNs = captureNs;
         if (latest_.bgra.size() != payload.size()) {
           latest_.bgra.resize(payload.size());
         }

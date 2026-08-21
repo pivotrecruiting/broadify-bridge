@@ -1,6 +1,18 @@
 #include "preview/preview_frame_store.h"
 
+#include <chrono>
+
 namespace broadify::meeting {
+namespace {
+
+uint64_t nowNs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+}  // namespace
 
 void PreviewFrameStore::publish(uint32_t width, uint32_t height, const uint8_t *rgba, size_t rgbaSize) {
   if (width == 0u || height == 0u || rgba == nullptr || rgbaSize != static_cast<size_t>(width) * height * 4u) {
@@ -10,6 +22,7 @@ void PreviewFrameStore::publish(uint32_t width, uint32_t height, const uint8_t *
     std::lock_guard<std::mutex> lock(mutex_);
     frame_.width = width;
     frame_.height = height;
+    frame_.captureNs = nowNs();
     frame_.rgba.assign(rgba, rgba + rgbaSize);
     ++frame_.sequence;
   }

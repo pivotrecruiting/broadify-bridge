@@ -1,5 +1,6 @@
 #include "preview/raw_frame_server.h"
 
+#include "preview/raw_frame_record.h"
 #include "util/helper_event_log.h"
 #include "util/pixel_swizzle.h"
 #include "util/win_qos.h"
@@ -33,10 +34,7 @@
 namespace broadify::meeting {
 namespace {
 
-constexpr uint32_t kRawFrameMagic = 0x47524642u;  // "BFRG" little endian.
-constexpr uint32_t kRawFrameVersion = 1u;
-constexpr uint32_t kRawFramePixelFormatBgra8 = 2u;
-constexpr size_t kRawFrameHeaderSize = 32u;
+constexpr size_t kRawFrameHeaderSize = kBfrgHeaderV2Size;
 constexpr auto kRawFrameHeartbeatInterval = std::chrono::milliseconds(1000);
 constexpr uint64_t kRawFrameHeartbeatSequenceMask = 1ull << 63;
 
@@ -181,13 +179,13 @@ void writeU64Le(std::vector<uint8_t> &data, size_t offset, uint64_t value) {
 
 void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &payload) {
   payload.resize(kRawFrameHeaderSize + frame.rgba.size());
-  writeU32Le(payload, 0u, kRawFrameMagic);
-  writeU32Le(payload, 4u, kRawFrameVersion);
-  writeU32Le(payload, 8u, frame.width);
-  writeU32Le(payload, 12u, frame.height);
-  writeU32Le(payload, 16u, kRawFramePixelFormatBgra8);
-  writeU32Le(payload, 20u, static_cast<uint32_t>(frame.rgba.size()));
-  writeU64Le(payload, 24u, frame.sequence);
+  BfrgRecordHeader header;
+  header.width = frame.width;
+  header.height = frame.height;
+  header.payloadSize = static_cast<uint32_t>(frame.rgba.size());
+  header.sequence = frame.sequence;
+  header.captureNs = frame.captureNs;
+  writeBfrgHeaderV2(payload, 0u, header);
 
   uint8_t *dst = payload.data() + kRawFrameHeaderSize;
   const uint8_t *src = frame.rgba.data();
@@ -258,6 +256,7 @@ void streamFrames(int client,
 
   uint64_t lastSequence = 0u;
   uint64_t heartbeatSequence = 0u;
+  uint64_t lastCaptureNs = 0u;
   uint64_t sentFrames = 0u;
   std::vector<uint8_t> payload;
   auto lastSentAt = std::chrono::steady_clock::now();
@@ -276,6 +275,7 @@ void streamFrames(int client,
         ++heartbeatSequence;
         writeU64Le(payload, 24u,
                    kRawFrameHeartbeatSequenceMask | heartbeatSequence);
+        writeU64Le(payload, 32u, lastCaptureNs);
         if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
           return;
         }
@@ -288,6 +288,7 @@ void streamFrames(int client,
     }
     lastSequence = frame.sequence;
     heartbeatSequence = frame.sequence;
+    lastCaptureNs = frame.captureNs;
     writeRawFramePayload(frame, payload);
     if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
       return;

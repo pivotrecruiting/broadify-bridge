@@ -12,6 +12,7 @@ struct PreviewFrame {
   uint32_t width = 0;
   uint32_t height = 0;
   uint64_t sequence = 0;
+  uint64_t captureNs = 0;
   std::vector<uint8_t> rgba;
 };
 

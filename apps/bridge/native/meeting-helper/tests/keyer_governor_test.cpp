@@ -84,16 +84,17 @@ int main() {
     // seedProbe heuristic (area scaling from the 512 probe: x0.39 for 320,
     // x0.25 for 256).
     KeyerAutoGovernor governor(testConfig());
-    governor.seedProbe(30.0);  // 30 <= 33.3 -> full quality fits
-    ok &= expect(governor.tier() == GovernorTier::Full512, "seed 30ms -> Full512");
-    governor.reset();
-    governor.seedProbe(60.0);  // 60*0.39=23.4 <= 33.3
+    governor.seedProbe(30.0);  // 30*0.39=11.7 <= 16.7
     ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                 "seed 60ms -> Balanced320");
+                 "seed 30ms -> Balanced320");
     governor.reset();
-    governor.seedProbe(120.0);  // 120*0.25=30 <= 33.3
+    governor.seedProbe(60.0);  // 60*0.25=15 <= 16.7
     ok &= expect(governor.tier() == GovernorTier::Performance256,
-                 "seed 120ms -> Performance256");
+                 "seed 60ms -> Performance256");
+    governor.reset();
+    governor.seedProbe(120.0);  // 120*0.25=30 > 16.7, async still useful
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "seed 120ms -> Lite256");
     governor.reset();
     // The spec case: 194ms at 512 with a 33.3ms budget. 194*0.25=48.5 does
     // not fit the fused budget but is well under offInferenceMs (120), so
@@ -107,7 +108,7 @@ int main() {
     governor.reset();
     governor.seedProbe(60.0);
     governor.seedProbe(500.0);  // second seed must be ignored
-    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
                  "seedProbe is one-shot");
   }
 
@@ -397,11 +398,11 @@ int main() {
     governor.reset();
     ok &= expect(std::string(governor.performanceModeForTier()) == "high_quality",
                  "Full512 -> high_quality");
-    governor.seedProbe(60.0);
+    governor.seedProbe(30.0);
     ok &= expect(std::string(governor.performanceModeForTier()) == "balanced",
                  "Balanced320 -> balanced");
     governor.reset();
-    governor.seedProbe(120.0);
+    governor.seedProbe(60.0);
     ok &= expect(std::string(governor.performanceModeForTier()) == "performance",
                  "Performance256 -> performance");
     governor.reset();
