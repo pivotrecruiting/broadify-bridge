@@ -274,9 +274,21 @@ export class MeetingHelperClient {
       // A REGDB_E_CLASSNOTREG failure triggers a one-shot elevated regsvr32
       // self-heal (MSI registration gap) before giving up.
       const framebusOutput = await this.framebusStart();
-      const vcam = await runVcamStartWithRegistrationSelfHeal(() =>
-        this.rpc("output.vcam.start"),
-      );
+      let vcam: Record<string, unknown>;
+      try {
+        vcam = await runVcamStartWithRegistrationSelfHeal(() =>
+          this.rpc("output.vcam.start"),
+        );
+      } catch (error) {
+        // Roll the partial output state back: a failed vcam start must not
+        // leave the raw frame stream running.
+        try {
+          await this.framebusStop();
+        } catch {
+          // Best effort; the original vcam error is the one that matters.
+        }
+        throw error;
+      }
       return { ...vcam, framebus_output: framebusOutput };
     }
     const framebusOutput = await this.framebusStart();
