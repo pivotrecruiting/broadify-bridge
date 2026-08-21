@@ -152,46 +152,15 @@ E2. Update `docs/bridge/subsystems/output-helper.md` or the meeting-helper doc t
 16. Docs updated (E1, E2). Comments/JSDoc in English. No secrets or PII in logs.
 
 ## Review
-- Round: 1/3
-- Verdict: MUST-FIX (round 1)
-- Must-fix (open):
-  - M1 `camera_mediafoundation.cpp` reopen thread: use-after-free / ghost reopen. Add `std::atomic<uint64_t> sessionGeneration_`
-    bumped in `stop()`/`startSet()`; the reopen lambda captures the generation and re-checks `running_ && generation == sessionGeneration_`
-    AFTER the sleep and again under the lock before installing. Keep `std::thread reopenThread_` and join it in `stop()` outside `mutex_`
-    (or use a shared_ptr token instead of `this`). Never spawn a second reopen thread while one is alive.
-  - M2 Reopen must resolve the SAME device by symbolic link (`cameraId`), not by index; derive the index from the match.
-  - M3 Do not destroy the old `MfCaptureSession` (Flush + 2 s wait) under `mutex_`; swap it out under the lock and let it die outside.
-  - M4 `frame_pipeline.cpp` watchdog: keep `camera_stalled` state/event platform-neutral, but call `camera.reopen(...)` only
-    `#if defined(_WIN32)` (macOS AVFoundation must not be restarted synchronously on the program thread).
-  - M5 `media_source.cpp`: wrap EVERY STDMETHODIMP body in try/catch → E_FAIL (incl. `Start`, `GetStreamAttributes`; use `try_as`
-    or catch around `.as<>()`); also `Activator`/`ClassFactory` methods in dllmain.cpp. Add `~MediaSource() { Shutdown(); }` so the
-    stream's raw back-pointer can never dangle.
-  - M6 `meeting-helper-manager.ts`: `vcam_raw_bind_failed` must reject `start()` deterministically: set `this.vcamRawBindFailed`
-    in `handleStdoutLine`; after `await this.waitForReady()` in `startInternal` throw `MeetingHelperRequestError("vcam_raw_bind_failed", …)`
-    if set (reset per start); kill the helper in that case. Helper: emit the bind failure via `emitHelperEvent` (sidecar) in addition to stdout.
-  - M7 Missing tests required by criteria 8, 9, 10, 11, 13: jest test that `camera_stalled` reaches the status snapshot; ctest for the
-    frame-age logic (factor the predicate into a platform-neutral function); control-server/helper test for idempotent `camera.start`
-    (`reopened:false`) and `stable_key` precedence; zod schema test for `MeetingCameraSelectionSchema`; manager test: crash restart with
-    VCam previously armed → `virtualCameraStart` called after the camera calls; manager test for M6.
-  - D6 (was deviated): implement the minimal powerMonitor path: bridge route `POST /meeting/camera/reopen` (guarded by
-    `enforceLocalOrToken`, calls `client.cameraReopen()` only when the engine is running, returns `{ok, reopened}`) and in
-    `src/electron/main.ts` `powerMonitor.on("resume"|"unlock-screen")` → `bridgeApiRequest("/meeting/camera/reopen", {method:"POST"})`
-    (existing `createBridgeApiRequest`). Jest test for the route.
-- Notes (non-blocking, do them if cheap):
-  - raw_frame_server.cpp: `SO_RCVTIMEO` 5 s for the per-client `readRequest`; keep worker threads in a vector and join them after
-    `running` clears (no detached threads touching state after `WSACleanup`).
-  - Heartbeat sequence: tag with the high bit (`seq | (1ull << 63)`) so a real frame can never collide with a heartbeat sequence.
-  - media_stream.cpp: avoid the per-new-frame 8 MB local `RawFrame` (member buffer or `copyLatestIfNewInto`).
-  - meeting-helper-manager.ts: after `taskkill` wait for the PID to exit before binding; skip the extra graceful `control.shutdown`
-    when `this.stopping` already sent it.
-  - control_server.cpp idempotent check: compare `stable_key` against the running session's `cameraId` when provided.
-- Handoff to human (if any): Windows C++ compile only in CI.
+- Round: 3/3
+- Verdict: PASS (round 3, 21.08.2026). Round 1: M1–M7 + D6; round 2: MF-1–MF-5; all resolved in 65b86abd…909948ad.
+- Must-fix (open): none
+- Notes (non-blocking): reopen flag window (microseconds, covered by watchdog); `camera.reopen` RPC on macOS returns
+  `camera_reopen_failed` (unused by the bridge); first-frame grace for the watchdog and worker reaping left for WP1.
+- Handoff to human (if any): Windows C++ compiled only by CI on the rc.13 test release; field test on the Windows laptop.
 
-## Verification
-- [x] Lint passed: `npm run lint` → exit 0.
-- [x] Root Jest passed: `npm run test:jest` → 173 suites passed, 1949 tests passed.
-- [x] Full build passed: `npm run build` → exit 0; includes root Jest, release-contract tests, protocol, bridge, graphics-renderer, and app build.
-- [x] Native helper build passed: `npm run build:meeting-helper` → exit 0; all CMake targets built, wrapper completed after local ad-hoc signing fallback because Developer ID timestamping was unavailable (`A timestamp was expected but was not found.`).
-- [x] Native raw-frame socket test passed directly: `apps/bridge/native/meeting-helper/build/raw_frame_server_test` → exit 0, `raw_frame_server_test passed`.
-- [ ] Native helper tests: `npm run test:meeting-helper-native` → 11/12 CTests passed including `raw_frame_server_test`; only `meeting_recorder_writer_test` failed with `audio_input_rejected`, matching the documented local mic-permission/environment issue. The recorder writer sources/tests were not changed in this round, so the failure is not caused by the fixes.
-- [x] Browser-verified (if UI-affecting) — n/a.
+## Verification (verifier ran independently of the implementer, outside the Codex sandbox)
+- [x] Tests pass — `npm run test:jest`: 173 suites / 1950 tests; `npm run test:meeting-helper-native`: 13/13 ctests
+- [x] Lint / type-check pass — `npm run lint`, `npm run build`, `npm run build:meeting-helper` (macOS) all exit 0
+- [ ] Browser-verified — n/a
+- [x] Bug reproduced before the fix, gone after — `raw_frame_server_test` fails with the base `raw_frame_server.cpp`, passes with the new one
