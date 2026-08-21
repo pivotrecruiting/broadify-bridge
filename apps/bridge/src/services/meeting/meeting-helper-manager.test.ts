@@ -330,6 +330,8 @@ describe("meeting-helper-manager", () => {
           framebusStatus: jest.fn().mockResolvedValue({}),
           keyerGet: jest.fn().mockResolvedValue({}),
           recordingStatus: jest.fn().mockResolvedValue({ recording: null }),
+          // W2 added output.vcam.status to the snapshot (best effort).
+          virtualCameraStatus: jest.fn().mockResolvedValue(null),
         };
         internals.process = {
           pid: 4242,
