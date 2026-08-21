@@ -260,6 +260,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.keyerBackend = status.backend;
   state.activeQualityMode = status.qualityMode;
   state.provider = status.provider;
+  state.gpuAdapter = status.gpuAdapter;
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;
   state.modelHashOk = status.modelHashOk;

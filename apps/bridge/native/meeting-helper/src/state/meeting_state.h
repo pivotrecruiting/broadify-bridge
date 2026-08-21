@@ -129,6 +129,8 @@ struct MeetingState {
   std::string activePerformanceMode;
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
+  std::string gpuAdapter;
+  std::string compositorAdapter;
   bool staleMaskActive = false;
   std::string provider;
   std::string modelPath;

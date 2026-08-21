@@ -1,4 +1,6 @@
 #include "compose/d3d11_compositor.h"
+#include "compose/d3d_adapter_select.h"
+#include "compose/staging_readback_ring.h"
 
 // D3D11 port of the Metal GPU compositor (metal_compositor.mm): one compute
 // dispatch composites background (mode/company image), back graphics, the
@@ -315,7 +317,8 @@ struct D3D11Context {
   ComPtr<ID3D11SamplerState> sampler;
   ComPtr<ID3D11Buffer> outputBuffer;
   ComPtr<ID3D11UnorderedAccessView> outputUav;
-  ComPtr<ID3D11Buffer> stagingBuffer;
+  std::vector<ComPtr<ID3D11Buffer>> stagingBuffers;
+  StagingReadbackRing stagingRing;
   size_t outputBufferSize = 0;
   LayerTexture camera;
   LayerTexture back;
@@ -362,8 +365,11 @@ bool initializeContext() {
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
                                       D3D_FEATURE_LEVEL_11_0};
   D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
+  const D3DAdapterInfo &adapter = sharedD3DAdapter();
   HRESULT hr = D3D11CreateDevice(
-      nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels,
+      adapter.available ? adapter.adapter.Get() : nullptr,
+      adapter.available ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+      nullptr, 0, levels,
       static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &ctx.device,
       &got, &ctx.context);
   if (FAILED(hr)) {
@@ -429,7 +435,8 @@ bool ensureOutputBuffers(uint32_t width, uint32_t height) {
   }
   ctx.outputBuffer.Reset();
   ctx.outputUav.Reset();
-  ctx.stagingBuffer.Reset();
+  ctx.stagingBuffers.clear();
+  ctx.stagingRing.reset();
 
   D3D11_BUFFER_DESC bufferDesc{};
   bufferDesc.ByteWidth = static_cast<UINT>(needed);
@@ -448,14 +455,44 @@ bool ensureOutputBuffers(uint32_t width, uint32_t height) {
                                                    &uavDesc, &ctx.outputUav))) {
     return false;
   }
-  D3D11_BUFFER_DESC stagingDesc{};
-  stagingDesc.ByteWidth = static_cast<UINT>(needed);
-  stagingDesc.Usage = D3D11_USAGE_STAGING;
-  stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  if (FAILED(ctx.device->CreateBuffer(&stagingDesc, nullptr, &ctx.stagingBuffer))) {
-    return false;
+  ctx.stagingBuffers.resize(ctx.stagingRing.depth());
+  for (auto &stagingBuffer : ctx.stagingBuffers) {
+    D3D11_BUFFER_DESC stagingDesc{};
+    stagingDesc.ByteWidth = static_cast<UINT>(needed);
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(ctx.device->CreateBuffer(&stagingDesc, nullptr, &stagingBuffer))) {
+      ctx.stagingBuffers.clear();
+      return false;
+    }
   }
   ctx.outputBufferSize = needed;
+  return true;
+}
+
+bool mapReadbackRing(ID3D11DeviceContext *context,
+                     std::vector<ComPtr<ID3D11Buffer>> &stagingBuffers,
+                     StagingReadbackRing &ring,
+                     ID3D11Resource *source,
+                     D3D11_MAPPED_SUBRESOURCE *mapped,
+                     size_t *mappedIndex) {
+  const StagingReadbackDecision decision = ring.advance();
+  context->CopyResource(stagingBuffers[decision.copyIndex].Get(), source);
+  HRESULT hr = context->Map(stagingBuffers[decision.preferredMapIndex].Get(), 0,
+                            D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, mapped);
+  if (SUCCEEDED(hr)) {
+    *mappedIndex = decision.preferredMapIndex;
+    return true;
+  }
+  if (hr != DXGI_ERROR_WAS_STILL_DRAWING || !decision.allowBlockingFallback) {
+    return false;
+  }
+  hr = context->Map(stagingBuffers[decision.fallbackMapIndex].Get(), 0,
+                    D3D11_MAP_READ, 0, mapped);
+  if (FAILED(hr)) {
+    return false;
+  }
+  *mappedIndex = decision.fallbackMapIndex;
   return true;
 }
 
@@ -615,17 +652,16 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
   ctx.context->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
   ctx.context->CSSetShaderResources(0, 6, nullSrvs);
 
-  ctx.context->CopyResource(ctx.stagingBuffer.Get(), ctx.outputBuffer.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  const HRESULT hr = ctx.context->Map(ctx.stagingBuffer.Get(), 0,
-                                      D3D11_MAP_READ, 0, &mapped);
-  if (FAILED(hr)) {
-    logCompositorEvent("readback_failed", hresultDetail(hr));
+  size_t mappedIndex = 0;
+  if (!mapReadbackRing(ctx.context.Get(), ctx.stagingBuffers, ctx.stagingRing,
+                       ctx.outputBuffer.Get(), &mapped, &mappedIndex)) {
+    logCompositorEvent("readback_pending", "staging ring not ready");
     return false;
   }
   output.resize(ctx.outputBufferSize);
   std::memcpy(output.data(), mapped.pData, ctx.outputBufferSize);
-  ctx.context->Unmap(ctx.stagingBuffer.Get(), 0);
+  ctx.context->Unmap(ctx.stagingBuffers[mappedIndex].Get(), 0);
   return true;
 }
 
@@ -782,7 +818,8 @@ struct GuidedContext {
   LayerTexture maskIn;
   ComPtr<ID3D11Buffer> outBuffer;
   ComPtr<ID3D11UnorderedAccessView> outUav;
-  ComPtr<ID3D11Buffer> outStaging;
+  std::vector<ComPtr<ID3D11Buffer>> outStaging;
+  StagingReadbackRing outRing;
   size_t outSize = 0;
   int radius = 8;
   float epsilon = 1.0e-3f;
@@ -917,7 +954,8 @@ bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
     ctx.planeT3 = {};
     ctx.outBuffer.Reset();
     ctx.outUav.Reset();
-    ctx.outStaging.Reset();
+    ctx.outStaging.clear();
+    ctx.outRing.reset();
     ctx.outSize = 0;
     ctx.planeW = workW;
     ctx.planeH = workH;
@@ -933,7 +971,8 @@ bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
   if (!ctx.outBuffer || ctx.outSize != needed) {
     ctx.outBuffer.Reset();
     ctx.outUav.Reset();
-    ctx.outStaging.Reset();
+    ctx.outStaging.clear();
+    ctx.outRing.reset();
     D3D11_BUFFER_DESC bufferDesc{};
     bufferDesc.ByteWidth = static_cast<UINT>(needed);
     bufferDesc.Usage = D3D11_USAGE_DEFAULT;
@@ -951,12 +990,16 @@ bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
                                                       &uavDesc, &ctx.outUav))) {
       return false;
     }
-    D3D11_BUFFER_DESC stagingDesc{};
-    stagingDesc.ByteWidth = static_cast<UINT>(needed);
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    if (FAILED(base.device->CreateBuffer(&stagingDesc, nullptr, &ctx.outStaging))) {
-      return false;
+    ctx.outStaging.resize(ctx.outRing.depth());
+    for (auto &stagingBuffer : ctx.outStaging) {
+      D3D11_BUFFER_DESC stagingDesc{};
+      stagingDesc.ByteWidth = static_cast<UINT>(needed);
+      stagingDesc.Usage = D3D11_USAGE_STAGING;
+      stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      if (FAILED(base.device->CreateBuffer(&stagingDesc, nullptr, &stagingBuffer))) {
+        ctx.outStaging.clear();
+        return false;
+      }
     }
     ctx.outSize = needed;
   }
@@ -1080,12 +1123,11 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
                  ctx.outUav.Get(), workW, workH);
 
   D3D11Context &baseCtx = base;
-  baseCtx.context->CopyResource(ctx.outStaging.Get(), ctx.outBuffer.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  const HRESULT hr =
-      baseCtx.context->Map(ctx.outStaging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-  if (FAILED(hr)) {
-    logCompositorEvent("guided_readback_failed", hresultDetail(hr));
+  size_t mappedIndex = 0;
+  if (!mapReadbackRing(baseCtx.context.Get(), ctx.outStaging, ctx.outRing,
+                       ctx.outBuffer.Get(), &mapped, &mappedIndex)) {
+    logCompositorEvent("guided_readback_pending", "staging ring not ready");
     return false;
   }
   const size_t strideW = (static_cast<size_t>(workW) + 3u) & ~static_cast<size_t>(3u);
@@ -1095,12 +1137,16 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
     std::memcpy(refined.data() + static_cast<size_t>(y) * workW,
                 src + static_cast<size_t>(y) * strideW, workW);
   }
-  baseCtx.context->Unmap(ctx.outStaging.Get(), 0);
+  baseCtx.context->Unmap(ctx.outStaging[mappedIndex].Get(), 0);
 
   mask.width = workW;
   mask.height = workH;
   mask.alpha = std::move(refined);
   return true;
+}
+
+std::string d3d11CompositorAdapterStatus() {
+  return d3dAdapterStatusString(sharedD3DAdapter());
 }
 
 }  // namespace broadify::meeting

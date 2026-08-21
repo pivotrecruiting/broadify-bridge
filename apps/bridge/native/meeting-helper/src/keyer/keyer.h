@@ -56,6 +56,7 @@ struct KeyerStatus {
   // 0.0 = no probe ran (macOS, ONNX disabled, load failure).
   double probeInferenceMs = 0.0;
   bool modelHashOk = false;
+  std::string gpuAdapter;
   KeyerMetrics metrics;
 };
 

@@ -1,5 +1,6 @@
 #include "keyer/modnet_keyer.h"
 
+#include "compose/d3d_adapter_select.h"
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
 #include "util/sha256.h"
@@ -25,6 +26,8 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <dml_provider_factory.h>
+#include <d3d12.h>
+#include <wrl/client.h>
 #endif
 #endif
 
@@ -78,6 +81,8 @@ bool selfTestForcesCpuProvider() {
 #endif
 
 #if BROADIFY_ENABLE_MODNET && defined(_WIN32)
+using Microsoft::WRL::ComPtr;
+
 std::wstring utf8ToWidePath(const std::string &path) {
   if (path.empty()) {
     return std::wstring();
@@ -100,6 +105,44 @@ std::wstring utf8ToWidePath(const std::string &path) {
     widePath.pop_back();
   }
   return widePath;
+}
+
+OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
+                                         const OrtDmlApi *dmlApi,
+                                         std::string *adapterStatus) {
+  const D3DAdapterInfo &adapter = sharedD3DAdapter();
+  if (!adapter.available || dmlApi == nullptr) {
+    return nullptr;
+  }
+
+  ComPtr<ID3D12Device> device;
+  HRESULT hr = D3D12CreateDevice(adapter.adapter.Get(), D3D_FEATURE_LEVEL_11_0,
+                                 IID_PPV_ARGS(&device));
+  if (FAILED(hr)) {
+    return nullptr;
+  }
+
+  D3D12_COMMAND_QUEUE_DESC queueDesc{};
+  queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+  ComPtr<ID3D12CommandQueue> queue;
+  hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
+  if (FAILED(hr)) {
+    return nullptr;
+  }
+
+  ComPtr<IDMLDevice> dmlDevice;
+  hr = DMLCreateDevice(device.Get(), DML_CREATE_DEVICE_FLAG_NONE,
+                       IID_PPV_ARGS(&dmlDevice));
+  if (FAILED(hr)) {
+    return nullptr;
+  }
+  OrtStatus *status = dmlApi->SessionOptionsAppendExecutionProvider_DML1(
+      sessionOptions, dmlDevice.Get(), queue.Get());
+  if (status == nullptr && adapterStatus != nullptr) {
+    *adapterStatus = d3dAdapterStatusString(adapter);
+  }
+  return status;
 }
 #endif
 
@@ -476,10 +519,19 @@ class ModnetKeyer::Impl {
         }
       }
       if (dmlApi != nullptr) {
-        OrtDmlDeviceOptions deviceOptions{
-            OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
-        dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
-            sessionOptions, &deviceOptions);
+        dmlStatus = appendDirectMlOnSharedAdapter(sessionOptions, dmlApi,
+                                                  &status_.gpuAdapter);
+        if (dmlStatus == nullptr && !status_.gpuAdapter.empty()) {
+          status_.provider = "directml";
+        } else {
+          if (dmlStatus != nullptr) {
+            Ort::GetApi().ReleaseStatus(dmlStatus);
+          }
+          OrtDmlDeviceOptions deviceOptions{
+              OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
+          dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
+              sessionOptions, &deviceOptions);
+        }
         if (dmlStatus != nullptr) {
           // HighPerformance append failed: fall back to the legacy device 0.
           Ort::GetApi().ReleaseStatus(dmlStatus);

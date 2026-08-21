@@ -64,6 +64,7 @@ set(MEETING_HELPER_SOURCES
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
   src/compose/compositor.cpp
+  src/compose/d3d_adapter_select.cpp
   src/common/options.cpp
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
@@ -215,7 +216,7 @@ if(WIN32)
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler DirectML avrt winmm dbghelp)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -261,6 +262,13 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(framebus_reader_log_gate_test
     tests/framebus_reader_log_gate_test.cpp
     src/pipeline/framebus_reader_log_gate.cpp
+  )
+  add_executable(staging_readback_ring_test
+    tests/staging_readback_ring_test.cpp
+  )
+  add_executable(d3d_adapter_select_test
+    tests/d3d_adapter_select_test.cpp
+    src/compose/d3d_adapter_select.cpp
   )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
@@ -325,6 +333,8 @@ if(MEETING_HELPER_BUILD_TESTS)
   foreach(helper_test
     guided_mask_refine_test
     framebus_reader_log_gate_test
+    staging_readback_ring_test
+    d3d_adapter_select_test
     keyer_governor_test
     keyer_cadence_test
     mask_retention_test

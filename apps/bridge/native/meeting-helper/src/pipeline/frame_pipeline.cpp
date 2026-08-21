@@ -2820,6 +2820,9 @@ void runFramePipeline(const Options &options,
       {
         std::lock_guard<std::mutex> lock(state.mutex);
         state.compositorBackend = lastCompositorBackend();
+#if defined(_WIN32)
+        state.compositorAdapter = d3d11CompositorAdapterStatus();
+#endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);
