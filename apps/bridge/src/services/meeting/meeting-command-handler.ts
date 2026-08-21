@@ -20,14 +20,8 @@ import {
   MeetingRecordingStartSchema,
 } from "./meeting-command-schemas.js";
 import { meetingMediaService } from "./meeting-media-service.js";
-import {
-  downloadGuardedBuffer,
-  openGuardedDownload,
-} from "./media-download.js";
-import {
-  BACKGROUND_IMAGE_MAX_BYTES,
-  storeBackgroundImage,
-} from "./background-image-store.js";
+import { openGuardedDownload } from "./media-download.js";
+import { fetchBackgroundImage } from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
 import {
   conferenceDirectorService,
@@ -35,6 +29,8 @@ import {
   parseInjectReading,
 } from "../conference/director/conference-director-service.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
+import { mapVcamStartError } from "./vcam-error-mapper.js";
+import { publishMeetingErrorEvent } from "./meeting-event-publisher.js";
 import {
   executeMeetingCallControl,
   MeetingCallControlError,
@@ -173,6 +169,33 @@ function configureMeetingGraphicsOutputs(
       }
     });
   return { completion: run, alreadySatisfiedOrPending };
+}
+
+/**
+ * Best-effort virtual-camera arm after a successful engine start. Runs in
+ * the background; failures are published as meeting error events with the
+ * stable vcam error codes so the UI can show actionable guidance without
+ * blocking the engine start itself.
+ */
+function autoArmVirtualCamera(): void {
+  void (async () => {
+    try {
+      const client = requireClient();
+      await client.virtualCameraStart();
+      console.info("[meeting] virtual camera auto-armed with engine start");
+    } catch (error: unknown) {
+      // A background arm must never take the process down — not even when
+      // the event publisher itself is unavailable (tests, early shutdown).
+      try {
+        const rawMessage = error instanceof Error ? error.message : String(error);
+        const mapped = mapVcamStartError(rawMessage);
+        publishMeetingErrorEvent(mapped.errorCode, mapped.error);
+        console.warn(`[meeting] virtual camera auto-arm failed: ${mapped.error}`);
+      } catch {
+        console.warn("[meeting] virtual camera auto-arm failed (unreportable)");
+      }
+    }
+  })();
 }
 
 async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCommandResultT> {
@@ -360,6 +383,11 @@ export async function handleMeetingCommand(
       // background later only costs a layer send instead of a cold start.
       // Format must match what the web app sends (MEETING_GRAPHICS_FORMAT,
       // 1920x1080@30) so the later configure call is a cache hit.
+      // Auto-arm the virtual camera with the engine so "Broadify Camera"
+      // exists in Teams/Zoom without the live-test click. Fire-and-forget:
+      // failures surface as meeting error events with the stable vcam codes
+      // (W1) instead of failing the engine start.
+      autoArmVirtualCamera();
       configureMeetingGraphicsOutputs(1920, 1080, 30).completion.catch((error: unknown) => {
         console.warn(
           `[meeting] graphics renderer pre-warm failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -582,13 +610,10 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_background_image_fetch",
       );
-      const { body, contentType } = await downloadGuardedBuffer(
-        url,
-        BACKGROUND_IMAGE_MAX_BYTES,
-        25_000,
-      );
-      const path = await storeBackgroundImage(body, contentType);
-      return { success: true, data: { path } };
+      // Cached per URL path (query/signature stripped) with conditional
+      // revalidation; see background-image-store.ts.
+      const { path, cached } = await fetchBackgroundImage(url);
+      return { success: true, data: { path, cached } };
     }
 
     case "meeting_media_fetch": {
@@ -803,15 +828,19 @@ export async function handleMeetingCommand(
         };
       }
       if (action === "start") {
-        return { success: true, data: await client.virtualCameraStart() };
+        // The only meeting RPC that previously bypassed runMeetingRpc: raw
+        // COM HRESULT strings reached the UI as unhandled command errors.
+        const result = await runMeetingRpc(() => client.virtualCameraStart());
+        if (!result.success && result.error) {
+          const mapped = mapVcamStartError(result.error);
+          return { ...result, error: mapped.error, errorCode: mapped.errorCode };
+        }
+        return result;
       }
       if (action === "stop") {
-        return { success: true, data: await client.virtualCameraStop() };
+        return runMeetingRpc(() => client.virtualCameraStop());
       }
-      return {
-        success: true,
-        data: await client.virtualCameraConfigure(settings ?? {}),
-      };
+      return runMeetingRpc(() => client.virtualCameraConfigure(settings ?? {}));
     }
 
     case "meeting_graphics_configure_outputs": {
