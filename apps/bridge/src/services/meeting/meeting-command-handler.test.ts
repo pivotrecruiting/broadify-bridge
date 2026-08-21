@@ -168,6 +168,10 @@ describe("meeting-command-handler", () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.virtualCameraStart).toHaveBeenCalledTimes(1);
+      // Unattended arm: the registration self-heal must never raise UAC.
+      expect(mockClient.virtualCameraStart).toHaveBeenCalledWith({
+        allowElevation: false,
+      });
       expect(mockClient.framebusStart).not.toHaveBeenCalled();
     });
 
@@ -476,6 +480,19 @@ describe("meeting-command-handler", () => {
 
       expect(mockClient.framebusStart).toHaveBeenCalled();
       expect(result.success).toBe(true);
+    });
+
+    it("starts the virtual camera with elevation allowed on explicit operator request", async () => {
+      mockClient.virtualCameraStart.mockResolvedValue({ active: true });
+
+      const result = await handleMeetingCommand("meeting_output_configure", {
+        target: "virtual_camera",
+        action: "start",
+      });
+
+      expect(result.success).toBe(true);
+      // Only the explicit start may raise the one-shot UAC prompt.
+      expect(mockClient.virtualCameraStart).toHaveBeenCalledWith();
     });
 
     it("configures the virtual camera", async () => {
