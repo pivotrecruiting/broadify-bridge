@@ -228,6 +228,31 @@ if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
 fi
 verify_codesign "$APP_PATH" "deep"
 
+# BroadifyVCam.app ships inside the bundle but is signIgnore'd by
+# electron-builder — gate it explicitly: it must verify, carry the release
+# team, and must NOT be an Apple-Development build (get-task-allow), which
+# customer Macs refuse to load as a system extension.
+VCAM_APP_PATH="$APP_PATH/Contents/Resources/native/vcam-helper/BroadifyVCam.app"
+VCAM_EXT_PATH="$VCAM_APP_PATH/Contents/Library/SystemExtensions/com.broadify.vcam.extension.systemextension"
+if [[ -d "$VCAM_APP_PATH" ]]; then
+  verify_codesign "$VCAM_APP_PATH" "deep"
+  VCAM_TEAM_ID="$(team_id "$VCAM_APP_PATH")"
+  if [[ "$VCAM_TEAM_ID" != "PG38DC5RG9" ]]; then
+    echo "[MacSignVerify] BroadifyVCam.app team mismatch: ${VCAM_TEAM_ID:-none}" >&2
+    exit 1
+  fi
+  for vcam_target in "$VCAM_APP_PATH" "$VCAM_EXT_PATH"; do
+    if codesign -d --entitlements :- "$vcam_target" 2>/dev/null | grep -q "get-task-allow"; then
+      echo "[MacSignVerify] $vcam_target carries get-task-allow (development signing) — release builds must use VCAM_SIGNING_MODE=developer-id" >&2
+      exit 1
+    fi
+  done
+  echo "[MacSignVerify] BroadifyVCam.app signing verified (team PG38DC5RG9, no get-task-allow)"
+else
+  echo "[MacSignVerify] BroadifyVCam.app missing from bundle" >&2
+  exit 1
+fi
+
 require_valid_entitlements "$HELPER_EXEC_PATH"
 require_valid_entitlements "$APP_PATH"
 require_entitlement_key "$APP_PATH" "com.apple.security.network.client"
