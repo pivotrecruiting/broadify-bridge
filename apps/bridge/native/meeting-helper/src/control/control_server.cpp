@@ -668,18 +668,34 @@ std::string handleRpc(const std::string &line,
     return okResponse(id, result.str());
   }
 
+  // The FrameBus output (shared memory, read by the conference display
+  // output) and the raw-frame TCP stream (read by the virtual-camera
+  // consumers) are independent outputs: toggling one must not black out the
+  // other.
   if (method == "output.framebus.start") {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = true;
-    state.vcamRawRunning = true;
     markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":true}");
   }
 
   if (method == "output.framebus.stop") {
-    previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = false;
+    markProgramDirty(state);
+    return okResponse(id, "{\"enabled\":true,\"running\":false}");
+  }
+
+  if (method == "output.vcam.raw.start") {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamRawRunning = true;
+    markProgramDirty(state);
+    return okResponse(id, "{\"enabled\":true,\"running\":true}");
+  }
+
+  if (method == "output.vcam.raw.stop") {
+    previewFrames.clear();
+    std::lock_guard<std::mutex> lock(state.mutex);
     state.vcamRawRunning = false;
     markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":false}");
