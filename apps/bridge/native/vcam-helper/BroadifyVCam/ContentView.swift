@@ -17,17 +17,17 @@ struct ContentView: View {
                 .font(.title2)
                 .bold()
             Text(
-                "Installs the system camera extension. The meeting engine "
-                    + "publishes frames via FrameBus shared memory."
+                "Installiert die System-Kameraerweiterung. Die Meeting-Engine "
+                    + "liefert die Bilder über den FrameBus."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
-                Button("Activate extension") {
+                Button("Erweiterung aktivieren") {
                     manager.activate()
                 }
-                Button("Deactivate extension") {
+                Button("Erweiterung deaktivieren") {
                     manager.deactivate()
                 }
             }
@@ -35,15 +35,15 @@ struct ContentView: View {
             if manager.needsMoveToApplications {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(
-                        "macOS blocked the camera extension because BroadifyVCam is not "
-                            + "running from the Applications folder (App Translocation). "
-                            + "Move BroadifyVCam.app to /Applications using Finder, then "
-                            + "launch it from there and try again."
+                        "macOS blockiert die Kameraerweiterung, weil BroadifyVCam nicht "
+                            + "aus dem Programme-Ordner läuft (App Translocation). "
+                            + "Bewege BroadifyVCam.app im Finder nach /Programme, starte sie "
+                            + "von dort und versuche es erneut."
                     )
                     .font(.footnote)
                     .foregroundStyle(.orange)
 
-                    Button("Show in Finder") {
+                    Button("Im Finder zeigen") {
                         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
                     }
                 }
@@ -52,14 +52,14 @@ struct ContentView: View {
             if manager.awaitingUserApproval {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(
-                        "macOS requires approval in System Settings. "
-                            + "Open General → Login Items & Extensions → Camera Extensions, "
-                            + "then enable broadify Virtual Camera."
+                        "macOS verlangt eine Freigabe in den Systemeinstellungen: "
+                            + "Allgemein → Anmeldeobjekte & Erweiterungen → Kamera-Erweiterungen "
+                            + "öffnen und broadify Virtual Camera aktivieren."
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                    Button("Open System Settings") {
+                    Button("Systemeinstellungen öffnen") {
                         SystemExtensionSettings.openCameraExtensionApprovalPane()
                     }
                 }
@@ -84,7 +84,7 @@ struct ContentView: View {
  * Wraps OSSystemExtensionManager requests for the camera extension.
  */
 final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionRequestDelegate {
-    @Published var statusText = "Ready."
+    @Published var statusText = "Bereit."
     @Published var isRequestingActivation = false
     @Published var awaitingUserApproval = false
     @Published var needsMoveToApplications = false
@@ -136,8 +136,8 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         refreshLaunchState()
         if needsMoveToApplications {
             statusText =
-                "Cannot activate from \(Bundle.main.bundlePath). "
-                + "Move BroadifyVCam.app to /Applications and launch it from there."
+                "Aktivierung aus \(Bundle.main.bundlePath) nicht möglich. "
+                + "BroadifyVCam.app nach /Programme bewegen und von dort starten."
             return
         }
 
@@ -169,7 +169,7 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
         logger.info("Deactivation requested for \(self.extensionIdentifier, privacy: .public)")
-        statusText = "Deactivation requested…"
+        statusText = "Deaktivierung angefordert…"
     }
 
     // MARK: - OSSystemExtensionRequestDelegate
@@ -191,7 +191,7 @@ final class ExtensionManager: NSObject, ObservableObject, OSSystemExtensionReque
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         awaitingUserApproval = true
         statusText =
-            "Waiting for approval in System Settings → General → Login Items & Extensions → Camera Extensions."
+            "Warte auf Freigabe: Systemeinstellungen → Allgemein → Anmeldeobjekte & Erweiterungen → Kamera-Erweiterungen."
         logger.info("Activation requires user approval in System Settings")
         SystemExtensionSettings.openCameraExtensionApprovalPane()
     }

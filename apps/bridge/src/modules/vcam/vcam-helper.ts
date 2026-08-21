@@ -86,7 +86,10 @@ function readBundleVersion(appPath: string): number | null {
 export function shouldAutoUpgradeEmbeddedVcamApp(
   embeddedVersion: number | null,
   installedVersion: number | null,
-  autoUpgradeOnStart = process.env[VCAM_AUTO_UPGRADE_ON_START_ENV] === "1",
+  // Default ON (opt-out via =0): customers must receive vcam fixes through
+  // normal bridge updates — the previous opt-in flag was never set anywhere,
+  // so installed extensions stayed frozen forever after the first install.
+  autoUpgradeOnStart = process.env[VCAM_AUTO_UPGRADE_ON_START_ENV] !== "0",
 ): boolean {
   if (!autoUpgradeOnStart || embeddedVersion === null || installedVersion === null) {
     return false;
@@ -215,7 +218,14 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
     };
   }
 
-  const normalized = listOutput.toLowerCase();
+  // Evaluate ONLY the lines describing our extension: matching the whole
+  // output made any other vendor's "[activated enabled]" extension count as
+  // ours (false available/running, wrong MEETING_VCAM_NATIVE_AVAILABLE).
+  const ownLines = listOutput
+    .split("\n")
+    .filter((line) => line.includes(VCAM_EXTENSION_BUNDLE_ID))
+    .map((line) => line.toLowerCase());
+  const normalized = ownLines.join("\n");
   const activated = normalized.includes("activated enabled");
   const waitingForUser =
     normalized.includes("waiting for user") ||

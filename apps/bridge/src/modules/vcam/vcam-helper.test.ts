@@ -316,6 +316,30 @@ describe("vcam-helper", () => {
     expect(status.code).toBeUndefined();
   });
 
+  it("ignores other vendors' activated extensions when classifying our state", () => {
+    if (process.platform !== "darwin") {
+      return;
+    }
+    mockExecFileSync.mockImplementation((command: unknown) => {
+      if (command === "systemextensionsctl") {
+        // Foreign extension active, ours still pending approval.
+        return [
+          "\t*\tXYZ\tcom.other.vendor.extension (2.0)\tcom.other.vendor.extension\t[activated enabled]",
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated waiting for user]",
+        ].join("\n");
+      }
+      throw new Error("No such xattr: com.apple.quarantine");
+    });
+
+    expect(isVcamExtensionAvailable()).toBe(false);
+  });
+
+  it("auto-upgrades by default and honors the opt-out", () => {
+    expect(shouldAutoUpgradeEmbeddedVcamApp(19, 18)).toBe(true);
+    expect(shouldAutoUpgradeEmbeddedVcamApp(18, 18)).toBe(false);
+    expect(shouldAutoUpgradeEmbeddedVcamApp(19, 18, false)).toBe(false);
+  });
+
   it("reports activation_completed when the extension activates after launch", async () => {
     const installed = "/Applications/BroadifyVCam.app";
     if (process.platform !== "darwin" || !hasEmbeddedVcamSystemExtension(installed)) {
