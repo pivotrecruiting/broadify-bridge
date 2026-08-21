@@ -39,8 +39,12 @@ HRESULT MediaSource::Initialize(IMFAttributes *attributes) {
     attributes->CopyAllItems(this);
   }
 
-  // Connect to the raw-frame stream and briefly wait for the first frame so the
-  // advertised media type matches the real program geometry.
+  // One-off geometry probe: connect to the raw-frame stream, briefly wait for
+  // the first frame so the advertised media type matches the real program
+  // geometry, then disconnect again. The Frame Server instantiates this
+  // source as soon as the camera is armed — long before any app streams — and
+  // an open connection makes the helper render, swizzle and send every frame.
+  // MediaStream reconnects for as long as the stream is actually running.
   _client = std::make_unique<RawFrameClient>(resolvePort());
   _client->start();
   _width = kFallbackWidth;
@@ -54,7 +58,9 @@ HRESULT MediaSource::Initialize(IMFAttributes *attributes) {
       break;
     }
   }
-  VcamLog("MediaSource::Initialize geometry %ux%u", _width, _height);
+  _client->stop();
+  VcamLog("MediaSource::Initialize geometry %ux%u (probe disconnected)", _width,
+          _height);
 
   _stream = winrt::make_self<MediaStream>();
   CK(_stream->Initialize(this, 0, _client.get(), _width, _height));

@@ -81,8 +81,26 @@ void RawFrameClient::stop() {
   if (!running_.exchange(false)) {
     return;
   }
+  {
+    // Wake a recv()/connect() that is blocked on the live socket; the run
+    // loop owns the handle and closes it once it observes running_ == false.
+    std::lock_guard<std::mutex> lock(socketMutex_);
+    if (activeSocket_ != kNoSocket) {
+      shutdown(static_cast<SOCKET>(activeSocket_), SD_BOTH);
+    }
+  }
   if (thread_.joinable()) {
     thread_.join();
+  }
+}
+
+void RawFrameClient::sleepWhileRunning(double ms) const {
+  constexpr DWORD kSliceMs = 50;
+  DWORD remaining = static_cast<DWORD>(ms);
+  while (remaining > 0 && running_.load()) {
+    const DWORD slice = std::min(remaining, kSliceMs);
+    Sleep(slice);
+    remaining -= slice;
   }
 }
 
@@ -123,9 +141,20 @@ void RawFrameClient::run() {
   while (running_.load()) {
     SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket == INVALID_SOCKET) {
-      Sleep(static_cast<DWORD>(backoffMs));
+      sleepWhileRunning(backoffMs);
       backoffMs = std::min(backoffMs * kBackoffFactor, kBackoffMaxMs);
       continue;
+    }
+    {
+      std::lock_guard<std::mutex> lock(socketMutex_);
+      activeSocket_ = static_cast<uintptr_t>(socket);
+    }
+    if (!running_.load()) {
+      // stop() may have raced the publication above; do not connect.
+      std::lock_guard<std::mutex> lock(socketMutex_);
+      activeSocket_ = kNoSocket;
+      closesocket(socket);
+      break;
     }
 
     sockaddr_in address{};
@@ -162,7 +191,7 @@ void RawFrameClient::run() {
     }
 
     if (connected) {
-      VcamLog("RawFrameClient: connected to 127.0.0.1:%u", port_);
+      VcamLog("RawFrameClient: connected to 127.0.0.1:%u (stream consumer active)", port_);
       backoffMs = kBackoffStartMs;
 
       uint8_t header[kRecordHeaderSize];
@@ -201,9 +230,16 @@ void RawFrameClient::run() {
       }
     }
 
+    {
+      std::lock_guard<std::mutex> lock(socketMutex_);
+      activeSocket_ = kNoSocket;
+    }
     closesocket(socket);
+    if (connected) {
+      VcamLog("RawFrameClient: disconnected from 127.0.0.1:%u", port_);
+    }
     if (running_.load()) {
-      Sleep(static_cast<DWORD>(backoffMs));
+      sleepWhileRunning(backoffMs);
       backoffMs = std::min(backoffMs * kBackoffFactor, kBackoffMaxMs);
     }
   }

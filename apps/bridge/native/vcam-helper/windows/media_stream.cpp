@@ -67,6 +67,14 @@ HRESULT MediaStream::Start() {
   if (!_queue) return MF_E_SHUTDOWN;
   CK(_queue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
   _state = MF_STREAM_STATE_RUNNING;
+  // Consume the raw-frame stream only while an app is actually pulling
+  // samples; the connection is what makes the helper render and send frames.
+  // start() is idempotent, so a repeated Start is harmless. The first
+  // RequestSample calls may still see no frame and fall back to the splash.
+  if (_client) {
+    _client->start();
+    VcamLog("MediaStream: running, raw-frame client connecting");
+  }
   return S_OK;
 }
 
@@ -75,6 +83,12 @@ HRESULT MediaStream::Stop() {
   if (!_queue) return MF_E_SHUTDOWN;
   CK(_queue->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr));
   _state = MF_STREAM_STATE_STOPPED;
+  if (_client) {
+    // Joins the reader thread; it only takes the client's own mutex, never
+    // _lock, so holding _lock here cannot deadlock.
+    _client->stop();
+    VcamLog("MediaStream: stopped, raw-frame client disconnected");
+  }
   return S_OK;
 }
 
@@ -83,6 +97,9 @@ void MediaStream::Shutdown() {
   if (_queue) {
     _queue->Shutdown();
     _queue.Reset();
+  }
+  if (_client) {
+    _client->stop();
   }
   _descriptor.Reset();
   _source.Reset();
