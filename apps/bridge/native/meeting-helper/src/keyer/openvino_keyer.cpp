@@ -144,7 +144,8 @@ class OpenVinoKeyer::Impl {
     status_.provider = entry.provider;
 
     const auto tensorStart = std::chrono::steady_clock::now();
-    buildModnetInputTensor(input, effective, effective, tensor_);
+    ModnetLetterboxMapping letterbox;
+    buildModnetInputTensor(input, effective, effective, tensor_, &letterbox);
     const auto tensorEnd = std::chrono::steady_clock::now();
     try {
       // Zero-copy input: the ov::Tensor wraps tensor_, which outlives the
@@ -171,7 +172,8 @@ class OpenVinoKeyer::Impl {
         maskWidth = dimensionOrFallback(outputShape[outputShape.size() - 1u], effective);
       }
       const auto maskStart = std::chrono::steady_clock::now();
-      copyModnetAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
+      copyModnetAlphaMask(mask, maskWidth, maskHeight, letterbox, input.width,
+                          input.height, input.timestampNs, result.mask);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
       status_.activeKeyer = "modnet";

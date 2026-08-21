@@ -355,6 +355,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/util/json_utils.cpp
     src/util/sha256.cpp
   )
+  add_executable(matting_common_test
+    tests/matting_common_test.cpp
+    src/keyer/matting_common.cpp
+  )
   foreach(helper_test
     guided_mask_refine_test
     framebus_reader_log_gate_test
@@ -370,6 +374,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_gating_test
     tier_handover_test
     matting_backend_test
+    matting_common_test
     control_server_test
     raw_frame_stream_header_test
     raw_frame_record_test

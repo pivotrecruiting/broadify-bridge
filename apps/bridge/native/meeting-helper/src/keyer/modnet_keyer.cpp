@@ -238,7 +238,9 @@ class ModnetKeyer::Impl {
     }
 #endif
     const auto tensorStart = std::chrono::steady_clock::now();
-    buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_);
+    ModnetLetterboxMapping letterbox;
+    buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
+                           &letterbox);
     const auto tensorEnd = std::chrono::steady_clock::now();
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -270,7 +272,8 @@ class ModnetKeyer::Impl {
         maskWidth = dimensionOrFallback(outputShape[outputShape.size() - 1u]);
       }
       const auto maskStart = std::chrono::steady_clock::now();
-      copyModnetAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
+      copyModnetAlphaMask(mask, maskWidth, maskHeight, letterbox, input.width,
+                          input.height, input.timestampNs, result.mask);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
       sessionRunSize_ = inputWidth_;
