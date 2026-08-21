@@ -82,6 +82,7 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/frame_pipeline_gating.cpp
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
+  src/pipeline/guided_work_size.cpp
   src/pipeline/keyer_cadence.cpp
   src/pipeline/mask_retention.cpp
   src/pipeline/subject_presence.cpp
@@ -264,6 +265,11 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(guided_mask_refine_test
     tests/guided_mask_refine_test.cpp
     src/pipeline/guided_mask_refine.cpp
+    src/pipeline/guided_work_size.cpp
+  )
+  add_executable(guided_work_size_test
+    tests/guided_work_size_test.cpp
+    src/pipeline/guided_work_size.cpp
   )
   add_executable(framebus_reader_log_gate_test
     tests/framebus_reader_log_gate_test.cpp
@@ -366,6 +372,7 @@ if(MEETING_HELPER_BUILD_TESTS)
   )
   foreach(helper_test
     guided_mask_refine_test
+    guided_work_size_test
     framebus_reader_log_gate_test
     staging_readback_ring_test
     d3d_adapter_select_test

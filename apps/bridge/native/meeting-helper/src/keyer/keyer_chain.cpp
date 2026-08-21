@@ -1,6 +1,7 @@
 #include "keyer/keyer_chain.h"
 
 #include <cstdlib>
+#include <iostream>
 #include <string>
 
 #include "keyer/matting_backend.h"
@@ -254,6 +255,18 @@ KeyerStatus KeyerChain::status() const {
 
 void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   std::lock_guard<std::mutex> lock(state.mutex);
+  static std::string lastLoggedProvider;
+  static std::string lastLoggedFallbackReason;
+  if (status.provider != lastLoggedProvider) {
+    lastLoggedProvider = status.provider;
+    std::cout << "{\"type\":\"keyer_provider\",\"provider\":\""
+              << status.provider << "\"}" << std::endl;
+  }
+  if (status.fallbackReason != lastLoggedFallbackReason) {
+    lastLoggedFallbackReason = status.fallbackReason;
+    std::cout << "{\"type\":\"keyer_fallback_change\",\"fallback_reason\":\""
+              << status.fallbackReason << "\"}" << std::endl;
+  }
   state.activeKeyer = status.activeKeyer;
   state.fallbackActive = status.fallbackActive;
   state.fallbackReason = status.fallbackReason;

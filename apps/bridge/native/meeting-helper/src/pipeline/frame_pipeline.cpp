@@ -107,7 +107,7 @@ constexpr double kCollapseDropRatio = 0.28;        // sudden drop below this = c
 // good pair is held instead. Set high so a subject genuinely filling the frame
 // is not misclassified. The keyer also resets its temporal state on this event
 // so the next frame re-converges.
-constexpr double kMaxForegroundCoverage = 0.92;
+constexpr double kMaxForegroundCoverage = 0.98;
 
 // Motion-adaptive temporal EMA: the current frame's weight scales with how much
 // the mask changed since the last frame. When the subject is still we lean on
@@ -430,6 +430,14 @@ bool fusedPostprocessEnabled() {
   return enabled;
 }
 
+bool fusedSmootherEmaEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_FUSED_SMOOTHER");
+    return raw == nullptr || raw[0] == '\0' || std::string(raw) != "edge";
+  }();
+  return enabled;
+}
+
 // fused and fused_cadence are the SAME active path for transition-reset
 // purposes (the cadence merely skips inferences within the fused path).
 std::string canonicalKeyerPathLabel(const std::string &label) {
@@ -528,6 +536,14 @@ bool edgeLiveEnabled() {
     return raw != nullptr && raw[0] == '1';
   }();
   return enabled;
+}
+
+bool asyncPreTemporalBlendEnabled() {
+#if defined(_WIN32)
+  return false;
+#else
+  return true;
+#endif
 }
 
 // Half-width of the alpha band (around 0.5) that gets stretched to a crisp
@@ -1215,7 +1231,13 @@ void postprocessAlpha(AlphaMask &mask,
   const auto closeEnd = std::chrono::steady_clock::now();
   remapAlphaSmoothstep(mask);
   const auto remapEnd = std::chrono::steady_clock::now();
-  stabilizeAlphaEdges(mask, previousMask, settings, maskAgeMs);
+  KeyerSettings effectiveSettings = settings;
+#if defined(_WIN32)
+  if (fusedSmootherEmaEnabled() && maskAgeMs == 0.0) {
+    effectiveSettings.edgeStabilizationEnabled = false;
+  }
+#endif
+  stabilizeAlphaEdges(mask, previousMask, effectiveSettings, maskAgeMs);
   const auto dilateStart = std::chrono::steady_clock::now();
   erodeAlpha(mask, settings.maskErodePx);
   dilateAlpha(mask, dynamicDilationRadius(settings, maskAgeMs));
@@ -1362,7 +1384,7 @@ class AsyncKeyerWorker {
         maskAgeMs = state_.keyerMetrics.maskAgeMs;
       }
       const auto temporalStart = std::chrono::steady_clock::now();
-      if (settings.temporalBlendEnabled) {
+      if (settings.temporalBlendEnabled && asyncPreTemporalBlendEnabled()) {
         blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
       }
       const double temporalPreMs =
@@ -2560,7 +2582,7 @@ void runFramePipeline(const Options &options,
                   fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 fusedMask = std::move(fused.mask);
-                stabilizeFusedMask(fusedMask, /*applyEma=*/true);
+                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
                 if (!(d3d11GuidedRefineAvailable() &&
                       guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                   guidedRefineMask(fusedMask, latestCameraFrame);
@@ -2642,7 +2664,7 @@ void runFramePipeline(const Options &options,
                 // refine BELOW then re-snaps the edge to the CURRENT frame, so the EMA
                 // never softens the visible boundary -> stable body AND crisp edge
                 // (mirrors the async worker's EMA -> live-snap order).
-                stabilizeFusedMask(fusedMask, /*applyEma=*/true);
+                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
                 // Retain the stabilized matte BEFORE the guided refine ties
                 // its edge to this specific frame; cadence-reused frames
                 // re-run the refine against their own (current) frame.

@@ -1,6 +1,7 @@
 #include "compose/d3d11_compositor.h"
 #include "compose/d3d_adapter_select.h"
 #include "compose/staging_readback_ring.h"
+#include "pipeline/guided_work_size.h"
 
 // D3D11 port of the Metal GPU compositor (metal_compositor.mm): one compute
 // dispatch composites background (mode/company image), back graphics, the
@@ -261,15 +262,12 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
       const float4 s = sampleLayer(cameraTex, src);
       float alpha = s.a;
       if (cameraKeyed != 0u) {
-        // Keyer mask (stretched over the camera frame) + the same normalize
-        // curve as the previous CPU alpha pass (cutoffs 18/242, smoothstep).
+        // Keyer mask stretched over the camera frame. The alpha curve lives
+        // in postprocessAlpha; do not apply a second compositor curve here.
         alpha = 0.0;
         if (maskPresent != 0u) {
           const float2 uv = (src + 0.5) / float2(camTexWidth, camTexHeight);
-          const float raw = maskTex.SampleLevel(layerSampler, uv, 0).r * 255.0;
-          if (raw > 18.0) {
-            alpha = raw >= 242.0 ? 1.0 : smoothstep(0.0, 1.0, (raw - 18.0) / 224.0);
-          }
+          alpha = maskTex.SampleLevel(layerSampler, uv, 0).r;
           // Only clip truly negligible alpha; keep the soft hair/edge band that
           // the old 24.5/255 snap discarded.
           if (alpha <= 8.0 / 255.0) {
@@ -941,10 +939,9 @@ bool initializeGuidedContext() {
 
   ctx.radius = std::max(
       1, static_cast<int>(guidedEnvDouble("BROADIFY_MEETING_GUIDED_RADIUS", 4.0) + 0.5));
-  // Apple-parity defaults: radius 4 + epsilon 1e-4 snap the edge harder to the
-  // real luminance boundary (was 8 / 1e-3, softer). Env-overridable for tuning.
+  // Apple-parity defaults: radius 4 + epsilon 5e-4. Env-overridable for tuning.
   ctx.epsilon = static_cast<float>(
-      guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 1.0e-4));
+      guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 5.0e-4));
 
   ctx.available = true;
   logCompositorEvent("guided_enabled",
@@ -1110,16 +1107,10 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   GuidedContext &ctx = guidedContext();
   D3D11Context &base = context();
 
-  // Working grid from the guide's aspect, capped at 512 (same as the CPU path).
-  uint32_t workW = guideFrame.width;
-  uint32_t workH = guideFrame.height;
-  constexpr uint32_t kWorkMaxWidth = 512u;
-  if (workW > kWorkMaxWidth) {
-    const double scale = static_cast<double>(kWorkMaxWidth) / workW;
-    workW = kWorkMaxWidth;
-    workH = std::max<uint32_t>(
-        1u, static_cast<uint32_t>(guideFrame.height * scale + 0.5));
-  }
+  const GuidedWorkSize workSize = selectGuidedWorkSize(
+      guideFrame.width, guideFrame.height, guidedWorkWidthFromEnv());
+  const uint32_t workW = workSize.width;
+  const uint32_t workH = workSize.height;
   if (!ensureGuidedResources(workW, workH)) {
     logCompositorEvent("guided_alloc_failed", "");
     return false;

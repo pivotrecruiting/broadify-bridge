@@ -15,7 +15,7 @@ bool expect(bool condition, const char *what) {
   return condition;
 }
 
-constexpr double kEmpty = 0.0005;    // clearly below the 0.003 floor
+constexpr double kEmpty = 0.0005;    // clearly below the 0.002 floor
 constexpr double kPresent = 0.05;    // clearly above the floor
 
 }  // namespace
@@ -25,7 +25,7 @@ int main() {
 
   {
     // Streak accumulation: successful empty frames at 30fps confirm once the
-    // accumulated time reaches acceptAfterMs (400ms), never before.
+    // accumulated time reaches acceptAfterMs (1500ms), never before.
     SubjectPresenceTracker tracker;
     double nowMs = 1000.0;
     ok &= expect(tracker.feed(kPresent, true, nowMs) == SubjectPresence::Present,
@@ -36,11 +36,11 @@ int main() {
                  "first empty frame bridges, never confirms");
     double accumulated = 0.0;
     bool confirmed = false;
-    for (int frame = 0; frame < 20 && !confirmed; ++frame) {
+    for (int frame = 0; frame < 80 && !confirmed; ++frame) {
       nowMs += 33.3;
       accumulated += 33.3;
       const SubjectPresence presence = tracker.feed(kEmpty, true, nowMs);
-      if (accumulated < 400.0) {
+      if (accumulated < 1500.0) {
         ok &= expect(presence == SubjectPresence::BridgingDropout,
                      "empty streak below acceptAfterMs stays BridgingDropout");
       } else {
@@ -70,8 +70,8 @@ int main() {
     ok &= expect(tracker.feed(kEmpty, true, nowMs) == SubjectPresence::BridgingDropout,
                  "the failure gap added no streak time");
     // From here it still takes the full acceptAfterMs of successes
-    // (12 x 33.3ms = 399.6ms accumulated stays just under the 400ms gate).
-    for (int frame = 0; frame < 12; ++frame) {
+    // (45 x 33.3ms = 1498.5ms accumulated stays just under the 1500ms gate).
+    for (int frame = 0; frame < 45; ++frame) {
       nowMs += 33.3;
       ok &= expect(tracker.feed(kEmpty, true, nowMs) == SubjectPresence::BridgingDropout,
                    "post-gap accumulation restarts from the re-anchor");
@@ -88,24 +88,24 @@ int main() {
     double nowMs = 0.0;
     slow.feed(kEmpty, true, nowMs);
     SubjectPresence slowPresence = SubjectPresence::BridgingDropout;
-    for (int frame = 0; frame < 2; ++frame) {
+    for (int frame = 0; frame < 8; ++frame) {
       nowMs += 200.0;
       slowPresence = slow.feed(kEmpty, true, nowMs);
     }
     ok &= expect(slowPresence == SubjectPresence::ConfirmedEmpty,
-                 "slow cadence confirms at 400ms wall time");
+                 "slow cadence confirms at 1500ms wall time");
 
     SubjectPresenceTracker fast;
     nowMs = 0.0;
     fast.feed(kEmpty, true, nowMs);
-    for (int frame = 0; frame < 99; ++frame) {
+    for (int frame = 0; frame < 374; ++frame) {
       nowMs += 4.0;
       ok &= expect(fast.feed(kEmpty, true, nowMs) == SubjectPresence::BridgingDropout,
-                   "fast cadence does not confirm before 400ms wall time");
+                   "fast cadence does not confirm before 1500ms wall time");
     }
     nowMs += 4.0;
     ok &= expect(fast.feed(kEmpty, true, nowMs) == SubjectPresence::ConfirmedEmpty,
-                 "fast cadence confirms at 400ms wall time");
+                 "fast cadence confirms at 1500ms wall time");
   }
 
   {

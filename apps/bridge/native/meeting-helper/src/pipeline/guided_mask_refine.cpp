@@ -1,5 +1,7 @@
 #include "pipeline/guided_mask_refine.h"
 
+#include "pipeline/guided_work_size.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -19,12 +21,11 @@ namespace {
 // Guided filter runs at this working width (keeps aspect). The boundary only
 // needs enough resolution to sit on the subject's edge; a smaller grid keeps the
 // per-frame cost tiny. The caller/compositor upscales the refined mask.
-constexpr uint32_t kWorkMaxWidth = 512u;
 // Radius (px at working res) must SPAN the mask's edge uncertainty, else the
 // filter merely reproduces the input. Epsilon (on 0..1 signals) sets stiffness:
 // smaller snaps harder to strong guide edges. Both overridable for field tuning.
-constexpr int kGuidedRadiusDefault = 8;
-constexpr double kGuidedEpsilonDefault = 1.0e-3;
+constexpr int kGuidedRadiusDefault = 4;
+constexpr double kGuidedEpsilonDefault = 5.0e-4;
 
 double envDouble(const char *name, double fallback) {
   const char *raw = std::getenv(name);
@@ -119,14 +120,10 @@ void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame) {
     return;
   }
 
-  // Working grid from the guide's aspect, capped at kWorkMaxWidth.
-  int workW = static_cast<int>(guideFrame.width);
-  int workH = static_cast<int>(guideFrame.height);
-  if (workW > static_cast<int>(kWorkMaxWidth)) {
-    const double scale = static_cast<double>(kWorkMaxWidth) / workW;
-    workW = static_cast<int>(kWorkMaxWidth);
-    workH = std::max(1, static_cast<int>(guideFrame.height * scale + 0.5));
-  }
+  const GuidedWorkSize workSize = selectGuidedWorkSize(
+      guideFrame.width, guideFrame.height, guidedWorkWidthFromEnv());
+  const int workW = static_cast<int>(workSize.width);
+  const int workH = static_cast<int>(workSize.height);
 
   // Guide luma (0..1) at full res, then resampled to the working grid.
   const int gW = static_cast<int>(guideFrame.width);
