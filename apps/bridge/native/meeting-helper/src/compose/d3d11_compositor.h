@@ -32,6 +32,8 @@ bool d3d11GuidedRefineAvailable();
 // path. Returns false on any failure; callers must then run the CPU refine.
 bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame);
 
+void resetGuidedRefineD3D11History();
+
 uint64_t d3d11CompositorCameraUploadCount();
 
 std::string d3d11CompositorAdapterStatus();

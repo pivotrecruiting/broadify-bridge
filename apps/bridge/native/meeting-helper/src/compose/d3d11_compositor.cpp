@@ -1115,6 +1115,10 @@ bool d3d11GuidedRefineAvailable() {
   return initializeGuidedContext();
 }
 
+void resetGuidedRefineD3D11History() {
+  guidedContext().hasPrevAb = false;
+}
+
 bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   if (!initializeGuidedContext()) {
     return false;

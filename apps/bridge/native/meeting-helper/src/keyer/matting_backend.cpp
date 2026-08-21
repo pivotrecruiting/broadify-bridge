@@ -18,16 +18,29 @@ bool hasPrefix(const std::string &value, const char *prefix) {
 }
 
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
+bool isLoadStageFallback(const std::string &reason) {
+  return reason == "loading" || reason == "not_loaded" ||
+         reason == "manifest_missing" || reason == "model_missing" ||
+         reason == "model_hash_missing" || reason == "model_hash_mismatch" ||
+         reason == "model_path_invalid" ||
+         reason == "session_create_failed" ||
+         reason == "onnxruntime_disabled";
+}
+
 // Runs the OpenVINO backend and permanently hands over to the ONNX Runtime
-// (DirectML) backend when OpenVINO cannot load its model or keeps failing
-// inference. Load-stage failures (model/hash/session problems) switch
-// immediately; transient inference failures only after a few in a row, so a
-// single hiccup does not throw away the faster backend.
+// (DirectML) backend when OpenVINO cannot load synchronously or keeps failing
+// inference. With async first-load, load-stage failures stay on OpenVINO so
+// the fused warmup retry gate can expose and retry them honestly; transient
+// inference failures only switch after a few in a row, so a single hiccup does
+// not throw away the faster backend.
 class FallbackMattingKeyer final : public MattingKeyer {
  public:
   FallbackMattingKeyer(std::unique_ptr<MattingKeyer> primary,
-                       std::unique_ptr<MattingKeyer> fallback)
-      : primary_(std::move(primary)), fallback_(std::move(fallback)) {}
+                       std::unique_ptr<MattingKeyer> fallback,
+                       bool loadInApply)
+      : primary_(std::move(primary)),
+        fallback_(std::move(fallback)),
+        loadInApply_(loadInApply) {}
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override {
     if (!primary_) {
@@ -39,6 +52,9 @@ class FallbackMattingKeyer final : public MattingKeyer {
       return result;
     }
     const std::string &reason = result.status.fallbackReason;
+    if (!loadInApply_ && isLoadStageFallback(reason)) {
+      return result;
+    }
     const bool transientFailure =
         reason == "inference_failed" || reason == "invalid_output";
     if (transientFailure) {
@@ -75,6 +91,7 @@ class FallbackMattingKeyer final : public MattingKeyer {
   static constexpr int kMaxConsecutiveInferenceFailures = 3;
   std::unique_ptr<MattingKeyer> primary_;
   std::unique_ptr<MattingKeyer> fallback_;
+  bool loadInApply_ = true;
   int consecutiveInferenceFailures_ = 0;
 };
 #endif  // BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
@@ -181,12 +198,14 @@ std::unique_ptr<MattingKeyer> createMattingKeyer(const MattingBackendOptions &op
   if (shouldUseOpenVino(options, /*openVinoCompiledIn=*/true, availableDevices)) {
     try {
       auto openvino = std::make_unique<OpenVinoKeyer>(
-          OpenVinoKeyerOptions{options.modelsDir, options.openVinoDevice});
+          OpenVinoKeyerOptions{options.modelsDir, options.openVinoDevice,
+                               options.loadInApply});
       std::cout << "{\"type\":\"matting_backend_selected\","
                    "\"backend\":\"openvino_modnet\",\"device\":\""
                 << options.openVinoDevice << "\"}" << std::endl;
       return std::make_unique<FallbackMattingKeyer>(std::move(openvino),
-                                                    std::move(modnet));
+                                                    std::move(modnet),
+                                                    options.loadInApply);
     } catch (...) {
       std::cout << "{\"type\":\"matting_backend_fallback\","
                    "\"from\":\"openvino_modnet\",\"to\":\"modnet\","

@@ -2315,6 +2315,7 @@ void runFramePipeline(const Options &options,
         // 1 = warmup succeeded, -1 = failed, 0 = none/in flight. Written by
         // the warmup thread before it clears the busy flag.
         static std::atomic<int> fusedWarmupOutcome{0};
+        static AsyncModelLoadRetryGate fusedLoadRetryGate;
         // Path label reported last frame. Hoisted from the sticky-label block
         // below so the step-down overlap detection can read which path was on
         // air before the governor demoted.
@@ -2344,6 +2345,9 @@ void runFramePipeline(const Options &options,
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
+#if defined(_WIN32)
+          resetGuidedRefineD3D11History();
+#endif
           fusedSubjectPresenceTracker().reset();
           fusedStabilizerState().reset();
           std::lock_guard<std::mutex> lock(state.mutex);
@@ -2380,6 +2384,19 @@ void runFramePipeline(const Options &options,
             return createMattingKeyer(backendOptions);
           }();
           const auto fusedNow = std::chrono::steady_clock::now();
+          if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
+              fusedWarmupThread.joinable()) {
+            // The thread body finished (busy is cleared last): join returns
+            // immediately and the outcome is stable. This is intentionally
+            // independent of governor/warm-handover toggles because the same
+            // thread also owns async first-load retries.
+            fusedWarmupThread.join();
+            if (fusedHandover.phase() == TierHandover::Phase::Warming) {
+              fusedHandover.completeWarmup(
+                  fusedWarmupOutcome.load(std::memory_order_relaxed) == 1);
+            }
+            fusedWarmupOutcome.store(0, std::memory_order_relaxed);
+          }
           const bool governorAutoEnabled = autoDegradeEnabled();
           if (governorAutoEnabled) {
             fusedGovernor.maybeStepUp(fusedNow);
@@ -2421,17 +2438,6 @@ void runFramePipeline(const Options &options,
           // approved one. While warming, the tier stays Lite256 and the async
           // worker stays on air untouched.
           if (governorAutoEnabled && warmHandoverEnabled()) {
-            if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
-                fusedWarmupThread.joinable()) {
-              // The thread body finished (busy is cleared last): join returns
-              // immediately and the outcome is stable.
-              fusedWarmupThread.join();
-              if (fusedHandover.phase() == TierHandover::Phase::Warming) {
-                fusedHandover.completeWarmup(
-                    fusedWarmupOutcome.load(std::memory_order_relaxed) == 1);
-              }
-              fusedWarmupOutcome.store(0, std::memory_order_relaxed);
-            }
             if (fusedHandover.consumeWarmupSuccess()) {
               // Perform the existing transition on the program thread: the
               // tier commit routes this very frame into the fused branch,
@@ -2488,9 +2494,10 @@ void runFramePipeline(const Options &options,
           if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
               !fusedWarmupThread.joinable()) {
             const KeyerStatus keyerStatus = fusedKeyer->status();
-            if (keyerStatus.fallbackActive &&
-                (keyerStatus.fallbackReason == "not_loaded" ||
-                 keyerStatus.fallbackReason == "loading")) {
+            if (fusedLoadRetryGate.shouldStartWarmup(
+                    keyerStatus, fusedNow,
+                    fusedWarmupBusy.load(std::memory_order_acquire),
+                    fusedWarmupThread.joinable())) {
               fusedWarmupOutcome.store(0, std::memory_order_relaxed);
               fusedWarmupBusy.store(true, std::memory_order_release);
               MattingKeyer *const keyerForWarmup = fusedKeyer.get();
@@ -2893,6 +2900,7 @@ void runFramePipeline(const Options &options,
           // seconds; the busy flag keeps guarding single-flight reuse and
           // its late outcome is discarded (governor reset cleared pending).
           fusedHandover.reset();
+          fusedLoadRetryGate.reset();
           if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
               fusedWarmupThread.joinable()) {
             fusedWarmupThread.join();

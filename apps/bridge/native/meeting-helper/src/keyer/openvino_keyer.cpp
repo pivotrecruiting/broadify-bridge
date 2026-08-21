@@ -113,6 +113,13 @@ class OpenVinoKeyer::Impl {
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) {
     std::lock_guard<std::mutex> lock(mutex_);
     KeyerResult result;
+    if (!loaded_ && !options_.loadInApply) {
+      if (!loadAttempted_) {
+        setFallback("loading");
+      }
+      result.status = status_;
+      return result;
+    }
     if (!ensureLoaded()) {
       result.status = status_;
       return result;
@@ -199,6 +206,21 @@ class OpenVinoKeyer::Impl {
     return status_;
   }
 
+  bool warmupForPerformanceMode(const std::string &performanceMode) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ensureLoaded()) {
+      return false;
+    }
+    const uint32_t requested = modnetInputSizeForMode(performanceMode);
+    if (ensureCompiledForSize(requested, /*warmupRuns=*/1, nullptr)) {
+      failedCompileSize_ = 0u;
+      currentSize_ = requested;
+      return true;
+    }
+    failedCompileSize_ = requested;
+    return false;
+  }
+
  private:
   struct CompiledEntry {
     ov::CompiledModel model;
@@ -218,6 +240,7 @@ class OpenVinoKeyer::Impl {
       return false;
     }
     lastLoadAttemptAt_ = now;
+    loadAttempted_ = true;
 
     // Optional INT8 OpenVINO IR (produced offline by
     // scripts/quantize-modnet-openvino.py): preferred over the FP32 ONNX when
@@ -386,6 +409,7 @@ class OpenVinoKeyer::Impl {
   mutable std::mutex mutex_;
   KeyerStatus status_;
   bool loaded_ = false;
+  bool loadAttempted_ = false;
   std::chrono::steady_clock::time_point lastLoadAttemptAt_{};
   uint32_t currentSize_ = kInitialInputSize;
   uint32_t failedCompileSize_ = 0u;
@@ -405,6 +429,10 @@ KeyerResult OpenVinoKeyer::apply(const VideoFrame &input, const KeyerSettings &s
 
 KeyerStatus OpenVinoKeyer::status() const {
   return impl_->status();
+}
+
+bool OpenVinoKeyer::warmupForPerformanceMode(const std::string &performanceMode) {
+  return impl_->warmupForPerformanceMode(performanceMode);
 }
 
 std::vector<std::string> OpenVinoKeyer::availableDevices() {

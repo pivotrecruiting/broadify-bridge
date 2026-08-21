@@ -238,7 +238,9 @@ class ModnetKeyer::Impl {
     }
 #endif
     if (!loaded_ && !options_.loadInApply) {
-      setFallback("loading");
+      if (!loadAttempted_) {
+        setFallback("loading");
+      }
       result.status = status_;
       return result;
     }
@@ -417,6 +419,7 @@ class ModnetKeyer::Impl {
       return false;
     }
     lastLoadAttemptAt_ = now;
+    loadAttempted_ = true;
 
     const ModelManifestEntry entry = findModelManifestEntry(options_.modelsDir, "modnet");
     if (entry.file.empty()) {
@@ -710,6 +713,7 @@ class ModnetKeyer::Impl {
   mutable std::mutex mutex_;
   KeyerStatus status_;
   bool loaded_ = false;
+  bool loadAttempted_ = false;
   std::chrono::steady_clock::time_point lastLoadAttemptAt_{};
   uint32_t inputWidth_ = kFallbackInputSize;
   uint32_t inputHeight_ = kFallbackInputSize;

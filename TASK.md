@@ -63,14 +63,72 @@ E1. `docs/bridge/features/meeting-keyer-windows.md` (pipeline diagram, env/defau
 - `npm run build` — passed: includes Jest, release contracts, `build:protocol`, `build:bridge`, `build:graphics-renderer`, and app build.
 - `npm run build:meeting-helper` — passed on macOS; helper and all native test binaries built.
 - `npm run test:meeting-helper-native` — expected nonzero on this macOS sandbox: 21/22 CTests passed; only `meeting_recorder_writer_test` failed with known `audio_input_rejected` microphone sandbox issue.
-- Focused native tests run during implementation:
-  - `npm run test:meeting-helper-native -- --tests-regex matting_common_test` — passed.
-  - `npm run test:meeting-helper-native -- --tests-regex 'keyer_governor_test|mask_retention_test|compositor_input_selection_test|matting_backend_test'` — passed.
-  - `npm run test:meeting-helper-native -- --tests-regex 'guided_work_size_test|guided_mask_refine_test|subject_presence_test'` — passed.
-- Focused Jest test during implementation:
-  - `npx jest apps/bridge/src/services/meeting/meeting-helper-manager.test.ts --runInBand` — passed.
 
 Deviations / macOS limits:
 - Windows DirectML, D3D11 compositor, and OpenVINO runtime paths were not compiled or exercised on macOS; `_WIN32` gating was preserved and macOS helper build passed.
-- D3D11 guided-filter coefficient EMA from C4 was not implemented in this bridge pass; radius/epsilon defaults and work-size parity were implemented and tested.
-- Initial MODNet load is still triggered through the keyer load path; tier sessions are prebuilt at load and `apply()` no longer has a session rebuild path.
+- Manual Windows field checks still required: remove/rename the models dir and confirm `model_missing`, one retry launch per 30 s, and no warmup thread churn.
+- `lastGoodMask` hold and `AsyncKeyerWorker::alive()` integration tests remain blocked by `frame_pipeline.cpp` structure; covered by review/manual checks.
+## Review
+- Round: 2/3
+- Verdict: MUST-FIX (round 2) — round-1 M2–M7 resolved, M1/M8 partially.
+- Must-fix (open):
+  - MF-1 `modnet_keyer.cpp` ~:240-244 + `frame_pipeline.cpp` ~:2424, 2488-2516: a failed first load must NOT be masked as
+    `"loading"`. `apply()` sets `loading` only while a load has never been attempted or the warmup thread is in flight; otherwise it
+    returns the stored failure status (`model_missing`, `session_create_failed`, `model_hash_mismatch`, …) untouched. The reload is
+    triggered from the warmup block on any fallback once `kModelLoadRetryInterval` (30 s) elapsed, and the warmup thread is
+    joined/re-armed independently of the governor/warm-handover blocks (must work with `BROADIFY_MEETING_AUTO_DEGRADE=0` and
+    `BROADIFY_MEETING_WARM_HANDOVER=0`). No thread churn (max one warmup thread per 30 s while failing). Unit test with
+    `BROADIFY_ENABLE_MODNET=0`-independent logic where possible (state machine factored out).
+  - MF-2 `matting_backend.cpp` ~:162-186 / `openvino_keyer.cpp` ~:113-116: plumb `loadInApply` into `OpenVinoKeyer` (and the
+    fallback wrapper) so the OpenVINO first load also runs on the warmup thread; same status/retry semantics as MF-1.
+- Notes (do if cheap): reset the D3D11 guided coefficient history (`hasPrevAb`) in `resetKeyerPathState`; document the parallel
+  first-load of the async KeyerChain instance; tests for `lastGoodMask` hold and `AsyncKeyerWorker::alive()` are BLOCKED by the
+  frame_pipeline structure — record as manual checks (models dir removed → `model_missing`, one retry / 30 s, no thread churn).
+- Handoff to human (if any): Windows compile only in CI; first-load/retry behaviour is a field check.
+
+Round 2 implementation notes:
+- MF-1 fixed: async MODNet `apply()` no longer overwrites post-attempt load failures with `loading`; the fused warmup thread is joined outside governor/warm-handover blocks and retries any fallback through a 30 s retry gate.
+- MF-2 fixed: OpenVINO accepts `loadInApply`, warms through `warmupForPerformanceMode`, and the fallback wrapper preserves async load-stage failures for the same retry semantics.
+- Cheap notes done: D3D11 guided coefficient history resets on keyer-path reset; the Windows keyer doc now calls out parallel first-load memory for the fused and async KeyerChain instances.
+- Manual checks recorded: models dir removed -> `model_missing`, one retry / 30 s, no thread churn; `lastGoodMask` hold and `AsyncKeyerWorker::alive()` tests remain blocked by the frame-pipeline structure.
+
+## Verification
+
+- `npm run lint` — passed.
+- `npm run test:jest` — passed: 173 suites, 1951 tests.
+- `npm run build` — passed: includes Jest, release contracts, `build:protocol`, `build:bridge`, `build:graphics-renderer`, and app build.
+- `npm run build:meeting-helper` — passed on macOS; helper and all native test binaries built.
+- `npm run test:meeting-helper-native` — expected nonzero on this macOS sandbox: 21/22 CTests passed; only `meeting_recorder_writer_test` failed with known `audio_input_rejected` microphone sandbox issue.
+
+Deviations / macOS limits:
+- Windows DirectML, D3D11 compositor, and OpenVINO runtime paths were not compiled or exercised on macOS; `_WIN32` gating was preserved and macOS helper build passed.
+- Manual Windows field checks still required: remove/rename the models dir and confirm `model_missing`, one retry launch per 30 s, and no warmup thread churn.
+- `lastGoodMask` hold and `AsyncKeyerWorker::alive()` integration tests remain blocked by `frame_pipeline.cpp` structure; covered by review/manual checks.
+## Review
+- Round: 1/3
+- Verdict: MUST-FIX (round 1)
+- Must-fix (open):
+  - M1 B2: initial MODNet load (hash + 3 tier sessions + warmups, up to several seconds) still runs synchronously in `apply()` →
+    `ensureLoaded()` on the program thread. Run the initial load on the existing `fusedWarmupThread` (same `fusedWarmupBusy` guard);
+    while `loaded_ == false`, `apply()` returns immediately with `fallbackReason="loading"` (no blocking) and the program branch serves
+    the Off/hold compositor input until ready. ctest for the non-blocking behaviour (stub that sleeps in session creation).
+  - M2 B3: the Off-tier "hold last mask" branch is dead: `resetKeyerPathState()` wipes `lastFusedRawMask` on every path change (incl.
+    fused→async_lite and the first Off frame). Keep a separate `lastGoodMask` (updated from the fused publish AND the async worker's
+    selected pair) that `resetKeyerPathState` does not clear, and source the Off hold from it. Unit test: fused→lite→off keeps a mask.
+  - M3 B4: `workerAlive` is never passed to `MaskRetention::decide()` (defaults true) → a dead worker freezes the stale mask forever.
+    Plumb real worker liveness (thread joinable + last-publish heartbeat) at both call sites; unit test.
+  - M4 macOS unchanged: the CPU guided-refine defaults (8/1e-3 → 4/5e-4) and work grid (512 → 960) must apply on Windows only —
+    gate with `#if defined(_WIN32)` (non-Windows keeps 512 / 8 / 1e-3).
+  - M5 macOS unchanged: gate `kMaxForegroundCoverage` 0.98 and the subject-presence thresholds (0.2 % / 1500 ms) to Windows; keep
+    0.92 / 0.003 / 400 ms on non-Windows. Fix `keyerDegraded` so it is true only for governor degradation / fallback while the keyer is
+    enabled (not for `keyer_disabled`).
+  - M6 C4: implement the guided-filter coefficient EMA (0.5) in the D3D11 implementation (as the macOS MPS path does); env
+    `BROADIFY_MEETING_GUIDED_COEFF_EMA` (default 0.5, 0 = off). Windows-only.
+  - M7 C3: replace the `maskAgeMs == 0.0` sentinel in `postprocessAlpha` with an explicit `fusedPath` parameter; make sure the Windows
+    async-lite path always has exactly one temporal smoother, and cadence-reused fused frames do not stack `stabilizeAlphaEdges` on the
+    EMA'd mask when the smoother is `ema`.
+  - M8 tests/logging: add a unit test for the tier switch without rebuild (`PREBUILD_TIERS` incl. excluded-tier behaviour documented),
+    and log `degradation_stage` changes (C6).
+- Notes: document 3 sessions × 2 instances memory; box downsample could use SIMD (defer); BLOCKED for the reviewer: whether macOS
+  production ever hits the ORT/letterbox path depends on the webapp's default keyer model (CoreML path untouched).
+- Handoff to human (if any): Windows compile only in CI.

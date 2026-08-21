@@ -1,6 +1,7 @@
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <set>
@@ -8,6 +9,7 @@
 #include <vector>
 
 using broadify::meeting::createMattingKeyer;
+using broadify::meeting::AsyncModelLoadRetryGate;
 using broadify::meeting::expandOpenVinoDeviceSelection;
 using broadify::meeting::MattingBackendKind;
 using broadify::meeting::MattingBackendOptions;
@@ -146,6 +148,40 @@ int main() {
     ok &= expect(invalid.count(512u) == 1u && invalid.count(320u) == 1u &&
                      invalid.count(256u) == 1u,
                  "invalid PREBUILD_TIERS falls back to all tiers");
+  }
+
+  {
+    AsyncModelLoadRetryGate gate;
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point t0{std::chrono::seconds(100)};
+    broadify::meeting::KeyerStatus status;
+    status.fallbackActive = true;
+    status.fallbackReason = "model_missing";
+
+    ok &= expect(gate.shouldStartWarmup(status, t0, false, false),
+                 "first async load attempt starts for any fallback reason");
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(29), false, false),
+                 "async load retry is throttled for 30 seconds");
+    ok &= expect(gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(30), false, false),
+                 "async load retry re-arms after 30 seconds");
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(60), true, false),
+                 "busy warmup suppresses retry launch");
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(60), false, true),
+                 "joinable warmup suppresses retry launch until joined");
+    status.fallbackActive = false;
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(60), false, false),
+                 "healthy keyer does not start async load retry");
+    gate.reset();
+    status.fallbackActive = true;
+    status.fallbackReason = "session_create_failed";
+    ok &= expect(gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(1), false, false),
+                 "reset clears async load retry backoff");
   }
 
   {
