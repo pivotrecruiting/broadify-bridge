@@ -20,14 +20,8 @@ import {
   MeetingRecordingStartSchema,
 } from "./meeting-command-schemas.js";
 import { meetingMediaService } from "./meeting-media-service.js";
-import {
-  downloadGuardedBuffer,
-  openGuardedDownload,
-} from "./media-download.js";
-import {
-  BACKGROUND_IMAGE_MAX_BYTES,
-  storeBackgroundImage,
-} from "./background-image-store.js";
+import { openGuardedDownload } from "./media-download.js";
+import { fetchBackgroundImage } from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
 import {
   conferenceDirectorService,
@@ -616,13 +610,10 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_background_image_fetch",
       );
-      const { body, contentType } = await downloadGuardedBuffer(
-        url,
-        BACKGROUND_IMAGE_MAX_BYTES,
-        25_000,
-      );
-      const path = await storeBackgroundImage(body, contentType);
-      return { success: true, data: { path } };
+      // Cached per URL path (query/signature stripped) with conditional
+      // revalidation; see background-image-store.ts.
+      const { path, cached } = await fetchBackgroundImage(url);
+      return { success: true, data: { path, cached } };
     }
 
     case "meeting_media_fetch": {
