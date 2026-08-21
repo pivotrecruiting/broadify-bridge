@@ -69,6 +69,35 @@ Deviations / macOS limits:
 - Manual Windows field checks still required: remove/rename the models dir and confirm `model_missing`, one retry launch per 30 s, and no warmup thread churn.
 - `lastGoodMask` hold and `AsyncKeyerWorker::alive()` integration tests remain blocked by `frame_pipeline.cpp` structure; covered by review/manual checks.
 ## Review
+- Round: 3/3
+- Verdict: STOP — round 3 without PASS (bounded loop exhausted). HANDOFF to human.
+- Resolved across rounds: A1–A4, B1 (prebuilt tiers), B3 (lastGoodMask Off hold), B4 (worker liveness), B5, C1–C3, C5, C6, C4 (coeff
+  EMA), D-bridge (`platform`), E docs; macOS gating of all tuned constants; honest load-failure status + 30 s (effective 30–60 s)
+  retry gate; async OpenVINO first load.
+- Open after round 3 (both small, Windows-only):
+  - HF-A COMPILE ERROR: `src/main.cpp:263-268` (OpenVINO self-test, `#if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)`) passes
+    `options.loadInApply` but `Options` has no such member → MSVC C2039. Fix: pass `true` (self-test wants a synchronous load).
+  - HF-B REGRESSION: `matting_backend.cpp:55-57` with `loadInApply=false` a load-stage OpenVINO failure stays on OpenVINO forever
+    (30 s retries) instead of handing over to DirectML. Fix: in `FallbackMattingKeyer::warmupForPerformanceMode`, when the primary
+    warmup fails with a load-stage reason other than `loading`/`not_loaded`, log `matting_backend_fallback`, `primary_.reset()`, and
+    return `fallback_->warmupForPerformanceMode(mode)` (safe: the program thread never touches the keyer while `fusedWarmupBusy`).
+- Notes: retry cadence effectively 30–60 s (document or drop the keyer-internal backoff when `loadInApply=false`); add a ctest
+  asserting that a failed load preserves `model_missing` under `loadInApply=false`.
+- Handoff to human: decision needed — apply HF-A/HF-B as a handoff fix (one commit, re-verified) or leave WP2 out of the next RC.
+
+## Verification
+
+- `npm run lint` — passed.
+- `npm run test:jest` — passed: 173 suites, 1951 tests.
+- `npm run build` — passed: includes Jest, release contracts, `build:protocol`, `build:bridge`, `build:graphics-renderer`, and app build.
+- `npm run build:meeting-helper` — passed on macOS; helper and all native test binaries built.
+- `npm run test:meeting-helper-native` — expected nonzero on this macOS sandbox: 21/22 CTests passed; only `meeting_recorder_writer_test` failed with known `audio_input_rejected` microphone sandbox issue.
+
+Deviations / macOS limits:
+- Windows DirectML, D3D11 compositor, and OpenVINO runtime paths were not compiled or exercised on macOS; `_WIN32` gating was preserved and macOS helper build passed.
+- Manual Windows field checks still required: remove/rename the models dir and confirm `model_missing`, one retry launch per 30 s, and no warmup thread churn.
+- `lastGoodMask` hold and `AsyncKeyerWorker::alive()` integration tests remain blocked by `frame_pipeline.cpp` structure; covered by review/manual checks.
+## Review
 - Round: 2/3
 - Verdict: MUST-FIX (round 2) — round-1 M2–M7 resolved, M1/M8 partially.
 - Must-fix (open):
