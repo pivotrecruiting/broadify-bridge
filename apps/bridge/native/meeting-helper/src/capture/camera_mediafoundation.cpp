@@ -261,6 +261,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     ComPtr<IMFSourceReader> reader;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
+      errorHandler_ = nullptr;
       reader = reader_;
     }
     if (!reader) {
@@ -447,13 +448,21 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   }
 
   void notifyCaptureError(HRESULT hr, const std::string &reason) {
+    std::function<void(HRESULT, const std::string &)> errorHandler;
+    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      if (shutdownStarted_.load()) {
+        return;
+      }
+      errorHandler = errorHandler_;
+    }
     const HRESULT reported =
         FAILED(hr) ? hr : HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
     std::cout << "{\"type\":\"camera_capture_error\",\"hr\":\""
               << hresultHex(reported) << "\",\"reason\":\"" << reason
               << "\"}" << std::endl;
-    if (errorHandler_) {
-      errorHandler_(reported, reason);
+    if (errorHandler) {
+      errorHandler(reported, reason);
     }
   }
 
@@ -578,6 +587,9 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 // the facade's last shared_ptr goes away.
 class MfCaptureSession {
  public:
+  explicit MfCaptureSession(std::string cameraId = {})
+      : cameraId_(std::move(cameraId)) {}
+
   ~MfCaptureSession() {
     stop();
     callback_.Reset();
@@ -596,6 +608,7 @@ class MfCaptureSession {
       return false;
     }
     callback_ = std::move(callback);
+    cameraId_ = cameraId;
     return true;
   }
 
@@ -614,7 +627,10 @@ class MfCaptureSession {
                      : false;
   }
 
+  const std::string &cameraId() const { return cameraId_; }
+
  private:
+  std::string cameraId_;
   ComPtr<MfReaderCallback> callback_;
 };
 
@@ -707,7 +723,7 @@ class MediaFoundationCameraSource final : public CameraSource {
       if (opened.count(camera->cameraIndex) != 0) {
         continue;  // de-dupe repeated indices.
       }
-      auto session = std::make_shared<MfCaptureSession>();
+      auto session = std::make_shared<MfCaptureSession>(camera->cameraId);
       std::string error;
       std::cout << "{\"type\":\"camera_open_start\",\"camera_index\":"
                 << camera->cameraIndex << ",\"device_name\":\""
@@ -857,78 +873,45 @@ class MediaFoundationCameraSource final : public CameraSource {
         setErrorLocked("No active camera to reopen.");
         return false;
       }
-      const std::vector<CameraInfo> cameras = listCamerasUnlocked();
-      const CameraInfo *camera = findByIndex(cameras, programIndex_);
-      if (camera == nullptr) {
+      const auto session = sessions_.find(programIndex_);
+      if (session == sessions_.end() || !session->second ||
+          session->second->cameraId().empty()) {
         setErrorLocked("No active camera to reopen.");
         return false;
       }
-      cameraId = camera->cameraId;
+      cameraId = session->second->cameraId();
     }
     scheduleReopen(cameraId, width, height, fps, S_OK, "requested", "");
     return true;
   }
 
  private:
-  std::vector<CameraInfo> listCamerasUnlocked() const {
-    ComApartment com;
-    const std::vector<DeviceEntry> devices = enumerateDevices();
-
-    std::vector<CameraInfo> cameras;
-    int index = 0;
-    for (const DeviceEntry &device : devices) {
-      if (isBroadifyVirtualCamera(device.label, device.cameraId)) {
-        continue;
-      }
-      const std::string lowered = lowerAscii(device.label);
-      CameraInfo info;
-      info.cameraIndex = index++;
-      info.label = device.label;
-      info.cameraId = device.cameraId;
-      info.displayName = device.label;
-      info.stableKey = device.cameraId;
-      info.backend = "mediafoundation";
-      info.deviceName = device.label;
-      info.builtinCandidate = lowered.find("integrated") != std::string::npos ||
-                              lowered.find("built-in") != std::string::npos;
-      info.virtualCandidate = lowered.find("virtual") != std::string::npos ||
-                              lowered.find("obs") != std::string::npos;
-      info.continuityCandidate = false;
-      info.available = true;
-      info.active = running_ && programIndex_ == info.cameraIndex;
-      cameras.push_back(std::move(info));
-    }
-    return cameras;
-  }
-
   void scheduleReopen(const std::string &cameraId, uint32_t width, uint32_t height,
                       uint32_t fps, HRESULT hr, const std::string &reason,
                       const std::string &deviceName) {
     std::thread finishedThread;
     int scheduledIndex = -1;
     uint64_t generation = 0;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (reopenThread_.joinable() && !reopenThreadRunning_.load()) {
-        finishedThread = std::move(reopenThread_);
-      }
+    bool expected = false;
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!running_) {
+      return;
     }
+    if (!reopenPending_.compare_exchange_strong(expected, true) ||
+        reopenThreadRunning_.exchange(true)) {
+      if (!expected) {
+        reopenPending_.store(false);
+      }
+      return;
+    }
+    generation = sessionGeneration_.load();
+    scheduledIndex = programIndex_;
+    if (reopenThread_.joinable()) {
+      finishedThread = std::move(reopenThread_);
+    }
+    lock.unlock();
     if (finishedThread.joinable()) {
       finishedThread.join();
-    }
-
-    bool expected = false;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (!reopenPending_.compare_exchange_strong(expected, true) ||
-          reopenThreadRunning_.exchange(true)) {
-        if (expected) {
-          reopenPending_.store(false);
-        }
-        return;
-      }
-      generation = sessionGeneration_.load();
-      scheduledIndex = programIndex_;
     }
     std::cout << "{\"type\":\"camera_reopen_scheduled\",\"camera_index\":"
               << scheduledIndex << ",\"hr\":\"" << hresultHex(hr)
@@ -937,6 +920,11 @@ class MediaFoundationCameraSource final : public CameraSource {
               << std::endl;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (!running_ || generation != sessionGeneration_.load()) {
+        reopenPending_.store(false);
+        reopenThreadRunning_.store(false);
+        return;
+      }
       reopenThread_ = std::thread([this, cameraId, width, height, fps, reason,
                                    generation] {
       const std::chrono::milliseconds backoffs[] = {
@@ -975,7 +963,7 @@ class MediaFoundationCameraSource final : public CameraSource {
                   << ",\"reason\":\"" << jsonEscape(reason)
                   << "\",\"device_name\":\"" << jsonEscape(camera->label)
                   << "\"}" << std::endl;
-        auto session = std::make_shared<MfCaptureSession>();
+        auto session = std::make_shared<MfCaptureSession>(camera->cameraId);
         std::string error;
         if (session->open(
                 camera->cameraId, width, height, fps,

@@ -366,7 +366,12 @@ std::string handleRpc(const std::string &line,
       return errorResponse(id, "camera_start_failed",
                            "Requested camera stable_key is not available.");
     }
-    if (activeCameraMatches(camera, stableKey, cameraIndex)) {
+    bool cameraStalled = false;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      cameraStalled = state.cameraStalled;
+    }
+    if (!cameraStalled && activeCameraMatches(camera, stableKey, cameraIndex)) {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = true;
       state.activeCameraIndex = cameraIndex;

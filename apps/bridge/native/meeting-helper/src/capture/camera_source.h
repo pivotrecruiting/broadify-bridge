@@ -57,8 +57,10 @@ class CameraSource {
     return false;
   }
   virtual bool reopen(uint32_t width, uint32_t height, uint32_t fps) {
-    const int index = activeCameraIndex();
-    return index >= 0 && start(index, width, height, fps);
+    (void)width;
+    (void)height;
+    (void)fps;
+    return false;
   }
   virtual void stop() = 0;
   virtual bool isRunning() const = 0;

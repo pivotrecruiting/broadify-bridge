@@ -1538,7 +1538,9 @@ export class MeetingHelperManager {
       }
     };
     if (platform() === "win32" && client && !this.stopping) {
-      void Promise.race([client.shutdown(), sleep(3000)]).finally(terminate);
+      void Promise.race([client.shutdown().catch(() => undefined), sleep(3000)])
+        .catch(() => undefined)
+        .finally(terminate);
       return;
     }
     terminate();

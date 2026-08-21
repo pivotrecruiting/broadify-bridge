@@ -298,6 +298,16 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/preview_frame_store.cpp
     src/util/helper_event_log.cpp
   )
+  add_executable(control_server_test
+    tests/control_server_test.cpp
+    src/control/control_server.cpp
+    src/capture/camera_source.cpp
+    src/output/vcam_controller.cpp
+    src/preview/preview_frame_store.cpp
+    src/recorder/meeting_recorder_stub.cpp
+    src/util/helper_event_log.cpp
+    src/util/json_utils.cpp
+  )
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -322,6 +332,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_stall_test
     tier_handover_test
     matting_backend_test
+    control_server_test
     raw_frame_stream_header_test
     raw_frame_server_test
   )
@@ -329,6 +340,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     if(WIN32)
       target_compile_definitions(${helper_test} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
       if(helper_test STREQUAL "raw_frame_server_test")
+        target_link_libraries(${helper_test} PRIVATE ws2_32)
+      elseif(helper_test STREQUAL "control_server_test")
         target_link_libraries(${helper_test} PRIVATE ws2_32)
       endif()
     elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")

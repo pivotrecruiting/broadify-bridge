@@ -523,6 +523,49 @@ describe("meeting-helper-manager", () => {
         }
         expect(kill).toHaveBeenCalledWith("SIGTERM");
       });
+
+      it("win32 kill still terminates when graceful shutdown rejects", async () => {
+        const os = require("node:os");
+        jest.spyOn(os, "platform").mockReturnValue("win32");
+        jest.useFakeTimers();
+        const manager = new MeetingHelperManager();
+        const internals = manager as unknown as {
+          state: string;
+          client: { shutdown: jest.Mock };
+          process: {
+            pid: number;
+            kill: jest.Mock;
+            once: jest.Mock;
+          } | null;
+          killProcess: () => void;
+        };
+        const kill = jest.fn();
+        internals.state = "running";
+        internals.client = {
+          shutdown: jest.fn().mockRejectedValue(
+            new MeetingHelperRequestError(
+              HELPER_NOT_REACHABLE_CODE,
+              "Meeting helper control socket not reachable (ENOENT)",
+            ),
+          ),
+        };
+        internals.process = {
+          pid: 4242,
+          kill,
+          once: jest.fn((_event: string, listener: () => void) => listener()),
+        };
+
+        try {
+          internals.killProcess();
+          await jest.advanceTimersByTimeAsync(0);
+
+          expect(internals.client.shutdown).toHaveBeenCalledTimes(1);
+          expect(kill).toHaveBeenCalledWith("SIGTERM");
+        } finally {
+          jest.useRealTimers();
+          jest.restoreAllMocks();
+        }
+      });
     });
 
     it("notifyRecordingChanged force-publishes a status snapshot", async () => {
