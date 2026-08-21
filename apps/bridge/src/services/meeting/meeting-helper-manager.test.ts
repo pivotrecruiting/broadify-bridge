@@ -9,6 +9,8 @@ import {
   findFreePort,
   inspectDeviceEntitlementStatuses,
   MeetingHelperManager,
+  parseWindowsProcessImageName,
+  parseWindowsTcpListenPids,
   resolveMeetingHelperPath,
   resolveMeetingHelperForwardedEnvArgs,
   resolveMeetingModelsDir,
@@ -100,7 +102,22 @@ describe("meeting-helper-manager", () => {
   });
 
   describe("findFreePort", () => {
+    const net = require("node:net");
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
     it("returns a usable localhost port", async () => {
+      jest.spyOn(net, "createServer").mockReturnValue({
+        once: jest.fn(),
+        listen: jest.fn((_port: number, _host: string, callback: () => void) => {
+          callback();
+        }),
+        address: jest.fn(() => ({ port: 32123 })),
+        close: jest.fn((callback: () => void) => callback()),
+      } as never);
+
       const port = await findFreePort();
       expect(port).toBeGreaterThan(0);
       expect(port).toBeLessThanOrEqual(65535);
@@ -169,6 +186,29 @@ describe("meeting-helper-manager", () => {
     });
   });
 
+  describe("Windows stale VCam port parsers", () => {
+    it("extracts listening PIDs for the requested local port", () => {
+      const output = [
+        "  Proto  Local Address          Foreign Address        State           PID",
+        "  TCP    127.0.0.1:18787        0.0.0.0:0              LISTENING       1234",
+        "  TCP    0.0.0.0:18787          0.0.0.0:0              LISTENING       5678",
+        "  TCP    127.0.0.1:18788        0.0.0.0:0              LISTENING       9999",
+        "  TCP    127.0.0.1:18787        127.0.0.1:50000        ESTABLISHED     7777",
+      ].join("\r\n");
+
+      expect(parseWindowsTcpListenPids(output, 18787)).toEqual([1234, 5678]);
+    });
+
+    it("parses CSV tasklist image names", () => {
+      expect(
+        parseWindowsProcessImageName(
+          '"meeting-helper.exe","1234","Console","1","42,000 K"\r\n',
+        ),
+      ).toBe("meeting-helper.exe");
+      expect(parseWindowsProcessImageName("INFO: No tasks are running")).toBeNull();
+    });
+  });
+
   describe("MeetingHelperManager", () => {
     it("starts in stopped state without client", () => {
       const manager = new MeetingHelperManager();
@@ -215,6 +255,75 @@ describe("meeting-helper-manager", () => {
       );
     });
 
+    it("restores virtual camera after replaying camera calls on restart", async () => {
+      const manager = new MeetingHelperManager();
+      const calls: string[] = [];
+      const client = {
+        cameraStart: jest.fn(async () => {
+          calls.push("cameraStart");
+        }),
+        cameraSelect: jest.fn(async () => {
+          calls.push("cameraSelect");
+        }),
+        virtualCameraStart: jest.fn(async () => {
+          calls.push("virtualCameraStart");
+        }),
+      };
+      const internals = manager as unknown as {
+        client: typeof client;
+        restoreRuntimeConfig: () => Promise<void>;
+      };
+      internals.client = client;
+      manager.noteCameraCall("cameraStart", { stable_key: "cam-a" });
+      manager.noteCameraCall("cameraSelect", { stable_key: "cam-b" });
+      manager.noteVirtualCameraStarted();
+
+      await internals.restoreRuntimeConfig();
+
+      expect(calls).toEqual([
+        "cameraStart",
+        "cameraSelect",
+        "virtualCameraStart",
+      ]);
+      expect(client.virtualCameraStart).toHaveBeenCalledWith({
+        allowElevation: false,
+      });
+    });
+
+    it("records VCam raw bind failures from helper stdout and rejects readiness", () => {
+      const manager = new MeetingHelperManager();
+      const readyRejecter = jest.fn();
+      const internals = manager as unknown as {
+        vcamRawBindFailed: string | null;
+        lastError: string | null;
+        readyRejecter: (error: Error) => void;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.readyRejecter = readyRejecter;
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "meeting_vcam_raw",
+          event: "error",
+          code: "vcam_raw_bind_failed",
+          message: "bind failed",
+        }),
+        mockLogger,
+      );
+
+      expect(internals.vcamRawBindFailed).toBe("bind failed");
+      expect(internals.lastError).toBe("bind failed");
+      expect(readyRejecter).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "vcam_raw_bind_failed" }),
+      );
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({ code: "vcam_raw_bind_failed" }),
+        }),
+      );
+    });
+
     it("getFullStatus returns manager status without helper when stopped", async () => {
       const manager = new MeetingHelperManager();
       const status = await manager.getFullStatus();
@@ -239,7 +348,6 @@ describe("meeting-helper-manager", () => {
 
     it("derives the deck REC mirror from the published snapshot (WP-2.4)", async () => {
       const { streamDeckManager } =
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         require("../streamdeck/stream-deck-manager.js");
       const recSpy = jest.spyOn(streamDeckManager, "setRecordingActive");
       try {
@@ -403,7 +511,7 @@ describe("meeting-helper-manager", () => {
         );
       });
 
-      it("ignores non-connect errors such as timeouts", async () => {
+      it("restarts after repeated status-poll timeouts", async () => {
         const { manager, kill } = armRunningManager(
           jest.fn().mockRejectedValue(
             new MeetingHelperRequestError("timeout", "timed out"),
@@ -413,7 +521,7 @@ describe("meeting-helper-manager", () => {
         for (let i = 0; i < 8; i += 1) {
           await manager.getFullStatus();
         }
-        expect(kill).not.toHaveBeenCalled();
+        expect(kill).toHaveBeenCalledWith("SIGTERM");
       });
     });
 

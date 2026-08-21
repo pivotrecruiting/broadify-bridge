@@ -409,7 +409,47 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function parseWindowsTcpListenPids(output: string, port: number): number[] {
+  const pids = new Set<number>();
+  const portPattern = new RegExp(`(?:127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[?::1\\]?|\\[?::\\]?):${port}\\b`, "i");
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!/\bLISTENING\b/i.test(trimmed) || !portPattern.test(trimmed)) {
+      continue;
+    }
+    const pid = Number.parseInt(trimmed.split(/\s+/).at(-1) ?? "", 10);
+    if (Number.isInteger(pid) && pid > 0) {
+      pids.add(pid);
+    }
+  }
+  return Array.from(pids);
+}
+
+export function parseWindowsProcessImageName(output: string): string | null {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const csvLine = lines.find((line) => line.startsWith("\""));
+  if (!csvLine) {
+    return null;
+  }
+  const match = /^"([^"]+)"/.exec(csvLine);
+  return match?.[1] ?? null;
+}
+
 function listTcpListenPids(port: number): number[] {
+  if (platform() === "win32") {
+    try {
+      const output = execFileSync("netstat", ["-ano", "-p", "tcp"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      return parseWindowsTcpListenPids(output, port);
+    } catch {
+      return [];
+    }
+  }
   if (platform() !== "darwin") {
     return [];
   }
@@ -432,6 +472,21 @@ function listTcpListenPids(port: number): number[] {
 }
 
 function isMeetingHelperProcess(pid: number): boolean {
+  if (platform() === "win32") {
+    try {
+      const output = execFileSync(
+        "tasklist",
+        ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      return parseWindowsProcessImageName(output)?.toLowerCase() === "meeting-helper.exe";
+    } catch {
+      return false;
+    }
+  }
   if (platform() !== "darwin") {
     return false;
   }
@@ -482,6 +537,22 @@ export async function releaseStaleMeetingHelperVcamPort(
       `[Meeting] Terminating stale meeting helper pid=${pid} on VCam raw port ${port}`,
     );
     try {
+      if (platform() === "win32") {
+        spawnSync("taskkill", ["/PID", String(pid), "/F"], {
+          stdio: ["ignore", "ignore", "ignore"],
+          windowsHide: true,
+        });
+        const exited = await waitForProcessExit(
+          pid,
+          STALE_HELPER_PORT_RELEASE_TIMEOUT_MS,
+        );
+        if (!exited) {
+          logger.warn(
+            `[Meeting] Stale meeting helper pid=${pid} still existed after taskkill.`,
+          );
+        }
+        continue;
+      }
       process.kill(pid, "SIGTERM");
       const exited = await waitForProcessExit(pid, STALE_HELPER_PORT_RELEASE_TIMEOUT_MS);
       if (!exited) {
@@ -604,6 +675,7 @@ export class MeetingHelperManager {
   private consecutiveControlFailures = 0;
   private lastRunningSince: number | null = null;
   private stopping = false;
+  private vcamRawBindFailed: string | null = null;
   // Set once the bridge itself is shutting down. The helper usually dies from
   // the process-group SIGTERM BEFORE server.ts reaches stop() (which sets
   // `stopping`), so without this flag that exit is misclassified as a crash
@@ -617,6 +689,7 @@ export class MeetingHelperManager {
     RestorableCameraMethodT,
     Record<string, unknown>
   >();
+  private shouldRestoreVirtualCamera = false;
   private keyerRestoreConfig: Record<string, unknown> | null = null;
 
   getClient(): MeetingHelperClient | null {
@@ -633,6 +706,14 @@ export class MeetingHelperManager {
 
   noteCameraStopped(): void {
     this.restorableCameraCalls.clear();
+  }
+
+  noteVirtualCameraStarted(): void {
+    this.shouldRestoreVirtualCamera = true;
+  }
+
+  noteVirtualCameraStopped(): void {
+    this.shouldRestoreVirtualCamera = false;
   }
 
   /** Merge a successful keyer patch into the replayable keyer config. */
@@ -662,6 +743,16 @@ export class MeetingHelperManager {
         const message = error instanceof Error ? error.message : String(error);
         getLogger().warn(
           `[Meeting] Restore of ${method} after helper restart failed: ${message}`,
+        );
+      }
+    }
+    if (this.shouldRestoreVirtualCamera) {
+      try {
+        await client.virtualCameraStart({ allowElevation: false });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        getLogger().warn(
+          `[Meeting] Restore of virtual camera after helper restart failed: ${message}`,
         );
       }
     }
@@ -734,6 +825,7 @@ export class MeetingHelperManager {
     this.clearRestartTimer();
     this.restartAttempts = 0;
     this.restorableCameraCalls.clear();
+    this.shouldRestoreVirtualCamera = false;
     this.keyerRestoreConfig = null;
     this.stopStatusPolling();
     const client = this.client;
@@ -797,7 +889,7 @@ export class MeetingHelperManager {
       const message = error instanceof Error ? error.message : String(error);
       if (
         error instanceof MeetingHelperRequestError &&
-        error.code === HELPER_NOT_REACHABLE_CODE
+        (error.code === HELPER_NOT_REACHABLE_CODE || error.code === "timeout")
       ) {
         this.noteControlChannelFailure(message);
       }
@@ -904,6 +996,7 @@ export class MeetingHelperManager {
     this.state = "starting";
     this.lastError = null;
     this.stdoutBuffer = "";
+    this.vcamRawBindFailed = null;
 
     try {
       const port = await findFreePort();
@@ -997,6 +1090,12 @@ export class MeetingHelperManager {
       const client = new MeetingHelperClient(controlSocketPath);
       if (!useLaunchServices) {
         await this.waitForReady();
+        if (this.vcamRawBindFailed) {
+          throw new MeetingHelperRequestError(
+            "vcam_raw_bind_failed",
+            this.vcamRawBindFailed,
+          );
+        }
       }
       const healthy = await waitForHelperPing(
         client,
@@ -1026,7 +1125,10 @@ export class MeetingHelperManager {
       const message = error instanceof Error ? error.message : String(error);
       this.lastError = message;
       this.state = "error";
-      publishMeetingErrorEvent("start_failed", message);
+      publishMeetingErrorEvent(
+        error instanceof MeetingHelperRequestError ? error.code : "start_failed",
+        message,
+      );
       this.killProcess();
       return this.getStatus();
     }
@@ -1073,6 +1175,7 @@ export class MeetingHelperManager {
     try {
       const parsed = JSON.parse(line) as {
         type?: string;
+        event?: string;
         code?: string;
         message?: string;
         camera_permission_status?: string;
@@ -1082,6 +1185,16 @@ export class MeetingHelperManager {
       }
       if (parsed.type === "meeting_vcam_raw") {
         logger.info(`[MeetingHelper] ${line}`);
+        if (parsed.event === "error" && parsed.code === "vcam_raw_bind_failed") {
+          const message =
+            parsed.message || "Meeting helper could not bind the VCam raw frame port.";
+          this.vcamRawBindFailed = message;
+          this.lastError = message;
+          publishMeetingErrorEvent("vcam_raw_bind_failed", message);
+          this.readyRejecter?.(
+            new MeetingHelperRequestError("vcam_raw_bind_failed", message),
+          );
+        }
       }
       if (parsed.type === "meeting_gpu_compositor") {
         logger.info(`[MeetingHelper] ${line}`);
@@ -1407,20 +1520,28 @@ export class MeetingHelperManager {
       return;
     }
     const child = this.process;
+    const client = this.client;
     this.process = null;
-    try {
-      child.kill("SIGTERM");
-      const forceKillTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Process already exited.
-        }
-      }, 3000);
-      child.once("exit", () => clearTimeout(forceKillTimer));
-    } catch {
-      // Process already exited.
+    const terminate = () => {
+      try {
+        child.kill("SIGTERM");
+        const forceKillTimer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Process already exited.
+          }
+        }, 3000);
+        child.once("exit", () => clearTimeout(forceKillTimer));
+      } catch {
+        // Process already exited.
+      }
+    };
+    if (platform() === "win32" && client && !this.stopping) {
+      void Promise.race([client.shutdown(), sleep(3000)]).finally(terminate);
+      return;
     }
+    terminate();
   }
 }
 

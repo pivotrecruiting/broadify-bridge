@@ -29,6 +29,8 @@ jest.mock("./meeting-helper-manager.js", () => ({
     getFullStatus: (...args: unknown[]) => mockGetFullStatus(...args),
     noteCameraCall: () => undefined,
     noteCameraStopped: () => undefined,
+    noteVirtualCameraStarted: () => undefined,
+    noteVirtualCameraStopped: () => undefined,
     noteKeyerConfigured: () => undefined,
     notifyRecordingChanged: (...args: unknown[]) =>
       mockNotifyRecordingChanged(...args),
@@ -84,6 +86,11 @@ const mockClient = {
   cameraSelect: jest.fn(),
   cameraStart: jest.fn(),
   cameraStop: jest.fn(),
+  cameraOpenSet: jest.fn(),
+  cameraProgramSelect: jest.fn(),
+  cameraPipSet: jest.fn(),
+  cameraAudioLevels: jest.fn(),
+  cameraAutoDirector: jest.fn(),
   keyerGet: jest.fn(),
   keyerConfigure: jest.fn(),
   keyerReset: jest.fn(),
@@ -134,6 +141,25 @@ describe("meeting-command-handler", () => {
 
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ manager: { state: "running" } });
+    });
+
+    it("preserves camera_stalled in the status snapshot", async () => {
+      mockGetFullStatus.mockResolvedValue({
+        manager: { state: "running" },
+        engine: { camera_running: true, camera_stalled: true },
+        recording: null,
+      });
+
+      const result = await handleMeetingCommand("meeting_get_state", {});
+
+      expect(result).toEqual({
+        success: true,
+        data: {
+          manager: { state: "running" },
+          engine: { camera_running: true, camera_stalled: true },
+          recording: null,
+        },
+      });
     });
   });
 

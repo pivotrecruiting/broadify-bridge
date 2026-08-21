@@ -19,6 +19,7 @@ type RouteRegistrarsT = {
   registerEngineRoute: typeof import("./routes/engine.js").registerEngineRoute;
   registerVideoRoute: typeof import("./routes/video.js").registerVideoRoute;
   registerGraphicsBrowserInputRoute: typeof import("./routes/graphics-browser-input.js").registerGraphicsBrowserInputRoute;
+  registerMeetingCameraRoute: typeof import("./routes/meeting-camera.js").registerMeetingCameraRoute;
   registerMeetingMediaRoute: typeof import("./routes/meeting-media.js").registerMeetingMediaRoute;
   registerWebSocketRoute: typeof import("./routes/websocket.js").registerWebSocketRoute;
   registerRelayRoute: typeof import("./routes/relay.js").registerRelayRoute;
@@ -77,6 +78,7 @@ export async function registerServerRoutes(
   await server.register(routes.registerEngineRoute);
   await server.register(routes.registerVideoRoute);
   await server.register(routes.registerGraphicsBrowserInputRoute);
+  await server.register(routes.registerMeetingCameraRoute);
   await server.register(routes.registerMeetingMediaRoute);
   await server.register(routes.registerWebSocketRoute);
   await server.register(routes.registerRelayRoute, {
