@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+
 type BridgeChildProcessLikeT = {
   pid?: number;
   kill: (signal: NodeJS.Signals) => void;
@@ -19,6 +21,23 @@ function signalProcessTree(
       return;
     } catch {
       // Group already gone or not a group leader; fall through.
+    }
+  }
+  if (
+    process.platform === "win32" &&
+    typeof processRef.pid === "number" &&
+    signal === "SIGKILL"
+  ) {
+    // Windows has no process groups: sweep the whole tree so grandchildren
+    // (meeting/display helpers, renderers) release the file locks the
+    // update installer needs to overwrite resources.
+    try {
+      execFileSync("taskkill", ["/pid", String(processRef.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+      return;
+    } catch {
+      // taskkill unavailable or tree already gone; fall through.
     }
   }
   try {
