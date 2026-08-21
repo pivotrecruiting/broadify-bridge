@@ -14,7 +14,11 @@ import {
 } from "../../modules/vcam/vcam-helper.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
-import { MeetingHelperClient } from "./meeting-helper-client.js";
+import {
+  HELPER_NOT_REACHABLE_CODE,
+  MeetingHelperClient,
+  MeetingHelperRequestError,
+} from "./meeting-helper-client.js";
 import {
   publishMeetingErrorEvent,
   publishMeetingStatusEvent,
@@ -30,6 +34,10 @@ const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
+// Consecutive connect-level RPC failures (helper_not_reachable) of the 2 s
+// status poll before a still-running helper process is treated as crashed
+// (its control channel is gone for good, e.g. the Windows pipe thread died).
+const HELPER_CONTROL_CHANNEL_LOST_THRESHOLD = 5;
 const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
 const CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS = 120;
 const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
@@ -495,15 +503,32 @@ export async function releaseStaleMeetingHelperVcamPort(
 async function waitForHelperPing(
   client: MeetingHelperClient,
   maxAttempts: number = HELPER_PING_ATTEMPTS,
+  logger: LoggerT = getLogger(),
 ): Promise<boolean> {
+  let lastError: string | null = null;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (await client.ping()) {
-      return true;
+    try {
+      if (await client.pingOrThrow()) {
+        return true;
+      }
+      lastError = "control.ping returned no pong";
+    } catch (error: unknown) {
+      // Keep the last failure: a bare helper_ping_failed was undiagnosable
+      // (ENOENT on the pipe vs. a helper that never answered look identical).
+      lastError =
+        error instanceof MeetingHelperRequestError
+          ? `${error.code}: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
     }
     if (attempt + 1 < maxAttempts) {
       await sleep(HELPER_PING_DELAY_MS);
     }
   }
+  logger.debug?.(
+    `[Meeting] control.ping failed ${maxAttempts} times; last error: ${lastError ?? "unknown"}`,
+  );
   return false;
 }
 
@@ -568,6 +593,7 @@ export class MeetingHelperManager {
   private lastStartOptions: MeetingHelperStartOptionsT = {};
   private restartAttempts = 0;
   private restartTimer: NodeJS.Timeout | null = null;
+  private consecutiveControlFailures = 0;
   private lastRunningSince: number | null = null;
   private stopping = false;
   // Set once the bridge itself is shutting down. The helper usually dies from
@@ -750,6 +776,7 @@ export class MeetingHelperManager {
       const recordingRaw = recordingResult?.recording;
       const recording =
         recordingRaw && typeof recordingRaw === "object" ? recordingRaw : null;
+      this.consecutiveControlFailures = 0;
       return {
         manager,
         engine: engineState,
@@ -760,8 +787,43 @@ export class MeetingHelperManager {
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
+      if (
+        error instanceof MeetingHelperRequestError &&
+        error.code === HELPER_NOT_REACHABLE_CODE
+      ) {
+        this.noteControlChannelFailure(message);
+      }
       return { manager, engine: null, engineError: message, recording: null };
     }
+  }
+
+  /**
+   * Liveness for a helper whose PROCESS is alive but whose control channel is
+   * gone (Windows: the pipe thread died after a CreateNamedPipe failure, so
+   * every RPC is ENOENT forever while the exit-bound restart logic never
+   * fires). Carried by the existing 2 s status poll: after
+   * HELPER_CONTROL_CHANNEL_LOST_THRESHOLD consecutive connect-level failures
+   * the process is killed, and the regular exit handler runs the bounded
+   * crash restart. Any successful snapshot resets the counter.
+   */
+  private noteControlChannelFailure(detail: string): void {
+    if (this.state !== "running" || !this.process) {
+      return;
+    }
+    this.consecutiveControlFailures += 1;
+    if (this.consecutiveControlFailures < HELPER_CONTROL_CHANNEL_LOST_THRESHOLD) {
+      return;
+    }
+    this.consecutiveControlFailures = 0;
+    const pid = this.process.pid ?? "unknown";
+    const message = `Meeting helper control channel lost (${HELPER_CONTROL_CHANNEL_LOST_THRESHOLD} consecutive failures, pid ${pid}): ${detail}`;
+    this.lastError = message;
+    getLogger().warn(`[Meeting] ${message}; killing helper for restart`);
+    publishMeetingErrorEvent("helper_control_channel_lost", message);
+    // Stop polling now: the kill takes up to 3 s and the exit handler must
+    // be the one to classify the crash and schedule the restart.
+    this.stopStatusPolling();
+    this.killProcess();
   }
 
   private async startInternal(
@@ -931,6 +993,7 @@ export class MeetingHelperManager {
       const healthy = await waitForHelperPing(
         client,
         useLaunchServices ? MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS : HELPER_PING_ATTEMPTS,
+        logger,
       );
       if (!healthy) {
         this.lastError = "Meeting helper did not respond to control.ping";
@@ -946,6 +1009,7 @@ export class MeetingHelperManager {
       this.client = client;
       this.state = "running";
       this.lastRunningSince = Date.now();
+      this.consecutiveControlFailures = 0;
       this.startStatusPolling();
       this.requestCameraPermissionPreflight(client, logger);
       await this.publishStatus("engine_started", true);
@@ -1195,6 +1259,7 @@ export class MeetingHelperManager {
     this.stopStatusPolling();
     this.process = null;
     this.client = null;
+    this.consecutiveControlFailures = 0;
     this.lastRuntimeBackendStatus = null;
     this.readyRejecter?.(new Error(`Meeting helper exited with code ${code}`));
     const wasRunning = this.state === "running";

@@ -1,9 +1,10 @@
 # Support-Runbook: Virtuelle Kamera („Broadify Camera")
 
-Für Support und Kunden-IT. Stand: VCam-Härtungsprogramm (W1/W2/M1/M2).
-Ab diesen Versionen startet die virtuelle Kamera **automatisch mit der
-Meeting-Engine** — ein separater „Live test"-Klick ist nicht mehr nötig —
-und Fehler erscheinen als verständliche Meldungen mit Fehlercode.
+Für Support und Kunden-IT. Stand: VCam-Härtungsprogramm (W1/W2/M1/M2) plus
+Installer-Fix (per-machine). Ab diesen Versionen startet die virtuelle Kamera
+**automatisch mit der Meeting-Engine** — ein separater „Live test"-Klick ist
+nicht mehr nötig — und Fehler erscheinen als verständliche Meldungen mit
+Fehlercode. Hintergrund/Architektur: `docs/bridge/features/virtual-camera-windows.md`.
 
 ## Windows
 
@@ -11,11 +12,77 @@ und Fehler erscheinen als verständliche Meldungen mit Fehlercode.
 
 | Meldung / Code | Ursache | Lösung |
 |---|---|---|
-| `vcam_not_registered` (0x80040154) | VCam-Komponente nicht registriert; die automatische Reparatur (Admin-Abfrage) wurde abgelehnt oder blockiert | Bridge neu installieren **oder** VCam-Start erneut auslösen und die Administrator-Abfrage bestätigen |
-| `vcam_access_denied` (0x80070005) | Windows verweigert das Anlegen der Kamera | 1) Einstellungen → Datenschutz und Sicherheit → Kamera: „Kamerazugriff" **und** „Desktop-Apps den Zugriff erlauben" einschalten. 2) Auf **Firmengeräten**: Geräteinstallations-Richtlinie — IT-Freigabetext unten verwenden. 3) Geister-Geräte entfernen: Geräte-Manager → ausgeblendete Geräte anzeigen → alte „Broadify Camera"-Einträge deinstallieren → Neustart |
+| `vcam_not_registered` (0x80040154) | CLSID `{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}` ist nicht in HKLM (64-Bit-View) registriert — **häufigster Fall: Per-User-Installation** (siehe Ursache 1) oder MSI-Installation | Mit dem aktuellen Installer **neu installieren** (fragt einmal nach Adminrechten) **oder** VCam-Start erneut auslösen und die Administrator-Abfrage bestätigen |
+| `vcam_access_denied` (0x80070005) | Kamera-Datenschutz für Desktop-Apps aus, **oder** App läuft „als Administrator" bei Per-User-Install, **oder** der registrierte DLL-Pfad liegt im Benutzerprofil, das der Frame-Server (LOCAL SERVICE) nicht lesen darf, **oder** Firmen-Richtlinie | Siehe Ursache 3; auf **Firmengeräten** IT-Freigabetext unten verwenden |
 | `vcam_windows11_required` | Windows 10 | Nicht unterstützt — die MF-Virtual-Camera existiert erst ab Windows 11 |
 | `vcam_raw_bind_failed` (Port 18787) | Anderer Prozess belegt den Frame-Port | Zweite Bridge-Instanz/Portbelegung beenden, Engine neu starten |
+| `helper_not_reachable` / `helper_control_channel_lost` | Steuerkanal zum Meeting-Helper nicht erreichbar; die Bridge startet den Helper nach wiederholtem Ausfall selbst neu | Engine neu starten; bleibt es, Bridge-Log mit `control_pipe_*`-Zeilen beilegen |
 | „Broadify Camera" sichtbar, aber **schwarz** | Normal, solange die Engine kein Programmbild liefert | Engine/Kamera in der Webapp starten; Teams/Zoom nach Kamera-Neuanlage einmal neu starten |
+
+### Ursache 1 (häufigster Kundenfall): Per-User-Installation
+
+Installer vor `nsis.perMachine: true` boten „Nur für mich" an. Diese
+Installation lief **ohne Elevation**, `regsvr32` nach HKLM scheiterte still,
+der Installer meldete trotzdem Erfolg. Erkennung (Admin-PowerShell):
+
+```powershell
+# Per-User-Install vorhanden? (Installationspfad unter %LOCALAPPDATA%)
+reg query HKCU\Software\com.broadify.bridge
+reg query HKCU\Software\com.broadify.bridge.rc   # RC-Kanal
+
+# Per-Machine-Install vorhanden?
+reg query HKLM\Software\com.broadify.bridge
+```
+
+Zeigt `HKCU` einen `InstallLocation` unter `C:\Users\<name>\AppData\Local\Programs\...`,
+ist es eine Per-User-Installation. **Abhilfe:** deinstallieren und mit dem
+aktuellen Installer neu installieren (fragt einmal nach Adminrechten, Ziel
+`C:\Program Files\BroadifyBridge`). Auto-Update migriert eine Per-User-
+Installation **nicht**.
+
+### Ursache 2: Registrierung fehlt oder ist veraltet
+
+```powershell
+reg query "HKLM\SOFTWARE\Classes\CLSID\{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}\InprocServer32" /ve /reg:64
+```
+
+- Kein Schlüssel → nicht registriert (MSI-Installation, alte Per-User-Installation).
+- Schlüssel zeigt auf eine nicht existierende Datei → veraltet (Pfad gewechselt,
+  Reste einer alten Installation).
+
+Die Bridge prüft die Registrierung selbst und versucht beides **einmal pro
+Session** zu heilen (UAC-Prompt). Wird der Prompt abgelehnt, steht im Log das
+manuelle Kommando:
+
+```powershell
+# Admin-PowerShell
+regsvr32 "C:\Program Files\BroadifyBridge\resources\native\vcam-helper\broadify-vcam.dll"
+```
+
+### Setup-Protokoll lesen („Details"-Bereich)
+
+Im Setup-Fenster „Details anzeigen" (oder das Installer-Log bei `/S`):
+
+```
+Registering Broadify virtual camera (broadify-vcam.dll)
+regsvr32 exit code: 0
+```
+
+`regsvr32 exit code: 3` = DLL nicht ladbar (fehlende Datei/Abhängigkeit,
+falsche Bitness), `5` = `DllRegisterServer` fehlgeschlagen (keine Elevation).
+Der Installer setzt dann Error-Level 3 und zeigt eine Meldung, installiert
+die App aber vollständig.
+
+### Ursache 3: 0x80070005 trotz korrekter Registrierung
+
+1. Windows-Einstellungen → Datenschutz und Sicherheit → Kamera: „Kamerazugriff"
+   **und** „Desktop-Apps den Zugriff auf die Kamera erlauben" einschalten.
+2. Bridge **nicht** „als Administrator" starten.
+3. Registrierter Pfad (siehe Ursache 2) muss unter `C:\Program Files\...`
+   liegen — nicht unter `C:\Users\...`.
+4. Geister-Geräte entfernen: Geräte-Manager → ausgeblendete Geräte anzeigen →
+   alte „Broadify Camera"-Einträge deinstallieren → Neustart.
+5. Firmengerät: Geräteinstallations-Richtlinie — IT-Freigabetext unten.
 
 ### IT-Freigabetext (verwaltete Firmengeräte)
 
@@ -31,12 +98,19 @@ und Fehler erscheinen als verständliche Meldungen mit Fehlercode.
 ### Diagnose-Kommandos (Admin-PowerShell)
 
 ```powershell
-# Registrierung vorhanden?
-reg query "HKLM\SOFTWARE\Classes\CLSID\{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}" /s
+# Registrierung vorhanden? (64-Bit-View)
+reg query "HKLM\SOFTWARE\Classes\CLSID\{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}" /s /reg:64
 # Frame-Server-Dienste startbar?
 sc query FrameServer; sc query FrameServerMonitor
 # Blockierte Geräteinstallation? Ereignisanzeige → System → Kernel-PnP/DeviceSetupManager
 ```
+
+### Checkliste vor Eskalation (Windows)
+
+- Windows 11? (`winver`)
+- `reg query HKCU\Software\com.broadify.bridge` leer, `HKLM` gesetzt?
+- InprocServer32-Pfad existiert und liegt unter Program Files?
+- Bridge-Log: Zeilen mit `[Meeting] VCam` (Probe-Ergebnis, regsvr32-Exit-Code).
 
 ## macOS
 

@@ -720,6 +720,49 @@ std::string handleRpc(const std::string &line,
 }  // namespace
 
 #if defined(_WIN32)
+namespace {
+
+constexpr DWORD CONTROL_PIPE_BUFFER_BYTES = 65536;
+// ~10 s of 50 ms retries before the control channel is declared dead.
+constexpr int CONTROL_PIPE_CREATE_MAX_CONSECUTIVE_FAILURES = 200;
+constexpr DWORD CONTROL_PIPE_CREATE_RETRY_DELAY_MS = 50;
+
+// Creates one listening instance of the control pipe. CreateNamedPipeA can
+// fail transiently (e.g. ERROR_PIPE_BUSY while libuv is still closing the
+// previous client handle); a single such failure used to end the control
+// thread for good while the helper process kept running - a silent, permanent
+// ENOENT for every later bridge RPC. Retry with a bounded budget instead and
+// report control_pipe_failed only once that budget is exhausted. Returns
+// INVALID_HANDLE_VALUE after the final failure or when `running` turned false.
+HANDLE createControlPipeInstance(const std::string &pipeName, std::atomic<bool> &running) {
+  int consecutiveFailures = 0;
+  while (running.load()) {
+    HANDLE pipe = CreateNamedPipeA(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
+                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                                   PIPE_UNLIMITED_INSTANCES, CONTROL_PIPE_BUFFER_BYTES,
+                                   CONTROL_PIPE_BUFFER_BYTES, 0, NULL);
+    if (pipe != INVALID_HANDLE_VALUE) {
+      return pipe;
+    }
+    const DWORD lastError = GetLastError();
+    consecutiveFailures += 1;
+    if (consecutiveFailures >= CONTROL_PIPE_CREATE_MAX_CONSECUTIVE_FAILURES) {
+      emitHelperEvent(
+          "{\"type\":\"error\",\"code\":\"control_pipe_failed\","
+          "\"message\":\"Could not create control pipe.\",\"win32_error\":" +
+          std::to_string(lastError) + ",\"attempts\":" + std::to_string(consecutiveFailures) + "}");
+      return INVALID_HANDLE_VALUE;
+    }
+    emitHelperEvent(
+        "{\"type\":\"control_pipe_retry\",\"win32_error\":" + std::to_string(lastError) +
+        ",\"attempt\":" + std::to_string(consecutiveFailures) + "}");
+    Sleep(CONTROL_PIPE_CREATE_RETRY_DELAY_MS);
+  }
+  return INVALID_HANDLE_VALUE;
+}
+
+}  // namespace
+
 void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
@@ -728,18 +771,28 @@ void runControlServer(const std::string &pipeName,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening) {
+  // Create the first instance BEFORE signalling readiness: the bridge starts
+  // pinging as soon as it sees `ready`, and a pipe that does not exist yet is
+  // indistinguishable (ENOENT) from a dead helper. If no instance can be
+  // created the ready signal is withheld on purpose, so the bridge's start
+  // timeout fires with control_pipe_failed as the visible cause.
+  HANDLE pipe = createControlPipeInstance(pipeName, running);
+  if (pipe == INVALID_HANDLE_VALUE) {
+    return;
+  }
   if (onListening) {
     onListening();
   }
   while (running.load()) {
-    HANDLE pipe = CreateNamedPipeA(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
-                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                                   1, 65536, 65536, 0, NULL);
-    if (pipe == INVALID_HANDLE_VALUE) {
-      std::cout << "{\"type\":\"error\",\"code\":\"control_pipe_failed\",\"message\":\"Could not create control pipe.\"}" << std::endl;
-      return;
-    }
     BOOL connected = ConnectNamedPipe(pipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+    // Open the next instance before serving this client. With a single
+    // instance there was a window between DisconnectNamedPipe/CloseHandle and
+    // the next CreateNamedPipeA in which no pipe existed at all, and bridge
+    // RPC bursts (engine start, status polls) hit ENOENT there - libuv retries
+    // ERROR_PIPE_BUSY on its own but not ERROR_FILE_NOT_FOUND. RPC handling
+    // stays sequential: the spare instance only parks the next client until
+    // this loop comes back around.
+    HANDLE nextPipe = createControlPipeInstance(pipeName, running);
     if (connected) {
       char buffer[8192];
       DWORD readBytes = 0;
@@ -762,7 +815,15 @@ void runControlServer(const std::string &pipeName,
     }
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
+    if (nextPipe == INVALID_HANDLE_VALUE) {
+      // Either shutting down (running == false) or control_pipe_failed was
+      // already reported by createControlPipeInstance.
+      return;
+    }
+    pipe = nextPipe;
   }
+  // Loop left via control.shutdown: release the parked spare instance.
+  CloseHandle(pipe);
 }
 #else
 void runControlServer(const std::string &socketPath,
