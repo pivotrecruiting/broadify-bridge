@@ -427,4 +427,72 @@ describe("meeting-helper-manager", () => {
       );
     });
   });
+  describe("status polling", () => {
+    type PollingInternalsT = {
+      startStatusPolling: () => void;
+      stopStatusPolling: () => void;
+    };
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("skips poll ticks while the previous publish is still in flight", async () => {
+      jest.useFakeTimers();
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as PollingInternalsT;
+      let resolveFirst: (() => void) | null = null;
+      const getFullStatusSpy = jest
+        .spyOn(manager, "getFullStatus")
+        .mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveFirst = () =>
+                resolve({ manager: { state: "running" }, engine: null, recording: null });
+            }),
+        );
+
+      internals.startStatusPolling();
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(getFullStatusSpy).toHaveBeenCalledTimes(1);
+
+      // Second and third ticks arrive while the first RPC is still pending.
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(getFullStatusSpy).toHaveBeenCalledTimes(1);
+
+      resolveFirst?.();
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(getFullStatusSpy).toHaveBeenCalledTimes(2);
+
+      internals.stopStatusPolling();
+    });
+
+    it("throttles counter-only status changes but publishes state changes at once", async () => {
+      const manager = new MeetingHelperManager();
+      let frames = 0;
+      let camera = 0;
+      jest.spyOn(manager, "getFullStatus").mockImplementation(async () => ({
+        manager: { state: "running" },
+        engine: { active_camera_index: camera, rendered_frames: (frames += 1) },
+        recording: null,
+      }));
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+      };
+      const statusEvents = () =>
+        mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => (event as { event: string }).event === "meeting_status",
+        ).length;
+
+      await internals.publishStatus("status_poll", false);
+      expect(statusEvents()).toBe(1);
+      await internals.publishStatus("status_poll", false);
+      expect(statusEvents()).toBe(1);
+
+      camera = 1;
+      await internals.publishStatus("status_poll", false);
+      expect(statusEvents()).toBe(2);
+    });
+  });
 });

@@ -23,6 +23,7 @@ import {
   publishMeetingErrorEvent,
   publishMeetingStatusEvent,
 } from "./meeting-event-publisher.js";
+import { decideStatusPublish } from "./status-publish-policy.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
@@ -32,6 +33,8 @@ const MACOS_MEETING_HELPER_APP_NAME = "Broadify Bridge Meeting Helper.app";
 const MACOS_MEETING_HELPER_EXECUTABLE_NAME = "BroadifyMeetingHelper";
 const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
+/** Log one skipped-poll debug line per this many consecutive skips. */
+const STATUS_POLL_SKIP_LOG_EVERY = 10;
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
 // Consecutive connect-level RPC failures (helper_not_reachable) of the 2 s
@@ -583,7 +586,12 @@ export class MeetingHelperManager {
   private port: number | null = null;
   private lastError: string | null = null;
   private statusPollTimer: NodeJS.Timeout | null = null;
-  private lastPublishedStatus: string | null = null;
+  /** Stable projection of the last published status (see status-publish-policy). */
+  private lastPublishedProjection: string | null = null;
+  private lastPublishedAt: number | null = null;
+  /** In-flight guard: a poll tick is skipped while the previous one runs. */
+  private statusPollInFlight = false;
+  private skippedStatusPolls = 0;
   private startPromise: Promise<MeetingHelperManagerStatusT> | null = null;
   private stdoutBuffer = "";
   private readyResolver: ((event: ReadyEventT) => void) | null = null;
@@ -1194,8 +1202,24 @@ export class MeetingHelperManager {
 
   private startStatusPolling(): void {
     this.stopStatusPolling();
+    this.statusPollInFlight = false;
+    this.skippedStatusPolls = 0;
     this.statusPollTimer = setInterval(() => {
-      void this.publishStatus("status_poll", false);
+      // A slow helper RPC must not stack polls (and RPC queue entries):
+      // skip this tick while the previous publish is still running.
+      if (this.statusPollInFlight) {
+        this.skippedStatusPolls += 1;
+        if (this.skippedStatusPolls % STATUS_POLL_SKIP_LOG_EVERY === 1) {
+          getLogger().debug?.(
+            `[Meeting] Status poll skipped, previous poll still in flight (${this.skippedStatusPolls} skipped)`,
+          );
+        }
+        return;
+      }
+      this.statusPollInFlight = true;
+      void this.publishStatus("status_poll", false).finally(() => {
+        this.statusPollInFlight = false;
+      });
     }, STATUS_POLL_INTERVAL_MS);
   }
 
@@ -1247,11 +1271,21 @@ export class MeetingHelperManager {
         }
       }
     }
-    const serialized = JSON.stringify(status);
-    if (!force && serialized === this.lastPublishedStatus) {
+    // Dedupe via the stable projection: per-frame counters and keyer metrics
+    // alone only reach the webapp every STATUS_METRICS_PUBLISH_INTERVAL_MS;
+    // state changes, active recordings and forced publishes go out at once.
+    const decision = decideStatusPublish({
+      status,
+      force,
+      lastProjection: this.lastPublishedProjection,
+      lastPublishedAt: this.lastPublishedAt,
+      now: Date.now(),
+    });
+    if (!decision.publish) {
       return;
     }
-    this.lastPublishedStatus = serialized;
+    this.lastPublishedProjection = decision.projection;
+    this.lastPublishedAt = Date.now();
     publishMeetingStatusEvent(reason, status);
   }
 
