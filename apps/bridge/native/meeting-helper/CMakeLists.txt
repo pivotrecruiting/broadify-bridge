@@ -91,6 +91,7 @@ set(MEETING_HELPER_SOURCES
   src/util/sha256.cpp
   src/util/json_utils.cpp
   src/util/helper_event_log.cpp
+  src/util/win_qos.cpp
 )
 
 if(APPLE)
@@ -310,6 +311,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
     src/util/helper_event_log.cpp
+    src/util/win_qos.cpp
   )
   add_executable(control_server_test
     tests/control_server_test.cpp

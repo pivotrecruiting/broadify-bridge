@@ -301,6 +301,14 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     return true;
   }
 
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock<std::mutex> lock(frameMutex_);
+    return frameCv_.wait_until(lock, deadline, [this, lastTimestampNs] {
+      return hasFrame_ && latestFrame_.timestampNs != lastTimestampNs;
+    });
+  }
+
   const std::string &initError() const { return initError_; }
 
   // IMFSourceReaderCallback -------------------------------------------------
@@ -550,9 +558,12 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     if (!converted) {
       return;
     }
-    std::lock_guard<std::mutex> lock(frameMutex_);
-    latestFrame_ = std::move(frame);
-    hasFrame_ = true;
+    {
+      std::lock_guard<std::mutex> lock(frameMutex_);
+      latestFrame_ = std::move(frame);
+      hasFrame_ = true;
+    }
+    frameCv_.notify_all();
   }
 
   std::atomic<long> refCount_{1};
@@ -575,6 +586,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   LONG stride_ = 0;
 
   mutable std::mutex frameMutex_;
+  std::condition_variable frameCv_;
   bool hasFrame_ = false;
   VideoFrame latestFrame_;
 };
@@ -625,6 +637,12 @@ class MfCaptureSession {
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
     return callback_ ? callback_->copyLatestFrameIfNew(lastTimestampNs, frame)
                      : false;
+  }
+
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) {
+    return callback_ ? callback_->waitForFrameOrTimeout(lastTimestampNs, deadline)
+                     : CameraSource::waitForFrameOrTimeout(lastTimestampNs, deadline);
   }
 
   const std::string &cameraId() const { return cameraId_; }
@@ -834,6 +852,13 @@ class MediaFoundationCameraSource final : public CameraSource {
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
     const std::shared_ptr<MfCaptureSession> session = programSession();
     return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
+  }
+
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) override {
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->waitForFrameOrTimeout(lastTimestampNs, deadline)
+                   : CameraSource::waitForFrameOrTimeout(lastTimestampNs, deadline);
   }
 
   // Reads a specific camera's latest frame (used for the conference PiP layer),

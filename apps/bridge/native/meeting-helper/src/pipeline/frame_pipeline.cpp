@@ -21,6 +21,7 @@
 #endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
+#include "util/win_qos.h"
 
 #include <algorithm>
 #include <array>
@@ -1648,6 +1649,10 @@ void runFramePipeline(const Options &options,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       std::atomic<bool> &running) {
+#if defined(_WIN32)
+  ScopedWinMmcss programThreadQos(L"Capture");
+  std::unique_ptr<ScopedWinTimerResolution> liveTimerResolution;
+#endif
   framebus_writer_t *writer = framebus_writer_open(
       options.framebusName.c_str(), options.width, options.height, options.fps, kSlotCount);
   if (writer == nullptr) {
@@ -1730,6 +1735,15 @@ void runFramePipeline(const Options &options,
       std::lock_guard<std::mutex> lock(state.mutex);
       state.pipelineMode = runtime.mode;
     }
+#if defined(_WIN32)
+    const bool liveTimerNeeded =
+        runtime.mode == "live" || runtime.mode == "keyer_live";
+    if (liveTimerNeeded && liveTimerResolution == nullptr) {
+      liveTimerResolution = std::make_unique<ScopedWinTimerResolution>();
+    } else if (!liveTimerNeeded && liveTimerResolution != nullptr) {
+      liveTimerResolution.reset();
+    }
+#endif
 
     if (runtime.mode == "idle" && !runtime.programDirty && programFrame.empty()) {
       std::this_thread::sleep_for(kIdleSleep);
@@ -2839,7 +2853,15 @@ void runFramePipeline(const Options &options,
     }
     const auto now = std::chrono::steady_clock::now();
     if (nextFrameAt > now) {
-      std::this_thread::sleep_until(nextFrameAt);
+      const auto loopEnd = std::chrono::steady_clock::now();
+      if (loopEnd > nextFrameAt + frameInterval) {
+        nextFrameAt = loopEnd + frameInterval;
+      }
+      if (runtime.cameraRunning) {
+        camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+      } else {
+        std::this_thread::sleep_until(nextFrameAt);
+      }
     } else {
       nextFrameAt = now;
     }

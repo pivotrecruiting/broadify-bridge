@@ -1,6 +1,7 @@
 #include "preview/raw_frame_server.h"
 
 #include "util/helper_event_log.h"
+#include "util/win_qos.h"
 
 #if defined(__APPLE__)
 #include <Accelerate/Accelerate.h>
@@ -17,10 +18,12 @@
 
 #if defined(_WIN32)
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -61,6 +64,8 @@ void configureClientSocket(int socketHandle) {
 #if defined(SO_NOSIGPIPE)
   setsockopt(socketHandle, SOL_SOCKET, SO_NOSIGPIPE, reinterpret_cast<const char *>(&opt), sizeof(opt));
 #endif
+  setsockopt(socketHandle, IPPROTO_TCP, TCP_NODELAY,
+             reinterpret_cast<const char *>(&opt), sizeof(opt));
 #if defined(_WIN32)
   const int sendTimeoutMs = 2000;
   const int receiveTimeoutMs = 5000;
@@ -77,6 +82,14 @@ void configureClientSocket(int socketHandle) {
   setsockopt(socketHandle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&receiveTimeout), sizeof(receiveTimeout));
 #endif
   (void)opt;
+}
+
+void configureSenderBuffer(int socketHandle, const RawFrameStreamGeometry &geometry) {
+  const int minimumBytes = static_cast<int>(
+      std::max<size_t>(64 * 1024u,
+                       static_cast<size_t>(geometry.width) * geometry.height * 4u * 2u));
+  setsockopt(socketHandle, SOL_SOCKET, SO_SNDBUF,
+             reinterpret_cast<const char *>(&minimumBytes), sizeof(minimumBytes));
 }
 
 int sendFlags() {
@@ -235,6 +248,8 @@ void streamFrames(int client,
                   PreviewFrameStore &previewFrames,
                   MeetingState &state,
                   std::atomic<bool> &running) {
+  ScopedWinMmcss senderThreadQos(L"Capture");
+  configureSenderBuffer(client, geometry);
   const std::string header = buildRawFrameStreamHeader(geometry);
   if (!sendAll(client, header.c_str(), header.size())) {
     return;
@@ -272,7 +287,9 @@ void streamFrames(int client,
         }
         lastSentAt = now;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      previewFrames.waitForNewFrame(lastSequence,
+                                    std::chrono::steady_clock::now() +
+                                        kRawFrameHeartbeatInterval);
       continue;
     }
     lastSequence = frame.sequence;

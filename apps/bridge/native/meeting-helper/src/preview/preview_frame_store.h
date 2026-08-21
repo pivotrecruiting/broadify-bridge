@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <condition_variable>
+#include <chrono>
 #include <mutex>
 #include <vector>
 
@@ -19,10 +21,13 @@ class PreviewFrameStore {
   void clear();
   bool copyLatest(PreviewFrame &frame) const;
   bool copyLatestIfNew(uint64_t lastSequence, PreviewFrame &frame) const;
+  bool waitForNewFrame(uint64_t lastSequence,
+                       std::chrono::steady_clock::time_point deadline) const;
   uint64_t sequence() const;
 
  private:
   mutable std::mutex mutex_;
+  mutable std::condition_variable cv_;
   PreviewFrame frame_;
 };
 
