@@ -279,8 +279,31 @@ describe("command-router", () => {
       expect(result.success).toBe(true);
       expect(engineAdapter.connect).toHaveBeenCalledWith({
         type: "atem",
+        transport: "network",
         ip: "192.168.1.10",
         port: 9910,
+      });
+    });
+
+    it("engine_connect accepts usb transport without ip/port", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.getState.mockReturnValue({
+        status: "connected",
+        type: "atem",
+        transport: "usb",
+        macros: [],
+      });
+
+      const result = await commandRouter.handleCommand("engine_connect", {
+        type: "atem",
+        transport: "usb",
+      });
+      expect(result.success).toBe(true);
+      expect(engineAdapter.connect).toHaveBeenCalledWith({
+        type: "atem",
+        transport: "usb",
+        ip: "",
+        port: 0,
       });
     });
 

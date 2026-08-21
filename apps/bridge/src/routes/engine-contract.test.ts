@@ -27,6 +27,39 @@ describe("ConnectRequestSchema", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("accepts usb transport for atem without ip/port", () => {
+    const result = ConnectRequestSchema.safeParse({
+      type: "atem",
+      transport: "usb",
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects usb transport for non-atem types", () => {
+    const result = ConnectRequestSchema.safeParse({
+      type: "vmix",
+      transport: "usb",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects network transport without ip/port", () => {
+    const result = ConnectRequestSchema.safeParse({
+      type: "atem",
+      transport: "network",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing ip/port when transport is omitted (network default)", () => {
+    const result = ConnectRequestSchema.safeParse({ type: "atem" });
+
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("mapEngineErrorToStatusCode", () => {

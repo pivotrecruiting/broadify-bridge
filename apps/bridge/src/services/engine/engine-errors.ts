@@ -148,3 +148,42 @@ export function createNotConnectedError(operation: string): EngineError {
   );
 }
 
+
+/**
+ * Create error for USB transport when the Blackmagic ATEM software (which
+ * ships the SDK runtime the USB helper loads) is not installed.
+ */
+export function createAtemSoftwareMissingError(): EngineError {
+  return new EngineError(
+    EngineErrorCode.DEVICE_NOT_FOUND,
+    "Blackmagic ATEM software is not installed. Install the ATEM software (which provides the USB driver runtime) and try again, or connect via network instead.",
+    { transport: "usb", reason: "atem_software_not_installed" }
+  );
+}
+
+/**
+ * Create error for USB transport when no switcher is attached via USB.
+ */
+export function createUsbSwitcherNotFoundError(): EngineError {
+  return new EngineError(
+    EngineErrorCode.DEVICE_NOT_FOUND,
+    "No ATEM switcher found on USB. Check the USB cable and that the switcher is powered on.",
+    { transport: "usb", reason: "no_usb_switcher_found" }
+  );
+}
+
+/**
+ * Create error for USB transport connect failures reported by the helper
+ * (e.g. incompatible firmware between switcher and installed ATEM software).
+ */
+export function createUsbConnectFailedError(reason: string): EngineError {
+  const code =
+    reason === "incompatible_firmware"
+      ? EngineErrorCode.PROTOCOL_ERROR
+      : EngineErrorCode.NETWORK_ERROR;
+  const message =
+    reason === "incompatible_firmware"
+      ? "The switcher firmware and the installed ATEM software are incompatible. Update the Blackmagic ATEM software and switcher firmware to matching versions."
+      : `USB connection to the ATEM switcher failed (${reason}). Reconnect the USB cable and try again.`;
+  return new EngineError(code, message, { transport: "usb", reason });
+}

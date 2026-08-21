@@ -10,6 +10,7 @@ const isRcChannel = updaterChannel === "rc";
 
 const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/decklink-helper/decklink-helper",
+  "apps/bridge/native/atem-usb-helper/atem-usb-helper",
   "apps/bridge/native/display-helper/display-helper",
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
   "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app",
@@ -122,6 +123,11 @@ if (config.win) {
     {
       from: "apps/bridge/native/display-helper/display-helper.exe",
       to: "native/display-helper/display-helper.exe",
+    },
+    {
+      // ATEM USB transport helper (official Blackmagic SDK, Studio mode).
+      from: "apps/bridge/native/atem-usb-helper/atem-usb-helper.exe",
+      to: "native/atem-usb-helper/atem-usb-helper.exe",
     },
     {
       from: "apps/bridge/native/meeting-helper/meeting-helper.exe",

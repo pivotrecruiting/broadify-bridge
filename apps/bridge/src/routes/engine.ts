@@ -11,6 +11,10 @@ import {
   mapEngineErrorToStatusCode,
   VmixActionRequestSchema,
 } from "./engine-contract.js";
+import {
+  describeEngineConnectTarget,
+  normalizeEngineConnectPayload,
+} from "../services/engine/engine-connect-schema.js";
 
 type EngineRouteDepsT = {
   engineAdapter: Pick<
@@ -75,14 +79,11 @@ export async function registerEngineRoute(
       const body = ConnectRequestSchema.parse(request.body || {});
 
       // Connect directly with provided config (no fallback to runtimeConfig)
-      await deps.engineAdapter.connect({
-        type: body.type,
-        ip: body.ip,
-        port: body.port,
-      });
+      const connectConfig = normalizeEngineConnectPayload(body);
+      await deps.engineAdapter.connect(connectConfig);
 
       fastify.log.info(
-        `[Engine] Connected to ${body.type} at ${body.ip}:${body.port}`
+        `[Engine] Connected to ${connectConfig.type} at ${describeEngineConnectTarget(connectConfig)}`
       );
 
       return {

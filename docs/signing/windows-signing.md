@@ -57,7 +57,10 @@ Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.y
 3. Ergebnis: signierte Artefakte in `dist/` (`.exe` für NSIS/Auto-Update, `.msi` für manuelle Kundeninstallation).
 4. Der Build muss vor `electron-builder` alle Windows-Runtime-Artefakte prüfen (`display-helper.exe`, `meeting-helper.exe`, `onnxruntime.dll`, MODNet-Modell, FrameBus-Addon).
 5. `scripts/sign-windows-native-resources.cjs` signiert nach dem Packen gezielt
-   `display-helper.exe`, `SDL2.dll`, `meeting-helper.exe` und `onnxruntime.dll`.
+   `display-helper.exe`, `SDL2.dll`, `atem-usb-helper.exe`, `meeting-helper.exe`
+   und `onnxruntime.dll` (vollständige Liste: `WINDOWS_NATIVE_RESOURCES` im Skript).
+   `verify-windows-release-signatures.ps1` prüft danach **jede** gepackte `.exe` —
+   ein neuer Helper muss also immer in diese Liste aufgenommen werden.
    `scripts/register-windows-azure-signing-serialization.cjs` serialisiert dabei
    alle Azure-Signing-Aufrufe. Das verhindert die bekannten Dateisperren und
    NuGet-Installationskollisionen von electron-builder 25 bei parallelem Signing.

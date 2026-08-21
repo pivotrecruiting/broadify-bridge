@@ -16,6 +16,7 @@ import {
   VmixActionSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
+import { normalizeEngineConnectPayload } from "./engine/engine-connect-schema.js";
 import { getBridgeContext } from "./bridge-context.js";
 import { GraphicsError } from "./graphics/graphics-errors.js";
 import {
@@ -193,17 +194,15 @@ export class CommandRouter {
         }
 
         case "engine_connect": {
-          const { type, ip, port } = parseRelayPayload(
+          const parsedPayload = parseRelayPayload(
             EngineConnectSchema,
             payload ?? {},
             "Invalid payload for engine_connect",
           );
 
-          await engineAdapter.connect({
-            type,
-            ip,
-            port,
-          });
+          await engineAdapter.connect(
+            normalizeEngineConnectPayload(parsedPayload),
+          );
 
           return {
             success: true,
