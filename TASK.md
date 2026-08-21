@@ -1,166 +1,101 @@
-# Task: WP0 — Windows meeting stability: grey virtual camera, camera dropouts, VCam robustness
+# Task: WP1 — Windows meeting load & latency (Stufe A)
 
 ## Raw request
-User (21.08.2026, after the read-only deep analysis of rc.11/rc.12): "lass uns damit beginnen … ich habe
-noch einen zusätzlichen Fehler auf Windows, den wir direkt mit beheben müssen (Stand 24 rc 12): Die
-virtuelle Kamera wird zwar in Teams erkannt, sendet aber graues Bild. Baue sauber … beide Maßnahmen
-(Stufe A + Stufe B), sodass wir wirklich alles sauber haben."
-
-WP0 is the first of several work packages. It targets symptom 3 ("camera drops out completely") and the
-rc.12 grey-picture bug, so a field-testable RC exists before the performance work (WP1+) lands.
+User Go 21.08.2026: implement both stages (A: Stellschrauben, B: Umbau) after the Windows deep analysis.
+WP1 = Stufe A for symptoms 1 ("laptop gets loud with VCam") and 2 ("latency").
 
 ## Context
-- Customer / project: Broadify Bridge, Windows 11 laptops (Intel iGPU + GTX 1660 Ti; iGPU-only).
-- Worktree / branch: `broadify-bridge-worktrees/win-stability-wp0` / `feature/win-stability-wp0`
-- Base branch: `feature/vcam-rc10` (= v0.24.0-rc.12, integration branch of the open VCam PRs #130–#137).
-  Stacked on purpose; PR target is `dev` after the stack ahead of it.
-- Host is macOS: Windows C++ (meeting-helper, vcam DLL) is NOT compiled locally. CI (`test-release.yml`,
-  windows-2022) compiles both; the user field-tests the RC. Keep Windows-only code behind `#ifdef _WIN32`
-  exactly like the existing code, and keep macOS builds green locally.
-- Analysis report with file:line evidence: https://claude.ai/code/artifact/da4506cb-1180-4e8c-9798-5ac541a10202
-  (sections 03 and 07). All paths below are relative to `apps/bridge/`.
+- Worktree / branch: `broadify-bridge-worktrees/win-stability-wp1` / `feature/win-stability-wp1`
+- Base branch: `feature/win-stability-wp0` (stacked on WP0, which is stacked on `feature/vcam-rc10`).
+- Host macOS; Windows C++ compiles only in CI. Keep macOS build + ctest green.
+- Evidence: analysis report sections 01/02 (https://claude.ai/code/artifact/da4506cb-1180-4e8c-9798-5ac541a10202).
+  Paths relative to `apps/bridge/native/meeting-helper/src/` unless noted.
 
-## Plan
-Implement in the order below; each block is a separate commit with a conventional-commit message.
+## Plan (each block = one commit)
 
-### Block A — Windows VCam DLL (`native/vcam-helper/windows/`)
-A1. `raw_frame_client.cpp`: set `SO_RCVTIMEO` (5 s) and `SO_SNDTIMEO` (5 s) and `SO_KEEPALIVE` on the socket
-    before `connect()`; treat a timeout in the handshake or in `recvExact` as a disconnect (log with
-    `WSAGetLastError()`), then back off and reconnect. Log connect() failures (rate-limited: first failure and
-    then once per backoff step change) with the error code.
-A2. `raw_frame_client.cpp`: wrap the whole body of `run()` in `try/catch(...)` (log + treat as disconnect) and
-    bound `payload.resize()`/`latest_` copies: allocate once per geometry change, reuse buffers (no per-frame
-    8 MB allocation). Never let an exception escape the thread.
-A3. `media_stream.cpp`: wrap every COM method body (`RequestSample`, `Start`, `Stop`, `Shutdown`,
-    `GetMediaSource`, `GetStreamDescriptor`, event methods) in `try/catch` returning `E_FAIL` — an exception
-    escaping a COM method terminates the Frame Server service (all cameras on the machine).
-A4. `media_stream.cpp`: allocate the MF sample buffer via a reused `IMFMediaBuffer` pool (or
-    `IMFVideoSampleAllocator`) instead of `MFCreateMemoryBuffer` per sample. Use `copyLatestIfNew` semantics
-    to skip the 8 MB deep copy when the sequence did not change: if no new frame, re-emit the previous
-    sample content (last good frame), NOT the splash. The splash is only used before the FIRST good frame
-    of a connection.
-A5. `media_stream.cpp` / `raw_frame_client.cpp`: staleness no longer switches to the splash once a good frame
-    was seen; it only logs (rate-limited) after 2 s and 10 s without frames. (Frozen last frame is the correct
-    behaviour; a grey screen is not.)
-A6. `media_stream.cpp`: `Stop()`/`Shutdown()` must not call `_client->stop()` (thread join) while holding
-    `_lock`; release the lock first. `RawFrameClient::stop()` must `closesocket()` the pending socket (not only
-    `shutdown()`), so a blocked `connect()`/`recv()` returns immediately.
-A7. `dllmain.cpp`: `Activator::ShutdownObject()` releases `_source` (calls `Shutdown()` on it). Break the
-    `MediaSource` ↔ `MediaStream` strong reference cycle (stream holds a weak/raw back-reference, cleared in
-    Shutdown) so a leaked source cannot keep a raw-frame connection alive.
-A8. `vcam_log.cpp`: prefix each line with local wall-clock time (`YYYY-MM-DD HH:MM:SS.mmm`), PID and TID; cap
-    the log at 5 MB (rename to `vcam.log.1` and start over). Keep the path.
-A9. `dllmain.cpp`: `Activator::ActivateObject` must create a fresh `MediaSource` when the cached one has been
-    shut down (a re-activation of a shut-down source returns `MF_E_SHUTDOWN`).
-A10. Media types stay RGB32 only in WP0 (NV12/YUY2 is WP4).
+### Block A — One GPU adapter, one upload, no blocking readback (`compose/d3d11_compositor.cpp`, `keyer/modnet_keyer.cpp`)
+A1. Adapter policy: a small platform helper (`compose/d3d_adapter_select.{h,cpp}`, Windows-only) enumerates via
+    `IDXGIFactory6::EnumAdapterByGpuPreference`. Policy env `BROADIFY_MEETING_GPU_POLICY` = `auto|high_performance|minimum_power`
+    (default `auto` = high_performance when a discrete adapter exists, else the only adapter). The chosen adapter LUID is
+    used BOTH for `D3D11CreateDevice` (compositor + guided filter) and for DirectML (create the D3D12 device on that
+    adapter and use `SessionOptionsAppendExecutionProvider_DML1` with our own device + queue; keep `DML2` as fallback).
+    Log the adapter description + LUID once (`gpu_adapter_selected` helper event) for both devices; status `keyer.get`
+    reports `gpu_adapter` and `compositor_adapter`.
+A2. Upload the camera frame once per frame into one texture shared by the guided-filter pass and the compositor pass
+    (drop the second `UpdateSubresource`); cache by frame timestamp.
+A3. Staging ring (3 deep) for both readbacks: issue `CopyResource` for frame N, `Map` the staging of frame N-1 with
+    `D3D11_MAP_FLAG_DO_NOT_WAIT` (fall back to a blocking Map only if N-2 is also not ready). The program frame therefore
+    lags the GPU by one frame but never stalls the CPU. Same for the guided-filter mask readback.
+A4. Fold the guided-filter dispatch chain and the compositor into one command submission per frame (no intermediate
+    readback of the refined mask when the GPU compositor consumes it directly — keep the mask on the GPU; only read it
+    back when a CPU consumer (recorder/preview post-process) needs it).
 
-### Block B — Helper raw-frame server (`native/meeting-helper/src/preview/raw_frame_server.cpp`)
-B1. Serve each accepted client on its own thread (detached, with a per-client `running` check), so a stalled
-    or leaked client can never block `accept()`. Keep `VcamClientCounter` semantics (count = live clients).
-B2. Set `SO_SNDTIMEO` (2 s) on accepted client sockets; a send timeout disconnects that client only.
-B3. Detect peer close: poll the client socket with `recv(MSG_PEEK)`/`select` (non-blocking) each loop
-    iteration so a half-open client is dropped even while no new frames arrive.
-B4. Heartbeat: while a client is connected and no new frame arrived for 1000 ms, re-send the last frame
-    (same payload, new sequence) so the DLL's staleness never trips on a legitimately static program.
-    Implement in the server (re-send cached last payload), not in the pipeline.
-B5. Bind with `SO_EXCLUSIVEADDRUSE` on Windows (instead of `SO_REUSEADDR`, which on Windows allows a second
-    bind on a live listener); keep `SO_REUSEADDR` on POSIX.
-B6. Log socket errors with the error code in the existing `meeting_vcam_raw` JSON events (`event":"error"`).
+### Block B — Consumer-gated work (`pipeline/frame_pipeline.cpp`, `state/meeting_state.h`)
+B1. Fused keyer + guided + compositor + readback run only when `hasNewCameraFrame` (or a program/graphics revision
+    changed). Cadence counter increments only on new camera frames.
+B2. FrameBus write only when a FrameBus reader is attached or `framebusRunning` was explicitly requested by an RPC
+    (`framebusRunning` default → `false`; `conference_display_start` already starts it). Keep the 1 Hz heartbeat for
+    attached readers only.
+B3. Preview publish only when `previewClients > 0 || vcamClients > 0` (already) — additionally skip the MJPEG encode
+    when no MJPEG client is connected (verify) and lower MJPEG to 10 fps while a VCam client is active.
 
-### Block C — Helper camera capture (`native/meeting-helper/src/capture/camera_mediafoundation.cpp`)
-C1. `OnReadSample`: on `FAILED(hrStatus)` or `MF_SOURCE_READERF_ENDOFSTREAM` do NOT silently stop. Record an
-    error state (hr, timestamp), emit a helper event `{"type":"camera_capture_error","hr":"0x…","reason":…}`
-    and schedule a reopen of the same device (by symbolic link) with backoff 500 ms → 1 s → 2 s → 5 s (cap),
-    unlimited attempts while the camera is supposed to be running. Reopen runs on the capture management
-    thread, never on the MF callback thread.
-C2. `OnEvent`: handle `MEVideoCaptureDeviceRemoved` and `MEError` the same way (reopen with backoff).
-C3. Frame-age watchdog: in the program loop (`frame_pipeline.cpp`) or in the camera source, if the newest
-    camera frame is older than 1500 ms while `cameraRunning`, set `state.cameraStalled = true`, emit
-    `{"type":"camera_stalled","age_ms":…}` once, and trigger the same reopen path. Clear the flag and emit
-    `camera_recovered` on the next frame. Expose `camera_stalled` in `state.get` (and therefore in the bridge
-    status snapshot).
-C4. Stable device identity: `camera.start`/`camera.select` accept an optional `stable_key` (the symbolic
-    link already exported by `camera.list`); when present it wins over `camera_index`. Index remains as
-    fallback. Bridge client (`src/services/meeting/meeting-helper-client.ts`) passes `stable_key` through when
-    the caller supplies it; the command router accepts it in the zod schema (`meeting_camera_start` /
-    `meeting_camera_select`).
-C5. Idempotent `camera.start`: in `control_server.cpp` (`camera.start` handler) return success without
-    touching the device when the same device (by symbolic link or resolved index) is already running with
-    the same requested geometry. Add a `"reopened": false/true` field to the response.
-C6. Logging: emit helper events for camera open start/success/failure (with hr and the device friendly name —
-    no PII beyond the device name), close, and reopen attempts.
+### Block C — Threads, timers, QoS (`main.cpp`, `pipeline/frame_pipeline.cpp`, `preview/raw_frame_server.cpp`)
+C1. Windows: `timeBeginPeriod(1)` while the pipeline is in `live`/`keyer_live` (`timeEndPeriod` otherwise);
+    `SetProcessInformation(ProcessPowerThrottling)` opting OUT of `EXECUTION_SPEED` throttling and of
+    `IGNORE_TIMER_RESOLUTION`; `AvSetMmThreadCharacteristicsW(L"Capture")` on the program thread and the raw-frame
+    sender threads; `AvRevertMmThreadCharacteristics` on exit. Env kill-switch `BROADIFY_MEETING_WIN_QOS=0`.
+C2. Program loop wakes on camera-frame arrival (condition variable signalled from the MF callback) with the 33 ms grid
+    as the upper bound — not a fixed `sleep_until` grid. Overrun policy: skip to the newest frame, never run
+    back-to-back more than one catch-up tick.
+C3. Raw-frame server: replace the 16 ms poll with a condition variable signalled from `PreviewFrameStore::publish`.
+C4. Raw-frame sender sockets: `TCP_NODELAY`, `SO_SNDBUF` ≥ 2 frames.
 
-### Block D — Bridge lifecycle (`src/services/meeting/`)
-D1. `meeting-helper-manager.ts` `restoreRuntimeConfig`: after a crash restart, if the virtual camera was
-    running before the crash (`lastVirtualCameraStatus` / a recorded `virtualCameraStart` call), re-arm it
-    via `client.virtualCameraStart({ allowElevation: false })` AFTER the camera calls; failures are warn-only
-    and produce the existing `vcam_*` error events.
-D2. `releaseStaleMeetingHelperVcamPort`: implement the Windows branch (`netstat -ano -p tcp` or
-    `Get-NetTCPConnection -LocalPort` via PowerShell → PID → `tasklist`/`Get-Process` to confirm the image name
-    is `meeting-helper.exe` and the PID is not our current helper → `taskkill /PID /F`). Same logging as the
-    darwin branch. Unit-test the parsers with fixture output.
-D3. `vcam_raw_bind_failed` from the helper must fail `start()` (reject the ready promise with a typed error
-    `vcam_raw_bind_failed`) instead of leaving the manager in `running`. Also emit it via `emitHelperEvent` in
-    the helper so it reaches the event-log sidecar.
-D4. Control-channel watchdog: count consecutive RPC `timeout` errors of the status poll as failures too (same
-    threshold 5), so a wedged-but-connectable helper is restarted.
-D5. Windows kill path: before `child.kill()` on win32, attempt a graceful `control.shutdown` RPC with a 3 s
-    timeout (so `IMFVirtualCamera::Stop/Remove` and `recorder.stop()` run); only then terminate.
-D6. Electron `powerMonitor` (`src/electron/main.ts`): on `resume` / `unlock-screen`, if the meeting engine is
-    running, send a bridge-local request that triggers the helper camera reopen path (new RPC
-    `camera.reopen`, no-op when not running). Keep it minimal.
+### Block D — Copies and conversions
+D1. SIMD swizzles (SSE2 baseline, AVX2 dispatch when available) for BGRA↔RGBA on Windows in capture, raw-frame
+    server and recorder (`util/pixel_swizzle.{h,cpp}` + ctest comparing against the scalar reference).
+D2. Capture: reuse a pooled frame buffer instead of a fresh `std::vector` per sample; `copyLatestFrameIfNew` hands out a
+    shared immutable buffer (no 8 MB copy on the program thread).
+D3. Request the camera's native media type explicitly: prefer the 30 fps type at ≤1920x1080 whose subtype is NV12/YUY2/
+    MJPG (in that order) and use `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` + `MF_LOW_LATENCY` so the conversion
+    to RGB32 is done by the video processor MFT (GPU when available) instead of the basic software converter.
+    Log the negotiated native type and fps (`camera_media_type` event).
+D4. ORT session options for DML: `SetIntraOpNumThreads(1)`, `AddConfigEntry("session.intra_op.allow_spinning","0")`,
+    `DisableMemPattern`, `ORT_SEQUENTIAL` (verify present), free-dimension overrides for fixed input size per tier.
 
-### Block E — Docs
-E1. Update `docs/bridge/features/virtual-camera-windows.md` (stream lifecycle, heartbeat, timeouts, last-frame
-    behaviour) and `docs/bridge/support/vcam-runbook.md` (new log lines + what "grey" now can and cannot mean).
-E2. Update `docs/bridge/subsystems/output-helper.md` or the meeting-helper doc that describes camera
-    lifecycle with the reopen/backoff/watchdog behaviour.
+### Block E — Latency policy
+E1. Governor step-down threshold 0.5 × budget (16.7 ms at 30 fps) with the existing hysteresis; step-up unchanged.
+E2. One-frame software pipeline: inference for frame N runs while frame N-1 is composited (the fused path keeps
+    mask_age ≤ 1 frame instead of 0). Env `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0|1` (default 1).
+E3. VCam DLL: `SetSampleTime` from the producer's capture timestamp (carried in the BFRG record: add a 64-bit
+    capture_ns field → header version 2, client accepts v1 and v2) converted to QPC/MF time base; duplicate frames
+    (same sequence) are re-delivered with the previous timestamp + frame duration.
+
+### Block F — Docs
+F1. `docs/bridge/features/virtual-camera-windows.md` + a new `docs/bridge/features/meeting-windows-performance.md`
+    (adapter policy, QoS, env flags, measuring guide: Task Manager GPU 0/1, `keyer.get` fields).
 
 ## Acceptance criteria
-0. rc.12 grey picture: with the helper running and a consumer connected, no state short of "no frame ever
-   received on this connection" shows the 0x1e splash. The diagnosed chain (camera reader dies silently →
-   no publish → stale → splash; server never notices the dead client) is closed at every link: C1/C3 (camera
-   reopen + stall event), B4 (server heartbeat), A5 (last good frame instead of splash), B1/B3 (multi-client,
-   dead-client detection), A1 (handshake timeout).
-1. DLL: no code path delivers the 0x1e splash after the first good frame of a connection; staleness and size
-   mismatch only log. (Code review + unit test of the frame-selection logic if it is factored into a
-   testable function.)
-2. DLL: `raw_frame_client.cpp` sets `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_KEEPALIVE`; a handshake that never
-   completes ends within ≤ 6 s with a logged disconnect and a reconnect.
-3. DLL: no COM method and no thread entry can propagate a C++ exception (grep: every `STDMETHODIMP` body and
-   `run()` are wrapped).
-4. DLL: per-sample allocation is gone (`MFCreateMemoryBuffer` not called per `RequestSample`).
-5. Helper raw server: two simultaneous clients are both served (ctest or a TS integration test against the
-   macOS build of the helper: connect two raw clients, both receive headers + frames).
-6. Helper raw server: a connected client receives a frame at least every ~1 s even when the program is static
-   (test with the macOS helper: start in `static_output`/idle with a consumer, assert frame cadence).
-7. Camera capture (Windows code, CI compile + review): `OnReadSample` error and `MEVideoCaptureDeviceRemoved`
-   lead to a logged reopen with backoff; no silent stop remains (`return S_OK; // stop re-arming` is gone).
-8. `camera_stalled` appears in `state.get` and in the bridge status snapshot; covered by a jest test of the
-   status mapping and by a ctest/unit test of the age logic (platform-neutral).
-9. `camera.start` twice with the same device and geometry does not reopen the device (helper unit test on the
-   macOS camera path or a control-server test with a stub camera source; response contains `reopened:false`).
-10. `stable_key` is accepted end-to-end (zod schema test + helper control test) and wins over `camera_index`.
-11. Bridge: after a simulated helper crash with VCam previously running, `restoreRuntimeConfig` calls
-    `virtualCameraStart` (jest, existing manager test harness).
-12. Bridge: Windows stale-port release parses `netstat`/PowerShell fixture output correctly and only kills
-    `meeting-helper.exe` PIDs that are not the current helper (jest with fixtures, `platform()` mocked).
-13. Bridge: `vcam_raw_bind_failed` rejects `start()` with a typed error (jest).
-14. Bridge: 5 consecutive status-poll timeouts trigger the restart path (jest).
-15. `npm run lint`, `npm run test:jest` (root and `apps/bridge`), `npm run build`, `npm run build:meeting-helper`
-    (macOS) and `npm run test:meeting-helper-native` pass locally. Windows compile is verified by CI on the RC.
-16. Docs updated (E1, E2). Comments/JSDoc in English. No secrets or PII in logs.
+1. Exactly one D3D adapter LUID is used by compositor and DirectML (status fields equal; helper event logged).
+2. Camera frame uploaded once per frame (code review; counter in debug metrics).
+3. No blocking `Map` in the steady state (ctest on the macOS build is not possible for D3D11 — review + Windows CI
+   compile; add a platform-neutral ring-buffer unit test for the staging index logic).
+4. `framebusRunning` defaults to false; FrameBus bytes are written only with a reader/explicit start (ctest on the
+   pipeline gating logic or a control-server test).
+5. Fused work does not run on reused camera frames (unit test of the gating predicate).
+6. Windows QoS calls present and env-gated (review + CI compile).
+7. SIMD swizzle ctest passes against the scalar reference for all alignments/tails.
+8. ORT session options verified by a ctest that inspects the options builder (factor the builder into a testable
+   function).
+9. Governor threshold test updated (keyer_governor_test).
+10. BFRG v2 header round-trip ctest (writer/reader) and the DLL accepts v1 and v2.
+11. `npm run lint`, `npm run test:jest`, `npm run build`, `npm run build:meeting-helper`, `npm run test:meeting-helper-native` pass.
+12. Docs updated; comments in English.
 
 ## Review
-- Round: 3/3
-- Verdict: PASS (round 3, 21.08.2026). Round 1: M1–M7 + D6; round 2: MF-1–MF-5; all resolved in 65b86abd…909948ad.
-- Must-fix (open): none
-- Notes (non-blocking): reopen flag window (microseconds, covered by watchdog); `camera.reopen` RPC on macOS returns
-  `camera_reopen_failed` (unused by the bridge); first-frame grace for the watchdog and worker reaping left for WP1.
-- Handoff to human (if any): Windows C++ compiled only by CI on the rc.13 test release; field test on the Windows laptop.
+- Round: 0/3
+- Verdict: (pending)
 
-## Verification (verifier ran independently of the implementer, outside the Codex sandbox)
-- [x] Tests pass — `npm run test:jest`: 173 suites / 1950 tests; `npm run test:meeting-helper-native`: 13/13 ctests
-- [x] Lint / type-check pass — `npm run lint`, `npm run build`, `npm run build:meeting-helper` (macOS) all exit 0
-- [ ] Browser-verified — n/a
-- [x] Bug reproduced before the fix, gone after — `raw_frame_server_test` fails with the base `raw_frame_server.cpp`, passes with the new one
+## Verification
+- [ ] Tests pass — `npm run test:jest` passed (173 suites / 1950 tests); `npm run test:meeting-helper-native` failed only `meeting_recorder_writer_test` with pre-existing macOS `audio_input_rejected` while 18/19 ctests passed.
+- [x] Lint / type-check pass — `npm run lint`, `npm run build`, and `npm run build:meeting-helper` exit 0.
+- [ ] Windows CI compile on the RC — not run from macOS worktree.
