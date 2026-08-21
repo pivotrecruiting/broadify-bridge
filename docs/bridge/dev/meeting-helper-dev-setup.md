@@ -269,6 +269,47 @@ Fehlercodes des Control-Kanals:
 | `helper_ping_failed` | `ready` kam, aber 15 Pings (100 ms) blieben ohne `pong`; letzter Ping-Fehler steht im Debug-Log. | Debug-Log lesen (`control.ping failed ... last error`). |
 | `control_pipe_failed` / `control_socket_failed` / `control_bind_failed` | Helper konnte den Kanal nicht anlegen; kein `ready`. | `win32_error` bzw. errno auswerten; Bridge-Start laeuft in den 20-s-Timeout. |
 
+### Status-Poll und Publish-Kadenz
+
+Die Bridge pollt den laufenden Helper alle `STATUS_POLL_INTERVAL_MS` (2000 ms)
+und publiziert das Ergebnis als `bridge_event` `meeting_status`
+(`reason: "status_poll"`). Zwei Schutzregeln
+(`apps/bridge/src/services/meeting/meeting-helper-manager.ts`,
+`apps/bridge/src/services/meeting/status-publish-policy.ts`):
+
+- **In-flight-Guard:** Laeuft der vorherige Poll noch (langsamer RPC), wird
+  der Tick uebersprungen statt gestapelt; ein Debug-Log alle
+  `STATUS_POLL_SKIP_LOG_EVERY` (10) Skips.
+- **Dedupe ueber stabile Projektion:** Verglichen wird der Snapshot ohne
+  Per-Frame-Zaehler (`rendered_frames`, `reused_frames`,
+  `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
+  `elapsed_seconds`, `video_frames`) und ohne `keyer.status.metrics`.
+  Publiziert wird sofort bei `force` (Lifecycle, Recording-Wechsel), immer
+  solange `recording.active` (Timer in der WebApp), bei jeder Aenderung der
+  Projektion (Kamera, Provider, Fallback, Fehler, VCam), und sonst
+  mindestens alle `STATUS_METRICS_PUBLISH_INTERVAL_MS` (6000 ms), damit
+  Performance-Panels weiterlaufen. Es werden also nie Updates stillgelegt,
+  nur reine Zaehler-Aenderungen gedrosselt.
+
+### Company-Background-Fetch (`meeting_background_image_fetch`)
+
+Die Bridge laedt Cloud-Hintergruende selbst (guarded HTTPS-Downloader:
+nur HTTPS/443, oeffentliche Adressen, 8 MB Cap, PNG/JPEG/WebP) und cached
+sie unter `<userDataDir>/meeting-backgrounds/<sha256>.<ext>` mit einem
+`index.json` daneben (`apps/bridge/src/services/meeting/background-image-store.ts`):
+
+- Cache-Key = Origin + Pfad der URL ohne Query, d. h. neu signierte
+  Supabase-URLs treffen denselben Eintrag.
+- Treffer mit vorhandener Datei: Conditional GET (`If-None-Match` mit dem
+  gespeicherten ETag, sonst `If-Modified-Since`). `304` liefert den
+  gecachten Pfad; `200` speichert neu (Datei wird nur geschrieben, wenn der
+  Hash noch nicht existiert). Schlaegt die Revalidierung netzwerkseitig
+  fehl, wird die gecachte Datei mit Warn-Log genutzt.
+- Cleanup: LRU-Eviction ueber `BACKGROUND_CACHE_MAX_FILES` (20) bzw.
+  `BACKGROUND_CACHE_MAX_TOTAL_BYTES` (200 MB); lokale Uploads ueber die
+  HTTP-Route werden unter `upload:<hash>` mitindiziert.
+- Antwort: `{ path, cached }` (`cached: true` bei 304/Offline-Fallback).
+
 ## Kamera-Spiegelung
 
 Die Kamera wird im Compositor standardmaessig horizontal gespiegelt, damit die
