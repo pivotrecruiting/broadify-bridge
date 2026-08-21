@@ -78,7 +78,7 @@ struct MeetingState {
   // speaking". Below this the auto-director holds the current program.
   float autoDirectorThreshold = 0.02f;
   bool keyerEnabled = false;
-  bool framebusRunning = true;
+  bool framebusRunning = false;
   bool vcamRawRunning = true;
   int previewClientCount = 0;
   int vcamClientCount = 0;

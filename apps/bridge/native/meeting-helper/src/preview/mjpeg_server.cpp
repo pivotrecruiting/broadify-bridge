@@ -344,9 +344,16 @@ void runMjpegServer(uint16_t port,
           !sendAll(client, "\r\n", 2)) {
         break;
       }
-      // ~15fps: the builder preview does not need program frame rate, and
-      // JPEG encoding is one of the most expensive per-client costs.
-      std::this_thread::sleep_for(std::chrono::milliseconds(66));
+      int vcamClients = 0;
+      {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        vcamClients = state.vcamClientCount;
+      }
+      // 15fps normally; 10fps while VCam is active so JPEG work yields CPU to
+      // the raw-frame path.
+      std::this_thread::sleep_for(
+          vcamClients > 0 ? std::chrono::milliseconds(100)
+                          : std::chrono::milliseconds(66));
     }
     closeSocketHandle(client);
   }

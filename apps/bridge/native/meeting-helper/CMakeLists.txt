@@ -77,6 +77,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/openvino_keyer.cpp
   src/main.cpp
   src/pipeline/frame_pipeline.cpp
+  src/pipeline/frame_pipeline_gating.cpp
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
   src/pipeline/keyer_cadence.cpp
@@ -289,6 +290,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(frame_pipeline_stall_test
     tests/frame_pipeline_stall_test.cpp
   )
+  add_executable(frame_pipeline_gating_test
+    tests/frame_pipeline_gating_test.cpp
+    src/pipeline/frame_pipeline_gating.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -340,6 +345,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     mask_retention_test
     subject_presence_test
     frame_pipeline_stall_test
+    frame_pipeline_gating_test
     tier_handover_test
     matting_backend_test
     control_server_test

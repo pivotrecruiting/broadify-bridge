@@ -10,6 +10,7 @@
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #include "pipeline/framebus_reader_log_gate.h"
+#include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
 #include "pipeline/subject_presence.h"
@@ -1742,7 +1743,10 @@ void runFramePipeline(const Options &options,
     const bool staticHeartbeatDue =
         lastStaticHeartbeatAt == std::chrono::steady_clock::time_point{} ||
         programStart - lastStaticHeartbeatAt >= kStaticHeartbeatInterval;
-    bool shouldRenderProgram = runtime.programDirty || runtime.programRevision != lastProgramRevision || programFrame.empty();
+    const bool programChanged =
+        runtime.programDirty || runtime.programRevision != lastProgramRevision ||
+        programFrame.empty();
+    bool shouldRenderProgram = programChanged;
     bool shouldPublishPreview = false;
     bool shouldWriteFramebus = false;
 
@@ -1990,6 +1994,12 @@ void runFramePipeline(const Options &options,
       if (hasNewFrontGraphicsFrame) {
         lastFrontGraphicsTimestampNs = frontGraphicsFrameForCompositor->timestampNs;
       }
+      const bool graphicsChanged = runtime.graphicsDirty ||
+          hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
+      const PipelineWorkTriggers workTriggers{
+          hasNewCameraFrame, programChanged, graphicsChanged};
+      const bool programWorkDue = shouldRunProgramWork(workTriggers);
+      const bool fusedKeyerWorkDue = shouldRunFusedKeyerWork(workTriggers);
       // Same-frame re-evaluation only while the async path is the active
       // source (see the gate above): while fused owns the keyer this block
       // must neither consume the parked worker's pair nor write telemetry.
@@ -2063,11 +2073,8 @@ void runFramePipeline(const Options &options,
 
       const bool hasNewUsableKeyerPair = selectedPair != nullptr && selectedPair->publishedAtNs > lastUsedKeyerPublishedNs;
       shouldRenderProgram = shouldRenderProgram ||
-          hasNewCameraFrame ||
-          hasNewBackGraphicsFrame ||
-          hasNewFrontGraphicsFrame ||
-          hasNewUsableKeyerPair ||
-          ((runtime.mode == "live" || runtime.mode == "keyer_live") && graphicsOutputActive);
+          programWorkDue ||
+          hasNewUsableKeyerPair;
       if (runtime.mode == "idle" && !outputConsumerActive && !shouldRenderProgram) {
         std::this_thread::sleep_for(kIdleSleep);
         nextFrameAt = std::chrono::steady_clock::now();
@@ -2091,7 +2098,7 @@ void runFramePipeline(const Options &options,
           selectedPair != nullptr ? &selectedPair->mask : nullptr;
       // Confirmed-empty masks skip the snap entirely (refining zeros is
       // wasted work); the pair's flagged zero mask goes to the compositor.
-      if (selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
+      if (fusedKeyerWorkDue && selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
           !latestCameraFrame.rgba.empty() && !selectedPair->mask.alpha.empty() &&
           !selectedPair->mask.emptyValid && guidedRefineAvailable()) {
         const bool fresherFrame =
@@ -2144,7 +2151,7 @@ void runFramePipeline(const Options &options,
       // whatever the async path chose on any failure.
       AlphaMask fusedMask;
 #if defined(__APPLE__)
-      if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+      if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
           !latestCameraFrame.rgba.empty()) {
         static CoreMLKeyer fusedKeyer(options.modelsDir);
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
@@ -2269,7 +2276,7 @@ void runFramePipeline(const Options &options,
         // Set on the frame a step-down overlap cuts over with a fresh worker
         // pair: the path-transition reset below then keeps the worker state.
         bool preserveWorkerOnCutover = false;
-        if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+        if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
           // MODNet matte carries no refine, so snap its edge onto the current
@@ -2792,8 +2799,9 @@ void runFramePipeline(const Options &options,
                                   options.height);
       }
 
-      shouldWriteFramebus = runtime.framebusRunning && !programFrame.empty() &&
-          (shouldRenderProgram || runtime.mode == "live" || runtime.mode == "keyer_live" || staticHeartbeatDue);
+      shouldWriteFramebus = shouldWriteFramebusFrame(
+          runtime.framebusRunning, !programFrame.empty(), shouldRenderProgram,
+          staticHeartbeatDue);
       if (shouldWriteFramebus) {
         framebus_writer_write_rgba(
             writer,
