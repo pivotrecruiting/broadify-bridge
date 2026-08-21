@@ -1,5 +1,5 @@
 import "./app-bootstrap.js";
-import { app, BrowserWindow, powerSaveBlocker, shell } from "electron";
+import { app, BrowserWindow, powerMonitor, powerSaveBlocker, shell } from "electron";
 import {
   getArgMap,
   resolveRendererEntry,
@@ -983,6 +983,24 @@ if (!isRendererProcess) {
       const bridgeApiRequest = createBridgeApiRequest(() =>
         bridgeProcessManager.getConfig(),
       );
+
+      const requestMeetingCameraReopen = (reason: string): void => {
+        void bridgeApiRequest("/meeting/camera/reopen", {
+          method: "POST",
+        }).catch((error: unknown) => {
+          logAppWarn(
+            `[Meeting] Camera reopen after ${reason} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+      };
+      powerMonitor.on("resume", () => {
+        requestMeetingCameraReopen("resume");
+      });
+      powerMonitor.on("unlock-screen", () => {
+        requestMeetingCameraReopen("unlock-screen");
+      });
 
       // Engine IPC handlers
 

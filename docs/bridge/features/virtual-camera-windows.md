@@ -24,10 +24,12 @@ sich die DLL nur bei Bedarf:
 - `MediaStream::Start` (App beginnt zu streamen): Verbindung aufbauen
   (`MediaStream: running, raw-frame client connecting`).
 - `MediaStream::Stop`/`Shutdown`: Verbindung trennen; `RawFrameClient::stop()`
-  beendet einen blockierenden `recv` per `shutdown()` und joint den
+  beendet einen blockierenden `connect`/`recv` per Socket-Close und joint den
   Leser-Thread, Reconnect-Backoffs werden in 50-ms-Scheiben unterbrochen.
 - Direkt nach dem Start liefert `RequestSample` bis zum ersten Frame den
-  dunklen Splash (bzw. den letzten Frame, solange er nicht aelter als 2 s ist).
+  dunklen Splash. Sobald einmal ein gueltiger Frame angekommen ist, wird nie
+  wieder auf den Splash umgeschaltet: bei Staleness, statischem Programm oder
+  Groessenabweichung bleibt der letzte gute Frame sichtbar.
 
 ### Geometrie-Handshake und Skalierung bei Abweichung
 
@@ -53,15 +55,16 @@ funktionieren weiter (Frame-Probe, dann Fallback); die macOS-Extension
 (`RawFrameStreamReader.swift`) liest nur `200 OK` und die Leerzeile und
 ignoriert die Zusatz-Header.
 
-Weicht die Groesse eines (nicht veralteten) Frames trotzdem vom
+Weicht die Groesse eines Frames trotzdem vom
 ausgehandelten Media Type ab, zeigt `MediaStream::RequestSample` **kein**
 graues Splash-Bild mehr, sondern skaliert den Frame per Nearest-Neighbour
 (einfaches Strecken, kein Letterbox) in den Sample-Puffer. Der Mismatch wird
 einmal pro Groessenwechsel geloggt
-(`MediaStream: source WxH differs from media type WxH, scaling`). Das dunkle
-Splash bleibt nur fuer „kein Frame / Frame aelter als 2 s"; fehlerhafte
-Payloads (Groesse passt nicht zu Breite x Hoehe x 4) werden weiterhin
-verworfen.
+(`MediaStream: source WxH differs from media type WxH, scaling`). Staleness
+loggt nach ca. 2 s und 10 s ohne neuen Frame, liefert aber weiter den letzten
+guten Sample-Puffer. Das dunkle Splash bleibt nur fuer „noch nie ein Frame auf
+dieser Verbindung empfangen"; fehlerhafte Payloads (Groesse passt nicht zu
+Breite x Hoehe x 4) werden verworfen, ohne den letzten guten Frame zu ersetzen.
 
 Symptom vor diesem Fix (rc.11): „Broadify Camera" in Teams waehlbar, aber
 dauerhaft grau — die Probe hatte den 2-s-Fenster verpasst, die DLL lief mit
@@ -78,6 +81,30 @@ Luefter entsprechen dann dem Zustand „VCam-Output gestoppt".
 Log-Zeilen (`VcamLog`): `RawFrameClient: connected to 127.0.0.1:18787
 (stream consumer active)` / `RawFrameClient: disconnected from ...` markieren
 den tatsaechlichen Verbrauch.
+
+## Stream-Lifecycle und Timeouts
+
+Die DLL setzt vor `connect()` `SO_RCVTIMEO`, `SO_SNDTIMEO` und `SO_KEEPALIVE`
+auf dem Raw-Frame-Socket. Ein nicht abgeschlossener Handshake oder ein
+blockierender Frame-Read endet nach ca. 5 s als Disconnect mit
+`WSAGetLastError()` im Log; danach verbindet der Client mit Backoff neu.
+Jeder COM-Einstieg der Media-Stream-Seite faengt C++-Exceptions ab und gibt
+`E_FAIL` zurueck, damit der Windows Frame Server nicht durch eine aus der DLL
+entweichende Exception beendet wird.
+
+Der Helper akzeptiert Raw-Frame-Clients nicht mehr inline im Listener, sondern
+startet pro Client einen eigenen Worker. Ein langsamer oder geleakter Consumer
+kann dadurch weder `accept()` noch andere Consumers blockieren. Auf Windows
+bindet der Listener mit `SO_EXCLUSIVEADDRUSE`; ein belegter Port meldet
+`vcam_raw_bind_failed`, die Bridge bricht den Engine-Start dann ab statt in
+einen unbrauchbaren Running-State zu gehen. Pro Client gilt ein 2-s-Sendtimeout,
+und der Worker prueft mit `select`/`recv(MSG_PEEK)`, ob der Peer geschlossen
+hat.
+
+Wenn das Programm statisch ist, sendet der Helper den zuletzt gecachten
+Raw-Frame mindestens alle ca. 1000 ms erneut und vergibt dafuer eine neue
+Sequenznummer. Dadurch bleibt die DLL frisch, auch wenn sich im Bild nichts
+aendert.
 
 ## Registrierung bei der Installation
 

@@ -110,6 +110,37 @@ std::string keyerConfigSignature(const MeetingState &state) {
   return signature.str();
 }
 
+int resolveCameraIndex(CameraSource &camera, const std::string &stableKey,
+                       int fallbackIndex) {
+  if (stableKey.empty()) {
+    return fallbackIndex;
+  }
+  const std::vector<CameraInfo> cameras = camera.listCameras();
+  const auto match = std::find_if(
+      cameras.begin(), cameras.end(), [&stableKey](const CameraInfo &info) {
+        return info.stableKey == stableKey || info.cameraId == stableKey;
+      });
+  return match == cameras.end() ? -1 : match->cameraIndex;
+}
+
+bool activeCameraMatches(CameraSource &camera, const std::string &stableKey,
+                         int cameraIndex) {
+  if (!camera.isRunning()) {
+    return false;
+  }
+  const int activeIndex = camera.activeCameraIndex();
+  if (stableKey.empty()) {
+    return activeIndex == cameraIndex;
+  }
+  const std::vector<CameraInfo> cameras = camera.listCameras();
+  const auto match = std::find_if(
+      cameras.begin(), cameras.end(), [activeIndex](const CameraInfo &info) {
+        return info.cameraIndex == activeIndex;
+      });
+  return match != cameras.end() &&
+         (match->stableKey == stableKey || match->cameraId == stableKey);
+}
+
 void markProgramDirty(MeetingState &state, bool graphicsDirty = false) {
   state.programDirty = true;
   state.graphicsDirty = state.graphicsDirty || graphicsDirty;
@@ -271,6 +302,7 @@ std::string handleRpc(const std::string &line,
     std::ostringstream result;
     result << "{\"bridge_running\":true,"
            << "\"camera_running\":" << (state.cameraRunning ? "true" : "false") << ","
+           << "\"camera_stalled\":" << (state.cameraStalled ? "true" : "false") << ","
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"pip_camera_index\":" << (state.pipCameraIndex >= 0 ? std::to_string(state.pipCameraIndex) : "null") << ","
@@ -312,7 +344,13 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "camera.select") {
-    const int cameraIndex = extractIntField(line, "camera_index", 0);
+    const std::string stableKey = extractStringField(line, "stable_key");
+    const int cameraIndex = resolveCameraIndex(
+        camera, stableKey, extractIntField(line, "camera_index", 0));
+    if (cameraIndex < 0) {
+      return errorResponse(id, "camera_select_failed",
+                           "Requested camera stable_key is not available.");
+    }
     const bool selected = camera.selectCamera(cameraIndex);
     if (!selected) {
       return errorResponse(id, "camera_select_failed", camera.lastError());
@@ -321,12 +359,31 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "camera.start") {
-    const int cameraIndex = extractIntField(line, "camera_index", camera.activeCameraIndex());
+    const std::string stableKey = extractStringField(line, "stable_key");
+    const int cameraIndex = resolveCameraIndex(
+        camera, stableKey, extractIntField(line, "camera_index", camera.activeCameraIndex()));
+    if (cameraIndex < 0) {
+      return errorResponse(id, "camera_start_failed",
+                           "Requested camera stable_key is not available.");
+    }
+    bool cameraStalled = false;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      cameraStalled = state.cameraStalled;
+    }
+    if (!cameraStalled && activeCameraMatches(camera, stableKey, cameraIndex)) {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.cameraRunning = true;
+      state.activeCameraIndex = cameraIndex;
+      state.cameraStalled = false;
+      return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(cameraIndex) + ",\"backend\":\"native\",\"reopened\":false}");
+    }
     const bool started = camera.start(cameraIndex, options.width, options.height, options.fps);
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = started;
       state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
+      state.cameraStalled = false;
       markProgramDirty(state);
     }
     if (!started) {
@@ -336,7 +393,25 @@ std::string handleRpc(const std::string &line,
           : "camera_start_failed";
       return errorResponse(id, code, camera.lastError());
     }
-    return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + ",\"backend\":\"native\"}");
+    return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + ",\"backend\":\"native\",\"reopened\":true}");
+  }
+
+  if (method == "camera.reopen") {
+    if (!camera.isRunning()) {
+      return okResponse(id, "{\"ok\":true,\"reopened\":false}");
+    }
+    const bool reopened = camera.reopen(options.width, options.height, options.fps);
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.cameraRunning = camera.isRunning();
+      state.activeCameraIndex = state.cameraRunning ? camera.activeCameraIndex() : -1;
+      state.cameraStalled = !reopened;
+      markProgramDirty(state);
+    }
+    if (!reopened) {
+      return errorResponse(id, "camera_reopen_failed", camera.lastError());
+    }
+    return okResponse(id, "{\"ok\":true,\"reopened\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + "}");
   }
 
   if (method == "camera.stop") {
@@ -344,6 +419,7 @@ std::string handleRpc(const std::string &line,
     previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.cameraRunning = false;
+    state.cameraStalled = false;
     state.activeCameraIndex = -1;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true}");

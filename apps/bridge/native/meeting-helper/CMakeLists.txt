@@ -278,6 +278,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/subject_presence_test.cpp
     src/pipeline/subject_presence.cpp
   )
+  add_executable(frame_pipeline_stall_test
+    tests/frame_pipeline_stall_test.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -287,6 +290,23 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(raw_frame_stream_header_test
     tests/raw_frame_stream_header_test.cpp
     src/preview/raw_frame_stream_header.cpp
+  )
+  add_executable(raw_frame_server_test
+    tests/raw_frame_server_test.cpp
+    src/preview/raw_frame_server.cpp
+    src/preview/raw_frame_stream_header.cpp
+    src/preview/preview_frame_store.cpp
+    src/util/helper_event_log.cpp
+  )
+  add_executable(control_server_test
+    tests/control_server_test.cpp
+    src/control/control_server.cpp
+    src/capture/camera_source.cpp
+    src/output/vcam_controller.cpp
+    src/preview/preview_frame_store.cpp
+    src/recorder/meeting_recorder_stub.cpp
+    src/util/helper_event_log.cpp
+    src/util/json_utils.cpp
   )
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
@@ -309,13 +329,23 @@ if(MEETING_HELPER_BUILD_TESTS)
     keyer_cadence_test
     mask_retention_test
     subject_presence_test
+    frame_pipeline_stall_test
     tier_handover_test
     matting_backend_test
+    control_server_test
     raw_frame_stream_header_test
+    raw_frame_server_test
   )
     target_include_directories(${helper_test} PRIVATE src)
     if(WIN32)
       target_compile_definitions(${helper_test} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+      if(helper_test STREQUAL "raw_frame_server_test")
+        target_link_libraries(${helper_test} PRIVATE ws2_32)
+      elseif(helper_test STREQUAL "control_server_test")
+        target_link_libraries(${helper_test} PRIVATE ws2_32)
+      endif()
+    elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
+      target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
   endforeach()

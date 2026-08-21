@@ -7,6 +7,10 @@ const readyHandlers: Array<() => void> = [];
 const secondInstanceHandlers: Array<() => void> = [];
 const openUrlHandlers: Array<(event: { preventDefault: () => void }, _url: string) => void> = [];
 const beforeQuitHandlers: Array<() => void | Promise<void>> = [];
+const powerMonitorHandlers: Record<string, Array<() => void>> = {
+  resume: [],
+  "unlock-screen": [],
+};
 
 const mockIpcMainHandle = jest.fn();
 const mockIpcWebContentsSend = jest.fn();
@@ -203,6 +207,12 @@ const mockAppOn = jest.fn((event: string, handler: () => void) => {
 });
 
 jest.mock("electron", () => ({
+  powerMonitor: {
+    on: jest.fn((event: string, handler: () => void) => {
+      powerMonitorHandlers[event] ??= [];
+      powerMonitorHandlers[event].push(handler);
+    }),
+  },
   powerSaveBlocker: {
     start: jest.fn().mockReturnValue(1),
     stop: jest.fn(),
@@ -259,6 +269,8 @@ describe("main", () => {
     secondInstanceHandlers.length = 0;
     openUrlHandlers.length = 0;
     beforeQuitHandlers.length = 0;
+    powerMonitorHandlers.resume.length = 0;
+    powerMonitorHandlers["unlock-screen"].length = 0;
     process.argv = ["/usr/bin/electron", "/app"];
     mockExistsSync.mockReturnValue(false);
     mockIsDev.mockReturnValue(false);
@@ -327,6 +339,23 @@ describe("main", () => {
       expect(channels).toContain("bridgeClearLogs");
       expect(channels).toContain("appClearLogs");
       expect(channels).toContain("openExternal");
+    });
+
+    it("requests meeting camera reopen on resume and unlock", async () => {
+      await readyHandlers[0]();
+
+      expect(powerMonitorHandlers.resume).toHaveLength(1);
+      expect(powerMonitorHandlers["unlock-screen"]).toHaveLength(1);
+
+      powerMonitorHandlers.resume[0]();
+      powerMonitorHandlers["unlock-screen"][0]();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockBridgeApiRequest).toHaveBeenCalledWith(
+        "/meeting/camera/reopen",
+        { method: "POST" },
+      );
+      expect(mockBridgeApiRequest).toHaveBeenCalledTimes(2);
     });
 
     it("second-instance focuses window", async () => {

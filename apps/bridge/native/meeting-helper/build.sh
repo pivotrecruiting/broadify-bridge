@@ -77,12 +77,29 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   fi
 
   if [[ -n "${SIGNING_IDENTITY}" ]]; then
-    codesign \
+    TIMESTAMP_ARGS=()
+    if [[ "${SIGNING_IDENTITY}" == Developer\ ID\ Application:* ]]; then
+      TIMESTAMP_ARGS=(--timestamp)
+    fi
+    if ! SIGN_OUTPUT="$(codesign \
       --force \
       --sign "${SIGNING_IDENTITY}" \
       --entitlements "${ENTITLEMENTS_FILE}" \
       --options runtime \
-      "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+      "${TIMESTAMP_ARGS[@]}" \
+      "${ROOT_DIR}/Broadify Bridge Meeting Helper.app" 2>&1)"; then
+      if [[ "${SIGN_OUTPUT}" == *"A timestamp was expected but was not found."* ]]; then
+        echo "Developer ID signing had no timestamp; re-signing helper ad-hoc for local verification." >&2
+        codesign \
+          --force \
+          --sign - \
+          --entitlements "${ENTITLEMENTS_FILE}" \
+          "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+      else
+        echo "${SIGN_OUTPUT}" >&2
+        exit 1
+      fi
+    fi
   else
     codesign \
       --force \
@@ -90,7 +107,20 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
       --entitlements "${ENTITLEMENTS_FILE}" \
       "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
   fi
-  codesign --verify --strict --deep --verbose=2 "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+  if ! VERIFY_OUTPUT="$(codesign --verify --strict --deep --verbose=2 "${ROOT_DIR}/Broadify Bridge Meeting Helper.app" 2>&1)"; then
+    if [[ "${VERIFY_OUTPUT}" == *"A timestamp was expected but was not found."* ]]; then
+      echo "Developer ID signature had no timestamp; re-signing helper ad-hoc for local verification." >&2
+      codesign \
+        --force \
+        --sign - \
+        --entitlements "${ENTITLEMENTS_FILE}" \
+        "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+      codesign --verify --strict --deep --verbose=2 "${ROOT_DIR}/Broadify Bridge Meeting Helper.app"
+    else
+      echo "${VERIFY_OUTPUT}" >&2
+      exit 1
+    fi
+  fi
 
   if [[ -f "${ROOT_DIR}/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" ]]; then
     cp -f "${ROOT_DIR}/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" "${ROOT_DIR}/meeting-helper"

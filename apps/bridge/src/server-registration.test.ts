@@ -71,6 +71,7 @@ describe("registerServerRoutes", () => {
       registerEngineRoute: Symbol("engine"),
       registerVideoRoute: Symbol("video"),
       registerGraphicsBrowserInputRoute: Symbol("graphics-browser-input"),
+      registerMeetingCameraRoute: Symbol("meeting-camera"),
       registerMeetingMediaRoute: Symbol("meeting-media"),
       registerWebSocketRoute: Symbol("ws"),
       registerRelayRoute: Symbol("relay"),
@@ -98,6 +99,7 @@ describe("registerServerRoutes", () => {
       { plugin: routes.registerEngineRoute, options: undefined },
       { plugin: routes.registerVideoRoute, options: undefined },
       { plugin: routes.registerGraphicsBrowserInputRoute, options: undefined },
+      { plugin: routes.registerMeetingCameraRoute, options: undefined },
       { plugin: routes.registerMeetingMediaRoute, options: undefined },
       { plugin: routes.registerWebSocketRoute, options: undefined },
       {
@@ -122,6 +124,7 @@ describe("registerServerRoutes", () => {
       registerEngineRoute: Symbol("engine"),
       registerVideoRoute: Symbol("video"),
       registerGraphicsBrowserInputRoute: Symbol("graphics-browser-input"),
+      registerMeetingCameraRoute: Symbol("meeting-camera"),
       registerMeetingMediaRoute: Symbol("meeting-media"),
       registerWebSocketRoute: Symbol("ws"),
       registerRelayRoute: Symbol("relay"),

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <exception>
 #include <string>
 
 #pragma comment(lib, "ws2_32.lib")
@@ -28,6 +29,8 @@ constexpr uint32_t kRawFramePixelFormatBgra8 = 2u;
 constexpr size_t kRecordHeaderSize = 32u;
 constexpr uint32_t kMaxDimension = 7680u;  // guard against corrupt headers.
 constexpr uint64_t kStaleWindowMs = 2000u;
+constexpr uint64_t kVeryStaleWindowMs = 10000u;
+constexpr DWORD kSocketTimeoutMs = 5000;
 
 constexpr double kBackoffStartMs = 250.0;
 constexpr double kBackoffMaxMs = 3000.0;
@@ -59,11 +62,29 @@ bool recvExact(SOCKET socket, uint8_t *buffer, size_t len,
     const int chunk = recv(socket, reinterpret_cast<char *>(buffer + received),
                            static_cast<int>(len - received), 0);
     if (chunk <= 0) {
+      const int error = WSAGetLastError();
+      if (chunk == SOCKET_ERROR &&
+          (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK)) {
+        VcamLog("RawFrameClient: recv timeout/disconnect error=%d", error);
+      } else if (chunk == SOCKET_ERROR) {
+        VcamLog("RawFrameClient: recv failed error=%d", error);
+      }
       return false;
     }
     received += static_cast<size_t>(chunk);
   }
   return true;
+}
+
+void configureSocket(SOCKET socket) {
+  const DWORD timeoutMs = kSocketTimeoutMs;
+  setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+             reinterpret_cast<const char *>(&timeoutMs), sizeof(timeoutMs));
+  setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
+             reinterpret_cast<const char *>(&timeoutMs), sizeof(timeoutMs));
+  const BOOL keepAlive = TRUE;
+  setsockopt(socket, SOL_SOCKET, SO_KEEPALIVE,
+             reinterpret_cast<const char *>(&keepAlive), sizeof(keepAlive));
 }
 
 // Finds a header line `name: value` in the HTTP handshake block (names are
@@ -132,11 +153,13 @@ void RawFrameClient::stop() {
     return;
   }
   {
-    // Wake a recv()/connect() that is blocked on the live socket; the run
-    // loop owns the handle and closes it once it observes running_ == false.
+    // Wake a recv()/connect() that is blocked on the live socket.
     std::lock_guard<std::mutex> lock(socketMutex_);
     if (activeSocket_ != kNoSocket) {
-      shutdown(static_cast<SOCKET>(activeSocket_), SD_BOTH);
+      const SOCKET socket = static_cast<SOCKET>(activeSocket_);
+      shutdown(socket, SD_BOTH);
+      closesocket(socket);
+      activeSocket_ = kNoSocket;
     }
   }
   if (thread_.joinable()) {
@@ -183,14 +206,28 @@ bool RawFrameClient::streamGeometry(uint32_t &width, uint32_t &height) const {
 }
 
 bool RawFrameClient::isStale() const {
+  return staleAgeMs() > kStaleWindowMs;
+}
+
+uint64_t RawFrameClient::staleAgeMs() const {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!hasFrame_) {
-    return true;
+    return UINT64_MAX;
   }
-  return GetTickCount64() - lastArrivalMs_ > kStaleWindowMs;
+  return GetTickCount64() - lastArrivalMs_;
 }
 
 void RawFrameClient::run() {
+  try {
+    runLoop();
+  } catch (const std::exception &error) {
+    VcamLog("RawFrameClient: thread exception: %s", error.what());
+  } catch (...) {
+    VcamLog("RawFrameClient: thread exception");
+  }
+}
+
+void RawFrameClient::runLoop() {
   WSADATA wsaData;
   if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
     VcamLog("RawFrameClient: WSAStartup failed");
@@ -198,6 +235,7 @@ void RawFrameClient::run() {
   }
 
   double backoffMs = kBackoffStartMs;
+  double lastLoggedConnectBackoffMs = 0.0;
   while (running_.load()) {
     SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket == INVALID_SOCKET) {
@@ -205,6 +243,7 @@ void RawFrameClient::run() {
       backoffMs = std::min(backoffMs * kBackoffFactor, kBackoffMaxMs);
       continue;
     }
+    configureSocket(socket);
     {
       std::lock_guard<std::mutex> lock(socketMutex_);
       activeSocket_ = static_cast<uintptr_t>(socket);
@@ -226,6 +265,7 @@ void RawFrameClient::run() {
     std::string handshake;
     if (connect(socket, reinterpret_cast<sockaddr *>(&address),
                 sizeof(address)) == 0) {
+      lastLoggedConnectBackoffMs = 0.0;
       static const char kRequest[] =
           "GET /stream.rgba HTTP/1.1\r\n"
           "Host: 127.0.0.1\r\n"
@@ -238,6 +278,13 @@ void RawFrameClient::run() {
         while (running_.load() && handshake.find("\r\n\r\n") == std::string::npos) {
           const int n = recv(socket, &byte, 1, 0);
           if (n <= 0) {
+            const int error = WSAGetLastError();
+            if (n == SOCKET_ERROR &&
+                (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK)) {
+              VcamLog("RawFrameClient: handshake timeout error=%d", error);
+            } else if (n == SOCKET_ERROR) {
+              VcamLog("RawFrameClient: handshake recv failed error=%d", error);
+            }
             connected = false;
             break;
           }
@@ -247,6 +294,16 @@ void RawFrameClient::run() {
             break;
           }
         }
+      } else {
+        VcamLog("RawFrameClient: handshake send failed error=%d", WSAGetLastError());
+      }
+    } else {
+      const int error = WSAGetLastError();
+      if (lastLoggedConnectBackoffMs == 0.0 ||
+          lastLoggedConnectBackoffMs != backoffMs) {
+        VcamLog("RawFrameClient: connect failed error=%d backoff_ms=%.0f", error,
+                backoffMs);
+        lastLoggedConnectBackoffMs = backoffMs;
       }
     }
 
@@ -275,6 +332,7 @@ void RawFrameClient::run() {
 
       uint8_t header[kRecordHeaderSize];
       std::vector<uint8_t> payload;
+      uint64_t lastStaleLogWindowMs = 0;
       while (running_.load()) {
         if (!recvExact(socket, header, kRecordHeaderSize, running_)) {
           break;
@@ -295,7 +353,9 @@ void RawFrameClient::run() {
                   height, pixelFormat, frameSize);
           break;
         }
-        payload.resize(frameSize);
+        if (payload.size() != frameSize) {
+          payload.resize(frameSize);
+        }
         if (!recvExact(socket, payload.data(), frameSize, running_)) {
           break;
         }
@@ -303,17 +363,45 @@ void RawFrameClient::run() {
         latest_.width = width;
         latest_.height = height;
         latest_.sequence = sequence;
-        latest_.bgra = payload;
+        if (latest_.bgra.size() != payload.size()) {
+          latest_.bgra.resize(payload.size());
+        }
+        std::memcpy(latest_.bgra.data(), payload.data(), payload.size());
         hasFrame_ = true;
         lastArrivalMs_ = GetTickCount64();
+        lastStaleLogWindowMs = 0;
+      }
+      uint64_t staleMs = 0;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (hasFrame_) {
+          staleMs = GetTickCount64() - lastArrivalMs_;
+        }
+      }
+      if (staleMs >= kVeryStaleWindowMs &&
+          lastStaleLogWindowMs != kVeryStaleWindowMs) {
+        VcamLog("RawFrameClient: no frames for %llu ms",
+                static_cast<unsigned long long>(staleMs));
+        lastStaleLogWindowMs = kVeryStaleWindowMs;
+      } else if (staleMs >= kStaleWindowMs &&
+                 lastStaleLogWindowMs != kStaleWindowMs) {
+        VcamLog("RawFrameClient: no frames for %llu ms",
+                static_cast<unsigned long long>(staleMs));
+        lastStaleLogWindowMs = kStaleWindowMs;
       }
     }
 
+    bool shouldClose = true;
     {
       std::lock_guard<std::mutex> lock(socketMutex_);
-      activeSocket_ = kNoSocket;
+      shouldClose = activeSocket_ == static_cast<uintptr_t>(socket);
+      if (shouldClose) {
+        activeSocket_ = kNoSocket;
+      }
     }
-    closesocket(socket);
+    if (shouldClose) {
+      closesocket(socket);
+    }
     if (connected) {
       VcamLog("RawFrameClient: disconnected from 127.0.0.1:%u", port_);
     }

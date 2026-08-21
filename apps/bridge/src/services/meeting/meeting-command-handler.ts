@@ -7,6 +7,7 @@ import {
 } from "../relay-command-schemas.js";
 import {
   ConferenceDisplayStartSchema,
+  MeetingCameraSelectionSchema,
   MeetingBackgroundImageFetchSchema,
   MeetingCallControlSchema,
   MeetingEngineStartSchema,
@@ -184,6 +185,7 @@ function autoArmVirtualCamera(): void {
     try {
       const client = requireClient();
       await client.virtualCameraStart({ allowElevation: false });
+      meetingHelperManager.noteVirtualCameraStarted();
       console.info("[meeting] virtual camera auto-armed with engine start");
     } catch (error: unknown) {
       // A background arm must never take the process down — not even when
@@ -413,7 +415,7 @@ export async function handleMeetingCommand(
 
     case "meeting_camera_select": {
       const options = parseRelayPayload(
-        MeetingPassthroughSchema,
+        MeetingCameraSelectionSchema,
         payload ?? {},
         "Invalid payload for meeting_camera_select",
       );
@@ -428,7 +430,7 @@ export async function handleMeetingCommand(
 
     case "meeting_camera_start": {
       const options = parseRelayPayload(
-        MeetingPassthroughSchema,
+        MeetingCameraSelectionSchema,
         payload ?? {},
         "Invalid payload for meeting_camera_start",
       );
@@ -854,10 +856,15 @@ export async function handleMeetingCommand(
           const mapped = mapVcamStartError(result.error);
           return { ...result, error: mapped.error, errorCode: mapped.errorCode };
         }
+        meetingHelperManager.noteVirtualCameraStarted();
         return result;
       }
       if (action === "stop") {
-        return runMeetingRpc(() => client.virtualCameraStop());
+        const result = await runMeetingRpc(() => client.virtualCameraStop());
+        if (result.success) {
+          meetingHelperManager.noteVirtualCameraStopped();
+        }
+        return result;
       }
       return runMeetingRpc(() => client.virtualCameraConfigure(settings ?? {}));
     }

@@ -145,6 +145,10 @@ export class MeetingHelperClient {
     return this.rpc("camera.stop");
   }
 
+  async cameraReopen(): Promise<Record<string, unknown>> {
+    return this.rpc("camera.reopen");
+  }
+
   async recordingMicrophones(): Promise<Record<string, unknown>> {
     return this.rpc("recording.microphones");
   }

@@ -11,6 +11,7 @@ namespace broadify::vcam {
 namespace {
 
 std::mutex g_logMutex;
+constexpr DWORD kMaxLogBytes = 5u * 1024u * 1024u;
 
 // Resolve %ProgramData%\Broadify and make sure it exists. Returns an empty
 // string on any failure (logging then becomes a no-op).
@@ -30,6 +31,31 @@ std::string resolveLogPath() {
   return dir + "\\vcam.log";
 }
 
+void rotateLogIfNeeded(const std::string &path) {
+  WIN32_FILE_ATTRIBUTE_DATA data{};
+  if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data)) {
+    return;
+  }
+  const ULONGLONG size =
+      (static_cast<ULONGLONG>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+  if (size < kMaxLogBytes) {
+    return;
+  }
+  const std::string rotated = path + ".1";
+  DeleteFileA(rotated.c_str());
+  MoveFileExA(path.c_str(), rotated.c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+
+std::string localTimestamp() {
+  SYSTEMTIME time{};
+  GetLocalTime(&time);
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u %02u:%02u:%02u.%03u",
+           time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute,
+           time.wSecond, time.wMilliseconds);
+  return buffer;
+}
+
 }  // namespace
 
 void VcamLog(const char *format, ...) {
@@ -46,12 +72,14 @@ void VcamLog(const char *format, ...) {
     if (path.empty()) {
       return;
     }
+    rotateLogIfNeeded(path);
     FILE *file = nullptr;
     if (fopen_s(&file, path.c_str(), "a") != 0 || file == nullptr) {
       return;
     }
-    fprintf(file, "[%llu] %s\n",
-            static_cast<unsigned long long>(GetTickCount64()), message);
+    fprintf(file, "[%s pid=%lu tid=%lu] %s\n", localTimestamp().c_str(),
+            static_cast<unsigned long>(GetCurrentProcessId()),
+            static_cast<unsigned long>(GetCurrentThreadId()), message);
     fclose(file);
   } catch (...) {
     // Best-effort logging: never propagate a logging failure.

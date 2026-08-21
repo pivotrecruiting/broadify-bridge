@@ -78,6 +78,7 @@ constexpr float kMaskRefineRangeSigmaLuma = 14.0f;
 constexpr auto kIdleSleep = std::chrono::milliseconds(1000);
 constexpr auto kStaticPollInterval = std::chrono::milliseconds(100);
 constexpr auto kStaticHeartbeatInterval = std::chrono::milliseconds(1000);
+constexpr auto kCameraStallWindow = std::chrono::milliseconds(1500);
 // Duty-cycle guard: only when one keyer pass clearly exceeds a camera frame
 // interval (1.5x, i.e. the machine sustains at most ~20fps anyway) insert a
 // cooldown of this fraction of the pass duration, so weak machines keep ~20%
@@ -1668,6 +1669,9 @@ void runFramePipeline(const Options &options,
   uint64_t lastBackGraphicsTimestampNs = 0u;
   uint64_t lastFrontGraphicsTimestampNs = 0u;
   auto lastStaticHeartbeatAt = std::chrono::steady_clock::time_point{};
+  auto cameraWatchdogStartAt = std::chrono::steady_clock::time_point{};
+  auto lastCameraFrameAt = std::chrono::steady_clock::time_point{};
+  bool cameraStallReported = false;
   AsyncKeyerWorker keyerWorker(options, state, running);
   GraphicsFrameBusReader backGraphicsReader(kMeetingBackGraphicsFrameBusName);
   GraphicsFrameBusReader frontGraphicsReader(kMeetingFrontGraphicsFrameBusName);
@@ -1756,9 +1760,47 @@ void runFramePipeline(const Options &options,
           !latestCameraFrame.rgba.empty();
       if (hasNewCameraFrame) {
         lastCameraTimestampNs = latestCameraFrame.timestampNs;
+        lastCameraFrameAt = programStart;
+        cameraWatchdogStartAt = programStart;
+        if (cameraStallReported) {
+          std::cout << "{\"type\":\"camera_recovered\"}" << std::endl;
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.cameraStalled = false;
+          cameraStallReported = false;
+        }
       } else if (!runtime.cameraRunning) {
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
+        lastCameraFrameAt = std::chrono::steady_clock::time_point{};
+        cameraWatchdogStartAt = std::chrono::steady_clock::time_point{};
+        cameraStallReported = false;
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.cameraStalled = false;
+      } else {
+        if (cameraWatchdogStartAt == std::chrono::steady_clock::time_point{}) {
+          cameraWatchdogStartAt = programStart;
+        }
+        const auto ageStart =
+            lastCameraFrameAt == std::chrono::steady_clock::time_point{}
+                ? cameraWatchdogStartAt
+                : lastCameraFrameAt;
+        const auto age = programStart - ageStart;
+        if (!cameraStallReported &&
+            isCameraFrameStalled(programStart, lastCameraFrameAt,
+                                 cameraWatchdogStartAt, kCameraStallWindow)) {
+          const auto ageMs =
+              std::chrono::duration_cast<std::chrono::milliseconds>(age).count();
+          std::cout << "{\"type\":\"camera_stalled\",\"age_ms\":" << ageMs
+                    << "}" << std::endl;
+          {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.cameraStalled = true;
+          }
+          cameraStallReported = true;
+#if defined(_WIN32)
+          camera.reopen(options.width, options.height, options.fps);
+#endif
+        }
       }
 
       // Conference PiP: a second open camera drawn as an inset. Read its

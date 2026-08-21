@@ -17,6 +17,13 @@ export const MeetingEngineStartSchema = z
 
 export const MeetingPassthroughSchema = z.record(z.unknown());
 
+export const MeetingCameraSelectionSchema = z
+  .object({
+    camera_index: z.number().int().min(0).optional(),
+    stable_key: z.string().min(1).max(1024).optional(),
+  })
+  .strict();
+
 export const MeetingCallControlSchema = z.object({
   platform: z.enum(["teams", "zoom"]),
   action: z.enum(["mic_toggle", "speaker_toggle", "hangup"]),
