@@ -1,6 +1,10 @@
 import { normalize } from "node:path";
 import { setBridgeContext } from "../bridge-context.js";
 import {
+  HELPER_NOT_REACHABLE_CODE,
+  MeetingHelperRequestError,
+} from "./meeting-helper-client.js";
+import {
   __setMeetingHelperPathForTesting,
   findFreePort,
   inspectDeviceEntitlementStatuses,
@@ -294,6 +298,120 @@ describe("meeting-helper-manager", () => {
         expect(mockLogger.warn).not.toHaveBeenCalledWith(
           expect.stringContaining("restart attempt"),
         );
+      });
+    });
+
+    describe("control channel liveness", () => {
+      type LivenessInternalsT = {
+        state: string;
+        client: unknown;
+        process: unknown;
+        restartTimer: NodeJS.Timeout | null;
+        handleProcessExit: (code: number | null) => void;
+      };
+
+      const notReachable = () =>
+        Promise.reject(
+          new MeetingHelperRequestError(
+            HELPER_NOT_REACHABLE_CODE,
+            "Meeting helper control socket not reachable (ENOENT)",
+          ),
+        );
+
+      const armRunningManager = (
+        getState: jest.Mock,
+      ): { manager: MeetingHelperManager; internals: LivenessInternalsT; kill: jest.Mock } => {
+        const manager = new MeetingHelperManager();
+        const internals = manager as unknown as LivenessInternalsT;
+        const kill = jest.fn();
+        internals.state = "running";
+        internals.client = {
+          getState,
+          framebusStatus: jest.fn().mockResolvedValue({}),
+          keyerGet: jest.fn().mockResolvedValue({}),
+          recordingStatus: jest.fn().mockResolvedValue({ recording: null }),
+        };
+        internals.process = {
+          pid: 4242,
+          kill,
+          // killProcess() arms a 3 s SIGKILL fallback cleared on exit; fire
+          // the exit listener right away so no timer leaks into other tests.
+          once: (_event: string, listener: () => void) => listener(),
+        };
+        return { manager, internals, kill };
+      };
+
+      it("kills the helper once after 5 consecutive connect failures and lets the exit path restart it", async () => {
+        const { manager, internals, kill } = armRunningManager(
+          jest.fn().mockImplementation(notReachable),
+        );
+
+        for (let i = 0; i < 4; i += 1) {
+          await manager.getFullStatus();
+        }
+        expect(kill).not.toHaveBeenCalled();
+
+        await manager.getFullStatus();
+        expect(kill).toHaveBeenCalledTimes(1);
+        expect(kill).toHaveBeenCalledWith("SIGTERM");
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("pid 4242"),
+        );
+        expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: "meeting_error",
+            data: expect.objectContaining({ code: "helper_control_channel_lost" }),
+          }),
+        );
+        const lostEvents = mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => event?.data?.code === "helper_control_channel_lost",
+        );
+        expect(lostEvents).toHaveLength(1);
+
+        // The child's exit handler classifies the kill as a crash -> restart.
+        internals.handleProcessExit(null);
+        expect(internals.state).toBe("error");
+        expect(internals.restartTimer).not.toBeNull();
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("restart attempt 1/3"),
+        );
+        manager.beginShutdown();
+        expect(internals.restartTimer).toBeNull();
+      });
+
+      it("resets the failure counter on a successful snapshot", async () => {
+        const getState = jest
+          .fn()
+          .mockImplementationOnce(notReachable)
+          .mockImplementationOnce(notReachable)
+          .mockImplementationOnce(notReachable)
+          .mockImplementationOnce(notReachable)
+          .mockResolvedValueOnce({ ok: true })
+          .mockImplementation(notReachable);
+        const { manager, kill } = armRunningManager(getState);
+
+        for (let i = 0; i < 9; i += 1) {
+          await manager.getFullStatus();
+        }
+        expect(kill).not.toHaveBeenCalled();
+        expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ code: "helper_control_channel_lost" }),
+          }),
+        );
+      });
+
+      it("ignores non-connect errors such as timeouts", async () => {
+        const { manager, kill } = armRunningManager(
+          jest.fn().mockRejectedValue(
+            new MeetingHelperRequestError("timeout", "timed out"),
+          ),
+        );
+
+        for (let i = 0; i < 8; i += 1) {
+          await manager.getFullStatus();
+        }
+        expect(kill).not.toHaveBeenCalled();
       });
     });
 
