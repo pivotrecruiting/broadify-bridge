@@ -303,8 +303,10 @@ sie unter `<userDataDir>/meeting-backgrounds/<sha256>.<ext>` mit einem
 - Treffer mit vorhandener Datei: Conditional GET (`If-None-Match` mit dem
   gespeicherten ETag, sonst `If-Modified-Since`). `304` liefert den
   gecachten Pfad; `200` speichert neu (Datei wird nur geschrieben, wenn der
-  Hash noch nicht existiert). Schlaegt die Revalidierung netzwerkseitig
-  fehl, wird die gecachte Datei mit Warn-Log genutzt.
+  Hash noch nicht existiert). Nur bei Transport-Fehlern (DNS, Connect,
+  Reset, Timeout, TLS) wird die gecachte Datei mit Warn-Log genutzt;
+  HTTP-Status-Antworten (401/403/404/410) und Guard-Ablehnungen sind
+  autoritativ und werden weitergereicht, 404/410 entfernen den Eintrag.
 - Cleanup: LRU-Eviction ueber `BACKGROUND_CACHE_MAX_FILES` (20) bzw.
   `BACKGROUND_CACHE_MAX_TOTAL_BYTES` (200 MB); lokale Uploads ueber die
   HTTP-Route werden unter `upload:<hash>` mitindiziert.

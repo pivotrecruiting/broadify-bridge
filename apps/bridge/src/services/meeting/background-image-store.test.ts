@@ -7,7 +7,12 @@ import {
   type BackgroundImageStoreDepsT,
   type BackgroundIndexT,
 } from "./background-image-store.js";
-import type { GuardedConditionalDownloadT } from "./media-download.js";
+import {
+  GuardedDownloadHttpError,
+  GuardedDownloadPolicyError,
+  isTransientDownloadError,
+  type GuardedConditionalDownloadT,
+} from "./media-download.js";
 
 type FakeStoreT = {
   deps: BackgroundImageStoreDepsT;
@@ -167,6 +172,74 @@ describe("background-image-store", () => {
     expect(store.warn).toHaveBeenCalledWith(
       expect.stringContaining("Download timed out."),
     );
+  });
+
+  it("falls back to the cached file on a node network error (ETIMEDOUT)", async () => {
+    const store = makeStore();
+    store.download.mockResolvedValueOnce(ok("png-bytes"));
+    const first = await fetchBackgroundImage(URL_A, store.deps);
+    const networkError = Object.assign(new Error("connect ETIMEDOUT"), {
+      code: "ETIMEDOUT",
+    });
+    store.download.mockRejectedValueOnce(networkError);
+
+    await expect(fetchBackgroundImage(URL_A, store.deps)).resolves.toEqual({
+      path: first.path,
+      cached: true,
+    });
+    expect(store.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not serve the cached file when revalidation is refused (403)", async () => {
+    const store = makeStore();
+    store.download.mockResolvedValueOnce(ok("png-bytes"));
+    const first = await fetchBackgroundImage(URL_A, store.deps);
+    store.download.mockRejectedValueOnce(new GuardedDownloadHttpError(403));
+
+    await expect(fetchBackgroundImage(URL_A, store.deps)).rejects.toThrow(
+      "Download failed with HTTP 403.",
+    );
+    expect(store.warn).not.toHaveBeenCalled();
+    expect(store.readIndex()[backgroundCacheKey(URL_A)].file_path).toBe(first.path);
+    expect(store.files.has(first.path)).toBe(true);
+  });
+
+  it("drops the entry and file when the object is gone upstream (404)", async () => {
+    const store = makeStore();
+    store.download.mockResolvedValueOnce(ok("png-bytes"));
+    const first = await fetchBackgroundImage(URL_A, store.deps);
+    store.download.mockRejectedValueOnce(new GuardedDownloadHttpError(404));
+
+    await expect(fetchBackgroundImage(URL_A, store.deps)).rejects.toThrow("HTTP 404");
+    expect(store.readIndex()[backgroundCacheKey(URL_A)]).toBeUndefined();
+    expect(store.unlinked).toEqual([first.path]);
+    expect(store.files.has(first.path)).toBe(false);
+  });
+
+  it("rethrows guard/policy rejections instead of using the cache", async () => {
+    const store = makeStore();
+    store.download.mockResolvedValueOnce(ok("png-bytes"));
+    const first = await fetchBackgroundImage(URL_A, store.deps);
+    store.download.mockRejectedValueOnce(
+      new GuardedDownloadPolicyError("Download host resolves to a non-public address."),
+    );
+
+    await expect(fetchBackgroundImage(URL_A, store.deps)).rejects.toThrow(
+      "non-public address",
+    );
+    expect(store.warn).not.toHaveBeenCalled();
+    expect(store.files.has(first.path)).toBe(true);
+  });
+
+  it("isTransientDownloadError only accepts transport-level failures", () => {
+    expect(isTransientDownloadError(new GuardedDownloadHttpError(401))).toBe(false);
+    expect(isTransientDownloadError(new GuardedDownloadPolicyError("x"))).toBe(false);
+    expect(isTransientDownloadError(new Error("Download timed out."))).toBe(true);
+    expect(
+      isTransientDownloadError(Object.assign(new Error("reset"), { code: "ECONNRESET" })),
+    ).toBe(true);
+    expect(isTransientDownloadError(new Error("generic"))).toBe(false);
+    expect(isTransientDownloadError("string")).toBe(false);
   });
 
   it("propagates download errors when nothing is cached", async () => {

@@ -39,6 +39,45 @@ export type GuardedConditionalDownloadT =
       lastModified: string | null;
     };
 
+/** Non-200/304 response from the origin (carries the HTTP status). */
+export class GuardedDownloadHttpError extends Error {
+  readonly statusCode: number;
+
+  constructor(statusCode: number) {
+    super(`Download failed with HTTP ${statusCode}.`);
+    this.name = "GuardedDownloadHttpError";
+    this.statusCode = statusCode;
+  }
+}
+
+/** URL/SSRF guard, size cap or empty-body rejection (never transient). */
+export class GuardedDownloadPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GuardedDownloadPolicyError";
+  }
+}
+
+/**
+ * True for transport-level failures (DNS, connect/reset, socket timeout,
+ * TLS) where a caller may reasonably fall back to a cached copy. HTTP status
+ * errors and guard/policy rejections are authoritative answers and are
+ * never transient.
+ */
+export function isTransientDownloadError(error: unknown): boolean {
+  if (
+    error instanceof GuardedDownloadHttpError ||
+    error instanceof GuardedDownloadPolicyError
+  ) {
+    return false;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" || error.message === "Download timed out.";
+}
+
 const FORBIDDEN_IPV4_RANGES: Array<[number, number]> = [
   // [network, prefix bits]
   [0x00000000, 8], // 0.0.0.0/8 "this network"
@@ -123,19 +162,19 @@ export function parseGuardedUrl(rawUrl: string): URL {
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new Error("Invalid download URL.");
+    throw new GuardedDownloadPolicyError("Invalid download URL.");
   }
   if (url.protocol !== "https:") {
-    throw new Error("Only HTTPS download URLs are allowed.");
+    throw new GuardedDownloadPolicyError("Only HTTPS download URLs are allowed.");
   }
   if (url.username || url.password) {
-    throw new Error("Credentials in download URLs are not allowed.");
+    throw new GuardedDownloadPolicyError("Credentials in download URLs are not allowed.");
   }
   if (url.port && url.port !== "443") {
-    throw new Error("Only port 443 download URLs are allowed.");
+    throw new GuardedDownloadPolicyError("Only port 443 download URLs are allowed.");
   }
   if (isIP(url.hostname.replace(/^\[|\]$/g, "")) !== 0) {
-    throw new Error("IP-literal download URLs are not allowed.");
+    throw new GuardedDownloadPolicyError("IP-literal download URLs are not allowed.");
   }
   return url;
 }
@@ -152,7 +191,7 @@ const guardedLookup: LookupFunction = (hostname, options, callback) => {
     const forbidden = list.find((entry) => isForbiddenAddress(entry.address));
     if (forbidden || list.length === 0) {
       callback(
-        new Error("Download host resolves to a non-public address."),
+        new GuardedDownloadPolicyError("Download host resolves to a non-public address."),
         [],
         0,
       );
@@ -192,13 +231,13 @@ function openGuardedRequest(
         }
         if (status !== 200) {
           response.resume();
-          reject(new Error(`Download failed with HTTP ${status}.`));
+          reject(new GuardedDownloadHttpError(status));
           return;
         }
         const declaredLength = Number(response.headers["content-length"] ?? 0);
         if (declaredLength > maxBytes) {
           response.destroy();
-          reject(new Error("Download exceeds the allowed size."));
+          reject(new GuardedDownloadPolicyError("Download exceeds the allowed size."));
           return;
         }
         const output = new PassThrough();
@@ -206,7 +245,7 @@ function openGuardedRequest(
         response.on("data", (chunk: Buffer) => {
           received += chunk.length;
           if (received > maxBytes) {
-            const error = new Error("Download exceeds the allowed size.");
+            const error = new GuardedDownloadPolicyError("Download exceeds the allowed size.");
             response.destroy(error);
             output.destroy(error);
           }
@@ -244,7 +283,7 @@ export async function openGuardedDownload(
   const result = await openGuardedRequest(rawUrl, maxBytes, timeoutMs, null);
   if (result.status !== "ok") {
     // Unreachable without conditional headers; keep the type narrow.
-    throw new Error("Download failed with HTTP 304.");
+    throw new GuardedDownloadHttpError(304);
   }
   return result.download;
 }
@@ -256,7 +295,7 @@ async function readStreamFully(stream: Readable): Promise<Buffer> {
   }
   const body = Buffer.concat(chunks);
   if (body.length === 0) {
-    throw new Error("Downloaded file is empty.");
+    throw new GuardedDownloadPolicyError("Downloaded file is empty.");
   }
   return body;
 }

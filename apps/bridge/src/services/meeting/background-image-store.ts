@@ -6,6 +6,8 @@ import { z } from "zod";
 import { getBridgeContext } from "../bridge-context.js";
 import {
   downloadGuardedBufferConditional,
+  GuardedDownloadHttpError,
+  isTransientDownloadError,
   type ConditionalRequestT,
   type GuardedConditionalDownloadT,
 } from "./media-download.js";
@@ -272,7 +274,16 @@ export async function fetchBackgroundImage(
         : null,
     );
   } catch (error: unknown) {
-    if (!cachedPath) {
+    // The storage's answer (401/403/404/410, guard rejections, size cap) is
+    // authoritative: the cache must never override it. Only transport
+    // failures (DNS, connect, reset, timeout, TLS) fall back to the copy.
+    if (
+      error instanceof GuardedDownloadHttpError &&
+      (error.statusCode === 404 || error.statusCode === 410)
+    ) {
+      await removeEntry(key, deps);
+    }
+    if (!cachedPath || !isTransientDownloadError(error)) {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
@@ -285,7 +296,7 @@ export async function fetchBackgroundImage(
 
   if (result.status === "not_modified") {
     if (!cachedPath) {
-      throw new Error("Download failed with HTTP 304.");
+      throw new GuardedDownloadHttpError(304);
     }
     await touchEntry(key, deps);
     return { path: cachedPath, cached: true };
@@ -299,6 +310,26 @@ export async function fetchBackgroundImage(
     deps,
   );
   return { path, cached: false };
+}
+
+/** Drops an index entry (object deleted upstream) and its unreferenced file. */
+async function removeEntry(
+  key: string,
+  deps: BackgroundImageStoreDepsT,
+): Promise<void> {
+  const index = await readIndex(deps);
+  const entry = index[key];
+  if (!entry) {
+    return;
+  }
+  delete index[key];
+  await writeIndex(deps, index).catch(() => undefined);
+  const stillReferenced = Object.values(index).some(
+    (other) => other.file_path === entry.file_path,
+  );
+  if (!stillReferenced) {
+    await deps.unlink(entry.file_path).catch(() => undefined);
+  }
 }
 
 async function touchEntry(
