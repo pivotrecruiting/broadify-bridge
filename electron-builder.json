@@ -1,7 +1,10 @@
 {
   "appId": "com.broadify.bridge",
   "productName": "Broadify Bridge",
-  "files": ["dist-electron/**", "dist-react/**"],
+  "files": [
+    "dist-electron/**",
+    "dist-react/**"
+  ],
   "asar": true,
   "extraResources": [
     {
@@ -15,6 +18,10 @@
     {
       "from": "apps/bridge/native/decklink-helper/decklink-helper",
       "to": "native/decklink-helper/decklink-helper"
+    },
+    {
+      "from": "apps/bridge/native/atem-usb-helper/atem-usb-helper",
+      "to": "native/atem-usb-helper/atem-usb-helper"
     },
     {
       "from": "apps/bridge/native/display-helper/display-helper",
@@ -51,7 +58,10 @@
     }
   ],
   "mac": {
-    "target": ["dmg", "zip"],
+    "target": [
+      "dmg",
+      "zip"
+    ],
     "icon": "./icon.png",
     "category": "public.app-category.utilities",
     "hardenedRuntime": true,
@@ -64,7 +74,7 @@
     ],
     "notarize": true,
     "extendInfo": {
-      "NSLocalNetworkUsageDescription": "Broadify Bridge benötigt Zugriff auf das lokale Netzwerk, um Video-Mischer, Canon Kameras und Ausgabegeräte in deinem Netzwerk zu finden und zu steuern."
+      "NSLocalNetworkUsageDescription": "Broadify Bridge ben\u00f6tigt Zugriff auf das lokale Netzwerk, um Video-Mischer, Canon Kameras und Ausgabeger\u00e4te in deinem Netzwerk zu finden und zu steuern."
     }
   },
   "linux": {
@@ -73,7 +83,10 @@
     "icon": "./icon.png"
   },
   "win": {
-    "target": ["nsis", "msi"],
+    "target": [
+      "nsis",
+      "msi"
+    ],
     "icon": "./icon.png",
     "azureSignOptions": {
       "publisherName": "${env.AZURE_CODE_SIGNING_PUBLISHER_NAME}",
@@ -93,6 +106,8 @@
   "msi": {
     "oneClick": false,
     "runAfterFinish": false,
-    "additionalLightArgs": ["-sval"]
+    "additionalLightArgs": [
+      "-sval"
+    ]
   }
 }

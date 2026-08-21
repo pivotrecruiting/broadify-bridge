@@ -1,12 +1,21 @@
 import type { EngineStatusT, MacroT, EngineStateT } from "../engine-types.js";
 
 /**
+ * Engine transport.
+ *
+ * "network" is the default for all engine types. "usb" is only valid for
+ * ATEM (official SDK via the atem-usb-helper); ip/port are ignored for USB.
+ */
+export type EngineTransportT = "network" | "usb";
+
+/**
  * Engine connection configuration
  */
 export interface EngineConnectConfig {
   type: "atem" | "tricaster" | "vmix";
   ip: string;
   port: number;
+  transport?: EngineTransportT;
 }
 
 export type EnsureVmixBrowserInputConfigT = {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EngineConnectPayloadSchema } from "../services/engine/engine-connect-schema.js";
 import { runtimeConfig } from "../services/runtime-config.js";
 import { moduleRegistry } from "../modules/module-registry.js";
 import { deviceCache } from "../services/device-cache.js";
@@ -37,13 +38,9 @@ const ConfigRequestSchema = z.object({
       output2: z.string(),
     })
     .optional(),
-  engine: z
-    .object({
-      type: z.enum(["atem", "tricaster", "vmix"]),
-      ip: z.string().ip({ version: "v4" }),
-      port: z.number().int().min(1).max(65535),
-    })
-    .optional(),
+  // Shared with the connect contract: network transport requires ip/port,
+  // USB transport (ATEM-only) does not.
+  engine: EngineConnectPayloadSchema.optional(),
 });
 
 /**
