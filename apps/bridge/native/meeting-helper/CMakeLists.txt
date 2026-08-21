@@ -342,7 +342,9 @@ if(MEETING_HELPER_BUILD_TESTS)
       if(helper_test STREQUAL "raw_frame_server_test")
         target_link_libraries(${helper_test} PRIVATE ws2_32)
       elseif(helper_test STREQUAL "control_server_test")
-        target_link_libraries(${helper_test} PRIVATE ws2_32)
+        # Links control_server.cpp + vcam_controller.cpp: needs the same Win32
+        # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
+        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
       endif()
     elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
