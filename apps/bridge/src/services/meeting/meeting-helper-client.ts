@@ -276,19 +276,26 @@ export class MeetingHelperClient {
    * frame (~250 MB/s at 1080p) into a segment nobody read. `framebus_output`
    * stays in the result for the web app's engagement check, but as a
    * read-only status snapshot.
+   *
+   * `allowElevation` (default true) lets the Windows registration self-heal
+   * raise a UAC prompt; the unattended engine-start auto-arm passes false so
+   * no prompt ever appears without an explicit operator action.
    */
-  async virtualCameraStart(): Promise<Record<string, unknown>> {
+  async virtualCameraStart(
+    options: { allowElevation?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
     const framebusOutput = await this.framebusStatus();
     await this.vcamRawStart();
     if (process.platform === "win32") {
       // Windows has no separate helper app: ask the meeting-helper to create
       // the "Broadify Camera" (MFCreateVirtualCamera). A REGDB_E_CLASSNOTREG
       // failure triggers a one-shot elevated regsvr32 self-heal (MSI
-      // registration gap) before giving up.
+      // registration gap) before giving up - unless elevation is disallowed.
       let vcam: Record<string, unknown>;
       try {
-        vcam = await runVcamStartWithRegistrationSelfHeal(() =>
-          this.rpc("output.vcam.start"),
+        vcam = await runVcamStartWithRegistrationSelfHeal(
+          () => this.rpc("output.vcam.start"),
+          { allowElevation: options.allowElevation ?? true },
         );
       } catch (error) {
         // Roll the partial output state back: a failed vcam start must not

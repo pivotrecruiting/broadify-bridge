@@ -66,30 +66,69 @@ den tatsaechlichen Verbrauch.
   schlägt `output.vcam.start` mit `REGDB_E_CLASSNOTREG` (`0x80040154`) fehl,
   bis die DLL manuell oder per Self-Heal registriert wurde.
 
-## Self-Heal in der Bridge (einmal pro Session)
+## Self-Heal in der Bridge (höchstens ein UAC-Prompt pro Installation)
 
 Scheitert `output.vcam.start` (Windows), prüft die Bridge zuerst die
 Registrierung per
 `reg query HKLM\SOFTWARE\Classes\CLSID\{8B1E9E3A-…}\InprocServer32 /ve /reg:64`
-(`apps/bridge/src/services/meeting/vcam-registration-self-heal.ts`):
+(`apps/bridge/src/services/meeting/vcam-registration-self-heal.ts`).
 
-- **registriert und DLL vorhanden** → kein Self-Heal, Fehler wird
-  unverändert gemeldet (Ursache liegt nicht an der Registrierung).
-- **fehlt** oder **veraltet** (Schlüssel zeigt auf eine nicht mehr
-  vorhandene Datei) → genau einmal pro Bridge-Session:
-  1. Elevierter `regsvr32 /s <resources>\native\vcam-helper\broadify-vcam.dll`
-     über `Start-Process -Verb RunAs -Wait -PassThru` → ein UAC-Prompt für den
-     Operator; der Exit-Code von `regsvr32` wird durchgereicht (3 = DLL nicht
-     ladbar, 5 = `DllRegisterServer` fehlgeschlagen/Zugriff verweigert).
-  2. Erneute Registry-Prüfung; nur bei bestätigter Registrierung folgt
-  3. ein einziger Retry von `output.vcam.start`.
-- **Probe nicht möglich** (`reg.exe` fehlt o. ä.) → Self-Heal nur, wenn der
-  Fehlertext `0x80040154` enthält (altes Verhalten).
+### Probe (sprachunabhängig)
+
+`reg.exe` lokalisiert sowohl das Wertelabel (`(Default)` / `(Standard)` /
+`(Par défaut)`) als auch den Fehlertext. Die Probe verlässt sich deshalb
+**nur** auf den Typ-Token und den Exit-Code:
+
+- Der Pfad ist der Rest der ersten Zeile mit `REG_SZ` bzw. `REG_EXPAND_SZ`
+  nach dem Typ-Token; `%VAR%` in `REG_EXPAND_SZ` wird gegen die Umgebung
+  expandiert (Groß-/Kleinschreibung egal).
+- `reg.exe` Exit-Code 1 ohne jeglichen `REG_`-Token in der Ausgabe →
+  **fehlt** (das ist in allen Sprachen „Schlüssel nicht gefunden").
+- Jeder andere Fehler und jede erfolgreiche Abfrage, die nicht geparst werden
+  kann → **unbekannt** (mit der rohen Ausgabe im Log, auf ~300 Zeichen
+  gekürzt). Eine nicht lesbare Ausgabe ist **nie** ein Beweis für „fehlt".
+- **registriert** nur, wenn die Datei existiert **und** nach Normalisierung
+  (`realpath`, `path.normalize`, case-insensitive) der installierten DLL
+  `<resources>\native\vcam-helper\broadify-vcam.dll` entspricht.
+- Datei fehlt oder zeigt auf eine andere Installation → **veraltet**
+  (beide Pfade stehen im Log).
+
+### Entscheidung
+
+- **registriert** → kein Self-Heal, Fehler wird unverändert gemeldet
+  (Ursache liegt nicht an der Registrierung).
+- **unbekannt** → Self-Heal nur, wenn der Fehlertext `0x80040154` enthält.
+- **fehlt** oder **veraltet**:
+  - **Unbeaufsichtigter Pfad** (Auto-Arm beim Engine-Start,
+    `virtualCameraStart({ allowElevation: false })`): **nie** ein UAC-Prompt.
+    Die Bridge loggt nur die Diagnose `vcam_not_registered` samt Admin-Kommando
+    und meldet den Fehler als Meeting-Event.
+  - **Expliziter Operator-Start** (`meeting_output_configure`, Target
+    `virtual_camera`, Action `start`): genau einmal
+    1. Elevierter `regsvr32 /s <resources>\native\vcam-helper\broadify-vcam.dll`
+       über `Start-Process -FilePath "%WINDIR%\Sysnative\regsvr32.exe"`
+       (falls vorhanden, sonst `System32`) `-Verb RunAs -Wait -PassThru` →
+       ein UAC-Prompt; der Exit-Code von `regsvr32` wird durchgereicht (3 =
+       DLL nicht ladbar, 5 = `DllRegisterServer` fehlgeschlagen/Zugriff
+       verweigert).
+    2. Erneute Registry-Prüfung; ist sie nicht **registriert**, landet die rohe
+       `reg.exe`-Ausgabe plus installierter Pfad im Log.
+    3. Ein einziger Retry von `output.vcam.start`.
+
+### Einmal-Sperre (persistiert)
+
+Vor dem Prompt schreibt die Bridge `<userDataDir>\vcam-self-heal.json`
+(`{ app_version, dll_path, attempted_at, outcome }`, zod-validiert). Ein
+Marker für dieselbe App-Version und denselben DLL-Pfad verhindert jeden
+weiteren Prompt – auch über Neustarts hinweg; im Log steht dann die Diagnose
+mit Zeitstempel des Versuchs. Erst eine bestätigte Registrierung plus
+erfolgreicher Retry löscht den Marker; ein App-Update (neue Version) erlaubt
+einen weiteren Versuch. Zusätzlich gilt eine In-Prozess-Sperre, falls der
+Marker nicht geschrieben werden kann.
 
 Wird die Elevation abgelehnt oder schlägt sie fehl, loggt die Bridge das
 manuelle Admin-Kommando und liefert den ursprünglichen Fehler aus. Es gibt
-keine Wiederholungsschleife; die Einmal-Sperre wird nur nach bestätigter
-Registrierung plus erfolgreichem Retry wieder freigegeben.
+keine Wiederholungsschleife.
 
 ## Manueller Fallback (Admin-Konsole)
 

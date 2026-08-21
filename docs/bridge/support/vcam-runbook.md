@@ -50,9 +50,17 @@ reg query "HKLM\SOFTWARE\Classes\CLSID\{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}\In
 - Schlüssel zeigt auf eine nicht existierende Datei → veraltet (Pfad gewechselt,
   Reste einer alten Installation).
 
-Die Bridge prüft die Registrierung selbst und versucht beides **einmal pro
-Session** zu heilen (UAC-Prompt). Wird der Prompt abgelehnt, steht im Log das
-manuelle Kommando:
+Die Bridge prüft die Registrierung selbst (sprachunabhängig: Typ-Token
+`REG_SZ`/`REG_EXPAND_SZ` + Exit-Code, nicht das lokalisierte `(Standard)`)
+und versucht beides **höchstens einmal pro Installation** zu heilen
+(UAC-Prompt) – und zwar **nur** beim expliziten Kamera-Start durch den
+Operator, **nie** beim automatischen Arm mit dem Engine-Start. Der Versuch
+wird in `<userDataDir>\vcam-self-heal.json` festgehalten; solange ein
+fehlgeschlagener Versuch für dieselbe Version/DLL dort steht, erscheint kein
+weiterer Prompt (Datei löschen oder App-Update = ein neuer Versuch). Wird der
+Prompt abgelehnt oder bleibt die Registrierung danach leer, steht im Log die
+Diagnose `vcam_not_registered`, die rohe `reg.exe`-Ausgabe und das manuelle
+Kommando:
 
 ```powershell
 # Admin-PowerShell
@@ -110,7 +118,10 @@ sc query FrameServer; sc query FrameServerMonitor
 - Windows 11? (`winver`)
 - `reg query HKCU\Software\com.broadify.bridge` leer, `HKLM` gesetzt?
 - InprocServer32-Pfad existiert und liegt unter Program Files?
-- Bridge-Log: Zeilen mit `[Meeting] VCam` (Probe-Ergebnis, regsvr32-Exit-Code).
+- Bridge-Log: Zeilen mit `[Meeting] VCam` (Probe-Ergebnis, regsvr32-Exit-Code,
+  rohe `reg.exe`-Ausgabe nach einem fehlgeschlagenen Heal).
+- `<userDataDir>\vcam-self-heal.json` vorhanden? Dann wurde der eine Prompt
+  bereits verbraucht – Inhalt (Version, Pfad, Zeitpunkt) in die Eskalation.
 
 ## macOS
 
