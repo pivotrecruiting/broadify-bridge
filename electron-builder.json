@@ -99,6 +99,8 @@
   },
   "nsis": {
     "oneClick": false,
+    "perMachine": true,
+    "packElevateHelper": true,
     "allowToChangeInstallationDirectory": true,
     "runAfterFinish": false,
     "include": "build/windows-installer.nsh"
