@@ -221,6 +221,54 @@ Der erwartete macOS-Lauf mit automatischer WebApp-Konfiguration enthaelt:
 }
 ```
 
+### Control-Channel: Ready-Handshake und Robustheit
+
+Der Helper ist der Server des Control-Kanals (Unix-Socket auf macOS, Named
+Pipe `\\.\pipe\broadify-meeting-<pid>-<ts>` auf Windows); die Bridge
+oeffnet pro RPC eine neue Verbindung und serialisiert alle RPCs ueber eine
+Queue. `ready` wird erst gesendet, wenn der Kanal tatsaechlich erreichbar ist:
+
+- macOS: nach `bind` + `listen`.
+- Windows: nach der ersten erfolgreichen `CreateNamedPipeA`. Schlaegt das
+  Anlegen dauerhaft fehl (200 Versuche x 50 ms), meldet der Helper
+  `{"type":"error","code":"control_pipe_failed","win32_error":<GetLastError>}`
+  und sendet KEIN `ready`; der Bridge-Start laeuft dann mit sichtbarer Ursache
+  in den Timeout.
+
+Windows haelt immer eine freie Pipe-Instanz bereit (`PIPE_UNLIMITED_INSTANCES`,
+naechste Instanz wird direkt nach `ConnectNamedPipe` angelegt, bevor der
+aktuelle Request bearbeitet wird). Damit gibt es kein Fenster mehr, in dem die
+Pipe nicht existiert und ein paralleler Connect mit `ENOENT` scheitert.
+Transiente `CreateNamedPipeA`-Fehler (z. B. `ERROR_PIPE_BUSY`, waehrend libuv
+das alte Client-Handle noch schliesst) werden als
+`{"type":"control_pipe_retry","win32_error":..,"attempt":..}` protokolliert und
+wiederholt statt den Control-Thread zu beenden. Die RPC-Verarbeitung bleibt
+sequentiell (ein Thread, ein Request nach dem anderen).
+
+Bridge-Seite (`meeting-helper-client.ts`): Connect-Fehler (`ENOENT`, `EPIPE`,
+`ECONNREFUSED`) werden nur auf Windows und nur in der Connect-Phase bis zu
+5x mit Backoff 20/40/80/160 ms innerhalb des RPC-Timeouts wiederholt. Fehler
+nach dem Schreiben des Requests werden nie wiederholt (RPCs sind nicht
+idempotent). Jeder Connect-Fehler wird zu `MeetingHelperRequestError` mit Code
+`helper_not_reachable` (Message enthaelt den Systemcode), damit
+Command-Antworten einen stabilen `errorCode` statt eines rohen `ENOENT`
+tragen.
+
+Liveness (`meeting-helper-manager.ts`): Laeuft der Helper-Prozess, aber der
+2-s-Status-Poll scheitert 5x in Folge mit `helper_not_reachable`, gilt der
+Kanal als verloren: Warn-Log mit PID, Event `helper_control_channel_lost`,
+Prozess wird beendet und ueber den normalen Crash-Restart (max. 3 Versuche)
+neu gestartet. Jeder erfolgreiche Snapshot setzt den Zaehler zurueck.
+
+Fehlercodes des Control-Kanals:
+
+| Code | Bedeutung | Massnahme |
+| --- | --- | --- |
+| `helper_not_reachable` | Socket/Pipe konnte nicht verbunden werden (Systemcode in der Message, z. B. `ENOENT`). Einzelner RPC, evtl. nach Retries. | Bei Haeufung Helper-Event-Log pruefen (`control_pipe_retry`, `control_pipe_failed`); Engine neu starten. |
+| `helper_control_channel_lost` | 5 Polls in Folge `helper_not_reachable` bei lebendem Prozess; Bridge startet den Helper automatisch neu. | Tail des Helper-Event-Logs im Bridge-Log lesen; bei `helper_restart_exhausted` Bridge neu starten, Windows-Ereignisanzeige/AV-Software auf Pipe-Blocker pruefen. |
+| `helper_ping_failed` | `ready` kam, aber 15 Pings (100 ms) blieben ohne `pong`; letzter Ping-Fehler steht im Debug-Log. | Debug-Log lesen (`control.ping failed ... last error`). |
+| `control_pipe_failed` / `control_socket_failed` / `control_bind_failed` | Helper konnte den Kanal nicht anlegen; kein `ready`. | `win32_error` bzw. errno auswerten; Bridge-Start laeuft in den 20-s-Timeout. |
+
 ## Kamera-Spiegelung
 
 Die Kamera wird im Compositor standardmaessig horizontal gespiegelt, damit die
