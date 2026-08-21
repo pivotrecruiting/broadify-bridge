@@ -410,12 +410,31 @@ describe("meeting-helper-manager", () => {
     });
 
     describe("control channel liveness", () => {
+      const os = require("node:os");
+
       type LivenessInternalsT = {
         state: string;
         client: unknown;
         process: unknown;
         restartTimer: NodeJS.Timeout | null;
         handleProcessExit: (code: number | null) => void;
+      };
+
+      const createFakeClient = (getState: jest.Mock) => ({
+        getState,
+        shutdown: jest.fn().mockResolvedValue(undefined),
+        framebusStatus: jest.fn().mockResolvedValue({}),
+        keyerGet: jest.fn().mockResolvedValue({}),
+        recordingStatus: jest.fn().mockResolvedValue({ recording: null }),
+        // W2 added output.vcam.status to the snapshot (best effort).
+        virtualCameraStatus: jest.fn().mockResolvedValue(null),
+      });
+
+      const awaitWin32GracefulKill = async () => {
+        if (os.platform() !== "win32") {
+          return;
+        }
+        await new Promise((resolve) => setImmediate(resolve));
       };
 
       const notReachable = () =>
@@ -433,14 +452,7 @@ describe("meeting-helper-manager", () => {
         const internals = manager as unknown as LivenessInternalsT;
         const kill = jest.fn();
         internals.state = "running";
-        internals.client = {
-          getState,
-          framebusStatus: jest.fn().mockResolvedValue({}),
-          keyerGet: jest.fn().mockResolvedValue({}),
-          recordingStatus: jest.fn().mockResolvedValue({ recording: null }),
-          // W2 added output.vcam.status to the snapshot (best effort).
-          virtualCameraStatus: jest.fn().mockResolvedValue(null),
-        };
+        internals.client = createFakeClient(getState);
         internals.process = {
           pid: 4242,
           kill,
@@ -462,6 +474,7 @@ describe("meeting-helper-manager", () => {
         expect(kill).not.toHaveBeenCalled();
 
         await manager.getFullStatus();
+        await awaitWin32GracefulKill();
         expect(kill).toHaveBeenCalledTimes(1);
         expect(kill).toHaveBeenCalledWith("SIGTERM");
         expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -521,11 +534,11 @@ describe("meeting-helper-manager", () => {
         for (let i = 0; i < 8; i += 1) {
           await manager.getFullStatus();
         }
+        await awaitWin32GracefulKill();
         expect(kill).toHaveBeenCalledWith("SIGTERM");
       });
 
       it("win32 kill still terminates when graceful shutdown rejects", async () => {
-        const os = require("node:os");
         jest.spyOn(os, "platform").mockReturnValue("win32");
         jest.useFakeTimers();
         const manager = new MeetingHelperManager();
