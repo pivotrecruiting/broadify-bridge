@@ -78,7 +78,7 @@ struct MeetingState {
   // speaking". Below this the auto-director holds the current program.
   float autoDirectorThreshold = 0.02f;
   bool keyerEnabled = false;
-  bool framebusRunning = true;
+  bool framebusRunning = false;
   bool vcamRawRunning = true;
   int previewClientCount = 0;
   int vcamClientCount = 0;
@@ -129,6 +129,8 @@ struct MeetingState {
   std::string activePerformanceMode;
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
+  std::string gpuAdapter;
+  std::string compositorAdapter;
   bool staleMaskActive = false;
   std::string provider;
   std::string modelPath;

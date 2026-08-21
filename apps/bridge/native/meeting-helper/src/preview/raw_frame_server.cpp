@@ -1,6 +1,9 @@
 #include "preview/raw_frame_server.h"
 
+#include "preview/raw_frame_record.h"
 #include "util/helper_event_log.h"
+#include "util/pixel_swizzle.h"
+#include "util/win_qos.h"
 
 #if defined(__APPLE__)
 #include <Accelerate/Accelerate.h>
@@ -17,10 +20,12 @@
 
 #if defined(_WIN32)
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -29,10 +34,7 @@
 namespace broadify::meeting {
 namespace {
 
-constexpr uint32_t kRawFrameMagic = 0x47524642u;  // "BFRG" little endian.
-constexpr uint32_t kRawFrameVersion = 1u;
-constexpr uint32_t kRawFramePixelFormatBgra8 = 2u;
-constexpr size_t kRawFrameHeaderSize = 32u;
+constexpr size_t kRawFrameHeaderSize = kBfrgHeaderV2Size;
 constexpr auto kRawFrameHeartbeatInterval = std::chrono::milliseconds(1000);
 constexpr uint64_t kRawFrameHeartbeatSequenceMask = 1ull << 63;
 
@@ -61,6 +63,8 @@ void configureClientSocket(int socketHandle) {
 #if defined(SO_NOSIGPIPE)
   setsockopt(socketHandle, SOL_SOCKET, SO_NOSIGPIPE, reinterpret_cast<const char *>(&opt), sizeof(opt));
 #endif
+  setsockopt(socketHandle, IPPROTO_TCP, TCP_NODELAY,
+             reinterpret_cast<const char *>(&opt), sizeof(opt));
 #if defined(_WIN32)
   const int sendTimeoutMs = 2000;
   const int receiveTimeoutMs = 5000;
@@ -77,6 +81,14 @@ void configureClientSocket(int socketHandle) {
   setsockopt(socketHandle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&receiveTimeout), sizeof(receiveTimeout));
 #endif
   (void)opt;
+}
+
+void configureSenderBuffer(int socketHandle, const RawFrameStreamGeometry &geometry) {
+  const int minimumBytes = static_cast<int>(
+      std::max<size_t>(64 * 1024u,
+                       static_cast<size_t>(geometry.width) * geometry.height * 4u * 2u));
+  setsockopt(socketHandle, SOL_SOCKET, SO_SNDBUF,
+             reinterpret_cast<const char *>(&minimumBytes), sizeof(minimumBytes));
 }
 
 int sendFlags() {
@@ -167,13 +179,13 @@ void writeU64Le(std::vector<uint8_t> &data, size_t offset, uint64_t value) {
 
 void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &payload) {
   payload.resize(kRawFrameHeaderSize + frame.rgba.size());
-  writeU32Le(payload, 0u, kRawFrameMagic);
-  writeU32Le(payload, 4u, kRawFrameVersion);
-  writeU32Le(payload, 8u, frame.width);
-  writeU32Le(payload, 12u, frame.height);
-  writeU32Le(payload, 16u, kRawFramePixelFormatBgra8);
-  writeU32Le(payload, 20u, static_cast<uint32_t>(frame.rgba.size()));
-  writeU64Le(payload, 24u, frame.sequence);
+  BfrgRecordHeader header;
+  header.width = frame.width;
+  header.height = frame.height;
+  header.payloadSize = static_cast<uint32_t>(frame.rgba.size());
+  header.sequence = frame.sequence;
+  header.captureNs = frame.captureNs;
+  writeBfrgHeaderV2(payload, 0u, header);
 
   uint8_t *dst = payload.data() + kRawFrameHeaderSize;
   const uint8_t *src = frame.rgba.data();
@@ -195,14 +207,7 @@ void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &paylo
     return;
   }
 #endif
-  const size_t pixelCount = frame.rgba.size() / 4u;
-  for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
-    const size_t offset = pixel * 4u;
-    dst[offset + 0u] = src[offset + 2u];
-    dst[offset + 1u] = src[offset + 1u];
-    dst[offset + 2u] = src[offset + 0u];
-    dst[offset + 3u] = src[offset + 3u];
-  }
+  swizzleRgbaToBgra(src, dst, frame.rgba.size() / 4u);
 }
 
 bool isVcamRawRunning(MeetingState &state) {
@@ -235,6 +240,8 @@ void streamFrames(int client,
                   PreviewFrameStore &previewFrames,
                   MeetingState &state,
                   std::atomic<bool> &running) {
+  ScopedWinMmcss senderThreadQos(L"Capture");
+  configureSenderBuffer(client, geometry);
   const std::string header = buildRawFrameStreamHeader(geometry);
   if (!sendAll(client, header.c_str(), header.size())) {
     return;
@@ -249,6 +256,7 @@ void streamFrames(int client,
 
   uint64_t lastSequence = 0u;
   uint64_t heartbeatSequence = 0u;
+  uint64_t lastCaptureNs = 0u;
   uint64_t sentFrames = 0u;
   std::vector<uint8_t> payload;
   auto lastSentAt = std::chrono::steady_clock::now();
@@ -267,16 +275,20 @@ void streamFrames(int client,
         ++heartbeatSequence;
         writeU64Le(payload, 24u,
                    kRawFrameHeartbeatSequenceMask | heartbeatSequence);
+        writeU64Le(payload, 32u, lastCaptureNs);
         if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
           return;
         }
         lastSentAt = now;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      previewFrames.waitForNewFrame(lastSequence,
+                                    std::chrono::steady_clock::now() +
+                                        kRawFrameHeartbeatInterval);
       continue;
     }
     lastSequence = frame.sequence;
     heartbeatSequence = frame.sequence;
+    lastCaptureNs = frame.captureNs;
     writeRawFramePayload(frame, payload);
     if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
       return;

@@ -260,6 +260,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.keyerBackend = status.backend;
   state.activeQualityMode = status.qualityMode;
   state.provider = status.provider;
+  state.gpuAdapter = status.gpuAdapter;
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;
   state.modelHashOk = status.modelHashOk;
@@ -272,6 +273,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   mergedMetrics.programFrameMs = state.keyerMetrics.programFrameMs;
   mergedMetrics.mjpegEncodeMs = state.keyerMetrics.mjpegEncodeMs;
   mergedMetrics.programFps = state.keyerMetrics.programFps;
+  mergedMetrics.cameraTextureUploads = state.keyerMetrics.cameraTextureUploads;
   state.keyerMetrics = mergedMetrics;
 }
 

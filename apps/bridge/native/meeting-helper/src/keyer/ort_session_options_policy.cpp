@@ -1,0 +1,18 @@
+#include "keyer/ort_session_options_policy.h"
+
+namespace broadify::meeting {
+
+OrtSessionOptionsPolicy makeDirectMlSessionOptionsPolicy(uint32_t inputWidth,
+                                                         uint32_t inputHeight) {
+  OrtSessionOptionsPolicy policy;
+  policy.intraOpThreads = 1;
+  policy.disableMemPattern = true;
+  policy.sequentialExecution = true;
+  policy.configEntries.push_back({"session.intra_op.allow_spinning", "0"});
+  policy.freeDimensionOverrides.push_back({"batch_size", 1});
+  policy.freeDimensionOverrides.push_back({"height", static_cast<int64_t>(inputHeight)});
+  policy.freeDimensionOverrides.push_back({"width", static_cast<int64_t>(inputWidth)});
+  return policy;
+}
+
+}  // namespace broadify::meeting

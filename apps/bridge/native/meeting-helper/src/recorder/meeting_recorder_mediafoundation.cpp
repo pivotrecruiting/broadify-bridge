@@ -1,5 +1,7 @@
 #include "recorder/meeting_recorder.h"
 
+#include "util/pixel_swizzle.h"
+
 // Windows Media Foundation recorder. Mirrors the macOS AVAssetWriter
 // implementation in meeting_recorder.mm: composited program frames (RGBA8)
 // plus one microphone are written to an .mp4 (H.264 + AAC). Video and audio
@@ -641,16 +643,7 @@ void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
   if (FAILED(buffer->Lock(&dst, nullptr, nullptr))) {
     return;
   }
-  // RGBA8 -> BGRA8 (RGB32 is B,G,R,X in memory): swap R and B.
-  const size_t pixelCount = static_cast<size_t>(width) * height;
-  for (size_t i = 0; i < pixelCount; i++) {
-    const uint8_t *src = rgba + i * 4u;
-    BYTE *out = dst + i * 4u;
-    out[0] = src[2];
-    out[1] = src[1];
-    out[2] = src[0];
-    out[3] = 255;
-  }
+  swizzleRgbaToBgra(rgba, dst, static_cast<size_t>(width) * height);
   buffer->Unlock();
   buffer->SetCurrentLength(static_cast<DWORD>(frameBytes));
 

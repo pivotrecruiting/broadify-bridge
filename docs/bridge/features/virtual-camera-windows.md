@@ -106,6 +106,18 @@ Raw-Frame mindestens alle ca. 1000 ms erneut und vergibt dafuer eine neue
 Sequenznummer. Dadurch bleibt die DLL frisch, auch wenn sich im Bild nichts
 aendert.
 
+Seit WP1 nutzt der Raw-Frame-Record `BFRG` Header-Version 2. Version 1
+(`32` Byte) bleibt lesbar; Version 2 (`40` Byte) fuegt nach der Sequenznummer
+ein `capture_ns`-Feld an. Die DLL setzt `IMFSample::SetSampleTime` aus diesem
+Produzenten-Zeitstempel, auf die Media-Foundation-Zeitbasis umgerechnet.
+Wird ein duplizierter Frame erneut ausgeliefert, erhaelt er den vorherigen
+Sample-Zeitstempel plus eine Frame-Dauer. Das stabilisiert A/V-Sync und
+reduziert sichtbare Latenzspruenge in Teams/Meet.
+
+Der Raw-Frame-Server sendet nur, wenn ein VCam-Client verbunden ist. MJPEG
+Preview-Encoding laeuft nur fuer verbundene MJPEG-Clients und wird bei aktiver
+VCam auf 10 fps begrenzt, damit die Raw-Frame-Ausgabe Vorrang hat.
+
 ## Registrierung bei der Installation
 
 - **NSIS-Installer (Standard):** ist seit `nsis.perMachine: true`

@@ -15,6 +15,7 @@
 #include "state/meeting_state.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/win_qos.h"
 
 #if defined(__APPLE__)
 #include "macos/macos_app.h"
@@ -283,6 +284,7 @@ int main(int argc, char **argv) {
 
 #if defined(_WIN32)
   SetUnhandledExceptionFilter(writeCrashDump);
+  configureMeetingProcessQos();
 #endif
   std::signal(SIGINT, signalHandler);
   std::signal(SIGTERM, signalHandler);

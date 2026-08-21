@@ -3,6 +3,7 @@
 #if defined(_WIN32)
 
 #include "util/json_utils.h"
+#include "util/pixel_swizzle.h"
 
 #include <windows.h>
 #include <mfapi.h>
@@ -151,23 +152,12 @@ std::vector<DeviceEntry> enumerateDevices() {
   return result;
 }
 
-// BGRA (MF RGB32) -> tightly packed RGBA, forcing opaque alpha. scan0/pitch are
-// already oriented top-down (pitch may be negative for a bottom-up source).
-void swizzleBgraToRgba(const uint8_t *scan0, ptrdiff_t pitch, uint32_t width,
-                       uint32_t height, std::vector<uint8_t> &destination) {
-  destination.resize(static_cast<size_t>(width) * height * 4u);
-  for (uint32_t y = 0; y < height; y++) {
-    const uint8_t *src = scan0 + static_cast<ptrdiff_t>(y) * pitch;
-    uint8_t *dst = destination.data() + static_cast<size_t>(y) * width * 4u;
-    for (uint32_t x = 0; x < width; x++) {
-      dst[0] = src[2];
-      dst[1] = src[1];
-      dst[2] = src[0];
-      dst[3] = 255u;
-      src += 4;
-      dst += 4;
-    }
+std::string guidToString(const GUID &guid) {
+  wchar_t buffer[64] = {};
+  if (StringFromGUID2(guid, buffer, static_cast<int>(std::size(buffer))) <= 0) {
+    return "";
   }
+  return wideToUtf8(buffer);
 }
 
 // One MediaFoundation capture session (one per camera). The source reader runs
@@ -302,6 +292,14 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     return true;
   }
 
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock<std::mutex> lock(frameMutex_);
+    return frameCv_.wait_until(lock, deadline, [this, lastTimestampNs] {
+      return hasFrame_ && latestFrame_.timestampNs != lastTimestampNs;
+    });
+  }
+
   const std::string &initError() const { return initError_; }
 
   // IMFSourceReaderCallback -------------------------------------------------
@@ -401,13 +399,14 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     }
 
     ComPtr<IMFAttributes> readerAttributes;
-    if (FAILED(MFCreateAttributes(&readerAttributes, 2))) {
+    if (FAILED(MFCreateAttributes(&readerAttributes, 3))) {
       return false;
     }
     readerAttributes->SetUINT32(advancedProcessing
                                     ? MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING
                                     : MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
                                 TRUE);
+    readerAttributes->SetUINT32(MF_LOW_LATENCY, TRUE);
     // Async callback mode: the reader delivers frames via OnReadSample instead
     // of a blocking ReadSample, so a frameless device never stalls shutdown().
     if (FAILED(readerAttributes->SetUnknown(
@@ -494,6 +493,17 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     frameWidth_ = width;
     frameHeight_ = height;
     stride_ = stride;
+    GUID subtype{};
+    UINT32 fpsNum = 0;
+    UINT32 fpsDen = 0;
+    current->GetGUID(MF_MT_SUBTYPE, &subtype);
+    MFGetAttributeRatio(current.Get(), MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
+    std::cout << "{\"type\":\"camera_media_type\",\"width\":" << width
+              << ",\"height\":" << height
+              << ",\"fps_num\":" << fpsNum
+              << ",\"fps_den\":" << fpsDen
+              << ",\"subtype\":\"" << guidToString(subtype) << "\"}"
+              << std::endl;
     return true;
   }
 
@@ -551,9 +561,12 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     if (!converted) {
       return;
     }
-    std::lock_guard<std::mutex> lock(frameMutex_);
-    latestFrame_ = std::move(frame);
-    hasFrame_ = true;
+    {
+      std::lock_guard<std::mutex> lock(frameMutex_);
+      latestFrame_ = std::move(frame);
+      hasFrame_ = true;
+    }
+    frameCv_.notify_all();
   }
 
   std::atomic<long> refCount_{1};
@@ -576,6 +589,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   LONG stride_ = 0;
 
   mutable std::mutex frameMutex_;
+  std::condition_variable frameCv_;
   bool hasFrame_ = false;
   VideoFrame latestFrame_;
 };
@@ -626,6 +640,12 @@ class MfCaptureSession {
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
     return callback_ ? callback_->copyLatestFrameIfNew(lastTimestampNs, frame)
                      : false;
+  }
+
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) {
+    return callback_ ? callback_->waitForFrameOrTimeout(lastTimestampNs, deadline)
+                     : CameraSource::waitForFrameOrTimeout(lastTimestampNs, deadline);
   }
 
   const std::string &cameraId() const { return cameraId_; }
@@ -835,6 +855,13 @@ class MediaFoundationCameraSource final : public CameraSource {
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
     const std::shared_ptr<MfCaptureSession> session = programSession();
     return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
+  }
+
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) override {
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->waitForFrameOrTimeout(lastTimestampNs, deadline)
+                   : CameraSource::waitForFrameOrTimeout(lastTimestampNs, deadline);
   }
 
   // Reads a specific camera's latest frame (used for the conference PiP layer),

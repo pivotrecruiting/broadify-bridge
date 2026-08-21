@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace broadify::meeting {
@@ -71,6 +73,13 @@ class CameraSource {
       return false;
     }
     return true;
+  }
+  virtual bool waitForFrameOrTimeout(
+      uint64_t lastTimestampNs,
+      std::chrono::steady_clock::time_point deadline) {
+    (void)lastTimestampNs;
+    std::this_thread::sleep_until(deadline);
+    return false;
   }
   virtual std::string lastError() const = 0;
   virtual std::string cameraPermissionStatus() const = 0;

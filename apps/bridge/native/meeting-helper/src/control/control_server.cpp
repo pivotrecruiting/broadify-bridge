@@ -174,7 +174,8 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
          << ",\"dropped_frames\":" << metrics.droppedFrames
-         << ",\"skipped_frames\":" << metrics.skippedFrames << "}";
+         << ",\"skipped_frames\":" << metrics.skippedFrames
+         << ",\"camera_texture_uploads\":" << metrics.cameraTextureUploads << "}";
   return result.str();
 }
 
@@ -310,6 +311,8 @@ std::string handleRpc(const std::string &line,
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
            << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
+           << "\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"") << ","
+           << "\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"") << ","
            << "\"preview_clients\":" << state.previewClientCount << ","
            << "\"vcam_clients\":" << state.vcamClientCount << ","
            << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
@@ -599,7 +602,9 @@ std::string handleRpc(const std::string &line,
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
            << ",\"degradation_stage\":\"" << jsonEscape(state.degradationStage)
            << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)
-           << "\",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
+           << "\",\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"")
+           << ",\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"")
+           << ",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel)
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
            << "\",\"quality_mode\":\"" << jsonEscape(state.activeQualityMode)

@@ -1,7 +1,9 @@
 #include "keyer/modnet_keyer.h"
 
+#include "compose/d3d_adapter_select.h"
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
+#include "keyer/ort_session_options_policy.h"
 #include "util/sha256.h"
 
 #include <algorithm>
@@ -25,6 +27,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <dml_provider_factory.h>
+#include <d3d12.h>
+#include <directml.h>
+#include <wrl/client.h>
 #endif
 #endif
 
@@ -78,6 +83,10 @@ bool selfTestForcesCpuProvider() {
 #endif
 
 #if BROADIFY_ENABLE_MODNET && defined(_WIN32)
+using Microsoft::WRL::ComPtr;
+using DmlCreateDeviceFn = HRESULT(WINAPI *)(ID3D12Device *, DML_CREATE_DEVICE_FLAGS,
+                                            REFIID, void **);
+
 std::wstring utf8ToWidePath(const std::string &path) {
   if (path.empty()) {
     return std::wstring();
@@ -100,6 +109,60 @@ std::wstring utf8ToWidePath(const std::string &path) {
     widePath.pop_back();
   }
   return widePath;
+}
+
+DmlCreateDeviceFn resolveDmlCreateDevice() {
+  static DmlCreateDeviceFn fn = []() -> DmlCreateDeviceFn {
+    HMODULE module = LoadLibraryW(L"DirectML.dll");
+    if (module == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<DmlCreateDeviceFn>(
+        GetProcAddress(module, "DMLCreateDevice"));
+  }();
+  return fn;
+}
+
+OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
+                                         const OrtDmlApi *dmlApi,
+                                         std::string *adapterStatus) {
+  const D3DAdapterInfo &adapter = sharedD3DAdapter();
+  if (!adapter.available || dmlApi == nullptr) {
+    return nullptr;
+  }
+
+  ComPtr<ID3D12Device> device;
+  HRESULT hr = D3D12CreateDevice(adapter.adapter.Get(), D3D_FEATURE_LEVEL_11_0,
+                                 IID_PPV_ARGS(&device));
+  if (FAILED(hr)) {
+    return nullptr;
+  }
+
+  D3D12_COMMAND_QUEUE_DESC queueDesc{};
+  queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+  ComPtr<ID3D12CommandQueue> queue;
+  hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
+  if (FAILED(hr)) {
+    return nullptr;
+  }
+
+  ComPtr<IDMLDevice> dmlDevice;
+  DmlCreateDeviceFn dmlCreateDevice = resolveDmlCreateDevice();
+  if (dmlCreateDevice == nullptr) {
+    return nullptr;
+  }
+  hr = dmlCreateDevice(device.Get(), DML_CREATE_DEVICE_FLAG_NONE,
+                       IID_PPV_ARGS(&dmlDevice));
+  if (FAILED(hr)) {
+    return nullptr;
+  }
+  OrtStatus *status = dmlApi->SessionOptionsAppendExecutionProvider_DML1(
+      sessionOptions, dmlDevice.Get(), queue.Get());
+  if (status == nullptr && adapterStatus != nullptr) {
+    *adapterStatus = d3dAdapterStatusString(adapter);
+  }
+  return status;
 }
 #endif
 
@@ -414,7 +477,12 @@ class ModnetKeyer::Impl {
   // cannot be represented for the platform API; ORT errors throw.
   std::unique_ptr<Ort::Session> createSession() {
     Ort::SessionOptions sessionOptions;
+    // A tier rebuild must not inherit the adapter of a previous session: the
+    // provider decision below repopulates it only when DirectML was appended.
+    status_.gpuAdapter.clear();
+#if !defined(_WIN32)
     sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
+#endif
     sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 #if defined(__APPLE__)
     status_.provider = "cpu";
@@ -446,12 +514,23 @@ class ModnetKeyer::Impl {
     }
 #elif defined(_WIN32)
     status_.provider = "cpu";
+    const OrtSessionOptionsPolicy dmlPolicy =
+        makeDirectMlSessionOptionsPolicy(inputWidth_, inputHeight_);
+    sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
     // The DirectML execution provider offloads MODNet inference to the GPU,
     // freeing the CPU that otherwise starves the capture, preview and status
     // pipeline. DML requires disabling the memory-pattern optimizer and
     // running the graph sequentially.
-    sessionOptions.DisableMemPattern();
-    sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
+    if (dmlPolicy.disableMemPattern) {
+      sessionOptions.DisableMemPattern();
+    }
+    if (dmlPolicy.sequentialExecution) {
+      sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
+    }
+    for (const auto &overrideDim : dmlPolicy.freeDimensionOverrides) {
+      sessionOptions.AddFreeDimensionOverrideByName(
+          overrideDim.name.c_str(), overrideDim.value);
+    }
     // DirectML device selection. Device 0 (the legacy default) is on hybrid
     // laptops usually the weak Intel iGPU rather than the discrete NVIDIA/AMD
     // GPU -> slow inference, stale masks, keyer flicker. Prefer the DML2 API,
@@ -476,10 +555,19 @@ class ModnetKeyer::Impl {
         }
       }
       if (dmlApi != nullptr) {
-        OrtDmlDeviceOptions deviceOptions{
-            OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
-        dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
-            sessionOptions, &deviceOptions);
+        dmlStatus = appendDirectMlOnSharedAdapter(sessionOptions, dmlApi,
+                                                  &status_.gpuAdapter);
+        if (dmlStatus == nullptr && !status_.gpuAdapter.empty()) {
+          status_.provider = "directml";
+        } else {
+          if (dmlStatus != nullptr) {
+            Ort::GetApi().ReleaseStatus(dmlStatus);
+          }
+          OrtDmlDeviceOptions deviceOptions{
+              OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
+          dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
+              sessionOptions, &deviceOptions);
+        }
         if (dmlStatus != nullptr) {
           // HighPerformance append failed: fall back to the legacy device 0.
           Ort::GetApi().ReleaseStatus(dmlStatus);
@@ -492,6 +580,10 @@ class ModnetKeyer::Impl {
       }
       if (dmlStatus == nullptr) {
         status_.provider = "directml";
+        sessionOptions.SetIntraOpNumThreads(dmlPolicy.intraOpThreads);
+        for (const auto &entry : dmlPolicy.configEntries) {
+          sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
+        }
       } else {
         // No DirectML device (no DX12 GPU or driver): fall back to the CPU
         // provider.

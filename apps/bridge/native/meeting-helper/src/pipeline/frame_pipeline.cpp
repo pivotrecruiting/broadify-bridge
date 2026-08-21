@@ -10,6 +10,7 @@
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #include "pipeline/framebus_reader_log_gate.h"
+#include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
 #include "pipeline/subject_presence.h"
@@ -20,6 +21,7 @@
 #endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
+#include "util/win_qos.h"
 
 #include <algorithm>
 #include <array>
@@ -482,6 +484,14 @@ bool fusedKeyerPerformanceOverrideActive() {
     return v == "high_quality" || v == "balanced" || v == "performance";
   }();
   return active;
+}
+
+bool fusedPipelineDepthEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_FUSED_PIPELINE_DEPTH");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
 }
 
 KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
@@ -1647,6 +1657,10 @@ void runFramePipeline(const Options &options,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       std::atomic<bool> &running) {
+#if defined(_WIN32)
+  ScopedWinMmcss programThreadQos(L"Capture");
+  std::unique_ptr<ScopedWinTimerResolution> liveTimerResolution;
+#endif
   framebus_writer_t *writer = framebus_writer_open(
       options.framebusName.c_str(), options.width, options.height, options.fps, kSlotCount);
   if (writer == nullptr) {
@@ -1729,6 +1743,15 @@ void runFramePipeline(const Options &options,
       std::lock_guard<std::mutex> lock(state.mutex);
       state.pipelineMode = runtime.mode;
     }
+#if defined(_WIN32)
+    const bool liveTimerNeeded =
+        runtime.mode == "live" || runtime.mode == "keyer_live";
+    if (liveTimerNeeded && liveTimerResolution == nullptr) {
+      liveTimerResolution = std::make_unique<ScopedWinTimerResolution>();
+    } else if (!liveTimerNeeded && liveTimerResolution != nullptr) {
+      liveTimerResolution.reset();
+    }
+#endif
 
     if (runtime.mode == "idle" && !runtime.programDirty && programFrame.empty()) {
       std::this_thread::sleep_for(kIdleSleep);
@@ -1742,7 +1765,10 @@ void runFramePipeline(const Options &options,
     const bool staticHeartbeatDue =
         lastStaticHeartbeatAt == std::chrono::steady_clock::time_point{} ||
         programStart - lastStaticHeartbeatAt >= kStaticHeartbeatInterval;
-    bool shouldRenderProgram = runtime.programDirty || runtime.programRevision != lastProgramRevision || programFrame.empty();
+    const bool programChanged =
+        runtime.programDirty || runtime.programRevision != lastProgramRevision ||
+        programFrame.empty();
+    bool shouldRenderProgram = programChanged;
     bool shouldPublishPreview = false;
     bool shouldWriteFramebus = false;
 
@@ -1990,6 +2016,12 @@ void runFramePipeline(const Options &options,
       if (hasNewFrontGraphicsFrame) {
         lastFrontGraphicsTimestampNs = frontGraphicsFrameForCompositor->timestampNs;
       }
+      const bool graphicsChanged = runtime.graphicsDirty ||
+          hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
+      const PipelineWorkTriggers workTriggers{
+          hasNewCameraFrame, programChanged, graphicsChanged};
+      const bool programWorkDue = shouldRunProgramWork(workTriggers);
+      const bool fusedKeyerWorkDue = shouldRunFusedKeyerWork(workTriggers);
       // Same-frame re-evaluation only while the async path is the active
       // source (see the gate above): while fused owns the keyer this block
       // must neither consume the parked worker's pair nor write telemetry.
@@ -2063,11 +2095,8 @@ void runFramePipeline(const Options &options,
 
       const bool hasNewUsableKeyerPair = selectedPair != nullptr && selectedPair->publishedAtNs > lastUsedKeyerPublishedNs;
       shouldRenderProgram = shouldRenderProgram ||
-          hasNewCameraFrame ||
-          hasNewBackGraphicsFrame ||
-          hasNewFrontGraphicsFrame ||
-          hasNewUsableKeyerPair ||
-          ((runtime.mode == "live" || runtime.mode == "keyer_live") && graphicsOutputActive);
+          programWorkDue ||
+          hasNewUsableKeyerPair;
       if (runtime.mode == "idle" && !outputConsumerActive && !shouldRenderProgram) {
         std::this_thread::sleep_for(kIdleSleep);
         nextFrameAt = std::chrono::steady_clock::now();
@@ -2091,7 +2120,7 @@ void runFramePipeline(const Options &options,
           selectedPair != nullptr ? &selectedPair->mask : nullptr;
       // Confirmed-empty masks skip the snap entirely (refining zeros is
       // wasted work); the pair's flagged zero mask goes to the compositor.
-      if (selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
+      if (fusedKeyerWorkDue && selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
           !latestCameraFrame.rgba.empty() && !selectedPair->mask.alpha.empty() &&
           !selectedPair->mask.emptyValid && guidedRefineAvailable()) {
         const bool fresherFrame =
@@ -2144,7 +2173,7 @@ void runFramePipeline(const Options &options,
       // whatever the async path chose on any failure.
       AlphaMask fusedMask;
 #if defined(__APPLE__)
-      if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+      if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
           !latestCameraFrame.rgba.empty()) {
         static CoreMLKeyer fusedKeyer(options.modelsDir);
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
@@ -2269,7 +2298,7 @@ void runFramePipeline(const Options &options,
         // Set on the frame a step-down overlap cuts over with a fresh worker
         // pair: the path-transition reset below then keeps the worker state.
         bool preserveWorkerOnCutover = false;
-        if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+        if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
           // MODNet matte carries no refine, so snap its edge onto the current
@@ -2574,9 +2603,13 @@ void runFramePipeline(const Options &options,
                 hasValidRetainedMask && lastFusedInferredLuma.valid()
                     ? meanAbsLumaDiff(currentFrameLuma, lastFusedInferredLuma)
                     : 0.0;
-            const CadenceDecision cadenceDecision = fusedCadence.decide(
+            CadenceDecision cadenceDecision = fusedCadence.decide(
                 latestCameraFrame.timestampNs, motionScore,
                 hasValidRetainedMask, fusedNow);
+            if (!fusedPipelineDepthEnabled()) {
+              cadenceDecision.runInference = true;
+              cadenceDecision.maskAgeMs = 0.0;
+            }
             if (cadenceDecision.runInference) {
               KeyerResult fused = fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
@@ -2792,8 +2825,9 @@ void runFramePipeline(const Options &options,
                                   options.height);
       }
 
-      shouldWriteFramebus = runtime.framebusRunning && !programFrame.empty() &&
-          (shouldRenderProgram || runtime.mode == "live" || runtime.mode == "keyer_live" || staticHeartbeatDue);
+      shouldWriteFramebus = shouldWriteFramebusFrame(
+          runtime.framebusRunning, !programFrame.empty(), shouldRenderProgram,
+          staticHeartbeatDue);
       if (shouldWriteFramebus) {
         framebus_writer_write_rgba(
             writer,
@@ -2820,6 +2854,10 @@ void runFramePipeline(const Options &options,
       {
         std::lock_guard<std::mutex> lock(state.mutex);
         state.compositorBackend = lastCompositorBackend();
+#if defined(_WIN32)
+        state.compositorAdapter = d3d11CompositorAdapterStatus();
+        state.keyerMetrics.cameraTextureUploads = d3d11CompositorCameraUploadCount();
+#endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);
@@ -2827,11 +2865,32 @@ void runFramePipeline(const Options &options,
       }
     }
     const auto now = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+    if (nextFrameAt > now + frameInterval) {
+      nextFrameAt = now + frameInterval;
+    }
     if (nextFrameAt > now) {
-      std::this_thread::sleep_until(nextFrameAt);
+      if (runtime.cameraRunning) {
+        if (camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt)) {
+          nextFrameAt = std::chrono::steady_clock::now();
+        }
+      } else {
+        std::this_thread::sleep_until(nextFrameAt);
+      }
     } else {
       nextFrameAt = now;
     }
+#else
+    if (nextFrameAt > now) {
+      if (runtime.cameraRunning) {
+        camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+      } else {
+        std::this_thread::sleep_until(nextFrameAt);
+      }
+    } else {
+      nextFrameAt = now;
+    }
+#endif
   }
   framebus_writer_close(writer);
 }

@@ -169,6 +169,10 @@ void MediaStream::Shutdown() {
       _descriptor.Reset();
       _sampleBuffers.clear();
       _lastSampleBuffer.Reset();
+      _lastSequence = 0;
+      _baseCaptureNs = 0;
+      _baseSampleTime = 0;
+      _lastSampleTime = 0;
       _source = nullptr;
     }
     if (client) {
@@ -287,6 +291,8 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
     const bool hasNewFrame =
         _client && _client->copyLatestIfNew(_lastSequence, _scratchFrame);
     bool usePreviousSample = _hasLastGoodFrame;
+    LONGLONG sampleTime =
+        _hasLastGoodFrame ? _lastSampleTime + kFrameDuration : MFGetSystemTime();
     if (hasNewFrame && isWellFormed(_scratchFrame)) {
       Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer =
           _sampleBuffers[_nextSampleBuffer];
@@ -313,6 +319,16 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       _lastSequence = _scratchFrame.sequence;
       _hasLastGoodFrame = true;
       usePreviousSample = true;
+      if (_scratchFrame.captureNs > 0) {
+        if (_baseCaptureNs == 0 || _scratchFrame.captureNs < _baseCaptureNs) {
+          _baseCaptureNs = _scratchFrame.captureNs;
+          _baseSampleTime = MFGetSystemTime();
+        }
+        sampleTime =
+            _baseSampleTime +
+            static_cast<LONGLONG>((_scratchFrame.captureNs - _baseCaptureNs) /
+                                  100u);
+      }
     } else if (hasNewFrame) {
       VcamLog("MediaStream: malformed frame %ux%u size=%llu, re-emitting last frame",
               _scratchFrame.width, _scratchFrame.height,
@@ -333,7 +349,11 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       CK(sample->AddBuffer(buffer.Get()));
     }
 
-    CK(sample->SetSampleTime(MFGetSystemTime()));
+    if (_hasLastGoodFrame && sampleTime <= _lastSampleTime) {
+      sampleTime = _lastSampleTime + 1;
+    }
+    _lastSampleTime = sampleTime;
+    CK(sample->SetSampleTime(sampleTime));
     CK(sample->SetSampleDuration(kFrameDuration));
     if (token) {
       CK(sample->SetUnknown(MFSampleExtension_Token, token));

@@ -64,6 +64,7 @@ set(MEETING_HELPER_SOURCES
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
   src/compose/compositor.cpp
+  src/compose/d3d_adapter_select.cpp
   src/common/options.cpp
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
@@ -74,8 +75,10 @@ set(MEETING_HELPER_SOURCES
   src/keyer/model_manifest.cpp
   src/keyer/modnet_keyer.cpp
   src/keyer/openvino_keyer.cpp
+  src/keyer/ort_session_options_policy.cpp
   src/main.cpp
   src/pipeline/frame_pipeline.cpp
+  src/pipeline/frame_pipeline_gating.cpp
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
   src/pipeline/keyer_cadence.cpp
@@ -84,11 +87,14 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/tier_handover.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
+  src/preview/raw_frame_record.cpp
   src/preview/raw_frame_server.cpp
   src/preview/raw_frame_stream_header.cpp
   src/util/sha256.cpp
   src/util/json_utils.cpp
   src/util/helper_event_log.cpp
+  src/util/pixel_swizzle.cpp
+  src/util/win_qos.cpp
 )
 
 if(APPLE)
@@ -215,7 +221,7 @@ if(WIN32)
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -262,6 +268,21 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/framebus_reader_log_gate_test.cpp
     src/pipeline/framebus_reader_log_gate.cpp
   )
+  add_executable(staging_readback_ring_test
+    tests/staging_readback_ring_test.cpp
+  )
+  add_executable(d3d_adapter_select_test
+    tests/d3d_adapter_select_test.cpp
+    src/compose/d3d_adapter_select.cpp
+  )
+  add_executable(pixel_swizzle_test
+    tests/pixel_swizzle_test.cpp
+    src/util/pixel_swizzle.cpp
+  )
+  add_executable(ort_session_options_policy_test
+    tests/ort_session_options_policy_test.cpp
+    src/keyer/ort_session_options_policy.cpp
+  )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
@@ -281,6 +302,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(frame_pipeline_stall_test
     tests/frame_pipeline_stall_test.cpp
   )
+  add_executable(frame_pipeline_gating_test
+    tests/frame_pipeline_gating_test.cpp
+    src/pipeline/frame_pipeline_gating.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -291,12 +316,19 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/raw_frame_stream_header_test.cpp
     src/preview/raw_frame_stream_header.cpp
   )
+  add_executable(raw_frame_record_test
+    tests/raw_frame_record_test.cpp
+    src/preview/raw_frame_record.cpp
+  )
   add_executable(raw_frame_server_test
     tests/raw_frame_server_test.cpp
+    src/preview/raw_frame_record.cpp
     src/preview/raw_frame_server.cpp
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
     src/util/helper_event_log.cpp
+    src/util/pixel_swizzle.cpp
+    src/util/win_qos.cpp
   )
   add_executable(control_server_test
     tests/control_server_test.cpp
@@ -319,32 +351,41 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/keyer/model_manifest.cpp
     src/keyer/modnet_keyer.cpp
     src/keyer/openvino_keyer.cpp
+    src/keyer/ort_session_options_policy.cpp
     src/util/json_utils.cpp
     src/util/sha256.cpp
   )
   foreach(helper_test
     guided_mask_refine_test
     framebus_reader_log_gate_test
+    staging_readback_ring_test
+    d3d_adapter_select_test
+    pixel_swizzle_test
+    ort_session_options_policy_test
     keyer_governor_test
     keyer_cadence_test
     mask_retention_test
     subject_presence_test
     frame_pipeline_stall_test
+    frame_pipeline_gating_test
     tier_handover_test
     matting_backend_test
     control_server_test
     raw_frame_stream_header_test
+    raw_frame_record_test
     raw_frame_server_test
   )
     target_include_directories(${helper_test} PRIVATE src)
     if(WIN32)
       target_compile_definitions(${helper_test} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
       if(helper_test STREQUAL "raw_frame_server_test")
-        target_link_libraries(${helper_test} PRIVATE ws2_32)
+        target_link_libraries(${helper_test} PRIVATE ws2_32 avrt winmm)
       elseif(helper_test STREQUAL "control_server_test")
         # Links control_server.cpp + vcam_controller.cpp: needs the same Win32
         # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
         target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
+      elseif(helper_test STREQUAL "d3d_adapter_select_test")
+        target_link_libraries(${helper_test} PRIVATE dxgi)
       endif()
     elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")

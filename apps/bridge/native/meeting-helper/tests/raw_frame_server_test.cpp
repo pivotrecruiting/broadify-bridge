@@ -29,7 +29,7 @@ using broadify::meeting::RawFrameStreamGeometry;
 using broadify::meeting::runRawFrameServer;
 
 constexpr uint32_t kRawFrameMagic = 0x47524642u;
-constexpr size_t kRawFrameHeaderSize = 32u;
+constexpr size_t kRawFrameHeaderSize = 40u;
 constexpr uint64_t kRawFrameHeartbeatSequenceMask = 1ull << 63;
 
 void fail(const char *message) {

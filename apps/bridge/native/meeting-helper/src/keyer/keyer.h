@@ -35,6 +35,7 @@ struct KeyerMetrics {
   uint32_t maskHeight = 0;
   uint64_t droppedFrames = 0;
   uint64_t skippedFrames = 0;
+  uint64_t cameraTextureUploads = 0;
 };
 
 struct KeyerDegradationSettings {
@@ -56,6 +57,7 @@ struct KeyerStatus {
   // 0.0 = no probe ran (macOS, ONNX disabled, load failure).
   double probeInferenceMs = 0.0;
   bool modelHashOk = false;
+  std::string gpuAdapter;
   KeyerMetrics metrics;
 };
 
