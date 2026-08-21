@@ -10,6 +10,7 @@
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #include "pipeline/framebus_reader_log_gate.h"
+#include "pipeline/compositor_input_selection.h"
 #include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
@@ -2329,9 +2330,14 @@ void runFramePipeline(const Options &options,
             if (!fusedGovernor.seeded() &&
                 fusedHandover.phase() != TierHandover::Phase::Warming &&
                 !fusedWarmupBusy.load(std::memory_order_acquire)) {
-              const double probeMs = fusedKeyer->status().probeInferenceMs;
-              if (probeMs > 0.0) {
-                fusedGovernor.seedProbe(probeMs);
+              const KeyerStatus keyerStatus = fusedKeyer->status();
+              if (keyerStatus.probeInferenceMs256 > 0.0) {
+                fusedGovernor.seedMeasuredProbes(
+                    keyerStatus.probeInferenceMs512,
+                    keyerStatus.probeInferenceMs320,
+                    keyerStatus.probeInferenceMs256);
+              } else if (keyerStatus.probeInferenceMs > 0.0) {
+                fusedGovernor.seedProbe(keyerStatus.probeInferenceMs);
               }
             }
             // The governor drives the fused input resolution; the env
@@ -2446,14 +2452,28 @@ void runFramePipeline(const Options &options,
             if (fusedHandover.phase() == TierHandover::Phase::Overlap) {
               fusedHandover.finishOverlap();
             }
-            keyerWorker.clear();
-            maskAgeAverage.clear();
-            asyncMaskRetention.reset();
             selectedPair.reset();
             frameForCompositor = &latestCameraFrame;
-            maskForCompositor = nullptr;
+            const GovernorOffCompositorInput offInput =
+                selectGovernorOffCompositorInput(!lastFusedRawMask.alpha.empty());
+            if (offInput == GovernorOffCompositorInput::LastMask) {
+              fusedMask = lastFusedRawMask;
+              if (!(d3d11GuidedRefineAvailable() &&
+                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+                guidedRefineMask(fusedMask, latestCameraFrame);
+              }
+              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+            } else {
+              fusedMask.width = latestCameraFrame.width;
+              fusedMask.height = latestCameraFrame.height;
+              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+              fusedMask.alpha.assign(
+                  static_cast<size_t>(fusedMask.width) * fusedMask.height, 0u);
+              fusedMask.emptyValid = true;
+            }
+            maskForCompositor = &fusedMask;
             KeyerStatus offStatus;
-            offStatus.activeKeyer = "passthrough";
+            offStatus.activeKeyer = "modnet";
             offStatus.backend = "modnet";
             offStatus.qualityMode = keyerSettings.qualityMode;
             offStatus.fallbackActive = true;
@@ -2461,9 +2481,10 @@ void runFramePipeline(const Options &options,
             updateMeetingKeyerStatus(state, offStatus);
             {
               std::lock_guard<std::mutex> lock(state.mutex);
-              state.degradationStage = "passthrough";
-              state.staleMaskActive = false;
-              state.keyerMetrics.maskAgeAvgMs = -1.0;
+              state.keyerDegraded = true;
+              state.degradationStage =
+                  fusedMask.emptyValid ? "background_only" : "keyer_off_hold";
+              state.staleMaskActive = !fusedMask.emptyValid;
             }
             fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
           } else if (governorAutoEnabled && fusedGovernor.wantsAsyncLite()) {

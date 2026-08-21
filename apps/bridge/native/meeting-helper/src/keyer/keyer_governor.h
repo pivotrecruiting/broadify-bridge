@@ -44,7 +44,7 @@ struct KeyerGovernorConfig {
   // Field lesson 2026-08-09: live inference under GPU contention can be 2-3x
   // the isolated benchmark, so climbing is only worth a visible transition
   // when the estimate fits with strong margin.
-  double stepUpFactor = 0.7;
+  double stepUpFactor = 0.8;
   // Minimum dwell time at the current tier before an estimate-based step-up
   // is considered. Doubles (up to reprobeMaxInterval) every time a step-up's
   // estimate proves wrong, and never resets downward within a session.
@@ -55,7 +55,7 @@ struct KeyerGovernorConfig {
   std::chrono::steady_clock::duration reprobeBaseInterval =
       std::chrono::seconds(60);
   std::chrono::steady_clock::duration reprobeMaxInterval =
-      std::chrono::seconds(600);
+      std::chrono::seconds(120);
   // Wrong-estimate watch window: a step-down within this many samples after a
   // step-up counts as a wrong estimate and doubles the corresponding backoff
   // (~1s at 30fps, Apple: 30).
@@ -99,6 +99,9 @@ class KeyerAutoGovernor {
   // estimate exceeds offInferenceMs it seeds Off. No-op once seeded or after
   // samples arrived.
   void seedProbe(double medianWarmupMs);
+  void seedMeasuredProbes(double full512Ms,
+                          double balanced320Ms,
+                          double performance256Ms);
   bool seeded() const { return seeded_; }
 
   // Estimate-based step-up, one tier per step. Fused tiers and Lite256 climb

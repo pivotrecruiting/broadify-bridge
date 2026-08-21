@@ -599,6 +599,7 @@ std::string handleRpc(const std::string &line,
            << ",\"max_mask_age_ms\":" << state.degradationSettings.maxMaskAgeMs << "},"
            << "\"status\":{\"active_keyer\":\"" << jsonEscape(state.activeKeyer)
            << "\",\"fallback_active\":" << (state.fallbackActive ? "true" : "false")
+           << ",\"keyer_degraded\":" << (state.keyerDegraded ? "true" : "false")
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
            << ",\"degradation_stage\":\"" << jsonEscape(state.degradationStage)
            << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)

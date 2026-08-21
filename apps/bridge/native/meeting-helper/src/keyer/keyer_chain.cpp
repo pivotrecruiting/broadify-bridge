@@ -263,6 +263,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.gpuAdapter = status.gpuAdapter;
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;
+  state.keyerDegraded = status.fallbackActive;
   state.modelHashOk = status.modelHashOk;
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;

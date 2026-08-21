@@ -56,7 +56,8 @@ class MaskRetention {
   MaskRetentionDecision decide(uint64_t frameTimestampNs,
                                uint64_t maskPublishedAtNs,
                                double maskAgeMs,
-                               double configuredMaxAgeMs);
+                               double configuredMaxAgeMs,
+                               bool workerAlive = true);
 
   // The adaptive gate currently in effect (capped at hardCapMs).
   double effectiveMaxAgeMs(double configuredMaxAgeMs) const;

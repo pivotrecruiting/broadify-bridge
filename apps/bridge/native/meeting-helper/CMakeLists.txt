@@ -77,6 +77,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/openvino_keyer.cpp
   src/keyer/ort_session_options_policy.cpp
   src/main.cpp
+  src/pipeline/compositor_input_selection.cpp
   src/pipeline/frame_pipeline.cpp
   src/pipeline/frame_pipeline_gating.cpp
   src/pipeline/framebus_reader_log_gate.cpp
@@ -306,6 +307,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/frame_pipeline_gating_test.cpp
     src/pipeline/frame_pipeline_gating.cpp
   )
+  add_executable(compositor_input_selection_test
+    tests/compositor_input_selection_test.cpp
+    src/pipeline/compositor_input_selection.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -372,6 +377,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     subject_presence_test
     frame_pipeline_stall_test
     frame_pipeline_gating_test
+    compositor_input_selection_test
     tier_handover_test
     matting_backend_test
     matting_common_test

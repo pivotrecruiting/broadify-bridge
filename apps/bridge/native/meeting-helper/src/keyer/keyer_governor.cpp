@@ -113,6 +113,30 @@ void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
   liteStepUpPending_ = false;
 }
 
+void KeyerAutoGovernor::seedMeasuredProbes(double full512Ms,
+                                           double balanced320Ms,
+                                           double performance256Ms) {
+  if (seeded_ || samples_ > 0u || performance256Ms <= 0.0) {
+    return;
+  }
+  seeded_ = true;
+  const double threshold = stepDownThresholdMs();
+  if (full512Ms > 0.0 && full512Ms <= threshold) {
+    tier_ = GovernorTier::Full512;
+  } else if (balanced320Ms > 0.0 && balanced320Ms <= threshold) {
+    tier_ = GovernorTier::Balanced320;
+  } else if (performance256Ms <= threshold) {
+    tier_ = GovernorTier::Performance256;
+  } else if (performance256Ms <= config_.offInferenceMs) {
+    tier_ = GovernorTier::Lite256;
+  } else {
+    tier_ = GovernorTier::Off;
+  }
+  degradeClockStarted_ = false;
+  stepUpWatch_ = StepUpWatch::None;
+  liteStepUpPending_ = false;
+}
+
 void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
   if (tier_ == GovernorTier::Full512) {
     return;

@@ -113,12 +113,36 @@ int main() {
   }
 
   {
+    // Measured tier probes beat the old 512-area estimate. Here the 512 probe
+    // would predict 256 at 15ms and seed Performance256, but the measured
+    // 256 probe is over budget, so startup correctly lands in async Lite256
+    // instead of stepping down immediately after start.
+    KeyerAutoGovernor governor(testConfig());
+    governor.seedMeasuredProbes(/*full512Ms=*/60.0,
+                                /*balanced320Ms=*/24.0,
+                                /*performance256Ms=*/30.0);
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "measured probes seed from the chosen tier cost");
+    governor.reset();
+    governor.seedMeasuredProbes(/*full512Ms=*/60.0,
+                                /*balanced320Ms=*/14.0,
+                                /*performance256Ms=*/30.0);
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "measured probes choose the best sustainable tier");
+    governor.seedMeasuredProbes(/*full512Ms=*/1.0,
+                                /*balanced320Ms=*/1.0,
+                                /*performance256Ms=*/1.0);
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "measured probe seeding is one-shot");
+  }
+
+  {
     // FIELD REGRESSION (RC live test 2026-08-09, hybrid GTX 1660 Ti + UHD
     // 630, DirectML under GPU contention): live async inference EMA 62ms at a
     // 33.3ms budget. The old live-probe step-up climbed every backoff
     // interval and fell straight back — user-visible mode flapping
     // (fused_cadence -> async_lite -> fused -> ...). The estimate policy must
-    // pin the tier: 62ms estimate > 0.7 * 33.3ms = 23.3ms, and 62ms <
+    // pin the tier: 62ms estimate > 0.8 * 33.3ms = 26.7ms, and 62ms <
     // offInferenceMs, so async_lite FOREVER — zero transitions across 35
     // simulated minutes of samples and elapsed time.
     KeyerAutoGovernor governor(testConfig());
@@ -146,10 +170,8 @@ int main() {
 
   {
     // Genuinely fast machine: async EMA 15ms at Lite256. The estimate (same
-    // input size, 15ms <= 23.3ms) steps up exactly once — after minSamples
-    // AND the 10s dwell — and Performance256 then holds (Balanced320 estimate
-    // 15 * 1.5625 = 23.4ms > 23.3ms, and 15ms is far under the step-down
-    // threshold), with no further transition over 10 simulated minutes.
+    // input size, 15ms <= 26.7ms) steps up after minSamples
+    // AND the 10s dwell — then Performance256 and Balanced320 fit, while Full512 does not.
     KeyerAutoGovernor governor(testConfig());
     governor.seedProbe(400.0);  // 400*0.25=100 <= 120 -> Lite256
     ok &= expect(governor.tier() == GovernorTier::Lite256, "seeded at Lite256");
@@ -172,9 +194,9 @@ int main() {
         previous = governor.tier();
       }
     }
-    ok &= expect(transitions == 1, "fast machine steps up exactly once");
-    ok &= expect(governor.tier() == GovernorTier::Performance256,
-                 "fast machine lands at Performance256 and stays");
+    ok &= expect(transitions == 2, "fast machine steps up twice");
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "fast machine lands at Balanced320 and stays");
     ok &= expect(!governor.wantsAsyncLite(), "fused tier after step-up");
   }
 
