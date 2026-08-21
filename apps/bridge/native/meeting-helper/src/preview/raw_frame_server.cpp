@@ -171,12 +171,12 @@ class VcamClientCounter {
   MeetingState &state_;
 };
 
-void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &state, std::atomic<bool> &running) {
-  const std::string header =
-      "HTTP/1.1 200 OK\r\n"
-      "Content-Type: application/vnd.broadify.raw-bgra-stream\r\n"
-      "Cache-Control: no-store\r\n"
-      "Connection: close\r\n\r\n";
+void streamFrames(int client,
+                  const RawFrameStreamGeometry &geometry,
+                  PreviewFrameStore &previewFrames,
+                  MeetingState &state,
+                  std::atomic<bool> &running) {
+  const std::string header = buildRawFrameStreamHeader(geometry);
   if (!sendAll(client, header.c_str(), header.size())) {
     return;
   }
@@ -220,6 +220,7 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &st
 }  // namespace
 
 void runRawFrameServer(uint16_t port,
+                       RawFrameStreamGeometry geometry,
                        PreviewFrameStore &previewFrames,
                        MeetingState &state,
                        std::atomic<bool> &running) {
@@ -268,7 +269,7 @@ void runRawFrameServer(uint16_t port,
     const std::string request = readRequest(client);
     if (request.find("GET /stream.rgba ") != std::string::npos) {
       std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_connected\",\"port\":" << port << "}" << std::endl;
-      streamFrames(client, previewFrames, state, running);
+      streamFrames(client, geometry, previewFrames, state, running);
       std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_disconnected\",\"port\":" << port << "}" << std::endl;
     } else {
       const std::string response =
