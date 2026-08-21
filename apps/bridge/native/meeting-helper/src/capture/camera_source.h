@@ -36,7 +36,30 @@ class CameraSource {
 
   virtual std::vector<CameraInfo> listCameras() = 0;
   virtual bool selectCamera(int cameraIndex) = 0;
+  virtual bool selectCameraByStableKey(const std::string &stableKey) {
+    const std::vector<CameraInfo> cameras = listCameras();
+    for (const CameraInfo &camera : cameras) {
+      if (camera.stableKey == stableKey || camera.cameraId == stableKey) {
+        return selectCamera(camera.cameraIndex);
+      }
+    }
+    return false;
+  }
   virtual bool start(int cameraIndex, uint32_t width, uint32_t height, uint32_t fps) = 0;
+  virtual bool startByStableKey(const std::string &stableKey, uint32_t width,
+                                uint32_t height, uint32_t fps) {
+    const std::vector<CameraInfo> cameras = listCameras();
+    for (const CameraInfo &camera : cameras) {
+      if (camera.stableKey == stableKey || camera.cameraId == stableKey) {
+        return start(camera.cameraIndex, width, height, fps);
+      }
+    }
+    return false;
+  }
+  virtual bool reopen(uint32_t width, uint32_t height, uint32_t fps) {
+    const int index = activeCameraIndex();
+    return index >= 0 && start(index, width, height, fps);
+  }
   virtual void stop() = 0;
   virtual bool isRunning() const = 0;
   virtual int activeCameraIndex() const = 0;

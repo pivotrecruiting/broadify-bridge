@@ -278,6 +278,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/subject_presence_test.cpp
     src/pipeline/subject_presence.cpp
   )
+  add_executable(frame_pipeline_stall_test
+    tests/frame_pipeline_stall_test.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -316,6 +319,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     keyer_cadence_test
     mask_retention_test
     subject_presence_test
+    frame_pipeline_stall_test
     tier_handover_test
     matting_backend_test
     raw_frame_stream_header_test

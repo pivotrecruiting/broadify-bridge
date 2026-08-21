@@ -65,6 +65,7 @@ struct CameraRenderState {
 struct MeetingState {
   mutable std::mutex mutex;
   bool cameraRunning = false;
+  bool cameraStalled = false;
   int activeCameraIndex = -1;
   // Conference: a second open camera drawn as picture-in-picture (-1 = off).
   int pipCameraIndex = -1;
