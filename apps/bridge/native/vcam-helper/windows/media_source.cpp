@@ -17,8 +17,13 @@ namespace {
   } while (0)
 
 constexpr uint16_t kDefaultPort = 18787;
-constexpr uint32_t kFallbackWidth = 1280;
-constexpr uint32_t kFallbackHeight = 720;
+// Matches the meeting helper's default program size (Options::width/height
+// in meeting-helper/src/common/options.h). Used only when neither the
+// handshake nor a frame answered within the probe window.
+constexpr uint32_t kFallbackWidth = 1920;
+constexpr uint32_t kFallbackHeight = 1080;
+constexpr int kProbeSteps = 20;       // x kProbeStepMs = ~2 s probe window.
+constexpr DWORD kProbeStepMs = 100;
 
 uint16_t resolvePort() {
   char value[16] = {0};
@@ -39,28 +44,43 @@ HRESULT MediaSource::Initialize(IMFAttributes *attributes) {
     attributes->CopyAllItems(this);
   }
 
-  // One-off geometry probe: connect to the raw-frame stream, briefly wait for
-  // the first frame so the advertised media type matches the real program
-  // geometry, then disconnect again. The Frame Server instantiates this
-  // source as soon as the camera is armed — long before any app streams — and
-  // an open connection makes the helper render, swizzle and send every frame.
-  // MediaStream reconnects for as long as the stream is actually running.
+  // One-off geometry probe: connect to the raw-frame stream and wait briefly
+  // for either the handshake geometry (X-Broadify-Frame-* headers, available
+  // immediately) or the first frame, so the advertised media type matches the
+  // real program geometry; then disconnect again. The Frame Server
+  // instantiates this source as soon as the camera is armed — long before any
+  // app streams — and an open connection makes the helper render, swizzle and
+  // send every frame. MediaStream reconnects for as long as the stream is
+  // actually running. The handshake is preferred because the probe runs while
+  // the helper is busiest (engine start), when the first frame can take
+  // longer than the probe window; missing it used to leave the media type at
+  // a wrong size and the stream permanently on the splash.
   _client = std::make_unique<RawFrameClient>(resolvePort());
   _client->start();
   _width = kFallbackWidth;
   _height = kFallbackHeight;
+  const char *geometrySource = "fallback";
   RawFrame frame;
-  for (int i = 0; i < 20; i++) {
-    Sleep(100);
+  for (int i = 0; i < kProbeSteps; i++) {
+    Sleep(kProbeStepMs);
+    uint32_t streamWidth = 0;
+    uint32_t streamHeight = 0;
+    if (_client->streamGeometry(streamWidth, streamHeight)) {
+      _width = streamWidth;
+      _height = streamHeight;
+      geometrySource = "handshake";
+      break;
+    }
     if (_client->copyLatest(frame) && frame.width > 0 && frame.height > 0) {
       _width = frame.width;
       _height = frame.height;
+      geometrySource = "frame";
       break;
     }
   }
   _client->stop();
-  VcamLog("MediaSource::Initialize geometry %ux%u (probe disconnected)", _width,
-          _height);
+  VcamLog("MediaSource::Initialize geometry %ux%u from %s (probe disconnected)",
+          _width, _height, geometrySource);
 
   _stream = winrt::make_self<MediaStream>();
   CK(_stream->Initialize(this, 0, _client.get(), _width, _height));

@@ -19,6 +19,43 @@ namespace {
 constexpr uint32_t kFrameRate = 30;
 constexpr LONGLONG kFrameDuration = 10000000LL / kFrameRate;  // 100ns units.
 
+// True when the payload is a dense BGRA8 image of the claimed size.
+bool isWellFormed(const RawFrame &frame) {
+  if (frame.width == 0 || frame.height == 0) {
+    return false;
+  }
+  const uint64_t expected =
+      static_cast<uint64_t>(frame.width) * frame.height * 4ull;
+  return frame.bgra.size() == expected;
+}
+
+// Nearest-neighbour stretch of a dense BGRA8 source into a dense BGRA8
+// destination of a different size. No letterboxing: the virtual camera keeps
+// showing the program picture rather than a splash when the helper's
+// geometry differs from the negotiated media type. Row/column lookups use
+// 64-bit arithmetic so width*height products cannot overflow.
+void scaleNearest(const uint8_t *src, uint32_t srcWidth, uint32_t srcHeight,
+                  uint8_t *dst, uint32_t dstWidth, uint32_t dstHeight) {
+  const size_t srcStride = static_cast<size_t>(srcWidth) * 4u;
+  const size_t dstStride = static_cast<size_t>(dstWidth) * 4u;
+  for (uint32_t y = 0; y < dstHeight; y++) {
+    const uint32_t sy = static_cast<uint32_t>(
+        (static_cast<uint64_t>(y) * srcHeight) / dstHeight);
+    const uint8_t *srcRow = src + static_cast<size_t>(sy) * srcStride;
+    uint8_t *dstRow = dst + static_cast<size_t>(y) * dstStride;
+    if (srcWidth == dstWidth) {
+      std::memcpy(dstRow, srcRow, dstStride);
+      continue;
+    }
+    for (uint32_t x = 0; x < dstWidth; x++) {
+      const uint32_t sx = static_cast<uint32_t>(
+          (static_cast<uint64_t>(x) * srcWidth) / dstWidth);
+      std::memcpy(dstRow + static_cast<size_t>(x) * 4u,
+                  srcRow + static_cast<size_t>(sx) * 4u, 4u);
+    }
+  }
+}
+
 }  // namespace
 
 HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
@@ -166,11 +203,24 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
   BYTE *dst = nullptr;
   CK(buffer->Lock(&dst, nullptr, nullptr));
   RawFrame frame;
-  const bool live = _client->copyLatest(frame) && frame.width == _width &&
-                    frame.height == _height && frame.bgra.size() == frameBytes &&
+  // Live = a well-formed frame that is not stale. A size that differs from
+  // the negotiated media type is not a reason for the splash: the frame is
+  // stretched instead (see scaleNearest). Malformed payloads are rejected.
+  const bool live = _client->copyLatest(frame) && isWellFormed(frame) &&
                     !_client->isStale();
-  if (live) {
+  if (live && frame.width == _width && frame.height == _height) {
     std::memcpy(dst, frame.bgra.data(), frameBytes);  // BGRA == RGB32 layout.
+    _lastSequence = frame.sequence;
+  } else if (live) {
+    if (frame.width != _loggedMismatchWidth ||
+        frame.height != _loggedMismatchHeight) {
+      _loggedMismatchWidth = frame.width;
+      _loggedMismatchHeight = frame.height;
+      VcamLog("MediaStream: source %ux%u differs from media type %ux%u, scaling",
+              frame.width, frame.height, _width, _height);
+    }
+    scaleNearest(frame.bgra.data(), frame.width, frame.height, dst, _width,
+                 _height);
     _lastSequence = frame.sequence;
   } else {
     std::memset(dst, 0x1e, frameBytes);  // dark splash until frames flow.
