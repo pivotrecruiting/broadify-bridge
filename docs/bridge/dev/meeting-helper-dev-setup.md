@@ -133,10 +133,23 @@ Freigabe den stabilen Fehlercode `camera_permission_denied`.
 ## Virtuelle Kamera macOS
 
 Die virtuelle Kamera ist eine CoreMediaIO Camera Extension unter
-`apps/bridge/native/vcam-helper`. Sie liest den Meeting-FrameBus und stellt
-`broadify Camera` fuer Zoom, Meet und Teams bereit.
-Wegen macOS-SystemExtension-Sandboxing konsumiert die Extension den fertigen
-Program-Frame ueber den lokalen Raw-Frame-Stream des Meeting-Helpers.
+`apps/bridge/native/vcam-helper`. Sie stellt `broadify Camera` fuer Zoom, Meet
+und Teams bereit. Wegen macOS-SystemExtension-Sandboxing konsumiert die
+Extension den fertigen Program-Frame ueber den lokalen Raw-Frame-Stream des
+Meeting-Helpers (TCP 18787), nicht ueber den FrameBus.
+
+Der Helper kennt deshalb zwei voneinander unabhaengige Program-Outputs:
+
+| Output | RPC | Leser |
+| --- | --- | --- |
+| FrameBus (Shared Memory) | `output.framebus.start/stop/status` | Conference-Display-Output (`conference_display_start` startet/stoppt ihn mit) |
+| Raw-Frame-Stream (TCP) | `output.vcam.raw.start/stop` | macOS-Extension, Windows-Media-Source-DLL |
+
+`virtualCameraStart()` armiert nur den Raw-Frame-Stream und liefert den
+FrameBus-Status read-only als `framebus_output` mit; es startet den FrameBus
+nicht mehr (das kopierte sonst jeden 1080p-Frame, ~250 MB/s, in ein Segment
+ohne Leser). `virtualCameraStop()` stoppt entsprechend nur den Raw-Frame-Stream
+und laesst einen laufenden FrameBus unangetastet.
 
 ```bash
 npm run build:vcam-helper
@@ -146,11 +159,12 @@ Danach:
 
 1. `apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app` nach
    `/Applications` kopieren.
-2. `meeting_engine_start` ausloesen.
-3. `meeting_output_configure` mit `target: "framebus"`, `action: "start"` senden.
-4. `meeting_output_configure` mit `target: "virtual_camera"`, `action: "start"`
-   senden. Die Bridge oeffnet die App.
-5. macOS-Freigabe in System Settings bestaetigen und in der Meeting-App
+2. `meeting_engine_start` ausloesen. Die Bridge armiert die virtuelle Kamera
+   automatisch mit (Auto-Arm); alternativ manuell
+   `meeting_output_configure` mit `target: "virtual_camera"`,
+   `action: "start"` senden. Die Bridge oeffnet die App. Ein FrameBus-Start
+   ist dafuer nicht noetig.
+3. macOS-Freigabe in System Settings bestaetigen und in der Meeting-App
    `broadify Camera` auswaehlen.
 
 `npm run dev` installiert die VCam-System-Extension nicht automatisch. Der Dev-

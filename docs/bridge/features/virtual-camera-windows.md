@@ -5,6 +5,38 @@ Meeting-Helper erzeugt die Kamera zur Laufzeit über `MFCreateVirtualCamera`
 (Windows 11); die Media-Source-DLL `broadify-vcam.dll` muss dafür im
 System-COM-Registry registriert sein.
 
+## Frame-Pfad und lazy Verbindung
+
+Die DLL liest den Program-Frame **nicht** aus dem FrameBus, sondern ueber den
+Raw-Frame-TCP-Stream des Meeting-Helpers (`127.0.0.1:18787`,
+`RawFrameClient`). Jede offene Verbindung zaehlt im Helper als VCam-Client
+und laesst ihn jeden Frame rendern, swizzeln und senden. Der Frame-Server
+instanziiert die Media Source bereits beim Armieren der Kamera (Engine-Start),
+lange bevor eine App streamt. Damit das keine Dauerlast erzeugt, verbindet
+sich die DLL nur bei Bedarf:
+
+- `MediaSource::Initialize`: einmalige Geometrie-Probe — verbinden, bis zu
+  2 s auf den ersten Frame warten (sonst 1280x720-Fallback), dann sofort
+  wieder trennen.
+- `MediaStream::Start` (App beginnt zu streamen): Verbindung aufbauen
+  (`MediaStream: running, raw-frame client connecting`).
+- `MediaStream::Stop`/`Shutdown`: Verbindung trennen; `RawFrameClient::stop()`
+  beendet einen blockierenden `recv` per `shutdown()` und joint den
+  Leser-Thread, Reconnect-Backoffs werden in 50-ms-Scheiben unterbrochen.
+- Direkt nach dem Start liefert `RequestSample` bis zum ersten Frame den
+  dunklen Splash (bzw. den letzten Frame, solange er nicht aelter als 2 s ist).
+
+Der Helper-FrameBus (`output.framebus.*`) ist davon entkoppelt: er wird nur
+noch vom Conference-Display-Output gestartet, nicht mehr vom VCam-Start. Der
+Raw-Frame-Stream wird ueber `output.vcam.raw.start/stop` armiert, das die
+Bridge in `virtualCameraStart()`/`virtualCameraStop()` aufruft. Ohne
+streamende App sieht der Helper keinen VCam-Client; Keyer-Qualitaet und
+Luefter entsprechen dann dem Zustand „VCam-Output gestoppt".
+
+Log-Zeilen (`VcamLog`): `RawFrameClient: connected to 127.0.0.1:18787
+(stream consumer active)` / `RawFrameClient: disconnected from ...` markieren
+den tatsaechlichen Verbrauch.
+
 ## Registrierung bei der Installation
 
 - **NSIS-Installer (Standard):** ist seit `nsis.perMachine: true`
