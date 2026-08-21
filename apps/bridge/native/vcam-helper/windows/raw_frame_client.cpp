@@ -14,7 +14,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <string>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -64,6 +66,54 @@ bool recvExact(SOCKET socket, uint8_t *buffer, size_t len,
   return true;
 }
 
+// Finds a header line `name: value` in the HTTP handshake block (names are
+// case-insensitive per RFC 7230) and parses the value as an unsigned integer.
+// Returns false when the header is missing or the value is not a plain
+// decimal number. Tolerates surrounding whitespace in the value.
+bool parseHeaderU32(const std::string &handshake, const char *name,
+                    uint32_t &out) {
+  std::string lowered(handshake.size(), '\0');
+  for (size_t i = 0; i < handshake.size(); i++) {
+    lowered[i] = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(handshake[i])));
+  }
+  std::string key = "\r\n";
+  for (const char *c = name; *c; ++c) {
+    key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+  }
+  key.push_back(':');
+  const size_t at = lowered.find(key);
+  if (at == std::string::npos) {
+    return false;
+  }
+  size_t pos = at + key.size();
+  const size_t end = handshake.find("\r\n", pos);
+  if (end == std::string::npos) {
+    return false;
+  }
+  while (pos < end && (handshake[pos] == ' ' || handshake[pos] == '\t')) {
+    pos++;
+  }
+  uint64_t value = 0;
+  size_t digits = 0;
+  while (pos < end && handshake[pos] >= '0' && handshake[pos] <= '9') {
+    value = value * 10u + static_cast<uint64_t>(handshake[pos] - '0');
+    if (value > 0xffffffffull) {
+      return false;
+    }
+    pos++;
+    digits++;
+  }
+  while (pos < end && (handshake[pos] == ' ' || handshake[pos] == '\t')) {
+    pos++;
+  }
+  if (digits == 0 || pos != end) {
+    return false;
+  }
+  out = static_cast<uint32_t>(value);
+  return true;
+}
+
 }  // namespace
 
 RawFrameClient::RawFrameClient(uint16_t port) : port_(port) {}
@@ -81,8 +131,26 @@ void RawFrameClient::stop() {
   if (!running_.exchange(false)) {
     return;
   }
+  {
+    // Wake a recv()/connect() that is blocked on the live socket; the run
+    // loop owns the handle and closes it once it observes running_ == false.
+    std::lock_guard<std::mutex> lock(socketMutex_);
+    if (activeSocket_ != kNoSocket) {
+      shutdown(static_cast<SOCKET>(activeSocket_), SD_BOTH);
+    }
+  }
   if (thread_.joinable()) {
     thread_.join();
+  }
+}
+
+void RawFrameClient::sleepWhileRunning(double ms) const {
+  constexpr DWORD kSliceMs = 50;
+  DWORD remaining = static_cast<DWORD>(ms);
+  while (remaining > 0 && running_.load()) {
+    const DWORD slice = std::min(remaining, kSliceMs);
+    Sleep(slice);
+    remaining -= slice;
   }
 }
 
@@ -101,6 +169,16 @@ bool RawFrameClient::copyLatestIfNew(uint64_t lastSequence, RawFrame &out) const
     return false;
   }
   out = latest_;
+  return true;
+}
+
+bool RawFrameClient::streamGeometry(uint32_t &width, uint32_t &height) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!hasStreamGeometry_) {
+    return false;
+  }
+  width = streamWidth_;
+  height = streamHeight_;
   return true;
 }
 
@@ -123,9 +201,20 @@ void RawFrameClient::run() {
   while (running_.load()) {
     SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket == INVALID_SOCKET) {
-      Sleep(static_cast<DWORD>(backoffMs));
+      sleepWhileRunning(backoffMs);
       backoffMs = std::min(backoffMs * kBackoffFactor, kBackoffMaxMs);
       continue;
+    }
+    {
+      std::lock_guard<std::mutex> lock(socketMutex_);
+      activeSocket_ = static_cast<uintptr_t>(socket);
+    }
+    if (!running_.load()) {
+      // stop() may have raced the publication above; do not connect.
+      std::lock_guard<std::mutex> lock(socketMutex_);
+      activeSocket_ = kNoSocket;
+      closesocket(socket);
+      break;
     }
 
     sockaddr_in address{};
@@ -134,6 +223,7 @@ void RawFrameClient::run() {
     inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
 
     bool connected = false;
+    std::string handshake;
     if (connect(socket, reinterpret_cast<sockaddr *>(&address),
                 sizeof(address)) == 0) {
       static const char kRequest[] =
@@ -143,7 +233,6 @@ void RawFrameClient::run() {
       if (send(socket, kRequest, static_cast<int>(sizeof(kRequest) - 1), 0) > 0) {
         // Consume the HTTP response headers up to the blank line; the raw
         // records begin immediately after.
-        std::string handshake;
         char byte = 0;
         connected = true;
         while (running_.load() && handshake.find("\r\n\r\n") == std::string::npos) {
@@ -162,7 +251,26 @@ void RawFrameClient::run() {
     }
 
     if (connected) {
-      VcamLog("RawFrameClient: connected to 127.0.0.1:%u", port_);
+      // The helper advertises its configured program geometry in the
+      // handshake; publish it before the first frame so a geometry probe can
+      // finish even while the pipeline is still busy starting up. Older
+      // helpers without the headers simply leave it unset.
+      uint32_t streamWidth = 0;
+      uint32_t streamHeight = 0;
+      if (parseHeaderU32(handshake, "X-Broadify-Frame-Width", streamWidth) &&
+          parseHeaderU32(handshake, "X-Broadify-Frame-Height", streamHeight) &&
+          streamWidth > 0 && streamHeight > 0 && streamWidth <= kMaxDimension &&
+          streamHeight <= kMaxDimension) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        hasStreamGeometry_ = true;
+        streamWidth_ = streamWidth;
+        streamHeight_ = streamHeight;
+        VcamLog("RawFrameClient: handshake geometry %ux%u", streamWidth,
+                streamHeight);
+      } else {
+        VcamLog("RawFrameClient: handshake without geometry headers");
+      }
+      VcamLog("RawFrameClient: connected to 127.0.0.1:%u (stream consumer active)", port_);
       backoffMs = kBackoffStartMs;
 
       uint8_t header[kRecordHeaderSize];
@@ -201,9 +309,16 @@ void RawFrameClient::run() {
       }
     }
 
+    {
+      std::lock_guard<std::mutex> lock(socketMutex_);
+      activeSocket_ = kNoSocket;
+    }
     closesocket(socket);
+    if (connected) {
+      VcamLog("RawFrameClient: disconnected from 127.0.0.1:%u", port_);
+    }
     if (running_.load()) {
-      Sleep(static_cast<DWORD>(backoffMs));
+      sleepWhileRunning(backoffMs);
       backoffMs = std::min(backoffMs * kBackoffFactor, kBackoffMaxMs);
     }
   }

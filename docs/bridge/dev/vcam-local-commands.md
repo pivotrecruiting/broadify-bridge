@@ -165,7 +165,7 @@ Diese Verzeichnisse nicht per `rm` loeschen; macOS besitzt und bereinigt
 
 Der Production-Meeting-Start darf keine bestehende VCam-Installation automatisch
 upgraden. Eine neue embedded Helper-Version wird zur Laufzeit nur mit
-`BRIDGE_VCAM_AUTO_UPGRADE_ON_START=1` ueber eine vorhandene
+`BRIDGE_VCAM_AUTO_UPGRADE_ON_START=0` schaltet das automatische VCam-Upgrade beim Start ab (Standard: an, damit Bridge-Updates auch die VCam-Fixes ausliefern).
 `/Applications/BroadifyVCam.app` kopiert; normaler Meeting-Betrieb verwendet die
 bereits aktivierte Camera Extension.
 

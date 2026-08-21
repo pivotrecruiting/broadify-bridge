@@ -56,6 +56,16 @@ jest.mock("../graphics/framebus/framebus-client.js", () => ({
   loadFrameBusModule: (...args: unknown[]) => mockLoadFrameBusModule(...args),
 }));
 
+const mockConferenceDisplayStart = jest.fn();
+const mockConferenceDisplayStop = jest.fn();
+jest.mock("../conference/conference-display-output.js", () => ({
+  ConferenceDisplayOutput: class {
+    start = (...args: unknown[]) => mockConferenceDisplayStart(...args);
+    stop = (...args: unknown[]) => mockConferenceDisplayStop(...args);
+    status = () => ({ running: false, frameBusName: "bfy", target: {}, lastError: null });
+  },
+}));
+
 const mockPickRecordingSavePath = jest.fn();
 jest.mock("./meeting-recording-dialog.js", () => ({
   pickRecordingSavePath: (...args: unknown[]) =>
@@ -79,6 +89,7 @@ const mockClient = {
   keyerReset: jest.fn(),
   programGet: jest.fn(),
   programUpdate: jest.fn(),
+  framebusStatus: jest.fn(),
   framebusStart: jest.fn(),
   framebusStop: jest.fn(),
   framebusConfigure: jest.fn(),
@@ -143,6 +154,25 @@ describe("meeting-command-handler", () => {
       // graphics frame they write stays invisible to the fresh helper.
       expect(mockMeetingBackGraphicsInvalidate).toHaveBeenCalledTimes(1);
       expect(mockMeetingFrontGraphicsInvalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it("auto-arms the virtual camera without starting the FrameBus output", async () => {
+      // Not running for the start decision, running for the arm that follows.
+      mockIsRunning.mockReturnValueOnce(false);
+      mockStart.mockResolvedValue({ state: "running", port: 9100 });
+      mockClient.virtualCameraStart.mockResolvedValue({ active: true });
+
+      const result = await handleMeetingCommand("meeting_engine_start", {});
+      // The arm runs detached from the engine start; let it settle.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(result.success).toBe(true);
+      expect(mockClient.virtualCameraStart).toHaveBeenCalledTimes(1);
+      // Unattended arm: the registration self-heal must never raise UAC.
+      expect(mockClient.virtualCameraStart).toHaveBeenCalledWith({
+        allowElevation: false,
+      });
+      expect(mockClient.framebusStart).not.toHaveBeenCalled();
     });
 
     it("is idempotent while running: no FrameBus clear, no renderer invalidate", async () => {
@@ -410,6 +440,35 @@ describe("meeting-command-handler", () => {
 
   });
 
+  describe("conference_display_start/stop", () => {
+    it("starts the helper FrameBus output before the display window", async () => {
+      const order: string[] = [];
+      mockClient.framebusStart.mockImplementation(async () => {
+        order.push("framebus");
+        return { running: true };
+      });
+      mockConferenceDisplayStart.mockImplementation(async () => {
+        order.push("display");
+      });
+
+      const result = await handleMeetingCommand("conference_display_start", {});
+
+      expect(result.success).toBe(true);
+      expect(order).toEqual(["framebus", "display"]);
+    });
+
+    it("stops the helper FrameBus output after the display window", async () => {
+      mockClient.framebusStop.mockResolvedValue({ running: false });
+      mockConferenceDisplayStop.mockResolvedValue(undefined);
+
+      const result = await handleMeetingCommand("conference_display_stop", {});
+
+      expect(result.success).toBe(true);
+      expect(mockConferenceDisplayStop).toHaveBeenCalledTimes(1);
+      expect(mockClient.framebusStop).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("meeting_output_configure", () => {
     it("starts the framebus output", async () => {
       mockClient.framebusStart.mockResolvedValue({ running: true });
@@ -421,6 +480,19 @@ describe("meeting-command-handler", () => {
 
       expect(mockClient.framebusStart).toHaveBeenCalled();
       expect(result.success).toBe(true);
+    });
+
+    it("starts the virtual camera with elevation allowed on explicit operator request", async () => {
+      mockClient.virtualCameraStart.mockResolvedValue({ active: true });
+
+      const result = await handleMeetingCommand("meeting_output_configure", {
+        target: "virtual_camera",
+        action: "start",
+      });
+
+      expect(result.success).toBe(true);
+      // Only the explicit start may raise the one-shot UAC prompt.
+      expect(mockClient.virtualCameraStart).toHaveBeenCalledWith();
     });
 
     it("configures the virtual camera", async () => {
