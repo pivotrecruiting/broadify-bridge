@@ -14,6 +14,7 @@ jest.mock("node:child_process", () => {
 });
 
 import {
+  __setVcamActivationPollForTesting,
   DEFAULT_MEETING_FRAMEBUS_NAME,
   getVcamHelperStatus,
   hasEmbeddedVcamSystemExtension,
@@ -30,6 +31,7 @@ describe("vcam-helper", () => {
   const originalHelperPath = process.env.BRIDGE_VCAM_HELPER_PATH;
 
   beforeEach(() => {
+    __setVcamActivationPollForTesting(1, 1);
     // Argument-dispatching default: queued mockReturnValueOnce values still
     // serve the first call (systemextensionsctl list), while the quarantine
     // probe added for the App-Translocation fix defaults to "not quarantined"
@@ -203,7 +205,11 @@ describe("vcam-helper", () => {
 
     const status = await openVcamHelperApp();
 
-    expect(mockSpawn).toHaveBeenCalledWith("open", [installed], expect.any(Object));
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "open",
+      [installed, "--args", "--activate"],
+      expect.any(Object),
+    );
     expect(status.launchRequested).toBe(true);
     expect(status.requiresUserApproval).toBe(true);
     expect(status.code).toBe("activation_requested");
@@ -310,6 +316,65 @@ describe("vcam-helper", () => {
     expect(status.code).toBeUndefined();
   });
 
+  it("ignores other vendors' activated extensions when classifying our state", () => {
+    if (process.platform !== "darwin") {
+      return;
+    }
+    mockExecFileSync.mockImplementation((command: unknown) => {
+      if (command === "systemextensionsctl") {
+        // Foreign extension active, ours still pending approval.
+        return [
+          "\t*\tXYZ\tcom.other.vendor.extension (2.0)\tcom.other.vendor.extension\t[activated enabled]",
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated waiting for user]",
+        ].join("\n");
+      }
+      throw new Error("No such xattr: com.apple.quarantine");
+    });
+
+    expect(isVcamExtensionAvailable()).toBe(false);
+  });
+
+  it("auto-upgrades by default and honors the opt-out", () => {
+    expect(shouldAutoUpgradeEmbeddedVcamApp(19, 18)).toBe(true);
+    expect(shouldAutoUpgradeEmbeddedVcamApp(18, 18)).toBe(false);
+    expect(shouldAutoUpgradeEmbeddedVcamApp(19, 18, false)).toBe(false);
+  });
+
+  it("reports activation_completed when the extension activates after launch", async () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (process.platform !== "darwin" || !hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    let sysextCalls = 0;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        sysextCalls += 1;
+        // Pending before launch, activated once the --activate request lands.
+        return sysextCalls === 1
+          ? "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated waiting for user]"
+          : "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated enabled]";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        throw new Error("No such xattr: com.apple.quarantine");
+      }
+      return "";
+    });
+    mockSpawn.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: jest.Mock };
+      (child as { unref: jest.Mock }).unref = jest.fn();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    });
+
+    const result = await openVcamHelperApp();
+
+    expect(result.code).toBe("activation_completed");
+    expect(result.requiresUserApproval).toBe(false);
+  });
+
   it("self-heals a quarantined install before opening the helper app", async () => {
     const installed = "/Applications/BroadifyVCam.app";
     if (process.platform !== "darwin" || !hasEmbeddedVcamSystemExtension(installed)) {
@@ -350,7 +415,11 @@ describe("vcam-helper", () => {
     );
     expect(xattrStripCall).toBeDefined();
     expect((xattrStripCall?.[1] as string[])[2]).toBe(installed);
-    expect(mockSpawn).toHaveBeenCalledWith("open", [installed], expect.any(Object));
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "open",
+      [installed, "--args", "--activate"],
+      expect.any(Object),
+    );
     expect(status.code).toBe("activation_requested");
   });
 
@@ -383,7 +452,11 @@ describe("vcam-helper", () => {
 
     const status = await openVcamHelperApp();
 
-    expect(mockSpawn).toHaveBeenCalledWith("open", [installed], expect.any(Object));
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "open",
+      [installed, "--args", "--activate"],
+      expect.any(Object),
+    );
     expect(status.launchRequested).toBe(true);
   });
 
