@@ -14,7 +14,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <string>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -61,6 +63,54 @@ bool recvExact(SOCKET socket, uint8_t *buffer, size_t len,
     }
     received += static_cast<size_t>(chunk);
   }
+  return true;
+}
+
+// Finds a header line `name: value` in the HTTP handshake block (names are
+// case-insensitive per RFC 7230) and parses the value as an unsigned integer.
+// Returns false when the header is missing or the value is not a plain
+// decimal number. Tolerates surrounding whitespace in the value.
+bool parseHeaderU32(const std::string &handshake, const char *name,
+                    uint32_t &out) {
+  std::string lowered(handshake.size(), '\0');
+  for (size_t i = 0; i < handshake.size(); i++) {
+    lowered[i] = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(handshake[i])));
+  }
+  std::string key = "\r\n";
+  for (const char *c = name; *c; ++c) {
+    key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+  }
+  key.push_back(':');
+  const size_t at = lowered.find(key);
+  if (at == std::string::npos) {
+    return false;
+  }
+  size_t pos = at + key.size();
+  const size_t end = handshake.find("\r\n", pos);
+  if (end == std::string::npos) {
+    return false;
+  }
+  while (pos < end && (handshake[pos] == ' ' || handshake[pos] == '\t')) {
+    pos++;
+  }
+  uint64_t value = 0;
+  size_t digits = 0;
+  while (pos < end && handshake[pos] >= '0' && handshake[pos] <= '9') {
+    value = value * 10u + static_cast<uint64_t>(handshake[pos] - '0');
+    if (value > 0xffffffffull) {
+      return false;
+    }
+    pos++;
+    digits++;
+  }
+  while (pos < end && (handshake[pos] == ' ' || handshake[pos] == '\t')) {
+    pos++;
+  }
+  if (digits == 0 || pos != end) {
+    return false;
+  }
+  out = static_cast<uint32_t>(value);
   return true;
 }
 
@@ -122,6 +172,16 @@ bool RawFrameClient::copyLatestIfNew(uint64_t lastSequence, RawFrame &out) const
   return true;
 }
 
+bool RawFrameClient::streamGeometry(uint32_t &width, uint32_t &height) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!hasStreamGeometry_) {
+    return false;
+  }
+  width = streamWidth_;
+  height = streamHeight_;
+  return true;
+}
+
 bool RawFrameClient::isStale() const {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!hasFrame_) {
@@ -163,6 +223,7 @@ void RawFrameClient::run() {
     inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
 
     bool connected = false;
+    std::string handshake;
     if (connect(socket, reinterpret_cast<sockaddr *>(&address),
                 sizeof(address)) == 0) {
       static const char kRequest[] =
@@ -172,7 +233,6 @@ void RawFrameClient::run() {
       if (send(socket, kRequest, static_cast<int>(sizeof(kRequest) - 1), 0) > 0) {
         // Consume the HTTP response headers up to the blank line; the raw
         // records begin immediately after.
-        std::string handshake;
         char byte = 0;
         connected = true;
         while (running_.load() && handshake.find("\r\n\r\n") == std::string::npos) {
@@ -191,6 +251,25 @@ void RawFrameClient::run() {
     }
 
     if (connected) {
+      // The helper advertises its configured program geometry in the
+      // handshake; publish it before the first frame so a geometry probe can
+      // finish even while the pipeline is still busy starting up. Older
+      // helpers without the headers simply leave it unset.
+      uint32_t streamWidth = 0;
+      uint32_t streamHeight = 0;
+      if (parseHeaderU32(handshake, "X-Broadify-Frame-Width", streamWidth) &&
+          parseHeaderU32(handshake, "X-Broadify-Frame-Height", streamHeight) &&
+          streamWidth > 0 && streamHeight > 0 && streamWidth <= kMaxDimension &&
+          streamHeight <= kMaxDimension) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        hasStreamGeometry_ = true;
+        streamWidth_ = streamWidth;
+        streamHeight_ = streamHeight;
+        VcamLog("RawFrameClient: handshake geometry %ux%u", streamWidth,
+                streamHeight);
+      } else {
+        VcamLog("RawFrameClient: handshake without geometry headers");
+      }
       VcamLog("RawFrameClient: connected to 127.0.0.1:%u (stream consumer active)", port_);
       backoffMs = kBackoffStartMs;
 

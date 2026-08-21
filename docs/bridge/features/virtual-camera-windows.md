@@ -16,8 +16,11 @@ lange bevor eine App streamt. Damit das keine Dauerlast erzeugt, verbindet
 sich die DLL nur bei Bedarf:
 
 - `MediaSource::Initialize`: einmalige Geometrie-Probe — verbinden, bis zu
-  2 s auf den ersten Frame warten (sonst 1280x720-Fallback), dann sofort
-  wieder trennen.
+  2 s auf die Geometrie warten, dann sofort wieder trennen. Die Geometrie
+  kommt bevorzugt aus dem HTTP-Handshake des Helpers (siehe unten), sonst aus
+  dem ersten Frame; kommt beides nicht, gilt der Fallback **1920x1080** (die
+  Default-Programmgroesse des Helpers). Die Quelle steht im Log:
+  `MediaSource::Initialize geometry 1920x1080 from handshake|frame|fallback`.
 - `MediaStream::Start` (App beginnt zu streamen): Verbindung aufbauen
   (`MediaStream: running, raw-frame client connecting`).
 - `MediaStream::Stop`/`Shutdown`: Verbindung trennen; `RawFrameClient::stop()`
@@ -25,6 +28,45 @@ sich die DLL nur bei Bedarf:
   Leser-Thread, Reconnect-Backoffs werden in 50-ms-Scheiben unterbrochen.
 - Direkt nach dem Start liefert `RequestSample` bis zum ersten Frame den
   dunklen Splash (bzw. den letzten Frame, solange er nicht aelter als 2 s ist).
+
+### Geometrie-Handshake und Skalierung bei Abweichung
+
+Der Raw-Frame-Server des Helpers (`raw_frame_server.cpp`) sendet in den
+HTTP-Antwort-Headern vor dem ersten BFRG-Record die konfigurierte
+Programmgeometrie:
+
+```
+X-Broadify-Frame-Width: 1920
+X-Broadify-Frame-Height: 1080
+X-Broadify-Frame-Fps: 30
+```
+
+Die Werte entsprechen `--width/--height/--fps` bzw. `MEETING_FRAME_*` des
+Helpers (`buildRawFrameStreamHeader`, Unit-Test
+`raw_frame_stream_header_test`). Die DLL (`RawFrameClient`) parst die Header
+case-insensitiv direkt nach dem Handshake und stellt sie ueber
+`streamGeometry()` bereit — noch bevor der erste Frame ankommt. Das ist
+wichtig, weil die Probe genau waehrend des Engine-Starts laeuft, wenn der
+Helper (DirectML-Session-Aufbau, 1-Hz-Static-Heartbeat) den ersten Frame oft
+erst nach mehreren Sekunden liefert. Aeltere Helper ohne diese Header
+funktionieren weiter (Frame-Probe, dann Fallback); die macOS-Extension
+(`RawFrameStreamReader.swift`) liest nur `200 OK` und die Leerzeile und
+ignoriert die Zusatz-Header.
+
+Weicht die Groesse eines (nicht veralteten) Frames trotzdem vom
+ausgehandelten Media Type ab, zeigt `MediaStream::RequestSample` **kein**
+graues Splash-Bild mehr, sondern skaliert den Frame per Nearest-Neighbour
+(einfaches Strecken, kein Letterbox) in den Sample-Puffer. Der Mismatch wird
+einmal pro Groessenwechsel geloggt
+(`MediaStream: source WxH differs from media type WxH, scaling`). Das dunkle
+Splash bleibt nur fuer „kein Frame / Frame aelter als 2 s"; fehlerhafte
+Payloads (Groesse passt nicht zu Breite x Hoehe x 4) werden weiterhin
+verworfen.
+
+Symptom vor diesem Fix (rc.11): „Broadify Camera" in Teams waehlbar, aber
+dauerhaft grau — die Probe hatte den 2-s-Fenster verpasst, die DLL lief mit
+1280x720, der Helper lieferte 1920x1080, jeder Frame wurde wegen der
+Groessenabweichung verworfen.
 
 Der Helper-FrameBus (`output.framebus.*`) ist davon entkoppelt: er wird nur
 noch vom Conference-Display-Output gestartet, nicht mehr vom VCam-Start. Der

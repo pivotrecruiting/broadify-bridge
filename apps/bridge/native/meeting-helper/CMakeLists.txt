@@ -85,6 +85,7 @@ set(MEETING_HELPER_SOURCES
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
   src/preview/raw_frame_server.cpp
+  src/preview/raw_frame_stream_header.cpp
   src/util/sha256.cpp
   src/util/json_utils.cpp
   src/util/helper_event_log.cpp
@@ -281,6 +282,12 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
   )
+  # Covers the raw-frame HTTP handshake the Windows VCam DLL parses for its
+  # geometry; stdlib-only, no sockets.
+  add_executable(raw_frame_stream_header_test
+    tests/raw_frame_stream_header_test.cpp
+    src/preview/raw_frame_stream_header.cpp
+  )
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -304,6 +311,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     subject_presence_test
     tier_handover_test
     matting_backend_test
+    raw_frame_stream_header_test
   )
     target_include_directories(${helper_test} PRIVATE src)
     if(WIN32)

@@ -52,6 +52,13 @@ class RawFrameClient {
   // media source shows a splash while stale.
   bool isStale() const;
 
+  // Program geometry advertised by the helper in the HTTP handshake
+  // (X-Broadify-Frame-Width/-Height). Set once per connection as soon as the
+  // handshake completes — before any frame — so the media source can fix its
+  // media type without waiting for the pipeline to produce a frame. Returns
+  // false until a handshake with both headers has been seen.
+  bool streamGeometry(uint32_t &width, uint32_t &height) const;
+
  private:
   void run();
 
@@ -72,6 +79,9 @@ class RawFrameClient {
   bool hasFrame_ = false;
   RawFrame latest_;
   uint64_t lastArrivalMs_ = 0;  // GetTickCount64() at last frame
+  bool hasStreamGeometry_ = false;
+  uint32_t streamWidth_ = 0;
+  uint32_t streamHeight_ = 0;
 };
 
 }  // namespace broadify::vcam

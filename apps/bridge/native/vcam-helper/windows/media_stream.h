@@ -79,6 +79,10 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
   uint32_t _width = 0;
   uint32_t _height = 0;
   uint64_t _lastSequence = 0;
+  // Last source geometry that differed from the media type; logged once per
+  // size change so a persistent mismatch does not flood the log at 30 fps.
+  uint32_t _loggedMismatchWidth = 0;
+  uint32_t _loggedMismatchHeight = 0;
   RawFrameClient *_client = nullptr;  // owned by the MediaSource.
   Microsoft::WRL::ComPtr<IMFStreamDescriptor> _descriptor;
   Microsoft::WRL::ComPtr<IMFMediaEventQueue> _queue;
