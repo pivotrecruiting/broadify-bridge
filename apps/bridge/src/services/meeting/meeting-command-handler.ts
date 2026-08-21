@@ -175,13 +175,15 @@ function configureMeetingGraphicsOutputs(
  * Best-effort virtual-camera arm after a successful engine start. Runs in
  * the background; failures are published as meeting error events with the
  * stable vcam error codes so the UI can show actionable guidance without
- * blocking the engine start itself.
+ * blocking the engine start itself. Unattended: the Windows registration
+ * self-heal may diagnose but never raise a UAC prompt from here; only the
+ * explicit `meeting_output_configure` start does.
  */
 function autoArmVirtualCamera(): void {
   void (async () => {
     try {
       const client = requireClient();
-      await client.virtualCameraStart();
+      await client.virtualCameraStart({ allowElevation: false });
       console.info("[meeting] virtual camera auto-armed with engine start");
     } catch (error: unknown) {
       // A background arm must never take the process down — not even when
