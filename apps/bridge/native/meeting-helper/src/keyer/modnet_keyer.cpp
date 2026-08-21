@@ -3,6 +3,7 @@
 #include "compose/d3d_adapter_select.h"
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
+#include "keyer/ort_session_options_policy.h"
 #include "util/sha256.h"
 
 #include <algorithm>
@@ -457,7 +458,9 @@ class ModnetKeyer::Impl {
   // cannot be represented for the platform API; ORT errors throw.
   std::unique_ptr<Ort::Session> createSession() {
     Ort::SessionOptions sessionOptions;
+#if !defined(_WIN32)
     sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
+#endif
     sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 #if defined(__APPLE__)
     status_.provider = "cpu";
@@ -489,12 +492,26 @@ class ModnetKeyer::Impl {
     }
 #elif defined(_WIN32)
     status_.provider = "cpu";
+    const OrtSessionOptionsPolicy dmlPolicy =
+        makeDirectMlSessionOptionsPolicy(inputWidth_, inputHeight_);
+    sessionOptions.SetIntraOpNumThreads(dmlPolicy.intraOpThreads);
     // The DirectML execution provider offloads MODNet inference to the GPU,
     // freeing the CPU that otherwise starves the capture, preview and status
     // pipeline. DML requires disabling the memory-pattern optimizer and
     // running the graph sequentially.
-    sessionOptions.DisableMemPattern();
-    sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
+    if (dmlPolicy.disableMemPattern) {
+      sessionOptions.DisableMemPattern();
+    }
+    if (dmlPolicy.sequentialExecution) {
+      sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
+    }
+    for (const auto &entry : dmlPolicy.configEntries) {
+      sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
+    }
+    for (const auto &overrideDim : dmlPolicy.freeDimensionOverrides) {
+      sessionOptions.AddFreeDimensionOverrideByName(
+          overrideDim.name.c_str(), overrideDim.value);
+    }
     // DirectML device selection. Device 0 (the legacy default) is on hybrid
     // laptops usually the weak Intel iGPU rather than the discrete NVIDIA/AMD
     // GPU -> slow inference, stale masks, keyer flicker. Prefer the DML2 API,

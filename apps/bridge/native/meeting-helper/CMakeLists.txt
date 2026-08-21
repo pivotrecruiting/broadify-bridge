@@ -75,6 +75,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/model_manifest.cpp
   src/keyer/modnet_keyer.cpp
   src/keyer/openvino_keyer.cpp
+  src/keyer/ort_session_options_policy.cpp
   src/main.cpp
   src/pipeline/frame_pipeline.cpp
   src/pipeline/frame_pipeline_gating.cpp
@@ -91,6 +92,7 @@ set(MEETING_HELPER_SOURCES
   src/util/sha256.cpp
   src/util/json_utils.cpp
   src/util/helper_event_log.cpp
+  src/util/pixel_swizzle.cpp
   src/util/win_qos.cpp
 )
 
@@ -272,6 +274,14 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/d3d_adapter_select_test.cpp
     src/compose/d3d_adapter_select.cpp
   )
+  add_executable(pixel_swizzle_test
+    tests/pixel_swizzle_test.cpp
+    src/util/pixel_swizzle.cpp
+  )
+  add_executable(ort_session_options_policy_test
+    tests/ort_session_options_policy_test.cpp
+    src/keyer/ort_session_options_policy.cpp
+  )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
@@ -311,6 +321,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
     src/util/helper_event_log.cpp
+    src/util/pixel_swizzle.cpp
     src/util/win_qos.cpp
   )
   add_executable(control_server_test
@@ -334,6 +345,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/keyer/model_manifest.cpp
     src/keyer/modnet_keyer.cpp
     src/keyer/openvino_keyer.cpp
+    src/keyer/ort_session_options_policy.cpp
     src/util/json_utils.cpp
     src/util/sha256.cpp
   )
@@ -342,6 +354,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     framebus_reader_log_gate_test
     staging_readback_ring_test
     d3d_adapter_select_test
+    pixel_swizzle_test
+    ort_session_options_policy_test
     keyer_governor_test
     keyer_cadence_test
     mask_retention_test

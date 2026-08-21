@@ -1,6 +1,7 @@
 #include "preview/raw_frame_server.h"
 
 #include "util/helper_event_log.h"
+#include "util/pixel_swizzle.h"
 #include "util/win_qos.h"
 
 #if defined(__APPLE__)
@@ -208,14 +209,7 @@ void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &paylo
     return;
   }
 #endif
-  const size_t pixelCount = frame.rgba.size() / 4u;
-  for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
-    const size_t offset = pixel * 4u;
-    dst[offset + 0u] = src[offset + 2u];
-    dst[offset + 1u] = src[offset + 1u];
-    dst[offset + 2u] = src[offset + 0u];
-    dst[offset + 3u] = src[offset + 3u];
-  }
+  swizzleRgbaToBgra(src, dst, frame.rgba.size() / 4u);
 }
 
 bool isVcamRawRunning(MeetingState &state) {
