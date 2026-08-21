@@ -101,14 +101,16 @@ function WebAppLink({ bridgeStatus }: { bridgeStatus: BridgeStatus }) {
     }
   };
 
+  // Subtle secondary link: the web app opens automatically on bridge start;
+  // this only remains as the re-open affordance (e.g. closed browser tab).
   return (
     <button
       onClick={handleClick}
-      className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 rounded-full transition-colors"
+      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
     >
       <span>Open web app</span>
       <svg
-        className="w-4 h-4"
+        className="w-3 h-3"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"
