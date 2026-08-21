@@ -105,6 +105,18 @@ prep () {
     ( cd "$path" && { npm ci || npm install; } )
   fi
 
+  # apps/bridge is its own npm package (not a workspace): the root install does
+  # not cover it, and without it ~20 jest suites fail with "Cannot find module
+  # 'fastify'/'pino'" and the release build gate goes red.
+  if [ -f "${path}/apps/bridge/package.json" ]; then
+    if [ -d "${path}/apps/bridge/node_modules" ]; then
+      echo "✓ apps/bridge/node_modules already present"
+    else
+      echo ">> Installing apps/bridge dependencies ..."
+      ( cd "${path}/apps/bridge" && { npm ci || npm install; } )
+    fi
+  fi
+
   echo "✓ ${path} is runnable. Start the dev server on a non-default port, e.g.:"
   echo "    cd \"${path}\" && npx next dev -p 3555"
   echo "  next dev also prints a Network URL (http://<lan-ip>:3555) — use it to test a mobile-only bug on a real phone."
