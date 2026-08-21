@@ -59,7 +59,13 @@ tmpfile="$(mktemp)"
 echo "Downloading ATEM USB helper (${target_name}) from: $url"
 curl -fsSL "$url" -o "$tmpfile"
 
-download_hash="$(shasum -a 256 "$tmpfile" | awk '{print $1}')"
+# Windows CI's Git Bash ships sha256sum but not shasum (same pattern as
+# download-modnet-model.sh).
+if command -v sha256sum >/dev/null 2>&1; then
+  download_hash="$(sha256sum "$tmpfile" | awk '{print $1}')"
+else
+  download_hash="$(shasum -a 256 "$tmpfile" | awk '{print $1}')"
+fi
 if [[ "$download_hash" != "$sha256" ]]; then
   echo "ATEM USB helper SHA256 mismatch." >&2
   echo "Expected: $sha256" >&2
