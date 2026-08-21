@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   backgroundCacheKey,
   BACKGROUND_IMAGE_INDEX_FILE,
@@ -100,7 +100,8 @@ describe("background-image-store", () => {
 
     expect(store.download).toHaveBeenCalledWith(URL_A, null);
     expect(result.cached).toBe(false);
-    expect(result.path.startsWith(DIRECTORY)).toBe(true);
+    // join() normalizes separators, so this holds on Windows runners too.
+    expect(dirname(result.path)).toBe(join(DIRECTORY));
     expect(result.path.endsWith(".png")).toBe(true);
     const entry = store.readIndex()[backgroundCacheKey(URL_A)];
     expect(entry).toMatchObject({
