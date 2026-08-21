@@ -644,8 +644,12 @@ class MfCaptureSession {
 
   bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
                              std::chrono::steady_clock::time_point deadline) {
-    return callback_ ? callback_->waitForFrameOrTimeout(lastTimestampNs, deadline)
-                     : CameraSource::waitForFrameOrTimeout(lastTimestampNs, deadline);
+    if (callback_) {
+      return callback_->waitForFrameOrTimeout(lastTimestampNs, deadline);
+    }
+    // No reader yet: behave like the base CameraSource (plain deadline wait).
+    std::this_thread::sleep_until(deadline);
+    return false;
   }
 
   const std::string &cameraId() const { return cameraId_; }
