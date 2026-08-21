@@ -326,6 +326,7 @@ struct D3D11Context {
   LayerTexture media;
   LayerTexture mask;
   LayerTexture backgroundImage;
+  uint64_t cameraUploadCount = 0;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -478,6 +479,15 @@ bool mapReadbackRing(ID3D11DeviceContext *context,
                      size_t *mappedIndex) {
   const StagingReadbackDecision decision = ring.advance();
   context->CopyResource(stagingBuffers[decision.copyIndex].Get(), source);
+  if (!decision.preferredMapValid) {
+    HRESULT hr = context->Map(stagingBuffers[decision.copyIndex].Get(), 0,
+                              D3D11_MAP_READ, 0, mapped);
+    if (FAILED(hr)) {
+      return false;
+    }
+    *mappedIndex = decision.copyIndex;
+    return true;
+  }
   HRESULT hr = context->Map(stagingBuffers[decision.preferredMapIndex].Get(), 0,
                             D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, mapped);
   if (SUCCEEDED(hr)) {
@@ -501,7 +511,10 @@ bool mapReadbackRing(ID3D11DeviceContext *context,
 // updates, background/media images change only on program updates).
 bool uploadLayer(LayerTexture &slot, const uint8_t *pixels, uint32_t width,
                  uint32_t height, uint64_t timestampNs, DXGI_FORMAT format,
-                 uint32_t bytesPerPixel) {
+                 uint32_t bytesPerPixel, bool *didUpload = nullptr) {
+  if (didUpload != nullptr) {
+    *didUpload = false;
+  }
   if (pixels == nullptr || width == 0u || height == 0u) {
     return false;
   }
@@ -534,6 +547,9 @@ bool uploadLayer(LayerTexture &slot, const uint8_t *pixels, uint32_t width,
     ctx.context->UpdateSubresource(slot.texture.Get(), 0, nullptr, pixels,
                                    width * bytesPerPixel, 0);
     slot.timestampNs = timestampNs;
+    if (didUpload != nullptr) {
+      *didUpload = true;
+    }
   }
   return true;
 }
@@ -544,6 +560,22 @@ bool uploadFrame(LayerTexture &slot, const VideoFrame *frame) {
   }
   return uploadLayer(slot, frame->rgba.data(), frame->width, frame->height,
                      frame->timestampNs, DXGI_FORMAT_R8G8B8A8_UNORM, 4u);
+}
+
+bool uploadCameraFrame(const VideoFrame *frame) {
+  if (frame == nullptr || frame->rgba.empty()) {
+    return false;
+  }
+  bool didUpload = false;
+  if (!uploadLayer(context().camera, frame->rgba.data(), frame->width,
+                   frame->height, frame->timestampNs,
+                   DXGI_FORMAT_R8G8B8A8_UNORM, 4u, &didUpload)) {
+    return false;
+  }
+  if (didUpload) {
+    ++context().cameraUploadCount;
+  }
+  return true;
 }
 
 }  // namespace
@@ -569,7 +601,7 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
   uniforms.backgroundMode = static_cast<uint32_t>(plan.backgroundMode);
   uniforms.frameIndex96 = static_cast<uint32_t>(plan.frameIndex % 96u);
 
-  if (plan.camera.present && uploadFrame(ctx.camera, plan.cameraFrame)) {
+  if (plan.camera.present && uploadCameraFrame(plan.cameraFrame)) {
     uniforms.cameraPresent = 1u;
     uniforms.cameraKeyed = plan.camera.keyed ? 1u : 0u;
     uniforms.cameraMirror = plan.camera.mirror ? 1u : 0u;
@@ -663,6 +695,10 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
   std::memcpy(output.data(), mapped.pData, ctx.outputBufferSize);
   ctx.context->Unmap(ctx.stagingBuffers[mappedIndex].Get(), 0);
   return true;
+}
+
+uint64_t d3d11CompositorCameraUploadCount() {
+  return context().cameraUploadCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,7 +1125,7 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
     return false;
   }
 
-  if (!uploadFrame(ctx.guide, &guideFrame)) {
+  if (!uploadCameraFrame(&guideFrame)) {
     return false;
   }
   if (!uploadLayer(ctx.maskIn, mask.alpha.data(), mask.width, mask.height,
@@ -1099,7 +1135,7 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
 
   setGuidedUniforms(workW, workH, 0u);
   // A = (I, p)
-  guidedDispatch(ctx.csBuildIp.Get(), ctx.guide.srv.Get(), ctx.maskIn.srv.Get(),
+  guidedDispatch(ctx.csBuildIp.Get(), base.camera.srv.Get(), ctx.maskIn.srv.Get(),
                  nullptr, nullptr, ctx.planeA.uav.Get(), nullptr, workW, workH);
   // T2 = mean(I, p)
   guidedBlur(ctx.planeA, ctx.planeT1, ctx.planeT2, workW, workH);

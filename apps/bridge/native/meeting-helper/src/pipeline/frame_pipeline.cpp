@@ -2856,6 +2856,7 @@ void runFramePipeline(const Options &options,
         state.compositorBackend = lastCompositorBackend();
 #if defined(_WIN32)
         state.compositorAdapter = d3d11CompositorAdapterStatus();
+        state.keyerMetrics.cameraTextureUploads = d3d11CompositorCameraUploadCount();
 #endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
@@ -2864,11 +2865,23 @@ void runFramePipeline(const Options &options,
       }
     }
     const auto now = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+    if (nextFrameAt > now + frameInterval) {
+      nextFrameAt = now + frameInterval;
+    }
     if (nextFrameAt > now) {
-      const auto loopEnd = std::chrono::steady_clock::now();
-      if (loopEnd > nextFrameAt + frameInterval) {
-        nextFrameAt = loopEnd + frameInterval;
+      if (runtime.cameraRunning) {
+        if (camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt)) {
+          nextFrameAt = std::chrono::steady_clock::now();
+        }
+      } else {
+        std::this_thread::sleep_until(nextFrameAt);
       }
+    } else {
+      nextFrameAt = now;
+    }
+#else
+    if (nextFrameAt > now) {
       if (runtime.cameraRunning) {
         camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
       } else {
@@ -2877,6 +2890,7 @@ void runFramePipeline(const Options &options,
     } else {
       nextFrameAt = now;
     }
+#endif
   }
   framebus_writer_close(writer);
 }

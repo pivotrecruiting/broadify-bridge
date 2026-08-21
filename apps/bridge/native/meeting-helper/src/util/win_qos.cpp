@@ -4,8 +4,8 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include <avrt.h>
 #include <windows.h>
+#include <avrt.h>
 #include <timeapi.h>
 #ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
 #define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4

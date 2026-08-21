@@ -174,7 +174,8 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
          << ",\"dropped_frames\":" << metrics.droppedFrames
-         << ",\"skipped_frames\":" << metrics.skippedFrames << "}";
+         << ",\"skipped_frames\":" << metrics.skippedFrames
+         << ",\"camera_texture_uploads\":" << metrics.cameraTextureUploads << "}";
   return result.str();
 }
 

@@ -9,6 +9,7 @@ struct StagingReadbackDecision {
   size_t copyIndex = 0;
   size_t preferredMapIndex = 0;
   size_t fallbackMapIndex = 0;
+  bool preferredMapValid = false;
   bool allowBlockingFallback = false;
 };
 
@@ -21,6 +22,7 @@ class StagingReadbackRing {
     decision.copyIndex = frameIndex_ % depth_;
     decision.preferredMapIndex = (frameIndex_ + depth_ - 1u) % depth_;
     decision.fallbackMapIndex = (frameIndex_ + depth_ - 2u) % depth_;
+    decision.preferredMapValid = frameIndex_ >= 1u;
     decision.allowBlockingFallback = frameIndex_ >= 2u;
     ++frameIndex_;
     return decision;

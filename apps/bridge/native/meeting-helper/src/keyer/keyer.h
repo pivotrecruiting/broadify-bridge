@@ -35,6 +35,7 @@ struct KeyerMetrics {
   uint32_t maskHeight = 0;
   uint64_t droppedFrames = 0;
   uint64_t skippedFrames = 0;
+  uint64_t cameraTextureUploads = 0;
 };
 
 struct KeyerDegradationSettings {

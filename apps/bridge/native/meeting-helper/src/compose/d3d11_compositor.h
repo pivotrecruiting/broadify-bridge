@@ -3,7 +3,9 @@
 #include "compose/metal_compositor.h"
 #include "keyer/keyer.h"
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace broadify::meeting {
 
@@ -29,6 +31,8 @@ bool d3d11GuidedRefineAvailable();
 // mask with the working-resolution result — identical semantics to the CPU
 // path. Returns false on any failure; callers must then run the CPU refine.
 bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame);
+
+uint64_t d3d11CompositorCameraUploadCount();
 
 std::string d3d11CompositorAdapterStatus();
 

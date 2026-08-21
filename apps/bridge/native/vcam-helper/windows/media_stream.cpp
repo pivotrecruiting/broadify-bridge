@@ -349,6 +349,9 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       CK(sample->AddBuffer(buffer.Get()));
     }
 
+    if (_hasLastGoodFrame && sampleTime <= _lastSampleTime) {
+      sampleTime = _lastSampleTime + 1;
+    }
     _lastSampleTime = sampleTime;
     CK(sample->SetSampleTime(sampleTime));
     CK(sample->SetSampleDuration(kFrameDuration));

@@ -45,9 +45,17 @@ VCam-Client verbunden, wird MJPEG auf 10 fps gedrosselt.
 
 Der Windows-Keyer-Governor steigt ab, sobald die geglaettete Inferenzzeit
 mehr als 0,5 x Framebudget verbraucht (bei 30 fps ca. 16,7 ms). Step-up bleibt
-unveraendert konservativ. `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` deaktiviert
-die ein-Frame-Reuse-Tiefe; Default `1` erlaubt die Pipeline mit maximal einem
-Frame Maskenalter.
+unveraendert konservativ. `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` ist heute
+ein Kill-Switch fuer die fused cadence reuse: bei `0` laeuft Inferenz fuer
+jeden neuen Kamera-Frame und `mask_age_ms` wird auf 0 gesetzt; Default `1`
+erlaubt die Wiederverwendung der retained matte zwischen Inferenz-Frames und
+refined sie erneut gegen den aktuellen Kamera-Frame. Die geplante ein-Frame
+Software-Pipeline (Inference N parallel zu Composite N-1) ist auf WP3
+verschoben.
+
+Zeitbasierte Hintergruende werden nur auf Kamera-, Programm- oder
+Grafik-Aenderungen fortgeschrieben; ohne solche Aenderung gibt es keinen
+separaten Render-Tick.
 
 BFRG v2 traegt `capture_ns`; die VCam-DLL akzeptiert v1 und v2. Samples werden
 aus dem Produzentenzeitstempel erzeugt, duplizierte Frames laufen mit

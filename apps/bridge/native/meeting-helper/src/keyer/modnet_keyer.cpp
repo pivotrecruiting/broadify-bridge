@@ -28,6 +28,7 @@
 #include <windows.h>
 #include <dml_provider_factory.h>
 #include <d3d12.h>
+#include <directml.h>
 #include <wrl/client.h>
 #endif
 #endif
@@ -83,6 +84,8 @@ bool selfTestForcesCpuProvider() {
 
 #if BROADIFY_ENABLE_MODNET && defined(_WIN32)
 using Microsoft::WRL::ComPtr;
+using DmlCreateDeviceFn = HRESULT(WINAPI *)(ID3D12Device *, DML_CREATE_DEVICE_FLAGS,
+                                            REFIID, void **);
 
 std::wstring utf8ToWidePath(const std::string &path) {
   if (path.empty()) {
@@ -106,6 +109,18 @@ std::wstring utf8ToWidePath(const std::string &path) {
     widePath.pop_back();
   }
   return widePath;
+}
+
+DmlCreateDeviceFn resolveDmlCreateDevice() {
+  static DmlCreateDeviceFn fn = []() -> DmlCreateDeviceFn {
+    HMODULE module = LoadLibraryW(L"DirectML.dll");
+    if (module == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<DmlCreateDeviceFn>(
+        GetProcAddress(module, "DMLCreateDevice"));
+  }();
+  return fn;
 }
 
 OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
@@ -133,7 +148,11 @@ OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
   }
 
   ComPtr<IDMLDevice> dmlDevice;
-  hr = DMLCreateDevice(device.Get(), DML_CREATE_DEVICE_FLAG_NONE,
+  DmlCreateDeviceFn dmlCreateDevice = resolveDmlCreateDevice();
+  if (dmlCreateDevice == nullptr) {
+    return nullptr;
+  }
+  hr = dmlCreateDevice(device.Get(), DML_CREATE_DEVICE_FLAG_NONE,
                        IID_PPV_ARGS(&dmlDevice));
   if (FAILED(hr)) {
     return nullptr;
@@ -494,7 +513,7 @@ class ModnetKeyer::Impl {
     status_.provider = "cpu";
     const OrtSessionOptionsPolicy dmlPolicy =
         makeDirectMlSessionOptionsPolicy(inputWidth_, inputHeight_);
-    sessionOptions.SetIntraOpNumThreads(dmlPolicy.intraOpThreads);
+    sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
     // The DirectML execution provider offloads MODNet inference to the GPU,
     // freeing the CPU that otherwise starves the capture, preview and status
     // pipeline. DML requires disabling the memory-pattern optimizer and
@@ -504,9 +523,6 @@ class ModnetKeyer::Impl {
     }
     if (dmlPolicy.sequentialExecution) {
       sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
-    }
-    for (const auto &entry : dmlPolicy.configEntries) {
-      sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
     }
     for (const auto &overrideDim : dmlPolicy.freeDimensionOverrides) {
       sessionOptions.AddFreeDimensionOverrideByName(
@@ -561,6 +577,10 @@ class ModnetKeyer::Impl {
       }
       if (dmlStatus == nullptr) {
         status_.provider = "directml";
+        sessionOptions.SetIntraOpNumThreads(dmlPolicy.intraOpThreads);
+        for (const auto &entry : dmlPolicy.configEntries) {
+          sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
+        }
       } else {
         // No DirectML device (no DX12 GPU or driver): fall back to the CPU
         // provider.

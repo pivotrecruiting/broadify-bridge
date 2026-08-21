@@ -273,6 +273,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   mergedMetrics.programFrameMs = state.keyerMetrics.programFrameMs;
   mergedMetrics.mjpegEncodeMs = state.keyerMetrics.mjpegEncodeMs;
   mergedMetrics.programFps = state.keyerMetrics.programFps;
+  mergedMetrics.cameraTextureUploads = state.keyerMetrics.cameraTextureUploads;
   state.keyerMetrics = mergedMetrics;
 }
 
