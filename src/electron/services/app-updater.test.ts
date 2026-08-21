@@ -371,6 +371,74 @@ describe("AppUpdaterService", () => {
     });
   });
 
+  describe("install preparation and state guards", () => {
+    it("runs the install preparation hook before autoUpdater.quitAndInstall", async () => {
+      jest.resetModules();
+      const { appUpdaterService } = await import("./app-updater.js");
+      appUpdaterService.initialize(jest.fn());
+      const hook = jest.fn().mockResolvedValue(undefined);
+      appUpdaterService.setInstallPreparationHook(hook);
+      emit("update-available", { version: "2.0.0" });
+      await appUpdaterService.downloadUpdate();
+      emit("update-downloaded", { version: "2.0.0" });
+
+      const result = appUpdaterService.quitAndInstall();
+      expect(result.success).toBe(true);
+      await jest.advanceTimersByTimeAsync(1);
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(mockQuitAndInstall).toHaveBeenCalledWith(false, true);
+      expect(hook.mock.invocationCallOrder[0]).toBeLessThan(
+        mockQuitAndInstall.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("still installs when the preparation hook hangs (timeout race)", async () => {
+      jest.resetModules();
+      const { appUpdaterService } = await import("./app-updater.js");
+      appUpdaterService.initialize(jest.fn());
+      appUpdaterService.setInstallPreparationHook(() => new Promise(() => {}));
+      emit("update-available", { version: "2.0.0" });
+      await appUpdaterService.downloadUpdate();
+      emit("update-downloaded", { version: "2.0.0" });
+
+      appUpdaterService.quitAndInstall();
+      await jest.advanceTimersByTimeAsync(11_000);
+
+      expect(mockQuitAndInstall).toHaveBeenCalledWith(false, true);
+    });
+
+    it("rejects a second install request while one is in progress", async () => {
+      jest.resetModules();
+      const { appUpdaterService } = await import("./app-updater.js");
+      appUpdaterService.initialize(jest.fn());
+      emit("update-available", { version: "2.0.0" });
+      await appUpdaterService.downloadUpdate();
+      emit("update-downloaded", { version: "2.0.0" });
+
+      expect(appUpdaterService.quitAndInstall().success).toBe(true);
+      const second = appUpdaterService.quitAndInstall();
+      expect(second.success).toBe(false);
+      expect(second.error).toContain("already in progress");
+    });
+
+    it("keeps the downloaded state when a periodic check re-announces the same version", async () => {
+      jest.resetModules();
+      const { appUpdaterService } = await import("./app-updater.js");
+      const listener = jest.fn();
+      appUpdaterService.initialize(listener);
+      emit("update-available", { version: "2.0.0" });
+      await appUpdaterService.downloadUpdate();
+      emit("update-downloaded", { version: "2.0.0" });
+      expect(appUpdaterService.getStatus().state).toBe("downloaded");
+
+      emit("update-available", { version: "2.0.0" });
+
+      expect(appUpdaterService.getStatus().state).toBe("downloaded");
+      expect(appUpdaterService.getStatus().downloadedVersion).toBe("2.0.0");
+    });
+  });
+
   describe("shutdown", () => {
     it("clears timers and listener", async () => {
       jest.resetModules();

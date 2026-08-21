@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { app } from "electron";
 import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 import type { AppUpdaterActionResultT, AppUpdaterStatusT } from "../types.js";
@@ -13,6 +15,9 @@ type UpdaterStatusListenerT = (status: AppUpdaterStatusT) => void;
 
 const STARTUP_CHECK_DELAY_MS = 15_000;
 const DEFAULT_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Upper bound for pre-install cleanup: installing must never hang on a stuck
+// helper shutdown, so the installer is started even if cleanup times out.
+const INSTALL_CLEANUP_TIMEOUT_MS = 10_000;
 
 /**
  * Service that owns desktop app auto-update state and lifecycle.
@@ -24,7 +29,7 @@ class AppUpdaterService {
     currentVersion: "unknown",
     availableVersion: null,
     downloadedVersion: null,
-    channel: process.env.BROADIFY_UPDATER_CHANNEL?.trim() || "latest",
+    channel: "latest",
     progressPercent: null,
     bytesPerSecond: null,
     transferredBytes: null,
@@ -35,6 +40,8 @@ class AppUpdaterService {
   };
 
   private statusListener: UpdaterStatusListenerT | null = null;
+  private installPreparationHook: (() => Promise<void>) | null = null;
+  private installRequested = false;
   private startupTimer: NodeJS.Timeout | null = null;
   private periodicTimer: NodeJS.Timeout | null = null;
   private initialized = false;
@@ -53,6 +60,7 @@ class AppUpdaterService {
     this.initialized = true;
     this.updateStatus({
       currentVersion: app.getVersion(),
+      channel: this.resolveConfiguredChannel(),
     });
 
     const disableReason = this.getDisableReason();
@@ -153,6 +161,16 @@ class AppUpdaterService {
   /**
    * Quit the app and install a downloaded update.
    */
+  /**
+   * Register the hook that tears down child processes and releases the quit
+   * guard before the installer runs. Installing requires a NORMAL app quit
+   * (Squirrel closes windows on macOS, NSIS calls app.quit() on Windows);
+   * the app's own close/before-quit handlers must stand down for it.
+   */
+  public setInstallPreparationHook(hook: () => Promise<void>): void {
+    this.installPreparationHook = hook;
+  }
+
   public quitAndInstall(): AppUpdaterActionResultT {
     if (!this.status.enabled) {
       return this.failAction("Auto-update is disabled.");
@@ -162,12 +180,35 @@ class AppUpdaterService {
       return this.failAction("No downloaded update is ready to install.");
     }
 
+    if (this.installRequested) {
+      return this.failAction("Update installation is already in progress.");
+    }
+    this.installRequested = true;
+
     this.updateStatus({
       message: "Installing update and restarting app...",
     });
 
     setImmediate(() => {
-      autoUpdater.quitAndInstall(false, true);
+      void (async () => {
+        try {
+          const hook = this.installPreparationHook;
+          if (hook) {
+            // Cleanup must never block the install indefinitely.
+            await Promise.race([
+              hook(),
+              new Promise<void>((resolve) =>
+                setTimeout(resolve, INSTALL_CLEANUP_TIMEOUT_MS),
+              ),
+            ]);
+          }
+        } catch (error) {
+          logAppWarn(
+            `[Updater] Pre-install cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        autoUpdater.quitAndInstall(false, true);
+      })();
     });
 
     return {
@@ -206,7 +247,37 @@ class AppUpdaterService {
   /**
    * Configure autoUpdater defaults and request headers.
    */
+  /**
+   * Resolve the update channel: an explicit env override wins; packaged
+   * builds otherwise carry their channel in app-update.yml (an RC build has
+   * no env var at runtime and must not silently fall back to "latest").
+   */
+  private resolveConfiguredChannel(): string {
+    const envChannel = process.env.BROADIFY_UPDATER_CHANNEL?.trim();
+    if (envChannel) {
+      return envChannel;
+    }
+    try {
+      const updateConfigPath = join(process.resourcesPath ?? "", "app-update.yml");
+      const match = readFileSync(updateConfigPath, "utf8").match(/^channel:\s*['"]?([\w.-]+)/m);
+      if (match) {
+        return match[1];
+      }
+    } catch {
+      // Unpackaged/dev runs have no app-update.yml.
+    }
+    return "latest";
+  }
+
   private configureAutoUpdater(): void {
+    // Route electron-updater logs into the app log so support can diagnose
+    // stuck checks/downloads/installs from the log file.
+    autoUpdater.logger = {
+      info: (message: unknown) => logAppInfo(`[Updater] ${String(message)}`),
+      warn: (message: unknown) => logAppWarn(`[Updater] ${String(message)}`),
+      error: (message: unknown) => logAppError(`[Updater] ${String(message)}`),
+      debug: (message: unknown) => logAppInfo(`[Updater:debug] ${String(message)}`),
+    };
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.channel = this.status.channel;
@@ -237,6 +308,17 @@ class AppUpdaterService {
     });
 
     autoUpdater.on("update-available", (info: UpdateInfo) => {
+      if (
+        this.status.state === "downloaded" &&
+        this.status.downloadedVersion === info.version
+      ) {
+        // Periodic re-checks must not clobber an already-downloaded update
+        // back into the "available" state (users had to re-download).
+        logAppInfo(
+          `[Updater] Update ${info.version} already downloaded; keeping install-ready state`,
+        );
+        return;
+      }
       this.updateStatus({
         state: "available",
         availableVersion: info.version,

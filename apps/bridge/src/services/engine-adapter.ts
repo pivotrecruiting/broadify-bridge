@@ -27,12 +27,15 @@ type EngineBroadcastTopicT = Parameters<typeof websocketManager.broadcast>[0];
 type EngineBroadcastMessageT = Parameters<typeof websocketManager.broadcast>[1];
 
 type EngineAdapterServiceDepsT = {
-  createAdapter: (type: EngineConnectConfig["type"]) => EngineAdapter;
+  createAdapter: (
+    type: EngineConnectConfig["type"],
+    transport?: EngineConnectConfig["transport"]
+  ) => EngineAdapter;
   broadcast: (topic: EngineBroadcastTopicT, message: EngineBroadcastMessageT) => void;
 };
 
 const defaultDeps: EngineAdapterServiceDepsT = {
-  createAdapter: (type) => createEngineAdapter(type),
+  createAdapter: (type, transport) => createEngineAdapter(type, transport),
   broadcast: (topic, message) => websocketManager.broadcast(topic, message),
 };
 
@@ -111,12 +114,13 @@ export class EngineAdapterService {
       throw createAlreadyConnectingError();
     }
 
-    // Update state
+    // Update state (ip/port are meaningless for the USB transport)
     this.stateStore.setState({
       status: "connecting",
       type: config.type,
-      ip: config.ip,
-      port: config.port,
+      transport: config.transport ?? "network",
+      ip: config.transport === "usb" ? undefined : config.ip,
+      port: config.transport === "usb" ? undefined : config.port,
     });
 
     try {
@@ -127,7 +131,7 @@ export class EngineAdapterService {
       }
 
       // Create adapter using factory
-      this.adapter = this.deps.createAdapter(config.type);
+      this.adapter = this.deps.createAdapter(config.type, config.transport);
 
       // Subscribe to adapter state changes and store unsubscribe function
       this.unsubscribeAdapterState = this.adapter.onStateChange(
