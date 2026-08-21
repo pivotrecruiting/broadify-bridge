@@ -95,32 +95,15 @@ F1. `docs/bridge/features/virtual-camera-windows.md` + a new `docs/bridge/featur
 12. Docs updated; comments in English.
 
 ## Review
-- Round: 1/3
-- Verdict: MUST-FIX (round 1)
-- Must-fix (open):
-  - M1 `src/util/win_qos.cpp`: include `<windows.h>` BEFORE `<avrt.h>`/`<timeapi.h>` (avrt.h needs HANDLE/DWORD/WINAPI) — Windows compile error.
-  - M2 `src/compose/staging_readback_ring.h` + `d3d11_compositor.cpp` `mapReadbackRing`: never map a slot that has not received a
-    `CopyResource` (frame 0 after every `reset()` currently maps an unwritten buffer → garbage program frame / all-zero mask). Track
-    written slots (`preferredValid = frameIndex_ >= 1` or a per-slot written flag); when not valid, do a blocking Map on the slot just
-    copied. Fix the ctest to assert the invariant "never map an unwritten slot" instead of codifying the bug.
-  - M3 `frame_pipeline.cpp` ~:2853-2879: after an early CV wake (camera frame before the deadline) set `nextFrameAt = now` (or clamp
-    `nextFrameAt = min(nextFrameAt, now + frameInterval)` at the top of each iteration) so `nextFrameAt` cannot drift ahead with a
-    60 fps camera; remove the dead overrun block inside `if (nextFrameAt > now)`. Windows-only path; macOS timing unchanged.
-  - M4 `modnet_keyer.cpp` ~:495-512: apply `SetIntraOpNumThreads(1)` + `allow_spinning=0` ONLY after a DML append succeeded
-    (`provider == "directml"`); CPU provider keeps `inferenceThreadCount()`.
-  - M5 `vcam-helper/windows/media_stream.cpp` ~:294-352: clamp `sampleTime = max(sampleTime, _lastSampleTime + 1)` whenever a last
-    good frame exists so sample times are strictly monotonic (duplicates at consumer rate, rebase after helper restart).
-  - M6 A2 was NOT implemented (still two camera uploads: `ctx.camera` and the guided `guide` texture): upload the camera frame once per
-    frame into one texture used by both passes (cache by frame timestamp) and add an upload counter to the debug metrics.
-  - M7 Windows test-target link libs in CMakeLists: `d3d_adapter_select_test` needs `dxgi`; `raw_frame_server_test` (now compiles
-    win_qos.cpp) needs `avrt winmm`. Also make `DMLCreateDevice` resolution robust: `GetProcAddress(LoadLibraryW(L"DirectML.dll"),
-    "DMLCreateDevice")` instead of a static import of DirectML.lib (not vendored; CI link unproven) — fall back to DML2 when absent.
-  - M8 TASK.md/docs honesty: record A4, B2(explicit start), D2, D3(partial), E2 as explicit deferrals to WP3 in the Plan, and correct
-    `docs/bridge/features/meeting-windows-performance.md` so it describes what `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH` really does today.
-- Notes (non-blocking): removed `(live && graphicsOutputActive)` render trigger means time-based backgrounds only advance on
-  camera/program changes — add one sentence to the docs; `pixel_swizzle_test` is scalar-vs-scalar on macOS (SIMD proven only on a
-  Windows ctest run); `d3d_adapter_select_test` covers env parsing only.
-- Handoff to human (if any): Windows compile/link only in CI (RC push allowed).
+- Round: 2/3
+- Verdict: PASS (round 2, 22.08.2026). Round 1 M1–M8 resolved in 043a9ae1; note "gpuAdapter not cleared on tier rebuild" closed in the
+  closing commit.
+- Must-fix (open): none
+- Notes (non-blocking): Windows loop paces at camera rate after CV wakes (60 fps cams render at 60); `GuidedContext::guide` dead (WP3);
+  docs lack `camera_texture_uploads` mention.
+- Deferred to WP3: A4 (no intermediate guided readback), B2 reader-count gating, D2 capture buffer pool, D3 native-subtype preference,
+  E2 one-frame software pipeline.
+- Handoff to human (if any): Windows compile/link only in CI; rc field test on the 1660 Ti laptop (fan/latency).
 
 ## Verification
 - [ ] Tests pass — `npm run test:jest` passed (173 suites / 1950 tests); `npm run test:meeting-helper-native` failed only `meeting_recorder_writer_test` with pre-existing macOS `audio_input_rejected` while 18/19 ctests passed.

@@ -477,6 +477,9 @@ class ModnetKeyer::Impl {
   // cannot be represented for the platform API; ORT errors throw.
   std::unique_ptr<Ort::Session> createSession() {
     Ort::SessionOptions sessionOptions;
+    // A tier rebuild must not inherit the adapter of a previous session: the
+    // provider decision below repopulates it only when DirectML was appended.
+    status_.gpuAdapter.clear();
 #if !defined(_WIN32)
     sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
 #endif
