@@ -267,13 +267,24 @@ export class MeetingHelperClient {
     };
   }
 
+  /**
+   * Arm the virtual camera without touching the FrameBus output. The FrameBus
+   * (shared memory) is only read by the conference display output; both
+   * virtual-camera consumers (macOS extension, Windows media-source DLL) pull
+   * frames over the raw-frame TCP stream and connect lazily while an app is
+   * actually streaming. Starting the FrameBus here used to copy every program
+   * frame (~250 MB/s at 1080p) into a segment nobody read. `framebus_output`
+   * stays in the result for the web app's engagement check, but as a
+   * read-only status snapshot.
+   */
   async virtualCameraStart(): Promise<Record<string, unknown>> {
+    const framebusOutput = await this.framebusStatus();
+    await this.vcamRawStart();
     if (process.platform === "win32") {
-      // Windows has no separate helper app: start the raw frame output and ask
-      // the meeting-helper to create the "Broadify Camera" (MFCreateVirtualCamera).
-      // A REGDB_E_CLASSNOTREG failure triggers a one-shot elevated regsvr32
-      // self-heal (MSI registration gap) before giving up.
-      const framebusOutput = await this.framebusStart();
+      // Windows has no separate helper app: ask the meeting-helper to create
+      // the "Broadify Camera" (MFCreateVirtualCamera). A REGDB_E_CLASSNOTREG
+      // failure triggers a one-shot elevated regsvr32 self-heal (MSI
+      // registration gap) before giving up.
       let vcam: Record<string, unknown>;
       try {
         vcam = await runVcamStartWithRegistrationSelfHeal(() =>
@@ -281,9 +292,9 @@ export class MeetingHelperClient {
         );
       } catch (error) {
         // Roll the partial output state back: a failed vcam start must not
-        // leave the raw frame stream running.
+        // leave the raw frame stream armed.
         try {
-          await this.framebusStop();
+          await this.vcamRawStop();
         } catch {
           // Best effort; the original vcam error is the one that matters.
         }
@@ -291,7 +302,6 @@ export class MeetingHelperClient {
       }
       return { ...vcam, framebus_output: framebusOutput };
     }
-    const framebusOutput = await this.framebusStart();
     const status = await openVcamHelperApp({
       framebusName: process.env[FRAMEBUS_NAME_ENV] || DEFAULT_MEETING_FRAMEBUS_NAME,
     });
@@ -301,9 +311,15 @@ export class MeetingHelperClient {
     };
   }
 
+  /**
+   * Disarm the virtual camera. Only the raw-frame stream is stopped; a
+   * FrameBus output started by another consumer (conference display, explicit
+   * `meeting_output_configure`) keeps running.
+   */
   async virtualCameraStop(): Promise<Record<string, unknown>> {
+    await this.vcamRawStop();
+    const framebusOutput = await this.framebusStatus();
     if (process.platform === "win32") {
-      const framebusOutput = await this.framebusStop();
       const vcam = await this.rpc("output.vcam.stop");
       return {
         ...vcam,
@@ -312,13 +328,22 @@ export class MeetingHelperClient {
           "Virtual camera output was stopped. Meeting preview and program rendering remain active.",
       };
     }
-    const framebusOutput = await this.framebusStop();
     return {
       ...(await this.virtualCameraStatus()),
       framebus_output: framebusOutput,
       message:
         "Virtual camera output was stopped. Meeting preview and program rendering remain active.",
     };
+  }
+
+  /** Enable the raw-frame TCP stream the virtual-camera consumers read. */
+  private async vcamRawStart(): Promise<Record<string, unknown>> {
+    return this.rpc("output.vcam.raw.start");
+  }
+
+  /** Disable the raw-frame TCP stream; connected consumers see a black feed. */
+  private async vcamRawStop(): Promise<Record<string, unknown>> {
+    return this.rpc("output.vcam.raw.stop");
   }
 
   /**

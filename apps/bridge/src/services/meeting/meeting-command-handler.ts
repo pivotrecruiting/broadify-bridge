@@ -675,6 +675,10 @@ export async function handleMeetingCommand(
         "Invalid payload for conference_display_start",
       );
       try {
+        // The display window reads the meeting FrameBus, which the helper
+        // only writes while its FrameBus output is running. The virtual-camera
+        // path no longer starts it, so this is the consumer that must.
+        await requireClient().framebusStart();
         await conferenceDisplayOutput.start({
           matchName: target.match_name,
           matchWidth: target.match_width,
@@ -695,6 +699,19 @@ export async function handleMeetingCommand(
 
     case "conference_display_stop": {
       await conferenceDisplayOutput.stop();
+      // Release the helper's FrameBus output again; a helper that is already
+      // gone has nothing left to stop.
+      if (meetingHelperManager.isRunning()) {
+        try {
+          await requireClient().framebusStop();
+        } catch (error: unknown) {
+          console.warn(
+            `[meeting] framebus stop after conference display stop failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
       return { success: true, data: conferenceDisplayOutput.status() };
     }
 
