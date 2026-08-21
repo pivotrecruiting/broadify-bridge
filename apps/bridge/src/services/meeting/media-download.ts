@@ -18,7 +18,26 @@ import type { Readable } from "node:stream";
 export type GuardedDownloadT = {
   stream: Readable;
   contentType: string;
+  /** Validators echoed by the origin, used for conditional re-fetches. */
+  etag: string | null;
+  lastModified: string | null;
 };
+
+/** Cache validators sent as If-None-Match / If-Modified-Since. */
+export type ConditionalRequestT = {
+  etag?: string | null;
+  lastModified?: string | null;
+};
+
+export type GuardedConditionalDownloadT =
+  | { status: "not_modified" }
+  | {
+      status: "ok";
+      body: Buffer;
+      contentType: string;
+      etag: string | null;
+      lastModified: string | null;
+    };
 
 const FORBIDDEN_IPV4_RANGES: Array<[number, number]> = [
   // [network, prefix bits]
@@ -143,22 +162,34 @@ const guardedLookup: LookupFunction = (hostname, options, callback) => {
   });
 };
 
-/**
- * Opens a guarded HTTPS download stream (no redirects) with a byte cap.
- * The returned stream errors when the cap or timeout is exceeded.
- */
-export function openGuardedDownload(
+type GuardedRequestResultT =
+  | { status: "not_modified" }
+  | { status: "ok"; download: GuardedDownloadT };
+
+function openGuardedRequest(
   rawUrl: string,
   maxBytes: number,
   timeoutMs: number,
-): Promise<GuardedDownloadT> {
+  conditional: ConditionalRequestT | null,
+): Promise<GuardedRequestResultT> {
   const url = parseGuardedUrl(rawUrl);
+  const headers: Record<string, string> = {};
+  if (conditional?.etag) {
+    headers["if-none-match"] = conditional.etag;
+  } else if (conditional?.lastModified) {
+    headers["if-modified-since"] = conditional.lastModified;
+  }
   return new Promise((resolve, reject) => {
     const request = httpsGet(
       url,
-      { lookup: guardedLookup, timeout: timeoutMs },
+      { lookup: guardedLookup, timeout: timeoutMs, headers },
       (response) => {
         const status = response.statusCode ?? 0;
+        if (status === 304 && conditional) {
+          response.resume();
+          resolve({ status: "not_modified" });
+          return;
+        }
         if (status !== 200) {
           response.resume();
           reject(new Error(`Download failed with HTTP ${status}.`));
@@ -183,9 +214,14 @@ export function openGuardedDownload(
         response.on("error", (error) => output.destroy(error));
         response.pipe(output);
         resolve({
-          stream: output,
-          contentType:
-            readSingleHeader(response.headers["content-type"]) ?? "",
+          status: "ok",
+          download: {
+            stream: output,
+            contentType:
+              readSingleHeader(response.headers["content-type"]) ?? "",
+            etag: readSingleHeader(response.headers.etag),
+            lastModified: readSingleHeader(response.headers["last-modified"]),
+          },
         });
       },
     );
@@ -194,6 +230,64 @@ export function openGuardedDownload(
     });
     request.on("error", reject);
   });
+}
+
+/**
+ * Opens a guarded HTTPS download stream (no redirects) with a byte cap.
+ * The returned stream errors when the cap or timeout is exceeded.
+ */
+export async function openGuardedDownload(
+  rawUrl: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<GuardedDownloadT> {
+  const result = await openGuardedRequest(rawUrl, maxBytes, timeoutMs, null);
+  if (result.status !== "ok") {
+    // Unreachable without conditional headers; keep the type narrow.
+    throw new Error("Download failed with HTTP 304.");
+  }
+  return result.download;
+}
+
+async function readStreamFully(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const body = Buffer.concat(chunks);
+  if (body.length === 0) {
+    throw new Error("Downloaded file is empty.");
+  }
+  return body;
+}
+
+/**
+ * Like downloadGuardedBuffer, but sends the stored validators as a
+ * conditional request and reports a 304 instead of re-downloading.
+ */
+export async function downloadGuardedBufferConditional(
+  rawUrl: string,
+  maxBytes: number,
+  timeoutMs: number,
+  conditional: ConditionalRequestT,
+): Promise<GuardedConditionalDownloadT> {
+  const result = await openGuardedRequest(
+    rawUrl,
+    maxBytes,
+    timeoutMs,
+    conditional,
+  );
+  if (result.status === "not_modified") {
+    return result;
+  }
+  const { stream, contentType, etag, lastModified } = result.download;
+  return {
+    status: "ok",
+    body: await readStreamFully(stream),
+    contentType,
+    etag,
+    lastModified,
+  };
 }
 
 /**
@@ -209,15 +303,7 @@ export async function downloadGuardedBuffer(
     maxBytes,
     timeoutMs,
   );
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const body = Buffer.concat(chunks);
-  if (body.length === 0) {
-    throw new Error("Downloaded file is empty.");
-  }
-  return { body, contentType };
+  return { body: await readStreamFully(stream), contentType };
 }
 
 function readSingleHeader(value: string | string[] | undefined): string | null {
