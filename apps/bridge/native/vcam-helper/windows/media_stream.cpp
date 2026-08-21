@@ -18,6 +18,9 @@ namespace {
 
 constexpr uint32_t kFrameRate = 30;
 constexpr LONGLONG kFrameDuration = 10000000LL / kFrameRate;  // 100ns units.
+constexpr uint64_t kStaleLogWindowMs = 2000;
+constexpr uint64_t kVeryStaleLogWindowMs = 10000;
+constexpr size_t kSampleBufferPoolSize = 3;
 
 // True when the payload is a dense BGRA8 image of the claimed size.
 bool isWellFormed(const RawFrame &frame) {
@@ -96,182 +99,312 @@ HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
   Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
   CK(_descriptor->GetMediaTypeHandler(&handler));
   CK(handler->SetCurrentMediaType(type.Get()));
+
+  const DWORD frameBytes = _width * _height * 4;
+  _sampleBuffers.clear();
+  _sampleBuffers.reserve(kSampleBufferPoolSize);
+  for (size_t i = 0; i < kSampleBufferPoolSize; i++) {
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
+    CK(MFCreateMemoryBuffer(frameBytes, &buffer));
+    _sampleBuffers.push_back(buffer);
+  }
   return S_OK;
 }
 
 HRESULT MediaStream::Start() {
-  winrt::slim_lock_guard lock(_lock);
-  if (!_queue) return MF_E_SHUTDOWN;
-  CK(_queue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
-  _state = MF_STREAM_STATE_RUNNING;
-  // Consume the raw-frame stream only while an app is actually pulling
-  // samples; the connection is what makes the helper render and send frames.
-  // start() is idempotent, so a repeated Start is harmless. The first
-  // RequestSample calls may still see no frame and fall back to the splash.
-  if (_client) {
-    _client->start();
-    VcamLog("MediaStream: running, raw-frame client connecting");
+  try {
+    RawFrameClient *client = nullptr;
+    {
+      winrt::slim_lock_guard lock(_lock);
+      if (!_queue) return MF_E_SHUTDOWN;
+      CK(_queue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
+      _state = MF_STREAM_STATE_RUNNING;
+      client = _client;
+    }
+    // Consume the raw-frame stream only while an app is actually pulling
+    // samples; the connection is what makes the helper render and send frames.
+    if (client) {
+      client->start();
+      VcamLog("MediaStream: running, raw-frame client connecting");
+    }
+    return S_OK;
+  } catch (...) {
+    VcamLog("MediaStream::Start exception");
+    return E_FAIL;
   }
-  return S_OK;
 }
 
 HRESULT MediaStream::Stop() {
-  winrt::slim_lock_guard lock(_lock);
-  if (!_queue) return MF_E_SHUTDOWN;
-  CK(_queue->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr));
-  _state = MF_STREAM_STATE_STOPPED;
-  if (_client) {
-    // Joins the reader thread; it only takes the client's own mutex, never
-    // _lock, so holding _lock here cannot deadlock.
-    _client->stop();
-    VcamLog("MediaStream: stopped, raw-frame client disconnected");
+  try {
+    RawFrameClient *client = nullptr;
+    {
+      winrt::slim_lock_guard lock(_lock);
+      if (!_queue) return MF_E_SHUTDOWN;
+      CK(_queue->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr));
+      _state = MF_STREAM_STATE_STOPPED;
+      client = _client;
+    }
+    if (client) {
+      client->stop();
+      VcamLog("MediaStream: stopped, raw-frame client disconnected");
+    }
+    return S_OK;
+  } catch (...) {
+    VcamLog("MediaStream::Stop exception");
+    return E_FAIL;
   }
-  return S_OK;
 }
 
 void MediaStream::Shutdown() {
-  winrt::slim_lock_guard lock(_lock);
-  if (_queue) {
-    _queue->Shutdown();
-    _queue.Reset();
+  try {
+    RawFrameClient *client = nullptr;
+    {
+      winrt::slim_lock_guard lock(_lock);
+      if (_queue) {
+        _queue->Shutdown();
+        _queue.Reset();
+      }
+      client = _client;
+      _client = nullptr;
+      _descriptor.Reset();
+      _sampleBuffers.clear();
+      _lastSampleBuffer.Reset();
+      _source = nullptr;
+    }
+    if (client) {
+      client->stop();
+    }
+  } catch (...) {
+    VcamLog("MediaStream::Shutdown exception");
   }
-  if (_client) {
-    _client->stop();
-  }
-  _descriptor.Reset();
-  _source.Reset();
 }
 
 STDMETHODIMP MediaStream::BeginGetEvent(IMFAsyncCallback *callback,
                                         IUnknown *state) {
-  winrt::slim_lock_guard lock(_lock);
-  if (!_queue) return MF_E_SHUTDOWN;
-  return _queue->BeginGetEvent(callback, state);
+  try {
+    winrt::slim_lock_guard lock(_lock);
+    if (!_queue) return MF_E_SHUTDOWN;
+    return _queue->BeginGetEvent(callback, state);
+  } catch (...) {
+    VcamLog("MediaStream::BeginGetEvent exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP MediaStream::EndGetEvent(IMFAsyncResult *result,
                                       IMFMediaEvent **event) {
-  if (!event) return E_POINTER;
-  winrt::slim_lock_guard lock(_lock);
-  if (!_queue) return MF_E_SHUTDOWN;
-  return _queue->EndGetEvent(result, event);
+  try {
+    if (!event) return E_POINTER;
+    winrt::slim_lock_guard lock(_lock);
+    if (!_queue) return MF_E_SHUTDOWN;
+    return _queue->EndGetEvent(result, event);
+  } catch (...) {
+    VcamLog("MediaStream::EndGetEvent exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP MediaStream::GetEvent(DWORD flags, IMFMediaEvent **event) {
-  Microsoft::WRL::ComPtr<IMFMediaEventQueue> queue;
-  {
-    winrt::slim_lock_guard lock(_lock);
-    if (!_queue) return MF_E_SHUTDOWN;
-    queue = _queue;
+  try {
+    Microsoft::WRL::ComPtr<IMFMediaEventQueue> queue;
+    {
+      winrt::slim_lock_guard lock(_lock);
+      if (!_queue) return MF_E_SHUTDOWN;
+      queue = _queue;
+    }
+    return queue->GetEvent(flags, event);
+  } catch (...) {
+    VcamLog("MediaStream::GetEvent exception");
+    return E_FAIL;
   }
-  return queue->GetEvent(flags, event);
 }
 
 STDMETHODIMP MediaStream::QueueEvent(MediaEventType type, REFGUID extended,
                                      HRESULT status, const PROPVARIANT *value) {
-  winrt::slim_lock_guard lock(_lock);
-  if (!_queue) return MF_E_SHUTDOWN;
-  return _queue->QueueEventParamVar(type, extended, status, value);
+  try {
+    winrt::slim_lock_guard lock(_lock);
+    if (!_queue) return MF_E_SHUTDOWN;
+    return _queue->QueueEventParamVar(type, extended, status, value);
+  } catch (...) {
+    VcamLog("MediaStream::QueueEvent exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP MediaStream::GetMediaSource(IMFMediaSource **source) {
-  if (!source) return E_POINTER;
-  *source = nullptr;
-  winrt::slim_lock_guard lock(_lock);
-  if (!_source) return MF_E_SHUTDOWN;
-  return _source.CopyTo(source);
+  try {
+    if (!source) return E_POINTER;
+    *source = nullptr;
+    winrt::slim_lock_guard lock(_lock);
+    if (!_source) return MF_E_SHUTDOWN;
+    _source->AddRef();
+    *source = _source;
+    return S_OK;
+  } catch (...) {
+    VcamLog("MediaStream::GetMediaSource exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP MediaStream::GetStreamDescriptor(IMFStreamDescriptor **descriptor) {
-  if (!descriptor) return E_POINTER;
-  *descriptor = nullptr;
-  winrt::slim_lock_guard lock(_lock);
-  if (!_descriptor) return MF_E_SHUTDOWN;
-  return _descriptor.CopyTo(descriptor);
+  try {
+    if (!descriptor) return E_POINTER;
+    *descriptor = nullptr;
+    winrt::slim_lock_guard lock(_lock);
+    if (!_descriptor) return MF_E_SHUTDOWN;
+    return _descriptor.CopyTo(descriptor);
+  } catch (...) {
+    VcamLog("MediaStream::GetStreamDescriptor exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
-  winrt::slim_lock_guard lock(_lock);
-  if (!_queue) return MF_E_SHUTDOWN;
+  try {
+    winrt::slim_lock_guard lock(_lock);
+    if (!_queue) return MF_E_SHUTDOWN;
 
-  const DWORD frameBytes = _width * _height * 4;
-  Microsoft::WRL::ComPtr<IMFSample> sample;
-  CK(MFCreateSample(&sample));
-  Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
-  CK(MFCreateMemoryBuffer(frameBytes, &buffer));
+    const DWORD frameBytes = _width * _height * 4;
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    CK(MFCreateSample(&sample));
 
-  BYTE *dst = nullptr;
-  CK(buffer->Lock(&dst, nullptr, nullptr));
-  RawFrame frame;
-  // Live = a well-formed frame that is not stale. A size that differs from
-  // the negotiated media type is not a reason for the splash: the frame is
-  // stretched instead (see scaleNearest). Malformed payloads are rejected.
-  const bool live = _client->copyLatest(frame) && isWellFormed(frame) &&
-                    !_client->isStale();
-  if (live && frame.width == _width && frame.height == _height) {
-    std::memcpy(dst, frame.bgra.data(), frameBytes);  // BGRA == RGB32 layout.
-    _lastSequence = frame.sequence;
-  } else if (live) {
-    if (frame.width != _loggedMismatchWidth ||
-        frame.height != _loggedMismatchHeight) {
-      _loggedMismatchWidth = frame.width;
-      _loggedMismatchHeight = frame.height;
-      VcamLog("MediaStream: source %ux%u differs from media type %ux%u, scaling",
-              frame.width, frame.height, _width, _height);
+    if (_client && _hasLastGoodFrame) {
+      const uint64_t staleAgeMs = _client->staleAgeMs();
+      const uint64_t staleWindow = staleAgeMs >= kVeryStaleLogWindowMs
+                                       ? kVeryStaleLogWindowMs
+                                       : staleAgeMs >= kStaleLogWindowMs
+                                             ? kStaleLogWindowMs
+                                             : 0;
+      if (_loggedStaleWindowMs != staleWindow) {
+        if (staleWindow != 0) {
+          VcamLog("MediaStream: raw frame stream stale for %llu ms, re-emitting last frame",
+                  static_cast<unsigned long long>(staleAgeMs));
+        }
+        _loggedStaleWindowMs = staleWindow;
+      }
     }
-    scaleNearest(frame.bgra.data(), frame.width, frame.height, dst, _width,
-                 _height);
-    _lastSequence = frame.sequence;
-  } else {
-    std::memset(dst, 0x1e, frameBytes);  // dark splash until frames flow.
-  }
-  buffer->Unlock();
-  buffer->SetCurrentLength(frameBytes);
-  CK(sample->AddBuffer(buffer.Get()));
 
-  CK(sample->SetSampleTime(MFGetSystemTime()));
-  CK(sample->SetSampleDuration(kFrameDuration));
-  if (token) {
-    CK(sample->SetUnknown(MFSampleExtension_Token, token));
+    const bool hasNewFrame =
+        _client && _client->copyLatestIfNew(_lastSequence, _scratchFrame);
+    bool usePreviousSample = _hasLastGoodFrame;
+    if (hasNewFrame && isWellFormed(_scratchFrame)) {
+      Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer =
+          _sampleBuffers[_nextSampleBuffer];
+      _nextSampleBuffer = (_nextSampleBuffer + 1) % _sampleBuffers.size();
+      BYTE *dst = nullptr;
+      CK(buffer->Lock(&dst, nullptr, nullptr));
+      if (_scratchFrame.width == _width && _scratchFrame.height == _height) {
+        std::memcpy(dst, _scratchFrame.bgra.data(), frameBytes);
+      } else {
+        if (_scratchFrame.width != _loggedMismatchWidth ||
+            _scratchFrame.height != _loggedMismatchHeight) {
+          _loggedMismatchWidth = _scratchFrame.width;
+          _loggedMismatchHeight = _scratchFrame.height;
+          VcamLog(
+              "MediaStream: source %ux%u differs from media type %ux%u, scaling",
+              _scratchFrame.width, _scratchFrame.height, _width, _height);
+        }
+        scaleNearest(_scratchFrame.bgra.data(), _scratchFrame.width,
+                     _scratchFrame.height, dst, _width, _height);
+      }
+      buffer->Unlock();
+      buffer->SetCurrentLength(frameBytes);
+      _lastSampleBuffer = buffer;
+      _lastSequence = _scratchFrame.sequence;
+      _hasLastGoodFrame = true;
+      usePreviousSample = true;
+    } else if (hasNewFrame) {
+      VcamLog("MediaStream: malformed frame %ux%u size=%llu, re-emitting last frame",
+              _scratchFrame.width, _scratchFrame.height,
+              static_cast<unsigned long long>(_scratchFrame.bgra.size()));
+    }
+
+    if (usePreviousSample && _lastSampleBuffer) {
+      CK(sample->AddBuffer(_lastSampleBuffer.Get()));
+    } else {
+      Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer =
+          _sampleBuffers[_nextSampleBuffer];
+      _nextSampleBuffer = (_nextSampleBuffer + 1) % _sampleBuffers.size();
+      BYTE *dst = nullptr;
+      CK(buffer->Lock(&dst, nullptr, nullptr));
+      std::memset(dst, 0x1e, frameBytes);
+      buffer->Unlock();
+      buffer->SetCurrentLength(frameBytes);
+      CK(sample->AddBuffer(buffer.Get()));
+    }
+
+    CK(sample->SetSampleTime(MFGetSystemTime()));
+    CK(sample->SetSampleDuration(kFrameDuration));
+    if (token) {
+      CK(sample->SetUnknown(MFSampleExtension_Token, token));
+    }
+    CK(_queue->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get()));
+    return S_OK;
+  } catch (...) {
+    VcamLog("MediaStream::RequestSample exception");
+    return E_FAIL;
   }
-  CK(_queue->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get()));
-  return S_OK;
 }
 
 STDMETHODIMP MediaStream::SetStreamState(MF_STREAM_STATE state) {
-  if (_state == state) return S_OK;
-  switch (state) {
-    case MF_STREAM_STATE_RUNNING:
-      return Start();
-    case MF_STREAM_STATE_STOPPED:
-      return Stop();
-    default:
-      return MF_E_INVALID_STATE_TRANSITION;
+  try {
+    if (_state == state) return S_OK;
+    switch (state) {
+      case MF_STREAM_STATE_RUNNING:
+        return Start();
+      case MF_STREAM_STATE_STOPPED:
+        return Stop();
+      default:
+        return MF_E_INVALID_STATE_TRANSITION;
+    }
+  } catch (...) {
+    VcamLog("MediaStream::SetStreamState exception");
+    return E_FAIL;
   }
 }
 
 STDMETHODIMP MediaStream::GetStreamState(MF_STREAM_STATE *state) {
-  if (!state) return E_POINTER;
-  *state = _state;
-  return S_OK;
+  try {
+    if (!state) return E_POINTER;
+    *state = _state;
+    return S_OK;
+  } catch (...) {
+    VcamLog("MediaStream::GetStreamState exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP
 MediaStream::KsProperty(PKSPROPERTY, ULONG, LPVOID, ULONG, ULONG *bytesReturned) {
-  if (bytesReturned) *bytesReturned = 0;
-  return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+  try {
+    if (bytesReturned) *bytesReturned = 0;
+    return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+  } catch (...) {
+    VcamLog("MediaStream::KsProperty exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP
 MediaStream::KsMethod(PKSMETHOD, ULONG, LPVOID, ULONG, ULONG *bytesReturned) {
-  if (bytesReturned) *bytesReturned = 0;
-  return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+  try {
+    if (bytesReturned) *bytesReturned = 0;
+    return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+  } catch (...) {
+    VcamLog("MediaStream::KsMethod exception");
+    return E_FAIL;
+  }
 }
 
 STDMETHODIMP
 MediaStream::KsEvent(PKSEVENT, ULONG, LPVOID, ULONG, ULONG *bytesReturned) {
-  if (bytesReturned) *bytesReturned = 0;
-  return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+  try {
+    if (bytesReturned) *bytesReturned = 0;
+    return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+  } catch (...) {
+    VcamLog("MediaStream::KsEvent exception");
+    return E_FAIL;
+  }
 }
 
 }  // namespace broadify::vcam

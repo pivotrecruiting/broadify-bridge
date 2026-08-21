@@ -17,7 +17,9 @@ Fehlercode. Hintergrund/Architektur: `docs/bridge/features/virtual-camera-window
 | `vcam_windows11_required` | Windows 10 | Nicht unterstützt — die MF-Virtual-Camera existiert erst ab Windows 11 |
 | `vcam_raw_bind_failed` (Port 18787) | Anderer Prozess belegt den Frame-Port | Zweite Bridge-Instanz/Portbelegung beenden, Engine neu starten |
 | `helper_not_reachable` / `helper_control_channel_lost` | Steuerkanal zum Meeting-Helper nicht erreichbar; die Bridge startet den Helper nach wiederholtem Ausfall selbst neu | Engine neu starten; bleibt es, Bridge-Log mit `control_pipe_*`-Zeilen beilegen |
+| `camera_capture_error` / `camera_stalled` | Windows-Kamera liefert keine Frames mehr oder MediaFoundation meldet Fehler/Ende | Helper versucht dieselbe Kamera mit Backoff neu zu oeffnen; Logs beilegen, wenn `camera_recovered` ausbleibt |
 | „Broadify Camera" sichtbar, aber **schwarz** | Normal, solange die Engine kein Programmbild liefert | Engine/Kamera in der Webapp starten; Teams/Zoom nach Kamera-Neuanlage einmal neu starten |
+| „Broadify Camera" sichtbar, aber **grau** | Ab WP0 nicht mehr normal nach dem ersten gueltigen Frame: Staleness friert den letzten Frame ein, nicht den Splash | Pruefen, ob auf dieser Verbindung je ein Frame ankam (`RawFrameClient: connected`, `frame_sent`, `camera_open_success`). Wenn ja: Logs eskalieren |
 
 ### Ursache 1 (häufigster Kundenfall): Per-User-Installation
 
@@ -122,6 +124,14 @@ sc query FrameServer; sc query FrameServerMonitor
   rohe `reg.exe`-Ausgabe nach einem fehlgeschlagenen Heal).
 - `<userDataDir>\vcam-self-heal.json` vorhanden? Dann wurde der eine Prompt
   bereits verbraucht – Inhalt (Version, Pfad, Zeitpunkt) in die Eskalation.
+- `%ProgramData%\Broadify\vcam.log` enthaelt lokale Zeit, PID und TID. Bei
+  5 MB wird zu `vcam.log.1` rotiert. Wichtige neue Zeilen:
+  `handshake timeout`, `recv timeout/disconnect`, `raw frame stream stale`,
+  `MediaStream: ... re-emitting last frame`.
+- Meeting-Helper-Events pruefen: `meeting_vcam_raw` mit
+  `event:"listening"`, `client_connected`, `frame_sent`, `error`; sowie
+  `camera_open_start`, `camera_open_success`, `camera_capture_error`,
+  `camera_reopen_attempt`, `camera_recovered`.
 
 ## macOS
 

@@ -29,6 +29,8 @@ namespace broadify::vcam {
 struct MediaSource
     : winrt::implements<MediaSource, AttributesBase<IMFAttributes>,
                         IMFMediaSourceEx, IMFGetService, IKsControl> {
+  ~MediaSource();
+
   // IMFMediaEventGenerator
   STDMETHOD(BeginGetEvent)(IMFAsyncCallback *callback, IUnknown *state);
   STDMETHOD(EndGetEvent)(IMFAsyncResult *result, IMFMediaEvent **event);
@@ -68,6 +70,7 @@ struct MediaSource
    ULONG *bytesReturned);
 
   HRESULT Initialize(IMFAttributes *attributes);
+  bool IsShutdown();
 
  private:
   // winrt::implements only answers QI for the exact interfaces listed above;
@@ -85,6 +88,7 @@ struct MediaSource
   }
 
   winrt::slim_mutex _lock;
+  bool _shutdown = false;
   uint32_t _width = 0;
   uint32_t _height = 0;
   std::unique_ptr<RawFrameClient> _client;

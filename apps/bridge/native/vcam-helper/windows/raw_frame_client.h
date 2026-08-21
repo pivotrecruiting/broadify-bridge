@@ -48,9 +48,9 @@ class RawFrameClient {
   // Copies only when the latest sequence differs from lastSequence.
   bool copyLatestIfNew(uint64_t lastSequence, RawFrame &out) const;
 
-  // True when no fresh frame has arrived within the stale window (~2s). The
-  // media source shows a splash while stale.
+  // True when no fresh frame has arrived within the stale window (~2s).
   bool isStale() const;
+  uint64_t staleAgeMs() const;
 
   // Program geometry advertised by the helper in the HTTP handshake
   // (X-Broadify-Frame-Width/-Height). Set once per connection as soon as the
@@ -61,6 +61,7 @@ class RawFrameClient {
 
  private:
   void run();
+  void runLoop();
 
   // Sleeps in short slices so stop() is not delayed by the reconnect backoff.
   void sleepWhileRunning(double ms) const;
@@ -70,7 +71,7 @@ class RawFrameClient {
   std::thread thread_;
 
   // Socket the run loop is currently blocked on (as uintptr_t to keep
-  // winsock out of this header); stop() shuts it down to unblock recv().
+  // winsock out of this header); stop() closes it to unblock connect()/recv().
   static constexpr uintptr_t kNoSocket = ~static_cast<uintptr_t>(0);
   mutable std::mutex socketMutex_;
   uintptr_t activeSocket_ = kNoSocket;
