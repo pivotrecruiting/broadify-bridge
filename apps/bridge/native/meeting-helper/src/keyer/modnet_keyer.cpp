@@ -71,9 +71,7 @@ int inferenceThreadCount() {
   return static_cast<int>(std::clamp(detectedThreads, 2u, kMaxCpuInferenceThreads));
 }
 
-#if BROADIFY_ENABLE_MODNET
-std::set<uint32_t> prebuildTierSizesFromEnv() {
-  const char *raw = std::getenv("BROADIFY_MEETING_KEYER_PREBUILD_TIERS");
+std::set<uint32_t> parseModnetPrebuildTierSizesInternal(const char *raw) {
   if (raw == nullptr || raw[0] == '\0' || std::string(raw) == "all") {
     return {kFallbackInputSize, kBalancedInputSize, kPerformanceInputSize};
   }
@@ -103,6 +101,12 @@ std::set<uint32_t> prebuildTierSizesFromEnv() {
     sizes.insert(kPerformanceInputSize);
   }
   return sizes;
+}
+
+#if BROADIFY_ENABLE_MODNET
+std::set<uint32_t> prebuildTierSizesFromEnv() {
+  return parseModnetPrebuildTierSizesInternal(
+      std::getenv("BROADIFY_MEETING_KEYER_PREBUILD_TIERS"));
 }
 
 // Self-test provider override, read once: when
@@ -205,6 +209,10 @@ OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
 
 }  // namespace
 
+std::set<uint32_t> parseModnetPrebuildTierSizes(const char *raw) {
+  return parseModnetPrebuildTierSizesInternal(raw);
+}
+
 class ModnetKeyer::Impl {
  public:
   explicit Impl(ModnetKeyerOptions options) : options_(std::move(options)) {
@@ -229,6 +237,11 @@ class ModnetKeyer::Impl {
       inputWidth_ = inputHeight_ = modnetInputSizeForMode(settings.performanceMode);
     }
 #endif
+    if (!loaded_ && !options_.loadInApply) {
+      setFallback("loading");
+      result.status = status_;
+      return result;
+    }
     if (!ensureLoaded()) {
       result.status = status_;
       return result;

@@ -107,7 +107,11 @@ constexpr double kCollapseDropRatio = 0.28;        // sudden drop below this = c
 // good pair is held instead. Set high so a subject genuinely filling the frame
 // is not misclassified. The keyer also resets its temporal state on this event
 // so the next frame re-converges.
+#if defined(_WIN32)
 constexpr double kMaxForegroundCoverage = 0.98;
+#else
+constexpr double kMaxForegroundCoverage = 0.92;
+#endif
 
 // Motion-adaptive temporal EMA: the current frame's weight scales with how much
 // the mask changed since the last frame. When the subject is still we lean on
@@ -1220,6 +1224,7 @@ void postprocessAlpha(AlphaMask &mask,
                       const AlphaMask &previousMask,
                       const KeyerSettings &settings,
                       double maskAgeMs,
+                      bool fusedPath,
                       KeyerMetrics &metrics) {
   const auto start = std::chrono::steady_clock::now();
   // Morphological close first: fill small holes the segmenter left inside the
@@ -1233,7 +1238,7 @@ void postprocessAlpha(AlphaMask &mask,
   const auto remapEnd = std::chrono::steady_clock::now();
   KeyerSettings effectiveSettings = settings;
 #if defined(_WIN32)
-  if (fusedSmootherEmaEnabled() && maskAgeMs == 0.0) {
+  if (fusedPath && fusedSmootherEmaEnabled()) {
     effectiveSettings.edgeStabilizationEnabled = false;
   }
 #endif
@@ -1303,6 +1308,7 @@ class AsyncKeyerWorker {
     skippedFrames_ = 0;
     keyerRate_ = RateMeter{};
     lastDropRateSample_ = std::chrono::steady_clock::now();
+    lastPublishAt_ = std::chrono::steady_clock::time_point{};
     lastDropRateTotal_ = 0u;
     droppedFramesPerSec_ = -1.0;
   }
@@ -1317,6 +1323,18 @@ class AsyncKeyerWorker {
     const auto now = std::chrono::steady_clock::now();
     updateDropRateLocked(now);
     return KeyerRuntimeStats{keyerRate_.value(now), droppedFramesPerSec_, droppedFrames_, skippedFrames_};
+  }
+
+  bool alive() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!thread_.joinable() || stopping_ || !running_.load()) {
+      return false;
+    }
+    if (lastPublishAt_ == std::chrono::steady_clock::time_point{}) {
+      return true;
+    }
+    const auto age = std::chrono::steady_clock::now() - lastPublishAt_;
+    return age <= std::chrono::milliseconds(5000);
   }
 
   void stop() {
@@ -1389,7 +1407,8 @@ class AsyncKeyerWorker {
       }
       const double temporalPreMs =
           elapsedMs(temporalStart, std::chrono::steady_clock::now());
-      postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs, keyed.status.metrics);
+      postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs,
+                       /*fusedPath=*/false, keyed.status.metrics);
       // Full-frame temporal EMA against the last published mask — the core
       // anti-flicker stabilizer. Skipped when the current mask collapsed (Fix 1
       // holds the last good pair instead), so a dropout is never smeared in.
@@ -1411,6 +1430,7 @@ class AsyncKeyerWorker {
           const auto now = std::chrono::steady_clock::now();
           const uint64_t publishNs = nowNs();
           keyerRate_.tick(now);
+          lastPublishAt_ = now;
           updateDropRateLocked(now);
           keyed.status.metrics.droppedFrames = droppedFrames_;
           keyed.status.metrics.skippedFrames = skippedFrames_;
@@ -1523,6 +1543,7 @@ class AsyncKeyerWorker {
   uint64_t skippedFrames_ = 0;
   RateMeter keyerRate_;
   std::chrono::steady_clock::time_point lastDropRateSample_{};
+  std::chrono::steady_clock::time_point lastPublishAt_{};
   uint64_t lastDropRateTotal_ = 0u;
   double droppedFramesPerSec_ = -1.0;
   bool hasPendingFrame_ = false;
@@ -1721,6 +1742,7 @@ void runFramePipeline(const Options &options,
   // between keyed and un-keyed frames. Windows-scoped: macOS keeps the tuned
   // hard-expiry behavior byte-identically.
   MaskRetention asyncMaskRetention;
+  AlphaMask lastGoodMask;
 #endif
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
@@ -1922,13 +1944,17 @@ void runFramePipeline(const Options &options,
             // no longer visibly turns off/on around the age gate.
             const MaskRetentionDecision retention = asyncMaskRetention.decide(
                 latestCameraFrame.timestampNs, latestPair->publishedAtNs,
-                maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs));
+                maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs),
+                keyerWorker.alive());
             const bool pairIsUsable = retention != MaskRetentionDecision::Passthrough;
 #else
             const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
 #endif
             if (pairIsUsable) {
               selectedPair = latestPair;
+#if defined(_WIN32)
+              lastGoodMask = selectedPair->mask;
+#endif
               frameForCompositor = &selectedPair->frame;
             } else {
               frameForCompositor = &latestCameraFrame;
@@ -1957,23 +1983,29 @@ void runFramePipeline(const Options &options,
                 // Confirmed-empty subject (Option A): the background stays
                 // composited on purpose - never report this as
                 // passthrough/stale_hold.
-                state.degradationStage = "no_subject";
+                setMeetingDegradationStage(state, "no_subject");
                 state.staleMaskActive = false;
               } else if (pairIsUsable) {
 #if defined(_WIN32)
                 if (retention == MaskRetentionDecision::StaleHold) {
-                  state.degradationStage = "stale_hold";
+                  setMeetingDegradationStage(state, "stale_hold");
                   state.staleMaskActive = true;
                 } else {
-                  state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                  setMeetingDegradationStage(
+                      state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                                 ? "fresh"
+                                 : "paired");
                   state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
                 }
 #else
-                state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                setMeetingDegradationStage(
+                    state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                               ? "fresh"
+                               : "paired");
                 state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
 #endif
               } else {
-                state.degradationStage = "passthrough";
+                setMeetingDegradationStage(state, "passthrough");
                 state.staleMaskActive = true;
               }
             }
@@ -1985,7 +2017,7 @@ void runFramePipeline(const Options &options,
             // reporting "passthrough" here while fused is on air is the bug.
             if (!g_fusedStepDownOverlapActive) {
               std::lock_guard<std::mutex> lock(state.mutex);
-              state.degradationStage = "passthrough";
+              setMeetingDegradationStage(state, "passthrough");
               state.staleMaskActive = false;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
               state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
@@ -2002,7 +2034,7 @@ void runFramePipeline(const Options &options,
           frameForCompositor = &latestCameraFrame;
           {
             std::lock_guard<std::mutex> lock(state.mutex);
-            state.degradationStage = "fresh";
+            setMeetingDegradationStage(state, "fresh");
             state.staleMaskActive = false;
             state.keyerMetrics.maskAgeAvgMs = -1.0;
           }
@@ -2015,7 +2047,7 @@ void runFramePipeline(const Options &options,
 #endif
         {
           std::lock_guard<std::mutex> lock(state.mutex);
-          state.degradationStage = "passthrough";
+          setMeetingDegradationStage(state, "passthrough");
           state.staleMaskActive = false;
           state.keyerMetrics.maskAgeAvgMs = -1.0;
         }
@@ -2062,13 +2094,17 @@ void runFramePipeline(const Options &options,
           // helper dedupes the passthrough streak by frame timestamp.
           const MaskRetentionDecision retention = asyncMaskRetention.decide(
               latestCameraFrame.timestampNs, latestPair->publishedAtNs,
-              maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs));
+              maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs),
+              keyerWorker.alive());
           const bool pairIsUsable = retention != MaskRetentionDecision::Passthrough;
 #else
           const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
 #endif
           if (pairIsUsable) {
             selectedPair = latestPair;
+#if defined(_WIN32)
+            lastGoodMask = selectedPair->mask;
+#endif
             frameForCompositor = &selectedPair->frame;
           } else {
             frameForCompositor = &latestCameraFrame;
@@ -2093,23 +2129,29 @@ void runFramePipeline(const Options &options,
             state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             if (pairIsUsable && latestPair->mask.emptyValid) {
               // Confirmed-empty subject (Option A): see the first block.
-              state.degradationStage = "no_subject";
+              setMeetingDegradationStage(state, "no_subject");
               state.staleMaskActive = false;
             } else if (pairIsUsable) {
 #if defined(_WIN32)
               if (retention == MaskRetentionDecision::StaleHold) {
-                state.degradationStage = "stale_hold";
+                setMeetingDegradationStage(state, "stale_hold");
                 state.staleMaskActive = true;
               } else {
-                state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                setMeetingDegradationStage(
+                    state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                               ? "fresh"
+                               : "paired");
                 state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
               }
 #else
-              state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+              setMeetingDegradationStage(
+                  state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                             ? "fresh"
+                             : "paired");
               state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
 #endif
             } else {
-              state.degradationStage = "passthrough";
+              setMeetingDegradationStage(state, "passthrough");
               state.staleMaskActive = true;
             }
           }
@@ -2213,7 +2255,7 @@ void runFramePipeline(const Options &options,
           std::lock_guard<std::mutex> lock(state.mutex);
           state.keyerMetrics.maskAgeMs = 0.0;
           state.keyerMetrics.maskAgeAvgMs = 0.0;
-          state.degradationStage = "fused";
+          setMeetingDegradationStage(state, "fused");
           state.staleMaskActive = false;
         } else {
           // Publish the failure instead of freezing silently (K-03): the
@@ -2331,8 +2373,12 @@ void runFramePipeline(const Options &options,
           // Backend via the matting factory (DirectML MODNet, or OpenVINO on
           // Intel GPU/NPU when compiled in) - the SAME factory as KeyerChain's
           // async keyer, so both sites always run the same backend.
-          static const std::unique_ptr<MattingKeyer> fusedKeyer =
-              createMattingKeyer(makeMattingBackendOptionsFromEnv(options.modelsDir));
+          static const std::unique_ptr<MattingKeyer> fusedKeyer = [&]() {
+            MattingBackendOptions backendOptions =
+                makeMattingBackendOptionsFromEnv(options.modelsDir);
+            backendOptions.loadInApply = false;
+            return createMattingKeyer(backendOptions);
+          }();
           const auto fusedNow = std::chrono::steady_clock::now();
           const bool governorAutoEnabled = autoDegradeEnabled();
           if (governorAutoEnabled) {
@@ -2439,6 +2485,35 @@ void runFramePipeline(const Options &options,
               }
             }
           }
+          if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
+              !fusedWarmupThread.joinable()) {
+            const KeyerStatus keyerStatus = fusedKeyer->status();
+            if (keyerStatus.fallbackActive &&
+                (keyerStatus.fallbackReason == "not_loaded" ||
+                 keyerStatus.fallbackReason == "loading")) {
+              fusedWarmupOutcome.store(0, std::memory_order_relaxed);
+              fusedWarmupBusy.store(true, std::memory_order_release);
+              MattingKeyer *const keyerForWarmup = fusedKeyer.get();
+              const std::string warmupMode = keyerSettings.performanceMode;
+              try {
+                fusedWarmupThread = std::thread([keyerForWarmup, warmupMode]() {
+                  bool warmupOk = false;
+                  try {
+                    warmupOk =
+                        keyerForWarmup->warmupForPerformanceMode(warmupMode);
+                  } catch (...) {
+                    warmupOk = false;
+                  }
+                  fusedWarmupOutcome.store(warmupOk ? 1 : -1,
+                                           std::memory_order_relaxed);
+                  fusedWarmupBusy.store(false, std::memory_order_release);
+                });
+              } catch (...) {
+                fusedWarmupBusy.store(false, std::memory_order_release);
+                fusedWarmupOutcome.store(-1, std::memory_order_relaxed);
+              }
+            }
+          }
           // The busy flag — not the handover phase — signals "the warmup
           // thread may still hold the fused keyer's mutex": a keyer disable
           // during an in-flight warmup resets the handover to Idle (and the
@@ -2477,9 +2552,9 @@ void runFramePipeline(const Options &options,
             selectedPair.reset();
             frameForCompositor = &latestCameraFrame;
             const GovernorOffCompositorInput offInput =
-                selectGovernorOffCompositorInput(!lastFusedRawMask.alpha.empty());
+                selectGovernorOffCompositorInput(!lastGoodMask.alpha.empty());
             if (offInput == GovernorOffCompositorInput::LastMask) {
-              fusedMask = lastFusedRawMask;
+              fusedMask = lastGoodMask;
               if (!(d3d11GuidedRefineAvailable() &&
                     guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                 guidedRefineMask(fusedMask, latestCameraFrame);
@@ -2504,8 +2579,9 @@ void runFramePipeline(const Options &options,
             {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.keyerDegraded = true;
-              state.degradationStage =
-                  fusedMask.emptyValid ? "background_only" : "keyer_off_hold";
+              setMeetingDegradationStage(
+                  state,
+                  fusedMask.emptyValid ? "background_only" : "keyer_off_hold");
               state.staleMaskActive = !fusedMask.emptyValid;
             }
             fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
@@ -2583,13 +2659,15 @@ void runFramePipeline(const Options &options,
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 fusedMask = std::move(fused.mask);
                 stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
+                lastGoodMask = fusedMask;
                 if (!(d3d11GuidedRefineAvailable() &&
                       guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                   guidedRefineMask(fusedMask, latestCameraFrame);
                 }
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
                   postprocessAlpha(fusedMask, lastFusedPublishedMask,
-                                   keyerSettings, 0.0, fused.status.metrics);
+                                   keyerSettings, 0.0, /*fusedPath=*/true,
+                                   fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
                 frameForCompositor = &latestCameraFrame;
@@ -2607,8 +2685,8 @@ void runFramePipeline(const Options &options,
                 // honest — a stale near-zero fps next to stage "fused" is
                 // exactly the mixed sample this guards against.
                 state.keyerMetrics.keyerFps = -1.0;
-                state.degradationStage =
-                    fusedMask.emptyValid ? "no_subject" : "fused";
+                setMeetingDegradationStage(
+                    state, fusedMask.emptyValid ? "no_subject" : "fused");
                 state.staleMaskActive = false;
               } else {
                 // The fused keyer cannot bridge the overlap (inference
@@ -2635,6 +2713,32 @@ void runFramePipeline(const Options &options,
             // disable seedProbe). Clears itself: the join-poll above reclaims
             // the thread the frame after its body finishes.
             g_fusedKeyerDegraded = true;
+            selectedPair.reset();
+            frameForCompositor = &latestCameraFrame;
+            if (!lastGoodMask.alpha.empty()) {
+              fusedMask = lastGoodMask;
+              if (!(d3d11GuidedRefineAvailable() &&
+                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+                guidedRefineMask(fusedMask, latestCameraFrame);
+              }
+              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+            } else {
+              fusedMask.width = latestCameraFrame.width;
+              fusedMask.height = latestCameraFrame.height;
+              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+              fusedMask.alpha.assign(
+                  static_cast<size_t>(fusedMask.width) * fusedMask.height, 0u);
+              fusedMask.emptyValid = true;
+            }
+            maskForCompositor = &fusedMask;
+            shouldRenderProgram = true;
+            {
+              std::lock_guard<std::mutex> lock(state.mutex);
+              setMeetingDegradationStage(
+                  state, fusedMask.emptyValid ? "background_only"
+                                              : "keyer_off_hold");
+              state.staleMaskActive = !fusedMask.emptyValid;
+            }
             fusedPipelineModeLabel = "async_lite";
           } else {
             downsampleLumaThumb(latestCameraFrame.rgba.data(),
@@ -2669,6 +2773,7 @@ void runFramePipeline(const Options &options,
                 // its edge to this specific frame; cadence-reused frames
                 // re-run the refine against their own (current) frame.
                 lastFusedRawMask = fusedMask;
+                lastGoodMask = fusedMask;
                 lastFusedInferredTsNs = latestCameraFrame.timestampNs;
                 lastFusedInferredLuma = currentFrameLuma;
                 // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
@@ -2686,7 +2791,8 @@ void runFramePipeline(const Options &options,
                 // for confirmed-empty mattes (nothing to shape).
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
                   postprocessAlpha(fusedMask, lastFusedPublishedMask,
-                                   keyerSettings, 0.0, fused.status.metrics);
+                                   keyerSettings, 0.0, /*fusedPath=*/true,
+                                   fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
                 frameForCompositor = &latestCameraFrame;
@@ -2707,8 +2813,8 @@ void runFramePipeline(const Options &options,
                 // The fused path owns this field and has no publish hop;
                 // never let the preserved-merge carry the async value.
                 state.keyerMetrics.keyerPublishToProgramMs = -1.0;
-                state.degradationStage =
-                    fusedMask.emptyValid ? "no_subject" : "fused";
+                setMeetingDegradationStage(
+                    state, fusedMask.emptyValid ? "no_subject" : "fused");
                 state.staleMaskActive = false;
               } else {
                 // Publish the failure instead of freezing silently (K-03): the
@@ -2743,6 +2849,7 @@ void runFramePipeline(const Options &options,
               if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
                 postprocessAlpha(fusedMask, lastFusedPublishedMask,
                                  keyerSettings, cadenceDecision.maskAgeMs,
+                                 /*fusedPath=*/true,
                                  reusedPostprocessMetrics);
                 lastFusedPublishedMask = fusedMask;
               }
@@ -2759,8 +2866,8 @@ void runFramePipeline(const Options &options,
                 state.keyerMetrics.maskPostprocessMs =
                     reusedPostprocessMetrics.maskPostprocessMs;
               }
-              state.degradationStage =
-                  fusedMask.emptyValid ? "no_subject" : "fused_reused";
+              setMeetingDegradationStage(
+                  state, fusedMask.emptyValid ? "no_subject" : "fused_reused");
               state.staleMaskActive = !fusedMask.emptyValid &&
                                       cadenceDecision.maskAgeMs >=
                                           keyerSettings.degradation.freshMaskAgeMs;
@@ -2773,6 +2880,7 @@ void runFramePipeline(const Options &options,
           fusedGovernor.reset();
           fusedCadence.reset();
           lastFusedRawMask = AlphaMask{};
+          lastGoodMask = AlphaMask{};
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};

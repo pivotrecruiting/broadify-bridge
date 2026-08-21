@@ -153,12 +153,14 @@ MattingBackendOptions makeMattingBackendOptionsFromEnv(std::string modelsDir) {
   options.forcedBackend = forcedBackend;
   options.openVinoDisabled = openVinoDisabled;
   options.openVinoDevice = openVinoDevice;
+  options.loadInApply = true;
   return options;
 }
 
 std::unique_ptr<MattingKeyer> createMattingKeyer(const MattingBackendOptions &options) {
   std::unique_ptr<MattingKeyer> modnet =
-      std::make_unique<ModnetKeyer>(ModnetKeyerOptions{options.modelsDir});
+      std::make_unique<ModnetKeyer>(
+          ModnetKeyerOptions{options.modelsDir, options.loadInApply});
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
   // Device probe: cheap relative to model compile, and the only reliable way
   // to see whether an OpenVINO-capable Intel GPU/NPU exists. A throwing probe

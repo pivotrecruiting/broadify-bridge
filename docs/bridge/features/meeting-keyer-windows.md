@@ -48,6 +48,7 @@ camera frame
 | `BROADIFY_MEETING_MASK_WORK_WIDTH` | `960` | Guided-refine/postprocess work width cap. 16:9 defaults to 960x540. |
 | `BROADIFY_MEETING_GUIDED_RADIUS` | `4` | Guided-filter radius for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_EPSILON` | `5e-4` | Guided-filter epsilon for D3D11 and CPU fallback. |
+| `BROADIFY_MEETING_GUIDED_COEFF_EMA` | `0.5` | D3D11 guided-filter coefficient EMA; `0` disables coefficient smoothing. |
 | `BROADIFY_MEETING_GPU_GUIDED` | `1` | Enables D3D11 guided refine; set `0` for CPU fallback. |
 | `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 1500 ms below 0.2% coverage. |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY` | unset | Forces legacy DirectML device 0 selection. |
@@ -66,7 +67,9 @@ camera frame
 - If memory pressure matters more than transition smoothness, restrict
   `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` to the expected modes. Excluding a
   tier means the helper will not synchronously build it from `apply()`; it will
-  keep the current prebuilt session.
+  keep the current prebuilt session. The default `all` builds three tier
+  sessions per keyer instance; with async and fused keyers active, that is two
+  instances.
 
 ## Status And Logs
 

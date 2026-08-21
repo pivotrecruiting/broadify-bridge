@@ -1,7 +1,9 @@
 #include "keyer/matting_backend.h"
+#include "keyer/modnet_keyer.h"
 
 #include <iostream>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -10,6 +12,7 @@ using broadify::meeting::expandOpenVinoDeviceSelection;
 using broadify::meeting::MattingBackendKind;
 using broadify::meeting::MattingBackendOptions;
 using broadify::meeting::parseForcedMattingBackend;
+using broadify::meeting::parseModnetPrebuildTierSizes;
 using broadify::meeting::shouldUseOpenVino;
 
 namespace {
@@ -130,6 +133,22 @@ int main() {
   }
 
   {
+    const std::set<uint32_t> all = parseModnetPrebuildTierSizes(nullptr);
+    ok &= expect(all.count(512u) == 1u && all.count(320u) == 1u &&
+                     all.count(256u) == 1u,
+                 "unset PREBUILD_TIERS prebuilds all runtime tiers");
+    const std::set<uint32_t> selected =
+        parseModnetPrebuildTierSizes("high_quality,performance");
+    ok &= expect(selected.count(512u) == 1u && selected.count(256u) == 1u &&
+                     selected.count(320u) == 0u,
+                 "PREBUILD_TIERS excludes omitted tiers without fallback rebuild");
+    const std::set<uint32_t> invalid = parseModnetPrebuildTierSizes("bogus");
+    ok &= expect(invalid.count(512u) == 1u && invalid.count(320u) == 1u &&
+                     invalid.count(256u) == 1u,
+                 "invalid PREBUILD_TIERS falls back to all tiers");
+  }
+
+  {
     // Factory wiring: without OpenVINO compiled in (this test binary) the
     // factory must return a working ModnetKeyer-backed instance whose apply()
     // reports the manifest-missing fallback for an empty models dir.
@@ -148,6 +167,27 @@ int main() {
     ok &= expect(result.status.fallbackReason == "manifest_missing",
                  "empty models dir reports manifest_missing");
     ok &= expect(result.mask.alpha.empty(), "fallback result carries no mask");
+  }
+
+  {
+    MattingBackendOptions options = optionsWith(MattingBackendKind::Auto, false);
+    options.loadInApply = false;
+    std::unique_ptr<broadify::meeting::MattingKeyer> keyer =
+        createMattingKeyer(options);
+    broadify::meeting::VideoFrame frame;
+    frame.width = 4u;
+    frame.height = 4u;
+    frame.timestampNs = 1u;
+    frame.rgba.assign(static_cast<size_t>(frame.width) * frame.height * 4u,
+                      128u);
+    const broadify::meeting::KeyerResult result =
+        keyer->apply(frame, broadify::meeting::KeyerSettings{});
+    ok &= expect(result.status.fallbackActive,
+                 "async first load reports fallback before warmup");
+    ok &= expect(result.status.fallbackReason == "loading",
+                 "async first load returns loading without synchronous load");
+    ok &= expect(result.mask.alpha.empty(),
+                 "async first load does not produce a mask while loading");
   }
 
   if (!ok) {

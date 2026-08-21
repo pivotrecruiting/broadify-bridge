@@ -714,7 +714,7 @@ struct GuidedUniforms {
   uint32_t radius;
   uint32_t horizontal;  // box blur direction
   float epsilon;
-  float pad0;
+  float coeffEma;
   float pad1;
   float pad2;
 };
@@ -726,7 +726,7 @@ cbuffer GuidedUniforms : register(b0) {
   uint radius;
   uint horizontal;
   float epsilon;
-  float pad0;
+  float coeffEma;
   float pad1;
   float pad2;
 };
@@ -797,6 +797,14 @@ void buildAb(uint3 gid : SV_DispatchThreadID) {
   outRG[gid.xy] = float2(a, mean.y - a * mean.x);
 }
 
+[numthreads(8, 8, 1)]
+void blendAb(uint3 gid : SV_DispatchThreadID) {
+  if (gid.x >= workW || gid.y >= workH) return;
+  const float2 current = srcA[gid.xy];
+  const float2 previous = srcB[gid.xy];
+  outRG[gid.xy] = previous * (1.0 - coeffEma) + current * coeffEma;
+}
+
 // q = a*I + b -> uint8. srcA = original (I,p), srcB = mean(a,b).
 [numthreads(8, 8, 1)]
 void buildOutput(uint3 gid : SV_DispatchThreadID) {
@@ -834,6 +842,7 @@ struct GuidedContext {
   ComPtr<ID3D11ComputeShader> csBuildCorr;
   ComPtr<ID3D11ComputeShader> csBoxBlur;
   ComPtr<ID3D11ComputeShader> csBuildAb;
+  ComPtr<ID3D11ComputeShader> csBlendAb;
   ComPtr<ID3D11ComputeShader> csBuildOutput;
   ComPtr<ID3D11Buffer> uniforms;
   // Work-grid float2 planes: A holds (I,p) for the whole pass chain.
@@ -846,6 +855,7 @@ struct GuidedContext {
   Plane planeT1;
   Plane planeT2;
   Plane planeT3;
+  Plane planePrevAb;
   uint32_t planeW = 0;
   uint32_t planeH = 0;
   LayerTexture guide;
@@ -857,6 +867,8 @@ struct GuidedContext {
   size_t outSize = 0;
   int radius = 8;
   float epsilon = 1.0e-3f;
+  float coeffEma = 0.5f;
+  bool hasPrevAb = false;
 };
 
 GuidedContext &guidedContext() {
@@ -924,6 +936,7 @@ bool initializeGuidedContext() {
       !compileGuidedShader(base.device.Get(), "buildCorr", &ctx.csBuildCorr) ||
       !compileGuidedShader(base.device.Get(), "boxBlur", &ctx.csBoxBlur) ||
       !compileGuidedShader(base.device.Get(), "buildAb", &ctx.csBuildAb) ||
+      !compileGuidedShader(base.device.Get(), "blendAb", &ctx.csBlendAb) ||
       !compileGuidedShader(base.device.Get(), "buildOutput", &ctx.csBuildOutput)) {
     return false;
   }
@@ -942,6 +955,9 @@ bool initializeGuidedContext() {
   // Apple-parity defaults: radius 4 + epsilon 5e-4. Env-overridable for tuning.
   ctx.epsilon = static_cast<float>(
       guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 5.0e-4));
+  ctx.coeffEma = static_cast<float>(
+      std::clamp(guidedEnvDouble("BROADIFY_MEETING_GUIDED_COEFF_EMA", 0.5),
+                 0.0, 1.0));
 
   ctx.available = true;
   logCompositorEvent("guided_enabled",
@@ -985,18 +1001,21 @@ bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
     ctx.planeT1 = {};
     ctx.planeT2 = {};
     ctx.planeT3 = {};
+    ctx.planePrevAb = {};
     ctx.outBuffer.Reset();
     ctx.outUav.Reset();
     ctx.outStaging.clear();
     ctx.outRing.reset();
     ctx.outSize = 0;
+    ctx.hasPrevAb = false;
     ctx.planeW = workW;
     ctx.planeH = workH;
   }
   if (!ensureGuidedPlane(ctx.planeA, workW, workH) ||
       !ensureGuidedPlane(ctx.planeT1, workW, workH) ||
       !ensureGuidedPlane(ctx.planeT2, workW, workH) ||
-      !ensureGuidedPlane(ctx.planeT3, workW, workH)) {
+      !ensureGuidedPlane(ctx.planeT3, workW, workH) ||
+      !ensureGuidedPlane(ctx.planePrevAb, workW, workH)) {
     return false;
   }
   const size_t strideW = (static_cast<size_t>(workW) + 3u) & ~static_cast<size_t>(3u);
@@ -1070,6 +1089,7 @@ void setGuidedUniforms(uint32_t workW, uint32_t workH, uint32_t horizontal) {
   uniforms.radius = static_cast<uint32_t>(ctx.radius);
   uniforms.horizontal = horizontal;
   uniforms.epsilon = ctx.epsilon;
+  uniforms.coeffEma = ctx.coeffEma;
   base.context->UpdateSubresource(ctx.uniforms.Get(), 0, nullptr, &uniforms, 0, 0);
   ID3D11Buffer *cbs[1] = {ctx.uniforms.Get()};
   base.context->CSSetConstantBuffers(0, 1, cbs);
@@ -1141,8 +1161,21 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   guidedDispatch(ctx.csBuildAb.Get(), nullptr, nullptr, ctx.planeT2.srv.Get(),
                  ctx.planeT1.srv.Get(), ctx.planeT3.uav.Get(), nullptr, workW,
                  workH);
+  const bool useCoeffEma =
+      ctx.coeffEma > 0.0f && ctx.coeffEma < 1.0f && ctx.hasPrevAb;
+  if (useCoeffEma) {
+    guidedDispatch(ctx.csBlendAb.Get(), nullptr, nullptr, ctx.planeT3.srv.Get(),
+                   ctx.planePrevAb.srv.Get(), ctx.planeT2.uav.Get(), nullptr,
+                   workW, workH);
+    base.context->CopyResource(ctx.planePrevAb.tex.Get(), ctx.planeT2.tex.Get());
+    // T2 now carries the EMA'd coefficient plane for the blur below.
+  } else {
+    base.context->CopyResource(ctx.planePrevAb.tex.Get(), ctx.planeT3.tex.Get());
+    ctx.hasPrevAb = true;
+  }
   // T2 = mean(a, b)
-  guidedBlur(ctx.planeT3, ctx.planeT1, ctx.planeT2, workW, workH);
+  guidedBlur(useCoeffEma ? ctx.planeT2 : ctx.planeT3, ctx.planeT1,
+             ctx.planeT2, workW, workH);
   // bytes = q = a*I + b
   setGuidedUniforms(workW, workH, 0u);
   guidedDispatch(ctx.csBuildOutput.Get(), nullptr, nullptr,

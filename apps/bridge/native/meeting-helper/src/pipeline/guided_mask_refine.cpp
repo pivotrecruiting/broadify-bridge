@@ -24,8 +24,13 @@ namespace {
 // Radius (px at working res) must SPAN the mask's edge uncertainty, else the
 // filter merely reproduces the input. Epsilon (on 0..1 signals) sets stiffness:
 // smaller snaps harder to strong guide edges. Both overridable for field tuning.
+#if defined(_WIN32)
 constexpr int kGuidedRadiusDefault = 4;
 constexpr double kGuidedEpsilonDefault = 5.0e-4;
+#else
+constexpr int kGuidedRadiusDefault = 8;
+constexpr double kGuidedEpsilonDefault = 1.0e-3;
+#endif
 
 double envDouble(const char *name, double fallback) {
   const char *raw = std::getenv(name);

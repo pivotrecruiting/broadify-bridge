@@ -276,7 +276,8 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.gpuAdapter = status.gpuAdapter;
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;
-  state.keyerDegraded = status.fallbackActive;
+  state.keyerDegraded =
+      status.fallbackActive && status.fallbackReason != "keyer_disabled";
   state.modelHashOk = status.modelHashOk;
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;
@@ -289,6 +290,16 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   mergedMetrics.programFps = state.keyerMetrics.programFps;
   mergedMetrics.cameraTextureUploads = state.keyerMetrics.cameraTextureUploads;
   state.keyerMetrics = mergedMetrics;
+}
+
+void setMeetingDegradationStage(MeetingState &state, const std::string &stage) {
+  static std::string lastLoggedStage;
+  if (stage != lastLoggedStage) {
+    lastLoggedStage = stage;
+    std::cout << "{\"type\":\"keyer_degradation_stage_change\","
+                 "\"degradation_stage\":\"" << stage << "\"}" << std::endl;
+  }
+  state.degradationStage = stage;
 }
 
 }  // namespace broadify::meeting

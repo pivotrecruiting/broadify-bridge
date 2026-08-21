@@ -27,6 +27,7 @@ struct MattingBackendOptions {
   // Expanded OpenVINO device selection string (see
   // expandOpenVinoDeviceSelection), e.g. "AUTO:NPU,GPU,CPU" or "GPU".
   std::string openVinoDevice;
+  bool loadInApply = true;
 };
 
 // Matting keyers additionally expose their status without running a frame:
