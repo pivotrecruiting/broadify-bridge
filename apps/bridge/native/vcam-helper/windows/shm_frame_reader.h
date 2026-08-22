@@ -33,6 +33,8 @@ class ShmFrameReader {
 
   void start();
   void stop();
+  bool createServiceRing();
+  void closeServiceRing();
 
   bool copyLatestIfNew(uint64_t lastSequence, RawFrame &out) const;
   uint64_t staleAgeMs() const;
@@ -65,6 +67,13 @@ class ShmFrameReader {
   void *mappingHandle_ = nullptr;
   void *mappingMemory_ = nullptr;
   void *eventHandle_ = nullptr;
+  void *ownerControlHandle_ = nullptr;
+  void *ownerControlMemory_ = nullptr;
+  void *ownerMappingHandle_ = nullptr;
+  void *ownerMappingMemory_ = nullptr;
+  void *ownerEventHandle_ = nullptr;
+  size_t ownerRingBytes_ = 0;
+  bool ownerLogEmitted_ = false;
   size_t ringBytes_ = 0;
   uint64_t lastSequence_ = 0;
   uint64_t writerGeneration_ = 0;
