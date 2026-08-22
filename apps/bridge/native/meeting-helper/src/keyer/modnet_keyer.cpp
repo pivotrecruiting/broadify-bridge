@@ -20,6 +20,7 @@
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -395,6 +396,136 @@ class ModnetKeyer::Impl {
     return result;
 #endif
   }
+
+#if defined(_WIN32)
+  KeyerResult applyGpu(const GpuCameraFrame &cameraFrame,
+                       const GpuPreprocessSlot &preprocessSlot,
+                       GpuFrameSlot frameSlot,
+                       const ModnetLetterboxMapping &letterbox,
+                       const KeyerSettings &settings) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    KeyerResult result;
+#if BROADIFY_ENABLE_MODNET
+    if (!loaded_ && !options_.loadInApply) {
+      if (!loadAttempted_) {
+        setFallback("loading");
+      }
+      result.status = status_;
+      return result;
+    }
+    if (!ensureLoaded()) {
+      result.status = status_;
+      return result;
+    }
+    status_.backend = "modnet";
+    status_.qualityMode = settings.qualityMode;
+    status_.metrics = KeyerMetrics{};
+    const uint32_t requested = modnetInputSizeForMode(settings.performanceMode);
+    auto sessionIt = tierSessions_.find(requested);
+    if (sessionIt != tierSessions_.end()) {
+      activeSession_ = sessionIt->second.session.get();
+      inputWidth_ = inputHeight_ = requested;
+      status_.probeInferenceMs = sessionIt->second.probeMs;
+    }
+    const KeyerIoBindingDecision possible = decideKeyerIoBinding(
+        meetingGpuResidentEnabled(), status_.provider == "directml",
+        dmlApiAvailable_, preprocessSlot.d3d12Buffer != nullptr, true);
+    if (!possible.useIoBinding || activeSession_ == nullptr) {
+      if (!ioBindingFallbackLogged_) {
+        ioBindingFallbackLogged_ = true;
+        std::cout << "{\"type\":\"keyer_gpu_binding_unavailable\",\"reason\":\""
+                  << possible.reason << "\"}" << std::endl;
+      }
+      setFallback(possible.reason.empty() ? "session_not_ready" : possible.reason);
+      result.status = status_;
+      return result;
+    }
+    const OrtDmlApi *dmlApi = nullptr;
+    OrtStatus *apiStatus = Ort::GetApi().GetExecutionProviderApi(
+        "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&dmlApi));
+    if (apiStatus != nullptr) {
+      Ort::GetApi().ReleaseStatus(apiStatus);
+      dmlApi = nullptr;
+    }
+    void *inputAllocation = nullptr;
+    try {
+      const auto runStart = std::chrono::steady_clock::now();
+      if (dmlApi == nullptr ||
+          dmlApi->CreateGPUAllocationFromD3DResource(
+              preprocessSlot.d3d12Buffer.Get(), &inputAllocation) != nullptr) {
+        throw std::runtime_error("input_allocation_failed");
+      }
+      std::array<int64_t, 4> inputShape = {
+          1, 3, static_cast<int64_t>(inputHeight_),
+          static_cast<int64_t>(inputWidth_)};
+      Ort::MemoryInfo dmlMemory("Dml", OrtDeviceAllocator, 0,
+                                OrtMemTypeDefault);
+      Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
+          dmlMemory, static_cast<float *>(inputAllocation),
+          static_cast<size_t>(3u) * inputWidth_ * inputHeight_,
+          inputShape.data(), inputShape.size());
+      Ort::IoBinding binding(*activeSession_);
+      binding.BindInput(inputNames_[0], inputTensor);
+      binding.BindOutput(outputNames_[0], &dmlMemory);
+      GpuContextWin &gpu = GpuContextWin::shared();
+      if (!gpu.waitOnD3D12(frameSlot.fenceValue)) {
+        throw std::runtime_error("fence_wait_failed");
+      }
+      activeSession_->Run(Ort::RunOptions{nullptr}, binding);
+      if (!gpu.signalFromD3D12(frameSlot.fenceValue + 1u)) {
+        throw std::runtime_error("fence_signal_failed");
+      }
+      const std::vector<Ort::Value> outputs = binding.GetOutputValues();
+      if (outputs.empty() || !outputs[0].IsTensor()) {
+        throw std::runtime_error("output_binding_failed");
+      }
+      const auto runEnd = std::chrono::steady_clock::now();
+      status_.activeKeyer = "modnet";
+      status_.fallbackActive = false;
+      status_.fallbackReason.clear();
+      status_.keyerIoBinding = true;
+      status_.inferenceMs = elapsedMs(runStart, runEnd);
+      status_.metrics.preprocessMs = -1.0;
+      status_.metrics.inferenceStageMs = status_.inferenceMs;
+      status_.metrics.sessionRunMs = status_.inferenceMs;
+      status_.metrics.maskWidth = inputWidth_;
+      status_.metrics.maskHeight = inputHeight_;
+      // WP3 keeps the alpha GPU-resident for the compositor path; CPU alpha is
+      // intentionally absent here.
+      result.mask.width = cameraFrame.width;
+      result.mask.height = cameraFrame.height;
+      result.mask.timestampNs = cameraFrame.timestampNs;
+      result.status = status_;
+      if (dmlApi != nullptr && inputAllocation != nullptr) {
+        dmlApi->FreeGPUAllocation(inputAllocation);
+      }
+      (void)letterbox;
+      return result;
+    } catch (...) {
+      if (dmlApi != nullptr && inputAllocation != nullptr) {
+        dmlApi->FreeGPUAllocation(inputAllocation);
+      }
+      if (!ioBindingFallbackLogged_) {
+        ioBindingFallbackLogged_ = true;
+        std::cout << "{\"type\":\"keyer_gpu_binding_unavailable\",\"reason\":\"io_binding_failed\"}"
+                  << std::endl;
+      }
+      setFallback("io_binding_failed");
+      result.status = status_;
+      return result;
+    }
+#else
+    (void)cameraFrame;
+    (void)preprocessSlot;
+    (void)frameSlot;
+    (void)letterbox;
+    (void)settings;
+    setFallback("onnxruntime_disabled");
+    result.status = status_;
+    return result;
+#endif
+  }
+#endif
 
   KeyerStatus status() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -779,6 +910,17 @@ ModnetKeyer::~ModnetKeyer() = default;
 KeyerResult ModnetKeyer::apply(const VideoFrame &input, const KeyerSettings &settings) {
   return impl_->apply(input, settings);
 }
+
+#if defined(_WIN32)
+KeyerResult ModnetKeyer::applyGpu(const GpuCameraFrame &cameraFrame,
+                                  const GpuPreprocessSlot &preprocessSlot,
+                                  GpuFrameSlot frameSlot,
+                                  const ModnetLetterboxMapping &letterbox,
+                                  const KeyerSettings &settings) {
+  return impl_->applyGpu(cameraFrame, preprocessSlot, frameSlot, letterbox,
+                         settings);
+}
+#endif
 
 KeyerStatus ModnetKeyer::status() const {
   return impl_->status();

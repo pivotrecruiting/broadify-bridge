@@ -2,6 +2,9 @@
 
 #include "keyer/keyer.h"
 #include "keyer/matting_backend.h"
+#if defined(_WIN32)
+#include "compose/gpu_preprocess.h"
+#endif
 
 #include <cstdint>
 #include <memory>
@@ -21,6 +24,13 @@ class ModnetKeyer : public MattingKeyer {
   ~ModnetKeyer() override;
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override;
+#if defined(_WIN32)
+  KeyerResult applyGpu(const GpuCameraFrame &cameraFrame,
+                       const GpuPreprocessSlot &preprocessSlot,
+                       GpuFrameSlot frameSlot,
+                       const ModnetLetterboxMapping &letterbox,
+                       const KeyerSettings &settings);
+#endif
   KeyerStatus status() const override;
   // Warm-handover entry (see MattingKeyer): builds/warms the session for the
   // mode's input size on the calling thread. Thread-safe against apply() and

@@ -19,6 +19,7 @@
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
 #include "compose/gpu_context_win.h"
+#include "compose/gpu_preprocess.h"
 #include "pipeline/mask_retention.h"
 #include "pipeline/tier_handover.h"
 #endif
@@ -37,10 +38,14 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+#if defined(_WIN32)
+#include <mfapi.h>
+#endif
 
 namespace broadify::meeting {
 namespace {
@@ -1721,6 +1726,11 @@ void runFramePipeline(const Options &options,
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
   VideoFrame latestCameraFrame;
+#if defined(_WIN32)
+  GpuCameraFrame latestGpuCameraFrame;
+  uint64_t lastGpuCameraTimestampNs = 0u;
+  GpuPreprocessorWin gpuPreprocessor;
+#endif
   VideoFrame latestPipFrame;
   uint64_t lastPipCameraTimestampNs = 0u;
   uint64_t lastCameraTimestampNs = 0u;
@@ -1831,6 +1841,15 @@ void runFramePipeline(const Options &options,
       const bool hasNewCameraFrame = runtime.cameraRunning &&
           camera.copyLatestFrameIfNew(lastCameraTimestampNs, latestCameraFrame) &&
           !latestCameraFrame.rgba.empty();
+#if defined(_WIN32)
+      const bool hasNewGpuCameraFrame = runtime.cameraRunning &&
+          meetingGpuResidentEnabled() &&
+          camera.copyLatestGpuFrameIfNew(lastGpuCameraTimestampNs,
+                                         latestGpuCameraFrame) &&
+          latestGpuCameraFrame.texture != nullptr;
+#else
+      const bool hasNewGpuCameraFrame = false;
+#endif
       if (hasNewCameraFrame) {
         lastCameraTimestampNs = latestCameraFrame.timestampNs;
         lastCameraFrameAt = programStart;
@@ -1841,9 +1860,25 @@ void runFramePipeline(const Options &options,
           state.cameraStalled = false;
           cameraStallReported = false;
         }
+#if defined(_WIN32)
+      } else if (hasNewGpuCameraFrame) {
+        lastGpuCameraTimestampNs = latestGpuCameraFrame.timestampNs;
+        lastCameraFrameAt = programStart;
+        cameraWatchdogStartAt = programStart;
+        if (cameraStallReported) {
+          std::cout << "{\"type\":\"camera_recovered\"}" << std::endl;
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.cameraStalled = false;
+          cameraStallReported = false;
+        }
+#endif
       } else if (!runtime.cameraRunning) {
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
+#if defined(_WIN32)
+        latestGpuCameraFrame = GpuCameraFrame{};
+        lastGpuCameraTimestampNs = 0u;
+#endif
         lastCameraFrameAt = std::chrono::steady_clock::time_point{};
         cameraWatchdogStartAt = std::chrono::steady_clock::time_point{};
         cameraStallReported = false;
@@ -1892,6 +1927,11 @@ void runFramePipeline(const Options &options,
         lastPipCameraTimestampNs = 0u;
       }
       const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
+#if defined(_WIN32)
+      const bool hasGpuCameraFrame = runtime.cameraRunning &&
+          latestGpuCameraFrame.texture != nullptr &&
+          latestGpuCameraFrame.timestampNs != 0u;
+#endif
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
       const VideoFrame *frameForCompositor = nullptr;
       std::shared_ptr<const PairedKeyerFrame> selectedPair;
@@ -2234,6 +2274,53 @@ void runFramePipeline(const Options &options,
           }
         }
       }
+
+#if defined(_WIN32)
+      if (gpuPipelineEnabled() && fusedKeyerWorkDue && !hasCameraFrame &&
+          hasGpuCameraFrame && snapshot.keyerEnabled) {
+        static ModnetKeyer gpuResidentKeyer(
+            ModnetKeyerOptions{options.modelsDir, false});
+        GpuContextWin &gpu = GpuContextWin::shared();
+        GpuFrameSlot gpuSlot = gpu.frameRing().acquireNext();
+        latestGpuCameraFrame.fenceValue = gpuSlot.fenceValue;
+        const uint32_t tensorSize =
+            modnetInputSizeForMode(keyerSettings.performanceMode);
+        const ModnetLetterboxMapping letterbox = modnetLetterboxMapping(
+            latestGpuCameraFrame.width, latestGpuCameraFrame.height,
+            tensorSize, tensorSize);
+        const bool nv12 = IsEqualGUID(latestGpuCameraFrame.subtype,
+                                      MFVideoFormat_NV12);
+        const bool yuy2 = IsEqualGUID(latestGpuCameraFrame.subtype,
+                                      MFVideoFormat_YUY2);
+        const bool preprocessOk =
+            (nv12 || yuy2) &&
+            gpuPreprocessor.preprocess(
+                latestGpuCameraFrame.texture.Get(),
+                latestGpuCameraFrame.subresourceIndex,
+                nv12 ? GpuCameraFormat::Nv12 : GpuCameraFormat::Yuy2,
+                latestGpuCameraFrame.width, latestGpuCameraFrame.height,
+                tensorSize, letterbox, gpuSlot);
+        if (preprocessOk) {
+          const GpuPreprocessSlot *preprocessSlot =
+              gpuPreprocessor.slot(gpuSlot.index);
+          if (preprocessSlot != nullptr) {
+            KeyerResult fused = gpuResidentKeyer.applyGpu(
+                latestGpuCameraFrame, *preprocessSlot, gpuSlot, letterbox,
+                keyerSettings);
+            updateMeetingKeyerStatus(state, fused.status);
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.gpuResident = gpu.telemetry().available;
+            state.gpuCapture = "dxgi";
+            state.keyerMetrics.maskAgeMs = 0.0;
+            state.keyerMetrics.maskAgeAvgMs = 0.0;
+          }
+        } else {
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.gpuCapture = "dxgi";
+          state.gpuResident = gpu.telemetry().available;
+        }
+      }
+#endif
 
       // Fused synchronous GPU keyer: key the CURRENT frame now (mask age 0) via
       // the native CoreML keyer, overriding the async selection. Falls back to
