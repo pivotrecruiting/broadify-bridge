@@ -80,6 +80,7 @@ struct MeetingState {
   bool keyerEnabled = false;
   bool framebusRunning = false;
   bool vcamRawRunning = true;
+  std::string vcamTransport = "tcp";
   int previewClientCount = 0;
   int vcamClientCount = 0;
   bool graphicsDirty = true;

@@ -3,6 +3,7 @@
 #include "capture/camera_source.h"
 #include "common/options.h"
 #include "preview/preview_frame_store.h"
+#include "preview/vcam_shm_ring_win.h"
 #include "state/meeting_state.h"
 
 #include <atomic>
@@ -31,6 +32,7 @@ void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      VcamShmRingWin *vcamShm,
                       MeetingRecorder &recorder,
                       std::atomic<bool> &running);
 

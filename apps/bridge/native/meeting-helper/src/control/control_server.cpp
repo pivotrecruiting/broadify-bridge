@@ -774,7 +774,8 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.vcamRawRunning = true;
     markProgramDirty(state);
-    return okResponse(id, "{\"enabled\":true,\"running\":true}");
+    return okResponse(id, std::string("{\"enabled\":true,\"running\":true,\"transport\":\"") +
+                              jsonEscape(state.vcamTransport) + "\"}");
   }
 
   if (method == "output.vcam.raw.stop") {
@@ -782,7 +783,8 @@ std::string handleRpc(const std::string &line,
     std::lock_guard<std::mutex> lock(state.mutex);
     state.vcamRawRunning = false;
     markProgramDirty(state);
-    return okResponse(id, "{\"enabled\":true,\"running\":false}");
+    return okResponse(id, std::string("{\"enabled\":true,\"running\":false,\"transport\":\"") +
+                              jsonEscape(state.vcamTransport) + "\"}");
   }
 
   if (method == "output.framebus.configure") {
@@ -807,6 +809,7 @@ std::string handleRpc(const std::string &line,
     std::ostringstream result;
     result << "{\"active\":" << (vcam.active ? "true" : "false")
            << ",\"supported\":" << (vcam.supported ? "true" : "false")
+           << ",\"transport\":\"" << jsonEscape(vcam.transport) << "\""
            << ",\"last_error\":"
            << (vcam.lastError.empty() ? "null"
                                       : "\"" + jsonEscape(vcam.lastError) + "\"")

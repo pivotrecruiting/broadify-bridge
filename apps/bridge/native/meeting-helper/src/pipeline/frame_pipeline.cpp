@@ -22,6 +22,7 @@
 #endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
+#include "util/pixel_swizzle.h"
 #include "util/win_qos.h"
 
 #include <algorithm>
@@ -617,6 +618,7 @@ struct PipelineRuntimeState {
   bool framebusRunning = false;
   int previewClients = 0;
   int vcamClients = 0;
+  std::string vcamTransport = "tcp";
   bool programDirty = false;
   bool graphicsDirty = false;
   uint64_t programRevision = 0;
@@ -1724,6 +1726,7 @@ void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      VcamShmRingWin *vcamShm,
                       MeetingRecorder &recorder,
                       std::atomic<bool> &running) {
 #if defined(_WIN32)
@@ -1771,6 +1774,7 @@ void runFramePipeline(const Options &options,
 #endif
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
+  std::vector<uint8_t> vcamBgraFrame;
   auto lastRenderStartAt = std::chrono::steady_clock::time_point{};
   while (running.load()) {
     PipelineRuntimeState runtime;
@@ -1783,6 +1787,7 @@ void runFramePipeline(const Options &options,
       runtime.framebusRunning = state.framebusRunning;
       runtime.previewClients = state.previewClientCount;
       runtime.vcamClients = state.vcamClientCount;
+      runtime.vcamTransport = state.vcamTransport;
       runtime.programDirty = state.programDirty;
       runtime.graphicsDirty = state.graphicsDirty;
       runtime.programRevision = state.programRevision;
@@ -3098,6 +3103,16 @@ void runFramePipeline(const Options &options,
         previewFrames.publish(options.width, options.height, programFrame.data(), programFrame.size());
         std::lock_guard<std::mutex> lock(state.mutex);
         ++state.publishedPreviewFrames;
+      }
+
+      if (vcamShm != nullptr && runtime.vcamTransport == "shm" &&
+          runtime.vcamClients > 0 && shouldRenderProgram && !programFrame.empty()) {
+        vcamBgraFrame.resize(programFrame.size());
+        swizzleRgbaToBgra(programFrame.data(), vcamBgraFrame.data(),
+                          programFrame.size() / 4u);
+        vcamShm->publishBgra(
+            options.width, options.height, vcamBgraFrame.data(), vcamBgraFrame.size(),
+            hasCameraFrame ? latestCameraFrame.timestampNs : nowNs());
       }
 
       const auto programEnd = std::chrono::steady_clock::now();

@@ -10,6 +10,7 @@
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
+#include "preview/vcam_shm_ring_win.h"
 #include "recorder/meeting_recorder.h"
 #include "output/vcam_controller.h"
 #include "state/meeting_state.h"
@@ -143,6 +144,18 @@ void printEvent(const std::string &json) {
   // Mirrored into the --event-log sidecar: on macOS the `open`-based launch
   // swallows stdout, so the sidecar is what the bridge can actually read.
   emitHelperEvent(json);
+}
+
+std::string requestedVcamTransport() {
+#if defined(_WIN32)
+  const char *value = std::getenv("BROADIFY_MEETING_VCAM_TRANSPORT");
+  if (value != nullptr && std::string(value) == "tcp") {
+    return "tcp";
+  }
+  return "shm";
+#else
+  return "tcp";
+#endif
 }
 
 #if BROADIFY_ENABLE_MODNET
@@ -338,6 +351,7 @@ int main(int argc, char **argv) {
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
+  VcamShmRingWin vcamShm;
   MeetingRecorder recorder;
 
   std::promise<void> controlListening;
@@ -390,10 +404,37 @@ int main(int argc, char **argv) {
   }
 #endif
 
-  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(recorder), std::ref(g_running));
-  std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
-  std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
+  std::string selectedVcamTransport = requestedVcamTransport();
+#if defined(_WIN32)
+  if (selectedVcamTransport == "shm") {
+    const VcamShmCreateResult shm =
+        vcamShm.create(options.width, options.height, options.fps, 1u);
+    if (!shm.ok || !shm.globalNamespace) {
+      std::string reason = shm.reason.empty() ? "mapping_unavailable" : shm.reason;
+      printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
+                 jsonEscape(reason) + "\"}");
+      selectedVcamTransport = "tcp";
+      vcamShm.close();
+    } else {
+      printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"global_mapping_created\"}");
+    }
+  } else {
+    printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"env\"}");
+  }
+#endif
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamTransport = selectedVcamTransport;
+  }
+  setVirtualCameraTransport(selectedVcamTransport);
+
+  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), &vcamShm, std::ref(recorder), std::ref(g_running));
+  std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
+  std::thread vcamRaw;
+  if (selectedVcamTransport == "tcp") {
+    vcamRaw = std::thread(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
+  }
   std::thread control(
       runControlServer,
       options.controlSocket,
@@ -411,6 +452,7 @@ int main(int argc, char **argv) {
   ready << "{\"type\":\"ready\",\"framebus\":\"" << jsonEscape(options.framebusName)
         << "\",\"preview_port\":" << options.previewPort
         << ",\"vcam_frame_port\":" << options.vcamFramePort
+        << ",\"vcam_transport\":\"" << jsonEscape(selectedVcamTransport) << "\""
         << ",\"control_socket\":\"" << jsonEscape(options.controlSocket) << "\"}";
   printEvent(ready.str());
 
@@ -449,7 +491,9 @@ int main(int argc, char **argv) {
   // g_running; joining them would hang forever (the historical reason this
   // helper survived every shutdown). Their sockets are closed by the OS.
   preview.detach();
-  vcamRaw.detach();
+  if (vcamRaw.joinable()) {
+    vcamRaw.detach();
+  }
   control.detach();
   // Name the exit path: silent code-0 exits were undiagnosable (the `open`
   // wrapper always reports 0 to the bridge whatever ended the app).
