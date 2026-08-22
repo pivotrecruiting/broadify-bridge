@@ -1,6 +1,9 @@
 #pragma once
 
 #include "keyer/keyer.h"
+#if defined(_WIN32)
+#include "compose/gpu_preprocess.h"
+#endif
 
 #include <chrono>
 #include <memory>
@@ -64,6 +67,24 @@ class AsyncModelLoadRetryGate {
 class MattingKeyer : public Keyer {
  public:
   virtual KeyerStatus status() const = 0;
+#if defined(_WIN32)
+  virtual KeyerResult applyGpu(const GpuCameraFrame &cameraFrame,
+                               const GpuPreprocessSlot &preprocessSlot,
+                               GpuFrameSlot frameSlot,
+                               const ModnetLetterboxMapping &letterbox,
+                               const KeyerSettings &settings) {
+    (void)cameraFrame;
+    (void)preprocessSlot;
+    (void)frameSlot;
+    (void)letterbox;
+    (void)settings;
+    KeyerResult result;
+    result.status = status();
+    result.status.fallbackActive = true;
+    result.status.fallbackReason = "gpu_entry_unavailable";
+    return result;
+  }
+#endif
 
   // Warm-handover entry (make-before-break tier step-up): ensure the
   // inference session for the given performance mode ("high_quality" |

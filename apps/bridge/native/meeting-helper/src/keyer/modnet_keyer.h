@@ -29,7 +29,7 @@ class ModnetKeyer : public MattingKeyer {
                        const GpuPreprocessSlot &preprocessSlot,
                        GpuFrameSlot frameSlot,
                        const ModnetLetterboxMapping &letterbox,
-                       const KeyerSettings &settings);
+                       const KeyerSettings &settings) override;
 #endif
   KeyerStatus status() const override;
   // Warm-handover entry (see MattingKeyer): builds/warms the session for the

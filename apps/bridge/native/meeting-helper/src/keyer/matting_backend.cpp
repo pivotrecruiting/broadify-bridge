@@ -85,6 +85,32 @@ class FallbackMattingKeyer final : public MattingKeyer {
   KeyerStatus status() const override {
     return primary_ ? primary_->status() : fallback_->status();
   }
+#if defined(_WIN32)
+  KeyerResult applyGpu(const GpuCameraFrame &cameraFrame,
+                       const GpuPreprocessSlot &preprocessSlot,
+                       GpuFrameSlot frameSlot,
+                       const ModnetLetterboxMapping &letterbox,
+                       const KeyerSettings &settings) override {
+    if (!primary_) {
+      return fallback_->applyGpu(cameraFrame, preprocessSlot, frameSlot,
+                                 letterbox, settings);
+    }
+    KeyerResult result = primary_->applyGpu(cameraFrame, preprocessSlot,
+                                            frameSlot, letterbox, settings);
+    if (!result.status.fallbackActive) {
+      consecutiveInferenceFailures_ = 0;
+      return result;
+    }
+    const std::string &reason = result.status.fallbackReason;
+    if (!loadInApply_ && isLoadStageFallback(reason)) {
+      return result;
+    }
+    logOpenVinoFallback(reason);
+    primary_.reset();
+    return fallback_->applyGpu(cameraFrame, preprocessSlot, frameSlot,
+                               letterbox, settings);
+  }
+#endif
 
   bool warmupForPerformanceMode(const std::string &performanceMode) override {
     // Forward to the currently active backend. If async OpenVINO warmup reaches

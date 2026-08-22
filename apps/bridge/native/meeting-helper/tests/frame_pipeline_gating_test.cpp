@@ -24,13 +24,16 @@ bool expect(bool condition, const char *what) {
 int main() {
   bool ok = true;
   ok &= expect(!shouldRunProgramWork({}), "idle reused frame does not run");
-  ok &= expect(shouldRunProgramWork({true, false, false}), "new camera runs");
-  ok &= expect(shouldRunProgramWork({false, true, false}), "program change runs");
-  ok &= expect(shouldRunProgramWork({false, false, true}), "graphics change runs");
+  ok &= expect(shouldRunProgramWork({true, false, false, false}), "new camera runs");
+  ok &= expect(shouldRunProgramWork({false, true, false, false}), "new GPU camera runs");
+  ok &= expect(shouldRunProgramWork({false, false, true, false}), "program change runs");
+  ok &= expect(shouldRunProgramWork({false, false, false, true}), "graphics change runs");
 
-  ok &= expect(shouldRunFusedKeyerWork({true, false, false}),
+  ok &= expect(shouldRunFusedKeyerWork({true, false, false, false}),
                "fused keyer runs on new camera");
-  ok &= expect(!shouldRunFusedKeyerWork({false, true, true}),
+  ok &= expect(shouldRunFusedKeyerWork({false, true, false, false}),
+               "fused keyer runs on new GPU camera");
+  ok &= expect(!shouldRunFusedKeyerWork({false, false, true, true}),
                "fused keyer does not run on reused camera");
 
   ok &= expect(!shouldWriteFramebusFrame(false, true, true, true),

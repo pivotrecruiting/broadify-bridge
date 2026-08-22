@@ -6,6 +6,7 @@ namespace broadify::meeting {
 
 struct PipelineWorkTriggers {
   bool hasNewCameraFrame = false;
+  bool hasNewGpuCameraFrame = false;
   bool programChanged = false;
   bool graphicsChanged = false;
 };

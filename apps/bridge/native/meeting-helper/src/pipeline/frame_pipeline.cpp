@@ -2116,7 +2116,8 @@ void runFramePipeline(const Options &options,
       const bool graphicsChanged = runtime.graphicsDirty ||
           hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
       const PipelineWorkTriggers workTriggers{
-          hasNewCameraFrame, programChanged, graphicsChanged};
+          hasNewCameraFrame, hasNewGpuCameraFrame, programChanged,
+          graphicsChanged};
       const bool programWorkDue = shouldRunProgramWork(workTriggers);
       const bool fusedKeyerWorkDue = shouldRunFusedKeyerWork(workTriggers);
       // Same-frame re-evaluation only while the async path is the active
@@ -2275,53 +2276,6 @@ void runFramePipeline(const Options &options,
         }
       }
 
-#if defined(_WIN32)
-      if (gpuPipelineEnabled() && fusedKeyerWorkDue && !hasCameraFrame &&
-          hasGpuCameraFrame && snapshot.keyerEnabled) {
-        static ModnetKeyer gpuResidentKeyer(
-            ModnetKeyerOptions{options.modelsDir, false});
-        GpuContextWin &gpu = GpuContextWin::shared();
-        GpuFrameSlot gpuSlot = gpu.frameRing().acquireNext();
-        latestGpuCameraFrame.fenceValue = gpuSlot.fenceValue;
-        const uint32_t tensorSize =
-            modnetInputSizeForMode(keyerSettings.performanceMode);
-        const ModnetLetterboxMapping letterbox = modnetLetterboxMapping(
-            latestGpuCameraFrame.width, latestGpuCameraFrame.height,
-            tensorSize, tensorSize);
-        const bool nv12 = IsEqualGUID(latestGpuCameraFrame.subtype,
-                                      MFVideoFormat_NV12);
-        const bool yuy2 = IsEqualGUID(latestGpuCameraFrame.subtype,
-                                      MFVideoFormat_YUY2);
-        const bool preprocessOk =
-            (nv12 || yuy2) &&
-            gpuPreprocessor.preprocess(
-                latestGpuCameraFrame.texture.Get(),
-                latestGpuCameraFrame.subresourceIndex,
-                nv12 ? GpuCameraFormat::Nv12 : GpuCameraFormat::Yuy2,
-                latestGpuCameraFrame.width, latestGpuCameraFrame.height,
-                tensorSize, letterbox, gpuSlot);
-        if (preprocessOk) {
-          const GpuPreprocessSlot *preprocessSlot =
-              gpuPreprocessor.slot(gpuSlot.index);
-          if (preprocessSlot != nullptr) {
-            KeyerResult fused = gpuResidentKeyer.applyGpu(
-                latestGpuCameraFrame, *preprocessSlot, gpuSlot, letterbox,
-                keyerSettings);
-            updateMeetingKeyerStatus(state, fused.status);
-            std::lock_guard<std::mutex> lock(state.mutex);
-            state.gpuResident = gpu.telemetry().available;
-            state.gpuCapture = "dxgi";
-            state.keyerMetrics.maskAgeMs = 0.0;
-            state.keyerMetrics.maskAgeAvgMs = 0.0;
-          }
-        } else {
-          std::lock_guard<std::mutex> lock(state.mutex);
-          state.gpuCapture = "dxgi";
-          state.gpuResident = gpu.telemetry().available;
-        }
-      }
-#endif
-
       // Fused synchronous GPU keyer: key the CURRENT frame now (mask age 0) via
       // the native CoreML keyer, overriding the async selection. Falls back to
       // whatever the async path chose on any failure.
@@ -2469,7 +2423,7 @@ void runFramePipeline(const Options &options,
           static const std::unique_ptr<MattingKeyer> fusedKeyer = [&]() {
             MattingBackendOptions backendOptions =
                 makeMattingBackendOptionsFromEnv(options.modelsDir);
-            backendOptions.loadInApply = false;
+            backendOptions.loadInApply = true;
             return createMattingKeyer(backendOptions);
           }();
           const auto fusedNow = std::chrono::steady_clock::now();

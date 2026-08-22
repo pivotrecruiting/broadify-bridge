@@ -3,12 +3,12 @@
 namespace broadify::meeting {
 
 bool shouldRunProgramWork(const PipelineWorkTriggers &triggers) {
-  return triggers.hasNewCameraFrame || triggers.programChanged ||
-         triggers.graphicsChanged;
+  return triggers.hasNewCameraFrame || triggers.hasNewGpuCameraFrame ||
+         triggers.programChanged || triggers.graphicsChanged;
 }
 
 bool shouldRunFusedKeyerWork(const PipelineWorkTriggers &triggers) {
-  return triggers.hasNewCameraFrame;
+  return triggers.hasNewCameraFrame || triggers.hasNewGpuCameraFrame;
 }
 
 bool shouldWriteFramebusFrame(bool framebusExplicitlyRunning,
