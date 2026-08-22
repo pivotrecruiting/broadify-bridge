@@ -25,6 +25,7 @@
 #include <cstring>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -625,6 +626,11 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
     return false;
   }
   D3D11Context &ctx = context();
+  std::unique_lock<std::mutex> contextLock;
+  if (meetingGpuResidentEnabled() && GpuContextWin::shared().available()) {
+    contextLock = std::unique_lock<std::mutex>(
+        GpuContextWin::shared().immediateContextMutex());
+  }
   if (!ensureOutputBuffers(plan.width, plan.height)) {
     logCompositorEvent("output_alloc_failed", "");
     return false;
@@ -1046,6 +1052,11 @@ bool ensureGuidedPlane(GuidedContext::Plane &plane, uint32_t width,
 bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
   GuidedContext &ctx = guidedContext();
   D3D11Context &base = context();
+  std::unique_lock<std::mutex> contextLock;
+  if (meetingGpuResidentEnabled() && GpuContextWin::shared().available()) {
+    contextLock = std::unique_lock<std::mutex>(
+        GpuContextWin::shared().immediateContextMutex());
+  }
   if (ctx.planeW != workW || ctx.planeH != workH) {
     ctx.planeA = {};
     ctx.planeT1 = {};
