@@ -5,15 +5,20 @@
 - Component: MediaPipe Selfie Segmenter landscape model, converted to ONNX as
   `selfie_landscape.onnx`.
 - License: Apache License 2.0.
-- Source: Google MediaPipe model assets.
+- Source: Google MediaPipe model assets,
+  `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite`.
+- Version: `float16/latest` as published by MediaPipe model storage at
+  conversion time.
 - Repository policy: the converted binary model is not committed. Release/CI
   downloads or prepares it into `apps/bridge/native/meeting-helper/models`.
+- Runtime contract: ONNX input is NHWC `1x144x256x3` float RGB in `[0,1]`;
+  output is a single foreground probability/logit mask upsampled by the helper
+  to the 512x288 work grid / frame aspect path.
 
 Conversion command:
 
 ```bash
-SELFIE_SEGMENTER_TASK_PATH=/path/to/selfie_segmenter_landscape.task \
-  bash scripts/prepare-selfie-segmenter-model.sh
+bash scripts/prepare-selfie-segmenter-model.sh
 ```
 
 The script runs:

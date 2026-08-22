@@ -3,21 +3,38 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELS_DIR="$ROOT_DIR/apps/bridge/native/meeting-helper/models"
-TASK_PATH="${SELFIE_SEGMENTER_TASK_PATH:-$MODELS_DIR/selfie_segmenter_landscape.task}"
+DEFAULT_TFLITE_URL="https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite"
+TFLITE_URL="${SELFIE_SEGMENTER_TFLITE_URL:-$DEFAULT_TFLITE_URL}"
+TASK_PATH="${SELFIE_SEGMENTER_TASK_PATH:-$MODELS_DIR/selfie_segmenter_landscape.tflite}"
 ONNX_PATH="$MODELS_DIR/selfie_landscape.onnx"
+EXPECTED_SHA256="${SELFIE_SEGMENTER_TFLITE_SHA256:-}"
 
 if [[ ! -f "$TASK_PATH" ]]; then
-  cat >&2 <<EOF
-MediaPipe Selfie Segmenter landscape task not found:
-  $TASK_PATH
-
-Download the official Apache-2.0 landscape task, then run:
-  SELFIE_SEGMENTER_TASK_PATH=/path/to/selfie_segmenter_landscape.task $0
-EOF
-  exit 1
+  mkdir -p "$MODELS_DIR"
+  echo "Downloading MediaPipe Selfie Segmenter landscape model from: $TFLITE_URL"
+  curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors "$TFLITE_URL" \
+    -o "$TASK_PATH"
 fi
 
 mkdir -p "$MODELS_DIR"
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  else
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  fi
+}
+
+if [[ -n "$EXPECTED_SHA256" ]]; then
+  ACTUAL_SHA256="$(hash_file "$TASK_PATH")"
+  if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+    echo "Selfie Segmenter source SHA256 mismatch." >&2
+    echo "Expected: $EXPECTED_SHA256" >&2
+    echo "Actual:   $ACTUAL_SHA256" >&2
+    exit 1
+  fi
+fi
 
 cat >&2 <<EOF
 Conversion command:
@@ -32,8 +49,4 @@ python -m tf2onnx.convert \
   --opset 17 \
   --output "$ONNX_PATH"
 
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum "$ONNX_PATH"
-else
-  shasum -a 256 "$ONNX_PATH"
-fi
+hash_file "$ONNX_PATH"
