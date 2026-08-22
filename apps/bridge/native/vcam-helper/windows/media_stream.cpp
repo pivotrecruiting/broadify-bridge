@@ -56,7 +56,9 @@ HRESULT createSampleBufferPool(
   buffers.reserve(kSampleBufferPoolSize);
   for (size_t i = 0; i < kSampleBufferPoolSize; i++) {
     Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
-    CK(MFCreate2DMediaBuffer(width, height, subtype, FALSE, &buffer));
+    // MFCreate2DMediaBuffer takes the FourCC (DWORD), not the subtype GUID; for
+    // the MF video subtypes (NV12, YUY2, RGB32 = D3DFMT_X8R8G8B8) Data1 is it.
+    CK(MFCreate2DMediaBuffer(width, height, subtype.Data1, FALSE, &buffer));
     buffers.push_back(buffer);
   }
   return S_OK;
