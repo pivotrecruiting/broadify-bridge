@@ -2406,6 +2406,36 @@ void runFramePipeline(const Options &options,
         // Set on the frame a step-down overlap cuts over with a fresh worker
         // pair: the path-transition reset below then keeps the worker state.
         bool preserveWorkerOnCutover = false;
+        const auto selectLiveFusedFallbackMask =
+            [&lastFusedPublishedMask, &lastGoodMask,
+             &latestCameraFrame](AlphaMask &selectedMask) {
+          const AlphaMask &retained =
+              !lastFusedPublishedMask.alpha.empty() ? lastFusedPublishedMask
+                                                    : lastGoodMask;
+          return selectRetainedOrEmptyMaskForLiveKeyer(
+              retained, latestCameraFrame.timestampNs, latestCameraFrame.width,
+              latestCameraFrame.height, selectedMask);
+        };
+        const auto refineLiveFusedFallbackMask =
+            [&latestCameraFrame](AlphaMask &selectedMask) {
+          if (!selectedMask.alpha.empty() && !selectedMask.emptyValid) {
+            if (!(d3d11GuidedRefineAvailable() &&
+                  guidedRefineMaskD3D11(selectedMask, latestCameraFrame))) {
+              guidedRefineMask(selectedMask, latestCameraFrame);
+            }
+            selectedMask.timestampNs = latestCameraFrame.timestampNs;
+          }
+        };
+        if (gpuPipelineEnabled() && !fusedKeyerWorkDue && hasCameraFrame &&
+            snapshot.keyerEnabled && !asyncPathActive &&
+            !latestCameraFrame.rgba.empty() &&
+            maskForCompositor == nullptr &&
+            selectLiveFusedFallbackMask(fusedMask)) {
+          frameForCompositor = &latestCameraFrame;
+          refineLiveFusedFallbackMask(fusedMask);
+          maskForCompositor = &fusedMask;
+          shouldRenderProgram = true;
+        }
         if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
@@ -2792,15 +2822,8 @@ void runFramePipeline(const Options &options,
             g_fusedKeyerDegraded = true;
             selectedPair.reset();
             frameForCompositor = &latestCameraFrame;
-            if (selectRetainedOrEmptyMaskForLiveKeyer(
-                    lastGoodMask, latestCameraFrame.timestampNs,
-                    latestCameraFrame.width, latestCameraFrame.height,
-                    fusedMask) && !fusedMask.emptyValid) {
-              if (!(d3d11GuidedRefineAvailable() &&
-                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
-                guidedRefineMask(fusedMask, latestCameraFrame);
-              }
-              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+            if (selectLiveFusedFallbackMask(fusedMask)) {
+              refineLiveFusedFallbackMask(fusedMask);
             }
             maskForCompositor = &fusedMask;
             shouldRenderProgram = true;
@@ -2894,6 +2917,12 @@ void runFramePipeline(const Options &options,
                 // Publish the failure instead of freezing silently (K-03): the
                 // status stream now reports fallback_active + reason, and the async
                 // fallback path starts receiving frames (submit guard above).
+                frameForCompositor = &latestCameraFrame;
+                if (selectLiveFusedFallbackMask(fusedMask)) {
+                  refineLiveFusedFallbackMask(fusedMask);
+                  maskForCompositor = &fusedMask;
+                  shouldRenderProgram = true;
+                }
                 g_fusedKeyerDegraded = true;
                 updateMeetingKeyerStatus(state, fused.status);
                 // The async fallback is the active source until a retry

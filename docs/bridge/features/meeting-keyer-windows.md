@@ -17,7 +17,8 @@ camera frame
        - DirectML by default, OpenVINO when selected and compiled in
   -> alpha readback
        - crop out letterbox padding
-       - bilinear upsample to camera working size
+       - emit the model-resolution content crop; compositor/guided refine
+         resample it against the live camera
   -> fused or async-lite governor path
        - fused: current-frame inference when sustainable
        - async-lite: worker publishes mask/frame pairs
@@ -25,7 +26,7 @@ camera frame
          stale last-mask hold is capped at 2 s, then background-only
   -> guided edge refine
        - D3D11 when available, CPU fallback otherwise
-       - work grid defaults to 960 px wide, aspect-preserving
+       - work grid defaults to 512 px wide, aspect-preserving
   -> postprocess
        - close, smoothstep alpha curve, erode/dilate, feather
        - one temporal smoother on fused path
@@ -43,16 +44,18 @@ camera frame
 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `all` | Prebuilds MODNet sessions. Accepts `all`, `512`, `320`, `256`, or mode names in a comma list. |
 | `BROADIFY_MEETING_DML_QUEUE` | `compute` | DirectML DML1 command queue type. Use `direct` for A/B against rc.21. |
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | unset | Overrides the governor step-down threshold for tests/tuning. |
-| `BROADIFY_MEETING_KEYER_CADENCE` | `auto` | Auto cadence, `0` disabled, or integer frame interval. |
+| `BROADIFY_MEETING_KEYER_CADENCE` | `auto` | Auto cadence, `0` disabled, or integer frame interval. Auto defaults to maxN 2 and motion threshold 4. |
 | `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH` | `1` | Enables cadence reuse of retained fused masks. |
 | `BROADIFY_MEETING_FUSED_POSTPROCESS` | `1` | Applies the postprocess chain on fused masks. |
 | `BROADIFY_MEETING_FUSED_SMOOTHER` | `ema` | `ema` uses motion-adaptive EMA and disables edge stabilization for fused masks; `edge` uses edge stabilization instead. |
-| `BROADIFY_MEETING_MASK_WORK_WIDTH` | `960` | Guided-refine/postprocess work width cap. 16:9 defaults to 960x540. |
+| `BROADIFY_MEETING_FUSED_EMA_STATIC` | `0.85` | Static-subject EMA weight for fused-mask stabilization. |
+| `BROADIFY_MEETING_MASK_WORK_WIDTH` | `512` | Guided-refine/postprocess work width cap. 16:9 defaults to 512x288. |
 | `BROADIFY_MEETING_GUIDED_RADIUS` | `4` | Guided-filter radius for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_EPSILON` | `5e-4` | Guided-filter epsilon for D3D11 and CPU fallback. |
-| `BROADIFY_MEETING_GUIDED_COEFF_EMA` | `0.5` | D3D11 guided-filter coefficient EMA; `0` disables coefficient smoothing. |
+| `BROADIFY_MEETING_GUIDED_COEFF_EMA` | `0` | D3D11 guided-filter coefficient EMA; default off to avoid silhouette trails. |
 | `BROADIFY_MEETING_GPU_GUIDED` | `1` | Enables D3D11 guided refine; set `0` for CPU fallback. |
-| `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 1500 ms below 0.2% coverage. |
+| `BROADIFY_MEETING_CAMERA_MAX_HEIGHT` | `720` | Clamps Windows MediaFoundation camera requests and reopen attempts to <=720p at <=30 fps. |
+| `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 400 ms below the foreground floor. |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY` | unset | Forces legacy DirectML device 0 selection. |
 
 ## Field A/B

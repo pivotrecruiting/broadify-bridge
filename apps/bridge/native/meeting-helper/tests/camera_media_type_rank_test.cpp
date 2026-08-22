@@ -54,12 +54,21 @@ int main() {
   ok &= expect(chooseIndex(c920Types, 1280, 720, 30) == 2,
                "C920-style list chooses raw 720p30 over MJPG");
 
-  const std::vector<CaseMediaType> comparableFpsTypes{
+  const std::vector<CaseMediaType> realC920Types{
+      {"YUY2 720p10", {10.0, 1280, 720, kYuy2}},
       {"YUY2 480p30", {30.0, 640, 480, kYuy2}},
-      {"MJPG 1080p60", {60.0, 1920, 1080, kMjpg}},
+      {"MJPG 720p30", {30.0, 1280, 720, kMjpg}},
+      {"MJPG 1080p30", {30.0, 1920, 1080, kMjpg}},
   };
-  ok &= expect(chooseIndex(comparableFpsTypes, 1280, 720, 30) == 0,
-               "raw subtype wins before pixel distance when fps is comparable");
+  ok &= expect(chooseIndex(realC920Types, 1280, 720, 30) == 2,
+               "real C920 720p30 request chooses MJPG 720p30");
+
+    const std::vector<CaseMediaType> comparableFpsTypes{
+        {"YUY2 480p30", {30.0, 640, 480, kYuy2}},
+        {"MJPG 1080p60", {60.0, 1920, 1080, kMjpg}},
+    };
+    ok &= expect(chooseIndex(comparableFpsTypes, 1280, 720, 30) == 1,
+                 "pixel floor wins before raw subtype when fps is comparable");
 
   const std::vector<CaseMediaType> lowFpsTypes{
       {"YUY2 1080p5", {5.0, 1920, 1080, kYuy2}},

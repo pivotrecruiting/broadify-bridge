@@ -1086,6 +1086,8 @@ class MediaFoundationCameraSource final : public CameraSource {
   void scheduleReopen(const std::string &cameraId, uint32_t width, uint32_t height,
                       uint32_t fps, HRESULT hr, const std::string &reason,
                       const std::string &deviceName) {
+    const CameraCaptureRequest captureRequest =
+        clampCameraCaptureRequest(width, height, fps);
     std::thread finishedThread;
     int scheduledIndex = -1;
     uint64_t generation = 0;
@@ -1122,7 +1124,10 @@ class MediaFoundationCameraSource final : public CameraSource {
         reopenThreadRunning_.store(false);
         return;
       }
-      reopenThread_ = std::thread([this, cameraId, width, height, fps, reason,
+      reopenThread_ = std::thread([this, cameraId,
+                                   width = captureRequest.width,
+                                   height = captureRequest.height,
+                                   fps = captureRequest.fps, reason,
                                    generation] {
       const std::chrono::milliseconds backoffs[] = {
           std::chrono::milliseconds(500), std::chrono::seconds(1),

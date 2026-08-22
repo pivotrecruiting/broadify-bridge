@@ -1203,17 +1203,19 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   guidedDispatch(ctx.csBuildAb.Get(), nullptr, nullptr, ctx.planeT2.srv.Get(),
                  ctx.planeT1.srv.Get(), ctx.planeT3.uav.Get(), nullptr, workW,
                  workH);
-  const bool useCoeffEma =
-      ctx.coeffEma > 0.0f && ctx.coeffEma < 1.0f && ctx.hasPrevAb;
+  const bool coeffEmaEnabled = ctx.coeffEma > 0.0f && ctx.coeffEma < 1.0f;
+  const bool useCoeffEma = coeffEmaEnabled && ctx.hasPrevAb;
   if (useCoeffEma) {
     guidedDispatch(ctx.csBlendAb.Get(), nullptr, nullptr, ctx.planeT3.srv.Get(),
                    ctx.planePrevAb.srv.Get(), ctx.planeT2.uav.Get(), nullptr,
                    workW, workH);
     base.context->CopyResource(ctx.planePrevAb.tex.Get(), ctx.planeT2.tex.Get());
     // T2 now carries the EMA'd coefficient plane for the blur below.
-  } else {
+  } else if (coeffEmaEnabled) {
     base.context->CopyResource(ctx.planePrevAb.tex.Get(), ctx.planeT3.tex.Get());
     ctx.hasPrevAb = true;
+  } else {
+    ctx.hasPrevAb = false;
   }
   // T2 = mean(a, b)
   guidedBlur(useCoeffEma ? ctx.planeT2 : ctx.planeT3, ctx.planeT1,
