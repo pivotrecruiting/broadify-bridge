@@ -1,101 +1,45 @@
-# Windows Meeting Performance
+# Windows meeting performance
 
-Dieses Dokument beschreibt die WP1-Stellschrauben fuer Windows-Last und
-Latenz im Meeting-Helper.
+Status: WP3 implementation draft, 22.08.2026.
 
-## GPU-Adapter
+## GPU-resident flag
 
-Der Windows-GPU-Pfad waehlt einmal pro Helper-Prozess einen DXGI-Adapter und
-verwendet dessen LUID fuer D3D11-Compositor/Guided-Filter und DirectML.
-Konfiguration:
+`BROADIFY_MEETING_GPU_RESIDENT=1` enables the Windows GPU-resident meeting path.
+The default is off for rc.22 field A/B testing. With the flag off the helper
+keeps the rc.21 capture, tensor, keyer and compositor paths.
 
-- `BROADIFY_MEETING_GPU_POLICY=auto` (Default): bevorzugt
-  High-Performance, wenn vorhanden.
-- `BROADIFY_MEETING_GPU_POLICY=high_performance`: erzwingt die schnelle GPU.
-- `BROADIFY_MEETING_GPU_POLICY=minimum_power`: bevorzugt die sparsame GPU.
-- `BROADIFY_MEETING_GPU_POLICY=split`: A/B-Modus wie rc.12; der
-  D3D11-Compositor nutzt den Default-Adapter, DirectML nutzt
-  High-Performance.
+Related diagnostics:
 
-Der Helper loggt einmal `gpu_adapter_selected` mit Beschreibung und LUID.
-`keyer.get`/`state.get` enthalten `gpu_adapter` und `compositor_adapter`.
-Fuer Akzeptanz muessen beide Felder dieselbe LUID zeigen, wenn DirectML und
-D3D11 aktiv sind. Bei `split` duerfen sie abweichen.
+- `BROADIFY_MEETING_GPU_SELF_TEST_DRIVER=warp` makes `meeting-helper --gpu-selftest`
+  create the shared context on WARP in CI.
+- `BROADIFY_MEETING_GPU_POLICY` keeps the existing adapter policy. The
+  gpu-resident path uses one adapter LUID for D3D11, D3D12 and DirectML.
 
-DirectML DML1 wird mit eigener D3D12-Device/Queue initialisiert; die Queue ist
-`D3D12_COMMAND_LIST_TYPE_DIRECT`. DML2 und das Legacy-Device-0 bleiben
-Fallbacks.
+## Fallbacks
 
-## QoS und Timer
+- Camera capture tries an `IMFDXGIDeviceManager` Source Reader with NV12/YUY2
+  when the flag is on. If the DXGI path cannot be opened, the helper logs
+  `camera_gpu_capture_unavailable` and falls back to the RGB32 CPU reader.
+- DirectML IO binding is guarded by a tested decision policy. If the provider
+  API or resource allocation is unavailable, the helper logs
+  `keyer_gpu_binding_unavailable` once and uses the existing CPU tensor input.
+- Current WP3 keeps the RGBA compositor result for existing CPU consumers:
+  recorder, MJPEG preview, FrameBus and TCP VCam. WP4 removes the TCP VCam
+  readback by replacing it with shared memory NV12 transport.
 
-Windows-QoS ist default aktiv und per `BROADIFY_MEETING_WIN_QOS=0`
-abschaltbar. Aktiviert werden:
+## Telemetry
 
-- Prozess opt-out aus Execution-Speed- und Timer-Resolution-Throttling.
-- `timeBeginPeriod(1)` nur in `live`/`keyer_live`, Ruecknahme beim Verlassen.
-- `AvSetMmThreadCharacteristicsW(L"Capture")` fuer Program- und
-  Raw-Frame-Sender-Threads.
-- Raw-Frame-Sockets mit `TCP_NODELAY` und groesserem Sendepuffer.
+`state.get` and `keyer.get` report:
 
-## Work-Gating
+- `gpu_resident`
+- `gpu_capture`
+- `keyer_io_binding`
+- `metrics.preprocess_ms`
+- `metrics.inference_ms`
+- `metrics.refine_ms`
+- `metrics.composite_ms`
+- `metrics.cpu_frame_copies_per_frame`
 
-Der FrameBus startet nicht mehr implizit; `framebus_running` ist default
-`false` und wird durch `output.framebus.start` bzw.
-`conference_display_start` gesetzt. Programmarbeit laeuft nur bei neuer
-Kamera, Programm-/Grafik-Revision oder neuem Keyer-Pair. Fused-Keyer-Arbeit
-laeuft nur bei einer neuen Kamera-Frame-Timestamp.
-
-MJPEG wird nur fuer verbundene MJPEG-Clients encodiert. Ist gleichzeitig ein
-VCam-Client verbunden, wird MJPEG auf 10 fps gedrosselt.
-
-## Readback
-
-Der Guided-Refine-Readback liest immer die Maske des aktuellen Kamera-Frames
-zurueck. Dadurch wird die Kante nicht mit einer Maske aus Frame N-1 auf Frame
-N composited.
-
-Der finale D3D11-Compositor-Readback nutzt default den direkten blocking
-Copy/Map-Pfad (rc.12-Latenz). Die Staging-Ring-Variante ist nur per
-`BROADIFY_MEETING_STAGING_RING=1` aktiv. Wenn sie aktiv ist, meldet
-`metrics.staging_readback_depth` die Ring-Tiefe, sonst `0`.
-
-## Latenzpolitik
-
-Der Windows-Keyer-Governor steigt ab, sobald die geglaettete Inferenzzeit
-mehr als 1,0 x Framebudget verbraucht (bei 30 fps ca. 33,3 ms). Step-up wird
-aus dieser Step-down-Schwelle berechnet und kann die Hysterese-Band nicht
-invertieren. `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` ist heute
-ein Kill-Switch fuer die fused cadence reuse: bei `0` laeuft Inferenz fuer
-jeden neuen Kamera-Frame und `mask_age_ms` wird auf 0 gesetzt; Default `1`
-erlaubt die Wiederverwendung der retained matte zwischen Inferenz-Frames und
-refined sie erneut gegen den aktuellen Kamera-Frame. Die geplante ein-Frame
-Software-Pipeline (Inference N parallel zu Composite N-1) ist auf WP3
-verschoben.
-
-Zeitbasierte Hintergruende werden nur auf Kamera-, Programm- oder
-Grafik-Aenderungen fortgeschrieben; ohne solche Aenderung gibt es keinen
-separaten Render-Tick.
-
-Der Windows-Program-Loop darf durch eine fruehe Kamera-CV-Wake frueher
-aufwachen, rendert aber nie schneller als `1 / targetFps`. Eine 60-fps-Webcam
-treibt den fused Pfad daher nicht mehr mit 60 Hz, wenn der Helper auf 30 fps
-konfiguriert ist.
-
-MediaFoundation bevorzugt einen angebotenen nativen Kamera-Typ mit maximal
-30 fps und maximal 1920x1080. Die Subtype-Praeferenz ist NV12, YUY2, MJPG;
-danach wird weiter RGB32 fuer den Helper ausgegeben. Der ausgewaehlte native
-Typ wird als `camera_native_media_type_selected` geloggt.
-
-BFRG v2 traegt `capture_ns`; die VCam-DLL akzeptiert v1 und v2. Samples werden
-aus dem Produzentenzeitstempel erzeugt, duplizierte Frames laufen mit
-Frame-Dauer weiter.
-
-## Messen
-
-1. In Windows Task Manager die Spalten fuer GPU Engine/GPU-Auslastung oeffnen.
-   Bei Hybrid-Geraeten pruefen, ob DirectML und D3D11 dieselbe GPU/LUID nutzen.
-2. In `keyer.get` `gpu_adapter`, `compositor_adapter`,
-   `keyer_pipeline_mode`, `active_performance_mode`, `metrics.session_run_ms`
-   und `metrics.program_frame_ms` beobachten.
-3. VCam-Verbrauch nur messen, wenn eine App wirklich streamt; eine bloss
-   registrierte/armierte Kamera verbindet die DLL nicht dauerhaft.
+In WP3 on the existing TCP VCam transport, VCam is still counted as a CPU
+consumer. A VCam-only zero-copy value of `0` requires the WP4 shared-memory
+NV12 virtual camera transport.

@@ -1,8 +1,14 @@
 # Design: Windows Meeting Engine, Stufe B (GPU-resident pipeline, shared-memory VCam, temporal matting)
 
-Status: draft for review, 21.08.2026. Targets `apps/bridge/native/meeting-helper` (Windows paths) and
+Status: WP3 implementation draft, 22.08.2026. Targets `apps/bridge/native/meeting-helper` (Windows paths) and
 `apps/bridge/native/vcam-helper/windows`. macOS paths are untouched. All official references are in the
 analysis report (section 06).
+
+WP3 note: `BROADIFY_MEETING_GPU_RESIDENT=1` is still default-off. The helper now
+has the shared D3D11/D3D12 context/fence, DXGI camera-open path with CPU
+fallback, preprocess mapping/resources, IO-binding fallback telemetry, and
+Windows release smoke self-test. Full end-to-end zero-copy VCam output remains
+blocked on WP4's shared-memory NV12 virtual-camera transport.
 
 ## 1. Goals / non-goals
 - Goal: zero CPU round-trips per frame between capture, keyer, compositor and the virtual camera on Windows.

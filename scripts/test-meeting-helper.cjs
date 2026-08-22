@@ -41,7 +41,7 @@ if (!existsSync(helperPath)) {
   process.exit(2);
 }
 
-const args = testKind === "gpu" ? ["--self-test"] : ["--keyer-self-test"];
+const args = testKind === "gpu" ? ["--gpu-selftest"] : ["--keyer-self-test"];
 if (testKind === "keyer") {
   const modelsDir =
     process.env.BRIDGE_MEETING_MODELS_DIR ||

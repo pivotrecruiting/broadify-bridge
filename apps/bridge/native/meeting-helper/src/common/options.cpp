@@ -68,6 +68,8 @@ Options parseOptions(int argc, char **argv) {
       options.run = true;
     } else if (arg == "--keyer-self-test") {
       options.keyerSelfTest = true;
+    } else if (arg == "--gpu-selftest" || arg == "--self-test") {
+      options.gpuSelfTest = true;
     } else if (arg == "--framebus-name") {
       options.framebusName = next();
     } else if (arg == "--control-socket") {

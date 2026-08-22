@@ -492,6 +492,14 @@ jobs:
           $helperPath = Join-Path $env:GITHUB_WORKSPACE 'dist\win-unpacked\resources\native\display-helper\display-helper.exe'
           & .\scripts\test-windows-display-helper.ps1 -HelperPath $helperPath -Attempts 3
 
+      - name: Smoke test Windows unpacked meeting helper
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $helperPath = Join-Path $env:GITHUB_WORKSPACE 'dist\win-unpacked\resources\native\meeting-helper\meeting-helper.exe'
+          $modelsDir = Join-Path $env:GITHUB_WORKSPACE 'dist\win-unpacked\resources\native\meeting-helper\models'
+          & .\scripts\test-windows-meeting-helper.ps1 -HelperPath $helperPath -ModelsDir $modelsDir
+
       - name: Verify Windows signatures
         if: matrix.os == 'windows-2022'
         shell: pwsh

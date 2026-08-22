@@ -153,6 +153,10 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"tensor_ms\":" << metricNumber(metrics.tensorMs)
          << ",\"session_run_ms\":" << metricNumber(metrics.sessionRunMs)
          << ",\"mask_apply_ms\":" << metricNumber(metrics.maskApplyMs)
+         << ",\"preprocess_ms\":" << metricNumber(metrics.preprocessMs >= 0.0 ? metrics.preprocessMs : metrics.tensorMs)
+         << ",\"inference_ms\":" << metricNumber(metrics.inferenceStageMs >= 0.0 ? metrics.inferenceStageMs : metrics.sessionRunMs)
+         << ",\"refine_ms\":" << metricNumber(metrics.refineMs >= 0.0 ? metrics.refineMs : metrics.maskPostprocessMs)
+         << ",\"composite_ms\":" << metricNumber(metrics.compositeMs >= 0.0 ? metrics.compositeMs : metrics.programFrameMs)
          << ",\"mask_dilate_ms\":" << metricNumber(metrics.maskDilateMs)
          << ",\"mask_close_ms\":" << metricNumber(metrics.maskCloseMs)
          << ",\"mask_remap_ms\":" << metricNumber(metrics.maskRemapMs)
@@ -314,6 +318,8 @@ std::string handleRpc(const std::string &line,
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
            << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
+           << "\"gpu_resident\":" << (state.gpuResident ? "true" : "false") << ","
+           << "\"gpu_capture\":\"" << jsonEscape(state.gpuCapture) << "\","
            << "\"keyer_io_binding\":" << (state.keyerIoBinding ? "true" : "false") << ","
            << "\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"") << ","
            << "\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"") << ","
@@ -610,6 +616,8 @@ std::string handleRpc(const std::string &line,
            << "\",\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"")
            << ",\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"")
            << ",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
+           << ",\"gpu_resident\":" << (state.gpuResident ? "true" : "false")
+           << ",\"gpu_capture\":\"" << jsonEscape(state.gpuCapture) << "\""
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel)
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
            << "\",\"quality_mode\":\"" << jsonEscape(state.activeQualityMode)

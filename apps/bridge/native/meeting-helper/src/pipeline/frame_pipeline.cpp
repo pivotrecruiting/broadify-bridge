@@ -3028,8 +3028,11 @@ void runFramePipeline(const Options &options,
                                        runtime.framebusRunning,
                                        runtime.vcamClients > 0,
                                    });
+        state.gpuResident = meetingGpuResidentEnabled();
+        state.gpuCapture = "cpu";
 #endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
+        state.keyerMetrics.compositeMs = state.keyerMetrics.programFrameMs;
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);
         state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;

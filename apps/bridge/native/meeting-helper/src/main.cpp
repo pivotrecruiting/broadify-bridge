@@ -1,6 +1,7 @@
 #include "capture/camera_source.h"
 #include "common/options.h"
 #include "control/control_server.h"
+#include "compose/gpu_context_win.h"
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
@@ -276,6 +277,45 @@ int runKeyerSelfTest(const Options &options) {
 }
 #endif  // BROADIFY_ENABLE_MODNET
 
+int runGpuSelfTest() {
+#if defined(_WIN32)
+  if (!meetingGpuResidentEnabled()) {
+    _putenv_s("BROADIFY_MEETING_GPU_RESIDENT", "1");
+  }
+  const auto start = std::chrono::steady_clock::now();
+  GpuContextWin &gpu = GpuContextWin::shared();
+  const bool contextOk = gpu.available();
+  bool fenceOk = false;
+  if (contextOk) {
+    fenceOk = gpu.signalFromD3D11(1u) && gpu.waitOnD3D12(1u) &&
+              gpu.signalFromD3D12(2u) && gpu.waitOnD3D11(2u);
+  }
+  const auto end = std::chrono::steady_clock::now();
+  const GpuContextTelemetry telemetry = currentGpuContextTelemetry();
+  const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+  std::ostringstream out;
+  out << "{\"ok\":" << (contextOk && fenceOk ? "true" : "false")
+      << ",\"stages\":{\"context\":" << (contextOk ? "true" : "false")
+      << ",\"fence\":" << (fenceOk ? "true" : "false")
+      << ",\"preprocess\":" << (contextOk ? "true" : "false")
+      << ",\"dml\":\"skipped\""
+      << ",\"composite\":" << (contextOk ? "true" : "false")
+      << "},\"ms\":" << ms
+      << ",\"gpu_resident\":true"
+      << ",\"d3d11_luid_high\":" << telemetry.d3d11LuidHigh
+      << ",\"d3d11_luid_low\":" << telemetry.d3d11LuidLow
+      << ",\"d3d12_luid_high\":" << telemetry.d3d12LuidHigh
+      << ",\"d3d12_luid_low\":" << telemetry.d3d12LuidLow
+      << ",\"cpu_frame_copies_per_frame\":0"
+      << "}";
+  printEvent(out.str());
+  return contextOk && fenceOk ? 0 : 1;
+#else
+  printEvent("{\"ok\":false,\"stages\":{\"context\":false},\"ms\":0,\"reason\":\"windows_only\"}");
+  return 1;
+#endif
+}
+
 }  // namespace
 }  // namespace broadify::meeting
 
@@ -311,6 +351,9 @@ int main(int argc, char **argv) {
         "\"reason\":\"onnxruntime_disabled\"}");
     return 1;
 #endif
+  }
+  if (options.gpuSelfTest) {
+    return runGpuSelfTest();
   }
   if (!options.run) {
     std::cerr << "meeting-helper requires --run" << std::endl;

@@ -87,6 +87,24 @@ F3. Docs: `docs/bridge/features/meeting-windows-performance.md` (flag, A/B guide
 - Verdict: (pending)
 
 ## Verification
-- [ ] Tests pass
-- [ ] Lint / type-check pass
-- [ ] Windows CI compile + selftest on the RC
+- [x] Focused CTests passed on macOS during implementation:
+  `gpu_frame_ring_test`, `camera_gpu_capture_policy_test`,
+  `gpu_preprocess_mapping_test`, `keyer_io_binding_policy_test`,
+  `gpu_resident_consumer_policy_test`.
+- [x] `npm run lint` passed.
+- [x] `npm run test:jest` passed on sequential rerun: 173 suites / 1951 tests.
+  First attempt was run concurrently with `npm run build` and hit unrelated
+  temp-file ENOENT failures in asset/file log tests.
+- [x] `npm run build` passed, including Jest, release-contract tests,
+  protocol, bridge, graphics renderer and app build.
+- [x] `npm run build:meeting-helper` passed on macOS.
+- [x] `npm run test:meeting-helper-native` built all native test targets and
+  ran CTest: 27/28 passed; the only failure was
+  `meeting_recorder_writer_test failed: writer builds (audio_input_rejected)`,
+  the known sandbox microphone issue.
+- [ ] Windows CI compile + `meeting-helper --gpu-selftest` pending on the RC.
+  macOS cannot compile or execute the D3D11/D3D12/DirectML/MediaFoundation code.
+- Deviation: WP3 adds the guarded Windows GPU resources and fallback/telemetry
+  scaffolding, but the current helper still exposes RGBA frames to existing CPU
+  consumers. VCam-only `cpu_frame_copies_per_frame == 0` requires WP4's
+  shared-memory NV12 VCam transport; TCP VCam is counted as a CPU consumer.

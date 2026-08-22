@@ -139,6 +139,8 @@ struct MeetingState {
   bool keyerDegraded = false;
   bool modelHashOk = false;
   bool keyerIoBinding = false;
+  bool gpuResident = false;
+  std::string gpuCapture = "cpu";
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;

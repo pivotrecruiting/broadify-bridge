@@ -77,14 +77,28 @@ bool GpuContextWin::initialize() {
   }
 
   const D3DAdapterInfo &selected = sharedD3DAdapter();
-  if (!selected.available || !selected.adapter) {
-    failureReason_ = "adapter_unavailable";
-    logGpuContextEvent("unavailable", failureReason_);
-    return false;
+  HRESULT hr = E_FAIL;
+  const char *selfTestDriver = std::getenv("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER");
+  if (selfTestDriver != nullptr && std::strcmp(selfTestDriver, "warp") == 0) {
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    Microsoft::WRL::ComPtr<IDXGIAdapter> warpAdapter;
+    hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (SUCCEEDED(hr)) {
+      hr = factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter));
+    }
+    if (SUCCEEDED(hr)) {
+      hr = warpAdapter.As(&adapter_);
+      telemetry_.adapter = "WARP";
+    }
+  } else {
+    if (!selected.available || !selected.adapter) {
+      failureReason_ = "adapter_unavailable";
+      logGpuContextEvent("unavailable", failureReason_);
+      return false;
+    }
+    telemetry_.adapter = d3dAdapterStatusString(selected);
+    hr = selected.adapter.As(&adapter_);
   }
-  telemetry_.adapter = d3dAdapterStatusString(selected);
-
-  HRESULT hr = selected.adapter.As(&adapter_);
   if (FAILED(hr)) {
     failureReason_ = "adapter4_unavailable " + hrHex(hr);
     logGpuContextEvent("unavailable", failureReason_);

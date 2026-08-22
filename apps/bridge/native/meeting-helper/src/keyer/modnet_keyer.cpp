@@ -378,6 +378,8 @@ class ModnetKeyer::Impl {
       status_.metrics.tensorMs = elapsedMs(tensorStart, tensorEnd);
       status_.metrics.sessionRunMs = elapsedMs(runStart, runEnd);
       status_.metrics.maskApplyMs = elapsedMs(maskStart, maskEnd);
+      status_.metrics.preprocessMs = status_.metrics.tensorMs;
+      status_.metrics.inferenceStageMs = status_.metrics.sessionRunMs;
       status_.metrics.maskWidth = maskWidth;
       status_.metrics.maskHeight = maskHeight;
       result.status = status_;

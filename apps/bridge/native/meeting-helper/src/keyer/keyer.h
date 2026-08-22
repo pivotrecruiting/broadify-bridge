@@ -13,6 +13,10 @@ struct KeyerMetrics {
   double tensorMs = -1.0;
   double sessionRunMs = -1.0;
   double maskApplyMs = -1.0;
+  double preprocessMs = -1.0;
+  double inferenceStageMs = -1.0;
+  double refineMs = -1.0;
+  double compositeMs = -1.0;
   double maskDilateMs = -1.0;
   double maskCloseMs = -1.0;
   double maskRemapMs = -1.0;

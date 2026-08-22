@@ -5,9 +5,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ModelsDir,
 
-  # Kept for caller compatibility; the integrated (Windows-parity) helper has
-  # no runtime self-test entry, so hardware acceleration cannot be asserted
-  # here anymore. Runtime health is covered by ctest + the RC test cycle.
+# Kept for caller compatibility; without it the GPU self-test runs on WARP so
+# release CI executes the D3D11/D3D12 path even on GPU-less runners.
   [switch]$RequireHardwareAcceleration
 )
 
@@ -68,4 +67,20 @@ if (-not ($output -match "requires --run")) {
 # fail the step after a fully successful smoke.
 & "$env:ComSpec" /c exit 0 | Out-Null
 
-Write-Host "Meeting helper packaged-binary smoke passed (loads with packaged DLLs, model present): $resolvedHelperPath"
+if (-not $RequireHardwareAcceleration) {
+  $env:BROADIFY_MEETING_GPU_SELF_TEST_DRIVER = "warp"
+}
+$env:BROADIFY_MEETING_GPU_RESIDENT = "1"
+$gpuOutput = & $resolvedHelperPath --gpu-selftest 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Meeting helper GPU self-test failed with exit code $LASTEXITCODE. Output: $gpuOutput"
+}
+$gpuJson = ($gpuOutput | Select-Object -Last 1) | ConvertFrom-Json
+if (-not $gpuJson.ok) {
+  throw "Meeting helper GPU self-test returned ok=false. Output: $gpuOutput"
+}
+if ($gpuJson.cpu_frame_copies_per_frame -ne 0) {
+  throw "Meeting helper GPU self-test expected cpu_frame_copies_per_frame=0, got $($gpuJson.cpu_frame_copies_per_frame)."
+}
+
+Write-Host "Meeting helper packaged-binary smoke passed (loads with packaged DLLs, model present, GPU self-test ok): $resolvedHelperPath"

@@ -280,6 +280,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
       status.fallbackActive && status.fallbackReason != "keyer_disabled";
   state.modelHashOk = status.modelHashOk;
   state.keyerIoBinding = status.keyerIoBinding;
+  state.gpuResident = state.gpuResident || status.keyerIoBinding;
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;
   mergedMetrics.maskAgeMs = state.keyerMetrics.maskAgeMs;
