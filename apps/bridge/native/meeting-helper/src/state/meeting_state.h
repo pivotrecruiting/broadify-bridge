@@ -137,6 +137,7 @@ struct MeetingState {
   double inferenceMs = -1.0;
   bool fallbackActive = true;
   bool keyerDegraded = false;
+  bool keyerReady = false;
   bool modelHashOk = false;
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;
