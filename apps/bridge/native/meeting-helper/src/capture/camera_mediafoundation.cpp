@@ -2,11 +2,15 @@
 
 #if defined(_WIN32)
 
+#include "capture/camera_gpu_capture_policy.h"
 #include "capture/camera_media_type_rank.h"
+#include "compose/gpu_context_win.h"
 #include "util/json_utils.h"
 #include "util/pixel_swizzle.h"
 
 #include <windows.h>
+#include <d3d11_4.h>
+#include <dxgi.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -171,6 +175,14 @@ struct NativeMediaTypeChoice {
   bool valid = false;
 };
 
+struct GpuCameraFrame {
+  ComPtr<ID3D11Texture2D> texture;
+  uint32_t subresourceIndex = 0;
+  uint64_t timestampNs = 0;
+  uint64_t fenceValue = 0;
+  GUID subtype{};
+};
+
 int subtypePreference(const GUID &subtype) {
   if (IsEqualGUID(subtype, MFVideoFormat_NV12)) {
     return 0;
@@ -313,10 +325,36 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
             std::function<void(HRESULT, const std::string &)> errorHandler) {
     errorHandler_ = std::move(errorHandler);
     ComPtr<IMFSourceReader> reader;
+    if (meetingGpuResidentEnabled()) {
+      bool gpuReaderOpened = initReader(symbolicLink, width, height, fps, true,
+                                        true, reader);
+      const CameraGpuCaptureDecision decision = decideCameraGpuCapture(
+          true, GpuContextWin::shared().available(), gpuReaderOpened,
+          gpuReaderOpened && gpuCaptureActive_);
+      if (decision.useGpuCapture) {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        reader_ = reader;
+        running_.store(true);
+        const HRESULT hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                                              0, nullptr, nullptr, nullptr, nullptr);
+        if (FAILED(hr)) {
+          running_.store(false);
+          reader_.Reset();
+          initError_ = "Could not start reading camera frames.";
+          return false;
+        }
+        return true;
+      }
+      std::cout << "{\"type\":\"camera_gpu_capture_unavailable\",\"reason\":\""
+                << jsonEscape(decision.reason) << "\"}" << std::endl;
+      gpuCaptureActive_ = false;
+      reader.Reset();
+      initError_.clear();
+    }
     // Prefer the standard video processor; fall back to the advanced one, which
     // wraps the full DXVA video processor and handles more source formats.
-    if (!initReader(symbolicLink, width, height, fps, false, reader) &&
-        !initReader(symbolicLink, width, height, fps, true, reader)) {
+    if (!initReader(symbolicLink, width, height, fps, false, false, reader) &&
+        !initReader(symbolicLink, width, height, fps, true, false, reader)) {
       if (initError_.empty()) {
         initError_ = "Camera does not support an RGB32 output format.";
       }
@@ -479,6 +517,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   bool initReader(const std::wstring &symbolicLink, uint32_t requestedWidth,
                   uint32_t requestedHeight, uint32_t requestedFps,
                   bool advancedProcessing,
+                  bool gpuCapture,
                   ComPtr<IMFSourceReader> &readerOut) {
     ComPtr<IMFAttributes> sourceAttributes;
     if (FAILED(MFCreateAttributes(&sourceAttributes, 2))) {
@@ -502,7 +541,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     }
 
     ComPtr<IMFAttributes> readerAttributes;
-    if (FAILED(MFCreateAttributes(&readerAttributes, 3))) {
+    if (FAILED(MFCreateAttributes(&readerAttributes, gpuCapture ? 6 : 3))) {
       return false;
     }
     readerAttributes->SetUINT32(advancedProcessing
@@ -510,6 +549,21 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
                                     : MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
                                 TRUE);
     readerAttributes->SetUINT32(MF_LOW_LATENCY, TRUE);
+    ComPtr<IMFDXGIDeviceManager> dxgiManager;
+    UINT dxgiResetToken = 0;
+    if (gpuCapture) {
+      GpuContextWin &gpu = GpuContextWin::shared();
+      if (!gpu.available() ||
+          FAILED(MFCreateDXGIDeviceManager(&dxgiResetToken, &dxgiManager)) ||
+          FAILED(dxgiManager->ResetDevice(gpu.d3d11Device(), dxgiResetToken)) ||
+          FAILED(readerAttributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER,
+                                              dxgiManager.Get()))) {
+        initError_ = "Could not initialize DXGI camera capture.";
+        return false;
+      }
+      readerAttributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
+                                  TRUE);
+    }
     // Async callback mode: the reader delivers frames via OnReadSample instead
     // of a blocking ReadSample, so a frameless device never stalls shutdown().
     if (FAILED(readerAttributes->SetUnknown(
@@ -548,7 +602,8 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       return false;
     }
     outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    outputType->SetGUID(MF_MT_SUBTYPE,
+                        gpuCapture ? nativeChoice.subtype : MFVideoFormat_RGB32);
     if (nativeChoice.valid) {
       MFSetAttributeSize(outputType.Get(), MF_MT_FRAME_SIZE,
                          nativeChoice.width, nativeChoice.height);
@@ -560,7 +615,8 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr,
                                      outputType.Get());
     if (FAILED(hr)) {
-      initError_ = "Camera does not support an RGB32 output format.";
+      initError_ = gpuCapture ? "Camera does not support a DXGI NV12/YUY2 output format."
+                              : "Camera does not support an RGB32 output format.";
       return false;
     }
 
@@ -568,6 +624,9 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       initError_ = "Could not read the negotiated camera format.";
       return false;
     }
+    gpuCaptureActive_ = gpuCapture &&
+        (IsEqualGUID(currentSubtype_, MFVideoFormat_NV12) ||
+         IsEqualGUID(currentSubtype_, MFVideoFormat_YUY2));
     readerOut = reader;
     return true;
   }
@@ -622,6 +681,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     UINT32 fpsNum = 0;
     UINT32 fpsDen = 0;
     current->GetGUID(MF_MT_SUBTYPE, &subtype);
+    currentSubtype_ = subtype;
     MFGetAttributeRatio(current.Get(), MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
     std::cout << "{\"type\":\"camera_media_type\",\"width\":" << width
               << ",\"height\":" << height
@@ -633,6 +693,27 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   }
 
   void processSample(IMFSample *sample) {
+    if (gpuCaptureActive_) {
+      ComPtr<IMFMediaBuffer> gpuBuffer;
+      if (SUCCEEDED(sample->GetBufferByIndex(0, &gpuBuffer))) {
+        ComPtr<IMFDXGIBuffer> dxgiBuffer;
+        if (SUCCEEDED(gpuBuffer.As(&dxgiBuffer))) {
+          GpuCameraFrame gpuFrame;
+          gpuFrame.timestampNs = nowNs();
+          gpuFrame.subtype = currentSubtype_;
+          dxgiBuffer->GetSubresourceIndex(&gpuFrame.subresourceIndex);
+          if (SUCCEEDED(dxgiBuffer->GetResource(IID_PPV_ARGS(&gpuFrame.texture)))) {
+            GpuContextWin &gpu = GpuContextWin::shared();
+            GpuFrameSlot slot = gpu.frameRing().acquireNext();
+            gpuFrame.fenceValue = slot.fenceValue;
+            latestGpuFrame_ = gpuFrame;
+            gpu.signalFromD3D11(slot.fenceValue);
+          }
+        }
+      }
+      // Until the downstream stages consume GpuCameraFrame directly, keep the
+      // rc.21 VideoFrame contract alive through the same reader callback.
+    }
     ComPtr<IMFMediaBuffer> buffer;
     if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) {
       return;
@@ -712,6 +793,9 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   uint32_t frameWidth_ = 0;
   uint32_t frameHeight_ = 0;
   LONG stride_ = 0;
+  GUID currentSubtype_{};
+  bool gpuCaptureActive_ = false;
+  GpuCameraFrame latestGpuFrame_;
 
   mutable std::mutex frameMutex_;
   std::condition_variable frameCv_;

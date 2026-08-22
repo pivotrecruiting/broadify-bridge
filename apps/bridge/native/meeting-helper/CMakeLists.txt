@@ -63,6 +63,7 @@ set(MEETING_HELPER_SOURCES
   ../vcam-helper/Shared/src/framebus_reader.c
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
+  src/capture/camera_gpu_capture_policy.cpp
   src/compose/compositor.cpp
   src/compose/d3d_adapter_select.cpp
   src/compose/gpu_context_win.cpp
@@ -299,6 +300,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(camera_media_type_rank_test
     tests/camera_media_type_rank_test.cpp
   )
+  add_executable(camera_gpu_capture_policy_test
+    tests/camera_gpu_capture_policy_test.cpp
+    src/capture/camera_gpu_capture_policy.cpp
+  )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
@@ -392,6 +397,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     pixel_swizzle_test
     ort_session_options_policy_test
     camera_media_type_rank_test
+    camera_gpu_capture_policy_test
     keyer_governor_test
     keyer_cadence_test
     mask_retention_test
