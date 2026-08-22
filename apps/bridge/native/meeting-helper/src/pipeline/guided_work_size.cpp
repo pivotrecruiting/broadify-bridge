@@ -6,11 +6,7 @@
 namespace broadify::meeting {
 namespace {
 
-#if defined(_WIN32)
-constexpr uint32_t kDefaultMaskWorkWidth = 960u;
-#else
 constexpr uint32_t kDefaultMaskWorkWidth = 512u;
-#endif
 
 }  // namespace
 

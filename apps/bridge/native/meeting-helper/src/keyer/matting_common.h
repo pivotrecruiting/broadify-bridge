@@ -46,8 +46,9 @@ void buildModnetInputTensor(const VideoFrame &input, uint32_t inputWidth,
                             ModnetLetterboxMapping *mapping = nullptr);
 
 // Mask readback: crop the model's letterboxed alpha back to the source-aspect
-// content region, then bilinearly resample it to the working frame size. A null
-// mask or zero dimension leaves outputMask untouched.
+// content region and emit that model-resolution crop. The frame dimensions are
+// accepted only for call-site compatibility; consumers resample when needed. A
+// null mask or zero dimension leaves outputMask untouched.
 void copyModnetAlphaMask(const float *mask, uint32_t maskWidth,
                          uint32_t maskHeight,
                          const ModnetLetterboxMapping &mapping,

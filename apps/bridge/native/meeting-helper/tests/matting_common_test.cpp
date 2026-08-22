@@ -48,33 +48,24 @@ VideoFrame makeGradientFrame(uint32_t width, uint32_t height) {
   return frame;
 }
 
-double referenceBox(const VideoFrame &frame,
-                    double left,
-                    double top,
-                    double right,
-                    double bottom,
-                    uint32_t channel) {
-  double sum = 0.0;
-  double weights = 0.0;
-  for (uint32_t y = 0; y < frame.height; ++y) {
-    const double wy =
-        std::max(0.0, std::min(bottom, static_cast<double>(y + 1u)) -
-                          std::max(top, static_cast<double>(y)));
-    for (uint32_t x = 0; x < frame.width; ++x) {
-      const double wx =
-          std::max(0.0, std::min(right, static_cast<double>(x + 1u)) -
-                            std::max(left, static_cast<double>(x)));
-      const double weight = wx * wy;
-      if (weight <= 0.0) {
-        continue;
-      }
+double referenceIntegerBox(const VideoFrame &frame,
+                           uint32_t left,
+                           uint32_t top,
+                           uint32_t right,
+                           uint32_t bottom,
+                           uint32_t channel) {
+  uint64_t sum = 0u;
+  uint64_t count = 0u;
+  for (uint32_t y = top; y < bottom; ++y) {
+    for (uint32_t x = left; x < right; ++x) {
       const size_t offset =
           (static_cast<size_t>(y) * frame.width + x) * 4u + channel;
-      sum += frame.rgba[offset] * weight;
-      weights += weight;
+      sum += frame.rgba[offset];
+      ++count;
     }
   }
-  return weights > 0.0 ? sum / weights : 127.5;
+  return count > 0u ? static_cast<double>(sum) / static_cast<double>(count)
+                    : 127.5;
 }
 
 }  // namespace
@@ -119,17 +110,17 @@ int main() {
     for (uint32_t channel = 0; channel < 3u; ++channel) {
       for (uint32_t y = 0; y < mapping.contentHeight; ++y) {
         for (uint32_t x = 0; x < mapping.contentWidth; ++x) {
-          const double left = static_cast<double>(x) * 6.0 / 4.0;
-          const double right = static_cast<double>(x + 1u) * 6.0 / 4.0;
-          const double top = static_cast<double>(y) * 3.0 / 2.0;
-          const double bottom = static_cast<double>(y + 1u) * 3.0 / 2.0;
+          const uint32_t left = (x * 6u) / 4u;
+          const uint32_t right = ((x + 1u) * 6u) / 4u;
+          const uint32_t top = (y * 3u) / 2u;
+          const uint32_t bottom = ((y + 1u) * 3u) / 2u;
           const size_t offset = static_cast<size_t>(mapping.contentY + y) * 4u +
                                 mapping.contentX + x + channel * channelSize;
           const double actual = denormalize(tensor[offset]);
           const double expected =
-              referenceBox(frame, left, top, right, bottom, channel);
+              referenceIntegerBox(frame, left, top, right, bottom, channel);
           ok &= expect(std::abs(actual - expected) < 0.01,
-                       "box downsample matches reference");
+                       "integer block downsample matches reference");
         }
       }
     }
@@ -150,8 +141,8 @@ int main() {
     AlphaMask output;
     copyModnetAlphaMask(modelMask.data(), 8u, 8u, mapping, 16u, 8u, 99u,
                         output);
-    ok &= expect(output.width == 16u && output.height == 8u,
-                 "alpha readback resamples to working dimensions");
+    ok &= expect(output.width == 8u && output.height == 4u,
+                 "alpha readback emits the model-resolution content crop");
     ok &= expect(output.timestampNs == 99u, "alpha readback keeps timestamp");
     for (const uint8_t alpha : output.alpha) {
       ok &= expect(alpha == 64u,

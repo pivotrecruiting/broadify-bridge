@@ -17,11 +17,7 @@ bool expect(bool condition, const char *what) {
 
 constexpr double kEmpty = 0.0005;    // clearly below the 0.002 floor
 constexpr double kPresent = 0.05;    // clearly above the floor
-#if defined(_WIN32)
-constexpr double kAcceptAfterMs = 1500.0;
-#else
 constexpr double kAcceptAfterMs = 400.0;
-#endif
 
 }  // namespace
 

@@ -17,6 +17,11 @@ using TimePoint = FusedCadenceController::TimePoint;
 
 constexpr uint64_t kFrameNs = 33'333'333ull;  // ~30fps
 constexpr double kLowMotion = 0.0;
+#if defined(_WIN32)
+constexpr int kExpectedMaxN = 2;
+#else
+constexpr int kExpectedMaxN = 4;
+#endif
 
 bool expect(bool condition, const char *what) {
   if (!condition) {
@@ -51,10 +56,12 @@ int main() {
     ok &= expect(slow.currentN() == 2, "50ms -> N=2");
     FusedCadenceController slower(testConfig());
     slower.onInferenceCompleted(kFrameNs, 100.0, at(0));
-    ok &= expect(slower.currentN() == 4, "100ms -> N=4");
+    ok &= expect(slower.currentN() == kExpectedMaxN,
+                 "100ms -> N clamped to platform maxN");
     FusedCadenceController slowest(testConfig());
     slowest.onInferenceCompleted(kFrameNs, 500.0, at(0));
-    ok &= expect(slowest.currentN() == 4, "500ms -> N clamped to maxN=4");
+    ok &= expect(slowest.currentN() == kExpectedMaxN,
+                 "500ms -> N clamped to platform maxN");
   }
 
   {
@@ -80,7 +87,7 @@ int main() {
     // Forced-inference triggers.
     FusedCadenceController cadence(testConfig());
     uint64_t ts = kFrameNs;
-    cadence.onInferenceCompleted(ts, 100.0, at(0));  // N=4
+    cadence.onInferenceCompleted(ts, 100.0, at(0));  // N=2
     // (a) No valid retained mask -> always infer, age reported as 0.
     CadenceDecision d = cadence.decide(ts + kFrameNs, kLowMotion, false, at(33));
     ok &= expect(d.runInference, "no valid mask forces inference");
@@ -90,7 +97,7 @@ int main() {
     ok &= expect(d.runInference, "motion above threshold forces inference");
     // (c) Mask age above maxMaskAgeMs (150) -> infer. 6 frames = ~200ms.
     FusedCadenceController aged(testConfig());
-    aged.onInferenceCompleted(kFrameNs, 100.0, at(0));  // N=4
+    aged.onInferenceCompleted(kFrameNs, 100.0, at(0));  // N=2
     const uint64_t oldTs = kFrameNs + 6ull * kFrameNs;
     d = aged.decide(oldTs, kLowMotion, true, at(200));
     ok &= expect(d.runInference, "over-age mask forces inference");

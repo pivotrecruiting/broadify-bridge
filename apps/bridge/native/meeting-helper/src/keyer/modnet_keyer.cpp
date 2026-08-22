@@ -20,6 +20,7 @@
 #include <set>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #if BROADIFY_ENABLE_MODNET
 #include <onnxruntime_cxx_api.h>
@@ -107,6 +108,19 @@ std::set<uint32_t> parseModnetPrebuildTierSizesInternal(const char *raw) {
 std::set<uint32_t> prebuildTierSizesFromEnv() {
   return parseModnetPrebuildTierSizesInternal(
       std::getenv("BROADIFY_MEETING_KEYER_PREBUILD_TIERS"));
+}
+
+std::vector<uint32_t> orderedPrebuildTierSizes(const std::set<uint32_t> &sizes) {
+  std::vector<uint32_t> ordered;
+  if (sizes.count(kFallbackInputSize) != 0u) {
+    ordered.push_back(kFallbackInputSize);
+  }
+  for (const uint32_t size : sizes) {
+    if (size != kFallbackInputSize) {
+      ordered.push_back(size);
+    }
+  }
+  return ordered;
 }
 
 // Self-test provider override, read once: when
@@ -466,7 +480,7 @@ class ModnetKeyer::Impl {
       const auto inputInfo = session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
 #else
       const std::set<uint32_t> sizes = prebuildTierSizesFromEnv();
-      for (const uint32_t size : sizes) {
+      for (const uint32_t size : orderedPrebuildTierSizes(sizes)) {
         inputWidth_ = size;
         inputHeight_ = size;
         std::unique_ptr<Ort::Session> builtSession = createSession();

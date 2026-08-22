@@ -22,12 +22,14 @@ struct CameraMediaTypeRank {
  * 1. FPS bands win only when they differ by more than one band. Bands are
  *    target-ish, comparable capture FPS (>= max(24, 80% of target) up to 2x
  *    target), usable (>=15), low, and unknown.
- * 2. Same or adjacent bands are comparable; choose the pixel count closest to
+ * 2. Reject undersized candidates before subtype preference: a format below
+ *    50% of requested pixels cannot beat one at or above that floor.
+ * 3. Prefer cheap raw formats before pixel-distance among candidates that both
+ *    satisfy, or both miss, the pixel floor.
+ * 4. Same or adjacent bands are comparable; choose the pixel count closest to
  *    the requested size.
- * 3. If size does not decide, choose FPS closest to the target, with rates
+ * 5. If size does not decide, choose FPS closest to the target, with rates
  *    above target penalized by one step so target-or-below rates win ties.
- * 4. Subtype preference is the final tie-break; lower subtypeRank is better
- *    (MediaFoundation maps NV12=0, YUY2=1, MJPG=2).
  */
 inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
                                   const CameraMediaTypeRank &current,
@@ -61,6 +63,21 @@ inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
   const uint64_t requestedPixels =
       static_cast<uint64_t>(requestedWidth == 0u ? 1920u : requestedWidth) *
       (requestedHeight == 0u ? 1080u : requestedHeight);
+  const auto meetsPixelFloor =
+      [requestedPixels](const CameraMediaTypeRank &type) {
+        const uint64_t pixels = static_cast<uint64_t>(type.width) * type.height;
+        return pixels * 2u >= requestedPixels;
+      };
+  const bool candidateMeetsFloor = meetsPixelFloor(candidate);
+  const bool currentMeetsFloor = meetsPixelFloor(current);
+  if (candidateMeetsFloor != currentMeetsFloor) {
+    return candidateMeetsFloor;
+  }
+
+  if (candidate.subtypeRank != current.subtypeRank) {
+    return candidate.subtypeRank < current.subtypeRank;
+  }
+
   const auto pixelDistance = [requestedPixels](const CameraMediaTypeRank &type) {
     const uint64_t pixels = static_cast<uint64_t>(type.width) * type.height;
     return pixels > requestedPixels ? pixels - requestedPixels : requestedPixels - pixels;
@@ -87,7 +104,7 @@ inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
     return candidateFpsPenalty < currentFpsPenalty;
   }
 
-  return candidate.subtypeRank < current.subtypeRank;
+  return false;
 }
 
 }  // namespace broadify::meeting

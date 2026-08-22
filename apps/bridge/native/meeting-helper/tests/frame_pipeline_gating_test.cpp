@@ -5,7 +5,9 @@
 
 using broadify::meeting::PipelineWorkTriggers;
 using broadify::meeting::clampFramePacingDeadline;
+using broadify::meeting::earlyCameraWakeRenderDeadline;
 using broadify::meeting::framePacingDeadlineReached;
+using broadify::meeting::shouldRenderEarlyCameraWake;
 using broadify::meeting::shouldRunFusedKeyerWork;
 using broadify::meeting::shouldRunProgramWork;
 using broadify::meeting::shouldSubmitAsyncKeyerFrame;
@@ -76,6 +78,60 @@ int main() {
                "early camera wake does not pass the floor");
   ok &= expect(framePacingDeadlineReached(epoch + interval, epoch + interval),
                "deadline passes at the floor");
+  const auto priorRender = epoch + std::chrono::milliseconds(100);
+  ok &= expect(!shouldRenderEarlyCameraWake(
+                   priorRender + std::chrono::milliseconds(24), priorRender,
+                   interval),
+               "camera wake before 75 percent skips");
+  ok &= expect(shouldRenderEarlyCameraWake(
+                   priorRender + std::chrono::milliseconds(25), priorRender,
+                   interval),
+               "camera wake after 75 percent renders immediately");
+  ok &= expect(shouldRenderEarlyCameraWake(
+                   epoch + std::chrono::milliseconds(1),
+                   Clock::time_point{}, interval),
+               "first camera wake renders without prior start");
+  const auto earlyWake = priorRender + std::chrono::milliseconds(16);
+  const auto nextFrame = priorRender + interval;
+  const auto earlyWakeDeadline = earlyCameraWakeRenderDeadline(
+      earlyWake, priorRender, nextFrame, interval);
+  ok &= expect(earlyWakeDeadline > priorRender + std::chrono::milliseconds(24) &&
+                   earlyWakeDeadline < priorRender + std::chrono::milliseconds(25),
+               "early camera wake waits until the 75 percent floor");
+  ok &= expect(earlyWakeDeadline > earlyWake,
+               "early camera wake iteration waits instead of spinning");
+  ok &= expect(earlyCameraWakeRenderDeadline(
+                   priorRender + std::chrono::milliseconds(25), priorRender,
+                   nextFrame, interval) ==
+                   priorRender + std::chrono::milliseconds(25),
+               "late camera wake renders immediately");
+
+  const auto fps60CameraInterval = std::chrono::milliseconds(16);
+  const auto fps60Start = epoch + std::chrono::milliseconds(200);
+  auto lastRenderAt = fps60Start;
+  auto scheduledFrameAt = fps60Start + interval;
+  auto cameraArrival = fps60Start + fps60CameraInterval;
+  int rendered60FpsCameraFrames = 0;
+  for (int cameraFrame = 1; cameraFrame <= 4; cameraFrame += 2) {
+    const auto renderAt = earlyCameraWakeRenderDeadline(
+        cameraArrival, lastRenderAt, scheduledFrameAt, interval);
+    ok &= expect(renderAt > cameraArrival,
+                 "60 fps camera waits while inference is still running");
+    ok &= expect(shouldRunFusedKeyerWork({true, false, false}),
+                 "60 fps camera render still runs fused inference");
+    ++rendered60FpsCameraFrames;
+    lastRenderAt = renderAt;
+    scheduledFrameAt = renderAt + interval;
+    cameraArrival = fps60Start + fps60CameraInterval * (cameraFrame + 2);
+  }
+  ok &= expect(rendered60FpsCameraFrames == 2,
+               "60 fps camera is throttled to the 0.75-interval render floor");
+
+  const auto fps30CameraArrival = epoch + interval;
+  ok &= expect(earlyCameraWakeRenderDeadline(
+                   fps30CameraArrival, epoch, epoch + interval, interval) ==
+                   fps30CameraArrival,
+               "30 fps camera renders on arrival");
 
   return ok ? 0 : 1;
 }

@@ -90,14 +90,19 @@ Grafik-Aenderungen fortgeschrieben; ohne solche Aenderung gibt es keinen
 separaten Render-Tick.
 
 Der Windows-Program-Loop darf durch eine fruehe Kamera-CV-Wake frueher
-aufwachen, rendert aber nie schneller als `1 / targetFps`. Eine 60-fps-Webcam
-treibt den fused Pfad daher nicht mehr mit 60 Hz, wenn der Helper auf 30 fps
-konfiguriert ist.
+aufwachen, sobald mindestens 0,75 x Frame-Intervall seit Renderstart
+vergangen sind; er rendert aber nie schneller als `1 / targetFps`. Eine
+60-fps-Webcam treibt den fused Pfad daher nicht mehr mit 60 Hz, wenn der
+Helper auf 30 fps konfiguriert ist.
 
 MediaFoundation bevorzugt einen angebotenen nativen Kamera-Typ mit maximal
-30 fps und maximal 1920x1080. Die Subtype-Praeferenz ist NV12, YUY2, MJPG;
-danach wird weiter RGB32 fuer den Helper ausgegeben. Der ausgewaehlte native
-Typ wird als `camera_native_media_type_selected` geloggt.
+30 fps und default maximal 1280x720 (`BROADIFY_MEETING_CAMERA_MAX_HEIGHT=720`;
+Reopen-Pfade werden ebenfalls geklemmt). Die Subtype-Praeferenz ist NV12,
+YUY2, MJPG, aber erst nachdem ein Kandidat mindestens 50 % der angefragten
+Pixel erreicht; danach wird weiter RGB32 fuer den Helper ausgegeben. Der
+ausgewaehlte native Typ wird als `camera_native_media_type_selected` geloggt.
+Der MODNet-Maskenreadback bleibt auf Model-Resolution (512 -> 512x288 bei
+16:9) und wird nicht auf Kamera-Aufloesung hochskaliert.
 
 BFRG v2 traegt `capture_ns`; die VCam-DLL akzeptiert v1 und v2. Samples werden
 aus dem Produzentenzeitstempel erzeugt, duplizierte Frames laufen mit
