@@ -2483,11 +2483,11 @@ void runFramePipeline(const Options &options,
                       } catch (...) {
                         warmupOk = false;
                       }
-                      fusedWarmupOutcome.store(warmupOk ? 1 : -1,
+                      g_fusedWarmupOutcome.store(warmupOk ? 1 : -1,
                                                std::memory_order_relaxed);
                       // MUST stay the last statement: the program thread only
                       // joins after observing busy == false.
-                      fusedWarmupBusy.store(false, std::memory_order_release);
+                      g_fusedWarmupBusy.store(false, std::memory_order_release);
                     });
               } catch (...) {
                 // Thread creation failed: treat as a failed warmup (the
@@ -2517,9 +2517,9 @@ void runFramePipeline(const Options &options,
                   } catch (...) {
                     warmupOk = false;
                   }
-                  fusedWarmupOutcome.store(warmupOk ? 1 : -1,
+                  g_fusedWarmupOutcome.store(warmupOk ? 1 : -1,
                                            std::memory_order_relaxed);
-                  fusedWarmupBusy.store(false, std::memory_order_release);
+                  g_fusedWarmupBusy.store(false, std::memory_order_release);
                 });
               } catch (...) {
                 fusedWarmupBusy.store(false, std::memory_order_release);
