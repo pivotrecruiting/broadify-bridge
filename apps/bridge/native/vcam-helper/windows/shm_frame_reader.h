@@ -73,7 +73,7 @@ class ShmFrameReader {
   void *ownerMappingMemory_ = nullptr;
   void *ownerEventHandle_ = nullptr;
   size_t ownerRingBytes_ = 0;
-  bool ownerLogEmitted_ = false;
+  std::string ownerLogOutcome_;
   size_t ringBytes_ = 0;
   uint64_t lastSequence_ = 0;
   uint64_t writerGeneration_ = 0;

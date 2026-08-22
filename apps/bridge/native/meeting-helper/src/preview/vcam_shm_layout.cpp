@@ -78,8 +78,20 @@ bool validHeader(const RingHeader *header, size_t bytes) {
     return false;
   }
   const PixelFormat format = static_cast<PixelFormat>(header->format);
-  const size_t required = ringBytesFor(header->width, header->height, format);
-  return required != 0u && required <= bytes && required <= header->capacity_bytes;
+  const size_t expectedStride =
+      slotStrideFor(header->width, header->height, format);
+  if (expectedStride == 0u || header->slot_stride != expectedStride) {
+    return false;
+  }
+  size_t slotsBytes = 0u;
+  size_t required = 0u;
+  if (!checkedMul(static_cast<size_t>(header->slot_count),
+                  static_cast<size_t>(header->slot_stride), slotsBytes) ||
+      !checkedAdd(alignUp(sizeof(RingHeader), kAlignment), slotsBytes,
+                  required)) {
+    return false;
+  }
+  return required <= bytes && required <= header->capacity_bytes;
 }
 
 void copyWideName(wchar_t *dst, const std::wstring &src) {
@@ -215,17 +227,11 @@ bool validateServiceRing(const void *memory, size_t bytes) {
   const auto *header = reinterpret_cast<const RingHeader *>(memory);
   if (header->magic != kRingMagic || header->version != kLayoutVersion ||
       header->owner != static_cast<uint32_t>(LayoutOwner::Service) ||
-      header->slot_count != kSlotCount ||
       header->capacity_bytes < maxServiceRingBytes() ||
-      header->capacity_bytes > bytes ||
-      header->format != static_cast<uint32_t>(PixelFormat::Bgra8)) {
+      header->capacity_bytes > bytes) {
     return false;
   }
-  if (header->width == 0u && header->height == 0u &&
-      header->slot_stride == 0u && header->writer_generation == 0u) {
-    return true;
-  }
-  return validHeader(header, bytes);
+  return true;
 }
 
 bool validateServiceControl(const ControlRecord &record) {

@@ -120,6 +120,12 @@ set(MEETING_HELPER_SOURCES
   src/util/win_qos.cpp
 )
 
+if(WIN32)
+  list(APPEND MEETING_HELPER_SOURCES
+    src/preview/vcam_writer_generation.cpp
+  )
+endif()
+
 if(APPLE)
   enable_language(OBJCXX)
   list(APPEND MEETING_HELPER_SOURCES
@@ -397,7 +403,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       "${CMAKE_CURRENT_BINARY_DIR}/generated"
     )
   endif()
-  add_executable(control_server_test
+  set(CONTROL_SERVER_TEST_SOURCES
     tests/control_server_test.cpp
     src/control/control_server.cpp
     src/capture/camera_source.cpp
@@ -409,6 +415,12 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/util/helper_event_log.cpp
     src/util/json_utils.cpp
   )
+  if(WIN32)
+    list(APPEND CONTROL_SERVER_TEST_SOURCES
+      src/preview/vcam_writer_generation.cpp
+    )
+  endif()
+  add_executable(control_server_test ${CONTROL_SERVER_TEST_SOURCES})
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free

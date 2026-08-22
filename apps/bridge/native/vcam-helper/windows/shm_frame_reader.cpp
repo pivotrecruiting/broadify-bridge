@@ -110,6 +110,20 @@ void logCreateFailed(DWORD error) {
   VcamLog("vcam_shm_owner service create_failed error=%lu", error);
 }
 
+void logOwnerOutcome(std::string &lastOutcome,
+                     const std::string &outcome,
+                     DWORD error = ERROR_SUCCESS) {
+  if (lastOutcome == outcome) {
+    return;
+  }
+  if (outcome == "create_failed") {
+    logCreateFailed(error);
+  } else {
+    VcamLog("vcam_shm_owner service %s", outcome.c_str());
+  }
+  lastOutcome = outcome;
+}
+
 }  // namespace
 
 ShmFrameReader::ShmFrameReader() = default;
@@ -165,10 +179,7 @@ bool ShmFrameReader::createServiceRing() {
   closeServiceRing();
   ownerRingBytes_ = broadify::vcam_shm::maxServiceRingBytes();
   if (ownerRingBytes_ == 0u) {
-    if (!ownerLogEmitted_) {
-      logCreateFailed(ERROR_INVALID_PARAMETER);
-      ownerLogEmitted_ = true;
-    }
+    logOwnerOutcome(ownerLogOutcome_, "create_failed", ERROR_INVALID_PARAMETER);
     return false;
   }
 
@@ -181,10 +192,7 @@ bool ShmFrameReader::createServiceRing() {
       size.LowPart, streamName.c_str());
   if (mapping == nullptr) {
     const DWORD error = GetLastError();
-    if (!ownerLogEmitted_) {
-      logCreateFailed(error);
-      ownerLogEmitted_ = true;
-    }
+    logOwnerOutcome(ownerLogOutcome_, "create_failed", error);
     ownerRingBytes_ = 0u;
     return false;
   }
@@ -195,10 +203,7 @@ bool ShmFrameReader::createServiceRing() {
   if (event == nullptr) {
     const DWORD error = GetLastError();
     CloseHandle(mapping);
-    if (!ownerLogEmitted_) {
-      logCreateFailed(error);
-      ownerLogEmitted_ = true;
-    }
+    logOwnerOutcome(ownerLogOutcome_, "create_failed", error);
     ownerRingBytes_ = 0u;
     return false;
   }
@@ -212,10 +217,7 @@ bool ShmFrameReader::createServiceRing() {
     const DWORD error = GetLastError();
     CloseHandle(event);
     CloseHandle(mapping);
-    if (!ownerLogEmitted_) {
-      logCreateFailed(error);
-      ownerLogEmitted_ = true;
-    }
+    logOwnerOutcome(ownerLogOutcome_, "create_failed", error);
     ownerRingBytes_ = 0u;
     return false;
   }
@@ -237,10 +239,7 @@ bool ShmFrameReader::createServiceRing() {
     CloseHandle(control);
     CloseHandle(event);
     CloseHandle(mapping);
-    if (!ownerLogEmitted_) {
-      logCreateFailed(error);
-      ownerLogEmitted_ = true;
-    }
+    logOwnerOutcome(ownerLogOutcome_, "create_failed", error);
     ownerRingBytes_ = 0u;
     return false;
   }
@@ -281,17 +280,11 @@ bool ShmFrameReader::createServiceRing() {
   }
   if (!initialized) {
     closeServiceRing();
-    if (!ownerLogEmitted_) {
-      logCreateFailed(ERROR_INVALID_DATA);
-      ownerLogEmitted_ = true;
-    }
+    logOwnerOutcome(ownerLogOutcome_, "create_failed", ERROR_INVALID_DATA);
     return false;
   }
-  if (!ownerLogEmitted_) {
-    VcamLog("vcam_shm_owner service %s",
-            openedExisting ? "opened_existing" : "created");
-    ownerLogEmitted_ = true;
-  }
+  logOwnerOutcome(ownerLogOutcome_,
+                  openedExisting ? "opened_existing" : "created");
   return true;
 }
 
@@ -392,6 +385,13 @@ bool ShmFrameReader::openFromControl(std::string &reason) {
     UnmapViewOfFile(controlView);
     CloseHandle(control);
     reason = "invalid_control_record";
+    return false;
+  }
+  if (record.width == 0u || record.height == 0u ||
+      record.writer_generation == 0u) {
+    UnmapViewOfFile(controlView);
+    CloseHandle(control);
+    reason = "control_mapping_absent";
     return false;
   }
 

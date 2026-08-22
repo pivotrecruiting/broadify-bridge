@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include <cstdlib>
+#include <cwchar>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -69,6 +70,70 @@ void testCreatorPublishReaderCopy() {
   CloseHandle(control);
 }
 
+void testServiceOwnedZeroGeometryOpenPublishValidate() {
+  const std::wstring controlName = controlMappingName(false);
+  const std::wstring streamName = serviceStreamMappingName(false);
+  const std::wstring eventName = serviceStreamEventName(false);
+  const size_t bytes = maxServiceRingBytes();
+  LARGE_INTEGER size{};
+  size.QuadPart = static_cast<LONGLONG>(bytes);
+  HANDLE stream = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr,
+                                     PAGE_READWRITE, size.HighPart,
+                                     size.LowPart, streamName.c_str());
+  CHECK(stream != nullptr);
+  HANDLE event = CreateEventW(nullptr, FALSE, FALSE, eventName.c_str());
+  CHECK(event != nullptr);
+  HANDLE control = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr,
+                                      PAGE_READWRITE, 0,
+                                      static_cast<DWORD>(sizeof(ControlRecord)),
+                                      controlName.c_str());
+  CHECK(control != nullptr);
+  void *streamMemory =
+      MapViewOfFile(stream, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, bytes);
+  CHECK(streamMemory != nullptr);
+  void *controlMemory = MapViewOfFile(control, FILE_MAP_READ | FILE_MAP_WRITE,
+                                      0, 0, sizeof(ControlRecord));
+  CHECK(controlMemory != nullptr);
+  CHECK(initializeServiceRing(streamMemory, bytes, 100u));
+  auto *controlRecord = static_cast<ControlRecord *>(controlMemory);
+  *controlRecord = ControlRecord{};
+  controlRecord->magic = kControlMagic;
+  controlRecord->version = kLayoutVersion;
+  controlRecord->owner = static_cast<uint32_t>(LayoutOwner::Service);
+  controlRecord->sequence = 2u;
+  controlRecord->capacity_bytes = bytes;
+  wcsncpy_s(controlRecord->mapping_name, streamName.c_str(),
+            kMaxNameChars - 1u);
+  wcsncpy_s(controlRecord->event_name, eventName.c_str(), kMaxNameChars - 1u);
+  CHECK(validateServiceControl(*controlRecord));
+  CHECK(validateServiceRing(streamMemory, bytes));
+
+  VcamShmRingWin helper;
+  const VcamShmCreateResult opened =
+      helper.openServiceRing(64, 36, 30, 21u, false);
+  CHECK(opened.ok);
+  CHECK(!opened.globalNamespace);
+  std::vector<uint8_t> bgra(64u * 36u * 4u, 231u);
+  CHECK(helper.publishBgra(64, 36, bgra.data(), bgra.size(), 0u));
+
+  ControlRecord record;
+  CHECK(readControlRecord(*controlRecord, record));
+  CHECK(validateServiceControl(record));
+  CHECK(validateServiceRing(streamMemory, bytes));
+  CopiedFrame copied;
+  CHECK(copyNewestFrame(streamMemory, bytes, copied));
+  CHECK(copied.width == 64u);
+  CHECK(copied.height == 36u);
+  CHECK(copied.data == bgra);
+
+  helper.close();
+  UnmapViewOfFile(controlMemory);
+  UnmapViewOfFile(streamMemory);
+  CloseHandle(control);
+  CloseHandle(event);
+  CloseHandle(stream);
+}
+
 void testRejectWrongMagicAndCapacity() {
   std::vector<uint8_t> memory(maxServiceRingBytes());
   CHECK(initializeServiceRing(memory.data(), memory.size(), 100u));
@@ -83,6 +148,7 @@ void testRejectWrongMagicAndCapacity() {
 
 int main() {
   testCreatorPublishReaderCopy();
+  testServiceOwnedZeroGeometryOpenPublishValidate();
   testRejectWrongMagicAndCapacity();
   std::cout << "vcam_shm_service_ring_test passed\n";
   return 0;

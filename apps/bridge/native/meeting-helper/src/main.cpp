@@ -11,6 +11,8 @@
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
 #include "preview/vcam_shm_ring_win.h"
+#include "preview/vcam_shm_retry_state.h"
+#include "preview/vcam_writer_generation.h"
 #include "recorder/meeting_recorder.h"
 #include "output/vcam_controller.h"
 #include "state/meeting_state.h"
@@ -731,6 +733,11 @@ int main(int argc, char **argv) {
         writerGeneration = state.vcamWriterGeneration;
       }
       if (!shouldUseShm) {
+#if defined(_WIN32)
+        if (vcamShm.active()) {
+          vcamShm.close();
+        }
+#endif
         lastReaderSeenMs = 0u;
         continue;
       }
@@ -755,17 +762,34 @@ int main(int argc, char **argv) {
         }
         const VcamShmCreateResult opened =
             vcamShm.create(width, height, fps, writerGeneration);
-        if (opened.ok) {
+        VcamShmOpenOutcome outcome = VcamShmOpenOutcome::CreateFailed;
+        if (opened.ok && opened.reason == "opened_service_ring") {
+          outcome = VcamShmOpenOutcome::OpenedServiceRing;
+        } else if (opened.ok && opened.reason == "created_global") {
+          outcome = VcamShmOpenOutcome::CreatedGlobal;
+        } else if (opened.reason == "service_ring_absent") {
+          outcome = VcamShmOpenOutcome::ServiceRingAbsent;
+        } else if (opened.reason == "global_namespace_privilege") {
+          outcome = VcamShmOpenOutcome::GlobalNamespacePrivilege;
+        }
+        const VcamShmRetryDecision retry =
+            decideVcamShmRetry(outcome, now, 2000u);
+        if (retry.useShm) {
           setVirtualCameraTransport("shm");
           printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"" +
                      jsonEscape(opened.reason.empty() ? "opened_service_ring"
                                                       : opened.reason) +
                      "\"}");
           nextOpenAttemptMs = 0u;
-          lastReaderSeenMs = now;
+          lastReaderSeenMs = 0u;
         } else {
           setVirtualCameraTransport("tcp");
-          nextOpenAttemptMs = now + 2000u;
+          const std::string fallbackReason =
+              opened.reason == "invalid_service_ring" ? opened.reason
+                                                       : retry.reason;
+          printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
+                     jsonEscape(fallbackReason) + "\"}");
+          nextOpenAttemptMs = retry.nextRetryMs;
         }
         continue;
       }
@@ -783,6 +807,8 @@ int main(int argc, char **argv) {
       } else if (lastReaderSeenMs != 0u && nowMs >= lastReaderSeenMs + 5000u &&
                  vcamShm.readerHeartbeatAbsent(5000u)) {
         vcamShm.close();
+        setVirtualCameraTransport("tcp");
+        printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"reader_absent\"}");
         lastReaderSeenMs = 0u;
         nextOpenAttemptMs = 0u;
         continue;
