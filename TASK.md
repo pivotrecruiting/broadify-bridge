@@ -1,6 +1,6 @@
 # TASK — WP4c: VCam SHM publish off the render thread (Windows)
 
-Base: feature/vcam-rc13 @ f1acb5e8 (rc.29). Round: 2/3.
+Base: feature/vcam-rc13 @ f1acb5e8 (rc.29). Round: 3/3 — PASS.
 
 ## Field evidence (rc.29, 22.08.2026)
 SHM path active for the first time (vcam.log: `vcam_shm_owner service created` → `vcam_reader_transport shm reason=shm_frame_available`),
@@ -55,3 +55,5 @@ N-2 publishMs -1 semantics documented or 0.
 Notes: T-1 widen the bounded-submit assertion to ≤10 ms (keep the gate as the correctness proof); D-1 `shm_frame_reader.cpp:329` copy
 directly into `out.bgra` (no 8-MB alloc/free per sample); Doc-1 `virtual-camera-windows.md:72-74` "zweifach gepuffert/kopiert" → match the
 implementation (triple buffers, one unlocked copy on the render thread, swizzle on the publisher thread).
+
+## Review round 3 (HEAD ed04a8ec) — PASS. Notes: N3-1 test invariant could assert submitFrame size after swap; N3-2 DLL copies before same-sequence early return (peek first); N3-3 one-off 24 MB alloc on first submit. Verifier green.
