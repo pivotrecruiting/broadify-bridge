@@ -1993,6 +1993,10 @@ void runFramePipeline(const Options &options,
       std::shared_ptr<const PairedKeyerFrame> selectedPair;
       KeyerSettings keyerSettings;
       bool keyerEnabled = false;
+#if defined(_WIN32)
+      std::string selectedKeyerTier;
+      OfdConfig selectedOfdConfig;
+#endif
       {
         std::lock_guard<std::mutex> lock(state.mutex);
         keyerEnabled = state.keyerEnabled;
@@ -2006,6 +2010,13 @@ void runFramePipeline(const Options &options,
         keyerSettings.edgeStabilizationStrength = state.edgeStabilizationStrength;
         keyerSettings.degradation = state.degradationSettings;
         keyerSettings.performanceMode = state.performanceMode;
+#if defined(_WIN32)
+        selectedKeyerTier = state.keyerTier;
+        selectedOfdConfig.epsilonNear = state.keyerTuning.ofdEpsilonNear;
+        selectedOfdConfig.epsilonFar = state.keyerTuning.ofdEpsilonFar;
+        setGuidedRefineTuning(state.keyerTuning.guidedRadius,
+                              state.keyerTuning.guidedEpsilon);
+#endif
       }
 #if defined(_WIN32)
       keyerSettings.dynamicDilation = false;
@@ -2422,7 +2433,8 @@ void runFramePipeline(const Options &options,
         static LumaThumb lastFusedInferredLuma;
         static LumaThumb currentFrameLuma;
         static OfdTemporal fusedOfd;
-        static std::deque<VideoFrame> fusedOfdFrames;
+        static std::deque<std::shared_ptr<const VideoFrame>> fusedOfdFrames;
+        static std::shared_ptr<const VideoFrame> lastFusedRawFrame;
         // Last PUBLISHED (post-postprocess) fused mask: the previous-mask
         // input for the fused postprocess parity (stabilizeAlphaEdges needs
         // temporal continuity). Reset wherever lastFusedRawMask is reset.
@@ -2446,6 +2458,7 @@ void runFramePipeline(const Options &options,
         // below so the step-down overlap detection can read which path was on
         // air before the governor demoted.
         static std::string lastReportedPipelineMode;
+        fusedOfd.configure(selectedOfdConfig);
         fusedCadence.setForceEveryFrame(runtime.vcamClients > 0);
         // Path-transition reset: invoked whenever the ACTIVE keyer path
         // changes between fused (fused_cadence counts as fused), async_lite
@@ -2469,6 +2482,7 @@ void runFramePipeline(const Options &options,
           asyncMaskRetention.reset();
           fusedCadence.reset();
           lastFusedRawMask = AlphaMask{};
+          lastFusedRawFrame.reset();
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
@@ -2490,11 +2504,12 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.skippedFrames = 0u;
         };
         const auto applyFusedOfd = [&](AlphaMask &mask,
-                                       const VideoFrame *&frame) -> bool {
+                                       std::shared_ptr<const VideoFrame> &frame)
+            -> bool {
           if (!fusedOfdEnabled()) {
             return true;
           }
-          fusedOfdFrames.push_back(latestCameraFrame);
+          fusedOfdFrames.push_back(frame);
           AlphaMask delayed;
           const bool ready = fusedOfd.push(mask, delayed);
           if (!ready) {
@@ -2510,7 +2525,7 @@ void runFramePipeline(const Options &options,
           }
           fusedOfdFrames.pop_front();
           mask = std::move(delayed);
-          frame = &fusedOfdFrames.front();
+          frame = fusedOfdFrames.front();
           return true;
         };
         std::string fusedPipelineModeLabel;
@@ -2877,7 +2892,8 @@ void runFramePipeline(const Options &options,
                   fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 fusedMask = std::move(fused.mask);
-                const VideoFrame *fusedFrame = &latestCameraFrame;
+                std::shared_ptr<const VideoFrame> fusedFrame =
+                    std::make_shared<VideoFrame>(latestCameraFrame);
                 (void)applyFusedOfd(fusedMask, fusedFrame);
                 stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
                 lastGoodMask = fusedMask;
@@ -2891,7 +2907,7 @@ void runFramePipeline(const Options &options,
                                    fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
-                frameForCompositor = fusedFrame;
+                frameForCompositor = fusedFrame.get();
                 maskForCompositor = &fusedMask;
                 shouldRenderProgram = true;
                 updateMeetingKeyerStatus(state, fused.status);
@@ -2973,7 +2989,8 @@ void runFramePipeline(const Options &options,
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 g_fusedKeyerDegraded = false;
                 fusedMask = std::move(fused.mask);
-                const VideoFrame *fusedFrame = &latestCameraFrame;
+                std::shared_ptr<const VideoFrame> fusedFrame =
+                    std::make_shared<VideoFrame>(latestCameraFrame);
                 (void)applyFusedOfd(fusedMask, fusedFrame);
                 // Temporal stabilization FIRST, on the raw matte: the motion-adaptive
                 // EMA smooths the per-frame confidence jitter and the collapse guard
@@ -2986,8 +3003,9 @@ void runFramePipeline(const Options &options,
                 // its edge to this specific frame; cadence-reused frames
                 // re-run the refine against their own (current) frame.
                 lastFusedRawMask = fusedMask;
+                lastFusedRawFrame = fusedFrame;
                 lastGoodMask = fusedMask;
-                lastFusedInferredTsNs = latestCameraFrame.timestampNs;
+                lastFusedInferredTsNs = fusedFrame->timestampNs;
                 lastFusedInferredLuma = currentFrameLuma;
                 // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
                 // CURRENT frame so the visible boundary stays crisp on motion.
@@ -3008,7 +3026,7 @@ void runFramePipeline(const Options &options,
                                    fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
-                frameForCompositor = fusedFrame;
+                frameForCompositor = fusedFrame.get();
                 maskForCompositor = &fusedMask;
                 shouldRenderProgram = true;
                 updateMeetingKeyerStatus(state, fused.status);
@@ -3060,13 +3078,14 @@ void runFramePipeline(const Options &options,
               // CURRENT frame. Booked honestly: the mask body is
               // maskAgeMs old ("fused_reused"), only the edge is fresh.
               fusedMask = lastFusedRawMask;
+              const VideoFrame *cadenceFrame =
+                  lastFusedRawFrame ? lastFusedRawFrame.get()
+                                    : &latestCameraFrame;
               if (!(d3d11GuidedRefineAvailable() &&
-                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
-                guidedRefineMask(fusedMask, latestCameraFrame);
+                    guidedRefineMaskD3D11(fusedMask, *cadenceFrame))) {
+                guidedRefineMask(fusedMask, *cadenceFrame);
               }
-              // The GPU compositors cache mask uploads by timestampNs; the
-              // refined mask belongs to the CURRENT frame now (KEY-02).
-              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+              fusedMask.timestampNs = cadenceFrame->timestampNs;
               // Postprocess parity on reused frames too, with the HONEST
               // mask age: dynamic dilation widens and the edge stabilization
               // age-fades exactly like the async path would for a mask this
@@ -3080,7 +3099,7 @@ void runFramePipeline(const Options &options,
                                  reusedPostprocessMetrics);
                 lastFusedPublishedMask = fusedMask;
               }
-              frameForCompositor = &latestCameraFrame;
+              frameForCompositor = cadenceFrame;
               maskForCompositor = &fusedMask;
               shouldRenderProgram = true;
               fusedPipelineModeLabel =
@@ -3107,6 +3126,7 @@ void runFramePipeline(const Options &options,
           fusedGovernor.reset();
           fusedCadence.reset();
           lastFusedRawMask = AlphaMask{};
+          lastFusedRawFrame.reset();
           lastGoodMask = AlphaMask{};
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};

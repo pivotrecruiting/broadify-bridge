@@ -64,6 +64,15 @@ void OfdTemporal::reset() {
   hasMiddle_ = false;
 }
 
+void OfdTemporal::configure(OfdConfig config) {
+  if (config.epsilonNear == config_.epsilonNear &&
+      config.epsilonFar == config_.epsilonFar) {
+    return;
+  }
+  config_ = config;
+  reset();
+}
+
 void OfdTemporal::finalizeMiddle(const AlphaMask &next, AlphaMask &middle) const {
   for (size_t i = 0; i < middle.alpha.size(); ++i) {
     const int prev = previous_.alpha[i];

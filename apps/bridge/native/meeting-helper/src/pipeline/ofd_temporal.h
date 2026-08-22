@@ -17,6 +17,7 @@ class OfdTemporal {
 
   bool push(const AlphaMask &input, AlphaMask &output);
   void reset();
+  void configure(OfdConfig config);
   uint64_t delayFrames() const { return 1u; }
 
  private:

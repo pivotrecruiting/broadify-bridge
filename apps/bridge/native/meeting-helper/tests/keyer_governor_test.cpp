@@ -187,6 +187,23 @@ int main() {
   }
 
   {
+    KeyerGovernorConfig config = testConfig();
+    config.tierFirstPolicy = true;
+    config.liteGateDuration = std::chrono::seconds(30);
+    KeyerAutoGovernor governor(config);
+    ok &= expect(governor.tier() == GovernorTier::Full512,
+                 "512 gate test starts at Full512");
+    for (int second = 1; second < 30; ++second) {
+      governor.addSample(40.0, at(second));
+    }
+    ok &= expect(governor.tier() == GovernorTier::Full512,
+                 "512 does not step to 320 before 30s over budget");
+    governor.addSample(40.0, at(31));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "512 steps to 320 after 30s over budget");
+  }
+
+  {
     // FIELD REGRESSION (RC live test 2026-08-09, hybrid GTX 1660 Ti + UHD
     // 630, DirectML under GPU contention): live async inference EMA 62ms at a
     // 33.3ms budget. The old live-probe step-up climbed every backoff
@@ -443,10 +460,16 @@ int main() {
     config.tierFirstPolicy = true;
     config.liteGateSamples = 30u;
     KeyerAutoGovernor governor(config);
-    feed(governor, 40.0, 10, at(1));
+    feed(governor, 40.0, 29, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Full512,
+                 "VCam policy holds 512 before sample gate");
+    feed(governor, 40.0, 1, at(1));
     ok &= expect(governor.tier() == GovernorTier::Balanced320,
                  "VCam policy still drops 512 -> 320");
-    feed(governor, 40.0, 10, at(2));
+    feed(governor, 40.0, 29, at(2));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "VCam policy holds 320 before sample gate");
+    feed(governor, 40.0, 1, at(2));
     ok &= expect(governor.tier() == GovernorTier::Performance256,
                  "VCam policy still drops 320 -> 256");
     feed(governor, 40.0, 29, at(3));

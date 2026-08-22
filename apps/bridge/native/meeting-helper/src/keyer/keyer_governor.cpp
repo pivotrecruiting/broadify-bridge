@@ -238,7 +238,7 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
     }
   } else {
     const double threshold = stepDownThresholdMs();
-    if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
+    if (config_.tierFirstPolicy) {
       if (inferenceMs > threshold) {
         ++liteGateOverBudgetSamples_;
         if (!liteGateClockStarted_) {
@@ -255,7 +255,7 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
     const bool fastExceed = samples_ >= config_.fastStartMinSamples &&
                             emaMs_ > config_.fastStartFactor * threshold;
     if (regularExceed || fastExceed) {
-      if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
+      if (config_.tierFirstPolicy) {
         const bool sampleGateMet =
             liteGateOverBudgetSamples_ >= config_.liteGateSamples;
         const bool durationGateMet =
