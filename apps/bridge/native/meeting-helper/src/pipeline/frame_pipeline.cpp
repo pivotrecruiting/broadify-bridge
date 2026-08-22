@@ -22,6 +22,7 @@
 #include "compose/gpu_preprocess.h"
 #include "pipeline/mask_retention.h"
 #include "pipeline/tier_handover.h"
+#include <mfapi.h>
 #endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
@@ -714,6 +715,107 @@ double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
   return std::chrono::duration<double, std::milli>(end - start).count();
 }
+
+#if defined(_WIN32)
+uint8_t clampByte(int value) {
+  return static_cast<uint8_t>(std::clamp(value, 0, 255));
+}
+
+void yuvToRgba(uint8_t y, uint8_t u, uint8_t v, uint8_t *dst) {
+  const int c = static_cast<int>(y) - 16;
+  const int d = static_cast<int>(u) - 128;
+  const int e = static_cast<int>(v) - 128;
+  dst[0] = clampByte((298 * c + 409 * e + 128) >> 8);
+  dst[1] = clampByte((298 * c - 100 * d - 208 * e + 128) >> 8);
+  dst[2] = clampByte((298 * c + 516 * d + 128) >> 8);
+  dst[3] = 255u;
+}
+
+bool readbackGpuCameraFrame(const GpuCameraFrame &gpuFrame, VideoFrame &frame) {
+  if (gpuFrame.texture == nullptr || gpuFrame.width == 0u ||
+      gpuFrame.height == 0u) {
+    return false;
+  }
+  GpuContextWin &gpu = GpuContextWin::shared();
+  if (!gpu.available()) {
+    return false;
+  }
+  const bool nv12 = IsEqualGUID(gpuFrame.subtype, MFVideoFormat_NV12);
+  const bool yuy2 = IsEqualGUID(gpuFrame.subtype, MFVideoFormat_YUY2);
+  if (!nv12 && !yuy2) {
+    return false;
+  }
+  D3D11_TEXTURE2D_DESC srcDesc{};
+  gpuFrame.texture->GetDesc(&srcDesc);
+  D3D11_TEXTURE2D_DESC stagingDesc = srcDesc;
+  stagingDesc.Width = gpuFrame.width;
+  stagingDesc.Height = gpuFrame.height;
+  stagingDesc.MipLevels = 1;
+  stagingDesc.ArraySize = 1;
+  stagingDesc.Usage = D3D11_USAGE_STAGING;
+  stagingDesc.BindFlags = 0;
+  stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  stagingDesc.MiscFlags = 0;
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+  if (FAILED(gpu.d3d11Device()->CreateTexture2D(&stagingDesc, nullptr,
+                                                &staging))) {
+    return false;
+  }
+  D3D11_MAPPED_SUBRESOURCE mapped{};
+  {
+    std::lock_guard<std::mutex> lock(gpu.immediateContextMutex());
+    gpu.d3d11Context()->CopySubresourceRegion(
+        staging.Get(), 0u, 0u, 0u, 0u, gpuFrame.texture.Get(),
+        gpuFrame.subresourceIndex, nullptr);
+    if (FAILED(gpu.d3d11Context()->Map(staging.Get(), 0u, D3D11_MAP_READ, 0u,
+                                       &mapped))) {
+      return false;
+    }
+  }
+  frame.width = gpuFrame.width;
+  frame.height = gpuFrame.height;
+  frame.timestampNs = gpuFrame.timestampNs;
+  frame.rgba.assign(static_cast<size_t>(frame.width) * frame.height * 4u, 0u);
+  const auto *base = static_cast<const uint8_t *>(mapped.pData);
+  if (nv12) {
+    const uint8_t *yPlane = base;
+    const uint8_t *uvPlane =
+        base + static_cast<size_t>(mapped.RowPitch) * frame.height;
+    for (uint32_t y = 0; y < frame.height; ++y) {
+      const uint8_t *yRow = yPlane + static_cast<size_t>(mapped.RowPitch) * y;
+      const uint8_t *uvRow =
+          uvPlane + static_cast<size_t>(mapped.RowPitch) * (y / 2u);
+      for (uint32_t x = 0; x < frame.width; ++x) {
+        yuvToRgba(yRow[x], uvRow[(x / 2u) * 2u],
+                  uvRow[(x / 2u) * 2u + 1u],
+                  frame.rgba.data() +
+                      (static_cast<size_t>(y) * frame.width + x) * 4u);
+      }
+    }
+  } else {
+    for (uint32_t y = 0; y < frame.height; ++y) {
+      const uint8_t *row = base + static_cast<size_t>(mapped.RowPitch) * y;
+      for (uint32_t x = 0; x + 1u < frame.width; x += 2u) {
+        const uint8_t y0 = row[x * 2u];
+        const uint8_t u = row[x * 2u + 1u];
+        const uint8_t y1 = row[x * 2u + 2u];
+        const uint8_t v = row[x * 2u + 3u];
+        yuvToRgba(y0, u, v,
+                  frame.rgba.data() +
+                      (static_cast<size_t>(y) * frame.width + x) * 4u);
+        yuvToRgba(y1, u, v,
+                  frame.rgba.data() +
+                      (static_cast<size_t>(y) * frame.width + x + 1u) * 4u);
+      }
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(gpu.immediateContextMutex());
+    gpu.d3d11Context()->Unmap(staging.Get(), 0u);
+  }
+  return true;
+}
+#endif
 
 float clamp01(float value) {
   return std::clamp(value, 0.0f, 1.0f);
@@ -2473,6 +2575,78 @@ void runFramePipeline(const Options &options,
             // DML session safely on a size change.
             if (!fusedKeyerPerformanceOverrideActive()) {
               keyerSettings.performanceMode = fusedGovernor.performanceModeForTier();
+            }
+          }
+          if (gpuPipelineEnabled() && fusedKeyerWorkDue && !hasCameraFrame &&
+              hasGpuCameraFrame && snapshot.keyerEnabled) {
+            GpuContextWin &gpu = GpuContextWin::shared();
+            const auto gpuPreprocessStart = std::chrono::steady_clock::now();
+            GpuFrameSlot gpuSlot = gpu.frameRing().acquireNext();
+            latestGpuCameraFrame.fenceValue = gpuSlot.fenceValue;
+            const uint32_t tensorSize =
+                modnetInputSizeForMode(keyerSettings.performanceMode);
+            const ModnetLetterboxMapping letterbox = modnetLetterboxMapping(
+                latestGpuCameraFrame.width, latestGpuCameraFrame.height,
+                tensorSize, tensorSize);
+            const bool nv12 = IsEqualGUID(latestGpuCameraFrame.subtype,
+                                          MFVideoFormat_NV12);
+            const bool yuy2 = IsEqualGUID(latestGpuCameraFrame.subtype,
+                                          MFVideoFormat_YUY2);
+            const bool preprocessOk =
+                (nv12 || yuy2) &&
+                gpuPreprocessor.preprocess(
+                    latestGpuCameraFrame.texture.Get(),
+                    latestGpuCameraFrame.subresourceIndex,
+                    nv12 ? GpuCameraFormat::Nv12 : GpuCameraFormat::Yuy2,
+                    latestGpuCameraFrame.width, latestGpuCameraFrame.height,
+                    tensorSize, letterbox, gpuSlot);
+            const auto gpuPreprocessEnd = std::chrono::steady_clock::now();
+            KeyerResult fused;
+            if (preprocessOk) {
+              const GpuPreprocessSlot *preprocessSlot =
+                  gpuPreprocessor.slot(gpuSlot.index);
+              if (preprocessSlot != nullptr) {
+                fused = fusedKeyer->applyGpu(latestGpuCameraFrame,
+                                             *preprocessSlot, gpuSlot,
+                                             letterbox, keyerSettings);
+              }
+            } else {
+              fused.status = fusedKeyer->status();
+              fused.status.fallbackActive = true;
+              fused.status.fallbackReason = "gpu_preprocess_failed";
+            }
+            VideoFrame gpuCameraReadbackFrame;
+            if (readbackGpuCameraFrame(latestGpuCameraFrame,
+                                       gpuCameraReadbackFrame)) {
+              latestCameraFrame = std::move(gpuCameraReadbackFrame);
+              lastCameraTimestampNs = latestCameraFrame.timestampNs;
+              frameForCompositor = &latestCameraFrame;
+              fusedMask.width = latestCameraFrame.width;
+              fusedMask.height = latestCameraFrame.height;
+              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+              fusedMask.alpha.assign(
+                  static_cast<size_t>(fusedMask.width) * fusedMask.height,
+                  255u);
+              maskForCompositor = &fusedMask;
+              shouldRenderProgram = true;
+            }
+            fused.status.metrics.preprocessMs =
+                elapsedMs(gpuPreprocessStart, gpuPreprocessEnd);
+            updateMeetingKeyerStatus(state, fused.status);
+            {
+              std::lock_guard<std::mutex> lock(state.mutex);
+              state.gpuResident = gpu.telemetry().available;
+              state.gpuCapture = "dxgi";
+              state.keyerMetrics.preprocessMs =
+                  fused.status.metrics.preprocessMs;
+              state.keyerMetrics.inferenceStageMs =
+                  fused.status.metrics.inferenceStageMs;
+              state.keyerMetrics.maskAgeMs = 0.0;
+              state.keyerMetrics.maskAgeAvgMs = 0.0;
+              setMeetingDegradationStage(
+                  state, fused.status.fallbackActive ? "gpu_passthrough"
+                                                     : "gpu_resident");
+              state.staleMaskActive = false;
             }
           }
           // Warm-handover step-up management (make-before-break): poll the
