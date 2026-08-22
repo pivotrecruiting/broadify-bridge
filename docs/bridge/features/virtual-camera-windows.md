@@ -46,9 +46,13 @@ Transport-Auswahl:
 SHM-DACL: `LOCAL SERVICE` hat Vollzugriff; `IU` (Interactive Users) und `AU`
 (Authenticated Users) haben Lese-/Schreibzugriff (`GRGW`/`GWGR`), keine
 weiteren SIDs werden eingetragen. Das ist lokal-only, aber jeder lokal
-authentifizierte Benutzer kann Frames in den Ring schreiben. Das ist bewusst
-akzeptiert und entspricht der heutigen Vertrauensebene des TCP-Loopback-Ports.
-Es werden keine Secrets oder Enrollment-Daten im Ring abgelegt.
+authentifizierte Benutzer kann Frames und Control-Felder schreiben. Deshalb
+werden Mapping-/Event-Namen und alle Header-Felder als untrusted behandelt:
+Objekte werden nur read-only bzw. mit minimalem Schreibrecht geoeffnet, Namen
+werden laengenbegrenzt kopiert, und Frame-Copy/Publish validieren Magic,
+Version, Owner, Capacity, Geometrie, Format, Slot-Zahl, Slot-Stride und
+Payload-Groesse vor jedem Zugriff. Es werden keine Secrets oder
+Enrollment-Daten im Ring abgelegt.
 
 Der SHM-Ring hat drei Slots und wird mit maximaler Kapazitaet
 (`1920x1080 BGRA * 3 Slots`) angelegt. Jeder Slot nutzt eine Sequenznummer als seqlock:
@@ -64,10 +68,12 @@ angeboten, wenn `HKCU\Software\Broadify\VCam\OfferNv12` als DWORD `1` gesetzt
 ist. Die DLL liest den Flag einmal pro `MediaStream::Start`.
 
 Die DLL erstellt die service-eigenen SHM-Objekte und startet den SHM-Reader
-erst in `MediaStream::Start`. TCP verbindet sie sofort aus `Start()`, wenn die
-SHM-Mapping fehlt, wenn der Heartbeat laenger als ca. 3 s steht oder wenn nach
-dem Oeffnen einer Mapping binnen 2 s kein Frame ankommt; danach prueft sie
-periodisch wieder auf SHM. Bei gesunder
+erst in `MediaStream::Start`. Ein zero-geometry Service-Header gilt fuer die
+Reader-Seite als "nicht offen", damit TCP sofort startet und die 2-s-Regel erst
+nach einer echten Geometrie-Publikation greift. TCP verbindet sie sofort aus
+`Start()`, wenn die SHM-Mapping fehlt, wenn der Heartbeat laenger als ca. 3 s
+steht oder wenn nach dem Oeffnen einer Mapping binnen 2 s kein Frame ankommt;
+danach prueft sie periodisch wieder auf SHM. Bei gesunder
 SHM-Verbindung wird der TCP-Client wieder gestoppt und damit gibt es keine
 per-Connection-Worker-Churn im Helper.
 Direkt nach Stream-Start liefert `RequestSample` bis zum ersten Frame den
@@ -121,7 +127,8 @@ Log-Zeilen (`VcamLog`): `build git=... time=...` steht am Anfang jeder
 Log-Datei. `MediaSource::Initialize ... (no activation probe)` bestaetigt den
 WP4-Pfad. `vcam_shm_owner service created` oder
 `vcam_shm_owner service opened_existing` bestaetigt WP4b-Ownership;
-`vcam_shm_owner service create_failed error=N` haelt Create-Fehler fest.
+`vcam_shm_owner service create_failed error=N` haelt Create-Fehler fest. Diese
+Owner-Zeile wird nur bei einem Outcome-Wechsel erneut geloggt.
 `vcam_reader_transport tcp reason=...` markiert Fallback,
 `vcam_reader_transport shm reason=shm_frame_available` die Rueckkehr. Pro
 Stream-Start loggt die DLL beim ersten Sample den ausgehandelten Typ, z. B.
@@ -137,6 +144,10 @@ Reason-Tabelle:
   TCP bleibt aktiv, Retry alle ca. 2 s.
 - `global_namespace_privilege`: Helper-Fallback konnte `Global\` nicht
   erstellen, typischer unelevierter Desktop-Fall.
+- `invalid_service_ring`: Helper hat die Service-Control-/Stream-Objekte
+  gefunden, aber Magic/Version/Owner/Capacity waren nicht plausibel.
+- `create_failed`: Helper konnte nach fehlendem Service-Ring auch den
+  Creator-Fallback nicht bereitstellen.
 
 Field-Checkliste:
 

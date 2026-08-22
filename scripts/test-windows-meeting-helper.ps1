@@ -80,6 +80,15 @@ if ($timeToFirstFrameMs -ge 100) {
   throw "Meeting helper VCam SHM self-test time_to_first_frame_ms was $timeToFirstFrameMs ms; expected < 100 ms. Output: $shmSelfTest"
 }
 
+$localShmSelfTest = & $resolvedHelperPath --vcam-shm-selftest --namespace local 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Meeting helper Local VCam SHM self-test failed with exit code $LASTEXITCODE. Output: $localShmSelfTest"
+}
+if (-not ($localShmSelfTest -match '"type":"vcam_shm_selftest"') -or
+    -not ($localShmSelfTest -match '"ok":true')) {
+  throw "Meeting helper Local VCam SHM self-test did not report success. Output: $localShmSelfTest"
+}
+
 Write-Warning "VCam SHM self-test ran in the current CI token only. PowerShell has no built-in restricted-token launcher; the non-elevated Global namespace denial path is covered by field runs and documented in docs/bridge/features/virtual-camera-windows.md."
 
 # The usage probe above intentionally leaves exit code 2 in $LASTEXITCODE;

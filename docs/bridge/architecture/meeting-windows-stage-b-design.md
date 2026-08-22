@@ -50,8 +50,11 @@ geometry and bumping generation.
 
 The DACL grants `LOCAL SERVICE` full access and grants Interactive Users plus
 Authenticated Users read/write. This matches the local trust level of the TCP
-loopback fallback: any local authenticated user can write frames, but no
-secrets are present.
+loopback fallback: any local authenticated user can write frames and control
+fields, but no secrets are present. The consequence is deliberate defensive
+parsing: object names are copied with fixed bounds, stream mappings are opened
+read-only by the DLL reader, and every header-derived size, stride, slot count
+and payload length is revalidated before a memcpy.
 
 Helper `output.vcam.raw.start` now attempts `OpenFileMappingW` first
 (`opened_service_ring`), then attempts the fixed `Global\` creator fallback
@@ -60,6 +63,10 @@ runtime because they do not cross the desktop/session boundary. If the service
 ring is absent, TCP remains active and the helper retries every 2 s while raw
 output is armed. If a previously visible DLL reader heartbeat disappears for
 more than 5 s, the helper closes its stale handles and re-runs the open path.
+The raw RPC handlers only arm or disarm output; the lifecycle thread is the
+sole owner of open/retry/close. The named section stays alive while either the
+DLL or helper holds a handle, and each helper publish path writes geometry plus
+a bumped writer generation so DLL readers can detect restarts and reopen.
 
 macOS cannot compile the Windows Frame Server DLL, SDDL ACL path, or
 MediaFoundation buffers. Platform-neutral layout, seqlock, discovery, SDDL
