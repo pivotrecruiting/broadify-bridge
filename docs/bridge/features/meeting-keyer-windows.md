@@ -30,3 +30,19 @@ Environment knobs:
 Windows MODNet fused EMA defaults to off
 (`BROADIFY_MEETING_FUSED_EMA_STATIC=1.0`) because OFD is the primary temporal
 flicker fix. Edge stabilization remains off for fused presets by default.
+
+## Field Logs
+
+`segmentation_tier_selected` is emitted once per helper start.
+`keyer.get.status.keyer_tier` mirrors the active selection:
+
+| Value | Meaning |
+| --- | --- |
+| `os_mask` | Windows OS background mask selected. |
+| `modnet_512_ofd` | Default MODNet 512 with OFD. |
+| `modnet_320_ofd` | Fixed lower MODNet tier with OFD. |
+| `selfie_landscape` | Optional MediaPipe landscape backend. |
+
+`keyer_tier_reason` is the diagnostic field to compare across machines, for
+example `windows_os_mask_capability`, `windows_modnet_default`, or
+`igpu_modnet320_over_budget`.

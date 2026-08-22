@@ -42,3 +42,36 @@ macOS cannot compile the Windows Frame Server DLL, SDDL ACL path, or
 MediaFoundation buffers. Platform-neutral layout, seqlock, discovery, SDDL
 string, and BGRA-to-NV12 conversion are covered by ctests on macOS; Windows CI
 must compile the DLL and run the SHM self-test.
+
+## 4. Windows Temporal Segmentation Tiers
+
+WP5 adds an explicit Windows-only segmentation tier decision before the keyer
+session starts:
+
+- `os_mask` (T0): intended for Windows Studio Effects background-segmentation
+  masks when the capture source exposes the mask capability.
+- `modnet_512_ofd` (T2): default MODNet tier with one-frame-delay temporal
+  stabilization.
+- `modnet_320_ofd`: lower fixed MODNet input tier after sustained budget
+  pressure.
+- `selfie_landscape` (T3): optional MediaPipe Selfie Segmenter landscape ONNX
+  backend for iGPU-only machines where MODNet 320 is over budget. RVM is not
+  included because of its GPL-3.0 license.
+
+The selected tier is logged as `segmentation_tier_selected` and reported in
+`keyer.get.status.keyer_tier`. `keyer_tier_reason` explains why the tier was
+chosen or why a requested tier was unavailable. The bridge persists helper
+`keyer_tier_cache` events to `<userData>/keyer-tier.json` for field triage.
+
+MODNet OFD is the primary flicker fix on Windows. It emits mask `t-1` after
+seeing masks `t-2`, `t-1`, and `t`, replacing isolated one-frame alpha spikes
+while preserving sustained motion. Windows fused EMA defaults to off
+(`BROADIFY_MEETING_FUSED_EMA_STATIC=1.0`) to avoid double temporal smoothing.
+
+The fused governor no longer changes input size per frame. It may use cadence
+pinning/unpinning, and it only drops from fused 256 to async lite after a
+continuous 30-second over-budget window; step-up hysteresis is 60 seconds.
+
+`meeting-helper --keyer-tier-selftest --models-dir <dir>` prints the probe
+summary expected in CI. On common CI runners without Windows Studio Effects
+mask support, the expected tier is T2 (`modnet_512_ofd`).
