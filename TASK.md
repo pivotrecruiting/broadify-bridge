@@ -1,6 +1,6 @@
 # TASK — WP4c: VCam SHM publish off the render thread (Windows)
 
-Base: feature/vcam-rc13 @ f1acb5e8 (rc.29). Round: 1/3.
+Base: feature/vcam-rc13 @ f1acb5e8 (rc.29). Round: 2/3.
 
 ## Field evidence (rc.29, 22.08.2026)
 SHM path active for the first time (vcam.log: `vcam_shm_owner service created` → `vcam_reader_transport shm reason=shm_frame_available`),
@@ -44,3 +44,14 @@ on the SHM path. The Frame Server reader copies on every SetEvent AND again in R
 Notes to fold in: N-1 replace sleep-timing in the latest-wins test with a gating hook; N-3 one in-function retry on torn `copyNewestFrame`
 in the DLL; N-4 `observeNewestLocked` checks `size == expected`; N-5 doc sentence that `published_preview_frames` stops with SHM-only readers;
 N-2 publishMs -1 semantics documented or 0.
+
+## Review round 2 (HEAD 6ab60df9; verifier green) — R1-1 resolved. MUST-FIX:
+- R2-1 `frame_pipeline.cpp:3216` + `vcam_shm_publisher.cpp:118`: `frame.rgba.swap(rgba)` hands a zeroed (first use) or 3-frames-old buffer
+  back as `programFrame`; recorder (`:3181-3183`, every tick) and FrameBus static heartbeat (`:3186-3194`) consume it on reuse ticks →
+  black/stale frames in MP4 and display output. Fix: the pipeline keeps `programFrame` intact — submit via a dedicated `vcamSubmitFrame`
+  vector filled with ONE unlocked memcpy on the render thread (no lock held during the copy; swap that vector into the publisher), or keep
+  the swap but restore `programFrame` content before any reuse. Add a regression test: after `submitRgba`, the caller's frame still equals
+  the submitted content (and the publisher publishes it byte-equal).
+Notes: T-1 widen the bounded-submit assertion to ≤10 ms (keep the gate as the correctness proof); D-1 `shm_frame_reader.cpp:329` copy
+directly into `out.bgra` (no 8-MB alloc/free per sample); Doc-1 `virtual-camera-windows.md:72-74` "zweifach gepuffert/kopiert" → match the
+implementation (triple buffers, one unlocked copy on the render thread, swizzle on the publisher thread).
