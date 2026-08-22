@@ -80,6 +80,8 @@ if ($timeToFirstFrameMs -ge 100) {
   throw "Meeting helper VCam SHM self-test time_to_first_frame_ms was $timeToFirstFrameMs ms; expected < 100 ms. Output: $shmSelfTest"
 }
 
+Write-Warning "VCam SHM self-test ran in the current CI token only. PowerShell has no built-in restricted-token launcher; the non-elevated Global namespace denial path is covered by field runs and documented in docs/bridge/features/virtual-camera-windows.md."
+
 # The usage probe above intentionally leaves exit code 2 in $LASTEXITCODE;
 # reset it so the CI shell wrapper (which exits with $LASTEXITCODE) does not
 # fail the step after a fully successful smoke.

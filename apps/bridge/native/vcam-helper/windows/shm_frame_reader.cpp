@@ -21,6 +21,7 @@ namespace broadify::vcam {
 namespace {
 
 constexpr uint64_t kMappingRetryMs = 5000u;
+constexpr uint64_t kNoFrameFallbackMs = 2000u;
 constexpr uint64_t kStaleWindowMs = 3000u;
 constexpr DWORD kEventWaitMs = 1000u;
 
@@ -73,6 +74,13 @@ bool readGlobalControl(broadify::vcam_shm::ControlRecord &record,
 ShmFrameReader::ShmFrameReader() = default;
 
 ShmFrameReader::~ShmFrameReader() { stop(); }
+
+bool ShmFrameReader::NoFrameDeadlineExpired(bool hasFrame,
+                                            uint64_t openedAtMs,
+                                            uint64_t currentMs) {
+  return !hasFrame && openedAtMs != 0u &&
+         currentMs >= openedAtMs + kNoFrameFallbackMs;
+}
 
 bool ShmFrameReader::ProbeGeometry(ShmGeometry &geometry) {
   HANDLE control = nullptr;
@@ -127,6 +135,11 @@ uint64_t ShmFrameReader::staleAgeMs() const {
 bool ShmFrameReader::hasMapping() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return mappingOpen_;
+}
+
+uint64_t ShmFrameReader::mappingGeneration() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return openGeneration_;
 }
 
 void ShmFrameReader::updateReaderLiveness() {
@@ -217,10 +230,12 @@ bool ShmFrameReader::openFromControl(std::string &reason) {
   mappingMemory_ = mappingView;
   eventHandle_ = event;
   writerGeneration_ = record.writer_generation;
+  openedAtMs_ = nowMs();
   updateReaderLiveness();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     mappingOpen_ = true;
+    ++openGeneration_;
   }
   VcamLog("ShmFrameReader: opened %ls", mappingName_.c_str());
   return true;
@@ -251,9 +266,11 @@ void ShmFrameReader::closeMappings() {
   ringBytes_ = 0u;
   lastSequence_ = 0u;
   writerGeneration_ = 0u;
+  openedAtMs_ = 0u;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     mappingOpen_ = false;
+    hasFrame_ = false;
   }
 }
 
@@ -346,6 +363,18 @@ void ShmFrameReader::run() {
       VcamLog("vcam_reader_transport tcp reason=shm_generation_changed");
       closeMappings();
       nextRetryMs = 0u;
+      continue;
+    }
+    bool noFrameDeadlineExpired = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      noFrameDeadlineExpired =
+          NoFrameDeadlineExpired(hasFrame_, openedAtMs_, nowMs());
+    }
+    if (noFrameDeadlineExpired) {
+      VcamLog("vcam_reader_transport tcp reason=shm_no_frame_after_open");
+      closeMappings();
+      nextRetryMs = nowMs() + kMappingRetryMs;
       continue;
     }
     if (heartbeatStale()) {

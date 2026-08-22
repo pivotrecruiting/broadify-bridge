@@ -126,8 +126,12 @@ sc query FrameServer; sc query FrameServerMonitor
   bereits verbraucht – Inhalt (Version, Pfad, Zeitpunkt) in die Eskalation.
 - `%ProgramData%\Broadify\vcam.log` enthaelt lokale Zeit, PID und TID sowie
   am Anfang den Build-Stamp (`build git=... time=...`). Bei
-  5 MB wird zu `vcam.log.1` rotiert. Wichtige neue Zeilen:
+  5 MB wird zu `vcam.log.1` rotiert. Wenn ein alter gemeinsamer Log nicht
+  beschreibbar und nicht dem aktuellen Prozess gehoert, versucht die DLL ihn
+  nach `vcam-legacy.log` umzubenennen; wenn auch das nicht reicht, schreibt
+  sie in `vcam-<pid>.log` im selben Verzeichnis. Wichtige neue Zeilen:
   `MediaSource::Initialize ... no activation probe`,
+  `stream_type subtype=RGB32 buffer=memory`,
   `vcam_reader_transport tcp reason=...`, `shm_heartbeat_stale`,
   `handshake timeout`, `recv timeout/disconnect`, `raw frame stream stale`,
   `MediaStream: ... re-emitting last frame`.

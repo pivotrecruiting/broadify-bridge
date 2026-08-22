@@ -7,7 +7,8 @@ System-COM-Registry registriert sein.
 
 ## Frame-Pfad und Transport-Auswahl
 
-Default ab WP4 ist Shared Memory: der Meeting-Helper legt beim Armieren von
+Default ab WP4 ist Shared Memory, wenn der Helper die noetigen Windows-
+Privilegien besitzt: der Meeting-Helper legt beim Armieren von
 `output.vcam.raw.start` eine globale Ring-Mapping an
 (`Global\BroadifyVcam-<pid>-<tick>`) und publiziert den aktuellen Namen in
 `Global\BroadifyVcamControl`. Die ACL erlaubt dem Windows Frame Server
@@ -23,24 +24,33 @@ Transport-Auswahl:
   Windows.
 - `BROADIFY_MEETING_VCAM_TRANSPORT=tcp`: alter Raw-TCP-Pfad
   (`127.0.0.1:18787`) bleibt fuer eine Release als Rollback erhalten.
+- Eine globale Mapping im `Global\`-Namespace erfordert fuer den erstellenden
+  Prozess `SeCreateGlobalPrivilege`. Das hat normalerweise nur ein erhoehter
+  Helper bzw. ein Dienstprozess; ein unelevierter Desktop-Helper faellt auf
+  TCP zurueck.
 - Kann der Helper keine globale Mapping mit ACL erstellen, schaltet er
-  automatisch auf TCP und loggt
-  `meeting_vcam_raw event=vcam_transport_selected transport=tcp`.
+  automatisch auf TCP und loggt bei `ERROR_ACCESS_DENIED`
+  `meeting_vcam_raw event=vcam_transport_selected transport=tcp reason=global_namespace_privilege`.
 - `output.vcam.status` enthaelt `transport: "shm"|"tcp"`.
-- TCP ist nur ein Kompatibilitaets-Fallback, nicht byte-for-byte identisch:
-  die DLL probt nicht mehr blockierend in der Aktivierung und bietet NV12
-  zuerst an.
+- TCP ist der normale Fallback fuer unelevierte Installationen. Die DLL probt
+  nicht mehr blockierend in der Aktivierung; wie in rc.26 bietet sie RGB32
+  standardmaessig als einzigen Media Type an.
 
 Der SHM-Ring hat drei Slots. Jeder Slot nutzt eine Sequenznummer als seqlock:
 ungerade bedeutet "Writer schreibt gerade", Leser kopieren nur den neuesten
 geraden Slot und pruefen die Sequenz nach dem Copy erneut. WP4 schreibt
 BGRA8; das Layout enthaelt bereits `format=NV12` fuer den spaeteren
-Compositor-Ausgang. Die DLL bietet NV12 zuerst an, danach RGB32 und YUY2.
+Compositor-Ausgang. Die DLL bietet standardmaessig nur RGB32 an; NV12/YUY2
+sind ein experimenteller Consumer-Kompatibilitaetspfad und werden nur
+angeboten, wenn `HKCU\Software\Broadify\VCam\OfferNv12` als DWORD `1` gesetzt
+ist. Die DLL liest den Flag einmal pro `MediaStream::Start`.
 
 Die DLL startet den SHM-Reader erst in `MediaStream::Start`. TCP verbindet sie
-nur, wenn die SHM-Mapping fehlt oder der Heartbeat laenger als ca. 3 s steht;
-danach prueft sie periodisch wieder auf SHM. Bei gesunder SHM-Verbindung gibt
-es keinen TCP-Client und damit keine per-Connection-Worker-Churn im Helper.
+sofort aus `Start()`, wenn die SHM-Mapping fehlt, wenn der Heartbeat laenger
+als ca. 3 s steht oder wenn nach dem Oeffnen einer Mapping binnen 2 s kein
+Frame ankommt; danach prueft sie periodisch wieder auf SHM. Bei gesunder
+SHM-Verbindung wird der TCP-Client wieder gestoppt und damit gibt es keine
+per-Connection-Worker-Churn im Helper.
 Direkt nach Stream-Start liefert `RequestSample` bis zum ersten Frame den
 dunklen Splash. Sobald einmal ein gueltiger Frame angekommen ist, wird nie
 wieder auf den Splash umgeschaltet: bei Staleness, statischem Programm oder
@@ -91,7 +101,9 @@ Luefter entsprechen dann dem Zustand „VCam-Output gestoppt".
 Log-Zeilen (`VcamLog`): `build git=... time=...` steht am Anfang jeder
 Log-Datei. `MediaSource::Initialize ... (no activation probe)` bestaetigt den
 WP4-Pfad. `vcam_reader_transport tcp reason=...` markiert Fallback,
-`vcam_reader_transport shm reason=shm_frame_available` die Rueckkehr.
+`vcam_reader_transport shm reason=shm_frame_available` die Rueckkehr. Pro
+Stream-Start loggt die DLL beim ersten Sample den ausgehandelten Typ, z. B.
+`stream_type subtype=RGB32 buffer=memory`.
 
 ## Stream-Lifecycle und Timeouts
 
@@ -125,9 +137,24 @@ Wird ein duplizierter Frame erneut ausgeliefert, erhaelt er den vorherigen
 Sample-Zeitstempel plus eine Frame-Dauer. Das stabilisiert A/V-Sync und
 reduziert sichtbare Latenzspruenge in Teams/Meet.
 
+Der SHM-Ring wird geschrieben, sobald `output.vcam.raw.start` aktiv ist, auch
+wenn der Frame-Server-Leser noch nicht in der Control-Mapping sichtbar ist.
+Mit aktivem SHM schreibt der Helper den Ring in voller Cadence auch ohne
+Reader; Reader-Liveness beeinflusst nur Diagnose und Transportstatus, nicht
+den Ring-Write.
+`output.vcam.raw.stop` schliesst die Mapping, so dass die DLL Staleness sieht
+und auf TCP zurueckfaellt.
+
 Der Raw-Frame-Server sendet nur, wenn ein VCam-Client verbunden ist. MJPEG
 Preview-Encoding laeuft nur fuer verbundene MJPEG-Clients und wird bei aktiver
 VCam auf 10 fps begrenzt, damit die Raw-Frame-Ausgabe Vorrang hat.
+
+CI-Hinweis: Der SHM-Selftest in `scripts/test-windows-meeting-helper.ps1`
+laeuft im aktuellen Runner-Token. Wenn der Runner erhoeht ist, beweist er die
+Vererbung und den Frame-Pfad, aber nicht den unelevierten
+`Global\`-Namespace-Fehler. Ohne einen Restricted-Token-Launcher bleibt dieser
+Blind Spot explizit; Feld- und Installer-Tests muessen
+`reason=global_namespace_privilege` auf normalen Desktops pruefen.
 
 Seit rc.18 field-fix liest der D3D11-Guided-Refine-Pfad die aktuelle Maske
 zurueck; der finale D3D11-Staging-Ring ist nur mit

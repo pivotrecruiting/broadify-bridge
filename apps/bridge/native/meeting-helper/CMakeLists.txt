@@ -377,6 +377,17 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/util/pixel_swizzle.cpp
     src/util/win_qos.cpp
   )
+  if(WIN32)
+    add_executable(shm_frame_reader_no_frame_test
+      tests/shm_frame_reader_no_frame_test.cpp
+      ../vcam-helper/windows/shm_frame_reader.cpp
+      ../vcam-helper/windows/vcam_log.cpp
+      src/preview/vcam_shm_layout.cpp
+    )
+    target_include_directories(shm_frame_reader_no_frame_test PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    )
+  endif()
   add_executable(control_server_test
     tests/control_server_test.cpp
     src/control/control_server.cpp
@@ -454,6 +465,13 @@ if(MEETING_HELPER_BUILD_TESTS)
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
   endforeach()
+
+  if(WIN32)
+    target_include_directories(shm_frame_reader_no_frame_test PRIVATE src)
+    target_compile_definitions(shm_frame_reader_no_frame_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(shm_frame_reader_no_frame_test PRIVATE advapi32)
+    add_test(NAME shm_frame_reader_no_frame_test COMMAND shm_frame_reader_no_frame_test)
+  endif()
 
   if(APPLE)
     # Exercises the production AVAssetWriter configuration across fragment

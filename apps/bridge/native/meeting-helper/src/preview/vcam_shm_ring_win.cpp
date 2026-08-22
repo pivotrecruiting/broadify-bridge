@@ -1,5 +1,7 @@
 #include "preview/vcam_shm_ring_win.h"
 
+#include "util/helper_event_log.h"
+
 #include <atomic>
 #include <cstring>
 #include <iostream>
@@ -41,6 +43,17 @@ uint64_t nowQpc() {
 std::string lastErrorText(const char *operation) {
   std::ostringstream out;
   out << operation << " failed error=" << GetLastError();
+  return out.str();
+}
+
+std::string createMappingFailureReason(const char *operation,
+                                       bool globalNamespace) {
+  const DWORD error = GetLastError();
+  if (globalNamespace && error == ERROR_ACCESS_DENIED) {
+    return "global_namespace_privilege";
+  }
+  std::ostringstream out;
+  out << operation << " failed error=" << error;
   return out.str();
 }
 
@@ -118,8 +131,7 @@ VcamShmCreateResult VcamShmRingWin::create(uint32_t width,
   }
   const std::string globalReason = reason;
   if (createWithNamespace(false, width, height, fps, writerGeneration, reason)) {
-    return VcamShmCreateResult{
-        true, false, "global namespace unavailable: " + globalReason};
+    return VcamShmCreateResult{true, false, globalReason};
   }
   return VcamShmCreateResult{false, false, reason};
 #else
@@ -319,7 +331,8 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
       INVALID_HANDLE_VALUE, streamSecurity.get(), PAGE_READWRITE, size.HighPart,
       size.LowPart, mappingName_.c_str());
   if (mapping == nullptr) {
-    reason = lastErrorText("CreateFileMappingW(stream)");
+    reason = createMappingFailureReason("CreateFileMappingW(stream)",
+                                        globalNamespace);
     close();
     return false;
   }
@@ -339,7 +352,8 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
       static_cast<DWORD>(sizeof(broadify::vcam_shm::ControlRecord)),
       controlName_.c_str());
   if (control == nullptr) {
-    reason = lastErrorText("CreateFileMappingW(control)");
+    reason = createMappingFailureReason("CreateFileMappingW(control)",
+                                        globalNamespace);
     close();
     return false;
   }
@@ -366,8 +380,7 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
           staleTicks > 0u && existing.heartbeat_qpc != 0u &&
           heartbeatQpc <= existing.heartbeat_qpc + staleTicks;
       if (heartbeatFresh && isProcessAlive(existing.writer_pid)) {
-        std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_shm_control_busy\"}"
-                  << std::endl;
+        emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_shm_control_busy\"}");
         reason = "vcam_shm_control_busy";
         close();
         return false;

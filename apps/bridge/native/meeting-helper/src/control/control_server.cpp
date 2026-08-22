@@ -29,6 +29,13 @@
 namespace broadify::meeting {
 namespace {
 
+#if defined(_WIN32)
+uint64_t initialVcamWriterGeneration() {
+  return (static_cast<uint64_t>(GetCurrentProcessId()) << 32u) ^
+         static_cast<uint64_t>(GetTickCount64());
+}
+#endif
+
 #if !defined(_WIN32)
 void configureSocketForShutdownChecks(int socketHandle) {
   timeval timeout{};
@@ -789,7 +796,15 @@ std::string handleRpc(const std::string &line,
       state.vcamRawRunning = true;
       if (state.vcamTransport == "shm" && vcamShm != nullptr &&
           !vcamShm->active()) {
+#if defined(_WIN32)
+        if (state.vcamWriterGeneration == 0u) {
+          state.vcamWriterGeneration = initialVcamWriterGeneration();
+        } else {
+          ++state.vcamWriterGeneration;
+        }
+#else
         ++state.vcamWriterGeneration;
+#endif
         const VcamShmCreateResult shm =
             vcamShm->create(options.width, options.height, options.fps,
                             state.vcamWriterGeneration);
@@ -817,6 +832,9 @@ std::string handleRpc(const std::string &line,
     previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.vcamRawRunning = false;
+    if (vcamShm != nullptr) {
+      vcamShm->close();
+    }
     markProgramDirty(state);
     return okResponse(id, std::string("{\"enabled\":true,\"running\":false,\"transport\":\"") +
                               jsonEscape(state.vcamTransport) + "\"}");
