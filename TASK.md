@@ -1,6 +1,6 @@
 # TASK — WP4b: service-owned VCam shared-memory ring (Windows)
 
-Base: feature/vcam-rc13 @ 4f628e95 (rc.28). Round: 1/3.
+Base: feature/vcam-rc13 @ 4f628e95 (rc.28). Round: 2/3.
 
 ## Field evidence (rc.28 vcam.log, 22.08.2026)
 `session=0 user=LOCAL_SERVICE` … `vcam_reader_transport tcp reason=control_mapping_absent` … `stream_type subtype=RGB32 buffer=memory`.
@@ -68,3 +68,14 @@ heartbeat-only re-init; N-4 emit `vcam_transport_selected transport=tcp reason=�
 N-6 log `vcam_shm_owner` once per outcome change; N-7 any magic/version/owner/capacity-valid header is openable (helper overwrites the rest);
 N-8 architecture doc: describe the real mechanism (section kept alive by open handles, generation bump); N-12 reasons table add
 `invalid_service_ring`, `create_failed`; doc the AU write consequence (arbitrary object names → read-only, size-validated).
+
+## Review round 2 (HEAD dff604af; verifier green) — R1-1..R1-5 verified PASS. MUST-FIX:
+- R2-1 SDDL `D:P(A;;GA;;;LS)(A;;GRGW;;;IU)(A;;GRGW;;;AU)` lacks GX → for the EVENT, SYNCHRONIZE lives in GENERIC_EXECUTE → same-user reader
+  (`--vcam-shm-selftest` Global in CI, `main.cpp:392 OpenEventW(SYNCHRONIZE)`) gets ACCESS_DENIED at stage `reader_open`. Add `GX` for
+  IU/AU (`GRGWGX`), update `testNamesAndSddl` + DACL sentences in both docs.
+Notes to fold in: N2-1 clamp `ProbeGeometry` width/height via `validateServiceControl` (+ max 1920x1080) before use in media_source;
+N2-2 `createWithNamespace` always allocates `maxServiceRingBytes()` so the Local test path equals production and the test asserts the DLL
+validators on the helper-created ring; N2-4 emit `vcam_transport_selected transport=tcp reason=…` only on reason change (retry stays silent);
+N2-5 `initializeRing` memsets only header + slot headers; N2-6 in `createWithNamespace` write `header->owner=Service` BEFORE publishing the
+control record; N2-7 DLL control-record write: fields first, `sequence` last with release fence; N2-13 docs: SHM engages ≤ ~7 s after Teams
+activation (DLL 5-s poll + helper 2-s retry), the first `control_mapping_absent` line is expected.
