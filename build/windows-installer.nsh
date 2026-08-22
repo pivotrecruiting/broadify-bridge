@@ -32,7 +32,7 @@
   DetailPrint "${SERVICE_NAME} stop exit code: ${RESULT_VAR}"
   StrCpy $2 0
   ${DoWhile} $2 < 25
-    ExecWait '$COMSPEC /C ""$WINDIR\Sysnative\sc.exe" query ${SERVICE_NAME} | "$WINDIR\Sysnative\find.exe" "STOPPED" >NUL"' $3
+    ExecWait '"$SYSDIR\cmd.exe" /C ""$WINDIR\Sysnative\sc.exe" query ${SERVICE_NAME} | "$WINDIR\Sysnative\find.exe" "STOPPED" >NUL"' $3
     ${If} $3 == 0
       ${Break}
     ${EndIf}
