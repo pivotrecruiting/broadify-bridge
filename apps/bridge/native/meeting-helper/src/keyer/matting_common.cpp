@@ -20,52 +20,70 @@ float normalized(float value) {
   return (value - kMean[0]) / kStd[0];
 }
 
-float boxAverageChannel(const VideoFrame &input,
-                        double left,
-                        double top,
-                        double right,
-                        double bottom,
-                        uint32_t channel) {
-  if (input.rgba.empty() || input.width == 0u || input.height == 0u ||
-      right <= left || bottom <= top) {
-    return 0.5f;
-  }
+struct ChannelIntegrals {
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  std::vector<uint64_t> r;
+  std::vector<uint64_t> g;
+  std::vector<uint64_t> b;
+};
 
-  const int xStart = std::max(0, static_cast<int>(std::floor(left)));
-  const int yStart = std::max(0, static_cast<int>(std::floor(top)));
-  const int xEnd = std::min(static_cast<int>(input.width),
-                            static_cast<int>(std::ceil(right)));
-  const int yEnd = std::min(static_cast<int>(input.height),
-                            static_cast<int>(std::ceil(bottom)));
-  double weightedSum = 0.0;
-  double weightTotal = 0.0;
-  for (int y = yStart; y < yEnd; ++y) {
-    const double yWeight =
-        std::max(0.0, std::min(bottom, static_cast<double>(y + 1)) -
-                          std::max(top, static_cast<double>(y)));
-    if (yWeight <= 0.0) {
-      continue;
-    }
-    for (int x = xStart; x < xEnd; ++x) {
-      const double xWeight =
-          std::max(0.0, std::min(right, static_cast<double>(x + 1)) -
-                            std::max(left, static_cast<double>(x)));
-      const double weight = xWeight * yWeight;
-      if (weight <= 0.0) {
-        continue;
-      }
-      const size_t offset =
-          (static_cast<size_t>(y) * input.width + static_cast<size_t>(x)) * 4u +
-          channel;
-      weightedSum += static_cast<double>(input.rgba[offset]) * weight;
-      weightTotal += weight;
+void buildChannelIntegrals(const VideoFrame &input, ChannelIntegrals &out) {
+  out.width = input.width;
+  out.height = input.height;
+  const size_t stride = static_cast<size_t>(input.width) + 1u;
+  const size_t values = stride * (static_cast<size_t>(input.height) + 1u);
+  out.r.assign(values, 0u);
+  out.g.assign(values, 0u);
+  out.b.assign(values, 0u);
+  for (uint32_t y = 0; y < input.height; ++y) {
+    uint64_t rowR = 0u;
+    uint64_t rowG = 0u;
+    uint64_t rowB = 0u;
+    for (uint32_t x = 0; x < input.width; ++x) {
+      const size_t source =
+          (static_cast<size_t>(y) * input.width + x) * 4u;
+      rowR += input.rgba[source + 0u];
+      rowG += input.rgba[source + 1u];
+      rowB += input.rgba[source + 2u];
+      const size_t target = (static_cast<size_t>(y) + 1u) * stride + x + 1u;
+      const size_t above = static_cast<size_t>(y) * stride + x + 1u;
+      out.r[target] = out.r[above] + rowR;
+      out.g[target] = out.g[above] + rowG;
+      out.b[target] = out.b[above] + rowB;
     }
   }
+}
 
-  if (weightTotal <= 0.0) {
+float integerBlockAverageChannel(const ChannelIntegrals &integrals,
+                                 uint32_t left,
+                                 uint32_t top,
+                                 uint32_t right,
+                                 uint32_t bottom,
+                                 uint32_t channel) {
+  if (integrals.width == 0u || integrals.height == 0u || right <= left ||
+      bottom <= top) {
     return 0.5f;
   }
-  return static_cast<float>((weightedSum / weightTotal) / 255.0);
+  left = std::min(left, integrals.width - 1u);
+  top = std::min(top, integrals.height - 1u);
+  right = std::min(std::max(right, left + 1u), integrals.width);
+  bottom = std::min(std::max(bottom, top + 1u), integrals.height);
+  const std::vector<uint64_t> &values =
+      channel == 0u ? integrals.r : channel == 1u ? integrals.g : integrals.b;
+  const size_t stride = static_cast<size_t>(integrals.width) + 1u;
+  const auto at = [&](uint32_t x, uint32_t y) -> uint64_t {
+    return values[static_cast<size_t>(y) * stride + x];
+  };
+  const uint64_t sum =
+      at(right, bottom) + at(left, top) - at(right, top) - at(left, bottom);
+  const uint64_t count =
+      static_cast<uint64_t>(right - left) * static_cast<uint64_t>(bottom - top);
+  return count > 0u
+             ? static_cast<float>(
+                   static_cast<double>(sum) /
+                   (static_cast<double>(count) * 255.0))
+             : 0.5f;
 }
 
 uint32_t scaledCropCoord(uint32_t sourceCoord,
@@ -181,33 +199,33 @@ void buildModnetInputTensor(const VideoFrame &input, uint32_t inputWidth,
   if (mapping.contentWidth == 0u || mapping.contentHeight == 0u) {
     return;
   }
+  ChannelIntegrals integrals;
+  buildChannelIntegrals(input, integrals);
   const size_t channelSize = static_cast<size_t>(inputWidth) * inputHeight;
   for (uint32_t y = 0; y < mapping.contentHeight; ++y) {
-    const double srcTop =
-        static_cast<double>(y) * static_cast<double>(input.height) /
-        static_cast<double>(mapping.contentHeight);
-    const double srcBottom =
-        static_cast<double>(y + 1u) * static_cast<double>(input.height) /
-        static_cast<double>(mapping.contentHeight);
+    const uint32_t srcTop = static_cast<uint32_t>(
+        (static_cast<uint64_t>(y) * input.height) / mapping.contentHeight);
+    const uint32_t srcBottom = static_cast<uint32_t>(
+        (static_cast<uint64_t>(y + 1u) * input.height) /
+        mapping.contentHeight);
     const uint32_t dstY = mapping.contentY + y;
     for (uint32_t x = 0; x < mapping.contentWidth; ++x) {
-      const double srcLeft =
-          static_cast<double>(x) * static_cast<double>(input.width) /
-          static_cast<double>(mapping.contentWidth);
-      const double srcRight =
-          static_cast<double>(x + 1u) * static_cast<double>(input.width) /
-          static_cast<double>(mapping.contentWidth);
+      const uint32_t srcLeft = static_cast<uint32_t>(
+          (static_cast<uint64_t>(x) * input.width) / mapping.contentWidth);
+      const uint32_t srcRight = static_cast<uint32_t>(
+          (static_cast<uint64_t>(x + 1u) * input.width) /
+          mapping.contentWidth);
       const uint32_t dstX = mapping.contentX + x;
       const size_t dstOffset = static_cast<size_t>(dstY) * inputWidth + dstX;
       tensor[dstOffset] =
-          normalized(boxAverageChannel(input, srcLeft, srcTop, srcRight,
-                                       srcBottom, 0u));
+          normalized(integerBlockAverageChannel(integrals, srcLeft, srcTop,
+                                                srcRight, srcBottom, 0u));
       tensor[channelSize + dstOffset] =
-          normalized(boxAverageChannel(input, srcLeft, srcTop, srcRight,
-                                       srcBottom, 1u));
+          normalized(integerBlockAverageChannel(integrals, srcLeft, srcTop,
+                                                srcRight, srcBottom, 1u));
       tensor[channelSize * 2u + dstOffset] =
-          normalized(boxAverageChannel(input, srcLeft, srcTop, srcRight,
-                                       srcBottom, 2u));
+          normalized(integerBlockAverageChannel(integrals, srcLeft, srcTop,
+                                                srcRight, srcBottom, 2u));
     }
   }
 }
@@ -238,17 +256,17 @@ void copyModnetAlphaMask(const float *mask, uint32_t maskWidth,
   cropWidth = std::max(1u, std::min(cropWidth, maskWidth - cropX));
   cropHeight = std::max(1u, std::min(cropHeight, maskHeight - cropY));
 
-  outputMask.width = outputWidth;
-  outputMask.height = outputHeight;
+  (void)outputWidth;
+  (void)outputHeight;
+  outputMask.width = cropWidth;
+  outputMask.height = cropHeight;
   outputMask.timestampNs = timestampNs;
-  outputMask.alpha.assign(static_cast<size_t>(outputWidth) * outputHeight, 0u);
-  for (uint32_t y = 0; y < outputHeight; ++y) {
-    for (uint32_t x = 0; x < outputWidth; ++x) {
-      const size_t offset = static_cast<size_t>(y) * outputWidth + x;
+  outputMask.alpha.assign(static_cast<size_t>(cropWidth) * cropHeight, 0u);
+  for (uint32_t y = 0; y < cropHeight; ++y) {
+    for (uint32_t x = 0; x < cropWidth; ++x) {
+      const size_t offset = static_cast<size_t>(y) * cropWidth + x;
       const float alpha = std::clamp(
-          sampleBilinearCrop(mask, maskWidth, maskHeight, cropX, cropY,
-                             cropWidth, cropHeight, x, y, outputWidth,
-                             outputHeight),
+          mask[static_cast<size_t>(cropY + y) * maskWidth + cropX + x],
           0.0f, 1.0f);
       outputMask.alpha[offset] =
           static_cast<uint8_t>(std::round(alpha * 255.0f));

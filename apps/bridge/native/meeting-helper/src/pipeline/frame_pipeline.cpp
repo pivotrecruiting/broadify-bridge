@@ -597,12 +597,11 @@ struct PairedKeyerFrame {
   VideoFrame frame;
   AlphaMask mask;
   uint64_t publishedAtNs = 0u;
-  // Inference cost of the pass that produced this mask, captured at publish
-  // time under the worker mutex. Governor samples read THIS instead of the
-  // shared state.inferenceMs, which is written after the pair is published
-  // and can still hold a stale pre-demotion value for the first sample.
+  // GPU/runtime session cost of the pass that produced this mask, captured at
+  // publish time under the worker mutex. Governor samples read THIS instead of
+  // total inferenceMs; CPU tensor/postprocess work must not drive tiering.
   // <= 0 means unknown (no sample is fed).
-  double inferenceMs = -1.0;
+  double sessionRunMs = -1.0;
 };
 
 struct KeyerRuntimeStats {
@@ -1502,7 +1501,7 @@ class AsyncKeyerWorker {
             pair->frame = std::move(frame);
             pair->mask = std::move(keyed.mask);
             pair->publishedAtNs = publishNs;
-            pair->inferenceMs = keyed.status.inferenceMs;
+            pair->sessionRunMs = keyed.status.metrics.sessionRunMs;
             latestPair_ = std::move(pair);
             lastPublishedCoverage_ = rawCoverage;
             collapseHoldResults_ = 0u;
@@ -2676,8 +2675,8 @@ void runFramePipeline(const Options &options,
               if (litePair->publishedAtNs != 0u &&
                   litePair->publishedAtNs != lastAsyncSampledPublishNs) {
                 lastAsyncSampledPublishNs = litePair->publishedAtNs;
-                if (litePair->inferenceMs > 0.0) {
-                  fusedGovernor.addSample(litePair->inferenceMs, fusedNow);
+                if (litePair->sessionRunMs > 0.0) {
+                  fusedGovernor.addSample(litePair->sessionRunMs, fusedNow);
                 }
               }
             }
@@ -2864,11 +2863,12 @@ void runFramePipeline(const Options &options,
                 shouldRenderProgram = true;
                 updateMeetingKeyerStatus(state, fused.status);
                 if (governorAutoEnabled) {
-                  fusedGovernor.addSample(fused.status.inferenceMs, fusedNow);
+                  fusedGovernor.addSample(fused.status.metrics.sessionRunMs,
+                                          fusedNow);
                 }
                 fusedCadence.onInferenceCompleted(
-                    latestCameraFrame.timestampNs, fused.status.inferenceMs,
-                    fusedNow);
+                    latestCameraFrame.timestampNs,
+                    fused.status.metrics.sessionRunMs, fusedNow);
                 fusedPipelineModeLabel =
                     fusedCadence.currentN() > 1 ? "fused_cadence" : "fused";
                 std::lock_guard<std::mutex> lock(state.mutex);
