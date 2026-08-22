@@ -135,3 +135,21 @@ E3. Docs + design doc status; runbook: what `keyer_tier` means in field logs.
   "falls back to MODNet" wording to what the code does.
 - R2-7 (M11) remove the duplicate `keyer_tier_cache` event (or read the cache on start to skip the probe — one or the other).
 - Notes: `adapterLooksIntegrated` log field; async worker ignores tier (document as known limitation).
+
+## HANDOFF — WP5 stopped after review round 3/3 (22.08.2026), HEAD 7c6b5f55
+Verifier: lint/jest(1951)/build/helper build/ctest 28/28 green on macOS. Round 3 verdict: MUST-FIX → STOP per doctrine (no round 4).
+Resolved in rounds 1–2: R2-1 tier decision after camera attach (never un-keyed), R2-3 EMA off on Windows, R2-5 tuning precedence +
+D3D11 guided refine driven by KeyerTuning, R2-6 docs, R2-7 cache event. macOS behaviour unchanged.
+Open MUST-FIX for the next owner:
+- H1 Windows compile break: `frame_pipeline.cpp:524` calls `d3dAdapterPolicyIsIntegratedGpuOnly()` without `#include "compose/d3d_adapter_select.h"`
+  (add under the `_WIN32` include group). CI run 32581919324 on test-release/wp5-temporal is the proof.
+- H2 Tier refinement (R2-4) cannot switch to `selfie_landscape`: the fused keyer is a `static const unique_ptr` created once with the initial
+  tier (`frame_pipeline.cpp:2709`), `createMattingKeyer` picks the model at construction. Status/event claim selfie while MODNet runs.
+  Fix: recreate/hand over the fused keyer on tier change, or restrict refinement to the 320 tier and report honestly.
+- H3 Cadence-skip ticks repeat the previous frame (`frame_pipeline.cpp:3221-3231`, `lastFusedOfdFrame` only advances per inference) →
+  15 fps at N=2, freeze for N-1 ticks at N=3/4; rc.26 composited `latestCameraFrame` on skip ticks. Fix: camera-frame-indexed delay
+  queue; composite the popped t-1 frame on skip ticks with the reused mask.
+Notes: N1 double frame copy (hold shared_ptr only); N2 KeyerTuning defaults dilate/feather/edgeStab/strength differ from rc.26
+(1/1/false/0.25 vs 0/0/true/0.35) — product decision; N4 CPU guided eps atomic default 2000u→500u; N5 clamp webapp guided_epsilon ≥1e-6;
+N7 guided_enabled log prints radius 8 not effective 4; stale `keyer_tier_cache` mention in meeting-windows-stage-b-design.md:64.
+Do NOT merge WP5 into an RC until H1–H3 are fixed and re-reviewed.
