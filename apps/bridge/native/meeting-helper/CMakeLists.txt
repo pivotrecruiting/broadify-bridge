@@ -74,6 +74,7 @@ set(MEETING_HELPER_SOURCES
   src/output/vcam_controller.cpp
   src/keyer/keyer_chain.cpp
   src/keyer/keyer_governor.cpp
+  src/keyer/keyer_io_binding_policy.cpp
   src/keyer/matting_backend.cpp
   src/keyer/matting_common.cpp
   src/keyer/model_manifest.cpp
@@ -303,6 +304,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/ort_session_options_policy_test.cpp
     src/keyer/ort_session_options_policy.cpp
   )
+  add_executable(keyer_io_binding_policy_test
+    tests/keyer_io_binding_policy_test.cpp
+    src/keyer/keyer_io_binding_policy.cpp
+  )
   add_executable(camera_media_type_rank_test
     tests/camera_media_type_rank_test.cpp
   )
@@ -403,6 +408,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     d3d_adapter_select_test
     pixel_swizzle_test
     ort_session_options_policy_test
+    keyer_io_binding_policy_test
     camera_media_type_rank_test
     camera_gpu_capture_policy_test
     keyer_governor_test

@@ -138,6 +138,7 @@ struct MeetingState {
   bool fallbackActive = true;
   bool keyerDegraded = false;
   bool modelHashOk = false;
+  bool keyerIoBinding = false;
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;

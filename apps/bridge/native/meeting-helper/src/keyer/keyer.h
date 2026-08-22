@@ -62,6 +62,7 @@ struct KeyerStatus {
   double probeInferenceMs256 = 0.0;
   bool modelHashOk = false;
   std::string gpuAdapter;
+  bool keyerIoBinding = false;
   KeyerMetrics metrics;
 };
 

@@ -313,6 +313,7 @@ std::string handleRpc(const std::string &line,
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
            << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
+           << "\"keyer_io_binding\":" << (state.keyerIoBinding ? "true" : "false") << ","
            << "\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"") << ","
            << "\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"") << ","
            << "\"preview_clients\":" << state.previewClientCount << ","
@@ -614,6 +615,7 @@ std::string handleRpc(const std::string &line,
            << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
            << "\",\"active_performance_mode\":" << (state.activePerformanceMode.empty() ? "null" : "\"" + jsonEscape(state.activePerformanceMode) + "\"")
            << ",\"provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"")
+           << ",\"keyer_io_binding\":" << (state.keyerIoBinding ? "true" : "false")
            << ",\"inference_ms\":" << (state.inferenceMs >= 0.0 ? std::to_string(state.inferenceMs) : "null")
            << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
@@ -687,6 +689,7 @@ std::string handleRpc(const std::string &line,
         state.provider.clear();
         state.inferenceMs = -1.0;
         state.keyerMetrics = KeyerMetrics{};
+        state.keyerIoBinding = false;
         markProgramDirty(state);
       }
     }
@@ -717,6 +720,7 @@ std::string handleRpc(const std::string &line,
     state.provider.clear();
     state.inferenceMs = -1.0;
     state.keyerMetrics = KeyerMetrics{};
+    state.keyerIoBinding = false;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true,\"active_keyer\":\"passthrough\"}");
   }

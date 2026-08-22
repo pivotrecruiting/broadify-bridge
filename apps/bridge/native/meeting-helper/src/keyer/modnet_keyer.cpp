@@ -3,6 +3,7 @@
 #include "compose/d3d_adapter_select.h"
 #include "compose/gpu_context_win.h"
 #include "keyer/matting_common.h"
+#include "keyer/keyer_io_binding_policy.h"
 #include "keyer/model_manifest.h"
 #include "keyer/ort_session_options_policy.h"
 #include "util/sha256.h"
@@ -273,6 +274,7 @@ class ModnetKeyer::Impl {
     status_.backend = "modnet";
     status_.qualityMode = settings.qualityMode;
     status_.metrics = KeyerMetrics{};
+    status_.keyerIoBinding = false;
     // Derive the model input resolution from the performance mode. The model is
     // dynamic, so a smaller square input directly cuts inference cost; the
     // frame pipeline's joint-bilateral upsampler refines masks below 400px.
@@ -325,6 +327,16 @@ class ModnetKeyer::Impl {
       Ort::Session *session = activeSession_;
 #if defined(__APPLE__)
       session = session_.get();
+#elif defined(_WIN32)
+      const KeyerIoBindingDecision ioBinding = decideKeyerIoBinding(
+          meetingGpuResidentEnabled(), status_.provider == "directml",
+          dmlApiAvailable_, false, false);
+      if (ioBinding.fallbackToCpuTensor && !ioBindingFallbackLogged_) {
+        ioBindingFallbackLogged_ = true;
+        std::cout << "{\"type\":\"keyer_gpu_binding_unavailable\",\"reason\":\""
+                  << ioBinding.reason << "\"}" << std::endl;
+      }
+      status_.keyerIoBinding = ioBinding.useIoBinding;
 #endif
       if (session == nullptr) {
         setFallback("session_not_ready");
@@ -660,6 +672,7 @@ class ModnetKeyer::Impl {
           Ort::GetApi().ReleaseStatus(apiStatus);
           dmlApi = nullptr;
         }
+        dmlApiAvailable_ = dmlApi != nullptr;
       }
       if (dmlApi != nullptr) {
         dmlStatus = appendDirectMlOnSelectedAdapter(sessionOptions, dmlApi,
@@ -718,8 +731,9 @@ class ModnetKeyer::Impl {
     status_.backend = "modnet";
     status_.qualityMode = "realtime";
     status_.fallbackActive = true;
-    status_.fallbackReason = reason;
-    status_.inferenceMs = -1.0;
+      status_.fallbackReason = reason;
+      status_.inferenceMs = -1.0;
+    status_.keyerIoBinding = false;
   }
 
   // Model (re)load attempts are throttled: session creation + hashing are
@@ -737,6 +751,8 @@ class ModnetKeyer::Impl {
   uint32_t inputWidth_ = kFallbackInputSize;
   uint32_t inputHeight_ = kFallbackInputSize;
   bool modelDynamic_ = false;
+  bool ioBindingFallbackLogged_ = false;
+  bool dmlApiAvailable_ = false;
   // Shape the current session has run with (0 = no Run yet) and the last
   // size a rebuild failed for (retried only after the requested size changes).
   uint32_t sessionRunSize_ = 0u;
