@@ -223,3 +223,23 @@ raw camera impossible while the keyer is enabled.
 Acceptance: no code path composites the raw camera while the keyer is enabled and the model is loaded (review + tests); fused path
 on a dGPU: guided grid 512, coeff EMA off, cadence ≤2, mask at model resolution; governor samples = GPU run only; camera ≤720p30 by
 default; macOS unchanged; lint/jest/build/helper/ctests green.
+
+### Consolidation review round 1 (4-symptom review) — verdicts S1 PARTIAL, S2 FIXED, S3 PARTIAL, S4 FIXED(caveat)
+Must-fix:
+- KR-1 `frame_pipeline.cpp` ~:2895-2903 fused-inference-failure frame: serve `selectRetainedOrEmptyMaskForLiveKeyer(lastGoodMask…)`
+  + guided refine (like the warmup-in-flight branch) before setting `g_fusedKeyerDegraded` — never a null mask.
+- KR-2 `frame_pipeline.cpp` ~:2409 (Windows): render without a new camera frame while keyer enabled and fused path owns the mask →
+  composite `lastFusedPublishedMask` (or the helper on `lastGoodMask`), never a null mask.
+- KR-3 `compositor.cpp` ~:1375-1386: the anchor-less→keyed change reaches Metal (macOS). Gate with `#if defined(_WIN32)`, keep the
+  old behaviour in `#else`.
+- KR-4 `matting_common.cpp` ~:34-45, 202: replace the integral-image build (3×uint64 planes per inference) by a true single-pass
+  block sum into three accumulators over disjoint integer-bounded blocks; no per-inference allocation; keep the brute-force parity test.
+- KR-5 `camera_mediafoundation.cpp` reopen/scheduleReopen: apply `clampCameraCaptureRequest` (≤720p30) on the reopen path too.
+- KR-6 `camera_media_type_rank.h`: pixel floor (candidate ≥ 50 % of requested pixels) BEFORE the subtype rule; add the real C920
+  list test (YUY2 1280x720@10, YUY2 640x480@30, MJPG 1280x720@30, MJPG 1920x1080@30; request 720p30 → MJPG 720p30).
+- KR-7 `meeting-helper-manager.ts` forwarded env: add `BROADIFY_MEETING_CAMERA_MAX_HEIGHT`, `BROADIFY_MEETING_GUIDED_COEFF_EMA`,
+  `BROADIFY_MEETING_MASK_WORK_WIDTH`, `BROADIFY_MEETING_FUSED_EMA_STATIC` (jest list test).
+- KR-8 docs `meeting-keyer-windows.md` / `meeting-windows-performance.md`: 512 grid, coeff EMA off, maxN 2 / motion 4, intraOp 1,
+  mask at model resolution, `CAMERA_MAX_HEIGHT`.
+Notes (do if cheap): S4 early-wake factor 0.9 → 0.75 (jitter); skip `CopyResource(planePrevAb)` when coeff EMA off; tests for the
+worker collapse bound, the fused-failure frame and the reopen clamp (factor as free functions); remove dead `sampleBilinearCrop`.
