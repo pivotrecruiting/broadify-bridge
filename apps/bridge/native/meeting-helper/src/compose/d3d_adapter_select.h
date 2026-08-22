@@ -34,12 +34,14 @@ const char *d3dGpuPolicyName(D3DGpuPolicy policy);
 #ifdef _WIN32
 D3DAdapterInfo selectD3DAdapter();
 D3DAdapterInfo selectDirectMlD3DAdapter();
+bool d3dAdapterPolicyIsIntegratedGpuOnly();
 const D3DAdapterInfo &sharedD3DAdapter();
 const D3DAdapterInfo &directMlD3DAdapter();
 std::string d3dAdapterStatusString(const D3DAdapterInfo &info);
 #else
 inline D3DAdapterInfo selectD3DAdapter() { return D3DAdapterInfo{}; }
 inline D3DAdapterInfo selectDirectMlD3DAdapter() { return D3DAdapterInfo{}; }
+inline bool d3dAdapterPolicyIsIntegratedGpuOnly() { return false; }
 inline const D3DAdapterInfo &sharedD3DAdapter() {
   static const D3DAdapterInfo info{};
   return info;

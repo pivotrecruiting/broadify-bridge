@@ -31,6 +31,9 @@ struct VideoFrame {
   uint64_t timestampNs = 0;
   uint64_t captureQpc = 0;
   std::vector<uint8_t> rgba;
+  uint32_t osMaskWidth = 0;
+  uint32_t osMaskHeight = 0;
+  std::vector<uint8_t> osMaskAlpha;
 };
 
 class CameraSource {

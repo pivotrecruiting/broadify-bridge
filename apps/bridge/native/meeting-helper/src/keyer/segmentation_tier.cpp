@@ -123,13 +123,20 @@ bool mapOsBackgroundMaskToAlphaMask(const OsMaskBlob &blob,
           static_cast<size_t>(blob.maskWidth) * blob.maskHeight) {
     return false;
   }
-  const uint32_t boxX = std::min(blob.foregroundBox.x, blob.maskWidth - 1u);
-  const uint32_t boxY = std::min(blob.foregroundBox.y, blob.maskHeight - 1u);
-  const uint32_t boxW =
-      std::min(blob.foregroundBox.width, blob.maskWidth - boxX);
-  const uint32_t boxH =
-      std::min(blob.foregroundBox.height, blob.maskHeight - boxY);
-  if (boxW == 0u || boxH == 0u) {
+  const OsMaskRect coverage =
+      blob.maskCoverageBox.width == 0u || blob.maskCoverageBox.height == 0u
+          ? OsMaskRect{0u, 0u, frameWidth, frameHeight}
+          : blob.maskCoverageBox;
+  const uint32_t coverageX = std::min(coverage.x, frameWidth - 1u);
+  const uint32_t coverageY = std::min(coverage.y, frameHeight - 1u);
+  const uint32_t coverageW = std::min(coverage.width, frameWidth - coverageX);
+  const uint32_t coverageH = std::min(coverage.height, frameHeight - coverageY);
+  const uint32_t fgX = std::min(blob.foregroundBox.x, blob.maskWidth);
+  const uint32_t fgY = std::min(blob.foregroundBox.y, blob.maskHeight);
+  const uint32_t fgW = std::min(blob.foregroundBox.width, blob.maskWidth - fgX);
+  const uint32_t fgH =
+      std::min(blob.foregroundBox.height, blob.maskHeight - fgY);
+  if (coverageW == 0u || coverageH == 0u || fgW == 0u || fgH == 0u) {
     return false;
   }
 
@@ -138,14 +145,20 @@ bool mapOsBackgroundMaskToAlphaMask(const OsMaskBlob &blob,
   out.timestampNs = timestampNs;
   out.emptyValid = false;
   out.alpha.assign(static_cast<size_t>(frameWidth) * frameHeight, 0u);
-  for (uint32_t y = 0; y < frameHeight; ++y) {
-    const uint32_t sourceY =
-        boxY + static_cast<uint32_t>((static_cast<uint64_t>(y) * boxH) /
-                                     frameHeight);
-    for (uint32_t x = 0; x < frameWidth; ++x) {
-      const uint32_t sourceX =
-          boxX + static_cast<uint32_t>((static_cast<uint64_t>(x) * boxW) /
-                                       frameWidth);
+  const uint32_t fgRight = fgX + fgW;
+  const uint32_t fgBottom = fgY + fgH;
+  for (uint32_t y = coverageY; y < coverageY + coverageH; ++y) {
+    const uint32_t sourceY = static_cast<uint32_t>(
+        (static_cast<uint64_t>(y - coverageY) * blob.maskHeight) / coverageH);
+    if (sourceY < fgY || sourceY >= fgBottom) {
+      continue;
+    }
+    for (uint32_t x = coverageX; x < coverageX + coverageW; ++x) {
+      const uint32_t sourceX = static_cast<uint32_t>(
+          (static_cast<uint64_t>(x - coverageX) * blob.maskWidth) / coverageW);
+      if (sourceX < fgX || sourceX >= fgRight) {
+        continue;
+      }
       out.alpha[static_cast<size_t>(y) * frameWidth + x] =
           blob.alpha[static_cast<size_t>(sourceY) * blob.maskWidth + sourceX];
     }

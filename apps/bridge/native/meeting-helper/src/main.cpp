@@ -1,6 +1,7 @@
 #include "capture/camera_source.h"
 #include "capture/windows_os_mask.h"
 #include "common/options.h"
+#include "compose/d3d_adapter_select.h"
 #include "control/control_server.h"
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
@@ -229,6 +230,11 @@ SegmentationTierDecision selectStartupSegmentationTier(const Options &options) {
   probe.osMaskCapabilityPresent = osMaskProbe.maskCapabilityPresent;
   probe.selfieLandscapeAssetPresent =
       pathExists(options.modelsDir + "/selfie_landscape.onnx");
+  probe.integratedGpuOnly = d3dAdapterPolicyIsIntegratedGpuOnly();
+  const char *modnet320Probe = std::getenv("BROADIFY_MEETING_MODNET320_PROBE_MS");
+  if (modnet320Probe != nullptr && modnet320Probe[0] != '\0') {
+    probe.modnet320ProbeMs = std::atof(modnet320Probe);
+  }
 #else
   (void)options;
 #endif

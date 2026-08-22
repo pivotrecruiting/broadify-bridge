@@ -45,6 +45,10 @@ bool isSoftwareAdapter(const DXGI_ADAPTER_DESC1 &desc) {
   return (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
 }
 
+bool adapterLooksIntegrated(const DXGI_ADAPTER_DESC1 &desc) {
+  return desc.DedicatedVideoMemory < 1024ull * 1024ull * 1024ull;
+}
+
 std::vector<D3DAdapterInfo> enumerateAdapters(IDXGIFactory6 *factory,
                                               DXGI_GPU_PREFERENCE preference,
                                               const char *policy) {
@@ -201,6 +205,33 @@ D3DAdapterInfo selectDirectMlD3DAdapter() {
   }
   logSelectedAdapter(adapters.front(), "directml");
   return adapters.front();
+}
+
+bool d3dAdapterPolicyIsIntegratedGpuOnly() {
+  Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+    return false;
+  }
+  bool sawHardware = false;
+  for (UINT index = 0;; ++index) {
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    const HRESULT hr = factory->EnumAdapters1(index, &adapter);
+    if (hr == DXGI_ERROR_NOT_FOUND) {
+      break;
+    }
+    if (FAILED(hr)) {
+      break;
+    }
+    DXGI_ADAPTER_DESC1 desc{};
+    if (FAILED(adapter->GetDesc1(&desc)) || isSoftwareAdapter(desc)) {
+      continue;
+    }
+    sawHardware = true;
+    if (!adapterLooksIntegrated(desc)) {
+      return false;
+    }
+  }
+  return sawHardware;
 }
 
 const D3DAdapterInfo &sharedD3DAdapter() {

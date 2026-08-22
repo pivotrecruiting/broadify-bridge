@@ -3,6 +3,7 @@
 #if defined(_WIN32)
 
 #include "capture/camera_media_type_rank.h"
+#include "capture/windows_os_mask.h"
 #include "util/json_utils.h"
 #include "util/pixel_swizzle.h"
 
@@ -366,6 +367,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
       reader_ = reader;
+      source_ = sourceForReader_;
     }
     running_.store(true);
     const HRESULT hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
@@ -374,6 +376,10 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       running_.store(false);
       std::lock_guard<std::mutex> lock(stateMutex_);
       reader_.Reset();
+      if (source_) {
+        detachWindowsOsBackgroundMaskSource(source_.Get());
+      }
+      source_.Reset();
       initError_ = "Could not start reading camera frames.";
       return false;
     }
@@ -406,11 +412,19 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       // Flush could not be queued; the re-arm loop has stopped (running_ is
       // false), so release from here (a non-callback thread, which is safe).
       reader_.Reset();
+      if (source_) {
+        detachWindowsOsBackgroundMaskSource(source_.Get());
+        source_.Reset();
+      }
       return;
     }
     if (flushCv_.wait_for(lock, std::chrono::seconds(2),
                           [this] { return flushCompleted_; })) {
       reader_.Reset();
+      if (source_) {
+        detachWindowsOsBackgroundMaskSource(source_.Get());
+        source_.Reset();
+      }
     } else {
       abandoned_ = true;
     }
@@ -480,14 +494,19 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 
   STDMETHODIMP OnFlush(DWORD /*streamIndex*/) override {
     ComPtr<IMFSourceReader> orphan;
+    ComPtr<IMFMediaSource> source;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
       flushCompleted_ = true;
       if (abandoned_) {
         orphan.Swap(reader_);
+        source.Swap(source_);
       }
     }
     flushCv_.notify_all();
+    if (source) {
+      detachWindowsOsBackgroundMaskSource(source.Get());
+    }
     if (orphan) {
       // shutdown() gave up waiting; the reader must still not be released on
       // this (callback) thread, so hand it to a detached releaser.
@@ -609,6 +628,15 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       initError_ = "Could not read the negotiated camera format.";
       return false;
     }
+    const WindowsOsMaskProbeResult osMaskProbe =
+        attachWindowsOsBackgroundMaskSource(source.Get());
+    std::cout << "{\"type\":\"windows_os_mask_probe\",\"property_present\":"
+              << (osMaskProbe.propertyPresent ? "true" : "false")
+              << ",\"mask_capability_present\":"
+              << (osMaskProbe.maskCapabilityPresent ? "true" : "false")
+              << ",\"reason\":\"" << jsonEscape(osMaskProbe.reason) << "\"}"
+              << std::endl;
+    sourceForReader_ = source;
     readerOut = reader;
     return true;
   }
@@ -684,6 +712,13 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     frame.height = frameHeight_;
     frame.timestampNs = nowNs();
     frame.captureQpc = nowQpc();
+    AlphaMask osMask;
+    if (extractWindowsOsBackgroundMask(sample, frame.width, frame.height,
+                                       frame.timestampNs, osMask)) {
+      frame.osMaskWidth = osMask.width;
+      frame.osMaskHeight = osMask.height;
+      frame.osMaskAlpha = std::move(osMask.alpha);
+    }
 
     bool converted = false;
     // Preferred path: the 2D buffer reports the real pitch (rows may be padded)
@@ -746,6 +781,8 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   std::mutex stateMutex_;
   std::condition_variable flushCv_;
   ComPtr<IMFSourceReader> reader_;
+  ComPtr<IMFMediaSource> source_;
+  ComPtr<IMFMediaSource> sourceForReader_;
   bool flushCompleted_ = false;
   bool abandoned_ = false;
 

@@ -2554,7 +2554,35 @@ void runFramePipeline(const Options &options,
             selectedMask.timestampNs = latestCameraFrame.timestampNs;
           }
         };
-        if (gpuPipelineEnabled() && !fusedKeyerWorkDue && hasCameraFrame &&
+        if (selectedKeyerTier == "os_mask" && hasCameraFrame &&
+            snapshot.keyerEnabled && !latestCameraFrame.osMaskAlpha.empty() &&
+            latestCameraFrame.osMaskWidth == latestCameraFrame.width &&
+            latestCameraFrame.osMaskHeight == latestCameraFrame.height) {
+          fusedMask.width = latestCameraFrame.osMaskWidth;
+          fusedMask.height = latestCameraFrame.osMaskHeight;
+          fusedMask.timestampNs = latestCameraFrame.timestampNs;
+          fusedMask.alpha = latestCameraFrame.osMaskAlpha;
+          frameForCompositor = &latestCameraFrame;
+          maskForCompositor = &fusedMask;
+          shouldRenderProgram = true;
+          KeyerStatus osStatus;
+          osStatus.activeKeyer = "windows_os_mask";
+          osStatus.backend = "windows_os_mask";
+          osStatus.qualityMode = keyerSettings.qualityMode;
+          osStatus.provider = "mediafoundation";
+          osStatus.fallbackActive = false;
+          osStatus.metrics.maskWidth = fusedMask.width;
+          osStatus.metrics.maskHeight = fusedMask.height;
+          updateMeetingKeyerStatus(state, osStatus);
+          {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.keyerMetrics.maskAgeMs = 0.0;
+            state.keyerMetrics.maskAgeAvgMs = 0.0;
+            setMeetingDegradationStage(state, "os_mask");
+            state.staleMaskActive = false;
+          }
+          fusedPipelineModeLabel = "os_mask";
+        } else if (gpuPipelineEnabled() && !fusedKeyerWorkDue && hasCameraFrame &&
             snapshot.keyerEnabled && !asyncPathActive &&
             !latestCameraFrame.rgba.empty() &&
             maskForCompositor == nullptr &&
@@ -2563,7 +2591,8 @@ void runFramePipeline(const Options &options,
           refineLiveFusedFallbackMask(fusedMask);
           maskForCompositor = &fusedMask;
         }
-        if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
+        if (selectedKeyerTier != "os_mask" &&
+            gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
           // MODNet matte carries no refine, so snap its edge onto the current
@@ -2577,6 +2606,7 @@ void runFramePipeline(const Options &options,
             MattingBackendOptions backendOptions =
                 makeMattingBackendOptionsFromEnv(options.modelsDir);
             backendOptions.loadInApply = false;
+            backendOptions.segmentationTier = selectedKeyerTier;
             return createMattingKeyer(backendOptions);
           }();
           const auto fusedNow = std::chrono::steady_clock::now();
@@ -2593,7 +2623,13 @@ void runFramePipeline(const Options &options,
             }
             fusedWarmupOutcome.store(0, std::memory_order_relaxed);
           }
-          const bool governorAutoEnabled = autoDegradeEnabled();
+          const bool fixedModnet320Tier =
+              selectedKeyerTier == "modnet_320_ofd";
+          if (fixedModnet320Tier) {
+            keyerSettings.performanceMode = "balanced";
+          }
+          const bool governorAutoEnabled =
+              autoDegradeEnabled() && !fixedModnet320Tier;
           if (governorAutoEnabled) {
             fusedGovernor.maybeStepUp(fusedNow);
             // Seed once from the session-build warmup probe (median steady

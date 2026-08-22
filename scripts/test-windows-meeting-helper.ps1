@@ -80,6 +80,16 @@ if ($timeToFirstFrameMs -ge 100) {
   throw "Meeting helper VCam SHM self-test time_to_first_frame_ms was $timeToFirstFrameMs ms; expected < 100 ms. Output: $shmSelfTest"
 }
 
+$tierSelfTest = & $resolvedHelperPath --keyer-tier-selftest --models-dir $resolvedModelsDir 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Meeting helper keyer-tier self-test failed with exit code $LASTEXITCODE. Output: $tierSelfTest"
+}
+if (-not ($tierSelfTest -match '"type":"keyer_tier_selftest"') -or
+    -not ($tierSelfTest -match '"ok":true') -or
+    -not ($tierSelfTest -match '"tier":"')) {
+  throw "Meeting helper keyer-tier self-test did not report a selected tier. Output: $tierSelfTest"
+}
+
 # The usage probe above intentionally leaves exit code 2 in $LASTEXITCODE;
 # reset it so the CI shell wrapper (which exits with $LASTEXITCODE) does not
 # fail the step after a fully successful smoke.

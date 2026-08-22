@@ -79,20 +79,22 @@ int main() {
     OsMaskBlob blob;
     blob.maskWidth = 4;
     blob.maskHeight = 2;
+    blob.maskCoverageBox = {0, 0, 4, 2};
     blob.foregroundBox = {1, 0, 2, 2};
     blob.alpha = {
         0, 10, 20, 0,
         0, 30, 40, 0,
     };
     AlphaMask out;
-    ok &= expect(mapOsBackgroundMaskToAlphaMask(blob, 2, 2, 99, out),
+    ok &= expect(mapOsBackgroundMaskToAlphaMask(blob, 4, 2, 99, out),
                  "synthetic OS mask maps to AlphaMask");
-    ok &= expect(out.width == 2 && out.height == 2 && out.timestampNs == 99,
+    ok &= expect(out.width == 4 && out.height == 2 && out.timestampNs == 99,
                  "mapped mask dimensions and timestamp");
-    ok &= expect(out.alpha.size() == 4u && out.alpha[0] == 10 &&
-                     out.alpha[1] == 20 && out.alpha[2] == 30 &&
-                     out.alpha[3] == 40,
-                 "foreground box is cropped and scaled");
+    ok &= expect(out.alpha.size() == 8u && out.alpha[0] == 0 &&
+                     out.alpha[1] == 10 && out.alpha[2] == 20 &&
+                     out.alpha[3] == 0 && out.alpha[5] == 30 &&
+                     out.alpha[6] == 40,
+                 "coverage box scales while foreground box clips output");
   }
 
   if (!ok) {

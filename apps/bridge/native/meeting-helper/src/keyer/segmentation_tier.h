@@ -43,6 +43,7 @@ struct OsMaskRect {
 struct OsMaskBlob {
   uint32_t maskWidth = 0;
   uint32_t maskHeight = 0;
+  OsMaskRect maskCoverageBox;
   OsMaskRect foregroundBox;
   std::vector<uint8_t> alpha;
 };
