@@ -2,6 +2,7 @@
 
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
+#include "preview/vcam_shm_ring_win.h"
 #include "recorder/meeting_recorder.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
@@ -270,6 +271,7 @@ std::string handleRpc(const std::string &line,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
+                      VcamShmRingWin *vcamShm,
                       const Options &options,
                       std::atomic<bool> &running) {
   const std::string id = extractStringField(line, "id");
@@ -690,7 +692,9 @@ std::string handleRpc(const std::string &line,
         markProgramDirty(state);
       }
     }
-    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, recorder, options, running);
+    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}",
+                     state, camera, previewFrames, recorder, vcamShm, options,
+                     running);
   }
 
   if (method == "keyer.reset") {
@@ -771,11 +775,35 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "output.vcam.raw.start") {
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.vcamRawRunning = true;
-    markProgramDirty(state);
+    std::string transport;
+    std::string fallbackReason;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.vcamRawRunning = true;
+      if (state.vcamTransport == "shm" && vcamShm != nullptr &&
+          !vcamShm->active()) {
+        ++state.vcamWriterGeneration;
+        const VcamShmCreateResult shm =
+            vcamShm->create(options.width, options.height, options.fps,
+                            state.vcamWriterGeneration);
+        if (!shm.ok || !shm.globalNamespace) {
+          fallbackReason = shm.reason.empty() ? "mapping_unavailable" : shm.reason;
+          state.vcamTransport = "tcp";
+          vcamShm->close();
+        }
+      }
+      transport = state.vcamTransport;
+      markProgramDirty(state);
+    }
+    setVirtualCameraTransport(transport);
+    if (!fallbackReason.empty()) {
+      emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
+                      jsonEscape(fallbackReason) + "\"}");
+    } else if (transport == "shm") {
+      emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"raw_start\"}");
+    }
     return okResponse(id, std::string("{\"enabled\":true,\"running\":true,\"transport\":\"") +
-                              jsonEscape(state.vcamTransport) + "\"}");
+                              jsonEscape(transport) + "\"}");
   }
 
   if (method == "output.vcam.raw.stop") {
@@ -873,7 +901,8 @@ void runControlServer(const std::string &pipeName,
                       MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
-                      const std::function<void()> &onListening) {
+                      const std::function<void()> &onListening,
+                      VcamShmRingWin *vcamShm) {
   // Create the first instance BEFORE signalling readiness: the bridge starts
   // pinging as soon as it sees `ready`, and a pipe that does not exist yet is
   // indistinguishable (ENOENT) from a dead helper. If no instance can be
@@ -905,7 +934,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-          const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
+      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           // Block until the client has read the response; without this,
@@ -936,7 +965,8 @@ void runControlServer(const std::string &socketPath,
                       MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
-                      const std::function<void()> &onListening) {
+                      const std::function<void()> &onListening,
+                      VcamShmRingWin *vcamShm) {
   unlink(socketPath.c_str());
   int serverFd = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
   if (serverFd < 0) {
@@ -971,7 +1001,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-        const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
+      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
         if (write(client, response.c_str(), response.size()) < 0) {
           // The bridge destroyed its socket first (RPC timeout). Before
           // SIGPIPE was ignored this write ended the whole process silently;

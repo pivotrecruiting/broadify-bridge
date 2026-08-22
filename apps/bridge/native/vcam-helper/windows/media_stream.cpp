@@ -188,10 +188,8 @@ HRESULT MediaStream::Start() {
     if (shmReader) {
       shmReader->start();
     }
-    if (client) {
-      client->start();
-    }
-    VcamLog("MediaStream: running, shm reader active with tcp fallback");
+    (void)client;
+    VcamLog("MediaStream: running, shm reader active");
     return S_OK;
   } catch (...) {
     VcamLog("MediaStream::Start exception");
@@ -217,6 +215,7 @@ HRESULT MediaStream::Stop() {
     if (client) {
       client->stop();
     }
+    _tcpRunning = false;
     VcamLog("MediaStream: stopped, transports disconnected");
     return S_OK;
   } catch (...) {
@@ -250,6 +249,7 @@ void MediaStream::Shutdown() {
       _baseCaptureQpc = 0;
       _baseSampleTime = 0;
       _lastSampleTime = 0;
+      _tcpRunning = false;
       _source = nullptr;
     }
     if (client) {
@@ -387,7 +387,18 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
         _shmReader && _shmReader->copyLatestIfNew(_lastShmSequence, _scratchFrame);
     if (hasNewFrame) {
       frameFromShm = true;
+      if (_client && _tcpRunning) {
+        _client->stop();
+        _tcpRunning = false;
+        VcamLog("vcam_reader_transport shm reason=shm_frame_available");
+      }
     } else {
+      if (_client && !_tcpRunning &&
+          (_shmReader == nullptr || !_shmReader->hasMapping())) {
+        _client->start();
+        _tcpRunning = true;
+        VcamLog("vcam_reader_transport tcp reason=shm_unavailable");
+      }
       hasNewFrame =
           _client && _client->copyLatestIfNew(_lastTcpSequence, _scratchFrame);
     }

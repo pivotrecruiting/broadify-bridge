@@ -352,6 +352,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/capture/camera_source.cpp
     src/output/vcam_controller.cpp
     src/preview/preview_frame_store.cpp
+    src/preview/vcam_shm_layout.cpp
+    src/preview/vcam_shm_ring_win.cpp
     src/recorder/meeting_recorder_stub.cpp
     src/util/helper_event_log.cpp
     src/util/json_utils.cpp

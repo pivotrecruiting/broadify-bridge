@@ -404,22 +404,9 @@ int main(int argc, char **argv) {
   }
 #endif
 
-  const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
   std::string selectedVcamTransport = requestedVcamTransport();
 #if defined(_WIN32)
-  if (selectedVcamTransport == "shm") {
-    const VcamShmCreateResult shm =
-        vcamShm.create(options.width, options.height, options.fps, 1u);
-    if (!shm.ok || !shm.globalNamespace) {
-      std::string reason = shm.reason.empty() ? "mapping_unavailable" : shm.reason;
-      printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
-                 jsonEscape(reason) + "\"}");
-      selectedVcamTransport = "tcp";
-      vcamShm.close();
-    } else {
-      printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"global_mapping_created\"}");
-    }
-  } else {
+  if (selectedVcamTransport == "tcp") {
     printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"env\"}");
   }
 #endif
@@ -431,10 +418,27 @@ int main(int argc, char **argv) {
 
   std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), &vcamShm, std::ref(recorder), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
-  std::thread vcamRaw;
-  if (selectedVcamTransport == "tcp") {
-    vcamRaw = std::thread(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
-  }
+  const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
+  std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
+  std::thread vcamShmLifecycle([&state, &vcamShm]() {
+    int lastReaderCount = 0;
+    while (g_running.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      if (!vcamShm.active()) {
+        continue;
+      }
+      vcamShm.heartbeat(0u);
+      const int readerCount =
+          static_cast<int>(std::min<uint64_t>(vcamShm.readerCount(), 32u));
+      if (readerCount != lastReaderCount) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.vcamClientCount = readerCount;
+        state.programDirty = true;
+        ++state.programRevision;
+        lastReaderCount = readerCount;
+      }
+    }
+  });
   std::thread control(
       runControlServer,
       options.controlSocket,
@@ -444,7 +448,8 @@ int main(int argc, char **argv) {
       std::ref(recorder),
       std::cref(options),
       std::ref(g_running),
-      [&controlListening]() { controlListening.set_value(); });
+      [&controlListening]() { controlListening.set_value(); },
+      &vcamShm);
 
   controlListeningFuture.wait();
 
@@ -493,6 +498,9 @@ int main(int argc, char **argv) {
   preview.detach();
   if (vcamRaw.joinable()) {
     vcamRaw.detach();
+  }
+  if (vcamShmLifecycle.joinable()) {
+    vcamShmLifecycle.detach();
   }
   control.detach();
   // Name the exit path: silent code-0 exits were undiagnosable (the `open`

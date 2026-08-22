@@ -81,6 +81,7 @@ struct MeetingState {
   bool framebusRunning = false;
   bool vcamRawRunning = true;
   std::string vcamTransport = "tcp";
+  uint64_t vcamWriterGeneration = 0;
   int previewClientCount = 0;
   int vcamClientCount = 0;
   bool graphicsDirty = true;
