@@ -11,6 +11,7 @@
 #include "keyer/openvino_keyer.h"
 #endif
 #include "pipeline/frame_pipeline.h"
+#include "pipeline/gpu_resident_consumer_policy.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <numeric>
 #include <vector>
@@ -280,7 +282,7 @@ int runKeyerSelfTest(const Options &options) {
 }
 #endif  // BROADIFY_ENABLE_MODNET
 
-int runGpuSelfTest() {
+int runGpuSelfTest(const Options &options) {
 #if defined(_WIN32)
   if (!meetingGpuResidentEnabled()) {
     _putenv_s("BROADIFY_MEETING_GPU_RESIDENT", "1");
@@ -292,6 +294,8 @@ int runGpuSelfTest() {
   bool fenceOk = false;
   bool preprocessOk = false;
   bool compositeOk = false;
+  bool dmlOk = false;
+  std::string dmlReason = "unavailable";
   if (contextOk) {
     fenceOk = gpu.signalFromD3D11(1u) && gpu.waitOnD3D12(1u) &&
               gpu.signalFromD3D12(2u) && gpu.waitOnD3D11(2u);
@@ -353,25 +357,48 @@ int runGpuSelfTest() {
     std::vector<uint8_t> composited;
     renderProgramFrame(composeOptions, snapshot, &frame, &mask, nullptr, nullptr,
                        nullptr, 1u, composited);
-    compositeOk = !composited.empty();
+    compositeOk = !composited.empty() &&
+                  std::strcmp(lastCompositorBackend(), "d3d11") == 0;
+#if BROADIFY_ENABLE_MODNET
+    if (!options.modelsDir.empty()) {
+      ModnetKeyer keyer(ModnetKeyerOptions{options.modelsDir, true});
+      KeyerSettings settings;
+      settings.performanceMode = "performance";
+      const KeyerResult result = keyer.apply(frame, settings);
+      dmlOk = !result.status.fallbackActive &&
+              result.status.provider == "directml";
+      dmlReason = dmlOk ? "ok" : result.status.fallbackReason;
+    } else {
+      dmlReason = "models_dir_missing";
+    }
+#else
+    dmlReason = "onnxruntime_disabled";
+#endif
   }
   const auto end = std::chrono::steady_clock::now();
   const GpuContextTelemetry telemetry = currentGpuContextTelemetry();
   const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+  const uint32_t cpuCopies = cpuFrameCopiesPerFrame(
+      telemetry.available,
+      GpuResidentConsumers{/*recorderActive=*/false,
+                           /*previewActive=*/false,
+                           /*framebusActive=*/false,
+                           /*vcamActive=*/false});
   std::ostringstream out;
   out << "{\"ok\":" << (contextOk && fenceOk && preprocessOk && compositeOk ? "true" : "false")
       << ",\"stages\":{\"context\":" << (contextOk ? "true" : "false")
       << ",\"fence\":" << (fenceOk ? "true" : "false")
       << ",\"preprocess\":" << (preprocessOk ? "true" : "false")
-      << ",\"dml\":\"skipped\""
+      << ",\"dml\":" << (dmlOk ? "\"ok\"" : "\"unavailable\"")
+      << ",\"dml_reason\":\"" << jsonEscape(dmlReason) << "\""
       << ",\"composite\":" << (compositeOk ? "true" : "false")
       << "},\"ms\":" << ms
-      << ",\"gpu_resident\":true"
+      << ",\"gpu_resident\":" << (telemetry.available ? "true" : "false")
       << ",\"d3d11_luid_high\":" << telemetry.d3d11LuidHigh
       << ",\"d3d11_luid_low\":" << telemetry.d3d11LuidLow
       << ",\"d3d12_luid_high\":" << telemetry.d3d12LuidHigh
       << ",\"d3d12_luid_low\":" << telemetry.d3d12LuidLow
-      << ",\"cpu_frame_copies_per_frame\":0"
+      << ",\"cpu_frame_copies_per_frame\":" << cpuCopies
       << "}";
   printEvent(out.str());
   return contextOk && fenceOk && preprocessOk && compositeOk ? 0 : 1;
@@ -418,7 +445,7 @@ int main(int argc, char **argv) {
 #endif
   }
   if (options.gpuSelfTest) {
-    return runGpuSelfTest();
+    return runGpuSelfTest(options);
   }
   if (!options.run) {
     std::cerr << "meeting-helper requires --run" << std::endl;

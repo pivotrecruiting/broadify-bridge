@@ -85,12 +85,22 @@ $gpuJson = $gpuJsonLine | ConvertFrom-Json
 if (-not $gpuJson.ok) {
   throw "Meeting helper GPU self-test returned ok=false. Output: $gpuOutput"
 }
+if (-not $gpuJson.gpu_resident) {
+  throw "Meeting helper GPU self-test did not report gpu_resident=true. Output: $gpuOutput"
+}
+if (-not $gpuJson.stages.dml) {
+  throw "Meeting helper GPU self-test did not report a DML stage. Output: $gpuOutput"
+}
+if ($gpuJson.stages.dml -eq "unavailable" -and -not $gpuJson.stages.dml_reason) {
+  throw "Meeting helper GPU self-test reported DML unavailable without a reason. Output: $gpuOutput"
+}
 if ($gpuJson.d3d11_luid_high -ne $gpuJson.d3d12_luid_high -or
     $gpuJson.d3d11_luid_low -ne $gpuJson.d3d12_luid_low) {
   throw "Meeting helper GPU self-test expected matching D3D11/D3D12 LUIDs. Output: $gpuOutput"
 }
-if ($gpuJson.cpu_frame_copies_per_frame -ne 0) {
-  throw "Meeting helper GPU self-test expected cpu_frame_copies_per_frame=0, got $($gpuJson.cpu_frame_copies_per_frame)."
+$expectedCpuCopies = 0
+if ($gpuJson.cpu_frame_copies_per_frame -ne $expectedCpuCopies) {
+  throw "Meeting helper GPU self-test expected cpu_frame_copies_per_frame=$expectedCpuCopies, got $($gpuJson.cpu_frame_copies_per_frame)."
 }
 
 Write-Host "Meeting helper packaged-binary smoke passed (loads with packaged DLLs, model present, GPU self-test ok): $resolvedHelperPath"

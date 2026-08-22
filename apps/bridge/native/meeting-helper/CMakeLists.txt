@@ -347,6 +347,11 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/gpu_resident_consumer_policy_test.cpp
     src/pipeline/gpu_resident_consumer_policy.cpp
   )
+  add_executable(gpu_preprocess_tensor_parity_test
+    tests/gpu_preprocess_tensor_parity_test.cpp
+    src/compose/gpu_preprocess.cpp
+    src/keyer/matting_common.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -424,6 +429,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_gating_test
     compositor_input_selection_test
     gpu_resident_consumer_policy_test
+    gpu_preprocess_tensor_parity_test
     tier_handover_test
     matting_backend_test
     matting_common_test
