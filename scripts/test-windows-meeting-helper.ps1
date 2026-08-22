@@ -75,9 +75,19 @@ $gpuOutput = & $resolvedHelperPath --gpu-selftest 2>&1
 if ($LASTEXITCODE -ne 0) {
   throw "Meeting helper GPU self-test failed with exit code $LASTEXITCODE. Output: $gpuOutput"
 }
-$gpuJson = ($gpuOutput | Select-Object -Last 1) | ConvertFrom-Json
+$gpuJsonLine = $gpuOutput |
+  Where-Object { $_ -match '^\s*\{' } |
+  Select-Object -Last 1
+if (-not $gpuJsonLine) {
+  throw "Meeting helper GPU self-test did not print a JSON result. Output: $gpuOutput"
+}
+$gpuJson = $gpuJsonLine | ConvertFrom-Json
 if (-not $gpuJson.ok) {
   throw "Meeting helper GPU self-test returned ok=false. Output: $gpuOutput"
+}
+if ($gpuJson.d3d11_luid_high -ne $gpuJson.d3d12_luid_high -or
+    $gpuJson.d3d11_luid_low -ne $gpuJson.d3d12_luid_low) {
+  throw "Meeting helper GPU self-test expected matching D3D11/D3D12 LUIDs. Output: $gpuOutput"
 }
 if ($gpuJson.cpu_frame_copies_per_frame -ne 0) {
   throw "Meeting helper GPU self-test expected cpu_frame_copies_per_frame=0, got $($gpuJson.cpu_frame_copies_per_frame)."

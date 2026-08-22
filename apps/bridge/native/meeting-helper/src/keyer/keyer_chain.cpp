@@ -1,4 +1,5 @@
 #include "keyer/keyer_chain.h"
+#include "compose/gpu_context_win.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -280,7 +281,7 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
       status.fallbackActive && status.fallbackReason != "keyer_disabled";
   state.modelHashOk = status.modelHashOk;
   state.keyerIoBinding = status.keyerIoBinding;
-  state.gpuResident = state.gpuResident || status.keyerIoBinding;
+  state.gpuResident = currentGpuContextTelemetry().available;
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;
   mergedMetrics.maskAgeMs = state.keyerMetrics.maskAgeMs;

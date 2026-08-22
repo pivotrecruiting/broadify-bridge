@@ -1,7 +1,10 @@
 #include "capture/camera_source.h"
 #include "common/options.h"
 #include "control/control_server.h"
+#include "compose/compositor.h"
+#include "compose/d3d11_compositor.h"
 #include "compose/gpu_context_win.h"
+#include "compose/gpu_preprocess.h"
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
@@ -282,24 +285,86 @@ int runGpuSelfTest() {
   if (!meetingGpuResidentEnabled()) {
     _putenv_s("BROADIFY_MEETING_GPU_RESIDENT", "1");
   }
+  _putenv_s("BROADIFY_MEETING_GPU_SELF_TEST_DRIVER", "warp");
   const auto start = std::chrono::steady_clock::now();
   GpuContextWin &gpu = GpuContextWin::shared();
   const bool contextOk = gpu.available();
   bool fenceOk = false;
+  bool preprocessOk = false;
+  bool compositeOk = false;
   if (contextOk) {
     fenceOk = gpu.signalFromD3D11(1u) && gpu.waitOnD3D12(1u) &&
               gpu.signalFromD3D12(2u) && gpu.waitOnD3D11(2u);
+    HANDLE fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (fenceEvent != nullptr &&
+        SUCCEEDED(gpu.d3d12Fence()->SetEventOnCompletion(2u, fenceEvent))) {
+      fenceOk = fenceOk &&
+                WaitForSingleObject(fenceEvent, 2000u) == WAIT_OBJECT_0;
+      CloseHandle(fenceEvent);
+    } else {
+      fenceOk = false;
+    }
+    constexpr uint32_t width = 1280u;
+    constexpr uint32_t height = 720u;
+    std::vector<uint8_t> nv12(static_cast<size_t>(width) * height * 3u / 2u,
+                              128u);
+    for (uint32_t y = 0; y < height; ++y) {
+      for (uint32_t x = 0; x < width; ++x) {
+        nv12[static_cast<size_t>(y) * width + x] =
+            static_cast<uint8_t>((x * 180u) / width + 32u);
+      }
+    }
+    D3D11_TEXTURE2D_DESC texDesc{};
+    texDesc.Width = width;
+    texDesc.Height = height;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_NV12;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA initial{};
+    initial.pSysMem = nv12.data();
+    initial.SysMemPitch = width;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> cameraTexture;
+    if (SUCCEEDED(gpu.d3d11Device()->CreateTexture2D(
+            &texDesc, &initial, &cameraTexture))) {
+      GpuPreprocessorWin preprocessor;
+      GpuFrameSlot slot = gpu.frameRing().acquireNext();
+      const uint32_t tensorSize = 256u;
+      const ModnetLetterboxMapping letterbox =
+          modnetLetterboxMapping(width, height, tensorSize, tensorSize);
+      preprocessOk = preprocessor.preprocess(
+          cameraTexture.Get(), 0u, GpuCameraFormat::Nv12, width, height,
+          tensorSize, letterbox, slot);
+    }
+    VideoFrame frame = makeKeyerSelfTestFrame();
+    AlphaMask mask;
+    mask.width = frame.width;
+    mask.height = frame.height;
+    mask.timestampNs = frame.timestampNs;
+    mask.alpha.assign(static_cast<size_t>(mask.width) * mask.height, 255u);
+    CompositorSnapshot snapshot;
+    snapshot.keyerEnabled = true;
+    Options composeOptions;
+    composeOptions.width = width;
+    composeOptions.height = height;
+    composeOptions.fps = 30u;
+    std::vector<uint8_t> composited;
+    renderProgramFrame(composeOptions, snapshot, &frame, &mask, nullptr, nullptr,
+                       nullptr, 1u, composited);
+    compositeOk = !composited.empty();
   }
   const auto end = std::chrono::steady_clock::now();
   const GpuContextTelemetry telemetry = currentGpuContextTelemetry();
   const double ms = std::chrono::duration<double, std::milli>(end - start).count();
   std::ostringstream out;
-  out << "{\"ok\":" << (contextOk && fenceOk ? "true" : "false")
+  out << "{\"ok\":" << (contextOk && fenceOk && preprocessOk && compositeOk ? "true" : "false")
       << ",\"stages\":{\"context\":" << (contextOk ? "true" : "false")
       << ",\"fence\":" << (fenceOk ? "true" : "false")
-      << ",\"preprocess\":" << (contextOk ? "true" : "false")
+      << ",\"preprocess\":" << (preprocessOk ? "true" : "false")
       << ",\"dml\":\"skipped\""
-      << ",\"composite\":" << (contextOk ? "true" : "false")
+      << ",\"composite\":" << (compositeOk ? "true" : "false")
       << "},\"ms\":" << ms
       << ",\"gpu_resident\":true"
       << ",\"d3d11_luid_high\":" << telemetry.d3d11LuidHigh
@@ -309,7 +374,7 @@ int runGpuSelfTest() {
       << ",\"cpu_frame_copies_per_frame\":0"
       << "}";
   printEvent(out.str());
-  return contextOk && fenceOk ? 0 : 1;
+  return contextOk && fenceOk && preprocessOk && compositeOk ? 0 : 1;
 #else
   printEvent("{\"ok\":false,\"stages\":{\"context\":false},\"ms\":0,\"reason\":\"windows_only\"}");
   return 1;

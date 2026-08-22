@@ -1,5 +1,6 @@
 #include "control/control_server.h"
 
+#include "compose/gpu_context_win.h"
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
 #include "recorder/meeting_recorder.h"
@@ -153,10 +154,10 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"tensor_ms\":" << metricNumber(metrics.tensorMs)
          << ",\"session_run_ms\":" << metricNumber(metrics.sessionRunMs)
          << ",\"mask_apply_ms\":" << metricNumber(metrics.maskApplyMs)
-         << ",\"preprocess_ms\":" << metricNumber(metrics.preprocessMs >= 0.0 ? metrics.preprocessMs : metrics.tensorMs)
-         << ",\"inference_ms\":" << metricNumber(metrics.inferenceStageMs >= 0.0 ? metrics.inferenceStageMs : metrics.sessionRunMs)
-         << ",\"refine_ms\":" << metricNumber(metrics.refineMs >= 0.0 ? metrics.refineMs : metrics.maskPostprocessMs)
-         << ",\"composite_ms\":" << metricNumber(metrics.compositeMs >= 0.0 ? metrics.compositeMs : metrics.programFrameMs)
+         << ",\"preprocess_ms\":" << metricNumber(metrics.preprocessMs)
+         << ",\"inference_ms\":" << metricNumber(metrics.inferenceStageMs)
+         << ",\"refine_ms\":" << metricNumber(metrics.refineMs)
+         << ",\"composite_ms\":" << metricNumber(metrics.compositeMs)
          << ",\"mask_dilate_ms\":" << metricNumber(metrics.maskDilateMs)
          << ",\"mask_close_ms\":" << metricNumber(metrics.maskCloseMs)
          << ",\"mask_remap_ms\":" << metricNumber(metrics.maskRemapMs)
