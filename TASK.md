@@ -186,3 +186,40 @@ sessions on the same GPU; DML on the DIRECT queue competes with the compositor).
   discriminators (`keyer.get` fields: keyer_pipeline_mode, degradation_stage, fallback_reason, provider, gpu_adapter).
 Acceptance: governor tests (no seed below 256 from probes; band); gating predicate test; retention cap test; env list test;
 macOS unchanged; lint/jest/build/helper/ctests green.
+
+## Consolidation (rc.24 field result, 22.08.2026) — KF-1..KF-6
+Field (1660 Ti, rc.24): S1 subject leaves → RAW camera; S2 sharp edges but GHOST; S3 LOUD again; S4 camera LATENCY. Root causes
+(two read-only analyses): WP2 moved the mask to camera resolution (1080p) and forced the camera to 1080p → every CPU stage 8× more
+work, double-precision box downsample + bilinear mask upscale per inference, governor/cadence fed `tensor+run+upscale` as "inference";
+guided work grid 512→960 (3.5× GPU) + coefficient EMA 0.5 (= ghost of previous silhouette by construction); presence acceptance
+1500 ms + compositor un-keyed fallback for anchor-less masks (= raw camera on exit); Passthrough with live worker after 2 s (= raw
+camera); loop floor phase lag. Target: a 1660 Ti runs fused 512 every frame with ONE guided pass at 512×288, nothing concurrently;
+raw camera impossible while the keyer is enabled.
+
+- KF-1 S1 never raw camera: (a) `compose/compositor.cpp` (D3D11 and CPU): an anchor-less, non-`emptyValid` mask is composited keyed
+  (same as the `emptyValid` branch) — raw camera only when `cameraMask == nullptr`; (b) `frame_pipeline.cpp` Passthrough with a live
+  worker (both decide() sites) and "no pair yet while model loaded" serve `lastGoodMask` ≤ 2 s, then a zero `emptyValid` mask (factor the
+  Off-branch logic into one helper); null mask only for model-missing/keyer-disabled; (c) `subject_presence.h` Windows
+  `acceptAfterMs` 1500 → 400, `emptyAcceptCoverage` = `kMinForegroundCoverage` (0.006); (d) async worker collapse hold bounded to
+  12 results, then publish the real low-coverage mask. Tests: presence thresholds; retention→mask selection helper; compositor
+  input selection (anchor-less → keyed).
+- KF-2 S2 no trail: guided coefficient EMA default OFF (`BROADIFY_MEETING_GUIDED_COEFF_EMA` default 0 → no `blendAb` dispatch/copy);
+  cadence `motionThreshold` 9 → 4 and `maxN` 4 → 2 (Windows); `BROADIFY_MEETING_FUSED_EMA_STATIC` default 0.72 → 0.85. Tests updated.
+- KF-3 S3 load back to (better than) rc.18: guided work grid Windows 960 → 512 (`guided_work_size.cpp`); postprocess therefore at
+  512×288; ORT intra-op 2 → 1; camera: default request ≤ 1280×720 @ 30 on Windows (env `BROADIFY_MEETING_CAMERA_MAX_HEIGHT`, default
+  720; the compositor scales into the 1080p program) and rank subtype NV12/YUY2 BEFORE pixel distance so MJPG never wins (tests).
+- KF-4 structural (the real regression): (a) `matting_common.cpp`: do NOT upscale the mask to the frame size — emit the cropped content
+  region at model resolution (guided refine / CPU refine resample as they already do; verify every consumer of `mask.width/height`
+  handles non-frame-sized masks: stabilizeFusedMask, lastGoodMask, postprocess, compositor upload, subject presence coverage);
+  (b) replace `boxAverageChannel` (double, per-pixel bounds) by a single-pass integer block average (keep the letterbox mapping and
+  the parity ctest, update expected values if needed); (c) `modnet_keyer.cpp`: governor and cadence receive `sessionRunMs` (GPU run
+  only) — CPU pre/post time must never drive tier decisions; expose both in telemetry; (d) prebuild order: probe 512 LAST-built →
+  instead seed from a 512 probe taken AFTER all builds (or build 512 first); tests for (c)/(d) where factorable.
+- KF-5 S4 latency: early camera wake renders immediately when ≥ 0.9 × frameInterval elapsed since the last render start (phase-aligned
+  to camera arrival, no grid wait); otherwise the frame is skipped (no sleep-to-grid); 60 fps cameras therefore render every other
+  frame. Gating test.
+- KF-6 self-check before any RC: (1) a 4-symptom regression review (read-only agent) with explicit verdicts S1–S4 against the final
+  diff; (2) Windows CI via `test-release/wp2-consolidation` (MSVC + ctests + helper smoke) green; only then rc.25.
+Acceptance: no code path composites the raw camera while the keyer is enabled and the model is loaded (review + tests); fused path
+on a dGPU: guided grid 512, coeff EMA off, cadence ≤2, mask at model resolution; governor samples = GPU run only; camera ≤720p30 by
+default; macOS unchanged; lint/jest/build/helper/ctests green.
