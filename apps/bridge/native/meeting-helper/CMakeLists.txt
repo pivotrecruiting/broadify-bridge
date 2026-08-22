@@ -88,6 +88,7 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
   src/pipeline/guided_work_size.cpp
+  src/pipeline/gpu_resident_consumer_policy.cpp
   src/pipeline/keyer_cadence.cpp
   src/pipeline/mask_retention.cpp
   src/pipeline/subject_presence.cpp
@@ -342,6 +343,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/compositor_input_selection_test.cpp
     src/pipeline/compositor_input_selection.cpp
   )
+  add_executable(gpu_resident_consumer_policy_test
+    tests/gpu_resident_consumer_policy_test.cpp
+    src/pipeline/gpu_resident_consumer_policy.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -418,6 +423,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_stall_test
     frame_pipeline_gating_test
     compositor_input_selection_test
+    gpu_resident_consumer_policy_test
     tier_handover_test
     matting_backend_test
     matting_common_test

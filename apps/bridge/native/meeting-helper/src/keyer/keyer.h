@@ -37,6 +37,7 @@ struct KeyerMetrics {
   uint64_t skippedFrames = 0;
   uint64_t cameraTextureUploads = 0;
   uint32_t stagingReadbackDepth = 0;
+  uint32_t cpuFrameCopiesPerFrame = 0;
 };
 
 struct KeyerDegradationSettings {

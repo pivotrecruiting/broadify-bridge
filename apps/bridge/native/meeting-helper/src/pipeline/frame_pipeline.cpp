@@ -12,11 +12,13 @@
 #include "pipeline/framebus_reader_log_gate.h"
 #include "pipeline/compositor_input_selection.h"
 #include "pipeline/frame_pipeline_gating.h"
+#include "pipeline/gpu_resident_consumer_policy.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
 #include "pipeline/subject_presence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
+#include "compose/gpu_context_win.h"
 #include "pipeline/mask_retention.h"
 #include "pipeline/tier_handover.h"
 #endif
@@ -3018,6 +3020,14 @@ void runFramePipeline(const Options &options,
         state.keyerMetrics.cameraTextureUploads = d3d11CompositorCameraUploadCount();
         state.keyerMetrics.stagingReadbackDepth =
             d3d11CompositorStagingReadbackDepth();
+        state.keyerMetrics.cpuFrameCopiesPerFrame =
+            cpuFrameCopiesPerFrame(meetingGpuResidentEnabled(),
+                                   GpuResidentConsumers{
+                                       recorder.status().active,
+                                       previewConsumerActive,
+                                       runtime.framebusRunning,
+                                       runtime.vcamClients > 0,
+                                   });
 #endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
