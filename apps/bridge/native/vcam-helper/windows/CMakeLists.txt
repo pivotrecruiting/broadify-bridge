@@ -2,21 +2,26 @@ cmake_minimum_required(VERSION 3.22)
 
 project(broadify_vcam LANGUAGES CXX)
 
-# C++/WinRT (winrt::implements) requires C++17.
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 execute_process(
   COMMAND git rev-parse --short=12 HEAD
-  WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../../../../.."
-  OUTPUT_VARIABLE BROADIFY_VCAM_GIT_SHA
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.."
+  OUTPUT_VARIABLE BROADIFY_BUILD_GIT_SHA
   OUTPUT_STRIP_TRAILING_WHITESPACE
   ERROR_QUIET
 )
-if(BROADIFY_VCAM_GIT_SHA STREQUAL "")
-  set(BROADIFY_VCAM_GIT_SHA "unknown")
+if(BROADIFY_BUILD_GIT_SHA STREQUAL "")
+  set(BROADIFY_BUILD_GIT_SHA "unknown")
 endif()
-string(TIMESTAMP BROADIFY_VCAM_BUILD_TIME "%Y-%m-%dT%H:%M:%SZ" UTC)
+string(TIMESTAMP BROADIFY_BUILD_TIMESTAMP "%Y-%m-%dT%H:%M:%SZ" UTC)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../meeting-helper/src/build_stamp.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp.h"
+  @ONLY
+)
+
+# C++/WinRT (winrt::implements) requires C++17.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(broadify-vcam SHARED
   ../../meeting-helper/src/preview/vcam_shm_layout.cpp
@@ -29,6 +34,10 @@ add_library(broadify-vcam SHARED
   broadify_vcam.def
 )
 
+target_include_directories(broadify-vcam PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
+
 target_compile_definitions(broadify-vcam PRIVATE
   NOMINMAX
   WIN32_LEAN_AND_MEAN
@@ -36,8 +45,6 @@ target_compile_definitions(broadify-vcam PRIVATE
   _UNICODE
   _CRT_SECURE_NO_WARNINGS
   _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
-  BROADIFY_VCAM_GIT_SHA="${BROADIFY_VCAM_GIT_SHA}"
-  BROADIFY_VCAM_BUILD_TIME="${BROADIFY_VCAM_BUILD_TIME}"
 )
 
 target_include_directories(broadify-vcam PRIVATE

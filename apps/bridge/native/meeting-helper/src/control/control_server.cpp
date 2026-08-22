@@ -604,6 +604,7 @@ std::string handleRpc(const std::string &line,
            << "\"status\":{\"active_keyer\":\"" << jsonEscape(state.activeKeyer)
            << "\",\"fallback_active\":" << (state.fallbackActive ? "true" : "false")
            << ",\"keyer_degraded\":" << (state.keyerDegraded ? "true" : "false")
+           << ",\"keyer_ready\":" << (state.keyerReady ? "true" : "false")
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
            << ",\"degradation_stage\":\"" << jsonEscape(state.degradationStage)
            << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)

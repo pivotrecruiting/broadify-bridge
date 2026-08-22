@@ -408,6 +408,27 @@ int main() {
   }
 
   {
+    // VCam-aware policy: degrade by fused tier first; async Lite requires a
+    // sustained 30-sample over-budget run at fused 256.
+    KeyerGovernorConfig config = testConfig();
+    config.tierFirstPolicy = true;
+    config.liteGateSamples = 30u;
+    KeyerAutoGovernor governor(config);
+    feed(governor, 40.0, 10, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "VCam policy still drops 512 -> 320");
+    feed(governor, 40.0, 10, at(2));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "VCam policy still drops 320 -> 256");
+    feed(governor, 40.0, 29, at(3));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "29 over-budget 256 samples stay fused");
+    feed(governor, 40.0, 1, at(4));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "30 over-budget 256 samples enter Lite256");
+  }
+
+  {
     // reset() returns to a clean, unseeded Full512 with base backoffs.
     KeyerAutoGovernor governor(testConfig());
     governor.seedProbe(500.0);

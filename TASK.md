@@ -131,3 +131,114 @@ MUST-FIX-1 (`vcam_shm_ring_win.cpp` `isProcessAlive`): `OpenProcess(SYNCHRONIZE)
 user process → readers counted dead → helper never publishes. Fixed in 42f11993: `PROCESS_QUERY_LIMITED_INFORMATION` +
 `GetExitCodeProcess`, `ERROR_ACCESS_DENIED` = alive. Notes: Local-namespace detour on busy control mapping; selftest stdout
 inheritance proven only by Windows CI. Decision for the human: include WP4 (default `shm`, auto TCP fallback) in rc.27 after CI green.
+
+## Inherited from feature/win-stability-wp2
+
+- KF-1 S1 never raw camera: (a) `compose/compositor.cpp` (D3D11 and CPU): an anchor-less, non-`emptyValid` mask is composited keyed
+  (same as the `emptyValid` branch) — raw camera only when `cameraMask == nullptr`; (b) `frame_pipeline.cpp` Passthrough with a live
+  worker (both decide() sites) and "no pair yet while model loaded" serve `lastGoodMask` ≤ 2 s, then a zero `emptyValid` mask (factor the
+  Off-branch logic into one helper); null mask only for model-missing/keyer-disabled; (c) `subject_presence.h` Windows
+  `acceptAfterMs` 1500 → 400, `emptyAcceptCoverage` = `kMinForegroundCoverage` (0.006); (d) async worker collapse hold bounded to
+  12 results, then publish the real low-coverage mask. Tests: presence thresholds; retention→mask selection helper; compositor
+  input selection (anchor-less → keyed).
+- KF-2 S2 no trail: guided coefficient EMA default OFF (`BROADIFY_MEETING_GUIDED_COEFF_EMA` default 0 → no `blendAb` dispatch/copy);
+  cadence `motionThreshold` 9 → 4 and `maxN` 4 → 2 (Windows); `BROADIFY_MEETING_FUSED_EMA_STATIC` default 0.72 → 0.85. Tests updated.
+- KF-3 S3 load back to (better than) rc.18: guided work grid Windows 960 → 512 (`guided_work_size.cpp`); postprocess therefore at
+  512×288; ORT intra-op 2 → 1; camera: default request ≤ 1280×720 @ 30 on Windows (env `BROADIFY_MEETING_CAMERA_MAX_HEIGHT`, default
+  720; the compositor scales into the 1080p program) and rank subtype NV12/YUY2 BEFORE pixel distance so MJPG never wins (tests).
+- KF-4 structural (the real regression): (a) `matting_common.cpp`: do NOT upscale the mask to the frame size — emit the cropped content
+  region at model resolution (guided refine / CPU refine resample as they already do; verify every consumer of `mask.width/height`
+  handles non-frame-sized masks: stabilizeFusedMask, lastGoodMask, postprocess, compositor upload, subject presence coverage);
+  (b) replace `boxAverageChannel` (double, per-pixel bounds) by a single-pass integer block average (keep the letterbox mapping and
+  the parity ctest, update expected values if needed); (c) `modnet_keyer.cpp`: governor and cadence receive `sessionRunMs` (GPU run
+  only) — CPU pre/post time must never drive tier decisions; expose both in telemetry; (d) prebuild order: probe 512 LAST-built →
+  instead seed from a 512 probe taken AFTER all builds (or build 512 first); tests for (c)/(d) where factorable.
+- KF-5 S4 latency: early camera wake renders immediately when ≥ 0.9 × frameInterval elapsed since the last render start (phase-aligned
+  to camera arrival, no grid wait); otherwise the frame is skipped (no sleep-to-grid); 60 fps cameras therefore render every other
+  frame. Gating test.
+- KF-6 self-check before any RC: (1) a 4-symptom regression review (read-only agent) with explicit verdicts S1–S4 against the final
+  diff; (2) Windows CI via `test-release/wp2-consolidation` (MSVC + ctests + helper smoke) green; only then rc.25.
+Acceptance: no code path composites the raw camera while the keyer is enabled and the model is loaded (review + tests); fused path
+on a dGPU: guided grid 512, coeff EMA off, cadence ≤2, mask at model resolution; governor samples = GPU run only; camera ≤720p30 by
+default; macOS unchanged; lint/jest/build/helper/ctests green.
+
+### Consolidation review round 1 (4-symptom review) — verdicts S1 PARTIAL, S2 FIXED, S3 PARTIAL, S4 FIXED(caveat)
+Must-fix:
+- KR-1 `frame_pipeline.cpp` ~:2895-2903 fused-inference-failure frame: serve `selectRetainedOrEmptyMaskForLiveKeyer(lastGoodMask…)`
+  + guided refine (like the warmup-in-flight branch) before setting `g_fusedKeyerDegraded` — never a null mask.
+- KR-2 `frame_pipeline.cpp` ~:2409 (Windows): render without a new camera frame while keyer enabled and fused path owns the mask →
+  composite `lastFusedPublishedMask` (or the helper on `lastGoodMask`), never a null mask.
+- KR-3 `compositor.cpp` ~:1375-1386: the anchor-less→keyed change reaches Metal (macOS). Gate with `#if defined(_WIN32)`, keep the
+  old behaviour in `#else`.
+- KR-4 `matting_common.cpp` ~:34-45, 202: replace the integral-image build (3×uint64 planes per inference) by a true single-pass
+  block sum into three accumulators over disjoint integer-bounded blocks; no per-inference allocation; keep the brute-force parity test.
+- KR-5 `camera_mediafoundation.cpp` reopen/scheduleReopen: apply `clampCameraCaptureRequest` (≤720p30) on the reopen path too.
+- KR-6 `camera_media_type_rank.h`: pixel floor (candidate ≥ 50 % of requested pixels) BEFORE the subtype rule; add the real C920
+  list test (YUY2 1280x720@10, YUY2 640x480@30, MJPG 1280x720@30, MJPG 1920x1080@30; request 720p30 → MJPG 720p30).
+- KR-7 `meeting-helper-manager.ts` forwarded env: add `BROADIFY_MEETING_CAMERA_MAX_HEIGHT`, `BROADIFY_MEETING_GUIDED_COEFF_EMA`,
+  `BROADIFY_MEETING_MASK_WORK_WIDTH`, `BROADIFY_MEETING_FUSED_EMA_STATIC` (jest list test).
+- KR-8 docs `meeting-keyer-windows.md` / `meeting-windows-performance.md`: 512 grid, coeff EMA off, maxN 2 / motion 4, intraOp 1,
+  mask at model resolution, `CAMERA_MAX_HEIGHT`.
+Notes (do if cheap): S4 early-wake factor 0.9 → 0.75 (jitter); skip `CopyResource(planePrevAb)` when coeff EMA off; tests for the
+worker collapse bound, the fused-failure frame and the reopen clamp (factor as free functions); remove dead `sampleBilinearCrop`.
+
+### Consolidation review round 2 — MF-1..MF-6 (fixed in a71c6fa9)
+MF-1 no explicit capture of the static `lastFusedPublishedMask`; MF-2 idle-render mask supply without forcing a render; MF-3 no
+early-wake consume/continue — wait until min(nextFrameAt, lastRenderStart + 0.75·interval), then render; MF-4 Windows null-mask
+catch-all before `renderProgramFrame` (lastGoodMask ≤ 2 s, then empty); MF-5 macOS `#else` byte-for-byte; MF-6 intraOp doc.
+
+### Consolidation review round 3 — FINAL: PASS
+S1 raw camera on exit: PASS (zero Windows paths; catch-all ages honestly → background-only after 2 s). S2 ghost: PASS. S3 load:
+PASS (no busy loop in any state: no camera / 30 fps / 60 fps / keyer off / idle). S4 latency: PASS (render on camera arrival at
+≥ 0.75·interval; inference on every rendered frame). Notes: test label for the 60 fps case corrected; catch-all sets no stage
+telemetry (cosmetic). Windows CI on `test-release/wp2-consolidation` is the release gate for rc.25.
+
+## rc.25 field result (22.08.2026) — VCam-aware keyer policy + grey/churn fixes — VF-1..VF-7 (→ rc.26)
+Field: keying better without Teams; GHOST only while Teams/VCam streams; Teams shows "grey"; laptop gets louder over time.
+Diagnosis: (F1) Teams' encoder + the TCP VCam path (~8 copies/frame) push `sessionRunMs` → cadence N=2 / governor → Lite256 =
+live frame paired with a 66–132 ms-old mask + dynamic dilation + 5 s fused/async overlap → trail; oscillation with doubling holdoff.
+(F2) most likely NOT the DLL splash but the helper's background-only render (zero `emptyValid` mask) during the prolonged first-load
+hold / inference failure under Teams load; second candidate `vcamRawRunning=false` disarm loop; third an old DLL still loaded in the
+Frame Server (no build stamp in vcam.log). (F3) thermal/governor feedback + camera stall-reopen loop + raw-server thread churn.
+- VF-1 contention-robust keyer policy (Windows): while `vcamClients > 0` pin cadence `maxN = 1` (never reuse a mask for a live frame);
+  degrade by TIER only (512→320→256 fused) before any async tier; Lite256 reachable only after ≥ 30 consecutive over-budget samples at
+  fused 256; in Lite/Off composite the PAIRED frame (`selectedPair->frame`) instead of `latestCameraFrame` (no live-snap of aged masks;
+  accept ≤100 ms latency instead of ghost); `dynamicDilation` off on Windows; fused EMA static 0.85 → 0.92; no fused/async overlap
+  double-inference while a VCam client is connected (cut over on first pair or after 1 s). Tests: governor transition rules, cadence pin,
+  pairing selection.
+- VF-2 first-load / not-ready: retained `lastGoodMask` hold up to 5 s during warm-up/failure (not 2 s); while no mask ever existed
+  composite the camera keyed with a FULL (alpha 255) mask? — NO: background-only is the spec'd behaviour; instead expose it: status
+  `keyer_ready:false`, degradation_stage `keyer_loading`, and a helper event `keyer_not_ready` with the reason so the operator/webapp can
+  show "Keyer lädt". Reduce the hold itself: build only the seeded tier + 256 at first load (`PREBUILD_TIERS` default `active,256`), the
+  remaining tier lazily in the background after the first frame.
+- VF-3 raw server: send a heartbeat (last stored frame or a 1-frame render-on-connect) even when `payload.empty()`; emit
+  `meeting_vcam_raw` event `no_frame_on_connect` if `sent_frames == 0` after 2 s; join/reap finished worker threads each accept
+  iteration (`workers` vector must not grow).
+- VF-4 diagnosability: DLL logs a build stamp (git sha + build time via a generated header) on first `VcamLog`; helper events on every
+  `output.vcam.raw.start/stop`, on every governor tier / cadence change and on `camera_stalled` reopen count per hour.
+- VF-5 camera stall loop: reopen only after 2 consecutive stall windows (3 s) and back off 5 s → 30 s between reopens while the camera
+  keeps stalling; never reopen while `vcamClients > 0` and frames arrive at ≥ 10 fps.
+- VF-6 installer (`build/windows-installer.nsh` + `deploy-vcam.ps1`): stop the `FrameServer`/`FrameServerMonitor` services (or warn and
+  require a reboot) when replacing `broadify-vcam.dll`; NSIS smoke unchanged otherwise.
+- VF-7 docs + runbook: "grey in Teams" triage order (keyer_ready → raw stream armed → DLL build stamp), env knobs, VCam-aware policy.
+Acceptance: unit tests for VF-1 rules and VF-5 backoff; no `workers` growth (test with a fake accept loop or review); macOS unchanged;
+lint/jest/build/helper/ctests green; then 4-symptom review (F1/F2/F3) + Windows CI test branch → rc.26.
+
+### VF review round 1 — F1 PARTIAL, F2 NOT (diagnosability only), F3 PARTIAL
+Must-fix:
+- VR-1 `vcam-helper/windows/media_source.cpp` ~:63-83: REMOVE the blocking geometry probe. Use handshake geometry if available within
+  ≤100 ms; on connect failure return immediately with 1920x1080; never sleep through 20×100 ms. Give `RawFrameClient` a
+  "connect attempt finished" signal (atomic state: connecting/connected/failed). This is the prime suspect for "Teams takes forever to
+  open" and removes the probe's side effects on `vcamClientCount`/policy and the `no_frame_on_connect` noise.
+- VR-2 `build/windows-installer.nsh`: stop `FrameServer`/`FrameServerMonitor` in `customInit` (runs in `.onInit`, BEFORE file
+  extraction), then poll `sc query` for STOPPED (bounded ~5 s) before proceeding; keep the reboot fallback; NSIS smoke green.
+- VR-3 `pipeline/compositor_input_selection.cpp` ~:43-49 + callers (`frame_pipeline.cpp` ~:2049, ~:2206): the non-VCam async path
+  must return `PairedFrame` (prior behaviour); `LatestCameraFrame` only when the live-snap can actually run
+  (`guidedRefineAvailable() && liveSnapEnabled()`); fix the test expectation.
+- VR-4 `preview/raw_frame_server.cpp` ~:305: implement the heartbeat when no payload exists (synthesized record with the last stored
+  frame if any, else a zero-size heartbeat the DLL accepts as keep-alive and ignores for display) so the DLL's 5 s recv timeout
+  cannot fire while the stream is armed; DLL side: accept the keep-alive record (version-tolerant). Also: when `vcamRawRunning` is
+  false, answer the handshake with a distinct HTTP status (e.g. 503 + `X-Broadify-Stream: disarmed`) and let the DLL back off to 3 s
+  immediately instead of treating it as a successful connection (kills the 250 ms reconnect storm).
+Notes: rename `vcamAwarePolicy` → `tierFirstPolicy`; `reopen_count_hour` → lifetime counter naming; reaping test should exercise
+the real worker vector; build stamp is configure-time (document).

@@ -60,6 +60,11 @@ struct KeyerGovernorConfig {
   // step-up counts as a wrong estimate and doubles the corresponding backoff
   // (~1s at 30fps, Apple: 30).
   uint64_t stableSamples = 30u;
+  // Windows VCam policy: Teams/encoder contention may push 256 fused over
+  // budget transiently. Require a longer consecutive over-budget run before
+  // leaving fused for async-lite, and degrade by fused tier first.
+  uint64_t liteGateSamples = 30u;
+  bool tierFirstPolicy = false;
   // Warm-handover deferral (make-before-break step-up): when true, an
   // estimate-approved Lite256 -> Performance256 step-up does NOT change the
   // tier; the governor latches liteStepUpPending() instead and the caller
@@ -177,6 +182,7 @@ class KeyerAutoGovernor {
   bool liteStepUpPending_ = false;
   double emaMs_ = -1.0;
   uint64_t samples_ = 0u;
+  uint64_t liteGateOverBudgetSamples_ = 0u;
   StepUpWatch stepUpWatch_ = StepUpWatch::None;
   // degradedAt_ is only meaningful while degradeClockStarted_ is true; a bare
   // epoch sentinel would collide with legitimate injected t=0 test clocks.

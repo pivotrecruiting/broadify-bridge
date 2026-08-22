@@ -125,6 +125,22 @@ int main() {
   }
 
   {
+    // VCam client policy pins cadence to every frame at runtime.
+    FusedCadenceController cadence(testConfig());
+    cadence.onInferenceCompleted(kFrameNs, 100.0, at(0));
+    ok &= expect(cadence.currentN() == kExpectedMaxN,
+                 "slow sample selects platform max before VCam pin");
+    cadence.setForceEveryFrame(true);
+    ok &= expect(cadence.currentN() == 1, "VCam pin forces N=1");
+    const CadenceDecision d =
+        cadence.decide(kFrameNs + kFrameNs, kLowMotion, true, at(33));
+    ok &= expect(d.runInference, "VCam pin runs every frame");
+    cadence.setForceEveryFrame(false);
+    ok &= expect(cadence.currentN() == kExpectedMaxN,
+                 "clearing VCam pin restores EMA cadence");
+  }
+
+  {
     // Cadence inert (BROADIFY_MEETING_KEYER_CADENCE=0): always infer.
     FusedCadenceConfig config = testConfig();
     config.enabled = false;

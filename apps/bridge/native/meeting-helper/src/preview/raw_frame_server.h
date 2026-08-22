@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 namespace broadify::meeting {
 
@@ -20,5 +21,8 @@ void runRawFrameServer(uint16_t port,
                        PreviewFrameStore &previewFrames,
                        MeetingState &state,
                        std::atomic<bool> &running);
+
+std::vector<bool> reapCompletedRawFrameWorkers(
+    const std::vector<bool> &workerCompleted);
 
 }  // namespace broadify::meeting

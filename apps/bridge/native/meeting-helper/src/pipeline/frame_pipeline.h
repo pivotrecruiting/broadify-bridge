@@ -6,6 +6,7 @@
 #include "preview/vcam_shm_ring_win.h"
 #include "state/meeting_state.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 
@@ -26,6 +27,44 @@ inline bool isCameraFrameStalled(
           ? watchdogStartAt
           : lastFrameAt;
   return now - ageStart >= stallWindow;
+}
+
+struct CameraStallReopenBackoff {
+  uint32_t consecutiveStallWindows = 0u;
+  uint32_t reopenCount = 0u;
+  std::chrono::steady_clock::time_point lastReopenAt{};
+  std::chrono::steady_clock::duration nextDelay = std::chrono::seconds(5);
+};
+
+inline bool shouldReopenStalledCamera(
+    CameraStallReopenBackoff &backoff,
+    std::chrono::steady_clock::time_point now,
+    bool stalledWindowElapsed,
+    bool vcamClientConnected,
+    double observedCameraFps) {
+  if (!stalledWindowElapsed) {
+    backoff.consecutiveStallWindows = 0u;
+    return false;
+  }
+  if (vcamClientConnected && observedCameraFps >= 10.0) {
+    return false;
+  }
+  ++backoff.consecutiveStallWindows;
+  if (backoff.consecutiveStallWindows < 2u) {
+    return false;
+  }
+  if (backoff.lastReopenAt != std::chrono::steady_clock::time_point{} &&
+      now - backoff.lastReopenAt < backoff.nextDelay) {
+    return false;
+  }
+  backoff.lastReopenAt = now;
+  ++backoff.reopenCount;
+  backoff.consecutiveStallWindows = 0u;
+  if (backoff.reopenCount > 1u) {
+    backoff.nextDelay = std::min<std::chrono::steady_clock::duration>(
+        backoff.nextDelay * 2, std::chrono::seconds(30));
+  }
+  return true;
 }
 
 void runFramePipeline(const Options &options,

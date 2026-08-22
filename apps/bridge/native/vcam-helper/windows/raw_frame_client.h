@@ -6,6 +6,8 @@
 #include <thread>
 #include <vector>
 
+#include "raw_frame_connect_state.h"
+
 namespace broadify::vcam {
 
 // One decoded program frame from the raw-frame stream. BGRA8, dense
@@ -60,6 +62,9 @@ class RawFrameClient {
   // false until a handshake with both headers has been seen.
   bool streamGeometry(uint32_t &width, uint32_t &height) const;
 
+  RawFrameConnectState connectState() const;
+  bool connectAttemptFinished() const;
+
  private:
   void run();
   void runLoop();
@@ -84,6 +89,7 @@ class RawFrameClient {
   bool hasStreamGeometry_ = false;
   uint32_t streamWidth_ = 0;
   uint32_t streamHeight_ = 0;
+  RawFrameConnectStateMachine connectState_;
 };
 
 }  // namespace broadify::vcam

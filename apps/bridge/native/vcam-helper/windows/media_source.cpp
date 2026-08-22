@@ -18,10 +18,12 @@ namespace {
 
 constexpr uint16_t kDefaultPort = 18787;
 // Matches the meeting helper's default program size (Options::width/height
-// in meeting-helper/src/common/options.h). Used only when neither the
-// handshake nor a frame answered within the probe window.
+// in meeting-helper/src/common/options.h). Used when handshake geometry is not
+// available inside the short initialization window.
 constexpr uint32_t kFallbackWidth = 1920;
 constexpr uint32_t kFallbackHeight = 1080;
+constexpr DWORD kGeometryWaitMs = 100;
+constexpr DWORD kGeometryPollMs = 10;
 
 uint16_t resolvePort() {
   char value[16] = {0};
@@ -54,8 +56,28 @@ HRESULT MediaSource::Initialize(IMFAttributes *attributes) {
     _width = geometry.width;
     _height = geometry.height;
     geometrySource = "shm_control";
+  } else {
+    // One short handshake-only geometry check. It never waits for a frame and
+    // is bounded to 100 ms so source activation cannot stall camera-open paths.
+    _client->start();
+    const ULONGLONG deadline = GetTickCount64() + kGeometryWaitMs;
+    while (GetTickCount64() < deadline) {
+      uint32_t streamWidth = 0;
+      uint32_t streamHeight = 0;
+      if (_client->streamGeometry(streamWidth, streamHeight)) {
+        _width = streamWidth;
+        _height = streamHeight;
+        geometrySource = "handshake";
+        break;
+      }
+      if (_client->connectAttemptFinished()) {
+        break;
+      }
+      Sleep(kGeometryPollMs);
+    }
+    _client->stop();
   }
-  VcamLog("MediaSource::Initialize geometry %ux%u from %s (no activation probe)",
+  VcamLog("MediaSource::Initialize geometry %ux%u from %s",
           _width, _height, geometrySource);
 
   _stream = winrt::make_self<MediaStream>();

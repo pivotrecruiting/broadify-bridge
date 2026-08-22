@@ -13,6 +13,9 @@
 # installed copy, then copies the new DLL, then registers it. Skipping this
 # leaves the Frame Server bound to the previously registered file (a classic
 # "my changes don't show up" trap).
+# If Windows keeps Camera Frame Server services alive and the DLL is locked,
+# stop them first. If they cannot be stopped, reboot before validating the new
+# build stamp in %ProgramData%\Broadify\vcam.log.
 param(
   [string]$SourceDll,
   [switch]$Unregister,
@@ -21,6 +24,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 $target = Join-Path $InstallDir "broadify-vcam.dll"
+
+function Stop-FrameServerService {
+  param([string]$Name)
+  try {
+    $service = Get-Service -Name $Name -ErrorAction Stop
+    if ($service.Status -ne "Stopped") {
+      Stop-Service -Name $Name -Force -ErrorAction Stop
+      Write-Host "Stopped $Name"
+    }
+  } catch {
+    Write-Warning "Could not stop $Name; reboot may be required for broadify-vcam.dll replacement. $($_.Exception.Message)"
+  }
+}
+
+Stop-FrameServerService -Name "FrameServer"
+Stop-FrameServerService -Name "FrameServerMonitor"
 
 # Always unregister the currently installed copy first (ignored if absent).
 if (Test-Path $target) {

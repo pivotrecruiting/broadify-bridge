@@ -76,11 +76,21 @@ refined sie erneut gegen den aktuellen Kamera-Frame. Die geplante ein-Frame
 Software-Pipeline (Inference N parallel zu Composite N-1) ist auf WP3
 verschoben.
 
+Sobald ein Windows-VCam-Client verbunden ist, gilt eine strengere Policy:
+fused cadence wird auf N=1 gepinnt, Dynamic-Dilation ist aus, und der Governor
+steigt erst 512 -> 320 -> 256 ab. `async_lite` ist erst nach 30
+aufeinanderfolgenden over-budget Samples bei fused 256 erreichbar. In
+`async_lite`/`off_reduced` wird bei VCam das gepaarte Worker-Frame zur Maske
+composited, nicht das neueste Live-Kamera-Frame; das akzeptiert bis zu 100 ms
+Latenz, vermeidet aber Ghosting durch gealterte Masken.
+
 `Off` ist keine eingefrorene Maske mehr: der Status meldet
 `keyer_pipeline_mode=off_reduced`, der Async-Keyer laeuft mit reduziertem
-Takt weiter, und neue Masken werden per Live-Snap gegen das aktuelle
-Kamera-Frame composited. `stale_hold` darf Luecken nur bis 2 s ueberbruecken;
-danach faellt der Helper auf `background_only`/Passthrough zurueck.
+Takt weiter. Ohne VCam werden neue Masken per Live-Snap gegen das aktuelle
+Kamera-Frame composited; mit VCam wird die gepaarte Maske/Frame-Kombination
+verwendet. `stale_hold` darf Luecken im normalen Betrieb nur bis 2 s
+ueberbruecken; waehrend Warmup/Failure haelt der Helper `lastGoodMask` bis zu
+5 s und meldet `keyer_ready=false` / `degradation_stage=keyer_loading`.
 
 Field-Regression rc.21 wird ueber `keyer.get` diskriminiert:
 `keyer_pipeline_mode`, `degradation_stage`, `fallback_reason`, `provider` und
@@ -112,6 +122,12 @@ Aktivierung; Geometrie kommt sofort aus der Control-Mapping oder aus dem
 Default 1920x1080@30. SHM-Samples nutzen den QPC-Zeitstempel des Slots.
 BFRG v2 im TCP-Fallback traegt weiter `capture_ns`; die VCam-DLL akzeptiert v1
 und v2. Duplizierte Frames laufen mit Frame-Dauer weiter.
+
+Der Raw-Frame-Server sendet Heartbeats aus dem zuletzt gespeicherten Frame und
+meldet `meeting_vcam_raw no_frame_on_connect`, wenn ein VCam-Client nach 2 s
+noch keinen Frame bekommen hat. Die VCam-DLL schreibt beim ersten Logeintrag
+einen Build-Stamp (`git_sha`, `build_time`) nach
+`%ProgramData%\Broadify\vcam.log`.
 
 ## Messen
 

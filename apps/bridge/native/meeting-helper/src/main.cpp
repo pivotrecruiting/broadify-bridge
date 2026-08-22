@@ -21,6 +21,9 @@
 #if defined(__APPLE__)
 #include "macos/macos_app.h"
 #endif
+#if defined(_WIN32)
+#include "build_stamp.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -540,6 +543,13 @@ int main(int argc, char **argv) {
   if (options.vcamShmSelfTest) {
     return runVcamShmSelfTest(argc > 0 ? argv[0] : "meeting-helper.exe");
   }
+#if defined(_WIN32)
+  emitHelperEvent(std::string("{\"type\":\"meeting_helper_build\","
+                              "\"git_sha\":\"") +
+                  jsonEscape(BROADIFY_BUILD_GIT_SHA) +
+                  "\",\"build_time\":\"" +
+                  jsonEscape(BROADIFY_BUILD_TIMESTAMP) + "\"}");
+#endif
   if (options.keyerSelfTest) {
     // Standalone benchmark used by scripts/test-meeting-helper.cjs (keyer /
     // keyer-hardware modes): no --run / --control-socket required.
