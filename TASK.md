@@ -105,3 +105,21 @@ D3. Docs: `docs/bridge/features/virtual-camera-windows.md` (transport, discovery
 ## Verification
 - [ ] Tests pass
 - [ ] Windows CI compile + shm selftest
+
+### WP4 review round 2 — MUST-FIX (M3/M5/M6/M7 partial) + lifecycle gaps
+- R2-1 `vcam_shm_ring_win.cpp:149`: heartbeat must ALWAYS be `nowQpc()` (never the camera capture QPC); frame timestamp = capture
+  QPC only when it advanced, else `nowQpc()` (no duplicate timestamps).
+- R2-2 `vcam_shm_layout.cpp` seqlock fences: writer — odd store, THEN a fence (seq_cst or release+compiler barrier) before payload
+  writes, payload, release fence, even store; reader — seq1 load, acquire fence, copy, acquire fence BEFORE re-reading the same slot's
+  seq2. Same for `writeControlRecord`/`readControlRecord`. Comment the Boehm pattern.
+- R2-3 `scripts/test-windows-meeting-helper.ps1:58-69`: remove the helper-EXE banner timing; instead the SHM selftest reports
+  `time_to_first_frame_ms` measured in the READER child (map → first frame) and the ps1 asserts < 100 ms.
+- R2-4 tests: generation-change case (reader must re-open when `writer_generation` changes; DLL reader must act on it — implement
+  in `shm_frame_reader.cpp`: re-read control on generation mismatch) and an interleaved-writer torn-read case.
+- R2-5 stale reader pinning: per-reader liveness — each reader writes its pid + last-seen QPC into a small reader table in the control
+  mapping (N=4 slots) instead of a bare counter; the helper derives `vcamShmReaderCount` = readers with last-seen < 3 s AND pid alive
+  (`OpenProcess(SYNCHRONIZE)`); test for the derivation.
+- R2-6 `vcam_shm_ring_win.cpp:251`: if the control mapping already exists (another helper/selftest), do NOT overwrite a live record
+  (check writer pid alive + heartbeat fresh → log `vcam_shm_control_busy`, fall back to TCP); the selftest uses its own control name
+  (`Global\BroadifyVcamControlSelftest`).
+- Notes: `shm_pending` status until the ring is active; `_tcpRunning` under `_lock`.
