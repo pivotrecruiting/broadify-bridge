@@ -447,6 +447,11 @@ int main(int argc, char **argv) {
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
   MeetingRecorder recorder;
+#if defined(_WIN32)
+  if (meetingGpuResidentEnabled()) {
+    (void)GpuContextWin::shared().available();
+  }
+#endif
 
   std::promise<void> controlListening;
   std::future<void> controlListeningFuture = controlListening.get_future();

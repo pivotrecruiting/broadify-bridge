@@ -55,7 +55,7 @@ class GpuContextWin {
 
  private:
   bool initialize();
-  bool initialized_ = false;
+  std::once_flag initializeOnce_;
   bool available_ = false;
   std::string failureReason_;
   GpuContextTelemetry telemetry_;

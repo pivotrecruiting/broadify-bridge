@@ -64,10 +64,9 @@ GpuContextWin &GpuContextWin::shared() {
 }
 
 bool GpuContextWin::available() {
-  if (!initialized_) {
-    initialized_ = true;
+  std::call_once(initializeOnce_, [this]() {
     available_ = initialize();
-  }
+  });
   return available_;
 }
 
@@ -129,12 +128,12 @@ bool GpuContextWin::initialize() {
   }
   Microsoft::WRL::ComPtr<ID3D10Multithread> multithread;
   hr = d3d11Device_.As(&multithread);
-  if (FAILED(hr) || multithread == nullptr ||
-      !multithread->SetMultithreadProtected(TRUE)) {
+  if (FAILED(hr) || multithread == nullptr) {
     failureReason_ = "d3d11_multithread_protection_failed " + hrHex(hr);
     logGpuContextEvent("unavailable", failureReason_);
     return false;
   }
+  multithread->SetMultithreadProtected(TRUE);
   hr = baseContext.As(&d3d11Context_);
   if (FAILED(hr) || !d3d11Context_) {
     failureReason_ = "d3d11_context4_unavailable " + hrHex(hr);

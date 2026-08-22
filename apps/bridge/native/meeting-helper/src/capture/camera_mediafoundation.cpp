@@ -579,6 +579,8 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       }
       readerAttributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
                                   TRUE);
+      readerAttributes->SetUINT32(MF_SOURCE_READER_D3D11_BIND_FLAGS,
+                                  D3D11_BIND_SHADER_RESOURCE);
     }
     // Async callback mode: the reader delivers frames via OnReadSample instead
     // of a blocking ReadSample, so a frameless device never stalls shutdown().
@@ -719,12 +721,22 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
         ComPtr<IMFDXGIBuffer> dxgiBuffer;
         if (SUCCEEDED(gpuBuffer.As(&dxgiBuffer))) {
           GpuCameraFrame gpuFrame;
+          gpuFrame.sample = sample;
+          gpuFrame.buffer = gpuBuffer;
           gpuFrame.timestampNs = nowNs();
           gpuFrame.subtype = currentSubtype_;
           gpuFrame.width = frameWidth_;
           gpuFrame.height = frameHeight_;
           dxgiBuffer->GetSubresourceIndex(&gpuFrame.subresourceIndex);
           if (SUCCEEDED(dxgiBuffer->GetResource(IID_PPV_ARGS(&gpuFrame.texture)))) {
+            static std::atomic<bool> loggedSrvFailure{false};
+            ComPtr<ID3D11ShaderResourceView> probeSrv;
+            if (FAILED(GpuContextWin::shared().d3d11Device()->CreateShaderResourceView(
+                    gpuFrame.texture.Get(), nullptr, &probeSrv)) &&
+                !loggedSrvFailure.exchange(true)) {
+              std::cout << "{\"type\":\"camera_gpu_srv_unavailable\"}"
+                        << std::endl;
+            }
             {
               std::lock_guard<std::mutex> lock(frameMutex_);
               latestGpuFrame_ = std::move(gpuFrame);

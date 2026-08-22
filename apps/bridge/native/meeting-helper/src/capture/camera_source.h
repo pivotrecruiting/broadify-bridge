@@ -12,12 +12,17 @@
 #include <d3d11_4.h>
 #include <guiddef.h>
 #include <wrl/client.h>
+
+struct IMFMediaBuffer;
+struct IMFSample;
 #endif
 
 namespace broadify::meeting {
 
 #ifdef _WIN32
 struct GpuCameraFrame {
+  Microsoft::WRL::ComPtr<IMFSample> sample;
+  Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
   Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
   uint32_t subresourceIndex = 0;
   uint32_t width = 0;

@@ -1052,11 +1052,6 @@ bool ensureGuidedPlane(GuidedContext::Plane &plane, uint32_t width,
 bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
   GuidedContext &ctx = guidedContext();
   D3D11Context &base = context();
-  std::unique_lock<std::mutex> contextLock;
-  if (meetingGpuResidentEnabled() && GpuContextWin::shared().available()) {
-    contextLock = std::unique_lock<std::mutex>(
-        GpuContextWin::shared().immediateContextMutex());
-  }
   if (ctx.planeW != workW || ctx.planeH != workH) {
     ctx.planeA = {};
     ctx.planeT1 = {};
@@ -1183,6 +1178,11 @@ void resetGuidedRefineD3D11History() {
 bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   if (!initializeGuidedContext()) {
     return false;
+  }
+  std::unique_lock<std::mutex> contextLock;
+  if (meetingGpuResidentEnabled() && GpuContextWin::shared().available()) {
+    contextLock = std::unique_lock<std::mutex>(
+        GpuContextWin::shared().immediateContextMutex());
   }
   if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u ||
       guideFrame.rgba.empty() || guideFrame.width == 0u ||
