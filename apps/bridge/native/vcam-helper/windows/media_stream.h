@@ -95,6 +95,9 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
   uint64_t _loggedStaleWindowMs = 0;
   bool _hasLastGoodFrame = false;
   bool _tcpRunning = false;
+  bool _offerNv12 = false;
+  bool _loggedFirstSampleStreamType = false;
+  uint64_t _lastShmReaderGeneration = 0;
   RawFrameClient *_client = nullptr;  // owned by the MediaSource.
   ShmFrameReader *_shmReader = nullptr;  // owned by the MediaSource.
   IMFMediaSource *_source = nullptr;  // weak back-reference, cleared in Shutdown.

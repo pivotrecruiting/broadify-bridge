@@ -34,13 +34,16 @@ Transport-Auswahl:
 - `output.vcam.status` enthaelt `transport: "shm"|"tcp"`.
 - TCP ist der normale Fallback fuer unelevierte Installationen. Die DLL probt
   nicht mehr blockierend in der Aktivierung; wie in rc.26 bietet sie RGB32
-  zuerst an, danach NV12 und YUY2.
+  standardmaessig als einzigen Media Type an.
 
 Der SHM-Ring hat drei Slots. Jeder Slot nutzt eine Sequenznummer als seqlock:
 ungerade bedeutet "Writer schreibt gerade", Leser kopieren nur den neuesten
 geraden Slot und pruefen die Sequenz nach dem Copy erneut. WP4 schreibt
 BGRA8; das Layout enthaelt bereits `format=NV12` fuer den spaeteren
-Compositor-Ausgang. Die DLL bietet RGB32 zuerst an, danach NV12 und YUY2.
+Compositor-Ausgang. Die DLL bietet standardmaessig nur RGB32 an; NV12/YUY2
+sind ein experimenteller Consumer-Kompatibilitaetspfad und werden nur
+angeboten, wenn `HKCU\Software\Broadify\VCam\OfferNv12` als DWORD `1` gesetzt
+ist. Die DLL liest den Flag einmal pro `MediaStream::Start`.
 
 Die DLL startet den SHM-Reader erst in `MediaStream::Start`. TCP verbindet sie
 sofort aus `Start()`, wenn die SHM-Mapping fehlt, wenn der Heartbeat laenger
@@ -98,7 +101,9 @@ Luefter entsprechen dann dem Zustand „VCam-Output gestoppt".
 Log-Zeilen (`VcamLog`): `build git=... time=...` steht am Anfang jeder
 Log-Datei. `MediaSource::Initialize ... (no activation probe)` bestaetigt den
 WP4-Pfad. `vcam_reader_transport tcp reason=...` markiert Fallback,
-`vcam_reader_transport shm reason=shm_frame_available` die Rueckkehr.
+`vcam_reader_transport shm reason=shm_frame_available` die Rueckkehr. Pro
+Stream-Start loggt die DLL beim ersten Sample den ausgehandelten Typ, z. B.
+`stream_type subtype=RGB32 buffer=memory`.
 
 ## Stream-Lifecycle und Timeouts
 
@@ -134,6 +139,9 @@ reduziert sichtbare Latenzspruenge in Teams/Meet.
 
 Der SHM-Ring wird geschrieben, sobald `output.vcam.raw.start` aktiv ist, auch
 wenn der Frame-Server-Leser noch nicht in der Control-Mapping sichtbar ist.
+Mit aktivem SHM schreibt der Helper den Ring in voller Cadence auch ohne
+Reader; Reader-Liveness beeinflusst nur Diagnose und Transportstatus, nicht
+den Ring-Write.
 `output.vcam.raw.stop` schliesst die Mapping, so dass die DLL Staleness sieht
 und auf TCP zurueckfaellt.
 

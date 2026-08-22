@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <vector>
+#include <windows.h>
 
 namespace broadify::vcam {
 namespace {
@@ -66,6 +67,37 @@ HRESULT createSampleBufferPool(
     buffers.push_back(buffer);
   }
   return S_OK;
+}
+
+const char *subtypeName(const GUID &subtype) {
+  if (subtype == MFVideoFormat_NV12) {
+    return "NV12";
+  }
+  if (subtype == MFVideoFormat_YUY2) {
+    return "YUY2";
+  }
+  if (subtype == MFVideoFormat_RGB32) {
+    return "RGB32";
+  }
+  return "unknown";
+}
+
+const char *bufferKindForSubtype(const GUID &subtype) {
+  return subtype == MFVideoFormat_RGB32 ? "memory" : "2d";
+}
+
+bool readOfferNv12Flag() {
+  DWORD value = 0;
+  DWORD valueBytes = sizeof(value);
+  const LSTATUS status = RegGetValueW(
+      HKEY_CURRENT_USER, L"Software\\Broadify\\VCam", L"OfferNv12",
+      RRF_RT_REG_DWORD, nullptr, &value, &valueBytes);
+  return status == ERROR_SUCCESS && value == 1u;
+}
+
+void logStreamType(const GUID &subtype) {
+  VcamLog("stream_type subtype=%s buffer=%s", subtypeName(subtype),
+          bufferKindForSubtype(subtype));
 }
 
 void fillSplash(const GUID &subtype, BYTE *dst, DWORD bytes, uint32_t width,
@@ -157,6 +189,46 @@ LONGLONG qpcToSampleTime(uint64_t qpc, uint64_t baseQpc, LONGLONG baseSampleTime
                                static_cast<uint64_t>(frequency.QuadPart));
 }
 
+HRESULT makeVideoType(const GUID &subtype, uint32_t width, uint32_t height,
+                      DWORD stride, DWORD bytesPerPixel,
+                      Microsoft::WRL::ComPtr<IMFMediaType> &type) {
+  CK(MFCreateMediaType(&type));
+  type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+  type->SetGUID(MF_MT_SUBTYPE, subtype);
+  type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+  type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+  MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, width, height);
+  type->SetUINT32(MF_MT_DEFAULT_STRIDE, stride);
+  MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, kFrameRate, 1);
+  MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+  type->SetUINT32(MF_MT_AVG_BITRATE,
+                  width * height * bytesPerPixel * 8 * kFrameRate);
+  return S_OK;
+}
+
+HRESULT makeStreamDescriptor(uint32_t index, uint32_t width, uint32_t height,
+                             bool offerNv12,
+                             IMFStreamDescriptor **descriptor) {
+  if (descriptor == nullptr) {
+    return E_POINTER;
+  }
+  *descriptor = nullptr;
+  Microsoft::WRL::ComPtr<IMFMediaType> rgb32Type;
+  CK(makeVideoType(MFVideoFormat_RGB32, width, height, width * 4, 4,
+                   rgb32Type));
+  if (!offerNv12) {
+    IMFMediaType *types[] = {rgb32Type.Get()};
+    return MFCreateStreamDescriptor(index, 1, types, descriptor);
+  }
+
+  Microsoft::WRL::ComPtr<IMFMediaType> nv12Type;
+  Microsoft::WRL::ComPtr<IMFMediaType> yuy2Type;
+  CK(makeVideoType(MFVideoFormat_NV12, width, height, width, 1, nv12Type));
+  CK(makeVideoType(MFVideoFormat_YUY2, width, height, width * 2, 2, yuy2Type));
+  IMFMediaType *types[] = {rgb32Type.Get(), nv12Type.Get(), yuy2Type.Get()};
+  return MFCreateStreamDescriptor(index, 3, types, descriptor);
+}
+
 }  // namespace
 
 HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
@@ -182,37 +254,15 @@ HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
 
   CK(MFCreateEventQueue(&_queue));
 
-  auto makeType = [&](const GUID &subtype, DWORD stride, DWORD bytesPerPixel,
-                      Microsoft::WRL::ComPtr<IMFMediaType> &type) -> HRESULT {
-    CK(MFCreateMediaType(&type));
-    type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    type->SetGUID(MF_MT_SUBTYPE, subtype);
-    type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE_RANGE_MIN, 15, 1);
-    MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE_RANGE_MAX, 30, 1);
-    MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, _width, _height);
-    type->SetUINT32(MF_MT_DEFAULT_STRIDE, stride);
-    MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, kFrameRate, 1);
-    MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-    type->SetUINT32(MF_MT_AVG_BITRATE,
-                    _width * _height * bytesPerPixel * 8 * kFrameRate);
-    return S_OK;
-  };
-
-  Microsoft::WRL::ComPtr<IMFMediaType> nv12Type;
-  Microsoft::WRL::ComPtr<IMFMediaType> rgb32Type;
-  Microsoft::WRL::ComPtr<IMFMediaType> yuy2Type;
-  CK(makeType(MFVideoFormat_NV12, _width, 1, nv12Type));
-  CK(makeType(MFVideoFormat_RGB32, _width * 4, 4, rgb32Type));
-  CK(makeType(MFVideoFormat_YUY2, _width * 2, 2, yuy2Type));
-
-  IMFMediaType *types[] = {rgb32Type.Get(), nv12Type.Get(), yuy2Type.Get()};
-  CK(MFCreateStreamDescriptor(_index, 3, types, &_descriptor));
+  CK(makeStreamDescriptor(static_cast<uint32_t>(_index), _width, _height,
+                          false, &_descriptor));
 
   Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
   CK(_descriptor->GetMediaTypeHandler(&handler));
+  Microsoft::WRL::ComPtr<IMFMediaType> rgb32Type;
+  CK(handler->GetMediaTypeByIndex(0, &rgb32Type));
   CK(handler->SetCurrentMediaType(rgb32Type.Get()));
+  logStreamType(MFVideoFormat_RGB32);
 
   CK(createSampleBufferPool(MFVideoFormat_RGB32, _width, _height,
                             _sampleBuffers));
@@ -227,6 +277,21 @@ HRESULT MediaStream::Start() {
     {
       winrt::slim_lock_guard lock(_lock);
       if (!_queue) return MF_E_SHUTDOWN;
+      const bool offerNv12 = readOfferNv12Flag();
+      if (offerNv12 != _offerNv12 || offerNv12) {
+        _offerNv12 = offerNv12;
+        CK(makeStreamDescriptor(static_cast<uint32_t>(_index), _width, _height,
+                                _offerNv12, &_descriptor));
+        Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
+        CK(_descriptor->GetMediaTypeHandler(&handler));
+        Microsoft::WRL::ComPtr<IMFMediaType> rgb32Type;
+        CK(handler->GetMediaTypeByIndex(0, &rgb32Type));
+        CK(handler->SetCurrentMediaType(rgb32Type.Get()));
+        logStreamType(MFVideoFormat_RGB32);
+      }
+      if (_offerNv12) {
+        VcamLog("MediaStream: OfferNv12 experiment enabled");
+      }
       CK(_queue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
       _state = MF_STREAM_STATE_RUNNING;
       client = _client;
@@ -261,6 +326,7 @@ HRESULT MediaStream::Stop() {
       client = _client;
       shmReader = _shmReader;
       _tcpRunning = false;
+      _loggedFirstSampleStreamType = false;
     }
     if (shmReader) {
       shmReader->stop();
@@ -298,11 +364,13 @@ void MediaStream::Shutdown() {
       _lastSequence = 0;
       _lastShmSequence = 0;
       _lastTcpSequence = 0;
+      _lastShmReaderGeneration = 0;
       _baseCaptureNs = 0;
       _baseCaptureQpc = 0;
       _baseSampleTime = 0;
       _lastSampleTime = 0;
       _tcpRunning = false;
+      _loggedFirstSampleStreamType = false;
       _source = nullptr;
     }
     if (client) {
@@ -419,6 +487,11 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       _nextSampleBuffer = 0;
       _lastSampleBuffer.Reset();
       _hasLastGoodFrame = false;
+      logStreamType(subtype);
+    }
+    if (!_loggedFirstSampleStreamType) {
+      logStreamType(subtype);
+      _loggedFirstSampleStreamType = true;
     }
     Microsoft::WRL::ComPtr<IMFSample> sample;
     CK(MFCreateSample(&sample));
@@ -439,6 +512,13 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       }
     }
 
+    if (_shmReader) {
+      const uint64_t shmGeneration = _shmReader->mappingGeneration();
+      if (shmGeneration != _lastShmReaderGeneration) {
+        _lastShmReaderGeneration = shmGeneration;
+        _lastShmSequence = 0u;
+      }
+    }
     bool frameFromShm = false;
     bool hasNewFrame =
         _shmReader && _shmReader->copyLatestIfNew(_lastShmSequence, _scratchFrame);

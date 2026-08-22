@@ -34,11 +34,9 @@ std::wstring widen(const std::string &value) {
   return wide;
 }
 
-bool applyDacl(const std::wstring &path, bool directory) {
+bool applyLogFileDacl(const std::wstring &path) {
   const wchar_t *sddl =
-      directory
-          ? L"D:PAI(A;OICI;0x1301bf;;;AU)(A;OICI;0x1301bf;;;LS)(A;OICI;FA;;;OW)(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
-          : L"D:PAI(A;;0x1301bf;;;AU)(A;;0x1301bf;;;LS)(A;;FA;;;OW)(A;;FA;;;BA)(A;;FA;;;SY)";
+      L"D:PAI(A;;0x1301bf;;;LS)(A;;FA;;;OW)(A;;FA;;;BA)";
   PSECURITY_DESCRIPTOR descriptor = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
           sddl, SDDL_REVISION_1, &descriptor, nullptr)) {
@@ -61,6 +59,32 @@ bool applyDacl(const std::wstring &path, bool directory) {
   return result == ERROR_SUCCESS;
 }
 
+bool makeWellKnownSid(WELL_KNOWN_SID_TYPE type, BYTE *buffer,
+                      DWORD bufferSize, PSID *sid) {
+  DWORD size = bufferSize;
+  *sid = buffer;
+  return CreateWellKnownSid(type, nullptr, *sid, &size) != FALSE;
+}
+
+bool currentTokenUserIs(PTOKEN_USER tokenUser, WELL_KNOWN_SID_TYPE type) {
+  BYTE sidBuffer[SECURITY_MAX_SID_SIZE];
+  PSID sid = nullptr;
+  return tokenUser != nullptr &&
+         makeWellKnownSid(type, sidBuffer, static_cast<DWORD>(sizeof(sidBuffer)),
+                          &sid) &&
+         EqualSid(tokenUser->User.Sid, sid) != FALSE;
+}
+
+bool tokenHasGroup(HANDLE token, WELL_KNOWN_SID_TYPE type) {
+  BYTE sidBuffer[SECURITY_MAX_SID_SIZE];
+  PSID sid = nullptr;
+  BOOL isMember = FALSE;
+  return makeWellKnownSid(type, sidBuffer, static_cast<DWORD>(sizeof(sidBuffer)),
+                          &sid) &&
+         CheckTokenMembership(token, sid, &isMember) != FALSE &&
+         isMember != FALSE;
+}
+
 bool appendProbe(const std::string &path) {
   FILE *file = nullptr;
   if (fopen_s(&file, path.c_str(), "a") != 0 || file == nullptr) {
@@ -68,6 +92,37 @@ bool appendProbe(const std::string &path) {
   }
   fclose(file);
   return true;
+}
+
+bool isOwnedByCurrentUser(const std::wstring &path) {
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  PSID owner = nullptr;
+  std::wstring mutablePath = path;
+  DWORD result = GetNamedSecurityInfoW(
+      mutablePath.data(), SE_FILE_OBJECT,
+      OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr,
+      &descriptor);
+  if (result != ERROR_SUCCESS || owner == nullptr) {
+    if (descriptor != nullptr) {
+      LocalFree(descriptor);
+    }
+    return false;
+  }
+
+  bool owned = false;
+  HANDLE token = nullptr;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    DWORD bytes = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
+    std::string buffer(bytes, '\0');
+    auto *tokenUser = reinterpret_cast<TOKEN_USER *>(buffer.data());
+    if (GetTokenInformation(token, TokenUser, tokenUser, bytes, &bytes)) {
+      owned = EqualSid(owner, tokenUser->User.Sid) != FALSE;
+    }
+    CloseHandle(token);
+  }
+  LocalFree(descriptor);
+  return owned;
 }
 
 std::string processIdentity() {
@@ -81,21 +136,14 @@ std::string processIdentity() {
     std::string buffer(bytes, '\0');
     auto *tokenUser = reinterpret_cast<TOKEN_USER *>(buffer.data());
     if (GetTokenInformation(token, TokenUser, tokenUser, bytes, &bytes)) {
-      BYTE localServiceSidBuffer[SECURITY_MAX_SID_SIZE];
-      DWORD localServiceSidSize = sizeof(localServiceSidBuffer);
-      PSID localServiceSid = localServiceSidBuffer;
-      if (CreateWellKnownSid(WinLocalServiceSid, nullptr, localServiceSid,
-                             &localServiceSidSize) &&
-          EqualSid(tokenUser->User.Sid, localServiceSid)) {
+      if (currentTokenUserIs(tokenUser, WinLocalServiceSid)) {
         user = "LOCAL_SERVICE";
+      } else if (currentTokenUserIs(tokenUser, WinLocalSystemSid)) {
+        user = "SYSTEM";
+      } else if (tokenHasGroup(token, WinInteractiveSid)) {
+        user = "interactive";
       } else {
-        LPSTR sidString = nullptr;
-        if (ConvertSidToStringSidA(tokenUser->User.Sid, &sidString)) {
-          user = sidString;
-          LocalFree(sidString);
-        } else {
-          user = "interactive";
-        }
+        user = "other";
       }
     }
     CloseHandle(token);
@@ -119,28 +167,41 @@ std::string resolveLogPath() {
     return {};
   }
   std::string dir = std::string(programData) + "\\Broadify";
-  const std::wstring dirWide = widen(dir);
-  if (dirWide.empty()) {
-    return {};
-  }
   if (!CreateDirectoryA(dir.c_str(), nullptr) &&
       GetLastError() != ERROR_ALREADY_EXISTS) {
     return {};
   }
-  applyDacl(dirWide, true);
 
   const std::string shared = dir + "\\vcam.log";
+  const std::wstring sharedWide = widen(shared);
   HANDLE file = CreateFileA(
       shared.c_str(), FILE_APPEND_DATA | READ_CONTROL | WRITE_DAC,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file != INVALID_HANDLE_VALUE) {
     CloseHandle(file);
-    applyDacl(widen(shared), false);
+    applyLogFileDacl(sharedWide);
   }
   if (appendProbe(shared)) {
     g_logPath = shared;
     return g_logPath;
+  }
+
+  if (!sharedWide.empty() && !isOwnedByCurrentUser(sharedWide)) {
+    const std::string legacy = dir + "\\vcam-legacy.log";
+    MoveFileExA(shared.c_str(), legacy.c_str(), MOVEFILE_REPLACE_EXISTING);
+    HANDLE replacement = CreateFileA(
+        shared.c_str(), FILE_APPEND_DATA | READ_CONTROL | WRITE_DAC,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (replacement != INVALID_HANDLE_VALUE) {
+      CloseHandle(replacement);
+      applyLogFileDacl(sharedWide);
+    }
+    if (appendProbe(shared)) {
+      g_logPath = shared;
+      return g_logPath;
+    }
   }
 
   char fallback[MAX_PATH];
@@ -153,7 +214,7 @@ std::string resolveLogPath() {
       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (fallbackFile != INVALID_HANDLE_VALUE) {
     CloseHandle(fallbackFile);
-    applyDacl(widen(perPid), false);
+    applyLogFileDacl(widen(perPid));
   }
   if (appendProbe(perPid)) {
     g_logPath = perPid;
@@ -174,6 +235,15 @@ void rotateLogIfNeeded(const std::string &path) {
   const std::string rotated = path + ".1";
   DeleteFileA(rotated.c_str());
   MoveFileExA(path.c_str(), rotated.c_str(), MOVEFILE_REPLACE_EXISTING);
+  applyLogFileDacl(widen(rotated));
+  HANDLE file = CreateFileA(
+      path.c_str(), FILE_APPEND_DATA | READ_CONTROL | WRITE_DAC,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    CloseHandle(file);
+    applyLogFileDacl(widen(path));
+  }
 }
 
 std::string localTimestamp() {

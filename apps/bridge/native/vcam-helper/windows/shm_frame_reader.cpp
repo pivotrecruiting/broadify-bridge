@@ -137,6 +137,11 @@ bool ShmFrameReader::hasMapping() const {
   return mappingOpen_;
 }
 
+uint64_t ShmFrameReader::mappingGeneration() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return openGeneration_;
+}
+
 void ShmFrameReader::updateReaderLiveness() {
   if (controlMemory_ == nullptr) {
     return;
@@ -230,6 +235,7 @@ bool ShmFrameReader::openFromControl(std::string &reason) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     mappingOpen_ = true;
+    ++openGeneration_;
   }
   VcamLog("ShmFrameReader: opened %ls", mappingName_.c_str());
   return true;

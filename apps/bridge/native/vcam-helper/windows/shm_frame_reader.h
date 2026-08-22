@@ -37,6 +37,7 @@ class ShmFrameReader {
   bool copyLatestIfNew(uint64_t lastSequence, RawFrame &out) const;
   uint64_t staleAgeMs() const;
   bool hasMapping() const;
+  uint64_t mappingGeneration() const;
 
  private:
   void run();
@@ -68,6 +69,7 @@ class ShmFrameReader {
   uint64_t lastSequence_ = 0;
   uint64_t writerGeneration_ = 0;
   uint64_t openedAtMs_ = 0;
+  uint64_t openGeneration_ = 0;
 };
 
 }  // namespace broadify::vcam
