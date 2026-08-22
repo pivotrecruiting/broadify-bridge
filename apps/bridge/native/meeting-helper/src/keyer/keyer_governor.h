@@ -64,6 +64,8 @@ struct KeyerGovernorConfig {
   // budget transiently. Require a longer consecutive over-budget run before
   // leaving fused for async-lite, and degrade by fused tier first.
   uint64_t liteGateSamples = 30u;
+  std::chrono::steady_clock::duration liteGateDuration =
+      std::chrono::steady_clock::duration::zero();
   bool tierFirstPolicy = false;
   // Warm-handover deferral (make-before-break step-up): when true, an
   // estimate-approved Lite256 -> Performance256 step-up does NOT change the
@@ -183,6 +185,8 @@ class KeyerAutoGovernor {
   double emaMs_ = -1.0;
   uint64_t samples_ = 0u;
   uint64_t liteGateOverBudgetSamples_ = 0u;
+  bool liteGateClockStarted_ = false;
+  TimePoint liteGateStartedAt_{};
   StepUpWatch stepUpWatch_ = StepUpWatch::None;
   // degradedAt_ is only meaningful while degradeClockStarted_ is true; a bare
   // epoch sentinel would collide with legitimate injected t=0 test clocks.

@@ -158,6 +158,35 @@ int main() {
   }
 
   {
+    KeyerGovernorConfig config = testConfig();
+    config.tierFirstPolicy = true;
+    config.liteGateDuration = std::chrono::seconds(30);
+    config.stepUpMinStableTime = std::chrono::seconds(60);
+    KeyerAutoGovernor governor(config);
+    governor.seedMeasuredProbes(/*full512Ms=*/90.0,
+                                /*balanced320Ms=*/70.0,
+                                /*performance256Ms=*/20.0);
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "duration gate test starts at Performance256");
+    for (int second = 1; second < 30; ++second) {
+      governor.addSample(40.0, at(second));
+    }
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "does not enter async lite before 30s over budget");
+    governor.addSample(40.0, at(31));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "enters async lite after 30s over budget");
+    governor.maybeStepUp(at(32));
+    feed(governor, 15.0, 10, at(32));
+    governor.maybeStepUp(at(90));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "does not step up before 60s hysteresis");
+    governor.maybeStepUp(at(92));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "steps up after 60s hysteresis");
+  }
+
+  {
     // FIELD REGRESSION (RC live test 2026-08-09, hybrid GTX 1660 Ti + UHD
     // 630, DirectML under GPU contention): live async inference EMA 62ms at a
     // 33.3ms budget. The old live-probe step-up climbed every backoff

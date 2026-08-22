@@ -241,8 +241,13 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
     if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
       if (inferenceMs > threshold) {
         ++liteGateOverBudgetSamples_;
+        if (!liteGateClockStarted_) {
+          liteGateStartedAt_ = now;
+          liteGateClockStarted_ = true;
+        }
       } else {
         liteGateOverBudgetSamples_ = 0u;
+        liteGateClockStarted_ = false;
       }
     }
     const bool regularExceed =
@@ -251,7 +256,14 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
                             emaMs_ > config_.fastStartFactor * threshold;
     if (regularExceed || fastExceed) {
       if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
-        if (liteGateOverBudgetSamples_ < config_.liteGateSamples) {
+        const bool sampleGateMet =
+            liteGateOverBudgetSamples_ >= config_.liteGateSamples;
+        const bool durationGateMet =
+            config_.liteGateDuration == std::chrono::steady_clock::duration::zero()
+                ? sampleGateMet
+                : (liteGateClockStarted_ &&
+                   now - liteGateStartedAt_ >= config_.liteGateDuration);
+        if (!durationGateMet) {
           return;
         }
       }
@@ -286,6 +298,7 @@ void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
   emaMs_ = -1.0;
   samples_ = 0u;
   liteGateOverBudgetSamples_ = 0u;
+  liteGateClockStarted_ = false;
   degradedAt_ = now;
   degradeClockStarted_ = true;
 }
@@ -322,6 +335,8 @@ void KeyerAutoGovernor::reset() {
   emaMs_ = -1.0;
   samples_ = 0u;
   liteGateOverBudgetSamples_ = 0u;
+  liteGateClockStarted_ = false;
+  liteGateStartedAt_ = TimePoint{};
   stepUpWatch_ = StepUpWatch::None;
   degradeClockStarted_ = false;
   degradedAt_ = TimePoint{};

@@ -14,6 +14,7 @@
 #include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
+#include "pipeline/ofd_temporal.h"
 #include "pipeline/subject_presence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
@@ -319,7 +320,7 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
     static const float fusedEmaStatic = [] {
       const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_STATIC");
 #if defined(_WIN32)
-      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.92f;
+      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 1.0f;
 #else
       return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.85f;
 #endif
@@ -467,6 +468,18 @@ bool fusedSmootherEmaEnabled() {
   return enabled;
 }
 
+bool fusedOfdEnabled() {
+#if defined(_WIN32)
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_KEYER_OFD");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+#else
+  return false;
+#endif
+}
+
 void emitKeyerNotReadyEvent(const char *reason) {
   static std::string lastReason;
   const std::string current = reason == nullptr ? std::string() : std::string(reason);
@@ -548,6 +561,8 @@ KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
   config.frameBudgetMs = 1000.0 / static_cast<double>(fps == 0u ? 30u : fps);
   config.stepDownOverrideMs = keyerMaxInferenceOverrideMs();
   config.tierFirstPolicy = true;
+  config.liteGateDuration = std::chrono::seconds(30);
+  config.stepUpMinStableTime = std::chrono::seconds(60);
   // Warm handover: defer the Lite256 -> Performance256 step-up until the
   // background session warmup succeeded (make-before-break). With the
   // kill-switch off this stays the historical immediate step-up.
@@ -2406,6 +2421,8 @@ void runFramePipeline(const Options &options,
         static uint64_t lastFusedInferredTsNs = 0u;
         static LumaThumb lastFusedInferredLuma;
         static LumaThumb currentFrameLuma;
+        static OfdTemporal fusedOfd;
+        static std::deque<VideoFrame> fusedOfdFrames;
         // Last PUBLISHED (post-postprocess) fused mask: the previous-mask
         // input for the fused postprocess parity (stabilizeAlphaEdges needs
         // temporal continuity). Reset wherever lastFusedRawMask is reset.
@@ -2455,6 +2472,8 @@ void runFramePipeline(const Options &options,
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
+          fusedOfd.reset();
+          fusedOfdFrames.clear();
 #if defined(_WIN32)
           resetGuidedRefineD3D11History();
 #endif
@@ -2469,6 +2488,30 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.droppedFramesPerSec = -1.0;
           state.keyerMetrics.droppedFrames = 0u;
           state.keyerMetrics.skippedFrames = 0u;
+        };
+        const auto applyFusedOfd = [&](AlphaMask &mask,
+                                       const VideoFrame *&frame) -> bool {
+          if (!fusedOfdEnabled()) {
+            return true;
+          }
+          fusedOfdFrames.push_back(latestCameraFrame);
+          AlphaMask delayed;
+          const bool ready = fusedOfd.push(mask, delayed);
+          if (!ready) {
+            while (fusedOfdFrames.size() > 2u) {
+              fusedOfdFrames.pop_front();
+            }
+            return false;
+          }
+          if (fusedOfdFrames.size() < 2u) {
+            fusedOfdFrames.clear();
+            fusedOfd.reset();
+            return false;
+          }
+          fusedOfdFrames.pop_front();
+          mask = std::move(delayed);
+          frame = &fusedOfdFrames.front();
+          return true;
         };
         std::string fusedPipelineModeLabel;
         // Effective performance mode driving the keyer this frame (empty on
@@ -2834,11 +2877,13 @@ void runFramePipeline(const Options &options,
                   fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 fusedMask = std::move(fused.mask);
+                const VideoFrame *fusedFrame = &latestCameraFrame;
+                (void)applyFusedOfd(fusedMask, fusedFrame);
                 stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
                 lastGoodMask = fusedMask;
                 if (!(d3d11GuidedRefineAvailable() &&
-                      guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
-                  guidedRefineMask(fusedMask, latestCameraFrame);
+                      guidedRefineMaskD3D11(fusedMask, *fusedFrame))) {
+                  guidedRefineMask(fusedMask, *fusedFrame);
                 }
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
                   postprocessAlpha(fusedMask, lastFusedPublishedMask,
@@ -2846,7 +2891,7 @@ void runFramePipeline(const Options &options,
                                    fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
-                frameForCompositor = &latestCameraFrame;
+                frameForCompositor = fusedFrame;
                 maskForCompositor = &fusedMask;
                 shouldRenderProgram = true;
                 updateMeetingKeyerStatus(state, fused.status);
@@ -2928,6 +2973,8 @@ void runFramePipeline(const Options &options,
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 g_fusedKeyerDegraded = false;
                 fusedMask = std::move(fused.mask);
+                const VideoFrame *fusedFrame = &latestCameraFrame;
+                (void)applyFusedOfd(fusedMask, fusedFrame);
                 // Temporal stabilization FIRST, on the raw matte: the motion-adaptive
                 // EMA smooths the per-frame confidence jitter and the collapse guard
                 // holds through MODNet dropouts (no "person briefly gone"). The guided
@@ -2945,8 +2992,8 @@ void runFramePipeline(const Options &options,
                 // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
                 // CURRENT frame so the visible boundary stays crisp on motion.
                 if (!(d3d11GuidedRefineAvailable() &&
-                      guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
-                  guidedRefineMask(fusedMask, latestCameraFrame);
+                      guidedRefineMaskD3D11(fusedMask, *fusedFrame))) {
+                  guidedRefineMask(fusedMask, *fusedFrame);
                 }
                 // Postprocess parity with the async worker: apply the
                 // user-facing erode/dilate/feather/edge-stabilization chain
@@ -2961,7 +3008,7 @@ void runFramePipeline(const Options &options,
                                    fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
-                frameForCompositor = &latestCameraFrame;
+                frameForCompositor = fusedFrame;
                 maskForCompositor = &fusedMask;
                 shouldRenderProgram = true;
                 updateMeetingKeyerStatus(state, fused.status);
@@ -3064,6 +3111,8 @@ void runFramePipeline(const Options &options,
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
+          fusedOfd.reset();
+          fusedOfdFrames.clear();
           fusedSubjectPresenceTracker().reset();
           fusedStabilizerState().reset();
           g_fusedKeyerOffReducedActive = false;

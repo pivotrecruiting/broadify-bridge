@@ -106,6 +106,7 @@ set(MEETING_HELPER_SOURCES
   src/pipeline/guided_work_size.cpp
   src/pipeline/keyer_cadence.cpp
   src/pipeline/mask_retention.cpp
+  src/pipeline/ofd_temporal.cpp
   src/pipeline/subject_presence.cpp
   src/pipeline/tier_handover.cpp
   src/preview/preview_frame_store.cpp
@@ -337,6 +338,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/mask_retention_test.cpp
     src/pipeline/mask_retention.cpp
   )
+  add_executable(ofd_temporal_test
+    tests/ofd_temporal_test.cpp
+    src/pipeline/ofd_temporal.cpp
+  )
   add_executable(subject_presence_test
     tests/subject_presence_test.cpp
     src/pipeline/subject_presence.cpp
@@ -430,6 +435,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     segmentation_tier_test
     keyer_cadence_test
     mask_retention_test
+    ofd_temporal_test
     subject_presence_test
     frame_pipeline_stall_test
     frame_pipeline_gating_test
