@@ -1,11 +1,14 @@
 #include "media_stream.h"
 
+#include "preview/vcam_shm_layout.h"
 #include "vcam_log.h"
 
 #include <ksmedia.h>
 #include <mferror.h>
 
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace broadify::vcam {
 namespace {
@@ -30,6 +33,55 @@ bool isWellFormed(const RawFrame &frame) {
   const uint64_t expected =
       static_cast<uint64_t>(frame.width) * frame.height * 4ull;
   return frame.bgra.size() == expected;
+}
+
+DWORD sampleBytesForSubtype(const GUID &subtype,
+                            uint32_t width,
+                            uint32_t height) {
+  if (subtype == MFVideoFormat_NV12) {
+    return width * height * 3 / 2;
+  }
+  if (subtype == MFVideoFormat_YUY2) {
+    return width * height * 2;
+  }
+  return width * height * 4;
+}
+
+HRESULT createSampleBufferPool(
+    const GUID &subtype,
+    uint32_t width,
+    uint32_t height,
+    std::vector<Microsoft::WRL::ComPtr<IMFMediaBuffer>> &buffers) {
+  buffers.clear();
+  buffers.reserve(kSampleBufferPoolSize);
+  for (size_t i = 0; i < kSampleBufferPoolSize; i++) {
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
+    // MFCreate2DMediaBuffer takes the FourCC (DWORD), not the subtype GUID; for
+    // the MF video subtypes (NV12, YUY2, RGB32 = D3DFMT_X8R8G8B8) Data1 is it.
+    CK(MFCreate2DMediaBuffer(width, height, subtype.Data1, FALSE, &buffer));
+    buffers.push_back(buffer);
+  }
+  return S_OK;
+}
+
+void fillSplash(const GUID &subtype, BYTE *dst, DWORD bytes, uint32_t width,
+                uint32_t height) {
+  if (subtype == MFVideoFormat_NV12) {
+    const DWORD yBytes = width * height;
+    std::memset(dst, 16, yBytes);
+    std::memset(dst + yBytes, 128, bytes - yBytes);
+    return;
+  }
+  if (subtype == MFVideoFormat_YUY2) {
+    for (DWORD i = 0; i + 3 < bytes; i += 4) {
+      dst[i] = 16;
+      dst[i + 1] = 128;
+      dst[i + 2] = 16;
+      dst[i + 3] = 128;
+    }
+    return;
+  }
+  std::memset(dst, 0x1e, bytes);
 }
 
 // Nearest-neighbour stretch of a dense BGRA8 source into a dense BGRA8
@@ -59,17 +111,62 @@ void scaleNearest(const uint8_t *src, uint32_t srcWidth, uint32_t srcHeight,
   }
 }
 
+void bgraToYuy2(const uint8_t *bgra,
+                uint32_t width,
+                uint32_t height,
+                uint8_t *yuy2,
+                size_t yuy2Size) {
+  if (yuy2Size < static_cast<size_t>(width) * height * 2u) {
+    return;
+  }
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x + 1u < width; x += 2u) {
+      const uint8_t *p0 = bgra + (static_cast<size_t>(y) * width + x) * 4u;
+      const uint8_t *p1 = p0 + 4u;
+      const int b0 = p0[0], g0 = p0[1], r0 = p0[2];
+      const int b1 = p1[0], g1 = p1[1], r1 = p1[2];
+      const uint8_t y0 = static_cast<uint8_t>(std::clamp(((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16, 0, 255));
+      const uint8_t y1 = static_cast<uint8_t>(std::clamp(((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16, 0, 255));
+      const int r = (r0 + r1) / 2;
+      const int g = (g0 + g1) / 2;
+      const int b = (b0 + b1) / 2;
+      const uint8_t u = static_cast<uint8_t>(std::clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128, 0, 255));
+      const uint8_t v = static_cast<uint8_t>(std::clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128, 0, 255));
+      uint8_t *dst = yuy2 + (static_cast<size_t>(y) * width + x) * 2u;
+      dst[0] = y0;
+      dst[1] = u;
+      dst[2] = y1;
+      dst[3] = v;
+    }
+  }
+}
+
+LONGLONG qpcToSampleTime(uint64_t qpc, uint64_t baseQpc, LONGLONG baseSampleTime) {
+  LARGE_INTEGER frequency{};
+  QueryPerformanceFrequency(&frequency);
+  if (qpc <= baseQpc || frequency.QuadPart <= 0) {
+    return baseSampleTime;
+  }
+  const uint64_t delta = qpc - baseQpc;
+  return baseSampleTime +
+         static_cast<LONGLONG>((delta * 10000000ull) /
+                               static_cast<uint64_t>(frequency.QuadPart));
+}
+
 }  // namespace
 
 HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
-                                RawFrameClient *client, uint32_t width,
+                                RawFrameClient *client,
+                                ShmFrameReader *shmReader,
+                                uint32_t width,
                                 uint32_t height) {
-  if (!source || !client || width == 0 || height == 0) {
+  if (!source || !client || !shmReader || width == 0 || height == 0) {
     return E_INVALIDARG;
   }
   _source = source;
   _index = index;
   _client = client;
+  _shmReader = shmReader;
   _width = width;
   _height = height;
 
@@ -81,52 +178,61 @@ HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
 
   CK(MFCreateEventQueue(&_queue));
 
-  Microsoft::WRL::ComPtr<IMFMediaType> type;
-  CK(MFCreateMediaType(&type));
-  type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-  type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-  type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-  type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-  MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, _width, _height);
-  type->SetUINT32(MF_MT_DEFAULT_STRIDE, _width * 4);  // positive = top-down.
-  MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, kFrameRate, 1);
-  MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-  type->SetUINT32(MF_MT_AVG_BITRATE, _width * _height * 4 * 8 * kFrameRate);
+  auto makeType = [&](const GUID &subtype, DWORD stride, DWORD bytesPerPixel,
+                      Microsoft::WRL::ComPtr<IMFMediaType> &type) -> HRESULT {
+    CK(MFCreateMediaType(&type));
+    type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    type->SetGUID(MF_MT_SUBTYPE, subtype);
+    type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+    MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE_RANGE_MIN, 15, 1);
+    MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE_RANGE_MAX, 30, 1);
+    MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, _width, _height);
+    type->SetUINT32(MF_MT_DEFAULT_STRIDE, stride);
+    MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, kFrameRate, 1);
+    MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    type->SetUINT32(MF_MT_AVG_BITRATE,
+                    _width * _height * bytesPerPixel * 8 * kFrameRate);
+    return S_OK;
+  };
 
-  IMFMediaType *types[] = {type.Get()};
-  CK(MFCreateStreamDescriptor(_index, 1, types, &_descriptor));
+  Microsoft::WRL::ComPtr<IMFMediaType> nv12Type;
+  Microsoft::WRL::ComPtr<IMFMediaType> rgb32Type;
+  Microsoft::WRL::ComPtr<IMFMediaType> yuy2Type;
+  CK(makeType(MFVideoFormat_NV12, _width, 1, nv12Type));
+  CK(makeType(MFVideoFormat_RGB32, _width * 4, 4, rgb32Type));
+  CK(makeType(MFVideoFormat_YUY2, _width * 2, 2, yuy2Type));
+
+  IMFMediaType *types[] = {nv12Type.Get(), rgb32Type.Get(), yuy2Type.Get()};
+  CK(MFCreateStreamDescriptor(_index, 3, types, &_descriptor));
 
   Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
   CK(_descriptor->GetMediaTypeHandler(&handler));
-  CK(handler->SetCurrentMediaType(type.Get()));
+  CK(handler->SetCurrentMediaType(nv12Type.Get()));
 
-  const DWORD frameBytes = _width * _height * 4;
-  _sampleBuffers.clear();
-  _sampleBuffers.reserve(kSampleBufferPoolSize);
-  for (size_t i = 0; i < kSampleBufferPoolSize; i++) {
-    Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
-    CK(MFCreateMemoryBuffer(frameBytes, &buffer));
-    _sampleBuffers.push_back(buffer);
-  }
+  CK(createSampleBufferPool(MFVideoFormat_NV12, _width, _height,
+                            _sampleBuffers));
+  _sampleBufferSubtype = MFVideoFormat_NV12;
   return S_OK;
 }
 
 HRESULT MediaStream::Start() {
   try {
     RawFrameClient *client = nullptr;
+    ShmFrameReader *shmReader = nullptr;
     {
       winrt::slim_lock_guard lock(_lock);
       if (!_queue) return MF_E_SHUTDOWN;
       CK(_queue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
       _state = MF_STREAM_STATE_RUNNING;
       client = _client;
+      shmReader = _shmReader;
     }
-    // Consume the raw-frame stream only while an app is actually pulling
-    // samples; the connection is what makes the helper render and send frames.
-    if (client) {
-      client->start();
-      VcamLog("MediaStream: running, raw-frame client connecting");
+    if (shmReader) {
+      shmReader->start();
     }
+    (void)client;
+    VcamLog("MediaStream: running, shm reader active");
     return S_OK;
   } catch (...) {
     VcamLog("MediaStream::Start exception");
@@ -137,17 +243,23 @@ HRESULT MediaStream::Start() {
 HRESULT MediaStream::Stop() {
   try {
     RawFrameClient *client = nullptr;
+    ShmFrameReader *shmReader = nullptr;
     {
       winrt::slim_lock_guard lock(_lock);
       if (!_queue) return MF_E_SHUTDOWN;
       CK(_queue->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr));
       _state = MF_STREAM_STATE_STOPPED;
       client = _client;
+      shmReader = _shmReader;
+      _tcpRunning = false;
+    }
+    if (shmReader) {
+      shmReader->stop();
     }
     if (client) {
       client->stop();
-      VcamLog("MediaStream: stopped, raw-frame client disconnected");
     }
+    VcamLog("MediaStream: stopped, transports disconnected");
     return S_OK;
   } catch (...) {
     VcamLog("MediaStream::Stop exception");
@@ -166,13 +278,22 @@ void MediaStream::Shutdown() {
       }
       client = _client;
       _client = nullptr;
+      if (_shmReader) {
+        _shmReader->stop();
+      }
+      _shmReader = nullptr;
       _descriptor.Reset();
       _sampleBuffers.clear();
       _lastSampleBuffer.Reset();
+      _sampleBufferSubtype = GUID_NULL;
       _lastSequence = 0;
+      _lastShmSequence = 0;
+      _lastTcpSequence = 0;
       _baseCaptureNs = 0;
+      _baseCaptureQpc = 0;
       _baseSampleTime = 0;
       _lastSampleTime = 0;
+      _tcpRunning = false;
       _source = nullptr;
     }
     if (client) {
@@ -268,7 +389,28 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
     winrt::slim_lock_guard lock(_lock);
     if (!_queue) return MF_E_SHUTDOWN;
 
-    const DWORD frameBytes = _width * _height * 4;
+    GUID subtype = MFVideoFormat_RGB32;
+    if (_descriptor) {
+      Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
+      Microsoft::WRL::ComPtr<IMFMediaType> currentType;
+      if (SUCCEEDED(_descriptor->GetMediaTypeHandler(&handler)) &&
+          SUCCEEDED(handler->GetCurrentMediaType(&currentType))) {
+        GUID selected = {};
+        if (SUCCEEDED(currentType->GetGUID(MF_MT_SUBTYPE, &selected))) {
+          subtype = selected;
+        }
+      }
+    }
+    const DWORD rgbFrameBytes = _width * _height * 4;
+    const DWORD outputFrameBytes =
+        sampleBytesForSubtype(subtype, _width, _height);
+    if (subtype != _sampleBufferSubtype || _sampleBuffers.empty()) {
+      CK(createSampleBufferPool(subtype, _width, _height, _sampleBuffers));
+      _sampleBufferSubtype = subtype;
+      _nextSampleBuffer = 0;
+      _lastSampleBuffer.Reset();
+      _hasLastGoodFrame = false;
+    }
     Microsoft::WRL::ComPtr<IMFSample> sample;
     CK(MFCreateSample(&sample));
 
@@ -288,8 +430,26 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       }
     }
 
-    const bool hasNewFrame =
-        _client && _client->copyLatestIfNew(_lastSequence, _scratchFrame);
+    bool frameFromShm = false;
+    bool hasNewFrame =
+        _shmReader && _shmReader->copyLatestIfNew(_lastShmSequence, _scratchFrame);
+    if (hasNewFrame) {
+      frameFromShm = true;
+      if (_client && _tcpRunning) {
+        _client->stop();
+        _tcpRunning = false;
+        VcamLog("vcam_reader_transport shm reason=shm_frame_available");
+      }
+    } else {
+      if (_client && !_tcpRunning &&
+          (_shmReader == nullptr || !_shmReader->hasMapping())) {
+        _client->start();
+        _tcpRunning = true;
+        VcamLog("vcam_reader_transport tcp reason=shm_unavailable");
+      }
+      hasNewFrame =
+          _client && _client->copyLatestIfNew(_lastTcpSequence, _scratchFrame);
+    }
     bool usePreviousSample = _hasLastGoodFrame;
     LONGLONG sampleTime =
         _hasLastGoodFrame ? _lastSampleTime + kFrameDuration : MFGetSystemTime();
@@ -299,8 +459,10 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       _nextSampleBuffer = (_nextSampleBuffer + 1) % _sampleBuffers.size();
       BYTE *dst = nullptr;
       CK(buffer->Lock(&dst, nullptr, nullptr));
+      std::vector<uint8_t> scaledBgra;
+      const uint8_t *sourceBgra = _scratchFrame.bgra.data();
       if (_scratchFrame.width == _width && _scratchFrame.height == _height) {
-        std::memcpy(dst, _scratchFrame.bgra.data(), frameBytes);
+        sourceBgra = _scratchFrame.bgra.data();
       } else {
         if (_scratchFrame.width != _loggedMismatchWidth ||
             _scratchFrame.height != _loggedMismatchHeight) {
@@ -310,24 +472,49 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
               "MediaStream: source %ux%u differs from media type %ux%u, scaling",
               _scratchFrame.width, _scratchFrame.height, _width, _height);
         }
+        scaledBgra.resize(rgbFrameBytes);
         scaleNearest(_scratchFrame.bgra.data(), _scratchFrame.width,
-                     _scratchFrame.height, dst, _width, _height);
+                     _scratchFrame.height, scaledBgra.data(), _width, _height);
+        sourceBgra = scaledBgra.data();
+      }
+      if (subtype == MFVideoFormat_NV12) {
+        broadify::vcam_shm::bgraToNv12(sourceBgra, _width, _height, dst,
+                                       outputFrameBytes);
+      } else if (subtype == MFVideoFormat_YUY2) {
+        bgraToYuy2(sourceBgra, _width, _height, dst, outputFrameBytes);
+      } else {
+        std::memcpy(dst, sourceBgra, rgbFrameBytes);
       }
       buffer->Unlock();
-      buffer->SetCurrentLength(frameBytes);
+      buffer->SetCurrentLength(outputFrameBytes);
       _lastSampleBuffer = buffer;
       _lastSequence = _scratchFrame.sequence;
+      if (frameFromShm) {
+        _lastShmSequence = _scratchFrame.sequence;
+      } else {
+        _lastTcpSequence = _scratchFrame.sequence;
+      }
       _hasLastGoodFrame = true;
       usePreviousSample = true;
       if (_scratchFrame.captureNs > 0) {
-        if (_baseCaptureNs == 0 || _scratchFrame.captureNs < _baseCaptureNs) {
-          _baseCaptureNs = _scratchFrame.captureNs;
-          _baseSampleTime = MFGetSystemTime();
+        if (frameFromShm) {
+          if (_baseCaptureQpc == 0 || _scratchFrame.captureNs < _baseCaptureQpc) {
+            _baseCaptureQpc = _scratchFrame.captureNs;
+            _baseSampleTime = MFGetSystemTime();
+          }
+          sampleTime =
+              qpcToSampleTime(_scratchFrame.captureNs, _baseCaptureQpc,
+                              _baseSampleTime);
+        } else {
+          if (_baseCaptureNs == 0 || _scratchFrame.captureNs < _baseCaptureNs) {
+            _baseCaptureNs = _scratchFrame.captureNs;
+            _baseSampleTime = MFGetSystemTime();
+          }
+          sampleTime =
+              _baseSampleTime +
+              static_cast<LONGLONG>((_scratchFrame.captureNs - _baseCaptureNs) /
+                                    100u);
         }
-        sampleTime =
-            _baseSampleTime +
-            static_cast<LONGLONG>((_scratchFrame.captureNs - _baseCaptureNs) /
-                                  100u);
       }
     } else if (hasNewFrame) {
       VcamLog("MediaStream: malformed frame %ux%u size=%llu, re-emitting last frame",
@@ -343,9 +530,9 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       _nextSampleBuffer = (_nextSampleBuffer + 1) % _sampleBuffers.size();
       BYTE *dst = nullptr;
       CK(buffer->Lock(&dst, nullptr, nullptr));
-      std::memset(dst, 0x1e, frameBytes);
+      fillSplash(subtype, dst, outputFrameBytes, _width, _height);
       buffer->Unlock();
-      buffer->SetCurrentLength(frameBytes);
+      buffer->SetCurrentLength(outputFrameBytes);
       CK(sample->AddBuffer(buffer.Get()));
     }
 

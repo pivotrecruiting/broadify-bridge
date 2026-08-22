@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <mutex>
+#include <utility>
 
 namespace broadify::meeting {
 namespace {
@@ -44,6 +45,7 @@ IMFVirtualCamera *g_vcam = nullptr;
 bool g_mfStarted = false;
 bool g_comReady = false;
 std::string g_lastError;
+std::string g_transport = "tcp";
 
 std::string formatHr(const char *what, HRESULT hr) {
   char buf[192];
@@ -148,7 +150,12 @@ void stopVirtualCamera() {
 
 VcamStatus virtualCameraStatus() {
   std::lock_guard<std::mutex> lock(g_mutex);
-  return VcamStatus{g_vcam != nullptr, true, g_lastError};
+  return VcamStatus{g_vcam != nullptr, true, g_lastError, g_transport};
+}
+
+void setVirtualCameraTransport(std::string transport) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_transport = std::move(transport);
 }
 
 }  // namespace broadify::meeting
@@ -157,6 +164,8 @@ VcamStatus virtualCameraStatus() {
 
 namespace broadify::meeting {
 
+void setVirtualCameraTransport(std::string) {}
+
 bool startVirtualCamera(std::string &errorOut) {
   errorOut = "virtual camera is only supported on Windows";
   return false;
@@ -164,7 +173,7 @@ bool startVirtualCamera(std::string &errorOut) {
 
 void stopVirtualCamera() {}
 
-VcamStatus virtualCameraStatus() { return VcamStatus{false, false, ""}; }
+VcamStatus virtualCameraStatus() { return VcamStatus{false, false, "", "tcp"}; }
 
 }  // namespace broadify::meeting
 

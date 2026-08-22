@@ -111,6 +111,8 @@ set(MEETING_HELPER_SOURCES
   src/preview/raw_frame_record.cpp
   src/preview/raw_frame_server.cpp
   src/preview/raw_frame_stream_header.cpp
+  src/preview/vcam_shm_layout.cpp
+  src/preview/vcam_shm_ring_win.cpp
   src/util/sha256.cpp
   src/util/json_utils.cpp
   src/util/helper_event_log.cpp
@@ -247,7 +249,7 @@ if(WIN32)
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -358,6 +360,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/raw_frame_record_test.cpp
     src/preview/raw_frame_record.cpp
   )
+  add_executable(vcam_shm_layout_test
+    tests/vcam_shm_layout_test.cpp
+    src/preview/vcam_shm_layout.cpp
+  )
   add_executable(raw_frame_connect_state_test
     tests/raw_frame_connect_state_test.cpp
   )
@@ -377,6 +383,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/capture/camera_source.cpp
     src/output/vcam_controller.cpp
     src/preview/preview_frame_store.cpp
+    src/preview/vcam_shm_layout.cpp
+    src/preview/vcam_shm_ring_win.cpp
     src/recorder/meeting_recorder_stub.cpp
     src/util/helper_event_log.cpp
     src/util/json_utils.cpp
@@ -425,6 +433,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     control_server_test
     raw_frame_stream_header_test
     raw_frame_record_test
+    vcam_shm_layout_test
     raw_frame_connect_state_test
     raw_frame_server_test
   )
@@ -436,7 +445,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       elseif(helper_test STREQUAL "control_server_test")
         # Links control_server.cpp + vcam_controller.cpp: needs the same Win32
         # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
-        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
+        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
       elseif(helper_test STREQUAL "d3d_adapter_select_test")
         target_link_libraries(${helper_test} PRIVATE dxgi)
       endif()

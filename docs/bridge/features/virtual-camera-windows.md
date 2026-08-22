@@ -5,35 +5,51 @@ Meeting-Helper erzeugt die Kamera zur Laufzeit über `MFCreateVirtualCamera`
 (Windows 11); die Media-Source-DLL `broadify-vcam.dll` muss dafür im
 System-COM-Registry registriert sein.
 
-## Frame-Pfad und lazy Verbindung
+## Frame-Pfad und Transport-Auswahl
 
-Die DLL liest den Program-Frame **nicht** aus dem FrameBus, sondern ueber den
-Raw-Frame-TCP-Stream des Meeting-Helpers (`127.0.0.1:18787`,
-`RawFrameClient`). Jede offene Verbindung zaehlt im Helper als VCam-Client
-und laesst ihn jeden Frame rendern, swizzeln und senden. Der Frame-Server
-instanziiert die Media Source bereits beim Armieren der Kamera (Engine-Start),
-lange bevor eine App streamt. Damit das keine Dauerlast erzeugt, verbindet
-sich die DLL nur bei Bedarf:
+Default ab WP4 ist Shared Memory: der Meeting-Helper legt beim Armieren von
+`output.vcam.raw.start` eine globale Ring-Mapping an
+(`Global\BroadifyVcam-<pid>-<tick>`) und publiziert den aktuellen Namen in
+`Global\BroadifyVcamControl`. Die ACL erlaubt dem Windows Frame Server
+(`NT AUTHORITY\LOCAL SERVICE`) Lesezugriff. Die DLL oeffnet diese Control-
+Mapping ohne Sleep in `MediaSource::Initialize`, uebernimmt die Geometrie
+falls vorhanden und faellt sonst sofort auf **1920x1080@30** zurueck. Es gibt
+keine TCP-Geometrie-Probe mehr; Kamera-Enumeration in Teams blockiert nicht
+auf einen nicht erreichbaren Helper.
 
-- `MediaSource::Initialize`: einmalige Geometrie-Probe — verbinden, bis zu
-  2 s auf die Geometrie warten, dann sofort wieder trennen. Die Geometrie
-  kommt bevorzugt aus dem HTTP-Handshake des Helpers (siehe unten), sonst aus
-  dem ersten Frame; kommt beides nicht, gilt der Fallback **1920x1080** (die
-  Default-Programmgroesse des Helpers). Die Quelle steht im Log:
-  `MediaSource::Initialize geometry 1920x1080 from handshake|frame|fallback`.
-- `MediaStream::Start` (App beginnt zu streamen): Verbindung aufbauen
-  (`MediaStream: running, raw-frame client connecting`).
-- `MediaStream::Stop`/`Shutdown`: Verbindung trennen; `RawFrameClient::stop()`
-  beendet einen blockierenden `connect`/`recv` per Socket-Close und joint den
-  Leser-Thread, Reconnect-Backoffs werden in 50-ms-Scheiben unterbrochen.
-- Direkt nach dem Start liefert `RequestSample` bis zum ersten Frame den
-  dunklen Splash. Sobald einmal ein gueltiger Frame angekommen ist, wird nie
-  wieder auf den Splash umgeschaltet: bei Staleness, statischem Programm oder
-  Groessenabweichung bleibt der letzte gute Frame sichtbar.
+Transport-Auswahl:
 
-### Geometrie-Handshake und Skalierung bei Abweichung
+- `BROADIFY_MEETING_VCAM_TRANSPORT=shm` oder unset: SHM ist Default auf
+  Windows.
+- `BROADIFY_MEETING_VCAM_TRANSPORT=tcp`: alter Raw-TCP-Pfad
+  (`127.0.0.1:18787`) bleibt fuer eine Release als Rollback erhalten.
+- Kann der Helper keine globale Mapping mit ACL erstellen, schaltet er
+  automatisch auf TCP und loggt
+  `meeting_vcam_raw event=vcam_transport_selected transport=tcp`.
+- `output.vcam.status` enthaelt `transport: "shm"|"tcp"`.
+- TCP ist nur ein Kompatibilitaets-Fallback, nicht byte-for-byte identisch:
+  die DLL probt nicht mehr blockierend in der Aktivierung und bietet NV12
+  zuerst an.
 
-Der Raw-Frame-Server des Helpers (`raw_frame_server.cpp`) sendet in den
+Der SHM-Ring hat drei Slots. Jeder Slot nutzt eine Sequenznummer als seqlock:
+ungerade bedeutet "Writer schreibt gerade", Leser kopieren nur den neuesten
+geraden Slot und pruefen die Sequenz nach dem Copy erneut. WP4 schreibt
+BGRA8; das Layout enthaelt bereits `format=NV12` fuer den spaeteren
+Compositor-Ausgang. Die DLL bietet NV12 zuerst an, danach RGB32 und YUY2.
+
+Die DLL startet den SHM-Reader erst in `MediaStream::Start`. TCP verbindet sie
+nur, wenn die SHM-Mapping fehlt oder der Heartbeat laenger als ca. 3 s steht;
+danach prueft sie periodisch wieder auf SHM. Bei gesunder SHM-Verbindung gibt
+es keinen TCP-Client und damit keine per-Connection-Worker-Churn im Helper.
+Direkt nach Stream-Start liefert `RequestSample` bis zum ersten Frame den
+dunklen Splash. Sobald einmal ein gueltiger Frame angekommen ist, wird nie
+wieder auf den Splash umgeschaltet: bei Staleness, statischem Programm oder
+Groessenabweichung bleibt der letzte gute Frame sichtbar.
+
+### TCP-Fallback und Geometrie-Handshake
+
+Der Raw-Frame-Server des Helpers (`raw_frame_server.cpp`) bleibt fuer
+Rollback/Fallback erhalten. Er sendet in den
 HTTP-Antwort-Headern vor dem ersten BFRG-Record die konfigurierte
 Programmgeometrie:
 
@@ -45,15 +61,10 @@ X-Broadify-Frame-Fps: 30
 
 Die Werte entsprechen `--width/--height/--fps` bzw. `MEETING_FRAME_*` des
 Helpers (`buildRawFrameStreamHeader`, Unit-Test
-`raw_frame_stream_header_test`). Die DLL (`RawFrameClient`) parst die Header
-case-insensitiv direkt nach dem Handshake und stellt sie ueber
-`streamGeometry()` bereit — noch bevor der erste Frame ankommt. Das ist
-wichtig, weil die Probe genau waehrend des Engine-Starts laeuft, wenn der
-Helper (DirectML-Session-Aufbau, 1-Hz-Static-Heartbeat) den ersten Frame oft
-erst nach mehreren Sekunden liefert. Aeltere Helper ohne diese Header
-funktionieren weiter (Frame-Probe, dann Fallback); die macOS-Extension
+`raw_frame_stream_header_test`). Die macOS-Extension
 (`RawFrameStreamReader.swift`) liest nur `200 OK` und die Leerzeile und
-ignoriert die Zusatz-Header.
+ignoriert die Zusatz-Header. Auf Windows ist die Geometrie im Normalfall aus
+der SHM-Control-Mapping bekannt; der TCP-Handshake ist nur noch Fallback.
 
 Weicht die Groesse eines Frames trotzdem vom
 ausgehandelten Media Type ab, zeigt `MediaStream::RequestSample` **kein**
@@ -66,10 +77,9 @@ guten Sample-Puffer. Das dunkle Splash bleibt nur fuer „noch nie ein Frame auf
 dieser Verbindung empfangen"; fehlerhafte Payloads (Groesse passt nicht zu
 Breite x Hoehe x 4) werden verworfen, ohne den letzten guten Frame zu ersetzen.
 
-Symptom vor diesem Fix (rc.11): „Broadify Camera" in Teams waehlbar, aber
-dauerhaft grau — die Probe hatte den 2-s-Fenster verpasst, die DLL lief mit
-1280x720, der Helper lieferte 1920x1080, jeder Frame wurde wegen der
-Groessenabweichung verworfen.
+Symptom vor WP4: „Broadify Camera" in Teams waehlbar, aber dauerhaft grau
+oder sehr langsame Teams-Kameraauswahl — der TCP-Pfad war nicht erreichbar
+und die DLL blockierte in der Aktivierung auf ihre Probe.
 
 Der Helper-FrameBus (`output.framebus.*`) ist davon entkoppelt: er wird nur
 noch vom Conference-Display-Output gestartet, nicht mehr vom VCam-Start. Der
@@ -78,9 +88,10 @@ Bridge in `virtualCameraStart()`/`virtualCameraStop()` aufruft. Ohne
 streamende App sieht der Helper keinen VCam-Client; Keyer-Qualitaet und
 Luefter entsprechen dann dem Zustand „VCam-Output gestoppt".
 
-Log-Zeilen (`VcamLog`): `RawFrameClient: connected to 127.0.0.1:18787
-(stream consumer active)` / `RawFrameClient: disconnected from ...` markieren
-den tatsaechlichen Verbrauch.
+Log-Zeilen (`VcamLog`): `build git=... time=...` steht am Anfang jeder
+Log-Datei. `MediaSource::Initialize ... (no activation probe)` bestaetigt den
+WP4-Pfad. `vcam_reader_transport tcp reason=...` markiert Fallback,
+`vcam_reader_transport shm reason=shm_frame_available` die Rueckkehr.
 
 ## Stream-Lifecycle und Timeouts
 

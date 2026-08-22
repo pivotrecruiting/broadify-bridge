@@ -24,7 +24,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(broadify-vcam SHARED
+  ../../meeting-helper/src/preview/vcam_shm_layout.cpp
   raw_frame_client.cpp
+  shm_frame_reader.cpp
   vcam_log.cpp
   media_stream.cpp
   media_source.cpp
@@ -43,6 +45,10 @@ target_compile_definitions(broadify-vcam PRIVATE
   _UNICODE
   _CRT_SECURE_NO_WARNINGS
   _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+)
+
+target_include_directories(broadify-vcam PRIVATE
+  ../../meeting-helper/src
 )
 
 target_link_libraries(broadify-vcam PRIVATE

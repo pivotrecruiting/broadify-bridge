@@ -79,6 +79,12 @@ std::wstring utf8ToWide(const std::string &value) {
   return out;
 }
 
+uint64_t nowQpc() {
+  LARGE_INTEGER value{};
+  QueryPerformanceCounter(&value);
+  return static_cast<uint64_t>(value.QuadPart);
+}
+
 bool isAccessDenied(HRESULT hr) {
   return hr == E_ACCESSDENIED ||
          hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
@@ -677,6 +683,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     frame.width = frameWidth_;
     frame.height = frameHeight_;
     frame.timestampNs = nowNs();
+    frame.captureQpc = nowQpc();
 
     bool converted = false;
     // Preferred path: the 2D buffer reports the real pitch (rows may be padded)

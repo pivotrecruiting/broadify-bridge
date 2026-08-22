@@ -46,34 +46,43 @@ HRESULT MediaSource::Initialize(IMFAttributes *attributes) {
     attributes->CopyAllItems(this);
   }
 
-  // One short handshake-only geometry check. It never waits for a frame and is
-  // bounded to 100 ms so source activation cannot stall camera-open paths.
   _client = std::make_unique<RawFrameClient>(resolvePort());
-  _client->start();
+  _shmReader = std::make_unique<ShmFrameReader>();
   _width = kFallbackWidth;
   _height = kFallbackHeight;
-  const char *geometrySource = "fallback";
-  const ULONGLONG deadline = GetTickCount64() + kGeometryWaitMs;
-  while (GetTickCount64() < deadline) {
-    uint32_t streamWidth = 0;
-    uint32_t streamHeight = 0;
-    if (_client->streamGeometry(streamWidth, streamHeight)) {
-      _width = streamWidth;
-      _height = streamHeight;
-      geometrySource = "handshake";
-      break;
+  const char *geometrySource = "default";
+  ShmGeometry geometry;
+  if (ShmFrameReader::ProbeGeometry(geometry)) {
+    _width = geometry.width;
+    _height = geometry.height;
+    geometrySource = "shm_control";
+  } else {
+    // One short handshake-only geometry check. It never waits for a frame and
+    // is bounded to 100 ms so source activation cannot stall camera-open paths.
+    _client->start();
+    const ULONGLONG deadline = GetTickCount64() + kGeometryWaitMs;
+    while (GetTickCount64() < deadline) {
+      uint32_t streamWidth = 0;
+      uint32_t streamHeight = 0;
+      if (_client->streamGeometry(streamWidth, streamHeight)) {
+        _width = streamWidth;
+        _height = streamHeight;
+        geometrySource = "handshake";
+        break;
+      }
+      if (_client->connectAttemptFinished()) {
+        break;
+      }
+      Sleep(kGeometryPollMs);
     }
-    if (_client->connectAttemptFinished()) {
-      break;
-    }
-    Sleep(kGeometryPollMs);
+    _client->stop();
   }
-  _client->stop();
   VcamLog("MediaSource::Initialize geometry %ux%u from %s",
           _width, _height, geometrySource);
 
   _stream = winrt::make_self<MediaStream>();
-  CK(_stream->Initialize(this, 0, _client.get(), _width, _height));
+  CK(_stream->Initialize(this, 0, _client.get(), _shmReader.get(), _width,
+                         _height));
 
   Microsoft::WRL::ComPtr<IMFStreamDescriptor> descriptor;
   CK(_stream->GetStreamDescriptor(&descriptor));
@@ -200,8 +209,12 @@ STDMETHODIMP MediaSource::Shutdown() {
     if (_client) {
       _client->stop();
     }
+    if (_shmReader) {
+      _shmReader->stop();
+    }
     _stream = nullptr;
     _client.reset();
+    _shmReader.reset();
     return S_OK;
   } catch (...) {
     VcamLog("MediaSource::Shutdown exception");

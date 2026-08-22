@@ -231,14 +231,18 @@ class VcamClientCounter {
  public:
   explicit VcamClientCounter(MeetingState &state) : state_(state) {
     std::lock_guard<std::mutex> lock(state_.mutex);
-    ++state_.vcamClientCount;
+    ++state_.vcamTcpClientCount;
+    state_.vcamClientCount =
+        state_.vcamShmReaderCount + state_.vcamTcpClientCount;
     state_.programDirty = true;
     ++state_.programRevision;
   }
 
   ~VcamClientCounter() {
     std::lock_guard<std::mutex> lock(state_.mutex);
-    state_.vcamClientCount = std::max(0, state_.vcamClientCount - 1);
+    state_.vcamTcpClientCount = std::max(0, state_.vcamTcpClientCount - 1);
+    state_.vcamClientCount =
+        state_.vcamShmReaderCount + state_.vcamTcpClientCount;
     state_.programDirty = true;
     ++state_.programRevision;
   }
