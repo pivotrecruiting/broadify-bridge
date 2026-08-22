@@ -83,42 +83,34 @@ F3. Docs: `docs/bridge/features/meeting-windows-performance.md` (flag, A/B guide
 9. Docs updated; comments in English; env flag documented.
 
 ## Review
-- Round: 1/3
-- Verdict: MUST-FIX (round 1) — substance: only Block A is a real data path; B is unsafe, C/D/E are stubs, F is tautological.
+- Round: 2/3
+- Verdict: MUST-FIX (round 2). Round-1 items partially resolved; with the flag on the path is still dead (context never available,
+  keyer block never triggered, compositor without camera pixels). Round 3 is the last review round; after it the branch goes to a
+  CI test branch (`test-release/wp3-gpu`) so MSVC + the WARP selftest verify what macOS cannot.
 - Must-fix (open):
-  - M1 `capture/camera_mediafoundation.cpp` ~:696-753: with the DXGI reader open (NV12/YUY2) the legacy BGRA swizzle reads
-    `width*4` bytes per row from a 1.5/2 B-per-pixel buffer → heap over-read + garbage. On the GPU path do NOT run the CPU
-    swizzle; deliver `GpuCameraFrame` downstream (M2). Request NV12 first, then YUY2 (never MJPG) from the D3D-manager reader.
-  - M2 `GpuCameraFrame` must actually reach the pipeline: camera_source API → frame_pipeline → preprocess/compositor; report
-    `gpu_capture:"dxgi"` when active; release the MF texture after consumption (do not starve the MF DXGI allocator).
-  - M3 Thread-safety: the D3D11 immediate context is not thread-safe — never call `signalFromD3D11`/`frameRing().acquireNext()`
-    from the MF callback thread; initialise `GpuContextWin` once on the main thread before capture starts; one mutex around all
-    immediate-context use, or move capture-side fence work to the pipeline thread.
-  - M4 `GpuContextWin::initialize()`: QI `ID3D10Multithread` and `SetMultithreadProtected(TRUE)` (required by the MF DXGI manager).
-  - M5 `compose/gpu_preprocess.cpp`: (a) shared tensor buffer must be created on the D3D12 side (`CreateCommittedResource`,
-    `D3D12_HEAP_FLAG_SHARED`, `ALLOW_UNORDERED_ACCESS`) → `ID3D12Device::CreateSharedHandle` → `ID3D11Device1::OpenSharedResource1`
-    (D3D11 cannot share buffers); (b) create NV12 SRVs (`R8_UNORM` luma, `R8G8_UNORM` chroma, TEXTURE2DARRAY with
-    `FirstArraySlice = subresource`) / YUY2 SRV and bind them; (c) implement the box-average in-shader over the same integer
-    bounds as the CPU `buildModnetInputTensor` (criterion 5) and add a ctest comparing against the CPU reference on a synthetic
-    frame; (d) add `using Microsoft::WRL::ComPtr;` (unqualified `ComPtr<ID3DBlob>`/`ComPtr<IDXGIResource1>` = MSVC error);
-    (e) `preprocess()` must be CALLED from the fused path when the flag is on.
-  - M6 `keyer/modnet_keyer.cpp`: implement real IO binding — per-(tier,slot) `Ort::IoBinding`, input from the shared D3D12 buffer via
-    `OrtDmlApi::CreateGPUAllocationFromD3DResource`, output to EP device memory, `GetD3D12ResourceFromAllocation` shared back to
-    D3D11 as the alpha source; `waitOnD3D12(slot.fence)` before `Run`, `signalFromD3D12` after; feed REAL booleans into
-    `decideKeyerIoBinding`.
-  - M7 `compose/d3d11_compositor.cpp`: E1 guided filter consumes the alpha buffer on the GPU (no CPU readback of the raw mask);
-    E2 compositor samples NV12/YUY2 directly (YUV→RGB in-shader, studio range) and writes an NV12 output texture; E3 RGBA readback
-    only when a CPU consumer exists (recorder/preview/FrameBus/VCam-TCP) — counted in `cpu_frame_copies_per_frame`.
-  - M8 `--gpu-selftest` must execute preprocess (synthetic NV12) → (DML if available) → composite, and prove the fence with
-    `SetEventOnCompletion` + bounded CPU wait; the ps1 asserts D3D11 LUID == D3D12 LUID; no literal constants in the JSON.
-  - M9 Restore the WP1 content of `docs/bridge/features/meeting-windows-performance.md` (GPU policy values, QoS, gating, staging
-    ring, governor latency policy, FUSED_PIPELINE_DEPTH) and add the WP3 section.
-  - M10 Telemetry honesty: `preprocess_ms/inference_ms/refine_ms/composite_ms` measure the GPU stages when the flag is on (null
-    otherwise); `gpu_resident` derived from `GpuContextWin::telemetry().available` only; `cpu_frame_copies_per_frame` counted from
-    real copies (VCam-TCP counts 1 until WP4 — document).
-- Notes: `<cstdio>` in gpu_context_win.cpp; `gpuCaptureActive_` reset on reopen; design doc says compute queue, impl uses DIRECT
-  (align the doc to DIRECT per WP1); selftest JSON line filtering in the ps1.
-- Decision (orchestrator): WP3 is NOT included in rc.22; it ships only after a real GPU path passes review.
+  - M-A `compose/gpu_context_win.cpp:130-137`: `SetMultithreadProtected(TRUE)` returns the PREVIOUS state (FALSE) — do not treat it
+    as failure; only check the QI HRESULT. (Today this makes the whole context unavailable.)
+  - M-B `frame_pipeline.cpp:2279-2282` + `frame_pipeline_gating.cpp`: add `hasNewGpuCameraFrame` to `PipelineWorkTriggers` and to
+    `shouldRunProgramWork`; GPU frames must trigger keyer + render (tests).
+  - M-C compositor must get camera pixels on the GPU path: compositor takes the camera `ID3D11Texture2D`+subresource and samples
+    NV12/YUY2 in-shader; alpha from the DML output via `GetD3D12ResourceFromAllocation` → `CreateSharedHandle` → `OpenSharedResource1`
+    → R32_FLOAT SRV into guided/composite. Until the GPU alpha path works, read the alpha back into `result.mask.alpha` so the existing
+    CPU mask path composites (counted honestly as a copy) — there must NEVER be a frame without the presenter.
+  - M-D `camera_mediafoundation.cpp:721-737`: keep the `IMFSample` (and buffer) inside `GpuCameraFrame` until consumed; set
+    `MF_SOURCE_READER_D3D11_BIND_FLAGS` = `D3D11_BIND_SHADER_RESOURCE`; log the first SRV creation failure.
+  - M-E `modnet_keyer.cpp:469`: `binding.BindOutput(name, dmlMemory)` (object, not `&dmlMemory`) — MSVC compile error.
+  - M-F `frame_pipeline.cpp:2281`: the GPU-resident keyer must load (warm entry / `loadInApply=true`) and be the SAME instance the
+    governor drives (no second static model instance with its own sessions).
+  - M-G `modnet_keyer.cpp:431-478`: real `outputBindingCreated`; convert the output via `GetD3D12ResourceFromAllocation`; release
+    every `OrtStatus*`.
+  - M-H `frame_pipeline.cpp:3118-3122`: telemetry — `gpu_capture` from `hasGpuCameraFrame`, `gpu_resident` from
+    `telemetry().available`, measured `preprocess_ms/inference_ms/composite_ms` (or null), no per-frame overwrite.
+  - M-I `d3d11_compositor.cpp:1183-1270`: lock `immediateContextMutex` at the top of `guidedRefineMaskD3D11` and remove it from
+    `ensureGuidedResources` (non-recursive mutex); `GpuContextWin` initialised once in `main()` before threads (`std::once_flag`).
+  - M-J selftest/ps1: no literals — `gpu_resident` from telemetry, `cpu_frame_copies_per_frame` computed, DML run or
+    `"dml":"unavailable"` with reason, `compositeOk` requires the D3D11 backend; add the ctest comparing GPU preprocess output
+    (read back in the selftest) against `buildModnetInputTensor` on a synthetic frame (tolerance 1e-3).
+- Notes: ring fence values (reserve 2 per slot or second fence); shared buffer initial state COMMON; docs ahead of code.
 
 ## Verification
 - [x] Focused CTests passed on macOS during implementation:
