@@ -9,6 +9,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <share.h>
 #include <string>
 
 namespace broadify::vcam {
@@ -75,19 +76,19 @@ bool currentTokenUserIs(PTOKEN_USER tokenUser, WELL_KNOWN_SID_TYPE type) {
          EqualSid(tokenUser->User.Sid, sid) != FALSE;
 }
 
-bool tokenHasGroup(HANDLE token, WELL_KNOWN_SID_TYPE type) {
+bool tokenHasGroup(WELL_KNOWN_SID_TYPE type) {
   BYTE sidBuffer[SECURITY_MAX_SID_SIZE];
   PSID sid = nullptr;
   BOOL isMember = FALSE;
   return makeWellKnownSid(type, sidBuffer, static_cast<DWORD>(sizeof(sidBuffer)),
                           &sid) &&
-         CheckTokenMembership(token, sid, &isMember) != FALSE &&
+         CheckTokenMembership(nullptr, sid, &isMember) != FALSE &&
          isMember != FALSE;
 }
 
 bool appendProbe(const std::string &path) {
-  FILE *file = nullptr;
-  if (fopen_s(&file, path.c_str(), "a") != 0 || file == nullptr) {
+  FILE *file = _fsopen(path.c_str(), "a", _SH_DENYNO);
+  if (file == nullptr) {
     return false;
   }
   fclose(file);
@@ -140,7 +141,7 @@ std::string processIdentity() {
         user = "LOCAL_SERVICE";
       } else if (currentTokenUserIs(tokenUser, WinLocalSystemSid)) {
         user = "SYSTEM";
-      } else if (tokenHasGroup(token, WinInteractiveSid)) {
+      } else if (tokenHasGroup(WinInteractiveSid)) {
         user = "interactive";
       } else {
         user = "other";

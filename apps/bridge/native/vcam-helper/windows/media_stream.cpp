@@ -254,15 +254,18 @@ HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
 
   CK(MFCreateEventQueue(&_queue));
 
+  _offerNv12 = readOfferNv12Flag();
   CK(makeStreamDescriptor(static_cast<uint32_t>(_index), _width, _height,
-                          false, &_descriptor));
+                          _offerNv12, &_descriptor));
 
   Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
   CK(_descriptor->GetMediaTypeHandler(&handler));
   Microsoft::WRL::ComPtr<IMFMediaType> rgb32Type;
   CK(handler->GetMediaTypeByIndex(0, &rgb32Type));
   CK(handler->SetCurrentMediaType(rgb32Type.Get()));
-  logStreamType(MFVideoFormat_RGB32);
+  if (_offerNv12) {
+    VcamLog("MediaStream: OfferNv12 experiment enabled");
+  }
 
   CK(createSampleBufferPool(MFVideoFormat_RGB32, _width, _height,
                             _sampleBuffers));
@@ -277,21 +280,6 @@ HRESULT MediaStream::Start() {
     {
       winrt::slim_lock_guard lock(_lock);
       if (!_queue) return MF_E_SHUTDOWN;
-      const bool offerNv12 = readOfferNv12Flag();
-      if (offerNv12 != _offerNv12 || offerNv12) {
-        _offerNv12 = offerNv12;
-        CK(makeStreamDescriptor(static_cast<uint32_t>(_index), _width, _height,
-                                _offerNv12, &_descriptor));
-        Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
-        CK(_descriptor->GetMediaTypeHandler(&handler));
-        Microsoft::WRL::ComPtr<IMFMediaType> rgb32Type;
-        CK(handler->GetMediaTypeByIndex(0, &rgb32Type));
-        CK(handler->SetCurrentMediaType(rgb32Type.Get()));
-        logStreamType(MFVideoFormat_RGB32);
-      }
-      if (_offerNv12) {
-        VcamLog("MediaStream: OfferNv12 experiment enabled");
-      }
       CK(_queue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
       _state = MF_STREAM_STATE_RUNNING;
       client = _client;
@@ -481,15 +469,16 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
     const DWORD rgbFrameBytes = _width * _height * 4;
     const DWORD outputFrameBytes =
         sampleBytesForSubtype(subtype, _width, _height);
-    if (subtype != _sampleBufferSubtype || _sampleBuffers.empty()) {
+    const bool subtypeChanged =
+        subtype != _sampleBufferSubtype || _sampleBuffers.empty();
+    if (subtypeChanged) {
       CK(createSampleBufferPool(subtype, _width, _height, _sampleBuffers));
       _sampleBufferSubtype = subtype;
       _nextSampleBuffer = 0;
       _lastSampleBuffer.Reset();
       _hasLastGoodFrame = false;
-      logStreamType(subtype);
     }
-    if (!_loggedFirstSampleStreamType) {
+    if (!_loggedFirstSampleStreamType || subtypeChanged) {
       logStreamType(subtype);
       _loggedFirstSampleStreamType = true;
     }
