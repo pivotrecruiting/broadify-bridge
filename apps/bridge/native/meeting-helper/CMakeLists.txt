@@ -122,6 +122,7 @@ set(MEETING_HELPER_SOURCES
 
 if(WIN32)
   list(APPEND MEETING_HELPER_SOURCES
+    src/preview/vcam_shm_publisher.cpp
     src/preview/vcam_writer_generation.cpp
   )
 endif()
@@ -398,6 +399,15 @@ if(MEETING_HELPER_BUILD_TESTS)
       src/preview/vcam_shm_layout.cpp
       src/preview/vcam_shm_ring_win.cpp
       src/util/helper_event_log.cpp
+      src/util/pixel_swizzle.cpp
+    )
+    add_executable(vcam_shm_publisher_test
+      tests/vcam_shm_publisher_test.cpp
+      src/preview/vcam_shm_layout.cpp
+      src/preview/vcam_shm_publisher.cpp
+      src/preview/vcam_shm_ring_win.cpp
+      src/util/helper_event_log.cpp
+      src/util/pixel_swizzle.cpp
     )
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE
       "${CMAKE_CURRENT_BINARY_DIR}/generated"
@@ -414,6 +424,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/recorder/meeting_recorder_stub.cpp
     src/util/helper_event_log.cpp
     src/util/json_utils.cpp
+    src/util/pixel_swizzle.cpp
   )
   if(WIN32)
     list(APPEND CONTROL_SERVER_TEST_SOURCES
@@ -497,6 +508,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_compile_definitions(vcam_shm_service_ring_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(vcam_shm_service_ring_test PRIVATE advapi32)
     add_test(NAME vcam_shm_service_ring_test COMMAND vcam_shm_service_ring_test)
+    target_include_directories(vcam_shm_publisher_test PRIVATE src)
+    target_compile_definitions(vcam_shm_publisher_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(vcam_shm_publisher_test PRIVATE advapi32)
+    add_test(NAME vcam_shm_publisher_test COMMAND vcam_shm_publisher_test)
   endif()
 
   if(APPLE)

@@ -298,6 +298,8 @@ und publiziert das Ergebnis als `bridge_event` `meeting_status`
   Per-Frame-Zaehler (`rendered_frames`, `reused_frames`,
   `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
   `elapsed_seconds`, `video_frames`) und ohne `keyer.status.metrics`.
+  `published_preview_frames` steigt nur fuer MJPEG/TCP-Preview-Consumer; bei
+  reinen SHM-VCam-Readern stoppt der Zaehler.
   Publiziert wird sofort bei `force` (Lifecycle, Recording-Wechsel), immer
   solange `recording.active` (Timer in der WebApp), bei jeder Aenderung der
   Projektion (Kamera, Provider, Fallback, Fehler, VCam), und sonst

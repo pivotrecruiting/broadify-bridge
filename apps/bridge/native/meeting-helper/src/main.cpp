@@ -10,6 +10,9 @@
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
+#if defined(_WIN32)
+#include "preview/vcam_shm_publisher.h"
+#endif
 #include "preview/vcam_shm_ring_win.h"
 #include "preview/vcam_shm_retry_state.h"
 #include "preview/vcam_writer_generation.h"
@@ -712,11 +715,22 @@ int main(int argc, char **argv) {
   }
   setVirtualCameraTransport(selectedVcamTransport);
 
-  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), &vcamShm, std::ref(recorder), std::ref(g_running));
+#if defined(_WIN32)
+  VcamShmPublisher vcamShmPublisher;
+#endif
+  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), &vcamShm,
+#if defined(_WIN32)
+                     &vcamShmPublisher,
+#endif
+                     std::ref(recorder), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
-  std::thread vcamShmLifecycle([&options, &state, &vcamShm]() {
+  std::thread vcamShmLifecycle([&options, &state, &vcamShm
+#if defined(_WIN32)
+                                , &vcamShmPublisher
+#endif
+  ]() {
     int lastReaderCount = 0;
     uint64_t nextOpenAttemptMs = 0u;
     uint64_t lastReaderSeenMs = 0u;
@@ -736,6 +750,7 @@ int main(int argc, char **argv) {
       if (!shouldUseShm) {
 #if defined(_WIN32)
         if (vcamShm.active()) {
+          vcamShmPublisher.stop();
           vcamShm.close();
         }
 #endif
@@ -777,6 +792,7 @@ int main(int argc, char **argv) {
         const VcamShmRetryDecision retry =
             decideVcamShmRetry(outcome, now, 2000u);
         if (retry.useShm) {
+          vcamShmPublisher.start(&vcamShm);
           setVirtualCameraTransport("shm");
           printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"" +
                      jsonEscape(opened.reason.empty() ? "opened_service_ring"
@@ -812,6 +828,9 @@ int main(int argc, char **argv) {
         lastReaderSeenMs = nowMs;
       } else if (lastReaderSeenMs != 0u && nowMs >= lastReaderSeenMs + 5000u &&
                  vcamShm.readerHeartbeatAbsent(5000u)) {
+#if defined(_WIN32)
+        vcamShmPublisher.stop();
+#endif
         vcamShm.close();
         setVirtualCameraTransport("tcp");
         if (lastTcpTransportReason != "reader_absent") {
@@ -832,6 +851,9 @@ int main(int argc, char **argv) {
         lastReaderCount = readerCount;
       }
     }
+#if defined(_WIN32)
+    vcamShmPublisher.stop();
+#endif
   });
   std::thread control(
       runControlServer,

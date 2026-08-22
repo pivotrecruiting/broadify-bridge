@@ -28,6 +28,7 @@ struct KeyerMetrics {
   double programFrameIntervalMs = -1.0;
   double programFrameMs = -1.0;
   double mjpegEncodeMs = -1.0;
+  double vcamPublishMs = -1.0;
   double keyerFps = -1.0;
   double programFps = -1.0;
   double droppedFramesPerSec = -1.0;
@@ -35,6 +36,7 @@ struct KeyerMetrics {
   uint32_t maskHeight = 0;
   uint64_t droppedFrames = 0;
   uint64_t skippedFrames = 0;
+  uint64_t vcamPublishDropped = 0;
   uint64_t cameraTextureUploads = 0;
   uint32_t stagingReadbackDepth = 0;
 };

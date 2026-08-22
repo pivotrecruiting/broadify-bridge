@@ -249,7 +249,21 @@ int main() {
     fail("stable_key did not take precedence over camera_index");
   }
 
-  (void)sendRpc(endpoint, "{\"id\":\"5\",\"method\":\"control.shutdown\"}");
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.keyerMetrics.vcamPublishMs = 1.25;
+    state.keyerMetrics.vcamPublishDropped = 7u;
+  }
+  const std::string keyer =
+      sendRpc(endpoint, "{\"id\":\"5\",\"method\":\"keyer.get\"}");
+  if (!contains(keyer, "\"vcam_publish_ms\":1.250000") ||
+      !contains(keyer, "\"vcam_publish_dropped\":7")) {
+    running.store(false);
+    server.join();
+    fail("keyer.get did not include vcam publish metrics");
+  }
+
+  (void)sendRpc(endpoint, "{\"id\":\"6\",\"method\":\"control.shutdown\"}");
   server.join();
   std::cout << "control_server_test passed" << std::endl;
   return 0;

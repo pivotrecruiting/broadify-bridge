@@ -170,6 +170,7 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"program_frame_interval_ms\":" << metricNumber(metrics.programFrameIntervalMs)
          << ",\"program_frame_ms\":" << metricNumber(metrics.programFrameMs)
          << ",\"mjpeg_encode_ms\":" << metricNumber(metrics.mjpegEncodeMs)
+         << ",\"vcam_publish_ms\":" << metricNumber(metrics.vcamPublishMs)
          << ",\"keyer_fps\":" << metricNumber(metrics.keyerFps)
          << ",\"program_fps\":" << metricNumber(metrics.programFps)
          << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
@@ -177,6 +178,7 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"mask_height\":" << metrics.maskHeight
          << ",\"dropped_frames\":" << metrics.droppedFrames
          << ",\"skipped_frames\":" << metrics.skippedFrames
+         << ",\"vcam_publish_dropped\":" << metrics.vcamPublishDropped
          << ",\"camera_texture_uploads\":" << metrics.cameraTextureUploads
          << ",\"staging_readback_depth\":" << metrics.stagingReadbackDepth
          << "}";

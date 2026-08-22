@@ -1,5 +1,6 @@
 #include "preview/vcam_shm_layout.h"
 #include "preview/vcam_shm_ring_win.h"
+#include "util/pixel_swizzle.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -65,6 +66,48 @@ void testCreatorPublishReaderCopy() {
   CHECK(copied.width == 64u);
   CHECK(copied.height == 36u);
   CHECK(copied.data == bgra);
+
+  UnmapViewOfFile(streamMemory);
+  CloseHandle(stream);
+  UnmapViewOfFile(controlMemory);
+  CloseHandle(control);
+}
+
+void testPublishRgbaAsBgraMatchesTwoPass() {
+  const std::wstring controlName =
+      L"Local\\BroadifyVcamServiceRingSwizzleCtest-" +
+      std::to_wstring(GetCurrentProcessId());
+  VcamShmRingWin creator;
+  const VcamShmCreateResult created =
+      creator.createWithControlName(17, 9, 30, 12u, controlName, false);
+  CHECK(created.ok);
+
+  std::vector<uint8_t> rgba(17u * 9u * 4u);
+  for (size_t i = 0; i < rgba.size(); ++i) {
+    rgba[i] = static_cast<uint8_t>((i * 19u + 7u) & 0xffu);
+  }
+  std::vector<uint8_t> expected(rgba.size());
+  swizzleRgbaToBgra(rgba.data(), expected.data(), rgba.size() / 4u);
+  CHECK(creator.publishRgbaAsBgra(17, 9, rgba.data(), 17u * 4u, 0u));
+
+  HANDLE control = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+                                    controlName.c_str());
+  CHECK(control != nullptr);
+  void *controlMemory = MapViewOfFile(control, FILE_MAP_READ | FILE_MAP_WRITE,
+                                      0, 0, sizeof(ControlRecord));
+  CHECK(controlMemory != nullptr);
+  auto *controlRecord = static_cast<ControlRecord *>(controlMemory);
+  ControlRecord record;
+  CHECK(readControlRecord(*controlRecord, record));
+  HANDLE stream = OpenFileMappingW(FILE_MAP_READ, FALSE, record.mapping_name);
+  CHECK(stream != nullptr);
+  void *streamMemory = MapViewOfFile(stream, FILE_MAP_READ, 0, 0,
+                                     static_cast<size_t>(record.capacity_bytes));
+  CHECK(streamMemory != nullptr);
+  CopiedFrame copied;
+  CHECK(copyNewestFrame(streamMemory, static_cast<size_t>(record.capacity_bytes),
+                        copied));
+  CHECK(copied.data == expected);
 
   UnmapViewOfFile(streamMemory);
   CloseHandle(stream);
@@ -150,6 +193,7 @@ void testRejectWrongMagicAndCapacity() {
 
 int main() {
   testCreatorPublishReaderCopy();
+  testPublishRgbaAsBgraMatchesTwoPass();
   testServiceOwnedZeroGeometryOpenPublishValidate();
   testRejectWrongMagicAndCapacity();
   std::cout << "vcam_shm_service_ring_test passed\n";

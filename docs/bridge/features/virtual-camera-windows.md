@@ -69,6 +69,19 @@ sind ein experimenteller Consumer-Kompatibilitaetspfad und werden nur
 angeboten, wenn `HKCU\Software\Broadify\VCam\OfferNv12` als DWORD `1` gesetzt
 ist. Die DLL liest den Flag einmal pro `MediaStream::Start`.
 
+Ab WP4c schreibt der Program-Thread den SHM-Ring nicht mehr direkt. Er kopiert
+das aktuelle RGBA-Programmframe ohne gehaltenen Publisher-Lock in einen
+Submit-Puffer, uebergibt ihn an den dreifach gepufferten `VcamShmPublisher`
+und kehrt sofort zur Pipeline zurueck. Der Publisher-Thread
+swizzelt RGBA -> BGRA direkt in den naechsten Ring-Slot und setzt danach das
+Frame-Event; es gibt kein zusaetzliches BGRA-Zwischenframe mehr. Ist der
+Publisher noch mit dem vorherigen Frame beschaeftigt, gewinnt das neueste
+pending Frame und das aeltere pending Frame wird verworfen. Bei inaktiver
+SHM-Mapping macht der Program-Thread keine Swizzle-/Publish-Arbeit.
+`keyer.get.metrics.vcam_publish_ms` zeigt die letzte Publisher-Laufzeit,
+`keyer.get.metrics.vcam_publish_dropped` die seit Start verworfenen pending
+Frames.
+
 Die DLL erstellt die service-eigenen SHM-Objekte und startet den SHM-Reader
 erst in `MediaStream::Start`. Ein zero-geometry Service-Header gilt fuer die
 Reader-Seite als "nicht offen", damit TCP sofort startet und die 2-s-Regel erst
@@ -85,6 +98,9 @@ Direkt nach Stream-Start liefert `RequestSample` bis zum ersten Frame den
 dunklen Splash. Sobald einmal ein gueltiger Frame angekommen ist, wird nie
 wieder auf den Splash umgeschaltet: bei Staleness, statischem Programm oder
 Groessenabweichung bleibt der letzte gute Frame sichtbar.
+Der SHM-Reader kopiert Ring-Payloads nur aus `RequestSample` heraus. Der
+Event-Wait im Reader-Thread aktualisiert Liveness, beobachtet Sequenz/
+Heartbeat und weckt den Stream, fuehrt aber keinen vollen Frame-Copy aus.
 
 ### TCP-Fallback und Geometrie-Handshake
 
@@ -197,11 +213,11 @@ Wird ein duplizierter Frame erneut ausgeliefert, erhaelt er den vorherigen
 Sample-Zeitstempel plus eine Frame-Dauer. Das stabilisiert A/V-Sync und
 reduziert sichtbare Latenzspruenge in Teams/Meet.
 
-Der SHM-Ring wird geschrieben, sobald `output.vcam.raw.start` aktiv ist, auch
-wenn der Frame-Server-Leser noch nicht in der Control-Mapping sichtbar ist.
-Mit aktivem SHM schreibt der Helper den Ring in voller Cadence auch ohne
-Reader; Reader-Liveness beeinflusst nur Diagnose und Transportstatus, nicht
-den Ring-Write.
+Der SHM-Ring wird geschrieben, sobald `output.vcam.raw.start` aktiv ist und
+die Mapping offen ist, auch wenn der Frame-Server-Leser noch nicht in der
+Control-Mapping sichtbar ist. Mit aktivem SHM schreibt der Publisher den Ring
+in voller Cadence auch ohne Reader; Reader-Liveness beeinflusst nur Diagnose
+und Transportstatus, nicht den Ring-Write.
 `output.vcam.raw.stop` schliesst die Mapping, so dass die DLL Staleness sieht
 und auf TCP zurueckfaellt.
 

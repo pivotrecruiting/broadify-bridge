@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -45,9 +46,15 @@ class VcamShmRingWin {
                    const uint8_t *bgra,
                    size_t bgraSize,
                    uint64_t captureQpc);
+  bool publishRgbaAsBgra(uint32_t width,
+                         uint32_t height,
+                         const uint8_t *rgba,
+                         size_t rgbaStride,
+                         uint64_t captureQpc);
   bool heartbeat(uint64_t heartbeatQpc);
   uint64_t readerCount() const;
   bool readerHeartbeatAbsent(uint64_t staleMs) const;
+  void setPublishGateForTesting(std::function<void()> gate);
 
   bool active() const;
   const std::wstring &mappingName() const { return mappingName_; }
@@ -81,6 +88,7 @@ class VcamShmRingWin {
   std::wstring mappingName_;
   std::wstring eventName_;
   std::wstring controlName_;
+  std::function<void()> publishGateForTesting_;
 };
 
 }  // namespace broadify::meeting

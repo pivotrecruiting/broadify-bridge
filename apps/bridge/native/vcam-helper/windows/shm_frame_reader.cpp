@@ -321,12 +321,29 @@ void ShmFrameReader::closeServiceRing() {
   ownerRingBytes_ = 0u;
 }
 
-bool ShmFrameReader::copyLatestIfNew(uint64_t lastSequence, RawFrame &out) const {
+bool ShmFrameReader::copyLatestIfNew(uint64_t lastSequence, RawFrame &out) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!hasFrame_ || latest_.sequence == lastSequence) {
+  if (mappingMemory_ == nullptr) {
     return false;
   }
-  out = latest_;
+  broadify::vcam_shm::FrameView frame;
+  if (!broadify::vcam_shm::copyNewestFrameInto(mappingMemory_, ringBytes_,
+                                               frame, out.bgra) &&
+      !broadify::vcam_shm::copyNewestFrameInto(mappingMemory_, ringBytes_,
+                                               frame, out.bgra)) {
+    return false;
+  }
+  if (frame.format != broadify::vcam_shm::PixelFormat::Bgra8 ||
+      frame.sequence == lastSequence) {
+    return false;
+  }
+  out.width = frame.width;
+  out.height = frame.height;
+  out.sequence = frame.sequence;
+  out.captureNs = frame.capture_qpc;
+  hasFrame_ = true;
+  lastArrivalMs_ = nowMs();
+  observedSequence_ = frame.sequence;
   return true;
 }
 
@@ -450,24 +467,25 @@ bool ShmFrameReader::openFromControl(std::string &reason) {
     return false;
   }
 
-  controlHandle_ = control;
-  controlMemory_ = controlView;
-  mappingHandle_ = mapping;
-  mappingMemory_ = mappingView;
-  eventHandle_ = event;
-  writerGeneration_ = record.writer_generation;
-  openedAtMs_ = nowMs();
-  updateReaderLiveness();
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    controlHandle_ = control;
+    controlMemory_ = controlView;
+    mappingHandle_ = mapping;
+    mappingMemory_ = mappingView;
+    eventHandle_ = event;
+    writerGeneration_ = record.writer_generation;
+    openedAtMs_ = nowMs();
     mappingOpen_ = true;
     ++openGeneration_;
   }
+  updateReaderLiveness();
   VcamLog("ShmFrameReader: opened %ls", mappingName_.c_str());
   return true;
 }
 
 void ShmFrameReader::closeMappings() {
+  std::lock_guard<std::mutex> lock(mutex_);
   clearReaderLiveness();
   if (eventHandle_ != nullptr) {
     CloseHandle(static_cast<HANDLE>(eventHandle_));
@@ -490,36 +508,26 @@ void ShmFrameReader::closeMappings() {
   controlMemory_ = nullptr;
   controlHandle_ = nullptr;
   ringBytes_ = 0u;
-  lastSequence_ = 0u;
+  observedSequence_ = 0u;
   writerGeneration_ = 0u;
   openedAtMs_ = 0u;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    mappingOpen_ = false;
-    hasFrame_ = false;
-  }
+  mappingOpen_ = false;
+  hasFrame_ = false;
 }
 
-bool ShmFrameReader::copyNewestLocked() {
-  broadify::vcam_shm::CopiedFrame frame;
-  if (!broadify::vcam_shm::copyNewestFrame(mappingMemory_, ringBytes_, frame) ||
+bool ShmFrameReader::observeNewestLocked() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  broadify::vcam_shm::FrameView frame;
+  if (!broadify::vcam_shm::peekNewestFrame(mappingMemory_, ringBytes_, frame) ||
       frame.format != broadify::vcam_shm::PixelFormat::Bgra8 ||
-      frame.sequence == lastSequence_) {
+      frame.size != broadify::vcam_shm::bytesPerFrame(
+                        frame.width, frame.height, frame.format) ||
+      frame.sequence == observedSequence_) {
     return false;
   }
-  RawFrame next;
-  next.width = frame.width;
-  next.height = frame.height;
-  next.sequence = frame.sequence;
-  next.captureNs = frame.capture_qpc;
-  next.bgra = std::move(frame.data);
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    latest_ = std::move(next);
-    hasFrame_ = true;
-    lastArrivalMs_ = nowMs();
-  }
-  lastSequence_ = frame.sequence;
+  hasFrame_ = true;
+  lastArrivalMs_ = nowMs();
+  observedSequence_ = frame.sequence;
   return true;
 }
 
@@ -570,7 +578,7 @@ void ShmFrameReader::run() {
     }
 
     updateReaderLiveness();
-    copyNewestLocked();
+    observeNewestLocked();
     const DWORD waitResult =
         WaitForSingleObject(static_cast<HANDLE>(eventHandle_), kEventWaitMs);
     if (!running_.load()) {
@@ -578,7 +586,7 @@ void ShmFrameReader::run() {
     }
     if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_TIMEOUT) {
       updateReaderLiveness();
-      copyNewestLocked();
+      observeNewestLocked();
     } else {
       VcamLog("ShmFrameReader: event wait failed error=%lu", GetLastError());
       closeMappings();
