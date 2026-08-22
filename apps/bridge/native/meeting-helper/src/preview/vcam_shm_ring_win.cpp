@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstring>
 #include <iostream>
+#include <utility>
 
 #if defined(_WIN32)
 
@@ -338,6 +339,9 @@ bool VcamShmRingWin::publishRgbaAsBgra(uint32_t width,
                                        size_t rgbaStride,
                                        uint64_t captureQpc) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (publishGateForTesting_) {
+    publishGateForTesting_();
+  }
   const size_t rowBytes = static_cast<size_t>(width) * 4u;
   const size_t dataSize = broadify::vcam_shm::bytesPerFrame(
       width, height, broadify::vcam_shm::PixelFormat::Bgra8);
@@ -389,6 +393,11 @@ bool VcamShmRingWin::publishRgbaAsBgra(uint32_t width,
   }
 #endif
   return true;
+}
+
+void VcamShmRingWin::setPublishGateForTesting(std::function<void()> gate) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  publishGateForTesting_ = std::move(gate);
 }
 
 bool VcamShmRingWin::heartbeat(uint64_t heartbeatQpc) {

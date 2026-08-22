@@ -35,6 +35,10 @@ class VcamShmPublisher {
                   const uint8_t *rgba,
                   size_t rgbaSize,
                   uint64_t captureQpc);
+  bool submitRgba(uint32_t width,
+                  uint32_t height,
+                  std::vector<uint8_t> &rgba,
+                  uint64_t captureQpc);
   VcamShmPublisherMetrics metrics() const;
   void setPublishDelayForTesting(std::chrono::milliseconds delay);
 
@@ -47,11 +51,14 @@ class VcamShmPublisher {
   };
 
   void run();
+  void resetLocked();
+  int reserveWriteBufferLocked(size_t rgbaSize);
 
   VcamShmRingWin *ring_ = nullptr;
-  std::array<BufferedFrame, 2> buffers_;
+  std::array<BufferedFrame, 3> buffers_;
   int pendingIndex_ = -1;
   int busyIndex_ = -1;
+  int writingIndex_ = -1;
   int nextWriteIndex_ = 0;
   bool running_ = false;
   mutable std::mutex mutex_;

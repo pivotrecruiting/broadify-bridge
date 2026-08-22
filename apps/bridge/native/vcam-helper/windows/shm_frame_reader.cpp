@@ -327,8 +327,11 @@ bool ShmFrameReader::copyLatestIfNew(uint64_t lastSequence, RawFrame &out) {
     return false;
   }
   broadify::vcam_shm::CopiedFrame frame;
-  if (!broadify::vcam_shm::copyNewestFrame(mappingMemory_, ringBytes_, frame) ||
-      frame.format != broadify::vcam_shm::PixelFormat::Bgra8 ||
+  if (!broadify::vcam_shm::copyNewestFrame(mappingMemory_, ringBytes_, frame) &&
+      !broadify::vcam_shm::copyNewestFrame(mappingMemory_, ringBytes_, frame)) {
+    return false;
+  }
+  if (frame.format != broadify::vcam_shm::PixelFormat::Bgra8 ||
       frame.sequence == lastSequence) {
     return false;
   }
@@ -516,6 +519,8 @@ bool ShmFrameReader::observeNewestLocked() {
   broadify::vcam_shm::FrameView frame;
   if (!broadify::vcam_shm::peekNewestFrame(mappingMemory_, ringBytes_, frame) ||
       frame.format != broadify::vcam_shm::PixelFormat::Bgra8 ||
+      frame.size != broadify::vcam_shm::bytesPerFrame(
+                        frame.width, frame.height, frame.format) ||
       frame.sequence == observedSequence_) {
     return false;
   }

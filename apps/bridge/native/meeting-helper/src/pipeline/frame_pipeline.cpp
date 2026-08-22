@@ -3213,11 +3213,9 @@ void runFramePipeline(const Options &options,
           runtime.vcamTransport == "shm" &&
           runtime.vcamRawRunning && shouldRenderProgram && !programFrame.empty()) {
 #if defined(_WIN32)
-        vcamShmPublisher->submitRgba(options.width, options.height,
-                                     programFrame.data(), programFrame.size(),
-                                     hasCameraFrame
-                                         ? latestCameraFrame.captureQpc
-                                         : 0u);
+        vcamShmPublisher->submitRgba(
+            options.width, options.height, programFrame,
+            hasCameraFrame ? latestCameraFrame.captureQpc : 0u);
 #else
         (void)vcamShm;
 #endif

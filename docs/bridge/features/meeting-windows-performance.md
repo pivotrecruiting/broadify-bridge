@@ -132,13 +132,14 @@ QPC-Zeitstempel des Slots. BFRG v2 im TCP-Fallback traegt weiter
 Frame-Dauer weiter.
 
 Ab WP4c ist der teure SHM-Publish vom Program-Thread getrennt. Der
-Program-Thread kopiert RGBA einmal in den zweifach gepufferten
+Program-Thread uebergibt RGBA per Pointer-Swap in den dreifach gepufferten
 `VcamShmPublisher`; der Publisher-Thread swizzelt RGBA -> BGRA direkt in den
 Ring-Slot und setzt das Event. Bei Backpressure gilt latest-wins:
 `metrics.vcam_publish_dropped` zaehlt verworfene pending Frames,
-`metrics.vcam_publish_ms` misst die letzte Swizzle-/Publish-Laufzeit. Dadurch
-blockiert die 8-MB-Swizzle-/Ring-Kopie nicht mehr Kamera-CV-Wake,
-Hintergrundwechsel oder Keyer-Cadence-Entscheidungen.
+`metrics.vcam_publish_ms` misst die letzte Swizzle-/Publish-Laufzeit und ist
+`-1`, bis der erste Publish abgeschlossen ist. Dadurch blockiert die
+8-MB-Swizzle-/Ring-Kopie nicht mehr Kamera-CV-Wake, Hintergrundwechsel oder
+Keyer-Cadence-Entscheidungen.
 
 Die Windows-VCam-DLL kopiert SHM-Payloads nur noch im
 `MediaStream::RequestSample`-Pfad. Der Reader-Thread wartet weiter auf das

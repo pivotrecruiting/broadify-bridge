@@ -1,5 +1,6 @@
 #include "preview/vcam_shm_publisher.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 
@@ -19,9 +20,7 @@ void VcamShmPublisher::start(VcamShmRingWin *ring) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     ring_ = ring;
-    pendingIndex_ = -1;
-    busyIndex_ = -1;
-    nextWriteIndex_ = 0;
+    resetLocked();
     running_ = true;
   }
   thread_ = std::thread(&VcamShmPublisher::run, this);
@@ -32,12 +31,12 @@ void VcamShmPublisher::stop() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_ && !thread_.joinable()) {
       ring_ = nullptr;
-      pendingIndex_ = -1;
-      busyIndex_ = -1;
+      resetLocked();
       return;
     }
     running_ = false;
     pendingIndex_ = -1;
+    writingIndex_ = -1;
   }
   cv_.notify_all();
   if (thread_.joinable()) {
@@ -45,7 +44,7 @@ void VcamShmPublisher::stop() {
   }
   std::lock_guard<std::mutex> lock(mutex_);
   ring_ = nullptr;
-  busyIndex_ = -1;
+  resetLocked();
 }
 
 bool VcamShmPublisher::submitRgba(uint32_t width,
@@ -57,27 +56,73 @@ bool VcamShmPublisher::submitRgba(uint32_t width,
   if (width == 0u || height == 0u || rgba == nullptr || rgbaSize != expected) {
     return false;
   }
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!running_ || ring_ == nullptr || !ring_->active()) {
-    return false;
-  }
-  int writeIndex = pendingIndex_;
-  if (writeIndex >= 0) {
-    droppedFrames_.fetch_add(1u, std::memory_order_relaxed);
-  } else {
-    writeIndex = nextWriteIndex_;
-    if (writeIndex == busyIndex_) {
-      writeIndex = 1 - writeIndex;
+  int writeIndex = -1;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!running_ || ring_ == nullptr) {
+      return false;
+    }
+    writeIndex = reserveWriteBufferLocked(rgbaSize);
+    if (writeIndex < 0) {
+      droppedFrames_.fetch_add(1u, std::memory_order_relaxed);
+      return false;
     }
   }
+
   BufferedFrame &frame = buffers_[static_cast<size_t>(writeIndex)];
   frame.width = width;
   frame.height = height;
   frame.captureQpc = captureQpc;
-  frame.rgba.resize(rgbaSize);
   std::memcpy(frame.rgba.data(), rgba, rgbaSize);
-  pendingIndex_ = writeIndex;
-  nextWriteIndex_ = 1 - writeIndex;
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!running_ || writingIndex_ != writeIndex) {
+      writingIndex_ = -1;
+      return false;
+    }
+    if (pendingIndex_ >= 0 && pendingIndex_ != writeIndex) {
+      droppedFrames_.fetch_add(1u, std::memory_order_relaxed);
+    }
+    pendingIndex_ = writeIndex;
+    writingIndex_ = -1;
+    nextWriteIndex_ = (writeIndex + 1) % static_cast<int>(buffers_.size());
+  }
+  cv_.notify_one();
+  return true;
+}
+
+bool VcamShmPublisher::submitRgba(uint32_t width,
+                                  uint32_t height,
+                                  std::vector<uint8_t> &rgba,
+                                  uint64_t captureQpc) {
+  const size_t expected = static_cast<size_t>(width) * height * 4u;
+  if (width == 0u || height == 0u || rgba.size() != expected) {
+    return false;
+  }
+  int writeIndex = -1;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!running_ || ring_ == nullptr) {
+      return false;
+    }
+    writeIndex = reserveWriteBufferLocked(expected);
+    if (writeIndex < 0) {
+      droppedFrames_.fetch_add(1u, std::memory_order_relaxed);
+      return false;
+    }
+    BufferedFrame &frame = buffers_[static_cast<size_t>(writeIndex)];
+    frame.width = width;
+    frame.height = height;
+    frame.captureQpc = captureQpc;
+    frame.rgba.swap(rgba);
+    if (pendingIndex_ >= 0 && pendingIndex_ != writeIndex) {
+      droppedFrames_.fetch_add(1u, std::memory_order_relaxed);
+    }
+    pendingIndex_ = writeIndex;
+    writingIndex_ = -1;
+    nextWriteIndex_ = (writeIndex + 1) % static_cast<int>(buffers_.size());
+  }
   cv_.notify_one();
   return true;
 }
@@ -89,6 +134,41 @@ VcamShmPublisherMetrics VcamShmPublisher::metrics() const {
   snapshot.publishMs =
       micros == 0u ? -1.0 : static_cast<double>(micros) / 1000.0;
   return snapshot;
+}
+
+void VcamShmPublisher::resetLocked() {
+  pendingIndex_ = -1;
+  busyIndex_ = -1;
+  writingIndex_ = -1;
+  nextWriteIndex_ = 0;
+}
+
+int VcamShmPublisher::reserveWriteBufferLocked(size_t rgbaSize) {
+  const bool needsResize = std::any_of(
+      buffers_.begin(), buffers_.end(),
+      [rgbaSize](const BufferedFrame &frame) {
+        return frame.rgba.size() != rgbaSize;
+      });
+  if (needsResize) {
+    if (pendingIndex_ >= 0 || busyIndex_ >= 0 || writingIndex_ >= 0) {
+      return -1;
+    }
+    for (BufferedFrame &frame : buffers_) {
+      frame.rgba.resize(rgbaSize);
+    }
+  }
+  for (size_t attempt = 0; attempt < buffers_.size(); ++attempt) {
+    const int candidate =
+        (nextWriteIndex_ + static_cast<int>(attempt)) %
+        static_cast<int>(buffers_.size());
+    if (candidate == pendingIndex_ || candidate == busyIndex_ ||
+        candidate == writingIndex_) {
+      continue;
+    }
+    writingIndex_ = candidate;
+    return candidate;
+  }
+  return -1;
 }
 
 void VcamShmPublisher::setPublishDelayForTesting(
@@ -131,10 +211,10 @@ void VcamShmPublisher::run() {
       ring = ring_;
       publishDelay = publishDelayForTesting_;
     }
-    if (publishDelay.count() > 0) {
-      std::this_thread::sleep_for(publishDelay);
-    }
-    if (ring != nullptr && ring->active()) {
+    if (ring != nullptr) {
+      if (publishDelay.count() > 0) {
+        std::this_thread::sleep_for(publishDelay);
+      }
       ring->publishRgbaAsBgra(width, height, rgba,
                               static_cast<size_t>(width) * 4u, captureQpc);
     }
