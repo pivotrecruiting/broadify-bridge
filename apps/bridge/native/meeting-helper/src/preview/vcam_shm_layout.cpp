@@ -427,6 +427,56 @@ bool copyNewestFrame(const void *memory, size_t bytes, CopiedFrame &frame) {
   return after == bestSequence && (after & 1u) == 0u;
 }
 
+#if defined(_WIN32)
+bool copyNewestFrameInto(const void *memory,
+                         size_t bytes,
+                         FrameView &frame,
+                         std::vector<uint8_t> &data) {
+  const RingHeader *header = ringHeader(memory, bytes);
+  if (header == nullptr) {
+    return false;
+  }
+  const size_t expected = bytesPerFrame(
+      header->width, header->height, static_cast<PixelFormat>(header->format));
+  if (expected == 0u) {
+    return false;
+  }
+  const SlotHeader *best = nullptr;
+  const uint8_t *bestData = nullptr;
+  uint64_t bestSequence = 0u;
+  for (uint32_t i = 0; i < header->slot_count; ++i) {
+    const SlotHeader *slot = slotHeader(memory, bytes, i);
+    const uint8_t *slotBytes = slotData(memory, bytes, i);
+    if (slot == nullptr || slotBytes == nullptr) {
+      return false;
+    }
+    const uint64_t sequence = volatileLoad64(slot->sequence);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if ((sequence & 1u) != 0u || sequence == 0u || sequence < bestSequence) {
+      continue;
+    }
+    best = slot;
+    bestData = slotBytes;
+    bestSequence = sequence;
+  }
+  if (best == nullptr || best->size != expected) {
+    return false;
+  }
+  frame.width = header->width;
+  frame.height = header->height;
+  frame.format = static_cast<PixelFormat>(header->format);
+  frame.sequence = bestSequence;
+  frame.capture_qpc = best->capture_qpc;
+  frame.data = bestData;
+  frame.size = expected;
+  data.resize(expected);
+  std::memcpy(data.data(), bestData, expected);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  const uint64_t after = volatileLoad64(best->sequence);
+  return after == bestSequence && (after & 1u) == 0u;
+}
+#endif
+
 bool updateHeartbeat(void *memory, size_t bytes, uint64_t heartbeatQpc) {
   RingHeader *header = ringHeader(memory, bytes);
   if (header == nullptr) {

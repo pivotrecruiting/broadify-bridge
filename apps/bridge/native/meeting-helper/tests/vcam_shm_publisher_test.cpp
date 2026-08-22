@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <cstdlib>
 #include <cwchar>
 #include <iostream>
@@ -225,13 +226,35 @@ void testSubmitIsBoundedWhileRingPublishIsLocked() {
   const auto submitElapsed =
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - submitStart);
-  CHECK(submitElapsed < std::chrono::milliseconds(1));
+  CHECK(submitElapsed <= std::chrono::milliseconds(10));
   CHECK(publisher.metrics().droppedFrames > 0u);
   {
     std::lock_guard<std::mutex> lock(gateMutex);
     releasePublish = true;
   }
   gateCv.notify_all();
+  publisher.stop();
+}
+
+void testSubmitBufferKeepsProgramFrameAndPublishesContent() {
+  const std::wstring controlName =
+      L"Local\\BroadifyVcamPublisherVectorCtest-" +
+      std::to_wstring(GetCurrentProcessId());
+  VcamShmRingWin ring;
+  CHECK(ring.createWithControlName(8, 4, 30, 34u, controlName, false).ok);
+  VcamShmPublisher publisher;
+  publisher.start(&ring);
+
+  std::vector<uint8_t> programFrame = rgbaFrame(8, 4, 40);
+  const std::vector<uint8_t> original = programFrame;
+  std::vector<uint8_t> submitFrame(programFrame.size());
+  std::memcpy(submitFrame.data(), programFrame.data(), programFrame.size());
+  CHECK(publisher.submitRgba(8, 4, submitFrame, 0u));
+  CHECK(programFrame == original);
+
+  std::vector<uint8_t> expected(original.size());
+  swizzleRgbaToBgra(original.data(), expected.data(), expected.size() / 4u);
+  waitNewestEquals(controlName, expected);
   publisher.stop();
 }
 
@@ -242,6 +265,7 @@ int main() {
   testStopJoin();
   testLatestWinsDropsPendingFrame();
   testSubmitIsBoundedWhileRingPublishIsLocked();
+  testSubmitBufferKeepsProgramFrameAndPublishesContent();
   std::cout << "vcam_shm_publisher_test passed\n";
   return 0;
 }

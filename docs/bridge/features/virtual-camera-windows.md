@@ -70,8 +70,9 @@ angeboten, wenn `HKCU\Software\Broadify\VCam\OfferNv12` als DWORD `1` gesetzt
 ist. Die DLL liest den Flag einmal pro `MediaStream::Start`.
 
 Ab WP4c schreibt der Program-Thread den SHM-Ring nicht mehr direkt. Er kopiert
-das aktuelle RGBA-Programmframe in einen zweifach gepufferten
-`VcamShmPublisher` und kehrt sofort zur Pipeline zurueck. Der Publisher-Thread
+das aktuelle RGBA-Programmframe ohne gehaltenen Publisher-Lock in einen
+Submit-Puffer, uebergibt ihn an den dreifach gepufferten `VcamShmPublisher`
+und kehrt sofort zur Pipeline zurueck. Der Publisher-Thread
 swizzelt RGBA -> BGRA direkt in den naechsten Ring-Slot und setzt danach das
 Frame-Event; es gibt kein zusaetzliches BGRA-Zwischenframe mehr. Ist der
 Publisher noch mit dem vorherigen Frame beschaeftigt, gewinnt das neueste

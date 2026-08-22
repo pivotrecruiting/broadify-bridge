@@ -34,6 +34,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <cstdlib>
 #include <deque>
 #include <iostream>
@@ -1776,6 +1777,9 @@ void runFramePipeline(const Options &options,
   auto nextFrameAt = std::chrono::steady_clock::now();
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
+#if defined(_WIN32)
+  std::vector<uint8_t> vcamSubmitFrame;
+#endif
   VideoFrame latestCameraFrame;
   VideoFrame latestPipFrame;
   uint64_t lastPipCameraTimestampNs = 0u;
@@ -3213,8 +3217,11 @@ void runFramePipeline(const Options &options,
           runtime.vcamTransport == "shm" &&
           runtime.vcamRawRunning && shouldRenderProgram && !programFrame.empty()) {
 #if defined(_WIN32)
+        vcamSubmitFrame.resize(programFrame.size());
+        std::memcpy(vcamSubmitFrame.data(), programFrame.data(),
+                    programFrame.size());
         vcamShmPublisher->submitRgba(
-            options.width, options.height, programFrame,
+            options.width, options.height, vcamSubmitFrame,
             hasCameraFrame ? latestCameraFrame.captureQpc : 0u);
 #else
         (void)vcamShm;

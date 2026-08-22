@@ -140,6 +140,12 @@ bool publishFrame(void *memory,
                   uint64_t heartbeatQpc);
 
 bool copyNewestFrame(const void *memory, size_t bytes, CopiedFrame &frame);
+#if defined(_WIN32)
+bool copyNewestFrameInto(const void *memory,
+                         size_t bytes,
+                         FrameView &frame,
+                         std::vector<uint8_t> &data);
+#endif
 bool peekNewestFrame(const void *memory, size_t bytes, FrameView &frame);
 bool updateHeartbeat(void *memory, size_t bytes, uint64_t heartbeatQpc);
 

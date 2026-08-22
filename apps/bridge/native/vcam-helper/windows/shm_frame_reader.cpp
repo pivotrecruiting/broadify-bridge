@@ -326,9 +326,11 @@ bool ShmFrameReader::copyLatestIfNew(uint64_t lastSequence, RawFrame &out) {
   if (mappingMemory_ == nullptr) {
     return false;
   }
-  broadify::vcam_shm::CopiedFrame frame;
-  if (!broadify::vcam_shm::copyNewestFrame(mappingMemory_, ringBytes_, frame) &&
-      !broadify::vcam_shm::copyNewestFrame(mappingMemory_, ringBytes_, frame)) {
+  broadify::vcam_shm::FrameView frame;
+  if (!broadify::vcam_shm::copyNewestFrameInto(mappingMemory_, ringBytes_,
+                                               frame, out.bgra) &&
+      !broadify::vcam_shm::copyNewestFrameInto(mappingMemory_, ringBytes_,
+                                               frame, out.bgra)) {
     return false;
   }
   if (frame.format != broadify::vcam_shm::PixelFormat::Bgra8 ||
@@ -339,7 +341,6 @@ bool ShmFrameReader::copyLatestIfNew(uint64_t lastSequence, RawFrame &out) {
   out.height = frame.height;
   out.sequence = frame.sequence;
   out.captureNs = frame.capture_qpc;
-  out.bgra = std::move(frame.data);
   hasFrame_ = true;
   lastArrivalMs_ = nowMs();
   observedSequence_ = frame.sequence;
