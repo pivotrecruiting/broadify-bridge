@@ -125,7 +125,7 @@ int main() {
     cameraArrival = fps60Start + fps60CameraInterval * (cameraFrame + 2);
   }
   ok &= expect(rendered60FpsCameraFrames == 2,
-               "60 fps camera renders every other frame");
+               "60 fps camera is throttled to the 0.75-interval render floor");
 
   const auto fps30CameraArrival = epoch + interval;
   ok &= expect(earlyCameraWakeRenderDeadline(

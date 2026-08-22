@@ -243,3 +243,14 @@ Must-fix:
   mask at model resolution, `CAMERA_MAX_HEIGHT`.
 Notes (do if cheap): S4 early-wake factor 0.9 → 0.75 (jitter); skip `CopyResource(planePrevAb)` when coeff EMA off; tests for the
 worker collapse bound, the fused-failure frame and the reopen clamp (factor as free functions); remove dead `sampleBilinearCrop`.
+
+### Consolidation review round 2 — MF-1..MF-6 (fixed in a71c6fa9)
+MF-1 no explicit capture of the static `lastFusedPublishedMask`; MF-2 idle-render mask supply without forcing a render; MF-3 no
+early-wake consume/continue — wait until min(nextFrameAt, lastRenderStart + 0.75·interval), then render; MF-4 Windows null-mask
+catch-all before `renderProgramFrame` (lastGoodMask ≤ 2 s, then empty); MF-5 macOS `#else` byte-for-byte; MF-6 intraOp doc.
+
+### Consolidation review round 3 — FINAL: PASS
+S1 raw camera on exit: PASS (zero Windows paths; catch-all ages honestly → background-only after 2 s). S2 ghost: PASS. S3 load:
+PASS (no busy loop in any state: no camera / 30 fps / 60 fps / keyer off / idle). S4 latency: PASS (render on camera arrival at
+≥ 0.75·interval; inference on every rendered frame). Notes: test label for the 60 fps case corrected; catch-all sets no stage
+telemetry (cosmetic). Windows CI on `test-release/wp2-consolidation` is the release gate for rc.25.
