@@ -285,3 +285,22 @@ Frame Server (no build stamp in vcam.log). (F3) thermal/governor feedback + came
 - VF-7 docs + runbook: "grey in Teams" triage order (keyer_ready → raw stream armed → DLL build stamp), env knobs, VCam-aware policy.
 Acceptance: unit tests for VF-1 rules and VF-5 backoff; no `workers` growth (test with a fake accept loop or review); macOS unchanged;
 lint/jest/build/helper/ctests green; then 4-symptom review (F1/F2/F3) + Windows CI test branch → rc.26.
+
+### VF review round 1 — F1 PARTIAL, F2 NOT (diagnosability only), F3 PARTIAL
+Must-fix:
+- VR-1 `vcam-helper/windows/media_source.cpp` ~:63-83: REMOVE the blocking geometry probe. Use handshake geometry if available within
+  ≤100 ms; on connect failure return immediately with 1920x1080; never sleep through 20×100 ms. Give `RawFrameClient` a
+  "connect attempt finished" signal (atomic state: connecting/connected/failed). This is the prime suspect for "Teams takes forever to
+  open" and removes the probe's side effects on `vcamClientCount`/policy and the `no_frame_on_connect` noise.
+- VR-2 `build/windows-installer.nsh`: stop `FrameServer`/`FrameServerMonitor` in `customInit` (runs in `.onInit`, BEFORE file
+  extraction), then poll `sc query` for STOPPED (bounded ~5 s) before proceeding; keep the reboot fallback; NSIS smoke green.
+- VR-3 `pipeline/compositor_input_selection.cpp` ~:43-49 + callers (`frame_pipeline.cpp` ~:2049, ~:2206): the non-VCam async path
+  must return `PairedFrame` (prior behaviour); `LatestCameraFrame` only when the live-snap can actually run
+  (`guidedRefineAvailable() && liveSnapEnabled()`); fix the test expectation.
+- VR-4 `preview/raw_frame_server.cpp` ~:305: implement the heartbeat when no payload exists (synthesized record with the last stored
+  frame if any, else a zero-size heartbeat the DLL accepts as keep-alive and ignores for display) so the DLL's 5 s recv timeout
+  cannot fire while the stream is armed; DLL side: accept the keep-alive record (version-tolerant). Also: when `vcamRawRunning` is
+  false, answer the handshake with a distinct HTTP status (e.g. 503 + `X-Broadify-Stream: disarmed`) and let the DLL back off to 3 s
+  immediately instead of treating it as a successful connection (kills the 250 ms reconnect storm).
+Notes: rename `vcamAwarePolicy` → `tierFirstPolicy`; `reopen_count_hour` → lifetime counter naming; reaping test should exercise
+the real worker vector; build stamp is configure-time (document).
