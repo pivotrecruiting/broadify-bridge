@@ -83,34 +83,24 @@ F3. Docs: `docs/bridge/features/meeting-windows-performance.md` (flag, A/B guide
 9. Docs updated; comments in English; env flag documented.
 
 ## Review
-- Round: 2/3
-- Verdict: MUST-FIX (round 2). Round-1 items partially resolved; with the flag on the path is still dead (context never available,
-  keyer block never triggered, compositor without camera pixels). Round 3 is the last review round; after it the branch goes to a
-  CI test branch (`test-release/wp3-gpu`) so MSVC + the WARP selftest verify what macOS cannot.
-- Must-fix (open):
-  - M-A `compose/gpu_context_win.cpp:130-137`: `SetMultithreadProtected(TRUE)` returns the PREVIOUS state (FALSE) — do not treat it
-    as failure; only check the QI HRESULT. (Today this makes the whole context unavailable.)
-  - M-B `frame_pipeline.cpp:2279-2282` + `frame_pipeline_gating.cpp`: add `hasNewGpuCameraFrame` to `PipelineWorkTriggers` and to
-    `shouldRunProgramWork`; GPU frames must trigger keyer + render (tests).
-  - M-C compositor must get camera pixels on the GPU path: compositor takes the camera `ID3D11Texture2D`+subresource and samples
-    NV12/YUY2 in-shader; alpha from the DML output via `GetD3D12ResourceFromAllocation` → `CreateSharedHandle` → `OpenSharedResource1`
-    → R32_FLOAT SRV into guided/composite. Until the GPU alpha path works, read the alpha back into `result.mask.alpha` so the existing
-    CPU mask path composites (counted honestly as a copy) — there must NEVER be a frame without the presenter.
-  - M-D `camera_mediafoundation.cpp:721-737`: keep the `IMFSample` (and buffer) inside `GpuCameraFrame` until consumed; set
-    `MF_SOURCE_READER_D3D11_BIND_FLAGS` = `D3D11_BIND_SHADER_RESOURCE`; log the first SRV creation failure.
-  - M-E `modnet_keyer.cpp:469`: `binding.BindOutput(name, dmlMemory)` (object, not `&dmlMemory`) — MSVC compile error.
-  - M-F `frame_pipeline.cpp:2281`: the GPU-resident keyer must load (warm entry / `loadInApply=true`) and be the SAME instance the
-    governor drives (no second static model instance with its own sessions).
-  - M-G `modnet_keyer.cpp:431-478`: real `outputBindingCreated`; convert the output via `GetD3D12ResourceFromAllocation`; release
-    every `OrtStatus*`.
-  - M-H `frame_pipeline.cpp:3118-3122`: telemetry — `gpu_capture` from `hasGpuCameraFrame`, `gpu_resident` from
-    `telemetry().available`, measured `preprocess_ms/inference_ms/composite_ms` (or null), no per-frame overwrite.
-  - M-I `d3d11_compositor.cpp:1183-1270`: lock `immediateContextMutex` at the top of `guidedRefineMaskD3D11` and remove it from
-    `ensureGuidedResources` (non-recursive mutex); `GpuContextWin` initialised once in `main()` before threads (`std::once_flag`).
-  - M-J selftest/ps1: no literals — `gpu_resident` from telemetry, `cpu_frame_copies_per_frame` computed, DML run or
-    `"dml":"unavailable"` with reason, `compositeOk` requires the D3D11 backend; add the ctest comparing GPU preprocess output
-    (read back in the selftest) against `buildModnetInputTensor` on a synthetic frame (tolerance 1e-3).
-- Notes: ring fence values (reserve 2 per slot or second fence); shared buffer initial state COMMON; docs ahead of code.
+- Round: 3/3
+- Verdict: STOP — round 3 without PASS (bounded loop exhausted). HANDOFF to human.
+- Resolved across rounds: A (GpuContext, shared fence, once-init, mutex discipline, ID3D10Multithread), B (DXGI capture with
+  retained IMFSample, NV12/YUY2-only, bind flags, fallback), C (shared D3D12 tensor buffer, NV12/YUY2 SRVs, box-average shader,
+  CPU parity ctest), D (IO binding input/output, OrtStatus hygiene, BindOutput fix), F (real selftest stages + fence wait, LUID
+  assert, honest telemetry fields, docs restored).
+- Open after round 3 (both mechanical, Windows-only, NOT verifiable without Windows CI):
+  - HF-1 `frame_pipeline.cpp:2516-2517 / 2581-2582`: the GPU block sits inside the `hasCameraFrame && !rgba.empty()` fused block but
+    requires `!hasCameraFrame` → unreachable; on the flag-on path `frameForCompositor` stays null → presenter missing. Fix: hoist
+    the GPU block (and the block-scoped `static fusedKeyer`) out of the CPU-frame condition.
+  - HF-2 `modnet_keyer.cpp:513-517` + `frame_pipeline.cpp:2628-2630`: DML output is dropped and the mask is hard-coded 255 while
+    telemetry reports `gpu_resident`. Fix (round-2 M-C minimum): read the DML output back into `result.mask.alpha` (counted as a
+    CPU copy) until the shared-SRV alpha path exists; never report `gpu_resident` with a synthetic mask.
+- Notes: fence value reuse between D3D11/D3D12 signals (reserve 2 per slot or second fence); `FallbackMattingKeyer::applyGpu`
+  drops OpenVINO primary on `gpu_entry_unavailable`; staging texture dims vs padded MF textures; selftest DML stage uses CPU apply.
+- Status: WP3 is NOT in any RC. Branch pushed; CI test branch `test-release/wp3-gpu` gives MSVC + WARP selftest feedback.
+- Handoff to human: decide — (a) handoff fix HF-1/HF-2 + iterate on the CI test branch until MSVC + WARP selftest are green, then
+  a flag-gated rc for field A/B; or (b) park WP3 and proceed with WP4 (shared-memory VCam) / WP5 (temporal model) first.
 
 ## Verification
 - [x] Focused CTests passed on macOS during implementation:
