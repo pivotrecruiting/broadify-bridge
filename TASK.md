@@ -1,6 +1,6 @@
 # TASK — WP4c: VCam SHM publish off the render thread (Windows)
 
-Base: feature/vcam-rc13 @ f1acb5e8 (rc.29). Round: 0/3.
+Base: feature/vcam-rc13 @ f1acb5e8 (rc.29). Round: 1/3.
 
 ## Field evidence (rc.29, 22.08.2026)
 SHM path active for the first time (vcam.log: `vcam_shm_owner service created` → `vcam_reader_transport shm reason=shm_frame_available`),
@@ -33,3 +33,14 @@ on the SHM path. The Frame Server reader copies on every SetEvent AND again in R
 ## Acceptance
 - macOS unchanged; lint/jest/build/helper build/ctest green (recorder audio_input_rejected known); Windows CI green incl. SHM selftests.
 - Field: keyer quality like rc.28 with Teams open, noise like rc.29, background change applies within ~1 s; `vcam_publish_dropped` ≈ 0.
+
+## Review round 1 (HEAD 4232c9e0; verifier green) — MUST-FIX
+- R1-1 `vcam_shm_publisher.cpp:60-63` `submitRgba()` calls `ring_->active()` (takes ring `mutex_`) while the publisher holds that mutex for
+  the whole in-slot swizzle (`vcam_shm_ring_win.cpp:335-392`) → render thread blocks ~2-5 ms on contended ticks = the stall this WP removes.
+  Fix: no ring lock on the render-thread path — drop `ring_->active()` from `submitRgba` (use `running_`, stop() always precedes close()) or
+  an atomic "ring active" flag refreshed by the publisher thread. Convert the hand-off to a pointer/buffer SWAP (pre-allocated, no 8-MB
+  memcpy under the publisher mutex; N-6) so the render thread only swaps + notifies. Add a test that injects the delay INSIDE the ring-locked
+  publish and asserts `submitRgba` wall time stays bounded (<1 ms) and drops accumulate.
+Notes to fold in: N-1 replace sleep-timing in the latest-wins test with a gating hook; N-3 one in-function retry on torn `copyNewestFrame`
+in the DLL; N-4 `observeNewestLocked` checks `size == expected`; N-5 doc sentence that `published_preview_frames` stops with SHM-only readers;
+N-2 publishMs -1 semantics documented or 0.
