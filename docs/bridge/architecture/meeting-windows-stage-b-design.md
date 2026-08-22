@@ -17,17 +17,17 @@ CMIO extension and TCP transport.
 
 ## 3. Windows Virtual Camera SHM Transport
 
-WP4 replaces the default Windows VCam TCP frame path with a named shared-memory
-ring:
+WP4b uses a service-owned named shared-memory ring for the default Windows
+VCam frame path:
 
-- Helper creates `Global\BroadifyVcamControl` and a per-run
-  `Global\BroadifyVcam-<pid>-<tick>` stream mapping when
-  `output.vcam.raw.start` arms the output.
-- ACL SDDL grants owner and Administrators full access, and
-  `NT AUTHORITY\LOCAL SERVICE` read/synchronize access so the Frame Server can
-  open the mapping.
-- Ring layout is `BFSM` version 1, three BGRA8 slots, seqlock sequence per
-  slot, capture QPC, writer generation, heartbeat QPC, and reader count.
+- The DLL creates `Global\BroadifyVcam-control`,
+  `Global\BroadifyVcam-stream`, and `Global\BroadifyVcam-frame` when
+  `MediaStream::Start` activates the stream.
+- ACL SDDL grants `LOCAL SERVICE` full access and grants Interactive Users
+  plus Authenticated Users read/write.
+- Ring layout is `BFSM` version 2, three BGRA8 slots, seqlock sequence per
+  slot, owner, capacity bytes, capture QPC, writer generation, heartbeat QPC,
+  and reader count.
 - DLL activation never probes TCP or sleeps. It reads geometry from the control
   mapping if present, otherwise advertises 1920x1080@30 immediately.
 - DLL streaming opens SHM on `MediaStream::Start`; TCP connects only when SHM
@@ -38,7 +38,31 @@ ring:
   release. `output.vcam.status.transport` and
   `meeting_vcam_raw/vcam_transport_selected` report the selected transport.
 
+### WP4b service-owned ring
+
+WP4b flips SHM ownership to the Windows Frame Server process. On
+`MediaStream::Start`, the DLL creates `Global\BroadifyVcam-control`,
+`Global\BroadifyVcam-stream`, and `Global\BroadifyVcam-frame` at the maximum
+supported capacity (`1920x1080 BGRA * 3 slots`). The initial headers are
+zero-geometry with `owner=service`, `writer_generation=0`, and
+`capacity_bytes` set; the helper validates those fields before writing
+geometry and bumping generation.
+
+The DACL grants `LOCAL SERVICE` full access and grants Interactive Users plus
+Authenticated Users read/write. This matches the local trust level of the TCP
+loopback fallback: any local authenticated user can write frames, but no
+secrets are present.
+
+Helper `output.vcam.raw.start` now attempts `OpenFileMappingW` first
+(`opened_service_ring`), then attempts the fixed `Global\` creator fallback
+when elevated (`created_global`). It no longer creates `Local\` mappings for
+runtime because they do not cross the desktop/session boundary. If the service
+ring is absent, TCP remains active and the helper retries every 2 s while raw
+output is armed. If a previously visible DLL reader heartbeat disappears for
+more than 5 s, the helper closes its stale handles and re-runs the open path.
+
 macOS cannot compile the Windows Frame Server DLL, SDDL ACL path, or
 MediaFoundation buffers. Platform-neutral layout, seqlock, discovery, SDDL
-string, and BGRA-to-NV12 conversion are covered by ctests on macOS; Windows CI
-must compile the DLL and run the SHM self-test.
+string, retry sequencing, and BGRA-to-NV12 conversion are covered by ctests on
+macOS; Windows CI must compile the DLL and run the SHM self-test plus
+`vcam_shm_service_ring_test`.

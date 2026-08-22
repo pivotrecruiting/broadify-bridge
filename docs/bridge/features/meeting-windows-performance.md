@@ -116,12 +116,14 @@ ausgewaehlte native Typ wird als `camera_native_media_type_selected` geloggt.
 Der MODNet-Maskenreadback bleibt auf Model-Resolution (512 -> 512x288 bei
 16:9) und wird nicht auf Kamera-Aufloesung hochskaliert.
 
-Der Windows-VCam-Default ist SHM (`Global\BroadifyVcamControl` +
-`Global\BroadifyVcam-<token>`). Die DLL blockiert nicht mehr in der
-Aktivierung; Geometrie kommt sofort aus der Control-Mapping oder aus dem
-Default 1920x1080@30. SHM-Samples nutzen den QPC-Zeitstempel des Slots.
-BFRG v2 im TCP-Fallback traegt weiter `capture_ns`; die VCam-DLL akzeptiert v1
-und v2. Duplizierte Frames laufen mit Frame-Dauer weiter.
+Der Windows-VCam-Default ist SHM (`Global\BroadifyVcam-control` +
+`Global\BroadifyVcam-stream`), wobei die DLL die globalen Objekte im Frame
+Server als `LOCAL SERVICE` erstellt und der Helper sie oeffnet. Die DLL
+blockiert nicht mehr in der Aktivierung; Geometrie kommt sofort aus der
+Control-Mapping oder aus dem Default 1920x1080@30. SHM-Samples nutzen den
+QPC-Zeitstempel des Slots. BFRG v2 im TCP-Fallback traegt weiter
+`capture_ns`; die VCam-DLL akzeptiert v1 und v2. Duplizierte Frames laufen mit
+Frame-Dauer weiter.
 
 Der Raw-Frame-Server sendet Heartbeats aus dem zuletzt gespeicherten Frame und
 meldet `meeting_vcam_raw no_frame_on_connect`, wenn ein VCam-Client nach 2 s
