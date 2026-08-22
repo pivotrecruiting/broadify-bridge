@@ -126,8 +126,9 @@ Check in this order:
    `client_connected`, and `no_frame_on_connect` if Teams connected before any
    program frame existed.
 3. DLL stamp: `%ProgramData%\Broadify\vcam.log` logs
-   `build_stamp git_sha=... build_time=...` on the first DLL log line, so an
-   old Frame Server process can be identified immediately.
+   `build_stamp git_sha=... build_time=...` on the first DLL log line. The
+   stamp is generated at CMake configure time, so rerun the configure/build
+   step before comparing it to a fresh commit.
 4. Installer/deploy fallback: if `FrameServer` or `FrameServerMonitor` cannot
    stop while replacing `broadify-vcam.dll`, reboot Windows before validating
    Teams.

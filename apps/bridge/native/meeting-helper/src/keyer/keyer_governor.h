@@ -64,7 +64,7 @@ struct KeyerGovernorConfig {
   // budget transiently. Require a longer consecutive over-budget run before
   // leaving fused for async-lite, and degrade by fused tier first.
   uint64_t liteGateSamples = 30u;
-  bool vcamAwarePolicy = false;
+  bool tierFirstPolicy = false;
   // Warm-handover deferral (make-before-break step-up): when true, an
   // estimate-approved Lite256 -> Performance256 step-up does NOT change the
   // tier; the governor latches liteStepUpPending() instead and the caller

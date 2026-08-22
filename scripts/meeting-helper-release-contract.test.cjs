@@ -242,6 +242,7 @@ test("Windows distribution builds, packages, signs and registers the vcam DLL", 
   assert.equal(builderJson.nsis.packElevateHelper, true);
   assert.equal(builderJson.nsis.oneClick, false);
   const installerScript = read("build/windows-installer.nsh");
+  assert.match(installerScript, /customInit/);
   assert.match(installerScript, /customInstall/);
   assert.match(installerScript, /customUnInstall/);
   // Sysnative, not System32: the 32-bit NSIS process must reach the 64-bit

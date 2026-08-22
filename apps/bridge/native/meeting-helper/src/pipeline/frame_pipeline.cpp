@@ -546,7 +546,7 @@ KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
   KeyerGovernorConfig config;
   config.frameBudgetMs = 1000.0 / static_cast<double>(fps == 0u ? 30u : fps);
   config.stepDownOverrideMs = keyerMaxInferenceOverrideMs();
-  config.vcamAwarePolicy = true;
+  config.tierFirstPolicy = true;
   // Warm handover: defer the Lite256 -> Performance256 step-up until the
   // background session warmup succeeded (make-before-break). With the
   // kill-switch off this stays the historical immediate step-up.
@@ -1944,7 +1944,7 @@ void runFramePipeline(const Options &options,
                                         cameraInputRate.value(programStart))) {
             emitHelperEvent(
                 "{\"type\":\"camera_stalled\",\"event\":\"reopen\","
-                "\"reopen_count_hour\":" +
+              "\"reopen_count_lifetime\":" +
                 std::to_string(cameraReopenBackoff.reopenCount) + "}");
             camera.reopen(options.width, options.height, options.fps);
           }
@@ -2048,7 +2048,9 @@ void runFramePipeline(const Options &options,
               lastGoodMask = selectedPair->mask;
               frameForCompositor =
                   selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
-                                                  pairIsUsable) ==
+                                                  pairIsUsable,
+                                                  guidedRefineAvailable() &&
+                                                      liveSnapEnabled()) ==
                           AsyncKeyerCompositorFrame::PairedFrame
                       ? &selectedPair->frame
                       : &latestCameraFrame;
@@ -2205,7 +2207,9 @@ void runFramePipeline(const Options &options,
             lastGoodMask = selectedPair->mask;
             frameForCompositor =
                 selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
-                                                pairIsUsable) ==
+                                                pairIsUsable,
+                                                guidedRefineAvailable() &&
+                                                    liveSnapEnabled()) ==
                         AsyncKeyerCompositorFrame::PairedFrame
                     ? &selectedPair->frame
                     : &latestCameraFrame;

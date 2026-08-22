@@ -41,11 +41,14 @@ bool selectRetainedOrEmptyMaskForLiveKeyer(const AlphaMask &lastGoodMask,
 }
 
 AsyncKeyerCompositorFrame selectAsyncKeyerCompositorFrame(bool vcamClientConnected,
-                                                          bool pairUsable) {
-  if (vcamClientConnected && pairUsable) {
-    return AsyncKeyerCompositorFrame::PairedFrame;
+                                                          bool pairUsable,
+                                                          bool liveSnapCanRun) {
+  if (!pairUsable) {
+    return AsyncKeyerCompositorFrame::LatestCameraFrame;
   }
-  return AsyncKeyerCompositorFrame::LatestCameraFrame;
+  return !vcamClientConnected && liveSnapCanRun
+             ? AsyncKeyerCompositorFrame::LatestCameraFrame
+             : AsyncKeyerCompositorFrame::PairedFrame;
 }
 
 }  // namespace broadify::meeting

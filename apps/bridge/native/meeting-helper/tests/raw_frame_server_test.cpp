@@ -129,6 +129,7 @@ int connectClient(uint16_t port) {
   const char request[] =
       "GET /stream.rgba HTTP/1.1\r\n"
       "Host: 127.0.0.1\r\n"
+      "X-Broadify-Accepts: keepalive-v2\r\n"
       "Connection: close\r\n\r\n";
   if (send(socketHandle, request, static_cast<int>(sizeof(request) - 1), 0) <=
       0) {
@@ -137,7 +138,7 @@ int connectClient(uint16_t port) {
   return socketHandle;
 }
 
-void readHttpHeader(int socketHandle) {
+std::string readHttpHeader(int socketHandle) {
   std::string header;
   char byte = 0;
   while (header.find("\r\n\r\n") == std::string::npos) {
@@ -150,6 +151,7 @@ void readHttpHeader(int socketHandle) {
       fail("oversized http header");
     }
   }
+  return header;
 }
 
 uint64_t readFrameSequence(int socketHandle) {
@@ -166,6 +168,27 @@ uint64_t readFrameSequence(int socketHandle) {
     fail("read raw frame payload");
   }
   return readU64Le(header.data() + 24);
+}
+
+void assertDisarmedHandshake(uint16_t port, MeetingState &state) {
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamRawRunning = false;
+  }
+  const int client = connectClient(port);
+  const std::string header = readHttpHeader(client);
+  closeSocketHandle(client);
+  if (header.find("HTTP/1.1 503 Service Unavailable\r\n") ==
+      std::string::npos) {
+    fail("disarmed stream must return HTTP 503");
+  }
+  if (header.find("X-Broadify-Stream: disarmed\r\n") == std::string::npos) {
+    fail("disarmed stream must advertise disarmed status");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamRawRunning = true;
+  }
 }
 
 }  // namespace
@@ -188,21 +211,31 @@ int main() {
   std::atomic<bool> running{true};
   RawFrameStreamGeometry geometry{2, 2, 30};
 
+  std::thread server([&] {
+    runRawFrameServer(port, geometry, previewFrames, state, running);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  assertDisarmedHandshake(port, state);
+
+  const int emptyClient = connectClient(port);
+  (void)readHttpHeader(emptyClient);
+  const uint64_t emptyHeartbeat = readFrameSequence(emptyClient);
+  if ((emptyHeartbeat & kRawFrameHeartbeatSequenceMask) == 0u) {
+    fail("empty stream heartbeat sequence must use the high-bit namespace");
+  }
+  closeSocketHandle(emptyClient);
+
   const uint8_t rgba[16] = {
       255, 0, 0, 255, 0, 255, 0, 255,
       0, 0, 255, 255, 255, 255, 255, 255,
   };
   previewFrames.publish(2, 2, rgba, sizeof(rgba));
 
-  std::thread server([&] {
-    runRawFrameServer(port, geometry, previewFrames, state, running);
-  });
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
   const int clientA = connectClient(port);
   const int clientB = connectClient(port);
-  readHttpHeader(clientA);
-  readHttpHeader(clientB);
+  (void)readHttpHeader(clientA);
+  (void)readHttpHeader(clientB);
 
   const uint64_t firstA = readFrameSequence(clientA);
   const uint64_t firstB = readFrameSequence(clientB);

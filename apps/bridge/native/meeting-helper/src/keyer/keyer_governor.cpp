@@ -238,7 +238,7 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
     }
   } else {
     const double threshold = stepDownThresholdMs();
-    if (config_.vcamAwarePolicy && tier_ == GovernorTier::Performance256) {
+    if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
       if (inferenceMs > threshold) {
         ++liteGateOverBudgetSamples_;
       } else {
@@ -250,7 +250,7 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
     const bool fastExceed = samples_ >= config_.fastStartMinSamples &&
                             emaMs_ > config_.fastStartFactor * threshold;
     if (regularExceed || fastExceed) {
-      if (config_.vcamAwarePolicy && tier_ == GovernorTier::Performance256) {
+      if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
         if (liteGateOverBudgetSamples_ < config_.liteGateSamples) {
           return;
         }

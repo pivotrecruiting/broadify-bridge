@@ -17,7 +17,8 @@ enum class AsyncKeyerCompositorFrame {
 GovernorOffCompositorInput selectGovernorOffCompositorInput(bool hasLastGoodMask);
 
 AsyncKeyerCompositorFrame selectAsyncKeyerCompositorFrame(bool vcamClientConnected,
-                                                          bool pairUsable);
+                                                          bool pairUsable,
+                                                          bool liveSnapCanRun);
 
 bool selectRetainedOrEmptyMaskForLiveKeyer(const AlphaMask &lastGoodMask,
                                            uint64_t currentFrameTimestampNs,

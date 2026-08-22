@@ -17,30 +17,46 @@
 ;   (electron-builder removes $INSTDIR first), so regsvr32 /u cannot work;
 ;   the CLSID key is removed directly instead.
 ; - The Windows Camera Frame Server can keep the DLL loaded across updates.
-;   The installer asks FrameServer/FrameServerMonitor to stop before
-;   registration. If Windows refuses, install continues and a reboot is the
-;   supported fallback so the new DLL is loaded on next camera use.
+;   The installer asks FrameServer/FrameServerMonitor to stop in customInit,
+;   before file extraction can attempt to replace broadify-vcam.dll. If Windows
+;   refuses, install continues and a reboot is the supported fallback so the
+;   new DLL is loaded on next camera use.
 
 ; Must match apps/bridge/native/vcam-helper/windows/vcam_guid.h.
 !define BROADIFY_VCAM_CLSID "{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}"
 !define BROADIFY_VCAM_CLSID_KEY "Software\Classes\CLSID\${BROADIFY_VCAM_CLSID}"
 !define BROADIFY_VCAM_DLL "$INSTDIR\resources\native\vcam-helper\broadify-vcam.dll"
 
+!macro stopFrameServerService SERVICE_NAME RESULT_VAR
+  ExecWait '"$WINDIR\Sysnative\sc.exe" stop ${SERVICE_NAME}' ${RESULT_VAR}
+  DetailPrint "${SERVICE_NAME} stop exit code: ${RESULT_VAR}"
+  StrCpy $2 0
+  ${DoWhile} $2 < 25
+    ExecWait '$COMSPEC /C ""$WINDIR\Sysnative\sc.exe" query ${SERVICE_NAME} | "$WINDIR\Sysnative\find.exe" "STOPPED" >NUL"' $3
+    ${If} $3 == 0
+      ${Break}
+    ${EndIf}
+    Sleep 200
+    IntOp $2 $2 + 1
+  ${Loop}
+  ${If} $3 != 0
+    DetailPrint "${SERVICE_NAME} did not report STOPPED within 5s."
+  ${EndIf}
+  ${If} ${RESULT_VAR} != 0
+  ${AndIf} ${RESULT_VAR} != 1062
+  ${AndIf} ${RESULT_VAR} != 1060
+    DetailPrint "${SERVICE_NAME} could not be stopped; reboot may be required for broadify-vcam.dll replacement to take effect."
+  ${EndIf}
+!macroend
+
+!macro customInit
+  DetailPrint "Stopping Windows Camera Frame Server services before VCam refresh"
+  !insertmacro stopFrameServerService "FrameServer" $0
+  !insertmacro stopFrameServerService "FrameServerMonitor" $1
+!macroend
+
 !macro customInstall
   SetRegView 64
-  DetailPrint "Stopping Windows Camera Frame Server services before VCam refresh"
-  ExecWait '"$WINDIR\Sysnative\sc.exe" stop FrameServer' $0
-  DetailPrint "FrameServer stop exit code: $0"
-  ExecWait '"$WINDIR\Sysnative\sc.exe" stop FrameServerMonitor' $1
-  DetailPrint "FrameServerMonitor stop exit code: $1"
-  ${If} $0 != 0
-  ${AndIf} $0 != 1062
-    DetailPrint "FrameServer could not be stopped; reboot may be required for broadify-vcam.dll replacement to take effect."
-  ${EndIf}
-  ${If} $1 != 0
-  ${AndIf} $1 != 1062
-    DetailPrint "FrameServerMonitor could not be stopped; reboot may be required for broadify-vcam.dll replacement to take effect."
-  ${EndIf}
   DetailPrint "Registering Broadify virtual camera (broadify-vcam.dll)"
   ExecWait '"$WINDIR\Sysnative\regsvr32.exe" /s "${BROADIFY_VCAM_DLL}"' $0
   DetailPrint "regsvr32 exit code: $0"

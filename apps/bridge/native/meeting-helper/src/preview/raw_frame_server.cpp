@@ -211,6 +211,17 @@ void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &paylo
   swizzleRgbaToBgra(src, dst, frame.rgba.size() / 4u);
 }
 
+void writeRawFrameKeepAlive(uint64_t sequence,
+                            uint64_t captureNs,
+                            std::vector<uint8_t> &payload) {
+  payload.resize(kRawFrameHeaderSize);
+  BfrgRecordHeader header;
+  header.payloadSize = 0u;
+  header.sequence = sequence;
+  header.captureNs = captureNs;
+  writeBfrgHeaderV2(payload, 0u, header);
+}
+
 bool isVcamRawRunning(MeetingState &state) {
   std::lock_guard<std::mutex> lock(state.mutex);
   return state.vcamRawRunning;
@@ -257,6 +268,7 @@ void reapCompletedWorkers(std::vector<RawFrameWorker> &workers) {
 
 void streamFrames(int client,
                   const RawFrameStreamGeometry &geometry,
+                  bool clientAcceptsZeroKeepAlive,
                   PreviewFrameStore &previewFrames,
                   MeetingState &state,
                   std::atomic<bool> &running) {
@@ -310,6 +322,17 @@ void streamFrames(int client,
           return;
         }
         lastSentAt = now;
+      } else if (payload.empty() && clientAcceptsZeroKeepAlive &&
+                 now - lastSentAt >= kRawFrameHeartbeatInterval) {
+        ++heartbeatSequence;
+        writeRawFrameKeepAlive(kRawFrameHeartbeatSequenceMask | heartbeatSequence,
+                               lastCaptureNs, payload);
+        if (!sendAll(client, reinterpret_cast<const char *>(payload.data()),
+                     payload.size())) {
+          return;
+        }
+        payload.clear();
+        lastSentAt = now;
       }
       previewFrames.waitForNewFrame(lastSequence,
                                     now + kRawFrameHeartbeatInterval);
@@ -343,8 +366,22 @@ void handleClient(int client,
   configureClientSocket(client);
   const std::string request = readRequest(client);
   if (request.find("GET /stream.rgba ") != std::string::npos) {
+    if (!isVcamRawRunning(state)) {
+      const std::string response =
+          "HTTP/1.1 503 Service Unavailable\r\n"
+          "X-Broadify-Stream: disarmed\r\n"
+          "Content-Length: 0\r\n"
+          "Cache-Control: no-store\r\n"
+          "Connection: close\r\n\r\n";
+      (void)sendAll(client, response.c_str(), response.size());
+      return;
+    }
     std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_connected\",\"port\":" << port << "}" << std::endl;
-    streamFrames(client, geometry, previewFrames, state, running);
+    const bool clientAcceptsZeroKeepAlive =
+        request.find("X-Broadify-Accepts: keepalive-v2") != std::string::npos ||
+        request.find("x-broadify-accepts: keepalive-v2") != std::string::npos;
+    streamFrames(client, geometry, clientAcceptsZeroKeepAlive, previewFrames,
+                 state, running);
     std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_disconnected\",\"port\":" << port << "}" << std::endl;
   } else {
     const std::string response =

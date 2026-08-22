@@ -411,7 +411,7 @@ int main() {
     // VCam-aware policy: degrade by fused tier first; async Lite requires a
     // sustained 30-sample over-budget run at fused 256.
     KeyerGovernorConfig config = testConfig();
-    config.vcamAwarePolicy = true;
+    config.tierFirstPolicy = true;
     config.liteGateSamples = 30u;
     KeyerAutoGovernor governor(config);
     feed(governor, 40.0, 10, at(1));

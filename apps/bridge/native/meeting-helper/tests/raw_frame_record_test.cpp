@@ -36,5 +36,20 @@ int main() {
   ok &= expect(readBfrgHeader(bytes.data(), kBfrgHeaderV1Size, parsed), "v1 parses");
   ok &= expect(parsed.version == kBfrgVersion1, "v1 version");
   ok &= expect(parsed.captureNs == 0, "v1 capture_ns defaults");
+
+  std::vector<uint8_t> keepAlive(kBfrgHeaderV2Size);
+  BfrgRecordHeader heartbeat;
+  heartbeat.payloadSize = 0u;
+  heartbeat.sequence = 1ull << 63;
+  heartbeat.captureNs = 987654321u;
+  writeBfrgHeaderV2(keepAlive, 0, heartbeat);
+  ok &= expect(readBfrgHeader(keepAlive.data(), keepAlive.size(), parsed),
+               "v2 zero-payload keep-alive parses");
+  ok &= expect(parsed.version == kBfrgVersion2, "keep-alive is v2");
+  ok &= expect(parsed.width == 0 && parsed.height == 0,
+               "keep-alive carries no display geometry");
+  ok &= expect(parsed.payloadSize == 0u, "keep-alive has no payload");
+  ok &= expect(parsed.captureNs == heartbeat.captureNs,
+               "keep-alive keeps capture_ns");
   return ok ? 0 : 1;
 }

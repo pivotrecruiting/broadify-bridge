@@ -38,6 +38,8 @@ constexpr DWORD kSocketTimeoutMs = 5000;
 constexpr double kBackoffStartMs = 250.0;
 constexpr double kBackoffMaxMs = 3000.0;
 constexpr double kBackoffFactor = 1.8;
+constexpr int kHttpStatusOk = 200;
+constexpr int kHttpStatusUnavailable = 503;
 
 uint32_t readU32Le(const uint8_t *p) {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
@@ -138,6 +140,55 @@ bool parseHeaderU32(const std::string &handshake, const char *name,
   return true;
 }
 
+int parseHttpStatus(const std::string &handshake) {
+  if (handshake.rfind("HTTP/", 0u) != 0u) {
+    return 0;
+  }
+  const size_t firstSpace = handshake.find(' ');
+  if (firstSpace == std::string::npos || firstSpace + 4u > handshake.size()) {
+    return 0;
+  }
+  int status = 0;
+  for (size_t i = 0; i < 3u; ++i) {
+    const char c = handshake[firstSpace + 1u + i];
+    if (c < '0' || c > '9') {
+      return 0;
+    }
+    status = status * 10 + (c - '0');
+  }
+  return status;
+}
+
+bool hasHeaderToken(const std::string &handshake, const char *name,
+                    const char *token) {
+  std::string lowered(handshake.size(), '\0');
+  for (size_t i = 0; i < handshake.size(); i++) {
+    lowered[i] = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(handshake[i])));
+  }
+  std::string key = "\r\n";
+  for (const char *c = name; *c; ++c) {
+    key.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+  }
+  key.push_back(':');
+  std::string expected;
+  for (const char *c = token; *c; ++c) {
+    expected.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+  }
+  const size_t at = lowered.find(key);
+  if (at == std::string::npos) {
+    return false;
+  }
+  const size_t end = lowered.find("\r\n", at + key.size());
+  if (end == std::string::npos) {
+    return false;
+  }
+  return lowered.substr(at + key.size(), end - (at + key.size()))
+             .find(expected) != std::string::npos;
+}
+
 }  // namespace
 
 RawFrameClient::RawFrameClient(uint16_t port) : port_(port) {}
@@ -148,6 +199,7 @@ void RawFrameClient::start() {
   if (running_.exchange(true)) {
     return;
   }
+  connectState_.markConnecting();
   thread_ = std::thread(&RawFrameClient::run, this);
 }
 
@@ -171,7 +223,7 @@ void RawFrameClient::stop() {
 }
 
 void RawFrameClient::sleepWhileRunning(double ms) const {
-  constexpr DWORD kSliceMs = 50;
+  constexpr DWORD kSliceMs = 5;
   DWORD remaining = static_cast<DWORD>(ms);
   while (remaining > 0 && running_.load()) {
     const DWORD slice = std::min(remaining, kSliceMs);
@@ -208,6 +260,14 @@ bool RawFrameClient::streamGeometry(uint32_t &width, uint32_t &height) const {
   return true;
 }
 
+RawFrameConnectState RawFrameClient::connectState() const {
+  return connectState_.state();
+}
+
+bool RawFrameClient::connectAttemptFinished() const {
+  return connectState_.attemptFinished();
+}
+
 bool RawFrameClient::isStale() const {
   return staleAgeMs() > kStaleWindowMs;
 }
@@ -234,14 +294,17 @@ void RawFrameClient::runLoop() {
   WSADATA wsaData;
   if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
     VcamLog("RawFrameClient: WSAStartup failed");
+    connectState_.markFailed();
     return;
   }
 
   double backoffMs = kBackoffStartMs;
   double lastLoggedConnectBackoffMs = 0.0;
   while (running_.load()) {
+    connectState_.markConnecting();
     SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket == INVALID_SOCKET) {
+      connectState_.markFailed();
       sleepWhileRunning(backoffMs);
       backoffMs = std::min(backoffMs * kBackoffFactor, kBackoffMaxMs);
       continue;
@@ -272,6 +335,7 @@ void RawFrameClient::runLoop() {
       static const char kRequest[] =
           "GET /stream.rgba HTTP/1.1\r\n"
           "Host: 127.0.0.1\r\n"
+          "X-Broadify-Accepts: keepalive-v2\r\n"
           "Connection: close\r\n\r\n";
       if (send(socket, kRequest, static_cast<int>(sizeof(kRequest) - 1), 0) > 0) {
         // Consume the HTTP response headers up to the blank line; the raw
@@ -302,11 +366,28 @@ void RawFrameClient::runLoop() {
       }
     } else {
       const int error = WSAGetLastError();
+      connectState_.markFailed();
       if (lastLoggedConnectBackoffMs == 0.0 ||
           lastLoggedConnectBackoffMs != backoffMs) {
         VcamLog("RawFrameClient: connect failed error=%d backoff_ms=%.0f", error,
                 backoffMs);
         lastLoggedConnectBackoffMs = backoffMs;
+      }
+    }
+
+    if (connected) {
+      const int httpStatus = parseHttpStatus(handshake);
+      if (httpStatus == kHttpStatusUnavailable &&
+          hasHeaderToken(handshake, "X-Broadify-Stream", "disarmed")) {
+        connectState_.markFailed();
+        backoffMs = kBackoffMaxMs;
+        VcamLog("RawFrameClient: stream disarmed, backing off %.0f ms",
+                backoffMs);
+        connected = false;
+      } else if (httpStatus != kHttpStatusOk) {
+        connectState_.markFailed();
+        VcamLog("RawFrameClient: HTTP handshake status %d", httpStatus);
+        connected = false;
       }
     }
 
@@ -331,6 +412,7 @@ void RawFrameClient::runLoop() {
         VcamLog("RawFrameClient: handshake without geometry headers");
       }
       VcamLog("RawFrameClient: connected to 127.0.0.1:%u (stream consumer active)", port_);
+      connectState_.markConnected();
       backoffMs = kBackoffStartMs;
 
       uint8_t header[kRecordHeaderV2Size];
@@ -361,9 +443,16 @@ void RawFrameClient::runLoop() {
         const uint64_t sequence = readU64Le(header + 24);
         const uint64_t captureNs =
             version == kRawFrameVersion2 ? readU64Le(header + 32) : 0;
+        if (version == kRawFrameVersion2 && frameSize == 0u) {
+          lastStaleLogWindowMs = 0;
+          continue;
+        }
+        const uint64_t expectedFrameSize =
+            static_cast<uint64_t>(width) * height * 4u;
         if (width == 0 || height == 0 || width > kMaxDimension ||
             height > kMaxDimension || pixelFormat != kRawFramePixelFormatBgra8 ||
-            frameSize != width * height * 4u) {
+            expectedFrameSize > 0xffffffffull ||
+            frameSize != static_cast<uint32_t>(expectedFrameSize)) {
           VcamLog("RawFrameClient: invalid header %ux%u fmt=%u size=%u", width,
                   height, pixelFormat, frameSize);
           break;
