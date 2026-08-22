@@ -31,7 +31,13 @@ class VcamShmRingWin {
                                             uint32_t height,
                                             uint32_t fps,
                                             uint64_t writerGeneration,
-                                            const std::wstring &controlName);
+                                            const std::wstring &controlName,
+                                            bool globalNamespace = true);
+  VcamShmCreateResult openServiceRing(uint32_t width,
+                                      uint32_t height,
+                                      uint32_t fps,
+                                      uint64_t writerGeneration,
+                                      bool globalNamespace = true);
   void close();
 
   bool publishBgra(uint32_t width,
@@ -41,23 +47,26 @@ class VcamShmRingWin {
                    uint64_t captureQpc);
   bool heartbeat(uint64_t heartbeatQpc);
   uint64_t readerCount() const;
+  bool readerHeartbeatAbsent(uint64_t staleMs) const;
 
-  bool active() const { return memory_ != nullptr; }
+  bool active() const;
   const std::wstring &mappingName() const { return mappingName_; }
   const std::wstring &eventName() const { return eventName_; }
 
  private:
+  void closeLocked();
   bool createWithNamespace(bool globalNamespace,
                            uint32_t width,
                            uint32_t height,
                            uint32_t fps,
                            uint64_t writerGeneration,
                            std::string &reason);
-  bool publishControl(uint32_t width,
-                      uint32_t height,
-                      uint32_t fps,
-                      uint64_t writerGeneration,
-                      uint64_t heartbeatQpc);
+  bool openServiceRingLocked(uint32_t width,
+                             uint32_t height,
+                             uint32_t fps,
+                             uint64_t writerGeneration,
+                             bool globalNamespace,
+                             std::string &reason);
 
   mutable std::mutex mutex_;
   void *mappingHandle_ = nullptr;

@@ -286,6 +286,7 @@ HRESULT MediaStream::Start() {
       shmReader = _shmReader;
     }
     if (shmReader) {
+      shmReader->createServiceRing();
       shmReader->start();
     }
     if (client && (!shmReader || !shmReader->hasMapping())) {
@@ -318,6 +319,7 @@ HRESULT MediaStream::Stop() {
     }
     if (shmReader) {
       shmReader->stop();
+      shmReader->closeServiceRing();
     }
     if (client) {
       client->stop();
@@ -343,6 +345,7 @@ void MediaStream::Shutdown() {
       _client = nullptr;
       if (_shmReader) {
         _shmReader->stop();
+        _shmReader->closeServiceRing();
       }
       _shmReader = nullptr;
       _descriptor.Reset();

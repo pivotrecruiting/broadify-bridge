@@ -12,6 +12,7 @@ struct Options {
   bool keyerSelfTest = false;
   bool vcamShmSelfTest = false;
   bool vcamShmReaderSelfTest = false;
+  bool vcamShmSelfTestLocalNamespace = false;
   std::string vcamShmSelfTestControlName;
   std::string framebusName = "broadify-meeting-framebus";
   std::string controlSocket;

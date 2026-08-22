@@ -59,6 +59,38 @@ void testRingRejectsTornSlot() {
   CHECK(!copyNewestFrame(memory.data(), memory.size(), frame));
 }
 
+void testRingRejectsAttackerControlledHeaderFields() {
+  const uint32_t width = 4;
+  const uint32_t height = 4;
+  const size_t bytes = ringBytesFor(width, height, PixelFormat::Bgra8);
+  std::vector<uint8_t> memory(bytes);
+  CHECK(initializeRing(memory.data(), memory.size(), width, height, 30, 1,
+                       PixelFormat::Bgra8, 123, 7, 100));
+  std::vector<uint8_t> frame(bytesPerFrame(width, height, PixelFormat::Bgra8),
+                             17u);
+  CHECK(publishFrame(memory.data(), memory.size(), 1, 101, frame.data(),
+                     frame.size(), 101));
+
+  auto *header = reinterpret_cast<RingHeader *>(memory.data());
+  const uint32_t expectedStride = header->slot_stride;
+  CopiedFrame copied;
+  header->slot_stride = expectedStride + 64u;
+  CHECK(!copyNewestFrame(memory.data(), memory.size(), copied));
+  CHECK(!publishFrame(memory.data(), memory.size(), 2, 102, frame.data(),
+                      frame.size(), 102));
+
+  header->slot_stride = expectedStride;
+  header->slot_count = kSlotCount + 1u;
+  CHECK(!copyNewestFrame(memory.data(), memory.size(), copied));
+  CHECK(!publishFrame(memory.data(), memory.size(), 2, 102, frame.data(),
+                      frame.size(), 102));
+
+  header->slot_count = kSlotCount;
+  CHECK(!copyNewestFrame(memory.data(), bytes - 1u, copied));
+  CHECK(!publishFrame(memory.data(), bytes - 1u, 2, 102, frame.data(),
+                      frame.size(), 102));
+}
+
 void testRingRejectsInterleavedWriterTornRead() {
   const uint32_t width = 512;
   const uint32_t height = 512;
@@ -164,17 +196,59 @@ void testControlRoundTrip() {
   CHECK(!readControlRecord(record, read));
 }
 
+void testServiceRingValidation() {
+  const size_t bytes = maxServiceRingBytes();
+  std::vector<uint8_t> memory(bytes);
+  CHECK(initializeServiceRing(memory.data(), memory.size(), 700));
+  CHECK(validateServiceRing(memory.data(), memory.size()));
+  auto *header = reinterpret_cast<RingHeader *>(memory.data());
+  CHECK(header->owner == static_cast<uint32_t>(LayoutOwner::Service));
+  CHECK(header->capacity_bytes == bytes);
+  CHECK(header->writer_generation == 0u);
+  header->capacity_bytes = bytes - 1u;
+  CHECK(!validateServiceRing(memory.data(), memory.size()));
+  header->capacity_bytes = bytes;
+  header->slot_stride = 1u;
+  header->slot_count = 99u;
+  CHECK(validateServiceRing(memory.data(), memory.size()));
+}
+
+void testServiceControlValidation() {
+  ControlRecord record;
+  CHECK(initializeControlRecord(
+      record, L"Global\\BroadifyVcam-stream", L"Global\\BroadifyVcam-frame",
+      1920, 1080, 30, 1, PixelFormat::Bgra8, 42, 3, 900));
+  record.owner = static_cast<uint32_t>(LayoutOwner::Service);
+  record.capacity_bytes = maxServiceRingBytes();
+  CHECK(validateServiceControl(record));
+  record.magic = 0u;
+  CHECK(!validateServiceControl(record));
+  record.magic = kControlMagic;
+  record.capacity_bytes = 1u;
+  CHECK(!validateServiceControl(record));
+  record.capacity_bytes = maxServiceRingBytes();
+  record.width = kMaxServiceWidth + 1u;
+  CHECK(!validateServiceControl(record));
+  record.width = kMaxServiceWidth;
+  record.height = kMaxServiceHeight + 1u;
+  CHECK(!validateServiceControl(record));
+}
+
 void testNamesAndSddl() {
   const std::wstring token = makeStreamToken(123, 456);
   CHECK(token == L"123-456");
   CHECK(streamMappingName(token, true) == L"Global\\BroadifyVcam-123-456");
   CHECK(streamEventName(token, false) == L"Local\\BroadifyVcamFrame-123-456");
+  CHECK(controlMappingName(true) == L"Global\\BroadifyVcam-control");
+  CHECK(serviceStreamMappingName(true) == L"Global\\BroadifyVcam-stream");
+  CHECK(serviceStreamEventName(false) == L"Local\\BroadifyVcam-frame");
   const std::wstring streamSddl = streamSecurityDescriptorSddl();
   const std::wstring controlSddl = controlSecurityDescriptorSddl();
-  CHECK(streamSddl.find(L"GRGX;;;LS") != std::wstring::npos);
-  CHECK(controlSddl.find(L"GWGR;;;LS") != std::wstring::npos);
-  CHECK(controlSddl.find(L"BA") != std::wstring::npos);
-  CHECK(controlSddl.find(L"OW") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GA;;;LS") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GRGWGX;;;IU") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GRGWGX;;;AU") != std::wstring::npos);
+  CHECK(controlSddl.find(L"GWGR;;;IU") != std::wstring::npos);
+  CHECK(controlSddl.find(L"GWGR;;;AU") != std::wstring::npos);
 }
 
 void testBgraToNv12Reference() {
@@ -200,10 +274,13 @@ void testBgraToNv12Reference() {
 int main() {
   testRingNewestEvenRule();
   testRingRejectsTornSlot();
+  testRingRejectsAttackerControlledHeaderFields();
   testRingRejectsInterleavedWriterTornRead();
   testControlRoundTrip();
   testControlGenerationChange();
   testControlReaderLivenessDerivation();
+  testServiceRingValidation();
+  testServiceControlValidation();
   testNamesAndSddl();
   testBgraToNv12Reference();
   std::cout << "vcam_shm_layout_test passed\n";

@@ -71,12 +71,27 @@ bool validHeader(const RingHeader *header, size_t bytes) {
     return false;
   }
   if (header->magic != kRingMagic || header->version != kLayoutVersion ||
-      header->slot_count != kSlotCount || header->width == 0u ||
+      header->slot_count != kSlotCount ||
+      header->owner == static_cast<uint32_t>(LayoutOwner::Unknown) ||
+      header->capacity_bytes < bytes || header->width == 0u ||
       header->height == 0u || header->slot_stride < sizeof(SlotHeader)) {
     return false;
   }
   const PixelFormat format = static_cast<PixelFormat>(header->format);
-  return ringBytesFor(header->width, header->height, format) <= bytes;
+  const size_t expectedStride =
+      slotStrideFor(header->width, header->height, format);
+  if (expectedStride == 0u || header->slot_stride != expectedStride) {
+    return false;
+  }
+  size_t slotsBytes = 0u;
+  size_t required = 0u;
+  if (!checkedMul(static_cast<size_t>(header->slot_count),
+                  static_cast<size_t>(header->slot_stride), slotsBytes) ||
+      !checkedAdd(alignUp(sizeof(RingHeader), kAlignment), slotsBytes,
+                  required)) {
+    return false;
+  }
+  return required <= bytes && required <= header->capacity_bytes;
 }
 
 void copyWideName(wchar_t *dst, const std::wstring &src) {
@@ -147,6 +162,10 @@ size_t ringBytesFor(uint32_t width, uint32_t height, PixelFormat format) {
   return total;
 }
 
+size_t maxServiceRingBytes() {
+  return ringBytesFor(kMaxServiceWidth, kMaxServiceHeight, PixelFormat::Bgra8);
+}
+
 bool initializeRing(void *memory,
                     size_t bytes,
                     uint32_t width,
@@ -161,10 +180,11 @@ bool initializeRing(void *memory,
   if (memory == nullptr || required == 0u || bytes < required) {
     return false;
   }
-  std::memset(memory, 0, bytes);
+  std::memset(memory, 0, sizeof(RingHeader));
   RingHeader *header = reinterpret_cast<RingHeader *>(memory);
   header->magic = kRingMagic;
   header->version = kLayoutVersion;
+  header->owner = static_cast<uint32_t>(LayoutOwner::Helper);
   header->width = width;
   header->height = height;
   header->fps_num = fpsNum == 0u ? kDefaultFpsNum : fpsNum;
@@ -172,11 +192,73 @@ bool initializeRing(void *memory,
   header->format = static_cast<uint32_t>(format);
   header->slot_count = kSlotCount;
   header->slot_stride = static_cast<uint32_t>(slotStrideFor(width, height, format));
+  header->capacity_bytes = bytes;
   header->writer_pid = writerPid;
   header->writer_generation = writerGeneration;
   header->heartbeat_qpc = heartbeatQpc;
   header->reader_count = 0;
+  for (uint32_t i = 0u; i < kSlotCount; ++i) {
+    SlotHeader *slot = slotHeader(memory, bytes, i);
+    if (slot == nullptr) {
+      return false;
+    }
+    std::memset(slot, 0, sizeof(SlotHeader));
+  }
   return true;
+}
+
+bool initializeServiceRing(void *memory, size_t bytes, uint64_t heartbeatQpc) {
+  const size_t capacity = maxServiceRingBytes();
+  if (memory == nullptr || capacity == 0u || bytes < capacity) {
+    return false;
+  }
+  std::memset(memory, 0, bytes);
+  RingHeader *header = reinterpret_cast<RingHeader *>(memory);
+  header->magic = kRingMagic;
+  header->version = kLayoutVersion;
+  header->owner = static_cast<uint32_t>(LayoutOwner::Service);
+  header->fps_num = kDefaultFpsNum;
+  header->fps_den = kDefaultFpsDen;
+  header->format = static_cast<uint32_t>(PixelFormat::Bgra8);
+  header->slot_count = kSlotCount;
+  header->capacity_bytes = bytes;
+  header->writer_generation = 0u;
+  header->heartbeat_qpc = heartbeatQpc;
+  return true;
+}
+
+bool validateServiceRing(const void *memory, size_t bytes) {
+  if (memory == nullptr || bytes < sizeof(RingHeader)) {
+    return false;
+  }
+  const auto *header = reinterpret_cast<const RingHeader *>(memory);
+  if (header->magic != kRingMagic || header->version != kLayoutVersion ||
+      header->owner != static_cast<uint32_t>(LayoutOwner::Service) ||
+      header->capacity_bytes < maxServiceRingBytes() ||
+      header->capacity_bytes > bytes) {
+    return false;
+  }
+  return true;
+}
+
+bool validateServiceControl(const ControlRecord &record) {
+  if (record.magic != kControlMagic || record.version != kLayoutVersion ||
+      record.owner != static_cast<uint32_t>(LayoutOwner::Service) ||
+      record.capacity_bytes < maxServiceRingBytes() ||
+      record.mapping_name[0] == L'\0' || record.event_name[0] == L'\0') {
+    return false;
+  }
+  if (record.width == 0u && record.height == 0u &&
+      record.writer_generation == 0u) {
+    return true;
+  }
+  const PixelFormat format = static_cast<PixelFormat>(record.format);
+  if (record.width > kMaxServiceWidth || record.height > kMaxServiceHeight) {
+    return false;
+  }
+  const size_t required = ringBytesFor(record.width, record.height, format);
+  return required != 0u && required <= record.capacity_bytes &&
+         record.fps_num != 0u && record.fps_den != 0u;
 }
 
 RingHeader *ringHeader(void *memory, size_t bytes) {
@@ -371,15 +453,25 @@ std::wstring streamEventName(const std::wstring &token, bool globalNamespace) {
 
 std::wstring controlMappingName(bool globalNamespace) {
   return std::wstring(globalNamespace ? L"Global\\" : L"Local\\") +
-         L"BroadifyVcamControl";
+         L"BroadifyVcam-control";
+}
+
+std::wstring serviceStreamMappingName(bool globalNamespace) {
+  return std::wstring(globalNamespace ? L"Global\\" : L"Local\\") +
+         L"BroadifyVcam-stream";
+}
+
+std::wstring serviceStreamEventName(bool globalNamespace) {
+  return std::wstring(globalNamespace ? L"Global\\" : L"Local\\") +
+         L"BroadifyVcam-frame";
 }
 
 std::wstring streamSecurityDescriptorSddl() {
-  return L"D:P(A;;GA;;;OW)(A;;GA;;;BA)(A;;GRGX;;;LS)";
+  return L"D:P(A;;GA;;;LS)(A;;GRGWGX;;;IU)(A;;GRGWGX;;;AU)";
 }
 
 std::wstring controlSecurityDescriptorSddl() {
-  return L"D:P(A;;GA;;;OW)(A;;GA;;;BA)(A;;GWGR;;;LS)";
+  return L"D:P(A;;GA;;;LS)(A;;GWGR;;;IU)(A;;GWGR;;;AU)";
 }
 
 std::wstring securityDescriptorSddl() {
@@ -405,11 +497,13 @@ bool initializeControlRecord(ControlRecord &record,
   record = ControlRecord{};
   record.magic = kControlMagic;
   record.version = kLayoutVersion;
+  record.owner = static_cast<uint32_t>(LayoutOwner::Helper);
   record.width = width;
   record.height = height;
   record.fps_num = fpsNum == 0u ? kDefaultFpsNum : fpsNum;
   record.fps_den = fpsDen == 0u ? kDefaultFpsDen : fpsDen;
   record.format = static_cast<uint32_t>(format);
+  record.capacity_bytes = ringBytesFor(width, height, format);
   record.writer_pid = writerPid;
   record.writer_generation = writerGeneration;
   record.heartbeat_qpc = heartbeatQpc;
@@ -420,6 +514,8 @@ bool initializeControlRecord(ControlRecord &record,
 
 bool writeControlRecord(ControlRecord &record, const ControlRecord &next) {
   if (next.magic != kControlMagic || next.version != kLayoutVersion ||
+      next.owner == static_cast<uint32_t>(LayoutOwner::Unknown) ||
+      next.capacity_bytes == 0u ||
       next.mapping_name[0] == L'\0' || next.event_name[0] == L'\0') {
     return false;
   }
@@ -432,9 +528,12 @@ bool writeControlRecord(ControlRecord &record, const ControlRecord &next) {
   std::atomic_thread_fence(std::memory_order_seq_cst);
   record.magic = next.magic;
   record.version = next.version;
+  record.owner = next.owner;
+  record.reserved0 = next.reserved0;
   record.writer_generation = next.writer_generation;
   record.heartbeat_qpc = next.heartbeat_qpc;
   record.reader_count = keepReaderCount;
+  record.capacity_bytes = next.capacity_bytes;
   record.width = next.width;
   record.height = next.height;
   record.fps_num = next.fps_num;
@@ -459,7 +558,9 @@ bool readControlRecord(const ControlRecord &record, ControlRecord &out) {
   std::atomic_thread_fence(std::memory_order_acquire);
   const uint64_t after = volatileLoad64(record.sequence);
   return before == after && (after & 1u) == 0u && out.magic == kControlMagic &&
-         out.version == kLayoutVersion && out.mapping_name[0] != L'\0' &&
+         out.version == kLayoutVersion &&
+         out.owner != static_cast<uint32_t>(LayoutOwner::Unknown) &&
+         out.capacity_bytes != 0u && out.mapping_name[0] != L'\0' &&
          out.event_name[0] != L'\0';
 }
 

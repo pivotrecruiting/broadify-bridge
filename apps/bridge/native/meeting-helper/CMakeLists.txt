@@ -120,6 +120,12 @@ set(MEETING_HELPER_SOURCES
   src/util/win_qos.cpp
 )
 
+if(WIN32)
+  list(APPEND MEETING_HELPER_SOURCES
+    src/preview/vcam_writer_generation.cpp
+  )
+endif()
+
 if(APPLE)
   enable_language(OBJCXX)
   list(APPEND MEETING_HELPER_SOURCES
@@ -364,6 +370,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/vcam_shm_layout_test.cpp
     src/preview/vcam_shm_layout.cpp
   )
+  add_executable(vcam_shm_retry_state_test
+    tests/vcam_shm_retry_state_test.cpp
+  )
   add_executable(raw_frame_connect_state_test
     tests/raw_frame_connect_state_test.cpp
   )
@@ -384,11 +393,17 @@ if(MEETING_HELPER_BUILD_TESTS)
       ../vcam-helper/windows/vcam_log.cpp
       src/preview/vcam_shm_layout.cpp
     )
+    add_executable(vcam_shm_service_ring_test
+      tests/vcam_shm_service_ring_test.cpp
+      src/preview/vcam_shm_layout.cpp
+      src/preview/vcam_shm_ring_win.cpp
+      src/util/helper_event_log.cpp
+    )
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE
       "${CMAKE_CURRENT_BINARY_DIR}/generated"
     )
   endif()
-  add_executable(control_server_test
+  set(CONTROL_SERVER_TEST_SOURCES
     tests/control_server_test.cpp
     src/control/control_server.cpp
     src/capture/camera_source.cpp
@@ -400,6 +415,12 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/util/helper_event_log.cpp
     src/util/json_utils.cpp
   )
+  if(WIN32)
+    list(APPEND CONTROL_SERVER_TEST_SOURCES
+      src/preview/vcam_writer_generation.cpp
+    )
+  endif()
+  add_executable(control_server_test ${CONTROL_SERVER_TEST_SOURCES})
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -445,6 +466,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     raw_frame_stream_header_test
     raw_frame_record_test
     vcam_shm_layout_test
+    vcam_shm_retry_state_test
     raw_frame_connect_state_test
     raw_frame_server_test
   )
@@ -471,6 +493,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_compile_definitions(shm_frame_reader_no_frame_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(shm_frame_reader_no_frame_test PRIVATE advapi32)
     add_test(NAME shm_frame_reader_no_frame_test COMMAND shm_frame_reader_no_frame_test)
+    target_include_directories(vcam_shm_service_ring_test PRIVATE src)
+    target_compile_definitions(vcam_shm_service_ring_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(vcam_shm_service_ring_test PRIVATE advapi32)
+    add_test(NAME vcam_shm_service_ring_test COMMAND vcam_shm_service_ring_test)
   endif()
 
   if(APPLE)

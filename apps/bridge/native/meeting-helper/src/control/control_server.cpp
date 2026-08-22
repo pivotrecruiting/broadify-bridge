@@ -3,6 +3,7 @@
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
 #include "preview/vcam_shm_ring_win.h"
+#include "preview/vcam_writer_generation.h"
 #include "recorder/meeting_recorder.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
@@ -28,13 +29,6 @@
 
 namespace broadify::meeting {
 namespace {
-
-#if defined(_WIN32)
-uint64_t initialVcamWriterGeneration() {
-  return (static_cast<uint64_t>(GetCurrentProcessId()) << 32u) ^
-         static_cast<uint64_t>(GetTickCount64());
-}
-#endif
 
 #if !defined(_WIN32)
 void configureSocketForShutdownChecks(int socketHandle) {
@@ -790,39 +784,24 @@ std::string handleRpc(const std::string &line,
 
   if (method == "output.vcam.raw.start") {
     std::string transport;
-    std::string fallbackReason;
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.vcamRawRunning = true;
-      if (state.vcamTransport == "shm" && vcamShm != nullptr &&
-          !vcamShm->active()) {
 #if defined(_WIN32)
+      if (state.vcamTransport == "shm") {
         if (state.vcamWriterGeneration == 0u) {
           state.vcamWriterGeneration = initialVcamWriterGeneration();
         } else {
           ++state.vcamWriterGeneration;
         }
-#else
-        ++state.vcamWriterGeneration;
-#endif
-        const VcamShmCreateResult shm =
-            vcamShm->create(options.width, options.height, options.fps,
-                            state.vcamWriterGeneration);
-        if (!shm.ok || !shm.globalNamespace) {
-          fallbackReason = shm.reason.empty() ? "mapping_unavailable" : shm.reason;
-          state.vcamTransport = "tcp";
-          vcamShm->close();
-        }
       }
+#else
+      if (state.vcamTransport == "shm") {
+        ++state.vcamWriterGeneration;
+      }
+#endif
       transport = state.vcamTransport;
       markProgramDirty(state);
-    }
-    setVirtualCameraTransport(transport);
-    if (!fallbackReason.empty()) {
-      emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
-                      jsonEscape(fallbackReason) + "\"}");
-    } else if (transport == "shm") {
-      emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"raw_start\"}");
     }
     return okResponse(id, std::string("{\"enabled\":true,\"running\":true,\"transport\":\"") +
                               jsonEscape(transport) + "\"}");
@@ -832,9 +811,7 @@ std::string handleRpc(const std::string &line,
     previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.vcamRawRunning = false;
-    if (vcamShm != nullptr) {
-      vcamShm->close();
-    }
+    (void)vcamShm;
     markProgramDirty(state);
     return okResponse(id, std::string("{\"enabled\":true,\"running\":false,\"transport\":\"") +
                               jsonEscape(state.vcamTransport) + "\"}");

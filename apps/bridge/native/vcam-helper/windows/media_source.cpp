@@ -1,10 +1,12 @@
 #include "media_source.h"
 
+#include "preview/vcam_shm_layout.h"
 #include "vcam_log.h"
 
 #include <mferror.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace broadify::vcam {
@@ -37,6 +39,14 @@ uint16_t resolvePort() {
   return kDefaultPort;
 }
 
+uint32_t clampVcamWidth(uint32_t width) {
+  return std::clamp(width, 1u, broadify::vcam_shm::kMaxServiceWidth);
+}
+
+uint32_t clampVcamHeight(uint32_t height) {
+  return std::clamp(height, 1u, broadify::vcam_shm::kMaxServiceHeight);
+}
+
 }  // namespace
 
 MediaSource::~MediaSource() { Shutdown(); }
@@ -53,8 +63,8 @@ HRESULT MediaSource::Initialize(IMFAttributes *attributes) {
   const char *geometrySource = "default";
   ShmGeometry geometry;
   if (ShmFrameReader::ProbeGeometry(geometry)) {
-    _width = geometry.width;
-    _height = geometry.height;
+    _width = clampVcamWidth(geometry.width);
+    _height = clampVcamHeight(geometry.height);
     geometrySource = "shm_control";
   } else {
     // One short handshake-only geometry check. It never waits for a frame and
@@ -65,8 +75,8 @@ HRESULT MediaSource::Initialize(IMFAttributes *attributes) {
       uint32_t streamWidth = 0;
       uint32_t streamHeight = 0;
       if (_client->streamGeometry(streamWidth, streamHeight)) {
-        _width = streamWidth;
-        _height = streamHeight;
+        _width = clampVcamWidth(streamWidth);
+        _height = clampVcamHeight(streamHeight);
         geometrySource = "handshake";
         break;
       }

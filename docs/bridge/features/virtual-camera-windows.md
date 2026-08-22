@@ -7,16 +7,18 @@ System-COM-Registry registriert sein.
 
 ## Frame-Pfad und Transport-Auswahl
 
-Default ab WP4 ist Shared Memory, wenn der Helper die noetigen Windows-
-Privilegien besitzt: der Meeting-Helper legt beim Armieren von
-`output.vcam.raw.start` eine globale Ring-Mapping an
-(`Global\BroadifyVcam-<pid>-<tick>`) und publiziert den aktuellen Namen in
-`Global\BroadifyVcamControl`. Die ACL erlaubt dem Windows Frame Server
-(`NT AUTHORITY\LOCAL SERVICE`) Lesezugriff. Die DLL oeffnet diese Control-
-Mapping ohne Sleep in `MediaSource::Initialize`, uebernimmt die Geometrie
-falls vorhanden und faellt sonst sofort auf **1920x1080@30** zurueck. Es gibt
-keine TCP-Geometrie-Probe mehr; Kamera-Enumeration in Teams blockiert nicht
-auf einen nicht erreichbaren Helper.
+Default ab WP4b ist Shared Memory mit Service-Ownership: die
+Media-Source-DLL laeuft im Windows Frame Server als
+`NT AUTHORITY\LOCAL SERVICE` und erstellt bei `MediaStream::Start` die festen
+globalen Objekte `Global\BroadifyVcam-control`,
+`Global\BroadifyVcam-stream` und `Global\BroadifyVcam-frame`. Der
+Meeting-Helper oeffnet diese Mapping beim Armieren von
+`output.vcam.raw.start` oder spaeter per Retry und schreibt dann Frames in den
+Ring. Die DLL oeffnet die Control-Mapping ohne Sleep in
+`MediaSource::Initialize`, uebernimmt die Geometrie falls vorhanden und faellt
+sonst sofort auf **1920x1080@30** zurueck. Es gibt keine TCP-Geometrie-Probe
+mehr; Kamera-Enumeration in Teams blockiert nicht auf einen nicht erreichbaren
+Helper.
 
 Transport-Auswahl:
 
@@ -25,32 +27,60 @@ Transport-Auswahl:
 - `BROADIFY_MEETING_VCAM_TRANSPORT=tcp`: alter Raw-TCP-Pfad
   (`127.0.0.1:18787`) bleibt fuer eine Release als Rollback erhalten.
 - Eine globale Mapping im `Global\`-Namespace erfordert fuer den erstellenden
-  Prozess `SeCreateGlobalPrivilege`. Das hat normalerweise nur ein erhoehter
-  Helper bzw. ein Dienstprozess; ein unelevierter Desktop-Helper faellt auf
-  TCP zurueck.
-- Kann der Helper keine globale Mapping mit ACL erstellen, schaltet er
-  automatisch auf TCP und loggt bei `ERROR_ACCESS_DENIED`
-  `meeting_vcam_raw event=vcam_transport_selected transport=tcp reason=global_namespace_privilege`.
+  Prozess `SeCreateGlobalPrivilege`. Das hat der Frame Server als
+  `LOCAL SERVICE`; ein normaler unelevierter Desktop-Helper hat es nicht.
+- Kann der Helper die service-eigene Mapping noch nicht oeffnen, bleibt der
+  TCP-Server aktiv und der Helper probiert alle ca. 2 s erneut. Sobald Teams
+  die Kamera aktiviert und die DLL die Mapping erstellt hat, wechselt der
+  Helper auf SHM und loggt
+  `meeting_vcam_raw event=vcam_transport_selected transport=shm reason=opened_service_ring`.
+- Ein erhoehter Helper kann die festen globalen Objekte weiterhin selbst
+  erstellen; das wird als `reason=created_global` gemeldet. Scheitert dieser
+  Fallback an `ERROR_ACCESS_DENIED`, bleibt TCP aktiv und die Diagnose ist
+  `reason=global_namespace_privilege`.
 - `output.vcam.status` enthaelt `transport: "shm"|"tcp"`.
 - TCP ist der normale Fallback fuer unelevierte Installationen. Die DLL probt
   nicht mehr blockierend in der Aktivierung; wie in rc.26 bietet sie RGB32
   standardmaessig als einzigen Media Type an.
 
-Der SHM-Ring hat drei Slots. Jeder Slot nutzt eine Sequenznummer als seqlock:
+SHM-DACL: `LOCAL SERVICE` hat Vollzugriff; `IU` (Interactive Users) und `AU`
+(Authenticated Users) haben auf Stream-Mapping und Frame-Event
+Lese-/Schreib-/Execute-Synchronisierungsrechte (`GRGWGX`) und auf die
+Control-Mapping Lese-/Schreibzugriff (`GWGR`), keine weiteren SIDs werden
+eingetragen. Das ist lokal-only, aber jeder lokal
+authentifizierte Benutzer kann Frames und Control-Felder schreiben. Deshalb
+werden Mapping-/Event-Namen und alle Header-Felder als untrusted behandelt:
+Objekte werden nur read-only bzw. mit minimalem Schreibrecht geoeffnet, Namen
+werden laengenbegrenzt kopiert, und Frame-Copy/Publish validieren Magic,
+Version, Owner, Capacity, Geometrie, Format, Slot-Zahl, Slot-Stride und
+Payload-Groesse vor jedem Zugriff. Es werden keine Secrets oder
+Enrollment-Daten im Ring abgelegt.
+
+Der SHM-Ring hat drei Slots und wird mit maximaler Kapazitaet
+(`1920x1080 BGRA * 3 Slots`) angelegt. Jeder Slot nutzt eine Sequenznummer als seqlock:
 ungerade bedeutet "Writer schreibt gerade", Leser kopieren nur den neuesten
 geraden Slot und pruefen die Sequenz nach dem Copy erneut. WP4 schreibt
 BGRA8; das Layout enthaelt bereits `format=NV12` fuer den spaeteren
-Compositor-Ausgang. Die DLL bietet standardmaessig nur RGB32 an; NV12/YUY2
+Compositor-Ausgang. Ab Layout-Version 2 validieren beide Prozesse `magic`,
+`version`, `owner`, `capacity_bytes`, Geometrie, Format, Slot-Zahl und
+Mapping-/Event-Namen bevor sie fremde Header verwenden. Die DLL bietet
+standardmaessig nur RGB32 an; NV12/YUY2
 sind ein experimenteller Consumer-Kompatibilitaetspfad und werden nur
 angeboten, wenn `HKCU\Software\Broadify\VCam\OfferNv12` als DWORD `1` gesetzt
 ist. Die DLL liest den Flag einmal pro `MediaStream::Start`.
 
-Die DLL startet den SHM-Reader erst in `MediaStream::Start`. TCP verbindet sie
-sofort aus `Start()`, wenn die SHM-Mapping fehlt, wenn der Heartbeat laenger
-als ca. 3 s steht oder wenn nach dem Oeffnen einer Mapping binnen 2 s kein
-Frame ankommt; danach prueft sie periodisch wieder auf SHM. Bei gesunder
+Die DLL erstellt die service-eigenen SHM-Objekte und startet den SHM-Reader
+erst in `MediaStream::Start`. Ein zero-geometry Service-Header gilt fuer die
+Reader-Seite als "nicht offen", damit TCP sofort startet und die 2-s-Regel erst
+nach einer echten Geometrie-Publikation greift. TCP verbindet sie sofort aus
+`Start()`, wenn die SHM-Mapping fehlt, wenn der Heartbeat laenger als ca. 3 s
+steht oder wenn nach dem Oeffnen einer Mapping binnen 2 s kein Frame ankommt;
+danach prueft sie periodisch wieder auf SHM. Bei gesunder
 SHM-Verbindung wird der TCP-Client wieder gestoppt und damit gibt es keine
 per-Connection-Worker-Churn im Helper.
+Nach Teams-Aktivierung kann SHM wegen DLL-5-s-Poll plus Helper-2-s-Retry bis
+zu ca. 7 s spaeter greifen; die erste Diagnose
+`control_mapping_absent` ist in diesem Fenster erwartet.
 Direkt nach Stream-Start liefert `RequestSample` bis zum ersten Frame den
 dunklen Splash. Sobald einmal ein gueltiger Frame angekommen ist, wird nie
 wieder auf den Splash umgeschaltet: bei Staleness, statischem Programm oder
@@ -100,10 +130,40 @@ Luefter entsprechen dann dem Zustand „VCam-Output gestoppt".
 
 Log-Zeilen (`VcamLog`): `build git=... time=...` steht am Anfang jeder
 Log-Datei. `MediaSource::Initialize ... (no activation probe)` bestaetigt den
-WP4-Pfad. `vcam_reader_transport tcp reason=...` markiert Fallback,
+WP4-Pfad. `vcam_shm_owner service created` oder
+`vcam_shm_owner service opened_existing` bestaetigt WP4b-Ownership;
+`vcam_shm_owner service create_failed error=N` haelt Create-Fehler fest. Diese
+Owner-Zeile wird nur bei einem Outcome-Wechsel erneut geloggt.
+`vcam_reader_transport tcp reason=...` markiert Fallback,
 `vcam_reader_transport shm reason=shm_frame_available` die Rueckkehr. Pro
 Stream-Start loggt die DLL beim ersten Sample den ausgehandelten Typ, z. B.
 `stream_type subtype=RGB32 buffer=memory`.
+
+Reason-Tabelle:
+
+- `opened_service_ring`: Helper hat die vom Frame Server erstellten globalen
+  Objekte geoeffnet.
+- `created_global`: Helper hat die festen globalen Objekte selbst erstellt
+  (normalerweise nur erhoeht).
+- `service_ring_absent`: DLL/Frame Server hat die Kamera noch nicht aktiviert;
+  TCP bleibt aktiv, Retry alle ca. 2 s.
+- `global_namespace_privilege`: Helper-Fallback konnte `Global\` nicht
+  erstellen, typischer unelevierter Desktop-Fall.
+- `invalid_service_ring`: Helper hat die Service-Control-/Stream-Objekte
+  gefunden, aber Magic/Version/Owner/Capacity waren nicht plausibel.
+- `create_failed`: Helper konnte nach fehlendem Service-Ring auch den
+  Creator-Fallback nicht bereitstellen.
+
+Field-Checkliste:
+
+- In `vcam.log` steht nach Teams-Aktivierung
+  `vcam_shm_owner service created` und spaeter
+  `vcam_reader_transport shm reason=shm_frame_available`.
+- Im Helper-Eventlog steht zuerst ggf.
+  `transport=tcp reason=service_ring_absent`, danach
+  `transport=shm reason=opened_service_ring`.
+- `stream_type subtype=RGB32 buffer=memory` ist erwartbar, solange der
+  NV12/YUY2-Experiment-Flag nicht gesetzt ist.
 
 ## Stream-Lifecycle und Timeouts
 
