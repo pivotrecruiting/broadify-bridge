@@ -83,8 +83,42 @@ F3. Docs: `docs/bridge/features/meeting-windows-performance.md` (flag, A/B guide
 9. Docs updated; comments in English; env flag documented.
 
 ## Review
-- Round: 0/3
-- Verdict: (pending)
+- Round: 1/3
+- Verdict: MUST-FIX (round 1) — substance: only Block A is a real data path; B is unsafe, C/D/E are stubs, F is tautological.
+- Must-fix (open):
+  - M1 `capture/camera_mediafoundation.cpp` ~:696-753: with the DXGI reader open (NV12/YUY2) the legacy BGRA swizzle reads
+    `width*4` bytes per row from a 1.5/2 B-per-pixel buffer → heap over-read + garbage. On the GPU path do NOT run the CPU
+    swizzle; deliver `GpuCameraFrame` downstream (M2). Request NV12 first, then YUY2 (never MJPG) from the D3D-manager reader.
+  - M2 `GpuCameraFrame` must actually reach the pipeline: camera_source API → frame_pipeline → preprocess/compositor; report
+    `gpu_capture:"dxgi"` when active; release the MF texture after consumption (do not starve the MF DXGI allocator).
+  - M3 Thread-safety: the D3D11 immediate context is not thread-safe — never call `signalFromD3D11`/`frameRing().acquireNext()`
+    from the MF callback thread; initialise `GpuContextWin` once on the main thread before capture starts; one mutex around all
+    immediate-context use, or move capture-side fence work to the pipeline thread.
+  - M4 `GpuContextWin::initialize()`: QI `ID3D10Multithread` and `SetMultithreadProtected(TRUE)` (required by the MF DXGI manager).
+  - M5 `compose/gpu_preprocess.cpp`: (a) shared tensor buffer must be created on the D3D12 side (`CreateCommittedResource`,
+    `D3D12_HEAP_FLAG_SHARED`, `ALLOW_UNORDERED_ACCESS`) → `ID3D12Device::CreateSharedHandle` → `ID3D11Device1::OpenSharedResource1`
+    (D3D11 cannot share buffers); (b) create NV12 SRVs (`R8_UNORM` luma, `R8G8_UNORM` chroma, TEXTURE2DARRAY with
+    `FirstArraySlice = subresource`) / YUY2 SRV and bind them; (c) implement the box-average in-shader over the same integer
+    bounds as the CPU `buildModnetInputTensor` (criterion 5) and add a ctest comparing against the CPU reference on a synthetic
+    frame; (d) add `using Microsoft::WRL::ComPtr;` (unqualified `ComPtr<ID3DBlob>`/`ComPtr<IDXGIResource1>` = MSVC error);
+    (e) `preprocess()` must be CALLED from the fused path when the flag is on.
+  - M6 `keyer/modnet_keyer.cpp`: implement real IO binding — per-(tier,slot) `Ort::IoBinding`, input from the shared D3D12 buffer via
+    `OrtDmlApi::CreateGPUAllocationFromD3DResource`, output to EP device memory, `GetD3D12ResourceFromAllocation` shared back to
+    D3D11 as the alpha source; `waitOnD3D12(slot.fence)` before `Run`, `signalFromD3D12` after; feed REAL booleans into
+    `decideKeyerIoBinding`.
+  - M7 `compose/d3d11_compositor.cpp`: E1 guided filter consumes the alpha buffer on the GPU (no CPU readback of the raw mask);
+    E2 compositor samples NV12/YUY2 directly (YUV→RGB in-shader, studio range) and writes an NV12 output texture; E3 RGBA readback
+    only when a CPU consumer exists (recorder/preview/FrameBus/VCam-TCP) — counted in `cpu_frame_copies_per_frame`.
+  - M8 `--gpu-selftest` must execute preprocess (synthetic NV12) → (DML if available) → composite, and prove the fence with
+    `SetEventOnCompletion` + bounded CPU wait; the ps1 asserts D3D11 LUID == D3D12 LUID; no literal constants in the JSON.
+  - M9 Restore the WP1 content of `docs/bridge/features/meeting-windows-performance.md` (GPU policy values, QoS, gating, staging
+    ring, governor latency policy, FUSED_PIPELINE_DEPTH) and add the WP3 section.
+  - M10 Telemetry honesty: `preprocess_ms/inference_ms/refine_ms/composite_ms` measure the GPU stages when the flag is on (null
+    otherwise); `gpu_resident` derived from `GpuContextWin::telemetry().available` only; `cpu_frame_copies_per_frame` counted from
+    real copies (VCam-TCP counts 1 until WP4 — document).
+- Notes: `<cstdio>` in gpu_context_win.cpp; `gpuCaptureActive_` reset on reopen; design doc says compute queue, impl uses DIRECT
+  (align the doc to DIRECT per WP1); selftest JSON line filtering in the ps1.
+- Decision (orchestrator): WP3 is NOT included in rc.22; it ships only after a real GPU path passes review.
 
 ## Verification
 - [x] Focused CTests passed on macOS during implementation:
