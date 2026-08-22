@@ -238,11 +238,23 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
     }
   } else {
     const double threshold = stepDownThresholdMs();
+    if (config_.vcamAwarePolicy && tier_ == GovernorTier::Performance256) {
+      if (inferenceMs > threshold) {
+        ++liteGateOverBudgetSamples_;
+      } else {
+        liteGateOverBudgetSamples_ = 0u;
+      }
+    }
     const bool regularExceed =
         samples_ >= config_.minSamples && emaMs_ > threshold;
     const bool fastExceed = samples_ >= config_.fastStartMinSamples &&
                             emaMs_ > config_.fastStartFactor * threshold;
     if (regularExceed || fastExceed) {
+      if (config_.vcamAwarePolicy && tier_ == GovernorTier::Performance256) {
+        if (liteGateOverBudgetSamples_ < config_.liteGateSamples) {
+          return;
+        }
+      }
       stepDown(tierBelow(tier_), now);
       return;
     }
@@ -273,6 +285,7 @@ void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
   tier_ = target;
   emaMs_ = -1.0;
   samples_ = 0u;
+  liteGateOverBudgetSamples_ = 0u;
   degradedAt_ = now;
   degradeClockStarted_ = true;
 }
@@ -308,6 +321,7 @@ void KeyerAutoGovernor::reset() {
   liteStepUpPending_ = false;
   emaMs_ = -1.0;
   samples_ = 0u;
+  liteGateOverBudgetSamples_ = 0u;
   stepUpWatch_ = StepUpWatch::None;
   degradeClockStarted_ = false;
   degradedAt_ = TimePoint{};
