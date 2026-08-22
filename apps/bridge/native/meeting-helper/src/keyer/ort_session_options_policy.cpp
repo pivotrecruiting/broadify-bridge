@@ -24,7 +24,7 @@ const char *directMlQueueTypeLabel(DirectMlQueueType queueType) {
 OrtSessionOptionsPolicy makeDirectMlSessionOptionsPolicy(uint32_t inputWidth,
                                                          uint32_t inputHeight) {
   OrtSessionOptionsPolicy policy;
-  policy.intraOpThreads = 2;
+  policy.intraOpThreads = 1;
   policy.disableMemPattern = true;
   policy.sequentialExecution = true;
   policy.configEntries.push_back({"session.intra_op.allow_spinning", "0"});

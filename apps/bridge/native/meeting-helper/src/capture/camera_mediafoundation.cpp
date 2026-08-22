@@ -19,6 +19,7 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <iostream>
 #include <cstddef>
 #include <cstdint>
@@ -189,6 +190,40 @@ double mediaTypeFps(uint32_t fpsNum, uint32_t fpsDen) {
     return 0.0;
   }
   return static_cast<double>(fpsNum) / static_cast<double>(fpsDen);
+}
+
+struct CameraCaptureRequest {
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  uint32_t fps = 0u;
+};
+
+uint32_t cameraMaxHeightFromEnv() {
+  const char *raw = std::getenv("BROADIFY_MEETING_CAMERA_MAX_HEIGHT");
+  if (raw == nullptr || raw[0] == '\0') {
+    return 720u;
+  }
+  const int parsed = std::atoi(raw);
+  return parsed > 0 ? static_cast<uint32_t>(parsed) : 720u;
+}
+
+CameraCaptureRequest clampCameraCaptureRequest(uint32_t width,
+                                               uint32_t height,
+                                               uint32_t fps) {
+  CameraCaptureRequest request{width, height, fps == 0u ? 30u : fps};
+  request.fps = std::min<uint32_t>(request.fps, 30u);
+  const uint32_t maxHeight = cameraMaxHeightFromEnv();
+  if (maxHeight == 0u || request.height == 0u || request.width == 0u ||
+      request.height <= maxHeight) {
+    return request;
+  }
+  request.width = std::max<uint32_t>(
+      1u, static_cast<uint32_t>(
+              (static_cast<uint64_t>(request.width) * maxHeight +
+               request.height / 2u) /
+              request.height));
+  request.height = maxHeight;
+  return request;
 }
 
 bool betterNativeMediaType(const NativeMediaTypeChoice &candidate,
@@ -862,6 +897,8 @@ class MediaFoundationCameraSource final : public CameraSource {
     }
 
     const std::vector<CameraInfo> cameras = listCameras();
+    const CameraCaptureRequest captureRequest =
+        clampCameraCaptureRequest(width, height, fps);
     std::map<int, std::shared_ptr<MfCaptureSession>> opened;
     std::string lastOpenError;
     for (int requestedIndex : cameraIndices) {
@@ -879,8 +916,11 @@ class MediaFoundationCameraSource final : public CameraSource {
                 << camera->cameraIndex << ",\"device_name\":\""
                 << jsonEscape(camera->label) << "\"}" << std::endl;
       if (!session->open(
-              camera->cameraId, width, height, fps,
-              [this, cameraId = camera->cameraId, width, height, fps,
+              camera->cameraId, captureRequest.width, captureRequest.height,
+              captureRequest.fps,
+              [this, cameraId = camera->cameraId,
+               width = captureRequest.width, height = captureRequest.height,
+               fps = captureRequest.fps,
                label = camera->label](HRESULT hr, const std::string &reason) {
                 scheduleReopen(cameraId, width, height, fps, hr, reason,
                                label);

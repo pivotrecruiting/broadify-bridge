@@ -22,12 +22,12 @@ struct CameraMediaTypeRank {
  * 1. FPS bands win only when they differ by more than one band. Bands are
  *    target-ish, comparable capture FPS (>= max(24, 80% of target) up to 2x
  *    target), usable (>=15), low, and unknown.
- * 2. Same or adjacent bands are comparable; choose the pixel count closest to
+ * 2. Prefer cheap raw formats before pixel-distance so MJPG never wins just
+ *    because it is closer to the requested size.
+ * 3. Same or adjacent bands are comparable; choose the pixel count closest to
  *    the requested size.
- * 3. If size does not decide, choose FPS closest to the target, with rates
+ * 4. If size does not decide, choose FPS closest to the target, with rates
  *    above target penalized by one step so target-or-below rates win ties.
- * 4. Subtype preference is the final tie-break; lower subtypeRank is better
- *    (MediaFoundation maps NV12=0, YUY2=1, MJPG=2).
  */
 inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
                                   const CameraMediaTypeRank &current,
@@ -56,6 +56,10 @@ inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
   const int currentBand = fpsBand(current.fps);
   if (std::abs(candidateBand - currentBand) > 1) {
     return candidateBand < currentBand;
+  }
+
+  if (candidate.subtypeRank != current.subtypeRank) {
+    return candidate.subtypeRank < current.subtypeRank;
   }
 
   const uint64_t requestedPixels =
@@ -87,7 +91,7 @@ inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
     return candidateFpsPenalty < currentFpsPenalty;
   }
 
-  return candidate.subtypeRank < current.subtypeRank;
+  return false;
 }
 
 }  // namespace broadify::meeting

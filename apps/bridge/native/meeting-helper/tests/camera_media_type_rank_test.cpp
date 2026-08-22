@@ -51,15 +51,15 @@ int main() {
       {"YUY2 720p30", {30.0, 1280, 720, kYuy2}},
       {"YUY2 480p30", {30.0, 640, 480, kYuy2}},
   };
-  ok &= expect(chooseIndex(c920Types, 1920, 1080, 30) == 1,
-               "C920-style list chooses MJPG 1080p30");
+  ok &= expect(chooseIndex(c920Types, 1280, 720, 30) == 2,
+               "C920-style list chooses raw 720p30 over MJPG");
 
   const std::vector<CaseMediaType> comparableFpsTypes{
       {"YUY2 480p30", {30.0, 640, 480, kYuy2}},
       {"MJPG 1080p60", {60.0, 1920, 1080, kMjpg}},
   };
-  ok &= expect(chooseIndex(comparableFpsTypes, 1920, 1080, 30) == 1,
-               "requested size wins when 30 and 60 fps are comparable");
+  ok &= expect(chooseIndex(comparableFpsTypes, 1280, 720, 30) == 0,
+               "raw subtype wins before pixel distance when fps is comparable");
 
   const std::vector<CaseMediaType> lowFpsTypes{
       {"YUY2 1080p5", {5.0, 1920, 1080, kYuy2}},
@@ -74,7 +74,7 @@ int main() {
       {"NV12 1080p30", {30.0, 1920, 1080, kNv12}},
   };
   ok &= expect(chooseIndex(subtypeTieTypes, 1920, 1080, 30) == 2,
-               "subtype is only the final tie-break");
+               "NV12 wins among otherwise equal raw formats");
 
   return ok ? 0 : 1;
 }

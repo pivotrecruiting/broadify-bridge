@@ -22,7 +22,7 @@ bool expect(bool condition, const char *what) {
 int main() {
   const auto policy = makeDirectMlSessionOptionsPolicy(320, 320);
   bool ok = true;
-  ok &= expect(policy.intraOpThreads == 2, "intra-op threads = 2");
+  ok &= expect(policy.intraOpThreads == 1, "intra-op threads = 1");
   ok &= expect(policy.disableMemPattern, "mem pattern disabled");
   ok &= expect(policy.sequentialExecution, "sequential execution");
   ok &= expect(policy.configEntries.size() == 1, "one config entry");
