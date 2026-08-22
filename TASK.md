@@ -1,163 +1,92 @@
-# Task: WP2 — Windows keyer quality & dropouts (Stufe A)
+# Task: WP3 — Windows GPU-resident meeting pipeline (Stufe B-1)
+
+## Raw request
+User Go 22.08.2026 ("Go fürs weiter bauen") after rc.21 (WP0+WP1+WP2) shipped. Stufe B = the architecture step that
+brings Windows to "other apps" level. Design: `docs/bridge/architecture/meeting-windows-stage-b-design.md` (section 2).
 
 ## Context
-- Bridge worktree: `win-stability-wp2` / `feature/win-stability-wp2`, base `feature/win-stability-wp1`.
-- Webapp worktree (separate repo /Users/gabrielbaeuerle/broadify): `feature/meeting-keyer-platform-profile`, base `dev`.
-- Evidence: analysis report sections 04/05. Paths relative to `apps/bridge/native/meeting-helper/src/`.
+- Worktree / branch: `broadify-bridge-worktrees/win-stability-wp3` / `feature/win-stability-wp3`, base `feature/win-stability-wp2`.
+- Host macOS: Windows C++ (D3D11/D3D12/DirectML/MF) compiles only in CI. macOS untouched.
+- Everything in this WP is behind `BROADIFY_MEETING_GPU_RESIDENT=1` (default OFF in this WP so rc.22 can be A/B-tested in the
+  field; flipping the default is a later decision). With the flag off, the rc.21 pipeline must be byte-for-byte unchanged.
+- Paths relative to `apps/bridge/native/meeting-helper/src/` unless noted.
 
 ## Plan (one commit per block)
 
-### Block A — Model input (`keyer/matting_common.cpp`, `keyer/modnet_keyer.cpp`)
-A1. Letterbox (pad to square with the mean colour / 0 after normalisation) instead of squashing 16:9 into 1:1; keep
-    a mapping struct so the output alpha is cropped back to the 16:9 region before upsampling.
-A2. Area-average (box) downsample into the tensor (SIMD where WP1 helpers exist), replacing nearest sampling.
-A3. Bilinear upsampling of the alpha to the working resolution (not nearest).
-A4. ctest: letterbox mapping round-trip, box downsample vs reference, alpha crop correctness.
+### Block A — GpuContext (`compose/gpu_context_win.{h,cpp}`)
+A1. One `IDXGIAdapter4` from the existing adapter policy (WP1 `d3d_adapter_select`), one `ID3D11Device5` + immediate context
+    (`D3D11_CREATE_DEVICE_BGRA_SUPPORT`, feature level ≥ 11.0), one `ID3D12Device` + one DIRECT command queue on the same LUID.
+    Reuse/replace the separate device creation in `d3d11_compositor.cpp` and `modnet_keyer.cpp` (DML1 path) so all three share
+    the GpuContext when the flag is on; with the flag off the existing creation paths stay.
+A2. Shared fence: `ID3D12Fence` created with `D3D12_FENCE_FLAG_SHARED`, `CreateSharedHandle`, opened in D3D11 via
+    `ID3D11Device5::OpenSharedFence`. Helpers `signalFromD3D11(value)`, `waitOnD3D12(value)`, `signalFromD3D12`, `waitOnD3D11`
+    (`ID3D11DeviceContext4::Signal/Wait`). No CPU waits in the steady state; a 3-deep frame ring (`FrameSlot{index, fenceValue}`).
+A3. Unit-testable ring/fence bookkeeping (`compose/gpu_frame_ring.{h,cpp}`, platform-neutral) + ctest.
 
-### Block B — No synchronous rebuilds, no raw-camera degradation (`keyer/modnet_keyer.cpp`, `keyer/keyer_governor.cpp`, `pipeline/frame_pipeline.cpp`, `pipeline/tier_handover.cpp`)
-B1. Pre-build one ORT session per fused tier (512/320/256) at load time on the warm-handover thread; tier switches
-    swap sessions (no rebuild in `apply()`). Memory budget env `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` (default all).
-B2. Initial load (hash + session + warmup) off the program thread; the program renders unkeyed-with-last-mask (or
-    background-only if no mask yet) until ready — never blocks.
-B3. Governor `Off` tier holds the last good mask (with the live-snap guided refine) instead of showing the raw camera;
-    add a `keyer_degraded` status flag and status reason; reprobe schedule unchanged but capped at 120 s.
-B4. Async-lite retention: `Passthrough` only when the worker is dead; otherwise keep `StaleHold` (last mask) until a
-    new pair arrives.
-B5. Governor seeds from a measured probe at the chosen tier instead of the 512 probe → no mandatory step-down after
-    start; step-up threshold 0.8 × budget.
+### Block B — Capture on the GPU (`capture/camera_mediafoundation.cpp`)
+B1. When the flag is on: `IMFDXGIDeviceManager` (`MFCreateDXGIDeviceManager` + `ResetDevice` with the GpuContext D3D11 device),
+    `MF_SOURCE_READER_D3D_MANAGER`, `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING`, `MF_LOW_LATENCY`. Request native NV12
+    (preferred) or YUY2 as the reader output (no RGB32). Samples via `IMFDXGIBuffer::GetResource` → `ID3D11Texture2D` (+ subresource
+    index). Hand the texture (and its timestamp) to the pipeline as a `GpuCameraFrame` (ComPtr + fence value), latest-slot semantics
+    as today.
+B2. Fallback: if the D3D manager path fails at open (driver without DXVA, MJPG-only device without HW decoder) log
+    `camera_gpu_capture_unavailable` and fall back to the rc.21 RGB32 CPU path automatically (flag stays on for the other stages:
+    the CPU frame is uploaded once into the GpuContext as today).
+B3. Keep the WP0 error/reopen/watchdog behaviour identical on the GPU path.
 
-### Block C — Post-processing chain (`pipeline/frame_pipeline.cpp`, `compose/d3d11_compositor.cpp`, `pipeline/guided_mask_refine.cpp`)
-C1. Work resolution for postprocess/feather ≥ 960×540 (env `BROADIFY_MEETING_MASK_WORK_WIDTH`, default 960).
-C2. Remove the second alpha curve (18/242 + smoothstep) in the D3D11 compositor shader; keep one curve in postprocess.
-C3. One temporal smoother on the fused path: keep motion-adaptive EMA, drop `stabilizeAlphaEdges` when EMA is active
-    (or vice versa via env `BROADIFY_MEETING_FUSED_SMOOTHER=ema|edge`, default `ema`). On the async-lite path drop
-    `blendAlphaTemporal` (0.85).
-C4. Guided filter: add coefficient EMA (0.5, as on macOS) to the D3D11 implementation; align CPU fallback defaults
-    with GPU (r=4, eps=1e-4 → both `5e-4` after A/B; make eps env-tunable as today).
-C5. Subject presence: confirmed-empty requires ≥ 1500 ms AND coverage < 0.2 %; collapse guard upper bound 98 %.
-C6. Structured log on EP selection (`keyer_provider`) and on every `fallback_reason`/`degradation_stage` change.
+### Block C — Preprocess compute shader (`compose/gpu_preprocess.{h,cpp}` + HLSL string)
+C1. NV12 (two SRVs: R8 luma + R8G8 chroma) or YUY2 → letterboxed, box-downsampled, normalised ((v-0.5)/0.5) NCHW fp32 tensor
+    written into an `ID3D11Buffer` (`D3D11_BIND_UNORDERED_ACCESS`, `D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED`)
+    sized for the current tier (512/320/256). Reuse the WP2 letterbox mapping struct so the alpha crop is identical.
+C2. One buffer per ring slot; shared handle opened in D3D12 (`ID3D12Device::OpenSharedHandle`) once per (slot, size).
+C3. Unit test for the letterbox/tensor index math shared with the CPU path (the CPU reference from WP2 must produce the same
+    mapping; a ctest compares the mapping tables).
 
-### Block D — Webapp platform profile (`/Users/gabrielbaeuerle/broadify/lib/meeting/meeting-keyer-profile.ts` + sync hook)
-D1. `buildAutomaticMeetingKeyerPatch(platform)` — platform from the bridge status (`platform: "win32"|"darwin"`,
-    add to the status snapshot if missing). Windows: edge_stabilization_strength 0.25, erode 0.25, feather 1;
-    macOS: 0.5 / 0 / 1 (A/B-verified 21.08.).
-D2. Only re-send the keyer patch when its content changed (already) AND not on every session hydration (guard against
-    identical payloads after hydration).
-D3. Unit tests for the profile per platform.
+### Block D — Inference with IO binding (`keyer/modnet_keyer.cpp`)
+D1. When the flag is on: `OrtDmlApi::CreateGPUAllocationFromD3DResource` on the opened D3D12 input buffer → `Ort::Value` bound as
+    input via `Ort::IoBinding`; output bound to an EP-allocated device tensor; after `Run`, `GetD3D12ResourceFromAllocation` gives
+    the output resource, which is shared back to D3D11 (`CreateSharedHandle` on the D3D12 resource → `OpenSharedResource1`) as the
+    alpha source buffer. Fence: D3D11 signals after preprocess, D3D12 queue waits; D3D12 signals after `Run`, D3D11 waits before
+    the guided pass. `Run` stays on the program thread for the fused path (single caller per session).
+D2. Sessions per tier (WP2 prebuilt) keep working; IO binding objects are per (tier, slot).
+D3. Fallback: any failure in D1 (API missing, allocation failed) → log `keyer_gpu_binding_unavailable` once and use the rc.21 CPU
+    tensor path for that session; status field `keyer_io_binding: true|false`.
 
-### Block E — Docs
-E1. `docs/bridge/features/meeting-keyer-windows.md` (pipeline diagram, env/default matrix, tuning guide).
+### Block E — Refine + composite on the GPU (`compose/d3d11_compositor.cpp`)
+E1. Guided filter consumes the alpha buffer directly (SRV over the shared buffer; convert to the existing R32F/R8 plane with one
+    dispatch) — no CPU readback of the raw mask on the GPU path; coefficient EMA (WP2) unchanged.
+E2. Compositor samples the camera NV12/YUY2 texture directly (YUV→RGB in-shader, studio range per MF attributes), the refined
+    alpha, and the existing background/logo textures; writes (a) an NV12 output texture (luma + chroma passes) and (b) only when a
+    CPU consumer exists (recorder, MJPEG preview, FrameBus, VCam-TCP until WP4) the RGBA staging readback via the existing ring
+    (WP1, opt-in) or blocking Map.
+E3. Camera-frame CPU consumers that still need RGBA while the flag is on (recorder, preview) get it from the compositor readback,
+    never from a second conversion.
+
+### Block F — Self-test, telemetry, docs
+F1. `meeting-helper --gpu-selftest`: creates the GpuContext on WARP (`D3D_DRIVER_TYPE_WARP` / WARP adapter) when no HW adapter,
+    runs preprocess → (DML if available, else skip) → composite on a synthetic NV12 frame, prints JSON `{ok, stages, ms}`; wired into
+    the Windows release smoke (`scripts/*windows*smoke*` / `test-release.yml`) so CI executes the GPU path, not only compiles it.
+F2. `keyer.get`/`state.get`: `gpu_resident: true|false`, `gpu_capture: dxgi|cpu`, `keyer_io_binding`, per-stage ms
+    (`preprocess_ms`, `inference_ms`, `refine_ms`, `composite_ms`), `cpu_frame_copies_per_frame` (must be 0 with only a VCam consumer).
+F3. Docs: `docs/bridge/features/meeting-windows-performance.md` (flag, A/B guide, fallbacks, telemetry) and the design doc's
+    status section.
 
 ## Acceptance criteria
-1. ctests for A4 pass; no nearest sampling remains in the tensor build.
-2. No `rebuildSessionForSize` call reachable from `apply()` (review + unit test of the tier switch).
-3. Governor Off never yields an unkeyed camera frame (unit test of the compositor input selection).
-4. Shader has one alpha curve; postprocess works at ≥ 960 wide (unit test of the work-size selection).
-5. Webapp profile tests per platform pass; bridge status exposes `platform`.
-6. lint/jest/build/helper build/ctest green in both repos.
+1. Flag off: no behavioural change (all existing ctests/jest unchanged; review confirms every new path is gated).
+2. Flag on, steady state, VCam-only consumer: `cpu_frame_copies_per_frame == 0` (telemetry) — code review + selftest assertion.
+3. GpuContext shares one LUID across D3D11, D3D12 and DML (telemetry fields equal); shared fence round-trip in the selftest.
+4. GPU capture falls back to the CPU path on failure with a logged reason; WP0 reopen/watchdog behaviour unchanged (existing tests).
+5. Letterbox/tensor mapping identical between CPU and GPU preprocess (ctest).
+6. IO binding fallback to CPU tensors on failure (unit test of the decision logic; selftest path on WARP skips DML gracefully).
+7. `--gpu-selftest` runs in the Windows CI smoke and passes on WARP.
+8. lint / jest / build / macOS helper build / ctests green; Windows compile + selftest in CI.
+9. Docs updated; comments in English; env flag documented.
+
+## Review
+- Round: 0/3
+- Verdict: (pending)
 
 ## Verification
-
-- `npm run lint` — passed.
-- `npm run test:jest` — passed: 173 suites, 1951 tests.
-- `npm run build` — passed: includes Jest, release contracts, `build:protocol`, `build:bridge`, `build:graphics-renderer`, and app build.
-- `npm run build:meeting-helper` — passed on macOS; helper and all native test binaries built.
-- `npm run test:meeting-helper-native` — expected nonzero on this macOS sandbox: 21/22 CTests passed; only `meeting_recorder_writer_test` failed with known `audio_input_rejected` microphone sandbox issue.
-
-Deviations / macOS limits:
-- Windows DirectML, D3D11 compositor, and OpenVINO runtime paths were not compiled or exercised on macOS; `_WIN32` gating was preserved and macOS helper build passed.
-- Manual Windows field checks still required: remove/rename the models dir and confirm `model_missing`, one retry launch per 30 s, and no warmup thread churn.
-- `lastGoodMask` hold and `AsyncKeyerWorker::alive()` integration tests remain blocked by `frame_pipeline.cpp` structure; covered by review/manual checks.
-## Review
-- Round: 3/3
-- Verdict: STOP — round 3 without PASS (bounded loop exhausted). HANDOFF to human.
-- Resolved across rounds: A1–A4, B1 (prebuilt tiers), B3 (lastGoodMask Off hold), B4 (worker liveness), B5, C1–C3, C5, C6, C4 (coeff
-  EMA), D-bridge (`platform`), E docs; macOS gating of all tuned constants; honest load-failure status + 30 s (effective 30–60 s)
-  retry gate; async OpenVINO first load.
-- Open after round 3 (both small, Windows-only):
-  - HF-A COMPILE ERROR: `src/main.cpp:263-268` (OpenVINO self-test, `#if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)`) passes
-    `options.loadInApply` but `Options` has no such member → MSVC C2039. Fix: pass `true` (self-test wants a synchronous load).
-  - HF-B REGRESSION: `matting_backend.cpp:55-57` with `loadInApply=false` a load-stage OpenVINO failure stays on OpenVINO forever
-    (30 s retries) instead of handing over to DirectML. Fix: in `FallbackMattingKeyer::warmupForPerformanceMode`, when the primary
-    warmup fails with a load-stage reason other than `loading`/`not_loaded`, log `matting_backend_fallback`, `primary_.reset()`, and
-    return `fallback_->warmupForPerformanceMode(mode)` (safe: the program thread never touches the keyer while `fusedWarmupBusy`).
-- Notes: retry cadence effectively 30–60 s (document or drop the keyer-internal backoff when `loadInApply=false`); add a ctest
-  asserting that a failed load preserves `model_missing` under `loadInApply=false`.
-- Handoff to human: decision needed — apply HF-A/HF-B as a handoff fix (one commit, re-verified) or leave WP2 out of the next RC.
-
-## Verification
-
-- `npm run lint` — passed.
-- `npm run test:jest` — passed: 173 suites, 1951 tests.
-- `npm run build` — passed: includes Jest, release contracts, `build:protocol`, `build:bridge`, `build:graphics-renderer`, and app build.
-- `npm run build:meeting-helper` — passed on macOS; helper and all native test binaries built.
-- `npm run test:meeting-helper-native` — expected nonzero on this macOS sandbox: 21/22 CTests passed; only `meeting_recorder_writer_test` failed with known `audio_input_rejected` microphone sandbox issue.
-
-Deviations / macOS limits:
-- Windows DirectML, D3D11 compositor, and OpenVINO runtime paths were not compiled or exercised on macOS; `_WIN32` gating was preserved and macOS helper build passed.
-- Manual Windows field checks still required: remove/rename the models dir and confirm `model_missing`, one retry launch per 30 s, and no warmup thread churn.
-- `lastGoodMask` hold and `AsyncKeyerWorker::alive()` integration tests remain blocked by `frame_pipeline.cpp` structure; covered by review/manual checks.
-## Review
-- Round: 2/3
-- Verdict: MUST-FIX (round 2) — round-1 M2–M7 resolved, M1/M8 partially.
-- Must-fix (open):
-  - MF-1 `modnet_keyer.cpp` ~:240-244 + `frame_pipeline.cpp` ~:2424, 2488-2516: a failed first load must NOT be masked as
-    `"loading"`. `apply()` sets `loading` only while a load has never been attempted or the warmup thread is in flight; otherwise it
-    returns the stored failure status (`model_missing`, `session_create_failed`, `model_hash_mismatch`, …) untouched. The reload is
-    triggered from the warmup block on any fallback once `kModelLoadRetryInterval` (30 s) elapsed, and the warmup thread is
-    joined/re-armed independently of the governor/warm-handover blocks (must work with `BROADIFY_MEETING_AUTO_DEGRADE=0` and
-    `BROADIFY_MEETING_WARM_HANDOVER=0`). No thread churn (max one warmup thread per 30 s while failing). Unit test with
-    `BROADIFY_ENABLE_MODNET=0`-independent logic where possible (state machine factored out).
-  - MF-2 `matting_backend.cpp` ~:162-186 / `openvino_keyer.cpp` ~:113-116: plumb `loadInApply` into `OpenVinoKeyer` (and the
-    fallback wrapper) so the OpenVINO first load also runs on the warmup thread; same status/retry semantics as MF-1.
-- Notes (do if cheap): reset the D3D11 guided coefficient history (`hasPrevAb`) in `resetKeyerPathState`; document the parallel
-  first-load of the async KeyerChain instance; tests for `lastGoodMask` hold and `AsyncKeyerWorker::alive()` are BLOCKED by the
-  frame_pipeline structure — record as manual checks (models dir removed → `model_missing`, one retry / 30 s, no thread churn).
-- Handoff to human (if any): Windows compile only in CI; first-load/retry behaviour is a field check.
-
-Round 2 implementation notes:
-- MF-1 fixed: async MODNet `apply()` no longer overwrites post-attempt load failures with `loading`; the fused warmup thread is joined outside governor/warm-handover blocks and retries any fallback through a 30 s retry gate.
-- MF-2 fixed: OpenVINO accepts `loadInApply`, warms through `warmupForPerformanceMode`, and the fallback wrapper preserves async load-stage failures for the same retry semantics.
-- Cheap notes done: D3D11 guided coefficient history resets on keyer-path reset; the Windows keyer doc now calls out parallel first-load memory for the fused and async KeyerChain instances.
-- Manual checks recorded: models dir removed -> `model_missing`, one retry / 30 s, no thread churn; `lastGoodMask` hold and `AsyncKeyerWorker::alive()` tests remain blocked by the frame-pipeline structure.
-
-## Verification
-
-- `npm run lint` — passed.
-- `npm run test:jest` — passed: 173 suites, 1951 tests.
-- `npm run build` — passed: includes Jest, release contracts, `build:protocol`, `build:bridge`, `build:graphics-renderer`, and app build.
-- `npm run build:meeting-helper` — passed on macOS; helper and all native test binaries built.
-- `npm run test:meeting-helper-native` — expected nonzero on this macOS sandbox: 21/22 CTests passed; only `meeting_recorder_writer_test` failed with known `audio_input_rejected` microphone sandbox issue.
-
-Deviations / macOS limits:
-- Windows DirectML, D3D11 compositor, and OpenVINO runtime paths were not compiled or exercised on macOS; `_WIN32` gating was preserved and macOS helper build passed.
-- Manual Windows field checks still required: remove/rename the models dir and confirm `model_missing`, one retry launch per 30 s, and no warmup thread churn.
-- `lastGoodMask` hold and `AsyncKeyerWorker::alive()` integration tests remain blocked by `frame_pipeline.cpp` structure; covered by review/manual checks.
-## Review
-- Round: 1/3
-- Verdict: MUST-FIX (round 1)
-- Must-fix (open):
-  - M1 B2: initial MODNet load (hash + 3 tier sessions + warmups, up to several seconds) still runs synchronously in `apply()` →
-    `ensureLoaded()` on the program thread. Run the initial load on the existing `fusedWarmupThread` (same `fusedWarmupBusy` guard);
-    while `loaded_ == false`, `apply()` returns immediately with `fallbackReason="loading"` (no blocking) and the program branch serves
-    the Off/hold compositor input until ready. ctest for the non-blocking behaviour (stub that sleeps in session creation).
-  - M2 B3: the Off-tier "hold last mask" branch is dead: `resetKeyerPathState()` wipes `lastFusedRawMask` on every path change (incl.
-    fused→async_lite and the first Off frame). Keep a separate `lastGoodMask` (updated from the fused publish AND the async worker's
-    selected pair) that `resetKeyerPathState` does not clear, and source the Off hold from it. Unit test: fused→lite→off keeps a mask.
-  - M3 B4: `workerAlive` is never passed to `MaskRetention::decide()` (defaults true) → a dead worker freezes the stale mask forever.
-    Plumb real worker liveness (thread joinable + last-publish heartbeat) at both call sites; unit test.
-  - M4 macOS unchanged: the CPU guided-refine defaults (8/1e-3 → 4/5e-4) and work grid (512 → 960) must apply on Windows only —
-    gate with `#if defined(_WIN32)` (non-Windows keeps 512 / 8 / 1e-3).
-  - M5 macOS unchanged: gate `kMaxForegroundCoverage` 0.98 and the subject-presence thresholds (0.2 % / 1500 ms) to Windows; keep
-    0.92 / 0.003 / 400 ms on non-Windows. Fix `keyerDegraded` so it is true only for governor degradation / fallback while the keyer is
-    enabled (not for `keyer_disabled`).
-  - M6 C4: implement the guided-filter coefficient EMA (0.5) in the D3D11 implementation (as the macOS MPS path does); env
-    `BROADIFY_MEETING_GUIDED_COEFF_EMA` (default 0.5, 0 = off). Windows-only.
-  - M7 C3: replace the `maskAgeMs == 0.0` sentinel in `postprocessAlpha` with an explicit `fusedPath` parameter; make sure the Windows
-    async-lite path always has exactly one temporal smoother, and cadence-reused fused frames do not stack `stabilizeAlphaEdges` on the
-    EMA'd mask when the smoother is `ema`.
-  - M8 tests/logging: add a unit test for the tier switch without rebuild (`PREBUILD_TIERS` incl. excluded-tier behaviour documented),
-    and log `degradation_stage` changes (C6).
-- Notes: document 3 sessions × 2 instances memory; box downsample could use SIMD (defer); BLOCKED for the reviewer: whether macOS
-  production ever hits the ORT/letterbox path depends on the webapp's default keyer model (CoreML path untouched).
-- Handoff to human (if any): Windows compile only in CI.
+- [ ] Tests pass
+- [ ] Lint / type-check pass
+- [ ] Windows CI compile + selftest on the RC
