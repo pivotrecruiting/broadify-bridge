@@ -8,7 +8,25 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#include <d3d11_4.h>
+#include <guiddef.h>
+#include <wrl/client.h>
+#endif
+
 namespace broadify::meeting {
+
+#ifdef _WIN32
+struct GpuCameraFrame {
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+  uint32_t subresourceIndex = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint64_t timestampNs = 0;
+  uint64_t fenceValue = 0;
+  GUID subtype{};
+};
+#endif
 
 struct CameraInfo {
   int cameraIndex = 0;
@@ -68,6 +86,19 @@ class CameraSource {
   virtual bool isRunning() const = 0;
   virtual int activeCameraIndex() const = 0;
   virtual bool copyLatestFrame(VideoFrame &frame) = 0;
+#ifdef _WIN32
+  virtual bool copyLatestGpuFrame(GpuCameraFrame &frame) {
+    (void)frame;
+    return false;
+  }
+  virtual bool copyLatestGpuFrameIfNew(uint64_t lastTimestampNs,
+                                       GpuCameraFrame &frame) {
+    if (!copyLatestGpuFrame(frame) || frame.timestampNs == lastTimestampNs) {
+      return false;
+    }
+    return true;
+  }
+#endif
   virtual bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
     if (!copyLatestFrame(frame) || frame.timestampNs == lastTimestampNs) {
       return false;

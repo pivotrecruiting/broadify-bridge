@@ -2,12 +2,14 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <iostream>
 #include <iterator>
 
 #ifdef _WIN32
 #include <d3d11.h>
 #include <d3d12.h>
+#include <d3d10.h>
 #include <dxgi1_6.h>
 #include <wrl/wrappers/corewrappers.h>
 #endif
@@ -125,6 +127,14 @@ bool GpuContextWin::initialize() {
     logGpuContextEvent("unavailable", failureReason_);
     return false;
   }
+  Microsoft::WRL::ComPtr<ID3D10Multithread> multithread;
+  hr = d3d11Device_.As(&multithread);
+  if (FAILED(hr) || multithread == nullptr ||
+      !multithread->SetMultithreadProtected(TRUE)) {
+    failureReason_ = "d3d11_multithread_protection_failed " + hrHex(hr);
+    logGpuContextEvent("unavailable", failureReason_);
+    return false;
+  }
   hr = baseContext.As(&d3d11Context_);
   if (FAILED(hr) || !d3d11Context_) {
     failureReason_ = "d3d11_context4_unavailable " + hrHex(hr);
@@ -179,7 +189,11 @@ bool GpuContextWin::initialize() {
 }
 
 bool GpuContextWin::signalFromD3D11(uint64_t value) {
-  return available() && SUCCEEDED(d3d11Context_->Signal(d3d11Fence_.Get(), value));
+  if (!available()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(immediateContextMutex_);
+  return SUCCEEDED(d3d11Context_->Signal(d3d11Fence_.Get(), value));
 }
 
 bool GpuContextWin::waitOnD3D12(uint64_t value) {
@@ -191,7 +205,11 @@ bool GpuContextWin::signalFromD3D12(uint64_t value) {
 }
 
 bool GpuContextWin::waitOnD3D11(uint64_t value) {
-  return available() && SUCCEEDED(d3d11Context_->Wait(d3d11Fence_.Get(), value));
+  if (!available()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(immediateContextMutex_);
+  return SUCCEEDED(d3d11Context_->Wait(d3d11Fence_.Get(), value));
 }
 #endif
 

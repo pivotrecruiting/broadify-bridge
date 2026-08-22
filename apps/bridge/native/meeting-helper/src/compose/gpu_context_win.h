@@ -4,6 +4,7 @@
 #include "compose/gpu_frame_ring.h"
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 #ifdef _WIN32
@@ -45,6 +46,7 @@ class GpuContextWin {
   ID3D12Fence *d3d12Fence() const { return d3d12Fence_.Get(); }
   ID3D11Fence *d3d11Fence() const { return d3d11Fence_.Get(); }
   GpuFrameRing &frameRing() { return frameRing_; }
+  std::mutex &immediateContextMutex() { return immediateContextMutex_; }
 
   bool signalFromD3D11(uint64_t value);
   bool waitOnD3D12(uint64_t value);
@@ -58,6 +60,7 @@ class GpuContextWin {
   std::string failureReason_;
   GpuContextTelemetry telemetry_;
   GpuFrameRing frameRing_{3};
+  std::mutex immediateContextMutex_;
   Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter_;
   Microsoft::WRL::ComPtr<ID3D11Device5> d3d11Device_;
   Microsoft::WRL::ComPtr<ID3D11DeviceContext4> d3d11Context_;

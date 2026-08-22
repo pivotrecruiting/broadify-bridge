@@ -175,14 +175,6 @@ struct NativeMediaTypeChoice {
   bool valid = false;
 };
 
-struct GpuCameraFrame {
-  ComPtr<ID3D11Texture2D> texture;
-  uint32_t subresourceIndex = 0;
-  uint64_t timestampNs = 0;
-  uint64_t fenceValue = 0;
-  GUID subtype{};
-};
-
 int subtypePreference(const GUID &subtype) {
   if (IsEqualGUID(subtype, MFVideoFormat_NV12)) {
     return 0;
@@ -230,7 +222,8 @@ bool betterNativeMediaType(const NativeMediaTypeChoice &candidate,
 NativeMediaTypeChoice chooseNativeMediaType(IMFSourceReader *reader,
                                             uint32_t requestedWidth,
                                             uint32_t requestedHeight,
-                                            uint32_t requestedFps) {
+                                            uint32_t requestedFps,
+                                            bool gpuCapture) {
   NativeMediaTypeChoice best;
   for (DWORD index = 0;; ++index) {
     ComPtr<IMFMediaType> type;
@@ -253,6 +246,10 @@ NativeMediaTypeChoice chooseNativeMediaType(IMFSourceReader *reader,
         FAILED(type->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
         FAILED(MFGetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, &width, &height)) ||
         width == 0u || height == 0u) {
+      continue;
+    }
+    if (gpuCapture && !IsEqualGUID(subtype, MFVideoFormat_NV12) &&
+        !IsEqualGUID(subtype, MFVideoFormat_YUY2)) {
       continue;
     }
     MFGetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
@@ -431,11 +428,30 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     return true;
   }
 
+  bool copyLatestGpuFrame(GpuCameraFrame &frame) {
+    std::lock_guard<std::mutex> lock(frameMutex_);
+    if (!hasGpuFrame_) {
+      return false;
+    }
+    frame = latestGpuFrame_;
+    return true;
+  }
+
+  bool copyLatestGpuFrameIfNew(uint64_t lastTimestampNs, GpuCameraFrame &frame) {
+    std::lock_guard<std::mutex> lock(frameMutex_);
+    if (!hasGpuFrame_ || latestGpuFrame_.timestampNs == lastTimestampNs) {
+      return false;
+    }
+    frame = latestGpuFrame_;
+    return true;
+  }
+
   bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
                              std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(frameMutex_);
     return frameCv_.wait_until(lock, deadline, [this, lastTimestampNs] {
-      return hasFrame_ && latestFrame_.timestampNs != lastTimestampNs;
+      return (hasFrame_ && latestFrame_.timestampNs != lastTimestampNs) ||
+             (hasGpuFrame_ && latestGpuFrame_.timestampNs != lastTimestampNs);
     });
   }
 
@@ -585,7 +601,11 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 
     const NativeMediaTypeChoice nativeChoice =
         chooseNativeMediaType(reader.Get(), requestedWidth, requestedHeight,
-                              requestedFps);
+                              requestedFps, gpuCapture);
+    if (gpuCapture && !nativeChoice.valid) {
+      initError_ = "Camera does not expose a native NV12/YUY2 DXGI format.";
+      return false;
+    }
     if (nativeChoice.valid) {
       reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr,
                                   nativeChoice.type.Get());
@@ -701,18 +721,20 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
           GpuCameraFrame gpuFrame;
           gpuFrame.timestampNs = nowNs();
           gpuFrame.subtype = currentSubtype_;
+          gpuFrame.width = frameWidth_;
+          gpuFrame.height = frameHeight_;
           dxgiBuffer->GetSubresourceIndex(&gpuFrame.subresourceIndex);
           if (SUCCEEDED(dxgiBuffer->GetResource(IID_PPV_ARGS(&gpuFrame.texture)))) {
-            GpuContextWin &gpu = GpuContextWin::shared();
-            GpuFrameSlot slot = gpu.frameRing().acquireNext();
-            gpuFrame.fenceValue = slot.fenceValue;
-            latestGpuFrame_ = gpuFrame;
-            gpu.signalFromD3D11(slot.fenceValue);
+            {
+              std::lock_guard<std::mutex> lock(frameMutex_);
+              latestGpuFrame_ = std::move(gpuFrame);
+              hasGpuFrame_ = true;
+            }
+            frameCv_.notify_all();
           }
         }
       }
-      // Until the downstream stages consume GpuCameraFrame directly, keep the
-      // rc.21 VideoFrame contract alive through the same reader callback.
+      return;
     }
     ComPtr<IMFMediaBuffer> buffer;
     if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) {
@@ -800,6 +822,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   mutable std::mutex frameMutex_;
   std::condition_variable frameCv_;
   bool hasFrame_ = false;
+  bool hasGpuFrame_ = false;
   VideoFrame latestFrame_;
 };
 
@@ -848,6 +871,15 @@ class MfCaptureSession {
 
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
     return callback_ ? callback_->copyLatestFrameIfNew(lastTimestampNs, frame)
+                     : false;
+  }
+
+  bool copyLatestGpuFrame(GpuCameraFrame &frame) {
+    return callback_ ? callback_->copyLatestGpuFrame(frame) : false;
+  }
+
+  bool copyLatestGpuFrameIfNew(uint64_t lastTimestampNs, GpuCameraFrame &frame) {
+    return callback_ ? callback_->copyLatestGpuFrameIfNew(lastTimestampNs, frame)
                      : false;
   }
 
@@ -1069,6 +1101,20 @@ class MediaFoundationCameraSource final : public CameraSource {
     const std::shared_ptr<MfCaptureSession> session = programSession();
     return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
   }
+
+#ifdef _WIN32
+  bool copyLatestGpuFrame(GpuCameraFrame &frame) override {
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->copyLatestGpuFrame(frame) : false;
+  }
+
+  bool copyLatestGpuFrameIfNew(uint64_t lastTimestampNs,
+                               GpuCameraFrame &frame) override {
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->copyLatestGpuFrameIfNew(lastTimestampNs, frame)
+                   : false;
+  }
+#endif
 
   bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
                              std::chrono::steady_clock::time_point deadline) override {
