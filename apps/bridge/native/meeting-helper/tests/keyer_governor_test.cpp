@@ -84,17 +84,17 @@ int main() {
     // seedProbe heuristic (area scaling from the 512 probe: x0.39 for 320,
     // x0.25 for 256).
     KeyerAutoGovernor governor(testConfig());
-    governor.seedProbe(30.0);  // 30*0.39=11.7 <= 16.7
+    governor.seedProbe(26.0);
+    ok &= expect(governor.tier() == GovernorTier::Full512,
+                 "seed 26ms -> Full512");
+    governor.reset();
+    governor.seedProbe(60.0);  // 60*0.39=23.4 <= 33.3
     ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                 "seed 30ms -> Balanced320");
+                 "seed 60ms -> Balanced320");
     governor.reset();
-    governor.seedProbe(60.0);  // 60*0.25=15 <= 16.7
+    governor.seedProbe(120.0);  // 120*0.25=30 <= 33.3
     ok &= expect(governor.tier() == GovernorTier::Performance256,
-                 "seed 60ms -> Performance256");
-    governor.reset();
-    governor.seedProbe(120.0);  // 120*0.25=30 > 16.7, async still useful
-    ok &= expect(governor.tier() == GovernorTier::Lite256,
-                 "seed 120ms -> Lite256");
+                 "seed 120ms -> Performance256");
     governor.reset();
     // The spec case: 194ms at 512 with a 33.3ms budget. 194*0.25=48.5 does
     // not fit the fused budget but is well under offInferenceMs (120), so
@@ -108,8 +108,25 @@ int main() {
     governor.reset();
     governor.seedProbe(60.0);
     governor.seedProbe(500.0);  // second seed must be ignored
-    ok &= expect(governor.tier() == GovernorTier::Performance256,
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
                  "seedProbe is one-shot");
+  }
+
+  {
+    // The climb threshold is derived from the actual step-down threshold and
+    // clamped to it, so the hysteresis band cannot invert even if a future
+    // config accidentally sets stepUpFactor > 1. A 34ms async estimate would
+    // immediately step down at Performance256 (threshold 33.3ms); it must not
+    // be allowed to step up from Lite256.
+    KeyerGovernorConfig config = testConfig();
+    config.stepUpFactor = 1.4;
+    KeyerAutoGovernor governor(config);
+    governor.seedProbe(400.0);  // Lite256
+    governor.maybeStepUp(at(1));
+    feed(governor, 34.0, 10, at(1));
+    governor.maybeStepUp(at(12));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "step-up band never inverts");
   }
 
   {
@@ -398,11 +415,11 @@ int main() {
     governor.reset();
     ok &= expect(std::string(governor.performanceModeForTier()) == "high_quality",
                  "Full512 -> high_quality");
-    governor.seedProbe(30.0);
+    governor.seedProbe(60.0);
     ok &= expect(std::string(governor.performanceModeForTier()) == "balanced",
                  "Balanced320 -> balanced");
     governor.reset();
-    governor.seedProbe(60.0);
+    governor.seedProbe(120.0);
     ok &= expect(std::string(governor.performanceModeForTier()) == "performance",
                  "Performance256 -> performance");
     governor.reset();

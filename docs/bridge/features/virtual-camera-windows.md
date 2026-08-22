@@ -118,6 +118,12 @@ Der Raw-Frame-Server sendet nur, wenn ein VCam-Client verbunden ist. MJPEG
 Preview-Encoding laeuft nur fuer verbundene MJPEG-Clients und wird bei aktiver
 VCam auf 10 fps begrenzt, damit die Raw-Frame-Ausgabe Vorrang hat.
 
+Seit rc.18 field-fix liest der D3D11-Guided-Refine-Pfad die aktuelle Maske
+zurueck; der finale D3D11-Staging-Ring ist nur mit
+`BROADIFY_MEETING_STAGING_RING=1` aktiv. Fuer Hybrid-GPU-A/B-Tests gibt es
+`BROADIFY_MEETING_GPU_POLICY=split` (Compositor Default-Adapter, DirectML
+High-Performance); `auto` bleibt der gemeinsame Adapterpfad.
+
 ## Registrierung bei der Installation
 
 - **NSIS-Installer (Standard):** ist seit `nsis.perMachine: true`

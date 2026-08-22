@@ -123,10 +123,10 @@ DmlCreateDeviceFn resolveDmlCreateDevice() {
   return fn;
 }
 
-OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
-                                         const OrtDmlApi *dmlApi,
-                                         std::string *adapterStatus) {
-  const D3DAdapterInfo &adapter = sharedD3DAdapter();
+OrtStatus *appendDirectMlOnSelectedAdapter(Ort::SessionOptions &sessionOptions,
+                                           const OrtDmlApi *dmlApi,
+                                           std::string *adapterStatus) {
+  const D3DAdapterInfo &adapter = directMlD3DAdapter();
   if (!adapter.available || dmlApi == nullptr) {
     return nullptr;
   }
@@ -139,7 +139,7 @@ OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
   }
 
   D3D12_COMMAND_QUEUE_DESC queueDesc{};
-  queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
   queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
   ComPtr<ID3D12CommandQueue> queue;
   hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
@@ -531,12 +531,11 @@ class ModnetKeyer::Impl {
       sessionOptions.AddFreeDimensionOverrideByName(
           overrideDim.name.c_str(), overrideDim.value);
     }
-    // DirectML device selection. Device 0 (the legacy default) is on hybrid
-    // laptops usually the weak Intel iGPU rather than the discrete NVIDIA/AMD
-    // GPU -> slow inference, stale masks, keyer flicker. Prefer the DML2 API,
-    // which asks DXGI for the HighPerformance (discrete) GPU adapter, and fall
-    // back to the legacy device-0 append (then CPU) if DML2 or a GPU is
-    // unavailable. BROADIFY_MEETING_KEYER_DML_LEGACY=1 forces the old device 0.
+    // DirectML device selection. By default DML1 uses the same adapter policy
+    // as the compositor; BROADIFY_MEETING_GPU_POLICY=split restores the rc.12
+    // topology (compositor default adapter, DML HighPerformance) for A/B.
+    // DML2 and the legacy device-0 append remain fallbacks.
+    // BROADIFY_MEETING_KEYER_DML_LEGACY=1 forces the old device 0.
     // Skipped when the self-test forces the CPU provider (see
     // selfTestForcesCpuProvider above); status_.provider then stays "cpu".
     // The sequential / mem-pattern settings above are harmless for CPU.
@@ -555,8 +554,8 @@ class ModnetKeyer::Impl {
         }
       }
       if (dmlApi != nullptr) {
-        dmlStatus = appendDirectMlOnSharedAdapter(sessionOptions, dmlApi,
-                                                  &status_.gpuAdapter);
+        dmlStatus = appendDirectMlOnSelectedAdapter(sessionOptions, dmlApi,
+                                                    &status_.gpuAdapter);
         if (dmlStatus == nullptr && !status_.gpuAdapter.empty()) {
           status_.provider = "directml";
         } else {

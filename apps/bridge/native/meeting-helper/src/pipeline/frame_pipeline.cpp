@@ -2857,6 +2857,8 @@ void runFramePipeline(const Options &options,
 #if defined(_WIN32)
         state.compositorAdapter = d3d11CompositorAdapterStatus();
         state.keyerMetrics.cameraTextureUploads = d3d11CompositorCameraUploadCount();
+        state.keyerMetrics.stagingReadbackDepth =
+            d3d11CompositorStagingReadbackDepth();
 #endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
@@ -2866,13 +2868,13 @@ void runFramePipeline(const Options &options,
     }
     const auto now = std::chrono::steady_clock::now();
 #if defined(_WIN32)
-    if (nextFrameAt > now + frameInterval) {
-      nextFrameAt = now + frameInterval;
-    }
+    nextFrameAt = clampFramePacingDeadline(nextFrameAt, now, frameInterval);
     if (nextFrameAt > now) {
       if (runtime.cameraRunning) {
-        if (camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt)) {
-          nextFrameAt = std::chrono::steady_clock::now();
+        camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+        const auto wokeAt = std::chrono::steady_clock::now();
+        if (!framePacingDeadlineReached(wokeAt, nextFrameAt)) {
+          std::this_thread::sleep_until(nextFrameAt);
         }
       } else {
         std::this_thread::sleep_until(nextFrameAt);

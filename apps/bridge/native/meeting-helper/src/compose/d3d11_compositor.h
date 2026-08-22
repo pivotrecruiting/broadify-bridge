@@ -34,6 +34,8 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame);
 
 uint64_t d3d11CompositorCameraUploadCount();
 
+uint32_t d3d11CompositorStagingReadbackDepth();
+
 std::string d3d11CompositorAdapterStatus();
 
 }  // namespace broadify::meeting

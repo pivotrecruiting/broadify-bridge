@@ -25,6 +25,8 @@ int main() {
                "high_performance");
   ok &= expect(parseD3DGpuPolicy("minimum-power") == D3DGpuPolicy::MinimumPower,
                "minimum-power");
+  ok &= expect(parseD3DGpuPolicy("split") == D3DGpuPolicy::Split,
+               "split");
   ok &= expect(parseD3DGpuPolicy("garbage") == D3DGpuPolicy::Auto, "invalid -> auto");
   return ok ? 0 : 1;
 }
