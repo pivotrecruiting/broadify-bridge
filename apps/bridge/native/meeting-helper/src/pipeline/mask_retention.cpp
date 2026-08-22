@@ -56,6 +56,11 @@ MaskRetentionDecision MaskRetention::decide(uint64_t frameTimestampNs,
     return !workerAlive && passthroughActive_ ? MaskRetentionDecision::Passthrough
                                               : MaskRetentionDecision::StaleHold;
   }
+  if (workerAlive) {
+    passthroughActive_ = true;
+    overCapFrames_ = 0u;
+    return MaskRetentionDecision::Passthrough;
+  }
   if (!workerAlive && passthroughActive_) {
     return MaskRetentionDecision::Passthrough;
   }

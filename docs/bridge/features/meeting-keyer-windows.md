@@ -21,7 +21,8 @@ camera frame
   -> fused or async-lite governor path
        - fused: current-frame inference when sustainable
        - async-lite: worker publishes mask/frame pairs
-       - off: keep keyed output with last mask, or background-only if no mask exists
+       - off_reduced: worker keeps running at reduced cadence, with live-snap;
+         stale last-mask hold is capped at 2 s, then background-only
   -> guided edge refine
        - D3D11 when available, CPU fallback otherwise
        - work grid defaults to 960 px wide, aspect-preserving
@@ -40,6 +41,7 @@ camera frame
 | `BROADIFY_MEETING_AUTO_DEGRADE` | `1` | Enables the fused tier governor. |
 | `BROADIFY_MEETING_WARM_HANDOVER` | `1` | Keeps make-before-break transitions between fused and async-lite. |
 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `all` | Prebuilds MODNet sessions. Accepts `all`, `512`, `320`, `256`, or mode names in a comma list. |
+| `BROADIFY_MEETING_DML_QUEUE` | `compute` | DirectML DML1 command queue type. Use `direct` for A/B against rc.21. |
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | unset | Overrides the governor step-down threshold for tests/tuning. |
 | `BROADIFY_MEETING_KEYER_CADENCE` | `auto` | Auto cadence, `0` disabled, or integer frame interval. |
 | `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH` | `1` | Enables cadence reuse of retained fused masks. |
@@ -52,6 +54,16 @@ camera frame
 | `BROADIFY_MEETING_GPU_GUIDED` | `1` | Enables D3D11 guided refine; set `0` for CPU fallback. |
 | `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 1500 ms below 0.2% coverage. |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY` | unset | Forces legacy DirectML device 0 selection. |
+
+## Field A/B
+
+| Scenario | Env | Expected discriminator |
+| --- | --- | --- |
+| rc.18-style DML queue | `BROADIFY_MEETING_DML_QUEUE=compute` | Lower compositor contention; default. |
+| rc.21 queue comparison | `BROADIFY_MEETING_DML_QUEUE=direct` | Direct queue can compete with D3D11 compositor on weak GPUs. |
+| Governor disabled | `BROADIFY_MEETING_AUTO_DEGRADE=0` | `keyer_pipeline_mode` stays fused/fused_cadence unless the keyer fails. |
+| No fused cadence reuse | `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` | `metrics.mask_age_ms` stays near 0 on fused frames. |
+| Prebuild only 256 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS=256` | First-load memory lower; step-up to missing tiers cannot warm. |
 
 ## Tuning
 
@@ -82,7 +94,12 @@ Bridge status exposes:
 - `platform`: Node `process.platform`, surfaced in `meeting_get_state`.
 - `keyer_degraded`: true when the helper is serving a degraded keyer state.
 - `fallback_reason`: reason for the current fallback/degradation.
-- `keyer_pipeline_mode`: `fused`, `fused_cadence`, `async_lite`, or `off`.
+- `provider`: active inference provider, for example `directml`.
+- `gpu_adapter`: selected DirectML/D3D adapter identity.
+- `keyer_pipeline_mode`: `fused`, `fused_cadence`, `async_lite`, or
+  `off_reduced`.
+- `degradation_stage`: `fresh`, `paired`, `stale_hold`, `off_reduced`,
+  `background_only`, or the active fused stage.
 - `active_performance_mode`: effective keyer performance tier.
 
 Native logs include `keyer_provider` changes and fallback-reason changes so

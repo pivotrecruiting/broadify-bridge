@@ -1,6 +1,25 @@
 #include "keyer/ort_session_options_policy.h"
 
+#include <string>
+
 namespace broadify::meeting {
+
+DirectMlQueueType parseDirectMlQueueType(const char *raw) {
+  if (raw != nullptr && std::string(raw) == "direct") {
+    return DirectMlQueueType::Direct;
+  }
+  return DirectMlQueueType::Compute;
+}
+
+const char *directMlQueueTypeLabel(DirectMlQueueType queueType) {
+  switch (queueType) {
+    case DirectMlQueueType::Direct:
+      return "direct";
+    case DirectMlQueueType::Compute:
+      return "compute";
+  }
+  return "compute";
+}
 
 OrtSessionOptionsPolicy makeDirectMlSessionOptionsPolicy(uint32_t inputWidth,
                                                          uint32_t inputHeight) {

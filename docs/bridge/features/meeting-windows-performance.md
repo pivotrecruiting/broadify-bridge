@@ -22,8 +22,10 @@ Der Helper loggt einmal `gpu_adapter_selected` mit Beschreibung und LUID.
 Fuer Akzeptanz muessen beide Felder dieselbe LUID zeigen, wenn DirectML und
 D3D11 aktiv sind. Bei `split` duerfen sie abweichen.
 
-DirectML DML1 wird mit eigener D3D12-Device/Queue initialisiert; die Queue ist
-`D3D12_COMMAND_LIST_TYPE_DIRECT`. DML2 und das Legacy-Device-0 bleiben
+DirectML DML1 wird mit eigener D3D12-Device/Queue initialisiert. Default ist
+`BROADIFY_MEETING_DML_QUEUE=compute`, also
+`D3D12_COMMAND_LIST_TYPE_COMPUTE`; `direct` stellt fuer A/B wieder
+`D3D12_COMMAND_LIST_TYPE_DIRECT` her. DML2 und das Legacy-Device-0 bleiben
 Fallbacks.
 
 ## QoS und Timer
@@ -72,6 +74,17 @@ refined sie erneut gegen den aktuellen Kamera-Frame. Die geplante ein-Frame
 Software-Pipeline (Inference N parallel zu Composite N-1) ist auf WP3
 verschoben.
 
+`Off` ist keine eingefrorene Maske mehr: der Status meldet
+`keyer_pipeline_mode=off_reduced`, der Async-Keyer laeuft mit reduziertem
+Takt weiter, und neue Masken werden per Live-Snap gegen das aktuelle
+Kamera-Frame composited. `stale_hold` darf Luecken nur bis 2 s ueberbruecken;
+danach faellt der Helper auf `background_only`/Passthrough zurueck.
+
+Field-Regression rc.21 wird ueber `keyer.get` diskriminiert:
+`keyer_pipeline_mode`, `degradation_stage`, `fallback_reason`, `provider` und
+`gpu_adapter` zeigen, ob die Maschine in `off_reduced` haengt, ob DirectML
+aktiv ist und welcher Adapter/Queue-A/B-Pfad laeuft.
+
 Zeitbasierte Hintergruende werden nur auf Kamera-, Programm- oder
 Grafik-Aenderungen fortgeschrieben; ohne solche Aenderung gibt es keinen
 separaten Render-Tick.
@@ -95,7 +108,8 @@ Frame-Dauer weiter.
 1. In Windows Task Manager die Spalten fuer GPU Engine/GPU-Auslastung oeffnen.
    Bei Hybrid-Geraeten pruefen, ob DirectML und D3D11 dieselbe GPU/LUID nutzen.
 2. In `keyer.get` `gpu_adapter`, `compositor_adapter`,
-   `keyer_pipeline_mode`, `active_performance_mode`, `metrics.session_run_ms`
-   und `metrics.program_frame_ms` beobachten.
+   `keyer_pipeline_mode`, `degradation_stage`, `fallback_reason`, `provider`,
+   `active_performance_mode`, `metrics.session_run_ms` und
+   `metrics.program_frame_ms` beobachten.
 3. VCam-Verbrauch nur messen, wenn eine App wirklich streamt; eine bloss
    registrierte/armierte Kamera verbindet die DLL nicht dauerhaft.

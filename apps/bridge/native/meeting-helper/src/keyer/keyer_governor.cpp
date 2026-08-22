@@ -122,12 +122,11 @@ void KeyerAutoGovernor::seedMeasuredProbes(double full512Ms,
     tier_ = GovernorTier::Full512;
   } else if (balanced320Ms > 0.0 && balanced320Ms <= threshold) {
     tier_ = GovernorTier::Balanced320;
-  } else if (performance256Ms <= threshold) {
-    tier_ = GovernorTier::Performance256;
-  } else if (performance256Ms <= config_.offInferenceMs) {
-    tier_ = GovernorTier::Lite256;
   } else {
-    tier_ = GovernorTier::Off;
+    // Build-time probes run while sessions are being created and can be
+    // distorted by first-load contention. Never seed below the fused 256 tier
+    // from those probes; Lite/Off require live async samples.
+    tier_ = GovernorTier::Performance256;
   }
   degradeClockStarted_ = false;
   stepUpWatch_ = StepUpWatch::None;
@@ -295,7 +294,7 @@ const char *KeyerAutoGovernor::performanceModeForTier() const {
 const char *KeyerAutoGovernor::pipelineModeLabel(bool cadenceActive) const {
   switch (tier_) {
     case GovernorTier::Off:
-      return "off";
+      return "off_reduced";
     case GovernorTier::Lite256:
       return "async_lite";
     default:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 
 namespace broadify::meeting {
 
@@ -16,6 +17,14 @@ bool shouldWriteFramebusFrame(bool framebusExplicitlyRunning,
                               bool hasProgramFrame,
                               bool programWorkRan,
                               bool heartbeatDue);
+
+bool shouldSubmitAsyncKeyerFrame(bool hasNewCameraFrame,
+                                 bool keyerEnabled,
+                                 bool asyncPathActive,
+                                 bool fusedWarmupInFlight,
+                                 bool governorOffReducedActive,
+                                 uint64_t frameIndex,
+                                 uint32_t reducedCadenceFrames = 4u);
 
 std::chrono::steady_clock::time_point clampFramePacingDeadline(
     std::chrono::steady_clock::time_point nextFrameAt,

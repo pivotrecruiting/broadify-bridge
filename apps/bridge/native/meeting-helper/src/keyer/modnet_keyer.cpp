@@ -180,7 +180,11 @@ OrtStatus *appendDirectMlOnSelectedAdapter(Ort::SessionOptions &sessionOptions,
   }
 
   D3D12_COMMAND_QUEUE_DESC queueDesc{};
-  queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+  const DirectMlQueueType dmlQueueType =
+      parseDirectMlQueueType(std::getenv("BROADIFY_MEETING_DML_QUEUE"));
+  queueDesc.Type = dmlQueueType == DirectMlQueueType::Direct
+                       ? D3D12_COMMAND_LIST_TYPE_DIRECT
+                       : D3D12_COMMAND_LIST_TYPE_COMPUTE;
   queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
   ComPtr<ID3D12CommandQueue> queue;
   hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
