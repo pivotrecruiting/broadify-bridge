@@ -123,3 +123,11 @@ D3. Docs: `docs/bridge/features/virtual-camera-windows.md` (transport, discovery
   (check writer pid alive + heartbeat fresh → log `vcam_shm_control_busy`, fall back to TCP); the selftest uses its own control name
   (`Global\BroadifyVcamControlSelftest`).
 - Notes: `shm_pending` status until the ring is active; `_tcpRunning` under `_lock`.
+
+### WP4 review round 3 — FINAL: one MUST-FIX (spec defect), applied as handoff fix 42f11993
+R2-1..R2-6 resolved. Criteria: 1 met, 2 met on selftest, 3 met, 4 met, 5 met, 6 partial (documented: `tcp` is not byte-for-byte —
+no activation probe, NV12 first, 5 s SHM retry log), 7 = Windows CI on `test-release/wp4-shm`.
+MUST-FIX-1 (`vcam_shm_ring_win.cpp` `isProcessAlive`): `OpenProcess(SYNCHRONIZE)` on the Frame Server (LOCAL SERVICE) is denied for a
+user process → readers counted dead → helper never publishes. Fixed in 42f11993: `PROCESS_QUERY_LIMITED_INFORMATION` +
+`GetExitCodeProcess`, `ERROR_ACCESS_DENIED` = alive. Notes: Local-namespace detour on busy control mapping; selftest stdout
+inheritance proven only by Windows CI. Decision for the human: include WP4 (default `shm`, auto TCP fallback) in rc.27 after CI green.
