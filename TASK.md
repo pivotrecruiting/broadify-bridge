@@ -271,3 +271,12 @@ heartbeat fresh, zero frames" is a stable state with no TCP fallback (helper pub
   possible — else document the CI blind spot explicitly.
 Acceptance: rc.28 behaves like rc.26 in Teams on an unelevated desktop (RGB32 TCP) with full stream-side logging; SHM engages only
 where the privilege exists and never leaves the consumer without frames.
+
+### BF review round 1 — MUST-FIX
+- BF-R1 (M1) `media_stream.cpp`: descriptor offers RGB32 ONLY (like rc.26 tag v0.24.0-rc.26 — no NV12/YUY2, no FRAME_RATE_RANGE attrs)
+  unless `HKCU\Software\Broadify\VCam\OfferNv12` DWORD=1 (read once at Start; documented as experiment flag). Log ONCE per Start the
+  negotiated subtype + buffer kind (`stream_type subtype=RGB32 buffer=memory`) in RequestSample on first sample, and on every SetCurrentMediaType.
+- BF-R2 (N2) `vcam_log.cpp` SDDL: grant LS + Administrators + owner on the log FILE only (and `.1`), no OICI on the directory; keep dir inheritance.
+- BF-R3 (N3) never log SIDs: identity as LOCAL_SERVICE / SYSTEM / interactive / other.
+- BF-R4 (N1) if shared vcam.log is not writable and not owned: try rename to `vcam-legacy.log` before per-pid fallback; field doc mentions per-pid files.
+- BF-R5 (N4) reset `_lastShmSequence` on SHM reopen. (N5) doc note: with SHM armed the ring is written at full cadence even without readers.
