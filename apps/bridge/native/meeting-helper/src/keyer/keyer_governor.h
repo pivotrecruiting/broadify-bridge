@@ -94,10 +94,10 @@ class KeyerAutoGovernor {
   // inference cost scales roughly linearly with input pixel AREA, so relative
   // to the 512 probe a 320 run costs ~(320/512)^2 = 0.39x and a 256 run
   // ~(256/512)^2 = 0.25x. The governor jumps directly to the best tier whose
-  // predicted cost fits the step-down threshold; if not even 256 fits, it
-  // seeds Lite256 (async keeps the program loop unblocked), and if the 256
-  // estimate exceeds offInferenceMs it seeds Off. No-op once seeded or after
-  // samples arrived.
+  // predicted cost fits the step-down threshold; if not even 256 fits, the
+  // measured-probe variant clamps to Performance256 because build-time probes
+  // can be distorted by first-load contention. Lite/Off only come from live
+  // samples. No-op once seeded or after samples arrived.
   void seedProbe(double medianWarmupMs);
   void seedMeasuredProbes(double full512Ms,
                           double balanced320Ms,

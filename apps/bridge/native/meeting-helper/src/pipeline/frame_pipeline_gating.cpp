@@ -19,6 +19,24 @@ bool shouldWriteFramebusFrame(bool framebusExplicitlyRunning,
          (programWorkRan || heartbeatDue);
 }
 
+bool shouldSubmitAsyncKeyerFrame(bool hasNewCameraFrame,
+                                 bool keyerEnabled,
+                                 bool asyncPathActive,
+                                 bool fusedWarmupInFlight,
+                                 bool governorOffReducedActive,
+                                 uint64_t frameIndex,
+                                 uint32_t reducedCadenceFrames) {
+  if (!hasNewCameraFrame || !keyerEnabled || !asyncPathActive ||
+      fusedWarmupInFlight) {
+    return false;
+  }
+  if (!governorOffReducedActive) {
+    return true;
+  }
+  const uint32_t cadence = reducedCadenceFrames == 0u ? 1u : reducedCadenceFrames;
+  return frameIndex % cadence == 0u;
+}
+
 std::chrono::steady_clock::time_point clampFramePacingDeadline(
     std::chrono::steady_clock::time_point nextFrameAt,
     std::chrono::steady_clock::time_point now,

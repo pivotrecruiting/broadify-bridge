@@ -70,26 +70,33 @@ int main() {
   }
 
   {
-    // Hard cap with hysteresis: while the worker is alive, even over-cap masks
-    // stay held. Passthrough only engages after 5 consecutive over-cap frames
-    // when the worker is dead; recovery on a fresh mask is immediate.
+    // Hard cap with hysteresis: a live worker can extend the soft window, but
+    // the hard 2s cap is absolute. When the worker is dead, passthrough still
+    // waits for the configured consecutive-frame streak.
     MaskRetention retention;
     uint64_t frameTs = 1000ull * kMsToNs;
     uint64_t publishTs = 990ull * kMsToNs;
     retention.decide(frameTs, publishTs, 10.0, configuredMaxAge);
-    double age = 1600.0;  // beyond the 1500ms hard cap
+    double age = 1600.0;  // below the 2000ms hard cap
     for (int frame = 0; frame < 4; ++frame) {
       frameTs += 33ull * kMsToNs;
       age += 33.0;
       ok &= expect(retention.decide(frameTs, publishTs, age, configuredMaxAge) ==
                        MaskRetentionDecision::StaleHold,
-                   "worker alive: over-cap frames still hold");
+                   "worker alive: under hard cap still holds");
     }
-    frameTs += 33ull * kMsToNs;
-    age += 33.0;
+    age = 2001.0;
     ok &= expect(retention.decide(frameTs, publishTs, age, configuredMaxAge) ==
-                     MaskRetentionDecision::StaleHold,
-                 "worker alive: 5th over-cap frame still holds");
+                     MaskRetentionDecision::Passthrough,
+                 "worker alive: hard cap forces passthrough");
+  }
+
+  {
+    MaskRetention retention;
+    uint64_t frameTs = 1000ull * kMsToNs;
+    uint64_t publishTs = 990ull * kMsToNs;
+    retention.decide(frameTs, publishTs, 10.0, configuredMaxAge);
+    double age = 2001.0;
     for (int frame = 0; frame < 5; ++frame) {
       frameTs += 33ull * kMsToNs;
       age += 33.0;
@@ -120,16 +127,16 @@ int main() {
     for (int frame = 0; frame < 4; ++frame) {
       frameTs += 33ull * kMsToNs;
       // Two evaluations of the SAME camera frame count as one streak step.
-      retention.decide(frameTs, publishTs, 1600.0, configuredMaxAge,
+      retention.decide(frameTs, publishTs, 2100.0, configuredMaxAge,
                        /*workerAlive=*/false);
-      ok &= expect(retention.decide(frameTs, publishTs, 1600.0,
+      ok &= expect(retention.decide(frameTs, publishTs, 2100.0,
                                     configuredMaxAge,
                                     /*workerAlive=*/false) ==
                        MaskRetentionDecision::StaleHold,
                    "double evaluation of one frame does not double-count");
     }
     frameTs += 33ull * kMsToNs;
-    ok &= expect(retention.decide(frameTs, publishTs, 1600.0, configuredMaxAge,
+    ok &= expect(retention.decide(frameTs, publishTs, 2100.0, configuredMaxAge,
                                   /*workerAlive=*/false) ==
                      MaskRetentionDecision::Passthrough,
                  "streak still completes on the 5th distinct frame");

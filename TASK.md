@@ -161,3 +161,28 @@ Deviations / macOS limits:
 - Notes: document 3 sessions × 2 instances memory; box downsample could use SIMD (defer); BLOCKED for the reviewer: whether macOS
   production ever hits the ORT/letterbox path depends on the webapp's default keyer model (CoreML path untouched).
 - Handoff to human (if any): Windows compile only in CI.
+
+## Field regression (rc.21, 22.08.2026): mask frozen, refreshes every ~60 s — fix set
+Diagnosis: governor lands in `Off` at start (`seedMeasuredProbes` seeds against 0.8×budget and may seed straight into Off when the
+256 probe > 120 ms; probes are measured on the warmup thread while the async KeyerChain instance concurrently builds its own 3 DML
+sessions on the same GPU; DML on the DIRECT queue competes with the compositor). Off = hold `lastGoodMask` + reprobe every 60→120 s
+= exactly "frozen mask, ~10 fresh masks per minute, camera fluid". Fix:
+- GR-1 `keyer_governor.cpp` `seedMeasuredProbes`: never seed below `Performance256` from build-time probes (clamp); Lite/Off only
+  from live samples. Test.
+- GR-2 `frame_pipeline.cpp`: during the fused first-load hold (`fusedWarmupInFlight`) do NOT feed the async worker (no
+  `keyerWorker.submit`, no concurrent KeyerChain load); the worker starts only after the fused load finished or failed. Test of the
+  gating predicate.
+- GR-3 Off tier semantics: Off must never be a frozen hold. In Off, keep the async worker running at a reduced cadence (e.g. every
+  4th frame, `Lite256` sessions) and composite its masks with live-snap; `lastGoodMask` hold only bridges gaps ≤ 2 s. Reprobe logic
+  unchanged. Telemetry `keyer_pipeline_mode:"off_reduced"`.
+- GR-4 `mask_retention.cpp`: StaleHold capped by age (hard cap 2 s) regardless of `workerAlive`; Passthrough after that (WP2's
+  "worker alive" rule only extends the soft window).
+- GR-5 DML queue type env-selectable `BROADIFY_MEETING_DML_QUEUE=compute|direct`, default `compute` (rc.18 behaviour; keying was
+  fine there apart from the ring lag). Keep `direct` available for A/B.
+- GR-6 Bridge `meeting-helper-manager.ts` forwarded env allow-list: add `BROADIFY_MEETING_GPU_POLICY`,
+  `BROADIFY_MEETING_KEYER_PREBUILD_TIERS`, `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH`, `BROADIFY_MEETING_DML_QUEUE`,
+  `BROADIFY_MEETING_STAGING_RING`, `BROADIFY_MEETING_GPU_RESIDENT` (jest test of the list).
+- GR-7 Docs (`meeting-keyer-windows.md`, `meeting-windows-performance.md`): Off semantics, env A/B table, and the field
+  discriminators (`keyer.get` fields: keyer_pipeline_mode, degradation_stage, fallback_reason, provider, gpu_adapter).
+Acceptance: governor tests (no seed below 256 from probes; band); gating predicate test; retention cap test; env list test;
+macOS unchanged; lint/jest/build/helper/ctests green.

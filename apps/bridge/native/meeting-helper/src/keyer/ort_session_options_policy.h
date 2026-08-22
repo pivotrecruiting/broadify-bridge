@@ -19,6 +19,10 @@ struct OrtSessionOptionsPolicy {
   std::vector<OrtFreeDimensionOverride> freeDimensionOverrides;
 };
 
+enum class DirectMlQueueType { Compute, Direct };
+
+DirectMlQueueType parseDirectMlQueueType(const char *raw);
+const char *directMlQueueTypeLabel(DirectMlQueueType queueType);
 OrtSessionOptionsPolicy makeDirectMlSessionOptionsPolicy(uint32_t inputWidth,
                                                          uint32_t inputHeight);
 

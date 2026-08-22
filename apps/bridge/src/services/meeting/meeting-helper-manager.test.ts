@@ -178,8 +178,14 @@ describe("meeting-helper-manager", () => {
     it("forwards only allowlisted meeting helper tuning values", () => {
       expect(
         resolveMeetingHelperForwardedEnvArgs({
+          BROADIFY_MEETING_DML_QUEUE: "compute",
+          BROADIFY_MEETING_FUSED_PIPELINE_DEPTH: "0",
+          BROADIFY_MEETING_GPU_POLICY: "auto",
           BROADIFY_MEETING_GPU_PIPELINE: "0",
+          BROADIFY_MEETING_GPU_RESIDENT: "1",
           BROADIFY_MEETING_COREML_UNITS: "cpuAndNeuralEngine",
+          BROADIFY_MEETING_KEYER_PREBUILD_TIERS: "256,320",
+          BROADIFY_MEETING_STAGING_RING: "1",
           BROADIFY_MEETING_FUTURE_SECRET: "do-not-forward",
           UNRELATED_VALUE: "ignored",
         }),
@@ -187,7 +193,19 @@ describe("meeting-helper-manager", () => {
         "--env",
         "BROADIFY_MEETING_COREML_UNITS=cpuAndNeuralEngine",
         "--env",
+        "BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0",
+        "--env",
         "BROADIFY_MEETING_GPU_PIPELINE=0",
+        "--env",
+        "BROADIFY_MEETING_GPU_POLICY=auto",
+        "--env",
+        "BROADIFY_MEETING_GPU_RESIDENT=1",
+        "--env",
+        "BROADIFY_MEETING_KEYER_PREBUILD_TIERS=256,320",
+        "--env",
+        "BROADIFY_MEETING_DML_QUEUE=compute",
+        "--env",
+        "BROADIFY_MEETING_STAGING_RING=1",
       ]);
     });
 

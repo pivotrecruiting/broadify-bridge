@@ -113,17 +113,21 @@ int main() {
   }
 
   {
-  {
-    // Measured tier probes beat the old 512-area estimate. Here the 512 probe
-    // would predict 256 at 15ms and seed Performance256, but the measured
-    // 256 probe misses the step-up threshold, so startup correctly lands in
-    // async Lite256 instead of climbing into a tier without enough margin.
+    // Measured tier probes beat the old 512-area estimate, but startup must
+    // never seed below Performance256 from build-time probes. Lite/Off require
+    // live async samples, because first-load contention can inflate probes.
     KeyerAutoGovernor governor(testConfig());
     governor.seedMeasuredProbes(/*full512Ms=*/60.0,
                                 /*balanced320Ms=*/30.0,
                                 /*performance256Ms=*/30.0);
-    ok &= expect(governor.tier() == GovernorTier::Lite256,
-                 "measured probes seed from the chosen tier cost");
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "measured probes clamp at Performance256");
+    governor.reset();
+    governor.seedMeasuredProbes(/*full512Ms=*/400.0,
+                                /*balanced320Ms=*/180.0,
+                                /*performance256Ms=*/130.0);
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "measured probes never seed Off");
     governor.reset();
     governor.seedMeasuredProbes(/*full512Ms=*/60.0,
                                 /*balanced320Ms=*/24.0,
@@ -151,7 +155,6 @@ int main() {
     governor.maybeStepUp(at(12));
     ok &= expect(governor.tier() == GovernorTier::Lite256,
                  "step-up band never inverts");
-  }
   }
 
   {
@@ -432,8 +435,8 @@ int main() {
                  "Lite256 label async_lite");
     governor.reset();
     governor.seedProbe(500.0);
-    ok &= expect(std::string(governor.pipelineModeLabel(false)) == "off",
-                 "Off label off");
+    ok &= expect(std::string(governor.pipelineModeLabel(false)) == "off_reduced",
+                 "Off label off_reduced");
     // Performance-mode mapping.
     governor.reset();
     ok &= expect(std::string(governor.performanceModeForTier()) == "high_quality",

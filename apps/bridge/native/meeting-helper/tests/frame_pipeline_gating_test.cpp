@@ -8,6 +8,7 @@ using broadify::meeting::clampFramePacingDeadline;
 using broadify::meeting::framePacingDeadlineReached;
 using broadify::meeting::shouldRunFusedKeyerWork;
 using broadify::meeting::shouldRunProgramWork;
+using broadify::meeting::shouldSubmitAsyncKeyerFrame;
 using broadify::meeting::shouldWriteFramebusFrame;
 
 namespace {
@@ -43,6 +44,17 @@ int main() {
                "framebus writes heartbeat");
   ok &= expect(!shouldWriteFramebusFrame(true, true, false, false),
                "framebus skips idle non-heartbeat");
+
+  ok &= expect(shouldSubmitAsyncKeyerFrame(true, true, true, false, false, 1),
+               "async submit runs on active async path");
+  ok &= expect(!shouldSubmitAsyncKeyerFrame(true, true, true, true, false, 1),
+               "fused warmup gates async first load");
+  ok &= expect(!shouldSubmitAsyncKeyerFrame(true, true, false, false, false, 1),
+               "parked async path does not submit");
+  ok &= expect(!shouldSubmitAsyncKeyerFrame(true, true, true, false, true, 1),
+               "off reduced cadence skips non-cadence frame");
+  ok &= expect(shouldSubmitAsyncKeyerFrame(true, true, true, false, true, 4),
+               "off reduced cadence submits every fourth frame");
 
   using Clock = std::chrono::steady_clock;
   const auto epoch = Clock::time_point{};
