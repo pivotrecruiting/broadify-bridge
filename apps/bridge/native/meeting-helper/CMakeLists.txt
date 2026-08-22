@@ -283,6 +283,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/ort_session_options_policy_test.cpp
     src/keyer/ort_session_options_policy.cpp
   )
+  add_executable(camera_media_type_rank_test
+    tests/camera_media_type_rank_test.cpp
+  )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
@@ -362,6 +365,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     d3d_adapter_select_test
     pixel_swizzle_test
     ort_session_options_policy_test
+    camera_media_type_rank_test
     keyer_governor_test
     keyer_cadence_test
     mask_retention_test

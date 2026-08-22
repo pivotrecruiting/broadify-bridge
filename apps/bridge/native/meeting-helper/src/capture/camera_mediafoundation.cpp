@@ -2,6 +2,7 @@
 
 #if defined(_WIN32)
 
+#include "capture/camera_media_type_rank.h"
 #include "util/json_utils.h"
 #include "util/pixel_swizzle.h"
 
@@ -198,36 +199,20 @@ bool betterNativeMediaType(const NativeMediaTypeChoice &candidate,
   if (!current.valid) {
     return true;
   }
-  const double candidateFps = mediaTypeFps(candidate.fpsNum, candidate.fpsDen);
-  const double currentFps = mediaTypeFps(current.fpsNum, current.fpsDen);
-  const double targetFps =
-      requestedFps == 0u ? 30.0 : std::min<double>(requestedFps, 30.0);
-  const bool candidateAtOrBelow30 = candidateFps > 0.0 && candidateFps <= targetFps;
-  const bool currentAtOrBelow30 = currentFps > 0.0 && currentFps <= targetFps;
-  if (candidateAtOrBelow30 != currentAtOrBelow30) {
-    return candidateAtOrBelow30;
-  }
-  const int candidateSubtype = subtypePreference(candidate.subtype);
-  const int currentSubtype = subtypePreference(current.subtype);
-  if (candidateSubtype != currentSubtype) {
-    return candidateSubtype < currentSubtype;
-  }
-  const uint64_t candidatePixels =
-      static_cast<uint64_t>(candidate.width) * candidate.height;
-  const uint64_t currentPixels = static_cast<uint64_t>(current.width) * current.height;
-  const uint64_t requestedPixels =
-      static_cast<uint64_t>(requestedWidth == 0u ? 1920u : requestedWidth) *
-      (requestedHeight == 0u ? 1080u : requestedHeight);
-  const uint64_t candidateDistance =
-      candidatePixels > requestedPixels ? candidatePixels - requestedPixels
-                                        : requestedPixels - candidatePixels;
-  const uint64_t currentDistance =
-      currentPixels > requestedPixels ? currentPixels - requestedPixels
-                                      : requestedPixels - currentPixels;
-  if (candidateDistance != currentDistance) {
-    return candidateDistance < currentDistance;
-  }
-  return candidateFps > currentFps;
+  const CameraMediaTypeRank candidateRank{
+      mediaTypeFps(candidate.fpsNum, candidate.fpsDen),
+      candidate.width,
+      candidate.height,
+      subtypePreference(candidate.subtype),
+  };
+  const CameraMediaTypeRank currentRank{
+      mediaTypeFps(current.fpsNum, current.fpsDen),
+      current.width,
+      current.height,
+      subtypePreference(current.subtype),
+  };
+  return betterCameraMediaType(candidateRank, currentRank, requestedWidth,
+                               requestedHeight, requestedFps);
 }
 
 NativeMediaTypeChoice chooseNativeMediaType(IMFSourceReader *reader,
