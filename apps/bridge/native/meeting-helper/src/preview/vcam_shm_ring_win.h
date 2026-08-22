@@ -31,7 +31,8 @@ class VcamShmRingWin {
                                             uint32_t height,
                                             uint32_t fps,
                                             uint64_t writerGeneration,
-                                            const std::wstring &controlName);
+                                            const std::wstring &controlName,
+                                            bool globalNamespace = true);
   void close();
 
   bool publishBgra(uint32_t width,
@@ -41,6 +42,7 @@ class VcamShmRingWin {
                    uint64_t captureQpc);
   bool heartbeat(uint64_t heartbeatQpc);
   uint64_t readerCount() const;
+  bool readerHeartbeatAbsent(uint64_t staleMs) const;
 
   bool active() const { return memory_ != nullptr; }
   const std::wstring &mappingName() const { return mappingName_; }
@@ -53,6 +55,11 @@ class VcamShmRingWin {
                            uint32_t fps,
                            uint64_t writerGeneration,
                            std::string &reason);
+  bool openServiceRing(uint32_t width,
+                       uint32_t height,
+                       uint32_t fps,
+                       uint64_t writerGeneration,
+                       std::string &reason);
   bool publishControl(uint32_t width,
                       uint32_t height,
                       uint32_t fps,

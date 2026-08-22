@@ -810,16 +810,25 @@ std::string handleRpc(const std::string &line,
                             state.vcamWriterGeneration);
         if (!shm.ok || !shm.globalNamespace) {
           fallbackReason = shm.reason.empty() ? "mapping_unavailable" : shm.reason;
-          state.vcamTransport = "tcp";
           vcamShm->close();
+        } else {
+          fallbackReason = shm.reason;
         }
       }
       transport = state.vcamTransport;
       markProgramDirty(state);
     }
-    setVirtualCameraTransport(transport);
+    setVirtualCameraTransport(fallbackReason.empty() || fallbackReason == "opened_service_ring" ||
+                                      fallbackReason == "created_global"
+                                  ? transport
+                                  : "tcp");
     if (!fallbackReason.empty()) {
-      emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
+      const std::string selected =
+          fallbackReason == "opened_service_ring" || fallbackReason == "created_global"
+              ? "shm"
+              : "tcp";
+      emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"" +
+                      selected + "\",\"reason\":\"" +
                       jsonEscape(fallbackReason) + "\"}");
     } else if (transport == "shm") {
       emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"raw_start\"}");

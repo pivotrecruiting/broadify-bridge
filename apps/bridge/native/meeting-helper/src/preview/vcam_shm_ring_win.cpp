@@ -126,12 +126,14 @@ VcamShmCreateResult VcamShmRingWin::create(uint32_t width,
   close();
 #if defined(_WIN32)
   std::string reason;
-  if (createWithNamespace(true, width, height, fps, writerGeneration, reason)) {
-    return VcamShmCreateResult{true, true, ""};
+  if (openServiceRing(width, height, fps, writerGeneration, reason)) {
+    return VcamShmCreateResult{true, true, "opened_service_ring"};
   }
-  const std::string globalReason = reason;
-  if (createWithNamespace(false, width, height, fps, writerGeneration, reason)) {
-    return VcamShmCreateResult{true, false, globalReason};
+  if (reason != "service_ring_absent") {
+    return VcamShmCreateResult{false, false, reason};
+  }
+  if (createWithNamespace(true, width, height, fps, writerGeneration, reason)) {
+    return VcamShmCreateResult{true, true, "created_global"};
   }
   return VcamShmCreateResult{false, false, reason};
 #else
@@ -148,13 +150,15 @@ VcamShmCreateResult VcamShmRingWin::createWithControlName(
     uint32_t height,
     uint32_t fps,
     uint64_t writerGeneration,
-    const std::wstring &controlName) {
+    const std::wstring &controlName,
+    bool globalNamespace) {
   close();
 #if defined(_WIN32)
   std::string reason;
   controlName_ = controlName;
-  if (createWithNamespace(true, width, height, fps, writerGeneration, reason)) {
-    return VcamShmCreateResult{true, true, ""};
+  if (createWithNamespace(globalNamespace, width, height, fps,
+                          writerGeneration, reason)) {
+    return VcamShmCreateResult{true, globalNamespace, "created_global"};
   }
   return VcamShmCreateResult{false, false, reason};
 #else
@@ -163,6 +167,7 @@ VcamShmCreateResult VcamShmRingWin::createWithControlName(
   (void)fps;
   (void)writerGeneration;
   (void)controlName;
+  (void)globalNamespace;
   return VcamShmCreateResult{false, false, "shared memory transport is Windows-only"};
 #endif
 }
@@ -276,6 +281,27 @@ uint64_t VcamShmRingWin::readerCount() const {
 #endif
 }
 
+bool VcamShmRingWin::readerHeartbeatAbsent(uint64_t staleMs) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (controlMemory_ == nullptr) {
+    return true;
+  }
+#if defined(_WIN32)
+  const auto *record =
+      static_cast<const broadify::vcam_shm::ControlRecord *>(controlMemory_);
+  broadify::vcam_shm::ControlRecord snapshot;
+  if (!broadify::vcam_shm::readControlRecord(*record, snapshot)) {
+    return true;
+  }
+  const uint64_t staleTicks = qpcStaleTicks(staleMs);
+  return broadify::vcam_shm::countLiveReaders(
+             snapshot, nowQpc(), staleTicks, isProcessAlive) == 0u;
+#else
+  (void)staleMs;
+  return true;
+#endif
+}
+
 bool VcamShmRingWin::publishControl(uint32_t width,
                                     uint32_t height,
                                     uint32_t fps,
@@ -296,8 +322,119 @@ bool VcamShmRingWin::publishControl(uint32_t width,
           writerGeneration, heartbeatQpc)) {
     return false;
   }
+  next.owner = static_cast<uint32_t>(broadify::vcam_shm::LayoutOwner::Service);
+  next.capacity_bytes = ringBytes_;
   auto *record = static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory_);
   return broadify::vcam_shm::writeControlRecord(*record, next);
+}
+
+bool VcamShmRingWin::openServiceRing(uint32_t width,
+                                     uint32_t height,
+                                     uint32_t fps,
+                                     uint64_t writerGeneration,
+                                     std::string &reason) {
+#if defined(_WIN32)
+  controlName_ = broadify::vcam_shm::controlMappingName(true);
+  mappingName_ = broadify::vcam_shm::serviceStreamMappingName(true);
+  eventName_ = broadify::vcam_shm::serviceStreamEventName(true);
+  ringBytes_ = broadify::vcam_shm::maxServiceRingBytes();
+  if (ringBytes_ == 0u) {
+    reason = "invalid geometry";
+    return false;
+  }
+
+  HANDLE control = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+                                    controlName_.c_str());
+  if (control == nullptr) {
+    reason = "service_ring_absent";
+    close();
+    return false;
+  }
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+                                    mappingName_.c_str());
+  if (mapping == nullptr) {
+    CloseHandle(control);
+    reason = "service_ring_absent";
+    close();
+    return false;
+  }
+  HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, eventName_.c_str());
+  if (event == nullptr) {
+    CloseHandle(mapping);
+    CloseHandle(control);
+    reason = "service_ring_absent";
+    close();
+    return false;
+  }
+  void *controlMemory = MapViewOfFile(
+      control, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+      sizeof(broadify::vcam_shm::ControlRecord));
+  void *memory =
+      MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, ringBytes_);
+  if (controlMemory == nullptr || memory == nullptr) {
+    if (memory != nullptr) {
+      UnmapViewOfFile(memory);
+    }
+    if (controlMemory != nullptr) {
+      UnmapViewOfFile(controlMemory);
+    }
+    CloseHandle(event);
+    CloseHandle(mapping);
+    CloseHandle(control);
+    reason = lastErrorText("MapViewOfFile(service)");
+    close();
+    return false;
+  }
+  auto *record = static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory);
+  broadify::vcam_shm::ControlRecord snapshot;
+  if (!broadify::vcam_shm::readControlRecord(*record, snapshot) ||
+      !broadify::vcam_shm::validateServiceControl(snapshot) ||
+      !broadify::vcam_shm::validateServiceRing(memory, ringBytes_)) {
+    UnmapViewOfFile(memory);
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(event);
+    CloseHandle(mapping);
+    CloseHandle(control);
+    reason = "invalid_service_ring";
+    close();
+    return false;
+  }
+
+  mappingHandle_ = mapping;
+  eventHandle_ = event;
+  controlHandle_ = control;
+  memory_ = memory;
+  controlMemory_ = controlMemory;
+  nextSequence_ = 1u;
+  lastFrameTimestampQpc_ = 0u;
+
+  const uint64_t heartbeatQpc = nowQpc();
+  if (!broadify::vcam_shm::initializeRing(
+          memory_, ringBytes_, width, height, fps, 1u,
+          broadify::vcam_shm::PixelFormat::Bgra8, GetCurrentProcessId(),
+          writerGeneration, heartbeatQpc)) {
+    reason = "failed to initialize shared memory layout";
+    close();
+    return false;
+  }
+  auto *header = static_cast<broadify::vcam_shm::RingHeader *>(memory_);
+  header->owner = static_cast<uint32_t>(broadify::vcam_shm::LayoutOwner::Service);
+  header->capacity_bytes = ringBytes_;
+  if (!publishControl(width, height, fps, writerGeneration, heartbeatQpc)) {
+    reason = "failed to initialize shared memory control";
+    close();
+    return false;
+  }
+  reason = "opened_service_ring";
+  return true;
+#else
+  (void)width;
+  (void)height;
+  (void)fps;
+  (void)writerGeneration;
+  reason = "shared memory transport is Windows-only";
+  return false;
+#endif
 }
 
 bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
@@ -309,8 +446,8 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
 #if defined(_WIN32)
   const uint64_t startTick = GetTickCount64();
   token_ = broadify::vcam_shm::makeStreamToken(GetCurrentProcessId(), startTick);
-  mappingName_ = broadify::vcam_shm::streamMappingName(token_, globalNamespace);
-  eventName_ = broadify::vcam_shm::streamEventName(token_, globalNamespace);
+  mappingName_ = broadify::vcam_shm::serviceStreamMappingName(globalNamespace);
+  eventName_ = broadify::vcam_shm::serviceStreamEventName(globalNamespace);
   if (controlName_.empty()) {
     controlName_ = broadify::vcam_shm::controlMappingName(globalNamespace);
   }
@@ -396,6 +533,9 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
     close();
     return false;
   }
+  auto *header = static_cast<broadify::vcam_shm::RingHeader *>(memory_);
+  header->owner = static_cast<uint32_t>(broadify::vcam_shm::LayoutOwner::Service);
+  header->capacity_bytes = ringBytes_;
   return true;
 #else
   (void)globalNamespace;

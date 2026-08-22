@@ -454,19 +454,73 @@ int runVcamShmReaderSelfTest(const Options &options) {
 #endif
 }
 
-int runVcamShmSelfTest(const char *argv0) {
+int runVcamShmSelfTest(const Options &options, const char *argv0) {
 #if defined(_WIN32)
   VcamShmRingWin ring;
-  const std::wstring controlName = L"Global\\BroadifyVcamControlSelftest";
+  const bool globalNamespace = !options.vcamShmSelfTestLocalNamespace;
+  const std::wstring controlName =
+      std::wstring(globalNamespace ? L"Global\\" : L"Local\\") +
+      L"BroadifyVcamControlSelftest";
   const VcamShmCreateResult created =
-      ring.createWithControlName(64, 36, 30, 1, controlName);
-  if (!created.ok || !created.globalNamespace) {
+      ring.createWithControlName(64, 36, 30, 1, controlName, globalNamespace);
+  if (!created.ok || created.globalNamespace != globalNamespace) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"writer_create\"}");
     return 1;
   }
-  if (!controlMappingAclGrantsLocalServiceWrite(controlName)) {
+  if (globalNamespace && !controlMappingAclGrantsLocalServiceWrite(controlName)) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"control_acl\"}");
     return 1;
+  }
+  if (!globalNamespace) {
+    std::vector<uint8_t> frame(64u * 36u * 4u, 90u);
+    if (!ring.publishBgra(64, 36, frame.data(), frame.size(), 0u)) {
+      printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"local_publish\"}");
+      return 1;
+    }
+    HANDLE control = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+                                      controlName.c_str());
+    if (control == nullptr) {
+      printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"local_control_open\"}");
+      return 1;
+    }
+    void *controlMemory = MapViewOfFile(
+        control, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+        sizeof(broadify::vcam_shm::ControlRecord));
+    if (controlMemory == nullptr) {
+      CloseHandle(control);
+      printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"local_control_map\"}");
+      return 1;
+    }
+    auto *controlRecord =
+        static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory);
+    broadify::vcam_shm::ControlRecord record;
+    const bool controlOk =
+        broadify::vcam_shm::readControlRecord(*controlRecord, record);
+    HANDLE mapping = controlOk
+                         ? OpenFileMappingW(FILE_MAP_READ, FALSE,
+                                            std::wstring(record.mapping_name).c_str())
+                         : nullptr;
+    const size_t ringBytes =
+        controlOk ? static_cast<size_t>(record.capacity_bytes) : 0u;
+    void *memory = mapping == nullptr
+                       ? nullptr
+                       : MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, ringBytes);
+    broadify::vcam_shm::CopiedFrame copied;
+    const bool ok =
+        memory != nullptr &&
+        broadify::vcam_shm::copyNewestFrame(memory, ringBytes, copied) &&
+        copied.data == frame;
+    if (memory != nullptr) {
+      UnmapViewOfFile(memory);
+    }
+    if (mapping != nullptr) {
+      CloseHandle(mapping);
+    }
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
+    printEvent(std::string("{\"type\":\"vcam_shm_selftest\",\"role\":\"local\",\"ok\":") +
+               (ok ? "true" : "false") + "}");
+    return ok ? 0 : 1;
   }
   std::wstring command = L"\"";
   command += asciiToWide(argv0);
@@ -509,6 +563,7 @@ int runVcamShmSelfTest(const char *argv0) {
              (exitCode == 0 ? "true" : "false") + "}");
   return exitCode == 0 ? 0 : 1;
 #else
+  (void)options;
   (void)argv0;
   printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"reason\":\"windows_only\"}");
   return 1;
@@ -541,7 +596,7 @@ int main(int argc, char **argv) {
     return runVcamShmReaderSelfTest(options);
   }
   if (options.vcamShmSelfTest) {
-    return runVcamShmSelfTest(argc > 0 ? argv[0] : "meeting-helper.exe");
+    return runVcamShmSelfTest(options, argc > 0 ? argv[0] : "meeting-helper.exe");
   }
 #if defined(_WIN32)
   emitHelperEvent(std::string("{\"type\":\"meeting_helper_build\","
@@ -659,16 +714,79 @@ int main(int argc, char **argv) {
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
-  std::thread vcamShmLifecycle([&state, &vcamShm]() {
+  std::thread vcamShmLifecycle([&options, &state, &vcamShm]() {
     int lastReaderCount = 0;
+    uint64_t nextOpenAttemptMs = 0u;
+    uint64_t lastReaderSeenMs = 0u;
     while (g_running.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      if (!vcamShm.active()) {
+      bool shouldUseShm = false;
+      uint32_t width = options.width;
+      uint32_t height = options.height;
+      uint32_t fps = options.fps;
+      uint64_t writerGeneration = 0u;
+      {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        shouldUseShm = state.vcamRawRunning && state.vcamTransport == "shm";
+        writerGeneration = state.vcamWriterGeneration;
+      }
+      if (!shouldUseShm) {
+        lastReaderSeenMs = 0u;
         continue;
       }
+#if defined(_WIN32)
+      if (!vcamShm.active()) {
+        const uint64_t now = GetTickCount64();
+        if (now < nextOpenAttemptMs) {
+          continue;
+        }
+        if (writerGeneration == 0u) {
+          writerGeneration = initialVcamWriterGeneration();
+          std::lock_guard<std::mutex> lock(state.mutex);
+          if (state.vcamWriterGeneration == 0u) {
+            state.vcamWriterGeneration = writerGeneration;
+          } else {
+            writerGeneration = state.vcamWriterGeneration;
+          }
+        } else {
+          ++writerGeneration;
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.vcamWriterGeneration = writerGeneration;
+        }
+        const VcamShmCreateResult opened =
+            vcamShm.create(width, height, fps, writerGeneration);
+        if (opened.ok) {
+          setVirtualCameraTransport("shm");
+          printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"" +
+                     jsonEscape(opened.reason.empty() ? "opened_service_ring"
+                                                      : opened.reason) +
+                     "\"}");
+          nextOpenAttemptMs = 0u;
+          lastReaderSeenMs = now;
+        } else {
+          setVirtualCameraTransport("tcp");
+          nextOpenAttemptMs = now + 2000u;
+        }
+        continue;
+      }
+#endif
       vcamShm.heartbeat(0u);
       const int readerCount =
           static_cast<int>(std::min<uint64_t>(vcamShm.readerCount(), 32u));
+#if defined(_WIN32)
+      const uint64_t nowMs = GetTickCount64();
+#else
+      const uint64_t nowMs = 0u;
+#endif
+      if (readerCount > 0) {
+        lastReaderSeenMs = nowMs;
+      } else if (lastReaderSeenMs != 0u && nowMs >= lastReaderSeenMs + 5000u &&
+                 vcamShm.readerHeartbeatAbsent(5000u)) {
+        vcamShm.close();
+        lastReaderSeenMs = 0u;
+        nextOpenAttemptMs = 0u;
+        continue;
+      }
       if (readerCount != lastReaderCount) {
         std::lock_guard<std::mutex> lock(state.mutex);
         state.vcamShmReaderCount = readerCount;

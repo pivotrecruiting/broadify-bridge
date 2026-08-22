@@ -73,6 +73,8 @@ Options parseOptions(int argc, char **argv) {
     } else if (arg == "--vcam-shm-reader-selftest") {
       options.vcamShmReaderSelfTest = true;
       options.vcamShmSelfTestControlName = next();
+    } else if (arg == "--namespace") {
+      options.vcamShmSelfTestLocalNamespace = std::string(next()) == "local";
     } else if (arg == "--framebus-name") {
       options.framebusName = next();
     } else if (arg == "--control-socket") {
