@@ -25,7 +25,7 @@ struct SubjectPresenceConfig {
   // "essentially empty" unchanged, and only the truly-empty band can ever
   // confirm an absent subject.
 #if defined(_WIN32)
-  double emptyAcceptCoverage = 0.002;
+  double emptyAcceptCoverage = 0.006;
 #else
   double emptyAcceptCoverage = 0.003;
 #endif
@@ -33,7 +33,7 @@ struct SubjectPresenceConfig {
   // stay below the floor before an empty frame is accepted. Time-based, so
   // the decision is independent of the inference cadence / call rate.
 #if defined(_WIN32)
-  double acceptAfterMs = 1500.0;
+  double acceptAfterMs = 400.0;
 #else
   double acceptAfterMs = 400.0;
 #endif

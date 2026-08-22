@@ -1317,6 +1317,7 @@ class AsyncKeyerWorker {
     hasPendingFrame_ = false;
     latestPair_.reset();
     lastPublishedCoverage_ = 0.0;
+    collapseHoldResults_ = 0u;
     presenceTracker_.reset();
     droppedFrames_ = 0;
     skippedFrames_ = 0;
@@ -1486,7 +1487,16 @@ class AsyncKeyerWorker {
           const bool confirmedEmpty =
               presence == SubjectPresence::ConfirmedEmpty &&
               rawCoverage < kMinForegroundCoverage;
-          if (!keyed.mask.alpha.empty() && (!collapsed || confirmedEmpty)) {
+          bool publishCollapsedMask = false;
+#if defined(_WIN32)
+          if (!keyed.mask.alpha.empty() && collapsed && !confirmedEmpty &&
+              rawCoverage < kMinForegroundCoverage) {
+            ++collapseHoldResults_;
+            publishCollapsedMask = collapseHoldResults_ >= 12u;
+          }
+#endif
+          if (!keyed.mask.alpha.empty() &&
+              (!collapsed || confirmedEmpty || publishCollapsedMask)) {
             keyed.mask.emptyValid = confirmedEmpty;
             auto pair = std::make_shared<PairedKeyerFrame>();
             pair->frame = std::move(frame);
@@ -1495,6 +1505,7 @@ class AsyncKeyerWorker {
             pair->inferenceMs = keyed.status.inferenceMs;
             latestPair_ = std::move(pair);
             lastPublishedCoverage_ = rawCoverage;
+            collapseHoldResults_ = 0u;
           } else if (latestPair_ == nullptr) {
             // No good mask to fall back to yet (startup): reset so the program
             // loop shows the un-keyed camera rather than a stale frame.
@@ -1548,6 +1559,7 @@ class AsyncKeyerWorker {
   VideoFrame pendingFrame_;
   std::shared_ptr<const PairedKeyerFrame> latestPair_;
   double lastPublishedCoverage_ = 0.0;
+  uint32_t collapseHoldResults_ = 0u;
   // Fed and reset under mutex_ only (feed in the publish section, reset in
   // clear()), so the program loop's clear() cannot race the worker thread.
   SubjectPresenceTracker presenceTracker_{subjectPresenceConfigFromEnv()};
@@ -2206,8 +2218,20 @@ void runFramePipeline(const Options &options,
       // runs when a genuinely fresher live frame exists (else it is a no-op);
       // the still path is untouched. Falls back to the paired mask on any issue.
       AlphaMask liveRefinedMask;
+      AlphaMask fallbackKeyerMask;
       const AlphaMask *maskForCompositor =
           selectedPair != nullptr ? &selectedPair->mask : nullptr;
+#if defined(_WIN32)
+      if (maskForCompositor == nullptr && hasCameraFrame && snapshot.keyerEnabled &&
+          asyncPathActive && !latestCameraFrame.rgba.empty() &&
+          selectRetainedOrEmptyMaskForLiveKeyer(
+              lastGoodMask, latestCameraFrame.timestampNs,
+              latestCameraFrame.width, latestCameraFrame.height,
+              fallbackKeyerMask)) {
+        frameForCompositor = &latestCameraFrame;
+        maskForCompositor = &fallbackKeyerMask;
+      }
+#endif
       // Confirmed-empty masks skip the snap entirely (refining zeros is
       // wasted work); the pair's flagged zero mask goes to the compositor.
       if (fusedKeyerWorkDue && selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
@@ -2589,30 +2613,23 @@ void runFramePipeline(const Options &options,
               fusedMask = selectedPair->mask;
               lastGoodMask = fusedMask;
             } else if (!lastGoodMask.alpha.empty()) {
-              fusedMask = lastGoodMask;
-              const double lastGoodAgeMs =
-                  latestCameraFrame.timestampNs >= lastGoodMask.timestampNs
-                      ? static_cast<double>(latestCameraFrame.timestampNs -
-                                            lastGoodMask.timestampNs) /
-                            1000000.0
-                      : 0.0;
-              if (lastGoodAgeMs > 2000.0) {
-                fusedMask = AlphaMask{};
-              }
+              (void)selectRetainedOrEmptyMaskForLiveKeyer(
+                  lastGoodMask, latestCameraFrame.timestampNs,
+                  latestCameraFrame.width, latestCameraFrame.height,
+                  fusedMask);
             }
-            if (!fusedMask.alpha.empty()) {
+            if (fusedMask.alpha.empty()) {
+              (void)selectRetainedOrEmptyMaskForLiveKeyer(
+                  AlphaMask{}, latestCameraFrame.timestampNs,
+                  latestCameraFrame.width, latestCameraFrame.height,
+                  fusedMask);
+            }
+            if (!fusedMask.alpha.empty() && !fusedMask.emptyValid) {
               if (!(d3d11GuidedRefineAvailable() &&
                     guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                 guidedRefineMask(fusedMask, latestCameraFrame);
               }
               fusedMask.timestampNs = latestCameraFrame.timestampNs;
-            } else {
-              fusedMask.width = latestCameraFrame.width;
-              fusedMask.height = latestCameraFrame.height;
-              fusedMask.timestampNs = latestCameraFrame.timestampNs;
-              fusedMask.alpha.assign(
-                  static_cast<size_t>(fusedMask.width) * fusedMask.height, 0u);
-              fusedMask.emptyValid = true;
             }
             maskForCompositor = &fusedMask;
             KeyerStatus offStatus;
@@ -2766,20 +2783,15 @@ void runFramePipeline(const Options &options,
             g_fusedKeyerDegraded = true;
             selectedPair.reset();
             frameForCompositor = &latestCameraFrame;
-            if (!lastGoodMask.alpha.empty()) {
-              fusedMask = lastGoodMask;
+            if (selectRetainedOrEmptyMaskForLiveKeyer(
+                    lastGoodMask, latestCameraFrame.timestampNs,
+                    latestCameraFrame.width, latestCameraFrame.height,
+                    fusedMask) && !fusedMask.emptyValid) {
               if (!(d3d11GuidedRefineAvailable() &&
                     guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                 guidedRefineMask(fusedMask, latestCameraFrame);
               }
               fusedMask.timestampNs = latestCameraFrame.timestampNs;
-            } else {
-              fusedMask.width = latestCameraFrame.width;
-              fusedMask.height = latestCameraFrame.height;
-              fusedMask.timestampNs = latestCameraFrame.timestampNs;
-              fusedMask.alpha.assign(
-                  static_cast<size_t>(fusedMask.width) * fusedMask.height, 0u);
-              fusedMask.emptyValid = true;
             }
             maskForCompositor = &fusedMask;
             shouldRenderProgram = true;
