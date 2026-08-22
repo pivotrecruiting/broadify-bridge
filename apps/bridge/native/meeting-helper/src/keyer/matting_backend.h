@@ -111,4 +111,11 @@ MattingBackendOptions makeMattingBackendOptionsFromEnv(std::string modelsDir);
 // everywhere else this is always the ONNX Runtime ModnetKeyer.
 std::unique_ptr<MattingKeyer> createMattingKeyer(const MattingBackendOptions &options);
 
+#if defined(BROADIFY_MATTING_BACKEND_TESTING)
+std::unique_ptr<MattingKeyer> createFallbackMattingKeyerForTesting(
+    std::unique_ptr<MattingKeyer> primary,
+    std::unique_ptr<MattingKeyer> fallback,
+    bool loadInApply);
+#endif
+
 }  // namespace broadify::meeting

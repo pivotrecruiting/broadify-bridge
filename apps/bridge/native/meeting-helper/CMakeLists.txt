@@ -366,6 +366,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/util/json_utils.cpp
     src/util/sha256.cpp
   )
+  target_compile_definitions(matting_backend_test PRIVATE
+    BROADIFY_MATTING_BACKEND_TESTING=1
+  )
   add_executable(matting_common_test
     tests/matting_common_test.cpp
     src/keyer/matting_common.cpp

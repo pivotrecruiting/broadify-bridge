@@ -17,7 +17,6 @@ bool hasPrefix(const std::string &value, const char *prefix) {
   return value.rfind(prefix, 0) == 0;
 }
 
-#if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
 bool isLoadStageFallback(const std::string &reason) {
   return reason == "loading" || reason == "not_loaded" ||
          reason == "manifest_missing" || reason == "model_missing" ||
@@ -27,12 +26,23 @@ bool isLoadStageFallback(const std::string &reason) {
          reason == "onnxruntime_disabled";
 }
 
+bool isRetryableAsyncLoadStageFallback(const std::string &reason) {
+  return isLoadStageFallback(reason) && reason != "loading" &&
+         reason != "not_loaded";
+}
+
+void logOpenVinoFallback(const std::string &reason) {
+  std::cout << "{\"type\":\"matting_backend_fallback\","
+               "\"from\":\"openvino_modnet\",\"to\":\"modnet\","
+               "\"reason\":\"" << reason << "\"}" << std::endl;
+}
+
 // Runs the OpenVINO backend and permanently hands over to the ONNX Runtime
-// (DirectML) backend when OpenVINO cannot load synchronously or keeps failing
-// inference. With async first-load, load-stage failures stay on OpenVINO so
-// the fused warmup retry gate can expose and retry them honestly; transient
-// inference failures only switch after a few in a row, so a single hiccup does
-// not throw away the faster backend.
+// (DirectML) backend when OpenVINO cannot load synchronously, when async warmup
+// reaches a terminal load-stage failure, or when inference keeps failing. Async
+// "loading"/"not_loaded" states stay on OpenVINO so the warmup retry gate can
+// expose in-flight work honestly; transient inference failures only switch after
+// a few in a row, so a single hiccup does not throw away the faster backend.
 class FallbackMattingKeyer final : public MattingKeyer {
  public:
   FallbackMattingKeyer(std::unique_ptr<MattingKeyer> primary,
@@ -65,9 +75,7 @@ class FallbackMattingKeyer final : public MattingKeyer {
       // One structured line, then the ONNX Runtime backend takes over for the
       // rest of the process lifetime (the reason vocabulary matches the keyer
       // fallback reasons).
-      std::cout << "{\"type\":\"matting_backend_fallback\","
-                   "\"from\":\"openvino_modnet\",\"to\":\"modnet\","
-                   "\"reason\":\"" << reason << "\"}" << std::endl;
+      logOpenVinoFallback(reason);
       primary_.reset();
       return fallback_->apply(input, settings);
     }
@@ -79,12 +87,22 @@ class FallbackMattingKeyer final : public MattingKeyer {
   }
 
   bool warmupForPerformanceMode(const std::string &performanceMode) override {
-    // Forward to the currently active backend. primary_ is only ever reset
-    // inside apply(), which never runs concurrently with a warmup (the fused
-    // instance is idle while the async worker owns the path), so this read
-    // is safe from the warmup thread.
-    return primary_ ? primary_->warmupForPerformanceMode(performanceMode)
-                    : fallback_->warmupForPerformanceMode(performanceMode);
+    // Forward to the currently active backend. If async OpenVINO warmup reaches
+    // a terminal load-stage failure, hand over immediately; the program thread
+    // never touches this keyer while fusedWarmupBusy is true.
+    if (!primary_) {
+      return fallback_->warmupForPerformanceMode(performanceMode);
+    }
+    if (primary_->warmupForPerformanceMode(performanceMode)) {
+      return true;
+    }
+    const std::string reason = primary_->status().fallbackReason;
+    if (!loadInApply_ && isRetryableAsyncLoadStageFallback(reason)) {
+      logOpenVinoFallback(reason);
+      primary_.reset();
+      return fallback_->warmupForPerformanceMode(performanceMode);
+    }
+    return false;
   }
 
  private:
@@ -94,7 +112,6 @@ class FallbackMattingKeyer final : public MattingKeyer {
   bool loadInApply_ = true;
   int consecutiveInferenceFailures_ = 0;
 };
-#endif  // BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
 
 }  // namespace
 
@@ -215,5 +232,16 @@ std::unique_ptr<MattingKeyer> createMattingKeyer(const MattingBackendOptions &op
 #endif
   return modnet;
 }
+
+#if defined(BROADIFY_MATTING_BACKEND_TESTING)
+std::unique_ptr<MattingKeyer> createFallbackMattingKeyerForTesting(
+    std::unique_ptr<MattingKeyer> primary,
+    std::unique_ptr<MattingKeyer> fallback,
+    bool loadInApply) {
+  return std::make_unique<FallbackMattingKeyer>(std::move(primary),
+                                               std::move(fallback),
+                                               loadInApply);
+}
+#endif
 
 }  // namespace broadify::meeting

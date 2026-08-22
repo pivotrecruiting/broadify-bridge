@@ -371,16 +371,16 @@ class ModnetKeyer::Impl {
   // Session creation happens during load, never from apply().
   bool warmupForPerformanceMode(const std::string &performanceMode) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!ensureLoaded()) {
+      return false;
+    }
 #if BROADIFY_ENABLE_MODNET
 #if defined(__APPLE__)
     // macOS freezes the CoreML session shape at load; per-mode rebuilds do
     // not exist there (and the warm handover is Windows-only anyway).
     (void)performanceMode;
-    return ensureLoaded();
+    return true;
 #else
-    if (!ensureLoaded()) {
-      return false;
-    }
     if (!modelDynamic_) {
       // Static model: one shape only, already warmed by ensureLoaded().
       return true;

@@ -70,6 +70,10 @@ camera frame
   keep the current prebuilt session. The default `all` builds three tier
   sessions per keyer instance; with async and fused keyers active, that is two
   instances.
+- With async first-load (`loadInApply=false` internally), failed model loads are
+  retried by the warmup path at most once per 30 s. Because retry scheduling is
+  checked from the program loop and waits for any previous warmup thread to be
+  joined first, the effective visible cadence is usually 30-60 s.
 
 ## Status And Logs
 
