@@ -1,6 +1,6 @@
 # TASK — WP4b: service-owned VCam shared-memory ring (Windows)
 
-Base: feature/vcam-rc13 @ 4f628e95 (rc.28). Round: 2/3.
+Base: feature/vcam-rc13 @ 4f628e95 (rc.28). Round: 3/3 — PASS.
 
 ## Field evidence (rc.28 vcam.log, 22.08.2026)
 `session=0 user=LOCAL_SERVICE` … `vcam_reader_transport tcp reason=control_mapping_absent` … `stream_type subtype=RGB32 buffer=memory`.
@@ -79,3 +79,6 @@ validators on the helper-created ring; N2-4 emit `vcam_transport_selected transp
 N2-5 `initializeRing` memsets only header + slot headers; N2-6 in `createWithNamespace` write `header->owner=Service` BEFORE publishing the
 control record; N2-7 DLL control-record write: fields first, `sequence` last with release fence; N2-13 docs: SHM engages ≤ ~7 s after Teams
 activation (DLL 5-s poll + helper 2-s retry), the first `control_mapping_absent` line is expected.
+
+## Review round 3 (HEAD d79d720e) — PASS. Notes only: N3-1 theoretical one-frame garbage window during in-place re-init with geometry
+change (zero slot headers before writing stride/magic), N3-2 GX also on the section (inert), N3-3 reason-string wording. Verifier green.
