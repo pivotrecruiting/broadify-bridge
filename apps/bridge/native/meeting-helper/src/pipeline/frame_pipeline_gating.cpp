@@ -19,4 +19,22 @@ bool shouldWriteFramebusFrame(bool framebusExplicitlyRunning,
          (programWorkRan || heartbeatDue);
 }
 
+std::chrono::steady_clock::time_point clampFramePacingDeadline(
+    std::chrono::steady_clock::time_point nextFrameAt,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::duration frameInterval) {
+  if (nextFrameAt > now + frameInterval) {
+    return now + frameInterval;
+  }
+  if (nextFrameAt <= now) {
+    return now;
+  }
+  return nextFrameAt;
+}
+
+bool framePacingDeadlineReached(std::chrono::steady_clock::time_point now,
+                                std::chrono::steady_clock::time_point nextFrameAt) {
+  return now >= nextFrameAt;
+}
+
 }  // namespace broadify::meeting

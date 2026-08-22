@@ -73,10 +73,7 @@ double KeyerAutoGovernor::stepDownThresholdMs() const {
 }
 
 double KeyerAutoGovernor::stepUpThresholdMs() const {
-  const double base = config_.stepDownOverrideMs > 0.0
-                          ? config_.stepDownOverrideMs
-                          : config_.frameBudgetMs;
-  return config_.stepUpFactor * base;
+  return std::min(config_.stepUpFactor, 1.0) * stepDownThresholdMs();
 }
 
 double KeyerAutoGovernor::estimatedStepUpMs() const {

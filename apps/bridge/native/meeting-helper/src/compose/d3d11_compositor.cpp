@@ -504,6 +504,31 @@ bool mapReadbackRing(ID3D11DeviceContext *context,
   return true;
 }
 
+bool stagingRingEnabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("BROADIFY_MEETING_STAGING_RING");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return enabled;
+}
+
+bool mapCurrentFrameReadback(ID3D11DeviceContext *context,
+                             std::vector<ComPtr<ID3D11Buffer>> &stagingBuffers,
+                             StagingReadbackRing &ring,
+                             ID3D11Resource *source,
+                             D3D11_MAPPED_SUBRESOURCE *mapped,
+                             size_t *mappedIndex) {
+  const StagingReadbackDecision decision = ring.advanceCurrentFrame();
+  context->CopyResource(stagingBuffers[decision.copyIndex].Get(), source);
+  HRESULT hr = context->Map(stagingBuffers[decision.preferredMapIndex].Get(), 0,
+                            D3D11_MAP_READ, 0, mapped);
+  if (FAILED(hr)) {
+    return false;
+  }
+  *mappedIndex = decision.preferredMapIndex;
+  return true;
+}
+
 // Uploads RGBA (or R8) pixels into the cached slot texture; skips the copy
 // when the timestamp is unchanged (graphics layers repeat frames between
 // updates, background/media images change only on program updates).
@@ -684,10 +709,18 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   size_t mappedIndex = 0;
-  if (!mapReadbackRing(ctx.context.Get(), ctx.stagingBuffers, ctx.stagingRing,
-                       ctx.outputBuffer.Get(), &mapped, &mappedIndex)) {
-    logCompositorEvent("readback_pending", "staging ring not ready");
-    return false;
+  if (stagingRingEnabled()) {
+    if (!mapReadbackRing(ctx.context.Get(), ctx.stagingBuffers, ctx.stagingRing,
+                         ctx.outputBuffer.Get(), &mapped, &mappedIndex)) {
+      logCompositorEvent("readback_pending", "staging ring not ready");
+      return false;
+    }
+  } else {
+    if (!mapCurrentFrameReadback(ctx.context.Get(), ctx.stagingBuffers,
+                                 ctx.stagingRing, ctx.outputBuffer.Get(),
+                                 &mapped, &mappedIndex)) {
+      return false;
+    }
   }
   output.resize(ctx.outputBufferSize);
   std::memcpy(output.data(), mapped.pData, ctx.outputBufferSize);
@@ -697,6 +730,11 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
 
 uint64_t d3d11CompositorCameraUploadCount() {
   return context().cameraUploadCount;
+}
+
+uint32_t d3d11CompositorStagingReadbackDepth() {
+  return stagingRingEnabled() ? static_cast<uint32_t>(context().stagingRing.depth())
+                              : 0u;
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,9 +1227,9 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   D3D11Context &baseCtx = base;
   D3D11_MAPPED_SUBRESOURCE mapped{};
   size_t mappedIndex = 0;
-  if (!mapReadbackRing(baseCtx.context.Get(), ctx.outStaging, ctx.outRing,
-                       ctx.outBuffer.Get(), &mapped, &mappedIndex)) {
-    logCompositorEvent("guided_readback_pending", "staging ring not ready");
+  if (!mapCurrentFrameReadback(baseCtx.context.Get(), ctx.outStaging, ctx.outRing,
+                               ctx.outBuffer.Get(), &mapped, &mappedIndex)) {
+    logCompositorEvent("guided_readback_failed", "current frame map failed");
     return false;
   }
   const size_t strideW = (static_cast<size_t>(workW) + 3u) & ~static_cast<size_t>(3u);

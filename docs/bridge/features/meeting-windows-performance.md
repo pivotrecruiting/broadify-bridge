@@ -13,11 +13,18 @@ Konfiguration:
   High-Performance, wenn vorhanden.
 - `BROADIFY_MEETING_GPU_POLICY=high_performance`: erzwingt die schnelle GPU.
 - `BROADIFY_MEETING_GPU_POLICY=minimum_power`: bevorzugt die sparsame GPU.
+- `BROADIFY_MEETING_GPU_POLICY=split`: A/B-Modus wie rc.12; der
+  D3D11-Compositor nutzt den Default-Adapter, DirectML nutzt
+  High-Performance.
 
 Der Helper loggt einmal `gpu_adapter_selected` mit Beschreibung und LUID.
 `keyer.get`/`state.get` enthalten `gpu_adapter` und `compositor_adapter`.
 Fuer Akzeptanz muessen beide Felder dieselbe LUID zeigen, wenn DirectML und
-D3D11 aktiv sind.
+D3D11 aktiv sind. Bei `split` duerfen sie abweichen.
+
+DirectML DML1 wird mit eigener D3D12-Device/Queue initialisiert; die Queue ist
+`D3D12_COMMAND_LIST_TYPE_DIRECT`. DML2 und das Legacy-Device-0 bleiben
+Fallbacks.
 
 ## QoS und Timer
 
@@ -41,11 +48,23 @@ laeuft nur bei einer neuen Kamera-Frame-Timestamp.
 MJPEG wird nur fuer verbundene MJPEG-Clients encodiert. Ist gleichzeitig ein
 VCam-Client verbunden, wird MJPEG auf 10 fps gedrosselt.
 
+## Readback
+
+Der Guided-Refine-Readback liest immer die Maske des aktuellen Kamera-Frames
+zurueck. Dadurch wird die Kante nicht mit einer Maske aus Frame N-1 auf Frame
+N composited.
+
+Der finale D3D11-Compositor-Readback nutzt default den direkten blocking
+Copy/Map-Pfad (rc.12-Latenz). Die Staging-Ring-Variante ist nur per
+`BROADIFY_MEETING_STAGING_RING=1` aktiv. Wenn sie aktiv ist, meldet
+`metrics.staging_readback_depth` die Ring-Tiefe, sonst `0`.
+
 ## Latenzpolitik
 
 Der Windows-Keyer-Governor steigt ab, sobald die geglaettete Inferenzzeit
-mehr als 0,5 x Framebudget verbraucht (bei 30 fps ca. 16,7 ms). Step-up bleibt
-unveraendert konservativ. `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` ist heute
+mehr als 1,0 x Framebudget verbraucht (bei 30 fps ca. 33,3 ms). Step-up wird
+aus dieser Step-down-Schwelle berechnet und kann die Hysterese-Band nicht
+invertieren. `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` ist heute
 ein Kill-Switch fuer die fused cadence reuse: bei `0` laeuft Inferenz fuer
 jeden neuen Kamera-Frame und `mask_age_ms` wird auf 0 gesetzt; Default `1`
 erlaubt die Wiederverwendung der retained matte zwischen Inferenz-Frames und
@@ -56,6 +75,16 @@ verschoben.
 Zeitbasierte Hintergruende werden nur auf Kamera-, Programm- oder
 Grafik-Aenderungen fortgeschrieben; ohne solche Aenderung gibt es keinen
 separaten Render-Tick.
+
+Der Windows-Program-Loop darf durch eine fruehe Kamera-CV-Wake frueher
+aufwachen, rendert aber nie schneller als `1 / targetFps`. Eine 60-fps-Webcam
+treibt den fused Pfad daher nicht mehr mit 60 Hz, wenn der Helper auf 30 fps
+konfiguriert ist.
+
+MediaFoundation bevorzugt einen angebotenen nativen Kamera-Typ mit maximal
+30 fps und maximal 1920x1080. Die Subtype-Praeferenz ist NV12, YUY2, MJPG;
+danach wird weiter RGB32 fuer den Helper ausgegeben. Der ausgewaehlte native
+Typ wird als `camera_native_media_type_selected` geloggt.
 
 BFRG v2 traegt `capture_ns`; die VCam-DLL akzeptiert v1 und v2. Samples werden
 aus dem Produzentenzeitstempel erzeugt, duplizierte Frames laufen mit

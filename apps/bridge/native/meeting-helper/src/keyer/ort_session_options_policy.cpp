@@ -5,7 +5,7 @@ namespace broadify::meeting {
 OrtSessionOptionsPolicy makeDirectMlSessionOptionsPolicy(uint32_t inputWidth,
                                                          uint32_t inputHeight) {
   OrtSessionOptionsPolicy policy;
-  policy.intraOpThreads = 1;
+  policy.intraOpThreads = 2;
   policy.disableMemPattern = true;
   policy.sequentialExecution = true;
   policy.configEntries.push_back({"session.intra_op.allow_spinning", "0"});
