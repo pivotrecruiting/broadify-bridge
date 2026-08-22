@@ -109,3 +109,29 @@ F1. `docs/bridge/features/virtual-camera-windows.md` + a new `docs/bridge/featur
 - [ ] Tests pass — `npm run test:jest` passed (173 suites / 1950 tests); `npm run test:meeting-helper-native` failed only `meeting_recorder_writer_test` with pre-existing macOS `audio_input_rejected` while 18/19 ctests passed.
 - [x] Lint / type-check pass — `npm run lint`, `npm run build`, and `npm run build:meeting-helper` exit 0.
 - [ ] Windows CI compile on the RC — not run from macOS worktree.
+
+## Field regression (rc.18, 22.08.2026): keyer ghosting + latency — fix set
+User field test on the 1660 Ti laptop: much quieter (good), but ghosting and latency in the keyer vs rc.12. Diagnosis (read-only):
+- FR-1 Staging readback ring returns the PREVIOUS frame's guided-refine mask (slot k-1) which is composited on the CURRENT camera
+  frame → deterministic 33–67 ms edge/body misalignment = ghost. `compose/d3d11_compositor.cpp:474-508, 1159-1176` (+ `:687-694`
+  for the final readback = +1–2 frames output latency). Fix: guided refine must return the current frame's result (blocking
+  CopyResource + Map for the guided readback). The final compositor readback ring becomes OPT-IN via
+  `BROADIFY_MEETING_STAGING_RING=1` (default off = rc.12 behaviour, no added latency); when enabled, surface the ring depth in
+  `mask_age_ms`/telemetry. Keep the staging-ring unit tests.
+- FR-2 Governor `stepDownFactor` 0.5 with `stepUpThresholdMs` still based on the full budget (0.7 × 33.3 = 23.3 > 16.7) → inverted
+  hysteresis → 320↔256↔Lite oscillation, synchronous session rebuilds, `resetKeyerPathState` pops. Fix: `stepDownFactor = 1.0`
+  (rc.12 seeding: 26 ms@512 stays at 512; cadence at 0.8 × budget degrades first), base `stepUpThresholdMs` on
+  `stepDownThresholdMs()` so the band can never invert (`keyer/keyer_governor.cpp:75-80`), fix the stale comment at
+  `keyer_governor.h:42-43`, update `keyer_governor_test`.
+- FR-3 CV-paced loop re-anchors `nextFrameAt = now` on every early camera wake → with a 60 fps webcam the whole fused pipeline runs
+  at 60 Hz (2× GPU load, feeds FR-2). Fix: keep 1/targetFps as the cadence floor (wake early but never run more than targetFps
+  iterations/s) in `pipeline/frame_pipeline.cpp:2868-2880`; additionally prefer a ≤30 fps media type when the camera offers one
+  (`capture/camera_mediafoundation.cpp` media-type selection) — log the chosen type.
+- FR-4 Adapter policy: create the DML1 command queue as `D3D12_COMMAND_LIST_TYPE_DIRECT` (matches ORT's own DML2 path; NVIDIA can
+  schedule an async compute queue behind the compositor's 3D queue), and add policy value `split` (compositor on the default adapter,
+  DML on HighPerformance = rc.12 topology) for A/B; `auto` stays the shared adapter. `compose/d3d_adapter_select.cpp`,
+  `keyer/modnet_keyer.cpp:126-165`, docs.
+- FR-5 `ort_session_options_policy.cpp`: intraOpThreads 2 (keep allow_spinning=0).
+Acceptance: guided refine output is the current frame's (unit test of the readback selection: the mask returned for frame k is
+from frame k); ring opt-in default off; governor tests updated incl. "band never inverts"; loop floor test; macOS unchanged;
+lint/jest/build/helper build/ctests green.
