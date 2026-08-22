@@ -114,3 +114,24 @@ E3. Docs + design doc status; runbook: what `keyer_tier` means in field logs.
 ## Verification
 - [ ] Tests pass
 - [ ] Windows CI compile + keyer-tier selftest
+
+### WP5 review round 2 — MUST-FIX (M3/M5/M7/M9 resolved)
+- R2-1 (M1) tier decision timing: run `decideSegmentationTier` AFTER the camera source is attached (on `camera.start` success, and again
+  on camera change), not at process start; publish `keyer_tier` + `segmentation_tier_selected` then; `BROADIFY_MEETING_KEYER_TIER=os_mask`
+  honoured once the probe succeeded. When tier == os_mask and a sample carries NO mask blob → use MODNet for that frame (never un-keyed).
+  `--keyer-tier-selftest` opens the first camera (if any) before deciding; reports `no_camera` honestly otherwise.
+- R2-2 (M2) cadence-skip frames: composite the advancing OFD queue front (the frame whose mask is final), never `lastFusedRawFrame`
+  again; hold frames by `shared_ptr` taken from the capture path (no `make_shared<VideoFrame>(copy)` per inference frame — add a
+  `copyLatestFrameShared()` or move semantics); document the two-frame priming in a comment.
+- R2-3 (M4) `fusedEmaMotion` default 1.0 on Windows (EMA fully off when OFD is active); keep macOS value.
+- R2-4 (M6) `modnet320ProbeMs` from the existing tier probe (the 320 session warm-up measurement already taken at first load), not env;
+  therefore the auto decision may be refined after first load (re-decide once, log).
+- R2-5 (M8) D3D11 guided refine (`d3d11_compositor.cpp` ~:991-998) reads radius/eps/coeffEma from `state.keyerTuning` (pass a
+  `GuidedTuning` struct into the call), remove its private env reads; `coefficientEma` and `cadencePinEnabled` consumed; Windows
+  default epsilon stays 5e-4 (do not silently change defaults — `KeyerTuning` defaults must equal rc.26 effective values);
+  `applyKeyerTuningPatch` = real patch (only provided fields), precedence default < env < webapp with a ctest asserting each layer.
+- R2-6 (M10) restore the deleted sections of `meeting-keyer-windows.md` (Pipeline, Environment table, Field A/B, Status And Logs, Teams
+  Grey Triage) from git history (`git show 789a1965:docs/bridge/features/meeting-keyer-windows.md`) and keep the new sections; fix the
+  "falls back to MODNet" wording to what the code does.
+- R2-7 (M11) remove the duplicate `keyer_tier_cache` event (or read the cache on start to skip the probe — one or the other).
+- Notes: `adapterLooksIntegrated` log field; async worker ignores tier (document as known limitation).
