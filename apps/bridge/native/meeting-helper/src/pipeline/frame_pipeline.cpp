@@ -311,7 +311,7 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
     // rebuild (higher = crisper/less ghost).
     static const float fusedEmaStatic = [] {
       const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_STATIC");
-      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.72f;
+      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.85f;
     }();
     static const float fusedEmaMotion = [] {
       const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_MOTION");

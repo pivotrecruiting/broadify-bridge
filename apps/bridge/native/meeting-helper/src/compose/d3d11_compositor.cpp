@@ -994,7 +994,7 @@ bool initializeGuidedContext() {
   ctx.epsilon = static_cast<float>(
       guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 5.0e-4));
   ctx.coeffEma = static_cast<float>(
-      std::clamp(guidedEnvDouble("BROADIFY_MEETING_GUIDED_COEFF_EMA", 0.5),
+      std::clamp(guidedEnvDouble("BROADIFY_MEETING_GUIDED_COEFF_EMA", 0.0),
                  0.0, 1.0));
 
   ctx.available = true;
