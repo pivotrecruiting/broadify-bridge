@@ -242,3 +242,32 @@ Must-fix:
   immediately instead of treating it as a successful connection (kills the 250 ms reconnect storm).
 Notes: rename `vcamAwarePolicy` → `tierFirstPolicy`; `reopen_count_hour` → lifetime counter naming; reaping test should exercise
 the real worker vector; build stamp is configure-time (document).
+
+## rc.27 field result (22.08.2026): BLACK in Teams — diagnosis + fix set (→ rc.28)
+Diagnosis (code + field vcam.log): (1) the streaming DLL instance runs in the Frame Server svchost as LOCAL SERVICE and CANNOT write
+`%ProgramData%\Broadify\vcam.log` (file owned by the user) → we have never seen a single stream-side log line; only the in-process
+activation probe logs. (2) Creating a `Global\` file mapping from an unelevated user process requires `SeCreateGlobalPrivilege` →
+`CreateFileMappingW(stream) failed error=5` on every normal desktop → helper falls back to TCP (CI runner is elevated, so the
+selftest passed). (3) On the TCP fallback the DLL now advertises NV12 first and writes NV12 into pooled 2D buffers (rc.26 used RGB32
++ MFCreateMemoryBuffer) → the black picture is the NV12 splash / empty NV12 samples on the LS instance. (4) Even with SHM, "mapping open,
+heartbeat fresh, zero frames" is a stable state with no TCP fallback (helper publishes only when vcamClients>0).
+- BF-1 `vcam_log.cpp`: create `%ProgramData%\Broadify` and the log with an explicit DACL (Authenticated Users + LOCAL SERVICE:
+  modify/append; owner full); if the existing file is not writable, fall back to `vcam-<pid>.log` in the same dir; log `build_stamp`
+  + process identity (session id, user = LS or interactive) on first line.
+- BF-2 `media_stream.cpp`: media types RGB32 FIRST (rc.26 behaviour and buffers: `MFCreateMemoryBuffer` for RGB32), NV12 second, YUY2
+  third; NV12 path stays but is only used when the consumer selects it. Start the TCP client in `Start()` immediately when
+  `!hasMapping()` (rc.26 timing), not lazily in RequestSample.
+- BF-3 `shm_frame_reader.cpp` / `media_stream.cpp`: "mapping open but no frame within 2 s of open" → treat like stale heartbeat
+  (close mappings, TCP fallback, retry SHM every 5 s).
+- BF-4 helper `frame_pipeline.cpp` ~:3198: publish into the ring whenever the ring is active and `vcamRawRunning` (drop the
+  `vcamClients > 0` term for the ring write only); `output.vcam.raw.stop` closes the ring (DLL sees staleness); route
+  `vcam_shm_control_busy` through `emitHelperEvent`; seed `vcamWriterGeneration` from pid+tick.
+- BF-5 Global namespace reality: document in `virtual-camera-windows.md` that SHM requires a process with `SeCreateGlobalPrivilege`
+  (today: elevated helper only) and that unelevated installs run TCP; status `vcam_transport_selected reason=global_namespace_privilege`
+  must say so explicitly (map error 5 to that reason). Design follow-up WP4b (separate task): the DLL (service, holds the privilege)
+  creates the `Global\` ring with an ACL for the interactive user's SID (WTSGetActiveConsoleSessionId + WTSQueryUserToken → SID) and the
+  helper OPENS it — reverse ownership.
+- BF-6 ctest for the "no frame within 2 s" reader rule; ps1: the SHM selftest additionally runs the reader with a restricted token if
+  possible — else document the CI blind spot explicitly.
+Acceptance: rc.28 behaves like rc.26 in Teams on an unelevated desktop (RGB32 TCP) with full stream-side logging; SHM engages only
+where the privilege exists and never leaves the consumer without frames.
