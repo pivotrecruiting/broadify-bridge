@@ -2543,8 +2543,12 @@ void runFramePipeline(const Options &options,
           // profile on the worker's chain: at ~11 reused masks/s the mask AGE
           // dominates perceived ghosting, so the younger 256-class mask beats
           // the finer 320 one. Cleared automatically outside the lite tier.
+          // Lite256 AND Off pin the worker to the 256 session: Off is the tier
+          // for machines too slow even for async 256, so running the webapp
+          // mode there would make the reduced cadence slower, not faster.
           keyerWorker.setGovernorPerformanceFloor(
-              governorAutoEnabled && fusedGovernor.wantsAsyncLite());
+              governorAutoEnabled &&
+              (fusedGovernor.wantsAsyncLite() || fusedGovernor.wantsOff()));
           // What actually drives the keyer now: the governor's tier (which is
           // also the async-lite floor, "performance"), or the webapp mode
           // when auto-degradation is off / the env pin is active.
