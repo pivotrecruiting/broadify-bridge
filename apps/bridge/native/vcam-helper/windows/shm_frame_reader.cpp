@@ -144,8 +144,16 @@ bool ShmFrameReader::ProbeGeometry(ShmGeometry &geometry) {
   if (!readGlobalControl(record, control, view, FILE_MAP_READ)) {
     return false;
   }
-  geometry.width = record.width;
-  geometry.height = record.height;
+  const bool validControl = broadify::vcam_shm::validateServiceControl(record);
+  if (!validControl) {
+    UnmapViewOfFile(view);
+    CloseHandle(control);
+    return false;
+  }
+  geometry.width =
+      std::min(record.width, broadify::vcam_shm::kMaxServiceWidth);
+  geometry.height =
+      std::min(record.height, broadify::vcam_shm::kMaxServiceHeight);
   geometry.fpsNum = record.fps_num == 0u ? 30u : record.fps_num;
   geometry.fpsDen = record.fps_den == 0u ? 1u : record.fps_den;
   UnmapViewOfFile(view);
@@ -262,12 +270,13 @@ bool ShmFrameReader::createServiceRing() {
     record->version = broadify::vcam_shm::kLayoutVersion;
     record->owner =
         static_cast<uint32_t>(broadify::vcam_shm::LayoutOwner::Service);
-    record->sequence = 2u;
     record->capacity_bytes = ownerRingBytes_;
     std::wcsncpy(record->mapping_name, streamName.c_str(),
                  broadify::vcam_shm::kMaxNameChars - 1u);
     std::wcsncpy(record->event_name, eventName.c_str(),
                  broadify::vcam_shm::kMaxNameChars - 1u);
+    std::atomic_thread_fence(std::memory_order_release);
+    *reinterpret_cast<volatile uint64_t *>(&record->sequence) = 2u;
   } else {
     initialized = broadify::vcam_shm::validateServiceRing(
         ownerMappingMemory_, ownerRingBytes_);

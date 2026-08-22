@@ -23,8 +23,9 @@ VCam frame path:
 - The DLL creates `Global\BroadifyVcam-control`,
   `Global\BroadifyVcam-stream`, and `Global\BroadifyVcam-frame` when
   `MediaStream::Start` activates the stream.
-- ACL SDDL grants `LOCAL SERVICE` full access and grants Interactive Users
-  plus Authenticated Users read/write.
+- ACL SDDL grants `LOCAL SERVICE` full access, grants Interactive Users plus
+  Authenticated Users read/write/execute-synchronize on the stream mapping and
+  frame event, and grants read/write on the control mapping.
 - Ring layout is `BFSM` version 2, three BGRA8 slots, seqlock sequence per
   slot, owner, capacity bytes, capture QPC, writer generation, heartbeat QPC,
   and reader count.
@@ -48,13 +49,15 @@ zero-geometry with `owner=service`, `writer_generation=0`, and
 `capacity_bytes` set; the helper validates those fields before writing
 geometry and bumping generation.
 
-The DACL grants `LOCAL SERVICE` full access and grants Interactive Users plus
-Authenticated Users read/write. This matches the local trust level of the TCP
-loopback fallback: any local authenticated user can write frames and control
-fields, but no secrets are present. The consequence is deliberate defensive
-parsing: object names are copied with fixed bounds, stream mappings are opened
-read-only by the DLL reader, and every header-derived size, stride, slot count
-and payload length is revalidated before a memcpy.
+The DACL grants `LOCAL SERVICE` full access. It grants Interactive Users plus
+Authenticated Users `GRGWGX` on the stream mapping and frame event, because
+event wait uses `SYNCHRONIZE` through generic execute, and `GWGR` on the
+control mapping. This matches the local trust level of the TCP loopback
+fallback: any local authenticated user can write frames and control fields, but
+no secrets are present. The consequence is deliberate defensive parsing:
+object names are copied with fixed bounds, stream mappings are opened read-only
+by the DLL reader, and every header-derived size, stride, slot count and
+payload length is revalidated before a memcpy.
 
 Helper `output.vcam.raw.start` now attempts `OpenFileMappingW` first
 (`opened_service_ring`), then attempts the fixed `Global\` creator fallback
@@ -67,6 +70,9 @@ The raw RPC handlers only arm or disarm output; the lifecycle thread is the
 sole owner of open/retry/close. The named section stays alive while either the
 DLL or helper holds a handle, and each helper publish path writes geometry plus
 a bumped writer generation so DLL readers can detect restarts and reopen.
+After Teams activates the camera, SHM can engage up to about 7 s later because
+the DLL polls every 5 s and the helper retries every 2 s; the first
+`control_mapping_absent` diagnostic is expected during that window.
 
 macOS cannot compile the Windows Frame Server DLL, SDDL ACL path, or
 MediaFoundation buffers. Platform-neutral layout, seqlock, discovery, SDDL

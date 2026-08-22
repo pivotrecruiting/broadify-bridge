@@ -524,11 +524,7 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
   resources.controlName = controlName_.empty()
                               ? broadify::vcam_shm::controlMappingName(globalNamespace)
                               : controlName_;
-  resources.ringBytes =
-      globalNamespace
-          ? broadify::vcam_shm::maxServiceRingBytes()
-          : broadify::vcam_shm::ringBytesFor(
-                width, height, broadify::vcam_shm::PixelFormat::Bgra8);
+  resources.ringBytes = broadify::vcam_shm::maxServiceRingBytes();
   if (resources.ringBytes == 0u) {
     reason = "invalid geometry";
     return false;
@@ -601,10 +597,7 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
   if (!broadify::vcam_shm::initializeRing(
           resources.memory, resources.ringBytes, width, height, fps, 1u,
           broadify::vcam_shm::PixelFormat::Bgra8, GetCurrentProcessId(),
-          writerGeneration, heartbeatQpc) ||
-      !publishControlRecord(resources.controlMemory, resources.mappingName,
-                            resources.eventName, resources.ringBytes, width,
-                            height, fps, writerGeneration, heartbeatQpc)) {
+          writerGeneration, heartbeatQpc)) {
     reason = "failed to initialize shared memory layout";
     closeResources(resources);
     return false;
@@ -613,6 +606,13 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
       static_cast<broadify::vcam_shm::RingHeader *>(resources.memory);
   header->owner = static_cast<uint32_t>(broadify::vcam_shm::LayoutOwner::Service);
   header->capacity_bytes = resources.ringBytes;
+  if (!publishControlRecord(resources.controlMemory, resources.mappingName,
+                            resources.eventName, resources.ringBytes, width,
+                            height, fps, writerGeneration, heartbeatQpc)) {
+    reason = "failed to initialize shared memory layout";
+    closeResources(resources);
+    return false;
+  }
   mappingHandle_ = resources.mappingHandle;
   eventHandle_ = resources.eventHandle;
   controlHandle_ = resources.controlHandle;

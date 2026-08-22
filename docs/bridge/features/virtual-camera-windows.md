@@ -44,8 +44,10 @@ Transport-Auswahl:
   standardmaessig als einzigen Media Type an.
 
 SHM-DACL: `LOCAL SERVICE` hat Vollzugriff; `IU` (Interactive Users) und `AU`
-(Authenticated Users) haben Lese-/Schreibzugriff (`GRGW`/`GWGR`), keine
-weiteren SIDs werden eingetragen. Das ist lokal-only, aber jeder lokal
+(Authenticated Users) haben auf Stream-Mapping und Frame-Event
+Lese-/Schreib-/Execute-Synchronisierungsrechte (`GRGWGX`) und auf die
+Control-Mapping Lese-/Schreibzugriff (`GWGR`), keine weiteren SIDs werden
+eingetragen. Das ist lokal-only, aber jeder lokal
 authentifizierte Benutzer kann Frames und Control-Felder schreiben. Deshalb
 werden Mapping-/Event-Namen und alle Header-Felder als untrusted behandelt:
 Objekte werden nur read-only bzw. mit minimalem Schreibrecht geoeffnet, Namen
@@ -76,6 +78,9 @@ steht oder wenn nach dem Oeffnen einer Mapping binnen 2 s kein Frame ankommt;
 danach prueft sie periodisch wieder auf SHM. Bei gesunder
 SHM-Verbindung wird der TCP-Client wieder gestoppt und damit gibt es keine
 per-Connection-Worker-Churn im Helper.
+Nach Teams-Aktivierung kann SHM wegen DLL-5-s-Poll plus Helper-2-s-Retry bis
+zu ca. 7 s spaeter greifen; die erste Diagnose
+`control_mapping_absent` ist in diesem Fenster erwartet.
 Direkt nach Stream-Start liefert `RequestSample` bis zum ersten Frame den
 dunklen Splash. Sobald einmal ein gueltiger Frame angekommen ist, wird nie
 wieder auf den Splash umgeschaltet: bei Staleness, statischem Programm oder

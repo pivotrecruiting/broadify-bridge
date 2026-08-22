@@ -180,7 +180,7 @@ bool initializeRing(void *memory,
   if (memory == nullptr || required == 0u || bytes < required) {
     return false;
   }
-  std::memset(memory, 0, bytes);
+  std::memset(memory, 0, sizeof(RingHeader));
   RingHeader *header = reinterpret_cast<RingHeader *>(memory);
   header->magic = kRingMagic;
   header->version = kLayoutVersion;
@@ -197,6 +197,13 @@ bool initializeRing(void *memory,
   header->writer_generation = writerGeneration;
   header->heartbeat_qpc = heartbeatQpc;
   header->reader_count = 0;
+  for (uint32_t i = 0u; i < kSlotCount; ++i) {
+    SlotHeader *slot = slotHeader(memory, bytes, i);
+    if (slot == nullptr) {
+      return false;
+    }
+    std::memset(slot, 0, sizeof(SlotHeader));
+  }
   return true;
 }
 
@@ -246,6 +253,9 @@ bool validateServiceControl(const ControlRecord &record) {
     return true;
   }
   const PixelFormat format = static_cast<PixelFormat>(record.format);
+  if (record.width > kMaxServiceWidth || record.height > kMaxServiceHeight) {
+    return false;
+  }
   const size_t required = ringBytesFor(record.width, record.height, format);
   return required != 0u && required <= record.capacity_bytes &&
          record.fps_num != 0u && record.fps_den != 0u;
@@ -457,7 +467,7 @@ std::wstring serviceStreamEventName(bool globalNamespace) {
 }
 
 std::wstring streamSecurityDescriptorSddl() {
-  return L"D:P(A;;GA;;;LS)(A;;GRGW;;;IU)(A;;GRGW;;;AU)";
+  return L"D:P(A;;GA;;;LS)(A;;GRGWGX;;;IU)(A;;GRGWGX;;;AU)";
 }
 
 std::wstring controlSecurityDescriptorSddl() {

@@ -720,6 +720,7 @@ int main(int argc, char **argv) {
     int lastReaderCount = 0;
     uint64_t nextOpenAttemptMs = 0u;
     uint64_t lastReaderSeenMs = 0u;
+    std::string lastTcpTransportReason;
     while (g_running.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       bool shouldUseShm = false;
@@ -739,6 +740,7 @@ int main(int argc, char **argv) {
         }
 #endif
         lastReaderSeenMs = 0u;
+        lastTcpTransportReason.clear();
         continue;
       }
 #if defined(_WIN32)
@@ -782,13 +784,17 @@ int main(int argc, char **argv) {
                      "\"}");
           nextOpenAttemptMs = 0u;
           lastReaderSeenMs = 0u;
+          lastTcpTransportReason.clear();
         } else {
           setVirtualCameraTransport("tcp");
           const std::string fallbackReason =
               opened.reason == "invalid_service_ring" ? opened.reason
                                                        : retry.reason;
-          printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
-                     jsonEscape(fallbackReason) + "\"}");
+          if (fallbackReason != lastTcpTransportReason) {
+            printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
+                       jsonEscape(fallbackReason) + "\"}");
+            lastTcpTransportReason = fallbackReason;
+          }
           nextOpenAttemptMs = retry.nextRetryMs;
         }
         continue;
@@ -808,7 +814,10 @@ int main(int argc, char **argv) {
                  vcamShm.readerHeartbeatAbsent(5000u)) {
         vcamShm.close();
         setVirtualCameraTransport("tcp");
-        printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"reader_absent\"}");
+        if (lastTcpTransportReason != "reader_absent") {
+          printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"reader_absent\"}");
+          lastTcpTransportReason = "reader_absent";
+        }
         lastReaderSeenMs = 0u;
         nextOpenAttemptMs = 0u;
         continue;

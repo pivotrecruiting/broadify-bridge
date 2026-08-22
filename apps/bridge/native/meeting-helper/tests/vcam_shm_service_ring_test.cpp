@@ -50,13 +50,15 @@ void testCreatorPublishReaderCopy() {
   auto *controlRecord = static_cast<ControlRecord *>(controlMemory);
   ControlRecord record;
   CHECK(readControlRecord(*controlRecord, record));
-  CHECK(record.capacity_bytes >= ringBytesFor(64, 36, PixelFormat::Bgra8));
+  CHECK(validateServiceControl(record));
+  CHECK(record.capacity_bytes == maxServiceRingBytes());
 
   HANDLE stream = OpenFileMappingW(FILE_MAP_READ, FALSE, record.mapping_name);
   CHECK(stream != nullptr);
   void *streamMemory = MapViewOfFile(stream, FILE_MAP_READ, 0, 0,
                                      static_cast<size_t>(record.capacity_bytes));
   CHECK(streamMemory != nullptr);
+  CHECK(validateServiceRing(streamMemory, static_cast<size_t>(record.capacity_bytes)));
   CopiedFrame copied;
   CHECK(copyNewestFrame(streamMemory, static_cast<size_t>(record.capacity_bytes),
                         copied));

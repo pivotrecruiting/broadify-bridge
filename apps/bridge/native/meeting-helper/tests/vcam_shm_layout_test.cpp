@@ -226,6 +226,12 @@ void testServiceControlValidation() {
   record.magic = kControlMagic;
   record.capacity_bytes = 1u;
   CHECK(!validateServiceControl(record));
+  record.capacity_bytes = maxServiceRingBytes();
+  record.width = kMaxServiceWidth + 1u;
+  CHECK(!validateServiceControl(record));
+  record.width = kMaxServiceWidth;
+  record.height = kMaxServiceHeight + 1u;
+  CHECK(!validateServiceControl(record));
 }
 
 void testNamesAndSddl() {
@@ -239,8 +245,8 @@ void testNamesAndSddl() {
   const std::wstring streamSddl = streamSecurityDescriptorSddl();
   const std::wstring controlSddl = controlSecurityDescriptorSddl();
   CHECK(streamSddl.find(L"GA;;;LS") != std::wstring::npos);
-  CHECK(streamSddl.find(L"GRGW;;;IU") != std::wstring::npos);
-  CHECK(streamSddl.find(L"GRGW;;;AU") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GRGWGX;;;IU") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GRGWGX;;;AU") != std::wstring::npos);
   CHECK(controlSddl.find(L"GWGR;;;IU") != std::wstring::npos);
   CHECK(controlSddl.find(L"GWGR;;;AU") != std::wstring::npos);
 }
