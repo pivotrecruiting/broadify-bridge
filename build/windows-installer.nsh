@@ -16,6 +16,10 @@
 ; - On uninstall the DLL is already deleted when customUnInstall runs
 ;   (electron-builder removes $INSTDIR first), so regsvr32 /u cannot work;
 ;   the CLSID key is removed directly instead.
+; - The Windows Camera Frame Server can keep the DLL loaded across updates.
+;   The installer asks FrameServer/FrameServerMonitor to stop before
+;   registration. If Windows refuses, install continues and a reboot is the
+;   supported fallback so the new DLL is loaded on next camera use.
 
 ; Must match apps/bridge/native/vcam-helper/windows/vcam_guid.h.
 !define BROADIFY_VCAM_CLSID "{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}"
@@ -24,6 +28,19 @@
 
 !macro customInstall
   SetRegView 64
+  DetailPrint "Stopping Windows Camera Frame Server services before VCam refresh"
+  ExecWait '"$WINDIR\Sysnative\sc.exe" stop FrameServer' $0
+  DetailPrint "FrameServer stop exit code: $0"
+  ExecWait '"$WINDIR\Sysnative\sc.exe" stop FrameServerMonitor' $1
+  DetailPrint "FrameServerMonitor stop exit code: $1"
+  ${If} $0 != 0
+  ${AndIf} $0 != 1062
+    DetailPrint "FrameServer could not be stopped; reboot may be required for broadify-vcam.dll replacement to take effect."
+  ${EndIf}
+  ${If} $1 != 0
+  ${AndIf} $1 != 1062
+    DetailPrint "FrameServerMonitor could not be stopped; reboot may be required for broadify-vcam.dll replacement to take effect."
+  ${EndIf}
   DetailPrint "Registering Broadify virtual camera (broadify-vcam.dll)"
   ExecWait '"$WINDIR\Sysnative\regsvr32.exe" /s "${BROADIFY_VCAM_DLL}"' $0
   DetailPrint "regsvr32 exit code: $0"
