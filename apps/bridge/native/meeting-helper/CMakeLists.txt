@@ -90,6 +90,7 @@ set(MEETING_HELPER_SOURCES
   src/output/vcam_controller.cpp
   src/keyer/keyer_chain.cpp
   src/keyer/keyer_governor.cpp
+  src/keyer/keyer_tuning.cpp
   src/keyer/matting_backend.cpp
   src/keyer/matting_common.cpp
   src/keyer/model_manifest.cpp
@@ -327,6 +328,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
   )
+  add_executable(keyer_tuning_test
+    tests/keyer_tuning_test.cpp
+    src/keyer/keyer_tuning.cpp
+  )
   add_executable(segmentation_tier_test
     tests/segmentation_tier_test.cpp
     src/keyer/segmentation_tier.cpp
@@ -393,6 +398,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/control_server_test.cpp
     src/control/control_server.cpp
     src/capture/camera_source.cpp
+    src/keyer/keyer_tuning.cpp
     src/output/vcam_controller.cpp
     src/preview/preview_frame_store.cpp
     src/preview/vcam_shm_layout.cpp
@@ -434,6 +440,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     ort_session_options_policy_test
     camera_media_type_rank_test
     keyer_governor_test
+    keyer_tuning_test
     segmentation_tier_test
     keyer_cadence_test
     mask_retention_test

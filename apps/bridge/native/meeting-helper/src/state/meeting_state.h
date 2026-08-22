@@ -1,6 +1,7 @@
 #pragma once
 
 #include "keyer/keyer.h"
+#include "keyer/keyer_tuning.h"
 
 #include <mutex>
 #include <string>
@@ -133,6 +134,7 @@ struct MeetingState {
   std::string activePerformanceMode;
   std::string keyerTier = "modnet_512_ofd";
   std::string keyerTierReason = "not_selected";
+  KeyerTuning keyerTuning;
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
   std::string gpuAdapter;

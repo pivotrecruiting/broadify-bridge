@@ -182,6 +182,28 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
   return result.str();
 }
 
+std::string keyerTuningJson(const KeyerTuning &tuning) {
+  std::ostringstream result;
+  result << "{\"preset\":\"" << jsonEscape(tuning.preset)
+         << "\",\"source\":\"" << jsonEscape(tuning.source)
+         << "\",\"guided_radius\":" << tuning.guidedRadius
+         << ",\"guided_epsilon\":" << tuning.guidedEpsilon
+         << ",\"coefficient_ema\":" << tuning.coefficientEma
+         << ",\"erode_px\":" << tuning.erodePx
+         << ",\"dilate_px\":" << tuning.dilatePx
+         << ",\"feather_px\":" << tuning.featherPx
+         << ",\"ofd_epsilon_near\":" << static_cast<int>(tuning.ofdEpsilonNear)
+         << ",\"ofd_epsilon_far\":" << static_cast<int>(tuning.ofdEpsilonFar)
+         << ",\"edge_stabilization_enabled\":"
+         << (tuning.edgeStabilizationEnabled ? "true" : "false")
+         << ",\"edge_stabilization_strength\":"
+         << tuning.edgeStabilizationStrength
+         << ",\"cadence_pin_enabled\":"
+         << (tuning.cadencePinEnabled ? "true" : "false")
+         << ",\"tier\":\"" << jsonEscape(tuning.tier) << "\"}";
+  return result.str();
+}
+
 void updateProgramSection(MeetingState &state, const std::string &section, const std::string &values) {
   const std::string safeValues = values.empty() ? "{\"enabled\":false}" : values;
   if (section == "speaker_layout") {
@@ -601,6 +623,7 @@ std::string handleRpc(const std::string &line,
            << ",\"edge_stabilization_strength\":" << state.edgeStabilizationStrength
            << ",\"fresh_mask_age_ms\":" << state.degradationSettings.freshMaskAgeMs
            << ",\"max_mask_age_ms\":" << state.degradationSettings.maxMaskAgeMs << "},"
+           << "\"tuning\":" << keyerTuningJson(state.keyerTuning) << ","
            << "\"status\":{\"active_keyer\":\"" << jsonEscape(state.activeKeyer)
            << "\",\"fallback_active\":" << (state.fallbackActive ? "true" : "false")
            << ",\"keyer_degraded\":" << (state.keyerDegraded ? "true" : "false")
@@ -674,6 +697,18 @@ std::string handleRpc(const std::string &line,
       if (!performanceMode.empty()) {
         state.performanceMode = normalizedPerformanceMode(performanceMode);
       }
+      const std::string preset = extractStringField(line, "preset");
+      if (!preset.empty()) {
+        state.keyerTuning = presetKeyerTuning(preset);
+        state.keyerTuning.source = "webapp";
+        state.maskErodePx = state.keyerTuning.erodePx;
+        state.maskDilatePx = state.keyerTuning.dilatePx;
+        state.maskFeatherPx = state.keyerTuning.featherPx;
+        state.edgeStabilizationEnabled =
+            state.keyerTuning.edgeStabilizationEnabled;
+        state.edgeStabilizationStrength =
+            state.keyerTuning.edgeStabilizationStrength;
+      }
       state.maskErodePx = clampedDouble(extractDoubleField(line, "mask_erode_px", state.maskErodePx), 0.0, 3.0);
       state.maskDilatePx = clampedPixelRadius(
           extractIntField(line, "mask_dilate_px", static_cast<int>(state.maskDilatePx)), 8u);
@@ -685,6 +720,20 @@ std::string handleRpc(const std::string &line,
           extractBoolField(line, "edge_stabilization_enabled", state.edgeStabilizationEnabled);
       state.edgeStabilizationStrength =
           clampedDouble(extractDoubleField(line, "edge_stabilization_strength", state.edgeStabilizationStrength), 0.0, 1.0);
+      if (line.find("\"mask_erode_px\"") != std::string::npos ||
+          line.find("\"mask_dilate_px\"") != std::string::npos ||
+          line.find("\"mask_feather_px\"") != std::string::npos ||
+          line.find("\"edge_stabilization_enabled\"") != std::string::npos ||
+          line.find("\"edge_stabilization_strength\"") != std::string::npos) {
+        state.keyerTuning.source = "webapp";
+        state.keyerTuning.erodePx = state.maskErodePx;
+        state.keyerTuning.dilatePx = state.maskDilatePx;
+        state.keyerTuning.featherPx = state.maskFeatherPx;
+        state.keyerTuning.edgeStabilizationEnabled =
+            state.edgeStabilizationEnabled;
+        state.keyerTuning.edgeStabilizationStrength =
+            state.edgeStabilizationStrength;
+      }
       KeyerDegradationSettings degradation = state.degradationSettings;
       degradation.freshMaskAgeMs = extractDoubleField(line, "fresh_mask_age_ms", degradation.freshMaskAgeMs);
       degradation.maxMaskAgeMs = extractDoubleField(line, "max_mask_age_ms", degradation.maxMaskAgeMs);

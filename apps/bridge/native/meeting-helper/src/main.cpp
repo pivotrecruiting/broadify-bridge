@@ -4,6 +4,7 @@
 #include "control/control_server.h"
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
+#include "keyer/keyer_tuning.h"
 #include "keyer/segmentation_tier.h"
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
 #include "keyer/openvino_keyer.h"
@@ -633,9 +634,18 @@ int main(int argc, char **argv) {
 #endif
 
   MeetingState state;
+  state.keyerTuning = resolveKeyerTuningFromEnv();
+  state.maskErodePx = state.keyerTuning.erodePx;
+  state.maskDilatePx = state.keyerTuning.dilatePx;
+  state.maskFeatherPx = state.keyerTuning.featherPx;
+  state.edgeStabilizationEnabled =
+      state.keyerTuning.edgeStabilizationEnabled;
+  state.edgeStabilizationStrength =
+      state.keyerTuning.edgeStabilizationStrength;
   const SegmentationTierDecision tierDecision =
       selectStartupSegmentationTier(options);
   state.keyerTier = segmentationTierName(tierDecision.tier);
+  state.keyerTuning.tier = state.keyerTier;
   state.keyerTierReason = tierDecision.reason;
   printEvent(std::string("{\"type\":\"segmentation_tier_selected\","
                          "\"tier\":\"") +
