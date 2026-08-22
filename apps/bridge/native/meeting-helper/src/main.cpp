@@ -221,7 +221,9 @@ bool pathExists(const std::string &path) {
   return file.good();
 }
 
-SegmentationTierDecision selectStartupSegmentationTier(const Options &options) {
+SegmentationTierProbe buildAttachedSegmentationTierProbe(
+    const Options &options,
+    double modnet320ProbeMs) {
   SegmentationTierProbe probe;
 #if defined(_WIN32)
   probe.windows = true;
@@ -231,15 +233,20 @@ SegmentationTierDecision selectStartupSegmentationTier(const Options &options) {
   probe.selfieLandscapeAssetPresent =
       pathExists(options.modelsDir + "/selfie_landscape.onnx");
   probe.integratedGpuOnly = d3dAdapterPolicyIsIntegratedGpuOnly();
-  const char *modnet320Probe = std::getenv("BROADIFY_MEETING_MODNET320_PROBE_MS");
-  if (modnet320Probe != nullptr && modnet320Probe[0] != '\0') {
-    probe.modnet320ProbeMs = std::atof(modnet320Probe);
-  }
+  probe.modnet320ProbeMs = modnet320ProbeMs;
 #else
   (void)options;
+  (void)modnet320ProbeMs;
 #endif
-  const SegmentationTier requested =
-      parseSegmentationTierOverride(std::getenv("BROADIFY_MEETING_KEYER_TIER"));
+  return probe;
+}
+
+SegmentationTierDecision selectAttachedSegmentationTier(
+    const Options &options,
+    SegmentationTier requested,
+    double modnet320ProbeMs) {
+  SegmentationTierProbe probe =
+      buildAttachedSegmentationTierProbe(options, modnet320ProbeMs);
   SegmentationTierDecision decision = decideSegmentationTier(requested, probe);
   if (decision.shouldEnableOsMask || decision.shouldDisableOsEffects) {
     configureWindowsOsBackgroundSegmentation(decision.shouldEnableOsMask);
@@ -247,8 +254,67 @@ SegmentationTierDecision selectStartupSegmentationTier(const Options &options) {
   return decision;
 }
 
+void applyAttachedSegmentationTierDecision(MeetingState &state,
+                                           const Options &options,
+                                           bool refinedFromProbe) {
+  std::string requestedRaw;
+  double probeMs = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    requestedRaw = state.requestedKeyerTier;
+    probeMs = state.keyerTierModnet320ProbeMs;
+  }
+  const SegmentationTier requested =
+      parseSegmentationTierOverride(requestedRaw.c_str());
+  SegmentationTierSelectionState selection;
+  selection.requested = requested;
+  SegmentationTierDecision decision;
+  const SegmentationTierProbe probe =
+      buildAttachedSegmentationTierProbe(options, probeMs);
+  (void)selectTierAfterCameraAttach(selection, probe, decision);
+  if (decision.shouldEnableOsMask || decision.shouldDisableOsEffects) {
+    configureWindowsOsBackgroundSegmentation(decision.shouldEnableOsMask);
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.keyerTier = segmentationTierName(decision.tier);
+    state.keyerTuning.tier = state.keyerTier;
+    state.keyerTierReason = decision.reason;
+    state.keyerTierSelected = true;
+    if (refinedFromProbe) {
+      state.keyerTierRefinedFromProbe = true;
+    } else {
+      state.keyerTierRefinedFromProbe = false;
+    }
+  }
+  printEvent(std::string("{\"type\":\"segmentation_tier_selected\","
+                         "\"tier\":\"") +
+             jsonEscape(segmentationTierName(decision.tier)) +
+             "\",\"reason\":\"" + jsonEscape(decision.reason) +
+             "\",\"refined_from_probe\":" +
+             (refinedFromProbe ? "true" : "false") + "}");
+}
+
 int runKeyerTierSelfTest(const Options &options) {
-  const SegmentationTierDecision decision = selectStartupSegmentationTier(options);
+  std::unique_ptr<CameraSource> camera = createCameraSource();
+  const std::vector<CameraInfo> cameras = camera->listCameras();
+  if (cameras.empty()) {
+    printEvent("{\"type\":\"keyer_tier_selftest\",\"ok\":false,"
+               "\"reason\":\"no_camera\"}");
+    return 1;
+  }
+  if (!camera->start(cameras.front().cameraIndex, options.width,
+                     options.height, options.fps)) {
+    printEvent(std::string("{\"type\":\"keyer_tier_selftest\",\"ok\":false,"
+                           "\"reason\":\"camera_start_failed\","
+                           "\"message\":\"") +
+               jsonEscape(camera->lastError()) + "\"}");
+    return 1;
+  }
+  const SegmentationTier requested =
+      parseSegmentationTierOverride(std::getenv("BROADIFY_MEETING_KEYER_TIER"));
+  const SegmentationTierDecision decision =
+      selectAttachedSegmentationTier(options, requested, 0.0);
   printEvent(std::string("{\"type\":\"keyer_tier_selftest\",\"ok\":true,"
                          "\"tier\":\"") +
              segmentationTierName(decision.tier) + "\",\"reason\":\"" +
@@ -650,19 +716,11 @@ int main(int argc, char **argv) {
   state.edgeStabilizationStrength =
       state.keyerTuning.edgeStabilizationStrength;
 #endif
-  const SegmentationTierDecision tierDecision =
-      selectStartupSegmentationTier(options);
-  state.keyerTier = segmentationTierName(tierDecision.tier);
+  state.requestedKeyerTier =
+      std::getenv("BROADIFY_MEETING_KEYER_TIER") != nullptr
+          ? std::getenv("BROADIFY_MEETING_KEYER_TIER")
+          : "auto";
   state.keyerTuning.tier = state.keyerTier;
-  state.keyerTierReason = tierDecision.reason;
-  printEvent(std::string("{\"type\":\"segmentation_tier_selected\","
-                         "\"tier\":\"") +
-             jsonEscape(state.keyerTier) + "\",\"reason\":\"" +
-             jsonEscape(state.keyerTierReason) + "\"}");
-  printEvent(std::string("{\"type\":\"keyer_tier_cache\","
-                         "\"tier\":\"") +
-             jsonEscape(state.keyerTier) + "\",\"reason\":\"" +
-             jsonEscape(state.keyerTierReason) + "\"}");
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
   VcamShmRingWin vcamShm;
@@ -765,6 +823,9 @@ int main(int argc, char **argv) {
       std::cref(options),
       std::ref(g_running),
       [&controlListening]() { controlListening.set_value(); },
+      [&state, &options]() {
+        applyAttachedSegmentationTierDecision(state, options, false);
+      },
       &vcamShm);
 
   controlListeningFuture.wait();

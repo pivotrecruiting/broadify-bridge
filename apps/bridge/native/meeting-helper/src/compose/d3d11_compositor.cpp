@@ -914,15 +914,6 @@ GuidedContext &guidedContext() {
   return ctx;
 }
 
-double guidedEnvDouble(const char *name, double fallback) {
-  const char *raw = std::getenv(name);
-  if (raw == nullptr || raw[0] == '\0') return fallback;
-  char *end = nullptr;
-  const double value = std::strtod(raw, &end);
-  if (end == raw || value <= 0.0) return fallback;
-  return value;
-}
-
 bool compileGuidedShader(ID3D11Device *device, const char *entry,
                          ComPtr<ID3D11ComputeShader> *out) {
   ComPtr<ID3DBlob> blob;
@@ -987,15 +978,6 @@ bool initializeGuidedContext() {
     logCompositorEvent("guided_uniforms_failed", "");
     return false;
   }
-
-  ctx.radius = std::max(
-      1, static_cast<int>(guidedEnvDouble("BROADIFY_MEETING_GUIDED_RADIUS", 4.0) + 0.5));
-  // Apple-parity defaults: radius 4 + epsilon 5e-4. Env-overridable for tuning.
-  ctx.epsilon = static_cast<float>(
-      guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 5.0e-4));
-  ctx.coeffEma = static_cast<float>(
-      std::clamp(guidedEnvDouble("BROADIFY_MEETING_GUIDED_COEFF_EMA", 0.0),
-                 0.0, 1.0));
 
   ctx.available = true;
   logCompositorEvent("guided_enabled",
@@ -1157,7 +1139,8 @@ void resetGuidedRefineD3D11History() {
   guidedContext().hasPrevAb = false;
 }
 
-bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
+bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame,
+                           const GuidedTuning &tuning) {
   if (!initializeGuidedContext()) {
     return false;
   }
@@ -1168,6 +1151,10 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   }
   GuidedContext &ctx = guidedContext();
   D3D11Context &base = context();
+  ctx.radius = std::max(1, static_cast<int>(tuning.radius));
+  ctx.epsilon = static_cast<float>(std::max(0.0, tuning.epsilon));
+  ctx.coeffEma =
+      static_cast<float>(std::clamp(tuning.coefficientEma, 0.0, 1.0));
 
   const GuidedWorkSize workSize = selectGuidedWorkSize(
       guideFrame.width, guideFrame.height, guidedWorkWidthFromEnv());

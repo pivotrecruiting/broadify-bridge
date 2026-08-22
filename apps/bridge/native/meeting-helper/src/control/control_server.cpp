@@ -295,7 +295,8 @@ std::string handleRpc(const std::string &line,
                       MeetingRecorder &recorder,
                       VcamShmRingWin *vcamShm,
                       const Options &options,
-                      std::atomic<bool> &running) {
+                      std::atomic<bool> &running,
+                      const std::function<void()> &onCameraAttached) {
   const std::string id = extractStringField(line, "id");
   const std::string method = extractStringField(line, "method");
   if (method.empty()) {
@@ -401,10 +402,15 @@ std::string handleRpc(const std::string &line,
       cameraStalled = state.cameraStalled;
     }
     if (!cameraStalled && activeCameraMatches(camera, stableKey, cameraIndex)) {
-      std::lock_guard<std::mutex> lock(state.mutex);
-      state.cameraRunning = true;
-      state.activeCameraIndex = cameraIndex;
-      state.cameraStalled = false;
+      {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.cameraRunning = true;
+        state.activeCameraIndex = cameraIndex;
+        state.cameraStalled = false;
+      }
+      if (onCameraAttached) {
+        onCameraAttached();
+      }
       return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(cameraIndex) + ",\"backend\":\"native\",\"reopened\":false}");
     }
     const bool started = camera.start(cameraIndex, options.width, options.height, options.fps);
@@ -421,6 +427,9 @@ std::string handleRpc(const std::string &line,
           ? "camera_permission_denied"
           : "camera_start_failed";
       return errorResponse(id, code, camera.lastError());
+    }
+    if (onCameraAttached) {
+      onCameraAttached();
     }
     return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + ",\"backend\":\"native\",\"reopened\":true}");
   }
@@ -439,6 +448,9 @@ std::string handleRpc(const std::string &line,
     }
     if (!reopened) {
       return errorResponse(id, "camera_reopen_failed", camera.lastError());
+    }
+    if (onCameraAttached) {
+      onCameraAttached();
     }
     return okResponse(id, "{\"ok\":true,\"reopened\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + "}");
   }
@@ -536,6 +548,9 @@ std::string handleRpc(const std::string &line,
               : "camera_start_failed";
       return errorResponse(id, code, camera.lastError());
     }
+    if (onCameraAttached) {
+      onCameraAttached();
+    }
     const std::vector<int> openSet = camera.activeCameraSet();
     std::ostringstream result;
     result << "{\"ok\":true,\"program_index\":" << camera.activeCameraIndex()
@@ -553,6 +568,9 @@ std::string handleRpc(const std::string &line,
     if (!camera.setProgramCamera(cameraIndex)) {
       return errorResponse(id, "camera_program_select_failed",
                            camera.lastError());
+    }
+    if (onCameraAttached) {
+      onCameraAttached();
     }
     std::lock_guard<std::mutex> lock(state.mutex);
     state.activeCameraIndex = camera.activeCameraIndex();
@@ -700,7 +718,8 @@ std::string handleRpc(const std::string &line,
       const std::string preset = extractStringField(line, "preset");
 #if defined(_WIN32)
       if (!preset.empty()) {
-        KeyerTuning patch = presetKeyerTuning(preset);
+        KeyerTuningPatch patch;
+        patch.preset = preset;
         patch.tier = state.keyerTuning.tier;
         applyKeyerTuningPatch(state.keyerTuning, patch, "webapp");
         state.maskErodePx = state.keyerTuning.erodePx;
@@ -728,16 +747,51 @@ std::string handleRpc(const std::string &line,
       if (line.find("\"mask_erode_px\"") != std::string::npos ||
           line.find("\"mask_dilate_px\"") != std::string::npos ||
           line.find("\"mask_feather_px\"") != std::string::npos ||
+          line.find("\"guided_radius\"") != std::string::npos ||
+          line.find("\"guided_epsilon\"") != std::string::npos ||
+          line.find("\"coefficient_ema\"") != std::string::npos ||
+          line.find("\"cadence_pin_enabled\"") != std::string::npos ||
           line.find("\"edge_stabilization_enabled\"") != std::string::npos ||
           line.find("\"edge_stabilization_strength\"") != std::string::npos) {
-        state.keyerTuning.source = "webapp";
-        state.keyerTuning.erodePx = state.maskErodePx;
-        state.keyerTuning.dilatePx = state.maskDilatePx;
-        state.keyerTuning.featherPx = state.maskFeatherPx;
-        state.keyerTuning.edgeStabilizationEnabled =
-            state.edgeStabilizationEnabled;
-        state.keyerTuning.edgeStabilizationStrength =
-            state.edgeStabilizationStrength;
+        KeyerTuningPatch patch;
+        if (line.find("\"mask_erode_px\"") != std::string::npos) {
+          patch.erodePx = state.maskErodePx;
+        }
+        if (line.find("\"mask_dilate_px\"") != std::string::npos) {
+          patch.dilatePx = state.maskDilatePx;
+        }
+        if (line.find("\"mask_feather_px\"") != std::string::npos) {
+          patch.featherPx = state.maskFeatherPx;
+        }
+        if (line.find("\"guided_radius\"") != std::string::npos) {
+          patch.guidedRadius = clampedPixelRadius(
+              extractIntField(line, "guided_radius",
+                              static_cast<int>(state.keyerTuning.guidedRadius)),
+              16u);
+        }
+        if (line.find("\"guided_epsilon\"") != std::string::npos) {
+          patch.guidedEpsilon =
+              extractDoubleField(line, "guided_epsilon",
+                                 state.keyerTuning.guidedEpsilon);
+        }
+        if (line.find("\"coefficient_ema\"") != std::string::npos) {
+          patch.coefficientEma = clampedDouble(
+              extractDoubleField(line, "coefficient_ema",
+                                 state.keyerTuning.coefficientEma),
+              0.0, 1.0);
+        }
+        if (line.find("\"cadence_pin_enabled\"") != std::string::npos) {
+          patch.cadencePinEnabled =
+              extractBoolField(line, "cadence_pin_enabled",
+                               state.keyerTuning.cadencePinEnabled);
+        }
+        if (line.find("\"edge_stabilization_enabled\"") != std::string::npos) {
+          patch.edgeStabilizationEnabled = state.edgeStabilizationEnabled;
+        }
+        if (line.find("\"edge_stabilization_strength\"") != std::string::npos) {
+          patch.edgeStabilizationStrength = state.edgeStabilizationStrength;
+        }
+        applyKeyerTuningPatch(state.keyerTuning, patch, "webapp");
       }
       KeyerDegradationSettings degradation = state.degradationSettings;
       degradation.freshMaskAgeMs = extractDoubleField(line, "fresh_mask_age_ms", degradation.freshMaskAgeMs);
@@ -758,7 +812,7 @@ std::string handleRpc(const std::string &line,
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}",
                      state, camera, previewFrames, recorder, vcamShm, options,
-                     running);
+                     running, onCameraAttached);
   }
 
   if (method == "keyer.reset") {
@@ -966,6 +1020,7 @@ void runControlServer(const std::string &pipeName,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening,
+                      const std::function<void()> &onCameraAttached,
                       VcamShmRingWin *vcamShm) {
   // Create the first instance BEFORE signalling readiness: the bridge starts
   // pinging as soon as it sees `ready`, and a pipe that does not exist yet is
@@ -998,7 +1053,9 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
+      const std::string response =
+          handleRpc(line, state, camera, previewFrames, recorder, vcamShm,
+                    options, running, onCameraAttached);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           // Block until the client has read the response; without this,
@@ -1030,6 +1087,7 @@ void runControlServer(const std::string &socketPath,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening,
+                      const std::function<void()> &onCameraAttached,
                       VcamShmRingWin *vcamShm) {
   unlink(socketPath.c_str());
   int serverFd = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
@@ -1065,7 +1123,9 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
+      const std::string response =
+          handleRpc(line, state, camera, previewFrames, recorder, vcamShm,
+                    options, running, onCameraAttached);
         if (write(client, response.c_str(), response.size()) < 0) {
           // The bridge destroyed its socket first (RPC timeout). Before
           // SIGPIPE was ignored this write ended the whole process silently;

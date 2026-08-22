@@ -17,6 +17,7 @@
 #include "pipeline/ofd_temporal.h"
 #include "pipeline/subject_presence.h"
 #if defined(_WIN32)
+#include "capture/windows_os_mask.h"
 #include "compose/d3d11_compositor.h"
 #include "pipeline/mask_retention.h"
 #include "pipeline/tier_handover.h"
@@ -36,6 +37,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
+#include <fstream>
 #include <deque>
 #include <iostream>
 #include <memory>
@@ -327,7 +329,11 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
     }();
     static const float fusedEmaMotion = [] {
       const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_MOTION");
+#if defined(_WIN32)
+      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 1.0f;
+#else
       return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.96f;
+#endif
     }();
     blendAlphaEma(fusedMask, prevFusedMask, fusedEmaStatic, fusedEmaMotion);
   }
@@ -479,6 +485,75 @@ bool fusedOfdEnabled() {
   return false;
 #endif
 }
+
+#if defined(_WIN32)
+bool fileExists(const std::string &path) {
+  std::ifstream file(path, std::ios::binary);
+  return file.good();
+}
+
+void maybeRefineAutoTierAfterProbe(MeetingState &state,
+                                   const Options &options,
+                                   const KeyerStatus &status) {
+  if (status.probeInferenceMs320 <= 0.0) {
+    return;
+  }
+  std::string requestedTier;
+  std::string currentTier;
+  std::string currentReason;
+  bool alreadyRefined = false;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    requestedTier = state.requestedKeyerTier;
+    currentTier = state.keyerTier;
+    currentReason = state.keyerTierReason;
+    alreadyRefined = state.keyerTierRefinedFromProbe;
+    if (alreadyRefined || requestedTier != "auto") {
+      return;
+    }
+    state.keyerTierModnet320ProbeMs = status.probeInferenceMs320;
+  }
+
+  SegmentationTierProbe probe;
+  probe.windows = true;
+  const WindowsOsMaskProbeResult osMaskProbe = probeWindowsOsBackgroundMask();
+  probe.osMaskPropertyPresent = osMaskProbe.propertyPresent;
+  probe.osMaskCapabilityPresent = osMaskProbe.maskCapabilityPresent;
+  probe.selfieLandscapeAssetPresent =
+      fileExists(options.modelsDir + "/selfie_landscape.onnx");
+  probe.integratedGpuOnly = d3dAdapterPolicyIsIntegratedGpuOnly();
+  probe.modnet320ProbeMs = status.probeInferenceMs320;
+  SegmentationTierSelectionState selection;
+  selection.requested = SegmentationTier::Auto;
+  selection.active = parseSegmentationTierOverride(currentTier.c_str());
+  selection.reason = currentReason;
+  selection.cameraAttached = true;
+  selection.selected = true;
+  SegmentationTierDecision decision;
+  if (!refineTierAfterModnet320Probe(selection, probe,
+                                     status.probeInferenceMs320, decision)) {
+    return;
+  }
+  if (decision.shouldEnableOsMask || decision.shouldDisableOsEffects) {
+    configureWindowsOsBackgroundSegmentation(decision.shouldEnableOsMask);
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.keyerTier = segmentationTierName(decision.tier);
+    state.keyerTuning.tier = state.keyerTier;
+    state.keyerTierReason = decision.reason;
+    state.keyerTierSelected = true;
+    state.keyerTierRefinedFromProbe = true;
+  }
+  emitHelperEvent(std::string("{\"type\":\"segmentation_tier_selected\","
+                              "\"tier\":\"") +
+                  jsonEscape(segmentationTierName(decision.tier)) +
+                  "\",\"reason\":\"" + jsonEscape(decision.reason) +
+                  "\",\"refined_from_probe\":true,"
+                  "\"modnet_320_probe_ms\":" +
+                  std::to_string(status.probeInferenceMs320) + "}");
+}
+#endif
 
 void emitKeyerNotReadyEvent(const char *reason) {
   static std::string lastReason;
@@ -1783,6 +1858,9 @@ void runFramePipeline(const Options &options,
   auto nextFrameAt = std::chrono::steady_clock::now();
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
+#if defined(_WIN32)
+  std::shared_ptr<const VideoFrame> latestCameraFrameShared;
+#endif
   VideoFrame latestCameraFrame;
   VideoFrame latestPipFrame;
   uint64_t lastPipCameraTimestampNs = 0u;
@@ -1897,12 +1975,22 @@ void runFramePipeline(const Options &options,
           : -1.0;
       previousProgramStartNs = programStartNs;
       const auto cameraCopyStart = std::chrono::steady_clock::now();
-      // Copy straight into latestCameraFrame: the intermediate local frame
-      // cost an extra full-frame copy (~3.7 MB) per camera frame.
+#if defined(_WIN32)
+      const std::shared_ptr<const VideoFrame> newCameraFrameShared =
+          runtime.cameraRunning
+              ? camera.copyLatestFrameSharedIfNew(lastCameraTimestampNs)
+              : nullptr;
+      const bool hasNewCameraFrame =
+          newCameraFrameShared != nullptr && !newCameraFrameShared->rgba.empty();
+      if (hasNewCameraFrame) {
+        latestCameraFrameShared = newCameraFrameShared;
+        latestCameraFrame = *latestCameraFrameShared;
+#else
       const bool hasNewCameraFrame = runtime.cameraRunning &&
           camera.copyLatestFrameIfNew(lastCameraTimestampNs, latestCameraFrame) &&
           !latestCameraFrame.rgba.empty();
       if (hasNewCameraFrame) {
+#endif
         lastCameraTimestampNs = latestCameraFrame.timestampNs;
         lastCameraFrameAt = programStart;
         cameraWatchdogStartAt = programStart;
@@ -1917,6 +2005,9 @@ void runFramePipeline(const Options &options,
           cameraStallReported = false;
         }
       } else if (!runtime.cameraRunning) {
+#if defined(_WIN32)
+        latestCameraFrameShared.reset();
+#endif
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
         lastCameraFrameAt = std::chrono::steady_clock::time_point{};
@@ -1996,6 +2087,8 @@ void runFramePipeline(const Options &options,
 #if defined(_WIN32)
       std::string selectedKeyerTier;
       OfdConfig selectedOfdConfig;
+      GuidedTuning selectedGuidedTuning;
+      bool selectedCadencePinEnabled = true;
 #endif
       {
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -2014,6 +2107,10 @@ void runFramePipeline(const Options &options,
         selectedKeyerTier = state.keyerTier;
         selectedOfdConfig.epsilonNear = state.keyerTuning.ofdEpsilonNear;
         selectedOfdConfig.epsilonFar = state.keyerTuning.ofdEpsilonFar;
+        selectedGuidedTuning.radius = state.keyerTuning.guidedRadius;
+        selectedGuidedTuning.epsilon = state.keyerTuning.guidedEpsilon;
+        selectedGuidedTuning.coefficientEma = state.keyerTuning.coefficientEma;
+        selectedCadencePinEnabled = state.keyerTuning.cadencePinEnabled;
         setGuidedRefineTuning(state.keyerTuning.guidedRadius,
                               state.keyerTuning.guidedEpsilon);
 #endif
@@ -2362,7 +2459,7 @@ void runFramePipeline(const Options &options,
           // GPU guided refine (BROADIFY_MEETING_GPU_GUIDED=1): same math on
           // the D3D11 device; the CPU refine stays as fallback and reference.
           if (!(d3d11GuidedRefineAvailable() &&
-                guidedRefineMaskD3D11(liveRefinedMask, guide))) {
+                guidedRefineMaskD3D11(liveRefinedMask, guide, selectedGuidedTuning))) {
             guidedRefineMask(liveRefinedMask, guide);
           }
 #else
@@ -2433,8 +2530,8 @@ void runFramePipeline(const Options &options,
         static LumaThumb lastFusedInferredLuma;
         static LumaThumb currentFrameLuma;
         static OfdTemporal fusedOfd;
-        static std::deque<std::shared_ptr<const VideoFrame>> fusedOfdFrames;
-        static std::shared_ptr<const VideoFrame> lastFusedRawFrame;
+        static OfdFrameDelayQueue fusedOfdFrames;
+        static std::shared_ptr<const VideoFrame> lastFusedOfdFrame;
         // Last PUBLISHED (post-postprocess) fused mask: the previous-mask
         // input for the fused postprocess parity (stabilizeAlphaEdges needs
         // temporal continuity). Reset wherever lastFusedRawMask is reset.
@@ -2459,7 +2556,8 @@ void runFramePipeline(const Options &options,
         // air before the governor demoted.
         static std::string lastReportedPipelineMode;
         fusedOfd.configure(selectedOfdConfig);
-        fusedCadence.setForceEveryFrame(runtime.vcamClients > 0);
+        fusedCadence.setForceEveryFrame(
+            selectedCadencePinEnabled && runtime.vcamClients > 0);
         // Path-transition reset: invoked whenever the ACTIVE keyer path
         // changes between fused (fused_cadence counts as fused), async_lite
         // and off. Clears everything the previous path owned, so the new
@@ -2482,12 +2580,12 @@ void runFramePipeline(const Options &options,
           asyncMaskRetention.reset();
           fusedCadence.reset();
           lastFusedRawMask = AlphaMask{};
-          lastFusedRawFrame.reset();
+          lastFusedOfdFrame.reset();
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
           fusedOfd.reset();
-          fusedOfdFrames.clear();
+          fusedOfdFrames.reset();
 #if defined(_WIN32)
           resetGuidedRefineD3D11History();
 #endif
@@ -2509,23 +2607,21 @@ void runFramePipeline(const Options &options,
           if (!fusedOfdEnabled()) {
             return true;
           }
-          fusedOfdFrames.push_back(frame);
           AlphaMask delayed;
           const bool ready = fusedOfd.push(mask, delayed);
           if (!ready) {
-            while (fusedOfdFrames.size() > 2u) {
-              fusedOfdFrames.pop_front();
-            }
+            std::shared_ptr<const VideoFrame> ignored;
+            (void)fusedOfdFrames.push(frame, ignored);
             return false;
           }
-          if (fusedOfdFrames.size() < 2u) {
-            fusedOfdFrames.clear();
+          std::shared_ptr<const VideoFrame> delayedFrame;
+          if (!fusedOfdFrames.push(frame, delayedFrame)) {
+            fusedOfdFrames.reset();
             fusedOfd.reset();
             return false;
           }
-          fusedOfdFrames.pop_front();
           mask = std::move(delayed);
-          frame = fusedOfdFrames.front();
+          frame = delayedFrame;
           return true;
         };
         std::string fusedPipelineModeLabel;
@@ -2545,19 +2641,26 @@ void runFramePipeline(const Options &options,
               latestCameraFrame.height, selectedMask, kWarmupRetainedMaskAgeMs);
         };
         const auto refineLiveFusedFallbackMask =
-            [&latestCameraFrame](AlphaMask &selectedMask) {
+            [&latestCameraFrame,
+             &selectedGuidedTuning](AlphaMask &selectedMask) {
           if (!selectedMask.alpha.empty() && !selectedMask.emptyValid) {
             if (!(d3d11GuidedRefineAvailable() &&
-                  guidedRefineMaskD3D11(selectedMask, latestCameraFrame))) {
+                  guidedRefineMaskD3D11(selectedMask, latestCameraFrame, selectedGuidedTuning))) {
               guidedRefineMask(selectedMask, latestCameraFrame);
             }
             selectedMask.timestampNs = latestCameraFrame.timestampNs;
           }
         };
-        if (selectedKeyerTier == "os_mask" && hasCameraFrame &&
-            snapshot.keyerEnabled && !latestCameraFrame.osMaskAlpha.empty() &&
+        const bool osMaskFrameAvailable =
+            hasCameraFrame && !latestCameraFrame.osMaskAlpha.empty() &&
             latestCameraFrame.osMaskWidth == latestCameraFrame.width &&
-            latestCameraFrame.osMaskHeight == latestCameraFrame.height) {
+            latestCameraFrame.osMaskHeight == latestCameraFrame.height;
+        const std::string effectiveKeyerTier =
+            selectedKeyerTier == "os_mask" && !osMaskFrameAvailable
+                ? std::string("modnet_512_ofd")
+                : selectedKeyerTier;
+        if (selectedKeyerTier == "os_mask" && snapshot.keyerEnabled &&
+            osMaskFrameAvailable) {
           fusedMask.width = latestCameraFrame.osMaskWidth;
           fusedMask.height = latestCameraFrame.osMaskHeight;
           fusedMask.timestampNs = latestCameraFrame.timestampNs;
@@ -2591,7 +2694,7 @@ void runFramePipeline(const Options &options,
           refineLiveFusedFallbackMask(fusedMask);
           maskForCompositor = &fusedMask;
         }
-        if (selectedKeyerTier != "os_mask" &&
+        if (effectiveKeyerTier != "os_mask" &&
             gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
@@ -2606,7 +2709,7 @@ void runFramePipeline(const Options &options,
             MattingBackendOptions backendOptions =
                 makeMattingBackendOptionsFromEnv(options.modelsDir);
             backendOptions.loadInApply = false;
-            backendOptions.segmentationTier = selectedKeyerTier;
+            backendOptions.segmentationTier = effectiveKeyerTier;
             return createMattingKeyer(backendOptions);
           }();
           const auto fusedNow = std::chrono::steady_clock::now();
@@ -2624,7 +2727,7 @@ void runFramePipeline(const Options &options,
             fusedWarmupOutcome.store(0, std::memory_order_relaxed);
           }
           const bool fixedModnet320Tier =
-              selectedKeyerTier == "modnet_320_ofd";
+              effectiveKeyerTier == "modnet_320_ofd";
           if (fixedModnet320Tier) {
             keyerSettings.performanceMode = "balanced";
           }
@@ -2648,6 +2751,7 @@ void runFramePipeline(const Options &options,
                 fusedHandover.phase() != TierHandover::Phase::Warming &&
                 !fusedWarmupBusy.load(std::memory_order_acquire)) {
               const KeyerStatus keyerStatus = fusedKeyer->status();
+              maybeRefineAutoTierAfterProbe(state, options, keyerStatus);
               if (keyerStatus.probeInferenceMs256 > 0.0) {
                 fusedGovernor.seedMeasuredProbes(
                     keyerStatus.probeInferenceMs512,
@@ -2828,7 +2932,7 @@ void runFramePipeline(const Options &options,
             }
             if (!fusedMask.alpha.empty() && !fusedMask.emptyValid) {
               if (!(d3d11GuidedRefineAvailable() &&
-                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame, selectedGuidedTuning))) {
                 guidedRefineMask(fusedMask, latestCameraFrame);
               }
               fusedMask.timestampNs = latestCameraFrame.timestampNs;
@@ -2929,12 +3033,12 @@ void runFramePipeline(const Options &options,
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 fusedMask = std::move(fused.mask);
                 std::shared_ptr<const VideoFrame> fusedFrame =
-                    std::make_shared<VideoFrame>(latestCameraFrame);
+                    latestCameraFrameShared;
                 (void)applyFusedOfd(fusedMask, fusedFrame);
                 stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
                 lastGoodMask = fusedMask;
                 if (!(d3d11GuidedRefineAvailable() &&
-                      guidedRefineMaskD3D11(fusedMask, *fusedFrame))) {
+                      guidedRefineMaskD3D11(fusedMask, *fusedFrame, selectedGuidedTuning))) {
                   guidedRefineMask(fusedMask, *fusedFrame);
                 }
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
@@ -3026,7 +3130,7 @@ void runFramePipeline(const Options &options,
                 g_fusedKeyerDegraded = false;
                 fusedMask = std::move(fused.mask);
                 std::shared_ptr<const VideoFrame> fusedFrame =
-                    std::make_shared<VideoFrame>(latestCameraFrame);
+                    latestCameraFrameShared;
                 (void)applyFusedOfd(fusedMask, fusedFrame);
                 // Temporal stabilization FIRST, on the raw matte: the motion-adaptive
                 // EMA smooths the per-frame confidence jitter and the collapse guard
@@ -3039,14 +3143,14 @@ void runFramePipeline(const Options &options,
                 // its edge to this specific frame; cadence-reused frames
                 // re-run the refine against their own (current) frame.
                 lastFusedRawMask = fusedMask;
-                lastFusedRawFrame = fusedFrame;
+                lastFusedOfdFrame = fusedFrame;
                 lastGoodMask = fusedMask;
                 lastFusedInferredTsNs = fusedFrame->timestampNs;
                 lastFusedInferredLuma = currentFrameLuma;
                 // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
                 // CURRENT frame so the visible boundary stays crisp on motion.
                 if (!(d3d11GuidedRefineAvailable() &&
-                      guidedRefineMaskD3D11(fusedMask, *fusedFrame))) {
+                      guidedRefineMaskD3D11(fusedMask, *fusedFrame, selectedGuidedTuning))) {
                   guidedRefineMask(fusedMask, *fusedFrame);
                 }
                 // Postprocess parity with the async worker: apply the
@@ -3115,10 +3219,10 @@ void runFramePipeline(const Options &options,
               // maskAgeMs old ("fused_reused"), only the edge is fresh.
               fusedMask = lastFusedRawMask;
               const VideoFrame *cadenceFrame =
-                  lastFusedRawFrame ? lastFusedRawFrame.get()
+                  lastFusedOfdFrame ? lastFusedOfdFrame.get()
                                     : &latestCameraFrame;
               if (!(d3d11GuidedRefineAvailable() &&
-                    guidedRefineMaskD3D11(fusedMask, *cadenceFrame))) {
+                    guidedRefineMaskD3D11(fusedMask, *cadenceFrame, selectedGuidedTuning))) {
                 guidedRefineMask(fusedMask, *cadenceFrame);
               }
               fusedMask.timestampNs = cadenceFrame->timestampNs;
@@ -3162,13 +3266,13 @@ void runFramePipeline(const Options &options,
           fusedGovernor.reset();
           fusedCadence.reset();
           lastFusedRawMask = AlphaMask{};
-          lastFusedRawFrame.reset();
+          lastFusedOfdFrame.reset();
           lastGoodMask = AlphaMask{};
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
           fusedOfd.reset();
-          fusedOfdFrames.clear();
+          fusedOfdFrames.reset();
           fusedSubjectPresenceTracker().reset();
           fusedStabilizerState().reset();
           g_fusedKeyerOffReducedActive = false;

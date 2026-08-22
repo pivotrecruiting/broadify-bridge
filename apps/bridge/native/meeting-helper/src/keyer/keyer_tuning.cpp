@@ -67,12 +67,21 @@ KeyerTuning presetKeyerTuning(const std::string &preset) {
 }
 
 KeyerTuning resolveKeyerTuningFromEnv() {
+  const bool hasEnvTuning =
+      env("BROADIFY_MEETING_KEYER_PRESET") != nullptr ||
+      env("BROADIFY_MEETING_GUIDED_RADIUS") != nullptr ||
+      env("BROADIFY_MEETING_GUIDED_EPSILON") != nullptr ||
+      env("BROADIFY_MEETING_GUIDED_COEFF_EMA") != nullptr ||
+      env("BROADIFY_MEETING_MASK_ERODE_PX") != nullptr ||
+      env("BROADIFY_MEETING_MASK_DILATE_PX") != nullptr ||
+      env("BROADIFY_MEETING_MASK_FEATHER_PX") != nullptr ||
+      env("BROADIFY_MEETING_EDGE_STAB") != nullptr ||
+      env("BROADIFY_MEETING_KEYER_TIER") != nullptr;
   KeyerTuning tuning = presetKeyerTuning(
       env("BROADIFY_MEETING_KEYER_PRESET") != nullptr
           ? env("BROADIFY_MEETING_KEYER_PRESET")
           : "balanced");
-  tuning.source = env("BROADIFY_MEETING_KEYER_PRESET") != nullptr ? "env"
-                                                                  : "default";
+  tuning.source = hasEnvTuning ? "env" : "default";
   tuning.guidedRadius = parseU32(env("BROADIFY_MEETING_GUIDED_RADIUS"),
                                  tuning.guidedRadius, 16);
   tuning.guidedEpsilon = parseDouble(env("BROADIFY_MEETING_GUIDED_EPSILON"),
@@ -95,22 +104,49 @@ KeyerTuning resolveKeyerTuningFromEnv() {
 }
 
 void applyKeyerTuningPatch(KeyerTuning &base,
-                           const KeyerTuning &patch,
+                           const KeyerTuningPatch &patch,
                            const std::string &source) {
-  base.preset = patch.preset.empty() ? base.preset : patch.preset;
-  base.guidedRadius = patch.guidedRadius;
-  base.guidedEpsilon = patch.guidedEpsilon;
-  base.coefficientEma = patch.coefficientEma;
-  base.erodePx = patch.erodePx;
-  base.dilatePx = patch.dilatePx;
-  base.featherPx = patch.featherPx;
-  base.ofdEpsilonNear = patch.ofdEpsilonNear;
-  base.ofdEpsilonFar = patch.ofdEpsilonFar;
-  base.edgeStabilizationEnabled = patch.edgeStabilizationEnabled;
-  base.edgeStabilizationStrength = patch.edgeStabilizationStrength;
-  base.cadencePinEnabled = patch.cadencePinEnabled;
-  if (!patch.tier.empty()) {
-    base.tier = patch.tier;
+  if (patch.preset.has_value()) {
+    KeyerTuning preset = presetKeyerTuning(*patch.preset);
+    preset.source = base.source;
+    preset.tier = base.tier;
+    base = preset;
+  }
+  if (patch.guidedRadius.has_value()) {
+    base.guidedRadius = *patch.guidedRadius;
+  }
+  if (patch.guidedEpsilon.has_value()) {
+    base.guidedEpsilon = *patch.guidedEpsilon;
+  }
+  if (patch.coefficientEma.has_value()) {
+    base.coefficientEma = *patch.coefficientEma;
+  }
+  if (patch.erodePx.has_value()) {
+    base.erodePx = *patch.erodePx;
+  }
+  if (patch.dilatePx.has_value()) {
+    base.dilatePx = *patch.dilatePx;
+  }
+  if (patch.featherPx.has_value()) {
+    base.featherPx = *patch.featherPx;
+  }
+  if (patch.ofdEpsilonNear.has_value()) {
+    base.ofdEpsilonNear = *patch.ofdEpsilonNear;
+  }
+  if (patch.ofdEpsilonFar.has_value()) {
+    base.ofdEpsilonFar = *patch.ofdEpsilonFar;
+  }
+  if (patch.edgeStabilizationEnabled.has_value()) {
+    base.edgeStabilizationEnabled = *patch.edgeStabilizationEnabled;
+  }
+  if (patch.edgeStabilizationStrength.has_value()) {
+    base.edgeStabilizationStrength = *patch.edgeStabilizationStrength;
+  }
+  if (patch.cadencePinEnabled.has_value()) {
+    base.cadencePinEnabled = *patch.cadencePinEnabled;
+  }
+  if (patch.tier.has_value() && !patch.tier->empty()) {
+    base.tier = *patch.tier;
   }
   base.source = source;
 }

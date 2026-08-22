@@ -86,4 +86,29 @@ void OfdTemporal::finalizeMiddle(const AlphaMask &next, AlphaMask &middle) const
   }
 }
 
+bool OfdFrameDelayQueue::push(const std::shared_ptr<const VideoFrame> &frame,
+                              std::shared_ptr<const VideoFrame> &delayed) {
+  delayed.reset();
+  if (!frame) {
+    reset();
+    return false;
+  }
+  frames_.push_back(frame);
+  // OFD finalizes the middle mask only when the next frame arrives, so the
+  // first two pushed frames prime the queue and the third emits frame t-1.
+  if (frames_.size() < 3u) {
+    return false;
+  }
+  frames_.pop_front();
+  delayed = frames_.front();
+  while (frames_.size() > 2u) {
+    frames_.pop_front();
+  }
+  return delayed != nullptr;
+}
+
+void OfdFrameDelayQueue::reset() {
+  frames_.clear();
+}
+
 }  // namespace broadify::meeting

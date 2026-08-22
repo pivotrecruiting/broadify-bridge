@@ -448,6 +448,15 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     return true;
   }
 
+  std::shared_ptr<const VideoFrame> copyLatestFrameSharedIfNew(
+      uint64_t lastTimestampNs) {
+    std::lock_guard<std::mutex> lock(frameMutex_);
+    if (!hasFrame_ || latestFrame_.timestampNs == lastTimestampNs) {
+      return nullptr;
+    }
+    return std::make_shared<VideoFrame>(latestFrame_);
+  }
+
   bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
                              std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(frameMutex_);
@@ -1068,6 +1077,13 @@ class MediaFoundationCameraSource final : public CameraSource {
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
     const std::shared_ptr<MfCaptureSession> session = programSession();
     return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
+  }
+
+  std::shared_ptr<const VideoFrame> copyLatestFrameSharedIfNew(
+      uint64_t lastTimestampNs) override {
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->copyLatestFrameSharedIfNew(lastTimestampNs)
+                   : nullptr;
   }
 
   bool waitForFrameOrTimeout(uint64_t lastTimestampNs,

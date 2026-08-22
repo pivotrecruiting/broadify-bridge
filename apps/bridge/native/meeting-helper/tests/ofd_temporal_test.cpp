@@ -1,10 +1,13 @@
 #include "pipeline/ofd_temporal.h"
 
 #include <iostream>
+#include <memory>
 
 using broadify::meeting::AlphaMask;
 using broadify::meeting::OfdConfig;
+using broadify::meeting::OfdFrameDelayQueue;
 using broadify::meeting::OfdTemporal;
+using broadify::meeting::VideoFrame;
 
 namespace {
 
@@ -58,6 +61,20 @@ int main() {
     larger.width = 2;
     larger.alpha = {20, 20};
     ok &= expect(!ofd.push(larger, out), "size change resets history");
+  }
+  {
+    OfdFrameDelayQueue frames;
+    std::shared_ptr<const VideoFrame> delayed;
+    auto f1 = std::make_shared<VideoFrame>();
+    auto f2 = std::make_shared<VideoFrame>();
+    auto f3 = std::make_shared<VideoFrame>();
+    f1->timestampNs = 1;
+    f2->timestampNs = 2;
+    f3->timestampNs = 3;
+    ok &= expect(!frames.push(f1, delayed), "first paired frame primes");
+    ok &= expect(!frames.push(f2, delayed), "second paired frame primes");
+    ok &= expect(frames.push(f3, delayed) && delayed == f2,
+                 "third paired frame emits advancing OFD front");
   }
 
   if (!ok) {

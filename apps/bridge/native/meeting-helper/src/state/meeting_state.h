@@ -134,6 +134,10 @@ struct MeetingState {
   std::string activePerformanceMode;
   std::string keyerTier = "modnet_512_ofd";
   std::string keyerTierReason = "not_selected";
+  std::string requestedKeyerTier = "auto";
+  double keyerTierModnet320ProbeMs = 0.0;
+  bool keyerTierSelected = false;
+  bool keyerTierRefinedFromProbe = false;
   KeyerTuning keyerTuning;
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";

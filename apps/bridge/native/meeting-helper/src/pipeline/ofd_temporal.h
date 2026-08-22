@@ -3,6 +3,8 @@
 #include "keyer/keyer.h"
 
 #include <cstdint>
+#include <deque>
+#include <memory>
 
 namespace broadify::meeting {
 
@@ -28,6 +30,16 @@ class OfdTemporal {
   AlphaMask middle_;
   bool hasPrevious_ = false;
   bool hasMiddle_ = false;
+};
+
+class OfdFrameDelayQueue {
+ public:
+  bool push(const std::shared_ptr<const VideoFrame> &frame,
+            std::shared_ptr<const VideoFrame> &delayed);
+  void reset();
+
+ private:
+  std::deque<std::shared_ptr<const VideoFrame>> frames_;
 };
 
 }  // namespace broadify::meeting

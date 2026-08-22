@@ -9,6 +9,12 @@
 
 namespace broadify::meeting {
 
+struct GuidedTuning {
+  uint32_t radius = 4;
+  double epsilon = 5.0e-4;
+  double coefficientEma = 0.0;
+};
+
 // True when the D3D11 GPU compositor is available AND explicitly enabled via
 // BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=1 (default OFF while the Windows path
 // is being validated). Callers fall back to the CPU compositor otherwise.
@@ -30,7 +36,8 @@ bool d3d11GuidedRefineAvailable();
 // the guide frame's luma edges on a <=512-wide working grid and REPLACES the
 // mask with the working-resolution result — identical semantics to the CPU
 // path. Returns false on any failure; callers must then run the CPU refine.
-bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame);
+bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame,
+                           const GuidedTuning &tuning);
 
 void resetGuidedRefineD3D11History();
 

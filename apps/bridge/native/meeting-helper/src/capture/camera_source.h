@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace broadify::meeting {
@@ -77,6 +78,14 @@ class CameraSource {
       return false;
     }
     return true;
+  }
+  virtual std::shared_ptr<const VideoFrame> copyLatestFrameSharedIfNew(
+      uint64_t lastTimestampNs) {
+    VideoFrame frame;
+    if (!copyLatestFrameIfNew(lastTimestampNs, frame)) {
+      return nullptr;
+    }
+    return std::make_shared<VideoFrame>(std::move(frame));
   }
   virtual bool waitForFrameOrTimeout(
       uint64_t lastTimestampNs,

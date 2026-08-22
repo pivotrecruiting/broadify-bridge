@@ -33,6 +33,16 @@ struct SegmentationTierDecision {
   bool shouldDisableOsEffects = false;
 };
 
+struct SegmentationTierSelectionState {
+  SegmentationTier requested = SegmentationTier::Auto;
+  SegmentationTier active = SegmentationTier::Modnet512Ofd;
+  std::string reason = "not_selected";
+  bool cameraAttached = false;
+  bool selected = false;
+  bool refinedFromProbe = false;
+  double modnet320ProbeMs = 0.0;
+};
+
 struct OsMaskRect {
   uint32_t x = 0;
   uint32_t y = 0;
@@ -53,6 +63,13 @@ const char *segmentationTierName(SegmentationTier tier);
 SegmentationTierDecision decideSegmentationTier(
     SegmentationTier requested,
     const SegmentationTierProbe &probe);
+bool selectTierAfterCameraAttach(SegmentationTierSelectionState &state,
+                                 const SegmentationTierProbe &probe,
+                                 SegmentationTierDecision &decision);
+bool refineTierAfterModnet320Probe(SegmentationTierSelectionState &state,
+                                   const SegmentationTierProbe &probe,
+                                   double modnet320ProbeMs,
+                                   SegmentationTierDecision &decision);
 
 bool mapOsBackgroundMaskToAlphaMask(const OsMaskBlob &blob,
                                     uint32_t frameWidth,

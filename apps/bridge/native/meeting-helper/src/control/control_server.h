@@ -22,6 +22,7 @@ void runControlServer(const std::string &socketPath,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening = {},
+                      const std::function<void()> &onCameraAttached = {},
                       VcamShmRingWin *vcamShm = nullptr);
 
 }  // namespace broadify::meeting

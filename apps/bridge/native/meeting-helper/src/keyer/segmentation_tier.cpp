@@ -112,6 +112,35 @@ SegmentationTierDecision decideSegmentationTier(
           false};
 }
 
+bool selectTierAfterCameraAttach(SegmentationTierSelectionState &state,
+                                 const SegmentationTierProbe &probe,
+                                 SegmentationTierDecision &decision) {
+  state.cameraAttached = true;
+  decision = decideSegmentationTier(state.requested, probe);
+  state.active = decision.tier;
+  state.reason = decision.reason;
+  state.selected = true;
+  return true;
+}
+
+bool refineTierAfterModnet320Probe(SegmentationTierSelectionState &state,
+                                   const SegmentationTierProbe &probe,
+                                   double modnet320ProbeMs,
+                                   SegmentationTierDecision &decision) {
+  if (!state.cameraAttached || !state.selected || state.refinedFromProbe ||
+      state.requested != SegmentationTier::Auto || modnet320ProbeMs <= 0.0) {
+    return false;
+  }
+  SegmentationTierProbe refinedProbe = probe;
+  refinedProbe.modnet320ProbeMs = modnet320ProbeMs;
+  decision = decideSegmentationTier(state.requested, refinedProbe);
+  state.active = decision.tier;
+  state.reason = decision.reason;
+  state.refinedFromProbe = true;
+  state.modnet320ProbeMs = modnet320ProbeMs;
+  return true;
+}
+
 bool mapOsBackgroundMaskToAlphaMask(const OsMaskBlob &blob,
                                     uint32_t frameWidth,
                                     uint32_t frameHeight,

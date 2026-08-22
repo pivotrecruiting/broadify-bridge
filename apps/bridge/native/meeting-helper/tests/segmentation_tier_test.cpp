@@ -6,9 +6,13 @@ using broadify::meeting::AlphaMask;
 using broadify::meeting::OsMaskBlob;
 using broadify::meeting::SegmentationTier;
 using broadify::meeting::SegmentationTierProbe;
+using broadify::meeting::SegmentationTierDecision;
+using broadify::meeting::SegmentationTierSelectionState;
 using broadify::meeting::decideSegmentationTier;
 using broadify::meeting::mapOsBackgroundMaskToAlphaMask;
 using broadify::meeting::parseSegmentationTierOverride;
+using broadify::meeting::refineTierAfterModnet320Probe;
+using broadify::meeting::selectTierAfterCameraAttach;
 
 namespace {
 
@@ -74,6 +78,39 @@ int main() {
         decideSegmentationTier(SegmentationTier::SelfieLandscape, probe);
     ok &= expect(decision.tier == SegmentationTier::Modnet512Ofd,
                  "unavailable forced selfie tier falls back safely");
+  }
+  {
+    SegmentationTierProbe probe;
+    probe.windows = true;
+    probe.frameBudgetMs = 33.0;
+    SegmentationTierSelectionState selection;
+    SegmentationTierDecision decision;
+    ok &= expect(!selection.selected, "tier selection starts pending");
+    ok &= expect(selectTierAfterCameraAttach(selection, probe, decision),
+                 "camera attach runs first tier decision");
+    ok &= expect(selection.selected &&
+                     selection.active == SegmentationTier::Modnet512Ofd,
+                 "attach decision selects MODNet before probe");
+    ok &= expect(refineTierAfterModnet320Probe(selection, probe, 50.0,
+                                              decision),
+                 "first MODNet 320 probe refines auto tier");
+    ok &= expect(selection.active == SegmentationTier::Modnet320Ofd,
+                 "over-budget probe selects 320 tier");
+    ok &= expect(!refineTierAfterModnet320Probe(selection, probe, 60.0,
+                                               decision),
+                 "probe refinement is one-shot");
+  }
+  {
+    SegmentationTierProbe probe;
+    probe.windows = true;
+    probe.osMaskPropertyPresent = true;
+    probe.osMaskCapabilityPresent = true;
+    SegmentationTierSelectionState selection;
+    selection.requested = SegmentationTier::OsMask;
+    SegmentationTierDecision decision;
+    ok &= expect(selectTierAfterCameraAttach(selection, probe, decision) &&
+                     selection.active == SegmentationTier::OsMask,
+                 "forced OS mask is honoured after attach probe succeeds");
   }
   {
     OsMaskBlob blob;
