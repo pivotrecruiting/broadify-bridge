@@ -1,5 +1,6 @@
 #include "compose/d3d11_compositor.h"
 #include "compose/d3d_adapter_select.h"
+#include "compose/gpu_context_win.h"
 #include "compose/staging_readback_ring.h"
 #include "pipeline/guided_work_size.h"
 
@@ -364,16 +365,27 @@ bool initializeContext() {
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
                                       D3D_FEATURE_LEVEL_11_0};
   D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
-  const D3DAdapterInfo &adapter = sharedD3DAdapter();
-  HRESULT hr = D3D11CreateDevice(
-      adapter.available ? adapter.adapter.Get() : nullptr,
-      adapter.available ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
-      nullptr, 0, levels,
-      static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &ctx.device,
-      &got, &ctx.context);
-  if (FAILED(hr)) {
-    logCompositorEvent("unavailable", "no D3D11 hardware device, " + hresultDetail(hr));
-    return false;
+  if (meetingGpuResidentEnabled()) {
+    GpuContextWin &gpu = GpuContextWin::shared();
+    if (!gpu.available()) {
+      logCompositorEvent("unavailable", "gpu resident context unavailable: " +
+                                            gpu.failureReason());
+      return false;
+    }
+    ctx.device = gpu.d3d11Device();
+    ctx.context = gpu.d3d11Context();
+  } else {
+    const D3DAdapterInfo &adapter = sharedD3DAdapter();
+    HRESULT hr = D3D11CreateDevice(
+        adapter.available ? adapter.adapter.Get() : nullptr,
+        adapter.available ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+        nullptr, 0, levels,
+        static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &ctx.device,
+        &got, &ctx.context);
+    if (FAILED(hr)) {
+      logCompositorEvent("unavailable", "no D3D11 hardware device, " + hresultDetail(hr));
+      return false;
+    }
   }
 
   ComPtr<ID3DBlob> blob;

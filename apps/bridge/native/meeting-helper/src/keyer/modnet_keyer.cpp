@@ -1,6 +1,7 @@
 #include "keyer/modnet_keyer.h"
 
 #include "compose/d3d_adapter_select.h"
+#include "compose/gpu_context_win.h"
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
 #include "keyer/ort_session_options_policy.h"
@@ -167,6 +168,25 @@ DmlCreateDeviceFn resolveDmlCreateDevice() {
 OrtStatus *appendDirectMlOnSelectedAdapter(Ort::SessionOptions &sessionOptions,
                                            const OrtDmlApi *dmlApi,
                                            std::string *adapterStatus) {
+  if (meetingGpuResidentEnabled()) {
+    GpuContextWin &gpu = GpuContextWin::shared();
+    if (!gpu.available() || dmlApi == nullptr) {
+      return nullptr;
+    }
+    ComPtr<IDMLDevice> dmlDevice;
+    DmlCreateDeviceFn dmlCreateDevice = resolveDmlCreateDevice();
+    if (dmlCreateDevice == nullptr ||
+        FAILED(dmlCreateDevice(gpu.d3d12Device(), DML_CREATE_DEVICE_FLAG_NONE,
+                               IID_PPV_ARGS(&dmlDevice)))) {
+      return nullptr;
+    }
+    if (adapterStatus != nullptr) {
+      *adapterStatus = gpu.telemetry().adapter;
+    }
+    return dmlApi->SessionOptionsAppendExecutionProvider_DML1(
+        sessionOptions, dmlDevice.Get(), gpu.d3d12Queue());
+  }
+
   const D3DAdapterInfo &adapter = directMlD3DAdapter();
   if (!adapter.available || dmlApi == nullptr) {
     return nullptr;
