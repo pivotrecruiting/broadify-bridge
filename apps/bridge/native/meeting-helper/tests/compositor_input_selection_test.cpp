@@ -4,7 +4,9 @@
 #include <iostream>
 
 using broadify::meeting::AlphaMask;
+using broadify::meeting::AsyncKeyerCompositorFrame;
 using broadify::meeting::GovernorOffCompositorInput;
+using broadify::meeting::selectAsyncKeyerCompositorFrame;
 using broadify::meeting::selectGovernorOffCompositorInput;
 using broadify::meeting::selectRetainedOrEmptyMaskForLiveKeyer;
 
@@ -53,5 +55,17 @@ int main() {
   ok &= expect(selected.width == 3u && selected.height == 2u &&
                    selected.emptyValid,
                "startup empty mask uses current frame dimensions");
+  ok &= expect(selectAsyncKeyerCompositorFrame(true, true, true) ==
+                   AsyncKeyerCompositorFrame::PairedFrame,
+               "VCam connected uses the paired keyer frame");
+  ok &= expect(selectAsyncKeyerCompositorFrame(false, true, true) ==
+                   AsyncKeyerCompositorFrame::LatestCameraFrame,
+               "non-VCam async path can live-snap when available");
+  ok &= expect(selectAsyncKeyerCompositorFrame(false, true, false) ==
+                   AsyncKeyerCompositorFrame::PairedFrame,
+               "non-VCam async path defaults to the paired keyer frame");
+  ok &= expect(selectAsyncKeyerCompositorFrame(true, false, true) ==
+                   AsyncKeyerCompositorFrame::LatestCameraFrame,
+               "unusable pair falls back to the latest camera frame");
   return ok ? 0 : 1;
 }

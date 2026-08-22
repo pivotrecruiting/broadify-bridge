@@ -278,6 +278,10 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.inferenceMs = status.inferenceMs;
   state.keyerDegraded =
       status.fallbackActive && status.fallbackReason != "keyer_disabled";
+  state.keyerReady =
+      !status.fallbackActive ||
+      (status.fallbackReason != "loading" &&
+       status.fallbackReason != "not_loaded");
   state.modelHashOk = status.modelHashOk;
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;

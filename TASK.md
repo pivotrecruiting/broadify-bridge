@@ -254,3 +254,53 @@ S1 raw camera on exit: PASS (zero Windows paths; catch-all ages honestly → bac
 PASS (no busy loop in any state: no camera / 30 fps / 60 fps / keyer off / idle). S4 latency: PASS (render on camera arrival at
 ≥ 0.75·interval; inference on every rendered frame). Notes: test label for the 60 fps case corrected; catch-all sets no stage
 telemetry (cosmetic). Windows CI on `test-release/wp2-consolidation` is the release gate for rc.25.
+
+## rc.25 field result (22.08.2026) — VCam-aware keyer policy + grey/churn fixes — VF-1..VF-7 (→ rc.26)
+Field: keying better without Teams; GHOST only while Teams/VCam streams; Teams shows "grey"; laptop gets louder over time.
+Diagnosis: (F1) Teams' encoder + the TCP VCam path (~8 copies/frame) push `sessionRunMs` → cadence N=2 / governor → Lite256 =
+live frame paired with a 66–132 ms-old mask + dynamic dilation + 5 s fused/async overlap → trail; oscillation with doubling holdoff.
+(F2) most likely NOT the DLL splash but the helper's background-only render (zero `emptyValid` mask) during the prolonged first-load
+hold / inference failure under Teams load; second candidate `vcamRawRunning=false` disarm loop; third an old DLL still loaded in the
+Frame Server (no build stamp in vcam.log). (F3) thermal/governor feedback + camera stall-reopen loop + raw-server thread churn.
+- VF-1 contention-robust keyer policy (Windows): while `vcamClients > 0` pin cadence `maxN = 1` (never reuse a mask for a live frame);
+  degrade by TIER only (512→320→256 fused) before any async tier; Lite256 reachable only after ≥ 30 consecutive over-budget samples at
+  fused 256; in Lite/Off composite the PAIRED frame (`selectedPair->frame`) instead of `latestCameraFrame` (no live-snap of aged masks;
+  accept ≤100 ms latency instead of ghost); `dynamicDilation` off on Windows; fused EMA static 0.85 → 0.92; no fused/async overlap
+  double-inference while a VCam client is connected (cut over on first pair or after 1 s). Tests: governor transition rules, cadence pin,
+  pairing selection.
+- VF-2 first-load / not-ready: retained `lastGoodMask` hold up to 5 s during warm-up/failure (not 2 s); while no mask ever existed
+  composite the camera keyed with a FULL (alpha 255) mask? — NO: background-only is the spec'd behaviour; instead expose it: status
+  `keyer_ready:false`, degradation_stage `keyer_loading`, and a helper event `keyer_not_ready` with the reason so the operator/webapp can
+  show "Keyer lädt". Reduce the hold itself: build only the seeded tier + 256 at first load (`PREBUILD_TIERS` default `active,256`), the
+  remaining tier lazily in the background after the first frame.
+- VF-3 raw server: send a heartbeat (last stored frame or a 1-frame render-on-connect) even when `payload.empty()`; emit
+  `meeting_vcam_raw` event `no_frame_on_connect` if `sent_frames == 0` after 2 s; join/reap finished worker threads each accept
+  iteration (`workers` vector must not grow).
+- VF-4 diagnosability: DLL logs a build stamp (git sha + build time via a generated header) on first `VcamLog`; helper events on every
+  `output.vcam.raw.start/stop`, on every governor tier / cadence change and on `camera_stalled` reopen count per hour.
+- VF-5 camera stall loop: reopen only after 2 consecutive stall windows (3 s) and back off 5 s → 30 s between reopens while the camera
+  keeps stalling; never reopen while `vcamClients > 0` and frames arrive at ≥ 10 fps.
+- VF-6 installer (`build/windows-installer.nsh` + `deploy-vcam.ps1`): stop the `FrameServer`/`FrameServerMonitor` services (or warn and
+  require a reboot) when replacing `broadify-vcam.dll`; NSIS smoke unchanged otherwise.
+- VF-7 docs + runbook: "grey in Teams" triage order (keyer_ready → raw stream armed → DLL build stamp), env knobs, VCam-aware policy.
+Acceptance: unit tests for VF-1 rules and VF-5 backoff; no `workers` growth (test with a fake accept loop or review); macOS unchanged;
+lint/jest/build/helper/ctests green; then 4-symptom review (F1/F2/F3) + Windows CI test branch → rc.26.
+
+### VF review round 1 — F1 PARTIAL, F2 NOT (diagnosability only), F3 PARTIAL
+Must-fix:
+- VR-1 `vcam-helper/windows/media_source.cpp` ~:63-83: REMOVE the blocking geometry probe. Use handshake geometry if available within
+  ≤100 ms; on connect failure return immediately with 1920x1080; never sleep through 20×100 ms. Give `RawFrameClient` a
+  "connect attempt finished" signal (atomic state: connecting/connected/failed). This is the prime suspect for "Teams takes forever to
+  open" and removes the probe's side effects on `vcamClientCount`/policy and the `no_frame_on_connect` noise.
+- VR-2 `build/windows-installer.nsh`: stop `FrameServer`/`FrameServerMonitor` in `customInit` (runs in `.onInit`, BEFORE file
+  extraction), then poll `sc query` for STOPPED (bounded ~5 s) before proceeding; keep the reboot fallback; NSIS smoke green.
+- VR-3 `pipeline/compositor_input_selection.cpp` ~:43-49 + callers (`frame_pipeline.cpp` ~:2049, ~:2206): the non-VCam async path
+  must return `PairedFrame` (prior behaviour); `LatestCameraFrame` only when the live-snap can actually run
+  (`guidedRefineAvailable() && liveSnapEnabled()`); fix the test expectation.
+- VR-4 `preview/raw_frame_server.cpp` ~:305: implement the heartbeat when no payload exists (synthesized record with the last stored
+  frame if any, else a zero-size heartbeat the DLL accepts as keep-alive and ignores for display) so the DLL's 5 s recv timeout
+  cannot fire while the stream is armed; DLL side: accept the keep-alive record (version-tolerant). Also: when `vcamRawRunning` is
+  false, answer the handshake with a distinct HTTP status (e.g. 503 + `X-Broadify-Stream: disarmed`) and let the DLL back off to 3 s
+  immediately instead of treating it as a successful connection (kills the 250 ms reconnect storm).
+Notes: rename `vcamAwarePolicy` → `tierFirstPolicy`; `reopen_count_hour` → lifetime counter naming; reaping test should exercise
+the real worker vector; build stamp is configure-time (document).

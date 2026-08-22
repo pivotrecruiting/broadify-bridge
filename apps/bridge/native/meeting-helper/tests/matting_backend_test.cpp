@@ -191,9 +191,14 @@ int main() {
 
   {
     const std::set<uint32_t> all = parseModnetPrebuildTierSizes(nullptr);
-    ok &= expect(all.count(512u) == 1u && all.count(320u) == 1u &&
+    ok &= expect(all.count(512u) == 1u && all.count(320u) == 0u &&
                      all.count(256u) == 1u,
-                 "unset PREBUILD_TIERS prebuilds all runtime tiers");
+                 "unset PREBUILD_TIERS prebuilds active tier and 256");
+    const std::set<uint32_t> active =
+        parseModnetPrebuildTierSizes("active,256");
+    ok &= expect(active.count(512u) == 1u && active.count(256u) == 1u &&
+                     active.count(320u) == 0u,
+                 "active PREBUILD_TIERS means current high tier plus 256");
     const std::set<uint32_t> selected =
         parseModnetPrebuildTierSizes("high_quality,performance");
     ok &= expect(selected.count(512u) == 1u && selected.count(256u) == 1u &&

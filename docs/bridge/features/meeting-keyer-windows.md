@@ -22,8 +22,11 @@ camera frame
   -> fused or async-lite governor path
        - fused: current-frame inference when sustainable
        - async-lite: worker publishes mask/frame pairs
-       - off_reduced: worker keeps running at reduced cadence, with live-snap;
-         stale last-mask hold is capped at 2 s, then background-only
+       - with a VCam client connected, fused cadence is pinned to every frame;
+         the governor steps 512 -> 320 -> 256 before async-lite, and
+         async-lite requires 30 consecutive over-budget samples at fused 256
+       - async-lite/off_reduced composite the worker's paired frame while VCam
+         is connected, avoiding a live frame with an aged mask
   -> guided edge refine
        - D3D11 when available, CPU fallback otherwise
        - work grid defaults to 512 px wide, aspect-preserving
@@ -41,14 +44,14 @@ camera frame
 | `BROADIFY_MEETING_GPU_PIPELINE` | `1` | Enables the fused Windows GPU keyer path. Set `0` for async worker path. |
 | `BROADIFY_MEETING_AUTO_DEGRADE` | `1` | Enables the fused tier governor. |
 | `BROADIFY_MEETING_WARM_HANDOVER` | `1` | Keeps make-before-break transitions between fused and async-lite. |
-| `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `all` | Prebuilds MODNet sessions. Accepts `all`, `512`, `320`, `256`, or mode names in a comma list. |
+| `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `active,256` | Prebuilds the current high tier plus 256 on first load. Accepts `all`, `active`, `512`, `320`, `256`, or mode names in a comma list. |
 | `BROADIFY_MEETING_DML_QUEUE` | `compute` | DirectML DML1 command queue type. Use `direct` for A/B against rc.21. |
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | unset | Overrides the governor step-down threshold for tests/tuning. |
 | `BROADIFY_MEETING_KEYER_CADENCE` | `auto` | Auto cadence, `0` disabled, or integer frame interval. Auto defaults to maxN 2 and motion threshold 4. |
 | `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH` | `1` | Enables cadence reuse of retained fused masks. |
 | `BROADIFY_MEETING_FUSED_POSTPROCESS` | `1` | Applies the postprocess chain on fused masks. |
 | `BROADIFY_MEETING_FUSED_SMOOTHER` | `ema` | `ema` uses motion-adaptive EMA and disables edge stabilization for fused masks; `edge` uses edge stabilization instead. |
-| `BROADIFY_MEETING_FUSED_EMA_STATIC` | `0.85` | Static-subject EMA weight for fused-mask stabilization. |
+| `BROADIFY_MEETING_FUSED_EMA_STATIC` | `0.92` | Static-subject EMA weight for fused-mask stabilization. |
 | `BROADIFY_MEETING_MASK_WORK_WIDTH` | `512` | Guided-refine/postprocess work width cap. 16:9 defaults to 512x288. |
 | `BROADIFY_MEETING_GUIDED_RADIUS` | `4` | Guided-filter radius for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_EPSILON` | `5e-4` | Guided-filter epsilon for D3D11 and CPU fallback. |
@@ -82,9 +85,9 @@ camera frame
 - If memory pressure matters more than transition smoothness, restrict
   `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` to the expected modes. Excluding a
   tier means the helper will not synchronously build it from `apply()`; it will
-  keep the current prebuilt session. The default `all` builds three tier
-  sessions per keyer instance; with async and fused keyers active, that is two
-  instances.
+  keep the current prebuilt session. The default `active,256` builds only the
+  current high tier and 256 on first load; `all` builds three tier sessions per
+  keyer instance.
 - With async first-load (`loadInApply=false` internally), failed model loads are
   retried by the warmup path at most once per 30 s. Because retry scheduling is
   checked from the program loop and waits for any previous warmup thread to be
@@ -99,6 +102,7 @@ Bridge status exposes:
 
 - `platform`: Node `process.platform`, surfaced in `meeting_get_state`.
 - `keyer_degraded`: true when the helper is serving a degraded keyer state.
+- `keyer_ready`: false while the enabled keyer is still loading/not loaded.
 - `fallback_reason`: reason for the current fallback/degradation.
 - `provider`: active inference provider, for example `directml`.
 - `gpu_adapter`: selected DirectML/D3D adapter identity.
@@ -110,3 +114,21 @@ Bridge status exposes:
 
 Native logs include `keyer_provider` changes and fallback-reason changes so
 provider selection and degradation transitions are visible in helper logs.
+
+## Teams Grey Triage
+
+Check in this order:
+
+1. `keyer.get.status.keyer_ready`: false means the helper is intentionally
+   rendering background-only while the keyer loads; the helper also emits
+   `keyer_not_ready` with the reason.
+2. Raw stream: look for `output.vcam.raw.start`, `meeting_vcam_raw`
+   `client_connected`, and `no_frame_on_connect` if Teams connected before any
+   program frame existed.
+3. DLL stamp: `%ProgramData%\Broadify\vcam.log` logs
+   `build_stamp git_sha=... build_time=...` on the first DLL log line. The
+   stamp is generated at CMake configure time, so rerun the configure/build
+   step before comparing it to a fresh commit.
+4. Installer/deploy fallback: if `FrameServer` or `FrameServerMonitor` cannot
+   stop while replacing `broadify-vcam.dll`, reboot Windows before validating
+   Teams.

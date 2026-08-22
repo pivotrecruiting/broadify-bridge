@@ -46,6 +46,9 @@ struct FusedCadenceConfig {
   // 0 = auto-derive N from the smoothed inference cost; >= 1 pins N
   // (1 = infer every frame).
   int pinnedN = 0;
+  // Runtime pin used by the Windows VCam policy. When true, infer every frame
+  // even if the cost EMA would otherwise select N=2.
+  bool forceEveryFrame = false;
   // false = cadence inert, infer every frame (BROADIFY_MEETING_KEYER_CADENCE=0).
   bool enabled = true;
 };
@@ -74,6 +77,8 @@ class FusedCadenceController {
   // Books a COMPLETED (successful) inference for frame frameTsNs.
   void onInferenceCompleted(uint64_t frameTsNs, double inferenceMs,
                             TimePoint now);
+
+  void setForceEveryFrame(bool forceEveryFrame);
 
   // Effective inference interval in frames (1 = every frame).
   int currentN() const;

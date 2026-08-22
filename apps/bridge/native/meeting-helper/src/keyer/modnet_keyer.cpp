@@ -73,7 +73,10 @@ int inferenceThreadCount() {
 }
 
 std::set<uint32_t> parseModnetPrebuildTierSizesInternal(const char *raw) {
-  if (raw == nullptr || raw[0] == '\0' || std::string(raw) == "all") {
+  if (raw == nullptr || raw[0] == '\0') {
+    return {kFallbackInputSize, kPerformanceInputSize};
+  }
+  if (std::string(raw) == "all") {
     return {kFallbackInputSize, kBalancedInputSize, kPerformanceInputSize};
   }
   std::set<uint32_t> sizes;
@@ -84,7 +87,7 @@ std::set<uint32_t> parseModnetPrebuildTierSizesInternal(const char *raw) {
     const std::string token =
         value.substr(start, comma == std::string::npos ? std::string::npos
                                                        : comma - start);
-    if (token == "high_quality" || token == "512") {
+    if (token == "active" || token == "high_quality" || token == "512") {
       sizes.insert(kFallbackInputSize);
     } else if (token == "balanced" || token == "320") {
       sizes.insert(kBalancedInputSize);
