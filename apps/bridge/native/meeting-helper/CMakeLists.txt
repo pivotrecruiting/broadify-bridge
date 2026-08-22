@@ -68,6 +68,7 @@ set(MEETING_HELPER_SOURCES
   src/compose/d3d_adapter_select.cpp
   src/compose/gpu_context_win.cpp
   src/compose/gpu_frame_ring.cpp
+  src/compose/gpu_preprocess.cpp
   src/common/options.cpp
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
@@ -285,6 +286,11 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/gpu_frame_ring_test.cpp
     src/compose/gpu_frame_ring.cpp
   )
+  add_executable(gpu_preprocess_mapping_test
+    tests/gpu_preprocess_mapping_test.cpp
+    src/compose/gpu_preprocess.cpp
+    src/keyer/matting_common.cpp
+  )
   add_executable(d3d_adapter_select_test
     tests/d3d_adapter_select_test.cpp
     src/compose/d3d_adapter_select.cpp
@@ -393,6 +399,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     framebus_reader_log_gate_test
     staging_readback_ring_test
     gpu_frame_ring_test
+    gpu_preprocess_mapping_test
     d3d_adapter_select_test
     pixel_swizzle_test
     ort_session_options_policy_test
