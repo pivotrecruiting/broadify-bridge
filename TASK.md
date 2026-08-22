@@ -124,3 +124,31 @@ F3. Docs: `docs/bridge/features/meeting-windows-performance.md` (flag, A/B guide
   scaffolding, but the current helper still exposes RGBA frames to existing CPU
   consumers. VCam-only `cpu_frame_copies_per_frame == 0` requires WP4's
   shared-memory NV12 VCam transport; TCP VCam is counted as a CPU consumer.
+
+## Windows CI (test-release/wp3-gpu, run 32563087621) — MSVC errors to fix in the handoff
+```
+src/compose/d3d11_compositor.cpp(394,3): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(397,7): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(401,32): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(405,3): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(408,7): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(409,5): error C2660: 'broadify::meeting::`anonymous-namespace'::logCompositorEvent': function does not take 1 arguments 
+src/compose/d3d11_compositor.cpp(409,57): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(417,3): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(418,7): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(419,5): error C2660: 'broadify::meeting::`anonymous-namespace'::logCompositorEvent': function does not take 1 arguments 
+src/compose/d3d11_compositor.cpp(419,57): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(429,3): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(430,7): error C2065: 'hr': undeclared identifier 
+src/compose/d3d11_compositor.cpp(431,5): error C2660: 'broadify::meeting::`anonymous-namespace'::logCompositorEvent': function does not take 1 arguments 
+src/compose/d3d11_compositor.cpp(431,56): error C2065: 'hr': undeclared identifier 
+src/compose/gpu_preprocess.cpp(204,3): error C2679: binary '=': no operator found which takes a right-hand operand of type 'initializer list' (or there is no acceptable conversion) 
+src/keyer/modnet_keyer.cpp(488,44): error C2662:         
+src/keyer/modnet_keyer.cpp(488,44): error C2662:             R=float 
+src/keyer/modnet_keyer.cpp(488,44): error C2662:             _Ty=Ort::Value 
+src/keyer/modnet_keyer.cpp(488,44): error C2662:         ] 
+src/keyer/modnet_keyer.cpp(488,44): error C2662:         and 
+src/keyer/modnet_keyer.cpp(488,44): error C2662:         with 
+src/keyer/modnet_keyer.cpp(488,44): error C2662: 'R *Ort::detail::ValueImpl<OrtValue>::GetTensorMutableData<float>(void)': cannot convert 'this' pointer from 'const _Ty' to 'Ort::detail::ValueImpl<OrtValue> &' 
+```
+- Also inherit from WP2: frame_pipeline.cpp C3493 (warmup lambdas must use the g_ globals) — merge origin/feature/win-stability-wp2 forward first.
