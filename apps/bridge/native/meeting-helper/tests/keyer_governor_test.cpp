@@ -116,17 +116,17 @@ int main() {
   {
     // Measured tier probes beat the old 512-area estimate. Here the 512 probe
     // would predict 256 at 15ms and seed Performance256, but the measured
-    // 256 probe is over budget, so startup correctly lands in async Lite256
-    // instead of stepping down immediately after start.
+    // 256 probe misses the step-up threshold, so startup correctly lands in
+    // async Lite256 instead of climbing into a tier without enough margin.
     KeyerAutoGovernor governor(testConfig());
     governor.seedMeasuredProbes(/*full512Ms=*/60.0,
-                                /*balanced320Ms=*/24.0,
+                                /*balanced320Ms=*/30.0,
                                 /*performance256Ms=*/30.0);
     ok &= expect(governor.tier() == GovernorTier::Lite256,
                  "measured probes seed from the chosen tier cost");
     governor.reset();
     governor.seedMeasuredProbes(/*full512Ms=*/60.0,
-                                /*balanced320Ms=*/14.0,
+                                /*balanced320Ms=*/24.0,
                                 /*performance256Ms=*/30.0);
     ok &= expect(governor.tier() == GovernorTier::Balanced320,
                  "measured probes choose the best sustainable tier");

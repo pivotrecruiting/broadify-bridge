@@ -117,7 +117,7 @@ void KeyerAutoGovernor::seedMeasuredProbes(double full512Ms,
     return;
   }
   seeded_ = true;
-  const double threshold = stepDownThresholdMs();
+  const double threshold = stepUpThresholdMs();
   if (full512Ms > 0.0 && full512Ms <= threshold) {
     tier_ = GovernorTier::Full512;
   } else if (balanced320Ms > 0.0 && balanced320Ms <= threshold) {
