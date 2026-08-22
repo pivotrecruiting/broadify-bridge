@@ -56,13 +56,18 @@ bool isProcessAlive(uint32_t pid) {
   if (pid == 0u) {
     return false;
   }
-  HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+  // The reader is the Windows Frame Server (svchost, LOCAL SERVICE). A user
+  // process may not get SYNCHRONIZE on it, so ask for the least privilege and
+  // treat "access denied" as alive/unknown; only a non-existent pid is dead.
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                               static_cast<DWORD>(pid));
   if (process == nullptr) {
-    return false;
+    return GetLastError() == ERROR_ACCESS_DENIED;
   }
-  const DWORD wait = WaitForSingleObject(process, 0);
+  DWORD exitCode = 0;
+  const BOOL ok = GetExitCodeProcess(process, &exitCode);
   CloseHandle(process);
-  return wait == WAIT_TIMEOUT;
+  return ok && exitCode == STILL_ACTIVE;
 }
 
 class SecurityAttributes {
