@@ -10,6 +10,7 @@
 #include <d3d11_4.h>
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <wrl/wrappers/corewrappers.h>
 #endif
 
 namespace broadify::meeting {

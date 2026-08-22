@@ -61,6 +61,8 @@ std::vector<TensorSampleMapping> buildGpuPreprocessMapping(
 #ifdef _WIN32
 namespace {
 
+using Microsoft::WRL::ComPtr;
+
 struct PreprocessUniforms {
   uint32_t sourceWidth;
   uint32_t sourceHeight;
@@ -98,6 +100,17 @@ float3 yuvToRgb(float y, float u, float v) {
                          yy + 1.8556 * uu));
 }
 
+float3 sampleCameraRgb(uint2 src) {
+  if (format == 0u) {
+    const float y = lumaTex.Load(uint3(src, 0));
+    const float2 uv = chromaTex.Load(uint3(src / 2u, 0));
+    return yuvToRgb(y, uv.x, uv.y);
+  }
+  const float4 pair = yuy2Tex.Load(uint3(src.x / 2u, src.y, 0));
+  const float y = (src.x & 1u) == 0u ? pair.x : pair.z;
+  return yuvToRgb(y, pair.y, pair.w);
+}
+
 void storeFloat(uint index, float value) {
   tensorOut.Store(index * 4u, asuint((value - 0.5) / 0.5));
 }
@@ -116,19 +129,28 @@ void preprocess(uint3 gid : SV_DispatchThreadID) {
     storeFloat(planeSize * 2u + dstOffset, 0.5);
     return;
   }
-  const float2 local = float2(gid.x - contentX + 0.5, gid.y - contentY + 0.5);
-  const uint2 src = uint2(min(uint(local.x * sourceWidth / max(contentWidth, 1u)), sourceWidth - 1u),
-                          min(uint(local.y * sourceHeight / max(contentHeight, 1u)), sourceHeight - 1u));
-  float3 rgb;
-  if (format == 0u) {
-    const float y = lumaTex.Load(uint3(src, 0));
-    const float2 uv = chromaTex.Load(uint3(src / 2u, 0));
-    rgb = yuvToRgb(y, uv.x, uv.y);
-  } else {
-    const float4 pair = yuy2Tex.Load(uint3(src.x / 2u, src.y, 0));
-    const float y = (src.x & 1u) == 0u ? pair.x : pair.z;
-    rgb = yuvToRgb(y, pair.y, pair.w);
+  const float srcLeft = float(gid.x - contentX) * float(sourceWidth) / float(max(contentWidth, 1u));
+  const float srcRight = float(gid.x - contentX + 1u) * float(sourceWidth) / float(max(contentWidth, 1u));
+  const float srcTop = float(gid.y - contentY) * float(sourceHeight) / float(max(contentHeight, 1u));
+  const float srcBottom = float(gid.y - contentY + 1u) * float(sourceHeight) / float(max(contentHeight, 1u));
+  const uint xStart = min(uint(floor(srcLeft)), sourceWidth - 1u);
+  const uint yStart = min(uint(floor(srcTop)), sourceHeight - 1u);
+  const uint xEnd = min(uint(ceil(srcRight)), sourceWidth);
+  const uint yEnd = min(uint(ceil(srcBottom)), sourceHeight);
+  float3 rgbSum = float3(0.0, 0.0, 0.0);
+  float weightTotal = 0.0;
+  for (uint y = yStart; y < yEnd; ++y) {
+    const float yWeight = max(0.0, min(srcBottom, float(y + 1u)) - max(srcTop, float(y)));
+    for (uint x = xStart; x < xEnd; ++x) {
+      const float xWeight = max(0.0, min(srcRight, float(x + 1u)) - max(srcLeft, float(x)));
+      const float weight = xWeight * yWeight;
+      if (weight > 0.0) {
+        rgbSum += sampleCameraRgb(uint2(x, y)) * weight;
+        weightTotal += weight;
+      }
+    }
   }
+  const float3 rgb = weightTotal > 0.0 ? rgbSum / weightTotal : float3(0.5, 0.5, 0.5);
   storeFloat(dstOffset, rgb.r);
   storeFloat(planeSize + dstOffset, rgb.g);
   storeFloat(planeSize * 2u + dstOffset, rgb.b);
@@ -181,15 +203,32 @@ bool GpuPreprocessorWin::ensureSlot(uint32_t index, uint32_t tensorSize) {
   }
   slot = {};
   const UINT bytes = tensorSize * tensorSize * 3u * sizeof(float);
-  D3D11_BUFFER_DESC desc{};
-  desc.ByteWidth = bytes;
-  desc.Usage = D3D11_USAGE_DEFAULT;
-  desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-  desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
-                   D3D11_RESOURCE_MISC_SHARED |
-                   D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
   GpuContextWin &gpu = GpuContextWin::shared();
-  if (FAILED(gpu.d3d11Device()->CreateBuffer(&desc, nullptr, &slot.d3d11Buffer))) {
+  D3D12_HEAP_PROPERTIES heapProps{};
+  heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+  D3D12_RESOURCE_DESC resourceDesc{};
+  resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  resourceDesc.Width = bytes;
+  resourceDesc.Height = 1;
+  resourceDesc.DepthOrArraySize = 1;
+  resourceDesc.MipLevels = 1;
+  resourceDesc.SampleDesc.Count = 1;
+  resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  if (FAILED(gpu.d3d12Device()->CreateCommittedResource(
+          &heapProps, D3D12_HEAP_FLAG_SHARED, &resourceDesc,
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+          IID_PPV_ARGS(&slot.d3d12Buffer)))) {
+    return false;
+  }
+  HANDLE rawHandle = nullptr;
+  if (FAILED(gpu.d3d12Device()->CreateSharedHandle(
+          slot.d3d12Buffer.Get(), nullptr, GENERIC_ALL, nullptr, &rawHandle))) {
+    return false;
+  }
+  slot.sharedHandle.Attach(rawHandle);
+  if (FAILED(gpu.d3d11Device()->OpenSharedResource1(
+          slot.sharedHandle.Get(), IID_PPV_ARGS(&slot.d3d11Buffer)))) {
     return false;
   }
   D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
@@ -201,20 +240,44 @@ bool GpuPreprocessorWin::ensureSlot(uint32_t index, uint32_t tensorSize) {
                                                           &uavDesc, &slot.uav))) {
     return false;
   }
-  ComPtr<IDXGIResource1> dxgiResource;
-  HANDLE rawHandle = nullptr;
-  if (FAILED(slot.d3d11Buffer.As(&dxgiResource)) ||
-      FAILED(dxgiResource->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr,
-                                              &rawHandle))) {
-    return false;
-  }
-  slot.sharedHandle.Attach(rawHandle);
-  if (FAILED(gpu.d3d12Device()->OpenSharedHandle(slot.sharedHandle.Get(),
-                                                 IID_PPV_ARGS(&slot.d3d12Buffer)))) {
-    return false;
-  }
   slot.tensorSize = tensorSize;
   return true;
+}
+
+bool createCameraSrvs(ID3D11Device5 *device,
+                      ID3D11Texture2D *cameraTexture,
+                      uint32_t subresource,
+                      GpuCameraFormat format,
+                      ComPtr<ID3D11ShaderResourceView> &lumaSrv,
+                      ComPtr<ID3D11ShaderResourceView> &chromaSrv,
+                      ComPtr<ID3D11ShaderResourceView> &yuy2Srv) {
+  D3D11_TEXTURE2D_DESC texDesc{};
+  cameraTexture->GetDesc(&texDesc);
+  const UINT firstArraySlice = texDesc.ArraySize > 1u ? subresource : 0u;
+  if (format == GpuCameraFormat::Nv12) {
+    D3D11_SHADER_RESOURCE_VIEW_DESC yDesc{};
+    yDesc.Format = DXGI_FORMAT_R8_UNORM;
+    yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+    yDesc.Texture2DArray.MostDetailedMip = 0;
+    yDesc.Texture2DArray.MipLevels = 1;
+    yDesc.Texture2DArray.FirstArraySlice = firstArraySlice;
+    yDesc.Texture2DArray.ArraySize = 1;
+    D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = yDesc;
+    uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+    return SUCCEEDED(device->CreateShaderResourceView(cameraTexture, &yDesc,
+                                                      &lumaSrv)) &&
+           SUCCEEDED(device->CreateShaderResourceView(cameraTexture, &uvDesc,
+                                                      &chromaSrv));
+  }
+  D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+  desc.Texture2DArray.MostDetailedMip = 0;
+  desc.Texture2DArray.MipLevels = 1;
+  desc.Texture2DArray.FirstArraySlice = firstArraySlice;
+  desc.Texture2DArray.ArraySize = 1;
+  return SUCCEEDED(device->CreateShaderResourceView(cameraTexture, &desc,
+                                                    &yuy2Srv));
 }
 
 bool GpuPreprocessorWin::preprocess(ID3D11Texture2D *cameraTexture,
@@ -225,26 +288,41 @@ bool GpuPreprocessorWin::preprocess(ID3D11Texture2D *cameraTexture,
                                     uint32_t tensorSize,
                                     const ModnetLetterboxMapping &letterbox,
                                     GpuFrameSlot frameSlot) {
-  (void)subresource;
   if (cameraTexture == nullptr || !ensureInitialized() ||
       !ensureSlot(frameSlot.index, tensorSize)) {
+    return false;
+  }
+  ComPtr<ID3D11ShaderResourceView> lumaSrv;
+  ComPtr<ID3D11ShaderResourceView> chromaSrv;
+  ComPtr<ID3D11ShaderResourceView> yuy2Srv;
+  GpuContextWin &gpu = GpuContextWin::shared();
+  if (!createCameraSrvs(gpu.d3d11Device(), cameraTexture, subresource, format,
+                        lumaSrv, chromaSrv, yuy2Srv)) {
     return false;
   }
   PreprocessUniforms uniforms{sourceWidth, sourceHeight, tensorSize,
                               format == GpuCameraFormat::Nv12 ? 0u : 1u,
                               letterbox.contentX, letterbox.contentY,
                               letterbox.contentWidth, letterbox.contentHeight};
-  GpuContextWin &gpu = GpuContextWin::shared();
-  gpu.d3d11Context()->UpdateSubresource(uniforms_.Get(), 0, nullptr,
-                                        &uniforms, 0, 0);
-  ID3D11UnorderedAccessView *uavs[1] = {slots_[frameSlot.index % 3u].uav.Get()};
-  ID3D11Buffer *cbs[1] = {uniforms_.Get()};
-  gpu.d3d11Context()->CSSetShader(shader_.Get(), nullptr, 0);
-  gpu.d3d11Context()->CSSetConstantBuffers(0, 1, cbs);
-  gpu.d3d11Context()->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-  gpu.d3d11Context()->Dispatch((tensorSize + 7u) / 8u, (tensorSize + 7u) / 8u, 1u);
-  ID3D11UnorderedAccessView *nullUav[1] = {nullptr};
-  gpu.d3d11Context()->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
+  {
+    std::lock_guard<std::mutex> lock(gpu.immediateContextMutex());
+    gpu.d3d11Context()->UpdateSubresource(uniforms_.Get(), 0, nullptr,
+                                          &uniforms, 0, 0);
+    ID3D11ShaderResourceView *srvs[3] = {lumaSrv.Get(), chromaSrv.Get(),
+                                         yuy2Srv.Get()};
+    ID3D11UnorderedAccessView *uavs[1] = {slots_[frameSlot.index % 3u].uav.Get()};
+    ID3D11Buffer *cbs[1] = {uniforms_.Get()};
+    gpu.d3d11Context()->CSSetShader(shader_.Get(), nullptr, 0);
+    gpu.d3d11Context()->CSSetConstantBuffers(0, 1, cbs);
+    gpu.d3d11Context()->CSSetShaderResources(0, 3, srvs);
+    gpu.d3d11Context()->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+    gpu.d3d11Context()->Dispatch((tensorSize + 7u) / 8u,
+                                 (tensorSize + 7u) / 8u, 1u);
+    ID3D11UnorderedAccessView *nullUav[1] = {nullptr};
+    ID3D11ShaderResourceView *nullSrvs[3] = {};
+    gpu.d3d11Context()->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
+    gpu.d3d11Context()->CSSetShaderResources(0, 3, nullSrvs);
+  }
   return gpu.signalFromD3D11(frameSlot.fenceValue);
 }
 
