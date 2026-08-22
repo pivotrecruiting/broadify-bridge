@@ -1,6 +1,7 @@
 #include "keyer/keyer_chain.h"
 
 #include <cstdlib>
+#include <iostream>
 #include <string>
 
 #include "keyer/matting_backend.h"
@@ -254,6 +255,18 @@ KeyerStatus KeyerChain::status() const {
 
 void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   std::lock_guard<std::mutex> lock(state.mutex);
+  static std::string lastLoggedProvider;
+  static std::string lastLoggedFallbackReason;
+  if (status.provider != lastLoggedProvider) {
+    lastLoggedProvider = status.provider;
+    std::cout << "{\"type\":\"keyer_provider\",\"provider\":\""
+              << status.provider << "\"}" << std::endl;
+  }
+  if (status.fallbackReason != lastLoggedFallbackReason) {
+    lastLoggedFallbackReason = status.fallbackReason;
+    std::cout << "{\"type\":\"keyer_fallback_change\",\"fallback_reason\":\""
+              << status.fallbackReason << "\"}" << std::endl;
+  }
   state.activeKeyer = status.activeKeyer;
   state.fallbackActive = status.fallbackActive;
   state.fallbackReason = status.fallbackReason;
@@ -263,6 +276,8 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.gpuAdapter = status.gpuAdapter;
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;
+  state.keyerDegraded =
+      status.fallbackActive && status.fallbackReason != "keyer_disabled";
   state.modelHashOk = status.modelHashOk;
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;
@@ -275,6 +290,16 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   mergedMetrics.programFps = state.keyerMetrics.programFps;
   mergedMetrics.cameraTextureUploads = state.keyerMetrics.cameraTextureUploads;
   state.keyerMetrics = mergedMetrics;
+}
+
+void setMeetingDegradationStage(MeetingState &state, const std::string &stage) {
+  static std::string lastLoggedStage;
+  if (stage != lastLoggedStage) {
+    lastLoggedStage = stage;
+    std::cout << "{\"type\":\"keyer_degradation_stage_change\","
+                 "\"degradation_stage\":\"" << stage << "\"}" << std::endl;
+  }
+  state.degradationStage = stage;
 }
 
 }  // namespace broadify::meeting

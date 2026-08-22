@@ -77,10 +77,12 @@ set(MEETING_HELPER_SOURCES
   src/keyer/openvino_keyer.cpp
   src/keyer/ort_session_options_policy.cpp
   src/main.cpp
+  src/pipeline/compositor_input_selection.cpp
   src/pipeline/frame_pipeline.cpp
   src/pipeline/frame_pipeline_gating.cpp
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
+  src/pipeline/guided_work_size.cpp
   src/pipeline/keyer_cadence.cpp
   src/pipeline/mask_retention.cpp
   src/pipeline/subject_presence.cpp
@@ -263,6 +265,11 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(guided_mask_refine_test
     tests/guided_mask_refine_test.cpp
     src/pipeline/guided_mask_refine.cpp
+    src/pipeline/guided_work_size.cpp
+  )
+  add_executable(guided_work_size_test
+    tests/guided_work_size_test.cpp
+    src/pipeline/guided_work_size.cpp
   )
   add_executable(framebus_reader_log_gate_test
     tests/framebus_reader_log_gate_test.cpp
@@ -305,6 +312,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(frame_pipeline_gating_test
     tests/frame_pipeline_gating_test.cpp
     src/pipeline/frame_pipeline_gating.cpp
+  )
+  add_executable(compositor_input_selection_test
+    tests/compositor_input_selection_test.cpp
+    src/pipeline/compositor_input_selection.cpp
   )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
@@ -355,8 +366,16 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/util/json_utils.cpp
     src/util/sha256.cpp
   )
+  target_compile_definitions(matting_backend_test PRIVATE
+    BROADIFY_MATTING_BACKEND_TESTING=1
+  )
+  add_executable(matting_common_test
+    tests/matting_common_test.cpp
+    src/keyer/matting_common.cpp
+  )
   foreach(helper_test
     guided_mask_refine_test
+    guided_work_size_test
     framebus_reader_log_gate_test
     staging_readback_ring_test
     d3d_adapter_select_test
@@ -368,8 +387,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     subject_presence_test
     frame_pipeline_stall_test
     frame_pipeline_gating_test
+    compositor_input_selection_test
     tier_handover_test
     matting_backend_test
+    matting_common_test
     control_server_test
     raw_frame_stream_header_test
     raw_frame_record_test

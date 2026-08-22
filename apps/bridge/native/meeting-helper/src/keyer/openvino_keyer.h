@@ -21,6 +21,7 @@ struct OpenVinoKeyerOptions {
   // OpenVINO device selection string, e.g. "AUTO:NPU,GPU,CPU" or "GPU"
   // (see expandOpenVinoDeviceSelection in matting_backend.h).
   std::string device;
+  bool loadInApply = true;
 };
 
 // MODNet matting via the OpenVINO runtime. Same contract as ModnetKeyer:
@@ -36,6 +37,7 @@ class OpenVinoKeyer : public MattingKeyer {
 
   KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) override;
   KeyerStatus status() const override;
+  bool warmupForPerformanceMode(const std::string &performanceMode) override;
 
   // Device probe used by the factory policy. Throws when the OpenVINO runtime
   // itself cannot initialize (missing DLLs and the like) - the factory treats

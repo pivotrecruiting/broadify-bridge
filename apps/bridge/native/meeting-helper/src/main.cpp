@@ -263,7 +263,7 @@ int runKeyerSelfTest(const Options &options) {
     const bool openVinoOk =
         benchmarkKeyerBackend("openvino_modnet", frame, [&options, &device]() {
           return std::make_unique<OpenVinoKeyer>(
-              OpenVinoKeyerOptions{options.modelsDir, device});
+              OpenVinoKeyerOptions{options.modelsDir, device, true});
         });
     ok = ok && openVinoOk;
   }

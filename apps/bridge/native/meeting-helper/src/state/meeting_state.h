@@ -136,6 +136,7 @@ struct MeetingState {
   std::string modelPath;
   double inferenceMs = -1.0;
   bool fallbackActive = true;
+  bool keyerDegraded = false;
   bool modelHashOk = false;
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;

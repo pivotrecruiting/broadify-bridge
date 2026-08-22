@@ -3,13 +3,16 @@
 #include "keyer/keyer.h"
 #include "keyer/matting_backend.h"
 
+#include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 
 namespace broadify::meeting {
 
 struct ModnetKeyerOptions {
   std::string modelsDir;
+  bool loadInApply = true;
 };
 
 class ModnetKeyer : public MattingKeyer {
@@ -29,5 +32,7 @@ class ModnetKeyer : public MattingKeyer {
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+std::set<uint32_t> parseModnetPrebuildTierSizes(const char *raw);
 
 }  // namespace broadify::meeting

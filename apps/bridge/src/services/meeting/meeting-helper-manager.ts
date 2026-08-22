@@ -107,6 +107,7 @@ export type RestorableCameraMethodT =
 
 type MeetingHelperManagerStatusT = {
   state: MeetingHelperLifecycleStateT;
+  platform: NodeJS.Platform;
   port: number | null;
   pid: number | null;
   framebusName: string;
@@ -775,6 +776,7 @@ export class MeetingHelperManager {
   getStatus(): MeetingHelperManagerStatusT {
     return {
       state: this.state,
+      platform: platform(),
       port: this.port,
       pid: this.process?.pid ?? null,
       framebusName: this.getFramebusName(),
@@ -858,7 +860,7 @@ export class MeetingHelperManager {
   async getFullStatus(): Promise<Record<string, unknown>> {
     const manager = this.getStatus();
     if (!this.client || this.state !== "running") {
-      return { manager, engine: null, recording: null };
+      return { platform: platform(), manager, engine: null, recording: null };
     }
     try {
       const [engineState, framebus, keyer, recordingResult, virtualCamera] =
@@ -878,6 +880,7 @@ export class MeetingHelperManager {
         recordingRaw && typeof recordingRaw === "object" ? recordingRaw : null;
       this.consecutiveControlFailures = 0;
       return {
+        platform: platform(),
         manager,
         engine: engineState,
         framebus,

@@ -40,6 +40,20 @@ describe("meeting-helper-manager", () => {
     });
   });
 
+  describe("status platform", () => {
+    it("exposes process.platform in manager and full status snapshots", async () => {
+      const manager = new MeetingHelperManager();
+
+      expect(manager.getStatus()).toMatchObject({
+        platform: process.platform,
+      });
+      await expect(manager.getFullStatus()).resolves.toMatchObject({
+        platform: process.platform,
+        manager: { platform: process.platform },
+      });
+    });
+  });
+
   describe("inspectDeviceEntitlementStatuses", () => {
     const os = require("node:os");
     const fs = require("node:fs");
@@ -329,6 +343,7 @@ describe("meeting-helper-manager", () => {
       const status = await manager.getFullStatus();
 
       expect(status).toEqual({
+        platform: process.platform,
         manager: expect.objectContaining({ state: "stopped" }),
         engine: null,
         recording: null,

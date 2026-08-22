@@ -13,9 +13,11 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <set>
 #include <thread>
 #include <utility>
 
@@ -37,6 +39,8 @@ namespace broadify::meeting {
 namespace {
 
 constexpr uint32_t kFallbackInputSize = 512;
+constexpr uint32_t kBalancedInputSize = 320;
+constexpr uint32_t kPerformanceInputSize = 256;
 constexpr uint32_t kMaxCpuInferenceThreads = 4;
 // Input normalization and mask readback live in matting_common.cpp: they are
 // shared verbatim with the OpenVINO backend so both produce identical tensors
@@ -67,7 +71,44 @@ int inferenceThreadCount() {
   return static_cast<int>(std::clamp(detectedThreads, 2u, kMaxCpuInferenceThreads));
 }
 
+std::set<uint32_t> parseModnetPrebuildTierSizesInternal(const char *raw) {
+  if (raw == nullptr || raw[0] == '\0' || std::string(raw) == "all") {
+    return {kFallbackInputSize, kBalancedInputSize, kPerformanceInputSize};
+  }
+  std::set<uint32_t> sizes;
+  const std::string value(raw);
+  size_t start = 0u;
+  while (start <= value.size()) {
+    const size_t comma = value.find(',', start);
+    const std::string token =
+        value.substr(start, comma == std::string::npos ? std::string::npos
+                                                       : comma - start);
+    if (token == "high_quality" || token == "512") {
+      sizes.insert(kFallbackInputSize);
+    } else if (token == "balanced" || token == "320") {
+      sizes.insert(kBalancedInputSize);
+    } else if (token == "performance" || token == "256") {
+      sizes.insert(kPerformanceInputSize);
+    }
+    if (comma == std::string::npos) {
+      break;
+    }
+    start = comma + 1u;
+  }
+  if (sizes.empty()) {
+    sizes.insert(kFallbackInputSize);
+    sizes.insert(kBalancedInputSize);
+    sizes.insert(kPerformanceInputSize);
+  }
+  return sizes;
+}
+
 #if BROADIFY_ENABLE_MODNET
+std::set<uint32_t> prebuildTierSizesFromEnv() {
+  return parseModnetPrebuildTierSizesInternal(
+      std::getenv("BROADIFY_MEETING_KEYER_PREBUILD_TIERS"));
+}
+
 // Self-test provider override, read once: when
 // BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu the CoreML/DirectML execution
 // providers are NOT appended, so ORT runs pure CPU. Used by
@@ -168,6 +209,10 @@ OrtStatus *appendDirectMlOnSharedAdapter(Ort::SessionOptions &sessionOptions,
 
 }  // namespace
 
+std::set<uint32_t> parseModnetPrebuildTierSizes(const char *raw) {
+  return parseModnetPrebuildTierSizesInternal(raw);
+}
+
 class ModnetKeyer::Impl {
  public:
   explicit Impl(ModnetKeyerOptions options) : options_(std::move(options)) {
@@ -192,6 +237,13 @@ class ModnetKeyer::Impl {
       inputWidth_ = inputHeight_ = modnetInputSizeForMode(settings.performanceMode);
     }
 #endif
+    if (!loaded_ && !options_.loadInApply) {
+      if (!loadAttempted_) {
+        setFallback("loading");
+      }
+      result.status = status_;
+      return result;
+    }
     if (!ensureLoaded()) {
       result.status = status_;
       return result;
@@ -222,23 +274,26 @@ class ModnetKeyer::Impl {
 #else
     if (modelDynamic_) {
       const uint32_t requested = modnetInputSizeForMode(settings.performanceMode);
-      uint32_t effective = requested;
-      if (sessionRunSize_ != 0u && requested != sessionRunSize_) {
-        if (requested == failedRebuildSize_) {
-          effective = sessionRunSize_;
-        } else if (rebuildSessionForSize(requested)) {
-          failedRebuildSize_ = 0u;
-        } else {
-          failedRebuildSize_ = requested;
-          effective = sessionRunSize_;
-        }
+      uint32_t effective = sessionRunSize_ != 0u ? sessionRunSize_ : inputWidth_;
+      auto sessionIt = tierSessions_.find(requested);
+      if (sessionIt != tierSessions_.end()) {
+        activeSession_ = sessionIt->second.session.get();
+        effective = requested;
+        status_.probeInferenceMs = sessionIt->second.probeMs;
+      } else if (activeSession_ == nullptr && !tierSessions_.empty()) {
+        auto fallbackIt = tierSessions_.begin();
+        activeSession_ = fallbackIt->second.session.get();
+        effective = fallbackIt->first;
+        status_.probeInferenceMs = fallbackIt->second.probeMs;
       }
       inputWidth_ = effective;
       inputHeight_ = effective;
     }
 #endif
     const auto tensorStart = std::chrono::steady_clock::now();
-    buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_);
+    ModnetLetterboxMapping letterbox;
+    buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
+                           &letterbox);
     const auto tensorEnd = std::chrono::steady_clock::now();
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -247,7 +302,16 @@ class ModnetKeyer::Impl {
 
     try {
       const auto runStart = std::chrono::steady_clock::now();
-      auto outputs = session_->Run(
+      Ort::Session *session = activeSession_;
+#if defined(__APPLE__)
+      session = session_.get();
+#endif
+      if (session == nullptr) {
+        setFallback("session_not_ready");
+        result.status = status_;
+        return result;
+      }
+      auto outputs = session->Run(
           Ort::RunOptions{nullptr},
           inputNames_.data(),
           &inputTensor,
@@ -270,7 +334,8 @@ class ModnetKeyer::Impl {
         maskWidth = dimensionOrFallback(outputShape[outputShape.size() - 1u]);
       }
       const auto maskStart = std::chrono::steady_clock::now();
-      copyModnetAlphaMask(mask, maskWidth, maskHeight, input.timestampNs, result.mask);
+      copyModnetAlphaMask(mask, maskWidth, maskHeight, letterbox, input.width,
+                          input.height, input.timestampNs, result.mask);
       const auto maskEnd = std::chrono::steady_clock::now();
       const auto end = std::chrono::steady_clock::now();
       sessionRunSize_ = inputWidth_;
@@ -302,45 +367,28 @@ class ModnetKeyer::Impl {
     return status_;
   }
 
-  // Warm-handover entry: build/warm the session for the mode's input size on
-  // the CALLING thread (a background warmup thread while the async worker
-  // owns the keyer path), so the next apply() at that mode finds a ready
-  // session. Reuses ensureLoaded()/rebuildSessionForSize() under the keyer
-  // mutex — the same internals apply() uses, so the state transitions are
-  // identical to a first visible inference at the new size.
+  // Warm-handover entry: verify the requested mode's prebuilt session exists.
+  // Session creation happens during load, never from apply().
   bool warmupForPerformanceMode(const std::string &performanceMode) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!ensureLoaded()) {
+      return false;
+    }
 #if BROADIFY_ENABLE_MODNET
 #if defined(__APPLE__)
     // macOS freezes the CoreML session shape at load; per-mode rebuilds do
     // not exist there (and the warm handover is Windows-only anyway).
     (void)performanceMode;
-    return ensureLoaded();
+    return true;
 #else
-    if (!ensureLoaded()) {
-      return false;
-    }
     if (!modelDynamic_) {
       // Static model: one shape only, already warmed by ensureLoaded().
       return true;
     }
     const uint32_t requested = modnetInputSizeForMode(performanceMode);
-    if (sessionRunSize_ == 0u || requested == sessionRunSize_) {
-      // ensureLoaded's warmup already ran the session at its initial shape;
-      // sessionRunSize_ == 0 only happens when that warmup failed — the next
-      // apply() pays the compile as before (best-effort, like ensureLoaded).
+    if (tierSessions_.find(requested) != tierSessions_.end()) {
       return true;
     }
-    if (requested == failedRebuildSize_) {
-      return false;
-    }
-    if (rebuildSessionForSize(requested)) {
-      failedRebuildSize_ = 0u;
-      inputWidth_ = requested;
-      inputHeight_ = requested;
-      return true;
-    }
-    failedRebuildSize_ = requested;
     return false;
 #endif
 #else
@@ -350,6 +398,13 @@ class ModnetKeyer::Impl {
   }
 
  private:
+  struct TierSession {
+#if BROADIFY_ENABLE_MODNET
+    std::unique_ptr<Ort::Session> session;
+#endif
+    double probeMs = 0.0;
+  };
+
   bool ensureLoaded() {
     if (loaded_) {
       return true;
@@ -364,6 +419,7 @@ class ModnetKeyer::Impl {
       return false;
     }
     lastLoadAttemptAt_ = now;
+    loadAttempted_ = true;
 
     const ModelManifestEntry entry = findModelManifestEntry(options_.modelsDir, "modnet");
     if (entry.file.empty()) {
@@ -390,6 +446,7 @@ class ModnetKeyer::Impl {
     try {
       env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "broadify-meeting-helper");
       modelPath_ = modelPath;
+#if defined(__APPLE__)
       session_ = createSession();
       if (!session_) {
         setFallback("model_path_invalid");
@@ -403,38 +460,32 @@ class ModnetKeyer::Impl {
       inputNames_[0] = inputName_.c_str();
       outputNames_[0] = outputName_.c_str();
       const auto inputInfo = session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
-      const std::vector<int64_t> inputShape = inputInfo.GetShape();
-      if (inputShape.size() >= 4u) {
-        // A dynamic model (dims reported as <= 0) lets us pick the input
-        // resolution per frame from the performance mode; a static model is
-        // pinned to its declared size.
-        modelDynamic_ = inputShape[2] <= 0 || inputShape[3] <= 0;
-#if !defined(__APPLE__)
-        inputHeight_ = dimensionOrFallback(inputShape[2]);
-        inputWidth_ = dimensionOrFallback(inputShape[3]);
 #else
-        // macOS keeps the size chosen in apply() (frozen into the CoreML
-        // free-dimension override); don't overwrite it with the model's dims.
-#endif
-      }
-#if defined(_WIN32)
-      // Warm up the freshly created session so the FIRST visible inference does
-      // not pay the DirectML shape-compile stall (documented above, ~145ms up
-      // to ~2.4s) -- that stall is what makes the keyer flicker/jump for the
-      // first seconds after the engine starts. The first zero-input Run
-      // compiles the kernels; two extra timed runs then measure steady-state
-      // cost, and the median of all three (run 1 carries the compile stall,
-      // so the median lands on a steady run) seeds the fused auto-degradation
-      // governor via probeInferenceMs. The two extra runs are a one-time cost
-      // per session build (including a reload after a transient failure) --
-      // acceptable. Non-fatal: on failure the first real frame just pays it.
-      if (inputWidth_ > 0u && inputHeight_ > 0u) {
+      const std::set<uint32_t> sizes = prebuildTierSizesFromEnv();
+      for (const uint32_t size : sizes) {
+        inputWidth_ = size;
+        inputHeight_ = size;
+        std::unique_ptr<Ort::Session> builtSession = createSession();
+        if (!builtSession) {
+          continue;
+        }
+        if (inputNames_[0] == nullptr || outputNames_[0] == nullptr) {
+          Ort::AllocatorWithDefaultOptions allocator;
+          Ort::AllocatedStringPtr inputNameAllocated =
+              builtSession->GetInputNameAllocated(0, allocator);
+          Ort::AllocatedStringPtr outputNameAllocated =
+              builtSession->GetOutputNameAllocated(0, allocator);
+          inputName_ = inputNameAllocated.get();
+          outputName_ = outputNameAllocated.get();
+          inputNames_[0] = inputName_.c_str();
+          outputNames_[0] = outputName_.c_str();
+        }
+        double probeMs = 0.0;
         try {
           std::vector<float> warmupTensor(
-              static_cast<size_t>(3u) * inputWidth_ * inputHeight_, 0.0f);
+              static_cast<size_t>(3u) * size * size, 0.0f);
           std::array<int64_t, 4> warmupShape = {
-              1, 3, static_cast<int64_t>(inputHeight_),
-              static_cast<int64_t>(inputWidth_)};
+              1, 3, static_cast<int64_t>(size), static_cast<int64_t>(size)};
           Ort::MemoryInfo memoryInfo =
               Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
           Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
@@ -443,19 +494,56 @@ class ModnetKeyer::Impl {
           std::array<double, 3> warmupRunMs = {0.0, 0.0, 0.0};
           for (size_t warmupRun = 0; warmupRun < warmupRunMs.size(); ++warmupRun) {
             const auto runStart = std::chrono::steady_clock::now();
-            session_->Run(Ort::RunOptions{nullptr}, inputNames_.data(),
-                          &warmupInput, 1, outputNames_.data(), 1);
+            builtSession->Run(Ort::RunOptions{nullptr}, inputNames_.data(),
+                              &warmupInput, 1, outputNames_.data(), 1);
             warmupRunMs[warmupRun] =
                 elapsedMs(runStart, std::chrono::steady_clock::now());
-            sessionRunSize_ = inputWidth_;
           }
           std::sort(warmupRunMs.begin(), warmupRunMs.end());
-          status_.probeInferenceMs = warmupRunMs[1];
+          probeMs = warmupRunMs[1];
         } catch (...) {
-          // Warmup is best-effort; ignore failures.
+          probeMs = 0.0;
+        }
+        tierSessions_[size] = TierSession{std::move(builtSession), probeMs};
+        if (size == kFallbackInputSize) {
+          status_.probeInferenceMs512 = probeMs;
+        } else if (size == kBalancedInputSize) {
+          status_.probeInferenceMs320 = probeMs;
+        } else if (size == kPerformanceInputSize) {
+          status_.probeInferenceMs256 = probeMs;
         }
       }
+      if (tierSessions_.empty()) {
+        setFallback("model_path_invalid");
+        return false;
+      }
+      auto initialIt = tierSessions_.find(kFallbackInputSize);
+      if (initialIt == tierSessions_.end()) {
+        initialIt = tierSessions_.begin();
+      }
+      activeSession_ = initialIt->second.session.get();
+      inputWidth_ = inputHeight_ = initialIt->first;
+      status_.probeInferenceMs = initialIt->second.probeMs;
+      sessionRunSize_ = initialIt->first;
+      const auto inputInfo = activeSession_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
 #endif
+      const std::vector<int64_t> inputShape = inputInfo.GetShape();
+      if (inputShape.size() >= 4u) {
+        // A dynamic model (dims reported as <= 0) lets us pick the input
+        // resolution per frame from the performance mode; a static model is
+        // pinned to its declared size.
+        modelDynamic_ = inputShape[2] <= 0 || inputShape[3] <= 0;
+#if !defined(__APPLE__)
+        if (!modelDynamic_) {
+          inputHeight_ = dimensionOrFallback(inputShape[2]);
+          inputWidth_ = dimensionOrFallback(inputShape[3]);
+        }
+#else
+        // macOS keeps the size chosen in apply() (frozen into the CoreML
+        // free-dimension override); don't overwrite it with the model's dims.
+#endif
+      }
+
       loaded_ = true;
       status_.activeKeyer = "modnet";
       status_.fallbackActive = false;
@@ -604,35 +692,6 @@ class ModnetKeyer::Impl {
 #endif
   }
 
-  // Replaces the session and pays the execution provider's shape-compile cost
-  // for `size` through a warmup Run, so visible inferences never hit it. The
-  // old session stays in place when anything fails.
-  bool rebuildSessionForSize(uint32_t size) {
-    const auto rebuildStart = std::chrono::steady_clock::now();
-    try {
-      std::unique_ptr<Ort::Session> newSession = createSession();
-      if (!newSession) {
-        return false;
-      }
-      std::vector<float> warmupTensor(static_cast<size_t>(3u) * size * size, 0.0f);
-      std::array<int64_t, 4> warmupShape = {1, 3, static_cast<int64_t>(size), static_cast<int64_t>(size)};
-      Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-      Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
-          memoryInfo, warmupTensor.data(), warmupTensor.size(), warmupShape.data(), warmupShape.size());
-      newSession->Run(
-          Ort::RunOptions{nullptr}, inputNames_.data(), &warmupInput, 1, outputNames_.data(), 1);
-      session_ = std::move(newSession);
-      sessionRunSize_ = size;
-      std::cout << "{\"type\":\"keyer_session_rebuild\",\"input_size\":" << size
-                << ",\"warmup_ms\":" << elapsedMs(rebuildStart, std::chrono::steady_clock::now())
-                << "}" << std::endl;
-      return true;
-    } catch (...) {
-      std::cout << "{\"type\":\"keyer_session_rebuild_failed\",\"input_size\":" << size
-                << "}" << std::endl;
-      return false;
-    }
-  }
 #endif
 
   void setFallback(const std::string &reason) {
@@ -654,6 +713,7 @@ class ModnetKeyer::Impl {
   mutable std::mutex mutex_;
   KeyerStatus status_;
   bool loaded_ = false;
+  bool loadAttempted_ = false;
   std::chrono::steady_clock::time_point lastLoadAttemptAt_{};
   uint32_t inputWidth_ = kFallbackInputSize;
   uint32_t inputHeight_ = kFallbackInputSize;
@@ -661,11 +721,12 @@ class ModnetKeyer::Impl {
   // Shape the current session has run with (0 = no Run yet) and the last
   // size a rebuild failed for (retried only after the requested size changes).
   uint32_t sessionRunSize_ = 0u;
-  uint32_t failedRebuildSize_ = 0u;
   std::string modelPath_;
 #if BROADIFY_ENABLE_MODNET
   std::unique_ptr<Ort::Env> env_;
   std::unique_ptr<Ort::Session> session_;
+  std::map<uint32_t, TierSession> tierSessions_;
+  Ort::Session *activeSession_ = nullptr;
   std::string inputName_;
   std::string outputName_;
   std::array<const char *, 1> inputNames_ = {nullptr};

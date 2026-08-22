@@ -24,11 +24,19 @@ struct SubjectPresenceConfig {
   // kMinForegroundCoverage (0.006): the existing dropout guards keep judging
   // "essentially empty" unchanged, and only the truly-empty band can ever
   // confirm an absent subject.
+#if defined(_WIN32)
+  double emptyAcceptCoverage = 0.002;
+#else
   double emptyAcceptCoverage = 0.003;
+#endif
   // Accumulated time (across successful inferences only) the coverage must
   // stay below the floor before an empty frame is accepted. Time-based, so
   // the decision is independent of the inference cadence / call rate.
+#if defined(_WIN32)
+  double acceptAfterMs = 1500.0;
+#else
   double acceptAfterMs = 400.0;
+#endif
   // Kill-switch hook (BROADIFY_MEETING_EMPTY_SUBJECT=0): an inert tracker
   // never confirms an empty frame -> exactly the pre-Option-A behavior.
   bool enabled = true;
