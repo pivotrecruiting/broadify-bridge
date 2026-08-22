@@ -4,6 +4,9 @@
 #include "common/options.h"
 #include "preview/preview_frame_store.h"
 #include "preview/vcam_shm_ring_win.h"
+#if defined(_WIN32)
+#include "preview/vcam_shm_publisher.h"
+#endif
 #include "state/meeting_state.h"
 
 #include <algorithm>
@@ -72,6 +75,9 @@ void runFramePipeline(const Options &options,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
                       VcamShmRingWin *vcamShm,
+#if defined(_WIN32)
+                      VcamShmPublisher *vcamShmPublisher,
+#endif
                       MeetingRecorder &recorder,
                       std::atomic<bool> &running);
 

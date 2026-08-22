@@ -45,6 +45,11 @@ class VcamShmRingWin {
                    const uint8_t *bgra,
                    size_t bgraSize,
                    uint64_t captureQpc);
+  bool publishRgbaAsBgra(uint32_t width,
+                         uint32_t height,
+                         const uint8_t *rgba,
+                         size_t rgbaStride,
+                         uint64_t captureQpc);
   bool heartbeat(uint64_t heartbeatQpc);
   uint64_t readerCount() const;
   bool readerHeartbeatAbsent(uint64_t staleMs) const;

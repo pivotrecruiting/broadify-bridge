@@ -1,6 +1,7 @@
 #include "preview/vcam_shm_ring_win.h"
 
 #include "util/helper_event_log.h"
+#include "util/pixel_swizzle.h"
 
 #include <atomic>
 #include <cstring>
@@ -329,6 +330,65 @@ bool VcamShmRingWin::publishBgra(uint32_t width,
   }
 #endif
   return ok;
+}
+
+bool VcamShmRingWin::publishRgbaAsBgra(uint32_t width,
+                                       uint32_t height,
+                                       const uint8_t *rgba,
+                                       size_t rgbaStride,
+                                       uint64_t captureQpc) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const size_t rowBytes = static_cast<size_t>(width) * 4u;
+  const size_t dataSize = broadify::vcam_shm::bytesPerFrame(
+      width, height, broadify::vcam_shm::PixelFormat::Bgra8);
+  if (memory_ == nullptr || width == 0u || height == 0u || rgba == nullptr ||
+      rgbaStride < rowBytes || dataSize == 0u) {
+    return false;
+  }
+  broadify::vcam_shm::RingHeader *header =
+      broadify::vcam_shm::ringHeader(memory_, ringBytes_);
+  if (header == nullptr || header->width != width || header->height != height ||
+      header->format !=
+          static_cast<uint32_t>(broadify::vcam_shm::PixelFormat::Bgra8)) {
+    return false;
+  }
+  const uint64_t heartbeatQpc = nowQpc();
+  uint64_t frameQpc = captureQpc;
+  if (frameQpc == 0u || frameQpc <= lastFrameTimestampQpc_) {
+    frameQpc = heartbeatQpc;
+  }
+  if (frameQpc <= lastFrameTimestampQpc_) {
+    frameQpc = lastFrameTimestampQpc_ + 1u;
+  }
+  const uint64_t sequence = nextSequence_++;
+  const uint32_t slotIndex =
+      static_cast<uint32_t>((sequence - 1u) % header->slot_count);
+  broadify::vcam_shm::SlotHeader *slot =
+      broadify::vcam_shm::slotHeader(memory_, ringBytes_, slotIndex);
+  uint8_t *dst = broadify::vcam_shm::slotData(memory_, ringBytes_, slotIndex);
+  if (slot == nullptr || dst == nullptr) {
+    return false;
+  }
+  const uint64_t evenSequence = sequence * 2u;
+  *reinterpret_cast<volatile uint64_t *>(&slot->sequence) = evenSequence | 1u;
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  for (uint32_t y = 0u; y < height; ++y) {
+    swizzleRgbaToBgra(rgba + static_cast<size_t>(y) * rgbaStride,
+                      dst + static_cast<size_t>(y) * rowBytes, width);
+  }
+  slot->capture_qpc = frameQpc;
+  slot->size = static_cast<uint32_t>(dataSize);
+  std::atomic_thread_fence(std::memory_order_release);
+  *reinterpret_cast<volatile uint64_t *>(&slot->sequence) = evenSequence;
+  std::atomic_thread_fence(std::memory_order_release);
+  *reinterpret_cast<volatile uint64_t *>(&header->heartbeat_qpc) = heartbeatQpc;
+  lastFrameTimestampQpc_ = frameQpc;
+#if defined(_WIN32)
+  if (eventHandle_ != nullptr) {
+    SetEvent(static_cast<HANDLE>(eventHandle_));
+  }
+#endif
+  return true;
 }
 
 bool VcamShmRingWin::heartbeat(uint64_t heartbeatQpc) {

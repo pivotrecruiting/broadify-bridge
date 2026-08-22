@@ -36,7 +36,7 @@ class ShmFrameReader {
   bool createServiceRing();
   void closeServiceRing();
 
-  bool copyLatestIfNew(uint64_t lastSequence, RawFrame &out) const;
+  bool copyLatestIfNew(uint64_t lastSequence, RawFrame &out);
   uint64_t staleAgeMs() const;
   bool hasMapping() const;
   uint64_t mappingGeneration() const;
@@ -45,7 +45,7 @@ class ShmFrameReader {
   void run();
   bool openFromControl(std::string &reason);
   void closeMappings();
-  bool copyNewestLocked();
+  bool observeNewestLocked();
   bool heartbeatStale() const;
   void updateReaderLiveness();
   void clearReaderLiveness();
@@ -56,7 +56,6 @@ class ShmFrameReader {
 
   mutable std::mutex mutex_;
   bool hasFrame_ = false;
-  RawFrame latest_;
   uint64_t lastArrivalMs_ = 0;
   bool mappingOpen_ = false;
   std::wstring mappingName_;
@@ -75,7 +74,7 @@ class ShmFrameReader {
   size_t ownerRingBytes_ = 0;
   std::string ownerLogOutcome_;
   size_t ringBytes_ = 0;
-  uint64_t lastSequence_ = 0;
+  uint64_t observedSequence_ = 0;
   uint64_t writerGeneration_ = 0;
   uint64_t openedAtMs_ = 0;
   uint64_t openGeneration_ = 0;

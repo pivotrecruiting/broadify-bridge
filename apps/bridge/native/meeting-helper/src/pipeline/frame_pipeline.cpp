@@ -19,10 +19,10 @@
 #include "compose/d3d11_compositor.h"
 #include "pipeline/mask_retention.h"
 #include "pipeline/tier_handover.h"
+#include "preview/vcam_shm_publisher.h"
 #endif
 #include "recorder/meeting_recorder.h"
 #include "util/json_utils.h"
-#include "util/pixel_swizzle.h"
 #include "util/win_qos.h"
 #if defined(_WIN32)
 #include "util/helper_event_log.h"
@@ -640,6 +640,8 @@ struct PipelineRuntimeState {
   bool framebusRunning = false;
   int previewClients = 0;
   int vcamClients = 0;
+  int vcamTcpClients = 0;
+  int vcamShmReaders = 0;
   bool vcamRawRunning = false;
   std::string vcamTransport = "tcp";
   bool programDirty = false;
@@ -1752,6 +1754,9 @@ void runFramePipeline(const Options &options,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
                       VcamShmRingWin *vcamShm,
+#if defined(_WIN32)
+                      VcamShmPublisher *vcamShmPublisher,
+#endif
                       MeetingRecorder &recorder,
                       std::atomic<bool> &running) {
 #if defined(_WIN32)
@@ -1804,7 +1809,6 @@ void runFramePipeline(const Options &options,
 #endif
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
-  std::vector<uint8_t> vcamBgraFrame;
   auto lastRenderStartAt = std::chrono::steady_clock::time_point{};
   while (running.load()) {
     PipelineRuntimeState runtime;
@@ -1817,6 +1821,8 @@ void runFramePipeline(const Options &options,
       runtime.framebusRunning = state.framebusRunning;
       runtime.previewClients = state.previewClientCount;
       runtime.vcamClients = state.vcamClientCount;
+      runtime.vcamTcpClients = state.vcamTcpClientCount;
+      runtime.vcamShmReaders = state.vcamShmReaderCount;
       runtime.vcamRawRunning = state.vcamRawRunning;
       runtime.vcamTransport = state.vcamTransport;
       runtime.programDirty = state.programDirty;
@@ -1867,7 +1873,8 @@ void runFramePipeline(const Options &options,
     }
 
     const bool outputConsumerActive = hasActiveOutputConsumer(runtime);
-    const bool previewConsumerActive = runtime.previewClients > 0 || runtime.vcamClients > 0;
+    const bool previewConsumerActive =
+        runtime.previewClients > 0 || runtime.vcamTcpClients > 0;
     const auto programStart = std::chrono::steady_clock::now();
     const bool staticHeartbeatDue =
         lastStaticHeartbeatAt == std::chrono::steady_clock::time_point{} ||
@@ -3199,14 +3206,21 @@ void runFramePipeline(const Options &options,
         ++state.publishedPreviewFrames;
       }
 
-      if (vcamShm != nullptr && runtime.vcamTransport == "shm" &&
+      if (vcamShm != nullptr &&
+#if defined(_WIN32)
+          vcamShmPublisher != nullptr &&
+#endif
+          runtime.vcamTransport == "shm" &&
           runtime.vcamRawRunning && shouldRenderProgram && !programFrame.empty()) {
-        vcamBgraFrame.resize(programFrame.size());
-        swizzleRgbaToBgra(programFrame.data(), vcamBgraFrame.data(),
-                          programFrame.size() / 4u);
-        vcamShm->publishBgra(
-            options.width, options.height, vcamBgraFrame.data(), vcamBgraFrame.size(),
-            hasCameraFrame ? latestCameraFrame.captureQpc : 0u);
+#if defined(_WIN32)
+        vcamShmPublisher->submitRgba(options.width, options.height,
+                                     programFrame.data(), programFrame.size(),
+                                     hasCameraFrame
+                                         ? latestCameraFrame.captureQpc
+                                         : 0u);
+#else
+        (void)vcamShm;
+#endif
       }
 
       const auto programEnd = std::chrono::steady_clock::now();
@@ -3228,6 +3242,13 @@ void runFramePipeline(const Options &options,
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);
         state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
+#if defined(_WIN32)
+        if (vcamShmPublisher != nullptr) {
+          const VcamShmPublisherMetrics metrics = vcamShmPublisher->metrics();
+          state.keyerMetrics.vcamPublishDropped = metrics.droppedFrames;
+          state.keyerMetrics.vcamPublishMs = metrics.publishMs;
+        }
+#endif
       }
     }
     const auto now = std::chrono::steady_clock::now();
