@@ -1930,6 +1930,7 @@ void runFramePipeline(const Options &options,
     bool shouldRenderProgram = programChanged;
     bool shouldPublishPreview = false;
     bool shouldWriteFramebus = false;
+    double measuredCompositeMs = -1.0;
 
     {
       const uint64_t programStartNs = nowNs();
@@ -3167,6 +3168,7 @@ void runFramePipeline(const Options &options,
 #endif  // __APPLE__
 
       if (shouldRenderProgram) {
+        const auto composeStart = std::chrono::steady_clock::now();
         renderProgramFrame(
             options,
             snapshot,
@@ -3178,6 +3180,8 @@ void runFramePipeline(const Options &options,
                                                         : nullptr,
             frameIndex++,
             programFrame);
+        measuredCompositeMs =
+            elapsedMs(composeStart, std::chrono::steady_clock::now());
         if (selectedPair != nullptr) {
           lastUsedKeyerPublishedNs = selectedPair->publishedAtNs;
         }
@@ -3231,6 +3235,7 @@ void runFramePipeline(const Options &options,
         std::lock_guard<std::mutex> lock(state.mutex);
         state.compositorBackend = lastCompositorBackend();
 #if defined(_WIN32)
+        const GpuContextTelemetry gpuTelemetry = currentGpuContextTelemetry();
         state.compositorAdapter = d3d11CompositorAdapterStatus();
         state.keyerMetrics.cameraTextureUploads = d3d11CompositorCameraUploadCount();
         state.keyerMetrics.stagingReadbackDepth =
@@ -3242,12 +3247,13 @@ void runFramePipeline(const Options &options,
                                        previewConsumerActive,
                                        runtime.framebusRunning,
                                        runtime.vcamClients > 0,
-                                   });
-        state.gpuResident = meetingGpuResidentEnabled();
-        state.gpuCapture = "cpu";
+                                   }) +
+            (hasGpuCameraFrame ? 1u : 0u);
+        state.gpuResident = gpuTelemetry.available;
+        state.gpuCapture = hasGpuCameraFrame ? "dxgi" : "cpu";
 #endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
-        state.keyerMetrics.compositeMs = state.keyerMetrics.programFrameMs;
+        state.keyerMetrics.compositeMs = measuredCompositeMs;
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);
         state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;

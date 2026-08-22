@@ -448,11 +448,16 @@ class ModnetKeyer::Impl {
       dmlApi = nullptr;
     }
     void *inputAllocation = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource> outputD3D12Resource;
     try {
       const auto runStart = std::chrono::steady_clock::now();
-      if (dmlApi == nullptr ||
-          dmlApi->CreateGPUAllocationFromD3DResource(
-              preprocessSlot.d3d12Buffer.Get(), &inputAllocation) != nullptr) {
+      if (dmlApi == nullptr) {
+        throw std::runtime_error("dml_api_unavailable");
+      }
+      OrtStatus *inputStatus = dmlApi->CreateGPUAllocationFromD3DResource(
+          preprocessSlot.d3d12Buffer.Get(), &inputAllocation);
+      if (inputStatus != nullptr) {
+        Ort::GetApi().ReleaseStatus(inputStatus);
         throw std::runtime_error("input_allocation_failed");
       }
       std::array<int64_t, 4> inputShape = {
@@ -466,7 +471,7 @@ class ModnetKeyer::Impl {
           inputShape.data(), inputShape.size());
       Ort::IoBinding binding(*activeSession_);
       binding.BindInput(inputNames_[0], inputTensor);
-      binding.BindOutput(outputNames_[0], &dmlMemory);
+      binding.BindOutput(outputNames_[0], dmlMemory);
       GpuContextWin &gpu = GpuContextWin::shared();
       if (!gpu.waitOnD3D12(frameSlot.fenceValue)) {
         throw std::runtime_error("fence_wait_failed");
@@ -479,11 +484,29 @@ class ModnetKeyer::Impl {
       if (outputs.empty() || !outputs[0].IsTensor()) {
         throw std::runtime_error("output_binding_failed");
       }
+      bool outputBindingCreated = false;
+      float *outputAllocation = outputs[0].GetTensorMutableData<float>();
+      if (outputAllocation != nullptr) {
+        Ort::Allocator dmlAllocator(*activeSession_, dmlMemory);
+        ID3D12Resource *rawOutputResource = nullptr;
+        OrtStatus *outputStatus = dmlApi->GetD3D12ResourceFromAllocation(
+            dmlAllocator, static_cast<void *>(outputAllocation),
+            &rawOutputResource);
+        if (outputStatus != nullptr) {
+          Ort::GetApi().ReleaseStatus(outputStatus);
+        } else if (rawOutputResource != nullptr) {
+          outputD3D12Resource.Attach(rawOutputResource);
+          outputBindingCreated = true;
+        }
+      }
+      if (!outputBindingCreated) {
+        throw std::runtime_error("output_resource_unavailable");
+      }
       const auto runEnd = std::chrono::steady_clock::now();
       status_.activeKeyer = "modnet";
       status_.fallbackActive = false;
       status_.fallbackReason.clear();
-      status_.keyerIoBinding = true;
+      status_.keyerIoBinding = outputBindingCreated;
       status_.inferenceMs = elapsedMs(runStart, runEnd);
       status_.metrics.preprocessMs = -1.0;
       status_.metrics.inferenceStageMs = status_.inferenceMs;
