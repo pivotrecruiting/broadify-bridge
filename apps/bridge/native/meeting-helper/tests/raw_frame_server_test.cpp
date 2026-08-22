@@ -26,6 +26,7 @@ namespace {
 using broadify::meeting::MeetingState;
 using broadify::meeting::PreviewFrameStore;
 using broadify::meeting::RawFrameStreamGeometry;
+using broadify::meeting::reapCompletedRawFrameWorkers;
 using broadify::meeting::runRawFrameServer;
 
 constexpr uint32_t kRawFrameMagic = 0x47524642u;
@@ -170,6 +171,12 @@ uint64_t readFrameSequence(int socketHandle) {
 }  // namespace
 
 int main() {
+  const std::vector<bool> survivors =
+      reapCompletedRawFrameWorkers({false, true, false, true});
+  if (survivors.size() != 2u || survivors[0] || survivors[1]) {
+    fail("completed raw-frame workers must be reaped");
+  }
+
 #if defined(_WIN32)
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);

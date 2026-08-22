@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -235,6 +236,25 @@ class VcamClientCounter {
   MeetingState &state_;
 };
 
+struct RawFrameWorker {
+  std::thread thread;
+  std::shared_ptr<std::atomic<bool>> completed;
+};
+
+void reapCompletedWorkers(std::vector<RawFrameWorker> &workers) {
+  for (auto it = workers.begin(); it != workers.end();) {
+    if (it->completed != nullptr &&
+        it->completed->load(std::memory_order_acquire)) {
+      if (it->thread.joinable()) {
+        it->thread.join();
+      }
+      it = workers.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 void streamFrames(int client,
                   const RawFrameStreamGeometry &geometry,
                   PreviewFrameStore &previewFrames,
@@ -260,6 +280,8 @@ void streamFrames(int client,
   uint64_t sentFrames = 0u;
   std::vector<uint8_t> payload;
   auto lastSentAt = std::chrono::steady_clock::now();
+  const auto connectedAt = lastSentAt;
+  bool noFrameOnConnectLogged = false;
   VcamClientCounter clientCounter(state);
   while (running.load()) {
     if (!isVcamRawRunning(state)) {
@@ -271,6 +293,14 @@ void streamFrames(int client,
     PreviewFrame frame;
     if (!previewFrames.copyLatestIfNew(lastSequence, frame)) {
       const auto now = std::chrono::steady_clock::now();
+      if (!noFrameOnConnectLogged && sentFrames == 0u &&
+          now - connectedAt >= std::chrono::seconds(2)) {
+        noFrameOnConnectLogged = true;
+#if defined(_WIN32)
+        emitHelperEvent(
+            "{\"type\":\"meeting_vcam_raw\",\"event\":\"no_frame_on_connect\"}");
+#endif
+      }
       if (!payload.empty() && now - lastSentAt >= kRawFrameHeartbeatInterval) {
         ++heartbeatSequence;
         writeU64Le(payload, 24u,
@@ -282,8 +312,7 @@ void streamFrames(int client,
         lastSentAt = now;
       }
       previewFrames.waitForNewFrame(lastSequence,
-                                    std::chrono::steady_clock::now() +
-                                        kRawFrameHeartbeatInterval);
+                                    now + kRawFrameHeartbeatInterval);
       continue;
     }
     lastSequence = frame.sequence;
@@ -330,6 +359,18 @@ void handleClient(int client,
 
 }  // namespace
 
+std::vector<bool> reapCompletedRawFrameWorkers(
+    const std::vector<bool> &workerCompleted) {
+  std::vector<bool> survivors;
+  survivors.reserve(workerCompleted.size());
+  for (bool completed : workerCompleted) {
+    if (!completed) {
+      survivors.push_back(false);
+    }
+  }
+  return survivors;
+}
+
 void runRawFrameServer(uint16_t port,
                        RawFrameStreamGeometry geometry,
                        PreviewFrameStore &previewFrames,
@@ -370,9 +411,14 @@ void runRawFrameServer(uint16_t port,
   }
 
   std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"listening\",\"port\":" << port << "}" << std::endl;
+#if defined(_WIN32)
+  emitHelperEvent("{\"type\":\"output.vcam.raw.start\",\"port\":" +
+                  std::to_string(port) + "}");
+#endif
 
-  std::vector<std::thread> workers;
+  std::vector<RawFrameWorker> workers;
   while (running.load()) {
+    reapCompletedWorkers(workers);
     fd_set readSet;
     FD_ZERO(&readSet);
     FD_SET(serverFd, &readSet);
@@ -400,17 +446,27 @@ void runRawFrameServer(uint16_t port,
       continue;
     }
 
-    workers.emplace_back(handleClient, client, port, geometry, std::ref(previewFrames), std::ref(state), std::ref(running));
+    std::shared_ptr<std::atomic<bool>> completed =
+        std::make_shared<std::atomic<bool>>(false);
+    workers.push_back(RawFrameWorker{
+        std::thread([client, port, geometry, &previewFrames, &state, &running,
+                     completed]() {
+          handleClient(client, port, geometry, previewFrames, state, running);
+          completed->store(true, std::memory_order_release);
+        }),
+        completed});
   }
 
   closeSocketHandle(serverFd);
-  for (std::thread &worker : workers) {
-    if (worker.joinable()) {
-      worker.join();
+  for (RawFrameWorker &worker : workers) {
+    if (worker.thread.joinable()) {
+      worker.thread.join();
     }
   }
 #if defined(_WIN32)
   WSACleanup();
+  emitHelperEvent("{\"type\":\"output.vcam.raw.stop\",\"port\":" +
+                  std::to_string(port) + "}");
 #endif
 }
 
