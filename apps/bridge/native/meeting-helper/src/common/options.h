@@ -10,6 +10,10 @@ struct Options {
   // Standalone keyer benchmark (--keyer-self-test): time MODNet inference per
   // input-size mode and exit, instead of running the meeting pipeline.
   bool keyerSelfTest = false;
+  bool vcamShmSelfTest = false;
+  bool vcamShmReaderSelfTest = false;
+  std::string vcamShmSelfTestMappingName;
+  std::string vcamShmSelfTestEventName;
   std::string framebusName = "broadify-meeting-framebus";
   std::string controlSocket;
   // Bridge PID for the orphan watchdog; -1 = not provided.

@@ -63,6 +63,15 @@ if (-not ($output -match "requires --run")) {
   throw "Meeting helper binary-load smoke did not print its usage banner. Output: $output"
 }
 
+$shmSelfTest = & $resolvedHelperPath --vcam-shm-selftest 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Meeting helper VCam SHM self-test failed with exit code $LASTEXITCODE. Output: $shmSelfTest"
+}
+if (-not ($shmSelfTest -match '"type":"vcam_shm_selftest"') -or
+    -not ($shmSelfTest -match '"ok":true')) {
+  throw "Meeting helper VCam SHM self-test did not report success. Output: $shmSelfTest"
+}
+
 # The usage probe above intentionally leaves exit code 2 in $LASTEXITCODE;
 # reset it so the CI shell wrapper (which exits with $LASTEXITCODE) does not
 # fail the step after a fully successful smoke.

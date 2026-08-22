@@ -37,7 +37,9 @@ abschaltbar. Aktiviert werden:
 - `timeBeginPeriod(1)` nur in `live`/`keyer_live`, Ruecknahme beim Verlassen.
 - `AvSetMmThreadCharacteristicsW(L"Capture")` fuer Program- und
   Raw-Frame-Sender-Threads.
-- Raw-Frame-Sockets mit `TCP_NODELAY` und groesserem Sendepuffer.
+- Raw-Frame-Sockets mit `TCP_NODELAY` und groesserem Sendepuffer, wenn der
+  Windows-VCam-Transport auf TCP zurueckfaellt. Default ist SHM; bei gesunder
+  SHM-Verbindung oeffnet die DLL keinen TCP-Client.
 
 ## Work-Gating
 
@@ -104,9 +106,12 @@ ausgewaehlte native Typ wird als `camera_native_media_type_selected` geloggt.
 Der MODNet-Maskenreadback bleibt auf Model-Resolution (512 -> 512x288 bei
 16:9) und wird nicht auf Kamera-Aufloesung hochskaliert.
 
-BFRG v2 traegt `capture_ns`; die VCam-DLL akzeptiert v1 und v2. Samples werden
-aus dem Produzentenzeitstempel erzeugt, duplizierte Frames laufen mit
-Frame-Dauer weiter.
+Der Windows-VCam-Default ist SHM (`Global\BroadifyVcamControl` +
+`Global\BroadifyVcam-<token>`). Die DLL blockiert nicht mehr in der
+Aktivierung; Geometrie kommt sofort aus der Control-Mapping oder aus dem
+Default 1920x1080@30. SHM-Samples nutzen den QPC-Zeitstempel des Slots.
+BFRG v2 im TCP-Fallback traegt weiter `capture_ns`; die VCam-DLL akzeptiert v1
+und v2. Duplizierte Frames laufen mit Frame-Dauer weiter.
 
 ## Messen
 

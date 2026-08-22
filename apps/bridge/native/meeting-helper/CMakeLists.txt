@@ -336,6 +336,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/raw_frame_record_test.cpp
     src/preview/raw_frame_record.cpp
   )
+  add_executable(vcam_shm_layout_test
+    tests/vcam_shm_layout_test.cpp
+    src/preview/vcam_shm_layout.cpp
+  )
   add_executable(raw_frame_server_test
     tests/raw_frame_server_test.cpp
     src/preview/raw_frame_record.cpp
@@ -402,6 +406,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     control_server_test
     raw_frame_stream_header_test
     raw_frame_record_test
+    vcam_shm_layout_test
     raw_frame_server_test
   )
     target_include_directories(${helper_test} PRIVATE src)

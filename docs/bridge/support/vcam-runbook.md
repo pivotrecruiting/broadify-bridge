@@ -19,7 +19,7 @@ Fehlercode. Hintergrund/Architektur: `docs/bridge/features/virtual-camera-window
 | `helper_not_reachable` / `helper_control_channel_lost` | Steuerkanal zum Meeting-Helper nicht erreichbar; die Bridge startet den Helper nach wiederholtem Ausfall selbst neu | Engine neu starten; bleibt es, Bridge-Log mit `control_pipe_*`-Zeilen beilegen |
 | `camera_capture_error` / `camera_stalled` | Windows-Kamera liefert keine Frames mehr oder MediaFoundation meldet Fehler/Ende | Helper versucht dieselbe Kamera mit Backoff neu zu oeffnen; Logs beilegen, wenn `camera_recovered` ausbleibt |
 | „Broadify Camera" sichtbar, aber **schwarz** | Normal, solange die Engine kein Programmbild liefert | Engine/Kamera in der Webapp starten; Teams/Zoom nach Kamera-Neuanlage einmal neu starten |
-| „Broadify Camera" sichtbar, aber **grau** | Ab WP0 nicht mehr normal nach dem ersten gueltigen Frame: Staleness friert den letzten Frame ein, nicht den Splash | Pruefen, ob auf dieser Verbindung je ein Frame ankam (`RawFrameClient: connected`, `frame_sent`, `camera_open_success`). Wenn ja: Logs eskalieren |
+| „Broadify Camera" sichtbar, aber **grau** | Ab WP4 zuerst Transport pruefen: SHM-Control/Heartbeat/Generation oder TCP-Fallback; nach dem ersten gueltigen Frame friert Staleness den letzten Frame ein, nicht den Splash | In `output.vcam.status` `transport` pruefen, dann `%ProgramData%\Broadify\vcam.log` auf `build git=`, `vcam_reader_transport`, `shm_heartbeat_stale`; Helper-Events auf `vcam_transport_selected`, Generation/Heartbeat und `camera_open_success` pruefen |
 
 ### Ursache 1 (häufigster Kundenfall): Per-User-Installation
 
@@ -124,12 +124,16 @@ sc query FrameServer; sc query FrameServerMonitor
   rohe `reg.exe`-Ausgabe nach einem fehlgeschlagenen Heal).
 - `<userDataDir>\vcam-self-heal.json` vorhanden? Dann wurde der eine Prompt
   bereits verbraucht – Inhalt (Version, Pfad, Zeitpunkt) in die Eskalation.
-- `%ProgramData%\Broadify\vcam.log` enthaelt lokale Zeit, PID und TID. Bei
+- `%ProgramData%\Broadify\vcam.log` enthaelt lokale Zeit, PID und TID sowie
+  am Anfang den Build-Stamp (`build git=... time=...`). Bei
   5 MB wird zu `vcam.log.1` rotiert. Wichtige neue Zeilen:
+  `MediaSource::Initialize ... no activation probe`,
+  `vcam_reader_transport tcp reason=...`, `shm_heartbeat_stale`,
   `handshake timeout`, `recv timeout/disconnect`, `raw frame stream stale`,
   `MediaStream: ... re-emitting last frame`.
 - Meeting-Helper-Events pruefen: `meeting_vcam_raw` mit
-  `event:"listening"`, `client_connected`, `frame_sent`, `error`; sowie
+  `event:"vcam_transport_selected"`, `listening`, `client_connected`,
+  `frame_sent`, `error`; sowie
   `camera_open_start`, `camera_open_success`, `camera_capture_error`,
   `camera_reopen_attempt`, `camera_recovered`.
 

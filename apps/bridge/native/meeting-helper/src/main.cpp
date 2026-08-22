@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <thread>
 #include <chrono>
+#include <cstring>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -289,6 +290,109 @@ int runKeyerSelfTest(const Options &options) {
 }
 #endif  // BROADIFY_ENABLE_MODNET
 
+std::wstring asciiToWide(const std::string &value) {
+  return std::wstring(value.begin(), value.end());
+}
+
+int runVcamShmReaderSelfTest(const Options &options) {
+#if defined(_WIN32)
+  const std::wstring mappingName = asciiToWide(options.vcamShmSelfTestMappingName);
+  const std::wstring eventName = asciiToWide(options.vcamShmSelfTestEventName);
+  const uint32_t width = 64;
+  const uint32_t height = 36;
+  const size_t ringBytes =
+      broadify::vcam_shm::ringBytesFor(width, height,
+                                       broadify::vcam_shm::PixelFormat::Bgra8);
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mappingName.c_str());
+  HANDLE event = OpenEventW(SYNCHRONIZE, FALSE, eventName.c_str());
+  if (mapping == nullptr || event == nullptr) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_open\"}");
+    if (mapping != nullptr) CloseHandle(mapping);
+    if (event != nullptr) CloseHandle(event);
+    return 1;
+  }
+  void *memory = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, ringBytes);
+  if (memory == nullptr) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_map\"}");
+    CloseHandle(event);
+    CloseHandle(mapping);
+    return 1;
+  }
+  uint64_t lastSequence = 0;
+  int frames = 0;
+  const uint64_t deadline = GetTickCount64() + 5000u;
+  while (GetTickCount64() < deadline && frames < 3) {
+    WaitForSingleObject(event, 1000);
+    broadify::vcam_shm::CopiedFrame frame;
+    if (broadify::vcam_shm::copyNewestFrame(memory, ringBytes, frame) &&
+        frame.sequence != lastSequence) {
+      lastSequence = frame.sequence;
+      ++frames;
+    }
+  }
+  UnmapViewOfFile(memory);
+  CloseHandle(event);
+  CloseHandle(mapping);
+  printEvent(std::string("{\"type\":\"vcam_shm_selftest\",\"role\":\"reader\",\"ok\":") +
+             (frames == 3 ? "true" : "false") + ",\"frames\":" +
+             std::to_string(frames) + "}");
+  return frames == 3 ? 0 : 1;
+#else
+  (void)options;
+  printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"reason\":\"windows_only\"}");
+  return 1;
+#endif
+}
+
+int runVcamShmSelfTest(const char *argv0) {
+#if defined(_WIN32)
+  VcamShmRingWin ring;
+  const VcamShmCreateResult created = ring.create(64, 36, 30, 1);
+  if (!created.ok || !created.globalNamespace) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"writer_create\"}");
+    return 1;
+  }
+  const std::wstring mappingName = ring.mappingName();
+  const std::wstring eventName = ring.eventName();
+  std::wstring command = L"\"";
+  command += asciiToWide(argv0);
+  command += L"\" --vcam-shm-reader-selftest ";
+  command += mappingName;
+  command += L" ";
+  command += eventName;
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0,
+                      nullptr, nullptr, &startup, &process)) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"spawn_reader\"}");
+    return 1;
+  }
+  std::vector<uint8_t> frame(64u * 36u * 4u, 0);
+  for (int i = 0; i < 3; ++i) {
+    std::memset(frame.data(), 40 + i * 40, frame.size());
+    ring.publishBgra(64, 36, frame.data(), frame.size(), 0u);
+    Sleep(100);
+  }
+  const DWORD wait = WaitForSingleObject(process.hProcess, 5000);
+  DWORD exitCode = 1;
+  if (wait == WAIT_OBJECT_0) {
+    GetExitCodeProcess(process.hProcess, &exitCode);
+  } else {
+    TerminateProcess(process.hProcess, 1);
+  }
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  printEvent(std::string("{\"type\":\"vcam_shm_selftest\",\"role\":\"writer\",\"ok\":") +
+             (exitCode == 0 ? "true" : "false") + "}");
+  return exitCode == 0 ? 0 : 1;
+#else
+  (void)argv0;
+  printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"reason\":\"windows_only\"}");
+  return 1;
+#endif
+}
+
 }  // namespace
 }  // namespace broadify::meeting
 
@@ -311,6 +415,12 @@ int main(int argc, char **argv) {
 
   Options options = parseOptions(argc, argv);
   setHelperEventLogPath(options.eventLogPath);
+  if (options.vcamShmReaderSelfTest) {
+    return runVcamShmReaderSelfTest(options);
+  }
+  if (options.vcamShmSelfTest) {
+    return runVcamShmSelfTest(argc > 0 ? argv[0] : "meeting-helper.exe");
+  }
   if (options.keyerSelfTest) {
     // Standalone benchmark used by scripts/test-meeting-helper.cjs (keyer /
     // keyer-hardware modes): no --run / --control-socket required.
