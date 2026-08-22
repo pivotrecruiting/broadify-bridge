@@ -640,6 +640,7 @@ struct PipelineRuntimeState {
   bool framebusRunning = false;
   int previewClients = 0;
   int vcamClients = 0;
+  bool vcamRawRunning = false;
   std::string vcamTransport = "tcp";
   bool programDirty = false;
   bool graphicsDirty = false;
@@ -651,7 +652,9 @@ struct PipelineRuntimeState {
 };
 
 bool hasActiveOutputConsumer(const PipelineRuntimeState &runtime) {
-  return runtime.framebusRunning || runtime.previewClients > 0 || runtime.vcamClients > 0;
+  return runtime.framebusRunning || runtime.previewClients > 0 ||
+      runtime.vcamClients > 0 ||
+      (runtime.vcamRawRunning && runtime.vcamTransport == "shm");
 }
 
 bool isGraphicsOutputActive(const CompositorSnapshot &snapshot) {
@@ -1814,6 +1817,7 @@ void runFramePipeline(const Options &options,
       runtime.framebusRunning = state.framebusRunning;
       runtime.previewClients = state.previewClientCount;
       runtime.vcamClients = state.vcamClientCount;
+      runtime.vcamRawRunning = state.vcamRawRunning;
       runtime.vcamTransport = state.vcamTransport;
       runtime.programDirty = state.programDirty;
       runtime.graphicsDirty = state.graphicsDirty;
@@ -3196,7 +3200,7 @@ void runFramePipeline(const Options &options,
       }
 
       if (vcamShm != nullptr && runtime.vcamTransport == "shm" &&
-          runtime.vcamClients > 0 && shouldRenderProgram && !programFrame.empty()) {
+          runtime.vcamRawRunning && shouldRenderProgram && !programFrame.empty()) {
         vcamBgraFrame.resize(programFrame.size());
         swizzleRgbaToBgra(programFrame.data(), vcamBgraFrame.data(),
                           programFrame.size() / 4u);

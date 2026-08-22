@@ -27,6 +27,9 @@ class ShmFrameReader {
   ShmFrameReader &operator=(const ShmFrameReader &) = delete;
 
   static bool ProbeGeometry(ShmGeometry &geometry);
+  static bool NoFrameDeadlineExpired(bool hasFrame,
+                                     uint64_t openedAtMs,
+                                     uint64_t nowMs);
 
   void start();
   void stop();
@@ -64,6 +67,7 @@ class ShmFrameReader {
   size_t ringBytes_ = 0;
   uint64_t lastSequence_ = 0;
   uint64_t writerGeneration_ = 0;
+  uint64_t openedAtMs_ = 0;
 };
 
 }  // namespace broadify::vcam

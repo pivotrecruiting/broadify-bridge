@@ -56,9 +56,13 @@ HRESULT createSampleBufferPool(
   buffers.reserve(kSampleBufferPoolSize);
   for (size_t i = 0; i < kSampleBufferPoolSize; i++) {
     Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
-    // MFCreate2DMediaBuffer takes the FourCC (DWORD), not the subtype GUID; for
-    // the MF video subtypes (NV12, YUY2, RGB32 = D3DFMT_X8R8G8B8) Data1 is it.
-    CK(MFCreate2DMediaBuffer(width, height, subtype.Data1, FALSE, &buffer));
+    if (subtype == MFVideoFormat_RGB32) {
+      CK(MFCreateMemoryBuffer(sampleBytesForSubtype(subtype, width, height),
+                              &buffer));
+    } else {
+      // MFCreate2DMediaBuffer takes the FourCC (DWORD), not the subtype GUID.
+      CK(MFCreate2DMediaBuffer(width, height, subtype.Data1, FALSE, &buffer));
+    }
     buffers.push_back(buffer);
   }
   return S_OK;
@@ -203,16 +207,16 @@ HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
   CK(makeType(MFVideoFormat_RGB32, _width * 4, 4, rgb32Type));
   CK(makeType(MFVideoFormat_YUY2, _width * 2, 2, yuy2Type));
 
-  IMFMediaType *types[] = {nv12Type.Get(), rgb32Type.Get(), yuy2Type.Get()};
+  IMFMediaType *types[] = {rgb32Type.Get(), nv12Type.Get(), yuy2Type.Get()};
   CK(MFCreateStreamDescriptor(_index, 3, types, &_descriptor));
 
   Microsoft::WRL::ComPtr<IMFMediaTypeHandler> handler;
   CK(_descriptor->GetMediaTypeHandler(&handler));
-  CK(handler->SetCurrentMediaType(nv12Type.Get()));
+  CK(handler->SetCurrentMediaType(rgb32Type.Get()));
 
-  CK(createSampleBufferPool(MFVideoFormat_NV12, _width, _height,
+  CK(createSampleBufferPool(MFVideoFormat_RGB32, _width, _height,
                             _sampleBuffers));
-  _sampleBufferSubtype = MFVideoFormat_NV12;
+  _sampleBufferSubtype = MFVideoFormat_RGB32;
   return S_OK;
 }
 
@@ -231,7 +235,12 @@ HRESULT MediaStream::Start() {
     if (shmReader) {
       shmReader->start();
     }
-    (void)client;
+    if (client && (!shmReader || !shmReader->hasMapping())) {
+      client->start();
+      winrt::slim_lock_guard lock(_lock);
+      _tcpRunning = true;
+      VcamLog("vcam_reader_transport tcp reason=shm_unavailable_at_start");
+    }
     VcamLog("MediaStream: running, shm reader active");
     return S_OK;
   } catch (...) {
