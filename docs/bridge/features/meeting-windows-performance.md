@@ -52,6 +52,12 @@ laeuft nur bei einer neuen Kamera-Frame-Timestamp.
 MJPEG wird nur fuer verbundene MJPEG-Clients encodiert. Ist gleichzeitig ein
 VCam-Client verbunden, wird MJPEG auf 10 fps gedrosselt.
 
+Auf dem Windows-SHM-VCam-Pfad zaehlen SHM-Reader weiter als VCam-Consumer fuer
+die Keyer-Policy. Das haelt die bisherige VCam-Kadenz unveraendert. Die
+Preview-FrameStore-Kopie laeuft aber nur noch fuer MJPEG-Preview-Clients oder
+TCP-Raw-VCam-Clients; reine SHM-Reader lesen aus dem SHM-Ring und brauchen
+diese zusaetzliche RGBA-Kopie nicht.
+
 ## Readback
 
 Der Guided-Refine-Readback liest immer die Maske des aktuellen Kamera-Frames
@@ -125,6 +131,20 @@ QPC-Zeitstempel des Slots. BFRG v2 im TCP-Fallback traegt weiter
 `capture_ns`; die VCam-DLL akzeptiert v1 und v2. Duplizierte Frames laufen mit
 Frame-Dauer weiter.
 
+Ab WP4c ist der teure SHM-Publish vom Program-Thread getrennt. Der
+Program-Thread kopiert RGBA einmal in den zweifach gepufferten
+`VcamShmPublisher`; der Publisher-Thread swizzelt RGBA -> BGRA direkt in den
+Ring-Slot und setzt das Event. Bei Backpressure gilt latest-wins:
+`metrics.vcam_publish_dropped` zaehlt verworfene pending Frames,
+`metrics.vcam_publish_ms` misst die letzte Swizzle-/Publish-Laufzeit. Dadurch
+blockiert die 8-MB-Swizzle-/Ring-Kopie nicht mehr Kamera-CV-Wake,
+Hintergrundwechsel oder Keyer-Cadence-Entscheidungen.
+
+Die Windows-VCam-DLL kopiert SHM-Payloads nur noch im
+`MediaStream::RequestSample`-Pfad. Der Reader-Thread wartet weiter auf das
+Frame-Event, aktualisiert Reader-Liveness und prueft Heartbeat/Generation/
+2-s-No-Frame-Fallback, kopiert aber nicht mehr bei jedem Event.
+
 Der Raw-Frame-Server sendet Heartbeats aus dem zuletzt gespeicherten Frame und
 meldet `meeting_vcam_raw no_frame_on_connect`, wenn ein VCam-Client nach 2 s
 noch keinen Frame bekommen hat. Die VCam-DLL schreibt beim ersten Logeintrag
@@ -137,7 +157,8 @@ einen Build-Stamp (`git_sha`, `build_time`) nach
    Bei Hybrid-Geraeten pruefen, ob DirectML und D3D11 dieselbe GPU/LUID nutzen.
 2. In `keyer.get` `gpu_adapter`, `compositor_adapter`,
    `keyer_pipeline_mode`, `degradation_stage`, `fallback_reason`, `provider`,
-   `active_performance_mode`, `metrics.session_run_ms` und
-   `metrics.program_frame_ms` beobachten.
+   `active_performance_mode`, `metrics.session_run_ms`,
+   `metrics.program_frame_ms`, `metrics.vcam_publish_ms` und
+   `metrics.vcam_publish_dropped` beobachten.
 3. VCam-Verbrauch nur messen, wenn eine App wirklich streamt; eine bloss
    registrierte/armierte Kamera verbindet die DLL nicht dauerhaft.
