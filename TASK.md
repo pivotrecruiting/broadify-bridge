@@ -280,3 +280,9 @@ where the privilege exists and never leaves the consumer without frames.
 - BF-R3 (N3) never log SIDs: identity as LOCAL_SERVICE / SYSTEM / interactive / other.
 - BF-R4 (N1) if shared vcam.log is not writable and not owned: try rename to `vcam-legacy.log` before per-pid fallback; field doc mentions per-pid files.
 - BF-R5 (N4) reset `_lastShmSequence` on SHM reopen. (N5) doc note: with SHM armed the ring is written at full cadence even without readers.
+
+### BF review round 2 — MUST-FIX (default RGB32 path verified rc.26-equivalent)
+- BF-R6 `media_stream.cpp`: read `OfferNv12` in `MediaStream::Initialize` (or pass from `MediaSource::Initialize`) so the descriptor the
+  presentation descriptor wraps is the one offered; remove the descriptor rebuild in `Start()`. Default (flag absent) = RGB32-only, unchanged.
+- BF-R7 `vcam_log.cpp:78-86`: `CheckTokenMembership(nullptr, sid, &isMember)` (primary token → ERROR_NO_IMPERSONATION_TOKEN → always "other").
+- BF-R8 (notes) dedupe the `stream_type` log (keep first-sample + subtype-change only); appendProbe via `_fsopen(..., "a", _SH_DENYNO)`.
