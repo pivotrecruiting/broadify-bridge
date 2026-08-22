@@ -75,8 +75,41 @@ E3. Docs + design doc status; runbook: what `keyer_tier` means in field logs.
 6. macOS untouched; lint/jest/build/helper/ctests green; Windows CI test branch green before any RC.
 
 ## Review
-- Round: 0/3
-- Verdict: (pending)
+- Round: 1/3
+- Verdict: MUST-FIX (round 1) — real: OFD algorithm, tier decision table, lite-gate timer, status/log plumbing. Stub/disconnected:
+  OS-mask probe/enable/consume, selfie backend, tier→pipeline wiring, tuning→pipeline wiring, governor 512/320 gating; macOS
+  regression; docs deleted. Rule: a real path or the feature is removed from the shipped surface — never a stub reported as a feature.
+- Must-fix (open):
+  - M1 OS mask (A1) real path: `windows_os_mask.cpp` — obtain the `IMFMediaSource` from the MF capture session →
+    `MFCreateExtendedCameraController` / `IMFExtendedCameraController::GetExtendedCameraControl(MF_CAPTURE_ENGINE_MEDIASOURCE,
+    KSPROPERTY_CAMERACONTROL_EXTENDED_BACKGROUNDSEGMENTATION, &ctrl)`; `GetCapabilities()` & `KSCAMERA_EXTENDEDPROP_BACKGROUNDSEGMENTATION_MASK`;
+    `SetFlags(_MASK)` + `CommitSettings()` else `SetFlags(_OFF)` + commit; in the sample callback
+    `IMFSample::GetUnknown(MFSampleExtension_CaptureMetadata, IID_IMFAttributes)` → `GetBlob(MF_CAPTURE_METADATA_FRAME_BACKGROUND_MASK)`
+    → parse `KSCAMERA_METADATA_BACKGROUNDSEGMENTATIONMASK` honouring `MaskCoverageBoundingBox` (frame region the mask covers),
+    `MaskResolution`, `ForegroundBoundingBox` (outside = background) → `AlphaMask` aligned to the frame; when tier == os_mask the fused
+    path uses that mask and skips `fusedKeyer->apply`. Fix the mapping test geometry to the KS struct semantics.
+  - M2 OFD vs cadence (B1): on cadence-skip frames composite the OFD-delayed frame (push `latestCameraFrame` into the OFD frame queue and
+    composite `front()`), never frame t with mask t-1; `lastFusedInferredTsNs` = the delayed frame's ts; prime the first two frames
+    sensibly (document). Construct `fusedOfd` from `state.keyerTuning.ofdEpsilon*` (not defaults). Keep frames by shared_ptr (no 8 MB copies).
+  - M3 governor (B2): gate ALL fused step-downs (512→320→256) behind the 30 s over-budget clock, 60 s step-up dwell; test "512 does not
+    step to 320 before 30 s"; pass the tier DECISION (not env) into the fixed performance mode for `modnet_320_ofd`.
+  - M4 (B3) `fusedEmaMotion` default 1.0 on Windows (EMA fully off when OFD active).
+  - M5 Selfie backend (C2) real: `Ort::Session` via the existing DML policy, NHWC 1×144×256×3 float RGB 0..1 (or NCHW if converted
+    with `--inputs-as-nchw`), letterbox, output activation per model, upsample to the 512×288 work grid; fail-soft: asset absent →
+    tier unavailable → MODNet (never "no keyer"). C1 script: default to the official `selfie_segmenter_landscape.tflite` URL
+    (mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/), sha256 verification, document input/output names;
+    manifest gets a real sha256 once converted — until then the asset is marked optional and CI skips it explicitly (logged).
+  - M6 Probe population (C3/A1): `integratedGpuOnly` from the adapter-select policy; `modnet320ProbeMs` from the existing probe; auto
+    decision wired into `MattingBackendOptions.segmentationTier`.
+  - M7 macOS regression (D1): guard `main.cpp` tuning application with `#if defined(_WIN32)`; `KeyerTuning` defaults == prior
+    `MeetingState` defaults on non-Windows; verify macOS postprocess settings byte-for-byte.
+  - M8 Tuning drives the pipeline (D1): guided radius/eps/coefficient EMA read from `state.keyerTuning` (remove the env reads, env goes
+    through the tuning resolver), OFD epsilons likewise; reported defaults == effective defaults; `applyKeyerTuningPatch` is a real patch
+    with precedence default < env < webapp; tests.
+  - M9 Bridge contract (D1): `preset: z.enum(["balanced","sharp","soft"]).optional()` in `MeetingKeyerConfigureSchema` + test; client forwards.
+  - M10 Docs (D2): restore the deleted sections of `meeting-keyer-windows.md` and ADD the Tuning/Field-Logs sections.
+  - M11 Selftest (E2): wire `--keyer-tier-selftest` into the Windows smoke script; cache file: read it on start or rename the event.
+- Notes: `THIRD_PARTY.md` source URL + version; `keyer_tier_cache` single event; include `<string>` directly.
 
 ## Verification
 - [ ] Tests pass
