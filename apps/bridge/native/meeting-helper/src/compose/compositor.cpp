@@ -1385,6 +1385,7 @@ bool tryRenderProgramFrameGpu(const Options &options,
         plan.camera = coverMapping(*cameraFrame, plan.width, plan.height);
         plan.camera.keyed = true;
         plan.camera.mirror = snapshot.cameraRender.mirror;
+      }
 #else
       } else if (cameraMask->emptyValid) {
         // Confirmed-empty subject (Option A): the keyer verified the person
