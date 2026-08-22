@@ -315,7 +315,9 @@ jobs:
         if: matrix.os == 'windows-2022'
         uses: actions/cache@v4
         with:
-          path: apps/bridge/native/meeting-helper/models/modnet.onnx
+          path: |
+            apps/bridge/native/meeting-helper/models/modnet.onnx
+            apps/bridge/native/meeting-helper/models/selfie_landscape.onnx
           key: modnet-model-${{ hashFiles('apps/bridge/native/meeting-helper/models/manifest.json') }}
 
       - name: Download MODNet model (meeting-helper, Windows only)

@@ -169,6 +169,9 @@ int main() {
     ok &= expect(parseForcedMattingBackend("openvino_modnet") ==
                      MattingBackendKind::OpenVinoModnet,
                  "openvino_modnet parses to OpenVinoModnet");
+    ok &= expect(parseForcedMattingBackend("selfie_landscape") ==
+                     MattingBackendKind::SelfieLandscape,
+                 "selfie_landscape parses to SelfieLandscape");
     ok &= expect(parseForcedMattingBackend("vision_person_segmentation") ==
                      MattingBackendKind::Auto,
                  "macOS backend values parse to Auto");
@@ -263,6 +266,18 @@ int main() {
     ok &= expect(result.status.fallbackReason == "manifest_missing",
                  "empty models dir reports manifest_missing");
     ok &= expect(result.mask.alpha.empty(), "fallback result carries no mask");
+  }
+
+  {
+    MattingBackendOptions options = optionsWith(MattingBackendKind::SelfieLandscape, false);
+    std::unique_ptr<broadify::meeting::MattingKeyer> keyer = createMattingKeyer(options);
+    const broadify::meeting::KeyerStatus status = keyer->status();
+    ok &= expectEqual(status.backend, "selfie_landscape",
+                      "factory returns selfie backend when forced");
+    ok &= expect(status.fallbackActive,
+                 "missing selfie model keeps fallback active");
+    ok &= expectEqual(status.fallbackReason, "model_missing",
+                      "missing selfie model reports model_missing");
   }
 
   {

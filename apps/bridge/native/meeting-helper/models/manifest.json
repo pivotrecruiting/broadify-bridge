@@ -8,8 +8,8 @@
       "required": true
     },
     {
-      "name": "mediapipe-selfie-segmenter",
-      "file": "selfie_segmenter.task",
+      "name": "selfie_landscape",
+      "file": "selfie_landscape.onnx",
       "sha256": "release-artifact-required",
       "required": false
     }

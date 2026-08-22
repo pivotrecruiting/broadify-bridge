@@ -1,6 +1,7 @@
 #include "keyer/matting_backend.h"
 
 #include "keyer/modnet_keyer.h"
+#include "keyer/selfie_keyer.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -153,6 +154,9 @@ MattingBackendKind parseForcedMattingBackend(const char *value) {
   if (v == "openvino_modnet") {
     return MattingBackendKind::OpenVinoModnet;
   }
+  if (v == "selfie_landscape") {
+    return MattingBackendKind::SelfieLandscape;
+  }
   return MattingBackendKind::Auto;
 }
 
@@ -181,17 +185,26 @@ MattingBackendOptions makeMattingBackendOptionsFromEnv(std::string modelsDir) {
   }();
   static const std::string openVinoDevice =
       expandOpenVinoDeviceSelection(std::getenv("BROADIFY_MEETING_OPENVINO_DEVICE"));
+  static const std::string segmentationTier = [] {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_TIER");
+    return value != nullptr ? std::string(value) : std::string();
+  }();
 
   MattingBackendOptions options;
   options.modelsDir = std::move(modelsDir);
   options.forcedBackend = forcedBackend;
   options.openVinoDisabled = openVinoDisabled;
   options.openVinoDevice = openVinoDevice;
+  options.segmentationTier = segmentationTier;
   options.loadInApply = true;
   return options;
 }
 
 std::unique_ptr<MattingKeyer> createMattingKeyer(const MattingBackendOptions &options) {
+  if (options.forcedBackend == MattingBackendKind::SelfieLandscape ||
+      options.segmentationTier == "selfie_landscape") {
+    return std::make_unique<SelfieKeyer>(SelfieKeyerOptions{options.modelsDir});
+  }
   std::unique_ptr<MattingKeyer> modnet =
       std::make_unique<ModnetKeyer>(
           ModnetKeyerOptions{options.modelsDir, options.loadInApply});

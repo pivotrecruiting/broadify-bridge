@@ -97,6 +97,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/openvino_keyer.cpp
   src/keyer/ort_session_options_policy.cpp
   src/keyer/segmentation_tier.cpp
+  src/keyer/selfie_keyer.cpp
   src/main.cpp
   src/pipeline/compositor_input_selection.cpp
   src/pipeline/frame_pipeline.cpp
@@ -412,6 +413,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/keyer/modnet_keyer.cpp
     src/keyer/openvino_keyer.cpp
     src/keyer/ort_session_options_policy.cpp
+    src/keyer/selfie_keyer.cpp
     src/util/json_utils.cpp
     src/util/sha256.cpp
   )

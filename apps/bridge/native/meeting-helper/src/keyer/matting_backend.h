@@ -11,7 +11,7 @@ namespace broadify::meeting {
 
 // Which matting backend the factory must produce. Auto lets the policy pick
 // based on OpenVINO availability and the local Intel GPU/NPU devices.
-enum class MattingBackendKind { Auto, Modnet, OpenVinoModnet };
+enum class MattingBackendKind { Auto, Modnet, OpenVinoModnet, SelfieLandscape };
 
 // Inputs for the backend factory. The env-derived fields are filled by
 // makeMattingBackendOptionsFromEnv (read-once); tests construct them directly.
@@ -28,6 +28,7 @@ struct MattingBackendOptions {
   // Expanded OpenVINO device selection string (see
   // expandOpenVinoDeviceSelection), e.g. "AUTO:NPU,GPU,CPU" or "GPU".
   std::string openVinoDevice;
+  std::string segmentationTier;
   bool loadInApply = true;
 };
 

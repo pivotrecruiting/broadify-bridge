@@ -179,7 +179,7 @@ if (config.win) {
       // when available and falls back to Apple Vision.
       from: "apps/bridge/native/meeting-helper/models",
       to: "native/meeting-helper/models",
-      filter: ["manifest.json", "modnet.onnx"],
+      filter: ["manifest.json", "modnet.onnx", "selfie_landscape.onnx", "THIRD_PARTY.md"],
     },
   ];
 
