@@ -87,14 +87,11 @@ void copyWideName(wchar_t *dst, const std::wstring &src) {
   }
 }
 
-uint64_t loadAcquire(const uint64_t &value) {
-  const uint64_t loaded = *reinterpret_cast<const volatile uint64_t *>(&value);
-  std::atomic_thread_fence(std::memory_order_acquire);
-  return loaded;
+uint64_t volatileLoad64(const uint64_t &value) {
+  return *reinterpret_cast<const volatile uint64_t *>(&value);
 }
 
-void storeRelease(uint64_t &value, uint64_t next) {
-  std::atomic_thread_fence(std::memory_order_release);
+void volatileStore64(uint64_t &value, uint64_t next) {
   *reinterpret_cast<volatile uint64_t *>(&value) = next;
 }
 
@@ -255,12 +252,17 @@ bool publishFrame(void *memory,
     return false;
   }
   const uint64_t evenSequence = sequence * 2u;
-  storeRelease(slot->sequence, evenSequence | 1u);
+  // Boehm seqlock pattern: publish odd first, fence before payload writes,
+  // then release-fence before publishing the even sequence.
+  volatileStore64(slot->sequence, evenSequence | 1u);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
   std::memcpy(dst, data, dataSize);
   slot->capture_qpc = captureQpc;
   slot->size = static_cast<uint32_t>(dataSize);
-  storeRelease(slot->sequence, evenSequence);
-  storeRelease(header->heartbeat_qpc, heartbeatQpc);
+  std::atomic_thread_fence(std::memory_order_release);
+  volatileStore64(slot->sequence, evenSequence);
+  std::atomic_thread_fence(std::memory_order_release);
+  volatileStore64(header->heartbeat_qpc, heartbeatQpc);
   return true;
 }
 
@@ -278,7 +280,8 @@ bool peekNewestFrame(const void *memory, size_t bytes, FrameView &frame) {
     if (slot == nullptr || data == nullptr) {
       return false;
     }
-    const uint64_t sequence = loadAcquire(slot->sequence);
+    const uint64_t sequence = volatileLoad64(slot->sequence);
+    std::atomic_thread_fence(std::memory_order_acquire);
     if ((sequence & 1u) != 0u || sequence == 0u || sequence < bestSequence) {
       continue;
     }
@@ -318,7 +321,8 @@ bool copyNewestFrame(const void *memory, size_t bytes, CopiedFrame &frame) {
     if (slot == nullptr || data == nullptr) {
       return false;
     }
-    const uint64_t sequence = loadAcquire(slot->sequence);
+    const uint64_t sequence = volatileLoad64(slot->sequence);
+    std::atomic_thread_fence(std::memory_order_acquire);
     if ((sequence & 1u) != 0u || sequence == 0u || sequence < bestSequence) {
       continue;
     }
@@ -336,7 +340,8 @@ bool copyNewestFrame(const void *memory, size_t bytes, CopiedFrame &frame) {
   frame.capture_qpc = best->capture_qpc;
   frame.data.resize(expected);
   std::memcpy(frame.data.data(), bestData, expected);
-  const uint64_t after = loadAcquire(best->sequence);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  const uint64_t after = volatileLoad64(best->sequence);
   return after == bestSequence && (after & 1u) == 0u;
 }
 
@@ -345,7 +350,8 @@ bool updateHeartbeat(void *memory, size_t bytes, uint64_t heartbeatQpc) {
   if (header == nullptr) {
     return false;
   }
-  storeRelease(header->heartbeat_qpc, heartbeatQpc);
+  std::atomic_thread_fence(std::memory_order_release);
+  volatileStore64(header->heartbeat_qpc, heartbeatQpc);
   return true;
 }
 
@@ -418,8 +424,12 @@ bool writeControlRecord(ControlRecord &record, const ControlRecord &next) {
     return false;
   }
   const uint64_t nextSequence = (record.sequence + 2u) & ~1ull;
-  storeRelease(record.sequence, nextSequence | 1u);
-  const uint64_t keepReaderCount = loadAcquire(record.reader_count);
+  const uint64_t keepReaderCount = volatileLoad64(record.reader_count);
+  ReaderSlot keepReaders[kReaderSlotCount] = {};
+  std::memcpy(keepReaders, record.readers, sizeof(keepReaders));
+  // Boehm seqlock pattern for the control record mirrors frame slots.
+  volatileStore64(record.sequence, nextSequence | 1u);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
   record.magic = next.magic;
   record.version = next.version;
   record.writer_generation = next.writer_generation;
@@ -431,22 +441,89 @@ bool writeControlRecord(ControlRecord &record, const ControlRecord &next) {
   record.fps_den = next.fps_den;
   record.format = next.format;
   record.writer_pid = next.writer_pid;
+  std::memcpy(record.readers, keepReaders, sizeof(record.readers));
   std::wmemcpy(record.mapping_name, next.mapping_name, kMaxNameChars);
   std::wmemcpy(record.event_name, next.event_name, kMaxNameChars);
-  storeRelease(record.sequence, nextSequence == 0u ? 2u : nextSequence);
+  std::atomic_thread_fence(std::memory_order_release);
+  volatileStore64(record.sequence, nextSequence == 0u ? 2u : nextSequence);
   return true;
 }
 
 bool readControlRecord(const ControlRecord &record, ControlRecord &out) {
-  const uint64_t before = loadAcquire(record.sequence);
-  if ((before & 1u) != 0u || before == 0u || record.magic != kControlMagic ||
-      record.version != kLayoutVersion || record.mapping_name[0] == L'\0' ||
-      record.event_name[0] == L'\0') {
+  const uint64_t before = volatileLoad64(record.sequence);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if ((before & 1u) != 0u || before == 0u) {
     return false;
   }
   out = record;
-  const uint64_t after = loadAcquire(record.sequence);
-  return before == after && (after & 1u) == 0u;
+  std::atomic_thread_fence(std::memory_order_acquire);
+  const uint64_t after = volatileLoad64(record.sequence);
+  return before == after && (after & 1u) == 0u && out.magic == kControlMagic &&
+         out.version == kLayoutVersion && out.mapping_name[0] != L'\0' &&
+         out.event_name[0] != L'\0';
+}
+
+bool updateReaderSlot(ControlRecord &record, uint32_t pid, uint64_t nowQpc) {
+  if (pid == 0u || nowQpc == 0u) {
+    return false;
+  }
+  for (uint32_t i = 0; i < kReaderSlotCount; ++i) {
+    if (record.readers[i].pid == pid) {
+      record.readers[i].last_seen_qpc = nowQpc;
+      return true;
+    }
+  }
+  uint32_t selected = kReaderSlotCount;
+  uint64_t oldest = UINT64_MAX;
+  for (uint32_t i = 0; i < kReaderSlotCount; ++i) {
+    if (record.readers[i].pid == 0u) {
+      selected = i;
+      break;
+    }
+    if (record.readers[i].last_seen_qpc < oldest) {
+      oldest = record.readers[i].last_seen_qpc;
+      selected = i;
+    }
+  }
+  if (selected >= kReaderSlotCount) {
+    return false;
+  }
+  record.readers[selected].pid = pid;
+  record.readers[selected].reserved0 = 0u;
+  record.readers[selected].last_seen_qpc = nowQpc;
+  return true;
+}
+
+void clearReaderSlot(ControlRecord &record, uint32_t pid) {
+  if (pid == 0u) {
+    return;
+  }
+  for (uint32_t i = 0; i < kReaderSlotCount; ++i) {
+    if (record.readers[i].pid == pid) {
+      record.readers[i] = ReaderSlot{};
+    }
+  }
+}
+
+uint64_t countLiveReaders(const ControlRecord &record,
+                          uint64_t nowQpc,
+                          uint64_t staleTicks,
+                          bool (*pidAlive)(uint32_t pid)) {
+  uint64_t count = 0u;
+  for (uint32_t i = 0; i < kReaderSlotCount; ++i) {
+    const ReaderSlot &slot = record.readers[i];
+    if (slot.pid == 0u || slot.last_seen_qpc == 0u) {
+      continue;
+    }
+    if (nowQpc > slot.last_seen_qpc + staleTicks) {
+      continue;
+    }
+    if (pidAlive != nullptr && !pidAlive(slot.pid)) {
+      continue;
+    }
+    ++count;
+  }
+  return count;
 }
 
 void bgraToNv12(const uint8_t *bgra,

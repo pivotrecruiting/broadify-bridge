@@ -72,8 +72,7 @@ Options parseOptions(int argc, char **argv) {
       options.vcamShmSelfTest = true;
     } else if (arg == "--vcam-shm-reader-selftest") {
       options.vcamShmReaderSelfTest = true;
-      options.vcamShmSelfTestMappingName = next();
-      options.vcamShmSelfTestEventName = next();
+      options.vcamShmSelfTestControlName = next();
     } else if (arg == "--framebus-name") {
       options.framebusName = next();
     } else if (arg == "--control-socket") {

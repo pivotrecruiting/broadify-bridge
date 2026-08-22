@@ -129,26 +129,36 @@ bool ShmFrameReader::hasMapping() const {
   return mappingOpen_;
 }
 
-void ShmFrameReader::incrementReaderCount(int64_t delta) {
+void ShmFrameReader::updateReaderLiveness() {
   if (controlMemory_ == nullptr) {
     return;
   }
   auto *record =
       static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory_);
-  if (delta > 0) {
-    InterlockedIncrement64(reinterpret_cast<volatile LONG64 *>(&record->reader_count));
-  } else {
-    auto *count = reinterpret_cast<volatile LONG64 *>(&record->reader_count);
-    LONG64 observed = *count;
-    while (observed > 0) {
-      const LONG64 exchanged =
-          InterlockedCompareExchange64(count, observed - 1, observed);
-      if (exchanged == observed) {
-        break;
-      }
-      observed = exchanged;
-    }
+  LARGE_INTEGER now{};
+  QueryPerformanceCounter(&now);
+  broadify::vcam_shm::updateReaderSlot(
+      *record, GetCurrentProcessId(), static_cast<uint64_t>(now.QuadPart));
+}
+
+void ShmFrameReader::clearReaderLiveness() {
+  if (controlMemory_ == nullptr) {
+    return;
   }
+  auto *record =
+      static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory_);
+  broadify::vcam_shm::clearReaderSlot(*record, GetCurrentProcessId());
+}
+
+bool ShmFrameReader::writerGenerationChanged() const {
+  if (controlMemory_ == nullptr || writerGeneration_ == 0u) {
+    return false;
+  }
+  const auto *record =
+      static_cast<const broadify::vcam_shm::ControlRecord *>(controlMemory_);
+  broadify::vcam_shm::ControlRecord current;
+  return broadify::vcam_shm::readControlRecord(*record, current) &&
+         current.writer_generation != writerGeneration_;
 }
 
 bool ShmFrameReader::openFromControl(std::string &reason) {
@@ -206,7 +216,8 @@ bool ShmFrameReader::openFromControl(std::string &reason) {
   mappingHandle_ = mapping;
   mappingMemory_ = mappingView;
   eventHandle_ = event;
-  incrementReaderCount(1);
+  writerGeneration_ = record.writer_generation;
+  updateReaderLiveness();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     mappingOpen_ = true;
@@ -216,7 +227,7 @@ bool ShmFrameReader::openFromControl(std::string &reason) {
 }
 
 void ShmFrameReader::closeMappings() {
-  incrementReaderCount(-1);
+  clearReaderLiveness();
   if (eventHandle_ != nullptr) {
     CloseHandle(static_cast<HANDLE>(eventHandle_));
   }
@@ -239,6 +250,7 @@ void ShmFrameReader::closeMappings() {
   controlHandle_ = nullptr;
   ringBytes_ = 0u;
   lastSequence_ = 0u;
+  writerGeneration_ = 0u;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     mappingOpen_ = false;
@@ -314,6 +326,7 @@ void ShmFrameReader::run() {
       lastReason.clear();
     }
 
+    updateReaderLiveness();
     copyNewestLocked();
     const DWORD waitResult =
         WaitForSingleObject(static_cast<HANDLE>(eventHandle_), kEventWaitMs);
@@ -321,11 +334,18 @@ void ShmFrameReader::run() {
       break;
     }
     if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_TIMEOUT) {
+      updateReaderLiveness();
       copyNewestLocked();
     } else {
       VcamLog("ShmFrameReader: event wait failed error=%lu", GetLastError());
       closeMappings();
       nextRetryMs = nowMs() + kMappingRetryMs;
+      continue;
+    }
+    if (writerGenerationChanged()) {
+      VcamLog("vcam_reader_transport tcp reason=shm_generation_changed");
+      closeMappings();
+      nextRetryMs = 0u;
       continue;
     }
     if (heartbeatStale()) {

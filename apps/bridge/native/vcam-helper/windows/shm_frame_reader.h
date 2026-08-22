@@ -41,7 +41,9 @@ class ShmFrameReader {
   void closeMappings();
   bool copyNewestLocked();
   bool heartbeatStale() const;
-  void incrementReaderCount(int64_t delta);
+  void updateReaderLiveness();
+  void clearReaderLiveness();
+  bool writerGenerationChanged() const;
 
   std::atomic<bool> running_{false};
   std::thread thread_;
@@ -61,6 +63,7 @@ class ShmFrameReader {
   void *eventHandle_ = nullptr;
   size_t ringBytes_ = 0;
   uint64_t lastSequence_ = 0;
+  uint64_t writerGeneration_ = 0;
 };
 
 }  // namespace broadify::vcam

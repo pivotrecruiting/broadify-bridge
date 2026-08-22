@@ -141,8 +141,7 @@ LONG WINAPI writeCrashDump(EXCEPTION_POINTERS *pointers) {
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
-bool controlMappingAclGrantsLocalServiceWrite() {
-  const std::wstring controlName = broadify::vcam_shm::controlMappingName(true);
+bool controlMappingAclGrantsLocalServiceWrite(const std::wstring &controlName) {
   HANDLE control = OpenFileMappingW(READ_CONTROL, FALSE, controlName.c_str());
   if (control == nullptr) {
     return false;
@@ -354,19 +353,45 @@ std::wstring asciiToWide(const std::string &value) {
 
 int runVcamShmReaderSelfTest(const Options &options) {
 #if defined(_WIN32)
-  const std::wstring mappingName = asciiToWide(options.vcamShmSelfTestMappingName);
-  const std::wstring eventName = asciiToWide(options.vcamShmSelfTestEventName);
   const uint32_t width = 64;
   const uint32_t height = 36;
   const size_t ringBytes =
       broadify::vcam_shm::ringBytesFor(width, height,
                                        broadify::vcam_shm::PixelFormat::Bgra8);
+  const std::wstring controlName = asciiToWide(options.vcamShmSelfTestControlName);
+  HANDLE control = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+                                    controlName.c_str());
+  if (control == nullptr) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_control_open\"}");
+    return 1;
+  }
+  void *controlMemory = MapViewOfFile(
+      control, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+      sizeof(broadify::vcam_shm::ControlRecord));
+  if (controlMemory == nullptr) {
+    CloseHandle(control);
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_control_map\"}");
+    return 1;
+  }
+  auto *controlRecord =
+      static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory);
+  broadify::vcam_shm::ControlRecord record;
+  if (!broadify::vcam_shm::readControlRecord(*controlRecord, record)) {
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_control_read\"}");
+    return 1;
+  }
+  const std::wstring mappingName(record.mapping_name);
+  const std::wstring eventName(record.event_name);
   HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mappingName.c_str());
   HANDLE event = OpenEventW(SYNCHRONIZE, FALSE, eventName.c_str());
   if (mapping == nullptr || event == nullptr) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_open\"}");
     if (mapping != nullptr) CloseHandle(mapping);
     if (event != nullptr) CloseHandle(event);
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
     return 1;
   }
   void *memory = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, ringBytes);
@@ -374,26 +399,50 @@ int runVcamShmReaderSelfTest(const Options &options) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_map\"}");
     CloseHandle(event);
     CloseHandle(mapping);
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
     return 1;
   }
+  LARGE_INTEGER mapQpc{};
+  LARGE_INTEGER firstFrameQpc{};
+  LARGE_INTEGER frequency{};
+  QueryPerformanceCounter(&mapQpc);
+  QueryPerformanceFrequency(&frequency);
   uint64_t lastSequence = 0;
   int frames = 0;
   const uint64_t deadline = GetTickCount64() + 5000u;
   while (GetTickCount64() < deadline && frames < 3) {
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    broadify::vcam_shm::updateReaderSlot(
+        *controlRecord, GetCurrentProcessId(), static_cast<uint64_t>(now.QuadPart));
     WaitForSingleObject(event, 1000);
     broadify::vcam_shm::CopiedFrame frame;
     if (broadify::vcam_shm::copyNewestFrame(memory, ringBytes, frame) &&
         frame.sequence != lastSequence) {
+      if (frames == 0) {
+        QueryPerformanceCounter(&firstFrameQpc);
+      }
       lastSequence = frame.sequence;
       ++frames;
     }
   }
+  broadify::vcam_shm::clearReaderSlot(*controlRecord, GetCurrentProcessId());
   UnmapViewOfFile(memory);
   CloseHandle(event);
   CloseHandle(mapping);
+  UnmapViewOfFile(controlMemory);
+  CloseHandle(control);
+  const uint64_t timeToFirstFrameMs =
+      (frames > 0 && frequency.QuadPart > 0)
+          ? static_cast<uint64_t>(((firstFrameQpc.QuadPart - mapQpc.QuadPart) *
+                                   1000ll) /
+                                  frequency.QuadPart)
+          : UINT64_MAX;
   printEvent(std::string("{\"type\":\"vcam_shm_selftest\",\"role\":\"reader\",\"ok\":") +
              (frames == 3 ? "true" : "false") + ",\"frames\":" +
-             std::to_string(frames) + "}");
+             std::to_string(frames) + ",\"time_to_first_frame_ms\":" +
+             std::to_string(timeToFirstFrameMs) + "}");
   return frames == 3 ? 0 : 1;
 #else
   (void)options;
@@ -405,23 +454,21 @@ int runVcamShmReaderSelfTest(const Options &options) {
 int runVcamShmSelfTest(const char *argv0) {
 #if defined(_WIN32)
   VcamShmRingWin ring;
-  const VcamShmCreateResult created = ring.create(64, 36, 30, 1);
+  const std::wstring controlName = L"Global\\BroadifyVcamControlSelftest";
+  const VcamShmCreateResult created =
+      ring.createWithControlName(64, 36, 30, 1, controlName);
   if (!created.ok || !created.globalNamespace) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"writer_create\"}");
     return 1;
   }
-  if (!controlMappingAclGrantsLocalServiceWrite()) {
+  if (!controlMappingAclGrantsLocalServiceWrite(controlName)) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"control_acl\"}");
     return 1;
   }
-  const std::wstring mappingName = ring.mappingName();
-  const std::wstring eventName = ring.eventName();
   std::wstring command = L"\"";
   command += asciiToWide(argv0);
   command += L"\" --vcam-shm-reader-selftest ";
-  command += mappingName;
-  command += L" ";
-  command += eventName;
+  command += controlName;
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process{};

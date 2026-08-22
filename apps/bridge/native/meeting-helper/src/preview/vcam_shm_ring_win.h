@@ -27,6 +27,11 @@ class VcamShmRingWin {
                              uint32_t height,
                              uint32_t fps,
                              uint64_t writerGeneration);
+  VcamShmCreateResult createWithControlName(uint32_t width,
+                                            uint32_t height,
+                                            uint32_t fps,
+                                            uint64_t writerGeneration,
+                                            const std::wstring &controlName);
   void close();
 
   bool publishBgra(uint32_t width,
@@ -62,6 +67,7 @@ class VcamShmRingWin {
   void *controlMemory_ = nullptr;
   size_t ringBytes_ = 0;
   uint64_t nextSequence_ = 1;
+  uint64_t lastFrameTimestampQpc_ = 0;
   std::wstring token_;
   std::wstring mappingName_;
   std::wstring eventName_;

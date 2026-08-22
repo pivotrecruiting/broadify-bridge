@@ -1,8 +1,11 @@
 #include "preview/vcam_shm_layout.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstdint>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 using namespace broadify::vcam_shm;
@@ -54,6 +57,84 @@ void testRingRejectsTornSlot() {
   std::fill(data, data + slot->size, 9);
   CopiedFrame frame;
   CHECK(!copyNewestFrame(memory.data(), memory.size(), frame));
+}
+
+void testRingRejectsInterleavedWriterTornRead() {
+  const uint32_t width = 512;
+  const uint32_t height = 512;
+  std::vector<uint8_t> memory(ringBytesFor(width, height, PixelFormat::Bgra8));
+  CHECK(initializeRing(memory.data(), memory.size(), width, height, 30, 1,
+                        PixelFormat::Bgra8, 123, 7, 100));
+  std::vector<uint8_t> first(bytesPerFrame(width, height, PixelFormat::Bgra8), 7);
+  std::vector<uint8_t> second(first.size(), 9);
+  CHECK(publishFrame(memory.data(), memory.size(), 1, 101, first.data(),
+                      first.size(), 101));
+
+  std::atomic<bool> running{true};
+  std::thread writer([&]() {
+    uint64_t sequence = 2;
+    while (running.load()) {
+      const uint64_t secondSequence = sequence++;
+      publishFrame(memory.data(), memory.size(), secondSequence,
+                   100 + secondSequence, second.data(), second.size(),
+                   100 + secondSequence);
+      const uint64_t firstSequence = sequence++;
+      publishFrame(memory.data(), memory.size(), firstSequence,
+                   100 + firstSequence, first.data(), first.size(),
+                   100 + firstSequence);
+    }
+  });
+
+  for (int i = 0; i < 200; ++i) {
+    CopiedFrame frame;
+    if (copyNewestFrame(memory.data(), memory.size(), frame)) {
+      CHECK(std::all_of(frame.data.begin(), frame.data.end(), [&](uint8_t value) {
+        return value == frame.data.front();
+      }));
+    }
+  }
+  running.store(false);
+  writer.join();
+}
+
+void testControlGenerationChange() {
+  ControlRecord record;
+  ControlRecord next;
+  CHECK(initializeControlRecord(
+      next, L"Global\\BroadifyVcam-1-2", L"Global\\BroadifyVcamFrame-1-2",
+      1920, 1080, 30, 1, PixelFormat::Bgra8, 42, 3, 900));
+  CHECK(writeControlRecord(record, next));
+  ControlRecord read;
+  CHECK(readControlRecord(record, read));
+  CHECK(read.writer_generation == 3);
+
+  CHECK(initializeControlRecord(
+      next, L"Global\\BroadifyVcam-1-3", L"Global\\BroadifyVcamFrame-1-3",
+      1920, 1080, 30, 1, PixelFormat::Bgra8, 42, 4, 901));
+  CHECK(writeControlRecord(record, next));
+  CHECK(readControlRecord(record, read));
+  CHECK(read.writer_generation == 4);
+  CHECK(std::wstring(read.mapping_name) == L"Global\\BroadifyVcam-1-3");
+}
+
+bool pidAliveExcept13(uint32_t pid) {
+  return pid != 13u;
+}
+
+void testControlReaderLivenessDerivation() {
+  ControlRecord record;
+  ControlRecord next;
+  CHECK(initializeControlRecord(
+      next, L"Global\\BroadifyVcam-1-2", L"Global\\BroadifyVcamFrame-1-2",
+      1920, 1080, 30, 1, PixelFormat::Bgra8, 42, 3, 900));
+  CHECK(writeControlRecord(record, next));
+  CHECK(updateReaderSlot(record, 11, 1000));
+  CHECK(updateReaderSlot(record, 12, 950));
+  CHECK(updateReaderSlot(record, 13, 1000));
+  CHECK(updateReaderSlot(record, 14, 10));
+  CHECK(countLiveReaders(record, 1000, 100, pidAliveExcept13) == 2);
+  clearReaderSlot(record, 12);
+  CHECK(countLiveReaders(record, 1000, 100, pidAliveExcept13) == 1);
 }
 
 void testControlRoundTrip() {
@@ -119,7 +200,10 @@ void testBgraToNv12Reference() {
 int main() {
   testRingNewestEvenRule();
   testRingRejectsTornSlot();
+  testRingRejectsInterleavedWriterTornRead();
   testControlRoundTrip();
+  testControlGenerationChange();
+  testControlReaderLivenessDerivation();
   testNamesAndSddl();
   testBgraToNv12Reference();
   std::cout << "vcam_shm_layout_test passed\n";

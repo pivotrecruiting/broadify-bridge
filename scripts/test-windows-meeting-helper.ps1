@@ -55,17 +55,12 @@ if ($modelSize -lt 1MB) {
 # usage error and exit with code 2. Reaching that point proves the PE loads
 # and all import DLLs (onnxruntime, DirectML, ...) resolve from the packaged
 # layout — a missing/misplaced DLL aborts with a loader error instead.
-$activationElapsed = [System.Diagnostics.Stopwatch]::StartNew()
 $output = & $resolvedHelperPath 2>&1
-$activationElapsed.Stop()
 if ($LASTEXITCODE -ne 2) {
   throw "Meeting helper binary-load smoke expected usage exit code 2, got $LASTEXITCODE. Output: $output"
 }
 if (-not ($output -match "requires --run")) {
   throw "Meeting helper binary-load smoke did not print its usage banner. Output: $output"
-}
-if ($activationElapsed.ElapsedMilliseconds -ge 100) {
-  throw "Meeting helper activation probe took $($activationElapsed.ElapsedMilliseconds) ms; expected < 100 ms."
 }
 
 $shmSelfTest = & $resolvedHelperPath --vcam-shm-selftest 2>&1
@@ -75,6 +70,14 @@ if ($LASTEXITCODE -ne 0) {
 if (-not ($shmSelfTest -match '"type":"vcam_shm_selftest"') -or
     -not ($shmSelfTest -match '"ok":true')) {
   throw "Meeting helper VCam SHM self-test did not report success. Output: $shmSelfTest"
+}
+$timeToFirstFrameMatch = [regex]::Match($shmSelfTest, '"time_to_first_frame_ms":(\d+)')
+if (-not $timeToFirstFrameMatch.Success) {
+  throw "Meeting helper VCam SHM self-test did not report time_to_first_frame_ms. Output: $shmSelfTest"
+}
+$timeToFirstFrameMs = [int64]$timeToFirstFrameMatch.Groups[1].Value
+if ($timeToFirstFrameMs -ge 100) {
+  throw "Meeting helper VCam SHM self-test time_to_first_frame_ms was $timeToFirstFrameMs ms; expected < 100 ms. Output: $shmSelfTest"
 }
 
 # The usage probe above intentionally leaves exit code 2 in $LASTEXITCODE;

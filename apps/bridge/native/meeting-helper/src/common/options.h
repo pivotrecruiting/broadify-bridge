@@ -12,8 +12,7 @@ struct Options {
   bool keyerSelfTest = false;
   bool vcamShmSelfTest = false;
   bool vcamShmReaderSelfTest = false;
-  std::string vcamShmSelfTestMappingName;
-  std::string vcamShmSelfTestEventName;
+  std::string vcamShmSelfTestControlName;
   std::string framebusName = "broadify-meeting-framebus";
   std::string controlSocket;
   // Bridge PID for the orphan watchdog; -1 = not provided.

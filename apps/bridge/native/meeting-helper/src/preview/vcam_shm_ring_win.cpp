@@ -1,7 +1,8 @@
 #include "preview/vcam_shm_ring_win.h"
 
-#include <cstring>
 #include <atomic>
+#include <cstring>
+#include <iostream>
 
 #if defined(_WIN32)
 
@@ -41,6 +42,27 @@ std::string lastErrorText(const char *operation) {
   std::ostringstream out;
   out << operation << " failed error=" << GetLastError();
   return out.str();
+}
+
+uint64_t qpcStaleTicks(uint64_t staleMs) {
+  LARGE_INTEGER frequency{};
+  QueryPerformanceFrequency(&frequency);
+  return frequency.QuadPart <= 0
+             ? 0u
+             : (static_cast<uint64_t>(frequency.QuadPart) * staleMs) / 1000u;
+}
+
+bool isProcessAlive(uint32_t pid) {
+  if (pid == 0u) {
+    return false;
+  }
+  HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+  if (process == nullptr) {
+    return false;
+  }
+  const DWORD wait = WaitForSingleObject(process, 0);
+  CloseHandle(process);
+  return wait == WAIT_TIMEOUT;
 }
 
 class SecurityAttributes {
@@ -104,6 +126,30 @@ VcamShmCreateResult VcamShmRingWin::create(uint32_t width,
 #endif
 }
 
+VcamShmCreateResult VcamShmRingWin::createWithControlName(
+    uint32_t width,
+    uint32_t height,
+    uint32_t fps,
+    uint64_t writerGeneration,
+    const std::wstring &controlName) {
+  close();
+#if defined(_WIN32)
+  std::string reason;
+  controlName_ = controlName;
+  if (createWithNamespace(true, width, height, fps, writerGeneration, reason)) {
+    return VcamShmCreateResult{true, true, ""};
+  }
+  return VcamShmCreateResult{false, false, reason};
+#else
+  (void)width;
+  (void)height;
+  (void)fps;
+  (void)writerGeneration;
+  (void)controlName;
+  return VcamShmCreateResult{false, false, "shared memory transport is Windows-only"};
+#endif
+}
+
 void VcamShmRingWin::close() {
   std::lock_guard<std::mutex> lock(mutex_);
 #if defined(_WIN32)
@@ -130,6 +176,7 @@ void VcamShmRingWin::close() {
   controlMemory_ = nullptr;
   ringBytes_ = 0u;
   nextSequence_ = 1u;
+  lastFrameTimestampQpc_ = 0u;
   token_.clear();
   mappingName_.clear();
   eventName_.clear();
@@ -146,10 +193,20 @@ bool VcamShmRingWin::publishBgra(uint32_t width,
       bgraSize != static_cast<size_t>(width) * height * 4u) {
     return false;
   }
-  const uint64_t heartbeatQpc = captureQpc == 0u ? nowQpc() : captureQpc;
+  const uint64_t heartbeatQpc = nowQpc();
+  uint64_t frameQpc = captureQpc;
+  if (frameQpc == 0u || frameQpc <= lastFrameTimestampQpc_) {
+    frameQpc = heartbeatQpc;
+  }
+  if (frameQpc <= lastFrameTimestampQpc_) {
+    frameQpc = lastFrameTimestampQpc_ + 1u;
+  }
   const bool ok = broadify::vcam_shm::publishFrame(
-      memory_, ringBytes_, nextSequence_++, captureQpc, bgra, bgraSize,
+      memory_, ringBytes_, nextSequence_++, frameQpc, bgra, bgraSize,
       heartbeatQpc);
+  if (ok) {
+    lastFrameTimestampQpc_ = frameQpc;
+  }
 #if defined(_WIN32)
   if (ok && eventHandle_ != nullptr) {
     SetEvent(static_cast<HANDLE>(eventHandle_));
@@ -163,8 +220,18 @@ bool VcamShmRingWin::heartbeat(uint64_t heartbeatQpc) {
   if (memory_ == nullptr) {
     return false;
   }
+  const uint64_t nextHeartbeat = heartbeatQpc == 0u ? nowQpc() : heartbeatQpc;
+  if (controlMemory_ != nullptr) {
+    auto *record =
+        static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory_);
+    broadify::vcam_shm::ControlRecord next;
+    if (broadify::vcam_shm::readControlRecord(*record, next)) {
+      next.heartbeat_qpc = nextHeartbeat;
+      broadify::vcam_shm::writeControlRecord(*record, next);
+    }
+  }
   return broadify::vcam_shm::updateHeartbeat(
-      memory_, ringBytes_, heartbeatQpc == 0u ? nowQpc() : heartbeatQpc);
+      memory_, ringBytes_, nextHeartbeat);
 }
 
 uint64_t VcamShmRingWin::readerCount() const {
@@ -174,10 +241,22 @@ uint64_t VcamShmRingWin::readerCount() const {
   }
   const auto *record =
       static_cast<const broadify::vcam_shm::ControlRecord *>(controlMemory_);
-  const uint64_t count =
-      *reinterpret_cast<const volatile uint64_t *>(&record->reader_count);
-  std::atomic_thread_fence(std::memory_order_acquire);
+  broadify::vcam_shm::ControlRecord snapshot;
+  if (!broadify::vcam_shm::readControlRecord(*record, snapshot)) {
+    return 0u;
+  }
+#if defined(_WIN32)
+  const uint64_t staleTicks = qpcStaleTicks(3000u);
+  const uint64_t count = broadify::vcam_shm::countLiveReaders(
+      snapshot, nowQpc(), staleTicks, isProcessAlive);
+  *reinterpret_cast<volatile uint64_t *>(
+      &static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory_)
+           ->reader_count) = count;
+  std::atomic_thread_fence(std::memory_order_release);
   return count;
+#else
+  return 0u;
+#endif
 }
 
 bool VcamShmRingWin::publishControl(uint32_t width,
@@ -215,7 +294,9 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
   token_ = broadify::vcam_shm::makeStreamToken(GetCurrentProcessId(), startTick);
   mappingName_ = broadify::vcam_shm::streamMappingName(token_, globalNamespace);
   eventName_ = broadify::vcam_shm::streamEventName(token_, globalNamespace);
-  controlName_ = broadify::vcam_shm::controlMappingName(globalNamespace);
+  if (controlName_.empty()) {
+    controlName_ = broadify::vcam_shm::controlMappingName(globalNamespace);
+  }
   ringBytes_ =
       broadify::vcam_shm::ringBytesFor(width, height, broadify::vcam_shm::PixelFormat::Bgra8);
   if (ringBytes_ == 0u) {
@@ -258,6 +339,7 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
     return false;
   }
   controlHandle_ = control;
+  const bool controlAlreadyExisted = GetLastError() == ERROR_ALREADY_EXISTS;
 
   memory_ = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, ringBytes_);
   controlMemory_ =
@@ -269,6 +351,24 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
     return false;
   }
   const uint64_t heartbeatQpc = nowQpc();
+  if (controlAlreadyExisted) {
+    const auto *record =
+        static_cast<const broadify::vcam_shm::ControlRecord *>(controlMemory_);
+    broadify::vcam_shm::ControlRecord existing;
+    if (broadify::vcam_shm::readControlRecord(*record, existing)) {
+      const uint64_t staleTicks = qpcStaleTicks(3000u);
+      const bool heartbeatFresh =
+          staleTicks > 0u && existing.heartbeat_qpc != 0u &&
+          heartbeatQpc <= existing.heartbeat_qpc + staleTicks;
+      if (heartbeatFresh && isProcessAlive(existing.writer_pid)) {
+        std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_shm_control_busy\"}"
+                  << std::endl;
+        reason = "vcam_shm_control_busy";
+        close();
+        return false;
+      }
+    }
+  }
   if (!broadify::vcam_shm::initializeRing(
           memory_, ringBytes_, width, height, fps, 1u,
           broadify::vcam_shm::PixelFormat::Bgra8, GetCurrentProcessId(),

@@ -623,6 +623,12 @@ std::string handleRpc(const std::string &line,
            << "\",\"keyer_pipeline_mode\":" << (state.keyerPipelineMode.empty() ? "null" : "\"" + jsonEscape(state.keyerPipelineMode) + "\"")
            << ",\"preview_clients\":" << state.previewClientCount
            << ",\"vcam_clients\":" << state.vcamClientCount
+           << ",\"vcam_transport_status\":\""
+           << jsonEscape(state.vcamTransport == "shm" && vcamShm != nullptr &&
+                                 !vcamShm->active()
+                             ? "shm_pending"
+                             : state.vcamTransport)
+           << "\""
            << ",\"program_dirty\":" << (state.programDirty ? "true" : "false")
            << ",\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false")
            << ",\"rendered_frames\":" << state.renderedFrames

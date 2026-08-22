@@ -12,6 +12,7 @@ constexpr uint32_t kControlMagic = 0x43534642u;  // "BFSC" little endian.
 constexpr uint32_t kLayoutVersion = 1u;
 constexpr uint32_t kSlotCount = 3u;
 constexpr uint32_t kMaxNameChars = 128u;
+constexpr uint32_t kReaderSlotCount = 4u;
 constexpr uint32_t kDefaultFpsNum = 30u;
 constexpr uint32_t kDefaultFpsDen = 1u;
 
@@ -45,6 +46,12 @@ struct SlotHeader {
   uint32_t reserved0 = 0;
 };
 
+struct ReaderSlot {
+  uint32_t pid = 0;
+  uint32_t reserved0 = 0;
+  uint64_t last_seen_qpc = 0;
+};
+
 struct ControlRecord {
   uint32_t magic = kControlMagic;
   uint32_t version = kLayoutVersion;
@@ -58,6 +65,7 @@ struct ControlRecord {
   uint32_t fps_den = kDefaultFpsDen;
   uint32_t format = static_cast<uint32_t>(PixelFormat::Bgra8);
   uint32_t writer_pid = 0;
+  ReaderSlot readers[kReaderSlotCount] = {};
   wchar_t mapping_name[kMaxNameChars] = {};
   wchar_t event_name[kMaxNameChars] = {};
 };
@@ -137,6 +145,12 @@ bool initializeControlRecord(ControlRecord &record,
                              uint64_t heartbeatQpc);
 bool writeControlRecord(ControlRecord &record, const ControlRecord &next);
 bool readControlRecord(const ControlRecord &record, ControlRecord &out);
+bool updateReaderSlot(ControlRecord &record, uint32_t pid, uint64_t nowQpc);
+void clearReaderSlot(ControlRecord &record, uint32_t pid);
+uint64_t countLiveReaders(const ControlRecord &record,
+                          uint64_t nowQpc,
+                          uint64_t staleTicks,
+                          bool (*pidAlive)(uint32_t pid));
 
 void bgraToNv12(const uint8_t *bgra,
                 uint32_t width,

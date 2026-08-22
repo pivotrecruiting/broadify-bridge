@@ -251,6 +251,7 @@ HRESULT MediaStream::Stop() {
       _state = MF_STREAM_STATE_STOPPED;
       client = _client;
       shmReader = _shmReader;
+      _tcpRunning = false;
     }
     if (shmReader) {
       shmReader->stop();
@@ -258,7 +259,6 @@ HRESULT MediaStream::Stop() {
     if (client) {
       client->stop();
     }
-    _tcpRunning = false;
     VcamLog("MediaStream: stopped, transports disconnected");
     return S_OK;
   } catch (...) {
