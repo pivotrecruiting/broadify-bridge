@@ -3,8 +3,8 @@
 #include "pipeline/guided_work_size.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
-#include <cstdlib>
 #include <vector>
 
 // Portable "fast guided filter" (He, Sun, Tang 2015) for edge-aware alpha-mask
@@ -25,33 +25,19 @@ namespace {
 // filter merely reproduces the input. Epsilon (on 0..1 signals) sets stiffness:
 // smaller snaps harder to strong guide edges. Both overridable for field tuning.
 #if defined(_WIN32)
-constexpr int kGuidedRadiusDefault = 4;
-constexpr double kGuidedEpsilonDefault = 5.0e-4;
+std::atomic<uint32_t> g_guidedRadius{4u};
+std::atomic<uint32_t> g_guidedEpsilonMicros{2000u};
 #else
-constexpr int kGuidedRadiusDefault = 8;
-constexpr double kGuidedEpsilonDefault = 1.0e-3;
+std::atomic<uint32_t> g_guidedRadius{8u};
+std::atomic<uint32_t> g_guidedEpsilonMicros{1000u};
 #endif
 
-double envDouble(const char *name, double fallback) {
-  const char *raw = std::getenv(name);
-  if (raw == nullptr || raw[0] == '\0') return fallback;
-  char *end = nullptr;
-  const double value = std::strtod(raw, &end);
-  if (end == raw || value <= 0.0) return fallback;
-  return value;
-}
-
 int guidedRadius() {
-  static const int r = std::max(
-      1, static_cast<int>(envDouble("BROADIFY_MEETING_GUIDED_RADIUS",
-                                    kGuidedRadiusDefault) + 0.5));
-  return r;
+  return std::max(1, static_cast<int>(g_guidedRadius.load()));
 }
 
 float guidedEpsilon() {
-  static const float e = static_cast<float>(
-      envDouble("BROADIFY_MEETING_GUIDED_EPSILON", kGuidedEpsilonDefault));
-  return e;
+  return static_cast<float>(g_guidedEpsilonMicros.load()) / 1000000.0f;
 }
 
 // Bilinear-ish downscale of a planar float image into (dstW x dstH).
@@ -117,6 +103,13 @@ void boxBlur(std::vector<float> &img, int W, int H, int r) {
 }  // namespace
 
 bool guidedRefineAvailable() { return true; }
+
+void setGuidedRefineTuning(uint32_t radius, double epsilon) {
+  g_guidedRadius.store(std::clamp<uint32_t>(radius, 1u, 16u));
+  const double clampedEpsilon = std::clamp(epsilon, 0.000001, 1.0);
+  g_guidedEpsilonMicros.store(
+      static_cast<uint32_t>(std::round(clampedEpsilon * 1000000.0)));
+}
 
 void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame) {
   if (mask.alpha.empty() || mask.width == 0u || mask.height == 0u ||

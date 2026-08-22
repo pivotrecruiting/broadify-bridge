@@ -12,6 +12,7 @@ namespace broadify::meeting {
 // working resolution). No-op when Core Image/Metal is unavailable or inputs are
 // empty, so the caller can invoke it unconditionally.
 void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame);
+void setGuidedRefineTuning(uint32_t radius, double epsilon);
 
 // True when the guided-filter backend initialized successfully (for logging).
 bool guidedRefineAvailable();

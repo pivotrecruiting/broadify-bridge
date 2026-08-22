@@ -97,7 +97,21 @@ KeyerTuning resolveKeyerTuningFromEnv() {
 void applyKeyerTuningPatch(KeyerTuning &base,
                            const KeyerTuning &patch,
                            const std::string &source) {
-  base = patch;
+  base.preset = patch.preset.empty() ? base.preset : patch.preset;
+  base.guidedRadius = patch.guidedRadius;
+  base.guidedEpsilon = patch.guidedEpsilon;
+  base.coefficientEma = patch.coefficientEma;
+  base.erodePx = patch.erodePx;
+  base.dilatePx = patch.dilatePx;
+  base.featherPx = patch.featherPx;
+  base.ofdEpsilonNear = patch.ofdEpsilonNear;
+  base.ofdEpsilonFar = patch.ofdEpsilonFar;
+  base.edgeStabilizationEnabled = patch.edgeStabilizationEnabled;
+  base.edgeStabilizationStrength = patch.edgeStabilizationStrength;
+  base.cadencePinEnabled = patch.cadencePinEnabled;
+  if (!patch.tier.empty()) {
+    base.tier = patch.tier;
+  }
   base.source = source;
 }
 

@@ -634,6 +634,7 @@ int main(int argc, char **argv) {
 #endif
 
   MeetingState state;
+#if defined(_WIN32)
   state.keyerTuning = resolveKeyerTuningFromEnv();
   state.maskErodePx = state.keyerTuning.erodePx;
   state.maskDilatePx = state.keyerTuning.dilatePx;
@@ -642,6 +643,7 @@ int main(int argc, char **argv) {
       state.keyerTuning.edgeStabilizationEnabled;
   state.edgeStabilizationStrength =
       state.keyerTuning.edgeStabilizationStrength;
+#endif
   const SegmentationTierDecision tierDecision =
       selectStartupSegmentationTier(options);
   state.keyerTier = segmentationTierName(tierDecision.tier);

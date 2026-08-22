@@ -55,6 +55,7 @@ export const MeetingKeyerConfigureSchema = z
     performance_mode: z
       .enum(["high_quality", "quality", "balanced", "performance"])
       .optional(),
+    preset: z.enum(["balanced", "sharp", "soft"]).optional(),
     mask_erode_px: z.number().min(0).max(3).optional(),
     mask_dilate_px: z.number().int().min(0).max(8).optional(),
     mask_feather_px: z.number().int().min(0).max(3).optional(),

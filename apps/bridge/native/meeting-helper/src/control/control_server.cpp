@@ -698,9 +698,11 @@ std::string handleRpc(const std::string &line,
         state.performanceMode = normalizedPerformanceMode(performanceMode);
       }
       const std::string preset = extractStringField(line, "preset");
+#if defined(_WIN32)
       if (!preset.empty()) {
-        state.keyerTuning = presetKeyerTuning(preset);
-        state.keyerTuning.source = "webapp";
+        KeyerTuning patch = presetKeyerTuning(preset);
+        patch.tier = state.keyerTuning.tier;
+        applyKeyerTuningPatch(state.keyerTuning, patch, "webapp");
         state.maskErodePx = state.keyerTuning.erodePx;
         state.maskDilatePx = state.keyerTuning.dilatePx;
         state.maskFeatherPx = state.keyerTuning.featherPx;
@@ -709,6 +711,9 @@ std::string handleRpc(const std::string &line,
         state.edgeStabilizationStrength =
             state.keyerTuning.edgeStabilizationStrength;
       }
+#else
+      (void)preset;
+#endif
       state.maskErodePx = clampedDouble(extractDoubleField(line, "mask_erode_px", state.maskErodePx), 0.0, 3.0);
       state.maskDilatePx = clampedPixelRadius(
           extractIntField(line, "mask_dilate_px", static_cast<int>(state.maskDilatePx)), 8u);
