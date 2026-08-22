@@ -1,8 +1,11 @@
 #include "pipeline/frame_pipeline_gating.h"
 
+#include <chrono>
 #include <iostream>
 
 using broadify::meeting::PipelineWorkTriggers;
+using broadify::meeting::clampFramePacingDeadline;
+using broadify::meeting::framePacingDeadlineReached;
 using broadify::meeting::shouldRunFusedKeyerWork;
 using broadify::meeting::shouldRunProgramWork;
 using broadify::meeting::shouldWriteFramebusFrame;
@@ -40,6 +43,27 @@ int main() {
                "framebus writes heartbeat");
   ok &= expect(!shouldWriteFramebusFrame(true, true, false, false),
                "framebus skips idle non-heartbeat");
+
+  using Clock = std::chrono::steady_clock;
+  const auto epoch = Clock::time_point{};
+  const auto interval = std::chrono::milliseconds(33);
+  ok &= expect(clampFramePacingDeadline(epoch + interval,
+                                        epoch + std::chrono::milliseconds(16),
+                                        interval) == epoch + interval,
+               "early camera wake keeps the fps floor");
+  ok &= expect(clampFramePacingDeadline(epoch + std::chrono::milliseconds(100),
+                                        epoch, interval) == epoch + interval,
+               "far future deadline clamps to one interval");
+  ok &= expect(clampFramePacingDeadline(epoch + std::chrono::milliseconds(10),
+                                        epoch + std::chrono::milliseconds(20),
+                                        interval) ==
+                   epoch + std::chrono::milliseconds(20),
+               "overrun skips catch-up bursts");
+  ok &= expect(!framePacingDeadlineReached(epoch + std::chrono::milliseconds(16),
+                                           epoch + interval),
+               "early camera wake does not pass the floor");
+  ok &= expect(framePacingDeadlineReached(epoch + interval, epoch + interval),
+               "deadline passes at the floor");
 
   return ok ? 0 : 1;
 }

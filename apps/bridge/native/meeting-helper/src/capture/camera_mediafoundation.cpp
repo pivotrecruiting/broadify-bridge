@@ -2,6 +2,7 @@
 
 #if defined(_WIN32)
 
+#include "capture/camera_media_type_rank.h"
 #include "util/json_utils.h"
 #include "util/pixel_swizzle.h"
 
@@ -160,6 +161,108 @@ std::string guidToString(const GUID &guid) {
   return wideToUtf8(buffer);
 }
 
+struct NativeMediaTypeChoice {
+  ComPtr<IMFMediaType> type;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t fpsNum = 0;
+  uint32_t fpsDen = 0;
+  GUID subtype{};
+  bool valid = false;
+};
+
+int subtypePreference(const GUID &subtype) {
+  if (IsEqualGUID(subtype, MFVideoFormat_NV12)) {
+    return 0;
+  }
+  if (IsEqualGUID(subtype, MFVideoFormat_YUY2)) {
+    return 1;
+  }
+  if (IsEqualGUID(subtype, MFVideoFormat_MJPG)) {
+    return 2;
+  }
+  return 3;
+}
+
+double mediaTypeFps(uint32_t fpsNum, uint32_t fpsDen) {
+  if (fpsNum == 0u || fpsDen == 0u) {
+    return 0.0;
+  }
+  return static_cast<double>(fpsNum) / static_cast<double>(fpsDen);
+}
+
+bool betterNativeMediaType(const NativeMediaTypeChoice &candidate,
+                           const NativeMediaTypeChoice &current,
+                           uint32_t requestedWidth,
+                           uint32_t requestedHeight,
+                           uint32_t requestedFps) {
+  if (!current.valid) {
+    return true;
+  }
+  const CameraMediaTypeRank candidateRank{
+      mediaTypeFps(candidate.fpsNum, candidate.fpsDen),
+      candidate.width,
+      candidate.height,
+      subtypePreference(candidate.subtype),
+  };
+  const CameraMediaTypeRank currentRank{
+      mediaTypeFps(current.fpsNum, current.fpsDen),
+      current.width,
+      current.height,
+      subtypePreference(current.subtype),
+  };
+  return betterCameraMediaType(candidateRank, currentRank, requestedWidth,
+                               requestedHeight, requestedFps);
+}
+
+NativeMediaTypeChoice chooseNativeMediaType(IMFSourceReader *reader,
+                                            uint32_t requestedWidth,
+                                            uint32_t requestedHeight,
+                                            uint32_t requestedFps) {
+  NativeMediaTypeChoice best;
+  for (DWORD index = 0;; ++index) {
+    ComPtr<IMFMediaType> type;
+    const HRESULT hr = reader->GetNativeMediaType(
+        MF_SOURCE_READER_FIRST_VIDEO_STREAM, index, &type);
+    if (hr == MF_E_NO_MORE_TYPES) {
+      break;
+    }
+    if (FAILED(hr)) {
+      break;
+    }
+    GUID major{};
+    GUID subtype{};
+    UINT32 width = 0;
+    UINT32 height = 0;
+    UINT32 fpsNum = 0;
+    UINT32 fpsDen = 0;
+    if (FAILED(type->GetGUID(MF_MT_MAJOR_TYPE, &major)) ||
+        !IsEqualGUID(major, MFMediaType_Video) ||
+        FAILED(type->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+        FAILED(MFGetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, &width, &height)) ||
+        width == 0u || height == 0u) {
+      continue;
+    }
+    MFGetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
+    if (width > 1920u || height > 1080u) {
+      continue;
+    }
+    NativeMediaTypeChoice candidate;
+    candidate.type = type;
+    candidate.width = width;
+    candidate.height = height;
+    candidate.fpsNum = fpsNum;
+    candidate.fpsDen = fpsDen;
+    candidate.subtype = subtype;
+    candidate.valid = true;
+    if (betterNativeMediaType(candidate, best, requestedWidth, requestedHeight,
+                              requestedFps)) {
+      best = std::move(candidate);
+    }
+  }
+  return best;
+}
+
 // One MediaFoundation capture session (one per camera). The source reader runs
 // in async callback mode (MF_SOURCE_READER_ASYNC_CALLBACK): OnReadSample stores
 // the latest frame and immediately re-arms the next ReadSample, so no thread
@@ -204,18 +307,16 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 
   // Creates the device source + async reader and arms the first read. Runs on
   // the caller's MTA thread and only blocks for reader creation, never for a
-  // frame. width/height/fps are accepted for contract parity with macOS; like
-  // the previous sync implementation the reader keeps the negotiated native
-  // RGB32 size. Returns false with initError() set on failure.
-  bool open(const std::wstring &symbolicLink, uint32_t /*width*/,
-            uint32_t /*height*/, uint32_t /*fps*/,
+  // frame. Returns false with initError() set on failure.
+  bool open(const std::wstring &symbolicLink, uint32_t width,
+            uint32_t height, uint32_t fps,
             std::function<void(HRESULT, const std::string &)> errorHandler) {
     errorHandler_ = std::move(errorHandler);
     ComPtr<IMFSourceReader> reader;
     // Prefer the standard video processor; fall back to the advanced one, which
     // wraps the full DXVA video processor and handles more source formats.
-    if (!initReader(symbolicLink, false, reader) &&
-        !initReader(symbolicLink, true, reader)) {
+    if (!initReader(symbolicLink, width, height, fps, false, reader) &&
+        !initReader(symbolicLink, width, height, fps, true, reader)) {
       if (initError_.empty()) {
         initError_ = "Camera does not support an RGB32 output format.";
       }
@@ -375,7 +476,9 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
  private:
   ~MfReaderCallback() = default;  // COM-refcounted: delete only via Release().
 
-  bool initReader(const std::wstring &symbolicLink, bool advancedProcessing,
+  bool initReader(const std::wstring &symbolicLink, uint32_t requestedWidth,
+                  uint32_t requestedHeight, uint32_t requestedFps,
+                  bool advancedProcessing,
                   ComPtr<IMFSourceReader> &readerOut) {
     ComPtr<IMFAttributes> sourceAttributes;
     if (FAILED(MFCreateAttributes(&sourceAttributes, 2))) {
@@ -426,12 +529,34 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
     reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
 
+    const NativeMediaTypeChoice nativeChoice =
+        chooseNativeMediaType(reader.Get(), requestedWidth, requestedHeight,
+                              requestedFps);
+    if (nativeChoice.valid) {
+      reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr,
+                                  nativeChoice.type.Get());
+      std::cout << "{\"type\":\"camera_native_media_type_selected\",\"width\":"
+                << nativeChoice.width << ",\"height\":" << nativeChoice.height
+                << ",\"fps_num\":" << nativeChoice.fpsNum
+                << ",\"fps_den\":" << nativeChoice.fpsDen
+                << ",\"subtype\":\"" << guidToString(nativeChoice.subtype)
+                << "\"}" << std::endl;
+    }
+
     ComPtr<IMFMediaType> outputType;
     if (FAILED(MFCreateMediaType(&outputType))) {
       return false;
     }
     outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    if (nativeChoice.valid) {
+      MFSetAttributeSize(outputType.Get(), MF_MT_FRAME_SIZE,
+                         nativeChoice.width, nativeChoice.height);
+      if (nativeChoice.fpsNum > 0u && nativeChoice.fpsDen > 0u) {
+        MFSetAttributeRatio(outputType.Get(), MF_MT_FRAME_RATE,
+                            nativeChoice.fpsNum, nativeChoice.fpsDen);
+      }
+    }
     hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr,
                                      outputType.Get());
     if (FAILED(hr)) {

@@ -18,9 +18,9 @@ struct KeyerGovernorConfig {
   // blocks the program loop below target fps.
   double frameBudgetMs = 1000.0 / 30.0;
   // Step down when the smoothed inference cost exceeds
-  // stepDownFactor * frameBudgetMs. Windows keeps half the frame for capture,
-  // compose, preview and raw-frame IO.
-  double stepDownFactor = 0.5;
+  // stepDownFactor * frameBudgetMs. A full-frame threshold preserves the
+  // rc.12 seed behavior; cadence, not tier churn, handles headroom first.
+  double stepDownFactor = 1.0;
   // Testing override for the step-down threshold: when > 0 it replaces
   // stepDownFactor * frameBudgetMs (BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS).
   // It also becomes the base of the step-up threshold, so the hysteresis band
@@ -39,8 +39,8 @@ struct KeyerGovernorConfig {
   // EMA weight of the newest sample (Apple: 0.2).
   double emaWeight = 0.2;
   // Step-UP margin: the next tier's ESTIMATED cost must fit
-  // stepUpFactor * frameBudgetMs (step-down stays at 1.0 * budget, so the
-  // hysteresis band between climbing and falling is wide by construction).
+  // stepUpFactor * stepDownThresholdMs(), so the hysteresis band cannot
+  // invert when the step-down threshold is overridden.
   // Field lesson 2026-08-09: live inference under GPU contention can be 2-3x
   // the isolated benchmark, so climbing is only worth a visible transition
   // when the estimate fits with strong margin.

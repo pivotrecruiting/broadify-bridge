@@ -75,13 +75,41 @@ std::vector<D3DAdapterInfo> enumerateAdapters(IDXGIFactory6 *factory,
   return adapters;
 }
 
-void logSelectedAdapter(const D3DAdapterInfo &info) {
-  static bool logged = false;
-  if (logged || !info.available) {
+void fillAdapterInfo(IDXGIAdapter1 *adapter, const char *policy,
+                     D3DAdapterInfo &info) {
+  DXGI_ADAPTER_DESC1 desc{};
+  if (adapter == nullptr || FAILED(adapter->GetDesc1(&desc)) ||
+      isSoftwareAdapter(desc)) {
     return;
   }
-  logged = true;
+  info.available = true;
+  info.policy = policy;
+  info.description = wideToUtf8(desc.Description);
+  info.luidHigh = static_cast<int64_t>(desc.AdapterLuid.HighPart);
+  info.luidLow =
+      static_cast<uint64_t>(static_cast<uint32_t>(desc.AdapterLuid.LowPart));
+  info.adapter = adapter;
+}
+
+D3DAdapterInfo defaultAdapter(IDXGIFactory6 *factory, const char *policy) {
+  D3DAdapterInfo info;
+  if (factory == nullptr) {
+    return info;
+  }
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+  if (FAILED(factory->EnumAdapters1(0, &adapter))) {
+    return info;
+  }
+  fillAdapterInfo(adapter.Get(), policy, info);
+  return info;
+}
+
+void logSelectedAdapter(const D3DAdapterInfo &info, const char *role) {
+  if (!info.available) {
+    return;
+  }
   std::cout << "{\"type\":\"gpu_adapter_selected\",\"backend\":\"d3d\","
+            << "\"role\":\"" << role << "\","
             << "\"policy\":\"" << info.policy << "\",\"description\":\""
             << info.description << "\",\"luid_high\":" << info.luidHigh
             << ",\"luid_low\":" << info.luidLow << "}" << std::endl;
@@ -103,6 +131,9 @@ D3DGpuPolicy parseD3DGpuPolicy(const char *value) {
       normalized == "power_saving") {
     return D3DGpuPolicy::MinimumPower;
   }
+  if (normalized == "split") {
+    return D3DGpuPolicy::Split;
+  }
   return D3DGpuPolicy::Auto;
 }
 
@@ -112,6 +143,8 @@ const char *d3dGpuPolicyName(D3DGpuPolicy policy) {
       return "high_performance";
     case D3DGpuPolicy::MinimumPower:
       return "minimum_power";
+    case D3DGpuPolicy::Split:
+      return "split";
     case D3DGpuPolicy::Auto:
     default:
       return "auto";
@@ -128,6 +161,11 @@ D3DAdapterInfo selectD3DAdapter() {
   const D3DGpuPolicy policy =
       parseD3DGpuPolicy(std::getenv("BROADIFY_MEETING_GPU_POLICY"));
   const char *policyName = d3dGpuPolicyName(policy);
+  if (policy == D3DGpuPolicy::Split) {
+    D3DAdapterInfo adapter = defaultAdapter(factory.Get(), policyName);
+    logSelectedAdapter(adapter, "compositor");
+    return adapter;
+  }
   const DXGI_GPU_PREFERENCE preference =
       policy == D3DGpuPolicy::MinimumPower
           ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
@@ -140,12 +178,38 @@ D3DAdapterInfo selectD3DAdapter() {
   if (adapters.empty()) {
     return D3DAdapterInfo{};
   }
-  logSelectedAdapter(adapters.front());
+  logSelectedAdapter(adapters.front(), "shared");
+  return adapters.front();
+}
+
+D3DAdapterInfo selectDirectMlD3DAdapter() {
+  Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+    return D3DAdapterInfo{};
+  }
+
+  const D3DGpuPolicy policy =
+      parseD3DGpuPolicy(std::getenv("BROADIFY_MEETING_GPU_POLICY"));
+  const char *policyName = d3dGpuPolicyName(policy);
+  if (policy != D3DGpuPolicy::Split) {
+    return sharedD3DAdapter();
+  }
+  std::vector<D3DAdapterInfo> adapters = enumerateAdapters(
+      factory.Get(), DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, policyName);
+  if (adapters.empty()) {
+    return D3DAdapterInfo{};
+  }
+  logSelectedAdapter(adapters.front(), "directml");
   return adapters.front();
 }
 
 const D3DAdapterInfo &sharedD3DAdapter() {
   static const D3DAdapterInfo info = selectD3DAdapter();
+  return info;
+}
+
+const D3DAdapterInfo &directMlD3DAdapter() {
+  static const D3DAdapterInfo info = selectDirectMlD3DAdapter();
   return info;
 }
 

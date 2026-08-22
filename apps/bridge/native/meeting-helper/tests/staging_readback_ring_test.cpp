@@ -70,5 +70,20 @@ int main() {
   ok &= expect(!reset0.preferredMapValid, "reset frame 0 preferred is unwritten");
   ok &= expectWrittenSlot(written, reset0.copyIndex, "reset frame 0 copied slot is written");
 
+  ring.reset();
+  for (size_t frame = 0; frame < 6; ++frame) {
+    const auto current = ring.advanceCurrentFrame();
+    ok &= expect(current.copyIndex == frame % 3, "current frame copies expected slot");
+    ok &= expect(current.preferredMapIndex == current.copyIndex,
+                 "current frame maps the copied slot");
+    ok &= expect(current.fallbackMapIndex == current.copyIndex,
+                 "current frame fallback is the copied slot");
+    ok &= expect(current.preferredMapValid, "current frame map is valid");
+    ok &= expect(current.allowBlockingFallback,
+                 "current frame permits blocking map");
+    ok &= expect(current.mapsCurrentFrame,
+                 "current frame decision reports current mask");
+  }
+
   return ok ? 0 : 1;
 }
