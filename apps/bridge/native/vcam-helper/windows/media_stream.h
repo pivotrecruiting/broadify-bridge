@@ -19,6 +19,7 @@
 
 #include "mf_attributes.h"
 #include "raw_frame_client.h"
+#include "shm_frame_reader.h"
 
 namespace broadify::vcam {
 
@@ -56,6 +57,7 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
    ULONG *bytesReturned);
 
   HRESULT Initialize(IMFMediaSource *source, int index, RawFrameClient *client,
+                     ShmFrameReader *shmReader,
                      uint32_t width, uint32_t height);
   HRESULT Start();
   HRESULT Stop();
@@ -80,7 +82,10 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
   uint32_t _width = 0;
   uint32_t _height = 0;
   uint64_t _lastSequence = 0;
+  uint64_t _lastShmSequence = 0;
+  uint64_t _lastTcpSequence = 0;
   uint64_t _baseCaptureNs = 0;
+  uint64_t _baseCaptureQpc = 0;
   LONGLONG _baseSampleTime = 0;
   LONGLONG _lastSampleTime = 0;
   // Last source geometry that differed from the media type; logged once per
@@ -90,6 +95,7 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
   uint64_t _loggedStaleWindowMs = 0;
   bool _hasLastGoodFrame = false;
   RawFrameClient *_client = nullptr;  // owned by the MediaSource.
+  ShmFrameReader *_shmReader = nullptr;  // owned by the MediaSource.
   IMFMediaSource *_source = nullptr;  // weak back-reference, cleared in Shutdown.
   Microsoft::WRL::ComPtr<IMFStreamDescriptor> _descriptor;
   Microsoft::WRL::ComPtr<IMFMediaEventQueue> _queue;

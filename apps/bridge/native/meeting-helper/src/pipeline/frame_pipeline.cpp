@@ -3112,7 +3112,7 @@ void runFramePipeline(const Options &options,
                           programFrame.size() / 4u);
         vcamShm->publishBgra(
             options.width, options.height, vcamBgraFrame.data(), vcamBgraFrame.size(),
-            hasCameraFrame ? latestCameraFrame.timestampNs : nowNs());
+            0u);
       }
 
       const auto programEnd = std::chrono::steady_clock::now();

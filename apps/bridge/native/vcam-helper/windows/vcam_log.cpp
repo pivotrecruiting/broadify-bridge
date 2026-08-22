@@ -11,6 +11,7 @@ namespace broadify::vcam {
 namespace {
 
 std::mutex g_logMutex;
+bool g_loggedBuildStamp = false;
 constexpr DWORD kMaxLogBytes = 5u * 1024u * 1024u;
 
 // Resolve %ProgramData%\Broadify and make sure it exists. Returns an empty
@@ -76,6 +77,24 @@ void VcamLog(const char *format, ...) {
     FILE *file = nullptr;
     if (fopen_s(&file, path.c_str(), "a") != 0 || file == nullptr) {
       return;
+    }
+    if (!g_loggedBuildStamp) {
+      fprintf(file, "[%s pid=%lu tid=%lu] build git=%s time=%s\n",
+              localTimestamp().c_str(),
+              static_cast<unsigned long>(GetCurrentProcessId()),
+              static_cast<unsigned long>(GetCurrentThreadId()),
+#if defined(BROADIFY_VCAM_GIT_SHA)
+              BROADIFY_VCAM_GIT_SHA,
+#else
+              "unknown",
+#endif
+#if defined(BROADIFY_VCAM_BUILD_TIME)
+              BROADIFY_VCAM_BUILD_TIME
+#else
+              "unknown"
+#endif
+      );
+      g_loggedBuildStamp = true;
     }
     fprintf(file, "[%s pid=%lu tid=%lu] %s\n", localTimestamp().c_str(),
             static_cast<unsigned long>(GetCurrentProcessId()),
