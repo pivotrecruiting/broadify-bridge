@@ -153,3 +153,6 @@ Notes: N1 double frame copy (hold shared_ptr only); N2 KeyerTuning defaults dila
 (1/1/false/0.25 vs 0/0/true/0.35) — product decision; N4 CPU guided eps atomic default 2000u→500u; N5 clamp webapp guided_epsilon ≥1e-6;
 N7 guided_enabled log prints radius 8 not effective 4; stale `keyer_tier_cache` mention in meeting-windows-stage-b-design.md:64.
 Do NOT merge WP5 into an RC until H1–H3 are fixed and re-reviewed.
+- H1 (CI proof, run 32581919324 on 7c6b5f55): `error C3861: 'd3dAdapterPolicyIsIntegratedGpuOnly': identifier not found` AND
+  `error C2039: 'copyLatestFrameSharedIfNew': is not a member of 'MfCaptureSession'` (camera_mediafoundation.cpp — the method is called on
+  the anonymous-namespace MfCaptureSession but only declared/defined elsewhere; declare it in the class or call through the owning source).
