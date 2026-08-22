@@ -14,6 +14,25 @@ endif()
 
 project(broadify_meeting_helper LANGUAGES C CXX)
 
+if(WIN32)
+  execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../../.."
+    OUTPUT_VARIABLE BROADIFY_BUILD_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if(BROADIFY_BUILD_GIT_SHA STREQUAL "")
+    set(BROADIFY_BUILD_GIT_SHA "unknown")
+  endif()
+  string(TIMESTAMP BROADIFY_BUILD_TIMESTAMP "%Y-%m-%dT%H:%M:%SZ" UTC)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/build_stamp.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp.h"
+    @ONLY
+  )
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -158,6 +177,11 @@ target_include_directories(meeting-helper PRIVATE
   ../framebus/include
   third_party/stb
 )
+if(WIN32)
+  target_include_directories(meeting-helper PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+  )
+endif()
 
 if(MEETING_HELPER_ENABLE_MODNET STREQUAL "1")
   find_path(ONNXRUNTIME_INCLUDE_DIR
