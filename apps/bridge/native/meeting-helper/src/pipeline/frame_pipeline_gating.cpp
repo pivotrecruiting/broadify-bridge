@@ -69,4 +69,21 @@ bool shouldRenderEarlyCameraWake(
   return now - lastRenderStartAt >= minElapsed;
 }
 
+std::chrono::steady_clock::time_point earlyCameraWakeRenderDeadline(
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::time_point lastRenderStartAt,
+    std::chrono::steady_clock::time_point nextFrameAt,
+    std::chrono::steady_clock::duration frameInterval,
+    double minIntervalFactor) {
+  if (shouldRenderEarlyCameraWake(now, lastRenderStartAt, frameInterval,
+                                  minIntervalFactor)) {
+    return now;
+  }
+  const auto minElapsed =
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(frameInterval) * minIntervalFactor);
+  const auto earliestRenderAt = lastRenderStartAt + minElapsed;
+  return earliestRenderAt < nextFrameAt ? earliestRenderAt : nextFrameAt;
+}
+
 }  // namespace broadify::meeting

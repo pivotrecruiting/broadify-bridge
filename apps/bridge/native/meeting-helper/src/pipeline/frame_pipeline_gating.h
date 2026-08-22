@@ -40,4 +40,11 @@ bool shouldRenderEarlyCameraWake(
       std::chrono::steady_clock::duration frameInterval,
       double minIntervalFactor = 0.75);
 
+std::chrono::steady_clock::time_point earlyCameraWakeRenderDeadline(
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::time_point lastRenderStartAt,
+    std::chrono::steady_clock::time_point nextFrameAt,
+    std::chrono::steady_clock::duration frameInterval,
+    double minIntervalFactor = 0.75);
+
 }  // namespace broadify::meeting

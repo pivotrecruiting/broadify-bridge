@@ -89,6 +89,9 @@ camera frame
   retried by the warmup path at most once per 30 s. Because retry scheduling is
   checked from the program loop and waits for any previous warmup thread to be
   joined first, the effective visible cadence is usually 30-60 s.
+- OpenVINO session builds use `intraOpThreads = 1` so background warmup and
+  fallback retries do not fan out across CPU cores while the compositor is
+  trying to maintain frame pacing.
 
 ## Status And Logs
 

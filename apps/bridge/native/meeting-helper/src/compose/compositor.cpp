@@ -1372,8 +1372,8 @@ bool tryRenderProgramFrameGpu(const Options &options,
         plan.camera.biasX = static_cast<float>(sourceCenterX - 0.5 - targetCenterX / kx);
         plan.camera.biasY = static_cast<float>(sourceCenterY - 0.5 - targetCenterY / ky);
         plan.camera.mirrorConst = static_cast<float>(cameraFrame->width) - 1.0f;
-      } else {
 #if defined(_WIN32)
+      } else {
         // Confirmed-empty subject (Option A): the keyer verified the person
         // left the frame, so KEEP the keyed composite - the zero mask is
         // uploaded (the upload is gated on camera.keyed) and both shaders
@@ -1386,12 +1386,29 @@ bool tryRenderProgramFrameGpu(const Options &options,
         plan.camera.keyed = true;
         plan.camera.mirror = snapshot.cameraRender.mirror;
 #else
+      } else if (cameraMask->emptyValid) {
+        // Confirmed-empty subject (Option A): the keyer verified the person
+        // left the frame, so KEEP the keyed composite - the zero mask is
+        // uploaded (the upload is gated on camera.keyed) and both shaders
+        // resolve it to alpha 0 everywhere, i.e. background-only with no
+        // presenter. Without the flag (model garbage), the un-keyed fallback
+        // below stays. Shared with macOS by design: it fixes the same latent
+        // bug there (macOS only ever "worked" via residual matte noise
+        // keeping the anchor alive).
+        plan.cameraFrame = cameraFrame;
+        plan.camera = coverMapping(*cameraFrame, plan.width, plan.height);
+        plan.camera.keyed = true;
+        plan.camera.mirror = snapshot.cameraRender.mirror;
+      } else {
+        // The mask collapsed (no confident foreground pixel): show the un-keyed
+        // camera instead of dropping the presenter entirely.
+        plan.media.belowCamera = false;
         plan.cameraFrame = cameraFrame;
         plan.camera = coverMapping(*cameraFrame, plan.width, plan.height);
         plan.camera.keyed = false;
         plan.camera.mirror = snapshot.cameraRender.mirror;
-#endif
       }
+#endif
     } else {
       plan.cameraFrame = cameraFrame;
       plan.camera = coverMapping(*cameraFrame, plan.width, plan.height);

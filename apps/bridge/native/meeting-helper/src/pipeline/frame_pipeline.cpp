@@ -2110,15 +2110,6 @@ void runFramePipeline(const Options &options,
       }
       const bool graphicsChanged = runtime.graphicsDirty ||
           hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
-#if defined(_WIN32)
-      if (hasNewCameraFrame && !programChanged && !graphicsChanged &&
-          !staticHeartbeatDue &&
-          !shouldRenderEarlyCameraWake(programStart, lastRenderStartAt,
-                                       frameInterval)) {
-        nextFrameAt = std::chrono::steady_clock::now();
-        continue;
-      }
-#endif
       const PipelineWorkTriggers workTriggers{
           hasNewCameraFrame, programChanged, graphicsChanged};
       const bool programWorkDue = shouldRunProgramWork(workTriggers);
@@ -2407,8 +2398,7 @@ void runFramePipeline(const Options &options,
         // pair: the path-transition reset below then keeps the worker state.
         bool preserveWorkerOnCutover = false;
         const auto selectLiveFusedFallbackMask =
-            [&lastFusedPublishedMask, &lastGoodMask,
-             &latestCameraFrame](AlphaMask &selectedMask) {
+            [&lastGoodMask, &latestCameraFrame](AlphaMask &selectedMask) {
           const AlphaMask &retained =
               !lastFusedPublishedMask.alpha.empty() ? lastFusedPublishedMask
                                                     : lastGoodMask;
@@ -2434,7 +2424,6 @@ void runFramePipeline(const Options &options,
           frameForCompositor = &latestCameraFrame;
           refineLiveFusedFallbackMask(fusedMask);
           maskForCompositor = &fusedMask;
-          shouldRenderProgram = true;
         }
         if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
@@ -3041,6 +3030,13 @@ void runFramePipeline(const Options &options,
         // this flag and mute their telemetry writes while it is set.
         g_fusedStepDownOverlapActive =
             fusedHandover.phase() == TierHandover::Phase::Overlap;
+        if (hasCameraFrame && snapshot.keyerEnabled &&
+            maskForCompositor == nullptr && !latestCameraFrame.rgba.empty() &&
+            selectLiveFusedFallbackMask(fusedMask)) {
+          frameForCompositor = &latestCameraFrame;
+          refineLiveFusedFallbackMask(fusedMask);
+          maskForCompositor = &fusedMask;
+        }
       }
 #else
       (void)fusedMask;
@@ -3133,10 +3129,12 @@ void runFramePipeline(const Options &options,
         const bool wokeForCamera =
             camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
         const auto wokeAt = std::chrono::steady_clock::now();
-        if (wokeForCamera &&
-            shouldRenderEarlyCameraWake(wokeAt, lastRenderStartAt,
-                                        frameInterval)) {
-          nextFrameAt = wokeAt;
+        if (wokeForCamera) {
+          nextFrameAt = earlyCameraWakeRenderDeadline(
+              wokeAt, lastRenderStartAt, nextFrameAt, frameInterval);
+          if (nextFrameAt > wokeAt) {
+            std::this_thread::sleep_until(nextFrameAt);
+          }
         }
       } else {
         std::this_thread::sleep_until(nextFrameAt);
