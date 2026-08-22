@@ -364,6 +364,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/vcam_shm_layout_test.cpp
     src/preview/vcam_shm_layout.cpp
   )
+  add_executable(vcam_shm_retry_state_test
+    tests/vcam_shm_retry_state_test.cpp
+  )
   add_executable(raw_frame_connect_state_test
     tests/raw_frame_connect_state_test.cpp
   )
@@ -383,6 +386,12 @@ if(MEETING_HELPER_BUILD_TESTS)
       ../vcam-helper/windows/shm_frame_reader.cpp
       ../vcam-helper/windows/vcam_log.cpp
       src/preview/vcam_shm_layout.cpp
+    )
+    add_executable(vcam_shm_service_ring_test
+      tests/vcam_shm_service_ring_test.cpp
+      src/preview/vcam_shm_layout.cpp
+      src/preview/vcam_shm_ring_win.cpp
+      src/util/helper_event_log.cpp
     )
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE
       "${CMAKE_CURRENT_BINARY_DIR}/generated"
@@ -445,6 +454,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     raw_frame_stream_header_test
     raw_frame_record_test
     vcam_shm_layout_test
+    vcam_shm_retry_state_test
     raw_frame_connect_state_test
     raw_frame_server_test
   )
@@ -471,6 +481,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_compile_definitions(shm_frame_reader_no_frame_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(shm_frame_reader_no_frame_test PRIVATE advapi32)
     add_test(NAME shm_frame_reader_no_frame_test COMMAND shm_frame_reader_no_frame_test)
+    target_include_directories(vcam_shm_service_ring_test PRIVATE src)
+    target_compile_definitions(vcam_shm_service_ring_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(vcam_shm_service_ring_test PRIVATE advapi32)
+    add_test(NAME vcam_shm_service_ring_test COMMAND vcam_shm_service_ring_test)
   endif()
 
   if(APPLE)
