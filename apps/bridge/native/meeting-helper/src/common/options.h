@@ -10,6 +10,7 @@ struct Options {
   // Standalone keyer benchmark (--keyer-self-test): time MODNet inference per
   // input-size mode and exit, instead of running the meeting pipeline.
   bool keyerSelfTest = false;
+  bool keyerTierSelfTest = false;
   bool vcamShmSelfTest = false;
   bool vcamShmReaderSelfTest = false;
   std::string vcamShmSelfTestControlName;

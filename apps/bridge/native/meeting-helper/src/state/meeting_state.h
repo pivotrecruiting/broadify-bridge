@@ -131,6 +131,8 @@ struct MeetingState {
   // not reported (macOS, keyer disabled); serialized additively as
   // "active_performance_mode" next to the requested "performance_mode".
   std::string activePerformanceMode;
+  std::string keyerTier = "modnet_512_ofd";
+  std::string keyerTierReason = "not_selected";
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
   std::string gpuAdapter;

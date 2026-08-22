@@ -82,6 +82,7 @@ set(MEETING_HELPER_SOURCES
   ../vcam-helper/Shared/src/framebus_reader.c
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
+  src/capture/windows_os_mask.cpp
   src/compose/compositor.cpp
   src/compose/d3d_adapter_select.cpp
   src/common/options.cpp
@@ -95,6 +96,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/modnet_keyer.cpp
   src/keyer/openvino_keyer.cpp
   src/keyer/ort_session_options_policy.cpp
+  src/keyer/segmentation_tier.cpp
   src/main.cpp
   src/pipeline/compositor_input_selection.cpp
   src/pipeline/frame_pipeline.cpp
@@ -323,6 +325,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
   )
+  add_executable(segmentation_tier_test
+    tests/segmentation_tier_test.cpp
+    src/keyer/segmentation_tier.cpp
+  )
   add_executable(keyer_cadence_test
     tests/keyer_cadence_test.cpp
     src/pipeline/keyer_cadence.cpp
@@ -421,6 +427,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     ort_session_options_policy_test
     camera_media_type_rank_test
     keyer_governor_test
+    segmentation_tier_test
     keyer_cadence_test
     mask_retention_test
     subject_presence_test

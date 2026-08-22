@@ -1,8 +1,10 @@
 #include "capture/camera_source.h"
+#include "capture/windows_os_mask.h"
 #include "common/options.h"
 #include "control/control_server.h"
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
+#include "keyer/segmentation_tier.h"
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
 #include "keyer/openvino_keyer.h"
 #endif
@@ -31,6 +33,8 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <numeric>
 #include <vector>
@@ -205,6 +209,44 @@ void printEvent(const std::string &json) {
   // Mirrored into the --event-log sidecar: on macOS the `open`-based launch
   // swallows stdout, so the sidecar is what the bridge can actually read.
   emitHelperEvent(json);
+}
+
+bool pathExists(const std::string &path) {
+  if (path.empty()) {
+    return false;
+  }
+  std::ifstream file(path, std::ios::binary);
+  return file.good();
+}
+
+SegmentationTierDecision selectStartupSegmentationTier(const Options &options) {
+  SegmentationTierProbe probe;
+#if defined(_WIN32)
+  probe.windows = true;
+  const WindowsOsMaskProbeResult osMaskProbe = probeWindowsOsBackgroundMask();
+  probe.osMaskPropertyPresent = osMaskProbe.propertyPresent;
+  probe.osMaskCapabilityPresent = osMaskProbe.maskCapabilityPresent;
+  probe.selfieLandscapeAssetPresent =
+      pathExists(options.modelsDir + "/selfie_landscape.onnx");
+#else
+  (void)options;
+#endif
+  const SegmentationTier requested =
+      parseSegmentationTierOverride(std::getenv("BROADIFY_MEETING_KEYER_TIER"));
+  SegmentationTierDecision decision = decideSegmentationTier(requested, probe);
+  if (decision.shouldEnableOsMask || decision.shouldDisableOsEffects) {
+    configureWindowsOsBackgroundSegmentation(decision.shouldEnableOsMask);
+  }
+  return decision;
+}
+
+int runKeyerTierSelfTest(const Options &options) {
+  const SegmentationTierDecision decision = selectStartupSegmentationTier(options);
+  printEvent(std::string("{\"type\":\"keyer_tier_selftest\",\"ok\":true,"
+                         "\"tier\":\"") +
+             segmentationTierName(decision.tier) + "\",\"reason\":\"" +
+             jsonEscape(decision.reason) + "\"}");
+  return 0;
 }
 
 std::string requestedVcamTransport() {
@@ -543,6 +585,9 @@ int main(int argc, char **argv) {
   if (options.vcamShmSelfTest) {
     return runVcamShmSelfTest(argc > 0 ? argv[0] : "meeting-helper.exe");
   }
+  if (options.keyerTierSelfTest) {
+    return runKeyerTierSelfTest(options);
+  }
 #if defined(_WIN32)
   emitHelperEvent(std::string("{\"type\":\"meeting_helper_build\","
                               "\"git_sha\":\"") +
@@ -588,6 +633,18 @@ int main(int argc, char **argv) {
 #endif
 
   MeetingState state;
+  const SegmentationTierDecision tierDecision =
+      selectStartupSegmentationTier(options);
+  state.keyerTier = segmentationTierName(tierDecision.tier);
+  state.keyerTierReason = tierDecision.reason;
+  printEvent(std::string("{\"type\":\"segmentation_tier_selected\","
+                         "\"tier\":\"") +
+             jsonEscape(state.keyerTier) + "\",\"reason\":\"" +
+             jsonEscape(state.keyerTierReason) + "\"}");
+  printEvent(std::string("{\"type\":\"keyer_tier_cache\","
+                         "\"tier\":\"") +
+             jsonEscape(state.keyerTier) + "\",\"reason\":\"" +
+             jsonEscape(state.keyerTierReason) + "\"}");
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
   VcamShmRingWin vcamShm;

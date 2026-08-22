@@ -68,6 +68,8 @@ Options parseOptions(int argc, char **argv) {
       options.run = true;
     } else if (arg == "--keyer-self-test") {
       options.keyerSelfTest = true;
+    } else if (arg == "--keyer-tier-selftest") {
+      options.keyerTierSelfTest = true;
     } else if (arg == "--vcam-shm-selftest") {
       options.vcamShmSelfTest = true;
     } else if (arg == "--vcam-shm-reader-selftest") {

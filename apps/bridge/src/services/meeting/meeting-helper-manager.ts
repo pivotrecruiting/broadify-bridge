@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -82,6 +82,7 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_KEYER_OPENVINO",
   "BROADIFY_MEETING_KEYER_PERFORMANCE",
   "BROADIFY_MEETING_KEYER_PREBUILD_TIERS",
+  "BROADIFY_MEETING_KEYER_TIER",
   "BROADIFY_MEETING_MASK_WORK_WIDTH",
   "BROADIFY_MEETING_DML_QUEUE",
   "BROADIFY_MEETING_OPENVINO_DEVICE",
@@ -1192,6 +1193,8 @@ export class MeetingHelperManager {
         code?: string;
         message?: string;
         camera_permission_status?: string;
+        tier?: string;
+        reason?: string;
       };
       if (parsed.type === "meeting_graphics_framebus") {
         logger.info(`[MeetingHelper] ${line}`);
@@ -1214,6 +1217,12 @@ export class MeetingHelperManager {
       }
       if (parsed.type === "meeting_keyer_pipeline") {
         logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (parsed.type === "segmentation_tier_selected") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (parsed.type === "keyer_tier_cache") {
+        this.writeKeyerTierCache(parsed.tier, parsed.reason, logger);
       }
       if (parsed.type === "meeting_recorder") {
         logger.info(`[MeetingHelper] ${line}`);
@@ -1245,6 +1254,35 @@ export class MeetingHelperManager {
       }
     } catch {
       logger.debug?.(`[MeetingHelper] Ignored non-JSON stdout line: ${line}`);
+    }
+  }
+
+  private writeKeyerTierCache(
+    tier: string | undefined,
+    reason: string | undefined,
+    logger: LoggerT,
+  ): void {
+    if (platform() !== "win32" || !tier) {
+      return;
+    }
+    try {
+      const filePath = join(getBridgeContext().userDataDir, "keyer-tier.json");
+      writeFileSync(
+        filePath,
+        `${JSON.stringify(
+          {
+            tier,
+            reason: reason ?? "unknown",
+            updated_at: new Date().toISOString(),
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn?.(`[Meeting] Failed to persist keyer tier cache: ${message}`);
     }
   }
 

@@ -622,6 +622,9 @@ std::string handleRpc(const std::string &line,
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
            << ",\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode)
            << "\",\"keyer_pipeline_mode\":" << (state.keyerPipelineMode.empty() ? "null" : "\"" + jsonEscape(state.keyerPipelineMode) + "\"")
+           << ",\"keyer_tier\":\"" << jsonEscape(state.keyerTier)
+           << "\",\"keyer_tier_reason\":\"" << jsonEscape(state.keyerTierReason)
+           << "\""
            << ",\"preview_clients\":" << state.previewClientCount
            << ",\"vcam_clients\":" << state.vcamClientCount
            << ",\"vcam_transport_status\":\""
