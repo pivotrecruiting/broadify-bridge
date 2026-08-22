@@ -102,6 +102,7 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
   Microsoft::WRL::ComPtr<IMFMediaEventQueue> _queue;
   std::vector<Microsoft::WRL::ComPtr<IMFMediaBuffer>> _sampleBuffers;
   Microsoft::WRL::ComPtr<IMFMediaBuffer> _lastSampleBuffer;
+  GUID _sampleBufferSubtype = GUID_NULL;
   RawFrame _scratchFrame;
   size_t _nextSampleBuffer = 0;
 };

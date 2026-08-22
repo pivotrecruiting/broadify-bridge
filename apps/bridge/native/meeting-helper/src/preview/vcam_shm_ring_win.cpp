@@ -1,6 +1,7 @@
 #include "preview/vcam_shm_ring_win.h"
 
 #include <cstring>
+#include <atomic>
 
 #if defined(_WIN32)
 
@@ -44,8 +45,7 @@ std::string lastErrorText(const char *operation) {
 
 class SecurityAttributes {
  public:
-  SecurityAttributes() {
-    const std::wstring sddl = broadify::vcam_shm::securityDescriptorSddl();
+  explicit SecurityAttributes(const std::wstring &sddl) {
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) {
@@ -105,6 +105,7 @@ VcamShmCreateResult VcamShmRingWin::create(uint32_t width,
 }
 
 void VcamShmRingWin::close() {
+  std::lock_guard<std::mutex> lock(mutex_);
 #if defined(_WIN32)
   if (memory_ != nullptr) {
     UnmapViewOfFile(memory_);
@@ -140,6 +141,7 @@ bool VcamShmRingWin::publishBgra(uint32_t width,
                                  const uint8_t *bgra,
                                  size_t bgraSize,
                                  uint64_t captureQpc) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (memory_ == nullptr || width == 0u || height == 0u ||
       bgraSize != static_cast<size_t>(width) * height * 4u) {
     return false;
@@ -157,6 +159,7 @@ bool VcamShmRingWin::publishBgra(uint32_t width,
 }
 
 bool VcamShmRingWin::heartbeat(uint64_t heartbeatQpc) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (memory_ == nullptr) {
     return false;
   }
@@ -165,12 +168,16 @@ bool VcamShmRingWin::heartbeat(uint64_t heartbeatQpc) {
 }
 
 uint64_t VcamShmRingWin::readerCount() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (controlMemory_ == nullptr) {
     return 0u;
   }
   const auto *record =
       static_cast<const broadify::vcam_shm::ControlRecord *>(controlMemory_);
-  return record->reader_count;
+  const uint64_t count =
+      *reinterpret_cast<const volatile uint64_t *>(&record->reader_count);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  return count;
 }
 
 bool VcamShmRingWin::publishControl(uint32_t width,
@@ -216,11 +223,14 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
     return false;
   }
 
-  SecurityAttributes security;
+  SecurityAttributes streamSecurity(
+      broadify::vcam_shm::streamSecurityDescriptorSddl());
+  SecurityAttributes controlSecurity(
+      broadify::vcam_shm::controlSecurityDescriptorSddl());
   LARGE_INTEGER size{};
   size.QuadPart = static_cast<LONGLONG>(ringBytes_);
   HANDLE mapping = CreateFileMappingW(
-      INVALID_HANDLE_VALUE, security.get(), PAGE_READWRITE, size.HighPart,
+      INVALID_HANDLE_VALUE, streamSecurity.get(), PAGE_READWRITE, size.HighPart,
       size.LowPart, mappingName_.c_str());
   if (mapping == nullptr) {
     reason = lastErrorText("CreateFileMappingW(stream)");
@@ -229,7 +239,8 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
   }
   mappingHandle_ = mapping;
 
-  HANDLE event = CreateEventW(security.get(), FALSE, FALSE, eventName_.c_str());
+  HANDLE event =
+      CreateEventW(streamSecurity.get(), FALSE, FALSE, eventName_.c_str());
   if (event == nullptr) {
     reason = lastErrorText("CreateEventW(frame)");
     close();
@@ -238,7 +249,7 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
   eventHandle_ = event;
 
   HANDLE control = CreateFileMappingW(
-      INVALID_HANDLE_VALUE, security.get(), PAGE_READWRITE, 0,
+      INVALID_HANDLE_VALUE, controlSecurity.get(), PAGE_READWRITE, 0,
       static_cast<DWORD>(sizeof(broadify::vcam_shm::ControlRecord)),
       controlName_.c_str());
   if (control == nullptr) {

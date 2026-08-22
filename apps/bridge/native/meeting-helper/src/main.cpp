@@ -45,6 +45,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <aclapi.h>
 #include <dbghelp.h>
 #else
 #include <unistd.h>
@@ -138,6 +139,63 @@ LONG WINAPI writeCrashDump(EXCEPTION_POINTERS *pointers) {
     CloseHandle(file);
   }
   return EXCEPTION_EXECUTE_HANDLER;
+}
+
+bool controlMappingAclGrantsLocalServiceWrite() {
+  const std::wstring controlName = broadify::vcam_shm::controlMappingName(true);
+  HANDLE control = OpenFileMappingW(READ_CONTROL, FALSE, controlName.c_str());
+  if (control == nullptr) {
+    return false;
+  }
+
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  PACL dacl = nullptr;
+  const DWORD securityResult =
+      GetSecurityInfo(control, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                      nullptr, nullptr, &dacl, nullptr, &descriptor);
+  CloseHandle(control);
+  if (securityResult != ERROR_SUCCESS || dacl == nullptr) {
+    if (descriptor != nullptr) {
+      LocalFree(descriptor);
+    }
+    return false;
+  }
+
+  SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+  PSID localServiceSid = nullptr;
+  bool ok = false;
+  if (AllocateAndInitializeSid(&ntAuthority, 1, SECURITY_LOCAL_SERVICE_RID, 0,
+                               0, 0, 0, 0, 0, 0, &localServiceSid)) {
+    for (DWORD i = 0; i < dacl->AceCount; ++i) {
+      void *ace = nullptr;
+      if (!GetAce(dacl, i, &ace)) {
+        continue;
+      }
+      const auto *header = static_cast<const ACE_HEADER *>(ace);
+      if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
+        continue;
+      }
+      const auto *allowed = static_cast<const ACCESS_ALLOWED_ACE *>(ace);
+      PSID sid = const_cast<DWORD *>(&allowed->SidStart);
+      if (!EqualSid(sid, localServiceSid)) {
+        continue;
+      }
+      const DWORD mask = allowed->Mask;
+      const bool genericOk =
+          (mask & (GENERIC_READ | GENERIC_WRITE)) ==
+          (GENERIC_READ | GENERIC_WRITE);
+      const bool sectionOk =
+          (mask & (FILE_MAP_READ | FILE_MAP_WRITE)) ==
+          (FILE_MAP_READ | FILE_MAP_WRITE);
+      if (genericOk || sectionOk) {
+        ok = true;
+        break;
+      }
+    }
+    FreeSid(localServiceSid);
+  }
+  LocalFree(descriptor);
+  return ok;
 }
 #endif
 
@@ -352,6 +410,10 @@ int runVcamShmSelfTest(const char *argv0) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"writer_create\"}");
     return 1;
   }
+  if (!controlMappingAclGrantsLocalServiceWrite()) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"control_acl\"}");
+    return 1;
+  }
   const std::wstring mappingName = ring.mappingName();
   const std::wstring eventName = ring.eventName();
   std::wstring command = L"\"";
@@ -369,12 +431,22 @@ int runVcamShmSelfTest(const char *argv0) {
     return 1;
   }
   std::vector<uint8_t> frame(64u * 36u * 4u, 0);
-  for (int i = 0; i < 3; ++i) {
-    std::memset(frame.data(), 40 + i * 40, frame.size());
+  const uint64_t deadline = GetTickCount64() + 5000u;
+  int frameIndex = 0;
+  DWORD wait = WAIT_TIMEOUT;
+  while (GetTickCount64() < deadline) {
+    wait = WaitForSingleObject(process.hProcess, 0);
+    if (wait == WAIT_OBJECT_0) {
+      break;
+    }
+    std::memset(frame.data(), 40 + (frameIndex % 5) * 35, frame.size());
     ring.publishBgra(64, 36, frame.data(), frame.size(), 0u);
-    Sleep(100);
+    ++frameIndex;
+    Sleep(33);
   }
-  const DWORD wait = WaitForSingleObject(process.hProcess, 5000);
+  if (wait != WAIT_OBJECT_0) {
+    wait = WaitForSingleObject(process.hProcess, 0);
+  }
   DWORD exitCode = 1;
   if (wait == WAIT_OBJECT_0) {
     GetExitCodeProcess(process.hProcess, &exitCode);
@@ -542,7 +614,9 @@ int main(int argc, char **argv) {
           static_cast<int>(std::min<uint64_t>(vcamShm.readerCount(), 32u));
       if (readerCount != lastReaderCount) {
         std::lock_guard<std::mutex> lock(state.mutex);
-        state.vcamClientCount = readerCount;
+        state.vcamShmReaderCount = readerCount;
+        state.vcamClientCount =
+            state.vcamShmReaderCount + state.vcamTcpClientCount;
         state.programDirty = true;
         ++state.programRevision;
         lastReaderCount = readerCount;

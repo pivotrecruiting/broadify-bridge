@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 namespace broadify::meeting {
@@ -53,6 +54,7 @@ class VcamShmRingWin {
                       uint64_t writerGeneration,
                       uint64_t heartbeatQpc);
 
+  mutable std::mutex mutex_;
   void *mappingHandle_ = nullptr;
   void *eventHandle_ = nullptr;
   void *controlHandle_ = nullptr;

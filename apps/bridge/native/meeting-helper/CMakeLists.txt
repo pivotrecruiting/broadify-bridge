@@ -225,7 +225,7 @@ if(WIN32)
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -417,7 +417,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       elseif(helper_test STREQUAL "control_server_test")
         # Links control_server.cpp + vcam_controller.cpp: needs the same Win32
         # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
-        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
+        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
       elseif(helper_test STREQUAL "d3d_adapter_select_test")
         target_link_libraries(${helper_test} PRIVATE dxgi)
       endif()

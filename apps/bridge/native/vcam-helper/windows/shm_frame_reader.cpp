@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <utility>
 
@@ -24,6 +25,12 @@ constexpr uint64_t kStaleWindowMs = 3000u;
 constexpr DWORD kEventWaitMs = 1000u;
 
 uint64_t nowMs() { return GetTickCount64(); }
+
+uint64_t loadAcquire(const uint64_t &value) {
+  const uint64_t loaded = *reinterpret_cast<const volatile uint64_t *>(&value);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  return loaded;
+}
 
 std::wstring boundedWideString(const wchar_t *value, size_t capacity) {
   size_t len = 0;
@@ -130,8 +137,17 @@ void ShmFrameReader::incrementReaderCount(int64_t delta) {
       static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory_);
   if (delta > 0) {
     InterlockedIncrement64(reinterpret_cast<volatile LONG64 *>(&record->reader_count));
-  } else if (record->reader_count > 0u) {
-    InterlockedDecrement64(reinterpret_cast<volatile LONG64 *>(&record->reader_count));
+  } else {
+    auto *count = reinterpret_cast<volatile LONG64 *>(&record->reader_count);
+    LONG64 observed = *count;
+    while (observed > 0) {
+      const LONG64 exchanged =
+          InterlockedCompareExchange64(count, observed - 1, observed);
+      if (exchanged == observed) {
+        break;
+      }
+      observed = exchanged;
+    }
   }
 }
 
@@ -258,7 +274,9 @@ bool ShmFrameReader::heartbeatStale() const {
   }
   const auto *header =
       broadify::vcam_shm::ringHeader(mappingMemory_, ringBytes_);
-  if (header == nullptr || header->heartbeat_qpc == 0u) {
+  const uint64_t heartbeatQpc =
+      header == nullptr ? 0u : loadAcquire(header->heartbeat_qpc);
+  if (header == nullptr || heartbeatQpc == 0u) {
     return true;
   }
   LARGE_INTEGER now{};
@@ -271,7 +289,7 @@ bool ShmFrameReader::heartbeatStale() const {
   const uint64_t nowQpc = static_cast<uint64_t>(now.QuadPart);
   const uint64_t staleTicks =
       (static_cast<uint64_t>(frequency.QuadPart) * kStaleWindowMs) / 1000u;
-  return nowQpc > header->heartbeat_qpc + staleTicks;
+  return nowQpc > heartbeatQpc + staleTicks;
 }
 
 void ShmFrameReader::run() {

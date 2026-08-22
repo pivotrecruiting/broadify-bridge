@@ -35,6 +35,53 @@ bool isWellFormed(const RawFrame &frame) {
   return frame.bgra.size() == expected;
 }
 
+DWORD sampleBytesForSubtype(const GUID &subtype,
+                            uint32_t width,
+                            uint32_t height) {
+  if (subtype == MFVideoFormat_NV12) {
+    return width * height * 3 / 2;
+  }
+  if (subtype == MFVideoFormat_YUY2) {
+    return width * height * 2;
+  }
+  return width * height * 4;
+}
+
+HRESULT createSampleBufferPool(
+    const GUID &subtype,
+    uint32_t width,
+    uint32_t height,
+    std::vector<Microsoft::WRL::ComPtr<IMFMediaBuffer>> &buffers) {
+  buffers.clear();
+  buffers.reserve(kSampleBufferPoolSize);
+  for (size_t i = 0; i < kSampleBufferPoolSize; i++) {
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
+    CK(MFCreate2DMediaBuffer(width, height, subtype, FALSE, &buffer));
+    buffers.push_back(buffer);
+  }
+  return S_OK;
+}
+
+void fillSplash(const GUID &subtype, BYTE *dst, DWORD bytes, uint32_t width,
+                uint32_t height) {
+  if (subtype == MFVideoFormat_NV12) {
+    const DWORD yBytes = width * height;
+    std::memset(dst, 16, yBytes);
+    std::memset(dst + yBytes, 128, bytes - yBytes);
+    return;
+  }
+  if (subtype == MFVideoFormat_YUY2) {
+    for (DWORD i = 0; i + 3 < bytes; i += 4) {
+      dst[i] = 16;
+      dst[i + 1] = 128;
+      dst[i + 2] = 16;
+      dst[i + 3] = 128;
+    }
+    return;
+  }
+  std::memset(dst, 0x1e, bytes);
+}
+
 // Nearest-neighbour stretch of a dense BGRA8 source into a dense BGRA8
 // destination of a different size. No letterboxing: the virtual camera keeps
 // showing the program picture rather than a splash when the helper's
@@ -161,15 +208,9 @@ HRESULT MediaStream::Initialize(IMFMediaSource *source, int index,
   CK(_descriptor->GetMediaTypeHandler(&handler));
   CK(handler->SetCurrentMediaType(nv12Type.Get()));
 
-  const DWORD frameBytes = _width * _height * 4;
-  _sampleBuffers.clear();
-  _sampleBuffers.reserve(kSampleBufferPoolSize);
-  for (size_t i = 0; i < kSampleBufferPoolSize; i++) {
-    Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
-    CK(MFCreate2DMediaBuffer(_width, _height, MFVideoFormat_RGB32, FALSE,
-                             &buffer));
-    _sampleBuffers.push_back(buffer);
-  }
+  CK(createSampleBufferPool(MFVideoFormat_NV12, _width, _height,
+                            _sampleBuffers));
+  _sampleBufferSubtype = MFVideoFormat_NV12;
   return S_OK;
 }
 
@@ -242,6 +283,7 @@ void MediaStream::Shutdown() {
       _descriptor.Reset();
       _sampleBuffers.clear();
       _lastSampleBuffer.Reset();
+      _sampleBufferSubtype = GUID_NULL;
       _lastSequence = 0;
       _lastShmSequence = 0;
       _lastTcpSequence = 0;
@@ -359,10 +401,14 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
     }
     const DWORD rgbFrameBytes = _width * _height * 4;
     const DWORD outputFrameBytes =
-        subtype == MFVideoFormat_NV12
-            ? (_width * _height * 3 / 2)
-            : subtype == MFVideoFormat_YUY2 ? (_width * _height * 2)
-                                            : rgbFrameBytes;
+        sampleBytesForSubtype(subtype, _width, _height);
+    if (subtype != _sampleBufferSubtype || _sampleBuffers.empty()) {
+      CK(createSampleBufferPool(subtype, _width, _height, _sampleBuffers));
+      _sampleBufferSubtype = subtype;
+      _nextSampleBuffer = 0;
+      _lastSampleBuffer.Reset();
+      _hasLastGoodFrame = false;
+    }
     Microsoft::WRL::ComPtr<IMFSample> sample;
     CK(MFCreateSample(&sample));
 
@@ -482,7 +528,7 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown *token) {
       _nextSampleBuffer = (_nextSampleBuffer + 1) % _sampleBuffers.size();
       BYTE *dst = nullptr;
       CK(buffer->Lock(&dst, nullptr, nullptr));
-      std::memset(dst, 0x1e, outputFrameBytes);
+      fillSplash(subtype, dst, outputFrameBytes, _width, _height);
       buffer->Unlock();
       buffer->SetCurrentLength(outputFrameBytes);
       CK(sample->AddBuffer(buffer.Get()));

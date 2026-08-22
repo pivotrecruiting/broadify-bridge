@@ -1,6 +1,7 @@
 #include "preview/vcam_shm_layout.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <cwchar>
 #include <limits>
@@ -84,6 +85,17 @@ void copyWideName(wchar_t *dst, const std::wstring &src) {
   if (count > 0u) {
     std::wmemcpy(dst, src.c_str(), count);
   }
+}
+
+uint64_t loadAcquire(const uint64_t &value) {
+  const uint64_t loaded = *reinterpret_cast<const volatile uint64_t *>(&value);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  return loaded;
+}
+
+void storeRelease(uint64_t &value, uint64_t next) {
+  std::atomic_thread_fence(std::memory_order_release);
+  *reinterpret_cast<volatile uint64_t *>(&value) = next;
 }
 
 }  // namespace
@@ -243,12 +255,12 @@ bool publishFrame(void *memory,
     return false;
   }
   const uint64_t evenSequence = sequence * 2u;
-  slot->sequence = evenSequence | 1u;
+  storeRelease(slot->sequence, evenSequence | 1u);
   std::memcpy(dst, data, dataSize);
   slot->capture_qpc = captureQpc;
   slot->size = static_cast<uint32_t>(dataSize);
-  slot->sequence = evenSequence;
-  header->heartbeat_qpc = heartbeatQpc;
+  storeRelease(slot->sequence, evenSequence);
+  storeRelease(header->heartbeat_qpc, heartbeatQpc);
   return true;
 }
 
@@ -266,7 +278,7 @@ bool peekNewestFrame(const void *memory, size_t bytes, FrameView &frame) {
     if (slot == nullptr || data == nullptr) {
       return false;
     }
-    const uint64_t sequence = slot->sequence;
+    const uint64_t sequence = loadAcquire(slot->sequence);
     if ((sequence & 1u) != 0u || sequence == 0u || sequence < bestSequence) {
       continue;
     }
@@ -288,30 +300,44 @@ bool peekNewestFrame(const void *memory, size_t bytes, FrameView &frame) {
 }
 
 bool copyNewestFrame(const void *memory, size_t bytes, CopiedFrame &frame) {
-  FrameView view;
-  if (!peekNewestFrame(memory, bytes, view)) {
-    return false;
-  }
   const RingHeader *header = ringHeader(memory, bytes);
-  const size_t expected = header == nullptr
-                              ? 0u
-                              : bytesPerFrame(header->width, header->height,
-                                              static_cast<PixelFormat>(header->format));
-  if (expected == 0u || view.size != expected) {
+  if (header == nullptr) {
     return false;
   }
-  frame.width = view.width;
-  frame.height = view.height;
-  frame.format = view.format;
-  frame.sequence = view.sequence;
-  frame.capture_qpc = view.capture_qpc;
-  frame.data.resize(view.size);
-  std::memcpy(frame.data.data(), view.data, view.size);
-  FrameView after;
-  if (!peekNewestFrame(memory, bytes, after)) {
+  const size_t expected = bytesPerFrame(
+      header->width, header->height, static_cast<PixelFormat>(header->format));
+  if (expected == 0u) {
     return false;
   }
-  return after.sequence == view.sequence && (after.sequence & 1u) == 0u;
+  const SlotHeader *best = nullptr;
+  const uint8_t *bestData = nullptr;
+  uint64_t bestSequence = 0u;
+  for (uint32_t i = 0; i < header->slot_count; ++i) {
+    const SlotHeader *slot = slotHeader(memory, bytes, i);
+    const uint8_t *data = slotData(memory, bytes, i);
+    if (slot == nullptr || data == nullptr) {
+      return false;
+    }
+    const uint64_t sequence = loadAcquire(slot->sequence);
+    if ((sequence & 1u) != 0u || sequence == 0u || sequence < bestSequence) {
+      continue;
+    }
+    best = slot;
+    bestData = data;
+    bestSequence = sequence;
+  }
+  if (best == nullptr || best->size != expected) {
+    return false;
+  }
+  frame.width = header->width;
+  frame.height = header->height;
+  frame.format = static_cast<PixelFormat>(header->format);
+  frame.sequence = bestSequence;
+  frame.capture_qpc = best->capture_qpc;
+  frame.data.resize(expected);
+  std::memcpy(frame.data.data(), bestData, expected);
+  const uint64_t after = loadAcquire(best->sequence);
+  return after == bestSequence && (after & 1u) == 0u;
 }
 
 bool updateHeartbeat(void *memory, size_t bytes, uint64_t heartbeatQpc) {
@@ -319,7 +345,7 @@ bool updateHeartbeat(void *memory, size_t bytes, uint64_t heartbeatQpc) {
   if (header == nullptr) {
     return false;
   }
-  header->heartbeat_qpc = heartbeatQpc;
+  storeRelease(header->heartbeat_qpc, heartbeatQpc);
   return true;
 }
 
@@ -342,8 +368,16 @@ std::wstring controlMappingName(bool globalNamespace) {
          L"BroadifyVcamControl";
 }
 
-std::wstring securityDescriptorSddl() {
+std::wstring streamSecurityDescriptorSddl() {
   return L"D:P(A;;GA;;;OW)(A;;GA;;;BA)(A;;GRGX;;;LS)";
+}
+
+std::wstring controlSecurityDescriptorSddl() {
+  return L"D:P(A;;GA;;;OW)(A;;GA;;;BA)(A;;GWGR;;;LS)";
+}
+
+std::wstring securityDescriptorSddl() {
+  return streamSecurityDescriptorSddl();
 }
 
 bool initializeControlRecord(ControlRecord &record,
@@ -384,8 +418,8 @@ bool writeControlRecord(ControlRecord &record, const ControlRecord &next) {
     return false;
   }
   const uint64_t nextSequence = (record.sequence + 2u) & ~1ull;
-  record.sequence = nextSequence | 1u;
-  const uint64_t keepReaderCount = record.reader_count;
+  storeRelease(record.sequence, nextSequence | 1u);
+  const uint64_t keepReaderCount = loadAcquire(record.reader_count);
   record.magic = next.magic;
   record.version = next.version;
   record.writer_generation = next.writer_generation;
@@ -399,19 +433,19 @@ bool writeControlRecord(ControlRecord &record, const ControlRecord &next) {
   record.writer_pid = next.writer_pid;
   std::wmemcpy(record.mapping_name, next.mapping_name, kMaxNameChars);
   std::wmemcpy(record.event_name, next.event_name, kMaxNameChars);
-  record.sequence = nextSequence == 0u ? 2u : nextSequence;
+  storeRelease(record.sequence, nextSequence == 0u ? 2u : nextSequence);
   return true;
 }
 
 bool readControlRecord(const ControlRecord &record, ControlRecord &out) {
-  const uint64_t before = record.sequence;
+  const uint64_t before = loadAcquire(record.sequence);
   if ((before & 1u) != 0u || before == 0u || record.magic != kControlMagic ||
       record.version != kLayoutVersion || record.mapping_name[0] == L'\0' ||
       record.event_name[0] == L'\0') {
     return false;
   }
   out = record;
-  const uint64_t after = record.sequence;
+  const uint64_t after = loadAcquire(record.sequence);
   return before == after && (after & 1u) == 0u;
 }
 

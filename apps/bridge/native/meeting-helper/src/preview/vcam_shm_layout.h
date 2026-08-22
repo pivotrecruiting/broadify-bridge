@@ -120,6 +120,8 @@ std::wstring makeStreamToken(uint64_t pid, uint64_t startTick);
 std::wstring streamMappingName(const std::wstring &token, bool globalNamespace);
 std::wstring streamEventName(const std::wstring &token, bool globalNamespace);
 std::wstring controlMappingName(bool globalNamespace);
+std::wstring streamSecurityDescriptorSddl();
+std::wstring controlSecurityDescriptorSddl();
 std::wstring securityDescriptorSddl();
 
 bool initializeControlRecord(ControlRecord &record,

@@ -55,12 +55,17 @@ if ($modelSize -lt 1MB) {
 # usage error and exit with code 2. Reaching that point proves the PE loads
 # and all import DLLs (onnxruntime, DirectML, ...) resolve from the packaged
 # layout — a missing/misplaced DLL aborts with a loader error instead.
+$activationElapsed = [System.Diagnostics.Stopwatch]::StartNew()
 $output = & $resolvedHelperPath 2>&1
+$activationElapsed.Stop()
 if ($LASTEXITCODE -ne 2) {
   throw "Meeting helper binary-load smoke expected usage exit code 2, got $LASTEXITCODE. Output: $output"
 }
 if (-not ($output -match "requires --run")) {
   throw "Meeting helper binary-load smoke did not print its usage banner. Output: $output"
+}
+if ($activationElapsed.ElapsedMilliseconds -ge 100) {
+  throw "Meeting helper activation probe took $($activationElapsed.ElapsedMilliseconds) ms; expected < 100 ms."
 }
 
 $shmSelfTest = & $resolvedHelperPath --vcam-shm-selftest 2>&1

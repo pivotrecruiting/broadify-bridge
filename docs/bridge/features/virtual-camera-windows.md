@@ -27,6 +27,9 @@ Transport-Auswahl:
   automatisch auf TCP und loggt
   `meeting_vcam_raw event=vcam_transport_selected transport=tcp`.
 - `output.vcam.status` enthaelt `transport: "shm"|"tcp"`.
+- TCP ist nur ein Kompatibilitaets-Fallback, nicht byte-for-byte identisch:
+  die DLL probt nicht mehr blockierend in der Aktivierung und bietet NV12
+  zuerst an.
 
 Der SHM-Ring hat drei Slots. Jeder Slot nutzt eine Sequenznummer als seqlock:
 ungerade bedeutet "Writer schreibt gerade", Leser kopieren nur den neuesten
