@@ -34,4 +34,10 @@ std::chrono::steady_clock::time_point clampFramePacingDeadline(
 bool framePacingDeadlineReached(std::chrono::steady_clock::time_point now,
                                 std::chrono::steady_clock::time_point nextFrameAt);
 
+bool shouldRenderEarlyCameraWake(
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::time_point lastRenderStartAt,
+    std::chrono::steady_clock::duration frameInterval,
+    double minIntervalFactor = 0.9);
+
 }  // namespace broadify::meeting

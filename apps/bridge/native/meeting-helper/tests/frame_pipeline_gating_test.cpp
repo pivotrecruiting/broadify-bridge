@@ -6,6 +6,7 @@
 using broadify::meeting::PipelineWorkTriggers;
 using broadify::meeting::clampFramePacingDeadline;
 using broadify::meeting::framePacingDeadlineReached;
+using broadify::meeting::shouldRenderEarlyCameraWake;
 using broadify::meeting::shouldRunFusedKeyerWork;
 using broadify::meeting::shouldRunProgramWork;
 using broadify::meeting::shouldSubmitAsyncKeyerFrame;
@@ -76,6 +77,19 @@ int main() {
                "early camera wake does not pass the floor");
   ok &= expect(framePacingDeadlineReached(epoch + interval, epoch + interval),
                "deadline passes at the floor");
+  const auto priorRender = epoch + std::chrono::milliseconds(100);
+  ok &= expect(!shouldRenderEarlyCameraWake(
+                   priorRender + std::chrono::milliseconds(16), priorRender,
+                   interval),
+               "60fps camera wake before 90 percent skips");
+  ok &= expect(shouldRenderEarlyCameraWake(
+                   priorRender + std::chrono::milliseconds(30), priorRender,
+                   interval),
+               "camera wake after 90 percent renders immediately");
+  ok &= expect(shouldRenderEarlyCameraWake(
+                   epoch + std::chrono::milliseconds(1),
+                   Clock::time_point{}, interval),
+               "first camera wake renders without prior start");
 
   return ok ? 0 : 1;
 }

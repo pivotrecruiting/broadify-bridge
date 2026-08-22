@@ -1771,6 +1771,7 @@ void runFramePipeline(const Options &options,
 #endif
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
+  auto lastRenderStartAt = std::chrono::steady_clock::time_point{};
   while (running.load()) {
     PipelineRuntimeState runtime;
     {
@@ -2109,6 +2110,15 @@ void runFramePipeline(const Options &options,
       }
       const bool graphicsChanged = runtime.graphicsDirty ||
           hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
+#if defined(_WIN32)
+      if (hasNewCameraFrame && !programChanged && !graphicsChanged &&
+          !staticHeartbeatDue &&
+          !shouldRenderEarlyCameraWake(programStart, lastRenderStartAt,
+                                       frameInterval)) {
+        nextFrameAt = std::chrono::steady_clock::now();
+        continue;
+      }
+#endif
       const PipelineWorkTriggers workTriggers{
           hasNewCameraFrame, programChanged, graphicsChanged};
       const bool programWorkDue = shouldRunProgramWork(workTriggers);
@@ -3067,6 +3077,9 @@ void runFramePipeline(const Options &options,
 
       const auto programEnd = std::chrono::steady_clock::now();
       programRate.tick(programEnd);
+      if (shouldRenderProgram) {
+        lastRenderStartAt = programStart;
+      }
       nextFrameAt += frameInterval;
       {
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -3088,10 +3101,13 @@ void runFramePipeline(const Options &options,
     nextFrameAt = clampFramePacingDeadline(nextFrameAt, now, frameInterval);
     if (nextFrameAt > now) {
       if (runtime.cameraRunning) {
-        camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+        const bool wokeForCamera =
+            camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
         const auto wokeAt = std::chrono::steady_clock::now();
-        if (!framePacingDeadlineReached(wokeAt, nextFrameAt)) {
-          std::this_thread::sleep_until(nextFrameAt);
+        if (wokeForCamera &&
+            shouldRenderEarlyCameraWake(wokeAt, lastRenderStartAt,
+                                        frameInterval)) {
+          nextFrameAt = wokeAt;
         }
       } else {
         std::this_thread::sleep_until(nextFrameAt);
