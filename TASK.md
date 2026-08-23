@@ -1,84 +1,77 @@
-# TASK — WP6 (rc.31): stabilization package after rc.30 soak test
+# TASK — WP7 (rc.32a): ghost-free 1080p capture on Windows, stage 1 (pure logic, no GPU code)
 
-Base: feature/vcam-rc13 @ c911f5d6 (rc.30). Round: 3/3 — PASS. Field feedback 23.08.2026 (rc.30): Teams picture ✔, backgrounds ✔, keyer good,
-noise ok. New: (1) Windows camera very pixelated; (2) Windows content paging: page goes out and never comes back; (4) macOS: key or
-picture gone ~1 s every few minutes; (5) SHM engages only after the DLL's 5-s poll. (Graphics stutter = separate WP7/rc.32.)
-Rule: these functions must not regress again — every fix gets a test and a log line that proves it in the field.
+Base: feature/vcam-rc13 @ 8ae984ec (rc.31). Round: 2/3 — PASS.
+Requirement (user): camera stays 1920x1080 on EVERY machine; ghost must go; nothing that works today may regress.
+Field diagnosis (rc.31 on GTX 1660 Ti laptop): ranker picks MJPG 1080p30 (raw only ≤720) → MF software MJPEG decode on the MF thread (~1 core)
++ render-thread costs scale 2.25x (8.3-MB `copyLatestFrameIfNew` under frameMutex_, scalar MODNet pre-pass, 8.3-MB UpdateSubresource);
+governor/cadence see only `sessionRunMs` (frame_pipeline.cpp:644-649, 3064-3069) → CPU overrun invisible → pacing clamp drops frames
+(frame_pipeline_gating.cpp:40-51) → stale/ghost. Stage 2 (rc.32b) = GPU pre-pass + MJPEG HW experiment; NOT in this WP.
 
-## S1 — Windows camera resolution (capture/camera_mediafoundation.cpp, capture/camera_media_type_rank.h)
-- Default `BROADIFY_MEETING_CAMERA_MAX_HEIGHT` 720 → 1080 (env still honoured; 0 = off). Keep the 30-fps clamp.
-- Ranker: never select a type below the requested size when a same-fps candidate ≥ request exists; pixel floor computed against the
-  UNCLAMPED program size; subtype preference (NV12 > YUY2 > MJPG) only decides among candidates ≥ request. Unit test with the three ladders
-  (Logitech MJPG 1080/720 + YUY2 720p10; NV12 1080/720/540; MJPG 1080/720 + YUY2 960x540 + NV12 848x480) asserting 1080p is chosen.
-- Emit `camera_native_media_type_selected` via emitHelperEvent (sidecar) with width/height/fps/subtype — not only cout.
-- Docs: meeting-windows-performance.md (KF-3 note updated: capture 1080, keyer still 512; measured trade-off to be confirmed in field).
+## A1 — Zero-copy camera hand-off (Windows only)
+- `capture/camera_mediafoundation.cpp`: `MfReaderCallback` gets a member `VideoFrame scratch_`; `processSample` swizzles into
+  `scratch_.rgba` (resize = no-op at steady size → no per-capture allocation; today: local `VideoFrame frame` ~:699 + `swizzleBgraToRgba`
+  resize on a fresh vector, pixel_swizzle.cpp:103-113), sets width/height/timestamps, then under `frameMutex_`: `std::swap(scratch_,
+  latestFrame_); hasFrame_ = true;`.
+- New `bool takeLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame)` on `MfReaderCallback`, `MfCaptureSession`,
+  `MediaFoundationCameraSource`: under `frameMutex_`, same predicate as `copyLatestFrameIfNew` (~:442-449), then `std::swap(frame,
+  latestFrame_)` → the consumer's previous buffer (timestamp == lastTimestampNs) now sits in `latestFrame_`, so `waitForFrameOrTimeout`
+  predicates (~:454-456) stay correct with no extra state. Three buffers rotate: scratch / latest / consumer. O(1) under the lock.
+- `capture/camera_source.h`: declare the virtual ONLY inside `#if defined(_WIN32)` (default: forwards to `copyLatestFrameIfNew`) — no
+  vtable change on macOS. Call site `pipeline/frame_pipeline.cpp:~1924` under `#if defined(_WIN32)`; Apple path literally untouched.
+- Keep `copyLatestFrame`/`copyLatestFrameIfNew` unchanged (PiP reads a different session ~:1998-2002; conference programIndex_ switch only
+  moves the pointer). `camera stop` path (`latestCameraFrame = VideoFrame{}` ~:1941) unchanged.
+- Extract the slot logic into a pure, testable class `capture/latest_frame_slot.h` (`publish(VideoFrame&&)`, `takeIfNew(lastTs, frame)`,
+  `copyIfNew`, `hasFrame`), used by `MfReaderCallback`. ctest `latest_frame_slot_test`: take returns true once per timestamp; buffer
+  capacity reused (pointer identity across 3 rotations, zero allocations after warm-up); second take same ts → false; wait-predicate parity.
+- Field: `keyer.get.metrics.camera_copy_ms` ≤ 0.1 at 1080p (was ≥1.5).
 
-## S2 — Content page decode (compose/compositor.cpp:296-322 + callers)
-- Decode off the render thread: a `MediaPageCache` (new compose/media_page_cache.{h,cpp}, platform-neutral) with a worker thread,
-  LRU of 4 decoded pages keyed by path, prefetch of page±1 when `page`/`page_count`/sibling paths are known (control_server.cpp:222-241 parses
-  `page`, `page_count`, `rendered_page_path`; if sibling paths are not available from the payload, derive them from the naming pattern only if
-  the pattern is deterministic — otherwise prefetch nothing and say so in the doc).
-- Render thread: `getMediaLayerImage` returns the previously displayed page until the new one is decoded (never blank-out on flip).
-- No negative cache: a failed open/decode is retried on the next program frame with bounded backoff (250 ms → 2 s), and logged ONCE per path
-  via emitHelperEvent `media_page_load_failed {path, errno/stage}` and `media_page_loaded {path, decode_ms}` on success.
-- Win32 file open via UTF-16 (`_wfopen`/`std::filesystem::path` from UTF-8) so non-ASCII user profiles work; JSON string unescape for the path
-  (json_utils extractStringField keeps escapes — fix or unescape at the call site, with a test `C:\\Users\\Jörg\\…`).
-- Cache key for the GPU upload: monotonic generation counter instead of the `RgbaImage*` address (compositor.cpp:1280/1329, d3d11 uploadLayer).
-- Tests: cache LRU/prefetch/keep-previous semantics; retry after failure; path unescape.
+## A2 — Governor/cadence see the real frame budget (tier step, never camera resolution)
+- Do NOT feed overhead into `addSample` (step-up estimate scales by input area, keyer_governor.cpp:79-84; overhead > budget would march
+  the ladder to Off). Add `void setFrameOverheadMs(double)` to `KeyerAutoGovernor`: `stepDownThresholdMs()` (~:69-73) becomes
+  `max(kOverheadFloorFactor(0.5) * base, base - overhead_)`; `stepUpThresholdMs()` derives from it (hysteresis coherent); override path
+  `stepDownOverrideMs` unchanged. Same `setFrameOverheadMs` on `FusedCadenceController` reducing `budget` in `currentN()`
+  (keyer_cadence.cpp:24-29) with the same floor.
+- frame_pipeline.cpp (Windows fused branch): on frames where fused inference ran, after `programEnd` (~:3311) compute
+  `overhead = programFrameMs - sessionRunMs`, EMA weight 0.2 into a loop-local `fusedOverheadEmaMs`; feed both controllers at the top of the
+  fused branch (before `maybeStepUp`, ~:2635); reset with `fusedGovernor.reset()` (~:3155-3156). One-frame lag acceptable.
+- Anti-flap: existing `minSamples`, `stepUpHoldoff_` (10 s, doubling), `stepUpFactor 0.8`, `tierFirstPolicy` (30 consecutive) untouched;
+  floor guarantees overhead alone never goes below Performance256 and never to Lite/Off.
+- Update the comment at :644-649 (tiering still driven by session cost; the BUDGET shrinks) — do not contradict it.
+- ctest `keyer_governor_test` (new cases, existing cases UNCHANGED): (1) overhead 15 ms + samples 20 ms at Full512 → Balanced320 (today:
+  stays); (2) then 8 ms samples → no step-up (8×2.56 > 0.8×18.3); (3) overhead 30 ms, samples 5 ms at Performance256 → stays (floor), never
+  Lite; (4) override path unaffected. `keyer_cadence_test`: overhead 15 ms, ema 18 ms → N=2 (today N=1).
 
-## S4 — macOS 1-s dropouts (pipeline/frame_pipeline.cpp Apple branch, keyer/subject_presence.h, keyer_chain.cpp)
-- Retained mask: in the `__APPLE__` fused path, when `!fusedKeyerWorkDue && hasCameraFrame && keyerEnabled && previous fused mask exists`,
-  composite with the previous mask (timestamp = current frame) instead of un-keyed — mirror of the Windows branch at ~:2514. Never render
-  raw camera while the keyer is enabled and a prior mask exists.
-- Subject presence (macOS values): `acceptAfterMs` 400 → 1500; collapse hold 12 → 45 frames; above-max-coverage → hold previous mask
-  instead of pass-through. Windows values untouched.
-- AVFoundation: observe `AVCaptureSessionWasInterrupted/InterruptionEnded/RuntimeError` and emit `camera_interrupted/camera_resumed`
-  helper events; stall watchdog emits `camera_stalled/camera_recovered` via emitHelperEvent (not cout).
-- Observability: `setMeetingDegradationStage` changes and `keyer_fallback_change` go through emitHelperEvent so they land in the sidecar log
-  on macOS (`open` swallows stdout). Add `empty_valid`/`no_subject` to `keyer.get`.
-- Tests: presence state machine timings (macOS vs Windows constants); retained-mask selection logic (factor into a pure function).
+## A3 — Metrics + over-budget event
+- `keyer/keyer.h` KeyerMetrics: `cameraUploadMs`, `frameOverheadMs`, `budgetThresholdMs`, `prepassGpu` (false for now). Upload timing
+  around `UpdateSubresource` in `uploadCameraFrame` (compose/d3d11_compositor.cpp:588-602), exposed like `d3d11CompositorCameraUploadCount()`
+  (~:731). TRAP: `keyer_chain.cpp:296-308` re-carries pipeline-owned fields explicitly — add every new field there (else −1 after inference).
+- JSON keys `camera_upload_ms`, `frame_overhead_ms`, `budget_threshold_ms`, `prepass_gpu` in `keyerMetricsJson` (control_server.cpp:152-188)
+  emitted under `#if defined(_WIN32)` → macOS `keyer.get` byte-identical.
+- Helper events `keyer_budget_overrun {program_frame_ms, session_run_ms, tensor_ms, camera_copy_ms, camera_upload_ms, tier, cadence_n}` on
+  entering overrun (EMA of program_frame_ms > budget for ≥30 frames), at most once per 10 s while persisting, and `keyer_budget_recovered`.
+  Pure `BudgetOverrunReporter` class + ctest for the rate limit. NEVER per frame (WP6 R1-4 lesson).
+- Docs: `meeting-windows-performance.md` (new section rc.32a), `meeting-field-checklist.md` rows: "Camera hand-off zero-copy"
+  (camera_copy_ms ≤ 0.1), "Budget visible" (frame_overhead_ms/budget_threshold_ms present; overrun event followed by a tier step within 2 s).
 
-## S5 — DLL SHM poll (vcam-helper/windows/shm_frame_reader.cpp)
-- `kMappingRetryMs` 5000 → 1000 while no mapping / zero geometry; keep 5 s for the stale/backoff case. Doc timing sentence updated (≤ ~3 s).
+## Parity / must NOT change
+- macOS: no Apple hunk; `camera_source.h` vtable unchanged on macOS; `keyer.get` JSON identical; `matting_common.cpp` untouched.
+- Ranker + 1080 default (rc.31 S1) unchanged; no capture-resolution fallback anywhere.
+- Governor `addSample` inputs, `stepDownOverrideMs`, warm-handover, `tierFirstPolicy` unchanged; existing governor/cadence tests pass unmodified.
+- Report must list every hunk in files compiled on macOS but Windows-executed only (keyer_governor.cpp, keyer_cadence.cpp, keyer.h, control_server.cpp).
 
 ## Acceptance
-- macOS: only S4 changes the Apple path (list every Apple-affecting hunk in the report). Windows: S1/S2/S5.
-- lint/jest/build/helper build/ctest green (recorder audio_input_rejected known); Windows CI (test-release/wp6-stabilize) green.
-- Field checklist (docs/bridge/features/meeting-field-checklist.md — NEW): Teams picture, background change < 2 s, page flip keeps
-  previous page until new page, camera 1080p line in sidecar, SHM within 3 s, Mac: no un-keyed frames; which log lines prove each.
+- lint/jest/build/helper build/ctest green (recorder audio_input_rejected known); Windows + macOS CI (test-release/wp7-budget) green.
+- Field (1660 Ti, MJPG 1080p30, Teams): program_fps ≥ 29.5 over 10 min, keyer_pipeline_mode ∈ {fused, fused_cadence}, mask_age_ms ≤ 34,
+  camera_copy_ms ≤ 0.1, program_frame_ms p95 ≤ 30; at most one keyer_budget_overrun per 10 s, each followed by a stage change/recovered.
 
-## Review round 1 (HEAD 4a81fc9b; verifier green) — MUST-FIX
-- R1-1 (S2) Prefetch never fires: bridge writes `page-0001.png` (1-based, width 4), webapp sends 0-based `page`; helper looks for token "1"/"01"
-  and returns early for page<=0 (`media_page_cache.cpp:83-116, 199-214`). Fix: file page = page+1, match token by numeric value, re-pad to the
-  token's width; test `page-0003.png`, page=2, page_count=6 → `page-0002.png` + `page-0004.png`; fix the doc claim.
-- R1-2 (S1) Subtype preference lost for cameras that only offer ≤ request (`camera_media_type_rank.h:85-88`): apply NV12>YUY2>MJPG tie-break
-  whenever both candidates are in the same reach-class AND same pixel count; test `{MJPG 720p30, YUY2 720p30}` request 1080 → YUY2. Delete the
-  dead `sameFpsBucket` branch (N1). Env parse: non-numeric → default, only literal "0" disables (N3). Add 720-clamp assertion test (N4).
-- R1-3 (S4) `lastAppleFusedMask` never invalidated (`frame_pipeline.cpp:2387-2413`): clear it on fused failure/fallback, on keyer disable, on
-  camera switch/geometry mismatch; bound its age (≤ 5000 ms like Windows `kWarmupRetainedMaskAgeMs`) and require width/height == camera frame
-  — reuse `selectRetainedOrEmptyMaskForLiveKeyer` where possible. Test the invalidation cases.
-- R1-4 (S4, touches Windows) `keyer_degradation_stage_change` via emitHelperEvent fires on every fused↔fused_reused flip (per frame/cadence
-  skip) → file open per frame on the render thread + sidecar flood (`keyer_chain.cpp:303-310`). Fix: emit only coarse transitions (exclude
-  fused↔fused_reused and any per-frame stage pairs), and make `emitHelperEvent` cheap (keep the ofstream open, or buffer + flush; never open/close
-  per event). Windows program-loop timing must be unchanged vs rc.30.
-- R1-5 (S4) above-max-coverage (`frame_pipeline.cpp:303-338`): hold the previous mask while coverage > kMaxForegroundCoverage (unbounded
-  hold, macOS), never pass the near-opaque matte through while a prior mask exists.
-Notes: N7 emit events outside `MediaPageCache::mutex_`; N12 real LRU=4 eviction assertion + failed-event-once test, backoff sleep 400 ms;
-N15 rename test reason `"zero_geometry"` to a real reason; N6 list Apple-affecting S2 hunks in the report; `empty_valid` vs `no_subject`
-distinct or one removed; `AVCaptureSessionRuntimeError` → `camera_runtime_error` event; Apple retained branch: set `staleMaskActive` only when
-the retained mask is older than freshMaskAgeMs.
+## Review round 1 (HEAD b46900a0; verifier green; A1/A2 PASS) — MUST-FIX
+- R1-1 `frame_pipeline.cpp:3375-3377`: `BudgetOverrunReporter::update(programFrameMs, budget = fusedBudgetThresholdMs)` — the threshold is
+  already `base − overhead`, program frame ≈ session + overhead → overhead counted twice → permanent spurious `keyer_budget_overrun`
+  (e.g. overhead 12, session 14 → frame 26 > 21.3 while governor correctly does not step). Fix: compare against the REAL frame budget
+  (`stepDownFactor × frameBudgetMs`, i.e. the governor base before overhead subtraction; or `threshold + overheadEma`), never the reduced
+  threshold; keep `budget_threshold_ms` metric as is. Test: overhead 12 / session 14 @30 fps → no event; session 30 → event.
+Notes to fold in: N1 apply the 10-s repeat interval also to re-entry after Recovered; N4 skip the first overhead sample (or seed with 0);
+N5 fix the re-indentation in keyer_governor_test.cpp:306 / keyer_cadence_test.cpp:127-128; N3 comment that camera_upload_ms is "last upload";
+N7 make reporter/EMA loop-locals; N6 comment on LatestFrameSlot::copy() semantics after take.
 
-## Review round 2 (HEAD c7803d31; verifier green; R1-1/R1-2/R1-4 PASS) — MUST-FIX
-- R2-1 REGRESSION (Windows+macOS): `compositor_input_selection.cpp:20-28` now requires mask width/height == camera frame. Masks are never at
-  camera resolution (MODNet 512x288 readback, D3D11 guided work size 512, CoreML refine ≤960) → Windows retained-mask paths
-  (`frame_pipeline.cpp:2327/2556/2795`) fall through to the EMPTY mask (presenter keyed out on every cadence-skip/warmup/governor-off frame);
-  Apple `lastAppleFusedMask` is cleared every frame (S4 never fires). Fix: remove the equality gate (the compositor resamples); at most check
-  aspect ratio within 1 %; restore the rc.30 test expectation (2x1 mask vs 4x2 frame → retained) + add a 512x288-vs-1920x1080 case. Same for the
-  explicit Apple geometry clear at ~:2398-2404 (compare against the mask's own source geometry/camera index, not pixel size).
-- R2-2 macOS over-coverage hold (`frame_pipeline.cpp:285-290`): held mask keeps the stale `timestampNs` → after 5 s `appleRetainedMaskAgeMs`
-  expires → skip frames un-keyed → flicker. Fix: re-stamp `fusedMask.timestampNs` with the current frame timestamp while holding. DECISION:
-  bound the over-coverage hold to 90 frames (~3 s), then pass the matte through (never stuck on a frozen silhouette) — document it.
-Notes: N2 docs — checklist row no longer expects `fused_reused`; performance doc subtype wording; mention 5-s bound + 3-s hold.
-N3 `no_subject` false for `background_only` — state in report (no consumer). N5 gate prefetch scan on path change.
-
-## Review round 3 (HEAD 3cabe1aa) — PASS. rc.30 parity of Windows retained-mask logic proven by empty diff. Notes: collapse hold does not re-stamp (status-only), presence tracker not fed during over-coverage hold, lastPrefetchPath_ never cleared. Verifier green.
+## Review round 2 (HEAD f59cdfa6) — PASS. Notes: reporter budget = 1000/fps (stepDownFactor is 1.0 everywhere today); MAX_INFERENCE_MS-Override → wiederkehrende Overrun-Events by design; N7 statics stilistisch; latest_frame_slot.h copy()-Kommentar nach take ungenau (kein Live-Caller); kein Test am Call-Site-Budget. Verifier grün.

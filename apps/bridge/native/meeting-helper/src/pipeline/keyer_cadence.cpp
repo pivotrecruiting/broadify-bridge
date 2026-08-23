@@ -4,6 +4,11 @@
 #include <cmath>
 
 namespace broadify::meeting {
+namespace {
+
+constexpr double kOverheadFloorFactor = 0.5;
+
+}  // namespace
 
 FusedCadenceController::FusedCadenceController(const FusedCadenceConfig &config)
     : config_(config) {}
@@ -21,7 +26,9 @@ int FusedCadenceController::currentN() const {
   if (emaMs_ <= 0.0) {
     return 1;
   }
-  const double budget = config_.frameBudgetMs * config_.headroom;
+  const double baseBudget = config_.frameBudgetMs * config_.headroom;
+  const double budget =
+      std::max(kOverheadFloorFactor * baseBudget, baseBudget - frameOverheadMs_);
   if (budget <= 0.0) {
     return 1;
   }
@@ -72,8 +79,13 @@ void FusedCadenceController::setForceEveryFrame(bool forceEveryFrame) {
   config_.forceEveryFrame = forceEveryFrame;
 }
 
+void FusedCadenceController::setFrameOverheadMs(double overheadMs) {
+  frameOverheadMs_ = std::max(0.0, overheadMs);
+}
+
 void FusedCadenceController::reset() {
   emaMs_ = -1.0;
+  frameOverheadMs_ = 0.0;
   lastInferredTsNs_ = 0u;
   framesSinceInference_ = 0;
 }

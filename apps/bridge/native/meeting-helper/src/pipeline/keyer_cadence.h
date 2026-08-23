@@ -79,6 +79,7 @@ class FusedCadenceController {
                             TimePoint now);
 
   void setForceEveryFrame(bool forceEveryFrame);
+  void setFrameOverheadMs(double overheadMs);
 
   // Effective inference interval in frames (1 = every frame).
   int currentN() const;
@@ -89,6 +90,7 @@ class FusedCadenceController {
  private:
   FusedCadenceConfig config_{};
   double emaMs_ = -1.0;
+  double frameOverheadMs_ = 0.0;
   uint64_t lastInferredTsNs_ = 0u;
   int framesSinceInference_ = 0;
 };
