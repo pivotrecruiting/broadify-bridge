@@ -338,6 +338,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/keyer_cadence_test.cpp
     src/pipeline/keyer_cadence.cpp
   )
+  add_executable(budget_overrun_reporter_test
+    tests/budget_overrun_reporter_test.cpp
+  )
   add_executable(mask_retention_test
     tests/mask_retention_test.cpp
     src/pipeline/mask_retention.cpp
@@ -479,6 +482,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     latest_frame_slot_test
     keyer_governor_test
     keyer_cadence_test
+    budget_overrun_reporter_test
     mask_retention_test
     subject_presence_test
     frame_pipeline_stall_test

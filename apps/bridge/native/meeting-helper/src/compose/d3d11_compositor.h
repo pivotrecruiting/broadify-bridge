@@ -36,6 +36,8 @@ void resetGuidedRefineD3D11History();
 
 uint64_t d3d11CompositorCameraUploadCount();
 
+double d3d11CompositorCameraUploadMs();
+
 uint32_t d3d11CompositorStagingReadbackDepth();
 
 std::string d3d11CompositorAdapterStatus();

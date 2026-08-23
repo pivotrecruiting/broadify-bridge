@@ -10,6 +10,9 @@ namespace broadify::meeting {
 
 struct KeyerMetrics {
   double cameraCopyMs = -1.0;
+  double cameraUploadMs = -1.0;
+  double frameOverheadMs = -1.0;
+  double budgetThresholdMs = -1.0;
   double tensorMs = -1.0;
   double sessionRunMs = -1.0;
   double maskApplyMs = -1.0;
@@ -39,6 +42,7 @@ struct KeyerMetrics {
   uint64_t vcamPublishDropped = 0;
   uint64_t cameraTextureUploads = 0;
   uint32_t stagingReadbackDepth = 0;
+  bool prepassGpu = false;
 };
 
 struct KeyerDegradationSettings {

@@ -18,6 +18,7 @@
 #include "pipeline/subject_presence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
+#include "pipeline/budget_overrun_reporter.h"
 #include "pipeline/mask_retention.h"
 #include "pipeline/tier_handover.h"
 #include "preview/vcam_shm_publisher.h"
@@ -505,6 +506,24 @@ void emitKeyerNotReadyEvent(const char *reason) {
 std::string canonicalKeyerPathLabel(const std::string &label) {
   return label == "fused_cadence" ? std::string("fused") : label;
 }
+
+#if defined(_WIN32)
+const char *governorTierLabel(GovernorTier tier) {
+  switch (tier) {
+    case GovernorTier::Full512:
+      return "full512";
+    case GovernorTier::Balanced320:
+      return "balanced320";
+    case GovernorTier::Performance256:
+      return "performance256";
+    case GovernorTier::Lite256:
+      return "lite256";
+    case GovernorTier::Off:
+      return "off";
+  }
+  return "unknown";
+}
+#endif
 
 // BROADIFY_MEETING_KEYER_CADENCE: unset/"auto" -> auto-derive the fused
 // inference interval N from the smoothed inference cost; "0" -> cadence inert
@@ -1904,9 +1923,14 @@ void runFramePipeline(const Options &options,
         runtime.previewClients > 0 || runtime.vcamTcpClients > 0;
     const auto programStart = std::chrono::steady_clock::now();
 #if defined(_WIN32)
+    static BudgetOverrunReporter fusedBudgetOverrunReporter;
     static double fusedOverheadEmaMs = -1.0;
     bool fusedInferenceRanThisFrame = false;
     double fusedInferenceSessionRunMs = -1.0;
+    double fusedInferenceTensorMs = -1.0;
+    double fusedBudgetThresholdMs = -1.0;
+    int fusedCadenceNForEvent = 1;
+    const char *fusedTierForEvent = "unknown";
 #endif
     const bool staticHeartbeatDue =
         lastStaticHeartbeatAt == std::chrono::steady_clock::time_point{} ||
@@ -2537,6 +2561,8 @@ void runFramePipeline(const Options &options,
         static std::string lastReportedPipelineMode;
         fusedGovernor.setFrameOverheadMs(fusedOverheadEmaMs);
         fusedCadence.setFrameOverheadMs(fusedOverheadEmaMs);
+        fusedBudgetThresholdMs = fusedGovernor.budgetThresholdMs();
+        fusedTierForEvent = governorTierLabel(fusedGovernor.tier());
         fusedCadence.setForceEveryFrame(runtime.vcamClients > 0);
         // Path-transition reset: invoked whenever the ACTIVE keyer path
         // changes between fused (fused_cadence counts as fused), async_lite
@@ -2961,6 +2987,7 @@ void runFramePipeline(const Options &options,
                 fusedInferenceRanThisFrame =
                     fused.status.metrics.sessionRunMs > 0.0;
                 fusedInferenceSessionRunMs = fused.status.metrics.sessionRunMs;
+                fusedInferenceTensorMs = fused.status.metrics.tensorMs;
                 fusedPipelineModeLabel = "fused";
                 std::lock_guard<std::mutex> lock(state.mutex);
                 state.keyerMetrics.maskAgeMs = 0.0;
@@ -3079,6 +3106,7 @@ void runFramePipeline(const Options &options,
                 fusedInferenceRanThisFrame =
                     fused.status.metrics.sessionRunMs > 0.0;
                 fusedInferenceSessionRunMs = fused.status.metrics.sessionRunMs;
+                fusedInferenceTensorMs = fused.status.metrics.tensorMs;
                 if (governorAutoEnabled) {
                   fusedGovernor.addSample(fused.status.metrics.sessionRunMs,
                                           fusedNow);
@@ -3173,6 +3201,7 @@ void runFramePipeline(const Options &options,
           // reset on camera hiccups - those must not wipe governor learning.
           fusedGovernor.reset();
           fusedCadence.reset();
+          fusedBudgetOverrunReporter.reset();
           fusedOverheadEmaMs = -1.0;
           lastFusedRawMask = AlphaMask{};
           lastGoodMask = AlphaMask{};
@@ -3240,6 +3269,9 @@ void runFramePipeline(const Options &options,
         // this flag and mute their telemetry writes while it is set.
         g_fusedStepDownOverlapActive =
             fusedHandover.phase() == TierHandover::Phase::Overlap;
+        fusedBudgetThresholdMs = fusedGovernor.budgetThresholdMs();
+        fusedTierForEvent = governorTierLabel(fusedGovernor.tier());
+        fusedCadenceNForEvent = fusedCadence.currentN();
         if (hasCameraFrame && snapshot.keyerEnabled &&
             maskForCompositor == nullptr && !latestCameraFrame.rgba.empty() &&
             selectLiveFusedFallbackMask(fusedMask)) {
@@ -3332,6 +3364,7 @@ void runFramePipeline(const Options &options,
       const double programFrameMs = elapsedMs(programStart, programEnd);
       const double cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
 #if defined(_WIN32)
+      const double cameraUploadMs = d3d11CompositorCameraUploadMs();
       if (fusedInferenceRanThisFrame && fusedInferenceSessionRunMs > 0.0) {
         const double frameOverheadMs =
             std::max(0.0, programFrameMs - fusedInferenceSessionRunMs);
@@ -3339,6 +3372,23 @@ void runFramePipeline(const Options &options,
             fusedOverheadEmaMs < 0.0
                 ? frameOverheadMs
                 : 0.2 * frameOverheadMs + 0.8 * fusedOverheadEmaMs;
+        const BudgetOverrunEvent budgetEvent =
+            fusedBudgetOverrunReporter.update(programFrameMs,
+                                              fusedBudgetThresholdMs,
+                                              programEnd);
+        if (budgetEvent == BudgetOverrunEvent::Overrun) {
+          emitHelperEvent(
+              "{\"type\":\"keyer_budget_overrun\",\"program_frame_ms\":" +
+              std::to_string(programFrameMs) + ",\"session_run_ms\":" +
+              std::to_string(fusedInferenceSessionRunMs) +
+              ",\"tensor_ms\":" + std::to_string(fusedInferenceTensorMs) +
+              ",\"camera_copy_ms\":" + std::to_string(cameraCopyMs) +
+              ",\"camera_upload_ms\":" + std::to_string(cameraUploadMs) +
+              ",\"tier\":\"" + fusedTierForEvent + "\",\"cadence_n\":" +
+              std::to_string(fusedCadenceNForEvent) + "}");
+        } else if (budgetEvent == BudgetOverrunEvent::Recovered) {
+          emitHelperEvent("{\"type\":\"keyer_budget_recovered\"}");
+        }
       }
 #endif
       programRate.tick(programEnd);
@@ -3360,6 +3410,10 @@ void runFramePipeline(const Options &options,
         state.keyerMetrics.programFps = programRate.value(programEnd);
         state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
 #if defined(_WIN32)
+        state.keyerMetrics.cameraUploadMs = cameraUploadMs;
+        state.keyerMetrics.frameOverheadMs = fusedOverheadEmaMs;
+        state.keyerMetrics.budgetThresholdMs = fusedBudgetThresholdMs;
+        state.keyerMetrics.prepassGpu = false;
         if (vcamShmPublisher != nullptr) {
           const VcamShmPublisherMetrics metrics = vcamShmPublisher->metrics();
           state.keyerMetrics.vcamPublishDropped = metrics.droppedFrames;

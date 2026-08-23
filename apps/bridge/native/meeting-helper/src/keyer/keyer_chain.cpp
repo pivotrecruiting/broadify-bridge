@@ -294,6 +294,10 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.modelHashOk = status.modelHashOk;
   KeyerMetrics mergedMetrics = status.metrics;
   mergedMetrics.cameraCopyMs = state.keyerMetrics.cameraCopyMs;
+  mergedMetrics.cameraUploadMs = state.keyerMetrics.cameraUploadMs;
+  mergedMetrics.frameOverheadMs = state.keyerMetrics.frameOverheadMs;
+  mergedMetrics.budgetThresholdMs = state.keyerMetrics.budgetThresholdMs;
+  mergedMetrics.prepassGpu = state.keyerMetrics.prepassGpu;
   mergedMetrics.maskAgeMs = state.keyerMetrics.maskAgeMs;
   mergedMetrics.maskAgeAvgMs = state.keyerMetrics.maskAgeAvgMs;
   mergedMetrics.keyerPublishToProgramMs = state.keyerMetrics.keyerPublishToProgramMs;
