@@ -124,8 +124,16 @@ int main() {
     ok &= expect(runs == 2, "pinned N=3 runs every third frame (2 of 6)");
   }
 
-  {
-    // VCam client policy pins cadence to every frame at runtime.
+    {
+      FusedCadenceController cadence(testConfig());
+      cadence.setFrameOverheadMs(15.0);
+      cadence.onInferenceCompleted(kFrameNs, 18.0, at(0));
+      ok &= expect(cadence.currentN() == 2,
+                   "15ms overhead makes 18ms EMA select N=2");
+    }
+
+    {
+      // VCam client policy pins cadence to every frame at runtime.
     FusedCadenceController cadence(testConfig());
     cadence.onInferenceCompleted(kFrameNs, 100.0, at(0));
     ok &= expect(cadence.currentN() == kExpectedMaxN,
