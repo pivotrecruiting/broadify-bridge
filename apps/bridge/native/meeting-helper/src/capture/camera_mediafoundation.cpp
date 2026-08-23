@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
@@ -27,6 +28,7 @@
 #include <functional>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -210,8 +212,19 @@ uint32_t cameraMaxHeightFromEnv() {
   if (raw == nullptr || raw[0] == '\0') {
     return 1080u;
   }
-  const int parsed = std::atoi(raw);
-  return parsed >= 0 ? static_cast<uint32_t>(parsed) : 1080u;
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0') {
+    return 1080u;
+  }
+  if (parsed == 0ul) {
+    return raw[0] == '0' && raw[1] == '\0' ? 0u : 1080u;
+  }
+  if (parsed > std::numeric_limits<uint32_t>::max()) {
+    return 1080u;
+  }
+  return static_cast<uint32_t>(parsed);
 }
 
 CameraCaptureRequest clampCameraCaptureRequest(uint32_t width,

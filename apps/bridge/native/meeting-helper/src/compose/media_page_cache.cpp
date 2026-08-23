@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 
 #if defined(_WIN32)
@@ -27,7 +28,7 @@ namespace broadify::meeting {
 namespace {
 
 constexpr size_t kMaxDecodedPages = 4u;
-constexpr auto kInitialRetryDelay = std::chrono::milliseconds(250);
+constexpr auto kInitialRetryDelay = std::chrono::milliseconds(400);
 constexpr auto kMaxRetryDelay = std::chrono::milliseconds(2000);
 
 std::vector<uint8_t> readFileBytes(const std::string &path, int &errorCode) {
@@ -82,6 +83,24 @@ std::string zeroPadNumber(int value, size_t width) {
   return out.str();
 }
 
+bool parsePositiveIntToken(const std::string &token, int &value) {
+  value = 0;
+  if (token.empty()) {
+    return false;
+  }
+  for (const char ch : token) {
+    if (!isDigit(ch)) {
+      return false;
+    }
+    const int digit = ch - '0';
+    if (value > (std::numeric_limits<int>::max() - digit) / 10) {
+      return false;
+    }
+    value = value * 10 + digit;
+  }
+  return value > 0;
+}
+
 }  // namespace
 
 std::string deriveSiblingMediaPagePathForTesting(const std::string &path,
@@ -90,8 +109,6 @@ std::string deriveSiblingMediaPagePathForTesting(const std::string &path,
   if (path.empty() || currentPage <= 0 || targetPage <= 0) {
     return {};
   }
-  const std::string current = std::to_string(currentPage);
-  const std::string currentPadded = zeroPadNumber(currentPage, 2u);
   const size_t fileStart = path.find_last_of("/\\") == std::string::npos
                                ? 0u
                                : path.find_last_of("/\\") + 1u;
@@ -106,7 +123,8 @@ std::string deriveSiblingMediaPagePathForTesting(const std::string &path,
       ++pos;
     }
     const std::string token = path.substr(start, pos - start);
-    if (token == current || token == currentPadded) {
+    int tokenValue = 0;
+    if (parsePositiveIntToken(token, tokenValue) && tokenValue == currentPage) {
       matches.push_back({start, token.size()});
     }
   }
@@ -187,15 +205,18 @@ void MediaPageCache::enqueueLocked(const std::string &path, bool prefetch) {
 void MediaPageCache::prefetchSiblingsLocked(const std::string &path,
                                            int page,
                                            int pageCount) {
-  if (page <= 0 || pageCount <= 0) {
+  if (page < 0 || pageCount <= 0) {
     return;
   }
-  for (int sibling : {page - 1, page + 1}) {
-    if (sibling < 1 || sibling > pageCount) {
+  const int currentFilePage = page + 1;
+  for (int siblingPage : {page - 1, page + 1}) {
+    if (siblingPage < 0 || siblingPage >= pageCount) {
       continue;
     }
+    const int siblingFilePage = siblingPage + 1;
     const std::string siblingPath =
-        deriveSiblingMediaPagePathForTesting(path, page, sibling);
+        deriveSiblingMediaPagePathForTesting(path, currentFilePage,
+                                             siblingFilePage);
     if (!siblingPath.empty()) {
       enqueueLocked(siblingPath, true);
     }
@@ -239,37 +260,44 @@ void MediaPageCache::finishLoad(const std::string &path,
                                 const std::string &stage,
                                 int errorCode,
                                 double decodeMs) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  Entry &entry = entries_[path];
-  entry.loading = false;
-  entry.lastUse = useCounter_++;
-  if (image) {
-    entry.image = image;
-    entry.generation = nextGeneration_++;
-    entry.failures = 0u;
-    entry.failedLogged = false;
-    entry.nextRetryAt = {};
-    pruneLocked();
-    std::ostringstream event;
-    event << "{\"type\":\"media_page_loaded\",\"path\":\"" << jsonEscape(path)
-          << "\",\"decode_ms\":" << decodeMs << "}";
-    emitHelperEvent(event.str());
-  } else {
-    entry.image.reset();
-    entry.failures = std::min<uint32_t>(entry.failures + 1u, 4u);
-    const auto delay = std::min(kInitialRetryDelay * (1 << (entry.failures - 1u)),
-                                kMaxRetryDelay);
-    entry.nextRetryAt = std::chrono::steady_clock::now() + delay;
-    if (!entry.failedLogged) {
+  std::string eventJson;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Entry &entry = entries_[path];
+    entry.loading = false;
+    entry.lastUse = useCounter_++;
+    if (image) {
+      entry.image = image;
+      entry.generation = nextGeneration_++;
+      entry.failures = 0u;
+      entry.failedLogged = false;
+      entry.nextRetryAt = {};
+      pruneLocked();
       std::ostringstream event;
-      event << "{\"type\":\"media_page_load_failed\",\"path\":\""
-            << jsonEscape(path) << "\",\"stage\":\"" << jsonEscape(stage)
-            << "\",\"errno\":" << errorCode << "}";
-      emitHelperEvent(event.str());
-      entry.failedLogged = true;
+      event << "{\"type\":\"media_page_loaded\",\"path\":\"" << jsonEscape(path)
+            << "\",\"decode_ms\":" << decodeMs << "}";
+      eventJson = event.str();
+    } else {
+      entry.image.reset();
+      entry.failures = std::min<uint32_t>(entry.failures + 1u, 4u);
+      const auto delay =
+          std::min(kInitialRetryDelay * (1 << (entry.failures - 1u)),
+                   kMaxRetryDelay);
+      entry.nextRetryAt = std::chrono::steady_clock::now() + delay;
+      if (!entry.failedLogged) {
+        std::ostringstream event;
+        event << "{\"type\":\"media_page_load_failed\",\"path\":\""
+              << jsonEscape(path) << "\",\"stage\":\"" << jsonEscape(stage)
+              << "\",\"errno\":" << errorCode << "}";
+        eventJson = event.str();
+        entry.failedLogged = true;
+      }
     }
+    idleCv_.notify_all();
   }
-  idleCv_.notify_all();
+  if (!eventJson.empty()) {
+    emitHelperEvent(eventJson);
+  }
 }
 
 void MediaPageCache::pruneLocked() {

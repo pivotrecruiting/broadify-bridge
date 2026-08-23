@@ -616,10 +616,7 @@ std::string handleRpc(const std::string &line,
                    ? "true"
                    : "false")
            << ",\"no_subject\":"
-           << (state.degradationStage == "no_subject" ||
-                       state.degradationStage == "background_only"
-                   ? "true"
-                   : "false")
+           << (state.degradationStage == "no_subject" ? "true" : "false")
            << ",\"compositor\":\"" << jsonEscape(state.compositorBackend)
            << "\",\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"")
            << ",\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"")

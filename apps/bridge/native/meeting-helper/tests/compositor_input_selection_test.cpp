@@ -37,7 +37,7 @@ int main() {
   lastGood.alpha = {255u, 128u};
   AlphaMask selected;
   ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
-                   lastGood, 2'500'000'000ull, 4u, 2u, selected),
+                   lastGood, 2'500'000'000ull, 2u, 1u, selected),
                "live keyer selects retained mask within 2s");
   ok &= expect(selected.alpha == lastGood.alpha &&
                    selected.timestampNs == 2'500'000'000ull &&
@@ -49,6 +49,12 @@ int main() {
   ok &= expect(selected.width == 4u && selected.height == 2u &&
                    selected.alpha.size() == 8u && selected.emptyValid,
                "expired retention becomes a keyed zero mask");
+  ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
+                   lastGood, 2'500'000'000ull, 4u, 2u, selected),
+               "geometry mismatch selects empty mask instead of retained");
+  ok &= expect(selected.width == 4u && selected.height == 2u &&
+                   selected.emptyValid,
+               "geometry mismatch uses current frame dimensions");
   ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
                    AlphaMask{}, 5'000'000ull, 3u, 2u, selected),
                "startup with loaded keyer selects empty mask");

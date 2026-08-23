@@ -82,6 +82,13 @@ std::string readKeyerQualityOverride() {
 }
 #endif
 
+std::string coarseDegradationStage(const std::string &stage) {
+  if (stage == "fused_reused") {
+    return "fused";
+  }
+  return stage;
+}
+
 }  // namespace
 
 KeyerChain::KeyerChain(const Options &options)
@@ -301,10 +308,11 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
 
 void setMeetingDegradationStage(MeetingState &state, const std::string &stage) {
   static std::string lastLoggedStage;
-  if (stage != lastLoggedStage) {
-    lastLoggedStage = stage;
+  const std::string coarseStage = coarseDegradationStage(stage);
+  if (coarseStage != lastLoggedStage) {
+    lastLoggedStage = coarseStage;
     emitHelperEvent("{\"type\":\"keyer_degradation_stage_change\","
-                    "\"degradation_stage\":\"" + jsonEscape(stage) + "\"}");
+                    "\"degradation_stage\":\"" + jsonEscape(coarseStage) + "\"}");
   }
   state.degradationStage = stage;
 }

@@ -741,7 +741,7 @@ class AvFoundationCameraSource final : public CameraSource {
                   NSError *error = note.userInfo[AVCaptureSessionErrorKey];
                   const char *message =
                       error != nil ? error.localizedDescription.UTF8String : "";
-                  emitCameraSessionEvent("camera_interrupted", cameraIndex,
+                  emitCameraSessionEvent("camera_runtime_error", cameraIndex,
                                          message != nullptr ? message : "");
                 }];
     stream->notificationTokens = {interruptedToken, endedToken,

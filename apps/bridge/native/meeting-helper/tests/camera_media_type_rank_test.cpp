@@ -102,5 +102,19 @@ int main() {
   ok &= expect(chooseIndex(subtypeTieTypes, 1920, 1080, 30) == 2,
                "NV12 wins among otherwise equal raw formats");
 
+  const std::vector<CaseMediaType> belowRequestSubtypeTieTypes{
+      {"MJPG 720p30", {30.0, 1280, 720, kMjpg}},
+      {"YUY2 720p30", {30.0, 1280, 720, kYuy2}},
+  };
+  ok &= expect(chooseIndex(belowRequestSubtypeTieTypes, 1920, 1080, 30) == 1,
+               "YUY2 wins same-size tie when all formats are below request");
+
+  const std::vector<CaseMediaType> clamped720Types{
+      {"YUY2 720p30", {30.0, 1280, 720, kYuy2}},
+      {"MJPG 1080p30", {30.0, 1920, 1080, kMjpg}},
+  };
+  ok &= expect(chooseIndex(clamped720Types, 1280, 720, 30) == 0,
+               "720p clamp request prefers same-size raw over larger MJPG");
+
   return ok ? 0 : 1;
 }

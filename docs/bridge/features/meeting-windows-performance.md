@@ -157,9 +157,12 @@ innerhalb von ca. 3 s nach Helper-Start sichtbar werden.
 Gerenderte Content-/Deck-Seiten werden nicht mehr auf dem Render-Thread
 dekodiert. Der Helper haelt bis zu vier dekodierte Seiten im LRU-Cache, laedt
 Seiten auf einem Worker und zeigt beim Seitenwechsel die zuletzt dekodierte
-Seite weiter, bis die neue Seite bereit ist. Prefetch laeuft fuer `page +/- 1`
-nur, wenn der Pfad ein eindeutiges Seitennummern-Muster enthaelt (z. B.
-`page-02.png`); bei nicht-deterministischen Pfaden wird nichts vorab geladen.
+Seite weiter, bis die neue Seite bereit ist. Prefetch laeuft fuer die
+0-basierte Steuerseitenzahl `page +/- 1`; Dateinamen sind 1-basiert, deshalb
+wird z. B. bei `page: 2` und `page-0003.png` `page-0002.png` und
+`page-0004.png` vorgeladen. Das passiert nur, wenn der Pfad ein eindeutiges
+Seitennummern-Muster enthaelt; bei nicht-deterministischen Pfaden wird nichts
+vorab geladen.
 Erfolg und Fehler stehen als `media_page_loaded` bzw.
 `media_page_load_failed` in den Helper-Events.
 

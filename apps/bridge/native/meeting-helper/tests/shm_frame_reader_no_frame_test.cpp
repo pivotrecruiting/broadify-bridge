@@ -21,7 +21,7 @@ int main() {
   CHECK(ShmFrameReader::NoFrameDeadlineExpired(false, 1000, 3000));
   CHECK(ShmFrameReader::NoFrameDeadlineExpired(false, 1000, 4500));
   CHECK(ShmFrameReader::RetryDelayMsForReason("control_mapping_absent") == 1000);
-  CHECK(ShmFrameReader::RetryDelayMsForReason("zero_geometry") == 1000);
+  CHECK(ShmFrameReader::RetryDelayMsForReason("invalid_stream_header") == 1000);
   CHECK(ShmFrameReader::RetryDelayMsForReason("shm_no_frame_after_open") == 5000);
   CHECK(ShmFrameReader::RetryDelayMsForReason("shm_heartbeat_stale") == 5000);
 

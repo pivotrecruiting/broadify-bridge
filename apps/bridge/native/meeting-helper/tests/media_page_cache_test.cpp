@@ -5,11 +5,15 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <thread>
+
+#include "util/helper_event_log.h"
 
 using broadify::meeting::MediaPageCache;
 using broadify::meeting::MediaPageImage;
 using broadify::meeting::deriveSiblingMediaPagePathForTesting;
+using broadify::meeting::setHelperEventLogPath;
 
 #define CHECK(expr)                                                     \
   do {                                                                  \
@@ -39,6 +43,19 @@ void writeByte(const std::filesystem::path &path, uint8_t value) {
   file.put(static_cast<char>(value));
 }
 
+int countLinesContaining(const std::filesystem::path &path,
+                         const std::string &needle) {
+  std::ifstream file(path);
+  int count = 0;
+  std::string line;
+  while (std::getline(file, line)) {
+    if (line.find(needle) != std::string::npos) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 }  // namespace
 
 int main() {
@@ -47,54 +64,68 @@ int main() {
       ("broadify-media-page-cache-" + std::to_string(std::rand()));
   std::filesystem::create_directories(dir);
 
+  const std::filesystem::path eventLog = dir / "events.jsonl";
+  setHelperEventLogPath(eventLog.string());
+
   CHECK(deriveSiblingMediaPagePathForTesting(
-            (dir / "deck-page-02.png").string(), 2, 3)
-            .find("deck-page-03.png") != std::string::npos);
+            (dir / "deck-page-0003.png").string(), 3, 4)
+            .find("deck-page-0004.png") != std::string::npos);
   CHECK(deriveSiblingMediaPagePathForTesting(
             (dir / "deck-02-page-02.png").string(), 2, 3)
             .empty());
 
   for (int page = 1; page <= 6; ++page) {
-    writeByte(dir / ("deck-page-0" + std::to_string(page) + ".png"),
-              static_cast<uint8_t>(page));
+    std::ostringstream name;
+    name << "deck-page-000" << page << ".png";
+    writeByte(dir / name.str(), static_cast<uint8_t>(page));
   }
 
   MediaPageCache cache(decodeBytes);
-  const std::string page2 = (dir / "deck-page-02.png").string();
-  CHECK(!cache.get(page2, 2, 6).image);
+  const std::string page3 = (dir / "deck-page-0003.png").string();
+  CHECK(!cache.get(page3, 2, 6).image);
   cache.waitForIdleForTesting();
-  const auto loaded2 = cache.get(page2, 2, 6);
-  CHECK(loaded2.image);
-  CHECK(loaded2.image->rgba[0] == 2u);
-  CHECK(loaded2.generation != 0u);
+  const auto loaded3 = cache.get(page3, 2, 6);
+  CHECK(loaded3.image);
+  CHECK(loaded3.image->rgba[0] == 3u);
+  CHECK(loaded3.generation != 0u);
 
-  const std::string page3 = (dir / "deck-page-03.png").string();
+  const std::string page2 = (dir / "deck-page-0002.png").string();
+  const std::string page4 = (dir / "deck-page-0004.png").string();
   cache.waitForIdleForTesting();
-  CHECK(cache.get(page3, 3, 6).image);
+  CHECK(cache.get(page2, 1, 6).image);
+  CHECK(cache.get(page4, 3, 6).image);
 
-  const std::string missing = (dir / "deck-page-09.png").string();
-  const auto held = cache.get(missing, 9, 9);
+  const std::string missing = (dir / "deck-page-0009.png").string();
+  const auto held = cache.get(missing, 8, 0);
   CHECK(held.image);
-  CHECK(held.image->rgba[0] == 3u);
+  CHECK(held.image->rgba[0] == 4u);
   cache.waitForIdleForTesting();
+  CHECK(countLinesContaining(eventLog, "deck-page-0009.png") == 1);
+  (void)cache.get(missing, 8, 0);
+  cache.waitForIdleForTesting();
+  CHECK(countLinesContaining(eventLog, "deck-page-0009.png") == 1);
   writeByte(missing, 9u);
-  std::this_thread::sleep_for(std::chrono::milliseconds(280));
-  CHECK(cache.get(missing, 9, 9).image);
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  CHECK(cache.get(missing, 8, 0).image);
   cache.waitForIdleForTesting();
-  const auto loaded9 = cache.get(missing, 9, 9);
+  const auto loaded9 = cache.get(missing, 8, 0);
   CHECK(loaded9.image);
   CHECK(loaded9.image->rgba[0] == 9u);
 
   for (int page = 1; page <= 6; ++page) {
-    const std::string path =
-        (dir / ("deck-page-0" + std::to_string(page) + ".png")).string();
-    (void)cache.get(path, page, 6);
+    std::ostringstream name;
+    name << "deck-page-000" << page << ".png";
+    const std::string path = (dir / name.str()).string();
+    (void)cache.get(path, page - 1, 6);
     cache.waitForIdleForTesting();
   }
-  const auto page2Again = cache.get(page2, 2, 6);
-  CHECK(page2Again.image);
-  CHECK(page2Again.pending || page2Again.image->rgba[0] == 2u);
+  const std::string page1 = (dir / "deck-page-0001.png").string();
+  const auto page1Again = cache.get(page1, 0, 6);
+  CHECK(page1Again.pending);
+  CHECK(page1Again.image);
+  CHECK(page1Again.image->rgba[0] == 6u);
 
+  setHelperEventLogPath("");
   std::filesystem::remove_all(dir);
   std::cout << "media_page_cache_test passed\n";
   return 0;
