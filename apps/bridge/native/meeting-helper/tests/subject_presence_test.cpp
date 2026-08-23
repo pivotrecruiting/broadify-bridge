@@ -17,7 +17,11 @@ bool expect(bool condition, const char *what) {
 
 constexpr double kEmpty = 0.0005;    // clearly below the 0.002 floor
 constexpr double kPresent = 0.05;    // clearly above the floor
+#if defined(_WIN32)
 constexpr double kAcceptAfterMs = 400.0;
+#else
+constexpr double kAcceptAfterMs = 1500.0;
+#endif
 
 }  // namespace
 
@@ -96,7 +100,7 @@ int main() {
       slowPresence = slow.feed(kEmpty, true, nowMs);
     }
     ok &= expect(slowPresence == SubjectPresence::ConfirmedEmpty,
-                 "slow cadence confirms at 1500ms wall time");
+                 "slow cadence confirms at the platform acceptAfterMs");
 
     SubjectPresenceTracker fast;
     nowMs = 0.0;
@@ -106,11 +110,11 @@ int main() {
     for (int frame = 0; frame < fastFramesBeforeAccept; ++frame) {
       nowMs += 4.0;
       ok &= expect(fast.feed(kEmpty, true, nowMs) == SubjectPresence::BridgingDropout,
-                   "fast cadence does not confirm before 1500ms wall time");
+                   "fast cadence does not confirm before platform acceptAfterMs");
     }
     nowMs += 4.0;
     ok &= expect(fast.feed(kEmpty, true, nowMs) == SubjectPresence::ConfirmedEmpty,
-                 "fast cadence confirms at 1500ms wall time");
+                 "fast cadence confirms at platform acceptAfterMs");
   }
 
   {

@@ -3,6 +3,7 @@
 #if defined(__APPLE__)
 
 #include "macos/macos_app.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -88,7 +89,18 @@ void emitCameraPermissionEvent(const std::string &status) {
   std::ostringstream event;
   event << "{\"type\":\"camera_permission_completed\",\"camera_permission_status\":\""
         << jsonEscape(status) << "\"}";
-  std::cout << event.str() << std::endl;
+  emitHelperEvent(event.str());
+}
+
+void emitCameraSessionEvent(const char *type, int cameraIndex,
+                            const std::string &reason) {
+  std::ostringstream event;
+  event << "{\"type\":\"" << type << "\",\"camera_index\":" << cameraIndex;
+  if (!reason.empty()) {
+    event << ",\"reason\":\"" << jsonEscape(reason) << "\"";
+  }
+  event << "}";
+  emitHelperEvent(event.str());
 }
 
 void requestCameraAccessOnMainThread(void (^completion)(BOOL granted)) {
@@ -330,6 +342,10 @@ class AvFoundationCameraSource final : public CameraSource {
         running_ = false;
       }
       for (auto &entry : streams) {
+        for (id token : entry.second->notificationTokens) {
+          [[NSNotificationCenter defaultCenter] removeObserver:token];
+        }
+        entry.second->notificationTokens.clear();
         if (entry.second->output != nil) {
           [entry.second->output setSampleBufferDelegate:nil queue:nil];
         }
@@ -634,6 +650,7 @@ class AvFoundationCameraSource final : public CameraSource {
     BroadifyCameraAudioDelegate *audioDelegate = nil;
     dispatch_queue_t audioQueue = nil;
     float audioLevel = 0.0f;
+    std::vector<id> notificationTokens;
   };
 
   // Opens a camera device into a new stream (not yet added to streams_).
@@ -697,6 +714,38 @@ class AvFoundationCameraSource final : public CameraSource {
         [[BroadifyCameraFrameDelegate alloc] initWithOwner:this
                                                cameraIndex:cameraIndex];
     [output setSampleBufferDelegate:stream->delegate queue:stream->queue];
+
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    id interruptedToken = [center
+        addObserverForName:AVCaptureSessionWasInterruptedNotification
+                    object:session
+                     queue:nil
+                usingBlock:^(NSNotification *note) {
+                  (void)note;
+                  std::string reason = "session_interrupted";
+                  emitCameraSessionEvent("camera_interrupted", cameraIndex,
+                                         reason);
+                }];
+    id endedToken = [center
+        addObserverForName:AVCaptureSessionInterruptionEndedNotification
+                    object:session
+                     queue:nil
+                usingBlock:^(__unused NSNotification *note) {
+                  emitCameraSessionEvent("camera_resumed", cameraIndex, "");
+                }];
+    id runtimeErrorToken = [center
+        addObserverForName:AVCaptureSessionRuntimeErrorNotification
+                    object:session
+                     queue:nil
+                usingBlock:^(NSNotification *note) {
+                  NSError *error = note.userInfo[AVCaptureSessionErrorKey];
+                  const char *message =
+                      error != nil ? error.localizedDescription.UTF8String : "";
+                  emitCameraSessionEvent("camera_interrupted", cameraIndex,
+                                         message != nullptr ? message : "");
+                }];
+    stream->notificationTokens = {interruptedToken, endedToken,
+                                  runtimeErrorToken};
 
     // V3 auto-director: attach the camera's paired microphone (matched by
     // device name) so we can measure per-camera speech level. Best-effort —

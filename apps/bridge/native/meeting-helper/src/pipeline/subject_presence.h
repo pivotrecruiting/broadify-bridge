@@ -35,7 +35,7 @@ struct SubjectPresenceConfig {
 #if defined(_WIN32)
   double acceptAfterMs = 400.0;
 #else
-  double acceptAfterMs = 400.0;
+  double acceptAfterMs = 1500.0;
 #endif
   // Kill-switch hook (BROADIFY_MEETING_EMPTY_SUBJECT=0): an inert tracker
   // never confirms an empty frame -> exactly the pre-Option-A behavior.

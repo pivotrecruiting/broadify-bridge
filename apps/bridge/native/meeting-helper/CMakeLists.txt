@@ -350,6 +350,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/frame_pipeline_gating_test.cpp
     src/pipeline/frame_pipeline_gating.cpp
   )
+  add_executable(retained_mask_selection_test
+    tests/retained_mask_selection_test.cpp
+  )
   add_executable(compositor_input_selection_test
     tests/compositor_input_selection_test.cpp
     src/pipeline/compositor_input_selection.cpp
@@ -476,6 +479,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     subject_presence_test
     frame_pipeline_stall_test
     frame_pipeline_gating_test
+    retained_mask_selection_test
     compositor_input_selection_test
     media_page_cache_test
     tier_handover_test

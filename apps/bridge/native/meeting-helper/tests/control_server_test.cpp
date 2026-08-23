@@ -253,14 +253,17 @@ int main() {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.keyerMetrics.vcamPublishMs = 1.25;
     state.keyerMetrics.vcamPublishDropped = 7u;
+    state.degradationStage = "no_subject";
   }
   const std::string keyer =
       sendRpc(endpoint, "{\"id\":\"5\",\"method\":\"keyer.get\"}");
   if (!contains(keyer, "\"vcam_publish_ms\":1.250000") ||
-      !contains(keyer, "\"vcam_publish_dropped\":7")) {
+      !contains(keyer, "\"vcam_publish_dropped\":7") ||
+      !contains(keyer, "\"empty_valid\":true") ||
+      !contains(keyer, "\"no_subject\":true")) {
     running.store(false);
     server.join();
-    fail("keyer.get did not include vcam publish metrics");
+    fail("keyer.get did not include vcam publish/no-subject fields");
   }
 
   const std::string mediaPath = "C:\\Users\\J\303\266rg\\Decks\\page-02.png";

@@ -14,6 +14,7 @@
 #include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
+#include "pipeline/retained_mask_selection.h"
 #include "pipeline/subject_presence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
@@ -22,11 +23,9 @@
 #include "preview/vcam_shm_publisher.h"
 #endif
 #include "recorder/meeting_recorder.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #include "util/win_qos.h"
-#if defined(_WIN32)
-#include "util/helper_event_log.h"
-#endif
 
 #include <algorithm>
 #include <array>
@@ -279,7 +278,11 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   AlphaMask &prevFusedMask = fusedStabilizerState().prevMask;
   double &prevFusedCoverage = fusedStabilizerState().prevCoverage;
   int &fusedCollapseHold = fusedStabilizerState().collapseHold;
+#if defined(_WIN32)
   constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
+#else
+  constexpr int kMaxFusedCollapseHold = 45;  // ~1.5s at 30fps
+#endif
   const double fusedCoverage = computeMaskCoverage(fusedMask);
   // Subject-presence tracking (Option A): only ever called on SUCCESSFUL
   // fused inference, so every feed counts towards the empty streak. When the
@@ -1911,7 +1914,7 @@ void runFramePipeline(const Options &options,
         cameraInputRate.tick(programStart);
 #endif
         if (cameraStallReported) {
-          std::cout << "{\"type\":\"camera_recovered\"}" << std::endl;
+          emitHelperEvent("{\"type\":\"camera_recovered\"}");
           std::lock_guard<std::mutex> lock(state.mutex);
           state.cameraStalled = false;
           cameraStallReported = false;
@@ -1942,8 +1945,8 @@ void runFramePipeline(const Options &options,
           const auto ageMs =
               std::chrono::duration_cast<std::chrono::milliseconds>(age).count();
           if (!cameraStallReported) {
-            std::cout << "{\"type\":\"camera_stalled\",\"age_ms\":" << ageMs
-                      << "}" << std::endl;
+            emitHelperEvent("{\"type\":\"camera_stalled\",\"age_ms\":" +
+                            std::to_string(ageMs) + "}");
             {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.cameraStalled = true;
@@ -2381,6 +2384,22 @@ void runFramePipeline(const Options &options,
       // whatever the async path chose on any failure.
       AlphaMask fusedMask;
 #if defined(__APPLE__)
+      static AlphaMask lastAppleFusedMask;
+      if (gpuPipelineEnabled() &&
+          shouldUseRetainedMaskWhenFusedSkipped(
+              fusedKeyerWorkDue, hasCameraFrame, snapshot.keyerEnabled,
+              !lastAppleFusedMask.alpha.empty(), maskForCompositor != nullptr) &&
+          !latestCameraFrame.rgba.empty()) {
+        fusedMask = lastAppleFusedMask;
+        fusedMask.timestampNs = latestCameraFrame.timestampNs;
+        frameForCompositor = &latestCameraFrame;
+        maskForCompositor = &fusedMask;
+        shouldRenderProgram = true;
+        std::lock_guard<std::mutex> lock(state.mutex);
+        setMeetingDegradationStage(
+            state, fusedMask.emptyValid ? "no_subject" : "fused_reused");
+        state.staleMaskActive = !fusedMask.emptyValid;
+      }
       if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
           !latestCameraFrame.rgba.empty()) {
         static CoreMLKeyer fusedKeyer(options.modelsDir);
@@ -2391,6 +2410,7 @@ void runFramePipeline(const Options &options,
           // Dropout guard only (no EMA): keeps the tuned macOS look, but a
           // model dropout no longer blanks the presenter for a frame (KEY-03).
           stabilizeFusedMask(fusedMask, /*applyEma=*/false);
+          lastAppleFusedMask = fusedMask;
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           shouldRenderProgram = true;
