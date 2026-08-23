@@ -1,6 +1,6 @@
 # TASK — WP6 (rc.31): stabilization package after rc.30 soak test
 
-Base: feature/vcam-rc13 @ c911f5d6 (rc.30). Round: 2/3. Field feedback 23.08.2026 (rc.30): Teams picture ✔, backgrounds ✔, keyer good,
+Base: feature/vcam-rc13 @ c911f5d6 (rc.30). Round: 3/3 — PASS. Field feedback 23.08.2026 (rc.30): Teams picture ✔, backgrounds ✔, keyer good,
 noise ok. New: (1) Windows camera very pixelated; (2) Windows content paging: page goes out and never comes back; (4) macOS: key or
 picture gone ~1 s every few minutes; (5) SHM engages only after the DLL's 5-s poll. (Graphics stutter = separate WP7/rc.32.)
 Rule: these functions must not regress again — every fix gets a test and a log line that proves it in the field.
@@ -80,3 +80,5 @@ the retained mask is older than freshMaskAgeMs.
   bound the over-coverage hold to 90 frames (~3 s), then pass the matte through (never stuck on a frozen silhouette) — document it.
 Notes: N2 docs — checklist row no longer expects `fused_reused`; performance doc subtype wording; mention 5-s bound + 3-s hold.
 N3 `no_subject` false for `background_only` — state in report (no consumer). N5 gate prefetch scan on path change.
+
+## Review round 3 (HEAD 3cabe1aa) — PASS. rc.30 parity of Windows retained-mask logic proven by empty diff. Notes: collapse hold does not re-stamp (status-only), presence tracker not fed during over-coverage hold, lastPrefetchPath_ never cleared. Verifier green.
