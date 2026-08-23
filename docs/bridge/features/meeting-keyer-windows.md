@@ -57,7 +57,7 @@ camera frame
 | `BROADIFY_MEETING_GUIDED_EPSILON` | `5e-4` | Guided-filter epsilon for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_COEFF_EMA` | `0` | D3D11 guided-filter coefficient EMA; default off to avoid silhouette trails. |
 | `BROADIFY_MEETING_GPU_GUIDED` | `1` | Enables D3D11 guided refine; set `0` for CPU fallback. |
-| `BROADIFY_MEETING_CAMERA_MAX_HEIGHT` | `720` | Clamps Windows MediaFoundation camera requests and reopen attempts to <=720p at <=30 fps. |
+| `BROADIFY_MEETING_CAMERA_MAX_HEIGHT` | `1080` | Clamps Windows MediaFoundation camera requests and reopen attempts to <=1080p at <=30 fps. `0` disables the height clamp. |
 | `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 400 ms below the foreground floor. |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY` | unset | Forces legacy DirectML device 0 selection. |
 

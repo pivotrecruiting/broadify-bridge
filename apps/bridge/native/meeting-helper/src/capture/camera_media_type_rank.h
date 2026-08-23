@@ -22,13 +22,13 @@ struct CameraMediaTypeRank {
  * 1. FPS bands win only when they differ by more than one band. Bands are
  *    target-ish, comparable capture FPS (>= max(24, 80% of target) up to 2x
  *    target), usable (>=15), low, and unknown.
- * 2. Reject undersized candidates before subtype preference: a format below
- *    50% of requested pixels cannot beat one at or above that floor.
- * 3. Prefer cheap raw formats before pixel-distance among candidates that both
- *    satisfy, or both miss, the pixel floor.
- * 4. Same or adjacent bands are comparable; choose the pixel count closest to
+ * 2. If any same-fps candidate reaches the requested size, never choose an
+ *    undersized type from that same FPS bucket.
+ * 3. Prefer candidates at-or-above the requested pixel count before subtype.
+ * 4. Subtype preference only breaks ties inside the same size class.
+ * 5. Same or adjacent bands are comparable; choose the pixel count closest to
  *    the requested size.
- * 5. If size does not decide, choose FPS closest to the target, with rates
+ * 6. If size does not decide, choose FPS closest to the target, with rates
  *    above target penalized by one step so target-or-below rates win ties.
  */
 inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
@@ -63,23 +63,33 @@ inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
   const uint64_t requestedPixels =
       static_cast<uint64_t>(requestedWidth == 0u ? 1920u : requestedWidth) *
       (requestedHeight == 0u ? 1080u : requestedHeight);
-  const auto meetsPixelFloor =
+  const auto pixelsOf = [](const CameraMediaTypeRank &type) {
+    return static_cast<uint64_t>(type.width) * type.height;
+  };
+  const auto reachesRequest =
       [requestedPixels](const CameraMediaTypeRank &type) {
-        const uint64_t pixels = static_cast<uint64_t>(type.width) * type.height;
-        return pixels * 2u >= requestedPixels;
+        return static_cast<uint64_t>(type.width) * type.height >= requestedPixels;
       };
-  const bool candidateMeetsFloor = meetsPixelFloor(candidate);
-  const bool currentMeetsFloor = meetsPixelFloor(current);
-  if (candidateMeetsFloor != currentMeetsFloor) {
-    return candidateMeetsFloor;
+  const auto sameFpsBucket = [](double left, double right) {
+    return left > 0.0 && right > 0.0 && std::abs(left - right) < 0.5;
+  };
+  const bool candidateReachesRequest = reachesRequest(candidate);
+  const bool currentReachesRequest = reachesRequest(current);
+  if (sameFpsBucket(candidate.fps, current.fps) &&
+      candidateReachesRequest != currentReachesRequest) {
+    return candidateReachesRequest;
+  }
+  if (candidateReachesRequest != currentReachesRequest) {
+    return candidateReachesRequest;
   }
 
-  if (candidate.subtypeRank != current.subtypeRank) {
+  if (candidateReachesRequest && currentReachesRequest &&
+      candidate.subtypeRank != current.subtypeRank) {
     return candidate.subtypeRank < current.subtypeRank;
   }
 
-  const auto pixelDistance = [requestedPixels](const CameraMediaTypeRank &type) {
-    const uint64_t pixels = static_cast<uint64_t>(type.width) * type.height;
+  const auto pixelDistance = [requestedPixels, pixelsOf](const CameraMediaTypeRank &type) {
+    const uint64_t pixels = pixelsOf(type);
     return pixels > requestedPixels ? pixels - requestedPixels : requestedPixels - pixels;
   };
   const uint64_t candidateDistance = pixelDistance(candidate);
