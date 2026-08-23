@@ -1,6 +1,6 @@
 # TASK — WP7 (rc.32a): ghost-free 1080p capture on Windows, stage 1 (pure logic, no GPU code)
 
-Base: feature/vcam-rc13 @ 8ae984ec (rc.31). Round: 1/3.
+Base: feature/vcam-rc13 @ 8ae984ec (rc.31). Round: 2/3 — PASS.
 Requirement (user): camera stays 1920x1080 on EVERY machine; ghost must go; nothing that works today may regress.
 Field diagnosis (rc.31 on GTX 1660 Ti laptop): ranker picks MJPG 1080p30 (raw only ≤720) → MF software MJPEG decode on the MF thread (~1 core)
 + render-thread costs scale 2.25x (8.3-MB `copyLatestFrameIfNew` under frameMutex_, scalar MODNet pre-pass, 8.3-MB UpdateSubresource);
@@ -73,3 +73,5 @@ governor/cadence see only `sessionRunMs` (frame_pipeline.cpp:644-649, 3064-3069)
 Notes to fold in: N1 apply the 10-s repeat interval also to re-entry after Recovered; N4 skip the first overhead sample (or seed with 0);
 N5 fix the re-indentation in keyer_governor_test.cpp:306 / keyer_cadence_test.cpp:127-128; N3 comment that camera_upload_ms is "last upload";
 N7 make reporter/EMA loop-locals; N6 comment on LatestFrameSlot::copy() semantics after take.
+
+## Review round 2 (HEAD f59cdfa6) — PASS. Notes: reporter budget = 1000/fps (stepDownFactor is 1.0 everywhere today); MAX_INFERENCE_MS-Override → wiederkehrende Overrun-Events by design; N7 statics stilistisch; latest_frame_slot.h copy()-Kommentar nach take ungenau (kein Live-Caller); kein Test am Call-Site-Budget. Verifier grün.
