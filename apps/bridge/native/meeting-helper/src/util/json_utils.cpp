@@ -24,6 +24,92 @@ size_t findValueStart(const std::string &body, const std::string &field) {
   return pos;
 }
 
+void appendUtf8(std::string &out, uint32_t codepoint) {
+  if (codepoint <= 0x7fu) {
+    out.push_back(static_cast<char>(codepoint));
+  } else if (codepoint <= 0x7ffu) {
+    out.push_back(static_cast<char>(0xc0u | (codepoint >> 6u)));
+    out.push_back(static_cast<char>(0x80u | (codepoint & 0x3fu)));
+  } else if (codepoint <= 0xffffu) {
+    out.push_back(static_cast<char>(0xe0u | (codepoint >> 12u)));
+    out.push_back(static_cast<char>(0x80u | ((codepoint >> 6u) & 0x3fu)));
+    out.push_back(static_cast<char>(0x80u | (codepoint & 0x3fu)));
+  } else {
+    out.push_back(static_cast<char>(0xf0u | (codepoint >> 18u)));
+    out.push_back(static_cast<char>(0x80u | ((codepoint >> 12u) & 0x3fu)));
+    out.push_back(static_cast<char>(0x80u | ((codepoint >> 6u) & 0x3fu)));
+    out.push_back(static_cast<char>(0x80u | (codepoint & 0x3fu)));
+  }
+}
+
+int hexValue(char ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return ch - 'a' + 10;
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return ch - 'A' + 10;
+  }
+  return -1;
+}
+
+std::string unescapeJsonString(const std::string &value) {
+  std::string out;
+  out.reserve(value.size());
+  for (size_t index = 0; index < value.size(); ++index) {
+    const char ch = value[index];
+    if (ch != '\\' || index + 1u >= value.size()) {
+      out.push_back(ch);
+      continue;
+    }
+    const char escaped = value[++index];
+    switch (escaped) {
+      case '"':
+      case '\\':
+      case '/':
+        out.push_back(escaped);
+        break;
+      case 'b':
+        out.push_back('\b');
+        break;
+      case 'f':
+        out.push_back('\f');
+        break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case 'u': {
+        if (index + 4u >= value.size()) {
+          return out;
+        }
+        uint32_t codepoint = 0;
+        for (size_t digit = 0; digit < 4u; ++digit) {
+          const int hex = hexValue(value[index + 1u + digit]);
+          if (hex < 0) {
+            return out;
+          }
+          codepoint = (codepoint << 4u) | static_cast<uint32_t>(hex);
+        }
+        index += 4u;
+        appendUtf8(out, codepoint);
+        break;
+      }
+      default:
+        out.push_back(escaped);
+        break;
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 uint64_t nowNs() {
@@ -83,7 +169,7 @@ std::string extractStringField(const std::string &body, const std::string &field
   if (end >= body.size()) {
     return "";
   }
-  return body.substr(pos + 1, end - pos - 1);
+  return unescapeJsonString(body.substr(pos + 1, end - pos - 1));
 }
 
 bool extractBoolField(const std::string &body, const std::string &field, bool fallback) {

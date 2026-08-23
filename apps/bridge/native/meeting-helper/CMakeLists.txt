@@ -84,6 +84,7 @@ set(MEETING_HELPER_SOURCES
   src/capture/camera_source.cpp
   src/compose/compositor.cpp
   src/compose/d3d_adapter_select.cpp
+  src/compose/media_page_cache.cpp
   src/common/options.cpp
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
@@ -353,6 +354,12 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/compositor_input_selection_test.cpp
     src/pipeline/compositor_input_selection.cpp
   )
+  add_executable(media_page_cache_test
+    tests/media_page_cache_test.cpp
+    src/compose/media_page_cache.cpp
+    src/util/helper_event_log.cpp
+    src/util/json_utils.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -470,6 +477,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_stall_test
     frame_pipeline_gating_test
     compositor_input_selection_test
+    media_page_cache_test
     tier_handover_test
     matting_backend_test
     matting_common_test

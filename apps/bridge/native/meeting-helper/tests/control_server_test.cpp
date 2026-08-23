@@ -263,7 +263,28 @@ int main() {
     fail("keyer.get did not include vcam publish metrics");
   }
 
-  (void)sendRpc(endpoint, "{\"id\":\"6\",\"method\":\"control.shutdown\"}");
+  const std::string mediaPath = "C:\\Users\\J\303\266rg\\Decks\\page-02.png";
+  const std::string mediaUpdate =
+      sendRpc(endpoint, "{\"id\":\"6\",\"method\":\"program.update\","
+                        "\"section\":\"media_layer\",\"values\":{"
+                        "\"enabled\":true,\"render_status\":\"ready\","
+                        "\"rendered_page_path\":\"C:\\\\Users\\\\J\\u00f6rg\\\\Decks\\\\page-02.png\","
+                        "\"page\":2,\"page_count\":4}}");
+  if (!contains(mediaUpdate, "\"ok\":true")) {
+    running.store(false);
+    server.join();
+    fail("media_layer update failed");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.mediaLayer.renderedPagePath != mediaPath) {
+      running.store(false);
+      server.join();
+      fail("rendered_page_path was not JSON-unescaped");
+    }
+  }
+
+  (void)sendRpc(endpoint, "{\"id\":\"7\",\"method\":\"control.shutdown\"}");
   server.join();
   std::cout << "control_server_test passed" << std::endl;
   return 0;
