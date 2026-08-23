@@ -23,7 +23,8 @@
 namespace broadify::vcam {
 namespace {
 
-constexpr uint64_t kMappingRetryMs = 5000u;
+constexpr uint64_t kMappingOpenRetryMs = 1000u;
+constexpr uint64_t kMappingStaleRetryMs = 5000u;
 constexpr uint64_t kNoFrameFallbackMs = 2000u;
 constexpr uint64_t kStaleWindowMs = 3000u;
 constexpr DWORD kEventWaitMs = 1000u;
@@ -135,6 +136,15 @@ bool ShmFrameReader::NoFrameDeadlineExpired(bool hasFrame,
                                             uint64_t currentMs) {
   return !hasFrame && openedAtMs != 0u &&
          currentMs >= openedAtMs + kNoFrameFallbackMs;
+}
+
+uint64_t ShmFrameReader::RetryDelayMsForReason(const std::string &reason) {
+  if (reason == "shm_no_frame_after_open" ||
+      reason == "shm_heartbeat_stale" ||
+      reason == "event_wait_failed") {
+    return kMappingStaleRetryMs;
+  }
+  return kMappingOpenRetryMs;
 }
 
 bool ShmFrameReader::ProbeGeometry(ShmGeometry &geometry) {
@@ -571,7 +581,7 @@ void ShmFrameReader::run() {
           VcamLog("vcam_reader_transport tcp reason=%s", reason.c_str());
           lastReason = reason;
         }
-        nextRetryMs = now + kMappingRetryMs;
+        nextRetryMs = now + RetryDelayMsForReason(reason);
         continue;
       }
       lastReason.clear();
@@ -590,7 +600,7 @@ void ShmFrameReader::run() {
     } else {
       VcamLog("ShmFrameReader: event wait failed error=%lu", GetLastError());
       closeMappings();
-      nextRetryMs = nowMs() + kMappingRetryMs;
+      nextRetryMs = nowMs() + RetryDelayMsForReason("event_wait_failed");
       continue;
     }
     if (writerGenerationChanged()) {
@@ -608,13 +618,13 @@ void ShmFrameReader::run() {
     if (noFrameDeadlineExpired) {
       VcamLog("vcam_reader_transport tcp reason=shm_no_frame_after_open");
       closeMappings();
-      nextRetryMs = nowMs() + kMappingRetryMs;
+      nextRetryMs = nowMs() + RetryDelayMsForReason("shm_no_frame_after_open");
       continue;
     }
     if (heartbeatStale()) {
       VcamLog("vcam_reader_transport tcp reason=shm_heartbeat_stale");
       closeMappings();
-      nextRetryMs = nowMs() + kMappingRetryMs;
+      nextRetryMs = nowMs() + RetryDelayMsForReason("shm_heartbeat_stale");
     }
   }
 }

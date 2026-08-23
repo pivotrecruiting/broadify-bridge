@@ -100,6 +100,10 @@ camera frame, so the visible edge stays fresh.
   `fused_reused`, and flag `stale_mask_active` once the age crosses the
   configured fresh threshold. A failed inference keeps forcing inference on
   the following frames until one lands.
+- macOS retained fused masks are bounded by the shared 5 s retained-mask
+  limit. Above-max-coverage dropouts hold the previous matte with the current
+  frame timestamp for at most 90 frames (~3 s), then the current matte passes
+  through so the presenter cannot freeze indefinitely.
 
 ## Async Mask Retention (Windows, `Lite256`/async path)
 

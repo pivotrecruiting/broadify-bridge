@@ -253,17 +253,41 @@ int main() {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.keyerMetrics.vcamPublishMs = 1.25;
     state.keyerMetrics.vcamPublishDropped = 7u;
+    state.degradationStage = "no_subject";
   }
   const std::string keyer =
       sendRpc(endpoint, "{\"id\":\"5\",\"method\":\"keyer.get\"}");
   if (!contains(keyer, "\"vcam_publish_ms\":1.250000") ||
-      !contains(keyer, "\"vcam_publish_dropped\":7")) {
+      !contains(keyer, "\"vcam_publish_dropped\":7") ||
+      !contains(keyer, "\"empty_valid\":true") ||
+      !contains(keyer, "\"no_subject\":true")) {
     running.store(false);
     server.join();
-    fail("keyer.get did not include vcam publish metrics");
+    fail("keyer.get did not include vcam publish/no-subject fields");
   }
 
-  (void)sendRpc(endpoint, "{\"id\":\"6\",\"method\":\"control.shutdown\"}");
+  const std::string mediaPath = "C:\\Users\\J\303\266rg\\Decks\\page-02.png";
+  const std::string mediaUpdate =
+      sendRpc(endpoint, "{\"id\":\"6\",\"method\":\"program.update\","
+                        "\"section\":\"media_layer\",\"values\":{"
+                        "\"enabled\":true,\"render_status\":\"ready\","
+                        "\"rendered_page_path\":\"C:\\\\Users\\\\J\\u00f6rg\\\\Decks\\\\page-02.png\","
+                        "\"page\":2,\"page_count\":4}}");
+  if (!contains(mediaUpdate, "\"ok\":true")) {
+    running.store(false);
+    server.join();
+    fail("media_layer update failed");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.mediaLayer.renderedPagePath != mediaPath) {
+      running.store(false);
+      server.join();
+      fail("rendered_page_path was not JSON-unescaped");
+    }
+  }
+
+  (void)sendRpc(endpoint, "{\"id\":\"7\",\"method\":\"control.shutdown\"}");
   server.join();
   std::cout << "control_server_test passed" << std::endl;
   return 0;

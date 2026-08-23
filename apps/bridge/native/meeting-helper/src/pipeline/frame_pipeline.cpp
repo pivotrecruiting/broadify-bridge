@@ -14,6 +14,7 @@
 #include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
+#include "pipeline/retained_mask_selection.h"
 #include "pipeline/subject_presence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
@@ -22,11 +23,9 @@
 #include "preview/vcam_shm_publisher.h"
 #endif
 #include "recorder/meeting_recorder.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #include "util/win_qos.h"
-#if defined(_WIN32)
-#include "util/helper_event_log.h"
-#endif
 
 #include <algorithm>
 #include <array>
@@ -95,9 +94,7 @@ constexpr auto kCameraStallWindow = std::chrono::milliseconds(1500);
 constexpr double kKeyerCooldownTriggerFactor = 1.5;
 constexpr double kKeyerCooldownFraction = 0.25;
 constexpr double kKeyerMaxCooldownMs = 50.0;
-#if defined(_WIN32)
 constexpr double kWarmupRetainedMaskAgeMs = 5000.0;
-#endif
 
 // Mask-collapse guard: Apple Vision intermittently returns a (near-)empty mask
 // under backlight / bad contrast, which would key the whole person out. We
@@ -256,10 +253,12 @@ struct FusedStabilizerState {
   AlphaMask prevMask;
   double prevCoverage = 0.0;
   int collapseHold = 0;
+  int overCoverageHold = 0;
   void reset() {
     prevMask = AlphaMask{};
     prevCoverage = 0.0;
     collapseHold = 0;
+    overCoverageHold = 0;
   }
 };
 
@@ -279,8 +278,29 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   AlphaMask &prevFusedMask = fusedStabilizerState().prevMask;
   double &prevFusedCoverage = fusedStabilizerState().prevCoverage;
   int &fusedCollapseHold = fusedStabilizerState().collapseHold;
+  int &fusedOverCoverageHold = fusedStabilizerState().overCoverageHold;
+#if defined(_WIN32)
   constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
+  constexpr int kMaxFusedOverCoverageHold = 12;
+#else
+  constexpr int kMaxFusedCollapseHold = 45;  // ~1.5s at 30fps
+  constexpr int kMaxFusedOverCoverageHold = 90;  // ~3s at 30fps
+#endif
   const double fusedCoverage = computeMaskCoverage(fusedMask);
+  const bool fusedOverCoverage = fusedCoverage > kMaxForegroundCoverage;
+#if !defined(_WIN32)
+  const uint64_t currentMaskTimestampNs = fusedMask.timestampNs;
+  if (fusedOverCoverage && !prevFusedMask.alpha.empty() &&
+      fusedOverCoverageHold < kMaxFusedOverCoverageHold) {
+    fusedMask = prevFusedMask;
+    fusedMask.timestampNs = currentMaskTimestampNs;
+    ++fusedOverCoverageHold;
+    return;
+  }
+#endif
+  if (!fusedOverCoverage) {
+    fusedOverCoverageHold = 0;
+  }
   // Subject-presence tracking (Option A): only ever called on SUCCESSFUL
   // fused inference, so every feed counts towards the empty streak. When the
   // person verifiably left (confirmed over acceptAfterMs), pass the empty
@@ -300,7 +320,8 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   }
   const bool fusedCollapsed =
       fusedCoverage < kMinForegroundCoverage ||
-      fusedCoverage > kMaxForegroundCoverage ||
+      (fusedOverCoverage &&
+       fusedOverCoverageHold < kMaxFusedOverCoverageHold) ||
       (prevFusedCoverage > kHealthyCoverage &&
        fusedCoverage < prevFusedCoverage * kCollapseDropRatio);
   if (fusedCollapsed && !prevFusedMask.alpha.empty() &&
@@ -1911,7 +1932,7 @@ void runFramePipeline(const Options &options,
         cameraInputRate.tick(programStart);
 #endif
         if (cameraStallReported) {
-          std::cout << "{\"type\":\"camera_recovered\"}" << std::endl;
+          emitHelperEvent("{\"type\":\"camera_recovered\"}");
           std::lock_guard<std::mutex> lock(state.mutex);
           state.cameraStalled = false;
           cameraStallReported = false;
@@ -1942,8 +1963,8 @@ void runFramePipeline(const Options &options,
           const auto ageMs =
               std::chrono::duration_cast<std::chrono::milliseconds>(age).count();
           if (!cameraStallReported) {
-            std::cout << "{\"type\":\"camera_stalled\",\"age_ms\":" << ageMs
-                      << "}" << std::endl;
+            emitHelperEvent("{\"type\":\"camera_stalled\",\"age_ms\":" +
+                            std::to_string(ageMs) + "}");
             {
               std::lock_guard<std::mutex> lock(state.mutex);
               state.cameraStalled = true;
@@ -2381,6 +2402,60 @@ void runFramePipeline(const Options &options,
       // whatever the async path chose on any failure.
       AlphaMask fusedMask;
 #if defined(__APPLE__)
+      static AlphaMask lastAppleFusedMask;
+      static int lastAppleFusedCameraIndex = -1;
+      static uint32_t lastAppleFusedSourceWidth = 0u;
+      static uint32_t lastAppleFusedSourceHeight = 0u;
+      const int currentAppleCameraIndex = camera.activeCameraIndex();
+      const auto clearAppleFusedMask = [&] {
+        lastAppleFusedMask = AlphaMask{};
+        lastAppleFusedCameraIndex = currentAppleCameraIndex;
+        lastAppleFusedSourceWidth =
+            hasCameraFrame ? latestCameraFrame.width : 0u;
+        lastAppleFusedSourceHeight =
+            hasCameraFrame ? latestCameraFrame.height : 0u;
+      };
+      if (!snapshot.keyerEnabled || !gpuPipelineEnabled() ||
+          (lastAppleFusedCameraIndex != -1 &&
+           lastAppleFusedCameraIndex != currentAppleCameraIndex) ||
+          (!lastAppleFusedMask.alpha.empty() && hasCameraFrame &&
+           lastAppleFusedSourceWidth != 0u &&
+           lastAppleFusedSourceHeight != 0u &&
+           (lastAppleFusedSourceWidth != latestCameraFrame.width ||
+            lastAppleFusedSourceHeight != latestCameraFrame.height))) {
+        clearAppleFusedMask();
+      }
+      const double appleRetainedMaskAgeMs =
+          (!lastAppleFusedMask.alpha.empty() &&
+           latestCameraFrame.timestampNs >= lastAppleFusedMask.timestampNs)
+              ? static_cast<double>(latestCameraFrame.timestampNs -
+                                    lastAppleFusedMask.timestampNs) /
+                    1000000.0
+              : 0.0;
+      if (gpuPipelineEnabled() &&
+          shouldUseRetainedMaskWhenFusedSkipped(
+              fusedKeyerWorkDue, hasCameraFrame, snapshot.keyerEnabled,
+              !lastAppleFusedMask.alpha.empty(), maskForCompositor != nullptr) &&
+          !latestCameraFrame.rgba.empty() &&
+          selectRetainedOrEmptyMaskForLiveKeyer(
+              lastAppleFusedMask, latestCameraFrame.timestampNs,
+              latestCameraFrame.width, latestCameraFrame.height, fusedMask,
+              kWarmupRetainedMaskAgeMs) &&
+          appleRetainedMaskAgeMs <= kWarmupRetainedMaskAgeMs &&
+          !(fusedMask.emptyValid && !lastAppleFusedMask.emptyValid)) {
+        frameForCompositor = &latestCameraFrame;
+        maskForCompositor = &fusedMask;
+        shouldRenderProgram = true;
+        std::lock_guard<std::mutex> lock(state.mutex);
+        setMeetingDegradationStage(
+            state, fusedMask.emptyValid ? "no_subject" : "fused_reused");
+        state.staleMaskActive = !fusedMask.emptyValid &&
+                                appleRetainedMaskAgeMs >
+                                    keyerSettings.degradation.freshMaskAgeMs;
+      } else if (!lastAppleFusedMask.alpha.empty() &&
+                 appleRetainedMaskAgeMs > kWarmupRetainedMaskAgeMs) {
+        clearAppleFusedMask();
+      }
       if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
           !latestCameraFrame.rgba.empty()) {
         static CoreMLKeyer fusedKeyer(options.modelsDir);
@@ -2391,6 +2466,10 @@ void runFramePipeline(const Options &options,
           // Dropout guard only (no EMA): keeps the tuned macOS look, but a
           // model dropout no longer blanks the presenter for a frame (KEY-03).
           stabilizeFusedMask(fusedMask, /*applyEma=*/false);
+          lastAppleFusedMask = fusedMask;
+          lastAppleFusedCameraIndex = currentAppleCameraIndex;
+          lastAppleFusedSourceWidth = latestCameraFrame.width;
+          lastAppleFusedSourceHeight = latestCameraFrame.height;
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           shouldRenderProgram = true;
@@ -2404,6 +2483,7 @@ void runFramePipeline(const Options &options,
           // Publish the failure instead of freezing silently (K-03): the
           // status stream now reports fallback_active + reason, and the async
           // Vision fallback starts receiving frames (submit guard above).
+          clearAppleFusedMask();
           g_fusedKeyerDegraded = true;
           updateMeetingKeyerStatus(state, fused.status);
         }

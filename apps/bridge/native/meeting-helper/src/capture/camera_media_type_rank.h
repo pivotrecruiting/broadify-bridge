@@ -22,10 +22,9 @@ struct CameraMediaTypeRank {
  * 1. FPS bands win only when they differ by more than one band. Bands are
  *    target-ish, comparable capture FPS (>= max(24, 80% of target) up to 2x
  *    target), usable (>=15), low, and unknown.
- * 2. Reject undersized candidates before subtype preference: a format below
- *    50% of requested pixels cannot beat one at or above that floor.
- * 3. Prefer cheap raw formats before pixel-distance among candidates that both
- *    satisfy, or both miss, the pixel floor.
+ * 2. Prefer candidates at-or-above the requested pixel count before subtype.
+ * 3. Subtype preference breaks ties inside the same reach class and pixel
+ *    count.
  * 4. Same or adjacent bands are comparable; choose the pixel count closest to
  *    the requested size.
  * 5. If size does not decide, choose FPS closest to the target, with rates
@@ -63,23 +62,26 @@ inline bool betterCameraMediaType(const CameraMediaTypeRank &candidate,
   const uint64_t requestedPixels =
       static_cast<uint64_t>(requestedWidth == 0u ? 1920u : requestedWidth) *
       (requestedHeight == 0u ? 1080u : requestedHeight);
-  const auto meetsPixelFloor =
+  const auto pixelsOf = [](const CameraMediaTypeRank &type) {
+    return static_cast<uint64_t>(type.width) * type.height;
+  };
+  const auto reachesRequest =
       [requestedPixels](const CameraMediaTypeRank &type) {
-        const uint64_t pixels = static_cast<uint64_t>(type.width) * type.height;
-        return pixels * 2u >= requestedPixels;
+        return static_cast<uint64_t>(type.width) * type.height >= requestedPixels;
       };
-  const bool candidateMeetsFloor = meetsPixelFloor(candidate);
-  const bool currentMeetsFloor = meetsPixelFloor(current);
-  if (candidateMeetsFloor != currentMeetsFloor) {
-    return candidateMeetsFloor;
+  const bool candidateReachesRequest = reachesRequest(candidate);
+  const bool currentReachesRequest = reachesRequest(current);
+  if (candidateReachesRequest != currentReachesRequest) {
+    return candidateReachesRequest;
   }
 
-  if (candidate.subtypeRank != current.subtypeRank) {
+  if (pixelsOf(candidate) == pixelsOf(current) &&
+      candidate.subtypeRank != current.subtypeRank) {
     return candidate.subtypeRank < current.subtypeRank;
   }
 
-  const auto pixelDistance = [requestedPixels](const CameraMediaTypeRank &type) {
-    const uint64_t pixels = static_cast<uint64_t>(type.width) * type.height;
+  const auto pixelDistance = [requestedPixels, pixelsOf](const CameraMediaTypeRank &type) {
+    const uint64_t pixels = pixelsOf(type);
     return pixels > requestedPixels ? pixels - requestedPixels : requestedPixels - pixels;
   };
   const uint64_t candidateDistance = pixelDistance(candidate);

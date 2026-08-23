@@ -610,7 +610,14 @@ std::string handleRpc(const std::string &line,
            << ",\"keyer_ready\":" << (state.keyerReady ? "true" : "false")
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
            << ",\"degradation_stage\":\"" << jsonEscape(state.degradationStage)
-           << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)
+           << "\",\"empty_valid\":"
+           << (state.degradationStage == "no_subject" ||
+                       state.degradationStage == "background_only"
+                   ? "true"
+                   : "false")
+           << ",\"no_subject\":"
+           << (state.degradationStage == "no_subject" ? "true" : "false")
+           << ",\"compositor\":\"" << jsonEscape(state.compositorBackend)
            << "\",\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"")
            << ",\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"")
            << ",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")

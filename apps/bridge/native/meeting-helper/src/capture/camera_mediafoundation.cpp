@@ -3,6 +3,7 @@
 #if defined(_WIN32)
 
 #include "capture/camera_media_type_rank.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #include "util/pixel_swizzle.h"
 
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
@@ -26,6 +28,7 @@
 #include <functional>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -207,10 +210,21 @@ struct CameraCaptureRequest {
 uint32_t cameraMaxHeightFromEnv() {
   const char *raw = std::getenv("BROADIFY_MEETING_CAMERA_MAX_HEIGHT");
   if (raw == nullptr || raw[0] == '\0') {
-    return 720u;
+    return 1080u;
   }
-  const int parsed = std::atoi(raw);
-  return parsed > 0 ? static_cast<uint32_t>(parsed) : 720u;
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0') {
+    return 1080u;
+  }
+  if (parsed == 0ul) {
+    return raw[0] == '0' && raw[1] == '\0' ? 0u : 1080u;
+  }
+  if (parsed > std::numeric_limits<uint32_t>::max()) {
+    return 1080u;
+  }
+  return static_cast<uint32_t>(parsed);
 }
 
 CameraCaptureRequest clampCameraCaptureRequest(uint32_t width,
@@ -576,12 +590,15 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     if (nativeChoice.valid) {
       reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr,
                                   nativeChoice.type.Get());
-      std::cout << "{\"type\":\"camera_native_media_type_selected\",\"width\":"
-                << nativeChoice.width << ",\"height\":" << nativeChoice.height
-                << ",\"fps_num\":" << nativeChoice.fpsNum
-                << ",\"fps_den\":" << nativeChoice.fpsDen
-                << ",\"subtype\":\"" << guidToString(nativeChoice.subtype)
-                << "\"}" << std::endl;
+      std::ostringstream event;
+      event << "{\"type\":\"camera_native_media_type_selected\",\"width\":"
+            << nativeChoice.width << ",\"height\":" << nativeChoice.height
+            << ",\"fps_num\":" << nativeChoice.fpsNum
+            << ",\"fps_den\":" << nativeChoice.fpsDen
+            << ",\"fps\":" << mediaTypeFps(nativeChoice.fpsNum, nativeChoice.fpsDen)
+            << ",\"subtype\":\"" << guidToString(nativeChoice.subtype)
+            << "\"}";
+      emitHelperEvent(event.str());
     }
 
     ComPtr<IMFMediaType> outputType;

@@ -10,15 +10,19 @@ namespace {
 std::mutex g_mutex;
 std::string g_path;
 std::string g_exitReason;
+std::ofstream g_file;
 
 }  // namespace
 
 void setHelperEventLogPath(const std::string &path) {
   std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_file.is_open()) {
+    g_file.close();
+  }
   g_path = path;
   if (!g_path.empty()) {
     // Truncate: one file per helper run keeps the post-mortem unambiguous.
-    std::ofstream file(g_path, std::ios::trunc);
+    g_file.open(g_path, std::ios::out | std::ios::trunc);
   }
 }
 
@@ -28,11 +32,12 @@ void emitHelperEvent(const std::string &jsonLine) {
   if (g_path.empty()) {
     return;
   }
-  // Open per event: incident events are rare, and an always-open handle
-  // would be lost by std::_Exit without a flush.
-  std::ofstream file(g_path, std::ios::app);
-  if (file) {
-    file << jsonLine << '\n';
+  if (!g_file.is_open()) {
+    g_file.open(g_path, std::ios::out | std::ios::app);
+  }
+  if (g_file) {
+    g_file << jsonLine << '\n';
+    g_file.flush();
   }
 }
 

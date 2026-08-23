@@ -6,6 +6,8 @@
 
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
+#include "util/helper_event_log.h"
+#include "util/json_utils.h"
 #if defined(__APPLE__)
 #include "keyer/coreml_keyer.h"
 #include "keyer/vision_keyer.h"
@@ -79,6 +81,13 @@ std::string readKeyerQualityOverride() {
   return (v == "balanced" || v == "fast") ? v : "";
 }
 #endif
+
+std::string coarseDegradationStage(const std::string &stage) {
+  if (stage == "fused_reused") {
+    return "fused";
+  }
+  return stage;
+}
 
 }  // namespace
 
@@ -259,13 +268,13 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   static std::string lastLoggedFallbackReason;
   if (status.provider != lastLoggedProvider) {
     lastLoggedProvider = status.provider;
-    std::cout << "{\"type\":\"keyer_provider\",\"provider\":\""
-              << status.provider << "\"}" << std::endl;
+    emitHelperEvent("{\"type\":\"keyer_provider\",\"provider\":\"" +
+                    jsonEscape(status.provider) + "\"}");
   }
   if (status.fallbackReason != lastLoggedFallbackReason) {
     lastLoggedFallbackReason = status.fallbackReason;
-    std::cout << "{\"type\":\"keyer_fallback_change\",\"fallback_reason\":\""
-              << status.fallbackReason << "\"}" << std::endl;
+    emitHelperEvent("{\"type\":\"keyer_fallback_change\",\"fallback_reason\":\"" +
+                    jsonEscape(status.fallbackReason) + "\"}");
   }
   state.activeKeyer = status.activeKeyer;
   state.fallbackActive = status.fallbackActive;
@@ -299,10 +308,11 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
 
 void setMeetingDegradationStage(MeetingState &state, const std::string &stage) {
   static std::string lastLoggedStage;
-  if (stage != lastLoggedStage) {
-    lastLoggedStage = stage;
-    std::cout << "{\"type\":\"keyer_degradation_stage_change\","
-                 "\"degradation_stage\":\"" << stage << "\"}" << std::endl;
+  const std::string coarseStage = coarseDegradationStage(stage);
+  if (coarseStage != lastLoggedStage) {
+    lastLoggedStage = coarseStage;
+    emitHelperEvent("{\"type\":\"keyer_degradation_stage_change\","
+                    "\"degradation_stage\":\"" + jsonEscape(coarseStage) + "\"}");
   }
   state.degradationStage = stage;
 }

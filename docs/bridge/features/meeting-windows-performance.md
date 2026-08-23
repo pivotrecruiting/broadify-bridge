@@ -114,13 +114,16 @@ vergangen sind; er rendert aber nie schneller als `1 / targetFps`. Eine
 Helper auf 30 fps konfiguriert ist.
 
 MediaFoundation bevorzugt einen angebotenen nativen Kamera-Typ mit maximal
-30 fps und default maximal 1280x720 (`BROADIFY_MEETING_CAMERA_MAX_HEIGHT=720`;
-Reopen-Pfade werden ebenfalls geklemmt). Die Subtype-Praeferenz ist NV12,
-YUY2, MJPG, aber erst nachdem ein Kandidat mindestens 50 % der angefragten
-Pixel erreicht; danach wird weiter RGB32 fuer den Helper ausgegeben. Der
-ausgewaehlte native Typ wird als `camera_native_media_type_selected` geloggt.
-Der MODNet-Maskenreadback bleibt auf Model-Resolution (512 -> 512x288 bei
-16:9) und wird nicht auf Kamera-Aufloesung hochskaliert.
+30 fps und default maximal 1920x1080 (`BROADIFY_MEETING_CAMERA_MAX_HEIGHT=1080`;
+`0` deaktiviert die Hoehenklemme; Reopen-Pfade werden ebenfalls geklemmt).
+Die Subtype-Praeferenz ist NV12, YUY2, MJPG, entscheidet aber nur bei gleicher
+Pixelzahl innerhalb derselben Groessenklasse; ein kleinerer Raw-Typ darf einen
+gleich schnellen 1080p-Typ nicht verdraengen. Danach wird weiter RGB32 fuer den
+Helper ausgegeben. Der ausgewaehlte native Typ wird als
+`camera_native_media_type_selected` in die Sidecar-Events geloggt. Der
+MODNet-Maskenreadback bleibt auf Model-Resolution (512 -> 512x288 bei 16:9)
+und wird nicht auf Kamera-Aufloesung hochskaliert; der gemessene Trade-off
+1080p Capture + 512er Keyer wird im Feld bestaetigt.
 
 Der Windows-VCam-Default ist SHM (`Global\BroadifyVcam-control` +
 `Global\BroadifyVcam-stream`), wobei die DLL die globalen Objekte im Frame
@@ -145,6 +148,23 @@ Die Windows-VCam-DLL kopiert SHM-Payloads nur noch im
 `MediaStream::RequestSample`-Pfad. Der Reader-Thread wartet weiter auf das
 Frame-Event, aktualisiert Reader-Liveness und prueft Heartbeat/Generation/
 2-s-No-Frame-Fallback, kopiert aber nicht mehr bei jedem Event.
+
+Solange die DLL noch kein Control-/Stream-Mapping oder nur Null-Geometrie
+sieht, pollt sie SHM nach 1 s erneut. Nach einem geoeffneten, aber stalen
+Mapping bleibt der Backoff bei 5 s. In der Feldmessung sollte SHM damit
+innerhalb von ca. 3 s nach Helper-Start sichtbar werden.
+
+Gerenderte Content-/Deck-Seiten werden nicht mehr auf dem Render-Thread
+dekodiert. Der Helper haelt bis zu vier dekodierte Seiten im LRU-Cache, laedt
+Seiten auf einem Worker und zeigt beim Seitenwechsel die zuletzt dekodierte
+Seite weiter, bis die neue Seite bereit ist. Prefetch laeuft fuer die
+0-basierte Steuerseitenzahl `page +/- 1`; Dateinamen sind 1-basiert, deshalb
+wird z. B. bei `page: 2` und `page-0003.png` `page-0002.png` und
+`page-0004.png` vorgeladen. Das passiert nur, wenn der Pfad ein eindeutiges
+Seitennummern-Muster enthaelt; bei nicht-deterministischen Pfaden wird nichts
+vorab geladen.
+Erfolg und Fehler stehen als `media_page_loaded` bzw.
+`media_page_load_failed` in den Helper-Events.
 
 Der Raw-Frame-Server sendet Heartbeats aus dem zuletzt gespeicherten Frame und
 meldet `meeting_vcam_raw no_frame_on_connect`, wenn ein VCam-Client nach 2 s

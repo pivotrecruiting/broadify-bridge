@@ -30,6 +30,7 @@ class ShmFrameReader {
   static bool NoFrameDeadlineExpired(bool hasFrame,
                                      uint64_t openedAtMs,
                                      uint64_t nowMs);
+  static uint64_t RetryDelayMsForReason(const std::string &reason);
 
   void start();
   void stop();
