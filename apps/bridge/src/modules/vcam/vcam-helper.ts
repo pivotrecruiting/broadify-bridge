@@ -86,7 +86,10 @@ function readBundleVersion(appPath: string): number | null {
 export function shouldAutoUpgradeEmbeddedVcamApp(
   embeddedVersion: number | null,
   installedVersion: number | null,
-  autoUpgradeOnStart = process.env[VCAM_AUTO_UPGRADE_ON_START_ENV] === "1",
+  // Default ON (opt-out via =0): customers must receive vcam fixes through
+  // normal bridge updates — the previous opt-in flag was never set anywhere,
+  // so installed extensions stayed frozen forever after the first install.
+  autoUpgradeOnStart = process.env[VCAM_AUTO_UPGRADE_ON_START_ENV] !== "0",
 ): boolean {
   if (!autoUpgradeOnStart || embeddedVersion === null || installedVersion === null) {
     return false;
@@ -215,7 +218,14 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
     };
   }
 
-  const normalized = listOutput.toLowerCase();
+  // Evaluate ONLY the lines describing our extension: matching the whole
+  // output made any other vendor's "[activated enabled]" extension count as
+  // ours (false available/running, wrong MEETING_VCAM_NATIVE_AVAILABLE).
+  const ownLines = listOutput
+    .split("\n")
+    .filter((line) => line.includes(VCAM_EXTENSION_BUNDLE_ID))
+    .map((line) => line.toLowerCase());
+  const normalized = ownLines.join("\n");
   const activated = normalized.includes("activated enabled");
   const waitingForUser =
     normalized.includes("waiting for user") ||
@@ -520,10 +530,16 @@ export async function openVcamHelperApp(
     }
 
     await new Promise<void>((resolve, reject) => {
-      const child: ChildProcess = spawn("open", [helperAppPath], {
-        detached: true,
-        stdio: "ignore",
-      });
+      // --args --activate: the helper app submits the activation request
+      // itself on launch (bridge-driven; no manual click in its window).
+      const child: ChildProcess = spawn(
+        "open",
+        [helperAppPath, "--args", "--activate"],
+        {
+          detached: true,
+          stdio: "ignore",
+        },
+      );
       child.once("error", reject);
       child.once("close", (code, signal) => {
         if (code !== 0) {
@@ -550,6 +566,24 @@ export async function openVcamHelperApp(
     };
   }
 
+  // The helper submits the activation request on launch (--activate). Give
+  // the extension a short window to become active — on already-approved
+  // machines and version upgrades this completes without any user action —
+  // and only then fall back to the approval guidance.
+  const activated = await waitForVcamActivation(
+    vcamActivationPollAttempts,
+    vcamActivationPollIntervalMs,
+  );
+  if (activated) {
+    return {
+      ...getVcamHelperStatus(options),
+      launchRequested: true,
+      requiresUserApproval: false,
+      code: "activation_completed",
+      message: "Virtual camera extension is active.",
+    };
+  }
+
   return {
     ...getVcamHelperStatus(options),
     launchRequested: true,
@@ -557,4 +591,37 @@ export async function openVcamHelperApp(
     code: "activation_requested",
     message: "BroadifyVCam.app was opened. Approve the camera extension in System Settings.",
   };
+}
+
+let vcamActivationPollAttempts = 5;
+let vcamActivationPollIntervalMs = 1_500;
+
+/**
+ * Test-only: shrink the post-launch activation polling. Call with null to
+ * reset (same pattern as the DeckLink helper path override).
+ * @internal
+ */
+export function __setVcamActivationPollForTesting(
+  attempts: number | null,
+  intervalMs: number | null,
+): void {
+  vcamActivationPollAttempts = attempts ?? 5;
+  vcamActivationPollIntervalMs = intervalMs ?? 1_500;
+}
+
+async function waitForVcamActivation(
+  attempts: number,
+  intervalMs: number,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, intervalMs);
+      timer.unref?.();
+    });
+    const state = getSystemExtensionActivationState();
+    if (state.activated) {
+      return true;
+    }
+  }
+  return false;
 }
