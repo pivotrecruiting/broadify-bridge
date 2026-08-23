@@ -1,6 +1,6 @@
 # TASK — WP7 (rc.32a): ghost-free 1080p capture on Windows, stage 1 (pure logic, no GPU code)
 
-Base: feature/vcam-rc13 @ 8ae984ec (rc.31). Round: 0/3.
+Base: feature/vcam-rc13 @ 8ae984ec (rc.31). Round: 1/3.
 Requirement (user): camera stays 1920x1080 on EVERY machine; ghost must go; nothing that works today may regress.
 Field diagnosis (rc.31 on GTX 1660 Ti laptop): ranker picks MJPG 1080p30 (raw only ≤720) → MF software MJPEG decode on the MF thread (~1 core)
 + render-thread costs scale 2.25x (8.3-MB `copyLatestFrameIfNew` under frameMutex_, scalar MODNet pre-pass, 8.3-MB UpdateSubresource);
@@ -63,3 +63,13 @@ governor/cadence see only `sessionRunMs` (frame_pipeline.cpp:644-649, 3064-3069)
 - lint/jest/build/helper build/ctest green (recorder audio_input_rejected known); Windows + macOS CI (test-release/wp7-budget) green.
 - Field (1660 Ti, MJPG 1080p30, Teams): program_fps ≥ 29.5 over 10 min, keyer_pipeline_mode ∈ {fused, fused_cadence}, mask_age_ms ≤ 34,
   camera_copy_ms ≤ 0.1, program_frame_ms p95 ≤ 30; at most one keyer_budget_overrun per 10 s, each followed by a stage change/recovered.
+
+## Review round 1 (HEAD b46900a0; verifier green; A1/A2 PASS) — MUST-FIX
+- R1-1 `frame_pipeline.cpp:3375-3377`: `BudgetOverrunReporter::update(programFrameMs, budget = fusedBudgetThresholdMs)` — the threshold is
+  already `base − overhead`, program frame ≈ session + overhead → overhead counted twice → permanent spurious `keyer_budget_overrun`
+  (e.g. overhead 12, session 14 → frame 26 > 21.3 while governor correctly does not step). Fix: compare against the REAL frame budget
+  (`stepDownFactor × frameBudgetMs`, i.e. the governor base before overhead subtraction; or `threshold + overheadEma`), never the reduced
+  threshold; keep `budget_threshold_ms` metric as is. Test: overhead 12 / session 14 @30 fps → no event; session 30 → event.
+Notes to fold in: N1 apply the 10-s repeat interval also to re-entry after Recovered; N4 skip the first overhead sample (or seed with 0);
+N5 fix the re-indentation in keyer_governor_test.cpp:306 / keyer_cadence_test.cpp:127-128; N3 comment that camera_upload_ms is "last upload";
+N7 make reporter/EMA loop-locals; N6 comment on LatestFrameSlot::copy() semantics after take.
