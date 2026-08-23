@@ -37,7 +37,8 @@ class BudgetOverrunReporter {
       if (overBudgetFrames_ < config_.consecutiveFrames) {
         return BudgetOverrunEvent::None;
       }
-      if (!overrunActive_ || now - lastOverrunEventAt_ >= config_.repeatInterval) {
+      if (lastOverrunEventAt_ == TimePoint{} ||
+          now - lastOverrunEventAt_ >= config_.repeatInterval) {
         overrunActive_ = true;
         lastOverrunEventAt_ = now;
         return BudgetOverrunEvent::Overrun;

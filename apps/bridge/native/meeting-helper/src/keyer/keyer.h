@@ -10,6 +10,7 @@ namespace broadify::meeting {
 
 struct KeyerMetrics {
   double cameraCopyMs = -1.0;
+  // Windows D3D path: duration of the last camera texture upload.
   double cameraUploadMs = -1.0;
   double frameOverheadMs = -1.0;
   double budgetThresholdMs = -1.0;

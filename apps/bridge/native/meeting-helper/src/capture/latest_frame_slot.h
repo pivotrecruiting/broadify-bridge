@@ -37,6 +37,8 @@ class LatestFrameSlot {
     if (!hasFrame_) {
       return false;
     }
+    // copy() intentionally returns the latest published frame even after
+    // takeIfNew() consumed its freshness marker; readers use it as a peek.
     frame = latestFrame_;
     return true;
   }

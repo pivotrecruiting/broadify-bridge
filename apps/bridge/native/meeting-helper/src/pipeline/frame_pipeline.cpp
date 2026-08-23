@@ -1924,11 +1924,13 @@ void runFramePipeline(const Options &options,
     const auto programStart = std::chrono::steady_clock::now();
 #if defined(_WIN32)
     static BudgetOverrunReporter fusedBudgetOverrunReporter;
-    static double fusedOverheadEmaMs = -1.0;
+    static double fusedOverheadEmaMs = 0.0;
     bool fusedInferenceRanThisFrame = false;
     double fusedInferenceSessionRunMs = -1.0;
     double fusedInferenceTensorMs = -1.0;
     double fusedBudgetThresholdMs = -1.0;
+    const double fusedReporterBudgetMs =
+        1000.0 / static_cast<double>(targetFps == 0u ? 30u : targetFps);
     int fusedCadenceNForEvent = 1;
     const char *fusedTierForEvent = "unknown";
 #endif
@@ -3202,7 +3204,7 @@ void runFramePipeline(const Options &options,
           fusedGovernor.reset();
           fusedCadence.reset();
           fusedBudgetOverrunReporter.reset();
-          fusedOverheadEmaMs = -1.0;
+          fusedOverheadEmaMs = 0.0;
           lastFusedRawMask = AlphaMask{};
           lastGoodMask = AlphaMask{};
           lastFusedInferredTsNs = 0u;
@@ -3368,13 +3370,10 @@ void runFramePipeline(const Options &options,
       if (fusedInferenceRanThisFrame && fusedInferenceSessionRunMs > 0.0) {
         const double frameOverheadMs =
             std::max(0.0, programFrameMs - fusedInferenceSessionRunMs);
-        fusedOverheadEmaMs =
-            fusedOverheadEmaMs < 0.0
-                ? frameOverheadMs
-                : 0.2 * frameOverheadMs + 0.8 * fusedOverheadEmaMs;
+        fusedOverheadEmaMs = 0.2 * frameOverheadMs + 0.8 * fusedOverheadEmaMs;
         const BudgetOverrunEvent budgetEvent =
             fusedBudgetOverrunReporter.update(programFrameMs,
-                                              fusedBudgetThresholdMs,
+                                              fusedReporterBudgetMs,
                                               programEnd);
         if (budgetEvent == BudgetOverrunEvent::Overrun) {
           emitHelperEvent(

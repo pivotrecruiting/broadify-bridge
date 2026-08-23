@@ -303,45 +303,45 @@ int main() {
                  "step-up holdoff is capped at reprobeMaxInterval");
   }
 
-    {
-      // WP7 overhead budget shrink: tiering still samples only session cost, but
-      // the step-down/step-up budget sees program-loop overhead.
-      KeyerAutoGovernor governor(testConfig());
-      governor.setFrameOverheadMs(15.0);
-      feed(governor, 20.0, 10, at(1));
-      ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                   "20ms session cost steps down when 15ms overhead shrinks budget");
-      feed(governor, 8.0, 10, at(2));
-      governor.maybeStepUp(at(12));
-      ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                   "8ms at Balanced320 does not step up under overhead budget");
-    }
+  {
+    // WP7 overhead budget shrink: tiering still samples only session cost, but
+    // the step-down/step-up budget sees program-loop overhead.
+    KeyerAutoGovernor governor(testConfig());
+    governor.setFrameOverheadMs(15.0);
+    feed(governor, 20.0, 10, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "20ms session cost steps down when 15ms overhead shrinks budget");
+    feed(governor, 8.0, 10, at(2));
+    governor.maybeStepUp(at(12));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "8ms at Balanced320 does not step up under overhead budget");
+  }
 
-    {
-      KeyerAutoGovernor governor(testConfig());
-      governor.seedMeasuredProbes(/*full512Ms=*/80.0,
-                                  /*balanced320Ms=*/60.0,
-                                  /*performance256Ms=*/20.0);
-      ok &= expect(governor.tier() == GovernorTier::Performance256,
-                   "overhead floor case starts at Performance256");
-      governor.setFrameOverheadMs(30.0);
-      feed(governor, 5.0, 30, at(1));
-      ok &= expect(governor.tier() == GovernorTier::Performance256,
-                   "overhead floor never pushes Performance256 to Lite");
-    }
+  {
+    KeyerAutoGovernor governor(testConfig());
+    governor.seedMeasuredProbes(/*full512Ms=*/80.0,
+                                /*balanced320Ms=*/60.0,
+                                /*performance256Ms=*/20.0);
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "overhead floor case starts at Performance256");
+    governor.setFrameOverheadMs(30.0);
+    feed(governor, 5.0, 30, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "overhead floor never pushes Performance256 to Lite");
+  }
 
-    {
-      KeyerGovernorConfig config = testConfig();
-      config.stepDownOverrideMs = 25.0;
-      KeyerAutoGovernor governor(config);
-      governor.setFrameOverheadMs(30.0);
-      feed(governor, 26.0, 10, at(1));
-      ok &= expect(governor.tier() == GovernorTier::Balanced320,
-                   "step-down override ignores overhead shrink");
-    }
+  {
+    KeyerGovernorConfig config = testConfig();
+    config.stepDownOverrideMs = 25.0;
+    KeyerAutoGovernor governor(config);
+    governor.setFrameOverheadMs(30.0);
+    feed(governor, 26.0, 10, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "step-down override ignores overhead shrink");
+  }
 
-    {
-      // Warm-handover deferral (before-red vs the immediate step-up): with
+  {
+    // Warm-handover deferral (before-red vs the immediate step-up): with
     // deferLiteStepUp the estimate-approved Lite256 -> Performance256 step-up
     // must NOT change the tier — it latches liteStepUpPending() until the
     // caller's background warmup commits it. Without the flag (the default
