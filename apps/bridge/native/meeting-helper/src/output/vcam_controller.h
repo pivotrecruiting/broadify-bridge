@@ -14,7 +14,10 @@ struct VcamStatus {
   bool active = false;
   bool supported = false;
   std::string lastError;
+  std::string transport = "tcp";
 };
+
+void setVirtualCameraTransport(std::string transport);
 
 // Creates and starts the virtual camera. Idempotent. Returns false and fills
 // errorOut on failure (e.g. the media-source DLL is not registered).

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace broadify::meeting {
@@ -27,6 +29,7 @@ struct VideoFrame {
   uint32_t width = 0;
   uint32_t height = 0;
   uint64_t timestampNs = 0;
+  uint64_t captureQpc = 0;
   std::vector<uint8_t> rgba;
 };
 
@@ -36,7 +39,32 @@ class CameraSource {
 
   virtual std::vector<CameraInfo> listCameras() = 0;
   virtual bool selectCamera(int cameraIndex) = 0;
+  virtual bool selectCameraByStableKey(const std::string &stableKey) {
+    const std::vector<CameraInfo> cameras = listCameras();
+    for (const CameraInfo &camera : cameras) {
+      if (camera.stableKey == stableKey || camera.cameraId == stableKey) {
+        return selectCamera(camera.cameraIndex);
+      }
+    }
+    return false;
+  }
   virtual bool start(int cameraIndex, uint32_t width, uint32_t height, uint32_t fps) = 0;
+  virtual bool startByStableKey(const std::string &stableKey, uint32_t width,
+                                uint32_t height, uint32_t fps) {
+    const std::vector<CameraInfo> cameras = listCameras();
+    for (const CameraInfo &camera : cameras) {
+      if (camera.stableKey == stableKey || camera.cameraId == stableKey) {
+        return start(camera.cameraIndex, width, height, fps);
+      }
+    }
+    return false;
+  }
+  virtual bool reopen(uint32_t width, uint32_t height, uint32_t fps) {
+    (void)width;
+    (void)height;
+    (void)fps;
+    return false;
+  }
   virtual void stop() = 0;
   virtual bool isRunning() const = 0;
   virtual int activeCameraIndex() const = 0;
@@ -46,6 +74,13 @@ class CameraSource {
       return false;
     }
     return true;
+  }
+  virtual bool waitForFrameOrTimeout(
+      uint64_t lastTimestampNs,
+      std::chrono::steady_clock::time_point deadline) {
+    (void)lastTimestampNs;
+    std::this_thread::sleep_until(deadline);
+    return false;
   }
   virtual std::string lastError() const = 0;
   virtual std::string cameraPermissionStatus() const = 0;

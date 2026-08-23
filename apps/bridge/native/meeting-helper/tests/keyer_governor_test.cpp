@@ -84,8 +84,9 @@ int main() {
     // seedProbe heuristic (area scaling from the 512 probe: x0.39 for 320,
     // x0.25 for 256).
     KeyerAutoGovernor governor(testConfig());
-    governor.seedProbe(30.0);  // 30 <= 33.3 -> full quality fits
-    ok &= expect(governor.tier() == GovernorTier::Full512, "seed 30ms -> Full512");
+    governor.seedProbe(26.0);
+    ok &= expect(governor.tier() == GovernorTier::Full512,
+                 "seed 26ms -> Full512");
     governor.reset();
     governor.seedProbe(60.0);  // 60*0.39=23.4 <= 33.3
     ok &= expect(governor.tier() == GovernorTier::Balanced320,
@@ -112,12 +113,57 @@ int main() {
   }
 
   {
+    // Measured tier probes beat the old 512-area estimate, but startup must
+    // never seed below Performance256 from build-time probes. Lite/Off require
+    // live async samples, because first-load contention can inflate probes.
+    KeyerAutoGovernor governor(testConfig());
+    governor.seedMeasuredProbes(/*full512Ms=*/60.0,
+                                /*balanced320Ms=*/30.0,
+                                /*performance256Ms=*/30.0);
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "measured probes clamp at Performance256");
+    governor.reset();
+    governor.seedMeasuredProbes(/*full512Ms=*/400.0,
+                                /*balanced320Ms=*/180.0,
+                                /*performance256Ms=*/130.0);
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "measured probes never seed Off");
+    governor.reset();
+    governor.seedMeasuredProbes(/*full512Ms=*/60.0,
+                                /*balanced320Ms=*/24.0,
+                                /*performance256Ms=*/30.0);
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "measured probes choose the best sustainable tier");
+    governor.seedMeasuredProbes(/*full512Ms=*/1.0,
+                                /*balanced320Ms=*/1.0,
+                                /*performance256Ms=*/1.0);
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "measured probe seeding is one-shot");
+  }
+  {
+    // The climb threshold is derived from the actual step-down threshold and
+    // clamped to it, so the hysteresis band cannot invert even if a future
+    // config accidentally sets stepUpFactor > 1. A 34ms async estimate would
+    // immediately step down at Performance256 (threshold 33.3ms); it must not
+    // be allowed to step up from Lite256.
+    KeyerGovernorConfig config = testConfig();
+    config.stepUpFactor = 1.4;
+    KeyerAutoGovernor governor(config);
+    governor.seedProbe(400.0);  // Lite256
+    governor.maybeStepUp(at(1));
+    feed(governor, 34.0, 10, at(1));
+    governor.maybeStepUp(at(12));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "step-up band never inverts");
+  }
+
+  {
     // FIELD REGRESSION (RC live test 2026-08-09, hybrid GTX 1660 Ti + UHD
     // 630, DirectML under GPU contention): live async inference EMA 62ms at a
     // 33.3ms budget. The old live-probe step-up climbed every backoff
     // interval and fell straight back — user-visible mode flapping
     // (fused_cadence -> async_lite -> fused -> ...). The estimate policy must
-    // pin the tier: 62ms estimate > 0.7 * 33.3ms = 23.3ms, and 62ms <
+    // pin the tier: 62ms estimate > 0.8 * 33.3ms = 26.7ms, and 62ms <
     // offInferenceMs, so async_lite FOREVER — zero transitions across 35
     // simulated minutes of samples and elapsed time.
     KeyerAutoGovernor governor(testConfig());
@@ -145,10 +191,8 @@ int main() {
 
   {
     // Genuinely fast machine: async EMA 15ms at Lite256. The estimate (same
-    // input size, 15ms <= 23.3ms) steps up exactly once — after minSamples
-    // AND the 10s dwell — and Performance256 then holds (Balanced320 estimate
-    // 15 * 1.5625 = 23.4ms > 23.3ms, and 15ms is far under the step-down
-    // threshold), with no further transition over 10 simulated minutes.
+    // input size, 15ms <= 26.7ms) steps up after minSamples
+    // AND the 10s dwell — then Performance256 and Balanced320 fit, while Full512 does not.
     KeyerAutoGovernor governor(testConfig());
     governor.seedProbe(400.0);  // 400*0.25=100 <= 120 -> Lite256
     ok &= expect(governor.tier() == GovernorTier::Lite256, "seeded at Lite256");
@@ -171,9 +215,9 @@ int main() {
         previous = governor.tier();
       }
     }
-    ok &= expect(transitions == 1, "fast machine steps up exactly once");
-    ok &= expect(governor.tier() == GovernorTier::Performance256,
-                 "fast machine lands at Performance256 and stays");
+    ok &= expect(transitions == 2, "fast machine steps up twice");
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "fast machine lands at Balanced320 and stays");
     ok &= expect(!governor.wantsAsyncLite(), "fused tier after step-up");
   }
 
@@ -364,6 +408,27 @@ int main() {
   }
 
   {
+    // VCam-aware policy: degrade by fused tier first; async Lite requires a
+    // sustained 30-sample over-budget run at fused 256.
+    KeyerGovernorConfig config = testConfig();
+    config.tierFirstPolicy = true;
+    config.liteGateSamples = 30u;
+    KeyerAutoGovernor governor(config);
+    feed(governor, 40.0, 10, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "VCam policy still drops 512 -> 320");
+    feed(governor, 40.0, 10, at(2));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "VCam policy still drops 320 -> 256");
+    feed(governor, 40.0, 29, at(3));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "29 over-budget 256 samples stay fused");
+    feed(governor, 40.0, 1, at(4));
+    ok &= expect(governor.tier() == GovernorTier::Lite256,
+                 "30 over-budget 256 samples enter Lite256");
+  }
+
+  {
     // reset() returns to a clean, unseeded Full512 with base backoffs.
     KeyerAutoGovernor governor(testConfig());
     governor.seedProbe(500.0);
@@ -391,8 +456,8 @@ int main() {
                  "Lite256 label async_lite");
     governor.reset();
     governor.seedProbe(500.0);
-    ok &= expect(std::string(governor.pipelineModeLabel(false)) == "off",
-                 "Off label off");
+    ok &= expect(std::string(governor.pipelineModeLabel(false)) == "off_reduced",
+                 "Off label off_reduced");
     // Performance-mode mapping.
     governor.reset();
     ok &= expect(std::string(governor.performanceModeForTier()) == "high_quality",

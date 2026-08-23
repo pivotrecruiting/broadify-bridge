@@ -14,6 +14,25 @@ endif()
 
 project(broadify_meeting_helper LANGUAGES C CXX)
 
+if(WIN32)
+  execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../../.."
+    OUTPUT_VARIABLE BROADIFY_BUILD_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if(BROADIFY_BUILD_GIT_SHA STREQUAL "")
+    set(BROADIFY_BUILD_GIT_SHA "unknown")
+  endif()
+  string(TIMESTAMP BROADIFY_BUILD_TIMESTAMP "%Y-%m-%dT%H:%M:%SZ" UTC)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/build_stamp.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp.h"
+    @ONLY
+  )
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -64,6 +83,8 @@ set(MEETING_HELPER_SOURCES
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
   src/compose/compositor.cpp
+  src/compose/d3d_adapter_select.cpp
+  src/compose/media_page_cache.cpp
   src/common/options.cpp
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
@@ -74,21 +95,38 @@ set(MEETING_HELPER_SOURCES
   src/keyer/model_manifest.cpp
   src/keyer/modnet_keyer.cpp
   src/keyer/openvino_keyer.cpp
+  src/keyer/ort_session_options_policy.cpp
   src/main.cpp
+  src/pipeline/compositor_input_selection.cpp
   src/pipeline/frame_pipeline.cpp
+  src/pipeline/frame_pipeline_gating.cpp
   src/pipeline/framebus_reader_log_gate.cpp
   src/pipeline/guided_mask_refine.cpp
+  src/pipeline/guided_work_size.cpp
   src/pipeline/keyer_cadence.cpp
   src/pipeline/mask_retention.cpp
   src/pipeline/subject_presence.cpp
   src/pipeline/tier_handover.cpp
   src/preview/preview_frame_store.cpp
   src/preview/mjpeg_server.cpp
+  src/preview/raw_frame_record.cpp
   src/preview/raw_frame_server.cpp
+  src/preview/raw_frame_stream_header.cpp
+  src/preview/vcam_shm_layout.cpp
+  src/preview/vcam_shm_ring_win.cpp
   src/util/sha256.cpp
   src/util/json_utils.cpp
   src/util/helper_event_log.cpp
+  src/util/pixel_swizzle.cpp
+  src/util/win_qos.cpp
 )
+
+if(WIN32)
+  list(APPEND MEETING_HELPER_SOURCES
+    src/preview/vcam_shm_publisher.cpp
+    src/preview/vcam_writer_generation.cpp
+  )
+endif()
 
 if(APPLE)
   enable_language(OBJCXX)
@@ -149,6 +187,11 @@ target_include_directories(meeting-helper PRIVATE
   ../framebus/include
   third_party/stb
 )
+if(WIN32)
+  target_include_directories(meeting-helper PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+  )
+endif()
 
 if(MEETING_HELPER_ENABLE_MODNET STREQUAL "1")
   find_path(ONNXRUNTIME_INCLUDE_DIR
@@ -214,7 +257,7 @@ if(WIN32)
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -256,10 +299,33 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(guided_mask_refine_test
     tests/guided_mask_refine_test.cpp
     src/pipeline/guided_mask_refine.cpp
+    src/pipeline/guided_work_size.cpp
+  )
+  add_executable(guided_work_size_test
+    tests/guided_work_size_test.cpp
+    src/pipeline/guided_work_size.cpp
   )
   add_executable(framebus_reader_log_gate_test
     tests/framebus_reader_log_gate_test.cpp
     src/pipeline/framebus_reader_log_gate.cpp
+  )
+  add_executable(staging_readback_ring_test
+    tests/staging_readback_ring_test.cpp
+  )
+  add_executable(d3d_adapter_select_test
+    tests/d3d_adapter_select_test.cpp
+    src/compose/d3d_adapter_select.cpp
+  )
+  add_executable(pixel_swizzle_test
+    tests/pixel_swizzle_test.cpp
+    src/util/pixel_swizzle.cpp
+  )
+  add_executable(ort_session_options_policy_test
+    tests/ort_session_options_policy_test.cpp
+    src/keyer/ort_session_options_policy.cpp
+  )
+  add_executable(camera_media_type_rank_test
+    tests/camera_media_type_rank_test.cpp
   )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
@@ -277,10 +343,105 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/subject_presence_test.cpp
     src/pipeline/subject_presence.cpp
   )
+  add_executable(frame_pipeline_stall_test
+    tests/frame_pipeline_stall_test.cpp
+  )
+  add_executable(frame_pipeline_gating_test
+    tests/frame_pipeline_gating_test.cpp
+    src/pipeline/frame_pipeline_gating.cpp
+  )
+  add_executable(retained_mask_selection_test
+    tests/retained_mask_selection_test.cpp
+  )
+  add_executable(compositor_input_selection_test
+    tests/compositor_input_selection_test.cpp
+    src/pipeline/compositor_input_selection.cpp
+  )
+  add_executable(media_page_cache_test
+    tests/media_page_cache_test.cpp
+    src/compose/media_page_cache.cpp
+    src/util/helper_event_log.cpp
+    src/util/json_utils.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
   )
+  # Covers the raw-frame HTTP handshake the Windows VCam DLL parses for its
+  # geometry; stdlib-only, no sockets.
+  add_executable(raw_frame_stream_header_test
+    tests/raw_frame_stream_header_test.cpp
+    src/preview/raw_frame_stream_header.cpp
+  )
+  add_executable(raw_frame_record_test
+    tests/raw_frame_record_test.cpp
+    src/preview/raw_frame_record.cpp
+  )
+  add_executable(vcam_shm_layout_test
+    tests/vcam_shm_layout_test.cpp
+    src/preview/vcam_shm_layout.cpp
+  )
+  add_executable(vcam_shm_retry_state_test
+    tests/vcam_shm_retry_state_test.cpp
+  )
+  add_executable(raw_frame_connect_state_test
+    tests/raw_frame_connect_state_test.cpp
+  )
+  add_executable(raw_frame_server_test
+    tests/raw_frame_server_test.cpp
+    src/preview/raw_frame_record.cpp
+    src/preview/raw_frame_server.cpp
+    src/preview/raw_frame_stream_header.cpp
+    src/preview/preview_frame_store.cpp
+    src/util/helper_event_log.cpp
+    src/util/pixel_swizzle.cpp
+    src/util/win_qos.cpp
+  )
+  if(WIN32)
+    add_executable(shm_frame_reader_no_frame_test
+      tests/shm_frame_reader_no_frame_test.cpp
+      ../vcam-helper/windows/shm_frame_reader.cpp
+      ../vcam-helper/windows/vcam_log.cpp
+      src/preview/vcam_shm_layout.cpp
+    )
+    add_executable(vcam_shm_service_ring_test
+      tests/vcam_shm_service_ring_test.cpp
+      src/preview/vcam_shm_layout.cpp
+      src/preview/vcam_shm_ring_win.cpp
+      src/util/helper_event_log.cpp
+      src/util/pixel_swizzle.cpp
+    )
+    add_executable(vcam_shm_publisher_test
+      tests/vcam_shm_publisher_test.cpp
+      src/preview/vcam_shm_layout.cpp
+      src/preview/vcam_shm_publisher.cpp
+      src/preview/vcam_shm_ring_win.cpp
+      src/util/helper_event_log.cpp
+      src/util/pixel_swizzle.cpp
+    )
+    target_include_directories(shm_frame_reader_no_frame_test PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    )
+  endif()
+  set(CONTROL_SERVER_TEST_SOURCES
+    tests/control_server_test.cpp
+    src/control/control_server.cpp
+    src/capture/camera_source.cpp
+    src/output/vcam_controller.cpp
+    src/preview/preview_frame_store.cpp
+    src/preview/vcam_shm_layout.cpp
+    src/preview/vcam_shm_ring_win.cpp
+    src/recorder/meeting_recorder_stub.cpp
+    src/util/helper_event_log.cpp
+    src/util/json_utils.cpp
+    src/util/pixel_swizzle.cpp
+  )
+  if(WIN32)
+    list(APPEND CONTROL_SERVER_TEST_SOURCES
+      src/preview/vcam_writer_generation.cpp
+    )
+  endif()
+  add_executable(control_server_test ${CONTROL_SERVER_TEST_SOURCES})
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -292,25 +453,78 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/keyer/model_manifest.cpp
     src/keyer/modnet_keyer.cpp
     src/keyer/openvino_keyer.cpp
+    src/keyer/ort_session_options_policy.cpp
     src/util/json_utils.cpp
     src/util/sha256.cpp
   )
+  target_compile_definitions(matting_backend_test PRIVATE
+    BROADIFY_MATTING_BACKEND_TESTING=1
+  )
+  add_executable(matting_common_test
+    tests/matting_common_test.cpp
+    src/keyer/matting_common.cpp
+  )
   foreach(helper_test
     guided_mask_refine_test
+    guided_work_size_test
     framebus_reader_log_gate_test
+    staging_readback_ring_test
+    d3d_adapter_select_test
+    pixel_swizzle_test
+    ort_session_options_policy_test
+    camera_media_type_rank_test
     keyer_governor_test
     keyer_cadence_test
     mask_retention_test
     subject_presence_test
+    frame_pipeline_stall_test
+    frame_pipeline_gating_test
+    retained_mask_selection_test
+    compositor_input_selection_test
+    media_page_cache_test
     tier_handover_test
     matting_backend_test
+    matting_common_test
+    control_server_test
+    raw_frame_stream_header_test
+    raw_frame_record_test
+    vcam_shm_layout_test
+    vcam_shm_retry_state_test
+    raw_frame_connect_state_test
+    raw_frame_server_test
   )
     target_include_directories(${helper_test} PRIVATE src)
     if(WIN32)
       target_compile_definitions(${helper_test} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+      if(helper_test STREQUAL "raw_frame_server_test")
+        target_link_libraries(${helper_test} PRIVATE ws2_32 avrt winmm)
+      elseif(helper_test STREQUAL "control_server_test")
+        # Links control_server.cpp + vcam_controller.cpp: needs the same Win32
+        # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
+        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
+      elseif(helper_test STREQUAL "d3d_adapter_select_test")
+        target_link_libraries(${helper_test} PRIVATE dxgi)
+      endif()
+    elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
+      target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
   endforeach()
+
+  if(WIN32)
+    target_include_directories(shm_frame_reader_no_frame_test PRIVATE src)
+    target_compile_definitions(shm_frame_reader_no_frame_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(shm_frame_reader_no_frame_test PRIVATE advapi32)
+    add_test(NAME shm_frame_reader_no_frame_test COMMAND shm_frame_reader_no_frame_test)
+    target_include_directories(vcam_shm_service_ring_test PRIVATE src)
+    target_compile_definitions(vcam_shm_service_ring_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(vcam_shm_service_ring_test PRIVATE advapi32)
+    add_test(NAME vcam_shm_service_ring_test COMMAND vcam_shm_service_ring_test)
+    target_include_directories(vcam_shm_publisher_test PRIVATE src)
+    target_compile_definitions(vcam_shm_publisher_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(vcam_shm_publisher_test PRIVATE advapi32)
+    add_test(NAME vcam_shm_publisher_test COMMAND vcam_shm_publisher_test)
+  endif()
 
   if(APPLE)
     # Exercises the production AVAssetWriter configuration across fragment

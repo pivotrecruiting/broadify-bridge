@@ -83,6 +83,24 @@ function App() {
   } | null>(null);
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("terms");
+  // One-shot flag: after a successful bridge start, open the web app in the
+  // default browser as soon as the status carries the web app URL. Never
+  // fires on failed starts and exactly once per started session.
+  const openWebAppAfterStartRef = useRef(false);
+  useEffect(() => {
+    if (!openWebAppAfterStartRef.current) {
+      return;
+    }
+    if (bridgeStatus.running && bridgeStatus.webAppUrl) {
+      openWebAppAfterStartRef.current = false;
+      void window.electron
+        .openExternal(bridgeStatus.webAppUrl)
+        .catch((error: unknown) => {
+          console.error("Failed to open web app URL after start:", error);
+        });
+    }
+  }, [bridgeStatus.running, bridgeStatus.webAppUrl]);
+
   const previousUpdaterStateRef = useRef(updaterStatus.state);
   const previousAvailableVersionRef = useRef<string | null>(updaterStatus.availableVersion);
 
@@ -188,6 +206,7 @@ function App() {
         console.error("Failed to start bridge:", result.error);
         alert(`Failed to start bridge: ${result.error || "Unknown error"}`);
       } else {
+        openWebAppAfterStartRef.current = true;
         // If port was changed automatically, update UI
         if (result.actualPort && result.actualPort !== portToUse) {
           const portConfig = getCurrentPortConfig();

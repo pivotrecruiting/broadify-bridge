@@ -3,6 +3,10 @@
 #include "compose/metal_compositor.h"
 #include "keyer/keyer.h"
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 namespace broadify::meeting {
 
 // True when the D3D11 GPU compositor is available AND explicitly enabled via
@@ -27,5 +31,13 @@ bool d3d11GuidedRefineAvailable();
 // mask with the working-resolution result — identical semantics to the CPU
 // path. Returns false on any failure; callers must then run the CPU refine.
 bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame);
+
+void resetGuidedRefineD3D11History();
+
+uint64_t d3d11CompositorCameraUploadCount();
+
+uint32_t d3d11CompositorStagingReadbackDepth();
+
+std::string d3d11CompositorAdapterStatus();
 
 }  // namespace broadify::meeting

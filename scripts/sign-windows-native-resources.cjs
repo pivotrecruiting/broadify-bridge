@@ -4,6 +4,9 @@ const path = require("node:path");
 const WINDOWS_NATIVE_RESOURCES = Object.freeze([
   "resources/native/display-helper/display-helper.exe",
   "resources/native/display-helper/SDL2.dll",
+  // ATEM USB transport helper (Studio mode); verify-windows-release-signatures
+  // enumerates every packaged .exe, so an unsigned helper fails the release.
+  "resources/native/atem-usb-helper/atem-usb-helper.exe",
   "resources/native/meeting-helper/meeting-helper.exe",
   "resources/native/meeting-helper/onnxruntime.dll",
   "resources/native/meeting-helper/onnxruntime_providers_shared.dll",

@@ -10,14 +10,24 @@
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
 #include "preview/raw_frame_server.h"
+#if defined(_WIN32)
+#include "preview/vcam_shm_publisher.h"
+#endif
+#include "preview/vcam_shm_ring_win.h"
+#include "preview/vcam_shm_retry_state.h"
+#include "preview/vcam_writer_generation.h"
 #include "recorder/meeting_recorder.h"
 #include "output/vcam_controller.h"
 #include "state/meeting_state.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/win_qos.h"
 
 #if defined(__APPLE__)
 #include "macos/macos_app.h"
+#endif
+#if defined(_WIN32)
+#include "build_stamp.h"
 #endif
 
 #include <algorithm>
@@ -37,11 +47,13 @@
 #include <cstdlib>
 #include <thread>
 #include <chrono>
+#include <cstring>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <aclapi.h>
 #include <dbghelp.h>
 #else
 #include <unistd.h>
@@ -136,12 +148,80 @@ LONG WINAPI writeCrashDump(EXCEPTION_POINTERS *pointers) {
   }
   return EXCEPTION_EXECUTE_HANDLER;
 }
+
+bool controlMappingAclGrantsLocalServiceWrite(const std::wstring &controlName) {
+  HANDLE control = OpenFileMappingW(READ_CONTROL, FALSE, controlName.c_str());
+  if (control == nullptr) {
+    return false;
+  }
+
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  PACL dacl = nullptr;
+  const DWORD securityResult =
+      GetSecurityInfo(control, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                      nullptr, nullptr, &dacl, nullptr, &descriptor);
+  CloseHandle(control);
+  if (securityResult != ERROR_SUCCESS || dacl == nullptr) {
+    if (descriptor != nullptr) {
+      LocalFree(descriptor);
+    }
+    return false;
+  }
+
+  SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+  PSID localServiceSid = nullptr;
+  bool ok = false;
+  if (AllocateAndInitializeSid(&ntAuthority, 1, SECURITY_LOCAL_SERVICE_RID, 0,
+                               0, 0, 0, 0, 0, 0, &localServiceSid)) {
+    for (DWORD i = 0; i < dacl->AceCount; ++i) {
+      void *ace = nullptr;
+      if (!GetAce(dacl, i, &ace)) {
+        continue;
+      }
+      const auto *header = static_cast<const ACE_HEADER *>(ace);
+      if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
+        continue;
+      }
+      const auto *allowed = static_cast<const ACCESS_ALLOWED_ACE *>(ace);
+      PSID sid = const_cast<DWORD *>(&allowed->SidStart);
+      if (!EqualSid(sid, localServiceSid)) {
+        continue;
+      }
+      const DWORD mask = allowed->Mask;
+      const bool genericOk =
+          (mask & (GENERIC_READ | GENERIC_WRITE)) ==
+          (GENERIC_READ | GENERIC_WRITE);
+      const bool sectionOk =
+          (mask & (FILE_MAP_READ | FILE_MAP_WRITE)) ==
+          (FILE_MAP_READ | FILE_MAP_WRITE);
+      if (genericOk || sectionOk) {
+        ok = true;
+        break;
+      }
+    }
+    FreeSid(localServiceSid);
+  }
+  LocalFree(descriptor);
+  return ok;
+}
 #endif
 
 void printEvent(const std::string &json) {
   // Mirrored into the --event-log sidecar: on macOS the `open`-based launch
   // swallows stdout, so the sidecar is what the bridge can actually read.
   emitHelperEvent(json);
+}
+
+std::string requestedVcamTransport() {
+#if defined(_WIN32)
+  const char *value = std::getenv("BROADIFY_MEETING_VCAM_TRANSPORT");
+  if (value != nullptr && std::string(value) == "tcp") {
+    return "tcp";
+  }
+  return "shm";
+#else
+  return "tcp";
+#endif
 }
 
 #if BROADIFY_ENABLE_MODNET
@@ -262,7 +342,7 @@ int runKeyerSelfTest(const Options &options) {
     const bool openVinoOk =
         benchmarkKeyerBackend("openvino_modnet", frame, [&options, &device]() {
           return std::make_unique<OpenVinoKeyer>(
-              OpenVinoKeyerOptions{options.modelsDir, device});
+              OpenVinoKeyerOptions{options.modelsDir, device, true});
         });
     ok = ok && openVinoOk;
   }
@@ -275,6 +355,226 @@ int runKeyerSelfTest(const Options &options) {
 }
 #endif  // BROADIFY_ENABLE_MODNET
 
+std::wstring asciiToWide(const std::string &value) {
+  return std::wstring(value.begin(), value.end());
+}
+
+int runVcamShmReaderSelfTest(const Options &options) {
+#if defined(_WIN32)
+  const uint32_t width = 64;
+  const uint32_t height = 36;
+  const size_t ringBytes =
+      broadify::vcam_shm::ringBytesFor(width, height,
+                                       broadify::vcam_shm::PixelFormat::Bgra8);
+  const std::wstring controlName = asciiToWide(options.vcamShmSelfTestControlName);
+  HANDLE control = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+                                    controlName.c_str());
+  if (control == nullptr) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_control_open\"}");
+    return 1;
+  }
+  void *controlMemory = MapViewOfFile(
+      control, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+      sizeof(broadify::vcam_shm::ControlRecord));
+  if (controlMemory == nullptr) {
+    CloseHandle(control);
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_control_map\"}");
+    return 1;
+  }
+  auto *controlRecord =
+      static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory);
+  broadify::vcam_shm::ControlRecord record;
+  if (!broadify::vcam_shm::readControlRecord(*controlRecord, record)) {
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_control_read\"}");
+    return 1;
+  }
+  const std::wstring mappingName(record.mapping_name);
+  const std::wstring eventName(record.event_name);
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mappingName.c_str());
+  HANDLE event = OpenEventW(SYNCHRONIZE, FALSE, eventName.c_str());
+  if (mapping == nullptr || event == nullptr) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_open\"}");
+    if (mapping != nullptr) CloseHandle(mapping);
+    if (event != nullptr) CloseHandle(event);
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
+    return 1;
+  }
+  void *memory = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, ringBytes);
+  if (memory == nullptr) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"reader_map\"}");
+    CloseHandle(event);
+    CloseHandle(mapping);
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
+    return 1;
+  }
+  LARGE_INTEGER mapQpc{};
+  LARGE_INTEGER firstFrameQpc{};
+  LARGE_INTEGER frequency{};
+  QueryPerformanceCounter(&mapQpc);
+  QueryPerformanceFrequency(&frequency);
+  uint64_t lastSequence = 0;
+  int frames = 0;
+  const uint64_t deadline = GetTickCount64() + 5000u;
+  while (GetTickCount64() < deadline && frames < 3) {
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    broadify::vcam_shm::updateReaderSlot(
+        *controlRecord, GetCurrentProcessId(), static_cast<uint64_t>(now.QuadPart));
+    WaitForSingleObject(event, 1000);
+    broadify::vcam_shm::CopiedFrame frame;
+    if (broadify::vcam_shm::copyNewestFrame(memory, ringBytes, frame) &&
+        frame.sequence != lastSequence) {
+      if (frames == 0) {
+        QueryPerformanceCounter(&firstFrameQpc);
+      }
+      lastSequence = frame.sequence;
+      ++frames;
+    }
+  }
+  broadify::vcam_shm::clearReaderSlot(*controlRecord, GetCurrentProcessId());
+  UnmapViewOfFile(memory);
+  CloseHandle(event);
+  CloseHandle(mapping);
+  UnmapViewOfFile(controlMemory);
+  CloseHandle(control);
+  const uint64_t timeToFirstFrameMs =
+      (frames > 0 && frequency.QuadPart > 0)
+          ? static_cast<uint64_t>(((firstFrameQpc.QuadPart - mapQpc.QuadPart) *
+                                   1000ll) /
+                                  frequency.QuadPart)
+          : UINT64_MAX;
+  printEvent(std::string("{\"type\":\"vcam_shm_selftest\",\"role\":\"reader\",\"ok\":") +
+             (frames == 3 ? "true" : "false") + ",\"frames\":" +
+             std::to_string(frames) + ",\"time_to_first_frame_ms\":" +
+             std::to_string(timeToFirstFrameMs) + "}");
+  return frames == 3 ? 0 : 1;
+#else
+  (void)options;
+  printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"reason\":\"windows_only\"}");
+  return 1;
+#endif
+}
+
+int runVcamShmSelfTest(const Options &options, const char *argv0) {
+#if defined(_WIN32)
+  VcamShmRingWin ring;
+  const bool globalNamespace = !options.vcamShmSelfTestLocalNamespace;
+  const std::wstring controlName =
+      std::wstring(globalNamespace ? L"Global\\" : L"Local\\") +
+      L"BroadifyVcamControlSelftest";
+  const VcamShmCreateResult created =
+      ring.createWithControlName(64, 36, 30, 1, controlName, globalNamespace);
+  if (!created.ok || created.globalNamespace != globalNamespace) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"writer_create\"}");
+    return 1;
+  }
+  if (globalNamespace && !controlMappingAclGrantsLocalServiceWrite(controlName)) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"control_acl\"}");
+    return 1;
+  }
+  if (!globalNamespace) {
+    std::vector<uint8_t> frame(64u * 36u * 4u, 90u);
+    if (!ring.publishBgra(64, 36, frame.data(), frame.size(), 0u)) {
+      printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"local_publish\"}");
+      return 1;
+    }
+    HANDLE control = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+                                      controlName.c_str());
+    if (control == nullptr) {
+      printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"local_control_open\"}");
+      return 1;
+    }
+    void *controlMemory = MapViewOfFile(
+        control, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+        sizeof(broadify::vcam_shm::ControlRecord));
+    if (controlMemory == nullptr) {
+      CloseHandle(control);
+      printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"local_control_map\"}");
+      return 1;
+    }
+    auto *controlRecord =
+        static_cast<broadify::vcam_shm::ControlRecord *>(controlMemory);
+    broadify::vcam_shm::ControlRecord record;
+    const bool controlOk =
+        broadify::vcam_shm::readControlRecord(*controlRecord, record);
+    HANDLE mapping = controlOk
+                         ? OpenFileMappingW(FILE_MAP_READ, FALSE,
+                                            std::wstring(record.mapping_name).c_str())
+                         : nullptr;
+    const size_t ringBytes =
+        controlOk ? static_cast<size_t>(record.capacity_bytes) : 0u;
+    void *memory = mapping == nullptr
+                       ? nullptr
+                       : MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, ringBytes);
+    broadify::vcam_shm::CopiedFrame copied;
+    const bool ok =
+        memory != nullptr &&
+        broadify::vcam_shm::copyNewestFrame(memory, ringBytes, copied) &&
+        copied.data == frame;
+    if (memory != nullptr) {
+      UnmapViewOfFile(memory);
+    }
+    if (mapping != nullptr) {
+      CloseHandle(mapping);
+    }
+    UnmapViewOfFile(controlMemory);
+    CloseHandle(control);
+    printEvent(std::string("{\"type\":\"vcam_shm_selftest\",\"role\":\"local\",\"ok\":") +
+               (ok ? "true" : "false") + "}");
+    return ok ? 0 : 1;
+  }
+  std::wstring command = L"\"";
+  command += asciiToWide(argv0);
+  command += L"\" --vcam-shm-reader-selftest ";
+  command += controlName;
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0,
+                      nullptr, nullptr, &startup, &process)) {
+    printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"spawn_reader\"}");
+    return 1;
+  }
+  std::vector<uint8_t> frame(64u * 36u * 4u, 0);
+  const uint64_t deadline = GetTickCount64() + 5000u;
+  int frameIndex = 0;
+  DWORD wait = WAIT_TIMEOUT;
+  while (GetTickCount64() < deadline) {
+    wait = WaitForSingleObject(process.hProcess, 0);
+    if (wait == WAIT_OBJECT_0) {
+      break;
+    }
+    std::memset(frame.data(), 40 + (frameIndex % 5) * 35, frame.size());
+    ring.publishBgra(64, 36, frame.data(), frame.size(), 0u);
+    ++frameIndex;
+    Sleep(33);
+  }
+  if (wait != WAIT_OBJECT_0) {
+    wait = WaitForSingleObject(process.hProcess, 0);
+  }
+  DWORD exitCode = 1;
+  if (wait == WAIT_OBJECT_0) {
+    GetExitCodeProcess(process.hProcess, &exitCode);
+  } else {
+    TerminateProcess(process.hProcess, 1);
+  }
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  printEvent(std::string("{\"type\":\"vcam_shm_selftest\",\"role\":\"writer\",\"ok\":") +
+             (exitCode == 0 ? "true" : "false") + "}");
+  return exitCode == 0 ? 0 : 1;
+#else
+  (void)options;
+  (void)argv0;
+  printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"reason\":\"windows_only\"}");
+  return 1;
+#endif
+}
+
 }  // namespace
 }  // namespace broadify::meeting
 
@@ -283,6 +583,7 @@ int main(int argc, char **argv) {
 
 #if defined(_WIN32)
   SetUnhandledExceptionFilter(writeCrashDump);
+  configureMeetingProcessQos();
 #endif
   std::signal(SIGINT, signalHandler);
   std::signal(SIGTERM, signalHandler);
@@ -296,6 +597,19 @@ int main(int argc, char **argv) {
 
   Options options = parseOptions(argc, argv);
   setHelperEventLogPath(options.eventLogPath);
+  if (options.vcamShmReaderSelfTest) {
+    return runVcamShmReaderSelfTest(options);
+  }
+  if (options.vcamShmSelfTest) {
+    return runVcamShmSelfTest(options, argc > 0 ? argv[0] : "meeting-helper.exe");
+  }
+#if defined(_WIN32)
+  emitHelperEvent(std::string("{\"type\":\"meeting_helper_build\","
+                              "\"git_sha\":\"") +
+                  jsonEscape(BROADIFY_BUILD_GIT_SHA) +
+                  "\",\"build_time\":\"" +
+                  jsonEscape(BROADIFY_BUILD_TIMESTAMP) + "\"}");
+#endif
   if (options.keyerSelfTest) {
     // Standalone benchmark used by scripts/test-meeting-helper.cjs (keyer /
     // keyer-hardware modes): no --run / --control-socket required.
@@ -336,6 +650,7 @@ int main(int argc, char **argv) {
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
   PreviewFrameStore previewFrames;
+  VcamShmRingWin vcamShm;
   MeetingRecorder recorder;
 
   std::promise<void> controlListening;
@@ -388,9 +703,158 @@ int main(int argc, char **argv) {
   }
 #endif
 
-  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), std::ref(recorder), std::ref(g_running));
+  std::string selectedVcamTransport = requestedVcamTransport();
+#if defined(_WIN32)
+  if (selectedVcamTransport == "tcp") {
+    printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"env\"}");
+  }
+#endif
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamTransport = selectedVcamTransport;
+  }
+  setVirtualCameraTransport(selectedVcamTransport);
+
+#if defined(_WIN32)
+  VcamShmPublisher vcamShmPublisher;
+#endif
+  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), &vcamShm,
+#if defined(_WIN32)
+                     &vcamShmPublisher,
+#endif
+                     std::ref(recorder), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
-  std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
+  const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
+  std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
+  std::thread vcamShmLifecycle([&options, &state, &vcamShm
+#if defined(_WIN32)
+                                , &vcamShmPublisher
+#endif
+  ]() {
+    int lastReaderCount = 0;
+    uint64_t nextOpenAttemptMs = 0u;
+    uint64_t lastReaderSeenMs = 0u;
+    std::string lastTcpTransportReason;
+    while (g_running.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      bool shouldUseShm = false;
+      uint32_t width = options.width;
+      uint32_t height = options.height;
+      uint32_t fps = options.fps;
+      uint64_t writerGeneration = 0u;
+      {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        shouldUseShm = state.vcamRawRunning && state.vcamTransport == "shm";
+        writerGeneration = state.vcamWriterGeneration;
+      }
+      if (!shouldUseShm) {
+#if defined(_WIN32)
+        if (vcamShm.active()) {
+          vcamShmPublisher.stop();
+          vcamShm.close();
+        }
+#endif
+        lastReaderSeenMs = 0u;
+        lastTcpTransportReason.clear();
+        continue;
+      }
+#if defined(_WIN32)
+      if (!vcamShm.active()) {
+        const uint64_t now = GetTickCount64();
+        if (now < nextOpenAttemptMs) {
+          continue;
+        }
+        if (writerGeneration == 0u) {
+          writerGeneration = initialVcamWriterGeneration();
+          std::lock_guard<std::mutex> lock(state.mutex);
+          if (state.vcamWriterGeneration == 0u) {
+            state.vcamWriterGeneration = writerGeneration;
+          } else {
+            writerGeneration = state.vcamWriterGeneration;
+          }
+        } else {
+          ++writerGeneration;
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.vcamWriterGeneration = writerGeneration;
+        }
+        const VcamShmCreateResult opened =
+            vcamShm.create(width, height, fps, writerGeneration);
+        VcamShmOpenOutcome outcome = VcamShmOpenOutcome::CreateFailed;
+        if (opened.ok && opened.reason == "opened_service_ring") {
+          outcome = VcamShmOpenOutcome::OpenedServiceRing;
+        } else if (opened.ok && opened.reason == "created_global") {
+          outcome = VcamShmOpenOutcome::CreatedGlobal;
+        } else if (opened.reason == "service_ring_absent") {
+          outcome = VcamShmOpenOutcome::ServiceRingAbsent;
+        } else if (opened.reason == "global_namespace_privilege") {
+          outcome = VcamShmOpenOutcome::GlobalNamespacePrivilege;
+        }
+        const VcamShmRetryDecision retry =
+            decideVcamShmRetry(outcome, now, 2000u);
+        if (retry.useShm) {
+          vcamShmPublisher.start(&vcamShm);
+          setVirtualCameraTransport("shm");
+          printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"shm\",\"reason\":\"" +
+                     jsonEscape(opened.reason.empty() ? "opened_service_ring"
+                                                      : opened.reason) +
+                     "\"}");
+          nextOpenAttemptMs = 0u;
+          lastReaderSeenMs = 0u;
+          lastTcpTransportReason.clear();
+        } else {
+          setVirtualCameraTransport("tcp");
+          const std::string fallbackReason =
+              opened.reason == "invalid_service_ring" ? opened.reason
+                                                       : retry.reason;
+          if (fallbackReason != lastTcpTransportReason) {
+            printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"" +
+                       jsonEscape(fallbackReason) + "\"}");
+            lastTcpTransportReason = fallbackReason;
+          }
+          nextOpenAttemptMs = retry.nextRetryMs;
+        }
+        continue;
+      }
+#endif
+      vcamShm.heartbeat(0u);
+      const int readerCount =
+          static_cast<int>(std::min<uint64_t>(vcamShm.readerCount(), 32u));
+#if defined(_WIN32)
+      const uint64_t nowMs = GetTickCount64();
+#else
+      const uint64_t nowMs = 0u;
+#endif
+      if (readerCount > 0) {
+        lastReaderSeenMs = nowMs;
+      } else if (lastReaderSeenMs != 0u && nowMs >= lastReaderSeenMs + 5000u &&
+                 vcamShm.readerHeartbeatAbsent(5000u)) {
+#if defined(_WIN32)
+        vcamShmPublisher.stop();
+#endif
+        vcamShm.close();
+        setVirtualCameraTransport("tcp");
+        if (lastTcpTransportReason != "reader_absent") {
+          printEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"vcam_transport_selected\",\"transport\":\"tcp\",\"reason\":\"reader_absent\"}");
+          lastTcpTransportReason = "reader_absent";
+        }
+        lastReaderSeenMs = 0u;
+        nextOpenAttemptMs = 0u;
+        continue;
+      }
+      if (readerCount != lastReaderCount) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.vcamShmReaderCount = readerCount;
+        state.vcamClientCount =
+            state.vcamShmReaderCount + state.vcamTcpClientCount;
+        state.programDirty = true;
+        ++state.programRevision;
+        lastReaderCount = readerCount;
+      }
+    }
+#if defined(_WIN32)
+    vcamShmPublisher.stop();
+#endif
+  });
   std::thread control(
       runControlServer,
       options.controlSocket,
@@ -400,7 +864,8 @@ int main(int argc, char **argv) {
       std::ref(recorder),
       std::cref(options),
       std::ref(g_running),
-      [&controlListening]() { controlListening.set_value(); });
+      [&controlListening]() { controlListening.set_value(); },
+      &vcamShm);
 
   controlListeningFuture.wait();
 
@@ -408,6 +873,7 @@ int main(int argc, char **argv) {
   ready << "{\"type\":\"ready\",\"framebus\":\"" << jsonEscape(options.framebusName)
         << "\",\"preview_port\":" << options.previewPort
         << ",\"vcam_frame_port\":" << options.vcamFramePort
+        << ",\"vcam_transport\":\"" << jsonEscape(selectedVcamTransport) << "\""
         << ",\"control_socket\":\"" << jsonEscape(options.controlSocket) << "\"}";
   printEvent(ready.str());
 
@@ -446,7 +912,12 @@ int main(int argc, char **argv) {
   // g_running; joining them would hang forever (the historical reason this
   // helper survived every shutdown). Their sockets are closed by the OS.
   preview.detach();
-  vcamRaw.detach();
+  if (vcamRaw.joinable()) {
+    vcamRaw.detach();
+  }
+  if (vcamShmLifecycle.joinable()) {
+    vcamShmLifecycle.detach();
+  }
   control.detach();
   // Name the exit path: silent code-0 exits were undiagnosable (the `open`
   // wrapper always reports 0 to the bridge whatever ended the app).

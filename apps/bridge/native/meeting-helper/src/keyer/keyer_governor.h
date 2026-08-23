@@ -18,7 +18,8 @@ struct KeyerGovernorConfig {
   // blocks the program loop below target fps.
   double frameBudgetMs = 1000.0 / 30.0;
   // Step down when the smoothed inference cost exceeds
-  // stepDownFactor * frameBudgetMs (mirrors the Apple governor's 34ms@30fps).
+  // stepDownFactor * frameBudgetMs. A full-frame threshold preserves the
+  // rc.12 seed behavior; cadence, not tier churn, handles headroom first.
   double stepDownFactor = 1.0;
   // Testing override for the step-down threshold: when > 0 it replaces
   // stepDownFactor * frameBudgetMs (BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS).
@@ -38,12 +39,12 @@ struct KeyerGovernorConfig {
   // EMA weight of the newest sample (Apple: 0.2).
   double emaWeight = 0.2;
   // Step-UP margin: the next tier's ESTIMATED cost must fit
-  // stepUpFactor * frameBudgetMs (step-down stays at 1.0 * budget, so the
-  // hysteresis band between climbing and falling is wide by construction).
+  // stepUpFactor * stepDownThresholdMs(), so the hysteresis band cannot
+  // invert when the step-down threshold is overridden.
   // Field lesson 2026-08-09: live inference under GPU contention can be 2-3x
   // the isolated benchmark, so climbing is only worth a visible transition
   // when the estimate fits with strong margin.
-  double stepUpFactor = 0.7;
+  double stepUpFactor = 0.8;
   // Minimum dwell time at the current tier before an estimate-based step-up
   // is considered. Doubles (up to reprobeMaxInterval) every time a step-up's
   // estimate proves wrong, and never resets downward within a session.
@@ -54,11 +55,16 @@ struct KeyerGovernorConfig {
   std::chrono::steady_clock::duration reprobeBaseInterval =
       std::chrono::seconds(60);
   std::chrono::steady_clock::duration reprobeMaxInterval =
-      std::chrono::seconds(600);
+      std::chrono::seconds(120);
   // Wrong-estimate watch window: a step-down within this many samples after a
   // step-up counts as a wrong estimate and doubles the corresponding backoff
   // (~1s at 30fps, Apple: 30).
   uint64_t stableSamples = 30u;
+  // Windows VCam policy: Teams/encoder contention may push 256 fused over
+  // budget transiently. Require a longer consecutive over-budget run before
+  // leaving fused for async-lite, and degrade by fused tier first.
+  uint64_t liteGateSamples = 30u;
+  bool tierFirstPolicy = false;
   // Warm-handover deferral (make-before-break step-up): when true, an
   // estimate-approved Lite256 -> Performance256 step-up does NOT change the
   // tier; the governor latches liteStepUpPending() instead and the caller
@@ -93,11 +99,14 @@ class KeyerAutoGovernor {
   // inference cost scales roughly linearly with input pixel AREA, so relative
   // to the 512 probe a 320 run costs ~(320/512)^2 = 0.39x and a 256 run
   // ~(256/512)^2 = 0.25x. The governor jumps directly to the best tier whose
-  // predicted cost fits the step-down threshold; if not even 256 fits, it
-  // seeds Lite256 (async keeps the program loop unblocked), and if the 256
-  // estimate exceeds offInferenceMs it seeds Off. No-op once seeded or after
-  // samples arrived.
+  // predicted cost fits the step-down threshold; if not even 256 fits, the
+  // measured-probe variant clamps to Performance256 because build-time probes
+  // can be distorted by first-load contention. Lite/Off only come from live
+  // samples. No-op once seeded or after samples arrived.
   void seedProbe(double medianWarmupMs);
+  void seedMeasuredProbes(double full512Ms,
+                          double balanced320Ms,
+                          double performance256Ms);
   bool seeded() const { return seeded_; }
 
   // Estimate-based step-up, one tier per step. Fused tiers and Lite256 climb
@@ -173,6 +182,7 @@ class KeyerAutoGovernor {
   bool liteStepUpPending_ = false;
   double emaMs_ = -1.0;
   uint64_t samples_ = 0u;
+  uint64_t liteGateOverBudgetSamples_ = 0u;
   StepUpWatch stepUpWatch_ = StepUpWatch::None;
   // degradedAt_ is only meaningful while degradeClockStarted_ is true; a bare
   // epoch sentinel would collide with legitimate injected t=0 test clocks.

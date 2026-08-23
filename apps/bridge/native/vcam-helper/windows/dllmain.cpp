@@ -39,31 +39,57 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
 struct Activator
     : winrt::implements<Activator, AttributesBase<IMFActivate>> {
   STDMETHODIMP ActivateObject(REFIID riid, void **ppv) {
-    if (!ppv) return E_POINTER;
-    *ppv = nullptr;
-    if (!_source) {
-      _source = winrt::make_self<MediaSource>();
-      const HRESULT hr = _source->Initialize(this);
-      if (FAILED(hr)) {
-        VcamLog("Activator::ActivateObject source init failed 0x%08lx", hr);
-        return hr;
+    try {
+      if (!ppv) return E_POINTER;
+      *ppv = nullptr;
+      if (!_source || _source->IsShutdown()) {
+        _source = winrt::make_self<MediaSource>();
+        const HRESULT hr = _source->Initialize(this);
+        if (FAILED(hr)) {
+          VcamLog("Activator::ActivateObject source init failed 0x%08lx", hr);
+          return hr;
+        }
       }
+      return _source.as(riid, ppv);
+    } catch (...) {
+      VcamLog("Activator::ActivateObject exception");
+      return E_FAIL;
     }
-    return _source.as(riid, ppv);
   }
 
-  STDMETHODIMP ShutdownObject() { return S_OK; }
+  STDMETHODIMP ShutdownObject() {
+    try {
+      if (_source) {
+        _source->Shutdown();
+        _source = nullptr;
+      }
+      return S_OK;
+    } catch (...) {
+      VcamLog("Activator::ShutdownObject exception");
+      return E_FAIL;
+    }
+  }
 
   STDMETHODIMP DetachObject() {
-    _source = nullptr;
-    return S_OK;
+    try {
+      _source = nullptr;
+      return S_OK;
+    } catch (...) {
+      VcamLog("Activator::DetachObject exception");
+      return E_FAIL;
+    }
   }
 
   HRESULT Initialize() {
-    HRESULT hr =
-        SetUINT32(MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES, 1);
-    if (FAILED(hr)) return hr;
-    return SetGUID(MFT_TRANSFORM_CLSID_Attribute, CLSID_BroadifyVCam);
+    try {
+      HRESULT hr =
+          SetUINT32(MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES, 1);
+      if (FAILED(hr)) return hr;
+      return SetGUID(MFT_TRANSFORM_CLSID_Attribute, CLSID_BroadifyVCam);
+    } catch (...) {
+      VcamLog("Activator::Initialize exception");
+      return E_FAIL;
+    }
   }
 
  private:
@@ -73,16 +99,28 @@ struct Activator
 struct ClassFactory : winrt::implements<ClassFactory, IClassFactory> {
   STDMETHODIMP CreateInstance(IUnknown *outer, REFIID riid,
                               void **result) noexcept final {
-    if (!result) return E_POINTER;
-    *result = nullptr;
-    if (outer) return CLASS_E_NOAGGREGATION;
-    auto activator = winrt::make_self<Activator>();
-    const HRESULT hr = activator->Initialize();
-    if (FAILED(hr)) return hr;
-    return activator.as(riid, result);
+    try {
+      if (!result) return E_POINTER;
+      *result = nullptr;
+      if (outer) return CLASS_E_NOAGGREGATION;
+      auto activator = winrt::make_self<Activator>();
+      const HRESULT hr = activator->Initialize();
+      if (FAILED(hr)) return hr;
+      return activator.as(riid, result);
+    } catch (...) {
+      VcamLog("ClassFactory::CreateInstance exception");
+      return E_FAIL;
+    }
   }
 
-  STDMETHODIMP LockServer(BOOL) noexcept final { return S_OK; }
+  STDMETHODIMP LockServer(BOOL) noexcept final {
+    try {
+      return S_OK;
+    } catch (...) {
+      VcamLog("ClassFactory::LockServer exception");
+      return E_FAIL;
+    }
+  }
 };
 
 _Check_return_ STDAPI DllGetClassObject(_In_ REFCLSID rclsid, _In_ REFIID riid,

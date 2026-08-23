@@ -1,5 +1,5 @@
 import "./app-bootstrap.js";
-import { app, BrowserWindow, powerSaveBlocker, shell } from "electron";
+import { app, BrowserWindow, powerMonitor, powerSaveBlocker, shell } from "electron";
 import {
   getArgMap,
   resolveRendererEntry,
@@ -599,6 +599,13 @@ if (!isRendererProcess) {
       appUpdaterService.initialize((status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           ipcWebContentsSend("updaterStatus", mainWindow.webContents, status);
+      // Installing an update needs a NORMAL quit (Squirrel/NSIS drive it).
+      // Tear children down first, then release the quit guard so the
+      // close/before-quit handlers stand down for the installer.
+      appUpdaterService.setInstallPreparationHook(async () => {
+        await runAppShutdownCleanup();
+        appShutdownCompleted = true;
+      });
         }
       });
 
@@ -976,6 +983,24 @@ if (!isRendererProcess) {
       const bridgeApiRequest = createBridgeApiRequest(() =>
         bridgeProcessManager.getConfig(),
       );
+
+      const requestMeetingCameraReopen = (reason: string): void => {
+        void bridgeApiRequest("/meeting/camera/reopen", {
+          method: "POST",
+        }).catch((error: unknown) => {
+          logAppWarn(
+            `[Meeting] Camera reopen after ${reason} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+      };
+      powerMonitor.on("resume", () => {
+        requestMeetingCameraReopen("resume");
+      });
+      powerMonitor.on("unlock-screen", () => {
+        requestMeetingCameraReopen("unlock-screen");
+      });
 
       // Engine IPC handlers
 

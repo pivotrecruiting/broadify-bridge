@@ -100,6 +100,10 @@ camera frame, so the visible edge stays fresh.
   `fused_reused`, and flag `stale_mask_active` once the age crosses the
   configured fresh threshold. A failed inference keeps forcing inference on
   the following frames until one lands.
+- macOS retained fused masks are bounded by the shared 5 s retained-mask
+  limit. Above-max-coverage dropouts hold the previous matte with the current
+  frame timestamp for at most 90 frames (~3 s), then the current matte passes
+  through so the presenter cannot freeze indefinitely.
 
 ## Async Mask Retention (Windows, `Lite256`/async path)
 
@@ -318,9 +322,14 @@ and on hybrid laptops (Intel iGPU + discrete GPU) the trigger would steal the
 keyer from a fast discrete DML adapter. Intel-GPU-only machines stay on
 DirectML until the INT8 IR proves faster; use
 `BROADIFY_MEETING_KEYER_BACKEND=openvino_modnet` for measurements.
-Everything else - including macOS - gets `ModnetKeyer`. If the OpenVINO probe
-throws, the keyer construction fails, or the backend later cannot load its
-model (or fails inference repeatedly), one structured
+Everything else - including macOS - gets `ModnetKeyer`. The Windows fused
+instance uses `loadInApply=false`: its first load and later failed-load retries
+run on the fused warmup thread, independently of auto-degradation and
+warm-handover toggles, with one retry launch at most every 30 s while failing.
+During that time KeyerChain's async instance may perform its own first load in
+parallel, so WP2 can briefly hold two backend instances and their prebuilt
+sessions in memory. If the OpenVINO probe throws, construction fails, or a
+loaded backend fails inference repeatedly, one structured
 `matting_backend_fallback` line is logged and the ONNX Runtime backend takes
 over permanently for the process.
 

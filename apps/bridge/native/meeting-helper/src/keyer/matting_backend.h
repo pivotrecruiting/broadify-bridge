@@ -2,6 +2,7 @@
 
 #include "keyer/keyer.h"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +28,34 @@ struct MattingBackendOptions {
   // Expanded OpenVINO device selection string (see
   // expandOpenVinoDeviceSelection), e.g. "AUTO:NPU,GPU,CPU" or "GPU".
   std::string openVinoDevice;
+  bool loadInApply = true;
+};
+
+// Program-thread gate for async first-load/retry scheduling. The expensive
+// model load itself is owned by the keyer; this class only prevents launcher
+// thread churn while a failing backend is inside its 30 s retry window.
+class AsyncModelLoadRetryGate {
+ public:
+  using TimePoint = std::chrono::steady_clock::time_point;
+  static constexpr std::chrono::seconds kRetryInterval{30};
+
+  bool shouldStartWarmup(const KeyerStatus &status, TimePoint now,
+                         bool warmupBusy, bool warmupJoinable) {
+    if (warmupBusy || warmupJoinable || !status.fallbackActive) {
+      return false;
+    }
+    if (lastStartedAt_ != TimePoint{} &&
+        now - lastStartedAt_ < kRetryInterval) {
+      return false;
+    }
+    lastStartedAt_ = now;
+    return true;
+  }
+
+  void reset() { lastStartedAt_ = TimePoint{}; }
+
+ private:
+  TimePoint lastStartedAt_{};
 };
 
 // Matting keyers additionally expose their status without running a frame:
@@ -81,5 +110,12 @@ MattingBackendOptions makeMattingBackendOptionsFromEnv(std::string modelsDir);
 // load failure falls back to the ONNX Runtime/DirectML backend at runtime);
 // everywhere else this is always the ONNX Runtime ModnetKeyer.
 std::unique_ptr<MattingKeyer> createMattingKeyer(const MattingBackendOptions &options);
+
+#if defined(BROADIFY_MATTING_BACKEND_TESTING)
+std::unique_ptr<MattingKeyer> createFallbackMattingKeyerForTesting(
+    std::unique_ptr<MattingKeyer> primary,
+    std::unique_ptr<MattingKeyer> fallback,
+    bool loadInApply);
+#endif
 
 }  // namespace broadify::meeting

@@ -1,15 +1,13 @@
 import { z } from "zod";
 import { EngineErrorCode } from "../services/engine/engine-errors.js";
+import { EngineConnectPayloadSchema } from "../services/engine/engine-connect-schema.js";
 
 /**
- * Connect request schema.
- * All fields are required - no fallback to runtimeConfig.
+ * Connect request schema (shared with the relay command validation).
+ * Network transport requires ip + port; USB transport (ATEM-only) does not.
+ * No fallback to runtimeConfig.
  */
-export const ConnectRequestSchema = z.object({
-  type: z.enum(["atem", "tricaster", "vmix"]),
-  ip: z.string().ip({ version: "v4" }),
-  port: z.number().int().min(1).max(65535),
-});
+export const ConnectRequestSchema = EngineConnectPayloadSchema;
 
 export const VmixActionRequestSchema = z.discriminatedUnion("actionType", [
   z.object({

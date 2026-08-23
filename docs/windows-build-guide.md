@@ -351,8 +351,12 @@ In Prioritätsreihenfolge:
    **Azure Trusted Signing** (env-gated). Seit dem VCam-Paketierungs-Fix baut `dist:win`
    die **broadify-vcam.dll mit** (`build:vcam-dll:windows`), packt sie nach
    `resources/native/vcam-helper/`, signiert sie und der NSIS-Installer registriert sie
-   per `regsvr32` (elevierte "Fuer alle Benutzer"-Installation noetig; per-User-Installs
-   und der MSI-Pfad registrieren NICHT — dort weiterhin `deploy-vcam.ps1` als Admin).
+   per `regsvr32`. Der NSIS-Installer ist **per-machine** (`nsis.perMachine: true`,
+   Ziel `%ProgramFiles%\BroadifyBridge`, einmal UAC) — per-User-Installs gibt es nicht
+   mehr, weil sie nicht nach HKLM schreiben konnten und eine tote Kamera hinterliessen.
+   Der regsvr32-Exit-Code wird geprueft (Details-Pane, Error-Level 3). Der MSI-Pfad
+   registriert weiterhin NICHT — dort `deploy-vcam.ps1` als Admin oder den
+   Bridge-Self-Heal (UAC-Prompt) nutzen.
    `deploy-vcam.ps1` bleibt der Dev-Workflow fuer lokale Builds.
 
 ---

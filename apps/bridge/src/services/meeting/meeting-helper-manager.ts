@@ -14,11 +14,16 @@ import {
 } from "../../modules/vcam/vcam-helper.js";
 import { getBridgeContext } from "../bridge-context.js";
 import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
-import { MeetingHelperClient } from "./meeting-helper-client.js";
+import {
+  HELPER_NOT_REACHABLE_CODE,
+  MeetingHelperClient,
+  MeetingHelperRequestError,
+} from "./meeting-helper-client.js";
 import {
   publishMeetingErrorEvent,
   publishMeetingStatusEvent,
 } from "./meeting-event-publisher.js";
+import { decideStatusPublish } from "./status-publish-policy.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
@@ -28,8 +33,14 @@ const MACOS_MEETING_HELPER_APP_NAME = "Broadify Bridge Meeting Helper.app";
 const MACOS_MEETING_HELPER_EXECUTABLE_NAME = "BroadifyMeetingHelper";
 const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
+/** Log one skipped-poll debug line per this many consecutive skips. */
+const STATUS_POLL_SKIP_LOG_EVERY = 10;
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
+// Consecutive connect-level RPC failures (helper_not_reachable) of the 2 s
+// status poll before a still-running helper process is treated as crashed
+// (its control channel is gone for good, e.g. the Windows pipe thread died).
+const HELPER_CONTROL_CHANNEL_LOST_THRESHOLD = 5;
 const MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS = 80;
 const CAMERA_PERMISSION_COMPLETION_POLL_ATTEMPTS = 120;
 const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
@@ -43,18 +54,24 @@ const HELPER_RESTART_BASE_DELAY_MS = 1000;
 const HELPER_RESTART_HEALTHY_UPTIME_MS = 60_000;
 const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_AUTO_DEGRADE",
+  "BROADIFY_MEETING_CAMERA_MAX_HEIGHT",
   "BROADIFY_MEETING_COREML_UNITS",
   "BROADIFY_MEETING_EMPTY_SUBJECT",
+  "BROADIFY_MEETING_FUSED_EMA_STATIC",
   "BROADIFY_MEETING_FUSED_POSTPROCESS",
+  "BROADIFY_MEETING_FUSED_PIPELINE_DEPTH",
   "BROADIFY_MEETING_GPU_COMPOSITOR",
   "BROADIFY_MEETING_GPU_COMPOSITOR_D3D11",
   "BROADIFY_MEETING_GPU_EMA",
   "BROADIFY_MEETING_GPU_EPSILON",
   "BROADIFY_MEETING_GPU_GUIDED",
   "BROADIFY_MEETING_GPU_PIPELINE",
+  "BROADIFY_MEETING_GPU_POLICY",
   "BROADIFY_MEETING_GPU_RADIUS",
   "BROADIFY_MEETING_GPU_REFINE",
   "BROADIFY_MEETING_GPU_REFINE_WIDTH",
+  "BROADIFY_MEETING_GPU_RESIDENT",
+  "BROADIFY_MEETING_GUIDED_COEFF_EMA",
   "BROADIFY_MEETING_GUIDED_EPSILON",
   "BROADIFY_MEETING_GUIDED_RADIUS",
   "BROADIFY_MEETING_GUIDED_REFINE",
@@ -64,10 +81,14 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS",
   "BROADIFY_MEETING_KEYER_OPENVINO",
   "BROADIFY_MEETING_KEYER_PERFORMANCE",
+  "BROADIFY_MEETING_KEYER_PREBUILD_TIERS",
+  "BROADIFY_MEETING_MASK_WORK_WIDTH",
+  "BROADIFY_MEETING_DML_QUEUE",
   "BROADIFY_MEETING_OPENVINO_DEVICE",
+  "BROADIFY_MEETING_STAGING_RING",
   "BROADIFY_MEETING_WARM_HANDOVER",
 ] as const;
-const MEETING_HELPER_ENV_VALUE_PATTERN = /^[A-Za-z0-9._+-]{1,64}$/;
+const MEETING_HELPER_ENV_VALUE_PATTERN = /^[A-Za-z0-9._,+-]{1,64}$/;
 
 type MeetingHelperLifecycleStateT =
   | "stopped"
@@ -96,6 +117,7 @@ export type RestorableCameraMethodT =
 
 type MeetingHelperManagerStatusT = {
   state: MeetingHelperLifecycleStateT;
+  platform: NodeJS.Platform;
   port: number | null;
   pid: number | null;
   framebusName: string;
@@ -398,7 +420,47 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function parseWindowsTcpListenPids(output: string, port: number): number[] {
+  const pids = new Set<number>();
+  const portPattern = new RegExp(`(?:127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[?::1\\]?|\\[?::\\]?):${port}\\b`, "i");
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!/\bLISTENING\b/i.test(trimmed) || !portPattern.test(trimmed)) {
+      continue;
+    }
+    const pid = Number.parseInt(trimmed.split(/\s+/).at(-1) ?? "", 10);
+    if (Number.isInteger(pid) && pid > 0) {
+      pids.add(pid);
+    }
+  }
+  return Array.from(pids);
+}
+
+export function parseWindowsProcessImageName(output: string): string | null {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const csvLine = lines.find((line) => line.startsWith("\""));
+  if (!csvLine) {
+    return null;
+  }
+  const match = /^"([^"]+)"/.exec(csvLine);
+  return match?.[1] ?? null;
+}
+
 function listTcpListenPids(port: number): number[] {
+  if (platform() === "win32") {
+    try {
+      const output = execFileSync("netstat", ["-ano", "-p", "tcp"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      return parseWindowsTcpListenPids(output, port);
+    } catch {
+      return [];
+    }
+  }
   if (platform() !== "darwin") {
     return [];
   }
@@ -421,6 +483,21 @@ function listTcpListenPids(port: number): number[] {
 }
 
 function isMeetingHelperProcess(pid: number): boolean {
+  if (platform() === "win32") {
+    try {
+      const output = execFileSync(
+        "tasklist",
+        ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      return parseWindowsProcessImageName(output)?.toLowerCase() === "meeting-helper.exe";
+    } catch {
+      return false;
+    }
+  }
   if (platform() !== "darwin") {
     return false;
   }
@@ -471,6 +548,22 @@ export async function releaseStaleMeetingHelperVcamPort(
       `[Meeting] Terminating stale meeting helper pid=${pid} on VCam raw port ${port}`,
     );
     try {
+      if (platform() === "win32") {
+        spawnSync("taskkill", ["/PID", String(pid), "/F"], {
+          stdio: ["ignore", "ignore", "ignore"],
+          windowsHide: true,
+        });
+        const exited = await waitForProcessExit(
+          pid,
+          STALE_HELPER_PORT_RELEASE_TIMEOUT_MS,
+        );
+        if (!exited) {
+          logger.warn(
+            `[Meeting] Stale meeting helper pid=${pid} still existed after taskkill.`,
+          );
+        }
+        continue;
+      }
       process.kill(pid, "SIGTERM");
       const exited = await waitForProcessExit(pid, STALE_HELPER_PORT_RELEASE_TIMEOUT_MS);
       if (!exited) {
@@ -495,15 +588,32 @@ export async function releaseStaleMeetingHelperVcamPort(
 async function waitForHelperPing(
   client: MeetingHelperClient,
   maxAttempts: number = HELPER_PING_ATTEMPTS,
+  logger: LoggerT = getLogger(),
 ): Promise<boolean> {
+  let lastError: string | null = null;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (await client.ping()) {
-      return true;
+    try {
+      if (await client.pingOrThrow()) {
+        return true;
+      }
+      lastError = "control.ping returned no pong";
+    } catch (error: unknown) {
+      // Keep the last failure: a bare helper_ping_failed was undiagnosable
+      // (ENOENT on the pipe vs. a helper that never answered look identical).
+      lastError =
+        error instanceof MeetingHelperRequestError
+          ? `${error.code}: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
     }
     if (attempt + 1 < maxAttempts) {
       await sleep(HELPER_PING_DELAY_MS);
     }
   }
+  logger.debug?.(
+    `[Meeting] control.ping failed ${maxAttempts} times; last error: ${lastError ?? "unknown"}`,
+  );
   return false;
 }
 
@@ -558,7 +668,12 @@ export class MeetingHelperManager {
   private port: number | null = null;
   private lastError: string | null = null;
   private statusPollTimer: NodeJS.Timeout | null = null;
-  private lastPublishedStatus: string | null = null;
+  /** Stable projection of the last published status (see status-publish-policy). */
+  private lastPublishedProjection: string | null = null;
+  private lastPublishedAt: number | null = null;
+  /** In-flight guard: a poll tick is skipped while the previous one runs. */
+  private statusPollInFlight = false;
+  private skippedStatusPolls = 0;
   private startPromise: Promise<MeetingHelperManagerStatusT> | null = null;
   private stdoutBuffer = "";
   private readyResolver: ((event: ReadyEventT) => void) | null = null;
@@ -568,8 +683,10 @@ export class MeetingHelperManager {
   private lastStartOptions: MeetingHelperStartOptionsT = {};
   private restartAttempts = 0;
   private restartTimer: NodeJS.Timeout | null = null;
+  private consecutiveControlFailures = 0;
   private lastRunningSince: number | null = null;
   private stopping = false;
+  private vcamRawBindFailed: string | null = null;
   // Set once the bridge itself is shutting down. The helper usually dies from
   // the process-group SIGTERM BEFORE server.ts reaches stop() (which sets
   // `stopping`), so without this flag that exit is misclassified as a crash
@@ -583,6 +700,7 @@ export class MeetingHelperManager {
     RestorableCameraMethodT,
     Record<string, unknown>
   >();
+  private shouldRestoreVirtualCamera = false;
   private keyerRestoreConfig: Record<string, unknown> | null = null;
 
   getClient(): MeetingHelperClient | null {
@@ -599,6 +717,14 @@ export class MeetingHelperManager {
 
   noteCameraStopped(): void {
     this.restorableCameraCalls.clear();
+  }
+
+  noteVirtualCameraStarted(): void {
+    this.shouldRestoreVirtualCamera = true;
+  }
+
+  noteVirtualCameraStopped(): void {
+    this.shouldRestoreVirtualCamera = false;
   }
 
   /** Merge a successful keyer patch into the replayable keyer config. */
@@ -631,6 +757,16 @@ export class MeetingHelperManager {
         );
       }
     }
+    if (this.shouldRestoreVirtualCamera) {
+      try {
+        await client.virtualCameraStart({ allowElevation: false });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        getLogger().warn(
+          `[Meeting] Restore of virtual camera after helper restart failed: ${message}`,
+        );
+      }
+    }
     if (this.keyerRestoreConfig) {
       try {
         await client.keyerConfigure(this.keyerRestoreConfig);
@@ -650,6 +786,7 @@ export class MeetingHelperManager {
   getStatus(): MeetingHelperManagerStatusT {
     return {
       state: this.state,
+      platform: platform(),
       port: this.port,
       pid: this.process?.pid ?? null,
       framebusName: this.getFramebusName(),
@@ -700,6 +837,7 @@ export class MeetingHelperManager {
     this.clearRestartTimer();
     this.restartAttempts = 0;
     this.restorableCameraCalls.clear();
+    this.shouldRestoreVirtualCamera = false;
     this.keyerRestoreConfig = null;
     this.stopStatusPolling();
     const client = this.client;
@@ -732,25 +870,73 @@ export class MeetingHelperManager {
   async getFullStatus(): Promise<Record<string, unknown>> {
     const manager = this.getStatus();
     if (!this.client || this.state !== "running") {
-      return { manager, engine: null, recording: null };
+      return { platform: platform(), manager, engine: null, recording: null };
     }
     try {
-      const [engineState, framebus, keyer, recordingResult] = await Promise.all([
-        this.client.getState(),
-        this.client.framebusStatus(),
-        this.client.keyerGet(),
-        // Best effort: a failing recording.status must not take down the whole
-        // snapshot (and older helpers may not implement the RPC).
-        this.client.recordingStatus().catch(() => null),
-      ]);
+      const [engineState, framebus, keyer, recordingResult, virtualCamera] =
+        await Promise.all([
+          this.client.getState(),
+          this.client.framebusStatus(),
+          this.client.keyerGet(),
+          // Best effort: a failing recording.status must not take down the whole
+          // snapshot (and older helpers may not implement the RPC).
+          this.client.recordingStatus().catch(() => null),
+          // Windows: output.vcam.status (active/supported/last_error);
+          // macOS: system-extension status. Best effort like recording.
+          this.client.virtualCameraStatus().catch(() => null),
+        ]);
       const recordingRaw = recordingResult?.recording;
       const recording =
         recordingRaw && typeof recordingRaw === "object" ? recordingRaw : null;
-      return { manager, engine: engineState, framebus, keyer, recording };
+      this.consecutiveControlFailures = 0;
+      return {
+        platform: platform(),
+        manager,
+        engine: engineState,
+        framebus,
+        keyer,
+        recording,
+        virtualCamera,
+      };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
+      if (
+        error instanceof MeetingHelperRequestError &&
+        (error.code === HELPER_NOT_REACHABLE_CODE || error.code === "timeout")
+      ) {
+        this.noteControlChannelFailure(message);
+      }
       return { manager, engine: null, engineError: message, recording: null };
     }
+  }
+
+  /**
+   * Liveness for a helper whose PROCESS is alive but whose control channel is
+   * gone (Windows: the pipe thread died after a CreateNamedPipe failure, so
+   * every RPC is ENOENT forever while the exit-bound restart logic never
+   * fires). Carried by the existing 2 s status poll: after
+   * HELPER_CONTROL_CHANNEL_LOST_THRESHOLD consecutive connect-level failures
+   * the process is killed, and the regular exit handler runs the bounded
+   * crash restart. Any successful snapshot resets the counter.
+   */
+  private noteControlChannelFailure(detail: string): void {
+    if (this.state !== "running" || !this.process) {
+      return;
+    }
+    this.consecutiveControlFailures += 1;
+    if (this.consecutiveControlFailures < HELPER_CONTROL_CHANNEL_LOST_THRESHOLD) {
+      return;
+    }
+    this.consecutiveControlFailures = 0;
+    const pid = this.process.pid ?? "unknown";
+    const message = `Meeting helper control channel lost (${HELPER_CONTROL_CHANNEL_LOST_THRESHOLD} consecutive failures, pid ${pid}): ${detail}`;
+    this.lastError = message;
+    getLogger().warn(`[Meeting] ${message}; killing helper for restart`);
+    publishMeetingErrorEvent("helper_control_channel_lost", message);
+    // Stop polling now: the kill takes up to 3 s and the exit handler must
+    // be the one to classify the crash and schedule the restart.
+    this.stopStatusPolling();
+    this.killProcess();
   }
 
   private async startInternal(
@@ -823,6 +1009,7 @@ export class MeetingHelperManager {
     this.state = "starting";
     this.lastError = null;
     this.stdoutBuffer = "";
+    this.vcamRawBindFailed = null;
 
     try {
       const port = await findFreePort();
@@ -916,10 +1103,17 @@ export class MeetingHelperManager {
       const client = new MeetingHelperClient(controlSocketPath);
       if (!useLaunchServices) {
         await this.waitForReady();
+        if (this.vcamRawBindFailed) {
+          throw new MeetingHelperRequestError(
+            "vcam_raw_bind_failed",
+            this.vcamRawBindFailed,
+          );
+        }
       }
       const healthy = await waitForHelperPing(
         client,
         useLaunchServices ? MACOS_LAUNCH_SERVICES_HELPER_PING_ATTEMPTS : HELPER_PING_ATTEMPTS,
+        logger,
       );
       if (!healthy) {
         this.lastError = "Meeting helper did not respond to control.ping";
@@ -935,6 +1129,7 @@ export class MeetingHelperManager {
       this.client = client;
       this.state = "running";
       this.lastRunningSince = Date.now();
+      this.consecutiveControlFailures = 0;
       this.startStatusPolling();
       this.requestCameraPermissionPreflight(client, logger);
       await this.publishStatus("engine_started", true);
@@ -943,7 +1138,10 @@ export class MeetingHelperManager {
       const message = error instanceof Error ? error.message : String(error);
       this.lastError = message;
       this.state = "error";
-      publishMeetingErrorEvent("start_failed", message);
+      publishMeetingErrorEvent(
+        error instanceof MeetingHelperRequestError ? error.code : "start_failed",
+        message,
+      );
       this.killProcess();
       return this.getStatus();
     }
@@ -990,6 +1188,7 @@ export class MeetingHelperManager {
     try {
       const parsed = JSON.parse(line) as {
         type?: string;
+        event?: string;
         code?: string;
         message?: string;
         camera_permission_status?: string;
@@ -999,6 +1198,16 @@ export class MeetingHelperManager {
       }
       if (parsed.type === "meeting_vcam_raw") {
         logger.info(`[MeetingHelper] ${line}`);
+        if (parsed.event === "error" && parsed.code === "vcam_raw_bind_failed") {
+          const message =
+            parsed.message || "Meeting helper could not bind the VCam raw frame port.";
+          this.vcamRawBindFailed = message;
+          this.lastError = message;
+          publishMeetingErrorEvent("vcam_raw_bind_failed", message);
+          this.readyRejecter?.(
+            new MeetingHelperRequestError("vcam_raw_bind_failed", message),
+          );
+        }
       }
       if (parsed.type === "meeting_gpu_compositor") {
         logger.info(`[MeetingHelper] ${line}`);
@@ -1119,8 +1328,24 @@ export class MeetingHelperManager {
 
   private startStatusPolling(): void {
     this.stopStatusPolling();
+    this.statusPollInFlight = false;
+    this.skippedStatusPolls = 0;
     this.statusPollTimer = setInterval(() => {
-      void this.publishStatus("status_poll", false);
+      // A slow helper RPC must not stack polls (and RPC queue entries):
+      // skip this tick while the previous publish is still running.
+      if (this.statusPollInFlight) {
+        this.skippedStatusPolls += 1;
+        if (this.skippedStatusPolls % STATUS_POLL_SKIP_LOG_EVERY === 1) {
+          getLogger().debug?.(
+            `[Meeting] Status poll skipped, previous poll still in flight (${this.skippedStatusPolls} skipped)`,
+          );
+        }
+        return;
+      }
+      this.statusPollInFlight = true;
+      void this.publishStatus("status_poll", false).finally(() => {
+        this.statusPollInFlight = false;
+      });
     }, STATUS_POLL_INTERVAL_MS);
   }
 
@@ -1172,11 +1397,21 @@ export class MeetingHelperManager {
         }
       }
     }
-    const serialized = JSON.stringify(status);
-    if (!force && serialized === this.lastPublishedStatus) {
+    // Dedupe via the stable projection: per-frame counters and keyer metrics
+    // alone only reach the webapp every STATUS_METRICS_PUBLISH_INTERVAL_MS;
+    // state changes, active recordings and forced publishes go out at once.
+    const decision = decideStatusPublish({
+      status,
+      force,
+      lastProjection: this.lastPublishedProjection,
+      lastPublishedAt: this.lastPublishedAt,
+      now: Date.now(),
+    });
+    if (!decision.publish) {
       return;
     }
-    this.lastPublishedStatus = serialized;
+    this.lastPublishedProjection = decision.projection;
+    this.lastPublishedAt = Date.now();
     publishMeetingStatusEvent(reason, status);
   }
 
@@ -1184,6 +1419,7 @@ export class MeetingHelperManager {
     this.stopStatusPolling();
     this.process = null;
     this.client = null;
+    this.consecutiveControlFailures = 0;
     this.lastRuntimeBackendStatus = null;
     this.readyRejecter?.(new Error(`Meeting helper exited with code ${code}`));
     const wasRunning = this.state === "running";
@@ -1297,20 +1533,30 @@ export class MeetingHelperManager {
       return;
     }
     const child = this.process;
+    const client = this.client;
     this.process = null;
-    try {
-      child.kill("SIGTERM");
-      const forceKillTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Process already exited.
-        }
-      }, 3000);
-      child.once("exit", () => clearTimeout(forceKillTimer));
-    } catch {
-      // Process already exited.
+    const terminate = () => {
+      try {
+        child.kill("SIGTERM");
+        const forceKillTimer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Process already exited.
+          }
+        }, 3000);
+        child.once("exit", () => clearTimeout(forceKillTimer));
+      } catch {
+        // Process already exited.
+      }
+    };
+    if (platform() === "win32" && client && !this.stopping) {
+      void Promise.race([client.shutdown().catch(() => undefined), sleep(3000)])
+        .catch(() => undefined)
+        .finally(terminate);
+      return;
     }
+    terminate();
   }
 }
 

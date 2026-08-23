@@ -57,5 +57,6 @@ class KeyerChain {
 };
 
 void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status);
+void setMeetingDegradationStage(MeetingState &state, const std::string &stage);
 
 }  // namespace broadify::meeting

@@ -65,6 +65,7 @@ struct CameraRenderState {
 struct MeetingState {
   mutable std::mutex mutex;
   bool cameraRunning = false;
+  bool cameraStalled = false;
   int activeCameraIndex = -1;
   // Conference: a second open camera drawn as picture-in-picture (-1 = off).
   int pipCameraIndex = -1;
@@ -77,9 +78,13 @@ struct MeetingState {
   // speaking". Below this the auto-director holds the current program.
   float autoDirectorThreshold = 0.02f;
   bool keyerEnabled = false;
-  bool framebusRunning = true;
+  bool framebusRunning = false;
   bool vcamRawRunning = true;
+  std::string vcamTransport = "tcp";
+  uint64_t vcamWriterGeneration = 0;
   int previewClientCount = 0;
+  int vcamShmReaderCount = 0;
+  int vcamTcpClientCount = 0;
   int vcamClientCount = 0;
   bool graphicsDirty = true;
   bool programDirty = true;
@@ -128,11 +133,15 @@ struct MeetingState {
   std::string activePerformanceMode;
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
+  std::string gpuAdapter;
+  std::string compositorAdapter;
   bool staleMaskActive = false;
   std::string provider;
   std::string modelPath;
   double inferenceMs = -1.0;
   bool fallbackActive = true;
+  bool keyerDegraded = false;
+  bool keyerReady = false;
   bool modelHashOk = false;
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;

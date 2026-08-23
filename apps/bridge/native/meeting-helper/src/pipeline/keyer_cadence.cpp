@@ -12,6 +12,9 @@ int FusedCadenceController::currentN() const {
   if (!config_.enabled) {
     return 1;
   }
+  if (config_.forceEveryFrame) {
+    return 1;
+  }
   if (config_.pinnedN >= 1) {
     return config_.pinnedN;
   }
@@ -63,6 +66,10 @@ void FusedCadenceController::onInferenceCompleted(uint64_t frameTsNs,
                           : config_.emaWeight * inferenceMs +
                                 (1.0 - config_.emaWeight) * emaMs_;
   }
+}
+
+void FusedCadenceController::setForceEveryFrame(bool forceEveryFrame) {
+  config_.forceEveryFrame = forceEveryFrame;
 }
 
 void FusedCadenceController::reset() {

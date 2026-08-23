@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EngineConnectPayloadSchemaStrict } from "./engine/engine-connect-schema.js";
 
 /**
  * Zod schemas for relay command payloads (non-graphics commands).
@@ -17,13 +18,10 @@ export const ListOutputsSchema = z
   })
   .strict();
 
-export const EngineConnectSchema = z
-  .object({
-    type: z.enum(["atem", "tricaster", "vmix"]),
-    ip: z.string().ip({ version: "v4" }),
-    port: z.number().int().min(1).max(65535),
-  })
-  .strict();
+// Shared with the HTTP route contract; strict so relay payloads with
+// unknown keys keep being rejected. USB transport (ATEM-only) needs no
+// ip/port — see engine-connect-schema.ts for the rules.
+export const EngineConnectSchema = EngineConnectPayloadSchemaStrict;
 
 export const MacroIdSchema = z
   .object({

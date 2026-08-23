@@ -62,6 +62,7 @@ describe("registerEngineRoute integration", () => {
     expect(response.statusCode).toBe(200);
     expect(engineAdapter.connect).toHaveBeenCalledWith({
       type: "atem",
+      transport: "network",
       ip: "10.0.0.10",
       port: 9910,
     });

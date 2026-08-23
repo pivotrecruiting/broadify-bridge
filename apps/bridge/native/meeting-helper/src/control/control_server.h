@@ -12,6 +12,7 @@ namespace broadify::meeting {
 
 class PreviewFrameStore;
 class MeetingRecorder;
+class VcamShmRingWin;
 
 void runControlServer(const std::string &socketPath,
                       MeetingState &state,
@@ -20,6 +21,7 @@ void runControlServer(const std::string &socketPath,
                       MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
-                      const std::function<void()> &onListening = {});
+                      const std::function<void()> &onListening = {},
+                      VcamShmRingWin *vcamShm = nullptr);
 
 }  // namespace broadify::meeting

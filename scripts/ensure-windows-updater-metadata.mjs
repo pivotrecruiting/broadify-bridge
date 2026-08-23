@@ -58,9 +58,10 @@ if (!(await fileExists(blockmapPath))) {
   throw new Error(`Missing NSIS blockmap: ${blockmapPath}`);
 }
 
-const [{ size }, sha512] = await Promise.all([
+const [{ size }, sha512, { size: blockMapSize }] = await Promise.all([
   stat(exePath),
   sha512Base64(exePath),
+  stat(blockmapPath),
 ]);
 
 const releaseDate = new Date().toISOString();
@@ -70,6 +71,7 @@ const latestYml = [
   `  - url: ${yamlString(exeName)}`,
   `    sha512: ${sha512}`,
   `    size: ${size}`,
+  `    blockMapSize: ${blockMapSize}`,
   `path: ${yamlString(exeName)}`,
   `sha512: ${sha512}`,
   `releaseDate: '${releaseDate}'`,

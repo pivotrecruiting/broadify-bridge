@@ -31,7 +31,17 @@ if (Test-Path $outputDll) {
   Remove-Item -Force $outputDll
 }
 
-Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config
+# The Frame Server is a 64-bit process and only loads a 64-bit in-proc DLL;
+# pin the platform for Visual Studio generators (a 32-bit default toolset would
+# otherwise produce a DLL that regsvr32 from Sysnative cannot load, exit 3).
+# Single-config generators (Ninja) reject -A, so only pass it for VS.
+$configureArgs = @("-S", $rootDir, "-B", $buildDir, "-DCMAKE_BUILD_TYPE=$Config")
+$generator = $env:CMAKE_GENERATOR
+$usesVisualStudioGenerator = [string]::IsNullOrWhiteSpace($generator) -or ($generator -like "Visual Studio*")
+if ($usesVisualStudioGenerator) {
+  $configureArgs += @("-A", "x64")
+}
+Invoke-NativeCommand cmake @configureArgs
 Invoke-NativeCommand cmake --build $buildDir --target broadify-vcam --config $Config --verbose
 
 $builtDll = Join-Path (Join-Path $buildDir $Config) "broadify-vcam.dll"

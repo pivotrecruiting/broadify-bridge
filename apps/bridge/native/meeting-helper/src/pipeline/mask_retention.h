@@ -27,14 +27,16 @@ struct MaskRetentionConfig {
   // Absolute upper bound for holding a stale mask; also caps the adaptive
   // gate. Beyond this a mask is presumed frozen (worker stalled / person
   // left) and passthrough takes over.
-  double hardCapMs = 1500.0;
+  double hardCapMs = 2000.0;
   // EMA weight of the newest publish-interval sample.
   double intervalEmaWeight = 0.2;
   // Publish intervals above this are ignored for the EMA (worker restart,
   // keyer re-enable) so one outage cannot inflate the gate.
   double maxPlausibleIntervalMs = 5000.0;
   // Consecutive program frames the hard-cap condition must hold before
-  // passthrough engages. Leaving passthrough is immediate on a fresh mask.
+  // passthrough engages when the worker is dead. A live worker may extend the
+  // soft window, but never beyond hardCapMs. Leaving passthrough is immediate
+  // on a fresh mask.
   uint32_t passthroughFrames = 5u;
 };
 
@@ -56,7 +58,8 @@ class MaskRetention {
   MaskRetentionDecision decide(uint64_t frameTimestampNs,
                                uint64_t maskPublishedAtNs,
                                double maskAgeMs,
-                               double configuredMaxAgeMs);
+                               double configuredMaxAgeMs,
+                               bool workerAlive = true);
 
   // The adaptive gate currently in effect (capped at hardCapMs).
   double effectiveMaxAgeMs(double configuredMaxAgeMs) const;

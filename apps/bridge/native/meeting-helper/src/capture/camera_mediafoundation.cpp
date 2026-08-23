@@ -2,7 +2,10 @@
 
 #if defined(_WIN32)
 
+#include "capture/camera_media_type_rank.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/pixel_swizzle.h"
 
 #include <windows.h>
 #include <mfapi.h>
@@ -14,14 +17,22 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <iostream>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <iomanip>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -71,9 +82,21 @@ std::wstring utf8ToWide(const std::string &value) {
   return out;
 }
 
+uint64_t nowQpc() {
+  LARGE_INTEGER value{};
+  QueryPerformanceCounter(&value);
+  return static_cast<uint64_t>(value.QuadPart);
+}
+
 bool isAccessDenied(HRESULT hr) {
   return hr == E_ACCESSDENIED ||
          hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+}
+
+std::string hresultHex(HRESULT hr) {
+  std::ostringstream out;
+  out << "0x" << std::hex << std::uppercase << static_cast<uint32_t>(hr);
+  return out.str();
 }
 
 // Per-thread COM apartment. MediaFoundation objects live in the MTA; every
@@ -140,23 +163,159 @@ std::vector<DeviceEntry> enumerateDevices() {
   return result;
 }
 
-// BGRA (MF RGB32) -> tightly packed RGBA, forcing opaque alpha. scan0/pitch are
-// already oriented top-down (pitch may be negative for a bottom-up source).
-void swizzleBgraToRgba(const uint8_t *scan0, ptrdiff_t pitch, uint32_t width,
-                       uint32_t height, std::vector<uint8_t> &destination) {
-  destination.resize(static_cast<size_t>(width) * height * 4u);
-  for (uint32_t y = 0; y < height; y++) {
-    const uint8_t *src = scan0 + static_cast<ptrdiff_t>(y) * pitch;
-    uint8_t *dst = destination.data() + static_cast<size_t>(y) * width * 4u;
-    for (uint32_t x = 0; x < width; x++) {
-      dst[0] = src[2];
-      dst[1] = src[1];
-      dst[2] = src[0];
-      dst[3] = 255u;
-      src += 4;
-      dst += 4;
+std::string guidToString(const GUID &guid) {
+  wchar_t buffer[64] = {};
+  if (StringFromGUID2(guid, buffer, static_cast<int>(std::size(buffer))) <= 0) {
+    return "";
+  }
+  return wideToUtf8(buffer);
+}
+
+struct NativeMediaTypeChoice {
+  ComPtr<IMFMediaType> type;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t fpsNum = 0;
+  uint32_t fpsDen = 0;
+  GUID subtype{};
+  bool valid = false;
+};
+
+int subtypePreference(const GUID &subtype) {
+  if (IsEqualGUID(subtype, MFVideoFormat_NV12)) {
+    return 0;
+  }
+  if (IsEqualGUID(subtype, MFVideoFormat_YUY2)) {
+    return 1;
+  }
+  if (IsEqualGUID(subtype, MFVideoFormat_MJPG)) {
+    return 2;
+  }
+  return 3;
+}
+
+double mediaTypeFps(uint32_t fpsNum, uint32_t fpsDen) {
+  if (fpsNum == 0u || fpsDen == 0u) {
+    return 0.0;
+  }
+  return static_cast<double>(fpsNum) / static_cast<double>(fpsDen);
+}
+
+struct CameraCaptureRequest {
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  uint32_t fps = 0u;
+};
+
+uint32_t cameraMaxHeightFromEnv() {
+  const char *raw = std::getenv("BROADIFY_MEETING_CAMERA_MAX_HEIGHT");
+  if (raw == nullptr || raw[0] == '\0') {
+    return 1080u;
+  }
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0') {
+    return 1080u;
+  }
+  if (parsed == 0ul) {
+    return raw[0] == '0' && raw[1] == '\0' ? 0u : 1080u;
+  }
+  if (parsed > std::numeric_limits<uint32_t>::max()) {
+    return 1080u;
+  }
+  return static_cast<uint32_t>(parsed);
+}
+
+CameraCaptureRequest clampCameraCaptureRequest(uint32_t width,
+                                               uint32_t height,
+                                               uint32_t fps) {
+  CameraCaptureRequest request{width, height, fps == 0u ? 30u : fps};
+  request.fps = std::min<uint32_t>(request.fps, 30u);
+  const uint32_t maxHeight = cameraMaxHeightFromEnv();
+  if (maxHeight == 0u || request.height == 0u || request.width == 0u ||
+      request.height <= maxHeight) {
+    return request;
+  }
+  request.width = std::max<uint32_t>(
+      1u, static_cast<uint32_t>(
+              (static_cast<uint64_t>(request.width) * maxHeight +
+               request.height / 2u) /
+              request.height));
+  request.height = maxHeight;
+  return request;
+}
+
+bool betterNativeMediaType(const NativeMediaTypeChoice &candidate,
+                           const NativeMediaTypeChoice &current,
+                           uint32_t requestedWidth,
+                           uint32_t requestedHeight,
+                           uint32_t requestedFps) {
+  if (!current.valid) {
+    return true;
+  }
+  const CameraMediaTypeRank candidateRank{
+      mediaTypeFps(candidate.fpsNum, candidate.fpsDen),
+      candidate.width,
+      candidate.height,
+      subtypePreference(candidate.subtype),
+  };
+  const CameraMediaTypeRank currentRank{
+      mediaTypeFps(current.fpsNum, current.fpsDen),
+      current.width,
+      current.height,
+      subtypePreference(current.subtype),
+  };
+  return betterCameraMediaType(candidateRank, currentRank, requestedWidth,
+                               requestedHeight, requestedFps);
+}
+
+NativeMediaTypeChoice chooseNativeMediaType(IMFSourceReader *reader,
+                                            uint32_t requestedWidth,
+                                            uint32_t requestedHeight,
+                                            uint32_t requestedFps) {
+  NativeMediaTypeChoice best;
+  for (DWORD index = 0;; ++index) {
+    ComPtr<IMFMediaType> type;
+    const HRESULT hr = reader->GetNativeMediaType(
+        MF_SOURCE_READER_FIRST_VIDEO_STREAM, index, &type);
+    if (hr == MF_E_NO_MORE_TYPES) {
+      break;
+    }
+    if (FAILED(hr)) {
+      break;
+    }
+    GUID major{};
+    GUID subtype{};
+    UINT32 width = 0;
+    UINT32 height = 0;
+    UINT32 fpsNum = 0;
+    UINT32 fpsDen = 0;
+    if (FAILED(type->GetGUID(MF_MT_MAJOR_TYPE, &major)) ||
+        !IsEqualGUID(major, MFMediaType_Video) ||
+        FAILED(type->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+        FAILED(MFGetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, &width, &height)) ||
+        width == 0u || height == 0u) {
+      continue;
+    }
+    MFGetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
+    if (width > 1920u || height > 1080u) {
+      continue;
+    }
+    NativeMediaTypeChoice candidate;
+    candidate.type = type;
+    candidate.width = width;
+    candidate.height = height;
+    candidate.fpsNum = fpsNum;
+    candidate.fpsDen = fpsDen;
+    candidate.subtype = subtype;
+    candidate.valid = true;
+    if (betterNativeMediaType(candidate, best, requestedWidth, requestedHeight,
+                              requestedFps)) {
+      best = std::move(candidate);
     }
   }
+  return best;
 }
 
 // One MediaFoundation capture session (one per camera). The source reader runs
@@ -203,16 +362,16 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 
   // Creates the device source + async reader and arms the first read. Runs on
   // the caller's MTA thread and only blocks for reader creation, never for a
-  // frame. width/height/fps are accepted for contract parity with macOS; like
-  // the previous sync implementation the reader keeps the negotiated native
-  // RGB32 size. Returns false with initError() set on failure.
-  bool open(const std::wstring &symbolicLink, uint32_t /*width*/,
-            uint32_t /*height*/, uint32_t /*fps*/) {
+  // frame. Returns false with initError() set on failure.
+  bool open(const std::wstring &symbolicLink, uint32_t width,
+            uint32_t height, uint32_t fps,
+            std::function<void(HRESULT, const std::string &)> errorHandler) {
+    errorHandler_ = std::move(errorHandler);
     ComPtr<IMFSourceReader> reader;
     // Prefer the standard video processor; fall back to the advanced one, which
     // wraps the full DXVA video processor and handles more source formats.
-    if (!initReader(symbolicLink, false, reader) &&
-        !initReader(symbolicLink, true, reader)) {
+    if (!initReader(symbolicLink, width, height, fps, false, reader) &&
+        !initReader(symbolicLink, width, height, fps, true, reader)) {
       if (initError_.empty()) {
         initError_ = "Camera does not support an RGB32 output format.";
       }
@@ -249,6 +408,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     ComPtr<IMFSourceReader> reader;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
+      errorHandler_ = nullptr;
       reader = reader_;
     }
     if (!reader) {
@@ -288,6 +448,14 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     return true;
   }
 
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock<std::mutex> lock(frameMutex_);
+    return frameCv_.wait_until(lock, deadline, [this, lastTimestampNs] {
+      return hasFrame_ && latestFrame_.timestampNs != lastTimestampNs;
+    });
+  }
+
   const std::string &initError() const { return initError_; }
 
   // IMFSourceReaderCallback -------------------------------------------------
@@ -295,7 +463,11 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
                             DWORD streamFlags, LONGLONG /*timestamp*/,
                             IMFSample *sample) override {
     if (FAILED(hrStatus) || (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM)) {
-      return S_OK;  // stream is done; stop re-arming.
+      running_.store(false);
+      notifyCaptureError(hrStatus, (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM)
+                                       ? "end_of_stream"
+                                       : "read_sample_failed");
+      return S_OK;
     }
     ComPtr<IMFSourceReader> reader;
     {
@@ -339,14 +511,29 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     return S_OK;
   }
 
-  STDMETHODIMP OnEvent(DWORD /*streamIndex*/, IMFMediaEvent * /*event*/) override {
+  STDMETHODIMP OnEvent(DWORD /*streamIndex*/, IMFMediaEvent *event) override {
+    if (!event) {
+      return S_OK;
+    }
+    MediaEventType type = static_cast<MediaEventType>(0);
+    HRESULT status = S_OK;
+    event->GetType(&type);
+    event->GetStatus(&status);
+    if (type == MEVideoCaptureDeviceRemoved || type == MEError || FAILED(status)) {
+      running_.store(false);
+      notifyCaptureError(status, type == MEVideoCaptureDeviceRemoved
+                                     ? "device_removed"
+                                     : "media_event_error");
+    }
     return S_OK;
   }
 
  private:
   ~MfReaderCallback() = default;  // COM-refcounted: delete only via Release().
 
-  bool initReader(const std::wstring &symbolicLink, bool advancedProcessing,
+  bool initReader(const std::wstring &symbolicLink, uint32_t requestedWidth,
+                  uint32_t requestedHeight, uint32_t requestedFps,
+                  bool advancedProcessing,
                   ComPtr<IMFSourceReader> &readerOut) {
     ComPtr<IMFAttributes> sourceAttributes;
     if (FAILED(MFCreateAttributes(&sourceAttributes, 2))) {
@@ -370,13 +557,14 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     }
 
     ComPtr<IMFAttributes> readerAttributes;
-    if (FAILED(MFCreateAttributes(&readerAttributes, 2))) {
+    if (FAILED(MFCreateAttributes(&readerAttributes, 3))) {
       return false;
     }
     readerAttributes->SetUINT32(advancedProcessing
                                     ? MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING
                                     : MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
                                 TRUE);
+    readerAttributes->SetUINT32(MF_LOW_LATENCY, TRUE);
     // Async callback mode: the reader delivers frames via OnReadSample instead
     // of a blocking ReadSample, so a frameless device never stalls shutdown().
     if (FAILED(readerAttributes->SetUnknown(
@@ -396,12 +584,37 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
     reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
 
+    const NativeMediaTypeChoice nativeChoice =
+        chooseNativeMediaType(reader.Get(), requestedWidth, requestedHeight,
+                              requestedFps);
+    if (nativeChoice.valid) {
+      reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr,
+                                  nativeChoice.type.Get());
+      std::ostringstream event;
+      event << "{\"type\":\"camera_native_media_type_selected\",\"width\":"
+            << nativeChoice.width << ",\"height\":" << nativeChoice.height
+            << ",\"fps_num\":" << nativeChoice.fpsNum
+            << ",\"fps_den\":" << nativeChoice.fpsDen
+            << ",\"fps\":" << mediaTypeFps(nativeChoice.fpsNum, nativeChoice.fpsDen)
+            << ",\"subtype\":\"" << guidToString(nativeChoice.subtype)
+            << "\"}";
+      emitHelperEvent(event.str());
+    }
+
     ComPtr<IMFMediaType> outputType;
     if (FAILED(MFCreateMediaType(&outputType))) {
       return false;
     }
     outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    if (nativeChoice.valid) {
+      MFSetAttributeSize(outputType.Get(), MF_MT_FRAME_SIZE,
+                         nativeChoice.width, nativeChoice.height);
+      if (nativeChoice.fpsNum > 0u && nativeChoice.fpsDen > 0u) {
+        MFSetAttributeRatio(outputType.Get(), MF_MT_FRAME_RATE,
+                            nativeChoice.fpsNum, nativeChoice.fpsDen);
+      }
+    }
     hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr,
                                      outputType.Get());
     if (FAILED(hr)) {
@@ -415,6 +628,25 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     }
     readerOut = reader;
     return true;
+  }
+
+  void notifyCaptureError(HRESULT hr, const std::string &reason) {
+    std::function<void(HRESULT, const std::string &)> errorHandler;
+    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      if (shutdownStarted_.load()) {
+        return;
+      }
+      errorHandler = errorHandler_;
+    }
+    const HRESULT reported =
+        FAILED(hr) ? hr : HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
+    std::cout << "{\"type\":\"camera_capture_error\",\"hr\":\""
+              << hresultHex(reported) << "\",\"reason\":\"" << reason
+              << "\"}" << std::endl;
+    if (errorHandler) {
+      errorHandler(reported, reason);
+    }
   }
 
   // Reads the negotiated frame size and stride. Touched by the opening thread
@@ -444,6 +676,17 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     frameWidth_ = width;
     frameHeight_ = height;
     stride_ = stride;
+    GUID subtype{};
+    UINT32 fpsNum = 0;
+    UINT32 fpsDen = 0;
+    current->GetGUID(MF_MT_SUBTYPE, &subtype);
+    MFGetAttributeRatio(current.Get(), MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
+    std::cout << "{\"type\":\"camera_media_type\",\"width\":" << width
+              << ",\"height\":" << height
+              << ",\"fps_num\":" << fpsNum
+              << ",\"fps_den\":" << fpsDen
+              << ",\"subtype\":\"" << guidToString(subtype) << "\"}"
+              << std::endl;
     return true;
   }
 
@@ -457,6 +700,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     frame.width = frameWidth_;
     frame.height = frameHeight_;
     frame.timestampNs = nowNs();
+    frame.captureQpc = nowQpc();
 
     bool converted = false;
     // Preferred path: the 2D buffer reports the real pitch (rows may be padded)
@@ -501,15 +745,19 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     if (!converted) {
       return;
     }
-    std::lock_guard<std::mutex> lock(frameMutex_);
-    latestFrame_ = std::move(frame);
-    hasFrame_ = true;
+    {
+      std::lock_guard<std::mutex> lock(frameMutex_);
+      latestFrame_ = std::move(frame);
+      hasFrame_ = true;
+    }
+    frameCv_.notify_all();
   }
 
   std::atomic<long> refCount_{1};
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdownStarted_{false};
   std::string initError_;
+  std::function<void(HRESULT, const std::string &)> errorHandler_;
 
   // Guards reader_ / flushCompleted_ / abandoned_ (the shutdown handshake).
   std::mutex stateMutex_;
@@ -525,6 +773,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
   LONG stride_ = 0;
 
   mutable std::mutex frameMutex_;
+  std::condition_variable frameCv_;
   bool hasFrame_ = false;
   VideoFrame latestFrame_;
 };
@@ -537,6 +786,9 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 // the facade's last shared_ptr goes away.
 class MfCaptureSession {
  public:
+  explicit MfCaptureSession(std::string cameraId = {})
+      : cameraId_(std::move(cameraId)) {}
+
   ~MfCaptureSession() {
     stop();
     callback_.Reset();
@@ -544,14 +796,18 @@ class MfCaptureSession {
 
   // Blocks only for device/reader creation, never for a frame.
   bool open(const std::string &cameraId, uint32_t width, uint32_t height,
-            uint32_t fps, std::string &errorOut) {
+            uint32_t fps,
+            std::function<void(HRESULT, const std::string &)> errorHandler,
+            std::string &errorOut) {
     ComPtr<MfReaderCallback> callback;
     callback.Attach(new MfReaderCallback());
-    if (!callback->open(utf8ToWide(cameraId), width, height, fps)) {
+    if (!callback->open(utf8ToWide(cameraId), width, height, fps,
+                        std::move(errorHandler))) {
       errorOut = callback->initError();
       return false;
     }
     callback_ = std::move(callback);
+    cameraId_ = cameraId;
     return true;
   }
 
@@ -570,7 +826,20 @@ class MfCaptureSession {
                      : false;
   }
 
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) {
+    if (callback_) {
+      return callback_->waitForFrameOrTimeout(lastTimestampNs, deadline);
+    }
+    // No reader yet: behave like the base CameraSource (plain deadline wait).
+    std::this_thread::sleep_until(deadline);
+    return false;
+  }
+
+  const std::string &cameraId() const { return cameraId_; }
+
  private:
+  std::string cameraId_;
   ComPtr<MfReaderCallback> callback_;
 };
 
@@ -652,6 +921,8 @@ class MediaFoundationCameraSource final : public CameraSource {
     }
 
     const std::vector<CameraInfo> cameras = listCameras();
+    const CameraCaptureRequest captureRequest =
+        clampCameraCaptureRequest(width, height, fps);
     std::map<int, std::shared_ptr<MfCaptureSession>> opened;
     std::string lastOpenError;
     for (int requestedIndex : cameraIndices) {
@@ -663,12 +934,32 @@ class MediaFoundationCameraSource final : public CameraSource {
       if (opened.count(camera->cameraIndex) != 0) {
         continue;  // de-dupe repeated indices.
       }
-      auto session = std::make_shared<MfCaptureSession>();
+      auto session = std::make_shared<MfCaptureSession>(camera->cameraId);
       std::string error;
-      if (!session->open(camera->cameraId, width, height, fps, error)) {
+      std::cout << "{\"type\":\"camera_open_start\",\"camera_index\":"
+                << camera->cameraIndex << ",\"device_name\":\""
+                << jsonEscape(camera->label) << "\"}" << std::endl;
+      if (!session->open(
+              camera->cameraId, captureRequest.width, captureRequest.height,
+              captureRequest.fps,
+              [this, cameraId = camera->cameraId,
+               width = captureRequest.width, height = captureRequest.height,
+               fps = captureRequest.fps,
+               label = camera->label](HRESULT hr, const std::string &reason) {
+                scheduleReopen(cameraId, width, height, fps, hr, reason,
+                               label);
+              },
+              error)) {
+        std::cout << "{\"type\":\"camera_open_failure\",\"camera_index\":"
+                  << camera->cameraIndex << ",\"device_name\":\""
+                  << jsonEscape(camera->label) << "\",\"error\":\""
+                  << jsonEscape(error) << "\"}" << std::endl;
         lastOpenError = error.empty() ? "Could not start the camera." : error;
         continue;
       }
+      std::cout << "{\"type\":\"camera_open_success\",\"camera_index\":"
+                << camera->cameraIndex << ",\"device_name\":\""
+                << jsonEscape(camera->label) << "\"}" << std::endl;
       opened[camera->cameraIndex] = std::move(session);
     }
 
@@ -681,14 +972,17 @@ class MediaFoundationCameraSource final : public CameraSource {
       return false;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    sessions_ = std::move(opened);
-    programIndex_ = sessions_.count(cameraIndices.front())
-                        ? cameraIndices.front()
-                        : sessions_.begin()->first;
-    running_ = true;
-    permissionStatus_ = "authorized";
-    lastError_.clear();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      sessions_ = std::move(opened);
+      programIndex_ = sessions_.count(cameraIndices.front())
+                          ? cameraIndices.front()
+                          : sessions_.begin()->first;
+      running_ = true;
+      sessionGeneration_.fetch_add(1);
+      permissionStatus_ = "authorized";
+      lastError_.clear();
+    }
     return true;
   }
 
@@ -716,11 +1010,19 @@ class MediaFoundationCameraSource final : public CameraSource {
 
   void stop() override {
     std::map<int, std::shared_ptr<MfCaptureSession>> sessions;
+    std::thread reopenThread;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       sessions.swap(sessions_);
       running_ = false;
+      reopenPending_.store(false);
+      sessionGeneration_.fetch_add(1);
+      reopenThread = std::move(reopenThread_);
     }
+    if (reopenThread.joinable()) {
+      reopenThread.join();
+    }
+    std::cout << "{\"type\":\"camera_close\"}" << std::endl;
     for (auto &entry : sessions) {
       if (entry.second) {
         entry.second->stop();  // outside the lock: joins the capture thread.
@@ -746,6 +1048,13 @@ class MediaFoundationCameraSource final : public CameraSource {
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
     const std::shared_ptr<MfCaptureSession> session = programSession();
     return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
+  }
+
+  bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
+                             std::chrono::steady_clock::time_point deadline) override {
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->waitForFrameOrTimeout(lastTimestampNs, deadline)
+                   : CameraSource::waitForFrameOrTimeout(lastTimestampNs, deadline);
   }
 
   // Reads a specific camera's latest frame (used for the conference PiP layer),
@@ -777,7 +1086,156 @@ class MediaFoundationCameraSource final : public CameraSource {
     return "authorized";
   }
 
+  bool reopen(uint32_t width, uint32_t height, uint32_t fps) override {
+    std::string cameraId;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!running_) {
+        setErrorLocked("No active camera to reopen.");
+        return false;
+      }
+      const auto session = sessions_.find(programIndex_);
+      if (session == sessions_.end() || !session->second ||
+          session->second->cameraId().empty()) {
+        setErrorLocked("No active camera to reopen.");
+        return false;
+      }
+      cameraId = session->second->cameraId();
+    }
+    scheduleReopen(cameraId, width, height, fps, S_OK, "requested", "");
+    return true;
+  }
+
  private:
+  void scheduleReopen(const std::string &cameraId, uint32_t width, uint32_t height,
+                      uint32_t fps, HRESULT hr, const std::string &reason,
+                      const std::string &deviceName) {
+    const CameraCaptureRequest captureRequest =
+        clampCameraCaptureRequest(width, height, fps);
+    std::thread finishedThread;
+    int scheduledIndex = -1;
+    uint64_t generation = 0;
+    bool expected = false;
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!running_) {
+      return;
+    }
+    if (!reopenPending_.compare_exchange_strong(expected, true) ||
+        reopenThreadRunning_.exchange(true)) {
+      if (!expected) {
+        reopenPending_.store(false);
+      }
+      return;
+    }
+    generation = sessionGeneration_.load();
+    scheduledIndex = programIndex_;
+    if (reopenThread_.joinable()) {
+      finishedThread = std::move(reopenThread_);
+    }
+    lock.unlock();
+    if (finishedThread.joinable()) {
+      finishedThread.join();
+    }
+    std::cout << "{\"type\":\"camera_reopen_scheduled\",\"camera_index\":"
+              << scheduledIndex << ",\"hr\":\"" << hresultHex(hr)
+              << "\",\"reason\":\"" << jsonEscape(reason)
+              << "\",\"device_name\":\"" << jsonEscape(deviceName) << "\"}"
+              << std::endl;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!running_ || generation != sessionGeneration_.load()) {
+        reopenPending_.store(false);
+        reopenThreadRunning_.store(false);
+        return;
+      }
+      reopenThread_ = std::thread([this, cameraId,
+                                   width = captureRequest.width,
+                                   height = captureRequest.height,
+                                   fps = captureRequest.fps, reason,
+                                   generation] {
+      const std::chrono::milliseconds backoffs[] = {
+          std::chrono::milliseconds(500), std::chrono::seconds(1),
+          std::chrono::seconds(2), std::chrono::seconds(5)};
+      size_t attempt = 0;
+      while (true) {
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (!running_ || generation != sessionGeneration_.load()) {
+            reopenPending_.store(false);
+            reopenThreadRunning_.store(false);
+            return;
+          }
+        }
+        std::this_thread::sleep_for(
+            backoffs[std::min(attempt, std::size(backoffs) - 1)]);
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (!running_ || generation != sessionGeneration_.load()) {
+            reopenPending_.store(false);
+            reopenThreadRunning_.store(false);
+            return;
+          }
+        }
+        ComApartment com;
+        const std::vector<CameraInfo> cameras = listCameras();
+        const CameraInfo *camera = findByCameraId(cameras, cameraId);
+        if (camera == nullptr) {
+          ++attempt;
+          continue;
+        }
+        const int cameraIndex = camera->cameraIndex;
+        std::cout << "{\"type\":\"camera_reopen_attempt\",\"camera_index\":"
+                  << cameraIndex << ",\"attempt\":" << (attempt + 1)
+                  << ",\"reason\":\"" << jsonEscape(reason)
+                  << "\",\"device_name\":\"" << jsonEscape(camera->label)
+                  << "\"}" << std::endl;
+        auto session = std::make_shared<MfCaptureSession>(camera->cameraId);
+        std::string error;
+        if (session->open(
+                camera->cameraId, width, height, fps,
+                [this, cameraId = camera->cameraId, width, height, fps,
+                 label = camera->label](HRESULT hr,
+                                        const std::string &nextReason) {
+                  scheduleReopen(cameraId, width, height, fps, hr,
+                                 nextReason, label);
+                },
+                error)) {
+          std::shared_ptr<MfCaptureSession> oldSession;
+          {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_ || generation != sessionGeneration_.load()) {
+              reopenPending_.store(false);
+              reopenThreadRunning_.store(false);
+              return;
+            }
+            auto old = sessions_.find(cameraIndex);
+            if (old != sessions_.end()) {
+              oldSession = std::move(old->second);
+            }
+            sessions_[cameraIndex] = std::move(session);
+            programIndex_ = cameraIndex;
+            running_ = true;
+            lastError_.clear();
+          }
+          oldSession.reset();
+          std::cout << "{\"type\":\"camera_reopen_success\",\"camera_index\":"
+                    << cameraIndex << ",\"device_name\":\""
+                    << jsonEscape(camera->label) << "\"}" << std::endl;
+          reopenPending_.store(false);
+          reopenThreadRunning_.store(false);
+          return;
+        }
+        setError(error.empty() ? "Could not reopen the camera." : error);
+        std::cout << "{\"type\":\"camera_reopen_failure\",\"camera_index\":"
+                  << cameraIndex << ",\"attempt\":" << (attempt + 1)
+                  << ",\"error\":\"" << jsonEscape(error) << "\"}"
+                  << std::endl;
+        ++attempt;
+      }
+      });
+    }
+  }
+
   std::shared_ptr<MfCaptureSession> programSession() const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = sessions_.find(programIndex_);
@@ -800,6 +1258,16 @@ class MediaFoundationCameraSource final : public CameraSource {
     return match == cameras.end() ? nullptr : &(*match);
   }
 
+  static const CameraInfo *findByCameraId(const std::vector<CameraInfo> &cameras,
+                                          const std::string &cameraId) {
+    const auto match = std::find_if(
+        cameras.begin(), cameras.end(),
+        [&cameraId](const CameraInfo &info) {
+          return info.cameraId == cameraId;
+        });
+    return match == cameras.end() ? nullptr : &(*match);
+  }
+
   void setPermissionStatus(const std::string &status) {
     std::lock_guard<std::mutex> lock(mutex_);
     permissionStatus_ = status;
@@ -807,6 +1275,11 @@ class MediaFoundationCameraSource final : public CameraSource {
 
   void setError(const std::string &error, const std::string &permissionStatus = "") {
     std::lock_guard<std::mutex> lock(mutex_);
+    setErrorLocked(error, permissionStatus);
+  }
+
+  void setErrorLocked(const std::string &error,
+                      const std::string &permissionStatus = "") {
     lastError_ = error;
     if (!permissionStatus.empty()) {
       permissionStatus_ = permissionStatus;
@@ -816,6 +1289,10 @@ class MediaFoundationCameraSource final : public CameraSource {
   mutable std::mutex mutex_;
   bool mfStarted_ = false;
   bool running_ = false;
+  std::atomic<bool> reopenPending_{false};
+  std::atomic<bool> reopenThreadRunning_{false};
+  std::atomic<uint64_t> sessionGeneration_{0};
+  std::thread reopenThread_;
   int programIndex_ = 0;
   std::string lastError_;
   // Windows has no camera prompt; startSet() flips this to "denied" only if the

@@ -28,6 +28,7 @@ struct KeyerMetrics {
   double programFrameIntervalMs = -1.0;
   double programFrameMs = -1.0;
   double mjpegEncodeMs = -1.0;
+  double vcamPublishMs = -1.0;
   double keyerFps = -1.0;
   double programFps = -1.0;
   double droppedFramesPerSec = -1.0;
@@ -35,6 +36,9 @@ struct KeyerMetrics {
   uint32_t maskHeight = 0;
   uint64_t droppedFrames = 0;
   uint64_t skippedFrames = 0;
+  uint64_t vcamPublishDropped = 0;
+  uint64_t cameraTextureUploads = 0;
+  uint32_t stagingReadbackDepth = 0;
 };
 
 struct KeyerDegradationSettings {
@@ -55,7 +59,11 @@ struct KeyerStatus {
   // inference-cost sample used to seed the fused auto-degradation governor.
   // 0.0 = no probe ran (macOS, ONNX disabled, load failure).
   double probeInferenceMs = 0.0;
+  double probeInferenceMs512 = 0.0;
+  double probeInferenceMs320 = 0.0;
+  double probeInferenceMs256 = 0.0;
   bool modelHashOk = false;
+  std::string gpuAdapter;
   KeyerMetrics metrics;
 };
 
