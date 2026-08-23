@@ -73,10 +73,7 @@ double KeyerAutoGovernor::stepDownThresholdMs() const {
 }
 
 double KeyerAutoGovernor::stepUpThresholdMs() const {
-  const double base = config_.stepDownOverrideMs > 0.0
-                          ? config_.stepDownOverrideMs
-                          : config_.frameBudgetMs;
-  return config_.stepUpFactor * base;
+  return std::min(config_.stepUpFactor, 1.0) * stepDownThresholdMs();
 }
 
 double KeyerAutoGovernor::estimatedStepUpMs() const {
@@ -108,6 +105,29 @@ void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
   }
   // The step-up clock starts on the first maybeStepUp() call (seedProbe has
   // no injected time on purpose - the probe median is not an event time).
+  degradeClockStarted_ = false;
+  stepUpWatch_ = StepUpWatch::None;
+  liteStepUpPending_ = false;
+}
+
+void KeyerAutoGovernor::seedMeasuredProbes(double full512Ms,
+                                           double balanced320Ms,
+                                           double performance256Ms) {
+  if (seeded_ || samples_ > 0u || performance256Ms <= 0.0) {
+    return;
+  }
+  seeded_ = true;
+  const double threshold = stepUpThresholdMs();
+  if (full512Ms > 0.0 && full512Ms <= threshold) {
+    tier_ = GovernorTier::Full512;
+  } else if (balanced320Ms > 0.0 && balanced320Ms <= threshold) {
+    tier_ = GovernorTier::Balanced320;
+  } else {
+    // Build-time probes run while sessions are being created and can be
+    // distorted by first-load contention. Never seed below the fused 256 tier
+    // from those probes; Lite/Off require live async samples.
+    tier_ = GovernorTier::Performance256;
+  }
   degradeClockStarted_ = false;
   stepUpWatch_ = StepUpWatch::None;
   liteStepUpPending_ = false;
@@ -218,11 +238,23 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
     }
   } else {
     const double threshold = stepDownThresholdMs();
+    if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
+      if (inferenceMs > threshold) {
+        ++liteGateOverBudgetSamples_;
+      } else {
+        liteGateOverBudgetSamples_ = 0u;
+      }
+    }
     const bool regularExceed =
         samples_ >= config_.minSamples && emaMs_ > threshold;
     const bool fastExceed = samples_ >= config_.fastStartMinSamples &&
                             emaMs_ > config_.fastStartFactor * threshold;
     if (regularExceed || fastExceed) {
+      if (config_.tierFirstPolicy && tier_ == GovernorTier::Performance256) {
+        if (liteGateOverBudgetSamples_ < config_.liteGateSamples) {
+          return;
+        }
+      }
       stepDown(tierBelow(tier_), now);
       return;
     }
@@ -253,6 +285,7 @@ void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
   tier_ = target;
   emaMs_ = -1.0;
   samples_ = 0u;
+  liteGateOverBudgetSamples_ = 0u;
   degradedAt_ = now;
   degradeClockStarted_ = true;
 }
@@ -274,7 +307,7 @@ const char *KeyerAutoGovernor::performanceModeForTier() const {
 const char *KeyerAutoGovernor::pipelineModeLabel(bool cadenceActive) const {
   switch (tier_) {
     case GovernorTier::Off:
-      return "off";
+      return "off_reduced";
     case GovernorTier::Lite256:
       return "async_lite";
     default:
@@ -288,6 +321,7 @@ void KeyerAutoGovernor::reset() {
   liteStepUpPending_ = false;
   emaMs_ = -1.0;
   samples_ = 0u;
+  liteGateOverBudgetSamples_ = 0u;
   stepUpWatch_ = StepUpWatch::None;
   degradeClockStarted_ = false;
   degradedAt_ = TimePoint{};

@@ -46,6 +46,29 @@ sequenceDiagram
 - **Windows:** Unterstützt (nativer `display-helper.exe`, SDL2, FrameBus)
 - **Linux:** Nicht implementiert
 
+## Meeting-Helper Kamera- und VCam-Lifecycle
+
+Der Meeting-Helper fuehrt Kameraaufnahme, Program-Compositing und den
+Raw-Frame-Stream fuer die virtuelle Kamera getrennt von der Bridge UI aus.
+`camera.list` exportiert neben `camera_index` einen stabilen `stable_key`
+(Windows: MediaFoundation symbolic link). `camera.start` und `camera.select`
+akzeptieren diesen `stable_key`; wenn er vorhanden ist, gewinnt er gegen den
+Index. Ein zweites `camera.start` fuer dieselbe aufgeloeste Kamera und dieselbe
+Helper-Geometrie ist idempotent und antwortet mit `reopened:false`.
+
+Auf Windows behandelt die MediaFoundation-Aufnahme Reader-Fehler,
+`MEVideoCaptureDeviceRemoved` und End-of-stream nicht mehr als stilles Ende.
+Der Callback emittiert `camera_capture_error` und plant einen Reopen auf der
+Capture-Management-Seite. Die Backoff-Stufen sind 500 ms, 1 s, 2 s und danach
+5 s; die Versuche laufen unbegrenzt, solange die Kamera laufen soll. Reopen
+nutzt wieder dieselbe stabile Device Identity.
+
+Zusaetzlich beobachtet die Programmschleife das Alter des letzten Kameraframes.
+Wenn bei laufender Kamera laenger als ca. 1500 ms kein neuer Frame ankommt,
+setzt sie `camera_stalled:true` in `state.get`, emittiert einmal
+`camera_stalled` mit `age_ms` und triggert denselben Reopen-Pfad. Der naechste
+Kameraframe loescht den Zustand und emittiert `camera_recovered`.
+
 ## Security‑Hinweise
 - Helper‑Binary wird per Pfad‑Check validiert (`X_OK` auf POSIX, `F_OK` auf Windows).
 - Keine Shell‑Execution; feste Argumente.

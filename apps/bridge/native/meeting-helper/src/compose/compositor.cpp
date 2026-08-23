@@ -1,4 +1,5 @@
 #include "compose/compositor.h"
+#include "compose/media_page_cache.h"
 #if defined(__APPLE__)
 #include "compose/metal_compositor.h"
 #elif defined(_WIN32)
@@ -51,11 +52,7 @@ struct SourceRect {
   uint32_t height = 0;
 };
 
-struct RgbaImage {
-  uint32_t width = 0;
-  uint32_t height = 0;
-  std::vector<uint8_t> rgba;
-};
+using RgbaImage = MediaPageImage;
 
 uint8_t clampByte(int value) {
   return static_cast<uint8_t>(std::clamp(value, 0, 255));
@@ -293,32 +290,19 @@ std::shared_ptr<const RgbaImage> getBackgroundImage(const std::string &path) {
   return cachedImage;
 }
 
-std::shared_ptr<const RgbaImage> getMediaLayerImage(const MediaLayerState &mediaLayer) {
+MediaPageCacheResult getMediaLayerImageResult(const MediaLayerState &mediaLayer) {
   if (mediaLayer.renderedPagePath.empty() || mediaLayer.renderStatus != "ready") {
-    return nullptr;
+    return {};
   }
+  static MediaPageCache cache([](const std::vector<uint8_t> &bytes) {
+    return decodeImageBytes(bytes);
+  });
+  return cache.get(mediaLayer.renderedPagePath, mediaLayer.page,
+                   mediaLayer.pageCount);
+}
 
-  static std::mutex cacheMutex;
-  static std::string cachedPath;
-  static std::shared_ptr<const RgbaImage> cachedImage;
-
-  std::lock_guard<std::mutex> lock(cacheMutex);
-  if (mediaLayer.renderedPagePath == cachedPath) {
-    return cachedImage;
-  }
-
-  std::ifstream file(mediaLayer.renderedPagePath, std::ios::binary);
-  if (!file) {
-    cachedPath = mediaLayer.renderedPagePath;
-    cachedImage = nullptr;
-    return nullptr;
-  }
-  std::vector<uint8_t> bytes(
-      (std::istreambuf_iterator<char>(file)),
-      std::istreambuf_iterator<char>());
-  cachedPath = mediaLayer.renderedPagePath;
-  cachedImage = decodeImageBytes(bytes);
-  return cachedImage;
+std::shared_ptr<const RgbaImage> getMediaLayerImage(const MediaLayerState &mediaLayer) {
+  return getMediaLayerImageResult(mediaLayer).image;
 }
 
 void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &target, const RgbaImage &image) {
@@ -1296,8 +1280,12 @@ bool tryRenderProgramFrameGpu(const Options &options,
   // Media (PiP/fullscreen) layer on the GPU. Without a rendered image the
   // layer simply stays absent — no placeholder panel and no CPU fallback.
   std::shared_ptr<const RgbaImage> mediaImage;
+  uint64_t mediaGeneration = 0;
   if (snapshot.mediaLayer.enabled) {
-    mediaImage = getMediaLayerImage(snapshot.mediaLayer);
+    const MediaPageCacheResult mediaResult =
+        getMediaLayerImageResult(snapshot.mediaLayer);
+    mediaImage = mediaResult.image;
+    mediaGeneration = mediaResult.generation;
   }
   if (mediaImage != nullptr) {
     Rect rect;
@@ -1326,7 +1314,7 @@ bool tryRenderProgramFrameGpu(const Options &options,
     plan.media.rgba = mediaImage->rgba.data();
     plan.media.width = mediaImage->width;
     plan.media.height = mediaImage->height;
-    plan.media.cacheKey = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(mediaImage.get()));
+    plan.media.cacheKey = mediaGeneration;
   }
 
   const bool hasCameraFrame = snapshot.cameraRender.enabled && cameraFrame != nullptr &&
@@ -1372,6 +1360,21 @@ bool tryRenderProgramFrameGpu(const Options &options,
         plan.camera.biasX = static_cast<float>(sourceCenterX - 0.5 - targetCenterX / kx);
         plan.camera.biasY = static_cast<float>(sourceCenterY - 0.5 - targetCenterY / ky);
         plan.camera.mirrorConst = static_cast<float>(cameraFrame->width) - 1.0f;
+#if defined(_WIN32)
+      } else {
+        // Confirmed-empty subject (Option A): the keyer verified the person
+        // left the frame, so KEEP the keyed composite - the zero mask is
+        // uploaded (the upload is gated on camera.keyed) and both shaders
+        // resolve it to alpha 0 everywhere, i.e. background-only with no
+        // presenter. Windows also sends low-coverage masks here after the
+        // collapse hold is bounded; raw camera is only allowed when the mask
+        // pointer itself is null (keyer disabled/model unavailable).
+        plan.cameraFrame = cameraFrame;
+        plan.camera = coverMapping(*cameraFrame, plan.width, plan.height);
+        plan.camera.keyed = true;
+        plan.camera.mirror = snapshot.cameraRender.mirror;
+      }
+#else
       } else if (cameraMask->emptyValid) {
         // Confirmed-empty subject (Option A): the keyer verified the person
         // left the frame, so KEEP the keyed composite - the zero mask is
@@ -1394,6 +1397,7 @@ bool tryRenderProgramFrameGpu(const Options &options,
         plan.camera.keyed = false;
         plan.camera.mirror = snapshot.cameraRender.mirror;
       }
+#endif
     } else {
       plan.cameraFrame = cameraFrame;
       plan.camera = coverMapping(*cameraFrame, plan.width, plan.height);

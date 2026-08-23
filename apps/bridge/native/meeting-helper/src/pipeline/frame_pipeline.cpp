@@ -10,16 +10,22 @@
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #include "pipeline/framebus_reader_log_gate.h"
+#include "pipeline/compositor_input_selection.h"
+#include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
 #include "pipeline/keyer_cadence.h"
+#include "pipeline/retained_mask_selection.h"
 #include "pipeline/subject_presence.h"
 #if defined(_WIN32)
 #include "compose/d3d11_compositor.h"
 #include "pipeline/mask_retention.h"
 #include "pipeline/tier_handover.h"
+#include "preview/vcam_shm_publisher.h"
 #endif
 #include "recorder/meeting_recorder.h"
+#include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/win_qos.h"
 
 #include <algorithm>
 #include <array>
@@ -27,6 +33,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <cstdlib>
 #include <deque>
 #include <iostream>
@@ -78,6 +85,7 @@ constexpr float kMaskRefineRangeSigmaLuma = 14.0f;
 constexpr auto kIdleSleep = std::chrono::milliseconds(1000);
 constexpr auto kStaticPollInterval = std::chrono::milliseconds(100);
 constexpr auto kStaticHeartbeatInterval = std::chrono::milliseconds(1000);
+constexpr auto kCameraStallWindow = std::chrono::milliseconds(1500);
 // Duty-cycle guard: only when one keyer pass clearly exceeds a camera frame
 // interval (1.5x, i.e. the machine sustains at most ~20fps anyway) insert a
 // cooldown of this fraction of the pass duration, so weak machines keep ~20%
@@ -86,6 +94,7 @@ constexpr auto kStaticHeartbeatInterval = std::chrono::milliseconds(1000);
 constexpr double kKeyerCooldownTriggerFactor = 1.5;
 constexpr double kKeyerCooldownFraction = 0.25;
 constexpr double kKeyerMaxCooldownMs = 50.0;
+constexpr double kWarmupRetainedMaskAgeMs = 5000.0;
 
 // Mask-collapse guard: Apple Vision intermittently returns a (near-)empty mask
 // under backlight / bad contrast, which would key the whole person out. We
@@ -103,7 +112,11 @@ constexpr double kCollapseDropRatio = 0.28;        // sudden drop below this = c
 // good pair is held instead. Set high so a subject genuinely filling the frame
 // is not misclassified. The keyer also resets its temporal state on this event
 // so the next frame re-converges.
+#if defined(_WIN32)
+constexpr double kMaxForegroundCoverage = 0.98;
+#else
 constexpr double kMaxForegroundCoverage = 0.92;
+#endif
 
 // Motion-adaptive temporal EMA: the current frame's weight scales with how much
 // the mask changed since the last frame. When the subject is still we lean on
@@ -240,10 +253,12 @@ struct FusedStabilizerState {
   AlphaMask prevMask;
   double prevCoverage = 0.0;
   int collapseHold = 0;
+  int overCoverageHold = 0;
   void reset() {
     prevMask = AlphaMask{};
     prevCoverage = 0.0;
     collapseHold = 0;
+    overCoverageHold = 0;
   }
 };
 
@@ -263,8 +278,29 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   AlphaMask &prevFusedMask = fusedStabilizerState().prevMask;
   double &prevFusedCoverage = fusedStabilizerState().prevCoverage;
   int &fusedCollapseHold = fusedStabilizerState().collapseHold;
+  int &fusedOverCoverageHold = fusedStabilizerState().overCoverageHold;
+#if defined(_WIN32)
   constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
+  constexpr int kMaxFusedOverCoverageHold = 12;
+#else
+  constexpr int kMaxFusedCollapseHold = 45;  // ~1.5s at 30fps
+  constexpr int kMaxFusedOverCoverageHold = 90;  // ~3s at 30fps
+#endif
   const double fusedCoverage = computeMaskCoverage(fusedMask);
+  const bool fusedOverCoverage = fusedCoverage > kMaxForegroundCoverage;
+#if !defined(_WIN32)
+  const uint64_t currentMaskTimestampNs = fusedMask.timestampNs;
+  if (fusedOverCoverage && !prevFusedMask.alpha.empty() &&
+      fusedOverCoverageHold < kMaxFusedOverCoverageHold) {
+    fusedMask = prevFusedMask;
+    fusedMask.timestampNs = currentMaskTimestampNs;
+    ++fusedOverCoverageHold;
+    return;
+  }
+#endif
+  if (!fusedOverCoverage) {
+    fusedOverCoverageHold = 0;
+  }
   // Subject-presence tracking (Option A): only ever called on SUCCESSFUL
   // fused inference, so every feed counts towards the empty streak. When the
   // person verifiably left (confirmed over acceptAfterMs), pass the empty
@@ -284,7 +320,8 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   }
   const bool fusedCollapsed =
       fusedCoverage < kMinForegroundCoverage ||
-      fusedCoverage > kMaxForegroundCoverage ||
+      (fusedOverCoverage &&
+       fusedOverCoverageHold < kMaxFusedOverCoverageHold) ||
       (prevFusedCoverage > kHealthyCoverage &&
        fusedCoverage < prevFusedCoverage * kCollapseDropRatio);
   if (fusedCollapsed && !prevFusedMask.alpha.empty() &&
@@ -303,7 +340,11 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
     // rebuild (higher = crisper/less ghost).
     static const float fusedEmaStatic = [] {
       const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_STATIC");
-      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.72f;
+#if defined(_WIN32)
+      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.92f;
+#else
+      return raw != nullptr ? static_cast<float>(std::atof(raw)) : 0.85f;
+#endif
     }();
     static const float fusedEmaMotion = [] {
       const char *raw = std::getenv("BROADIFY_MEETING_FUSED_EMA_MOTION");
@@ -332,6 +373,20 @@ bool g_fusedKeyerDegraded = false;
 // warming worker while the fused keyer is what actually composites.
 // Program-loop thread only, like g_fusedKeyerDegraded.
 bool g_fusedStepDownOverlapActive = false;
+bool g_fusedKeyerOffReducedActive = false;
+#if defined(_WIN32)
+struct FusedWarmupThreadHolder {
+  std::thread thread;
+  ~FusedWarmupThreadHolder() {
+    if (thread.joinable()) {
+      thread.detach();
+    }
+  }
+};
+FusedWarmupThreadHolder g_fusedWarmupThreadHolder;
+std::atomic<bool> g_fusedWarmupBusy{false};
+std::atomic<int> g_fusedWarmupOutcome{0};
+#endif
 
 // Live-frame edge-snap toggle (default ON). The keyer publishes a mask paired
 // with the OLD frame it was computed on; compositing that old frame is the
@@ -426,6 +481,25 @@ bool fusedPostprocessEnabled() {
   return enabled;
 }
 
+bool fusedSmootherEmaEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_FUSED_SMOOTHER");
+    return raw == nullptr || raw[0] == '\0' || std::string(raw) != "edge";
+  }();
+  return enabled;
+}
+
+void emitKeyerNotReadyEvent(const char *reason) {
+  static std::string lastReason;
+  const std::string current = reason == nullptr ? std::string() : std::string(reason);
+  if (current == lastReason) {
+    return;
+  }
+  lastReason = current;
+  emitHelperEvent("{\"type\":\"keyer_not_ready\",\"reason\":\"" +
+                  jsonEscape(current) + "\"}");
+}
+
 // fused and fused_cadence are the SAME active path for transition-reset
 // purposes (the cadence merely skips inferences within the fused path).
 std::string canonicalKeyerPathLabel(const std::string &label) {
@@ -483,10 +557,19 @@ bool fusedKeyerPerformanceOverrideActive() {
   return active;
 }
 
+bool fusedPipelineDepthEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_FUSED_PIPELINE_DEPTH");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+}
+
 KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
   KeyerGovernorConfig config;
   config.frameBudgetMs = 1000.0 / static_cast<double>(fps == 0u ? 30u : fps);
   config.stepDownOverrideMs = keyerMaxInferenceOverrideMs();
+  config.tierFirstPolicy = true;
   // Warm handover: defer the Lite256 -> Performance256 step-up until the
   // background session warmup succeeded (make-before-break). With the
   // kill-switch off this stays the historical immediate step-up.
@@ -516,6 +599,14 @@ bool edgeLiveEnabled() {
     return raw != nullptr && raw[0] == '1';
   }();
   return enabled;
+}
+
+bool asyncPreTemporalBlendEnabled() {
+#if defined(_WIN32)
+  return false;
+#else
+  return true;
+#endif
 }
 
 // Half-width of the alpha band (around 0.5) that gets stretched to a crisp
@@ -551,12 +642,11 @@ struct PairedKeyerFrame {
   VideoFrame frame;
   AlphaMask mask;
   uint64_t publishedAtNs = 0u;
-  // Inference cost of the pass that produced this mask, captured at publish
-  // time under the worker mutex. Governor samples read THIS instead of the
-  // shared state.inferenceMs, which is written after the pair is published
-  // and can still hold a stale pre-demotion value for the first sample.
+  // GPU/runtime session cost of the pass that produced this mask, captured at
+  // publish time under the worker mutex. Governor samples read THIS instead of
+  // total inferenceMs; CPU tensor/postprocess work must not drive tiering.
   // <= 0 means unknown (no sample is fed).
-  double inferenceMs = -1.0;
+  double sessionRunMs = -1.0;
 };
 
 struct KeyerRuntimeStats {
@@ -572,6 +662,10 @@ struct PipelineRuntimeState {
   bool framebusRunning = false;
   int previewClients = 0;
   int vcamClients = 0;
+  int vcamTcpClients = 0;
+  int vcamShmReaders = 0;
+  bool vcamRawRunning = false;
+  std::string vcamTransport = "tcp";
   bool programDirty = false;
   bool graphicsDirty = false;
   uint64_t programRevision = 0;
@@ -582,7 +676,9 @@ struct PipelineRuntimeState {
 };
 
 bool hasActiveOutputConsumer(const PipelineRuntimeState &runtime) {
-  return runtime.framebusRunning || runtime.previewClients > 0 || runtime.vcamClients > 0;
+  return runtime.framebusRunning || runtime.previewClients > 0 ||
+      runtime.vcamClients > 0 ||
+      (runtime.vcamRawRunning && runtime.vcamTransport == "shm");
 }
 
 bool isGraphicsOutputActive(const CompositorSnapshot &snapshot) {
@@ -1192,6 +1288,7 @@ void postprocessAlpha(AlphaMask &mask,
                       const AlphaMask &previousMask,
                       const KeyerSettings &settings,
                       double maskAgeMs,
+                      bool fusedPath,
                       KeyerMetrics &metrics) {
   const auto start = std::chrono::steady_clock::now();
   // Morphological close first: fill small holes the segmenter left inside the
@@ -1203,7 +1300,13 @@ void postprocessAlpha(AlphaMask &mask,
   const auto closeEnd = std::chrono::steady_clock::now();
   remapAlphaSmoothstep(mask);
   const auto remapEnd = std::chrono::steady_clock::now();
-  stabilizeAlphaEdges(mask, previousMask, settings, maskAgeMs);
+  KeyerSettings effectiveSettings = settings;
+#if defined(_WIN32)
+  if (fusedPath && fusedSmootherEmaEnabled()) {
+    effectiveSettings.edgeStabilizationEnabled = false;
+  }
+#endif
+  stabilizeAlphaEdges(mask, previousMask, effectiveSettings, maskAgeMs);
   const auto dilateStart = std::chrono::steady_clock::now();
   erodeAlpha(mask, settings.maskErodePx);
   dilateAlpha(mask, dynamicDilationRadius(settings, maskAgeMs));
@@ -1264,11 +1367,13 @@ class AsyncKeyerWorker {
     hasPendingFrame_ = false;
     latestPair_.reset();
     lastPublishedCoverage_ = 0.0;
+    collapseHoldResults_ = 0u;
     presenceTracker_.reset();
     droppedFrames_ = 0;
     skippedFrames_ = 0;
     keyerRate_ = RateMeter{};
     lastDropRateSample_ = std::chrono::steady_clock::now();
+    lastPublishAt_ = std::chrono::steady_clock::time_point{};
     lastDropRateTotal_ = 0u;
     droppedFramesPerSec_ = -1.0;
   }
@@ -1283,6 +1388,18 @@ class AsyncKeyerWorker {
     const auto now = std::chrono::steady_clock::now();
     updateDropRateLocked(now);
     return KeyerRuntimeStats{keyerRate_.value(now), droppedFramesPerSec_, droppedFrames_, skippedFrames_};
+  }
+
+  bool alive() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!thread_.joinable() || stopping_ || !running_.load()) {
+      return false;
+    }
+    if (lastPublishAt_ == std::chrono::steady_clock::time_point{}) {
+      return true;
+    }
+    const auto age = std::chrono::steady_clock::now() - lastPublishAt_;
+    return age <= std::chrono::milliseconds(5000);
   }
 
   void stop() {
@@ -1350,12 +1467,13 @@ class AsyncKeyerWorker {
         maskAgeMs = state_.keyerMetrics.maskAgeMs;
       }
       const auto temporalStart = std::chrono::steady_clock::now();
-      if (settings.temporalBlendEnabled) {
+      if (settings.temporalBlendEnabled && asyncPreTemporalBlendEnabled()) {
         blendAlphaTemporal(keyed.mask, previousMask, maskAgeMs);
       }
       const double temporalPreMs =
           elapsedMs(temporalStart, std::chrono::steady_clock::now());
-      postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs, keyed.status.metrics);
+      postprocessAlpha(keyed.mask, previousMask, settings, maskAgeMs,
+                       /*fusedPath=*/false, keyed.status.metrics);
       // Full-frame temporal EMA against the last published mask — the core
       // anti-flicker stabilizer. Skipped when the current mask collapsed (Fix 1
       // holds the last good pair instead), so a dropout is never smeared in.
@@ -1377,6 +1495,7 @@ class AsyncKeyerWorker {
           const auto now = std::chrono::steady_clock::now();
           const uint64_t publishNs = nowNs();
           keyerRate_.tick(now);
+          lastPublishAt_ = now;
           updateDropRateLocked(now);
           keyed.status.metrics.droppedFrames = droppedFrames_;
           keyed.status.metrics.skippedFrames = skippedFrames_;
@@ -1418,15 +1537,25 @@ class AsyncKeyerWorker {
           const bool confirmedEmpty =
               presence == SubjectPresence::ConfirmedEmpty &&
               rawCoverage < kMinForegroundCoverage;
-          if (!keyed.mask.alpha.empty() && (!collapsed || confirmedEmpty)) {
+          bool publishCollapsedMask = false;
+#if defined(_WIN32)
+          if (!keyed.mask.alpha.empty() && collapsed && !confirmedEmpty &&
+              rawCoverage < kMinForegroundCoverage) {
+            ++collapseHoldResults_;
+            publishCollapsedMask = collapseHoldResults_ >= 12u;
+          }
+#endif
+          if (!keyed.mask.alpha.empty() &&
+              (!collapsed || confirmedEmpty || publishCollapsedMask)) {
             keyed.mask.emptyValid = confirmedEmpty;
             auto pair = std::make_shared<PairedKeyerFrame>();
             pair->frame = std::move(frame);
             pair->mask = std::move(keyed.mask);
             pair->publishedAtNs = publishNs;
-            pair->inferenceMs = keyed.status.inferenceMs;
+            pair->sessionRunMs = keyed.status.metrics.sessionRunMs;
             latestPair_ = std::move(pair);
             lastPublishedCoverage_ = rawCoverage;
+            collapseHoldResults_ = 0u;
           } else if (latestPair_ == nullptr) {
             // No good mask to fall back to yet (startup): reset so the program
             // loop shows the un-keyed camera rather than a stale frame.
@@ -1480,6 +1609,7 @@ class AsyncKeyerWorker {
   VideoFrame pendingFrame_;
   std::shared_ptr<const PairedKeyerFrame> latestPair_;
   double lastPublishedCoverage_ = 0.0;
+  uint32_t collapseHoldResults_ = 0u;
   // Fed and reset under mutex_ only (feed in the publish section, reset in
   // clear()), so the program loop's clear() cannot race the worker thread.
   SubjectPresenceTracker presenceTracker_{subjectPresenceConfigFromEnv()};
@@ -1489,6 +1619,7 @@ class AsyncKeyerWorker {
   uint64_t skippedFrames_ = 0;
   RateMeter keyerRate_;
   std::chrono::steady_clock::time_point lastDropRateSample_{};
+  std::chrono::steady_clock::time_point lastPublishAt_{};
   uint64_t lastDropRateTotal_ = 0u;
   double droppedFramesPerSec_ = -1.0;
   bool hasPendingFrame_ = false;
@@ -1644,8 +1775,16 @@ void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
+                      VcamShmRingWin *vcamShm,
+#if defined(_WIN32)
+                      VcamShmPublisher *vcamShmPublisher,
+#endif
                       MeetingRecorder &recorder,
                       std::atomic<bool> &running) {
+#if defined(_WIN32)
+  ScopedWinMmcss programThreadQos(L"Capture");
+  std::unique_ptr<ScopedWinTimerResolution> liveTimerResolution;
+#endif
   framebus_writer_t *writer = framebus_writer_open(
       options.framebusName.c_str(), options.width, options.height, options.fps, kSlotCount);
   if (writer == nullptr) {
@@ -1659,6 +1798,9 @@ void runFramePipeline(const Options &options,
   auto nextFrameAt = std::chrono::steady_clock::now();
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
+#if defined(_WIN32)
+  std::vector<uint8_t> vcamSubmitFrame;
+#endif
   VideoFrame latestCameraFrame;
   VideoFrame latestPipFrame;
   uint64_t lastPipCameraTimestampNs = 0u;
@@ -1668,6 +1810,14 @@ void runFramePipeline(const Options &options,
   uint64_t lastBackGraphicsTimestampNs = 0u;
   uint64_t lastFrontGraphicsTimestampNs = 0u;
   auto lastStaticHeartbeatAt = std::chrono::steady_clock::time_point{};
+  auto cameraWatchdogStartAt = std::chrono::steady_clock::time_point{};
+  auto lastCameraFrameAt = std::chrono::steady_clock::time_point{};
+  bool cameraStallReported = false;
+  uint64_t cameraStallWindowCountReported = 0u;
+#if defined(_WIN32)
+  CameraStallReopenBackoff cameraReopenBackoff;
+  RateMeter cameraInputRate;
+#endif
   AsyncKeyerWorker keyerWorker(options, state, running);
   GraphicsFrameBusReader backGraphicsReader(kMeetingBackGraphicsFrameBusName);
   GraphicsFrameBusReader frontGraphicsReader(kMeetingFrontGraphicsFrameBusName);
@@ -1680,9 +1830,11 @@ void runFramePipeline(const Options &options,
   // between keyed and un-keyed frames. Windows-scoped: macOS keeps the tuned
   // hard-expiry behavior byte-identically.
   MaskRetention asyncMaskRetention;
+  AlphaMask lastGoodMask;
 #endif
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
+  auto lastRenderStartAt = std::chrono::steady_clock::time_point{};
   while (running.load()) {
     PipelineRuntimeState runtime;
     {
@@ -1694,6 +1846,10 @@ void runFramePipeline(const Options &options,
       runtime.framebusRunning = state.framebusRunning;
       runtime.previewClients = state.previewClientCount;
       runtime.vcamClients = state.vcamClientCount;
+      runtime.vcamTcpClients = state.vcamTcpClientCount;
+      runtime.vcamShmReaders = state.vcamShmReaderCount;
+      runtime.vcamRawRunning = state.vcamRawRunning;
+      runtime.vcamTransport = state.vcamTransport;
       runtime.programDirty = state.programDirty;
       runtime.graphicsDirty = state.graphicsDirty;
       runtime.programRevision = state.programRevision;
@@ -1725,6 +1881,15 @@ void runFramePipeline(const Options &options,
       std::lock_guard<std::mutex> lock(state.mutex);
       state.pipelineMode = runtime.mode;
     }
+#if defined(_WIN32)
+    const bool liveTimerNeeded =
+        runtime.mode == "live" || runtime.mode == "keyer_live";
+    if (liveTimerNeeded && liveTimerResolution == nullptr) {
+      liveTimerResolution = std::make_unique<ScopedWinTimerResolution>();
+    } else if (!liveTimerNeeded && liveTimerResolution != nullptr) {
+      liveTimerResolution.reset();
+    }
+#endif
 
     if (runtime.mode == "idle" && !runtime.programDirty && programFrame.empty()) {
       std::this_thread::sleep_for(kIdleSleep);
@@ -1733,12 +1898,16 @@ void runFramePipeline(const Options &options,
     }
 
     const bool outputConsumerActive = hasActiveOutputConsumer(runtime);
-    const bool previewConsumerActive = runtime.previewClients > 0 || runtime.vcamClients > 0;
+    const bool previewConsumerActive =
+        runtime.previewClients > 0 || runtime.vcamTcpClients > 0;
     const auto programStart = std::chrono::steady_clock::now();
     const bool staticHeartbeatDue =
         lastStaticHeartbeatAt == std::chrono::steady_clock::time_point{} ||
         programStart - lastStaticHeartbeatAt >= kStaticHeartbeatInterval;
-    bool shouldRenderProgram = runtime.programDirty || runtime.programRevision != lastProgramRevision || programFrame.empty();
+    const bool programChanged =
+        runtime.programDirty || runtime.programRevision != lastProgramRevision ||
+        programFrame.empty();
+    bool shouldRenderProgram = programChanged;
     bool shouldPublishPreview = false;
     bool shouldWriteFramebus = false;
 
@@ -1756,9 +1925,72 @@ void runFramePipeline(const Options &options,
           !latestCameraFrame.rgba.empty();
       if (hasNewCameraFrame) {
         lastCameraTimestampNs = latestCameraFrame.timestampNs;
+        lastCameraFrameAt = programStart;
+        cameraWatchdogStartAt = programStart;
+        cameraStallWindowCountReported = 0u;
+#if defined(_WIN32)
+        cameraInputRate.tick(programStart);
+#endif
+        if (cameraStallReported) {
+          emitHelperEvent("{\"type\":\"camera_recovered\"}");
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.cameraStalled = false;
+          cameraStallReported = false;
+        }
       } else if (!runtime.cameraRunning) {
         latestCameraFrame = VideoFrame{};
         lastCameraTimestampNs = 0u;
+        lastCameraFrameAt = std::chrono::steady_clock::time_point{};
+        cameraWatchdogStartAt = std::chrono::steady_clock::time_point{};
+        cameraStallReported = false;
+        cameraStallWindowCountReported = 0u;
+#if defined(_WIN32)
+        cameraReopenBackoff = CameraStallReopenBackoff{};
+#endif
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.cameraStalled = false;
+      } else {
+        if (cameraWatchdogStartAt == std::chrono::steady_clock::time_point{}) {
+          cameraWatchdogStartAt = programStart;
+        }
+        const auto ageStart =
+            lastCameraFrameAt == std::chrono::steady_clock::time_point{}
+                ? cameraWatchdogStartAt
+                : lastCameraFrameAt;
+        const auto age = programStart - ageStart;
+        if (isCameraFrameStalled(programStart, lastCameraFrameAt,
+                                 cameraWatchdogStartAt, kCameraStallWindow)) {
+          const auto ageMs =
+              std::chrono::duration_cast<std::chrono::milliseconds>(age).count();
+          if (!cameraStallReported) {
+            emitHelperEvent("{\"type\":\"camera_stalled\",\"age_ms\":" +
+                            std::to_string(ageMs) + "}");
+            {
+              std::lock_guard<std::mutex> lock(state.mutex);
+              state.cameraStalled = true;
+            }
+            cameraStallReported = true;
+          }
+#if defined(_WIN32)
+          const uint64_t windowCount = static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::milliseconds>(age).count() /
+              kCameraStallWindow.count());
+          const bool newStallWindow = windowCount > cameraStallWindowCountReported;
+          if (newStallWindow) {
+            cameraStallWindowCountReported = windowCount;
+          }
+          if (shouldReopenStalledCamera(cameraReopenBackoff, programStart,
+                                        newStallWindow,
+                                        runtime.vcamClients > 0,
+                                        cameraInputRate.value(programStart))) {
+            emitHelperEvent(
+                "{\"type\":\"camera_stalled\",\"event\":\"reopen\","
+              "\"reopen_count_lifetime\":" +
+                std::to_string(cameraReopenBackoff.reopenCount) + "}");
+            camera.reopen(options.width, options.height, options.fps);
+          }
+#endif
+        }
       }
 
       // Conference PiP: a second open camera drawn as an inset. Read its
@@ -1796,12 +2028,26 @@ void runFramePipeline(const Options &options,
         keyerSettings.degradation = state.degradationSettings;
         keyerSettings.performanceMode = state.performanceMode;
       }
+#if defined(_WIN32)
+      keyerSettings.dynamicDilation = false;
+#endif
       // The fused path keys synchronously below; don't also run the async worker
       // (that would run the model twice per frame). While the fused keyer is
       // degraded, the async worker takes over - it must receive frames or the
       // fallback can never produce a mask (K-03).
       const bool asyncPathActive = !gpuPipelineEnabled() || g_fusedKeyerDegraded;
-      if (hasNewCameraFrame && keyerEnabled && asyncPathActive) {
+#if defined(_WIN32)
+      const bool submitAsyncKeyerFrame = shouldSubmitAsyncKeyerFrame(
+          hasNewCameraFrame, keyerEnabled, asyncPathActive,
+          g_fusedWarmupBusy.load(std::memory_order_acquire),
+          g_fusedKeyerOffReducedActive, frameIndex);
+#else
+      const bool submitAsyncKeyerFrame = shouldSubmitAsyncKeyerFrame(
+          hasNewCameraFrame, keyerEnabled, asyncPathActive,
+          /*fusedWarmupInFlight=*/false, /*governorOffReducedActive=*/false,
+          frameIndex);
+#endif
+      if (submitAsyncKeyerFrame) {
         keyerWorker.submit(latestCameraFrame);
       }
       if (hasCameraFrame) {
@@ -1831,14 +2077,27 @@ void runFramePipeline(const Options &options,
             // no longer visibly turns off/on around the age gate.
             const MaskRetentionDecision retention = asyncMaskRetention.decide(
                 latestCameraFrame.timestampNs, latestPair->publishedAtNs,
-                maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs));
+                maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs),
+                keyerWorker.alive());
             const bool pairIsUsable = retention != MaskRetentionDecision::Passthrough;
 #else
             const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
 #endif
             if (pairIsUsable) {
               selectedPair = latestPair;
+#if defined(_WIN32)
+              lastGoodMask = selectedPair->mask;
+              frameForCompositor =
+                  selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
+                                                  pairIsUsable,
+                                                  guidedRefineAvailable() &&
+                                                      liveSnapEnabled()) ==
+                          AsyncKeyerCompositorFrame::PairedFrame
+                      ? &selectedPair->frame
+                      : &latestCameraFrame;
+#else
               frameForCompositor = &selectedPair->frame;
+#endif
             } else {
               frameForCompositor = &latestCameraFrame;
             }
@@ -1866,23 +2125,29 @@ void runFramePipeline(const Options &options,
                 // Confirmed-empty subject (Option A): the background stays
                 // composited on purpose - never report this as
                 // passthrough/stale_hold.
-                state.degradationStage = "no_subject";
+                setMeetingDegradationStage(state, "no_subject");
                 state.staleMaskActive = false;
               } else if (pairIsUsable) {
 #if defined(_WIN32)
                 if (retention == MaskRetentionDecision::StaleHold) {
-                  state.degradationStage = "stale_hold";
+                  setMeetingDegradationStage(state, "stale_hold");
                   state.staleMaskActive = true;
                 } else {
-                  state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                  setMeetingDegradationStage(
+                      state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                                 ? "fresh"
+                                 : "paired");
                   state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
                 }
 #else
-                state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                setMeetingDegradationStage(
+                    state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                               ? "fresh"
+                               : "paired");
                 state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
 #endif
               } else {
-                state.degradationStage = "passthrough";
+                setMeetingDegradationStage(state, "passthrough");
                 state.staleMaskActive = true;
               }
             }
@@ -1894,7 +2159,7 @@ void runFramePipeline(const Options &options,
             // reporting "passthrough" here while fused is on air is the bug.
             if (!g_fusedStepDownOverlapActive) {
               std::lock_guard<std::mutex> lock(state.mutex);
-              state.degradationStage = "passthrough";
+              setMeetingDegradationStage(state, "passthrough");
               state.staleMaskActive = false;
               state.keyerMetrics.droppedFrames = keyerStats.droppedFramesTotal;
               state.keyerMetrics.skippedFrames = keyerStats.skippedFramesTotal;
@@ -1911,7 +2176,7 @@ void runFramePipeline(const Options &options,
           frameForCompositor = &latestCameraFrame;
           {
             std::lock_guard<std::mutex> lock(state.mutex);
-            state.degradationStage = "fresh";
+            setMeetingDegradationStage(state, "fresh");
             state.staleMaskActive = false;
             state.keyerMetrics.maskAgeAvgMs = -1.0;
           }
@@ -1924,7 +2189,7 @@ void runFramePipeline(const Options &options,
 #endif
         {
           std::lock_guard<std::mutex> lock(state.mutex);
-          state.degradationStage = "passthrough";
+          setMeetingDegradationStage(state, "passthrough");
           state.staleMaskActive = false;
           state.keyerMetrics.maskAgeAvgMs = -1.0;
         }
@@ -1948,6 +2213,12 @@ void runFramePipeline(const Options &options,
       if (hasNewFrontGraphicsFrame) {
         lastFrontGraphicsTimestampNs = frontGraphicsFrameForCompositor->timestampNs;
       }
+      const bool graphicsChanged = runtime.graphicsDirty ||
+          hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
+      const PipelineWorkTriggers workTriggers{
+          hasNewCameraFrame, programChanged, graphicsChanged};
+      const bool programWorkDue = shouldRunProgramWork(workTriggers);
+      const bool fusedKeyerWorkDue = shouldRunFusedKeyerWork(workTriggers);
       // Same-frame re-evaluation only while the async path is the active
       // source (see the gate above): while fused owns the keyer this block
       // must neither consume the parked worker's pair nor write telemetry.
@@ -1965,14 +2236,27 @@ void runFramePipeline(const Options &options,
           // helper dedupes the passthrough streak by frame timestamp.
           const MaskRetentionDecision retention = asyncMaskRetention.decide(
               latestCameraFrame.timestampNs, latestPair->publishedAtNs,
-              maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs));
+              maskAgeMs, std::max(0.0, keyerSettings.degradation.maxMaskAgeMs),
+              keyerWorker.alive());
           const bool pairIsUsable = retention != MaskRetentionDecision::Passthrough;
 #else
           const bool pairIsUsable = maskAgeMs <= std::max(0.0, keyerSettings.degradation.maxMaskAgeMs);
 #endif
           if (pairIsUsable) {
             selectedPair = latestPair;
+#if defined(_WIN32)
+            lastGoodMask = selectedPair->mask;
+            frameForCompositor =
+                selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
+                                                pairIsUsable,
+                                                guidedRefineAvailable() &&
+                                                    liveSnapEnabled()) ==
+                        AsyncKeyerCompositorFrame::PairedFrame
+                    ? &selectedPair->frame
+                    : &latestCameraFrame;
+#else
             frameForCompositor = &selectedPair->frame;
+#endif
           } else {
             frameForCompositor = &latestCameraFrame;
             selectedPair.reset();
@@ -1996,23 +2280,29 @@ void runFramePipeline(const Options &options,
             state.keyerMetrics.keyerFps = keyerStats.keyerFps;
             if (pairIsUsable && latestPair->mask.emptyValid) {
               // Confirmed-empty subject (Option A): see the first block.
-              state.degradationStage = "no_subject";
+              setMeetingDegradationStage(state, "no_subject");
               state.staleMaskActive = false;
             } else if (pairIsUsable) {
 #if defined(_WIN32)
               if (retention == MaskRetentionDecision::StaleHold) {
-                state.degradationStage = "stale_hold";
+                setMeetingDegradationStage(state, "stale_hold");
                 state.staleMaskActive = true;
               } else {
-                state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+                setMeetingDegradationStage(
+                    state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                               ? "fresh"
+                               : "paired");
                 state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
               }
 #else
-              state.degradationStage = maskAgeMs < keyerSettings.degradation.freshMaskAgeMs ? "fresh" : "paired";
+              setMeetingDegradationStage(
+                  state, maskAgeMs < keyerSettings.degradation.freshMaskAgeMs
+                             ? "fresh"
+                             : "paired");
               state.staleMaskActive = maskAgeMs >= keyerSettings.degradation.freshMaskAgeMs;
 #endif
             } else {
-              state.degradationStage = "passthrough";
+              setMeetingDegradationStage(state, "passthrough");
               state.staleMaskActive = true;
             }
           }
@@ -2021,11 +2311,8 @@ void runFramePipeline(const Options &options,
 
       const bool hasNewUsableKeyerPair = selectedPair != nullptr && selectedPair->publishedAtNs > lastUsedKeyerPublishedNs;
       shouldRenderProgram = shouldRenderProgram ||
-          hasNewCameraFrame ||
-          hasNewBackGraphicsFrame ||
-          hasNewFrontGraphicsFrame ||
-          hasNewUsableKeyerPair ||
-          ((runtime.mode == "live" || runtime.mode == "keyer_live") && graphicsOutputActive);
+          programWorkDue ||
+          hasNewUsableKeyerPair;
       if (runtime.mode == "idle" && !outputConsumerActive && !shouldRenderProgram) {
         std::this_thread::sleep_for(kIdleSleep);
         nextFrameAt = std::chrono::steady_clock::now();
@@ -2045,11 +2332,24 @@ void runFramePipeline(const Options &options,
       // runs when a genuinely fresher live frame exists (else it is a no-op);
       // the still path is untouched. Falls back to the paired mask on any issue.
       AlphaMask liveRefinedMask;
+      AlphaMask fallbackKeyerMask;
       const AlphaMask *maskForCompositor =
           selectedPair != nullptr ? &selectedPair->mask : nullptr;
+#if defined(_WIN32)
+      if (maskForCompositor == nullptr && hasCameraFrame && snapshot.keyerEnabled &&
+          asyncPathActive && !latestCameraFrame.rgba.empty() &&
+          selectRetainedOrEmptyMaskForLiveKeyer(
+              lastGoodMask, latestCameraFrame.timestampNs,
+              latestCameraFrame.width, latestCameraFrame.height,
+              fallbackKeyerMask)) {
+        frameForCompositor = &latestCameraFrame;
+        maskForCompositor = &fallbackKeyerMask;
+      }
+#endif
       // Confirmed-empty masks skip the snap entirely (refining zeros is
       // wasted work); the pair's flagged zero mask goes to the compositor.
-      if (selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
+      if (fusedKeyerWorkDue && runtime.vcamClients == 0 &&
+          selectedPair != nullptr && snapshot.keyerEnabled && hasCameraFrame &&
           !latestCameraFrame.rgba.empty() && !selectedPair->mask.alpha.empty() &&
           !selectedPair->mask.emptyValid && guidedRefineAvailable()) {
         const bool fresherFrame =
@@ -2102,7 +2402,61 @@ void runFramePipeline(const Options &options,
       // whatever the async path chose on any failure.
       AlphaMask fusedMask;
 #if defined(__APPLE__)
-      if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+      static AlphaMask lastAppleFusedMask;
+      static int lastAppleFusedCameraIndex = -1;
+      static uint32_t lastAppleFusedSourceWidth = 0u;
+      static uint32_t lastAppleFusedSourceHeight = 0u;
+      const int currentAppleCameraIndex = camera.activeCameraIndex();
+      const auto clearAppleFusedMask = [&] {
+        lastAppleFusedMask = AlphaMask{};
+        lastAppleFusedCameraIndex = currentAppleCameraIndex;
+        lastAppleFusedSourceWidth =
+            hasCameraFrame ? latestCameraFrame.width : 0u;
+        lastAppleFusedSourceHeight =
+            hasCameraFrame ? latestCameraFrame.height : 0u;
+      };
+      if (!snapshot.keyerEnabled || !gpuPipelineEnabled() ||
+          (lastAppleFusedCameraIndex != -1 &&
+           lastAppleFusedCameraIndex != currentAppleCameraIndex) ||
+          (!lastAppleFusedMask.alpha.empty() && hasCameraFrame &&
+           lastAppleFusedSourceWidth != 0u &&
+           lastAppleFusedSourceHeight != 0u &&
+           (lastAppleFusedSourceWidth != latestCameraFrame.width ||
+            lastAppleFusedSourceHeight != latestCameraFrame.height))) {
+        clearAppleFusedMask();
+      }
+      const double appleRetainedMaskAgeMs =
+          (!lastAppleFusedMask.alpha.empty() &&
+           latestCameraFrame.timestampNs >= lastAppleFusedMask.timestampNs)
+              ? static_cast<double>(latestCameraFrame.timestampNs -
+                                    lastAppleFusedMask.timestampNs) /
+                    1000000.0
+              : 0.0;
+      if (gpuPipelineEnabled() &&
+          shouldUseRetainedMaskWhenFusedSkipped(
+              fusedKeyerWorkDue, hasCameraFrame, snapshot.keyerEnabled,
+              !lastAppleFusedMask.alpha.empty(), maskForCompositor != nullptr) &&
+          !latestCameraFrame.rgba.empty() &&
+          selectRetainedOrEmptyMaskForLiveKeyer(
+              lastAppleFusedMask, latestCameraFrame.timestampNs,
+              latestCameraFrame.width, latestCameraFrame.height, fusedMask,
+              kWarmupRetainedMaskAgeMs) &&
+          appleRetainedMaskAgeMs <= kWarmupRetainedMaskAgeMs &&
+          !(fusedMask.emptyValid && !lastAppleFusedMask.emptyValid)) {
+        frameForCompositor = &latestCameraFrame;
+        maskForCompositor = &fusedMask;
+        shouldRenderProgram = true;
+        std::lock_guard<std::mutex> lock(state.mutex);
+        setMeetingDegradationStage(
+            state, fusedMask.emptyValid ? "no_subject" : "fused_reused");
+        state.staleMaskActive = !fusedMask.emptyValid &&
+                                appleRetainedMaskAgeMs >
+                                    keyerSettings.degradation.freshMaskAgeMs;
+      } else if (!lastAppleFusedMask.alpha.empty() &&
+                 appleRetainedMaskAgeMs > kWarmupRetainedMaskAgeMs) {
+        clearAppleFusedMask();
+      }
+      if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
           !latestCameraFrame.rgba.empty()) {
         static CoreMLKeyer fusedKeyer(options.modelsDir);
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
@@ -2112,6 +2466,10 @@ void runFramePipeline(const Options &options,
           // Dropout guard only (no EMA): keeps the tuned macOS look, but a
           // model dropout no longer blanks the presenter for a frame (KEY-03).
           stabilizeFusedMask(fusedMask, /*applyEma=*/false);
+          lastAppleFusedMask = fusedMask;
+          lastAppleFusedCameraIndex = currentAppleCameraIndex;
+          lastAppleFusedSourceWidth = latestCameraFrame.width;
+          lastAppleFusedSourceHeight = latestCameraFrame.height;
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           shouldRenderProgram = true;
@@ -2119,12 +2477,13 @@ void runFramePipeline(const Options &options,
           std::lock_guard<std::mutex> lock(state.mutex);
           state.keyerMetrics.maskAgeMs = 0.0;
           state.keyerMetrics.maskAgeAvgMs = 0.0;
-          state.degradationStage = "fused";
+          setMeetingDegradationStage(state, "fused");
           state.staleMaskActive = false;
         } else {
           // Publish the failure instead of freezing silently (K-03): the
           // status stream now reports fallback_active + reason, and the async
           // Vision fallback starts receiving frames (submit guard above).
+          clearAppleFusedMask();
           g_fusedKeyerDegraded = true;
           updateMeetingKeyerStatus(state, fused.status);
         }
@@ -2151,38 +2510,21 @@ void runFramePipeline(const Options &options,
         // are program-thread-only; the warmup worker thread communicates
         // exclusively through the two atomics below.
         static TierHandover fusedHandover;
-        // Holder instead of a bare static std::thread: a warmup still running
-        // at process exit would make ~thread() call std::terminate. Detaching
-        // at static destruction lets the process exit cleanly; the thread
-        // only touches process-lifetime statics (fused keyer + atomics).
-        // COUPLING: this safety relies on main.cpp shutting down via
-        // std::_Exit(0), which skips ALL static destructors — including the
-        // static fusedKeyer below that a still-detached warmup thread may be
-        // using. Replacing std::_Exit with a normal return from main would
-        // destroy the fused keyer under that running thread (shutdown
-        // use-after-free); see the matching comment at the _Exit call site.
-        struct FusedWarmupThreadHolder {
-          std::thread thread;
-          ~FusedWarmupThreadHolder() {
-            if (thread.joinable()) {
-              thread.detach();
-            }
-          }
-        };
-        static FusedWarmupThreadHolder fusedWarmupThreadHolder;
-        std::thread &fusedWarmupThread = fusedWarmupThreadHolder.thread;
+        std::thread &fusedWarmupThread = g_fusedWarmupThreadHolder.thread;
         // true from just before the warmup thread spawns until the LAST
         // statement of its body; the program thread joins ONLY while false,
         // so join() always returns immediately and a running session build
         // (up to ~12s) can never block the program loop.
-        static std::atomic<bool> fusedWarmupBusy{false};
+        std::atomic<bool> &fusedWarmupBusy = g_fusedWarmupBusy;
         // 1 = warmup succeeded, -1 = failed, 0 = none/in flight. Written by
         // the warmup thread before it clears the busy flag.
-        static std::atomic<int> fusedWarmupOutcome{0};
+        std::atomic<int> &fusedWarmupOutcome = g_fusedWarmupOutcome;
+        static AsyncModelLoadRetryGate fusedLoadRetryGate;
         // Path label reported last frame. Hoisted from the sticky-label block
         // below so the step-down overlap detection can read which path was on
         // air before the governor demoted.
         static std::string lastReportedPipelineMode;
+        fusedCadence.setForceEveryFrame(runtime.vcamClients > 0);
         // Path-transition reset: invoked whenever the ACTIVE keyer path
         // changes between fused (fused_cadence counts as fused), async_lite
         // and off. Clears everything the previous path owned, so the new
@@ -2208,6 +2550,9 @@ void runFramePipeline(const Options &options,
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
+#if defined(_WIN32)
+          resetGuidedRefineD3D11History();
+#endif
           fusedSubjectPresenceTracker().reset();
           fusedStabilizerState().reset();
           std::lock_guard<std::mutex> lock(state.mutex);
@@ -2227,7 +2572,35 @@ void runFramePipeline(const Options &options,
         // Set on the frame a step-down overlap cuts over with a fresh worker
         // pair: the path-transition reset below then keeps the worker state.
         bool preserveWorkerOnCutover = false;
-        if (gpuPipelineEnabled() && hasCameraFrame && snapshot.keyerEnabled &&
+        const auto selectLiveFusedFallbackMask =
+            [&lastGoodMask, &latestCameraFrame](AlphaMask &selectedMask) {
+          const AlphaMask &retained =
+              !lastFusedPublishedMask.alpha.empty() ? lastFusedPublishedMask
+                                                    : lastGoodMask;
+          return selectRetainedOrEmptyMaskForLiveKeyer(
+              retained, latestCameraFrame.timestampNs, latestCameraFrame.width,
+              latestCameraFrame.height, selectedMask, kWarmupRetainedMaskAgeMs);
+        };
+        const auto refineLiveFusedFallbackMask =
+            [&latestCameraFrame](AlphaMask &selectedMask) {
+          if (!selectedMask.alpha.empty() && !selectedMask.emptyValid) {
+            if (!(d3d11GuidedRefineAvailable() &&
+                  guidedRefineMaskD3D11(selectedMask, latestCameraFrame))) {
+              guidedRefineMask(selectedMask, latestCameraFrame);
+            }
+            selectedMask.timestampNs = latestCameraFrame.timestampNs;
+          }
+        };
+        if (gpuPipelineEnabled() && !fusedKeyerWorkDue && hasCameraFrame &&
+            snapshot.keyerEnabled && !asyncPathActive &&
+            !latestCameraFrame.rgba.empty() &&
+            maskForCompositor == nullptr &&
+            selectLiveFusedFallbackMask(fusedMask)) {
+          frameForCompositor = &latestCameraFrame;
+          refineLiveFusedFallbackMask(fusedMask);
+          maskForCompositor = &fusedMask;
+        }
+        if (gpuPipelineEnabled() && fusedKeyerWorkDue && hasCameraFrame && snapshot.keyerEnabled &&
             !latestCameraFrame.rgba.empty()) {
           // Synchronous keyer on the CURRENT frame -> mask age 0. The raw
           // MODNet matte carries no refine, so snap its edge onto the current
@@ -2237,9 +2610,26 @@ void runFramePipeline(const Options &options,
           // Backend via the matting factory (DirectML MODNet, or OpenVINO on
           // Intel GPU/NPU when compiled in) - the SAME factory as KeyerChain's
           // async keyer, so both sites always run the same backend.
-          static const std::unique_ptr<MattingKeyer> fusedKeyer =
-              createMattingKeyer(makeMattingBackendOptionsFromEnv(options.modelsDir));
+          static const std::unique_ptr<MattingKeyer> fusedKeyer = [&]() {
+            MattingBackendOptions backendOptions =
+                makeMattingBackendOptionsFromEnv(options.modelsDir);
+            backendOptions.loadInApply = false;
+            return createMattingKeyer(backendOptions);
+          }();
           const auto fusedNow = std::chrono::steady_clock::now();
+          if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
+              fusedWarmupThread.joinable()) {
+            // The thread body finished (busy is cleared last): join returns
+            // immediately and the outcome is stable. This is intentionally
+            // independent of governor/warm-handover toggles because the same
+            // thread also owns async first-load retries.
+            fusedWarmupThread.join();
+            if (fusedHandover.phase() == TierHandover::Phase::Warming) {
+              fusedHandover.completeWarmup(
+                  fusedWarmupOutcome.load(std::memory_order_relaxed) == 1);
+            }
+            fusedWarmupOutcome.store(0, std::memory_order_relaxed);
+          }
           const bool governorAutoEnabled = autoDegradeEnabled();
           if (governorAutoEnabled) {
             fusedGovernor.maybeStepUp(fusedNow);
@@ -2258,9 +2648,14 @@ void runFramePipeline(const Options &options,
             if (!fusedGovernor.seeded() &&
                 fusedHandover.phase() != TierHandover::Phase::Warming &&
                 !fusedWarmupBusy.load(std::memory_order_acquire)) {
-              const double probeMs = fusedKeyer->status().probeInferenceMs;
-              if (probeMs > 0.0) {
-                fusedGovernor.seedProbe(probeMs);
+              const KeyerStatus keyerStatus = fusedKeyer->status();
+              if (keyerStatus.probeInferenceMs256 > 0.0) {
+                fusedGovernor.seedMeasuredProbes(
+                    keyerStatus.probeInferenceMs512,
+                    keyerStatus.probeInferenceMs320,
+                    keyerStatus.probeInferenceMs256);
+              } else if (keyerStatus.probeInferenceMs > 0.0) {
+                fusedGovernor.seedProbe(keyerStatus.probeInferenceMs);
               }
             }
             // The governor drives the fused input resolution; the env
@@ -2276,17 +2671,6 @@ void runFramePipeline(const Options &options,
           // approved one. While warming, the tier stays Lite256 and the async
           // worker stays on air untouched.
           if (governorAutoEnabled && warmHandoverEnabled()) {
-            if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
-                fusedWarmupThread.joinable()) {
-              // The thread body finished (busy is cleared last): join returns
-              // immediately and the outcome is stable.
-              fusedWarmupThread.join();
-              if (fusedHandover.phase() == TierHandover::Phase::Warming) {
-                fusedHandover.completeWarmup(
-                    fusedWarmupOutcome.load(std::memory_order_relaxed) == 1);
-              }
-              fusedWarmupOutcome.store(0, std::memory_order_relaxed);
-            }
             if (fusedHandover.consumeWarmupSuccess()) {
               // Perform the existing transition on the program thread: the
               // tier commit routes this very frame into the fused branch,
@@ -2326,17 +2710,47 @@ void runFramePipeline(const Options &options,
                       } catch (...) {
                         warmupOk = false;
                       }
-                      fusedWarmupOutcome.store(warmupOk ? 1 : -1,
+                      g_fusedWarmupOutcome.store(warmupOk ? 1 : -1,
                                                std::memory_order_relaxed);
                       // MUST stay the last statement: the program thread only
                       // joins after observing busy == false.
-                      fusedWarmupBusy.store(false, std::memory_order_release);
+                      g_fusedWarmupBusy.store(false, std::memory_order_release);
                     });
               } catch (...) {
                 // Thread creation failed: treat as a failed warmup (the
                 // wrong-estimate path fires on the next frame).
                 fusedWarmupBusy.store(false, std::memory_order_release);
                 fusedHandover.completeWarmup(false);
+              }
+            }
+          }
+          if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
+              !fusedWarmupThread.joinable()) {
+            const KeyerStatus keyerStatus = fusedKeyer->status();
+            if (fusedLoadRetryGate.shouldStartWarmup(
+                    keyerStatus, fusedNow,
+                    fusedWarmupBusy.load(std::memory_order_acquire),
+                    fusedWarmupThread.joinable())) {
+              fusedWarmupOutcome.store(0, std::memory_order_relaxed);
+              fusedWarmupBusy.store(true, std::memory_order_release);
+              MattingKeyer *const keyerForWarmup = fusedKeyer.get();
+              const std::string warmupMode = keyerSettings.performanceMode;
+              try {
+                fusedWarmupThread = std::thread([keyerForWarmup, warmupMode]() {
+                  bool warmupOk = false;
+                  try {
+                    warmupOk =
+                        keyerForWarmup->warmupForPerformanceMode(warmupMode);
+                  } catch (...) {
+                    warmupOk = false;
+                  }
+                  g_fusedWarmupOutcome.store(warmupOk ? 1 : -1,
+                                           std::memory_order_relaxed);
+                  g_fusedWarmupBusy.store(false, std::memory_order_release);
+                });
+              } catch (...) {
+                fusedWarmupBusy.store(false, std::memory_order_release);
+                fusedWarmupOutcome.store(-1, std::memory_order_relaxed);
               }
             }
           }
@@ -2356,18 +2770,21 @@ void runFramePipeline(const Options &options,
           // profile on the worker's chain: at ~11 reused masks/s the mask AGE
           // dominates perceived ghosting, so the younger 256-class mask beats
           // the finer 320 one. Cleared automatically outside the lite tier.
+          // Lite256 AND Off pin the worker to the 256 session: Off is the tier
+          // for machines too slow even for async 256, so running the webapp
+          // mode there would make the reduced cadence slower, not faster.
           keyerWorker.setGovernorPerformanceFloor(
-              governorAutoEnabled && fusedGovernor.wantsAsyncLite());
+              governorAutoEnabled &&
+              (fusedGovernor.wantsAsyncLite() || fusedGovernor.wantsOff()));
           // What actually drives the keyer now: the governor's tier (which is
           // also the async-lite floor, "performance"), or the webapp mode
           // when auto-degradation is off / the env pin is active.
           fusedActiveMode = keyerSettings.performanceMode;
           if (governorAutoEnabled && fusedGovernor.wantsOff()) {
-            // Even async 256 inference is uselessly slow on this machine:
-            // stop keying entirely and say so. The async worker is starved
-            // (g_fusedKeyerDegraded stays false -> submit guard blocks) and
-            // cleared like the keyer-disabled path, so no stale mask lingers.
-            g_fusedKeyerDegraded = false;
+            // Even async 256 inference is too slow for normal cadence. Keep
+            // it running at reduced cadence so Off is never a frozen hold.
+            g_fusedKeyerDegraded = true;
+            g_fusedKeyerOffReducedActive = true;
             // A Lite -> Off step-down aborts any step-down overlap in flight
             // (a Warming phase is left to the poll block above; its outcome
             // commits as a no-op because the step-down cleared the pending
@@ -2375,14 +2792,51 @@ void runFramePipeline(const Options &options,
             if (fusedHandover.phase() == TierHandover::Phase::Overlap) {
               fusedHandover.finishOverlap();
             }
-            keyerWorker.clear();
-            maskAgeAverage.clear();
-            asyncMaskRetention.reset();
-            selectedPair.reset();
+            selectedPair = keyerWorker.copyLatest();
             frameForCompositor = &latestCameraFrame;
-            maskForCompositor = nullptr;
+            fusedMask = AlphaMask{};
+            bool offPairUsable = false;
+            double offMaskAgeMs = 0.0;
+            MaskRetentionDecision offRetention = MaskRetentionDecision::Passthrough;
+            if (selectedPair != nullptr) {
+              if (latestCameraFrame.timestampNs >= selectedPair->frame.timestampNs) {
+                offMaskAgeMs = static_cast<double>(
+                    latestCameraFrame.timestampNs - selectedPair->frame.timestampNs) /
+                    1000000.0;
+              }
+              offRetention = asyncMaskRetention.decide(
+                  latestCameraFrame.timestampNs, selectedPair->publishedAtNs,
+                  offMaskAgeMs,
+                  std::max(0.0, keyerSettings.degradation.maxMaskAgeMs),
+                  keyerWorker.alive());
+              offPairUsable =
+                  offRetention != MaskRetentionDecision::Passthrough;
+            }
+            if (offPairUsable) {
+              fusedMask = selectedPair->mask;
+              lastGoodMask = fusedMask;
+            } else if (!lastGoodMask.alpha.empty()) {
+              (void)selectRetainedOrEmptyMaskForLiveKeyer(
+                  lastGoodMask, latestCameraFrame.timestampNs,
+                  latestCameraFrame.width, latestCameraFrame.height,
+                  fusedMask);
+            }
+            if (fusedMask.alpha.empty()) {
+              (void)selectRetainedOrEmptyMaskForLiveKeyer(
+                  AlphaMask{}, latestCameraFrame.timestampNs,
+                  latestCameraFrame.width, latestCameraFrame.height,
+                  fusedMask);
+            }
+            if (!fusedMask.alpha.empty() && !fusedMask.emptyValid) {
+              if (!(d3d11GuidedRefineAvailable() &&
+                    guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
+                guidedRefineMask(fusedMask, latestCameraFrame);
+              }
+              fusedMask.timestampNs = latestCameraFrame.timestampNs;
+            }
+            maskForCompositor = &fusedMask;
             KeyerStatus offStatus;
-            offStatus.activeKeyer = "passthrough";
+            offStatus.activeKeyer = "modnet";
             offStatus.backend = "modnet";
             offStatus.qualityMode = keyerSettings.qualityMode;
             offStatus.fallbackActive = true;
@@ -2390,12 +2844,18 @@ void runFramePipeline(const Options &options,
             updateMeetingKeyerStatus(state, offStatus);
             {
               std::lock_guard<std::mutex> lock(state.mutex);
-              state.degradationStage = "passthrough";
-              state.staleMaskActive = false;
-              state.keyerMetrics.maskAgeAvgMs = -1.0;
+              state.keyerDegraded = true;
+              setMeetingDegradationStage(
+                  state, fusedMask.emptyValid ? "background_only"
+                                              : offRetention == MaskRetentionDecision::StaleHold
+                                                    ? "stale_hold"
+                                                    : "off_reduced");
+              state.staleMaskActive = !fusedMask.emptyValid;
+              state.keyerMetrics.maskAgeMs = offMaskAgeMs;
             }
             fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
           } else if (governorAutoEnabled && fusedGovernor.wantsAsyncLite()) {
+            g_fusedKeyerOffReducedActive = false;
             // Fused inference cannot hold frame rate even at 256: hand the
             // keyer to the async worker (mask reuse keeps the program at
             // frame rate) via the existing degradation mechanism. The flag
@@ -2419,8 +2879,8 @@ void runFramePipeline(const Options &options,
               if (litePair->publishedAtNs != 0u &&
                   litePair->publishedAtNs != lastAsyncSampledPublishNs) {
                 lastAsyncSampledPublishNs = litePair->publishedAtNs;
-                if (litePair->inferenceMs > 0.0) {
-                  fusedGovernor.addSample(litePair->inferenceMs, fusedNow);
+                if (litePair->sessionRunMs > 0.0) {
+                  fusedGovernor.addSample(litePair->sessionRunMs, fusedNow);
                 }
               }
             }
@@ -2434,7 +2894,8 @@ void runFramePipeline(const Options &options,
             // block on the keyer mutex a leftover warmup thread holds
             // (unreachable by construction today — busy implies the fused
             // path did not run last frame — but kept airtight).
-            if (warmHandoverEnabled() && !fusedWarmupInFlight &&
+            if (runtime.vcamClients == 0 && warmHandoverEnabled() &&
+                !fusedWarmupInFlight &&
                 fusedHandover.phase() == TierHandover::Phase::Idle &&
                 canonicalKeyerPathLabel(lastReportedPipelineMode) == "fused") {
               fusedHandover.beginOverlap(nowNs(), fusedNow);
@@ -2468,14 +2929,16 @@ void runFramePipeline(const Options &options,
                   fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 fusedMask = std::move(fused.mask);
-                stabilizeFusedMask(fusedMask, /*applyEma=*/true);
+                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
+                lastGoodMask = fusedMask;
                 if (!(d3d11GuidedRefineAvailable() &&
                       guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                   guidedRefineMask(fusedMask, latestCameraFrame);
                 }
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
                   postprocessAlpha(fusedMask, lastFusedPublishedMask,
-                                   keyerSettings, 0.0, fused.status.metrics);
+                                   keyerSettings, 0.0, /*fusedPath=*/true,
+                                   fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
                 frameForCompositor = &latestCameraFrame;
@@ -2493,8 +2956,8 @@ void runFramePipeline(const Options &options,
                 // honest — a stale near-zero fps next to stage "fused" is
                 // exactly the mixed sample this guards against.
                 state.keyerMetrics.keyerFps = -1.0;
-                state.degradationStage =
-                    fusedMask.emptyValid ? "no_subject" : "fused";
+                setMeetingDegradationStage(
+                    state, fusedMask.emptyValid ? "no_subject" : "fused");
                 state.staleMaskActive = false;
               } else {
                 // The fused keyer cannot bridge the overlap (inference
@@ -2509,6 +2972,7 @@ void runFramePipeline(const Options &options,
               fusedPipelineModeLabel = fusedGovernor.pipelineModeLabel(false);
             }
           } else if (fusedWarmupInFlight) {
+            g_fusedKeyerOffReducedActive = false;
             // Fused-branch entry gate (see fusedWarmupInFlight above): the
             // governor no longer wants async-lite (typically: it was reset by
             // a keyer disable while a warmup was in flight), but the first
@@ -2521,8 +2985,23 @@ void runFramePipeline(const Options &options,
             // disable seedProbe). Clears itself: the join-poll above reclaims
             // the thread the frame after its body finishes.
             g_fusedKeyerDegraded = true;
+            selectedPair.reset();
+            frameForCompositor = &latestCameraFrame;
+            if (selectLiveFusedFallbackMask(fusedMask)) {
+              refineLiveFusedFallbackMask(fusedMask);
+            }
+            maskForCompositor = &fusedMask;
+            shouldRenderProgram = true;
+            {
+              std::lock_guard<std::mutex> lock(state.mutex);
+              state.keyerReady = false;
+              setMeetingDegradationStage(state, "keyer_loading");
+              state.staleMaskActive = !fusedMask.emptyValid;
+            }
+            emitKeyerNotReadyEvent("loading");
             fusedPipelineModeLabel = "async_lite";
           } else {
+            g_fusedKeyerOffReducedActive = false;
             downsampleLumaThumb(latestCameraFrame.rgba.data(),
                                 latestCameraFrame.width,
                                 latestCameraFrame.height, currentFrameLuma);
@@ -2532,9 +3011,13 @@ void runFramePipeline(const Options &options,
                 hasValidRetainedMask && lastFusedInferredLuma.valid()
                     ? meanAbsLumaDiff(currentFrameLuma, lastFusedInferredLuma)
                     : 0.0;
-            const CadenceDecision cadenceDecision = fusedCadence.decide(
+            CadenceDecision cadenceDecision = fusedCadence.decide(
                 latestCameraFrame.timestampNs, motionScore,
                 hasValidRetainedMask, fusedNow);
+            if (!fusedPipelineDepthEnabled()) {
+              cadenceDecision.runInference = true;
+              cadenceDecision.maskAgeMs = 0.0;
+            }
             if (cadenceDecision.runInference) {
               KeyerResult fused = fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
@@ -2546,11 +3029,12 @@ void runFramePipeline(const Options &options,
                 // refine BELOW then re-snaps the edge to the CURRENT frame, so the EMA
                 // never softens the visible boundary -> stable body AND crisp edge
                 // (mirrors the async worker's EMA -> live-snap order).
-                stabilizeFusedMask(fusedMask, /*applyEma=*/true);
+                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
                 // Retain the stabilized matte BEFORE the guided refine ties
                 // its edge to this specific frame; cadence-reused frames
                 // re-run the refine against their own (current) frame.
                 lastFusedRawMask = fusedMask;
+                lastGoodMask = fusedMask;
                 lastFusedInferredTsNs = latestCameraFrame.timestampNs;
                 lastFusedInferredLuma = currentFrameLuma;
                 // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
@@ -2568,7 +3052,8 @@ void runFramePipeline(const Options &options,
                 // for confirmed-empty mattes (nothing to shape).
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
                   postprocessAlpha(fusedMask, lastFusedPublishedMask,
-                                   keyerSettings, 0.0, fused.status.metrics);
+                                   keyerSettings, 0.0, /*fusedPath=*/true,
+                                   fused.status.metrics);
                   lastFusedPublishedMask = fusedMask;
                 }
                 frameForCompositor = &latestCameraFrame;
@@ -2576,11 +3061,12 @@ void runFramePipeline(const Options &options,
                 shouldRenderProgram = true;
                 updateMeetingKeyerStatus(state, fused.status);
                 if (governorAutoEnabled) {
-                  fusedGovernor.addSample(fused.status.inferenceMs, fusedNow);
+                  fusedGovernor.addSample(fused.status.metrics.sessionRunMs,
+                                          fusedNow);
                 }
                 fusedCadence.onInferenceCompleted(
-                    latestCameraFrame.timestampNs, fused.status.inferenceMs,
-                    fusedNow);
+                    latestCameraFrame.timestampNs,
+                    fused.status.metrics.sessionRunMs, fusedNow);
                 fusedPipelineModeLabel =
                     fusedCadence.currentN() > 1 ? "fused_cadence" : "fused";
                 std::lock_guard<std::mutex> lock(state.mutex);
@@ -2589,15 +3075,28 @@ void runFramePipeline(const Options &options,
                 // The fused path owns this field and has no publish hop;
                 // never let the preserved-merge carry the async value.
                 state.keyerMetrics.keyerPublishToProgramMs = -1.0;
-                state.degradationStage =
-                    fusedMask.emptyValid ? "no_subject" : "fused";
+                setMeetingDegradationStage(
+                    state, fusedMask.emptyValid ? "no_subject" : "fused");
                 state.staleMaskActive = false;
               } else {
                 // Publish the failure instead of freezing silently (K-03): the
                 // status stream now reports fallback_active + reason, and the async
                 // fallback path starts receiving frames (submit guard above).
+                frameForCompositor = &latestCameraFrame;
+                if (selectLiveFusedFallbackMask(fusedMask)) {
+                  refineLiveFusedFallbackMask(fusedMask);
+                  maskForCompositor = &fusedMask;
+                  shouldRenderProgram = true;
+                }
                 g_fusedKeyerDegraded = true;
                 updateMeetingKeyerStatus(state, fused.status);
+                if (fused.status.fallbackReason == "loading" ||
+                    fused.status.fallbackReason == "not_loaded") {
+                  std::lock_guard<std::mutex> lock(state.mutex);
+                  state.keyerReady = false;
+                  setMeetingDegradationStage(state, "keyer_loading");
+                  emitKeyerNotReadyEvent(fused.status.fallbackReason.c_str());
+                }
                 // The async fallback is the active source until a retry
                 // succeeds - report that instead of blanking the pipeline
                 // mode to null.
@@ -2625,6 +3124,7 @@ void runFramePipeline(const Options &options,
               if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
                 postprocessAlpha(fusedMask, lastFusedPublishedMask,
                                  keyerSettings, cadenceDecision.maskAgeMs,
+                                 /*fusedPath=*/true,
                                  reusedPostprocessMetrics);
                 lastFusedPublishedMask = fusedMask;
               }
@@ -2641,8 +3141,8 @@ void runFramePipeline(const Options &options,
                 state.keyerMetrics.maskPostprocessMs =
                     reusedPostprocessMetrics.maskPostprocessMs;
               }
-              state.degradationStage =
-                  fusedMask.emptyValid ? "no_subject" : "fused_reused";
+              setMeetingDegradationStage(
+                  state, fusedMask.emptyValid ? "no_subject" : "fused_reused");
               state.staleMaskActive = !fusedMask.emptyValid &&
                                       cadenceDecision.maskAgeMs >=
                                           keyerSettings.degradation.freshMaskAgeMs;
@@ -2655,11 +3155,13 @@ void runFramePipeline(const Options &options,
           fusedGovernor.reset();
           fusedCadence.reset();
           lastFusedRawMask = AlphaMask{};
+          lastGoodMask = AlphaMask{};
           lastFusedInferredTsNs = 0u;
           lastFusedInferredLuma = LumaThumb{};
           lastFusedPublishedMask = AlphaMask{};
           fusedSubjectPresenceTracker().reset();
           fusedStabilizerState().reset();
+          g_fusedKeyerOffReducedActive = false;
           // Warm-handover cleanup: abort any transition; join the warmup
           // thread only when its body already finished (join is immediate
           // then). A still-running session build is left to complete in the
@@ -2667,6 +3169,7 @@ void runFramePipeline(const Options &options,
           // seconds; the busy flag keeps guarding single-flight reuse and
           // its late outcome is discarded (governor reset cleared pending).
           fusedHandover.reset();
+          fusedLoadRetryGate.reset();
           if (!fusedWarmupBusy.load(std::memory_order_acquire) &&
               fusedWarmupThread.joinable()) {
             fusedWarmupThread.join();
@@ -2686,6 +3189,13 @@ void runFramePipeline(const Options &options,
         if (!snapshot.keyerEnabled) {
           lastReportedPipelineMode.clear();
         } else if (!fusedPipelineModeLabel.empty()) {
+          if (fusedPipelineModeLabel != lastReportedPipelineMode) {
+            emitHelperEvent(
+                "{\"type\":\"keyer_policy_change\",\"pipeline_mode\":\"" +
+                jsonEscape(fusedPipelineModeLabel) +
+                "\",\"active_performance_mode\":\"" +
+                jsonEscape(fusedActiveMode) + "\"}");
+          }
           const bool pathChanged =
               !lastReportedPipelineMode.empty() &&
               canonicalKeyerPathLabel(fusedPipelineModeLabel) !=
@@ -2710,6 +3220,13 @@ void runFramePipeline(const Options &options,
         // this flag and mute their telemetry writes while it is set.
         g_fusedStepDownOverlapActive =
             fusedHandover.phase() == TierHandover::Phase::Overlap;
+        if (hasCameraFrame && snapshot.keyerEnabled &&
+            maskForCompositor == nullptr && !latestCameraFrame.rgba.empty() &&
+            selectLiveFusedFallbackMask(fusedMask)) {
+          frameForCompositor = &latestCameraFrame;
+          refineLiveFusedFallbackMask(fusedMask);
+          maskForCompositor = &fusedMask;
+        }
       }
 #else
       (void)fusedMask;
@@ -2750,8 +3267,9 @@ void runFramePipeline(const Options &options,
                                   options.height);
       }
 
-      shouldWriteFramebus = runtime.framebusRunning && !programFrame.empty() &&
-          (shouldRenderProgram || runtime.mode == "live" || runtime.mode == "keyer_live" || staticHeartbeatDue);
+      shouldWriteFramebus = shouldWriteFramebusFrame(
+          runtime.framebusRunning, !programFrame.empty(), shouldRenderProgram,
+          staticHeartbeatDue);
       if (shouldWriteFramebus) {
         framebus_writer_write_rgba(
             writer,
@@ -2772,24 +3290,84 @@ void runFramePipeline(const Options &options,
         ++state.publishedPreviewFrames;
       }
 
+      if (vcamShm != nullptr &&
+#if defined(_WIN32)
+          vcamShmPublisher != nullptr &&
+#endif
+          runtime.vcamTransport == "shm" &&
+          runtime.vcamRawRunning && shouldRenderProgram && !programFrame.empty()) {
+#if defined(_WIN32)
+        vcamSubmitFrame.resize(programFrame.size());
+        std::memcpy(vcamSubmitFrame.data(), programFrame.data(),
+                    programFrame.size());
+        vcamShmPublisher->submitRgba(
+            options.width, options.height, vcamSubmitFrame,
+            hasCameraFrame ? latestCameraFrame.captureQpc : 0u);
+#else
+        (void)vcamShm;
+#endif
+      }
+
       const auto programEnd = std::chrono::steady_clock::now();
       programRate.tick(programEnd);
+      if (shouldRenderProgram) {
+        lastRenderStartAt = programStart;
+      }
       nextFrameAt += frameInterval;
       {
         std::lock_guard<std::mutex> lock(state.mutex);
         state.compositorBackend = lastCompositorBackend();
+#if defined(_WIN32)
+        state.compositorAdapter = d3d11CompositorAdapterStatus();
+        state.keyerMetrics.cameraTextureUploads = d3d11CompositorCameraUploadCount();
+        state.keyerMetrics.stagingReadbackDepth =
+            d3d11CompositorStagingReadbackDepth();
+#endif
         state.keyerMetrics.programFrameMs = elapsedMs(programStart, programEnd);
         state.keyerMetrics.cameraCopyMs = elapsedMs(cameraCopyStart, cameraCopyEnd);
         state.keyerMetrics.programFps = programRate.value(programEnd);
         state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;
+#if defined(_WIN32)
+        if (vcamShmPublisher != nullptr) {
+          const VcamShmPublisherMetrics metrics = vcamShmPublisher->metrics();
+          state.keyerMetrics.vcamPublishDropped = metrics.droppedFrames;
+          state.keyerMetrics.vcamPublishMs = metrics.publishMs;
+        }
+#endif
       }
     }
     const auto now = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+    nextFrameAt = clampFramePacingDeadline(nextFrameAt, now, frameInterval);
     if (nextFrameAt > now) {
-      std::this_thread::sleep_until(nextFrameAt);
+      if (runtime.cameraRunning) {
+        const bool wokeForCamera =
+            camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+        const auto wokeAt = std::chrono::steady_clock::now();
+        if (wokeForCamera) {
+          nextFrameAt = earlyCameraWakeRenderDeadline(
+              wokeAt, lastRenderStartAt, nextFrameAt, frameInterval);
+          if (nextFrameAt > wokeAt) {
+            std::this_thread::sleep_until(nextFrameAt);
+          }
+        }
+      } else {
+        std::this_thread::sleep_until(nextFrameAt);
+      }
     } else {
       nextFrameAt = now;
     }
+#else
+    if (nextFrameAt > now) {
+      if (runtime.cameraRunning) {
+        camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+      } else {
+        std::this_thread::sleep_until(nextFrameAt);
+      }
+    } else {
+      nextFrameAt = now;
+    }
+#endif
   }
   framebus_writer_close(writer);
 }

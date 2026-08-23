@@ -1,10 +1,16 @@
 import { normalize } from "node:path";
 import { setBridgeContext } from "../bridge-context.js";
 import {
+  HELPER_NOT_REACHABLE_CODE,
+  MeetingHelperRequestError,
+} from "./meeting-helper-client.js";
+import {
   __setMeetingHelperPathForTesting,
   findFreePort,
   inspectDeviceEntitlementStatuses,
   MeetingHelperManager,
+  parseWindowsProcessImageName,
+  parseWindowsTcpListenPids,
   resolveMeetingHelperPath,
   resolveMeetingHelperForwardedEnvArgs,
   resolveMeetingModelsDir,
@@ -31,6 +37,20 @@ describe("meeting-helper-manager", () => {
       logPath: "/tmp/bridge.log",
       logger: mockLogger,
       publishBridgeEvent: mockPublishBridgeEvent,
+    });
+  });
+
+  describe("status platform", () => {
+    it("exposes process.platform in manager and full status snapshots", async () => {
+      const manager = new MeetingHelperManager();
+
+      expect(manager.getStatus()).toMatchObject({
+        platform: process.platform,
+      });
+      await expect(manager.getFullStatus()).resolves.toMatchObject({
+        platform: process.platform,
+        manager: { platform: process.platform },
+      });
     });
   });
 
@@ -96,7 +116,22 @@ describe("meeting-helper-manager", () => {
   });
 
   describe("findFreePort", () => {
+    const net = require("node:net");
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
     it("returns a usable localhost port", async () => {
+      jest.spyOn(net, "createServer").mockReturnValue({
+        once: jest.fn(),
+        listen: jest.fn((_port: number, _host: string, callback: () => void) => {
+          callback();
+        }),
+        address: jest.fn(() => ({ port: 32123 })),
+        close: jest.fn((callback: () => void) => callback()),
+      } as never);
+
       const port = await findFreePort();
       expect(port).toBeGreaterThan(0);
       expect(port).toBeLessThanOrEqual(65535);
@@ -143,16 +178,46 @@ describe("meeting-helper-manager", () => {
     it("forwards only allowlisted meeting helper tuning values", () => {
       expect(
         resolveMeetingHelperForwardedEnvArgs({
+          BROADIFY_MEETING_CAMERA_MAX_HEIGHT: "720",
+          BROADIFY_MEETING_DML_QUEUE: "compute",
+          BROADIFY_MEETING_FUSED_EMA_STATIC: "0.85",
+          BROADIFY_MEETING_FUSED_PIPELINE_DEPTH: "0",
+          BROADIFY_MEETING_GUIDED_COEFF_EMA: "0",
+          BROADIFY_MEETING_GPU_POLICY: "auto",
           BROADIFY_MEETING_GPU_PIPELINE: "0",
+          BROADIFY_MEETING_GPU_RESIDENT: "1",
           BROADIFY_MEETING_COREML_UNITS: "cpuAndNeuralEngine",
+          BROADIFY_MEETING_KEYER_PREBUILD_TIERS: "256,320",
+          BROADIFY_MEETING_MASK_WORK_WIDTH: "512",
+          BROADIFY_MEETING_STAGING_RING: "1",
           BROADIFY_MEETING_FUTURE_SECRET: "do-not-forward",
           UNRELATED_VALUE: "ignored",
         }),
       ).toEqual([
         "--env",
+        "BROADIFY_MEETING_CAMERA_MAX_HEIGHT=720",
+        "--env",
         "BROADIFY_MEETING_COREML_UNITS=cpuAndNeuralEngine",
         "--env",
+        "BROADIFY_MEETING_FUSED_EMA_STATIC=0.85",
+        "--env",
+        "BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0",
+        "--env",
         "BROADIFY_MEETING_GPU_PIPELINE=0",
+        "--env",
+        "BROADIFY_MEETING_GPU_POLICY=auto",
+        "--env",
+        "BROADIFY_MEETING_GPU_RESIDENT=1",
+        "--env",
+        "BROADIFY_MEETING_GUIDED_COEFF_EMA=0",
+        "--env",
+        "BROADIFY_MEETING_KEYER_PREBUILD_TIERS=256,320",
+        "--env",
+        "BROADIFY_MEETING_MASK_WORK_WIDTH=512",
+        "--env",
+        "BROADIFY_MEETING_DML_QUEUE=compute",
+        "--env",
+        "BROADIFY_MEETING_STAGING_RING=1",
       ]);
     });
 
@@ -162,6 +227,29 @@ describe("meeting-helper-manager", () => {
           BROADIFY_MEETING_GPU_PIPELINE: "0\nBROADIFY_MEETING_GPU_REFINE=0",
         }),
       ).toEqual([]);
+    });
+  });
+
+  describe("Windows stale VCam port parsers", () => {
+    it("extracts listening PIDs for the requested local port", () => {
+      const output = [
+        "  Proto  Local Address          Foreign Address        State           PID",
+        "  TCP    127.0.0.1:18787        0.0.0.0:0              LISTENING       1234",
+        "  TCP    0.0.0.0:18787          0.0.0.0:0              LISTENING       5678",
+        "  TCP    127.0.0.1:18788        0.0.0.0:0              LISTENING       9999",
+        "  TCP    127.0.0.1:18787        127.0.0.1:50000        ESTABLISHED     7777",
+      ].join("\r\n");
+
+      expect(parseWindowsTcpListenPids(output, 18787)).toEqual([1234, 5678]);
+    });
+
+    it("parses CSV tasklist image names", () => {
+      expect(
+        parseWindowsProcessImageName(
+          '"meeting-helper.exe","1234","Console","1","42,000 K"\r\n',
+        ),
+      ).toBe("meeting-helper.exe");
+      expect(parseWindowsProcessImageName("INFO: No tasks are running")).toBeNull();
     });
   });
 
@@ -211,11 +299,81 @@ describe("meeting-helper-manager", () => {
       );
     });
 
+    it("restores virtual camera after replaying camera calls on restart", async () => {
+      const manager = new MeetingHelperManager();
+      const calls: string[] = [];
+      const client = {
+        cameraStart: jest.fn(async () => {
+          calls.push("cameraStart");
+        }),
+        cameraSelect: jest.fn(async () => {
+          calls.push("cameraSelect");
+        }),
+        virtualCameraStart: jest.fn(async () => {
+          calls.push("virtualCameraStart");
+        }),
+      };
+      const internals = manager as unknown as {
+        client: typeof client;
+        restoreRuntimeConfig: () => Promise<void>;
+      };
+      internals.client = client;
+      manager.noteCameraCall("cameraStart", { stable_key: "cam-a" });
+      manager.noteCameraCall("cameraSelect", { stable_key: "cam-b" });
+      manager.noteVirtualCameraStarted();
+
+      await internals.restoreRuntimeConfig();
+
+      expect(calls).toEqual([
+        "cameraStart",
+        "cameraSelect",
+        "virtualCameraStart",
+      ]);
+      expect(client.virtualCameraStart).toHaveBeenCalledWith({
+        allowElevation: false,
+      });
+    });
+
+    it("records VCam raw bind failures from helper stdout and rejects readiness", () => {
+      const manager = new MeetingHelperManager();
+      const readyRejecter = jest.fn();
+      const internals = manager as unknown as {
+        vcamRawBindFailed: string | null;
+        lastError: string | null;
+        readyRejecter: (error: Error) => void;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.readyRejecter = readyRejecter;
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "meeting_vcam_raw",
+          event: "error",
+          code: "vcam_raw_bind_failed",
+          message: "bind failed",
+        }),
+        mockLogger,
+      );
+
+      expect(internals.vcamRawBindFailed).toBe("bind failed");
+      expect(internals.lastError).toBe("bind failed");
+      expect(readyRejecter).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "vcam_raw_bind_failed" }),
+      );
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({ code: "vcam_raw_bind_failed" }),
+        }),
+      );
+    });
+
     it("getFullStatus returns manager status without helper when stopped", async () => {
       const manager = new MeetingHelperManager();
       const status = await manager.getFullStatus();
 
       expect(status).toEqual({
+        platform: process.platform,
         manager: expect.objectContaining({ state: "stopped" }),
         engine: null,
         recording: null,
@@ -235,7 +393,6 @@ describe("meeting-helper-manager", () => {
 
     it("derives the deck REC mirror from the published snapshot (WP-2.4)", async () => {
       const { streamDeckManager } =
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         require("../streamdeck/stream-deck-manager.js");
       const recSpy = jest.spyOn(streamDeckManager, "setRecordingActive");
       try {
@@ -297,6 +454,178 @@ describe("meeting-helper-manager", () => {
       });
     });
 
+    describe("control channel liveness", () => {
+      const os = require("node:os");
+
+      type LivenessInternalsT = {
+        state: string;
+        client: unknown;
+        process: unknown;
+        restartTimer: NodeJS.Timeout | null;
+        handleProcessExit: (code: number | null) => void;
+      };
+
+      const createFakeClient = (getState: jest.Mock) => ({
+        getState,
+        shutdown: jest.fn().mockResolvedValue(undefined),
+        framebusStatus: jest.fn().mockResolvedValue({}),
+        keyerGet: jest.fn().mockResolvedValue({}),
+        recordingStatus: jest.fn().mockResolvedValue({ recording: null }),
+        // W2 added output.vcam.status to the snapshot (best effort).
+        virtualCameraStatus: jest.fn().mockResolvedValue(null),
+      });
+
+      const awaitWin32GracefulKill = async () => {
+        if (os.platform() !== "win32") {
+          return;
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+
+      const notReachable = () =>
+        Promise.reject(
+          new MeetingHelperRequestError(
+            HELPER_NOT_REACHABLE_CODE,
+            "Meeting helper control socket not reachable (ENOENT)",
+          ),
+        );
+
+      const armRunningManager = (
+        getState: jest.Mock,
+      ): { manager: MeetingHelperManager; internals: LivenessInternalsT; kill: jest.Mock } => {
+        const manager = new MeetingHelperManager();
+        const internals = manager as unknown as LivenessInternalsT;
+        const kill = jest.fn();
+        internals.state = "running";
+        internals.client = createFakeClient(getState);
+        internals.process = {
+          pid: 4242,
+          kill,
+          // killProcess() arms a 3 s SIGKILL fallback cleared on exit; fire
+          // the exit listener right away so no timer leaks into other tests.
+          once: (_event: string, listener: () => void) => listener(),
+        };
+        return { manager, internals, kill };
+      };
+
+      it("kills the helper once after 5 consecutive connect failures and lets the exit path restart it", async () => {
+        const { manager, internals, kill } = armRunningManager(
+          jest.fn().mockImplementation(notReachable),
+        );
+
+        for (let i = 0; i < 4; i += 1) {
+          await manager.getFullStatus();
+        }
+        expect(kill).not.toHaveBeenCalled();
+
+        await manager.getFullStatus();
+        await awaitWin32GracefulKill();
+        expect(kill).toHaveBeenCalledTimes(1);
+        expect(kill).toHaveBeenCalledWith("SIGTERM");
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("pid 4242"),
+        );
+        expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: "meeting_error",
+            data: expect.objectContaining({ code: "helper_control_channel_lost" }),
+          }),
+        );
+        const lostEvents = mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => event?.data?.code === "helper_control_channel_lost",
+        );
+        expect(lostEvents).toHaveLength(1);
+
+        // The child's exit handler classifies the kill as a crash -> restart.
+        internals.handleProcessExit(null);
+        expect(internals.state).toBe("error");
+        expect(internals.restartTimer).not.toBeNull();
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("restart attempt 1/3"),
+        );
+        manager.beginShutdown();
+        expect(internals.restartTimer).toBeNull();
+      });
+
+      it("resets the failure counter on a successful snapshot", async () => {
+        const getState = jest
+          .fn()
+          .mockImplementationOnce(notReachable)
+          .mockImplementationOnce(notReachable)
+          .mockImplementationOnce(notReachable)
+          .mockImplementationOnce(notReachable)
+          .mockResolvedValueOnce({ ok: true })
+          .mockImplementation(notReachable);
+        const { manager, kill } = armRunningManager(getState);
+
+        for (let i = 0; i < 9; i += 1) {
+          await manager.getFullStatus();
+        }
+        expect(kill).not.toHaveBeenCalled();
+        expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ code: "helper_control_channel_lost" }),
+          }),
+        );
+      });
+
+      it("restarts after repeated status-poll timeouts", async () => {
+        const { manager, kill } = armRunningManager(
+          jest.fn().mockRejectedValue(
+            new MeetingHelperRequestError("timeout", "timed out"),
+          ),
+        );
+
+        for (let i = 0; i < 8; i += 1) {
+          await manager.getFullStatus();
+        }
+        await awaitWin32GracefulKill();
+        expect(kill).toHaveBeenCalledWith("SIGTERM");
+      });
+
+      it("win32 kill still terminates when graceful shutdown rejects", async () => {
+        jest.spyOn(os, "platform").mockReturnValue("win32");
+        jest.useFakeTimers();
+        const manager = new MeetingHelperManager();
+        const internals = manager as unknown as {
+          state: string;
+          client: { shutdown: jest.Mock };
+          process: {
+            pid: number;
+            kill: jest.Mock;
+            once: jest.Mock;
+          } | null;
+          killProcess: () => void;
+        };
+        const kill = jest.fn();
+        internals.state = "running";
+        internals.client = {
+          shutdown: jest.fn().mockRejectedValue(
+            new MeetingHelperRequestError(
+              HELPER_NOT_REACHABLE_CODE,
+              "Meeting helper control socket not reachable (ENOENT)",
+            ),
+          ),
+        };
+        internals.process = {
+          pid: 4242,
+          kill,
+          once: jest.fn((_event: string, listener: () => void) => listener()),
+        };
+
+        try {
+          internals.killProcess();
+          await jest.advanceTimersByTimeAsync(0);
+
+          expect(internals.client.shutdown).toHaveBeenCalledTimes(1);
+          expect(kill).toHaveBeenCalledWith("SIGTERM");
+        } finally {
+          jest.useRealTimers();
+          jest.restoreAllMocks();
+        }
+      });
+    });
+
     it("notifyRecordingChanged force-publishes a status snapshot", async () => {
       const manager = new MeetingHelperManager();
       manager.notifyRecordingChanged();
@@ -305,6 +634,74 @@ describe("meeting-helper-manager", () => {
       expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
         expect.objectContaining({ event: "meeting_status" }),
       );
+    });
+  });
+  describe("status polling", () => {
+    type PollingInternalsT = {
+      startStatusPolling: () => void;
+      stopStatusPolling: () => void;
+    };
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("skips poll ticks while the previous publish is still in flight", async () => {
+      jest.useFakeTimers();
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as PollingInternalsT;
+      let resolveFirst: (() => void) | null = null;
+      const getFullStatusSpy = jest
+        .spyOn(manager, "getFullStatus")
+        .mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveFirst = () =>
+                resolve({ manager: { state: "running" }, engine: null, recording: null });
+            }),
+        );
+
+      internals.startStatusPolling();
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(getFullStatusSpy).toHaveBeenCalledTimes(1);
+
+      // Second and third ticks arrive while the first RPC is still pending.
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(getFullStatusSpy).toHaveBeenCalledTimes(1);
+
+      resolveFirst?.();
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(getFullStatusSpy).toHaveBeenCalledTimes(2);
+
+      internals.stopStatusPolling();
+    });
+
+    it("throttles counter-only status changes but publishes state changes at once", async () => {
+      const manager = new MeetingHelperManager();
+      let frames = 0;
+      let camera = 0;
+      jest.spyOn(manager, "getFullStatus").mockImplementation(async () => ({
+        manager: { state: "running" },
+        engine: { active_camera_index: camera, rendered_frames: (frames += 1) },
+        recording: null,
+      }));
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+      };
+      const statusEvents = () =>
+        mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => (event as { event: string }).event === "meeting_status",
+        ).length;
+
+      await internals.publishStatus("status_poll", false);
+      expect(statusEvents()).toBe(1);
+      await internals.publishStatus("status_poll", false);
+      expect(statusEvents()).toBe(1);
+
+      camera = 1;
+      await internals.publishStatus("status_poll", false);
+      expect(statusEvents()).toBe(2);
     });
   });
 });

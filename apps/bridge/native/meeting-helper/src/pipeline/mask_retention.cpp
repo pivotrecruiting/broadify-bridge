@@ -18,7 +18,8 @@ double MaskRetention::effectiveMaxAgeMs(double configuredMaxAgeMs) const {
 MaskRetentionDecision MaskRetention::decide(uint64_t frameTimestampNs,
                                             uint64_t maskPublishedAtNs,
                                             double maskAgeMs,
-                                            double configuredMaxAgeMs) {
+                                            double configuredMaxAgeMs,
+                                            bool workerAlive) {
   const bool newMask = maskPublishedAtNs != 0u &&
                        maskPublishedAtNs != lastMaskPublishedAtNs_;
   if (newMask) {
@@ -52,16 +53,21 @@ MaskRetentionDecision MaskRetention::decide(uint64_t frameTimestampNs,
   }
   if (maskAgeMs <= config_.hardCapMs) {
     overCapFrames_ = 0u;
-    return passthroughActive_ ? MaskRetentionDecision::Passthrough
-                              : MaskRetentionDecision::StaleHold;
+    return !workerAlive && passthroughActive_ ? MaskRetentionDecision::Passthrough
+                                              : MaskRetentionDecision::StaleHold;
   }
-  if (passthroughActive_) {
+  if (workerAlive) {
+    passthroughActive_ = true;
+    overCapFrames_ = 0u;
+    return MaskRetentionDecision::Passthrough;
+  }
+  if (!workerAlive && passthroughActive_) {
     return MaskRetentionDecision::Passthrough;
   }
   if (newFrame) {
     ++overCapFrames_;
   }
-  if (overCapFrames_ >= config_.passthroughFrames) {
+  if (!workerAlive && overCapFrames_ >= config_.passthroughFrames) {
     passthroughActive_ = true;
     return MaskRetentionDecision::Passthrough;
   }

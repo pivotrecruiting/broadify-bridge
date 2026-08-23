@@ -7,6 +7,7 @@ import {
 } from "../relay-command-schemas.js";
 import {
   ConferenceDisplayStartSchema,
+  MeetingCameraSelectionSchema,
   MeetingBackgroundImageFetchSchema,
   MeetingCallControlSchema,
   MeetingEngineStartSchema,
@@ -20,14 +21,8 @@ import {
   MeetingRecordingStartSchema,
 } from "./meeting-command-schemas.js";
 import { meetingMediaService } from "./meeting-media-service.js";
-import {
-  downloadGuardedBuffer,
-  openGuardedDownload,
-} from "./media-download.js";
-import {
-  BACKGROUND_IMAGE_MAX_BYTES,
-  storeBackgroundImage,
-} from "./background-image-store.js";
+import { openGuardedDownload } from "./media-download.js";
+import { fetchBackgroundImage } from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
 import {
   conferenceDirectorService,
@@ -181,13 +176,16 @@ function configureMeetingGraphicsOutputs(
  * Best-effort virtual-camera arm after a successful engine start. Runs in
  * the background; failures are published as meeting error events with the
  * stable vcam error codes so the UI can show actionable guidance without
- * blocking the engine start itself.
+ * blocking the engine start itself. Unattended: the Windows registration
+ * self-heal may diagnose but never raise a UAC prompt from here; only the
+ * explicit `meeting_output_configure` start does.
  */
 function autoArmVirtualCamera(): void {
   void (async () => {
     try {
       const client = requireClient();
-      await client.virtualCameraStart();
+      await client.virtualCameraStart({ allowElevation: false });
+      meetingHelperManager.noteVirtualCameraStarted();
       console.info("[meeting] virtual camera auto-armed with engine start");
     } catch (error: unknown) {
       // A background arm must never take the process down — not even when
@@ -417,7 +415,7 @@ export async function handleMeetingCommand(
 
     case "meeting_camera_select": {
       const options = parseRelayPayload(
-        MeetingPassthroughSchema,
+        MeetingCameraSelectionSchema,
         payload ?? {},
         "Invalid payload for meeting_camera_select",
       );
@@ -432,7 +430,7 @@ export async function handleMeetingCommand(
 
     case "meeting_camera_start": {
       const options = parseRelayPayload(
-        MeetingPassthroughSchema,
+        MeetingCameraSelectionSchema,
         payload ?? {},
         "Invalid payload for meeting_camera_start",
       );
@@ -616,13 +614,10 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_background_image_fetch",
       );
-      const { body, contentType } = await downloadGuardedBuffer(
-        url,
-        BACKGROUND_IMAGE_MAX_BYTES,
-        25_000,
-      );
-      const path = await storeBackgroundImage(body, contentType);
-      return { success: true, data: { path } };
+      // Cached per URL path (query/signature stripped) with conditional
+      // revalidation; see background-image-store.ts.
+      const { path, cached } = await fetchBackgroundImage(url);
+      return { success: true, data: { path, cached } };
     }
 
     case "meeting_media_fetch": {
@@ -684,6 +679,10 @@ export async function handleMeetingCommand(
         "Invalid payload for conference_display_start",
       );
       try {
+        // The display window reads the meeting FrameBus, which the helper
+        // only writes while its FrameBus output is running. The virtual-camera
+        // path no longer starts it, so this is the consumer that must.
+        await requireClient().framebusStart();
         await conferenceDisplayOutput.start({
           matchName: target.match_name,
           matchWidth: target.match_width,
@@ -704,6 +703,19 @@ export async function handleMeetingCommand(
 
     case "conference_display_stop": {
       await conferenceDisplayOutput.stop();
+      // Release the helper's FrameBus output again; a helper that is already
+      // gone has nothing left to stop.
+      if (meetingHelperManager.isRunning()) {
+        try {
+          await requireClient().framebusStop();
+        } catch (error: unknown) {
+          console.warn(
+            `[meeting] framebus stop after conference display stop failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
       return { success: true, data: conferenceDisplayOutput.status() };
     }
 
@@ -844,10 +856,15 @@ export async function handleMeetingCommand(
           const mapped = mapVcamStartError(result.error);
           return { ...result, error: mapped.error, errorCode: mapped.errorCode };
         }
+        meetingHelperManager.noteVirtualCameraStarted();
         return result;
       }
       if (action === "stop") {
-        return runMeetingRpc(() => client.virtualCameraStop());
+        const result = await runMeetingRpc(() => client.virtualCameraStop());
+        if (result.success) {
+          meetingHelperManager.noteVirtualCameraStopped();
+        }
+        return result;
       }
       return runMeetingRpc(() => client.virtualCameraConfigure(settings ?? {}));
     }

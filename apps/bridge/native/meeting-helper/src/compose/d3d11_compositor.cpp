@@ -1,4 +1,7 @@
 #include "compose/d3d11_compositor.h"
+#include "compose/d3d_adapter_select.h"
+#include "compose/staging_readback_ring.h"
+#include "pipeline/guided_work_size.h"
 
 // D3D11 port of the Metal GPU compositor (metal_compositor.mm): one compute
 // dispatch composites background (mode/company image), back graphics, the
@@ -259,15 +262,12 @@ void composeProgram(uint3 gid : SV_DispatchThreadID) {
       const float4 s = sampleLayer(cameraTex, src);
       float alpha = s.a;
       if (cameraKeyed != 0u) {
-        // Keyer mask (stretched over the camera frame) + the same normalize
-        // curve as the previous CPU alpha pass (cutoffs 18/242, smoothstep).
+        // Keyer mask stretched over the camera frame. The alpha curve lives
+        // in postprocessAlpha; do not apply a second compositor curve here.
         alpha = 0.0;
         if (maskPresent != 0u) {
           const float2 uv = (src + 0.5) / float2(camTexWidth, camTexHeight);
-          const float raw = maskTex.SampleLevel(layerSampler, uv, 0).r * 255.0;
-          if (raw > 18.0) {
-            alpha = raw >= 242.0 ? 1.0 : smoothstep(0.0, 1.0, (raw - 18.0) / 224.0);
-          }
+          alpha = maskTex.SampleLevel(layerSampler, uv, 0).r;
           // Only clip truly negligible alpha; keep the soft hair/edge band that
           // the old 24.5/255 snap discarded.
           if (alpha <= 8.0 / 255.0) {
@@ -315,7 +315,8 @@ struct D3D11Context {
   ComPtr<ID3D11SamplerState> sampler;
   ComPtr<ID3D11Buffer> outputBuffer;
   ComPtr<ID3D11UnorderedAccessView> outputUav;
-  ComPtr<ID3D11Buffer> stagingBuffer;
+  std::vector<ComPtr<ID3D11Buffer>> stagingBuffers;
+  StagingReadbackRing stagingRing;
   size_t outputBufferSize = 0;
   LayerTexture camera;
   LayerTexture back;
@@ -323,6 +324,7 @@ struct D3D11Context {
   LayerTexture media;
   LayerTexture mask;
   LayerTexture backgroundImage;
+  uint64_t cameraUploadCount = 0;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -362,8 +364,11 @@ bool initializeContext() {
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
                                       D3D_FEATURE_LEVEL_11_0};
   D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
+  const D3DAdapterInfo &adapter = sharedD3DAdapter();
   HRESULT hr = D3D11CreateDevice(
-      nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels,
+      adapter.available ? adapter.adapter.Get() : nullptr,
+      adapter.available ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+      nullptr, 0, levels,
       static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &ctx.device,
       &got, &ctx.context);
   if (FAILED(hr)) {
@@ -429,7 +434,8 @@ bool ensureOutputBuffers(uint32_t width, uint32_t height) {
   }
   ctx.outputBuffer.Reset();
   ctx.outputUav.Reset();
-  ctx.stagingBuffer.Reset();
+  ctx.stagingBuffers.clear();
+  ctx.stagingRing.reset();
 
   D3D11_BUFFER_DESC bufferDesc{};
   bufferDesc.ByteWidth = static_cast<UINT>(needed);
@@ -448,14 +454,78 @@ bool ensureOutputBuffers(uint32_t width, uint32_t height) {
                                                    &uavDesc, &ctx.outputUav))) {
     return false;
   }
-  D3D11_BUFFER_DESC stagingDesc{};
-  stagingDesc.ByteWidth = static_cast<UINT>(needed);
-  stagingDesc.Usage = D3D11_USAGE_STAGING;
-  stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  if (FAILED(ctx.device->CreateBuffer(&stagingDesc, nullptr, &ctx.stagingBuffer))) {
-    return false;
+  ctx.stagingBuffers.resize(ctx.stagingRing.depth());
+  for (auto &stagingBuffer : ctx.stagingBuffers) {
+    D3D11_BUFFER_DESC stagingDesc{};
+    stagingDesc.ByteWidth = static_cast<UINT>(needed);
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(ctx.device->CreateBuffer(&stagingDesc, nullptr, &stagingBuffer))) {
+      ctx.stagingBuffers.clear();
+      return false;
+    }
   }
   ctx.outputBufferSize = needed;
+  return true;
+}
+
+bool mapReadbackRing(ID3D11DeviceContext *context,
+                     std::vector<ComPtr<ID3D11Buffer>> &stagingBuffers,
+                     StagingReadbackRing &ring,
+                     ID3D11Resource *source,
+                     D3D11_MAPPED_SUBRESOURCE *mapped,
+                     size_t *mappedIndex) {
+  const StagingReadbackDecision decision = ring.advance();
+  context->CopyResource(stagingBuffers[decision.copyIndex].Get(), source);
+  if (!decision.preferredMapValid) {
+    HRESULT hr = context->Map(stagingBuffers[decision.copyIndex].Get(), 0,
+                              D3D11_MAP_READ, 0, mapped);
+    if (FAILED(hr)) {
+      return false;
+    }
+    *mappedIndex = decision.copyIndex;
+    return true;
+  }
+  HRESULT hr = context->Map(stagingBuffers[decision.preferredMapIndex].Get(), 0,
+                            D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, mapped);
+  if (SUCCEEDED(hr)) {
+    *mappedIndex = decision.preferredMapIndex;
+    return true;
+  }
+  if (hr != DXGI_ERROR_WAS_STILL_DRAWING || !decision.allowBlockingFallback) {
+    return false;
+  }
+  hr = context->Map(stagingBuffers[decision.fallbackMapIndex].Get(), 0,
+                    D3D11_MAP_READ, 0, mapped);
+  if (FAILED(hr)) {
+    return false;
+  }
+  *mappedIndex = decision.fallbackMapIndex;
+  return true;
+}
+
+bool stagingRingEnabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("BROADIFY_MEETING_STAGING_RING");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return enabled;
+}
+
+bool mapCurrentFrameReadback(ID3D11DeviceContext *context,
+                             std::vector<ComPtr<ID3D11Buffer>> &stagingBuffers,
+                             StagingReadbackRing &ring,
+                             ID3D11Resource *source,
+                             D3D11_MAPPED_SUBRESOURCE *mapped,
+                             size_t *mappedIndex) {
+  const StagingReadbackDecision decision = ring.advanceCurrentFrame();
+  context->CopyResource(stagingBuffers[decision.copyIndex].Get(), source);
+  HRESULT hr = context->Map(stagingBuffers[decision.preferredMapIndex].Get(), 0,
+                            D3D11_MAP_READ, 0, mapped);
+  if (FAILED(hr)) {
+    return false;
+  }
+  *mappedIndex = decision.preferredMapIndex;
   return true;
 }
 
@@ -464,7 +534,10 @@ bool ensureOutputBuffers(uint32_t width, uint32_t height) {
 // updates, background/media images change only on program updates).
 bool uploadLayer(LayerTexture &slot, const uint8_t *pixels, uint32_t width,
                  uint32_t height, uint64_t timestampNs, DXGI_FORMAT format,
-                 uint32_t bytesPerPixel) {
+                 uint32_t bytesPerPixel, bool *didUpload = nullptr) {
+  if (didUpload != nullptr) {
+    *didUpload = false;
+  }
   if (pixels == nullptr || width == 0u || height == 0u) {
     return false;
   }
@@ -497,6 +570,9 @@ bool uploadLayer(LayerTexture &slot, const uint8_t *pixels, uint32_t width,
     ctx.context->UpdateSubresource(slot.texture.Get(), 0, nullptr, pixels,
                                    width * bytesPerPixel, 0);
     slot.timestampNs = timestampNs;
+    if (didUpload != nullptr) {
+      *didUpload = true;
+    }
   }
   return true;
 }
@@ -507,6 +583,22 @@ bool uploadFrame(LayerTexture &slot, const VideoFrame *frame) {
   }
   return uploadLayer(slot, frame->rgba.data(), frame->width, frame->height,
                      frame->timestampNs, DXGI_FORMAT_R8G8B8A8_UNORM, 4u);
+}
+
+bool uploadCameraFrame(const VideoFrame *frame) {
+  if (frame == nullptr || frame->rgba.empty()) {
+    return false;
+  }
+  bool didUpload = false;
+  if (!uploadLayer(context().camera, frame->rgba.data(), frame->width,
+                   frame->height, frame->timestampNs,
+                   DXGI_FORMAT_R8G8B8A8_UNORM, 4u, &didUpload)) {
+    return false;
+  }
+  if (didUpload) {
+    ++context().cameraUploadCount;
+  }
+  return true;
 }
 
 }  // namespace
@@ -532,7 +624,7 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
   uniforms.backgroundMode = static_cast<uint32_t>(plan.backgroundMode);
   uniforms.frameIndex96 = static_cast<uint32_t>(plan.frameIndex % 96u);
 
-  if (plan.camera.present && uploadFrame(ctx.camera, plan.cameraFrame)) {
+  if (plan.camera.present && uploadCameraFrame(plan.cameraFrame)) {
     uniforms.cameraPresent = 1u;
     uniforms.cameraKeyed = plan.camera.keyed ? 1u : 0u;
     uniforms.cameraMirror = plan.camera.mirror ? 1u : 0u;
@@ -615,18 +707,34 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
   ctx.context->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
   ctx.context->CSSetShaderResources(0, 6, nullSrvs);
 
-  ctx.context->CopyResource(ctx.stagingBuffer.Get(), ctx.outputBuffer.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  const HRESULT hr = ctx.context->Map(ctx.stagingBuffer.Get(), 0,
-                                      D3D11_MAP_READ, 0, &mapped);
-  if (FAILED(hr)) {
-    logCompositorEvent("readback_failed", hresultDetail(hr));
-    return false;
+  size_t mappedIndex = 0;
+  if (stagingRingEnabled()) {
+    if (!mapReadbackRing(ctx.context.Get(), ctx.stagingBuffers, ctx.stagingRing,
+                         ctx.outputBuffer.Get(), &mapped, &mappedIndex)) {
+      logCompositorEvent("readback_pending", "staging ring not ready");
+      return false;
+    }
+  } else {
+    if (!mapCurrentFrameReadback(ctx.context.Get(), ctx.stagingBuffers,
+                                 ctx.stagingRing, ctx.outputBuffer.Get(),
+                                 &mapped, &mappedIndex)) {
+      return false;
+    }
   }
   output.resize(ctx.outputBufferSize);
   std::memcpy(output.data(), mapped.pData, ctx.outputBufferSize);
-  ctx.context->Unmap(ctx.stagingBuffer.Get(), 0);
+  ctx.context->Unmap(ctx.stagingBuffers[mappedIndex].Get(), 0);
   return true;
+}
+
+uint64_t d3d11CompositorCameraUploadCount() {
+  return context().cameraUploadCount;
+}
+
+uint32_t d3d11CompositorStagingReadbackDepth() {
+  return stagingRingEnabled() ? static_cast<uint32_t>(context().stagingRing.depth())
+                              : 0u;
 }
 
 // ---------------------------------------------------------------------------
@@ -644,7 +752,7 @@ struct GuidedUniforms {
   uint32_t radius;
   uint32_t horizontal;  // box blur direction
   float epsilon;
-  float pad0;
+  float coeffEma;
   float pad1;
   float pad2;
 };
@@ -656,7 +764,7 @@ cbuffer GuidedUniforms : register(b0) {
   uint radius;
   uint horizontal;
   float epsilon;
-  float pad0;
+  float coeffEma;
   float pad1;
   float pad2;
 };
@@ -727,6 +835,14 @@ void buildAb(uint3 gid : SV_DispatchThreadID) {
   outRG[gid.xy] = float2(a, mean.y - a * mean.x);
 }
 
+[numthreads(8, 8, 1)]
+void blendAb(uint3 gid : SV_DispatchThreadID) {
+  if (gid.x >= workW || gid.y >= workH) return;
+  const float2 current = srcA[gid.xy];
+  const float2 previous = srcB[gid.xy];
+  outRG[gid.xy] = previous * (1.0 - coeffEma) + current * coeffEma;
+}
+
 // q = a*I + b -> uint8. srcA = original (I,p), srcB = mean(a,b).
 [numthreads(8, 8, 1)]
 void buildOutput(uint3 gid : SV_DispatchThreadID) {
@@ -764,6 +880,7 @@ struct GuidedContext {
   ComPtr<ID3D11ComputeShader> csBuildCorr;
   ComPtr<ID3D11ComputeShader> csBoxBlur;
   ComPtr<ID3D11ComputeShader> csBuildAb;
+  ComPtr<ID3D11ComputeShader> csBlendAb;
   ComPtr<ID3D11ComputeShader> csBuildOutput;
   ComPtr<ID3D11Buffer> uniforms;
   // Work-grid float2 planes: A holds (I,p) for the whole pass chain.
@@ -776,16 +893,20 @@ struct GuidedContext {
   Plane planeT1;
   Plane planeT2;
   Plane planeT3;
+  Plane planePrevAb;
   uint32_t planeW = 0;
   uint32_t planeH = 0;
   LayerTexture guide;
   LayerTexture maskIn;
   ComPtr<ID3D11Buffer> outBuffer;
   ComPtr<ID3D11UnorderedAccessView> outUav;
-  ComPtr<ID3D11Buffer> outStaging;
+  std::vector<ComPtr<ID3D11Buffer>> outStaging;
+  StagingReadbackRing outRing;
   size_t outSize = 0;
   int radius = 8;
   float epsilon = 1.0e-3f;
+  float coeffEma = 0.5f;
+  bool hasPrevAb = false;
 };
 
 GuidedContext &guidedContext() {
@@ -853,6 +974,7 @@ bool initializeGuidedContext() {
       !compileGuidedShader(base.device.Get(), "buildCorr", &ctx.csBuildCorr) ||
       !compileGuidedShader(base.device.Get(), "boxBlur", &ctx.csBoxBlur) ||
       !compileGuidedShader(base.device.Get(), "buildAb", &ctx.csBuildAb) ||
+      !compileGuidedShader(base.device.Get(), "blendAb", &ctx.csBlendAb) ||
       !compileGuidedShader(base.device.Get(), "buildOutput", &ctx.csBuildOutput)) {
     return false;
   }
@@ -868,10 +990,12 @@ bool initializeGuidedContext() {
 
   ctx.radius = std::max(
       1, static_cast<int>(guidedEnvDouble("BROADIFY_MEETING_GUIDED_RADIUS", 4.0) + 0.5));
-  // Apple-parity defaults: radius 4 + epsilon 1e-4 snap the edge harder to the
-  // real luminance boundary (was 8 / 1e-3, softer). Env-overridable for tuning.
+  // Apple-parity defaults: radius 4 + epsilon 5e-4. Env-overridable for tuning.
   ctx.epsilon = static_cast<float>(
-      guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 1.0e-4));
+      guidedEnvDouble("BROADIFY_MEETING_GUIDED_EPSILON", 5.0e-4));
+  ctx.coeffEma = static_cast<float>(
+      std::clamp(guidedEnvDouble("BROADIFY_MEETING_GUIDED_COEFF_EMA", 0.0),
+                 0.0, 1.0));
 
   ctx.available = true;
   logCompositorEvent("guided_enabled",
@@ -915,17 +1039,21 @@ bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
     ctx.planeT1 = {};
     ctx.planeT2 = {};
     ctx.planeT3 = {};
+    ctx.planePrevAb = {};
     ctx.outBuffer.Reset();
     ctx.outUav.Reset();
-    ctx.outStaging.Reset();
+    ctx.outStaging.clear();
+    ctx.outRing.reset();
     ctx.outSize = 0;
+    ctx.hasPrevAb = false;
     ctx.planeW = workW;
     ctx.planeH = workH;
   }
   if (!ensureGuidedPlane(ctx.planeA, workW, workH) ||
       !ensureGuidedPlane(ctx.planeT1, workW, workH) ||
       !ensureGuidedPlane(ctx.planeT2, workW, workH) ||
-      !ensureGuidedPlane(ctx.planeT3, workW, workH)) {
+      !ensureGuidedPlane(ctx.planeT3, workW, workH) ||
+      !ensureGuidedPlane(ctx.planePrevAb, workW, workH)) {
     return false;
   }
   const size_t strideW = (static_cast<size_t>(workW) + 3u) & ~static_cast<size_t>(3u);
@@ -933,7 +1061,8 @@ bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
   if (!ctx.outBuffer || ctx.outSize != needed) {
     ctx.outBuffer.Reset();
     ctx.outUav.Reset();
-    ctx.outStaging.Reset();
+    ctx.outStaging.clear();
+    ctx.outRing.reset();
     D3D11_BUFFER_DESC bufferDesc{};
     bufferDesc.ByteWidth = static_cast<UINT>(needed);
     bufferDesc.Usage = D3D11_USAGE_DEFAULT;
@@ -951,12 +1080,16 @@ bool ensureGuidedResources(uint32_t workW, uint32_t workH) {
                                                       &uavDesc, &ctx.outUav))) {
       return false;
     }
-    D3D11_BUFFER_DESC stagingDesc{};
-    stagingDesc.ByteWidth = static_cast<UINT>(needed);
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    if (FAILED(base.device->CreateBuffer(&stagingDesc, nullptr, &ctx.outStaging))) {
-      return false;
+    ctx.outStaging.resize(ctx.outRing.depth());
+    for (auto &stagingBuffer : ctx.outStaging) {
+      D3D11_BUFFER_DESC stagingDesc{};
+      stagingDesc.ByteWidth = static_cast<UINT>(needed);
+      stagingDesc.Usage = D3D11_USAGE_STAGING;
+      stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      if (FAILED(base.device->CreateBuffer(&stagingDesc, nullptr, &stagingBuffer))) {
+        ctx.outStaging.clear();
+        return false;
+      }
     }
     ctx.outSize = needed;
   }
@@ -994,6 +1127,7 @@ void setGuidedUniforms(uint32_t workW, uint32_t workH, uint32_t horizontal) {
   uniforms.radius = static_cast<uint32_t>(ctx.radius);
   uniforms.horizontal = horizontal;
   uniforms.epsilon = ctx.epsilon;
+  uniforms.coeffEma = ctx.coeffEma;
   base.context->UpdateSubresource(ctx.uniforms.Get(), 0, nullptr, &uniforms, 0, 0);
   ID3D11Buffer *cbs[1] = {ctx.uniforms.Get()};
   base.context->CSSetConstantBuffers(0, 1, cbs);
@@ -1019,6 +1153,10 @@ bool d3d11GuidedRefineAvailable() {
   return initializeGuidedContext();
 }
 
+void resetGuidedRefineD3D11History() {
+  guidedContext().hasPrevAb = false;
+}
+
 bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   if (!initializeGuidedContext()) {
     return false;
@@ -1031,22 +1169,16 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   GuidedContext &ctx = guidedContext();
   D3D11Context &base = context();
 
-  // Working grid from the guide's aspect, capped at 512 (same as the CPU path).
-  uint32_t workW = guideFrame.width;
-  uint32_t workH = guideFrame.height;
-  constexpr uint32_t kWorkMaxWidth = 512u;
-  if (workW > kWorkMaxWidth) {
-    const double scale = static_cast<double>(kWorkMaxWidth) / workW;
-    workW = kWorkMaxWidth;
-    workH = std::max<uint32_t>(
-        1u, static_cast<uint32_t>(guideFrame.height * scale + 0.5));
-  }
+  const GuidedWorkSize workSize = selectGuidedWorkSize(
+      guideFrame.width, guideFrame.height, guidedWorkWidthFromEnv());
+  const uint32_t workW = workSize.width;
+  const uint32_t workH = workSize.height;
   if (!ensureGuidedResources(workW, workH)) {
     logCompositorEvent("guided_alloc_failed", "");
     return false;
   }
 
-  if (!uploadFrame(ctx.guide, &guideFrame)) {
+  if (!uploadCameraFrame(&guideFrame)) {
     return false;
   }
   if (!uploadLayer(ctx.maskIn, mask.alpha.data(), mask.width, mask.height,
@@ -1056,7 +1188,7 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
 
   setGuidedUniforms(workW, workH, 0u);
   // A = (I, p)
-  guidedDispatch(ctx.csBuildIp.Get(), ctx.guide.srv.Get(), ctx.maskIn.srv.Get(),
+  guidedDispatch(ctx.csBuildIp.Get(), base.camera.srv.Get(), ctx.maskIn.srv.Get(),
                  nullptr, nullptr, ctx.planeA.uav.Get(), nullptr, workW, workH);
   // T2 = mean(I, p)
   guidedBlur(ctx.planeA, ctx.planeT1, ctx.planeT2, workW, workH);
@@ -1071,8 +1203,23 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   guidedDispatch(ctx.csBuildAb.Get(), nullptr, nullptr, ctx.planeT2.srv.Get(),
                  ctx.planeT1.srv.Get(), ctx.planeT3.uav.Get(), nullptr, workW,
                  workH);
+  const bool coeffEmaEnabled = ctx.coeffEma > 0.0f && ctx.coeffEma < 1.0f;
+  const bool useCoeffEma = coeffEmaEnabled && ctx.hasPrevAb;
+  if (useCoeffEma) {
+    guidedDispatch(ctx.csBlendAb.Get(), nullptr, nullptr, ctx.planeT3.srv.Get(),
+                   ctx.planePrevAb.srv.Get(), ctx.planeT2.uav.Get(), nullptr,
+                   workW, workH);
+    base.context->CopyResource(ctx.planePrevAb.tex.Get(), ctx.planeT2.tex.Get());
+    // T2 now carries the EMA'd coefficient plane for the blur below.
+  } else if (coeffEmaEnabled) {
+    base.context->CopyResource(ctx.planePrevAb.tex.Get(), ctx.planeT3.tex.Get());
+    ctx.hasPrevAb = true;
+  } else {
+    ctx.hasPrevAb = false;
+  }
   // T2 = mean(a, b)
-  guidedBlur(ctx.planeT3, ctx.planeT1, ctx.planeT2, workW, workH);
+  guidedBlur(useCoeffEma ? ctx.planeT2 : ctx.planeT3, ctx.planeT1,
+             ctx.planeT2, workW, workH);
   // bytes = q = a*I + b
   setGuidedUniforms(workW, workH, 0u);
   guidedDispatch(ctx.csBuildOutput.Get(), nullptr, nullptr,
@@ -1080,12 +1227,11 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
                  ctx.outUav.Get(), workW, workH);
 
   D3D11Context &baseCtx = base;
-  baseCtx.context->CopyResource(ctx.outStaging.Get(), ctx.outBuffer.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  const HRESULT hr =
-      baseCtx.context->Map(ctx.outStaging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-  if (FAILED(hr)) {
-    logCompositorEvent("guided_readback_failed", hresultDetail(hr));
+  size_t mappedIndex = 0;
+  if (!mapCurrentFrameReadback(baseCtx.context.Get(), ctx.outStaging, ctx.outRing,
+                               ctx.outBuffer.Get(), &mapped, &mappedIndex)) {
+    logCompositorEvent("guided_readback_failed", "current frame map failed");
     return false;
   }
   const size_t strideW = (static_cast<size_t>(workW) + 3u) & ~static_cast<size_t>(3u);
@@ -1095,12 +1241,16 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
     std::memcpy(refined.data() + static_cast<size_t>(y) * workW,
                 src + static_cast<size_t>(y) * strideW, workW);
   }
-  baseCtx.context->Unmap(ctx.outStaging.Get(), 0);
+  baseCtx.context->Unmap(ctx.outStaging[mappedIndex].Get(), 0);
 
   mask.width = workW;
   mask.height = workH;
   mask.alpha = std::move(refined);
   return true;
+}
+
+std::string d3d11CompositorAdapterStatus() {
+  return d3dAdapterStatusString(sharedD3DAdapter());
 }
 
 }  // namespace broadify::meeting

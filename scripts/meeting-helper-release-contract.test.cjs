@@ -234,14 +234,54 @@ test("Windows distribution builds, packages, signs and registers the vcam DLL", 
 
   const builderJson = JSON.parse(read("electron-builder.json"));
   assert.equal(builderJson.nsis.include, "build/windows-installer.nsh");
+  // regsvr32 writes HKLM: only a per-machine (elevated) install can register
+  // the class. A per-user install ("Only for me") silently produced
+  // 0x80040154 at runtime. packElevateHelper keeps electron-updater able to
+  // elevate the silent update of a per-machine install.
+  assert.equal(builderJson.nsis.perMachine, true);
+  assert.equal(builderJson.nsis.packElevateHelper, true);
+  assert.equal(builderJson.nsis.oneClick, false);
   const installerScript = read("build/windows-installer.nsh");
+  assert.match(installerScript, /customInit/);
   assert.match(installerScript, /customInstall/);
   assert.match(installerScript, /customUnInstall/);
   // Sysnative, not System32: the 32-bit NSIS process must reach the 64-bit
   // regsvr32 or the CLSID lands under WOW6432Node where the Frame Server
   // never looks.
   assert.match(installerScript, /Sysnative\\regsvr32\.exe/);
-  assert.match(installerScript, /\/u \/s/);
+  // The regsvr32 exit code must be checked and reported (details pane,
+  // error level, message box unless silent) instead of DetailPrint-only.
+  assert.match(installerScript, /regsvr32 exit code: \$0/);
+  assert.match(installerScript, /\$\{If\} \$0 != 0/);
+  assert.match(installerScript, /SetErrorLevel 3/);
+  assert.match(installerScript, /\$\{IfNot\} \$\{Silent\}[\s\S]*MessageBox MB_OK\|MB_ICONEXCLAMATION/);
+  assert.doesNotMatch(installerScript, /\bAbort\b/);
+  // Uninstall: the DLL is already deleted when customUnInstall runs, so
+  // regsvr32 /u cannot work - the CLSID key is removed directly (64-bit view).
+  const vcamGuidHeader = read("apps/bridge/native/vcam-helper/windows/vcam_guid.h");
+  const clsid = "{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}";
+  assert.ok(vcamGuidHeader.includes(clsid), "vcam_guid.h must define the CLSID");
+  assert.ok(installerScript.includes(`!define BROADIFY_VCAM_CLSID "${clsid}"`));
+  assert.match(installerScript, /SetRegView 64/);
+  assert.match(
+    installerScript,
+    /DeleteRegKey HKLM "\$\{BROADIFY_VCAM_CLSID_KEY\}"/,
+  );
+  assert.match(
+    installerScript,
+    /BROADIFY_VCAM_CLSID_KEY "Software\\Classes\\CLSID\\\$\{BROADIFY_VCAM_CLSID\}"/,
+  );
+  assert.doesNotMatch(installerScript, /regsvr32\.exe" \/u/);
+  // The NSIS smoke test must prove the installer (not the test) registered
+  // the class, and that uninstall removed it again.
+  const smokeNsis = read("scripts/smoke-test-windows-nsis.ps1");
+  assert.ok(smokeNsis.includes(clsid), "NSIS smoke must assert the CLSID");
+  assert.match(smokeNsis, /InprocServer32/);
+  assert.match(smokeNsis, /\$env:ProgramFiles/);
+  const selfHeal = read(
+    "apps/bridge/src/services/meeting/vcam-registration-self-heal.ts",
+  );
+  assert.ok(selfHeal.includes(clsid), "self-heal must probe the same CLSID");
 
   const verifyArtifacts = read("scripts/verify-release-artifacts.sh");
   assert.match(

@@ -1,15 +1,25 @@
 #include "keyer/matting_backend.h"
+#include "keyer/modnet_keyer.h"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <set>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using broadify::meeting::createMattingKeyer;
+using broadify::meeting::createFallbackMattingKeyerForTesting;
+using broadify::meeting::AsyncModelLoadRetryGate;
 using broadify::meeting::expandOpenVinoDeviceSelection;
 using broadify::meeting::MattingBackendKind;
 using broadify::meeting::MattingBackendOptions;
 using broadify::meeting::parseForcedMattingBackend;
+using broadify::meeting::parseModnetPrebuildTierSizes;
 using broadify::meeting::shouldUseOpenVino;
 
 namespace {
@@ -21,6 +31,16 @@ bool expect(bool condition, const char *what) {
   return condition;
 }
 
+bool expectEqual(const std::string &actual, const std::string &expected,
+                 const char *what) {
+  if (actual != expected) {
+    std::cerr << "matting_backend_test failed: " << what << " (actual: "
+              << actual << ", expected: " << expected << ")" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 MattingBackendOptions optionsWith(MattingBackendKind forced, bool disabled) {
   MattingBackendOptions options;
   options.modelsDir = "";
@@ -29,6 +49,46 @@ MattingBackendOptions optionsWith(MattingBackendKind forced, bool disabled) {
   options.openVinoDevice = expandOpenVinoDeviceSelection(nullptr);
   return options;
 }
+
+struct StubMattingKeyerState {
+  int applyCount = 0;
+  int warmupCount = 0;
+  std::string lastWarmupMode;
+};
+
+class StubMattingKeyer final : public broadify::meeting::MattingKeyer {
+ public:
+  StubMattingKeyer(std::string reason, bool warmupResult,
+                   std::shared_ptr<StubMattingKeyerState> state)
+      : state_(std::move(state)), warmupResult_(warmupResult) {
+    status_.fallbackActive = !reason.empty();
+    status_.fallbackReason = std::move(reason);
+  }
+
+  broadify::meeting::KeyerResult apply(
+      const broadify::meeting::VideoFrame &input,
+      const broadify::meeting::KeyerSettings &settings) override {
+    (void)input;
+    (void)settings;
+    ++state_->applyCount;
+    broadify::meeting::KeyerResult result;
+    result.status = status_;
+    return result;
+  }
+
+  broadify::meeting::KeyerStatus status() const override { return status_; }
+
+  bool warmupForPerformanceMode(const std::string &performanceMode) override {
+    state_->lastWarmupMode = performanceMode;
+    ++state_->warmupCount;
+    return warmupResult_;
+  }
+
+ private:
+  std::shared_ptr<StubMattingKeyerState> state_;
+  broadify::meeting::KeyerStatus status_;
+  bool warmupResult_ = false;
+};
 
 }  // namespace
 
@@ -130,6 +190,61 @@ int main() {
   }
 
   {
+    const std::set<uint32_t> all = parseModnetPrebuildTierSizes(nullptr);
+    ok &= expect(all.count(512u) == 1u && all.count(320u) == 0u &&
+                     all.count(256u) == 1u,
+                 "unset PREBUILD_TIERS prebuilds active tier and 256");
+    const std::set<uint32_t> active =
+        parseModnetPrebuildTierSizes("active,256");
+    ok &= expect(active.count(512u) == 1u && active.count(256u) == 1u &&
+                     active.count(320u) == 0u,
+                 "active PREBUILD_TIERS means current high tier plus 256");
+    const std::set<uint32_t> selected =
+        parseModnetPrebuildTierSizes("high_quality,performance");
+    ok &= expect(selected.count(512u) == 1u && selected.count(256u) == 1u &&
+                     selected.count(320u) == 0u,
+                 "PREBUILD_TIERS excludes omitted tiers without fallback rebuild");
+    const std::set<uint32_t> invalid = parseModnetPrebuildTierSizes("bogus");
+    ok &= expect(invalid.count(512u) == 1u && invalid.count(320u) == 1u &&
+                     invalid.count(256u) == 1u,
+                 "invalid PREBUILD_TIERS falls back to all tiers");
+  }
+
+  {
+    AsyncModelLoadRetryGate gate;
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point t0{std::chrono::seconds(100)};
+    broadify::meeting::KeyerStatus status;
+    status.fallbackActive = true;
+    status.fallbackReason = "model_missing";
+
+    ok &= expect(gate.shouldStartWarmup(status, t0, false, false),
+                 "first async load attempt starts for any fallback reason");
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(29), false, false),
+                 "async load retry is throttled for 30 seconds");
+    ok &= expect(gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(30), false, false),
+                 "async load retry re-arms after 30 seconds");
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(60), true, false),
+                 "busy warmup suppresses retry launch");
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(60), false, true),
+                 "joinable warmup suppresses retry launch until joined");
+    status.fallbackActive = false;
+    ok &= expect(!gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(60), false, false),
+                 "healthy keyer does not start async load retry");
+    gate.reset();
+    status.fallbackActive = true;
+    status.fallbackReason = "session_create_failed";
+    ok &= expect(gate.shouldStartWarmup(
+                     status, t0 + std::chrono::seconds(1), false, false),
+                 "reset clears async load retry backoff");
+  }
+
+  {
     // Factory wiring: without OpenVINO compiled in (this test binary) the
     // factory must return a working ModnetKeyer-backed instance whose apply()
     // reports the manifest-missing fallback for an empty models dir.
@@ -148,6 +263,89 @@ int main() {
     ok &= expect(result.status.fallbackReason == "manifest_missing",
                  "empty models dir reports manifest_missing");
     ok &= expect(result.mask.alpha.empty(), "fallback result carries no mask");
+  }
+
+  {
+    MattingBackendOptions options = optionsWith(MattingBackendKind::Auto, false);
+    options.loadInApply = false;
+    const std::filesystem::path modelsDir =
+        std::filesystem::temp_directory_path() /
+        "broadify-matting-backend-test-model-missing";
+    std::filesystem::create_directories(modelsDir);
+    {
+      std::ofstream manifest(modelsDir / "manifest.json");
+      manifest << "{\"models\":[{\"name\":\"modnet\","
+                  "\"file\":\"missing-modnet.onnx\","
+                  "\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\","
+                  "\"required\":true}]}";
+    }
+    options.modelsDir = modelsDir.string();
+    std::unique_ptr<broadify::meeting::MattingKeyer> keyer =
+        createMattingKeyer(options);
+    broadify::meeting::VideoFrame frame;
+    frame.width = 4u;
+    frame.height = 4u;
+    frame.timestampNs = 1u;
+    frame.rgba.assign(static_cast<size_t>(frame.width) * frame.height * 4u,
+                      128u);
+    const broadify::meeting::KeyerResult result =
+        keyer->apply(frame, broadify::meeting::KeyerSettings{});
+    ok &= expect(result.status.fallbackActive,
+                 "async first load reports fallback before warmup");
+    ok &= expect(result.status.fallbackReason == "loading",
+                 "async first load returns loading without synchronous load");
+    ok &= expect(result.mask.alpha.empty(),
+                 "async first load does not produce a mask while loading");
+    ok &= expect(!keyer->warmupForPerformanceMode("balanced"),
+                 "async warmup reports failed load");
+    const broadify::meeting::KeyerResult afterWarmup =
+        keyer->apply(frame, broadify::meeting::KeyerSettings{});
+    ok &= expect(afterWarmup.status.fallbackActive,
+                 "failed async load keeps fallback active");
+    ok &= expectEqual(afterWarmup.status.fallbackReason, "model_missing",
+                      "failed async load preserves model_missing");
+    std::filesystem::remove_all(modelsDir);
+  }
+
+  {
+    auto primaryState = std::make_shared<StubMattingKeyerState>();
+    auto primary =
+        std::make_unique<StubMattingKeyer>("model_missing", false,
+                                           primaryState);
+    auto fallbackState = std::make_shared<StubMattingKeyerState>();
+    auto fallback = std::make_unique<StubMattingKeyer>("", true,
+                                                       fallbackState);
+    std::ostringstream capturedLogs;
+    std::streambuf *originalCout = std::cout.rdbuf(capturedLogs.rdbuf());
+    std::unique_ptr<broadify::meeting::MattingKeyer> keyer =
+        createFallbackMattingKeyerForTesting(std::move(primary),
+                                             std::move(fallback),
+                                             false);
+    const bool warmupOk = keyer->warmupForPerformanceMode("performance");
+    std::cout.rdbuf(originalCout);
+    ok &= expect(warmupOk,
+                 "wrapper warmup hands over to fallback after load failure");
+    ok &= expect(primaryState->warmupCount == 1,
+                 "wrapper warms the primary before handover");
+    ok &= expect(fallbackState->warmupCount == 1,
+                 "wrapper warms the fallback after handover");
+    ok &= expect(fallbackState->lastWarmupMode == "performance",
+                 "wrapper forwards the requested mode to fallback warmup");
+    ok &= expect(capturedLogs.str().find("\"type\":\"matting_backend_fallback\"") !=
+                     std::string::npos,
+                 "wrapper logs the fallback handover");
+    ok &= expect(capturedLogs.str().find("\"reason\":\"model_missing\"") !=
+                     std::string::npos,
+                 "wrapper logs the load-stage failure reason");
+    broadify::meeting::VideoFrame frame;
+    frame.width = 4u;
+    frame.height = 4u;
+    frame.timestampNs = 2u;
+    frame.rgba.assign(static_cast<size_t>(frame.width) * frame.height * 4u,
+                      128u);
+    (void)keyer->apply(frame, broadify::meeting::KeyerSettings{});
+    ok &= expect(fallbackState->applyCount == 1,
+                 "wrapper apply uses fallback after warmup handover");
   }
 
   if (!ok) {

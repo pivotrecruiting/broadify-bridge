@@ -1,12 +1,19 @@
 #include "preview/raw_frame_server.h"
 
+#include "preview/raw_frame_record.h"
+#include "util/helper_event_log.h"
+#include "util/pixel_swizzle.h"
+#include "util/win_qos.h"
+
 #if defined(__APPLE__)
 #include <Accelerate/Accelerate.h>
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -14,10 +21,13 @@
 
 #if defined(_WIN32)
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -25,10 +35,9 @@
 namespace broadify::meeting {
 namespace {
 
-constexpr uint32_t kRawFrameMagic = 0x47524642u;  // "BFRG" little endian.
-constexpr uint32_t kRawFrameVersion = 1u;
-constexpr uint32_t kRawFramePixelFormatBgra8 = 2u;
-constexpr size_t kRawFrameHeaderSize = 32u;
+constexpr size_t kRawFrameHeaderSize = kBfrgHeaderV2Size;
+constexpr auto kRawFrameHeartbeatInterval = std::chrono::milliseconds(1000);
+constexpr uint64_t kRawFrameHeartbeatSequenceMask = 1ull << 63;
 
 void closeSocketHandle(int socketHandle) {
 #if defined(_WIN32)
@@ -51,12 +60,36 @@ void configureSocketForShutdownChecks(int socketHandle) {
 }
 
 void configureClientSocket(int socketHandle) {
+  const int opt = 1;
 #if defined(SO_NOSIGPIPE)
-  int opt = 1;
   setsockopt(socketHandle, SOL_SOCKET, SO_NOSIGPIPE, reinterpret_cast<const char *>(&opt), sizeof(opt));
-#else
-  (void)socketHandle;
 #endif
+  setsockopt(socketHandle, IPPROTO_TCP, TCP_NODELAY,
+             reinterpret_cast<const char *>(&opt), sizeof(opt));
+#if defined(_WIN32)
+  const int sendTimeoutMs = 2000;
+  const int receiveTimeoutMs = 5000;
+  setsockopt(socketHandle, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&sendTimeoutMs), sizeof(sendTimeoutMs));
+  setsockopt(socketHandle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&receiveTimeoutMs), sizeof(receiveTimeoutMs));
+#else
+  timeval sendTimeout{};
+  sendTimeout.tv_sec = 2;
+  sendTimeout.tv_usec = 0;
+  setsockopt(socketHandle, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&sendTimeout), sizeof(sendTimeout));
+  timeval receiveTimeout{};
+  receiveTimeout.tv_sec = 5;
+  receiveTimeout.tv_usec = 0;
+  setsockopt(socketHandle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&receiveTimeout), sizeof(receiveTimeout));
+#endif
+  (void)opt;
+}
+
+void configureSenderBuffer(int socketHandle, const RawFrameStreamGeometry &geometry) {
+  const int minimumBytes = static_cast<int>(
+      std::max<size_t>(64 * 1024u,
+                       static_cast<size_t>(geometry.width) * geometry.height * 4u * 2u));
+  setsockopt(socketHandle, SOL_SOCKET, SO_SNDBUF,
+             reinterpret_cast<const char *>(&minimumBytes), sizeof(minimumBytes));
 }
 
 int sendFlags() {
@@ -65,6 +98,19 @@ int sendFlags() {
 #else
   return 0;
 #endif
+}
+
+int lastSocketError() {
+#if defined(_WIN32)
+  return WSAGetLastError();
+#else
+  return errno;
+#endif
+}
+
+void logRawSocketError(const char *operation, int errorCode) {
+  std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"error\",\"operation\":\"" << operation
+            << "\",\"error_code\":" << errorCode << "}" << std::endl;
 }
 
 bool sendAll(int socketHandle, const char *data, size_t size) {
@@ -76,6 +122,7 @@ bool sendAll(int socketHandle, const char *data, size_t size) {
         static_cast<int>(size - bytesSent),
         sendFlags());
     if (result <= 0) {
+      logRawSocketError("send", lastSocketError());
       return false;
     }
     bytesSent += static_cast<size_t>(result);
@@ -93,6 +140,31 @@ std::string readRequest(int socketHandle) {
   return std::string(buffer);
 }
 
+bool peerClosed(int socketHandle) {
+  fd_set readSet;
+  FD_ZERO(&readSet);
+  FD_SET(socketHandle, &readSet);
+  timeval timeout{};
+  const int ready = select(socketHandle + 1, &readSet, nullptr, nullptr, &timeout);
+  if (ready == 0) {
+    return false;
+  }
+  if (ready < 0) {
+    logRawSocketError("peer_select", lastSocketError());
+    return true;
+  }
+  char byte = 0;
+  const int result = recv(socketHandle, &byte, 1, MSG_PEEK);
+  if (result == 0) {
+    return true;
+  }
+  if (result < 0) {
+    logRawSocketError("peer_peek", lastSocketError());
+    return true;
+  }
+  return false;
+}
+
 void writeU32Le(std::vector<uint8_t> &data, size_t offset, uint32_t value) {
   data[offset + 0u] = static_cast<uint8_t>(value & 0xffu);
   data[offset + 1u] = static_cast<uint8_t>((value >> 8u) & 0xffu);
@@ -108,13 +180,13 @@ void writeU64Le(std::vector<uint8_t> &data, size_t offset, uint64_t value) {
 
 void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &payload) {
   payload.resize(kRawFrameHeaderSize + frame.rgba.size());
-  writeU32Le(payload, 0u, kRawFrameMagic);
-  writeU32Le(payload, 4u, kRawFrameVersion);
-  writeU32Le(payload, 8u, frame.width);
-  writeU32Le(payload, 12u, frame.height);
-  writeU32Le(payload, 16u, kRawFramePixelFormatBgra8);
-  writeU32Le(payload, 20u, static_cast<uint32_t>(frame.rgba.size()));
-  writeU64Le(payload, 24u, frame.sequence);
+  BfrgRecordHeader header;
+  header.width = frame.width;
+  header.height = frame.height;
+  header.payloadSize = static_cast<uint32_t>(frame.rgba.size());
+  header.sequence = frame.sequence;
+  header.captureNs = frame.captureNs;
+  writeBfrgHeaderV2(payload, 0u, header);
 
   uint8_t *dst = payload.data() + kRawFrameHeaderSize;
   const uint8_t *src = frame.rgba.data();
@@ -136,14 +208,18 @@ void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &paylo
     return;
   }
 #endif
-  const size_t pixelCount = frame.rgba.size() / 4u;
-  for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
-    const size_t offset = pixel * 4u;
-    dst[offset + 0u] = src[offset + 2u];
-    dst[offset + 1u] = src[offset + 1u];
-    dst[offset + 2u] = src[offset + 0u];
-    dst[offset + 3u] = src[offset + 3u];
-  }
+  swizzleRgbaToBgra(src, dst, frame.rgba.size() / 4u);
+}
+
+void writeRawFrameKeepAlive(uint64_t sequence,
+                            uint64_t captureNs,
+                            std::vector<uint8_t> &payload) {
+  payload.resize(kRawFrameHeaderSize);
+  BfrgRecordHeader header;
+  header.payloadSize = 0u;
+  header.sequence = sequence;
+  header.captureNs = captureNs;
+  writeBfrgHeaderV2(payload, 0u, header);
 }
 
 bool isVcamRawRunning(MeetingState &state) {
@@ -155,14 +231,18 @@ class VcamClientCounter {
  public:
   explicit VcamClientCounter(MeetingState &state) : state_(state) {
     std::lock_guard<std::mutex> lock(state_.mutex);
-    ++state_.vcamClientCount;
+    ++state_.vcamTcpClientCount;
+    state_.vcamClientCount =
+        state_.vcamShmReaderCount + state_.vcamTcpClientCount;
     state_.programDirty = true;
     ++state_.programRevision;
   }
 
   ~VcamClientCounter() {
     std::lock_guard<std::mutex> lock(state_.mutex);
-    state_.vcamClientCount = std::max(0, state_.vcamClientCount - 1);
+    state_.vcamTcpClientCount = std::max(0, state_.vcamTcpClientCount - 1);
+    state_.vcamClientCount =
+        state_.vcamShmReaderCount + state_.vcamTcpClientCount;
     state_.programDirty = true;
     ++state_.programRevision;
   }
@@ -171,12 +251,34 @@ class VcamClientCounter {
   MeetingState &state_;
 };
 
-void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &state, std::atomic<bool> &running) {
-  const std::string header =
-      "HTTP/1.1 200 OK\r\n"
-      "Content-Type: application/vnd.broadify.raw-bgra-stream\r\n"
-      "Cache-Control: no-store\r\n"
-      "Connection: close\r\n\r\n";
+struct RawFrameWorker {
+  std::thread thread;
+  std::shared_ptr<std::atomic<bool>> completed;
+};
+
+void reapCompletedWorkers(std::vector<RawFrameWorker> &workers) {
+  for (auto it = workers.begin(); it != workers.end();) {
+    if (it->completed != nullptr &&
+        it->completed->load(std::memory_order_acquire)) {
+      if (it->thread.joinable()) {
+        it->thread.join();
+      }
+      it = workers.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void streamFrames(int client,
+                  const RawFrameStreamGeometry &geometry,
+                  bool clientAcceptsZeroKeepAlive,
+                  PreviewFrameStore &previewFrames,
+                  MeetingState &state,
+                  std::atomic<bool> &running) {
+  ScopedWinMmcss senderThreadQos(L"Capture");
+  configureSenderBuffer(client, geometry);
+  const std::string header = buildRawFrameStreamHeader(geometry);
   if (!sendAll(client, header.c_str(), header.size())) {
     return;
   }
@@ -189,23 +291,65 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &st
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
   uint64_t lastSequence = 0u;
+  uint64_t heartbeatSequence = 0u;
+  uint64_t lastCaptureNs = 0u;
   uint64_t sentFrames = 0u;
   std::vector<uint8_t> payload;
+  auto lastSentAt = std::chrono::steady_clock::now();
+  const auto connectedAt = lastSentAt;
+  bool noFrameOnConnectLogged = false;
   VcamClientCounter clientCounter(state);
   while (running.load()) {
     if (!isVcamRawRunning(state)) {
       return;
     }
+    if (peerClosed(client)) {
+      return;
+    }
     PreviewFrame frame;
     if (!previewFrames.copyLatestIfNew(lastSequence, frame)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      const auto now = std::chrono::steady_clock::now();
+      if (!noFrameOnConnectLogged && sentFrames == 0u &&
+          now - connectedAt >= std::chrono::seconds(2)) {
+        noFrameOnConnectLogged = true;
+#if defined(_WIN32)
+        emitHelperEvent(
+            "{\"type\":\"meeting_vcam_raw\",\"event\":\"no_frame_on_connect\"}");
+#endif
+      }
+      if (!payload.empty() && now - lastSentAt >= kRawFrameHeartbeatInterval) {
+        ++heartbeatSequence;
+        writeU64Le(payload, 24u,
+                   kRawFrameHeartbeatSequenceMask | heartbeatSequence);
+        writeU64Le(payload, 32u, lastCaptureNs);
+        if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
+          return;
+        }
+        lastSentAt = now;
+      } else if (payload.empty() && clientAcceptsZeroKeepAlive &&
+                 now - lastSentAt >= kRawFrameHeartbeatInterval) {
+        ++heartbeatSequence;
+        writeRawFrameKeepAlive(kRawFrameHeartbeatSequenceMask | heartbeatSequence,
+                               lastCaptureNs, payload);
+        if (!sendAll(client, reinterpret_cast<const char *>(payload.data()),
+                     payload.size())) {
+          return;
+        }
+        payload.clear();
+        lastSentAt = now;
+      }
+      previewFrames.waitForNewFrame(lastSequence,
+                                    now + kRawFrameHeartbeatInterval);
       continue;
     }
     lastSequence = frame.sequence;
+    heartbeatSequence = frame.sequence;
+    lastCaptureNs = frame.captureNs;
     writeRawFramePayload(frame, payload);
     if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
       return;
     }
+    lastSentAt = std::chrono::steady_clock::now();
     ++sentFrames;
     if (sentFrames == 1u || sentFrames % 90u == 0u) {
       std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"frame_sent\",\"seq\":" << frame.sequence
@@ -217,9 +361,59 @@ void streamFrames(int client, PreviewFrameStore &previewFrames, MeetingState &st
   }
 }
 
+void handleClient(int client,
+                  uint16_t port,
+                  RawFrameStreamGeometry geometry,
+                  PreviewFrameStore &previewFrames,
+                  MeetingState &state,
+                  std::atomic<bool> &running) {
+  configureClientSocket(client);
+  const std::string request = readRequest(client);
+  if (request.find("GET /stream.rgba ") != std::string::npos) {
+    if (!isVcamRawRunning(state)) {
+      const std::string response =
+          "HTTP/1.1 503 Service Unavailable\r\n"
+          "X-Broadify-Stream: disarmed\r\n"
+          "Content-Length: 0\r\n"
+          "Cache-Control: no-store\r\n"
+          "Connection: close\r\n\r\n";
+      (void)sendAll(client, response.c_str(), response.size());
+      return;
+    }
+    std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_connected\",\"port\":" << port << "}" << std::endl;
+    const bool clientAcceptsZeroKeepAlive =
+        request.find("X-Broadify-Accepts: keepalive-v2") != std::string::npos ||
+        request.find("x-broadify-accepts: keepalive-v2") != std::string::npos;
+    streamFrames(client, geometry, clientAcceptsZeroKeepAlive, previewFrames,
+                 state, running);
+    std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_disconnected\",\"port\":" << port << "}" << std::endl;
+  } else {
+    const std::string response =
+        "HTTP/1.1 404 Not Found\r\n"
+        "Content-Length: 0\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n";
+    (void)sendAll(client, response.c_str(), response.size());
+  }
+  closeSocketHandle(client);
+}
+
 }  // namespace
 
+std::vector<bool> reapCompletedRawFrameWorkers(
+    const std::vector<bool> &workerCompleted) {
+  std::vector<bool> survivors;
+  survivors.reserve(workerCompleted.size());
+  for (bool completed : workerCompleted) {
+    if (!completed) {
+      survivors.push_back(false);
+    }
+  }
+  return survivors;
+}
+
 void runRawFrameServer(uint16_t port,
+                       RawFrameStreamGeometry geometry,
                        PreviewFrameStore &previewFrames,
                        MeetingState &state,
                        std::atomic<bool> &running) {
@@ -235,7 +429,11 @@ void runRawFrameServer(uint16_t port,
   }
 
   int opt = 1;
+#if defined(_WIN32)
+  setsockopt(serverFd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&opt), sizeof(opt));
+#else
   setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&opt), sizeof(opt));
+#endif
   configureSocketForShutdownChecks(serverFd);
 
   sockaddr_in addr{};
@@ -243,15 +441,40 @@ void runRawFrameServer(uint16_t port,
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = htons(port);
   if (bind(serverFd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 || listen(serverFd, 16) != 0) {
-    std::cout << "{\"type\":\"error\",\"code\":\"vcam_raw_bind_failed\",\"port\":" << port
-              << ",\"message\":\"Could not bind VCam raw frame port.\"}" << std::endl;
+    const int errorCode = lastSocketError();
+    logRawSocketError("bind_listen", errorCode);
+    emitHelperEvent("{\"type\":\"error\",\"code\":\"vcam_raw_bind_failed\",\"port\":" + std::to_string(port) +
+                    ",\"message\":\"Could not bind VCam raw frame port.\"}");
+    emitHelperEvent("{\"type\":\"meeting_vcam_raw\",\"event\":\"error\",\"code\":\"vcam_raw_bind_failed\",\"port\":" + std::to_string(port) +
+                    ",\"error_code\":" + std::to_string(errorCode) + "}");
     closeSocketHandle(serverFd);
     return;
   }
 
   std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"listening\",\"port\":" << port << "}" << std::endl;
+#if defined(_WIN32)
+  emitHelperEvent("{\"type\":\"output.vcam.raw.start\",\"port\":" +
+                  std::to_string(port) + "}");
+#endif
 
+  std::vector<RawFrameWorker> workers;
   while (running.load()) {
+    reapCompletedWorkers(workers);
+    fd_set readSet;
+    FD_ZERO(&readSet);
+    FD_SET(serverFd, &readSet);
+    timeval acceptTimeout{};
+    acceptTimeout.tv_sec = 0;
+    acceptTimeout.tv_usec = 250000;
+    const int ready =
+        select(serverFd + 1, &readSet, nullptr, nullptr, &acceptTimeout);
+    if (ready == 0) {
+      continue;
+    }
+    if (ready < 0) {
+      logRawSocketError("accept_select", lastSocketError());
+      continue;
+    }
     sockaddr_in clientAddr{};
 #if defined(_WIN32)
     int len = sizeof(clientAddr);
@@ -264,26 +487,27 @@ void runRawFrameServer(uint16_t port,
       continue;
     }
 
-    configureClientSocket(client);
-    const std::string request = readRequest(client);
-    if (request.find("GET /stream.rgba ") != std::string::npos) {
-      std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_connected\",\"port\":" << port << "}" << std::endl;
-      streamFrames(client, previewFrames, state, running);
-      std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_disconnected\",\"port\":" << port << "}" << std::endl;
-    } else {
-      const std::string response =
-          "HTTP/1.1 404 Not Found\r\n"
-          "Content-Length: 0\r\n"
-          "Cache-Control: no-store\r\n"
-          "Connection: close\r\n\r\n";
-      (void)sendAll(client, response.c_str(), response.size());
-    }
-    closeSocketHandle(client);
+    std::shared_ptr<std::atomic<bool>> completed =
+        std::make_shared<std::atomic<bool>>(false);
+    workers.push_back(RawFrameWorker{
+        std::thread([client, port, geometry, &previewFrames, &state, &running,
+                     completed]() {
+          handleClient(client, port, geometry, previewFrames, state, running);
+          completed->store(true, std::memory_order_release);
+        }),
+        completed});
   }
 
   closeSocketHandle(serverFd);
+  for (RawFrameWorker &worker : workers) {
+    if (worker.thread.joinable()) {
+      worker.thread.join();
+    }
+  }
 #if defined(_WIN32)
   WSACleanup();
+  emitHelperEvent("{\"type\":\"output.vcam.raw.stop\",\"port\":" +
+                  std::to_string(port) + "}");
 #endif
 }
 

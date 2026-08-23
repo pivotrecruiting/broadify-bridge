@@ -1,0 +1,137 @@
+#include "pipeline/frame_pipeline_gating.h"
+
+#include <chrono>
+#include <iostream>
+
+using broadify::meeting::PipelineWorkTriggers;
+using broadify::meeting::clampFramePacingDeadline;
+using broadify::meeting::earlyCameraWakeRenderDeadline;
+using broadify::meeting::framePacingDeadlineReached;
+using broadify::meeting::shouldRenderEarlyCameraWake;
+using broadify::meeting::shouldRunFusedKeyerWork;
+using broadify::meeting::shouldRunProgramWork;
+using broadify::meeting::shouldSubmitAsyncKeyerFrame;
+using broadify::meeting::shouldWriteFramebusFrame;
+
+namespace {
+
+bool expect(bool condition, const char *what) {
+  if (!condition) {
+    std::cerr << "frame_pipeline_gating_test failed: " << what << std::endl;
+  }
+  return condition;
+}
+
+}  // namespace
+
+int main() {
+  bool ok = true;
+  ok &= expect(!shouldRunProgramWork({}), "idle reused frame does not run");
+  ok &= expect(shouldRunProgramWork({true, false, false}), "new camera runs");
+  ok &= expect(shouldRunProgramWork({false, true, false}), "program change runs");
+  ok &= expect(shouldRunProgramWork({false, false, true}), "graphics change runs");
+
+  ok &= expect(shouldRunFusedKeyerWork({true, false, false}),
+               "fused keyer runs on new camera");
+  ok &= expect(!shouldRunFusedKeyerWork({false, true, true}),
+               "fused keyer does not run on reused camera");
+
+  ok &= expect(!shouldWriteFramebusFrame(false, true, true, true),
+               "framebus kill switch blocks writes");
+  ok &= expect(!shouldWriteFramebusFrame(true, false, true, true),
+               "framebus needs a frame");
+  ok &= expect(shouldWriteFramebusFrame(true, true, true, false),
+               "framebus writes changed program");
+  ok &= expect(shouldWriteFramebusFrame(true, true, false, true),
+               "framebus writes heartbeat");
+  ok &= expect(!shouldWriteFramebusFrame(true, true, false, false),
+               "framebus skips idle non-heartbeat");
+
+  ok &= expect(shouldSubmitAsyncKeyerFrame(true, true, true, false, false, 1),
+               "async submit runs on active async path");
+  ok &= expect(!shouldSubmitAsyncKeyerFrame(true, true, true, true, false, 1),
+               "fused warmup gates async first load");
+  ok &= expect(!shouldSubmitAsyncKeyerFrame(true, true, false, false, false, 1),
+               "parked async path does not submit");
+  ok &= expect(!shouldSubmitAsyncKeyerFrame(true, true, true, false, true, 1),
+               "off reduced cadence skips non-cadence frame");
+  ok &= expect(shouldSubmitAsyncKeyerFrame(true, true, true, false, true, 4),
+               "off reduced cadence submits every fourth frame");
+
+  using Clock = std::chrono::steady_clock;
+  const auto epoch = Clock::time_point{};
+  const auto interval = std::chrono::milliseconds(33);
+  ok &= expect(clampFramePacingDeadline(epoch + interval,
+                                        epoch + std::chrono::milliseconds(16),
+                                        interval) == epoch + interval,
+               "early camera wake keeps the fps floor");
+  ok &= expect(clampFramePacingDeadline(epoch + std::chrono::milliseconds(100),
+                                        epoch, interval) == epoch + interval,
+               "far future deadline clamps to one interval");
+  ok &= expect(clampFramePacingDeadline(epoch + std::chrono::milliseconds(10),
+                                        epoch + std::chrono::milliseconds(20),
+                                        interval) ==
+                   epoch + std::chrono::milliseconds(20),
+               "overrun skips catch-up bursts");
+  ok &= expect(!framePacingDeadlineReached(epoch + std::chrono::milliseconds(16),
+                                           epoch + interval),
+               "early camera wake does not pass the floor");
+  ok &= expect(framePacingDeadlineReached(epoch + interval, epoch + interval),
+               "deadline passes at the floor");
+  const auto priorRender = epoch + std::chrono::milliseconds(100);
+  ok &= expect(!shouldRenderEarlyCameraWake(
+                   priorRender + std::chrono::milliseconds(24), priorRender,
+                   interval),
+               "camera wake before 75 percent skips");
+  ok &= expect(shouldRenderEarlyCameraWake(
+                   priorRender + std::chrono::milliseconds(25), priorRender,
+                   interval),
+               "camera wake after 75 percent renders immediately");
+  ok &= expect(shouldRenderEarlyCameraWake(
+                   epoch + std::chrono::milliseconds(1),
+                   Clock::time_point{}, interval),
+               "first camera wake renders without prior start");
+  const auto earlyWake = priorRender + std::chrono::milliseconds(16);
+  const auto nextFrame = priorRender + interval;
+  const auto earlyWakeDeadline = earlyCameraWakeRenderDeadline(
+      earlyWake, priorRender, nextFrame, interval);
+  ok &= expect(earlyWakeDeadline > priorRender + std::chrono::milliseconds(24) &&
+                   earlyWakeDeadline < priorRender + std::chrono::milliseconds(25),
+               "early camera wake waits until the 75 percent floor");
+  ok &= expect(earlyWakeDeadline > earlyWake,
+               "early camera wake iteration waits instead of spinning");
+  ok &= expect(earlyCameraWakeRenderDeadline(
+                   priorRender + std::chrono::milliseconds(25), priorRender,
+                   nextFrame, interval) ==
+                   priorRender + std::chrono::milliseconds(25),
+               "late camera wake renders immediately");
+
+  const auto fps60CameraInterval = std::chrono::milliseconds(16);
+  const auto fps60Start = epoch + std::chrono::milliseconds(200);
+  auto lastRenderAt = fps60Start;
+  auto scheduledFrameAt = fps60Start + interval;
+  auto cameraArrival = fps60Start + fps60CameraInterval;
+  int rendered60FpsCameraFrames = 0;
+  for (int cameraFrame = 1; cameraFrame <= 4; cameraFrame += 2) {
+    const auto renderAt = earlyCameraWakeRenderDeadline(
+        cameraArrival, lastRenderAt, scheduledFrameAt, interval);
+    ok &= expect(renderAt > cameraArrival,
+                 "60 fps camera waits while inference is still running");
+    ok &= expect(shouldRunFusedKeyerWork({true, false, false}),
+                 "60 fps camera render still runs fused inference");
+    ++rendered60FpsCameraFrames;
+    lastRenderAt = renderAt;
+    scheduledFrameAt = renderAt + interval;
+    cameraArrival = fps60Start + fps60CameraInterval * (cameraFrame + 2);
+  }
+  ok &= expect(rendered60FpsCameraFrames == 2,
+               "60 fps camera is throttled to the 0.75-interval render floor");
+
+  const auto fps30CameraArrival = epoch + interval;
+  ok &= expect(earlyCameraWakeRenderDeadline(
+                   fps30CameraArrival, epoch, epoch + interval, interval) ==
+                   fps30CameraArrival,
+               "30 fps camera renders on arrival");
+
+  return ok ? 0 : 1;
+}

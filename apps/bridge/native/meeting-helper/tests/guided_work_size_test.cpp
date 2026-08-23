@@ -1,0 +1,37 @@
+#include "pipeline/guided_work_size.h"
+
+#include <iostream>
+
+using broadify::meeting::GuidedWorkSize;
+using broadify::meeting::selectGuidedWorkSize;
+
+namespace {
+
+bool expect(bool condition, const char *what) {
+  if (!condition) {
+    std::cerr << "guided_work_size_test failed: " << what << std::endl;
+  }
+  return condition;
+}
+
+}  // namespace
+
+int main() {
+  bool ok = true;
+  constexpr uint32_t kDefaultWorkWidth = 512u;
+  constexpr uint32_t kExpected16x9Height = 288u;
+  constexpr uint32_t kExpected4x3Height = 384u;
+  GuidedWorkSize size = selectGuidedWorkSize(1920u, 1080u, kDefaultWorkWidth);
+  ok &= expect(size.width == kDefaultWorkWidth &&
+                   size.height == kExpected16x9Height,
+               "default 16:9 work size matches platform default");
+  size = selectGuidedWorkSize(640u, 360u, kDefaultWorkWidth);
+  ok &= expect(size.width == kDefaultWorkWidth &&
+                   size.height == kExpected16x9Height,
+               "default keeps the legacy 512-wide grid");
+  size = selectGuidedWorkSize(1440u, 1080u, kDefaultWorkWidth);
+  ok &= expect(size.width == kDefaultWorkWidth &&
+                   size.height == kExpected4x3Height,
+               "4:3 work size preserves aspect");
+  return ok ? 0 : 1;
+}

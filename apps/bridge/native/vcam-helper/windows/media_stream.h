@@ -15,9 +15,11 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <vector>
 
 #include "mf_attributes.h"
 #include "raw_frame_client.h"
+#include "shm_frame_reader.h"
 
 namespace broadify::vcam {
 
@@ -55,6 +57,7 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
    ULONG *bytesReturned);
 
   HRESULT Initialize(IMFMediaSource *source, int index, RawFrameClient *client,
+                     ShmFrameReader *shmReader,
                      uint32_t width, uint32_t height);
   HRESULT Start();
   HRESULT Stop();
@@ -79,10 +82,32 @@ struct MediaStream : winrt::implements<MediaStream, AttributesBase<IMFAttributes
   uint32_t _width = 0;
   uint32_t _height = 0;
   uint64_t _lastSequence = 0;
+  uint64_t _lastShmSequence = 0;
+  uint64_t _lastTcpSequence = 0;
+  uint64_t _baseCaptureNs = 0;
+  uint64_t _baseCaptureQpc = 0;
+  LONGLONG _baseSampleTime = 0;
+  LONGLONG _lastSampleTime = 0;
+  // Last source geometry that differed from the media type; logged once per
+  // size change so a persistent mismatch does not flood the log at 30 fps.
+  uint32_t _loggedMismatchWidth = 0;
+  uint32_t _loggedMismatchHeight = 0;
+  uint64_t _loggedStaleWindowMs = 0;
+  bool _hasLastGoodFrame = false;
+  bool _tcpRunning = false;
+  bool _offerNv12 = false;
+  bool _loggedFirstSampleStreamType = false;
+  uint64_t _lastShmReaderGeneration = 0;
   RawFrameClient *_client = nullptr;  // owned by the MediaSource.
+  ShmFrameReader *_shmReader = nullptr;  // owned by the MediaSource.
+  IMFMediaSource *_source = nullptr;  // weak back-reference, cleared in Shutdown.
   Microsoft::WRL::ComPtr<IMFStreamDescriptor> _descriptor;
   Microsoft::WRL::ComPtr<IMFMediaEventQueue> _queue;
-  Microsoft::WRL::ComPtr<IMFMediaSource> _source;
+  std::vector<Microsoft::WRL::ComPtr<IMFMediaBuffer>> _sampleBuffers;
+  Microsoft::WRL::ComPtr<IMFMediaBuffer> _lastSampleBuffer;
+  GUID _sampleBufferSubtype = GUID_NULL;
+  RawFrame _scratchFrame;
+  size_t _nextSampleBuffer = 0;
 };
 
 }  // namespace broadify::vcam

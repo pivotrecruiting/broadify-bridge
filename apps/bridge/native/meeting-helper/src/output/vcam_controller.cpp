@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <mutex>
+#include <utility>
 
 namespace broadify::meeting {
 namespace {
@@ -28,12 +29,23 @@ constexpr wchar_t kSourceId[] = L"{8B1E9E3A-7C4D-4E2B-9F1A-2D6C5B0A9E77}";
 // lives in winerror-adjacent headers we do not want to depend on here, so use
 // the raw HRESULT value.
 constexpr HRESULT kClassNotRegistered = static_cast<HRESULT>(0x80040154L);
+// E_ACCESSDENIED from the Frame Server. Documented causes: camera privacy
+// setting for desktop apps is off, the helper runs elevated while the app was
+// installed per-user, or the registered DLL path lives in a user profile the
+// Frame Server (LOCAL SERVICE) cannot read - i.e. not under Program Files.
+constexpr HRESULT kAccessDenied = static_cast<HRESULT>(0x80070005L);
+constexpr const char *kAccessDeniedHint =
+    " (access denied: allow camera access for desktop apps in Windows "
+    "privacy settings; do not run the app elevated while it is installed "
+    "per-user; the registered broadify-vcam.dll path must be readable by "
+    "LOCAL SERVICE, i.e. installed under Program Files)";
 
 std::mutex g_mutex;
 IMFVirtualCamera *g_vcam = nullptr;
 bool g_mfStarted = false;
 bool g_comReady = false;
 std::string g_lastError;
+std::string g_transport = "tcp";
 
 std::string formatHr(const char *what, HRESULT hr) {
   char buf[192];
@@ -92,9 +104,13 @@ bool startVirtualCamera(std::string &errorOut) {
       MFVirtualCameraAccess_CurrentUser, L"Broadify Camera", kSourceId, nullptr,
       0, &g_vcam);
   if (FAILED(hr)) {
-    g_lastError =
-        formatHr("MFCreateVirtualCamera", hr) +
-        " (is broadify-vcam.dll registered? regsvr32 requires elevation)";
+    g_lastError = formatHr("MFCreateVirtualCamera", hr);
+    if (hr == kAccessDenied) {
+      g_lastError += kAccessDeniedHint;
+    } else {
+      g_lastError +=
+          " (is broadify-vcam.dll registered? regsvr32 requires elevation)";
+    }
     errorOut = g_lastError;
     g_vcam = nullptr;
     return false;
@@ -108,6 +124,8 @@ bool startVirtualCamera(std::string &errorOut) {
       // REGDB_E_CLASSNOTREG when the vcam media source DLL is missing from
       // the registry (e.g. the MSI skipped elevation).
       g_lastError += " (is broadify-vcam.dll registered? regsvr32 requires elevation)";
+    } else if (hr == kAccessDenied) {
+      g_lastError += kAccessDeniedHint;
     }
     errorOut = g_lastError;
     g_vcam->Remove();
@@ -132,7 +150,12 @@ void stopVirtualCamera() {
 
 VcamStatus virtualCameraStatus() {
   std::lock_guard<std::mutex> lock(g_mutex);
-  return VcamStatus{g_vcam != nullptr, true, g_lastError};
+  return VcamStatus{g_vcam != nullptr, true, g_lastError, g_transport};
+}
+
+void setVirtualCameraTransport(std::string transport) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_transport = std::move(transport);
 }
 
 }  // namespace broadify::meeting
@@ -141,6 +164,8 @@ VcamStatus virtualCameraStatus() {
 
 namespace broadify::meeting {
 
+void setVirtualCameraTransport(std::string) {}
+
 bool startVirtualCamera(std::string &errorOut) {
   errorOut = "virtual camera is only supported on Windows";
   return false;
@@ -148,7 +173,7 @@ bool startVirtualCamera(std::string &errorOut) {
 
 void stopVirtualCamera() {}
 
-VcamStatus virtualCameraStatus() { return VcamStatus{false, false, ""}; }
+VcamStatus virtualCameraStatus() { return VcamStatus{false, false, "", "tcp"}; }
 
 }  // namespace broadify::meeting
 

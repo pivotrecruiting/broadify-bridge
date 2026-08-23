@@ -20,6 +20,7 @@
 #include "mf_attributes.h"
 #include "media_stream.h"
 #include "raw_frame_client.h"
+#include "shm_frame_reader.h"
 
 namespace broadify::vcam {
 
@@ -29,6 +30,8 @@ namespace broadify::vcam {
 struct MediaSource
     : winrt::implements<MediaSource, AttributesBase<IMFAttributes>,
                         IMFMediaSourceEx, IMFGetService, IKsControl> {
+  ~MediaSource();
+
   // IMFMediaEventGenerator
   STDMETHOD(BeginGetEvent)(IMFAsyncCallback *callback, IUnknown *state);
   STDMETHOD(EndGetEvent)(IMFAsyncResult *result, IMFMediaEvent **event);
@@ -68,6 +71,7 @@ struct MediaSource
    ULONG *bytesReturned);
 
   HRESULT Initialize(IMFAttributes *attributes);
+  bool IsShutdown();
 
  private:
   // winrt::implements only answers QI for the exact interfaces listed above;
@@ -85,9 +89,11 @@ struct MediaSource
   }
 
   winrt::slim_mutex _lock;
+  bool _shutdown = false;
   uint32_t _width = 0;
   uint32_t _height = 0;
   std::unique_ptr<RawFrameClient> _client;
+  std::unique_ptr<ShmFrameReader> _shmReader;
   winrt::com_ptr<MediaStream> _stream;
   Microsoft::WRL::ComPtr<IMFMediaEventQueue> _queue;
   Microsoft::WRL::ComPtr<IMFPresentationDescriptor> _descriptor;

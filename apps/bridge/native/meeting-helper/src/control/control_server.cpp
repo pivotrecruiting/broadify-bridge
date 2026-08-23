@@ -2,6 +2,8 @@
 
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
+#include "preview/vcam_shm_ring_win.h"
+#include "preview/vcam_writer_generation.h"
 #include "recorder/meeting_recorder.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
@@ -110,6 +112,37 @@ std::string keyerConfigSignature(const MeetingState &state) {
   return signature.str();
 }
 
+int resolveCameraIndex(CameraSource &camera, const std::string &stableKey,
+                       int fallbackIndex) {
+  if (stableKey.empty()) {
+    return fallbackIndex;
+  }
+  const std::vector<CameraInfo> cameras = camera.listCameras();
+  const auto match = std::find_if(
+      cameras.begin(), cameras.end(), [&stableKey](const CameraInfo &info) {
+        return info.stableKey == stableKey || info.cameraId == stableKey;
+      });
+  return match == cameras.end() ? -1 : match->cameraIndex;
+}
+
+bool activeCameraMatches(CameraSource &camera, const std::string &stableKey,
+                         int cameraIndex) {
+  if (!camera.isRunning()) {
+    return false;
+  }
+  const int activeIndex = camera.activeCameraIndex();
+  if (stableKey.empty()) {
+    return activeIndex == cameraIndex;
+  }
+  const std::vector<CameraInfo> cameras = camera.listCameras();
+  const auto match = std::find_if(
+      cameras.begin(), cameras.end(), [activeIndex](const CameraInfo &info) {
+        return info.cameraIndex == activeIndex;
+      });
+  return match != cameras.end() &&
+         (match->stableKey == stableKey || match->cameraId == stableKey);
+}
+
 void markProgramDirty(MeetingState &state, bool graphicsDirty = false) {
   state.programDirty = true;
   state.graphicsDirty = state.graphicsDirty || graphicsDirty;
@@ -137,13 +170,18 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"program_frame_interval_ms\":" << metricNumber(metrics.programFrameIntervalMs)
          << ",\"program_frame_ms\":" << metricNumber(metrics.programFrameMs)
          << ",\"mjpeg_encode_ms\":" << metricNumber(metrics.mjpegEncodeMs)
+         << ",\"vcam_publish_ms\":" << metricNumber(metrics.vcamPublishMs)
          << ",\"keyer_fps\":" << metricNumber(metrics.keyerFps)
          << ",\"program_fps\":" << metricNumber(metrics.programFps)
          << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
          << ",\"dropped_frames\":" << metrics.droppedFrames
-         << ",\"skipped_frames\":" << metrics.skippedFrames << "}";
+         << ",\"skipped_frames\":" << metrics.skippedFrames
+         << ",\"vcam_publish_dropped\":" << metrics.vcamPublishDropped
+         << ",\"camera_texture_uploads\":" << metrics.cameraTextureUploads
+         << ",\"staging_readback_depth\":" << metrics.stagingReadbackDepth
+         << "}";
   return result.str();
 }
 
@@ -236,6 +274,7 @@ std::string handleRpc(const std::string &line,
                       CameraSource &camera,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
+                      VcamShmRingWin *vcamShm,
                       const Options &options,
                       std::atomic<bool> &running) {
   const std::string id = extractStringField(line, "id");
@@ -271,6 +310,7 @@ std::string handleRpc(const std::string &line,
     std::ostringstream result;
     result << "{\"bridge_running\":true,"
            << "\"camera_running\":" << (state.cameraRunning ? "true" : "false") << ","
+           << "\"camera_stalled\":" << (state.cameraStalled ? "true" : "false") << ","
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"pip_camera_index\":" << (state.pipCameraIndex >= 0 ? std::to_string(state.pipCameraIndex) : "null") << ","
@@ -278,6 +318,8 @@ std::string handleRpc(const std::string &line,
            << "\"keyer_enabled\":" << (state.keyerEnabled ? "true" : "false") << ","
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
            << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
+           << "\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"") << ","
+           << "\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"") << ","
            << "\"preview_clients\":" << state.previewClientCount << ","
            << "\"vcam_clients\":" << state.vcamClientCount << ","
            << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
@@ -312,7 +354,13 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "camera.select") {
-    const int cameraIndex = extractIntField(line, "camera_index", 0);
+    const std::string stableKey = extractStringField(line, "stable_key");
+    const int cameraIndex = resolveCameraIndex(
+        camera, stableKey, extractIntField(line, "camera_index", 0));
+    if (cameraIndex < 0) {
+      return errorResponse(id, "camera_select_failed",
+                           "Requested camera stable_key is not available.");
+    }
     const bool selected = camera.selectCamera(cameraIndex);
     if (!selected) {
       return errorResponse(id, "camera_select_failed", camera.lastError());
@@ -321,12 +369,31 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "camera.start") {
-    const int cameraIndex = extractIntField(line, "camera_index", camera.activeCameraIndex());
+    const std::string stableKey = extractStringField(line, "stable_key");
+    const int cameraIndex = resolveCameraIndex(
+        camera, stableKey, extractIntField(line, "camera_index", camera.activeCameraIndex()));
+    if (cameraIndex < 0) {
+      return errorResponse(id, "camera_start_failed",
+                           "Requested camera stable_key is not available.");
+    }
+    bool cameraStalled = false;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      cameraStalled = state.cameraStalled;
+    }
+    if (!cameraStalled && activeCameraMatches(camera, stableKey, cameraIndex)) {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.cameraRunning = true;
+      state.activeCameraIndex = cameraIndex;
+      state.cameraStalled = false;
+      return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(cameraIndex) + ",\"backend\":\"native\",\"reopened\":false}");
+    }
     const bool started = camera.start(cameraIndex, options.width, options.height, options.fps);
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = started;
       state.activeCameraIndex = started ? camera.activeCameraIndex() : -1;
+      state.cameraStalled = false;
       markProgramDirty(state);
     }
     if (!started) {
@@ -336,7 +403,25 @@ std::string handleRpc(const std::string &line,
           : "camera_start_failed";
       return errorResponse(id, code, camera.lastError());
     }
-    return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + ",\"backend\":\"native\"}");
+    return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + ",\"backend\":\"native\",\"reopened\":true}");
+  }
+
+  if (method == "camera.reopen") {
+    if (!camera.isRunning()) {
+      return okResponse(id, "{\"ok\":true,\"reopened\":false}");
+    }
+    const bool reopened = camera.reopen(options.width, options.height, options.fps);
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.cameraRunning = camera.isRunning();
+      state.activeCameraIndex = state.cameraRunning ? camera.activeCameraIndex() : -1;
+      state.cameraStalled = !reopened;
+      markProgramDirty(state);
+    }
+    if (!reopened) {
+      return errorResponse(id, "camera_reopen_failed", camera.lastError());
+    }
+    return okResponse(id, "{\"ok\":true,\"reopened\":true,\"camera_index\":" + std::to_string(camera.activeCameraIndex()) + "}");
   }
 
   if (method == "camera.stop") {
@@ -344,6 +429,7 @@ std::string handleRpc(const std::string &line,
     previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.cameraRunning = false;
+    state.cameraStalled = false;
     state.activeCameraIndex = -1;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true}");
@@ -520,10 +606,21 @@ std::string handleRpc(const std::string &line,
            << ",\"max_mask_age_ms\":" << state.degradationSettings.maxMaskAgeMs << "},"
            << "\"status\":{\"active_keyer\":\"" << jsonEscape(state.activeKeyer)
            << "\",\"fallback_active\":" << (state.fallbackActive ? "true" : "false")
+           << ",\"keyer_degraded\":" << (state.keyerDegraded ? "true" : "false")
+           << ",\"keyer_ready\":" << (state.keyerReady ? "true" : "false")
            << ",\"fallback_reason\":" << (state.fallbackReason.empty() ? "null" : "\"" + jsonEscape(state.fallbackReason) + "\"")
            << ",\"degradation_stage\":\"" << jsonEscape(state.degradationStage)
-           << "\",\"compositor\":\"" << jsonEscape(state.compositorBackend)
-           << "\",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
+           << "\",\"empty_valid\":"
+           << (state.degradationStage == "no_subject" ||
+                       state.degradationStage == "background_only"
+                   ? "true"
+                   : "false")
+           << ",\"no_subject\":"
+           << (state.degradationStage == "no_subject" ? "true" : "false")
+           << ",\"compositor\":\"" << jsonEscape(state.compositorBackend)
+           << "\",\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"")
+           << ",\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"")
+           << ",\"stale_mask_active\":" << (state.staleMaskActive ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel)
            << "\",\"backend\":\"" << jsonEscape(state.keyerBackend)
            << "\",\"quality_mode\":\"" << jsonEscape(state.activeQualityMode)
@@ -537,6 +634,12 @@ std::string handleRpc(const std::string &line,
            << "\",\"keyer_pipeline_mode\":" << (state.keyerPipelineMode.empty() ? "null" : "\"" + jsonEscape(state.keyerPipelineMode) + "\"")
            << ",\"preview_clients\":" << state.previewClientCount
            << ",\"vcam_clients\":" << state.vcamClientCount
+           << ",\"vcam_transport_status\":\""
+           << jsonEscape(state.vcamTransport == "shm" && vcamShm != nullptr &&
+                                 !vcamShm->active()
+                             ? "shm_pending"
+                             : state.vcamTransport)
+           << "\""
            << ",\"program_dirty\":" << (state.programDirty ? "true" : "false")
            << ",\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false")
            << ",\"rendered_frames\":" << state.renderedFrames
@@ -606,7 +709,9 @@ std::string handleRpc(const std::string &line,
         markProgramDirty(state);
       }
     }
-    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}", state, camera, previewFrames, recorder, options, running);
+    return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}",
+                     state, camera, previewFrames, recorder, vcamShm, options,
+                     running);
   }
 
   if (method == "keyer.reset") {
@@ -668,21 +773,57 @@ std::string handleRpc(const std::string &line,
     return okResponse(id, result.str());
   }
 
+  // The FrameBus output (shared memory, read by the conference display
+  // output) and the raw-frame TCP stream (read by the virtual-camera
+  // consumers) are independent outputs: toggling one must not black out the
+  // other.
   if (method == "output.framebus.start") {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = true;
-    state.vcamRawRunning = true;
     markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":true}");
   }
 
   if (method == "output.framebus.stop") {
-    previewFrames.clear();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.framebusRunning = false;
-    state.vcamRawRunning = false;
     markProgramDirty(state);
     return okResponse(id, "{\"enabled\":true,\"running\":false}");
+  }
+
+  if (method == "output.vcam.raw.start") {
+    std::string transport;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.vcamRawRunning = true;
+#if defined(_WIN32)
+      if (state.vcamTransport == "shm") {
+        if (state.vcamWriterGeneration == 0u) {
+          state.vcamWriterGeneration = initialVcamWriterGeneration();
+        } else {
+          ++state.vcamWriterGeneration;
+        }
+      }
+#else
+      if (state.vcamTransport == "shm") {
+        ++state.vcamWriterGeneration;
+      }
+#endif
+      transport = state.vcamTransport;
+      markProgramDirty(state);
+    }
+    return okResponse(id, std::string("{\"enabled\":true,\"running\":true,\"transport\":\"") +
+                              jsonEscape(transport) + "\"}");
+  }
+
+  if (method == "output.vcam.raw.stop") {
+    previewFrames.clear();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamRawRunning = false;
+    (void)vcamShm;
+    markProgramDirty(state);
+    return okResponse(id, std::string("{\"enabled\":true,\"running\":false,\"transport\":\"") +
+                              jsonEscape(state.vcamTransport) + "\"}");
   }
 
   if (method == "output.framebus.configure") {
@@ -707,6 +848,7 @@ std::string handleRpc(const std::string &line,
     std::ostringstream result;
     result << "{\"active\":" << (vcam.active ? "true" : "false")
            << ",\"supported\":" << (vcam.supported ? "true" : "false")
+           << ",\"transport\":\"" << jsonEscape(vcam.transport) << "\""
            << ",\"last_error\":"
            << (vcam.lastError.empty() ? "null"
                                       : "\"" + jsonEscape(vcam.lastError) + "\"")
@@ -720,6 +862,49 @@ std::string handleRpc(const std::string &line,
 }  // namespace
 
 #if defined(_WIN32)
+namespace {
+
+constexpr DWORD CONTROL_PIPE_BUFFER_BYTES = 65536;
+// ~10 s of 50 ms retries before the control channel is declared dead.
+constexpr int CONTROL_PIPE_CREATE_MAX_CONSECUTIVE_FAILURES = 200;
+constexpr DWORD CONTROL_PIPE_CREATE_RETRY_DELAY_MS = 50;
+
+// Creates one listening instance of the control pipe. CreateNamedPipeA can
+// fail transiently (e.g. ERROR_PIPE_BUSY while libuv is still closing the
+// previous client handle); a single such failure used to end the control
+// thread for good while the helper process kept running - a silent, permanent
+// ENOENT for every later bridge RPC. Retry with a bounded budget instead and
+// report control_pipe_failed only once that budget is exhausted. Returns
+// INVALID_HANDLE_VALUE after the final failure or when `running` turned false.
+HANDLE createControlPipeInstance(const std::string &pipeName, std::atomic<bool> &running) {
+  int consecutiveFailures = 0;
+  while (running.load()) {
+    HANDLE pipe = CreateNamedPipeA(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
+                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                                   PIPE_UNLIMITED_INSTANCES, CONTROL_PIPE_BUFFER_BYTES,
+                                   CONTROL_PIPE_BUFFER_BYTES, 0, NULL);
+    if (pipe != INVALID_HANDLE_VALUE) {
+      return pipe;
+    }
+    const DWORD lastError = GetLastError();
+    consecutiveFailures += 1;
+    if (consecutiveFailures >= CONTROL_PIPE_CREATE_MAX_CONSECUTIVE_FAILURES) {
+      emitHelperEvent(
+          "{\"type\":\"error\",\"code\":\"control_pipe_failed\","
+          "\"message\":\"Could not create control pipe.\",\"win32_error\":" +
+          std::to_string(lastError) + ",\"attempts\":" + std::to_string(consecutiveFailures) + "}");
+      return INVALID_HANDLE_VALUE;
+    }
+    emitHelperEvent(
+        "{\"type\":\"control_pipe_retry\",\"win32_error\":" + std::to_string(lastError) +
+        ",\"attempt\":" + std::to_string(consecutiveFailures) + "}");
+    Sleep(CONTROL_PIPE_CREATE_RETRY_DELAY_MS);
+  }
+  return INVALID_HANDLE_VALUE;
+}
+
+}  // namespace
+
 void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
@@ -727,19 +912,30 @@ void runControlServer(const std::string &pipeName,
                       MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
-                      const std::function<void()> &onListening) {
+                      const std::function<void()> &onListening,
+                      VcamShmRingWin *vcamShm) {
+  // Create the first instance BEFORE signalling readiness: the bridge starts
+  // pinging as soon as it sees `ready`, and a pipe that does not exist yet is
+  // indistinguishable (ENOENT) from a dead helper. If no instance can be
+  // created the ready signal is withheld on purpose, so the bridge's start
+  // timeout fires with control_pipe_failed as the visible cause.
+  HANDLE pipe = createControlPipeInstance(pipeName, running);
+  if (pipe == INVALID_HANDLE_VALUE) {
+    return;
+  }
   if (onListening) {
     onListening();
   }
   while (running.load()) {
-    HANDLE pipe = CreateNamedPipeA(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
-                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                                   1, 65536, 65536, 0, NULL);
-    if (pipe == INVALID_HANDLE_VALUE) {
-      std::cout << "{\"type\":\"error\",\"code\":\"control_pipe_failed\",\"message\":\"Could not create control pipe.\"}" << std::endl;
-      return;
-    }
     BOOL connected = ConnectNamedPipe(pipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+    // Open the next instance before serving this client. With a single
+    // instance there was a window between DisconnectNamedPipe/CloseHandle and
+    // the next CreateNamedPipeA in which no pipe existed at all, and bridge
+    // RPC bursts (engine start, status polls) hit ENOENT there - libuv retries
+    // ERROR_PIPE_BUSY on its own but not ERROR_FILE_NOT_FOUND. RPC handling
+    // stays sequential: the spare instance only parks the next client until
+    // this loop comes back around.
+    HANDLE nextPipe = createControlPipeInstance(pipeName, running);
     if (connected) {
       char buffer[8192];
       DWORD readBytes = 0;
@@ -749,7 +945,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-          const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
+      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           // Block until the client has read the response; without this,
@@ -762,7 +958,15 @@ void runControlServer(const std::string &pipeName,
     }
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
+    if (nextPipe == INVALID_HANDLE_VALUE) {
+      // Either shutting down (running == false) or control_pipe_failed was
+      // already reported by createControlPipeInstance.
+      return;
+    }
+    pipe = nextPipe;
   }
+  // Loop left via control.shutdown: release the parked spare instance.
+  CloseHandle(pipe);
 }
 #else
 void runControlServer(const std::string &socketPath,
@@ -772,7 +976,8 @@ void runControlServer(const std::string &socketPath,
                       MeetingRecorder &recorder,
                       const Options &options,
                       std::atomic<bool> &running,
-                      const std::function<void()> &onListening) {
+                      const std::function<void()> &onListening,
+                      VcamShmRingWin *vcamShm) {
   unlink(socketPath.c_str());
   int serverFd = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
   if (serverFd < 0) {
@@ -807,7 +1012,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-        const std::string response = handleRpc(line, state, camera, previewFrames, recorder, options, running);
+      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
         if (write(client, response.c_str(), response.size()) < 0) {
           // The bridge destroyed its socket first (RPC timeout). Before
           // SIGPIPE was ignored this write ended the whole process silently;
