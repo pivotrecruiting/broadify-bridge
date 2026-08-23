@@ -1,6 +1,6 @@
 # TASK — WP6 (rc.31): stabilization package after rc.30 soak test
 
-Base: feature/vcam-rc13 @ c911f5d6 (rc.30). Round: 1/3. Field feedback 23.08.2026 (rc.30): Teams picture ✔, backgrounds ✔, keyer good,
+Base: feature/vcam-rc13 @ c911f5d6 (rc.30). Round: 2/3. Field feedback 23.08.2026 (rc.30): Teams picture ✔, backgrounds ✔, keyer good,
 noise ok. New: (1) Windows camera very pixelated; (2) Windows content paging: page goes out and never comes back; (4) macOS: key or
 picture gone ~1 s every few minutes; (5) SHM engages only after the DLL's 5-s poll. (Graphics stutter = separate WP7/rc.32.)
 Rule: these functions must not regress again — every fix gets a test and a log line that proves it in the field.
@@ -67,3 +67,16 @@ Notes: N7 emit events outside `MediaPageCache::mutex_`; N12 real LRU=4 eviction 
 N15 rename test reason `"zero_geometry"` to a real reason; N6 list Apple-affecting S2 hunks in the report; `empty_valid` vs `no_subject`
 distinct or one removed; `AVCaptureSessionRuntimeError` → `camera_runtime_error` event; Apple retained branch: set `staleMaskActive` only when
 the retained mask is older than freshMaskAgeMs.
+
+## Review round 2 (HEAD c7803d31; verifier green; R1-1/R1-2/R1-4 PASS) — MUST-FIX
+- R2-1 REGRESSION (Windows+macOS): `compositor_input_selection.cpp:20-28` now requires mask width/height == camera frame. Masks are never at
+  camera resolution (MODNet 512x288 readback, D3D11 guided work size 512, CoreML refine ≤960) → Windows retained-mask paths
+  (`frame_pipeline.cpp:2327/2556/2795`) fall through to the EMPTY mask (presenter keyed out on every cadence-skip/warmup/governor-off frame);
+  Apple `lastAppleFusedMask` is cleared every frame (S4 never fires). Fix: remove the equality gate (the compositor resamples); at most check
+  aspect ratio within 1 %; restore the rc.30 test expectation (2x1 mask vs 4x2 frame → retained) + add a 512x288-vs-1920x1080 case. Same for the
+  explicit Apple geometry clear at ~:2398-2404 (compare against the mask's own source geometry/camera index, not pixel size).
+- R2-2 macOS over-coverage hold (`frame_pipeline.cpp:285-290`): held mask keeps the stale `timestampNs` → after 5 s `appleRetainedMaskAgeMs`
+  expires → skip frames un-keyed → flicker. Fix: re-stamp `fusedMask.timestampNs` with the current frame timestamp while holding. DECISION:
+  bound the over-coverage hold to 90 frames (~3 s), then pass the matte through (never stuck on a frozen silhouette) — document it.
+Notes: N2 docs — checklist row no longer expects `fused_reused`; performance doc subtype wording; mention 5-s bound + 3-s hold.
+N3 `no_subject` false for `background_only` — state in report (no consumer). N5 gate prefetch scan on path change.
