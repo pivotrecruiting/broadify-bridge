@@ -149,6 +149,20 @@ Die Windows-VCam-DLL kopiert SHM-Payloads nur noch im
 Frame-Event, aktualisiert Reader-Liveness und prueft Heartbeat/Generation/
 2-s-No-Frame-Fallback, kopiert aber nicht mehr bei jedem Event.
 
+Solange die DLL noch kein Control-/Stream-Mapping oder nur Null-Geometrie
+sieht, pollt sie SHM nach 1 s erneut. Nach einem geoeffneten, aber stalen
+Mapping bleibt der Backoff bei 5 s. In der Feldmessung sollte SHM damit
+innerhalb von ca. 3 s nach Helper-Start sichtbar werden.
+
+Gerenderte Content-/Deck-Seiten werden nicht mehr auf dem Render-Thread
+dekodiert. Der Helper haelt bis zu vier dekodierte Seiten im LRU-Cache, laedt
+Seiten auf einem Worker und zeigt beim Seitenwechsel die zuletzt dekodierte
+Seite weiter, bis die neue Seite bereit ist. Prefetch laeuft fuer `page +/- 1`
+nur, wenn der Pfad ein eindeutiges Seitennummern-Muster enthaelt (z. B.
+`page-02.png`); bei nicht-deterministischen Pfaden wird nichts vorab geladen.
+Erfolg und Fehler stehen als `media_page_loaded` bzw.
+`media_page_load_failed` in den Helper-Events.
+
 Der Raw-Frame-Server sendet Heartbeats aus dem zuletzt gespeicherten Frame und
 meldet `meeting_vcam_raw no_frame_on_connect`, wenn ein VCam-Client nach 2 s
 noch keinen Frame bekommen hat. Die VCam-DLL schreibt beim ersten Logeintrag
