@@ -735,18 +735,29 @@ export class MeetingHelperManager {
       return { manager, engine: null, recording: null };
     }
     try {
-      const [engineState, framebus, keyer, recordingResult] = await Promise.all([
-        this.client.getState(),
-        this.client.framebusStatus(),
-        this.client.keyerGet(),
-        // Best effort: a failing recording.status must not take down the whole
-        // snapshot (and older helpers may not implement the RPC).
-        this.client.recordingStatus().catch(() => null),
-      ]);
+      const [engineState, framebus, keyer, recordingResult, virtualCamera] =
+        await Promise.all([
+          this.client.getState(),
+          this.client.framebusStatus(),
+          this.client.keyerGet(),
+          // Best effort: a failing recording.status must not take down the whole
+          // snapshot (and older helpers may not implement the RPC).
+          this.client.recordingStatus().catch(() => null),
+          // Windows: output.vcam.status (active/supported/last_error);
+          // macOS: system-extension status. Best effort like recording.
+          this.client.virtualCameraStatus().catch(() => null),
+        ]);
       const recordingRaw = recordingResult?.recording;
       const recording =
         recordingRaw && typeof recordingRaw === "object" ? recordingRaw : null;
-      return { manager, engine: engineState, framebus, keyer, recording };
+      return {
+        manager,
+        engine: engineState,
+        framebus,
+        keyer,
+        recording,
+        virtualCamera,
+      };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       return { manager, engine: null, engineError: message, recording: null };
