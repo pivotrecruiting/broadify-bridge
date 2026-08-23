@@ -75,6 +75,11 @@ class CameraSource {
     }
     return true;
   }
+#if defined(_WIN32)
+  virtual bool takeLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
+    return copyLatestFrameIfNew(lastTimestampNs, frame);
+  }
+#endif
   virtual bool waitForFrameOrTimeout(
       uint64_t lastTimestampNs,
       std::chrono::steady_clock::time_point deadline) {

@@ -1921,7 +1921,11 @@ void runFramePipeline(const Options &options,
       // Copy straight into latestCameraFrame: the intermediate local frame
       // cost an extra full-frame copy (~3.7 MB) per camera frame.
       const bool hasNewCameraFrame = runtime.cameraRunning &&
+#if defined(_WIN32)
+          camera.takeLatestFrameIfNew(lastCameraTimestampNs, latestCameraFrame) &&
+#else
           camera.copyLatestFrameIfNew(lastCameraTimestampNs, latestCameraFrame) &&
+#endif
           !latestCameraFrame.rgba.empty();
       if (hasNewCameraFrame) {
         lastCameraTimestampNs = latestCameraFrame.timestampNs;
