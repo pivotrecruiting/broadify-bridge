@@ -253,10 +253,12 @@ struct FusedStabilizerState {
   AlphaMask prevMask;
   double prevCoverage = 0.0;
   int collapseHold = 0;
+  int overCoverageHold = 0;
   void reset() {
     prevMask = AlphaMask{};
     prevCoverage = 0.0;
     collapseHold = 0;
+    overCoverageHold = 0;
   }
 };
 
@@ -276,17 +278,28 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   AlphaMask &prevFusedMask = fusedStabilizerState().prevMask;
   double &prevFusedCoverage = fusedStabilizerState().prevCoverage;
   int &fusedCollapseHold = fusedStabilizerState().collapseHold;
+  int &fusedOverCoverageHold = fusedStabilizerState().overCoverageHold;
 #if defined(_WIN32)
   constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
+  constexpr int kMaxFusedOverCoverageHold = 12;
 #else
   constexpr int kMaxFusedCollapseHold = 45;  // ~1.5s at 30fps
+  constexpr int kMaxFusedOverCoverageHold = 90;  // ~3s at 30fps
 #endif
   const double fusedCoverage = computeMaskCoverage(fusedMask);
-  if (fusedCoverage > kMaxForegroundCoverage && !prevFusedMask.alpha.empty()) {
+  const bool fusedOverCoverage = fusedCoverage > kMaxForegroundCoverage;
 #if !defined(_WIN32)
+  const uint64_t currentMaskTimestampNs = fusedMask.timestampNs;
+  if (fusedOverCoverage && !prevFusedMask.alpha.empty() &&
+      fusedOverCoverageHold < kMaxFusedOverCoverageHold) {
     fusedMask = prevFusedMask;
+    fusedMask.timestampNs = currentMaskTimestampNs;
+    ++fusedOverCoverageHold;
     return;
+  }
 #endif
+  if (!fusedOverCoverage) {
+    fusedOverCoverageHold = 0;
   }
   // Subject-presence tracking (Option A): only ever called on SUCCESSFUL
   // fused inference, so every feed counts towards the empty streak. When the
@@ -307,7 +320,8 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   }
   const bool fusedCollapsed =
       fusedCoverage < kMinForegroundCoverage ||
-      fusedCoverage > kMaxForegroundCoverage ||
+      (fusedOverCoverage &&
+       fusedOverCoverageHold < kMaxFusedOverCoverageHold) ||
       (prevFusedCoverage > kHealthyCoverage &&
        fusedCoverage < prevFusedCoverage * kCollapseDropRatio);
   if (fusedCollapsed && !prevFusedMask.alpha.empty() &&
@@ -2390,17 +2404,25 @@ void runFramePipeline(const Options &options,
 #if defined(__APPLE__)
       static AlphaMask lastAppleFusedMask;
       static int lastAppleFusedCameraIndex = -1;
+      static uint32_t lastAppleFusedSourceWidth = 0u;
+      static uint32_t lastAppleFusedSourceHeight = 0u;
       const int currentAppleCameraIndex = camera.activeCameraIndex();
       const auto clearAppleFusedMask = [&] {
         lastAppleFusedMask = AlphaMask{};
         lastAppleFusedCameraIndex = currentAppleCameraIndex;
+        lastAppleFusedSourceWidth =
+            hasCameraFrame ? latestCameraFrame.width : 0u;
+        lastAppleFusedSourceHeight =
+            hasCameraFrame ? latestCameraFrame.height : 0u;
       };
       if (!snapshot.keyerEnabled || !gpuPipelineEnabled() ||
           (lastAppleFusedCameraIndex != -1 &&
            lastAppleFusedCameraIndex != currentAppleCameraIndex) ||
           (!lastAppleFusedMask.alpha.empty() && hasCameraFrame &&
-           (lastAppleFusedMask.width != latestCameraFrame.width ||
-            lastAppleFusedMask.height != latestCameraFrame.height))) {
+           lastAppleFusedSourceWidth != 0u &&
+           lastAppleFusedSourceHeight != 0u &&
+           (lastAppleFusedSourceWidth != latestCameraFrame.width ||
+            lastAppleFusedSourceHeight != latestCameraFrame.height))) {
         clearAppleFusedMask();
       }
       const double appleRetainedMaskAgeMs =
@@ -2446,6 +2468,8 @@ void runFramePipeline(const Options &options,
           stabilizeFusedMask(fusedMask, /*applyEma=*/false);
           lastAppleFusedMask = fusedMask;
           lastAppleFusedCameraIndex = currentAppleCameraIndex;
+          lastAppleFusedSourceWidth = latestCameraFrame.width;
+          lastAppleFusedSourceHeight = latestCameraFrame.height;
           frameForCompositor = &latestCameraFrame;
           maskForCompositor = &fusedMask;
           shouldRenderProgram = true;

@@ -17,15 +17,13 @@ bool selectRetainedOrEmptyMaskForLiveKeyer(const AlphaMask &lastGoodMask,
                                            double maxRetainedAgeMs) {
   selectedMask = AlphaMask{};
   if (!lastGoodMask.alpha.empty()) {
-    const bool sameGeometry =
-        lastGoodMask.width == frameWidth && lastGoodMask.height == frameHeight;
     const double ageMs =
         currentFrameTimestampNs >= lastGoodMask.timestampNs
             ? static_cast<double>(currentFrameTimestampNs -
                                   lastGoodMask.timestampNs) /
                   1000000.0
             : 0.0;
-    if (sameGeometry && ageMs <= maxRetainedAgeMs) {
+    if (ageMs <= maxRetainedAgeMs) {
       selectedMask = lastGoodMask;
       selectedMask.timestampNs = currentFrameTimestampNs;
       return true;

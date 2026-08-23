@@ -71,6 +71,7 @@ class MediaPageCache {
   std::vector<std::string> queue_;
   std::shared_ptr<const MediaPageImage> displayedImage_;
   std::string displayedPath_;
+  std::string lastPrefetchPath_;
   uint64_t displayedGeneration_ = 0;
   uint64_t nextGeneration_ = 1;
   uint64_t useCounter_ = 1;

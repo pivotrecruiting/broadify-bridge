@@ -116,10 +116,10 @@ Helper auf 30 fps konfiguriert ist.
 MediaFoundation bevorzugt einen angebotenen nativen Kamera-Typ mit maximal
 30 fps und default maximal 1920x1080 (`BROADIFY_MEETING_CAMERA_MAX_HEIGHT=1080`;
 `0` deaktiviert die Hoehenklemme; Reopen-Pfade werden ebenfalls geklemmt).
-Die Subtype-Praeferenz ist NV12, YUY2, MJPG, entscheidet aber nur zwischen
-Kandidaten, die die angefragte Groesse erreichen; ein kleinerer Raw-Typ darf
-einen gleich schnellen 1080p-Typ nicht verdraengen. Danach wird weiter RGB32
-fuer den Helper ausgegeben. Der ausgewaehlte native Typ wird als
+Die Subtype-Praeferenz ist NV12, YUY2, MJPG, entscheidet aber nur bei gleicher
+Pixelzahl innerhalb derselben Groessenklasse; ein kleinerer Raw-Typ darf einen
+gleich schnellen 1080p-Typ nicht verdraengen. Danach wird weiter RGB32 fuer den
+Helper ausgegeben. Der ausgewaehlte native Typ wird als
 `camera_native_media_type_selected` in die Sidecar-Events geloggt. Der
 MODNet-Maskenreadback bleibt auf Model-Resolution (512 -> 512x288 bei 16:9)
 und wird nicht auf Kamera-Aufloesung hochskaliert; der gemessene Trade-off

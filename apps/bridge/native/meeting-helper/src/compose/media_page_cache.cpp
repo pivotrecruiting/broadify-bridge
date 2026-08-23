@@ -165,11 +165,17 @@ MediaPageCacheResult MediaPageCache::get(const std::string &path,
     displayedImage_ = entry.image;
     displayedPath_ = path;
     displayedGeneration_ = entry.generation;
-    prefetchSiblingsLocked(path, page, pageCount);
+    if (lastPrefetchPath_ != path) {
+      prefetchSiblingsLocked(path, page, pageCount);
+      lastPrefetchPath_ = path;
+    }
     return MediaPageCacheResult{entry.image, entry.generation, path, false};
   }
   enqueueLocked(path, false);
-  prefetchSiblingsLocked(path, page, pageCount);
+  if (lastPrefetchPath_ != path) {
+    prefetchSiblingsLocked(path, page, pageCount);
+    lastPrefetchPath_ = path;
+  }
   return MediaPageCacheResult{displayedImage_, displayedGeneration_,
                               displayedPath_, true};
 }

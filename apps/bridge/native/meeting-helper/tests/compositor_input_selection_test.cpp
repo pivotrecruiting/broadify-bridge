@@ -44,17 +44,30 @@ int main() {
                    !selected.emptyValid,
                "retained mask is timestamp-rebased but otherwise unchanged");
   ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
+                   lastGood, 2'500'000'000ull, 4u, 2u, selected),
+               "rc.30 parity: 2x1 retained mask is valid for a 4x2 frame");
+  ok &= expect(selected.width == 2u && selected.height == 1u &&
+                   selected.alpha == lastGood.alpha && !selected.emptyValid,
+               "retained mask keeps its own resolution for compositor resample");
+  AlphaMask modnetMask;
+  modnetMask.width = 512u;
+  modnetMask.height = 288u;
+  modnetMask.timestampNs = 10'000'000'000ull;
+  modnetMask.alpha.assign(512u * 288u, 192u);
+  ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
+                   modnetMask, 11'000'000'000ull, 1920u, 1080u, selected),
+               "512x288 retained mask is valid for a 1920x1080 frame");
+  ok &= expect(selected.width == 512u && selected.height == 288u &&
+                   selected.alpha.size() == modnetMask.alpha.size() &&
+                   selected.timestampNs == 11'000'000'000ull &&
+                   !selected.emptyValid,
+               "retained MODNet mask is timestamp-rebased only");
+  ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
                    lastGood, 3'100'000'000ull, 4u, 2u, selected),
                "live keyer selects empty mask after retention expires");
   ok &= expect(selected.width == 4u && selected.height == 2u &&
                    selected.alpha.size() == 8u && selected.emptyValid,
                "expired retention becomes a keyed zero mask");
-  ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
-                   lastGood, 2'500'000'000ull, 4u, 2u, selected),
-               "geometry mismatch selects empty mask instead of retained");
-  ok &= expect(selected.width == 4u && selected.height == 2u &&
-                   selected.emptyValid,
-               "geometry mismatch uses current frame dimensions");
   ok &= expect(selectRetainedOrEmptyMaskForLiveKeyer(
                    AlphaMask{}, 5'000'000ull, 3u, 2u, selected),
                "startup with loaded keyer selects empty mask");
