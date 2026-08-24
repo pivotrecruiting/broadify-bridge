@@ -19,6 +19,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -325,6 +326,7 @@ struct D3D11Context {
   LayerTexture mask;
   LayerTexture backgroundImage;
   uint64_t cameraUploadCount = 0;
+  double cameraUploadMs = -1.0;
 };
 
 // The program loop is the only caller, so no locking is needed.
@@ -590,6 +592,7 @@ bool uploadCameraFrame(const VideoFrame *frame) {
     return false;
   }
   bool didUpload = false;
+  const auto uploadStart = std::chrono::steady_clock::now();
   if (!uploadLayer(context().camera, frame->rgba.data(), frame->width,
                    frame->height, frame->timestampNs,
                    DXGI_FORMAT_R8G8B8A8_UNORM, 4u, &didUpload)) {
@@ -597,6 +600,9 @@ bool uploadCameraFrame(const VideoFrame *frame) {
   }
   if (didUpload) {
     ++context().cameraUploadCount;
+    const auto uploadEnd = std::chrono::steady_clock::now();
+    context().cameraUploadMs =
+        std::chrono::duration<double, std::milli>(uploadEnd - uploadStart).count();
   }
   return true;
 }
@@ -730,6 +736,10 @@ bool renderProgramFrameD3D11(const MetalComposePlan &plan,
 
 uint64_t d3d11CompositorCameraUploadCount() {
   return context().cameraUploadCount;
+}
+
+double d3d11CompositorCameraUploadMs() {
+  return context().cameraUploadMs;
 }
 
 uint32_t d3d11CompositorStagingReadbackDepth() {

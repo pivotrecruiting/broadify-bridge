@@ -10,6 +10,7 @@ namespace {
 // Field-validated within ~10% (2026-08: 512/320/256 live measurements).
 constexpr double kAreaScale320 = 0.390625;
 constexpr double kAreaScale256 = 0.25;
+constexpr double kOverheadFloorFactor = 0.5;
 
 GovernorTier tierBelow(GovernorTier tier) {
   switch (tier) {
@@ -67,9 +68,11 @@ KeyerAutoGovernor::KeyerAutoGovernor(const KeyerGovernorConfig &config)
       reprobeInterval_(config.reprobeBaseInterval) {}
 
 double KeyerAutoGovernor::stepDownThresholdMs() const {
-  return config_.stepDownOverrideMs > 0.0
-             ? config_.stepDownOverrideMs
-             : config_.stepDownFactor * config_.frameBudgetMs;
+  if (config_.stepDownOverrideMs > 0.0) {
+    return config_.stepDownOverrideMs;
+  }
+  const double base = config_.stepDownFactor * config_.frameBudgetMs;
+  return std::max(kOverheadFloorFactor * base, base - frameOverheadMs_);
 }
 
 double KeyerAutoGovernor::stepUpThresholdMs() const {
@@ -265,6 +268,10 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
   }
 }
 
+void KeyerAutoGovernor::setFrameOverheadMs(double overheadMs) {
+  frameOverheadMs_ = std::max(0.0, overheadMs);
+}
+
 void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
   // Any step-down invalidates a deferred (not yet committed) step-up.
   liteStepUpPending_ = false;
@@ -320,6 +327,7 @@ void KeyerAutoGovernor::reset() {
   seeded_ = false;
   liteStepUpPending_ = false;
   emaMs_ = -1.0;
+  frameOverheadMs_ = 0.0;
   samples_ = 0u;
   liteGateOverBudgetSamples_ = 0u;
   stepUpWatch_ = StepUpWatch::None;

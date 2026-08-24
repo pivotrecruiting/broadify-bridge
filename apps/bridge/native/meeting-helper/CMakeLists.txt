@@ -327,6 +327,9 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(camera_media_type_rank_test
     tests/camera_media_type_rank_test.cpp
   )
+  add_executable(latest_frame_slot_test
+    tests/latest_frame_slot_test.cpp
+  )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
@@ -334,6 +337,9 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(keyer_cadence_test
     tests/keyer_cadence_test.cpp
     src/pipeline/keyer_cadence.cpp
+  )
+  add_executable(budget_overrun_reporter_test
+    tests/budget_overrun_reporter_test.cpp
   )
   add_executable(mask_retention_test
     tests/mask_retention_test.cpp
@@ -473,8 +479,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     pixel_swizzle_test
     ort_session_options_policy_test
     camera_media_type_rank_test
+    latest_frame_slot_test
     keyer_governor_test
     keyer_cadence_test
+    budget_overrun_reporter_test
     mask_retention_test
     subject_presence_test
     frame_pipeline_stall_test

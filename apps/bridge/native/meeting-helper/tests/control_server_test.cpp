@@ -253,6 +253,12 @@ int main() {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.keyerMetrics.vcamPublishMs = 1.25;
     state.keyerMetrics.vcamPublishDropped = 7u;
+#if defined(_WIN32)
+    state.keyerMetrics.cameraUploadMs = 0.33;
+    state.keyerMetrics.frameOverheadMs = 4.5;
+    state.keyerMetrics.budgetThresholdMs = 18.0;
+    state.keyerMetrics.prepassGpu = false;
+#endif
     state.degradationStage = "no_subject";
   }
   const std::string keyer =
@@ -265,6 +271,25 @@ int main() {
     server.join();
     fail("keyer.get did not include vcam publish/no-subject fields");
   }
+#if defined(_WIN32)
+  if (!contains(keyer, "\"camera_upload_ms\":0.330000") ||
+      !contains(keyer, "\"frame_overhead_ms\":4.500000") ||
+      !contains(keyer, "\"budget_threshold_ms\":18.000000") ||
+      !contains(keyer, "\"prepass_gpu\":false")) {
+    running.store(false);
+    server.join();
+    fail("keyer.get did not include Windows budget/upload metrics");
+  }
+#else
+  if (contains(keyer, "\"camera_upload_ms\"") ||
+      contains(keyer, "\"frame_overhead_ms\"") ||
+      contains(keyer, "\"budget_threshold_ms\"") ||
+      contains(keyer, "\"prepass_gpu\"")) {
+    running.store(false);
+    server.join();
+    fail("keyer.get changed macOS metric JSON");
+  }
+#endif
 
   const std::string mediaPath = "C:\\Users\\J\303\266rg\\Decks\\page-02.png";
   const std::string mediaUpdate =

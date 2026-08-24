@@ -152,6 +152,12 @@ void markProgramDirty(MeetingState &state, bool graphicsDirty = false) {
 std::string keyerMetricsJson(const KeyerMetrics &metrics) {
   std::ostringstream result;
   result << "{\"camera_copy_ms\":" << metricNumber(metrics.cameraCopyMs)
+#if defined(_WIN32)
+         << ",\"camera_upload_ms\":" << metricNumber(metrics.cameraUploadMs)
+         << ",\"frame_overhead_ms\":" << metricNumber(metrics.frameOverheadMs)
+         << ",\"budget_threshold_ms\":" << metricNumber(metrics.budgetThresholdMs)
+         << ",\"prepass_gpu\":" << (metrics.prepassGpu ? "true" : "false")
+#endif
          << ",\"tensor_ms\":" << metricNumber(metrics.tensorMs)
          << ",\"session_run_ms\":" << metricNumber(metrics.sessionRunMs)
          << ",\"mask_apply_ms\":" << metricNumber(metrics.maskApplyMs)
