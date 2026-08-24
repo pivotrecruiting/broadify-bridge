@@ -30,7 +30,11 @@ using broadify::meeting::reapCompletedRawFrameWorkers;
 using broadify::meeting::runRawFrameServer;
 
 constexpr uint32_t kRawFrameMagic = 0x47524642u;
-constexpr size_t kRawFrameHeaderSize = 40u;
+constexpr uint32_t kRawFrameVersion1 = 1u;
+constexpr uint32_t kRawFrameVersion2 = 2u;
+constexpr uint32_t kRawFramePixelFormatBgra8 = 2u;
+constexpr size_t kRawFrameHeaderV1Size = 32u;
+constexpr size_t kRawFrameHeaderV2Size = 40u;
 constexpr uint64_t kRawFrameHeartbeatSequenceMask = 1ull << 63;
 
 void fail(const char *message) {
@@ -58,6 +62,19 @@ uint64_t readU64Le(const uint8_t *p) {
     value |= static_cast<uint64_t>(p[i]) << (8 * i);
   }
   return value;
+}
+
+void writeU32Le(uint8_t *p, uint32_t value) {
+  p[0] = static_cast<uint8_t>(value & 0xffu);
+  p[1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+  p[2] = static_cast<uint8_t>((value >> 16u) & 0xffu);
+  p[3] = static_cast<uint8_t>((value >> 24u) & 0xffu);
+}
+
+void writeU64Le(uint8_t *p, uint64_t value) {
+  for (int i = 0; i < 8; i++) {
+    p[i] = static_cast<uint8_t>((value >> (8 * i)) & 0xffu);
+  }
 }
 
 bool recvExact(int socketHandle, uint8_t *data, size_t size) {
@@ -102,7 +119,7 @@ uint16_t reservePort() {
   return port;
 }
 
-int connectClient(uint16_t port) {
+int connectClient(uint16_t port, bool acceptsKeepAliveV2) {
   const int socketHandle = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
   if (socketHandle < 0) {
     fail("client socket");
@@ -126,12 +143,14 @@ int connectClient(uint16_t port) {
       0) {
     fail("connect");
   }
-  const char request[] =
+  std::string request =
       "GET /stream.rgba HTTP/1.1\r\n"
-      "Host: 127.0.0.1\r\n"
-      "X-Broadify-Accepts: keepalive-v2\r\n"
-      "Connection: close\r\n\r\n";
-  if (send(socketHandle, request, static_cast<int>(sizeof(request) - 1), 0) <=
+      "Host: 127.0.0.1\r\n";
+  if (acceptsKeepAliveV2) {
+    request += "X-Broadify-Accepts: keepalive-v2\r\n";
+  }
+  request += "Connection: close\r\n\r\n";
+  if (send(socketHandle, request.c_str(), static_cast<int>(request.size()), 0) <=
       0) {
     fail("send request");
   }
@@ -154,8 +173,13 @@ std::string readHttpHeader(int socketHandle) {
   return header;
 }
 
-uint64_t readFrameSequence(int socketHandle) {
-  std::vector<uint8_t> header(kRawFrameHeaderSize);
+struct RawFrameRecord {
+  std::vector<uint8_t> header;
+  std::vector<uint8_t> payload;
+};
+
+RawFrameRecord readFrameRecord(int socketHandle, size_t headerSize) {
+  std::vector<uint8_t> header(headerSize);
   if (!recvExact(socketHandle, header.data(), header.size())) {
     fail("read raw frame header");
   }
@@ -167,7 +191,35 @@ uint64_t readFrameSequence(int socketHandle) {
   if (!recvExact(socketHandle, payload.data(), payload.size())) {
     fail("read raw frame payload");
   }
-  return readU64Le(header.data() + 24);
+  return RawFrameRecord{header, payload};
+}
+
+uint64_t readFrameSequence(int socketHandle, size_t headerSize) {
+  const RawFrameRecord record = readFrameRecord(socketHandle, headerSize);
+  return readU64Le(record.header.data() + 24);
+}
+
+bool recvTimesOut(int socketHandle) {
+  uint8_t byte = 0;
+  const int result = recv(socketHandle, reinterpret_cast<char *>(&byte), 1, 0);
+  return result <= 0;
+}
+
+std::vector<uint8_t> buildLegacyV1RecordBytes() {
+  std::vector<uint8_t> expected(kRawFrameHeaderV1Size + 16u);
+  writeU32Le(expected.data(), kRawFrameMagic);
+  writeU32Le(expected.data() + 4u, kRawFrameVersion1);
+  writeU32Le(expected.data() + 8u, 2u);
+  writeU32Le(expected.data() + 12u, 2u);
+  writeU32Le(expected.data() + 16u, kRawFramePixelFormatBgra8);
+  writeU32Le(expected.data() + 20u, 16u);
+  writeU64Le(expected.data() + 24u, 1u);
+  const uint8_t bgra[16] = {
+      0, 0, 255, 255, 0, 255, 0, 255,
+      255, 0, 0, 255, 255, 255, 255, 255,
+  };
+  std::memcpy(expected.data() + kRawFrameHeaderV1Size, bgra, sizeof(bgra));
+  return expected;
 }
 
 void assertDisarmedHandshake(uint16_t port, MeetingState &state) {
@@ -175,7 +227,7 @@ void assertDisarmedHandshake(uint16_t port, MeetingState &state) {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.vcamRawRunning = false;
   }
-  const int client = connectClient(port);
+  const int client = connectClient(port, true);
   const std::string header = readHttpHeader(client);
   closeSocketHandle(client);
   if (header.find("HTTP/1.1 503 Service Unavailable\r\n") ==
@@ -218,9 +270,28 @@ int main() {
 
   assertDisarmedHandshake(port, state);
 
-  const int emptyClient = connectClient(port);
+  const int legacyEmptyClient = connectClient(port, false);
+  (void)readHttpHeader(legacyEmptyClient);
+  if (!recvTimesOut(legacyEmptyClient)) {
+    fail("legacy v1 clients must not receive zero-length keep-alives");
+  }
+  closeSocketHandle(legacyEmptyClient);
+
+  const int emptyClient = connectClient(port, true);
   (void)readHttpHeader(emptyClient);
-  const uint64_t emptyHeartbeat = readFrameSequence(emptyClient);
+  const RawFrameRecord emptyHeartbeatRecord =
+      readFrameRecord(emptyClient, kRawFrameHeaderV2Size);
+  if (readU32Le(emptyHeartbeatRecord.header.data() + 4) != kRawFrameVersion2) {
+    fail("v2 client must receive version 2 records");
+  }
+  if (emptyHeartbeatRecord.header.size() != kRawFrameHeaderV2Size) {
+    fail("v2 header must be 40 bytes");
+  }
+  if (readU32Le(emptyHeartbeatRecord.header.data() + 20) != 0u) {
+    fail("v2 empty heartbeat must have zero payload");
+  }
+  const uint64_t emptyHeartbeat =
+      readU64Le(emptyHeartbeatRecord.header.data() + 24);
   if ((emptyHeartbeat & kRawFrameHeartbeatSequenceMask) == 0u) {
     fail("empty stream heartbeat sequence must use the high-bit namespace");
   }
@@ -232,19 +303,35 @@ int main() {
   };
   previewFrames.publish(2, 2, rgba, sizeof(rgba));
 
-  const int clientA = connectClient(port);
-  const int clientB = connectClient(port);
+  const int clientA = connectClient(port, true);
+  const int clientB = connectClient(port, true);
+  const int legacyClient = connectClient(port, false);
   (void)readHttpHeader(clientA);
   (void)readHttpHeader(clientB);
+  (void)readHttpHeader(legacyClient);
 
-  const uint64_t firstA = readFrameSequence(clientA);
-  const uint64_t firstB = readFrameSequence(clientB);
+  const uint64_t firstA = readFrameSequence(clientA, kRawFrameHeaderV2Size);
+  const uint64_t firstB = readFrameSequence(clientB, kRawFrameHeaderV2Size);
   if (firstA == 0 || firstB == 0) {
     fail("both clients must receive an initial frame");
   }
+  const RawFrameRecord firstLegacy =
+      readFrameRecord(legacyClient, kRawFrameHeaderV1Size);
+  if (readU32Le(firstLegacy.header.data() + 4) != kRawFrameVersion1) {
+    fail("legacy client must receive version 1 records");
+  }
+  if (firstLegacy.header.size() != kRawFrameHeaderV1Size) {
+    fail("v1 header must be 32 bytes");
+  }
+  std::vector<uint8_t> firstLegacyBytes = firstLegacy.header;
+  firstLegacyBytes.insert(firstLegacyBytes.end(), firstLegacy.payload.begin(),
+                          firstLegacy.payload.end());
+  if (firstLegacyBytes != buildLegacyV1RecordBytes()) {
+    fail("v1 record bytes must match the v0.23.5 writer layout");
+  }
 
   const auto heartbeatStart = std::chrono::steady_clock::now();
-  const uint64_t heartbeatA = readFrameSequence(clientA);
+  const uint64_t heartbeatA = readFrameSequence(clientA, kRawFrameHeaderV2Size);
   const auto heartbeatMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::steady_clock::now() - heartbeatStart)
                                .count();
@@ -257,9 +344,18 @@ int main() {
   if (heartbeatMs < 800 || heartbeatMs > 1800) {
     fail("heartbeat cadence outside expected window");
   }
+  const RawFrameRecord legacyHeartbeat =
+      readFrameRecord(legacyClient, kRawFrameHeaderV1Size);
+  if (readU32Le(legacyHeartbeat.header.data() + 20) != 16u) {
+    fail("legacy v1 heartbeat must resend the full frame payload");
+  }
+  if (legacyHeartbeat.payload.empty()) {
+    fail("legacy v1 heartbeat must not be zero-length");
+  }
 
   closeSocketHandle(clientA);
   closeSocketHandle(clientB);
+  closeSocketHandle(legacyClient);
   running.store(false);
   {
     std::lock_guard<std::mutex> lock(state.mutex);
