@@ -1,6 +1,6 @@
 # Broadify Legal Docs (Desktop App + Relay) - Entwurfsset
 
-Stand: 25. Februar 2026
+Stand: 24. August 2026 (EULA, Datenschutzhinweise und Security-Transparenz in Version 2.0 codeverifiziert gegen v0.25.2; englische Fassungen unter `en/`)
 
 Hinweis: Dieses Set ist ein technisch abgestimmter Entwurf und keine Rechtsberatung. Die finale Freigabe sollte durch einen IT-/Medienrechtsanwalt erfolgen.
 

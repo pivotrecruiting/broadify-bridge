@@ -1,310 +1,102 @@
-# Datenschutzerklaerung (Ergaenzung) - Broadify Desktop App, Bridge und Relay
+# Datenschutzhinweise — broadify Bridge (WebApp, Bridge, Relay)
 
-Stand: 25. Februar 2026 (Entwurf)
+Stand: 24. August 2026 · Dokumentversion 2.0 · Bezugsstand der Software: broadify Bridge v0.25.2
 
-Hinweis: Mustertext / keine Rechtsberatung. Dieser Text ist als eigenstaendiger Abschnitt oder separate Datenschutzerklaerung fuer die installierbare Software gedacht. Website-/Marketing-/Stripe-Texte allein sind hierfuer nicht ausreichend.
+> Verbindlichkeitshinweis: Alle technischen Aussagen sind aus dem Quellcode der Version v0.25.2 abgeleitet und verifiziert; Speicher- und Übertragungswege sind mit Quellenangabe im „Technischen Anhang" dokumentiert. Mit `[…]` markierte Angaben sind vor Veröffentlichung festzulegen. Englische Fassung: `docs/legal/en/privacy-notice-broadify-bridge.md`.
 
-## 1. Worum es in diesem Dokument geht
+## 1. Gegenstand
 
-Diese Datenschutzhinweise beschreiben die Verarbeitung personenbezogener Daten bei der Nutzung der installierbaren Broadify Desktop App ("Broadify Bridge"), der lokal laufenden Bridge-Komponente und der damit verbundenen Remote-Steuerung ueber die Broadify WebApp und den Relay-Dienst.
+Diese Hinweise beschreiben die Verarbeitung personenbezogener Daten bei Nutzung der Desktop-Software **broadify Bridge** (Produktlinien broadifyStudio, broadifyMeeting, broadifyConference), der zugehörigen **WebApp** (app.broadify.de) und des **Relay-Dienstes**, der Steuerkommandos zwischen WebApp und installierter Software vermittelt. Sie ergänzen die Datenschutzhinweise für Website, WebApp-Konto/Abrechnung und Zahlungsabwicklung.
 
-Dieses Dokument ergaenzt die Datenschutzhinweise fuer:
+## 2. Verantwortlicher
 
-- Website (Marketing, Cookies, Kontaktformulare),
-- WebApp (Account, Login, Subscription, Organisationsverwaltung),
-- Zahlungsabwicklung (z. B. Stripe).
+Verantwortlicher (Art. 4 Nr. 7 DSGVO): **[LEGAL_ENTITY_NAME] · [ADDRESS] · [EMAIL_PRIVACY]** · Datenschutzkontakt/DSB: **[DPO_CONTACT]**
 
-## 2. Verantwortlicher / Kontakt
+Bei produktiver B2B-Nutzung verarbeitet broadify Inhalts- und Betriebsdaten regelmäßig **im Auftrag des Kunden** (Art. 28 DSGVO); ein Auftragsverarbeitungsvertrag wird bereitgestellt: **[AVV-Referenz]**. Für Konto-, Lizenz-, Abrechnungs- und Sicherheitsprozesse ist broadify Verantwortlicher.
 
-Verantwortlicher (Art. 4 Nr. 7 DSGVO):
+## 3. Leitprinzip: Lokale Verarbeitung von Video und Audio
 
-- `[LEGAL_ENTITY_NAME]`
-- `[ADDRESS]`
-- `[EMAIL_PRIVACY]`
+Die Kernverarbeitung der Software erfolgt **vollständig auf dem Endgerät**:
 
-Datenschutzkontakt / DSB (falls vorhanden):
+- Kamerabild-Erfassung, Personen-Freistellung (KI-Segmentierung mit lokal mitgelieferten Modellen), Hintergrund-/Inhaltseinblendung und die Bereitstellung als virtuelle Kamera laufen ausschließlich lokal. Der native Verarbeitungsprozess besitzt **keinerlei ausgehende Netzwerkverbindungen**; seine Schnittstellen sind an die lokale Maschine (Loopback bzw. lokaler Speicher) gebunden.
+- Aufzeichnungen werden als MP4-Datei **lokal** gespeichert (Standard: Ordner „Filme"/„Videos" des Nutzers bzw. vom Nutzer gewählter Pfad). Es existiert kein Code-Pfad, der Aufzeichnungen, Kamerabilder oder Ton an broadify überträgt.
+- Video-, Audio- und Bilddaten verlassen das Gerät über broadify-Infrastruktur **nicht**. Über das Relay werden ausschließlich Steuer- und Status-Nachrichten im JSON-Format übertragen.
 
-- `[DPO_CONTACT]`
+## 4. Kategorien verarbeiteter Daten, Zwecke, Rechtsgrundlagen
 
-## 3. Rollenmodell (wichtig fuer B2B)
+### 4.1 Konto- und Organisationsdaten (WebApp)
 
-Je nach Nutzung kann Broadify datenschutzrechtlich unterschiedliche Rollen einnehmen:
+Benutzerkonto, Rollen/Berechtigungen, Organisationszugehörigkeit, Plan-/Lizenzstatus. Zweck: Vertragserfüllung, Zugriffskontrolle. Rechtsgrundlage: Art. 6 Abs. 1 lit. b DSGVO. Details in den Datenschutzhinweisen der WebApp.
 
-1. Verantwortlicher
-   - fuer Account-, Lizenz-, Abrechnungs- und Sicherheitsprozesse rund um die Broadify-Dienste.
+### 4.2 Geräte- und Verbindungsdaten (Bridge/Relay)
 
-2. Auftragsverarbeiter (typisch bei B2B-Produktivnutzung)
-   - soweit ueber die Software/Relay im Auftrag des Kunden personenbezogene Inhalts- oder Betriebsdaten verarbeitet werden.
+- **Bridge-ID**: lokal erzeugte Zufalls-UUID (kein Hardware-Bezug), **Bridge-Name**: vom Nutzer frei vergeben, **App-Version**, Protokollversion und Sitzungs-UUID. Diese Daten werden beim Verbindungsaufbau an das Relay übermittelt. Die Software überträgt **keinen Rechnernamen (Hostname), keine Benutzernamen und keine Hardware-Seriennummern** an das Relay.
+- **Verbindungsprotokoll**: Beginn/Ende der Relay-Verbindung je Bridge (Tabelle `relay_bridge_sessions`: Bridge-ID, Sitzung, Region, Zeitstempel). Zweck: Betrieb, Zustellbarkeit, Sicherheit. Rechtsgrundlage: Art. 6 Abs. 1 lit. b, f DSGVO.
+- **Organisationszuordnung**: Zuordnung Bridge ↔ Organisation, „zuletzt gesehen"-Zeitstempel und letzte Version (Tabellen `bridges`, `organization_bridges`); öffentlicher Schlüssel der Bridge (`bridge_enrollment_keys`). Der private Schlüssel verbleibt ausschließlich auf dem Gerät (Dateirechte 0600).
 
-3. Getrennte Verantwortlichkeit / gemeinsame Verantwortlichkeit
-   - kann in Einzelfaellen fuer bestimmte Integrationen oder Supportprozesse relevant sein.
+### 4.3 Steuerkommandos und Statusdaten (Relay)
 
-Die konkrete Rollenverteilung ist vertraglich (inkl. AVV/DPA, falls erforderlich) festzulegen.
+- Jedes Kommando eines WebApp-Nutzers wird serverseitig signiert und enthält als Metadaten die **Nutzer-UUID, Organisations-UUID, Rolle, Ziel-Bridge, Kommando-Typ und einen Payload-Hash** (Gültigkeit 30 Sekunden). Zweck: Autorisierung und Nachvollziehbarkeit der Fernsteuerung. Rechtsgrundlage: Art. 6 Abs. 1 lit. b, f DSGVO.
+- Kommando-Umschläge (einschließlich Payload, z. B. Grafik-Texte, Gerätenamen, Ziel-IP eines Bildmischers) werden zur **Zustellung transient** in der Relay-Datenbank gehalten (`relay_pending_commands`) und nach Zustellung nicht dauerhaft benötigt. **[Konkrete Löschfrist aus dem Relay-Betrieb einsetzen — Retention-Policy.]**
+- Statusmeldungen der Bridge an die WebApp können funktionsbedingt enthalten: Gerätenamen (z. B. Kamera-/Ausgabegeräte-Bezeichnungen), die vom Nutzer konfigurierte Ziel-IP/Port eines Bildmischers im LAN, Installationspfade der Software-Komponenten sowie — bei Nutzung des Speichern-Dialogs — den vom Nutzer gewählten Aufnahmepfad. Diese Daten sind nur für autorisierte Nutzer der eigenen Organisation sichtbar.
 
-## 4. Welche Funktionen der Software datenschutzrelevant sind
+### 4.4 Inhaltsdaten (auftragsbezogen)
 
-Die Desktop-App/Bridge kann insbesondere:
+- **Grafik-Vorlagen und dynamische Werte** (z. B. Bauchbinden-Texte mit Namen) werden vom Kunden in der WebApp gepflegt und über das Relay an die Bridge übertragen; Verantwortlichkeit für Inhalte liegt beim Kunden.
+- **Meeting-Präsentationen (PDF/PPTX)** werden vom Nutzer in einen privaten Speicher-Bucket hochgeladen (max. 100 MB, Formatprüfung) und von der Bridge über kurzlebige signierte URLs (Gültigkeit 1 Stunde) abgerufen; die Dateien werden serverseitig **automatisch nach 24 Stunden gelöscht** (stündlicher Löschlauf). **Hintergrundbilder/Logos** liegen in einem privaten Bucket (max. 5 MB, nur Bildformate). Abrufe durch die Bridge erfolgen ausschließlich per HTTPS mit technischen Schutzmaßnahmen (u. a. Größen-/Zeitlimits, Blockade privater Netzadressen).
 
-- lokal eine Bridge-Komponente starten und betreiben,
-- lokale Hilfsprozesse / native Komponenten fuer Geraeteerkennung, Rendering und Ausgabe starten (plattform- und funktionsabhaengig),
-- mit der Broadify WebApp und dem Relay-Dienst kommunizieren,
-- Steuerungsbefehle remote empfangen und ausfuehren,
-- lokale Geraete-/Output-Informationen erfassen und zur Anzeige/Steuerung bereitstellen,
-- system- und netzwerkbezogene Informationen (z. B. Interfaces, IPs, Port-Verfuegbarkeit) zur Konfiguration und Diagnose verarbeiten,
-- technische Systemressourcen-/Diagnosedaten (z. B. CPU/RAM/Datentraegermetriken) fuer UI/Monitoring verarbeiten,
-- Konfigurationen, Identifikatoren und Logs lokal speichern,
-- Fehler- und Absturzinformationen an einen Monitoring-/Error-Tracking-Dienst uebermitteln (sofern aktiviert).
+### 4.5 Absturz- und Fehlerdiagnose (Sentry)
 
-## 5. Kategorien verarbeiteter Daten
+Die Desktop-App übermittelt Absturz- und Fehlerberichte an **Sentry** (Functional Software, Inc.), konfiguriert auf **EU-Ingest (Rechenzentrum Deutschland/EU, sentry.io „de"-Region)**. Übermittelt werden technische Fehlerdaten (Fehlermeldung, Stacktrace, App-Version, Betriebssystem-Metadaten, Bildschirmauflösung); es werden **keine Nutzerkonten-Daten gesetzt, keine Screenshots übertragen und kein Rechnername übermittelt** (die Software setzt keinen Servernamen). Der Bridge-Serverprozess und die nativen Helfer enthalten kein Sentry. Zweck: Stabilität und Fehlerbehebung. Rechtsgrundlage: Art. 6 Abs. 1 lit. f DSGVO. **[Optional: Opt-out-Mechanismus dokumentieren, sobald produktseitig vorhanden; derzeit ist die Übermittlung technisch nicht abschaltbar.]**
 
-Die folgenden Kategorien sind aus aktuellem Architektur-/Code-Stand abzuleiten. Je nach Plan/Funktion kann nicht jede Kategorie in jedem Fall anfallen.
+### 4.6 Update-Prüfung (GitHub)
 
-### 5.1 Account-, Organisations- und Lizenzdaten (vor allem WebApp/Backend)
+Die Software prüft Updates gegen die öffentlichen Releases von `github.com/pivotrecruiting/broadify-bridge` (GitHub Inc.). Dabei werden keine Konto- oder Gerätekennungen der Software mitgesendet; es gelten die üblichen technischen Zugriffsdaten des HTTP-Abrufs (IP-Adresse) beim Anbieter GitHub. Download/Installation nur nach Nutzerbestätigung; die Prüfung ist per Umgebungsvariable deaktivierbar.
 
-- Benutzerkonto-/Login-Daten
-- Rollen-/Berechtigungsinformationen
-- Organisationszuordnungen
-- Lizenz-/Subscription-Status
+### 4.7 Lokale Protokolle (auf dem Endgerät)
 
-### 5.2 Geraete- und Bridge-Identifikatoren
+Bridge- und App-Logs werden lokal gespeichert (App-Datenverzeichnis, `logs/bridge.log` mit 5-MB-Rotation und begrenzter Dateianzahl; Windows-Kamerakomponente: `%ProgramData%\Broadify\vcam.log`). Logs enthalten technische Betriebsdaten und — bedingt durch die Logbibliothek — den lokalen Rechnernamen; sie **verbleiben auf dem Gerät** (kein Kommando und keine Schnittstelle exportiert Logs an broadify) und sind vom Nutzer in der App einsehbar und löschbar. Kommando-Payloads werden in Produktionslogs nicht ausgeschrieben.
 
-- `bridge_id` (UUID)
-- Bridge-Name (nutzerdefiniert)
-- technische Versions-/Runtime-Informationen
-- ggf. Geraete-/Output-IDs und Bezeichnungen
+### 4.8 Keine Werbe-/Analyse-Tracker
 
-### 5.3 Netzwerk- und Verbindungsdaten
+Die Desktop-Software enthält **keine** Analyse-, Tracking- oder Werbe-SDKs (verifiziert; einziges externes Diagnosewerkzeug ist Sentry gemäß 4.5).
 
-- IP-Adressen (Client, Bridge, Zielgeraete je nach Funktion)
-- Ports (z. B. Engine-Verbindungen)
-- Zeitstempel, Request-/Command-IDs
-- Relay-Verbindungsstatus
-- Netzwerkinterface-Informationen (z. B. Interface-Namen, lokale IPv4-Adressen)
-- Port-Pruef-/Verfuegbarkeitsinformationen
+## 5. Empfänger und Auftragsverarbeiter
 
-### 5.3a Verbindungs- und Transportmetadaten (technisch)
+| Empfänger | Leistung | Datenkategorien | Standort/Transfer |
+| --- | --- | --- | --- |
+| Fly.io, Inc. | Hosting des Relay-Dienstes | Verbindungs-, Kommando- und Statusdaten (4.2, 4.3) | **[Region/SCC dokumentieren]** |
+| Supabase, Inc. | Datenbank, Auth, Datei-Speicher der WebApp | Konto-/Organisationsdaten, Geräteregistrierung, Inhalts-Uploads (4.1, 4.2, 4.4) | **[Region/SCC dokumentieren]** |
+| Vercel, Inc. | Hosting der WebApp | WebApp-Zugriffsdaten | **[Region/SCC dokumentieren]** |
+| Functional Software, Inc. (Sentry) | Absturz-/Fehlerdiagnose | technische Fehlerdaten (4.5) | EU-Ingest; **[SCC/TIA dokumentieren]** |
+| GitHub, Inc. (Microsoft) | Bereitstellung signierter Updates | technische Abrufdaten (4.6) | USA; **[SCC dokumentieren]** |
+| Stripe | Zahlungsabwicklung | siehe WebApp-/Zahlungs-Datenschutzhinweise | — |
 
-- Metadaten aus lokalen HTTP-/WebSocket-Kommunikationspfaden der Bridge
-- Metadaten aus Remote-Relay-WebSocket-Verbindungen
-- lokale IPC-Metadaten zwischen Bridge und Graphics-Renderer (z. B. Ports, technische Sitzungsparameter)
-- Frame-/Output-Session-Metadaten (z. B. FrameBus-Name, technische Formatparameter)
+Interne Zugriffe erfolgen nach Need-to-know (Support, Betrieb, Security). **[Vollständige Subprozessorenliste mit Ländern und Transfermechanismen (SCC/TIA) final pflegen.]**
 
-### 5.4 Steuerungs-, Status- und Konfigurationsdaten
+## 6. Speicherdauer
 
-- Command-Metadaten (z. B. Command-Typ, Zeitfenster/TTL, Scope-Metadaten)
-- Statusdaten (z. B. Outputs, Engine-Status, Verbindungsstatus)
-- Konfigurationsdaten fuer lokale Bridge-/Netzwerkeinstellungen
-- Engine-Zielparameter (z. B. Ziel-IP und Ziel-Port fuer ATEM/vMix/TriCaster)
+- Pairing-Codes: nur im Arbeitsspeicher, max. 10 Minuten bzw. bis zum Neustart der Software.
+- Signierte Abruf-URLs für Inhalte: 1 Stunde.
+- Meeting-Präsentationsdateien (Transfer-Bucket): automatische Löschung nach 24 Stunden.
+- Kommando-Umschläge im Relay: transient zur Zustellung; **[verbindliche Frist einsetzen]**.
+- Relay-Verbindungsprotokolle, Geräteregistrierung: für die Dauer der Organisation-Zuordnung bzw. **[Frist einsetzen]**.
+- Sentry-Fehlerdaten: gemäß Sentry-Projektkonfiguration **[Frist einsetzen, Standard 90 Tage]**.
+- Lokale Logs: Rolling-Retention auf dem Endgerät (5-MB-Rotation, begrenzte Dateianzahl); Löschung jederzeit durch den Nutzer.
+- Lokale Aufzeichnungen, Caches und Konfigurationen: verbleiben bis zur Löschung durch den Nutzer auf dem Endgerät.
 
-### 5.5 Inhaltsdaten (potenziell personenbezogen)
+## 7. Betroffenenrechte
 
-Je nach Nutzung koennen ueber Graphics-/Template-Funktionen Inhaltsdaten verarbeitet werden, z. B.:
+Betroffene haben, soweit anwendbar, die Rechte auf Auskunft, Berichtigung, Löschung, Einschränkung, Datenübertragbarkeit und Widerspruch sowie das Beschwerderecht bei einer Aufsichtsbehörde. Anfragen an: **[EMAIL_PRIVACY]**. Bei Auftragsverarbeitung für einen Kunden werden Anfragen in Abstimmung mit dem Kunden als Verantwortlichem beantwortet; vertragliche Regelungen (AVV) gehen vor.
 
-- Template-Inhalte (HTML/CSS-Bundles)
-- dynamische Werte (`values`), die personenbezogene Daten enthalten koennen
-- Asset-Metadaten
-- lokal gespeicherte Graphics-Assets (z. B. Bilddateien), soweit ueber die Software bereitgestellt
+## 8. Pflicht zur Bereitstellung
 
-### 5.6 Pairing- und Sicherheitsdaten
+Geräte-, Verbindungs- und Sicherheitsmetadaten (4.2, 4.3) sind technisch erforderlich, um Kopplung und Fernsteuerung sicher bereitzustellen; ohne sie sind diese Funktionen nicht nutzbar. Die rein lokalen Funktionen der Software erfordern keine Übermittlung an broadify.
 
-- Pairing-Code (kurzlebig)
-- Sicherheitsmetadaten (z. B. Signatur-/Replay-/TTL-Metadaten)
-- Enrollment-/Schluessel-Metadaten fuer Bridge-Authentisierung
+## 9. Änderungen
 
-### 5.7 Protokoll-, Fehler- und Diagnosedaten
+Diese Hinweise werden angepasst, wenn sich Funktionen, Datenverarbeitungen, Dienstleister oder rechtliche Anforderungen ändern. Es gilt die jeweils veröffentlichte Fassung; wesentliche Änderungen werden versioniert dokumentiert (Dokumentversion, Bezugsstand der Software).
 
-- lokale App-/Bridge-Logs
-- Fehler- und Absturzmeldungen
-- technische Kontextdaten fuer Troubleshooting
-- Error-Tracking-/Crash-Kontext aus der Electron-Desktop-App (Main und Renderer), soweit aktiviert
+---
 
-## 6. Zwecke und Rechtsgrundlagen (muss final abgestimmt werden)
-
-### 6.1 Bereitstellung und Betrieb der Software / Remote-Steuerung
-
-Zweck:
-
-- Bereitstellung der vereinbarten Softwarefunktionen,
-- Aufbau und Betrieb der Remote-Steuerung (WebApp -> Relay -> Bridge),
-- Ausfuehrung und Rueckmeldung von Steuerungsbefehlen.
-
-Rechtsgrundlage (typisch):
-
-- Art. 6 Abs. 1 lit. b DSGVO (Vertragserfuellung)
-- ggf. Art. 6 Abs. 1 lit. f DSGVO (berechtigtes Interesse an sicherem, funktionsfaehigem Betrieb)
-
-### 6.2 IT-Sicherheit, Missbrauchserkennung und Systemschutz
-
-Zweck:
-
-- Authentisierung/Autorisierung,
-- Replay-/Missbrauchsschutz,
-- Sicherheitslogging,
-- Incident-Analyse.
-
-Rechtsgrundlage (typisch):
-
-- Art. 6 Abs. 1 lit. f DSGVO (berechtigtes Interesse an Sicherheit und Missbrauchsverhinderung)
-- ggf. Art. 6 Abs. 1 lit. c DSGVO (gesetzliche Pflichten, z. B. Nachweis-/Meldepflichten)
-
-### 6.3 Fehleranalyse / Stabilitaet / Monitoring
-
-Zweck:
-
-- Analyse von Abstuerzen und Fehlern,
-- Stabilisierung der Desktop-App/Bridge,
-- Verbesserung der Produktqualitaet.
-
-Rechtsgrundlage (typisch):
-
-- Art. 6 Abs. 1 lit. f DSGVO (berechtigtes Interesse)
-- alternativ/erganzend Einwilligung, falls national erforderlich oder intern so entschieden
-
-Hinweis: Wenn ein externer Fehlertracking-Dienst (z. B. Sentry) genutzt wird, sind Datenumfang, PII-Scrubbing und Rechtsgrundlagen gesondert zu pruefen.
-
-## 7. Datenquellen
-
-Personenbezogene Daten stammen typischerweise aus:
-
-- Eingaben des Nutzers in WebApp/Desktop-App,
-- der lokalen Bridge-/Systemkonfiguration,
-- angeschlossenen oder im Netzwerk angesprochenen Zielsystemen (Metadaten),
-- Relay-/Backend-Kommunikation,
-- Logs/Fehlermeldungen im Betrieb.
-
-## 8. Empfaenger und Kategorien von Empfaengern
-
-Je nach Architektur und Vertrag koennen Daten an folgende Empfaenger uebermittelt werden bzw. durch diese verarbeitet werden:
-
-- interne Teams (Support, Betrieb, Security) nach Need-to-know
-- Hosting-/Plattformanbieter der WebApp/Backend-/Relay-Infrastruktur
-- Datenbank-/Auth-Anbieter
-- Fehlertracking-/Monitoring-Anbieter
-- Zahlungsanbieter (separat in Website/WebApp-Datenschutztexten)
-
-### 8.1 Typische Drittanbieter (bitte final pruefen und vervollstaendigen)
-
-Aus den vorhandenen Security-Dokumenten ergeben sich u. a. folgende Anbieter:
-
-- Supabase (Auth / Datenbank / API)
-- Fly.io (Relay-Hosting)
-- Vercel (WebApp-Hosting)
-- Sentry (Error Monitoring; Web und Electron)
-- Stripe (Billing, separat in Zahlungsabschnitt)
-
-Weitere tatsaechlich genutzte Anbieter (z. B. E-Mail, CDN, Tunnel, Support) sind aufzunehmen.
-
-## 9. Remote-Relay-Architektur (Transparenzhinweis)
-
-Die Software nutzt fuer Remote-Steuerung eine Relay-Architektur. Dabei koennen Steuerungsdaten, Statusdaten und je nach Funktion auch Inhaltsdaten (z. B. Graphics-/Template-Payloads) ueber den Relay-Dienst verarbeitet bzw. weitergeleitet werden.
-
-Wichtige Punkte:
-
-- die lokale Bridge baut eine ausgehende Verbindung zum Relay auf,
-- Befehle werden ueber WebApp/Backend/Relay an die Bridge vermittelt,
-- je nach Funktion koennen Inhalte personenbezogene Daten enthalten,
-- die Daten koennen auf dem Transportweg durch Dienstleister verarbeitet werden,
-- es gelten technische Schutzmassnahmen (u. a. Signaturen, Replay-Schutz, Limits), jedoch kein Null-Risiko.
-
-Ergaenzend nutzt die Software weitere lokale Verbindungsmechanismen (z. B. lokale Bridge-HTTP/WS-Schnittstellen, lokale IPC-Verbindungen zwischen internen Komponenten, Shared-Memory-Transport fuer Graphics-Daten). Diese dienen der Funktion der Desktop-App und lokalen Bridge.
-
-## 10. Lokale Speicherung auf dem Endgeraet
-
-Die Desktop-App/Bridge speichert lokal - je nach Nutzung - insbesondere:
-
-- Bridge-ID und Profilinformationen (z. B. Bridge-Name, Zeitstempel der AGB-Akzeptanz),
-- Konfigurationsdaten (z. B. Netzwerk-/Bridge-/Graphics-Output-Konfigurationen),
-- lokale Logdateien,
-- sicherheitsbezogene Schluessel-/Enrollment-Daten fuer Relay-Authentisierung (inkl. lokaler Bridge-Authentisierungsidentitaet),
-- ggf. lokale Assets/Template-bezogene Dateien fuer Graphics-Funktionen.
-
-Die Speicherung erfolgt im jeweiligen App-/Bridge-Datenverzeichnis des Betriebssystems bzw. in einem konfigurierten Bridge-UserData-Verzeichnis.
-
-Hinweis: Einzelne technische Dateinamen/-arten (z. B. Bridge-ID, Profil, Logs, Graphics-Assets/Manifeste, lokale Schluesseldateien) sollten in einer technischen Anhangsdokumentation oder internen TOM-/Data-Inventory-Dokumentation gepflegt werden.
-
-## 11. Speicherdauer und Loeschung (mit Betriebsrealitaet abgleichen)
-
-Die konkrete Speicherdauer haengt von Datenart, Zweck, Vertrag und Betriebsprozessen ab. Grundsaetzlich speichern wir Daten nur so lange, wie dies fuer die genannten Zwecke erforderlich ist oder gesetzliche Aufbewahrungspflichten bestehen.
-
-Technisch dokumentierte/derzeit vorgesehene Leitwerte (final pruefen):
-
-- Pairing-Secrets: kurzlebig (z. B. ca. 10 Minuten)
-- Betriebs-/App-/Bridge-Logs: begrenzte Aufbewahrung / Rolling-Retention
-- Security-/Audit-Logs: laenger zur Sicherheitsnachvollziehbarkeit
-- Backups: gem. Infrastruktur-/Provider-Retention
-
-Verbindliche Fristen sollten in einer separaten Retention-Policy gepflegt werden.
-
-## 12. Internationale Datentransfers / Drittlandtransfer
-
-Wenn Anbieter ausserhalb der EU/des EWR eingesetzt werden oder Zugriffe aus Drittlaendern erfolgen, kann ein Drittlandtransfer vorliegen.
-
-In diesem Fall sind - je nach Anbieter und Datenkategorie - geeignete Garantien vorzusehen, z. B.:
-
-- EU-Standardvertragsklauseln (SCC),
-- Transfer Impact Assessment (TIA),
-- zusaetzliche technische/organisatorische Massnahmen.
-
-Bitte final die tatsaechlichen Standorte der eingesetzten Dienste dokumentieren.
-
-## 13. Sicherheitsmassnahmen (Kurzueberblick)
-
-Wir setzen technische und organisatorische Massnahmen ein, darunter - nach aktuellem Stand - insbesondere:
-
-- Authentisierung/Autorisierung im Remote-Steuerpfad,
-- signierte Commands und Replay-Schutz,
-- Payload-/Groessenlimits und Timeouts,
-- lokale Zugriffsbeschraenkungen fuer Bridge-Endpunkte (Loopback oder Token),
-- Logging-Reduktion/Redaction (keine Voll-Payload-Dumps in Standardlogs),
-- abgesicherte IPC-Kommunikation zwischen internen Komponenten (lokal + Token-Handshake),
-- rollen- und organisationsbezogene Zugriffskontrollen in den Cloud-Komponenten.
-
-Eine detailliertere technische Beschreibung kann in einer separaten Security-Transparenzseite und einem technischen Anhang (Verbindungsmechanismen / Systemzugriffe / lokale Speicherung) bereitgestellt werden.
-
-## 14. Betroffenenrechte
-
-Betroffene Personen haben - soweit anwendbar - insbesondere folgende Rechte:
-
-- Auskunft
-- Berichtigung
-- Loeschung
-- Einschraenkung der Verarbeitung
-- Datenuebertragbarkeit
-- Widerspruch
-- Beschwerde bei einer Aufsichtsbehoerde
-
-Anfragen koennen an `[EMAIL_PRIVACY]` gerichtet werden.
-
-Bei B2B-Auftragsverarbeitung erfolgen Betroffenenanfragen teilweise ueber den jeweiligen Kunden als Verantwortlichen; vertragliche Regelungen (AVV/DPA) gehen vor.
-
-## 15. Pflicht zur Bereitstellung / Folgen der Nichtbereitstellung
-
-Bestimmte Daten sind technisch erforderlich, um die Software bereitzustellen und Remote-Steuerung sicher zu betreiben (z. B. Identifikatoren, Verbindungs- und Sicherheitsmetadaten). Ohne diese Daten kann die Nutzung einzelner Funktionen eingeschraenkt oder nicht moeglich sein.
-
-## 16. Aenderungen dieser Datenschutzhinweise
-
-Wir koennen diese Datenschutzhinweise anpassen, wenn sich Funktionen, Datenverarbeitungen, Dienstleister oder rechtliche Anforderungen aendern. Die jeweils aktuelle Fassung wird an geeigneter Stelle bereitgestellt.
-
-## 17. Technischer Anhang (empfohlen)
-
-Fuer eine belastbare Transparenz gegenueber Kunden und zur juristischen Abstimmung empfehlen wir einen versionierten technischen Anhang mit:
-
-- Verbindungsmechanismen (lokal/remote, HTTP/WS/IPC/FrameBus),
-- System-/Hardwareabfragen (plattformabhaengig),
-- lokalen Speicherorten und Datenklassen,
-- Hilfsprozessen / nativen Komponenten.
-
-Dieser Anhang kann als separates Dokument bereitgestellt werden.
-
-## Anhang A - Tabelle zur Finalisierung (auszufuellen)
-
-| Feld | Platzhalter / Aktion |
-| --- | --- |
-| Verantwortlicher | `[LEGAL_ENTITY_NAME]`, Adresse, Kontakt |
-| Datenschutzkontakt | `[DPO_CONTACT]` |
-| B2B/B2C Rollenmodell | Verantwortlicher / AV / getrennt / gemischt |
-| Subprozessorenliste | Anbieter, Zweck, Land, Rechtsmechanismus |
-| Rechtsgrundlagen | pro Datenkategorie final pruefen |
-| Retention | verbindliche Fristen und Loeschprozesse |
-| Sentry-Konfiguration | PII-Scrubbing, DSN, Opt-out/Opt-in Strategie |
-| Transfermechanismen | SCC/TIA/sonstige Garantien |
+*Referenzen: Security- und Remote-Control-Transparenz — broadify Bridge (vollständige Kommando-Liste, Sicherheitsarchitektur) · Technischer Anhang (Verbindungsmechanismen, Systemzugriffe, lokale Speicherung mit Quellcode-Nachweisen) · EULA — broadify Bridge.*

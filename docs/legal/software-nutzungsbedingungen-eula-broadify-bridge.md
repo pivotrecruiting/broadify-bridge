@@ -1,193 +1,112 @@
-# Software-Nutzungsbedingungen (EULA) - Broadify Bridge Desktop App
+# Software-Nutzungsbedingungen (EULA) — broadify Bridge
 
-Stand: 25. Februar 2026 (Entwurf)
+Stand: 24. August 2026 · Dokumentversion 2.0 · Bezugsstand der Software: broadify Bridge v0.25.2
 
-Hinweis: Mustertext / keine Rechtsberatung. B2B-/B2C-spezifische Klauseln muessen juristisch finalisiert werden.
+> Verbindlichkeitshinweis: Alle technischen Aussagen dieses Dokuments sind aus dem Quellcode der Version v0.25.2 abgeleitet und verifiziert. Mit `[…]` markierte Angaben (Rechtsträger, Rechtswahl, Gerichtsstand, SLA) sind vor Veröffentlichung durch Geschäftsführung bzw. Rechtsprüfung festzulegen. Englische Fassung: `docs/legal/en/eula-broadify-bridge.md` (informatorisch).
 
 ## 1. Vertragspartner und Geltungsbereich
 
-Diese Software-Nutzungsbedingungen gelten fuer die installierbare Desktop-Software "Broadify Bridge" einschliesslich lokaler Bridge-Komponente, optionaler Relay-Anbindung und zugehoeriger Update-/Supportleistungen (zusammen "Software").
+1.1 Diese Software-Nutzungsbedingungen („EULA") gelten für die installierbare Desktop-Software **broadify Bridge** einschließlich der lokalen Bridge-Komponente, der nativen Hilfskomponenten (u. a. virtuelle Kamera, Meeting-/Grafik-/Display-Helfer) und der Relay-Anbindung zur Fernsteuerung (zusammen „Software").
 
-Anbieter / Lizenzgeber:
+Anbieter/Lizenzgeber: **[LEGAL_ENTITY_NAME] · [ADDRESS] · [EMAIL_LEGAL]**
 
-- `[LEGAL_ENTITY_NAME]`
-- `[ADDRESS]`
-- `[EMAIL_LEGAL]`
+1.2 Diese EULA ergänzt die Bedingungen für Website/WebApp/Abrechnung. Im Konflikt geht für die installierte Software diese EULA vor (Rangfolge in Abschnitt 14).
 
-Diese Bedingungen ergaenzen die Bedingungen fuer Website/WebApp/Abrechnung. Im Konfliktfall gehen fuer die installierte Software diese Software-Nutzungsbedingungen vor.
+## 2. Leistungsbeschreibung und Produktlinien
 
-## 2. Leistungsbeschreibung (Kurzbeschreibung)
+2.1 Die Software ist die lokale Geräte-Komponente der broadify-Produktlinien. Der jeweils nutzbare Funktionsumfang richtet sich nach dem gebuchten Plan; die Zuordnung erfolgt in der broadify-WebApp:
 
-Die Software dient der lokalen Anbindung, Steuerung und Uebermittlung von Steuerungs-/Statusdaten zwischen:
+- **broadifyStudio** — Ansteuerung von Produktionshardware und Grafikausgabe: Bildmischer (Blackmagic ATEM über LAN und USB, vMix, NewTek TriCaster), Grafik-Rendering mit Ausgabe über Blackmagic-DeckLink-Hardware oder angeschlossene Displays, Elgato Stream Deck, Kamera-Presets (Canon XC), schaltbare Steckdosen (Shelly/Tasmota).
+- **broadifyMeeting** — lokale Kamera-Verarbeitung für Videokonferenzen: Personen-Freistellung (Keying) vollständig auf dem Endgerät, Hintergrund- und Inhaltseinblendung, Bereitstellung des Ergebnisses als virtuelle Systemkamera („Broadify Camera") für Konferenzsoftware (z. B. Microsoft Teams, Zoom), lokale MP4-Aufzeichnung.
+- **broadifyConference** — Konferenzraum-Funktionen: Display-Ausgabe sowie automatische Bildregie auf Basis von Mikrofon-Array-Daten (unterstützt: Shure, Sennheiser TCC2).
 
-- der installierten Broadify Bridge auf dem Endgeraet des Nutzers,
-- lokalen Zielsystemen/Geraeten im Netzwerk (z. B. Broadcast-/Engine-Systeme),
-- der Broadify-WebApp und einem Relay-Dienst fuer Remote-Steuerung.
-
-Die Software kann Befehle empfangen, die ueber die Broadify-WebApp und den Relay-Dienst an die lokale Bridge uebermittelt werden.
+2.2 Die Software empfängt Steuerkommandos, die autorisierte Nutzer der Kundenorganisation über die broadify-WebApp und den Relay-Dienst an die lokal installierte Bridge übermitteln (Abschnitt 5).
 
 ## 3. Lizenzumfang
 
-Der Lizenzgeber raeumt dem Nutzer eine einfache, nicht ausschliessliche, nicht uebertragbare und widerrufliche Lizenz ein, die Software waehrend der Vertragslaufzeit nach Massgabe dieser Bedingungen zu nutzen.
+3.1 Der Lizenzgeber räumt dem Nutzer eine einfache, nicht ausschließliche, nicht übertragbare, widerrufliche Lizenz ein, die Software während der Vertragslaufzeit nach Maßgabe dieser Bedingungen zu nutzen. Die Anzahl zulässiger Installationen („Bridges") richtet sich nach dem gebuchten Plan.
 
-Zulaessig ist insbesondere:
+3.2 Zulässig sind insbesondere Installation auf vertraglich zulässigen Endgeräten, Nutzung für eigene betriebliche Zwecke gemäß Plan sowie Konfiguration der Bridge und verbundener Systeme.
 
-- Installation auf den vertraglich zulaessigen Endgeraeten,
-- Nutzung fuer eigene betriebliche Zwecke (oder gemaess gebuchtem Plan),
-- Konfiguration der lokalen Bridge und verbundenen Systeme.
+3.3 Nicht zulässig sind, soweit gesetzlich nicht zwingend erlaubt: Unterlizenzierung, Weiterverkauf oder Vermietung; Umgehung technischer Schutzmechanismen; Reverse Engineering, Dekompilierung oder Disassemblierung außerhalb der §§ 69d, 69e UrhG; Nutzung zur unbefugten Fernsteuerung fremder Systeme; Nutzung in rechtswidrigen oder missbräuchlichen Szenarien. Rechte aus Open-Source-Lizenzen mitgelieferter Drittkomponenten (Abschnitt 8) bleiben unberührt.
 
-Nicht zulaessig ist insbesondere, soweit gesetzlich zulaessig:
+## 4. Installation, Systemzugriffe und Systemintegration
 
-- Unterlizenzierung, Weiterverkauf oder Vermietung der Software,
-- Umgehung technischer Schutzmechanismen,
-- Reverse Engineering, Dekompilierung oder Disassemblierung (ausser gesetzlich zwingend erlaubt),
-- Nutzung zur unbefugten Fernsteuerung fremder Systeme,
-- Nutzung in rechtswidrigen, sicherheitskritischen oder missbraeuchlichen Szenarien.
+4.1 Dem Nutzer ist bekannt, dass die Software für ihre Funktion die folgenden — abschließend im „Technischen Anhang" und im Transparenzdokument beschriebenen — Zugriffe nutzt:
 
-## 4. Voraussetzungen und Systemzugriffe
-
-Dem Nutzer ist bekannt und er stimmt zu, dass die Software fuer ihre Funktion technisch erforderliche Zugriffe und Prozesse nutzt, insbesondere:
-
-- lokale Installation auf dem Endgeraet,
-- lokale Hintergrundprozesse / lokaler Bridge-Dienst,
-- lokale Hilfsprozesse / native Komponenten fuer Rendering, Geraeteerkennung und Ausgabe (je nach Plattform/Funktion),
-- Netzwerkkommunikation (lokal, LAN optional, Internet fuer Relay/Cloud-Dienste),
-- mehrere Verbindungsmechanismen (z. B. lokales HTTP/WebSocket, Remote-Relay-WebSocket, lokales TCP-IPC zwischen internen Komponenten),
-- Kommunikation mit der Broadify-WebApp und Relay-Infrastruktur,
-- Zugriff auf lokale System-/Netzwerkinformationen zur Konfiguration und Geraeteerkennung (z. B. Netzwerkinterfaces, IP-Adressen, Port-Verfuegbarkeit),
-- Zugriff auf Hardware-/Geraetemetadata (z. B. Displays, USB-/Capture-Geraete, DeckLink-Geraete/-Modi; plattformabhaengig),
-- Zugriff auf Systemressourcen-/Diagnosedaten (z. B. CPU/RAM/Datentraegerkennwerte) fuer Anzeige/Diagnose,
-- Zugriff auf angeschlossene bzw. im Netzwerk erreichbare Zielsysteme gemaess Nutzerkonfiguration,
+- lokale Installation; unter **Windows** maschinenweit („per machine", `C:\Program Files`) mit Administratorrechten; der Installer registriert die virtuelle Kamera (COM-Komponente `broadify-vcam.dll`) im Windows-Kamera-Subsystem und entfernt die Registrierung bei Deinstallation;
+- unter **macOS** eine sandboxed CoreMediaIO-Systemerweiterung für die virtuelle Kamera (`com.broadify.vcam.extension`), deren Aktivierung eine ausdrückliche Nutzerfreigabe in den Systemeinstellungen erfordert; Kamera- und Mikrofonzugriff über die macOS-Berechtigungsdialoge;
+- lokale Hintergrund- und Hilfsprozesse (Bridge-Server, Meeting-/Grafik-/Display-Helfer), die ausschließlich an den Lebenszyklus der Desktop-App gebunden sind;
+- Netzwerkkommunikation: lokal (Loopback), optional LAN gemäß Nutzerkonfiguration, Internet ausschließlich für Relay, Update-Prüfung, Absturzdiagnose und den Abruf vom Kunden bereitgestellter Inhalte (Details: Datenschutzhinweise);
+- Zugriff auf Hardware-/Gerätemetadaten (Displays, Capture-/DeckLink-Geräte, Kameras, Mikrofone) zur Geräteerkennung;
 - lokale Protokollierung (Logs) zu Betriebs-, Fehler- und Sicherheitszwecken.
 
-Soweit die Software Funktionen zur Geraete-/Output-Erkennung, Netzwerkbindung oder Remote-Steuerung anbietet, sind diese Bestandteil der vereinbarten Funktionalitaet.
-
-Hinweis: Nach aktuellem Stand werden systemnahe Informationen ausgelesen, jedoch keine allgemeinen Betriebssystemeinstellungen ueber eine dedizierte System-Preferences-API geaendert. Technische und plattformabhaengige Details koennen im technischen Anhang beschrieben werden.
+4.2 Die Software richtet **keinen Autostart, keinen Windows-Dienst und keinen macOS-LaunchAgent/-Daemon** ein. Sämtliche Prozesse der Software laufen nur, solange der Nutzer die App gestartet hat, und beenden sich mit ihr; ein Überwachungsmechanismus beendet verwaiste Hilfsprozesse selbsttätig.
 
 ## 5. Remote-Steuerung / Fernzugriff (wesentliche Klausel)
 
-1. Die Software ist darauf ausgelegt, dass bestimmte Befehle ueber die Broadify-WebApp und einen Relay-Dienst an die lokal installierte Bridge uebermittelt werden koennen ("Remote-Steuerung").
-2. Mit Aktivierung/Nutzung der Software autorisiert der Nutzer diese Fernuebermittlung im Rahmen der produktseitig vorgesehenen Funktionen.
-3. Der Nutzer ist verantwortlich fuer die Absicherung seiner Zugaenge und Endgeraete, insbesondere:
-   - sichere Passwoerter,
-   - Mehrfaktor-Authentisierung (falls angeboten),
-   - Zugriffsbeschraenkungen innerhalb seines Unternehmens,
-   - Schutz vor unbefugtem Zugriff auf Nutzerkonten und Endgeraete.
-4. Der Nutzer darf Remote-Funktionen nur fuer Systeme verwenden, fuer die er berechtigt ist.
-5. Der Nutzer ist verpflichtet, Missbrauch, Verdacht auf Kompromittierung oder unbefugte Nutzung unverzueglich zu melden an: `[SECURITY_CONTACT_EMAIL]`.
+5.1 Fernsteuerung setzt eine aktive Kopplung durch den Kunden voraus (Pairing-Verfahren mit 8-stelligem Zufallscode, Gültigkeit 10 Minuten, Neuerzeugung bei jedem Start der Software). Ohne Kopplung und ohne laufende Software ist keine Fernsteuerung möglich.
+
+5.2 Der Umfang der Fernsteuerung ist technisch auf eine feste, versionierte Kommando-Liste begrenzt; jedes Kommando ist kryptografisch signiert (Ed25519), zeitlich befristet und replay-geschützt und wird vor Ausführung schema-validiert. Es existiert **kein** Kommando zur Ausführung beliebigen Codes, zum Auslesen beliebiger Dateien oder zur Bildschirmaufnahme. Die vollständige Kommando-Liste, die Sicherheitsarchitektur und die bekannten Grenzen sind im Dokument „Security- und Remote-Control-Transparenz — broadify Bridge" offengelegt.
+
+5.3 Video- und Audiodaten verlassen das Endgerät nicht über broadify-Infrastruktur; Keying, Kompositing, virtuelle Kamera und Aufzeichnung laufen vollständig lokal (vgl. Datenschutzhinweise, Abschnitt „Lokale Verarbeitung").
+
+5.4 Der Nutzer ist verantwortlich für die Absicherung seiner Zugänge und Endgeräte (sichere Passwörter, Mehrfaktor-Authentisierung soweit angeboten, Rollen-/Rechtevergabe in seiner Organisation) und dafür, Remote-Funktionen nur für Systeme zu verwenden, für die er berechtigt ist. Missbrauch oder Verdacht auf Kompromittierung ist unverzüglich zu melden an: **[SECURITY_CONTACT_EMAIL]**.
 
 ## 6. Pflichten des Nutzers (Betrieb und Sicherheit)
 
-Der Nutzer ist insbesondere verpflichtet:
+Der Nutzer ist insbesondere verpflichtet: die Software nur in kompatiblen, angemessen gesicherten Umgebungen einzusetzen; Zugangsdaten und Pairing-Codes vertraulich zu behandeln; lokale Netzwerke, Endgeräte und angeschlossene Systeme abzusichern; Updates und Sicherheitshinweise zu beachten; erforderliche Einwilligungen für Inhalte und personenbezogene Daten einzuholen, die über die Software verarbeitet werden. Auf Mehrbenutzersystemen mit nicht vertrauenswürdigen lokalen Nutzern ist der Einsatz mit dem IT-Sicherheitsverantwortlichen abzustimmen (lokales Vertrauensmodell, siehe Transparenzdokument).
 
-- die Software nur in kompatiblen und ausreichend gesicherten Umgebungen einzusetzen,
-- Zugangsdaten vertraulich zu behandeln,
-- lokale Netzwerke, Endgeraete und angeschlossene Systeme angemessen abzusichern,
-- Updates/Sicherheitshinweise des Anbieters zu beachten,
-- keine unzulaessigen oder gefaehrlichen Kommandos/Workflows einzurichten,
-- erforderliche Einwilligungen/Freigaben fuer Inhalte und personenbezogene Daten einzuholen, die ueber die Software verarbeitet werden.
+## 7. Updates, Änderungen, Wartung
 
-## 7. Datenverarbeitung und Datenschutz
+7.1 Die Software prüft nach dem Start und danach alle sechs Stunden auf Updates. Bezugsquelle sind ausschließlich signierte Releases des Repositories `github.com/pivotrecruiting/broadify-bridge`. Download und Installation erfolgen **erst nach Bestätigung durch den Nutzer** (kein automatischer Download, keine automatische Installation beim Beenden). Die Update-Prüfung kann über die Umgebungsvariable `BROADIFY_DISABLE_AUTO_UPDATE` deaktiviert werden.
 
-Informationen zur Verarbeitung personenbezogener Daten in Zusammenhang mit der Software, der lokalen Bridge und dem Relay-Dienst ergeben sich aus der gesonderten Datenschutzerklaerung fuer Desktop-App und Relay.
+7.2 Windows-Builds sind per Azure Trusted Signing (Authenticode, RFC-3161-Zeitstempel) signiert; macOS-Builds sind Developer-ID-signiert, gehärtet (Hardened Runtime) und von Apple notarisiert. Update-Metadaten enthalten SHA-512-Prüfsummen, die der Updater vor Installation verifiziert.
 
-Sofern der Anbieter personenbezogene Daten im Auftrag des Kunden verarbeitet, kann ein Auftragsverarbeitungsvertrag (AVV/DPA) erforderlich sein.
+7.3 Der Anbieter kann Funktionen im vertraglich und rechtlich zulässigen Rahmen ändern, erweitern oder einstellen und Sicherheitsmaßnahmen anpassen. Für einen sicheren Betrieb kann eine aktuelle Version erforderlich sein.
 
-## 8. Updates, Aenderungen, Wartung
+## 8. Drittkomponenten und Open-Source-Software
 
-Der Anbieter kann die Software im Rahmen der vertraglichen Vereinbarungen aktualisieren, weiterentwickeln oder Sicherheitsupdates bereitstellen.
+8.1 Die Software enthält bzw. nutzt Drittkomponenten, insbesondere: Electron/Chromium (MIT), React (MIT), ONNX Runtime (MIT), Microsoft DirectML (proprietäre Redistributable-Bedingungen, nur Windows), Intel OpenVINO Runtime (Apache-2.0, nur Windows), MODNet-Segmentierungsmodell (Apache-2.0), pdf.js (Apache-2.0), stb_image (Public Domain/MIT), SDL2 (zlib, nur macOS), LibreOffice als Präsentations-Renderer (MPL-2.0, nur macOS/arm64), Anbindungen an Blackmagic-Hardware (kompiliert gemäß den Bedingungen des Blackmagic-SDK) sowie weitere Bibliotheken unter permissiven Lizenzen. Die vollständige Liste einschließlich Lizenztexten führt die Datei `NOTICES.md` der Software.
 
-Der Nutzer nimmt zur Kenntnis, dass:
+8.2 Für Open-Source-Komponenten gelten vorrangig deren Lizenzbedingungen; diese EULA schränkt daraus resultierende Nutzerrechte nicht ein. Die Software enthält kein NDI-SDK. Betriebssystem-Frameworks (Media Foundation, AVFoundation, CoreML, Vision) werden genutzt, aber nicht mitvertrieben.
 
-- Funktionen geaendert, erweitert oder eingestellt werden koennen, soweit vertraglich und rechtlich zulaessig,
-- Sicherheitsmassnahmen angepasst werden koennen,
-- fuer einen sicheren Betrieb eine aktuelle Version erforderlich sein kann.
+## 9. Datenverarbeitung und Datenschutz
 
-## 9. Verfuegbarkeit und Leistungsgrenzen
+Die Verarbeitung personenbezogener Daten ist in den „Datenschutzhinweisen — broadify Bridge" beschrieben. Sofern der Anbieter personenbezogene Daten im Auftrag des Kunden verarbeitet, wird auf Anforderung ein Auftragsverarbeitungsvertrag (AVV/DPA) geschlossen: **[AVV-Referenz/Prozess einsetzen]**.
 
-Die Funktion der Software kann von Drittkomponenten und externen Faktoren abhaengen, insbesondere:
+## 10. Verfügbarkeit und Leistungsgrenzen
 
-- Internetverbindung,
-- lokale Netzwerkkonfiguration,
-- angeschlossene Drittgeraete/-systeme,
-- Betriebszustand des Relay-Dienstes,
-- Plattformdienste und Betriebssystemumgebung.
+Der Relay-Dienst ist ein Cloud-Dienst; Verfügbarkeitszusagen ergeben sich ausschließlich aus dem Hauptvertrag bzw. SLA **[Referenz einsetzen]**. Die lokalen Funktionen der Software (Keying, virtuelle Kamera, Aufzeichnung, Hardware-Ansteuerung im LAN) funktionieren unabhängig von der Relay-Verfügbarkeit, sofern keine Fernsteuerung benötigt wird. Im Übrigen kann die Funktion von Drittgeräten, Netzwerkkonfiguration und Plattformdiensten abhängen; eine unterbrechungsfreie Verfügbarkeit wird nur geschuldet, soweit ausdrücklich vereinbart.
 
-Eine unterbrechungsfreie oder fehlerfreie Verfuegbarkeit wird nur geschuldet, soweit dies ausdruecklich vertraglich vereinbart ist.
+## 11. Haftung (juristisch zu finalisieren)
 
-## 10. Haftung / Haftungsbeschraenkung (juristisch finalisieren)
+11.1 Der Anbieter haftet nach den gesetzlichen Vorschriften bei Vorsatz und grober Fahrlässigkeit sowie bei Verletzung von Leben, Körper oder Gesundheit und nach dem Produkthaftungsgesetz.
 
-### 10.1 Allgemein
+11.2 Im Übrigen ist die Haftung — soweit gesetzlich zulässig — auf die Verletzung wesentlicher Vertragspflichten und den vertragstypisch vorhersehbaren Schaden beschränkt. **[B2B-/B2C-Differenzierung, Haftungshöchstbeträge und Ausschlüsse (Folgeschäden, entgangener Gewinn, Produktions-/Sendungsausfälle durch Fehlbedienung, kompromittierte Nutzerkonten, Drittgeräte) juristisch formulieren.]**
 
-Der Anbieter haftet nach den gesetzlichen Vorschriften bei Vorsatz und grober Fahrlaessigkeit sowie bei Verletzung von Leben, Koerper oder Gesundheit.
+11.3 Der Nutzer ist für die fachgerechte Konfiguration und Freigabe fernsteuerbarer Funktionen verantwortlich. Der Anbieter haftet nicht für Schäden aus unbefugter Nutzung auf Nutzerseite, sofern er die vertraglich geschuldeten Sicherheitsmaßnahmen eingehalten hat und kein eigenes Verschulden vorliegt.
 
-### 10.2 Typische Beschraenkungen (insb. B2B)
+## 12. Sperrung / Suspendierung
 
-Im Uebrigen ist die Haftung - soweit gesetzlich zulaessig - beschraenkt auf vorhersehbare, vertragstypische Schaeden.
+Der Anbieter kann den Zugriff auf Remote-Dienste ganz oder teilweise sperren, wenn ein Sicherheitsvorfall oder Missbrauch vermutet wird, erhebliche Vertragsverstöße vorliegen oder die Sperrung zur Gefahrenabwehr bzw. Einhaltung gesetzlicher Pflichten erforderlich ist. Soweit möglich, wird der Nutzer vorab, andernfalls unverzüglich nachträglich informiert. Die lokalen Funktionen der installierten Software bleiben von einer Relay-Sperrung technisch unberührt.
 
-Ausgeschlossen oder beschraenkt werden sollten (juristisch pruefen):
+## 13. Laufzeit, Beendigung, Folgen der Beendigung
 
-- indirekte Schaeden und Folgeschaeden,
-- entgangener Gewinn,
-- Produktions-/Sendungsausfaelle durch Fehlbedienung oder Fehlkonfiguration,
-- Schaeden durch kompromittierte Nutzerkonten oder unzureichende Zugangssicherung auf Nutzerseite,
-- Schaeden durch Drittgeraete/Drittsysteme oder deren Fehlverhalten.
-
-### 10.3 Remote-Steuerungsspezifische Risikoverteilung
-
-Der Nutzer ist fuer die fachgerechte Konfiguration und Freigabe der ueber die Software fernsteuerbaren Funktionen verantwortlich. Der Anbieter haftet nicht fuer Schaeden, die aus unbefugter Nutzung auf Nutzerseite resultieren, sofern der Anbieter die vertraglich geschuldeten Sicherheitsmassnahmen eingehalten hat und kein eigenes Verschulden vorliegt.
-
-Wichtig: Fuer B2C gelten engere gesetzliche Grenzen. B2C-Klauseln separat juristisch formulieren.
-
-## 11. Sperrung / Suspendierung
-
-Der Anbieter kann den Zugriff auf Remote-Dienste oder die Nutzung der Software ganz oder teilweise sperren, wenn:
-
-- ein Sicherheitsvorfall oder Missbrauch vermutet wird,
-- erhebliche Vertragsverstoesse vorliegen,
-- die Sperrung zur Gefahrenabwehr oder zur Einhaltung gesetzlicher Pflichten erforderlich ist.
-
-Soweit moeglich, erfolgt eine Information des Nutzers vorab oder unverzueglich nachtraeglich.
-
-## 12. Laufzeit, Beendigung, Folgen der Beendigung
-
-Die Laufzeit richtet sich nach dem zugrunde liegenden Subscription-/Vertragspaket. Mit Vertragsende endet regelmaessig das Nutzungsrecht an der Software bzw. an Remote-/Cloud-Funktionen, soweit nichts anderes vereinbart ist.
-
-Nach Vertragsende koennen Remote-Funktionen deaktiviert sein; lokal gespeicherte Daten auf dem Geraet des Nutzers verbleiben zunaechst auf dem Geraet, soweit keine automatische Loeschroutine greift.
-
-## 13. Export, Sanktionen, Compliance (optional je Zielmarkt)
-
-Der Nutzer sichert zu, die Software nicht unter Verstoss gegen anwendbare Exportkontroll-, Sanktions- oder Embargovorschriften zu verwenden.
+Die Laufzeit richtet sich nach dem zugrunde liegenden Vertrag. Mit Vertragsende endet das Nutzungsrecht; der Kunde deinstalliert die Software und kann die Kopplung seiner Bridges in der WebApp entfernen. Lokal gespeicherte Daten (Aufzeichnungen, Logs, Caches) verbleiben auf dem Gerät des Nutzers und liegen in seiner Verantwortung.
 
 ## 14. Rangfolge der Dokumente
 
-Empfohlene Rangfolge (bei Widerspruechen):
+Bei Widersprüchen gilt: 1. Individualvertrag/Angebot/Auftragsformular · 2. Leistungsbeschreibung/SLA · 3. diese EULA · 4. Website-/WebApp-AGB · 5. sonstige Richtlinien. Die Transparenzdokumente (Datenschutzhinweise, Security- und Remote-Control-Transparenz, Technischer Anhang) sind Informationsunterlagen und begründen keine über den Vertrag hinausgehenden Leistungspflichten.
 
-1. Individualvertrag / Angebot / Auftragsformular
-2. Leistungsbeschreibung / SLA (falls vorhanden)
-3. Diese Software-Nutzungsbedingungen (EULA)
-4. Website-/WebApp-AGB
-5. Sonstige Richtlinien
+## 15. Export und Compliance
 
-## 15. Gerichtsstand / anwendbares Recht (juristisch finalisieren)
+Der Nutzer sichert zu, die Software nicht unter Verstoß gegen anwendbare Exportkontroll-, Sanktions- oder Embargovorschriften zu verwenden.
 
-Platzhalter fuer Rechtswahl und Gerichtsstand:
+## 16. Anwendbares Recht, Gerichtsstand (juristisch zu finalisieren)
 
-- Anwendbares Recht: `[JURISDICTION_LAW]`
-- Gerichtsstand (B2B): `[COURT]`
+Anwendbares Recht: **[JURISDICTION_LAW, z. B. Recht der Bundesrepublik Deutschland unter Ausschluss des UN-Kaufrechts]**. Gerichtsstand (B2B): **[COURT]**. Für Verbraucher gelten zwingende Verbraucherschutzvorschriften. Maßgebliche Vertragssprache ist Deutsch.
 
-Fuer Verbraucher (B2C) gelten zwingende Verbraucherschutzvorschriften.
+---
 
-## Anhang A - Produktspezifische Hinweise (technischer Bezug)
-
-Dieser Anhang dient der Transparenz und kann in Kurzform in die Produktdokumentation uebernommen werden:
-
-- Die Desktop-App startet eine lokale Bridge-Komponente.
-- Die Bridge kann lokal oder optional im LAN erreichbar sein (je nach Konfiguration).
-- Remote-Steuerung erfolgt ueber WebApp + Relay-Dienst.
-- Die Software verarbeitet Steuerungs-, Status- und Konfigurationsdaten.
-- Fehler- und Betriebslogs koennen lokal gespeichert werden.
-- Fehlertracking-/Crashdiagnose kann ueber externe Dienste erfolgen (siehe Datenschutzerklaerung).
-- Die Software kann lokale Hardware-/Systemmetadaten zur Geraeteerkennung und Konfiguration auslesen (plattformabhaengig).
-- Fuer Graphics/Outputs koennen lokale Hilfsprozesse und native Komponenten verwendet werden.
-- Details zu Verbindungsmechanismen, Systemabfragen und lokaler Speicherung siehe technischer Anhang.
+*Referenzen: Datenschutzhinweise — broadify Bridge · Security- und Remote-Control-Transparenz — broadify Bridge · Technischer Anhang (Verbindungsmechanismen, Systemzugriffe, lokale Speicherung) · NOTICES.md.*
