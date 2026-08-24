@@ -2,6 +2,7 @@
 
 #if defined(_WIN32)
 
+#include "capture/latest_frame_slot.h"
 #include "capture/camera_media_type_rank.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
@@ -432,27 +433,24 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 
   bool copyLatestFrame(VideoFrame &frame) {
     std::lock_guard<std::mutex> lock(frameMutex_);
-    if (!hasFrame_) {
-      return false;
-    }
-    frame = latestFrame_;
-    return true;
+    return latestFrameSlot_.copy(frame);
   }
 
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
     std::lock_guard<std::mutex> lock(frameMutex_);
-    if (!hasFrame_ || latestFrame_.timestampNs == lastTimestampNs) {
-      return false;
-    }
-    frame = latestFrame_;
-    return true;
+    return latestFrameSlot_.copyIfNew(lastTimestampNs, frame);
+  }
+
+  bool takeLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
+    std::lock_guard<std::mutex> lock(frameMutex_);
+    return latestFrameSlot_.takeIfNew(lastTimestampNs, frame);
   }
 
   bool waitForFrameOrTimeout(uint64_t lastTimestampNs,
                              std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(frameMutex_);
     return frameCv_.wait_until(lock, deadline, [this, lastTimestampNs] {
-      return hasFrame_ && latestFrame_.timestampNs != lastTimestampNs;
+      return latestFrameSlot_.hasFrameNewerThan(lastTimestampNs);
     });
   }
 
@@ -696,11 +694,10 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       return;
     }
 
-    VideoFrame frame;
-    frame.width = frameWidth_;
-    frame.height = frameHeight_;
-    frame.timestampNs = nowNs();
-    frame.captureQpc = nowQpc();
+    scratch_.width = frameWidth_;
+    scratch_.height = frameHeight_;
+    scratch_.timestampNs = nowNs();
+    scratch_.captureQpc = nowQpc();
 
     bool converted = false;
     // Preferred path: the 2D buffer reports the real pitch (rows may be padded)
@@ -713,7 +710,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
       DWORD bufferLength = 0;
       if (SUCCEEDED(buffer2d->Lock2DSize(MF2DBuffer_LockFlags_Read, &scanline0,
                                          &pitch, &bufferStart, &bufferLength))) {
-        swizzleBgraToRgba(scanline0, pitch, frameWidth_, frameHeight_, frame.rgba);
+        swizzleBgraToRgba(scanline0, pitch, frameWidth_, frameHeight_, scratch_.rgba);
         buffer2d->Unlock2D();
         converted = true;
       }
@@ -735,7 +732,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
                           : data;
           const ptrdiff_t pitch = stride_ < 0 ? -rowStride : rowStride;
           swizzleBgraToRgba(scanline0, pitch, frameWidth_, frameHeight_,
-                            frame.rgba);
+                            scratch_.rgba);
           converted = true;
         }
         buffer->Unlock();
@@ -747,8 +744,7 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     }
     {
       std::lock_guard<std::mutex> lock(frameMutex_);
-      latestFrame_ = std::move(frame);
-      hasFrame_ = true;
+      latestFrameSlot_.publish(std::move(scratch_));
     }
     frameCv_.notify_all();
   }
@@ -774,8 +770,8 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
 
   mutable std::mutex frameMutex_;
   std::condition_variable frameCv_;
-  bool hasFrame_ = false;
-  VideoFrame latestFrame_;
+  LatestFrameSlot latestFrameSlot_;
+  VideoFrame scratch_;
 };
 
 // One capture session as seen by the CameraSource facade. Thin owner of the
@@ -823,6 +819,11 @@ class MfCaptureSession {
 
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
     return callback_ ? callback_->copyLatestFrameIfNew(lastTimestampNs, frame)
+                     : false;
+  }
+
+  bool takeLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) {
+    return callback_ ? callback_->takeLatestFrameIfNew(lastTimestampNs, frame)
                      : false;
   }
 
@@ -1048,6 +1049,11 @@ class MediaFoundationCameraSource final : public CameraSource {
   bool copyLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
     const std::shared_ptr<MfCaptureSession> session = programSession();
     return session ? session->copyLatestFrameIfNew(lastTimestampNs, frame) : false;
+  }
+
+  bool takeLatestFrameIfNew(uint64_t lastTimestampNs, VideoFrame &frame) override {
+    const std::shared_ptr<MfCaptureSession> session = programSession();
+    return session ? session->takeLatestFrameIfNew(lastTimestampNs, frame) : false;
   }
 
   bool waitForFrameOrTimeout(uint64_t lastTimestampNs,

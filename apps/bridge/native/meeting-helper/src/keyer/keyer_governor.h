@@ -125,6 +125,7 @@ class KeyerAutoGovernor {
   // inference cost (basis of the Lite -> Performance256 estimate and of the
   // Lite -> Off guard).
   void addSample(double inferenceMs, TimePoint now);
+  void setFrameOverheadMs(double overheadMs);
 
   // Deferred Lite256 -> Performance256 step-up (config.deferLiteStepUp).
   // Pending means: the estimate approved the step-up, the tier stays Lite256
@@ -157,6 +158,7 @@ class KeyerAutoGovernor {
 
   // Introspection for tests/telemetry.
   double inferenceEmaMs() const { return emaMs_; }
+  double budgetThresholdMs() const { return stepDownThresholdMs(); }
   std::chrono::steady_clock::duration reprobeInterval() const {
     return reprobeInterval_;
   }
@@ -181,6 +183,7 @@ class KeyerAutoGovernor {
   bool seeded_ = false;
   bool liteStepUpPending_ = false;
   double emaMs_ = -1.0;
+  double frameOverheadMs_ = 0.0;
   uint64_t samples_ = 0u;
   uint64_t liteGateOverBudgetSamples_ = 0u;
   StepUpWatch stepUpWatch_ = StepUpWatch::None;

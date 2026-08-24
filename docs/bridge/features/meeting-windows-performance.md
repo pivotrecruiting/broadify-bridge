@@ -82,6 +82,28 @@ refined sie erneut gegen den aktuellen Kamera-Frame. Die geplante ein-Frame
 Software-Pipeline (Inference N parallel zu Composite N-1) ist auf WP3
 verschoben.
 
+### rc.32a: 1080p Capture-Budget
+
+MediaFoundation rotiert die Windows-Programmkamera jetzt ueber drei RGBA-
+Puffer (`scratch`, `latest`, Consumer) per Pointer-Swap. Der Program-Loop
+nimmt neue Frames mit `takeLatestFrameIfNew`, waehrend `copyLatestFrame*` fuer
+andere Lesepfade unveraendert bleibt. Im Feld sollte
+`keyer.get.metrics.camera_copy_ms` bei 1920x1080 unter 0,1 ms liegen.
+
+Der Governor bekommt weiterhin nur echte Session-/Inferenzkosten als Sample.
+Das restliche Program-Frame-Budget wird separat als `frame_overhead_ms`
+geglaettet und reduziert die Step-down-/Step-up-Schwelle sowie die fused
+Cadence-Budgetrechnung. Ein Floor von 50 Prozent des Basisbudgets verhindert,
+dass Overhead allein unter `performance`/256 drueckt; Kameraaufloesung wird
+nie reduziert.
+
+`keyer.get.metrics` enthaelt auf Windows zusaetzlich
+`camera_upload_ms`, `frame_overhead_ms`, `budget_threshold_ms` und
+`prepass_gpu` (aktuell `false`). Bei anhaltender Ueberschreitung meldet der
+Helper hoechstens alle 10 s `keyer_budget_overrun` mit Program-/Session-/
+Tensor-/Copy-/Upload-Kosten, Tier und Cadence-N; wenn die EMA wieder unter das
+Budget faellt, folgt `keyer_budget_recovered`.
+
 Sobald ein Windows-VCam-Client verbunden ist, gilt eine strengere Policy:
 fused cadence wird auf N=1 gepinnt, Dynamic-Dilation ist aus, und der Governor
 steigt erst 512 -> 320 -> 256 ab. `async_lite` ist erst nach 30
