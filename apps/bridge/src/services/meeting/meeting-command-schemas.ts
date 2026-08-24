@@ -21,8 +21,13 @@ export const MeetingCameraSelectionSchema = z
   .object({
     camera_index: z.number().int().min(0).optional(),
     stable_key: z.string().min(1).max(1024).optional(),
+    width: z.number().int().min(160).max(7680).optional(),
+    height: z.number().int().min(120).max(4320).optional(),
+    fps: z.number().int().min(1).max(240).optional(),
+    selection_source: z.string().min(1).max(64).optional(),
+    lock_mode: z.string().min(1).max(64).optional(),
   })
-  .strict();
+  .passthrough();
 
 export const MeetingCallControlSchema = z.object({
   platform: z.enum(["teams", "zoom"]),
