@@ -35,9 +35,13 @@
 namespace broadify::meeting {
 namespace {
 
-constexpr size_t kRawFrameHeaderSize = kBfrgHeaderV2Size;
 constexpr auto kRawFrameHeartbeatInterval = std::chrono::milliseconds(1000);
 constexpr uint64_t kRawFrameHeartbeatSequenceMask = 1ull << 63;
+
+enum class RawFrameProtocolVersion {
+  V1,
+  V2,
+};
 
 void closeSocketHandle(int socketHandle) {
 #if defined(_WIN32)
@@ -178,17 +182,41 @@ void writeU64Le(std::vector<uint8_t> &data, size_t offset, uint64_t value) {
   }
 }
 
-void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &payload) {
-  payload.resize(kRawFrameHeaderSize + frame.rgba.size());
+size_t rawFrameHeaderSize(RawFrameProtocolVersion protocolVersion) {
+  return protocolVersion == RawFrameProtocolVersion::V2 ? kBfrgHeaderV2Size
+                                                        : kBfrgHeaderV1Size;
+}
+
+void writeBfrgHeaderV1(std::vector<uint8_t> &data,
+                       size_t offset,
+                       const BfrgRecordHeader &header) {
+  writeU32Le(data, offset + 0u, kBfrgMagic);
+  writeU32Le(data, offset + 4u, kBfrgVersion1);
+  writeU32Le(data, offset + 8u, header.width);
+  writeU32Le(data, offset + 12u, header.height);
+  writeU32Le(data, offset + 16u, header.pixelFormat);
+  writeU32Le(data, offset + 20u, header.payloadSize);
+  writeU64Le(data, offset + 24u, header.sequence);
+}
+
+void writeRawFramePayload(const PreviewFrame &frame,
+                          RawFrameProtocolVersion protocolVersion,
+                          std::vector<uint8_t> &payload) {
+  const size_t headerSize = rawFrameHeaderSize(protocolVersion);
+  payload.resize(headerSize + frame.rgba.size());
   BfrgRecordHeader header;
   header.width = frame.width;
   header.height = frame.height;
   header.payloadSize = static_cast<uint32_t>(frame.rgba.size());
   header.sequence = frame.sequence;
-  header.captureNs = frame.captureNs;
-  writeBfrgHeaderV2(payload, 0u, header);
+  if (protocolVersion == RawFrameProtocolVersion::V2) {
+    header.captureNs = frame.captureNs;
+    writeBfrgHeaderV2(payload, 0u, header);
+  } else {
+    writeBfrgHeaderV1(payload, 0u, header);
+  }
 
-  uint8_t *dst = payload.data() + kRawFrameHeaderSize;
+  uint8_t *dst = payload.data() + headerSize;
   const uint8_t *src = frame.rgba.data();
 #if defined(__APPLE__)
   // SIMD-accelerated RGBA->BGRA swizzle; the scalar loop cost several
@@ -214,7 +242,7 @@ void writeRawFramePayload(const PreviewFrame &frame, std::vector<uint8_t> &paylo
 void writeRawFrameKeepAlive(uint64_t sequence,
                             uint64_t captureNs,
                             std::vector<uint8_t> &payload) {
-  payload.resize(kRawFrameHeaderSize);
+  payload.resize(kBfrgHeaderV2Size);
   BfrgRecordHeader header;
   header.payloadSize = 0u;
   header.sequence = sequence;
@@ -272,7 +300,7 @@ void reapCompletedWorkers(std::vector<RawFrameWorker> &workers) {
 
 void streamFrames(int client,
                   const RawFrameStreamGeometry &geometry,
-                  bool clientAcceptsZeroKeepAlive,
+                  RawFrameProtocolVersion protocolVersion,
                   PreviewFrameStore &previewFrames,
                   MeetingState &state,
                   std::atomic<bool> &running) {
@@ -321,12 +349,15 @@ void streamFrames(int client,
         ++heartbeatSequence;
         writeU64Le(payload, 24u,
                    kRawFrameHeartbeatSequenceMask | heartbeatSequence);
-        writeU64Le(payload, 32u, lastCaptureNs);
+        if (protocolVersion == RawFrameProtocolVersion::V2) {
+          writeU64Le(payload, 32u, lastCaptureNs);
+        }
         if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
           return;
         }
         lastSentAt = now;
-      } else if (payload.empty() && clientAcceptsZeroKeepAlive &&
+      } else if (payload.empty() &&
+                 protocolVersion == RawFrameProtocolVersion::V2 &&
                  now - lastSentAt >= kRawFrameHeartbeatInterval) {
         ++heartbeatSequence;
         writeRawFrameKeepAlive(kRawFrameHeartbeatSequenceMask | heartbeatSequence,
@@ -345,7 +376,7 @@ void streamFrames(int client,
     lastSequence = frame.sequence;
     heartbeatSequence = frame.sequence;
     lastCaptureNs = frame.captureNs;
-    writeRawFramePayload(frame, payload);
+    writeRawFramePayload(frame, protocolVersion, payload);
     if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
       return;
     }
@@ -384,7 +415,10 @@ void handleClient(int client,
     const bool clientAcceptsZeroKeepAlive =
         request.find("X-Broadify-Accepts: keepalive-v2") != std::string::npos ||
         request.find("x-broadify-accepts: keepalive-v2") != std::string::npos;
-    streamFrames(client, geometry, clientAcceptsZeroKeepAlive, previewFrames,
+    const RawFrameProtocolVersion protocolVersion =
+        clientAcceptsZeroKeepAlive ? RawFrameProtocolVersion::V2
+                                   : RawFrameProtocolVersion::V1;
+    streamFrames(client, geometry, protocolVersion, previewFrames,
                  state, running);
     std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"client_disconnected\",\"port\":" << port << "}" << std::endl;
   } else {
