@@ -1,6 +1,6 @@
 # TASK — HF1 (v0.25.2 hotfix + rc line): restore BFRG v1 for legacy VCam clients; tolerant camera-select schema
 
-Base: feature/vcam-rc13 @ 17132d34 (rc.32). Round: 0/3. PRODUCTION bugs on macOS v0.25.1; fixes must be minimal and surgical.
+Base: feature/vcam-rc13 @ 17132d34 (rc.32). Round: 1/3 — PASS. PRODUCTION bugs on macOS v0.25.1; fixes must be minimal and surgical.
 
 ## Bug 1 — Mac Teams black picture (root cause, verified in field + code)
 Commit f7baffa0 (bfrg v2, 22.08.) made `raw_frame_server.cpp` write 40-byte v2 records (`writeBfrgHeaderV2`) to EVERY TCP client. The macOS
@@ -39,3 +39,5 @@ Commit da6405e3 made `MeetingCameraSelectionSchema` `.strict()` with only `camer
 - lint/jest/build/helper build/ctest green (recorder audio_input_rejected known); CI Mac+Win green (test-release/hf1-vcam-v1).
 - Field (Mac v0.25.1-Extension v17 gegen neuen Helper): Teams zeigt Bild; `lsof -nP -iTCP:18787` zeigt ESTABLISHED während Teams streamt.
 - Field (Builder-Seite): Kamera-Wechsel + Live-Test ohne "Invalid payload".
+
+## Review round 1 (HEAD cfb093ff) — PASS, no MUST-FIX. v1 layout byte-identical to v0.23.5 (field-by-field); rc.26/rc.31 Win-DLLs unaffected (send header, get v2); pre-v2 DLLs (rc.16) repaired as bonus; mixed clients per-thread state; schema passthrough = pre-rc.28 contract, tighter. Notes: single-recv sniff (pre-existing), v1 heartbeat vs 1-s Swift timeout (no worse than v0.23.5), fps int-only. Verifier grün (1954 Jest, 30/30 ctest).
