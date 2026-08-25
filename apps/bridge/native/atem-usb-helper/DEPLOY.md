@@ -14,7 +14,7 @@ npm run prepare:atem-usb-helper-release   # on an arm64 machine
 # repeat on an x64 machine (or build.sh under Rosetta with an x64 toolchain)
 ```
 
-Windows (x64 Native Tools shell; requires the ATEM software):
+Windows (x64 Native Tools shell; no ATEM SDK required):
 
 ```powershell
 cd apps\bridge\native\atem-usb-helper
@@ -22,23 +22,36 @@ cd apps\bridge\native\atem-usb-helper
 Get-FileHash .\atem-usb-helper.exe -Algorithm SHA256
 ```
 
-`build.ps1` resolves the Windows SDK in this order:
+The manual `ATEM USB Helper Windows` workflow builds the same artifact on
+`windows-2022` with MSVC x64 and uploads `atem-usb-helper.exe` plus its SHA256.
+
+By default, `build.ps1` uses `src\bmd_switcher_interop_win.h` instead of a
+vendor SDK. It embeds both known Discovery generations:
+
+- 9.x Discovery IID `83C30ED4-4314-4C81-B1E3-23C518D6D8BD`, CLSID
+  `B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A`
+- 10.x Discovery IID `1EEE089A-5422-4A76-B068-F6EDCFBD3AC0`, CLSID
+  `8A13D4FA-4801-48E3-BF68-442D63E34500`
+
+After compiling, the script scans the built exe for the little-endian byte
+patterns of both Discovery CLSIDs and both Discovery IIDs. The build fails if
+any required GUID bytes are missing.
+
+For local cross-checks against an installed SDK, run `.\build.ps1 -UseSdkIdl`.
+That mode resolves the Windows SDK in this order:
 
 1. `ATEM_SDK_ROOT`
 2. `C:\Program Files (x86)\Blackmagic Design\ATEM Switchers\Developer SDK\Windows`
 3. `C:\Program Files (x86)\Blackmagic Design\Blackmagic ATEM Switchers\Developer SDK\Windows`
 
-Before compiling it prints the resolved `BMDSwitcherAPI.idl` path, the first
-12 hex chars of its SHA256, and the extracted `CBMDSwitcherDiscovery` CLSID.
-After compiling it scans the built exe for the little-endian Discovery CLSID
-bytes, and for `IBMDSwitcherDiscovery` IID
-`83C30ED4-4314-4C81-B1E3-23C518D6D8BD` when the selected IDL declares that IID.
-The build fails if the expected embedded GUID bytes are missing.
+It prints the resolved `BMDSwitcherAPI.idl` path, the first 12 hex chars of
+its SHA256, and the extracted `CBMDSwitcherDiscovery` CLSID before compiling.
 
 The shipped Windows asset must be rebuilt whenever Blackmagic changes SDK GUIDs
-in a major version. On 24.08.2026 a prebuilt exe was found to report
+in a major version and the interop header must be updated in the same change.
+On 24.08.2026 a prebuilt exe was found to report
 `atem_software_not_installed` on machines with ATEM Switchers 9.7/10.0
-installed because it did not embed the 9.x Discovery IID.
+installed because it embedded neither the 9.x nor 10.x Discovery GUIDs.
 
 ## 2. Upload
 

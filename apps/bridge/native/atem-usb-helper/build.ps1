@@ -1,11 +1,11 @@
 param(
-  [string]$Config = "Release"
+  [string]$Config = "Release",
+  [switch]$UseSdkIdl
 )
 
-# Builds the ATEM USB helper (Windows). Run from a Developer PowerShell for
-# VS (cl + midl on PATH). SDK interface headers are midl-generated from the
-# BMDSwitcherAPI.idl shipped with the locally installed ATEM software (or an
-# explicit ATEM_SDK_ROOT); no SDK files are committed or shipped.
+# Builds the ATEM USB helper (Windows). The default build uses the checked-in
+# interoperability header and does not require the ATEM SDK or midl. Use
+# -UseSdkIdl only as a local cross-check against an installed SDK IDL.
 
 $ErrorActionPreference = "Stop"
 
@@ -24,8 +24,14 @@ if (-not $env:VSCMD_ARG_TGT_ARCH) {
 }
 
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$srcDir = Join-Path $rootDir "src"
 $buildDir = Join-Path $rootDir "build-win"
 $outputExe = Join-Path $rootDir "atem-usb-helper.exe"
+$sourcePath = Join-Path $srcDir "atem-usb-helper.cpp"
+$interopHeader = Join-Path $srcDir "bmd_switcher_interop_win.h"
+$sdkIdlSha = "interop-v97+v100"
+$sdkDiscoveryClsid = "B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A+8A13D4FA-4801-48E3-BF68-442D63E34500"
+$sdkVersion = "9.7+10.0-interop"
 
 function Invoke-NativeCommand {
   param(
@@ -60,99 +66,88 @@ function Get-IdlUuidBefore {
 }
 
 function Test-BytePattern {
-  param(
-    [Parameter(Mandatory = $true)]
-    [byte[]]$Bytes,
-    [Parameter(Mandatory = $true)]
-    [byte[]]$Pattern
-  )
-
+  param([byte[]]$Bytes, [byte[]]$Pattern)
   for ($i = 0; $i -le $Bytes.Length - $Pattern.Length; $i++) {
     $matched = $true
     for ($j = 0; $j -lt $Pattern.Length; $j++) {
-      if ($Bytes[$i + $j] -ne $Pattern[$j]) {
-        $matched = $false
-        break
-      }
+      if ($Bytes[$i + $j] -ne $Pattern[$j]) { $matched = $false; break }
     }
-    if ($matched) {
-      return $true
-    }
+    if ($matched) { return $true }
   }
   return $false
 }
 
-$sdkCandidates = @()
-if ($env:ATEM_SDK_ROOT) {
-  $sdkCandidates += $env:ATEM_SDK_ROOT
-}
-$sdkCandidates += "C:\Program Files (x86)\Blackmagic Design\ATEM Switchers\Developer SDK\Windows"
-$sdkCandidates += "C:\Program Files (x86)\Blackmagic Design\Blackmagic ATEM Switchers\Developer SDK\Windows"
-
-$triedIdlPaths = @()
-$sdkRoot = $null
-$idlPath = $null
-foreach ($candidate in $sdkCandidates) {
-  $candidateIdlPath = Join-Path $candidate "include\BMDSwitcherAPI.idl"
-  $triedIdlPaths += $candidateIdlPath
-  if (Test-Path $candidateIdlPath) {
-    $sdkRoot = $candidate
-    $idlPath = $candidateIdlPath
-    break
+if ($UseSdkIdl) {
+  $sdkCandidates = @()
+  if ($env:ATEM_SDK_ROOT) {
+    $sdkCandidates += $env:ATEM_SDK_ROOT
   }
-}
-if (-not $idlPath) {
-  throw "BMDSwitcherAPI.idl not found. Tried: $($triedIdlPaths -join '; '). Install the Blackmagic ATEM software or set ATEM_SDK_ROOT."
-}
+  $sdkCandidates += "C:\Program Files (x86)\Blackmagic Design\ATEM Switchers\Developer SDK\Windows"
+  $sdkCandidates += "C:\Program Files (x86)\Blackmagic Design\Blackmagic ATEM Switchers\Developer SDK\Windows"
 
-$idlText = Get-Content -Raw -Path $idlPath
-$sdkIdlSha = (Get-FileHash $idlPath -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0, 12)
-$sdkDiscoveryClsid = Get-IdlUuidBefore -Text $idlText -Kind "coclass" -Name "CBMDSwitcherDiscovery"
-if (-not $sdkDiscoveryClsid) {
-  throw "Could not extract CBMDSwitcherDiscovery CLSID from $idlPath."
-}
-$sdkDiscoveryIid = Get-IdlUuidBefore -Text $idlText -Kind "interface" -Name "IBMDSwitcherDiscovery"
-$versionMatch = [regex]::Match($idlText, "(?im)\b(?:ATEM\s+)?(?:Switchers\s+)?(?:SDK\s+)?(?:version|v)\s*[:= ]+\s*([0-9]+(?:\.[0-9]+)+)")
-$sdkVersion = if ($versionMatch.Success) { $versionMatch.Groups[1].Value } else { "unknown" }
+  $triedIdlPaths = @()
+  $idlPath = $null
+  foreach ($candidate in $sdkCandidates) {
+    $candidateIdlPath = Join-Path $candidate "include\BMDSwitcherAPI.idl"
+    $triedIdlPaths += $candidateIdlPath
+    if (Test-Path $candidateIdlPath) {
+      $idlPath = $candidateIdlPath
+      break
+    }
+  }
+  if (-not $idlPath) {
+    throw "BMDSwitcherAPI.idl not found. Tried: $($triedIdlPaths -join '; '). Install the Blackmagic ATEM software or set ATEM_SDK_ROOT."
+  }
 
-Write-Host "Using BMDSwitcherAPI.idl: $idlPath"
-Write-Host "BMDSwitcherAPI.idl SHA256: $sdkIdlSha"
-Write-Host "CBMDSwitcherDiscovery CLSID: $sdkDiscoveryClsid"
+  $idlText = Get-Content -Raw -Path $idlPath
+  $sdkIdlSha = (Get-FileHash $idlPath -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0, 12)
+  $sdkDiscoveryClsid = Get-IdlUuidBefore -Text $idlText -Kind "coclass" -Name "CBMDSwitcherDiscovery"
+  if (-not $sdkDiscoveryClsid) {
+    throw "Could not extract CBMDSwitcherDiscovery CLSID from $idlPath."
+  }
+  $versionMatch = [regex]::Match($idlText, "(?im)\b(?:ATEM\s+)?(?:Switchers\s+)?(?:SDK\s+)?(?:version|v)\s*[:= ]+\s*([0-9]+(?:\.[0-9]+)+)")
+  $sdkVersion = if ($versionMatch.Success) { $versionMatch.Groups[1].Value } else { "unknown" }
+
+  Write-Host "Using BMDSwitcherAPI.idl for cross-check: $idlPath"
+  Write-Host "BMDSwitcherAPI.idl SHA256: $sdkIdlSha"
+  Write-Host "CBMDSwitcherDiscovery CLSID: $sdkDiscoveryClsid"
+  New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+  Invoke-NativeCommand midl /nologo /h BMDSwitcherAPI_h.h /iid BMDSwitcherAPI_i.c /out $buildDir $idlPath
+} else {
+  Write-Host "Using Windows interop header: $interopHeader"
+  Write-Host "Interop Discovery CLSIDs: $sdkDiscoveryClsid"
+  Write-Host "Interop Discovery IIDs: 83C30ED4-4314-4C81-B1E3-23C518D6D8BD + 1EEE089A-5422-4A76-B068-F6EDCFBD3AC0"
+}
 
 if (Test-Path $outputExe) {
   Remove-Item -Force $outputExe
 }
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
-# Generate the COM interface header + IID definitions from the SDK IDL.
-Invoke-NativeCommand midl /nologo /h BMDSwitcherAPI_h.h /iid BMDSwitcherAPI_i.c /out $buildDir $idlPath
-
-$sourcePath = Join-Path $rootDir "src\atem-usb-helper.cpp"
-$iidPath = Join-Path $buildDir "BMDSwitcherAPI_i.c"
 $defineSdkIdlSha = '/DHELPER_SDK_IDL_SHA=\"' + $sdkIdlSha + '\"'
 $defineSdkDiscoveryClsid = '/DHELPER_SDK_DISCOVERY_CLSID=\"' + $sdkDiscoveryClsid + '\"'
 $defineSdkVersion = '/DHELPER_SDK_VERSION=\"' + $sdkVersion + '\"'
 
 Invoke-NativeCommand cl /nologo /std:c++17 /EHsc /O2 /W4 /DUNICODE /D_UNICODE `
   $defineSdkIdlSha $defineSdkDiscoveryClsid $defineSdkVersion `
-  /I $buildDir `
+  /I $srcDir `
   /Fo"$buildDir\" `
-  $sourcePath $iidPath `
+  $sourcePath `
   /Fe:$outputExe `
   ole32.lib oleaut32.lib
 
 $exeBytes = [System.IO.File]::ReadAllBytes($outputExe)
-$clsidBytes = ([Guid]::Parse($sdkDiscoveryClsid)).ToByteArray()
-if (-not (Test-BytePattern -Bytes $exeBytes -Pattern $clsidBytes)) {
-  throw "Built helper does not contain CBMDSwitcherDiscovery CLSID bytes ($sdkDiscoveryClsid)."
-}
-$expectedDiscoveryIid = "83C30ED4-4314-4C81-B1E3-23C518D6D8BD"
-if ($sdkDiscoveryIid -eq $expectedDiscoveryIid) {
-  $iidBytes = ([Guid]::Parse($expectedDiscoveryIid)).ToByteArray()
-  if (-not (Test-BytePattern -Bytes $exeBytes -Pattern $iidBytes)) {
-    throw "Built helper does not contain IBMDSwitcherDiscovery IID bytes ($expectedDiscoveryIid)."
+$requiredGuids = @(
+  "B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A",
+  "8A13D4FA-4801-48E3-BF68-442D63E34500",
+  "83C30ED4-4314-4C81-B1E3-23C518D6D8BD",
+  "1EEE089A-5422-4A76-B068-F6EDCFBD3AC0"
+)
+foreach ($guid in $requiredGuids) {
+  if (-not (Test-BytePattern -Bytes $exeBytes -Pattern ([Guid]::Parse($guid)).ToByteArray())) {
+    throw "Built helper does not contain required Discovery GUID bytes ($guid)."
   }
 }
-Write-Host "Verified embedded Discovery CLSID bytes in $outputExe"
+Write-Host "Verified embedded 9.7 and 10.0 Discovery CLSID/IID bytes in $outputExe"
 
 Write-Host "built $outputExe"

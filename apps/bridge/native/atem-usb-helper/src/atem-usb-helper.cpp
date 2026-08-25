@@ -20,10 +20,9 @@
   - macOS: SDK runtime loaded at runtime by BMDSwitcherAPIDispatch from
     /Library/Application Support/Blackmagic Design/Switchers/. Missing ATEM
     software degrades to sdk_available=false / atem_software_not_installed.
-  - Windows: real COM. CoCreateInstance fails with REGDB_E_CLASSNOTREG when
-    the ATEM software is not installed -> same graceful degradation. The
-    interface header is midl-generated from the SDK's BMDSwitcherAPI.idl at
-    build time (see build.ps1).
+  - Windows: real COM. CoCreateInstance tries the known 9.x and 10.x
+    Discovery generations. If neither COM class is registered, the helper
+    reports atem_software_not_installed with the raw HRESULTs.
 
   Threading: SDK callbacks arrive on SDK-owned threads, stdin commands on a
   dedicated reader thread; stdout writes are serialized by a mutex and all
@@ -34,7 +33,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <objbase.h>
-#include "BMDSwitcherAPI_h.h"
+#include "bmd_switcher_interop_win.h"
 #else
 #include <BMDSwitcherAPI.h>
 #include <CoreFoundation/CFPlugInCOM.h>
@@ -74,7 +73,9 @@ namespace {
 
 #if defined(_WIN32)
 using PlatformStringT = BSTR;
-std::atomic<long> g_lastDiscoveryHr{0};
+std::atomic<long> g_lastDiscoveryHrV97{0};
+std::atomic<long> g_lastDiscoveryHrV100{0};
+std::atomic<int> g_discoveryGeneration{0};
 #else
 using PlatformStringT = CFStringRef;
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
@@ -131,11 +132,28 @@ void releasePlatformString(PlatformStringT value) {
 IBMDSwitcherDiscovery *createSwitcherDiscovery() {
 #if defined(_WIN32)
   IBMDSwitcherDiscovery *discovery = nullptr;
-  const HRESULT result = CoCreateInstance(
-      CLSID_CBMDSwitcherDiscovery, nullptr, CLSCTX_ALL,
-      IID_IBMDSwitcherDiscovery, reinterpret_cast<void **>(&discovery));
-  g_lastDiscoveryHr.store(static_cast<long>(result));
-  return SUCCEEDED(result) ? discovery : nullptr;
+  HRESULT result = CoCreateInstance(
+      CLSID_CBMDSwitcherDiscovery_v97, nullptr, CLSCTX_ALL,
+      IID_IBMDSwitcherDiscovery_v97, reinterpret_cast<void **>(&discovery));
+  g_lastDiscoveryHrV97.store(static_cast<long>(result));
+  if (SUCCEEDED(result)) {
+    g_lastDiscoveryHrV100.store(0);
+    g_discoveryGeneration.store(9);
+    return discovery;
+  }
+
+  discovery = nullptr;
+  result = CoCreateInstance(
+      CLSID_CBMDSwitcherDiscovery_v100, nullptr, CLSCTX_ALL,
+      IID_IBMDSwitcherDiscovery_v100, reinterpret_cast<void **>(&discovery));
+  g_lastDiscoveryHrV100.store(static_cast<long>(result));
+  if (SUCCEEDED(result)) {
+    g_discoveryGeneration.store(10);
+    return discovery;
+  }
+
+  g_discoveryGeneration.store(0);
+  return nullptr;
 #else
   return CreateBMDSwitcherDiscoveryInstance();
 #endif
@@ -189,11 +207,36 @@ std::string formatHRESULT(HRESULT result) {
 }
 
 std::string discoveryHrJson() {
-  return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHr.load()));
+  return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHrV97.load()));
+}
+
+std::string discoveryHrV100Json() {
+  return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHrV100.load()));
+}
+
+std::string discoveryGenerationJson() {
+  const int generation = g_discoveryGeneration.load();
+  if (generation == 9) {
+    return "9";
+  }
+  if (generation == 10) {
+    return "10";
+  }
+  return "none";
+}
+
+void appendWindowsDiscoveryJson(std::ostringstream &out, bool includeBothHrs) {
+  out << ",\"sdk_generation\":\"" << discoveryGenerationJson() << "\""
+      << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+  if (includeBothHrs) {
+    out << ",\"discovery_hr_v97\":\"" << discoveryHrJson() << "\""
+        << ",\"discovery_hr_v100\":\"" << discoveryHrV100Json() << "\"";
+  }
 }
 
 std::string discoveryMissingDetail() {
-  return "CoCreateInstance hr=" + discoveryHrJson();
+  return "CoCreateInstance hr=" + discoveryHrJson() + " (v97=" + discoveryHrJson() +
+         ", v100=" + discoveryHrV100Json() + ")";
 }
 #endif
 
@@ -603,8 +646,8 @@ int runProbe() {
     out << "{\"mode\":\"probe\",\"sdk_available\":false,\"connected\":false,"
         << "\"error\":\"atem_software_not_installed\"";
 #if defined(_WIN32)
-    out << ",\"detail\":\"" << jsonEscape(discoveryMissingDetail()) << "\""
-        << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+    out << ",\"detail\":\"" << jsonEscape(discoveryMissingDetail()) << "\"";
+    appendWindowsDiscoveryJson(out, true);
 #endif
     out << ",";
     appendHelperBuildJson(out);
@@ -621,7 +664,7 @@ int runProbe() {
     out << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":false,"
         << "\"error\":\"" << connectFailureToError(failReason) << "\"";
 #if defined(_WIN32)
-    out << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+    appendWindowsDiscoveryJson(out, false);
 #endif
     out << ",";
     appendHelperBuildJson(out);
@@ -667,7 +710,7 @@ int runProbe() {
       << "\"macro_slots\":" << macroSlots << ","
       << "\"valid_macros\":" << validMacros;
 #if defined(_WIN32)
-  out << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+  appendWindowsDiscoveryJson(out, false);
 #endif
   out << ",";
   appendHelperBuildJson(out);
@@ -683,6 +726,9 @@ int runSessionLoop() {
   RunSession session;
   std::ostringstream ready;
   ready << "{\"type\":\"ready\",";
+#if defined(_WIN32)
+  ready << "\"sdk_generation\":\"" << discoveryGenerationJson() << "\",";
+#endif
   appendHelperBuildJson(ready);
   ready << "}";
   emitLine(ready.str());

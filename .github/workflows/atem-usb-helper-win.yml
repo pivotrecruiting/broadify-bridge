@@ -1,0 +1,37 @@
+name: ATEM USB Helper Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build ATEM USB helper
+        shell: pwsh
+        working-directory: apps/bridge/native/atem-usb-helper
+        run: .\build.ps1
+
+      - name: Write SHA256
+        shell: pwsh
+        working-directory: apps/bridge/native/atem-usb-helper
+        run: |
+          $hash = (Get-FileHash .\atem-usb-helper.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  atem-usb-helper.exe" | Set-Content -NoNewline -Path .\atem-usb-helper.exe.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atem-usb-helper-win-x64
+          path: |
+            apps/bridge/native/atem-usb-helper/atem-usb-helper.exe
+            apps/bridge/native/atem-usb-helper/atem-usb-helper.exe.sha256
