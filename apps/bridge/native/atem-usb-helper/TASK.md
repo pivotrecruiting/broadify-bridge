@@ -49,3 +49,39 @@ built against a wrong/unknown SDK. Contributing factor: build.ps1's default SDK 
 - Diff touches ONLY files under `apps/bridge/native/atem-usb-helper/`.
 - Error code strings unchanged; JSON strictly additive.
 - macOS helper behaviour unchanged apart from additive JSON fields.
+
+## Round 2 — dual-generation Windows build without SDK (Go 25.08.)
+Field facts: shipped exe contains neither 9.x nor 10.x Discovery GUIDs; customer PC (Win11) had 10.0 then 9.7 — both failed. IDL diff
+9.7 vs 10.0 (reference extracts in `.atem-idl-ref/idl97.txt` / `idl100.txt` at the worktree root, UNTRACKED — read them, never commit):
+- Discovery IID: 9.7 = 83C30ED4-4314-4C81-B1E3-23C518D6D8BD; 10.0 = 1EEE089A-5422-4A76-B068-F6EDCFBD3AC0.
+- Discovery coclass CLSID: 9.7 = B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A; 10.0 = 8A13D4FA-4801-48E3-BF68-442D63E34500.
+- IBMDSwitcher IID differs (5054C164-… vs FD979282-…) but 10.0 only APPENDS `DoesSupportTallyConfig` at the vtable end —
+  prefix-compatible; we never QI for IBMDSwitcher (ConnectTo returns it directly) and never call the appended method.
+- IBMDSwitcherCallback, MacroPool(+Callback), MacroControl(+Callback), TransferMacro and the four enums are identical in both IDLs.
+
+### B1 — Interop header `src/bmd_switcher_interop_win.h` (Windows only)
+Hand-written interoperability declarations (own authorship; header comment: minimal Blackmagic Switcher COM surface for
+interoperability, GUID values from the vendor IDLs, no vendor text copied). Declare with EXACT method order from `idl97.txt`:
+IBMDSwitcherDiscovery, IBMDSwitcher (full 9.7 list; params of uncalled methods may use generic typedefs like `unsigned int` /
+`long long`), IBMDSwitcherCallback, IBMDSwitcherMacroPool(+Callback), IBMDSwitcherMacroControl(+Callback), IBMDSwitcherTransferMacro —
+all `: public IUnknown`, `virtual HRESULT STDMETHODCALLTYPE`. Methods the helper calls or overrides get exact real signatures (BSTR on
+Windows). Enums used, with exact values from the ref file. GUIDs: `CLSID_CBMDSwitcherDiscovery_v97/_v100`,
+`IID_IBMDSwitcherDiscovery_v97/_v100`, single IIDs for identical interfaces. No midl, no `_i.c`.
+
+### B2 — src/atem-usb-helper.cpp (Windows branch)
+Include the interop header instead of `BMDSwitcherAPI_h.h`. `createSwitcherDiscovery()`: try (CLSID_v97, IID_v97) then
+(CLSID_v100, IID_v100); remember generation + both HRESULTs. Probe/ready JSON adds `"sdk_generation":"9"|"10"|"none"` and on failure
+`"discovery_hr_v97"`/`"discovery_hr_v100"` (keep `discovery_hr` = v97 for continuity). Macro logic/callbacks unchanged.
+
+### B3 — build.ps1
+Default: build from the interop header, NO SDK required (no midl). Optional `-UseSdkIdl` switch restores the midl path for cross-checks.
+Self-check: built exe must contain the byte patterns of BOTH Discovery CLSIDs and BOTH IIDs; fail otherwise. helper_build defines:
+sdk_idl_sha "interop-v97+v100", sdk_version "9.7+10.0-interop".
+
+### B4 — CI workflow `.github/workflows/atem-usb-helper-win.yml`
+`workflow_dispatch` only; windows-2022; `ilammy/msvc-dev-cmd@v1` (x64); run build.ps1; upload `atem-usb-helper.exe` + SHA256 as artifact.
+No secrets.
+
+### Verification (macOS host)
+macOS build.sh + `--probe` unchanged; `npm run lint` green; diff limited to the helper dir + the new workflow file; `.atem-idl-ref/`
+stays untracked.
