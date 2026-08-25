@@ -22,6 +22,24 @@ cd apps\bridge\native\atem-usb-helper
 Get-FileHash .\atem-usb-helper.exe -Algorithm SHA256
 ```
 
+`build.ps1` resolves the Windows SDK in this order:
+
+1. `ATEM_SDK_ROOT`
+2. `C:\Program Files (x86)\Blackmagic Design\ATEM Switchers\Developer SDK\Windows`
+3. `C:\Program Files (x86)\Blackmagic Design\Blackmagic ATEM Switchers\Developer SDK\Windows`
+
+Before compiling it prints the resolved `BMDSwitcherAPI.idl` path, the first
+12 hex chars of its SHA256, and the extracted `CBMDSwitcherDiscovery` CLSID.
+After compiling it scans the built exe for the little-endian Discovery CLSID
+bytes, and for `IBMDSwitcherDiscovery` IID
+`83C30ED4-4314-4C81-B1E3-23C518D6D8BD` when the selected IDL declares that IID.
+The build fails if the expected embedded GUID bytes are missing.
+
+The shipped Windows asset must be rebuilt whenever Blackmagic changes SDK GUIDs
+in a major version. On 24.08.2026 a prebuilt exe was found to report
+`atem_software_not_installed` on machines with ATEM Switchers 9.7/10.0
+installed because it did not embed the 9.x Discovery IID.
+
 ## 2. Upload
 
 Upload `atem-usb-helper-arm64`, `atem-usb-helper-x64` and

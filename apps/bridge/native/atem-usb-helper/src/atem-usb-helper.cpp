@@ -46,6 +46,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -61,8 +62,19 @@
 
 namespace {
 
+#ifndef HELPER_SDK_IDL_SHA
+#define HELPER_SDK_IDL_SHA "unbuilt"
+#endif
+#ifndef HELPER_SDK_DISCOVERY_CLSID
+#define HELPER_SDK_DISCOVERY_CLSID "unbuilt"
+#endif
+#ifndef HELPER_SDK_VERSION
+#define HELPER_SDK_VERSION "unbuilt"
+#endif
+
 #if defined(_WIN32)
 using PlatformStringT = BSTR;
+std::atomic<long> g_lastDiscoveryHr{0};
 #else
 using PlatformStringT = CFStringRef;
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
@@ -122,6 +134,7 @@ IBMDSwitcherDiscovery *createSwitcherDiscovery() {
   const HRESULT result = CoCreateInstance(
       CLSID_CBMDSwitcherDiscovery, nullptr, CLSCTX_ALL,
       IID_IBMDSwitcherDiscovery, reinterpret_cast<void **>(&discovery));
+  g_lastDiscoveryHr.store(static_cast<long>(result));
   return SUCCEEDED(result) ? discovery : nullptr;
 #else
   return CreateBMDSwitcherDiscoveryInstance();
@@ -160,6 +173,29 @@ std::string jsonEscape(const std::string &value) {
   }
   return out.str();
 }
+
+void appendHelperBuildJson(std::ostringstream &out) {
+  out << "\"helper_build\":{\"sdk_idl_sha\":\"" << jsonEscape(HELPER_SDK_IDL_SHA)
+      << "\",\"sdk_discovery_clsid\":\"" << jsonEscape(HELPER_SDK_DISCOVERY_CLSID)
+      << "\",\"sdk_version\":\"" << jsonEscape(HELPER_SDK_VERSION) << "\"}";
+}
+
+#if defined(_WIN32)
+std::string formatHRESULT(HRESULT result) {
+  std::ostringstream out;
+  out << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
+      << static_cast<unsigned long>(result);
+  return out.str();
+}
+
+std::string discoveryHrJson() {
+  return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHr.load()));
+}
+
+std::string discoveryMissingDetail() {
+  return "CoCreateInstance hr=" + discoveryHrJson();
+}
+#endif
 
 // Minimal field extraction for the flat command objects this helper accepts
 // (same hand-rolled approach as the meeting helper's control server; no
@@ -341,7 +377,11 @@ class RunSession {
       discovery_ = createSwitcherDiscovery();
     }
     if (discovery_ == nullptr) {
+#if defined(_WIN32)
+      emitError("atem_software_not_installed", discoveryMissingDetail());
+#else
       emitError("atem_software_not_installed");
+#endif
       return;
     }
     BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
@@ -559,8 +599,17 @@ class RunSession {
 int runProbe() {
   IBMDSwitcherDiscovery *discovery = createSwitcherDiscovery();
   if (discovery == nullptr) {
-    std::cout << "{\"mode\":\"probe\",\"sdk_available\":false,\"connected\":false,"
-              << "\"error\":\"atem_software_not_installed\"}" << std::endl;
+    std::ostringstream out;
+    out << "{\"mode\":\"probe\",\"sdk_available\":false,\"connected\":false,"
+        << "\"error\":\"atem_software_not_installed\"";
+#if defined(_WIN32)
+    out << ",\"detail\":\"" << jsonEscape(discoveryMissingDetail()) << "\""
+        << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+#endif
+    out << ",";
+    appendHelperBuildJson(out);
+    out << "}";
+    std::cout << out.str() << std::endl;
     return 0;
   }
 
@@ -568,9 +617,16 @@ int runProbe() {
   BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
   const HRESULT result = connectViaUsb(discovery, &switcher, &failReason);
   if (result != S_OK || switcher == nullptr) {
-    std::cout << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":false,"
-              << "\"error\":\"" << connectFailureToError(failReason) << "\"}"
-              << std::endl;
+    std::ostringstream out;
+    out << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":false,"
+        << "\"error\":\"" << connectFailureToError(failReason) << "\"";
+#if defined(_WIN32)
+    out << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+#endif
+    out << ",";
+    appendHelperBuildJson(out);
+    out << "}";
+    std::cout << out.str() << std::endl;
     discovery->Release();
     return 0;
   }
@@ -605,10 +661,18 @@ int runProbe() {
     macroPool->Release();
   }
 
-  std::cout << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":true,"
-            << "\"product_name\":\"" << jsonEscape(productName) << "\","
-            << "\"macro_slots\":" << macroSlots << ","
-            << "\"valid_macros\":" << validMacros << "}" << std::endl;
+  std::ostringstream out;
+  out << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":true,"
+      << "\"product_name\":\"" << jsonEscape(productName) << "\","
+      << "\"macro_slots\":" << macroSlots << ","
+      << "\"valid_macros\":" << validMacros;
+#if defined(_WIN32)
+  out << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+#endif
+  out << ",";
+  appendHelperBuildJson(out);
+  out << "}";
+  std::cout << out.str() << std::endl;
 
   switcher->Release();
   discovery->Release();
@@ -617,7 +681,11 @@ int runProbe() {
 
 int runSessionLoop() {
   RunSession session;
-  emitLine("{\"type\":\"ready\"}");
+  std::ostringstream ready;
+  ready << "{\"type\":\"ready\",";
+  appendHelperBuildJson(ready);
+  ready << "}";
+  emitLine(ready.str());
 
   std::thread readerThread([&session]() {
 #if defined(_WIN32)

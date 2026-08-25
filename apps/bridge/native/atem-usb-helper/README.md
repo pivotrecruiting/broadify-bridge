@@ -29,9 +29,12 @@ can offer `transport: "usb"` next to the existing network transport
 
 Prints a single JSON object:
 
-- SDK missing: `{"mode":"probe","sdk_available":false,"connected":false,"error":"atem_software_not_installed"}`
-- No switcher on USB: `{"mode":"probe","sdk_available":true,"connected":false,"error":"no_usb_switcher_found"}`
-- Connected: `{"mode":"probe","sdk_available":true,"connected":true,"product_name":"...","macro_slots":100,"valid_macros":3}`
+- SDK missing: `{"mode":"probe","sdk_available":false,"connected":false,"error":"atem_software_not_installed","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
+- No switcher on USB: `{"mode":"probe","sdk_available":true,"connected":false,"error":"no_usb_switcher_found","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
+- Connected: `{"mode":"probe","sdk_available":true,"connected":true,"product_name":"...","macro_slots":100,"valid_macros":3,"helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
+
+Windows probe output also includes `discovery_hr` and includes the
+`CoCreateInstance` HRESULT in `detail` when the SDK COM object is missing.
 
 Stable error identifiers: `atem_software_not_installed`,
 `no_usb_switcher_found`, `incompatible_firmware`, `corrupt_data`,
@@ -57,6 +60,10 @@ $env:ATEM_SDK_ROOT = "D:\SDKs\ATEM\Windows"; .\build.ps1
 On Windows the graceful-degradation path is COM-based: without the ATEM
 software installed, `CoCreateInstance` fails (`REGDB_E_CLASSNOTREG`) and the
 helper reports `atem_software_not_installed` exactly like on macOS.
+The Windows build first checks `ATEM_SDK_ROOT`, then the current
+`Blackmagic Design\ATEM Switchers\Developer SDK\Windows` install path, then the
+legacy `Blackmagic Design\Blackmagic ATEM Switchers\Developer SDK\Windows`
+path.
 
 ### `--run` (long-lived session for the bridge adapter)
 
@@ -76,7 +83,7 @@ Commands:
 
 Events:
 
-- `{"type":"ready"}` — emitted once at startup.
+- `{"type":"ready","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}` — emitted once at startup.
 - `{"type":"connected","product_name":"ATEM Mini Extreme"}`
 - `{"type":"macros","macros":[{"id":0,"name":"...","description":"..."}]}` —
   after connect, on `list_macros`, and on every macro-pool change.
