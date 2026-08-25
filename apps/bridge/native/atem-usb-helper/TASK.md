@@ -85,3 +85,27 @@ No secrets.
 ### Verification (macOS host)
 macOS build.sh + `--probe` unchanged; `npm run lint` green; diff limited to the helper dir + the new workflow file; `.atem-idl-ref/`
 stays untracked.
+
+## Round 3 — MUST-FIX MF-1 + third generation 10.4 (Go 25.08.)
+Review round 2 verdict MUST-FIX. New ground truth: `.atem-idl-ref/idl104.txt` (SDK 10.4; current field version). Measured slots
+(method index within IBMDSwitcher, 1-based): GetProductName = 1 in ALL gens; AddCallback/RemoveCallback = 43/44 (9.7), 44/45 (10.0,
+DoesSupportTallyConfig inserted at 42), 50/51 (10.4, inserts at 27-29 and 45-48). Discovery GUIDs 10.4: IID
+28449053-AC7A-49EB-ACD2-D1E0C57DC627, coclass CLSID A9CDC765-3787-409D-A1E5-29F4F034A599. Callback/MacroPool/MacroControl/
+TransferMacro IIDs and bodies identical across 9.7/10.0/10.4; enums additive only (10.4 adds two EventType values — additive, keep 9.7 set).
+- R3-1 (MF-1) Per-generation IBMDSwitcher layouts: `IBMDSwitcher_v97/_v100/_v104` structs with EXACT method order from the respective
+  ref file. Discovery declared once with `ConnectTo(BSTR, void** switcherOut, BMDSwitcherConnectToFailure*)`; after connect, wrap the
+  raw pointer in a small `SwitcherHandle { void* p; int gen; }` exposing exactly `getProductName`, `addCallback`, `removeCallback`
+  (dispatch by gen via static_cast to the right struct). All other switcher usage must go through this handle; compile-time no direct
+  IBMDSwitcher* remains.
+- R3-2 Third generation: try creation order v104 → v100 → v97 (newest first); `sdk_generation` ∈ {"10.4","10.0","9.7","none"}; on
+  total failure emit all three HRESULTs (`discovery_hr_v97/_v100/_v104`; keep `discovery_hr` = v97).
+- R3-3 Unsupported-version detection: if all creations fail AND `C:\Program Files (x86)\Blackmagic Design\ATEM Switchers\BMDSwitcherAPI64.dll`
+  exists → detail "ATEM software found but its version is not supported by this helper (supported: 9.7, 10.0, 10.4)"; error code string
+  stays `atem_software_not_installed` (bridge contract unchanged).
+- R3-4 build.ps1 self-check: all SIX Discovery GUID byte patterns (3 CLSIDs + 3 IIDs) must be embedded; helper_build sdk_version
+  "9.7+10.0+10.4-interop".
+- R3-5 Notes: ready-event `sdk_generation` only after connect (omit or "none" until then — document); v100/v104 HR sentinel = 1
+  (S_FALSE-like "not attempted") instead of 0; `-UseSdkIdl` doc wording honest (provenance stamp, not vtable cross-check); fix
+  `jsonEscape` \u padding to 4 hex digits (pre-existing bug, trivial).
+- R3-6 DEPLOY.md: supported-generations table + exact recipe to add a future generation (extract GUIDs + slots from new IDL, extend
+  header/table/self-check).
