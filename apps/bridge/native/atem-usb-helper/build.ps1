@@ -124,12 +124,16 @@ if (Test-Path $outputExe) {
 }
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
-$defineSdkIdlSha = '/DHELPER_SDK_IDL_SHA=\"' + $sdkIdlSha + '\"'
-$defineSdkDiscoveryClsid = '/DHELPER_SDK_DISCOVERY_CLSID=\"' + $sdkDiscoveryClsid + '\"'
-$defineSdkVersion = '/DHELPER_SDK_VERSION=\"' + $sdkVersion + '\"'
+# Build metadata via a generated header (avoids MSVC /D quote mangling).
+$buildInfoHeader = Join-Path $buildDir "helper_build_info.h"
+@(
+  ('#define HELPER_SDK_IDL_SHA "' + $sdkIdlSha + '"'),
+  ('#define HELPER_SDK_DISCOVERY_CLSID "' + $sdkDiscoveryClsid + '"'),
+  ('#define HELPER_SDK_VERSION "' + $sdkVersion + '"')
+) | Set-Content -Encoding ascii $buildInfoHeader
 
 Invoke-NativeCommand cl /nologo /std:c++17 /EHsc /O2 /W4 /DUNICODE /D_UNICODE `
-  $defineSdkIdlSha $defineSdkDiscoveryClsid $defineSdkVersion `
+  /FI"$buildInfoHeader" `
   /I $srcDir `
   /Fo"$buildDir\" `
   $sourcePath `
