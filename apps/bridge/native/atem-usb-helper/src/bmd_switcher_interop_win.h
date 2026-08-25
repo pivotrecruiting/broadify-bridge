@@ -12,7 +12,9 @@
 #include <unknwn.h>
 #include <windows.h>
 
-struct IBMDSwitcher;
+struct IBMDSwitcher_v97;
+struct IBMDSwitcher_v100;
+struct IBMDSwitcher_v104;
 struct IBMDSwitcherCallback;
 struct IBMDSwitcherMacro;
 struct IBMDSwitcherMacroControlCallback;
@@ -23,11 +25,15 @@ inline constexpr CLSID CLSID_CBMDSwitcherDiscovery_v97 = {
     0xB8C0BA7E, 0xBDED, 0x4B73, {0x96, 0xA8, 0x26, 0x6A, 0xF1, 0xBC, 0x2D, 0x7A}};
 inline constexpr CLSID CLSID_CBMDSwitcherDiscovery_v100 = {
     0x8A13D4FA, 0x4801, 0x48E3, {0xBF, 0x68, 0x44, 0x2D, 0x63, 0xE3, 0x45, 0x00}};
+inline constexpr CLSID CLSID_CBMDSwitcherDiscovery_v104 = {
+    0xA9CDC765, 0x3787, 0x409D, {0xA1, 0xE5, 0x29, 0xF4, 0xF0, 0x34, 0xA5, 0x99}};
 
 inline constexpr IID IID_IBMDSwitcherDiscovery_v97 = {
     0x83C30ED4, 0x4314, 0x4C81, {0xB1, 0xE3, 0x23, 0xC5, 0x18, 0xD6, 0xD8, 0xBD}};
 inline constexpr IID IID_IBMDSwitcherDiscovery_v100 = {
     0x1EEE089A, 0x5422, 0x4A76, {0xB0, 0x68, 0xF6, 0xED, 0xCF, 0xBD, 0x3A, 0xC0}};
+inline constexpr IID IID_IBMDSwitcherDiscovery_v104 = {
+    0x28449053, 0xAC7A, 0x49EB, {0xAC, 0xD2, 0xD1, 0xE0, 0xC5, 0x7D, 0xC6, 0x27}};
 inline constexpr IID IID_IBMDSwitcherCallback = {
     0xEE50FC2C, 0xD0D7, 0x42D6, {0x96, 0x5A, 0x57, 0x49, 0x8C, 0xEC, 0xC1, 0xF6}};
 inline constexpr IID IID_IBMDSwitcherMacroPool = {
@@ -91,11 +97,12 @@ enum BMDSwitcherMacroControlEventType {
 };
 
 struct IBMDSwitcherDiscovery : public IUnknown {
-  virtual HRESULT STDMETHODCALLTYPE ConnectTo(BSTR deviceAddress, IBMDSwitcher **switcherDevice,
+  virtual HRESULT STDMETHODCALLTYPE ConnectTo(BSTR deviceAddress, void **switcherDevice,
                                               BMDSwitcherConnectToFailure *failReason) = 0;
 };
 
-struct IBMDSwitcher : public IUnknown {
+// IBMDSwitcher 9.7: 44 methods.
+struct IBMDSwitcher_v97 : public IUnknown {
   virtual HRESULT STDMETHODCALLTYPE GetProductName(BSTR *productName) = 0;
   virtual HRESULT STDMETHODCALLTYPE GetVideoMode(BMDSwitcherVideoMode *videoMode) = 0;
   virtual HRESULT STDMETHODCALLTYPE SetVideoMode(BMDSwitcherVideoMode videoMode) = 0;
@@ -148,6 +155,132 @@ struct IBMDSwitcher : public IUnknown {
   virtual HRESULT STDMETHODCALLTYPE DoesSupportDskTallyOverride(BOOL *supported) = 0;
   virtual HRESULT STDMETHODCALLTYPE GetDskTallyOverrideEnabled(BOOL *enabled) = 0;
   virtual HRESULT STDMETHODCALLTYPE SetDskTallyOverrideEnabled(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE CreateIterator(REFIID iid, LPVOID *ppv) = 0;
+  virtual HRESULT STDMETHODCALLTYPE AddCallback(IBMDSwitcherCallback *callback) = 0;
+  virtual HRESULT STDMETHODCALLTYPE RemoveCallback(IBMDSwitcherCallback *callback) = 0;
+};
+
+// IBMDSwitcher 10.0: 45 methods.
+struct IBMDSwitcher_v100 : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE GetProductName(BSTR *productName) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetVideoMode(BMDSwitcherVideoMode *videoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetVideoMode(BMDSwitcherVideoMode videoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportVideoMode(BMDSwitcherVideoMode videoMode, BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesVideoModeChangeRequireReconfiguration(BMDSwitcherVideoMode videoMode,
+                                                                             BOOL *required) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetMethodForDownConvertedSD(BMDSwitcherDownConversionMethod *method) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetMethodForDownConvertedSD(BMDSwitcherDownConversionMethod method) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetDownConvertedHDVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                               BMDSwitcherVideoMode *downConvertedHDVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetDownConvertedHDVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                               BMDSwitcherVideoMode downConvertedHDVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportDownConvertedHDVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                                       BMDSwitcherVideoMode downConvertedHDVideoMode,
+                                                                       BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetMultiViewVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                         BMDSwitcherVideoMode *multiviewVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetMultiViewVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                         BMDSwitcherVideoMode multiviewVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportMultiViewVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                                 BMDSwitcherVideoMode multiviewVideoMode,
+                                                                 BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE Get3GSDIOutputLevel(BMDSwitcher3GSDIOutputLevel *outputLevel) = 0;
+  virtual HRESULT STDMETHODCALLTYPE Set3GSDIOutputLevel(BMDSwitcher3GSDIOutputLevel outputLevel) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportColorimetrySetting(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetColorimetryMode(BMDSwitcherColorimetryMode *colorimetry) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetColorimetryMode(BMDSwitcherColorimetryMode colorimetry) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetPowerStatus(BMDSwitcherPowerStatus *powerStatus) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCode(unsigned char *hours, unsigned char *minutes, unsigned char *seconds,
+                                               unsigned char *frames, BOOL *dropFrame) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetTimeCode(unsigned char hours, unsigned char minutes, unsigned char seconds,
+                                               unsigned char frames) = 0;
+  virtual HRESULT STDMETHODCALLTYPE RequestTimeCode(void) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCodeLocked(BOOL *timeCodeLocked) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCodeExternal(BOOL *timeCodeExternal) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCodeMode(BMDSwitcherTimeCodeMode *timeCodeMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetTimeCodeMode(BMDSwitcherTimeCodeMode timeCodeMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetAreOutputsConfigurable(BOOL *configurable) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetSuperSourceCascade(BOOL *cascade) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetSuperSourceCascade(BOOL cascade) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SuspendStreaming(unsigned int durationMs) = 0;
+  virtual HRESULT STDMETHODCALLTYPE AllowStreamingToResume(void) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportAutoVideoMode(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetAutoVideoMode(BOOL *enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetAutoVideoModeDetected(BOOL *detected) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetAutoVideoMode(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportFadeToBlackEnabledSetting(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetFadeToBlackEnabled(BOOL *enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetFadeToBlackEnabled(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportDskTallyOverride(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetDskTallyOverrideEnabled(BOOL *enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetDskTallyOverrideEnabled(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportTallyConfig(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE CreateIterator(REFIID iid, LPVOID *ppv) = 0;
+  virtual HRESULT STDMETHODCALLTYPE AddCallback(IBMDSwitcherCallback *callback) = 0;
+  virtual HRESULT STDMETHODCALLTYPE RemoveCallback(IBMDSwitcherCallback *callback) = 0;
+};
+
+// IBMDSwitcher 10.4: 51 methods.
+struct IBMDSwitcher_v104 : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE GetProductName(BSTR *productName) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetVideoMode(BMDSwitcherVideoMode *videoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetVideoMode(BMDSwitcherVideoMode videoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportVideoMode(BMDSwitcherVideoMode videoMode, BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesVideoModeChangeRequireReconfiguration(BMDSwitcherVideoMode videoMode,
+                                                                             BOOL *required) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetMethodForDownConvertedSD(BMDSwitcherDownConversionMethod *method) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetMethodForDownConvertedSD(BMDSwitcherDownConversionMethod method) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetDownConvertedHDVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                               BMDSwitcherVideoMode *downConvertedHDVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetDownConvertedHDVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                               BMDSwitcherVideoMode downConvertedHDVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportDownConvertedHDVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                                       BMDSwitcherVideoMode downConvertedHDVideoMode,
+                                                                       BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetMultiViewVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                         BMDSwitcherVideoMode *multiviewVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetMultiViewVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                         BMDSwitcherVideoMode multiviewVideoMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportMultiViewVideoMode(BMDSwitcherVideoMode coreVideoMode,
+                                                                 BMDSwitcherVideoMode multiviewVideoMode,
+                                                                 BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE Get3GSDIOutputLevel(BMDSwitcher3GSDIOutputLevel *outputLevel) = 0;
+  virtual HRESULT STDMETHODCALLTYPE Set3GSDIOutputLevel(BMDSwitcher3GSDIOutputLevel outputLevel) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportColorimetrySetting(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetColorimetryMode(BMDSwitcherColorimetryMode *colorimetry) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetColorimetryMode(BMDSwitcherColorimetryMode colorimetry) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetPowerStatus(BMDSwitcherPowerStatus *powerStatus) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCode(unsigned char *hours, unsigned char *minutes, unsigned char *seconds,
+                                               unsigned char *frames, BOOL *dropFrame) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetTimeCode(unsigned char hours, unsigned char minutes, unsigned char seconds,
+                                               unsigned char frames) = 0;
+  virtual HRESULT STDMETHODCALLTYPE RequestTimeCode(void) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCodeLocked(BOOL *timeCodeLocked) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCodeExternal(BOOL *timeCodeExternal) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimeCodeMode(BMDSwitcherTimeCodeMode *timeCodeMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetTimeCodeMode(BMDSwitcherTimeCodeMode timeCodeMode) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportTimecodeSdiOutputEnabledSetting(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetTimecodeSdiOutputEnabled(BOOL *enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetTimecodeSdiOutputEnabled(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetAreOutputsConfigurable(BOOL *configurable) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetSuperSourceCascade(BOOL *cascade) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetSuperSourceCascade(BOOL cascade) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SuspendStreaming(unsigned int durationMs) = 0;
+  virtual HRESULT STDMETHODCALLTYPE AllowStreamingToResume(void) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportAutoVideoMode(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetAutoVideoMode(BOOL *enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetAutoVideoModeDetected(BOOL *detected) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetAutoVideoMode(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportFadeToBlackEnabledSetting(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetFadeToBlackEnabled(BOOL *enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetFadeToBlackEnabled(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportDskTallyOverride(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetDskTallyOverrideEnabled(BOOL *enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetDskTallyOverrideEnabled(BOOL enabled) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportTallyConfig(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportExternalAudioControl(BOOL *supported) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetExternalAudioControlActive(BOOL *active) = 0;
+  virtual HRESULT STDMETHODCALLTYPE SetExternalAudioControlActive(BOOL active) = 0;
   virtual HRESULT STDMETHODCALLTYPE CreateIterator(REFIID iid, LPVOID *ppv) = 0;
   virtual HRESULT STDMETHODCALLTYPE AddCallback(IBMDSwitcherCallback *callback) = 0;
   virtual HRESULT STDMETHODCALLTYPE RemoveCallback(IBMDSwitcherCallback *callback) = 0;

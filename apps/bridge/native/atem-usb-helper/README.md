@@ -14,7 +14,7 @@ can offer `transport: "usb"` next to the existing network transport
   `BMDSwitcherAPIDispatch` from
   `/Library/Application Support/Blackmagic Design/Switchers/BMDSwitcherAPI.bundle`.
   On Windows, the helper builds against a minimal interoperability header with
-  the known ATEM Switchers 9.x and 10.x Discovery COM identities.
+  the known ATEM Switchers 9.7, 10.0 and 10.4 Discovery COM identities.
   If the ATEM software is not installed, the helper reports
   `atem_software_not_installed` instead of crashing — the customer-facing
   requirement is "Blackmagic ATEM software installed".
@@ -37,7 +37,9 @@ Prints a single JSON object:
 
 Windows probe output also includes `sdk_generation` and `discovery_hr`. When
 the SDK COM object is missing, it includes `discovery_hr_v97`,
-`discovery_hr_v100`, and the `CoCreateInstance` HRESULTs in `detail`.
+`discovery_hr_v100`, `discovery_hr_v104`, and the `CoCreateInstance` HRESULTs
+in `detail`. If the ATEM runtime DLL is present but all supported Discovery
+generations fail, `detail` reports that the installed version is unsupported.
 
 Stable error identifiers: `atem_software_not_installed`,
 `no_usb_switcher_found`, `incompatible_firmware`, `corrupt_data`,
@@ -61,15 +63,17 @@ Windows (x64 Developer PowerShell for VS — `cl` on PATH; no ATEM SDK required)
 On Windows the graceful-degradation path is COM-based: without the ATEM
 software installed, `CoCreateInstance` fails (`REGDB_E_CLASSNOTREG`) and the
 helper reports `atem_software_not_installed` exactly like on macOS.
-The default Windows build embeds both known Discovery generations:
+The default Windows build embeds all supported Discovery generations:
 
-- 9.x Discovery IID `83C30ED4-4314-4C81-B1E3-23C518D6D8BD`, CLSID
+- 9.7 Discovery IID `83C30ED4-4314-4C81-B1E3-23C518D6D8BD`, CLSID
   `B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A`
-- 10.x Discovery IID `1EEE089A-5422-4A76-B068-F6EDCFBD3AC0`, CLSID
+- 10.0 Discovery IID `1EEE089A-5422-4A76-B068-F6EDCFBD3AC0`, CLSID
   `8A13D4FA-4801-48E3-BF68-442D63E34500`
+- 10.4 Discovery IID `28449053-AC7A-49EB-ACD2-D1E0C57DC627`, CLSID
+  `A9CDC765-3787-409D-A1E5-29F4F034A599`
 
-For local SDK cross-checks only, `.\build.ps1 -UseSdkIdl` runs `midl` against
-an installed SDK IDL after checking `ATEM_SDK_ROOT`, the current
+For local SDK provenance stamping only, `.\build.ps1 -UseSdkIdl` runs `midl`
+against an installed SDK IDL after checking `ATEM_SDK_ROOT`, the current
 `Blackmagic Design\ATEM Switchers\Developer SDK\Windows` install path, and the
 legacy `Blackmagic Design\Blackmagic ATEM Switchers\Developer SDK\Windows`
 path.
@@ -92,7 +96,7 @@ Commands:
 
 Events:
 
-- `{"type":"ready","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}` — emitted once at startup. Windows also includes `sdk_generation`.
+- `{"type":"ready","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}` — emitted once at startup. Windows also includes `sdk_generation`, which is `"none"` before a USB connection selects a Discovery generation.
 - `{"type":"connected","product_name":"ATEM Mini Extreme"}`
 - `{"type":"macros","macros":[{"id":0,"name":"...","description":"..."}]}` —
   after connect, on `list_macros`, and on every macro-pool change.

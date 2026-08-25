@@ -5,7 +5,7 @@ param(
 
 # Builds the ATEM USB helper (Windows). The default build uses the checked-in
 # interoperability header and does not require the ATEM SDK or midl. Use
-# -UseSdkIdl only as a local cross-check against an installed SDK IDL.
+# -UseSdkIdl only to stamp provenance from an installed SDK IDL.
 
 $ErrorActionPreference = "Stop"
 
@@ -29,9 +29,9 @@ $buildDir = Join-Path $rootDir "build-win"
 $outputExe = Join-Path $rootDir "atem-usb-helper.exe"
 $sourcePath = Join-Path $srcDir "atem-usb-helper.cpp"
 $interopHeader = Join-Path $srcDir "bmd_switcher_interop_win.h"
-$sdkIdlSha = "interop-v97+v100"
-$sdkDiscoveryClsid = "B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A+8A13D4FA-4801-48E3-BF68-442D63E34500"
-$sdkVersion = "9.7+10.0-interop"
+$sdkIdlSha = "interop-v97+v100+v104"
+$sdkDiscoveryClsid = "B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A+8A13D4FA-4801-48E3-BF68-442D63E34500+A9CDC765-3787-409D-A1E5-29F4F034A599"
+$sdkVersion = "9.7+10.0+10.4-interop"
 
 function Invoke-NativeCommand {
   param(
@@ -116,7 +116,7 @@ if ($UseSdkIdl) {
 } else {
   Write-Host "Using Windows interop header: $interopHeader"
   Write-Host "Interop Discovery CLSIDs: $sdkDiscoveryClsid"
-  Write-Host "Interop Discovery IIDs: 83C30ED4-4314-4C81-B1E3-23C518D6D8BD + 1EEE089A-5422-4A76-B068-F6EDCFBD3AC0"
+  Write-Host "Interop Discovery IIDs: 83C30ED4-4314-4C81-B1E3-23C518D6D8BD + 1EEE089A-5422-4A76-B068-F6EDCFBD3AC0 + 28449053-AC7A-49EB-ACD2-D1E0C57DC627"
 }
 
 if (Test-Path $outputExe) {
@@ -140,14 +140,16 @@ $exeBytes = [System.IO.File]::ReadAllBytes($outputExe)
 $requiredGuids = @(
   "B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A",
   "8A13D4FA-4801-48E3-BF68-442D63E34500",
+  "A9CDC765-3787-409D-A1E5-29F4F034A599",
   "83C30ED4-4314-4C81-B1E3-23C518D6D8BD",
-  "1EEE089A-5422-4A76-B068-F6EDCFBD3AC0"
+  "1EEE089A-5422-4A76-B068-F6EDCFBD3AC0",
+  "28449053-AC7A-49EB-ACD2-D1E0C57DC627"
 )
 foreach ($guid in $requiredGuids) {
   if (-not (Test-BytePattern -Bytes $exeBytes -Pattern ([Guid]::Parse($guid)).ToByteArray())) {
     throw "Built helper does not contain required Discovery GUID bytes ($guid)."
   }
 }
-Write-Host "Verified embedded 9.7 and 10.0 Discovery CLSID/IID bytes in $outputExe"
+Write-Host "Verified embedded 9.7, 10.0 and 10.4 Discovery CLSID/IID bytes in $outputExe"
 
 Write-Host "built $outputExe"
