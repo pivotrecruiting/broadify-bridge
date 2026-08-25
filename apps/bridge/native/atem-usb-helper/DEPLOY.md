@@ -14,13 +14,58 @@ npm run prepare:atem-usb-helper-release   # on an arm64 machine
 # repeat on an x64 machine (or build.sh under Rosetta with an x64 toolchain)
 ```
 
-Windows (x64 Native Tools shell; requires the ATEM software):
+Windows (x64 Native Tools shell; no ATEM SDK required):
 
 ```powershell
 cd apps\bridge\native\atem-usb-helper
 .\build.ps1
 Get-FileHash .\atem-usb-helper.exe -Algorithm SHA256
 ```
+
+The manual `ATEM USB Helper Windows` workflow builds the same artifact on
+`windows-2022` with MSVC x64 and uploads `atem-usb-helper.exe` plus its SHA256.
+
+By default, `build.ps1` uses `src\bmd_switcher_interop_win.h` instead of a
+vendor SDK. It embeds all supported Discovery generations:
+
+| ATEM SDK | Discovery IID | Discovery CLSID | IBMDSwitcher slots |
+|---|---|---|---:|
+| 9.7 | `83C30ED4-4314-4C81-B1E3-23C518D6D8BD` | `B8C0BA7E-BDED-4B73-96A8-266AF1BC2D7A` | 44 |
+| 10.0 | `1EEE089A-5422-4A76-B068-F6EDCFBD3AC0` | `8A13D4FA-4801-48E3-BF68-442D63E34500` | 45 |
+| 10.4 | `28449053-AC7A-49EB-ACD2-D1E0C57DC627` | `A9CDC765-3787-409D-A1E5-29F4F034A599` | 51 |
+
+After compiling, the script scans the built exe for the little-endian byte
+patterns of all Discovery CLSIDs and Discovery IIDs. The build fails if
+any required GUID bytes are missing.
+
+For local provenance stamping from an installed SDK, run `.\build.ps1 -UseSdkIdl`.
+That mode resolves the Windows SDK in this order:
+
+1. `ATEM_SDK_ROOT`
+2. `C:\Program Files (x86)\Blackmagic Design\ATEM Switchers\Developer SDK\Windows`
+3. `C:\Program Files (x86)\Blackmagic Design\Blackmagic ATEM Switchers\Developer SDK\Windows`
+
+It prints the resolved `BMDSwitcherAPI.idl` path, the first 12 hex chars of
+its SHA256, and the extracted `CBMDSwitcherDiscovery` CLSID before compiling.
+
+To add support for a future ATEM SDK generation:
+
+1. Extract the Discovery IID, Discovery coclass CLSID, and exact
+   `IBMDSwitcher` method list from the new vendor IDL.
+2. Count the 1-based method slots and record the positions of
+   `GetProductName`, `AddCallback`, and `RemoveCallback`.
+3. Add a new `IBMDSwitcher_v...` struct in
+   `src\bmd_switcher_interop_win.h` with the literal method order from the IDL.
+4. Extend the `SwitcherHandle` dispatch and newest-first `CoCreateInstance`
+   table in `src\atem-usb-helper.cpp`.
+5. Add the new Discovery IID and CLSID to `build.ps1`'s embedded-GUID
+   self-check and update this supported-generations table.
+
+The shipped Windows asset must be rebuilt whenever Blackmagic changes SDK GUIDs
+in a major version and the interop header must be updated in the same change.
+On 24.08.2026 a prebuilt exe was found to report
+`atem_software_not_installed` on machines with ATEM Switchers 9.7/10.0
+installed because it embedded neither the 9.7 nor 10.0 Discovery GUIDs.
 
 ## 2. Upload
 

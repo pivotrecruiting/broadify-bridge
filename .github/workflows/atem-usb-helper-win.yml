@@ -1,0 +1,53 @@
+name: ATEM USB Helper Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/atem-usb-win-fix
+    paths:
+      - apps/bridge/native/atem-usb-helper/**
+      - .github/workflows/atem-usb-helper-win.yml
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build ATEM USB helper
+        shell: pwsh
+        working-directory: apps/bridge/native/atem-usb-helper
+        run: .\build.ps1
+
+      - name: Runtime smoke (--probe without ATEM software)
+        shell: pwsh
+        run: |
+          $out = & apps\bridge\native\atem-usb-helper\atem-usb-helper.exe --probe
+          Write-Host "probe: $out"
+          if ($out -notmatch '"mode":"probe"') { throw "probe did not emit probe JSON" }
+          if ($out -notmatch '"helper_build"') { throw "probe missing helper_build metadata" }
+          if ($out -notmatch 'atem_software_not_installed') { throw "expected atem_software_not_installed on a bare runner, got: $out" }
+          if ($out -notmatch 'discovery_hr_v104') { throw "probe missing per-generation HRESULTs" }
+
+      - name: Write SHA256
+        shell: pwsh
+        working-directory: apps/bridge/native/atem-usb-helper
+        run: |
+          $hash = (Get-FileHash .\atem-usb-helper.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  atem-usb-helper.exe" | Set-Content -NoNewline -Path .\atem-usb-helper.exe.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atem-usb-helper-win-x64
+          path: |
+            apps/bridge/native/atem-usb-helper/atem-usb-helper.exe
+            apps/bridge/native/atem-usb-helper/atem-usb-helper.exe.sha256

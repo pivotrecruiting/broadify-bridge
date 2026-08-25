@@ -20,10 +20,9 @@
   - macOS: SDK runtime loaded at runtime by BMDSwitcherAPIDispatch from
     /Library/Application Support/Blackmagic Design/Switchers/. Missing ATEM
     software degrades to sdk_available=false / atem_software_not_installed.
-  - Windows: real COM. CoCreateInstance fails with REGDB_E_CLASSNOTREG when
-    the ATEM software is not installed -> same graceful degradation. The
-    interface header is midl-generated from the SDK's BMDSwitcherAPI.idl at
-    build time (see build.ps1).
+  - Windows: real COM. CoCreateInstance tries the known 9.7, 10.0 and 10.4
+    Discovery generations. If neither COM class is registered, the helper
+    reports atem_software_not_installed with the raw HRESULTs.
 
   Threading: SDK callbacks arrive on SDK-owned threads, stdin commands on a
   dedicated reader thread; stdout writes are serialized by a mutex and all
@@ -34,7 +33,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <objbase.h>
-#include "BMDSwitcherAPI_h.h"
+#include "bmd_switcher_interop_win.h"
 #else
 #include <BMDSwitcherAPI.h>
 #include <CoreFoundation/CFPlugInCOM.h>
@@ -46,6 +45,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -61,8 +61,23 @@
 
 namespace {
 
+#ifndef HELPER_SDK_IDL_SHA
+#define HELPER_SDK_IDL_SHA "unbuilt"
+#endif
+#ifndef HELPER_SDK_DISCOVERY_CLSID
+#define HELPER_SDK_DISCOVERY_CLSID "unbuilt"
+#endif
+#ifndef HELPER_SDK_VERSION
+#define HELPER_SDK_VERSION "unbuilt"
+#endif
+
 #if defined(_WIN32)
 using PlatformStringT = BSTR;
+constexpr long kDiscoveryNotAttemptedHr = 1;
+std::atomic<long> g_lastDiscoveryHrV97{kDiscoveryNotAttemptedHr};
+std::atomic<long> g_lastDiscoveryHrV100{kDiscoveryNotAttemptedHr};
+std::atomic<long> g_lastDiscoveryHrV104{kDiscoveryNotAttemptedHr};
+std::atomic<int> g_discoveryGeneration{0};
 #else
 using PlatformStringT = CFStringRef;
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
@@ -115,29 +130,148 @@ void releasePlatformString(PlatformStringT value) {
 #endif
 }
 
+#if defined(_WIN32)
+struct SwitcherHandle {
+  void *p = nullptr;
+  int gen = 0;
+
+  bool empty() const { return p == nullptr; }
+
+  HRESULT queryInterface(REFIID iid, void **out) const {
+    if (p == nullptr) {
+      return E_POINTER;
+    }
+    return static_cast<IUnknown *>(p)->QueryInterface(iid, out);
+  }
+
+  HRESULT getProductName(PlatformStringT *productName) const {
+    if (gen == 104) {
+      return static_cast<IBMDSwitcher_v104 *>(p)->GetProductName(productName);
+    }
+    if (gen == 100) {
+      return static_cast<IBMDSwitcher_v100 *>(p)->GetProductName(productName);
+    }
+    return static_cast<IBMDSwitcher_v97 *>(p)->GetProductName(productName);
+  }
+
+  HRESULT addCallback(IBMDSwitcherCallback *callback) const {
+    if (gen == 104) {
+      return static_cast<IBMDSwitcher_v104 *>(p)->AddCallback(callback);
+    }
+    if (gen == 100) {
+      return static_cast<IBMDSwitcher_v100 *>(p)->AddCallback(callback);
+    }
+    return static_cast<IBMDSwitcher_v97 *>(p)->AddCallback(callback);
+  }
+
+  HRESULT removeCallback(IBMDSwitcherCallback *callback) const {
+    if (gen == 104) {
+      return static_cast<IBMDSwitcher_v104 *>(p)->RemoveCallback(callback);
+    }
+    if (gen == 100) {
+      return static_cast<IBMDSwitcher_v100 *>(p)->RemoveCallback(callback);
+    }
+    return static_cast<IBMDSwitcher_v97 *>(p)->RemoveCallback(callback);
+  }
+
+  void release() {
+    if (p != nullptr) {
+      static_cast<IUnknown *>(p)->Release();
+      p = nullptr;
+      gen = 0;
+    }
+  }
+};
+#else
+struct SwitcherHandle {
+  void *p = nullptr;
+  int gen = 0;
+
+  bool empty() const { return p == nullptr; }
+  HRESULT queryInterface(REFIID iid, void **out) const {
+    return static_cast<IBMDSwitcher *>(p)->QueryInterface(iid, out);
+  }
+  HRESULT getProductName(PlatformStringT *productName) const {
+    return static_cast<IBMDSwitcher *>(p)->GetProductName(productName);
+  }
+  HRESULT addCallback(IBMDSwitcherCallback *callback) const {
+    return static_cast<IBMDSwitcher *>(p)->AddCallback(callback);
+  }
+  HRESULT removeCallback(IBMDSwitcherCallback *callback) const {
+    return static_cast<IBMDSwitcher *>(p)->RemoveCallback(callback);
+  }
+  void release() {
+    if (p != nullptr) {
+      static_cast<IBMDSwitcher *>(p)->Release();
+      p = nullptr;
+      gen = 0;
+    }
+  }
+};
+#endif
+
 /** Creates the SDK discovery object; nullptr = ATEM software not installed. */
 IBMDSwitcherDiscovery *createSwitcherDiscovery() {
 #if defined(_WIN32)
   IBMDSwitcherDiscovery *discovery = nullptr;
-  const HRESULT result = CoCreateInstance(
-      CLSID_CBMDSwitcherDiscovery, nullptr, CLSCTX_ALL,
-      IID_IBMDSwitcherDiscovery, reinterpret_cast<void **>(&discovery));
-  return SUCCEEDED(result) ? discovery : nullptr;
+  g_lastDiscoveryHrV97.store(kDiscoveryNotAttemptedHr);
+  g_lastDiscoveryHrV100.store(kDiscoveryNotAttemptedHr);
+  g_lastDiscoveryHrV104.store(kDiscoveryNotAttemptedHr);
+
+  HRESULT result = CoCreateInstance(
+      CLSID_CBMDSwitcherDiscovery_v104, nullptr, CLSCTX_ALL,
+      IID_IBMDSwitcherDiscovery_v104, reinterpret_cast<void **>(&discovery));
+  g_lastDiscoveryHrV104.store(static_cast<long>(result));
+  if (SUCCEEDED(result)) {
+    g_discoveryGeneration.store(104);
+    return discovery;
+  }
+
+  discovery = nullptr;
+  result = CoCreateInstance(
+      CLSID_CBMDSwitcherDiscovery_v100, nullptr, CLSCTX_ALL,
+      IID_IBMDSwitcherDiscovery_v100, reinterpret_cast<void **>(&discovery));
+  g_lastDiscoveryHrV100.store(static_cast<long>(result));
+  if (SUCCEEDED(result)) {
+    g_discoveryGeneration.store(100);
+    return discovery;
+  }
+
+  discovery = nullptr;
+  result = CoCreateInstance(
+      CLSID_CBMDSwitcherDiscovery_v97, nullptr, CLSCTX_ALL,
+      IID_IBMDSwitcherDiscovery_v97, reinterpret_cast<void **>(&discovery));
+  g_lastDiscoveryHrV97.store(static_cast<long>(result));
+  if (SUCCEEDED(result)) {
+    g_discoveryGeneration.store(97);
+    return discovery;
+  }
+
+  g_discoveryGeneration.store(0);
+  return nullptr;
 #else
   return CreateBMDSwitcherDiscoveryInstance();
 #endif
 }
 
 /** USB-only connect: empty device address per the ATEM SDK manual. */
-HRESULT connectViaUsb(IBMDSwitcherDiscovery *discovery, IBMDSwitcher **switcher,
+HRESULT connectViaUsb(IBMDSwitcherDiscovery *discovery, SwitcherHandle *switcher,
                       BMDSwitcherConnectToFailure *failReason) {
 #if defined(_WIN32)
   BSTR emptyAddress = SysAllocString(L"");
-  const HRESULT result = discovery->ConnectTo(emptyAddress, switcher, failReason);
+  void *switcherOut = nullptr;
+  const HRESULT result = discovery->ConnectTo(emptyAddress, &switcherOut, failReason);
   SysFreeString(emptyAddress);
+  switcher->p = switcherOut;
+  switcher->gen = SUCCEEDED(result) && switcherOut != nullptr ? g_discoveryGeneration.load() : 0;
   return result;
 #else
-  return discovery->ConnectTo(CFSTR(""), switcher, failReason);
+  using MacSwitcherT = IBMDSwitcher;
+  MacSwitcherT *switcherOut = nullptr;
+  const HRESULT result = discovery->ConnectTo(CFSTR(""), &switcherOut, failReason);
+  switcher->p = switcherOut;
+  switcher->gen = result == S_OK && switcherOut != nullptr ? 1 : 0;
+  return result;
 #endif
 }
 
@@ -152,7 +286,8 @@ std::string jsonEscape(const std::string &value) {
       case '\t': out << "\\t"; break;
       default:
         if (static_cast<unsigned char>(c) < 0x20) {
-          out << "\\u" << std::hex << static_cast<int>(c);
+          out << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+              << static_cast<int>(static_cast<unsigned char>(c)) << std::dec;
         } else {
           out << c;
         }
@@ -160,6 +295,73 @@ std::string jsonEscape(const std::string &value) {
   }
   return out.str();
 }
+
+void appendHelperBuildJson(std::ostringstream &out) {
+  out << "\"helper_build\":{\"sdk_idl_sha\":\"" << jsonEscape(HELPER_SDK_IDL_SHA)
+      << "\",\"sdk_discovery_clsid\":\"" << jsonEscape(HELPER_SDK_DISCOVERY_CLSID)
+      << "\",\"sdk_version\":\"" << jsonEscape(HELPER_SDK_VERSION) << "\"}";
+}
+
+#if defined(_WIN32)
+std::string formatHRESULT(HRESULT result) {
+  std::ostringstream out;
+  out << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
+      << static_cast<unsigned long>(result);
+  return out.str();
+}
+
+std::string discoveryHrJson() {
+  return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHrV97.load()));
+}
+
+std::string discoveryHrV100Json() {
+  return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHrV100.load()));
+}
+
+std::string discoveryHrV104Json() {
+  return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHrV104.load()));
+}
+
+std::string discoveryGenerationJson() {
+  const int generation = g_discoveryGeneration.load();
+  if (generation == 104) {
+    return "10.4";
+  }
+  if (generation == 100) {
+    return "10.0";
+  }
+  if (generation == 97) {
+    return "9.7";
+  }
+  return "none";
+}
+
+void appendWindowsDiscoveryJson(std::ostringstream &out, bool includeBothHrs) {
+  out << ",\"sdk_generation\":\"" << discoveryGenerationJson() << "\""
+      << ",\"discovery_hr\":\"" << discoveryHrJson() << "\"";
+  if (includeBothHrs) {
+    out << ",\"discovery_hr_v97\":\"" << discoveryHrJson() << "\""
+        << ",\"discovery_hr_v100\":\"" << discoveryHrV100Json() << "\""
+        << ",\"discovery_hr_v104\":\"" << discoveryHrV104Json() << "\"";
+  }
+}
+
+bool atemRuntimeDllExists() {
+  constexpr wchar_t kRuntimeDllPath[] =
+      L"C:\\Program Files (x86)\\Blackmagic Design\\ATEM Switchers\\BMDSwitcherAPI64.dll";
+  const DWORD attributes = GetFileAttributesW(kRuntimeDllPath);
+  return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::string discoveryMissingDetail() {
+  if (atemRuntimeDllExists()) {
+    return "ATEM software found but its version is not supported by this helper "
+           "(supported: 9.7, 10.0, 10.4)";
+  }
+  return "CoCreateInstance hr=" + discoveryHrJson() + " (v97=" + discoveryHrJson() +
+         ", v100=" + discoveryHrV100Json() + ", v104=" + discoveryHrV104Json() + ")";
+}
+#endif
 
 // Minimal field extraction for the flat command objects this helper accepts
 // (same hand-rolled approach as the meeting helper's control server; no
@@ -333,7 +535,7 @@ class RunSession {
 
   void connect() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (switcher_ != nullptr) {
+    if (!switcher_.empty()) {
       emitError("already_connected");
       return;
     }
@@ -341,27 +543,31 @@ class RunSession {
       discovery_ = createSwitcherDiscovery();
     }
     if (discovery_ == nullptr) {
+#if defined(_WIN32)
+      emitError("atem_software_not_installed", discoveryMissingDetail());
+#else
       emitError("atem_software_not_installed");
+#endif
       return;
     }
     BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
     if (connectViaUsb(discovery_, &switcher_, &failReason) != S_OK ||
-        switcher_ == nullptr) {
-      switcher_ = nullptr;
+        switcher_.empty()) {
+      switcher_.release();
       emitError(connectFailureToError(failReason));
       return;
     }
 
-    switcher_->QueryInterface(IID_IBMDSwitcherMacroPool,
-                              reinterpret_cast<void **>(&macroPool_));
-    switcher_->QueryInterface(IID_IBMDSwitcherMacroControl,
-                              reinterpret_cast<void **>(&macroControl_));
+    switcher_.queryInterface(IID_IBMDSwitcherMacroPool,
+                             reinterpret_cast<void **>(&macroPool_));
+    switcher_.queryInterface(IID_IBMDSwitcherMacroControl,
+                             reinterpret_cast<void **>(&macroControl_));
 
     switcherMonitor_ = new SwitcherMonitor([this]() {
       connectedFlag_.store(false);
       emitLine("{\"type\":\"disconnected\"}");
     });
-    switcher_->AddCallback(switcherMonitor_);
+    switcher_.addCallback(switcherMonitor_);
     if (macroPool_ != nullptr) {
       poolMonitor_ = new MacroPoolMonitor([this]() { emitMacrosUnlocked(); });
       macroPool_->AddCallback(poolMonitor_);
@@ -374,7 +580,7 @@ class RunSession {
     connectedFlag_.store(true);
     std::string productName;
     PlatformStringT productNameRef = nullptr;
-    if (switcher_->GetProductName(&productNameRef) == S_OK && productNameRef) {
+    if (switcher_.getProductName(&productNameRef) == S_OK && productNameRef) {
       productName = platformStringToStdString(productNameRef);
       releasePlatformString(productNameRef);
     }
@@ -423,7 +629,7 @@ class RunSession {
 
  private:
   bool requireConnected() {
-    if (switcher_ == nullptr || !connectedFlag_.load()) {
+    if (switcher_.empty() || !connectedFlag_.load()) {
       emitError("not_connected");
       return false;
     }
@@ -449,7 +655,7 @@ class RunSession {
   }
 
   void disconnectLocked(bool emitEvent) {
-    if (switcher_ == nullptr) {
+    if (switcher_.empty()) {
       return;
     }
     if (controlMonitor_ != nullptr && macroControl_ != nullptr) {
@@ -459,14 +665,14 @@ class RunSession {
       macroPool_->RemoveCallback(poolMonitor_);
     }
     if (switcherMonitor_ != nullptr) {
-      switcher_->RemoveCallback(switcherMonitor_);
+      switcher_.removeCallback(switcherMonitor_);
     }
     releaseAndClear(controlMonitor_);
     releaseAndClear(poolMonitor_);
     releaseAndClear(switcherMonitor_);
     releaseAndClear(macroControl_);
     releaseAndClear(macroPool_);
-    releaseAndClear(switcher_);
+    switcher_.release();
     const bool wasConnected = connectedFlag_.exchange(false);
     if (emitEvent && wasConnected) {
       emitLine("{\"type\":\"disconnected\"}");
@@ -548,7 +754,7 @@ class RunSession {
   std::mutex mutex_;
   std::atomic<bool> connectedFlag_{false};
   IBMDSwitcherDiscovery *discovery_ = nullptr;
-  IBMDSwitcher *switcher_ = nullptr;
+  SwitcherHandle switcher_;
   IBMDSwitcherMacroPool *macroPool_ = nullptr;
   IBMDSwitcherMacroControl *macroControl_ = nullptr;
   SwitcherMonitor *switcherMonitor_ = nullptr;
@@ -559,25 +765,41 @@ class RunSession {
 int runProbe() {
   IBMDSwitcherDiscovery *discovery = createSwitcherDiscovery();
   if (discovery == nullptr) {
-    std::cout << "{\"mode\":\"probe\",\"sdk_available\":false,\"connected\":false,"
-              << "\"error\":\"atem_software_not_installed\"}" << std::endl;
+    std::ostringstream out;
+    out << "{\"mode\":\"probe\",\"sdk_available\":false,\"connected\":false,"
+        << "\"error\":\"atem_software_not_installed\"";
+#if defined(_WIN32)
+    out << ",\"detail\":\"" << jsonEscape(discoveryMissingDetail()) << "\"";
+    appendWindowsDiscoveryJson(out, true);
+#endif
+    out << ",";
+    appendHelperBuildJson(out);
+    out << "}";
+    std::cout << out.str() << std::endl;
     return 0;
   }
 
-  IBMDSwitcher *switcher = nullptr;
+  SwitcherHandle switcher;
   BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
   const HRESULT result = connectViaUsb(discovery, &switcher, &failReason);
-  if (result != S_OK || switcher == nullptr) {
-    std::cout << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":false,"
-              << "\"error\":\"" << connectFailureToError(failReason) << "\"}"
-              << std::endl;
+  if (result != S_OK || switcher.empty()) {
+    std::ostringstream out;
+    out << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":false,"
+        << "\"error\":\"" << connectFailureToError(failReason) << "\"";
+#if defined(_WIN32)
+    appendWindowsDiscoveryJson(out, false);
+#endif
+    out << ",";
+    appendHelperBuildJson(out);
+    out << "}";
+    std::cout << out.str() << std::endl;
     discovery->Release();
     return 0;
   }
 
   std::string productName;
   PlatformStringT productNameRef = nullptr;
-  if (switcher->GetProductName(&productNameRef) == S_OK && productNameRef) {
+  if (switcher.getProductName(&productNameRef) == S_OK && productNameRef) {
     productName = platformStringToStdString(productNameRef);
     releasePlatformString(productNameRef);
   }
@@ -585,8 +807,8 @@ int runProbe() {
   uint32_t macroSlots = 0;
   uint32_t validMacros = 0;
   IBMDSwitcherMacroPool *macroPool = nullptr;
-  if (switcher->QueryInterface(IID_IBMDSwitcherMacroPool,
-                               reinterpret_cast<void **>(&macroPool)) == S_OK &&
+  if (switcher.queryInterface(IID_IBMDSwitcherMacroPool,
+                              reinterpret_cast<void **>(&macroPool)) == S_OK &&
       macroPool != nullptr) {
     macroPool->GetMaxCount(&macroSlots);
     for (uint32_t i = 0; i < macroSlots; ++i) {
@@ -605,19 +827,34 @@ int runProbe() {
     macroPool->Release();
   }
 
-  std::cout << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":true,"
-            << "\"product_name\":\"" << jsonEscape(productName) << "\","
-            << "\"macro_slots\":" << macroSlots << ","
-            << "\"valid_macros\":" << validMacros << "}" << std::endl;
+  std::ostringstream out;
+  out << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":true,"
+      << "\"product_name\":\"" << jsonEscape(productName) << "\","
+      << "\"macro_slots\":" << macroSlots << ","
+      << "\"valid_macros\":" << validMacros;
+#if defined(_WIN32)
+  appendWindowsDiscoveryJson(out, false);
+#endif
+  out << ",";
+  appendHelperBuildJson(out);
+  out << "}";
+  std::cout << out.str() << std::endl;
 
-  switcher->Release();
+  switcher.release();
   discovery->Release();
   return 0;
 }
 
 int runSessionLoop() {
   RunSession session;
-  emitLine("{\"type\":\"ready\"}");
+  std::ostringstream ready;
+  ready << "{\"type\":\"ready\",";
+#if defined(_WIN32)
+  ready << "\"sdk_generation\":\"" << discoveryGenerationJson() << "\",";
+#endif
+  appendHelperBuildJson(ready);
+  ready << "}";
+  emitLine(ready.str());
 
   std::thread readerThread([&session]() {
 #if defined(_WIN32)
