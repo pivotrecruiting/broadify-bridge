@@ -2,6 +2,12 @@ name: ATEM USB Helper Windows
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/atem-usb-win-fix
+    paths:
+      - apps/bridge/native/atem-usb-helper/**
+      - .github/workflows/atem-usb-helper-win.yml
 
 jobs:
   build:
