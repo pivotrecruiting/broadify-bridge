@@ -28,6 +28,11 @@ import {
 } from "./graphics-pixel-utils.js";
 import { frameBusWriterMatchesTarget } from "./framebus-writer-match.js";
 import { selectFrameBusSeedFrame } from "./framebus-seed-frame.js";
+import {
+  buildIdleFrameBuffer,
+  resolveIdleFrameColor,
+  type IdleFrameColorT,
+} from "./idle-frame.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -586,12 +591,15 @@ function ensureFrameBusWriter(
         forceRecreate: true,
       });
     }
-    // Seed the fresh region. Hard zeros are only safe on an idle output: a
-    // writer swap also happens mid-show (geometry change, meeting reattach),
-    // and there a blank frame drops key/fill to key=0 and robs a downstream
-    // chroma keyer of its key colour, so the black frame gets keyed on air.
-    // Re-publish the retained frame whenever its geometry still fits.
-    const initBuffer = carriedFrame ?? Buffer.alloc(width * height * 4, 0);
+    // Seed the fresh region. Hard zeros are only safe on an output that reads
+    // alpha: a writer swap also happens mid-show (geometry change, meeting
+    // reattach), and there a blank frame drops key/fill to key=0 and robs a
+    // downstream chroma keyer of its key colour, so the black frame gets keyed
+    // on air. Re-publish the retained frame whenever its geometry still fits,
+    // otherwise seed the session background - on a video output that is the
+    // key colour, so the very first frame is already keyable.
+    const initBuffer =
+      carriedFrame ?? buildIdleFrameBuffer(width, height, currentIdleFrameColor());
     const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(initBuffer, initTimestampNs);
     // Retain the init frame too: if no paint ever fires (idle renderer), the
@@ -603,7 +611,8 @@ function ensureFrameBusWriter(
         name: frameBusWriter.name,
         size: frameBusWriter.size,
         header: frameBusWriter.header,
-        seededFrom: carriedFrame ? "retained_frame" : "blank",
+        seededFrom: carriedFrame ? "retained_frame" : "idle_color",
+        ...(carriedFrame ? {} : { idleColor: currentIdleFrameColor() }),
       },
       "[GraphicsRenderer] FrameBus writer initialized",
     );
@@ -1141,6 +1150,30 @@ async function ensureSingleWindow(
 }
 
 /**
+ * Reset the renderer page to the session background.
+ *
+ * @returns Promise resolved once the page has been told, or immediately when
+ * there is no window.
+ */
+async function applySessionBackground(): Promise<void> {
+  if (!singleWindow || singleWindow.isDestroyed()) {
+    return;
+  }
+  const script = rendererClearColor
+    ? `window.__setClearColor && window.__setClearColor(${JSON.stringify(
+        rendererClearColor,
+      )});`
+    : `window.__setBackground && window.__setBackground(${JSON.stringify(
+        rendererBackgroundMode || "transparent",
+      )});`;
+  try {
+    await singleWindow.webContents.executeJavaScript(script, true);
+  } catch {
+    // Best-effort: the idle frame below is written either way.
+  }
+}
+
+/**
  * Force an offscreen repaint after a control-plane DOM mutation.
  *
  * Some Chromium offscreen scenarios may delay paint dispatch for non-animated
@@ -1157,7 +1190,26 @@ function requestSingleWindowRepaint(): void {
   }
 }
 
-function writeTransparentFrame(reason: string): void {
+/**
+ * Resolve the colour an empty frame must carry for the active session.
+ *
+ * @returns RGBA fill colour of the idle picture.
+ */
+function currentIdleFrameColor(): IdleFrameColorT {
+  return resolveIdleFrameColor(rendererBackgroundMode, rendererClearColor);
+}
+
+/**
+ * Publish the idle picture: a solid frame in the session background colour.
+ *
+ * Deterministic on purpose. The previous capture-based idle frame took
+ * seconds on Windows and reproduced whatever background the last layer had
+ * set, so an opaque graphic background stayed on air after its graphic was
+ * gone.
+ *
+ * @param reason Log tag identifying the trigger.
+ */
+function writeIdleFrame(reason: string): void {
   if (!rendererConfig) {
     return;
   }
@@ -1165,7 +1217,8 @@ function writeTransparentFrame(reason: string): void {
   if (!ensureFrameBusWriter(width, height, fps) || !frameBusWriter) {
     return;
   }
-  const buffer = Buffer.alloc(width * height * 4, 0);
+  const color = currentIdleFrameColor();
+  const buffer = buildIdleFrameBuffer(width, height, color);
   try {
     const timestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(buffer, timestampNs);
@@ -1182,14 +1235,16 @@ function writeTransparentFrame(reason: string): void {
         width,
         height,
         fps,
+        backgroundMode: rendererBackgroundMode,
+        color,
       },
-      "[GraphicsRenderer] Transparent FrameBus frame written",
+      "[GraphicsRenderer] Idle FrameBus frame written",
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(
       { reason, message },
-      "[GraphicsRenderer] Transparent FrameBus write failed",
+      "[GraphicsRenderer] Idle FrameBus write failed",
     );
   }
 }
@@ -1505,7 +1560,7 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
   singleLayerSnapshots.delete(message.layerId);
   if (!singleWindow) {
     if (singleLayerSnapshots.size === 0) {
-      writeTransparentFrame("remove_layer_no_window");
+      writeIdleFrame("remove_layer_no_window");
     }
     return;
   }
@@ -1513,20 +1568,18 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
     `window.__removeLayer(${JSON.stringify(message.layerId)});`,
     true,
   );
-  // Both branches capture the page rather than writing hard zeros. The page
-  // still carries the session background — transparent for key/fill, green /
-  // black / white for an opaque output — so the capture IS the correct idle
-  // picture. A zero frame is only correct for key/fill; on an opaque output it
-  // is black, which a downstream chroma keyer cannot key, so the black frame
-  // goes to air. Zeros stay as the fallback for when the capture fails,
-  // because leaving the last graphic frame on the bus would be worse.
-  const reason =
-    singleLayerSnapshots.size === 0 ? "remove_last_layer" : "remove_layer";
-  const captured = await writeCapturedWindowFrame(reason);
-  if (!captured && singleLayerSnapshots.size === 0) {
-    writeTransparentFrame("remove_last_layer_capture_failed");
+  if (singleLayerSnapshots.size === 0) {
+    // Nothing is live any more, so the idle picture follows entirely from the
+    // session background and needs no capture. Reset the page to that
+    // background first: a layer may have set an opaque one of its own, and it
+    // outlives the layer (__removeLayer never touches #graphics-background),
+    // so the next paint would put that colour back on the bus.
+    await applySessionBackground();
+    writeIdleFrame("remove_last_layer");
+  } else {
+    await writeCapturedWindowFrame("remove_layer");
+    scheduleCapturedWindowFrames("remove_layer");
   }
-  scheduleCapturedWindowFrames(reason);
   requestSingleWindowRepaint();
 }
 

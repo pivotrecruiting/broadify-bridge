@@ -2392,12 +2392,13 @@ describe("electron-renderer-entry", () => {
     );
   });
 
-  it("publishes the captured page instead of a blank frame when the last layer is removed", async () => {
-    // Regression: removing the LAST layer used to write hard zeros straight to
-    // the FrameBus, bypassing the DOM. The page still carries the session
-    // background, so on an opaque output that blank frame is black — which a
-    // downstream chroma keyer cannot key, so black went to air. Capture the
-    // page instead; zeros remain only as the fallback when capture fails.
+  it("publishes a solid session-background frame when the last layer is removed", async () => {
+    // Regression, twice over. Removing the LAST layer first wrote hard zeros
+    // (black on an opaque output, which a chroma keyer cannot key), then a
+    // capture of the page - but the page keeps whatever background the layer
+    // set, so an opaque graphic background stayed on air after its graphic was
+    // gone, and the capture itself cost seconds on Windows. The idle frame is
+    // now derived from the session background and written directly.
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
     process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
     const width = 8;
@@ -2487,17 +2488,28 @@ describe("electron-renderer-entry", () => {
 
     const logMessages = mockPinoInfo.mock.calls.map((call) => call[1]);
     expect(logMessages).toContain(
-      "[GraphicsRenderer] Captured FrameBus frame written"
-    );
-    // The blank-frame fallback must not have been needed.
-    expect(logMessages).not.toContain(
-      "[GraphicsRenderer] Transparent FrameBus frame written"
+      "[GraphicsRenderer] Idle FrameBus frame written"
     );
 
-    // What actually landed on the bus last must be the painted page, not zeros.
+    // The removal path must not capture at all any more: no captured write may
+    // carry a remove_last_layer reason.
+    const capturedRemoveReasons = mockPinoInfo.mock.calls
+      .filter(
+        (call) => call[1] === "[GraphicsRenderer] Captured FrameBus frame written"
+      )
+      .map((call) => (call[0] as { reason?: string }).reason ?? "");
+    expect(
+      capturedRemoveReasons.filter((reason) => reason.startsWith("remove_last_layer"))
+    ).toEqual([]);
+
+    // What landed on the bus last must be the session background - here green,
+    // solid over every pixel - and not the page the removed layer left behind.
     const lastFrame = writeFrame.mock.calls.at(-1)?.[0] as Buffer;
     expect(lastFrame).toBeDefined();
-    expect(lastFrame.every((byte) => byte === 0)).toBe(false);
+    expect(lastFrame.length).toBe(width * height * 4);
+    expect(lastFrame.equals(Buffer.concat(
+      Array.from({ length: width * height }, () => Buffer.from([0, 255, 0, 255]))
+    ))).toBe(true);
   });
 
   it("shutdown after create_layer calls stopPainting and destroy on window", async () => {

@@ -109,6 +109,14 @@ export async function createServer(config: BridgeConfigT) {
   setBridgeContext(baseContext);
   logRuntimeDiagnostics(baseContext.logger);
 
+  // Device modules FIRST: the persisted graphics output is restored inside
+  // graphicsManager.initialize(), and resolving its target port goes through
+  // the device cache. With an empty module registry that lookup returns no
+  // devices, so a display output was misread as DeckLink and the restore died
+  // on a helper that does not exist on Windows.
+  initializeModules();
+  server.log.info("[Server] Device modules initialized");
+
   await graphicsManager.initialize();
 
   // Register CORS + WebSocket plugins.
@@ -119,9 +127,7 @@ export async function createServer(config: BridgeConfigT) {
   server.log.info("[Server] CORS plugin registered");
   server.log.info("[Server] WebSocket plugin registered");
 
-  // Initialize device modules and device watchers.
-  initializeModules();
-  server.log.info("[Server] Device modules initialized");
+  // Device watchers (hotplug); the modules themselves are registered above.
   deviceCache.initializeWatchers();
   server.log.info("[Server] Device watchers initialized");
 

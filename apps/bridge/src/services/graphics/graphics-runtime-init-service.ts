@@ -123,18 +123,15 @@ export class GraphicsRuntimeInitService {
 
       this.deps.setOutputConfig(null);
       this.deps.setOutputAdapter(this.deps.createStubOutputAdapter());
-      try {
-        await outputConfigStore.clear();
-        getBridgeContext().logger.warn(
-          "[Graphics] Cleared persisted output config after startup failure"
-        );
-      } catch (clearError) {
-        const clearMessage =
-          clearError instanceof Error ? clearError.message : String(clearError);
-        getBridgeContext().logger.warn(
-          `[Graphics] Failed to clear persisted output config: ${clearMessage}`
-        );
-      }
+      // The persisted config is KEPT on purpose. Deleting it turned every
+      // transient startup failure (a helper not ready, a display not yet
+      // enumerated) into permanent data loss: the operator had to pick the
+      // output again after every restart. A config that is genuinely wrong
+      // fails again on the next start and is visible in the log; one that was
+      // only unlucky simply works again.
+      getBridgeContext().logger.warn(
+        "[Graphics] Kept persisted output config despite startup failure; reconfigure to replace it"
+      );
     }
   }
 }

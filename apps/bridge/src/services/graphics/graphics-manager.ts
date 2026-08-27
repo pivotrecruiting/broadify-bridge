@@ -19,6 +19,7 @@ import { outputConfigStore } from "./output-config-store.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { resolveSessionBackgroundMode } from "./session-background.js";
 import { isDevelopmentMode } from "../dev-mode.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
@@ -846,7 +847,7 @@ export class GraphicsManager {
       framebusName: frameBusConfig?.name ?? "",
       framebusSlotCount: frameBusConfig?.slotCount ?? 0,
       framebusSize: frameBusConfig?.size ?? 0,
-      backgroundMode: "transparent",
+      backgroundMode: resolveSessionBackgroundMode(config.outputKey),
     };
   }
 

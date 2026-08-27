@@ -296,6 +296,13 @@ describe("server", () => {
       );
       expect(mockInitializeModules).toHaveBeenCalled();
       expect(mockDeviceCacheInitializeWatchers).toHaveBeenCalled();
+      // Order matters: graphicsManager.initialize() restores the persisted
+      // output and resolves its target through the device cache. Registered
+      // afterwards, the module registry was still empty during the restore, a
+      // display output was misread as DeckLink, and the restore failed.
+      expect(mockInitializeModules.mock.invocationCallOrder[0]).toBeLessThan(
+        mockGraphicsInitialize.mock.invocationCallOrder[0]
+      );
       expect(mockRegisterServerRoutes).toHaveBeenCalledWith(
         expect.objectContaining({
           register: expect.any(Function),

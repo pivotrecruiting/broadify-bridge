@@ -196,7 +196,7 @@ describe("GraphicsRuntimeInitService", () => {
     expect(mockAdapter.configure).toHaveBeenCalledWith(persistedConfig);
   });
 
-  it("on persisted config failure falls back to stub and clears store", async () => {
+  it("on persisted config failure falls back to stub but KEEPS the store", async () => {
     mockGetConfig.mockReturnValue({
       version: 1,
       outputKey: "stub",
@@ -241,6 +241,13 @@ describe("GraphicsRuntimeInitService", () => {
     );
     expect(setOutputConfig).toHaveBeenCalledWith(null);
     expect(setOutputAdapter).toHaveBeenCalledWith(stubAdapter);
-    expect(mockClear).toHaveBeenCalled();
+    // Regression: the store used to be wiped here, so any transient startup
+    // failure (helper not ready, display not yet enumerated) cost the operator
+    // the output selection permanently - it had to be picked again after every
+    // restart.
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Kept persisted output config")
+    );
   });
 });
