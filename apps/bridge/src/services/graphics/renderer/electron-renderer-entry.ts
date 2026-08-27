@@ -42,6 +42,8 @@ const logger = pino({
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
+/** Studio: how long to wait for a paint before capturing as a safety net. */
+const STUDIO_CAPTURE_FALLBACK_MS = 100;
 const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
@@ -857,6 +859,76 @@ function scheduleFrameBusReadyRetry(
   );
 }
 
+/**
+ * Force the offscreen window to the target content size.
+ *
+ * Windows clamps a NEW window to the work area - the screen minus the
+ * taskbar - so a 1080-tall window comes back as 1032 next to a 48px taskbar.
+ * That is not cosmetic: the page is laid out in a fixed 1920x1080 system, so
+ * the rows below the viewport are never rendered and never captured (graphics
+ * cut off at the bottom), and the short capture is then stretched back to the
+ * target, which distorts what is left and costs a full-frame resample on every
+ * frame. `enableLargerThanScreen` does not help here - it is macOS-only.
+ *
+ * The clamp applies to window creation; a resize afterwards is a separate
+ * request, so ask again. Whether Windows honours it is what the log records.
+ *
+ * @param window Offscreen renderer window.
+ * @param width Target content width.
+ * @param height Target content height.
+ */
+function ensureWindowContentSize(
+  window: BrowserWindow,
+  width: number,
+  height: number,
+): void {
+  let initialWidth: number;
+  let initialHeight: number;
+  try {
+    [initialWidth, initialHeight] = window.getContentSize();
+  } catch {
+    return;
+  }
+  if (initialWidth === width && initialHeight === height) {
+    return;
+  }
+
+  try {
+    window.setContentSize(width, height);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn({ message }, "[GraphicsRenderer] setContentSize failed");
+  }
+
+  let actualWidth = initialWidth;
+  let actualHeight = initialHeight;
+  try {
+    [actualWidth, actualHeight] = window.getContentSize();
+  } catch {
+    // Keep the pre-resize values for the log below.
+  }
+
+  const details = {
+    requestedWidth: width,
+    requestedHeight: height,
+    clampedWidth: initialWidth,
+    clampedHeight: initialHeight,
+    actualWidth,
+    actualHeight,
+  };
+  if (actualWidth === width && actualHeight === height) {
+    logger.info(
+      details,
+      "[GraphicsRenderer] Offscreen viewport recovered after work-area clamp",
+    );
+    return;
+  }
+  logger.error(
+    details,
+    "[GraphicsRenderer] Offscreen viewport still clamped; graphics are cropped and resampled",
+  );
+}
+
 async function destroySingleWindow(): Promise<void> {
   if (!singleWindow) {
     singleWindowReady = null;
@@ -971,6 +1043,7 @@ async function ensureSingleWindow(
     });
 
     singleWindowFormat = { width, height, fps, renderScale };
+    ensureWindowContentSize(singleWindow, renderWidth, renderHeight);
 
     singleWindow.webContents.setFrameRate(normalizeNativeFrameRate(fps));
 
@@ -1109,7 +1182,10 @@ async function ensureSingleWindow(
       });
     });
 
-    const html = buildSingleWindowDocument(renderScale);
+    const html = buildSingleWindowDocument(
+      renderScale,
+      rendererBackgroundMode || backgroundMode,
+    );
     await singleWindow.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
     );
@@ -1375,13 +1451,69 @@ async function writeCapturedWindowFrame(reason: string): Promise<boolean> {
   }
 }
 
+/**
+ * Whether this renderer serves one of the meeting compositor planes.
+ *
+ * The capture path behaves differently per side, so this gate decides it.
+ * Meeting keeps exactly the behaviour it has had since the capture path was
+ * introduced; only the studio side is rolled back.
+ *
+ * @returns True when the active FrameBus is a meeting graphics plane.
+ */
+function isMeetingGraphicsBus(): boolean {
+  return MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
+}
+
+/**
+ * Publish the result of a layer mutation.
+ *
+ * Studio takes the paint path: invalidate() forces a repaint and the paint
+ * handler publishes it, exactly as the renderer worked before the capture path
+ * arrived with the meeting work. The extra captures duplicated that frame four
+ * times per command - each a full capturePage plus a pixel pass - and landed
+ * 120/300/700 ms into fades that run 450 ms (enter) and 300 ms (exit), so an
+ * older frame could overwrite a newer paint and the picture jumped back.
+ *
+ * @param reason Log tag identifying the trigger.
+ */
+async function publishLayerMutation(reason: string): Promise<void> {
+  requestSingleWindowRepaint();
+  if (isMeetingGraphicsBus()) {
+    await writeCapturedWindowFrame(reason);
+  }
+  scheduleCapturedWindowFrames(reason);
+}
+
 function scheduleCapturedWindowFrames(reason: string): void {
+  if (!isMeetingGraphicsBus()) {
+    scheduleStudioFallbackCapture(reason);
+    return;
+  }
   const delaysMs = [120, 300, 700];
   for (const delayMs of delaysMs) {
     setTimeout(() => {
       void writeCapturedWindowFrame(`${reason}_${delayMs}ms`);
     }, delayMs);
   }
+}
+
+/**
+ * Studio safety net: capture once if the invalidate produced no paint.
+ *
+ * Static content can leave Chromium's offscreen pipeline without a paint
+ * event - the reason the captures were added in the first place. One capture
+ * covers that, and only when it is actually needed.
+ *
+ * @param reason Log tag identifying the trigger.
+ */
+function scheduleStudioFallbackCapture(reason: string): void {
+  const paintsBefore = paintCount;
+  setTimeout(() => {
+    if (paintCount !== paintsBefore) {
+      return;
+    }
+    void writeCapturedWindowFrame(`${reason}_fallback`);
+  }, STUDIO_CAPTURE_FALLBACK_MS);
 }
 
 function registerAssetProtocol(): void {
@@ -1480,9 +1612,7 @@ async function createLayer(message: {
     },
     "[GraphicsRenderer] create_layer rendered",
   );
-  requestSingleWindowRepaint();
-  await writeCapturedWindowFrame("create_layer");
-  scheduleCapturedWindowFrames("create_layer");
+  await publishLayerMutation("create_layer");
 }
 
 /**
@@ -1512,9 +1642,7 @@ async function updateValues(message: {
     )}, ${JSON.stringify(message.bindings || {})});`,
     true,
   );
-  requestSingleWindowRepaint();
-  await writeCapturedWindowFrame("update_values");
-  scheduleCapturedWindowFrames("update_values");
+  await publishLayerMutation("update_values");
 }
 
 /**
@@ -1546,9 +1674,7 @@ async function updateLayout(message: {
     )}, ${JSON.stringify(zIndexValue)});`,
     true,
   );
-  requestSingleWindowRepaint();
-  await writeCapturedWindowFrame("update_layout");
-  scheduleCapturedWindowFrames("update_layout");
+  await publishLayerMutation("update_layout");
 }
 
 /**
@@ -1577,8 +1703,7 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
     await applySessionBackground();
     writeIdleFrame("remove_last_layer");
   } else {
-    await writeCapturedWindowFrame("remove_layer");
-    scheduleCapturedWindowFrames("remove_layer");
+    await publishLayerMutation("remove_layer");
   }
   requestSingleWindowRepaint();
 }

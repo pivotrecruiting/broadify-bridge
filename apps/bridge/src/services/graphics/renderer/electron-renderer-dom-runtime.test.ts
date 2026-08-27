@@ -4,6 +4,36 @@ jest.mock("./animation-css.js", () => ({
   getStandardAnimationCss: () => "/* mock animation css */",
 }));
 
+describe("buildSingleWindowDocument background", () => {
+  /**
+   * Read the effective background declaration of the page background layer.
+   *
+   * @param html Generated document.
+   * @returns The CSS value, or null when the rule is missing.
+   */
+  const backgroundValue = (html: string): string | null => {
+    const rule = html.slice(html.indexOf("#graphics-background"));
+    const match = rule
+      .slice(0, rule.indexOf("}"))
+      .match(/background:\s*([^;]+);/);
+    return match ? match[1].trim() : null;
+  };
+
+  it("bakes the session background into the document", () => {
+    // The offscreen window starts painting the moment the page loads, and
+    // those first paints go straight to the FrameBus. Applying the background
+    // by script afterwards published black frames on an output without alpha -
+    // a visible flash before the first graphic.
+    expect(backgroundValue(buildSingleWindowDocument(1, "green"))).toBe("#00FF00");
+    expect(backgroundValue(buildSingleWindowDocument(1, "white"))).toBe("#FFFFFF");
+  });
+
+  it("stays transparent when no background mode is given", () => {
+    expect(backgroundValue(buildSingleWindowDocument(1, null))).toBe("transparent");
+    expect(backgroundValue(buildSingleWindowDocument(1))).toBe("transparent");
+  });
+});
+
 describe("electron-renderer-dom-runtime", () => {
   describe("buildSingleWindowDocument", () => {
     it("returns a string", () => {

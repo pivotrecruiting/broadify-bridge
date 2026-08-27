@@ -10,7 +10,27 @@ const BASE_RENDER_HEIGHT = 1080;
  *
  * @returns HTML payload loaded into the hidden Electron BrowserWindow.
  */
-export function buildSingleWindowDocument(renderScale = 1): string {
+/**
+ * Resolve the CSS colour for a background mode.
+ *
+ * Kept in lockstep with resolveBackgroundColor() in the generated page script
+ * below - the document needs the colour at BUILD time so the very first paint
+ * already carries it, while the script needs it at runtime for later changes.
+ *
+ * @param mode Background mode.
+ * @returns CSS colour value.
+ */
+export function resolveBackgroundCssColor(mode: string | null | undefined): string {
+  if (mode === "green") return "#00FF00";
+  if (mode === "black") return "#000000";
+  if (mode === "white") return "#FFFFFF";
+  return "transparent";
+}
+
+export function buildSingleWindowDocument(
+  renderScale = 1,
+  initialBackgroundMode: string | null = null,
+): string {
   const standardCss = JSON.stringify(getStandardAnimationCss());
   const applyLayoutRuntimeScript = getApplyLayoutRuntimeScript(renderScale);
   const perspectivePx = 1200 * renderScale;
@@ -30,7 +50,12 @@ export function buildSingleWindowDocument(renderScale = 1): string {
       #graphics-background {
         position: absolute;
         inset: 0;
-        background: transparent;
+        /* Baked in rather than applied by script afterwards: the offscreen
+           window starts painting the moment the page loads, and those first
+           paints go straight to the FrameBus. With a transparent start, an
+           output without alpha published black frames until the script ran -
+           a visible flash before the first graphic. */
+        background: ${resolveBackgroundCssColor(initialBackgroundMode)};
       }
       #graphics-root {
         position: absolute;
