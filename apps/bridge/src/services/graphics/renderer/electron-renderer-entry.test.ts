@@ -28,6 +28,10 @@ const mockExecuteJS = jest.fn().mockResolvedValue(undefined);
 const mockInvalidate = jest.fn();
 const mockStartPainting = jest.fn();
 const mockSetFrameRate = jest.fn();
+// No default implementation on purpose: an unconfigured capturePage resolves
+// to undefined, so writeCapturedWindowFrame throws internally and reports
+// failure — exactly how this harness behaved before capturePage existed.
+const mockCapturePage = jest.fn();
 let lastDidFinishLoadHandler: (() => void) | null = null;
 const paintHandlers: Array<(event: unknown, dirty: unknown, image: unknown) => void> = [];
 
@@ -52,6 +56,7 @@ const mockBrowserWindow = jest.fn().mockImplementation(() => {
     startPainting: mockStartPainting,
     stopPainting: mockStopPainting,
     setFrameRate: mockSetFrameRate,
+    capturePage: (...args: unknown[]) => (mockCapturePage as jest.Mock)(...args),
     isDestroyed: () => false,
     isPainting: () => true,
   };
@@ -2385,6 +2390,114 @@ describe("electron-renderer-entry", () => {
       expect.stringMatching(/__removeLayer.*layer-1/),
       true
     );
+  });
+
+  it("publishes the captured page instead of a blank frame when the last layer is removed", async () => {
+    // Regression: removing the LAST layer used to write hard zeros straight to
+    // the FrameBus, bypassing the DOM. The page still carries the session
+    // background, so on an opaque output that blank frame is black — which a
+    // downstream chroma keyer cannot key, so black went to air. Capture the
+    // page instead; zeros remain only as the fallback when capture fails.
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    const width = 8;
+    const height = 4;
+    const validConfig = {
+      width,
+      height,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "green" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    const writeFrame = jest.fn();
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: { width, height, fps: 30, slotCount: 2, pixelFormat: 1 },
+        writeFrame,
+        close: jest.fn(),
+      }),
+    });
+    // A non-zero page: every byte 0x22 stands in for "background is painted".
+    const capturedBitmap = Buffer.alloc(width * height * 4, 0x22);
+    mockCapturePage.mockResolvedValue({
+      getSize: () => ({ width, height }),
+      isEmpty: () => false,
+      toBitmap: () => capturedBitmap,
+    });
+
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation((_opts: unknown, cb?: () => void) => {
+      if (cb) connectionCallback = cb;
+      return mockSocket;
+    });
+    const createLayerPayload = {
+      layerId: "layer-1",
+      html: "<div>test</div>",
+      css: "",
+      values: {},
+      layout: { x: 0, y: 0, scale: 1 },
+      backgroundMode: "green",
+      width,
+      height,
+      fps: 30,
+    };
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "renderer_configure", token: "test-token", ...validConfig },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "create_layer", token: "test-token", ...createLayerPayload },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "remove_layer", token: "test-token", layerId: "layer-1" },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 80));
+
+    const logMessages = mockPinoInfo.mock.calls.map((call) => call[1]);
+    expect(logMessages).toContain(
+      "[GraphicsRenderer] Captured FrameBus frame written"
+    );
+    // The blank-frame fallback must not have been needed.
+    expect(logMessages).not.toContain(
+      "[GraphicsRenderer] Transparent FrameBus frame written"
+    );
+
+    // What actually landed on the bus last must be the painted page, not zeros.
+    const lastFrame = writeFrame.mock.calls.at(-1)?.[0] as Buffer;
+    expect(lastFrame).toBeDefined();
+    expect(lastFrame.every((byte) => byte === 0)).toBe(false);
   });
 
   it("shutdown after create_layer calls stopPainting and destroy on window", async () => {

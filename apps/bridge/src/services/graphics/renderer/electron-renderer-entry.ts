@@ -27,6 +27,7 @@ import {
   resampleRgbaBilinear,
 } from "./graphics-pixel-utils.js";
 import { frameBusWriterMatchesTarget } from "./framebus-writer-match.js";
+import { selectFrameBusSeedFrame } from "./framebus-seed-frame.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -209,6 +210,26 @@ function stopFrameBusHeartbeat(): void {
   lastWrittenFrameBuffer = null;
   lastWrittenFrameTimestampNs = 0n;
   lastWrittenFrameAtMs = 0;
+}
+
+// Paint dedup state. Module-scoped on purpose: it used to live in the paint
+// handler closure, so the direct write paths (idle frame, captured frame) left
+// a stale checksum behind. The very paint that had to repair such a frame then
+// looked like a duplicate and was dropped, and the heartbeat re-published the
+// stale frame once per second for as long as the page stayed unchanged.
+let lastPaintChecksum = -1;
+let lastPaintChecksumAtMs = 0;
+
+/**
+ * Forget the last painted frame's checksum.
+ *
+ * Every FrameBus write that does NOT come from the paint handler must call
+ * this: it changes what readers see, so the next paint is meaningful even when
+ * it is pixel-identical to the previously *painted* frame.
+ */
+function invalidatePaintDedup(): void {
+  lastPaintChecksum = -1;
+  lastPaintChecksumAtMs = 0;
 }
 
 const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
@@ -434,6 +455,13 @@ function ensureFrameBusWriter(
   fps: number,
 ): boolean {
   const nativeFrameRate = normalizeNativeFrameRate(fps);
+  // Snapshot the retained frame before the teardown below drops it: it seeds a
+  // freshly created writer so the swap does not blank a live output.
+  const carriedFrame = selectFrameBusSeedFrame(
+    lastWrittenFrameBuffer,
+    width,
+    height,
+  );
   if (frameBusWriter) {
     const header = frameBusWriter.header;
     const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
@@ -558,17 +586,24 @@ function ensureFrameBusWriter(
         forceRecreate: true,
       });
     }
-    const initBuffer = Buffer.alloc(width * height * 4, 0);
+    // Seed the fresh region. Hard zeros are only safe on an idle output: a
+    // writer swap also happens mid-show (geometry change, meeting reattach),
+    // and there a blank frame drops key/fill to key=0 and robs a downstream
+    // chroma keyer of its key colour, so the black frame gets keyed on air.
+    // Re-publish the retained frame whenever its geometry still fits.
+    const initBuffer = carriedFrame ?? Buffer.alloc(width * height * 4, 0);
     const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(initBuffer, initTimestampNs);
     // Retain the init frame too: if no paint ever fires (idle renderer), the
     // heartbeat still keeps the seq advancing for readers.
     noteFrameBusFrameWritten(initBuffer, initTimestampNs);
+    invalidatePaintDedup();
     logger.info(
       {
         name: frameBusWriter.name,
         size: frameBusWriter.size,
         header: frameBusWriter.header,
+        seededFrom: carriedFrame ? "retained_frame" : "blank",
       },
       "[GraphicsRenderer] FrameBus writer initialized",
     );
@@ -930,8 +965,6 @@ async function ensureSingleWindow(
 
     singleWindow.webContents.setFrameRate(normalizeNativeFrameRate(fps));
 
-    let lastWrittenChecksum = -1;
-    let lastWrittenAtMs = 0;
     singleWindow.webContents.on("paint", (_event, _dirty, image) => {
       const frameStartAt = Date.now();
       if (paintCount === 0) {
@@ -1005,12 +1038,15 @@ async function ensureSingleWindow(
         checksum = ((checksum * 31) ^ (buffer[i] ?? 0)) >>> 0;
       }
       const writeNowMs = Date.now();
-      if (checksum === lastWrittenChecksum && writeNowMs - lastWrittenAtMs < 1000) {
+      if (
+        checksum === lastPaintChecksum &&
+        writeNowMs - lastPaintChecksumAtMs < 1000
+      ) {
         logPerfIfNeeded();
         return;
       }
-      lastWrittenChecksum = checksum;
-      lastWrittenAtMs = writeNowMs;
+      lastPaintChecksum = checksum;
+      lastPaintChecksumAtMs = writeNowMs;
 
       try {
         const frameTimestampNs = BigInt(writeNowMs) * 1_000_000n;
@@ -1134,6 +1170,7 @@ function writeTransparentFrame(reason: string): void {
     const timestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(buffer, timestampNs);
     noteFrameBusFrameWritten(buffer, timestampNs);
+    invalidatePaintDedup();
     logger.info(
       {
         reason,
@@ -1157,13 +1194,20 @@ function writeTransparentFrame(reason: string): void {
   }
 }
 
-async function writeCapturedWindowFrame(reason: string): Promise<void> {
+/**
+ * Capture the offscreen window and publish it to the FrameBus.
+ *
+ * @param reason Log tag identifying the trigger.
+ * @returns Whether a frame actually reached the bus. Callers that rely on the
+ * capture to leave correct content behind must fall back when this is false.
+ */
+async function writeCapturedWindowFrame(reason: string): Promise<boolean> {
   if (!rendererConfig || !singleWindow || singleWindow.isDestroyed()) {
-    return;
+    return false;
   }
   const { width, height, fps } = rendererConfig;
   if (!ensureFrameBusWriter(width, height, fps) || !frameBusWriter) {
-    return;
+    return false;
   }
 
   try {
@@ -1174,7 +1218,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         { reason, imageWidth: imageSize.width, imageHeight: imageSize.height },
         "[GraphicsRenderer] Captured frame empty",
       );
-      return;
+      return false;
     }
 
     const sourceBuffer = bgraToRgba(image.toBitmap());
@@ -1189,7 +1233,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         },
         "[GraphicsRenderer] Captured source frame buffer length mismatch",
       );
-      return;
+      return false;
     }
 
     let buffer: Buffer;
@@ -1213,7 +1257,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         },
         "[GraphicsRenderer] Captured frame downsample failed",
       );
-      return;
+      return false;
     }
 
     if (buffer.length !== width * height * 4) {
@@ -1227,7 +1271,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         },
         "[GraphicsRenderer] Captured frame buffer length mismatch after downsample",
       );
-      return;
+      return false;
     }
 
     let nonTransparentPixels = 0;
@@ -1245,6 +1289,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
     const timestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(buffer, timestampNs);
     noteFrameBusFrameWritten(buffer, timestampNs);
+    invalidatePaintDedup();
     logger.info(
       {
         reason,
@@ -1264,12 +1309,14 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
       },
       "[GraphicsRenderer] Captured FrameBus frame written",
     );
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(
       { reason, message },
       "[GraphicsRenderer] Captured FrameBus write failed",
     );
+    return false;
   }
 }
 
@@ -1466,12 +1513,20 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
     `window.__removeLayer(${JSON.stringify(message.layerId)});`,
     true,
   );
-  if (singleLayerSnapshots.size === 0) {
-    writeTransparentFrame("remove_last_layer");
-  } else {
-    await writeCapturedWindowFrame("remove_layer");
-    scheduleCapturedWindowFrames("remove_layer");
+  // Both branches capture the page rather than writing hard zeros. The page
+  // still carries the session background — transparent for key/fill, green /
+  // black / white for an opaque output — so the capture IS the correct idle
+  // picture. A zero frame is only correct for key/fill; on an opaque output it
+  // is black, which a downstream chroma keyer cannot key, so the black frame
+  // goes to air. Zeros stay as the fallback for when the capture fails,
+  // because leaving the last graphic frame on the bus would be worse.
+  const reason =
+    singleLayerSnapshots.size === 0 ? "remove_last_layer" : "remove_layer";
+  const captured = await writeCapturedWindowFrame(reason);
+  if (!captured && singleLayerSnapshots.size === 0) {
+    writeTransparentFrame("remove_last_layer_capture_failed");
   }
+  scheduleCapturedWindowFrames(reason);
   requestSingleWindowRepaint();
 }
 
