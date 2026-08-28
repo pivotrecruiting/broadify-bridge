@@ -533,7 +533,7 @@ export class GraphicsManager {
     }
     const durationMs =
       typeof data.durationMs === "number" ? data.durationMs : null;
-    await this.presetService.prepareBeforeRender(
+    const { deferredLayerIds } = await this.presetService.prepareBeforeRender(
       prepared.presetId,
       prepared.category,
       prepared.layerId,
@@ -559,6 +559,14 @@ export class GraphicsManager {
           renderedLayerIds = layerIds;
         },
       });
+    }
+
+    // Cross-category leftovers of the replaced preset go away only now that
+    // the new layer is live: removing them first dropped the output to the
+    // idle frame between two graphics. This order turns the switch into a
+    // crossfade - the old layer plays its exit while the new one is on air.
+    for (const layerId of deferredLayerIds) {
+      await this.removeLayerById(layerId, "preset_replace");
     }
 
     this.presetService.syncAfterRender(

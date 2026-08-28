@@ -160,12 +160,17 @@ describe("GraphicsPresetService", () => {
       };
       const service = createService();
 
-      await service.prepareBeforeRender(undefined, "lower_third", "layer-x");
-
-      const removedIds = mockRemoveLayerWithRenderer.mock.calls.map(
-        (call) => call[1]
+      const { deferredLayerIds } = await service.prepareBeforeRender(
+        undefined,
+        "lower_third",
+        "layer-x"
       );
-      expect(removedIds).toEqual(["layer-y"]);
+
+      // layer-y lives in ANOTHER category: it must not be torn down before
+      // the incoming layer is live (that gap was the on-air flicker), so it
+      // comes back to the caller for removal after the render.
+      expect(mockRemoveLayerWithRenderer).not.toHaveBeenCalled();
+      expect(deferredLayerIds).toEqual(["layer-y"]);
       expect(activePreset).toBeNull();
     });
 
@@ -207,14 +212,15 @@ describe("GraphicsPresetService", () => {
       categoryToLayer.set("slides", "old-foreground-layer");
       const service = createService();
 
-      await service.prepareBeforeRender("new-foreground-preset", "overlays");
-
-      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledTimes(1);
-      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledWith(
-        expect.anything(),
-        "old-foreground-layer",
-        "preset_replace"
+      const { deferredLayerIds } = await service.prepareBeforeRender(
+        "new-foreground-preset",
+        "overlays"
       );
+
+      // The old foreground layer sits in a different category, so its removal
+      // is deferred until the incoming layer is live - the caller removes it.
+      expect(mockRemoveLayerWithRenderer).not.toHaveBeenCalled();
+      expect(deferredLayerIds).toEqual(["old-foreground-layer"]);
       expect(layers.has("background-layer")).toBe(true);
     });
 
