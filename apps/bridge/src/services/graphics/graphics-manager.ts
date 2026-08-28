@@ -536,6 +536,7 @@ export class GraphicsManager {
     await this.presetService.prepareBeforeRender(
       prepared.presetId,
       prepared.category,
+      prepared.layerId,
     );
 
     let renderedLayerIds: string[] = [];

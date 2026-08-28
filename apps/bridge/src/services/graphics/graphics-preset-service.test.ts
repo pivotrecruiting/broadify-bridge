@@ -88,6 +88,87 @@ describe("GraphicsPresetService", () => {
   }
 
   describe("prepareBeforeRender", () => {
+    it("replaces the incoming layer in place instead of tearing it down", async () => {
+      // Field recording (key/fill): every preset switch showed
+      // "full -> shimmer -> full -> out". The bridge removed the very layer
+      // the incoming send was about to re-render, so the output dropped to
+      // the idle frame and the graphic re-entered through its enter
+      // animation. The renderer replaces a same-id layer in place - the
+      // teardown was pure flicker.
+      layers.set(
+        "layer-x",
+        createLayerState({ layerId: "layer-x", presetId: "old-preset" })
+      );
+      categoryToLayer.set("lower_third", "layer-x");
+      const service = createService();
+
+      await service.prepareBeforeRender("new-preset", "lower_third", "layer-x");
+
+      expect(mockRemoveLayerWithRenderer).not.toHaveBeenCalled();
+      expect(layers.has("layer-x")).toBe(true);
+    });
+
+    it("still removes a same-category layer with a DIFFERENT id", async () => {
+      layers.set(
+        "layer-old",
+        createLayerState({ layerId: "layer-old", presetId: "old-preset" })
+      );
+      categoryToLayer.set("lower_third", "layer-old");
+      const service = createService();
+
+      await service.prepareBeforeRender("new-preset", "lower_third", "layer-new");
+
+      expect(mockRemoveLayerWithRenderer).toHaveBeenCalledWith(
+        expect.anything(),
+        "layer-old",
+        "preset_replace"
+      );
+    });
+
+    it("skips the resend teardown for the same preset and layer id", async () => {
+      layers.set(
+        "layer-x",
+        createLayerState({ layerId: "layer-x", presetId: "preset-a" })
+      );
+      categoryToLayer.set("lower_third", "layer-x");
+      const service = createService();
+
+      await service.prepareBeforeRender("preset-a", "lower_third", "layer-x");
+
+      expect(mockRemoveLayerWithRenderer).not.toHaveBeenCalled();
+    });
+
+    it("spares the incoming layer when a non-preset send replaces a preset", async () => {
+      layers.set(
+        "layer-x",
+        createLayerState({ layerId: "layer-x", presetId: "preset-a" })
+      );
+      layers.set(
+        "layer-y",
+        createLayerState({
+          layerId: "layer-y",
+          category: "overlays",
+          presetId: "preset-a",
+        })
+      );
+      activePreset = {
+        presetId: "preset-a",
+        layerIds: new Set(["layer-x", "layer-y"]),
+        timer: null,
+        expiresAt: null,
+        durationMs: null,
+      };
+      const service = createService();
+
+      await service.prepareBeforeRender(undefined, "lower_third", "layer-x");
+
+      const removedIds = mockRemoveLayerWithRenderer.mock.calls.map(
+        (call) => call[1]
+      );
+      expect(removedIds).toEqual(["layer-y"]);
+      expect(activePreset).toBeNull();
+    });
+
     it("removes layers not in preset when presetId provided", async () => {
       layers.set(
         "old-layer",

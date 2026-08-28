@@ -76,13 +76,22 @@ export class GraphicsPresetService {
    */
   async prepareBeforeRender(
     presetId: string | undefined,
-    category: GraphicsCategoryT
+    category: GraphicsCategoryT,
+    incomingLayerId?: string
   ): Promise<void> {
     const activePreset = this.deps.getActivePreset();
     if (presetId) {
-      await this.removeLayersNotInPreset(presetId, category);
+      // The layer the incoming send is about to render is NOT torn down: the
+      // renderer replaces a layer with the same id in place, so removing it
+      // first only put a remove->create cycle on air - the graphic dropped to
+      // the idle frame and re-entered through its enter animation. Field
+      // recording: "full -> shimmer -> full -> out" on every preset switch.
+      await this.removeLayersNotInPreset(presetId, category, incomingLayerId);
       const existingLayerId = this.deps.categoryToLayer.get(category);
       if (!existingLayerId) {
+        return;
+      }
+      if (existingLayerId === incomingLayerId) {
         return;
       }
       const existingLayer = this.deps.layers.get(existingLayerId);
@@ -97,7 +106,11 @@ export class GraphicsPresetService {
     }
 
     if (activePreset) {
-      await this.removePresetById(activePreset.presetId, "send_non_preset");
+      await this.removePresetById(
+        activePreset.presetId,
+        "send_non_preset",
+        incomingLayerId
+      );
     }
   }
 
@@ -261,10 +274,12 @@ export class GraphicsPresetService {
    */
   async removePresetById(
     presetId: string,
-    reason: RemovePresetReasonT = "manual"
+    reason: RemovePresetReasonT = "manual",
+    excludeLayerId?: string
   ): Promise<void> {
     const layersToRemove = Array.from(this.deps.layers.values()).filter(
-      (layer) => layer.presetId === presetId
+      (layer) =>
+        layer.presetId === presetId && layer.layerId !== excludeLayerId
     );
     const activePreset = this.deps.getActivePreset();
     const wasActive = activePreset?.presetId === presetId;
@@ -315,11 +330,13 @@ export class GraphicsPresetService {
 
   private async removeLayersNotInPreset(
     presetId: string,
-    incomingCategory: GraphicsCategoryT
+    incomingCategory: GraphicsCategoryT,
+    excludeLayerId?: string
   ): Promise<void> {
     const layersToRemove = Array.from(this.deps.layers.values()).filter(
       (layer) =>
         layer.presetId !== presetId &&
+        layer.layerId !== excludeLayerId &&
         isSameReplaceGroup(layer.category, incomingCategory)
     );
     const presetIds = new Set<string>();
