@@ -4,6 +4,36 @@ jest.mock("./animation-css.js", () => ({
   getStandardAnimationCss: () => "/* mock animation css */",
 }));
 
+describe("foreign template animation tolerance", () => {
+  // AI-generated templates routinely ship their own anim-in/anim-out classes
+  // and hand-written keyframes. The runtime must neither strip those classes
+  // (which cancelled a running entrance mid-flight - the graphic snapped) nor
+  // require [data-animate] to wait for the exit. These are contract tests on
+  // the generated script; the behaviour itself runs in Chromium.
+  const script = buildSingleWindowDocument(1, null);
+
+  it("strips only the namespaced runtime classes, never foreign anim-*", () => {
+    expect(script).toContain('startsWith("bfy-anim-")');
+    expect(script).not.toContain('startsWith("anim-")');
+    expect(script).toContain('"bfy-anim-ease-out"');
+  });
+
+  it("triggers a template-authored anim-out exit convention", () => {
+    expect(script).toContain("legacyExitClass");
+    expect(script).toContain('classList.add("anim-out")');
+    expect(script).toContain('classList.remove("anim-in")');
+  });
+
+  it("waits for whatever exit animations actually run, capped at 2s", () => {
+    expect(script).toContain("getAnimations({ subtree: true })");
+    expect(script).toContain("2000");
+    expect(script).toContain("iterations === Infinity");
+    // The helper must actually be awaited on the removal path - defining it
+    // without calling it would silently restore the hard cut.
+    expect(script).toContain("await waitForExitAnimations(rootElement)");
+  });
+});
+
 describe("buildSingleWindowDocument background", () => {
   /**
    * Read the effective background declaration of the page background layer.

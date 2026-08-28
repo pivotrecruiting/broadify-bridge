@@ -4,70 +4,70 @@
 export const getStandardAnimationCss = (): string => `
 /* Standard Animation Classes - Always Available */
 /* Fade animations with different easing functions */
-.root.state-enter.anim-ease [data-animate] {
+.root.state-enter.bfy-anim-ease [data-animate] {
   animation-name: fade-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-ease [data-animate] {
+.root.state-exit.bfy-anim-ease [data-animate] {
   animation-name: fade-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease;
   animation-fill-mode: both;
 }
 
-.root.state-enter.anim-ease-in [data-animate] {
+.root.state-enter.bfy-anim-ease-in [data-animate] {
   animation-name: fade-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease-in;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-ease-in [data-animate] {
+.root.state-exit.bfy-anim-ease-in [data-animate] {
   animation-name: fade-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease-in;
   animation-fill-mode: both;
 }
 
-.root.state-enter.anim-ease-out [data-animate] {
+.root.state-enter.bfy-anim-ease-out [data-animate] {
   animation-name: fade-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-ease-out [data-animate] {
+.root.state-exit.bfy-anim-ease-out [data-animate] {
   animation-name: fade-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-enter.anim-ease-in-out [data-animate] {
+.root.state-enter.bfy-anim-ease-in-out [data-animate] {
   animation-name: fade-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease-in-out;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-ease-in-out [data-animate] {
+.root.state-exit.bfy-anim-ease-in-out [data-animate] {
   animation-name: fade-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease-in-out;
   animation-fill-mode: both;
 }
 
-.root.state-enter.anim-linear [data-animate] {
+.root.state-enter.bfy-anim-linear [data-animate] {
   animation-name: fade-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: linear;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-linear [data-animate] {
+.root.state-exit.bfy-anim-linear [data-animate] {
   animation-name: fade-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: linear;
@@ -75,56 +75,56 @@ export const getStandardAnimationCss = (): string => `
 }
 
 /* Slide animations */
-.root.state-enter.anim-slide-up [data-animate] {
+.root.state-enter.bfy-anim-slide-up [data-animate] {
   animation-name: slide-up-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-slide-up [data-animate] {
+.root.state-exit.bfy-anim-slide-up [data-animate] {
   animation-name: slide-up-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-enter.anim-slide-down [data-animate] {
+.root.state-enter.bfy-anim-slide-down [data-animate] {
   animation-name: slide-down-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-slide-down [data-animate] {
+.root.state-exit.bfy-anim-slide-down [data-animate] {
   animation-name: slide-down-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-enter.anim-slide-left [data-animate] {
+.root.state-enter.bfy-anim-slide-left [data-animate] {
   animation-name: slide-left-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-slide-left [data-animate] {
+.root.state-exit.bfy-anim-slide-left [data-animate] {
   animation-name: slide-left-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-enter.anim-slide-right [data-animate] {
+.root.state-enter.bfy-anim-slide-right [data-animate] {
   animation-name: slide-right-enter;
   animation-duration: var(--anim-dur-enter, 450ms);
   animation-timing-function: ease-out;
   animation-fill-mode: both;
 }
 
-.root.state-exit.anim-slide-right [data-animate] {
+.root.state-exit.bfy-anim-slide-right [data-animate] {
   animation-name: slide-right-exit;
   animation-duration: var(--anim-dur-exit, 300ms);
   animation-timing-function: ease-out;

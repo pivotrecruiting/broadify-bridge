@@ -109,14 +109,18 @@ export function buildSingleWindowDocument(
         const classes = String(element.className || "")
           .split(/\\s+/)
           .filter((entry) => entry.length > 0);
+        // Strip ONLY the runtime's own namespaced classes. Foreign templates
+        // (AI-generated ones especially) carry their own anim-* classes for
+        // their hand-written keyframes; stripping those cancelled a running
+        // entrance mid-flight and the graphic visibly snapped.
         const currentAnimationClass = classes.find((entry) =>
-          entry.startsWith("anim-"),
+          entry.startsWith("bfy-anim-"),
         );
         const nextClasses = classes.filter(
-          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
+          (entry) => !entry.startsWith("bfy-anim-") && entry !== "state-enter" && entry !== "state-exit"
         );
         const nextAnimationClass =
-          animationClass || currentAnimationClass || "anim-ease-out";
+          animationClass || currentAnimationClass || "bfy-anim-ease-out";
         if (nextAnimationClass) {
           nextClasses.push(nextAnimationClass);
         }
@@ -323,6 +327,9 @@ ${applyLayoutRuntimeScript}
           values: payload.values || {},
           bindings: payload.bindings || {},
         };
+        // Foreign-convention detection: a template that authors its own exit
+        // on an .anim-out rule expects someone to add that class on removal.
+        layerState.legacyExitClass = /\.anim-out\b/.test(String(payload.css || ""));
         layers.set(payload.layerId, layerState);
 
         if (payload.backgroundMode) {
@@ -361,6 +368,47 @@ ${applyLayoutRuntimeScript}
         applyLayout(layer.host, layout);
       };
 
+      // Convention-independent exit wait: ask Chromium which animations are
+      // actually running instead of requiring [data-animate]. Infinite
+      // (ambient) animations are ignored, and a 2s cap protects removal from
+      // a runaway exit. Falls back to the [data-animate] duration scan where
+      // getAnimations is unavailable.
+      const waitForExitAnimations = async (rootElement) => {
+        if (!rootElement) return;
+        await waitForNextFrame();
+        if (typeof rootElement.getAnimations !== "function") {
+          const animatedElements = getAnimatedElements(rootElement);
+          if (animatedElements.length > 0) {
+            const exitMs = getExitDurationMs(rootElement);
+            if (exitMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, exitMs));
+            }
+          }
+          return;
+        }
+        const running = rootElement
+          .getAnimations({ subtree: true })
+          .filter((animation) => {
+            if (animation.playState !== "running" && animation.playState !== "pending") {
+              return false;
+            }
+            try {
+              const timing = animation.effect && animation.effect.getTiming
+                ? animation.effect.getTiming()
+                : null;
+              if (timing && timing.iterations === Infinity) return false;
+            } catch (e) {}
+            return true;
+          });
+        if (running.length === 0) return;
+        await Promise.race([
+          Promise.allSettled(
+            running.map((animation) => animation.finished.catch(() => null))
+          ),
+          new Promise((resolve) => setTimeout(resolve, 2000)),
+        ]);
+      };
+
       window.__removeLayer = async (layerId) => {
         const layer = layers.get(layerId);
         const host =
@@ -376,21 +424,16 @@ ${applyLayoutRuntimeScript}
           layer?.container ||
           (host.shadowRoot ? host.shadowRoot.querySelector("#graphic-root") : null);
         const rootElement = getRootElement(container);
-        const shouldAnimate = getAnimatedElements(rootElement).length > 0;
         if (rootElement) {
           applyAnimationState(rootElement, layer?.bindings?.animationClass, true);
-        }
-
-        if (shouldAnimate) {
-          const exitMs = getExitDurationMs(rootElement);
-          if (exitMs > 0) {
-            await new Promise((resolve) => {
-              setTimeout(resolve, exitMs);
-            });
-          } else {
-            await waitForNextFrame();
+          if (layer && layer.legacyExitClass) {
+            // Trigger the template's own exit convention (anim-in -> anim-out).
+            rootElement.classList.remove("anim-in");
+            rootElement.classList.add("anim-out");
           }
         }
+
+        await waitForExitAnimations(rootElement);
 
         host.remove();
         layers.delete(layerId);

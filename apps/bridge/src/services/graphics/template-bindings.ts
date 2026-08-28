@@ -71,10 +71,13 @@ const normalizeSchemaEntry = (value: unknown): TemplateSchemaEntryT | null => {
  */
 export function getAnimationClassFromValue(value: unknown): string {
   const normalized = String(value ?? "ease-out").toLowerCase().trim();
+  // The runtime's own classes are namespaced: templates authored outside our
+  // convention (AI-generated ones in particular) routinely carry their own
+  // anim-* classes, and the renderer used to strip those mid-animation.
   if (VALID_ANIMATION_VALUES.has(normalized)) {
-    return `anim-${normalized}`;
+    return `bfy-anim-${normalized}`;
   }
-  return "anim-ease-out";
+  return "bfy-anim-ease-out";
 }
 
 /**
