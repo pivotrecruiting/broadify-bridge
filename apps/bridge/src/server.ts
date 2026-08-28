@@ -17,6 +17,8 @@ import { registerLogsRoute } from "./routes/logs.js";
 import { initializeModules } from "./modules/index.js";
 import { RelayClient } from "./services/relay-client.js";
 import { deviceCache } from "./services/device-cache.js";
+import { engineAdapter } from "./services/engine-adapter.js";
+import { engineConnectionStore } from "./services/engine/engine-connection-store.js";
 import {
   resolveUserDataDir,
   setBridgeContext,
@@ -201,6 +203,52 @@ export async function createServer(config: BridgeConfigT) {
   return server;
 }
 
+/** Give USB enumeration and helpers a moment before the reconnect attempt. */
+const ENGINE_AUTO_RECONNECT_DELAY_MS = 3_000;
+
+/**
+ * Reconnect the engine with the operator's last persisted connection.
+ *
+ * A connection choice belongs to the operator, not to the session: after a
+ * bridge restart the previous connection (USB or network) comes back on its
+ * own. A failed attempt - switcher off, cable gone - stays SILENT apart from
+ * a log line: the state is reset to disconnected instead of parking an error
+ * in the UI, and the stored choice is kept for the next start.
+ *
+ * @param server Fastify instance used for logging.
+ */
+function scheduleEngineAutoReconnect(
+  server: Awaited<ReturnType<typeof createServer>>
+): void {
+  const timer = setTimeout(() => {
+    void (async () => {
+      const persisted = await engineConnectionStore.load();
+      if (!persisted) {
+        return;
+      }
+      if (engineAdapter.getStatus() !== "disconnected") {
+        return;
+      }
+      server.log.info(
+        `[Engine] Auto-reconnecting last connection (type=${persisted.type}, transport=${persisted.transport ?? "network"})`
+      );
+      try {
+        await engineAdapter.connect(persisted);
+        server.log.info("[Engine] Auto-reconnect successful");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.info(`[Engine] Auto-reconnect skipped: ${message}`);
+        try {
+          await engineAdapter.disconnect();
+        } catch {
+          // Best-effort reset; the operator can connect manually.
+        }
+      }
+    })();
+  }, ENGINE_AUTO_RECONNECT_DELAY_MS);
+  timer.unref?.();
+}
+
 /**
  * Start the server and handle graceful shutdown
  */
@@ -221,6 +269,8 @@ export async function startServer(
       server.log.info("[Server] Starting relay client connection...");
       await relayClient.connect();
     }
+
+    scheduleEngineAutoReconnect(server);
   } catch (err: unknown) {
     // Check for port already in use
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

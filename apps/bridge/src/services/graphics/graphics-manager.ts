@@ -99,6 +99,8 @@ type GraphicsManagerDepsT = {
    * passes nothing here and keeps the env path bit-identical.
    */
   frameBusOverrides?: FrameBusOverridesT;
+  /** False for the meeting planes: never write or restore the shared output store. */
+  persistOutputConfig?: boolean;
   runtimeInitService?: GraphicsRuntimeInitServiceLikeT;
   outputTransitionService?: GraphicsOutputTransitionServiceLikeT;
   selectOutputAdapter?: (
@@ -210,8 +212,14 @@ export class GraphicsManager {
           this.outputAdapter = runtime.outputAdapter;
         },
         selectOutputAdapter,
-        persistConfig: (config) => outputConfigStore.setConfig(config),
-        clearPersistedConfig: () => outputConfigStore.clear(),
+        persistConfig: (config) =>
+          this.deps.persistOutputConfig === false
+            ? Promise.resolve()
+            : outputConfigStore.setConfig(config),
+        clearPersistedConfig: () =>
+          this.deps.persistOutputConfig === false
+            ? Promise.resolve()
+            : outputConfigStore.clear(),
         resolveFrameBusConfig: (config, previous) =>
           resolveFrameBusConfig(config, previous, this.deps.frameBusOverrides),
         buildRendererConfig: (config, frameBusConfig) =>
@@ -221,6 +229,7 @@ export class GraphicsManager {
     this.runtimeInitService =
       this.deps.runtimeInitService ??
       new GraphicsRuntimeInitService({
+        usePersistedOutputConfig: this.deps.persistOutputConfig !== false,
         getRenderer: () => this.renderer,
         setRenderer: (renderer) => {
           this.renderer = renderer;

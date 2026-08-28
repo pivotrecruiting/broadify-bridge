@@ -82,6 +82,25 @@ jest.mock("./services/runtime-diagnostics.js", () => ({
     mockLogRuntimeDiagnostics(...args),
 }));
 
+const mockEngineConnect = jest.fn().mockResolvedValue(undefined);
+const mockEngineDisconnect = jest.fn().mockResolvedValue(undefined);
+const mockEngineGetStatus = jest.fn().mockReturnValue("disconnected");
+jest.mock("./services/engine-adapter.js", () => ({
+  engineAdapter: {
+    connect: (...args: unknown[]) => mockEngineConnect(...args),
+    disconnect: (...args: unknown[]) => mockEngineDisconnect(...args),
+    getStatus: () => mockEngineGetStatus(),
+  },
+}));
+
+const mockEngineConnectionLoad = jest.fn().mockResolvedValue(null);
+jest.mock("./services/engine/engine-connection-store.js", () => ({
+  engineConnectionStore: {
+    load: () => mockEngineConnectionLoad(),
+    save: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
 jest.mock("./services/graphics/graphics-manager.js", () => ({
   graphicsManager: {
     initialize: (...args: unknown[]) => mockGraphicsInitialize(...args),
@@ -498,6 +517,63 @@ describe("server", () => {
       expect(mockLog.info).toHaveBeenCalledWith(
         "[Server] Starting relay client connection..."
       );
+    });
+
+    it("auto-reconnects the persisted engine connection after startup", async () => {
+      // A connection choice belongs to the operator: after a bridge restart
+      // the previous connection (USB or network) must come back on its own
+      // instead of the webapp defaulting back to network.
+      jest.useFakeTimers();
+      try {
+        mockEngineConnectionLoad.mockResolvedValue({
+          type: "atem",
+          transport: "usb",
+        });
+        mockEngineGetStatus.mockReturnValue("disconnected");
+        const { createServer, startServer } = await import("./server.js");
+        const config = createBaseConfig();
+        const server = await createServer(config);
+
+        await startServer(server, config);
+        expect(mockEngineConnect).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(3_500);
+        expect(mockEngineConnect).toHaveBeenCalledWith({
+          type: "atem",
+          transport: "usb",
+        });
+      } finally {
+        jest.useRealTimers();
+        mockEngineConnectionLoad.mockResolvedValue(null);
+        mockEngineConnect.mockClear();
+      }
+    });
+
+    it("stays silently disconnected when the auto-reconnect fails", async () => {
+      jest.useFakeTimers();
+      try {
+        mockEngineConnectionLoad.mockResolvedValue({
+          type: "atem",
+          transport: "usb",
+        });
+        mockEngineGetStatus.mockReturnValue("disconnected");
+        mockEngineConnect.mockRejectedValueOnce(new Error("no switcher"));
+        const { createServer, startServer } = await import("./server.js");
+        const config = createBaseConfig();
+        const server = await createServer(config);
+
+        await startServer(server, config);
+        await jest.advanceTimersByTimeAsync(3_500);
+
+        // Failure resets to disconnected instead of parking an error in the
+        // UI; the stored choice is kept for the next start.
+        expect(mockEngineDisconnect).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+        mockEngineConnectionLoad.mockResolvedValue(null);
+        mockEngineConnect.mockClear();
+        mockEngineDisconnect.mockClear();
+      }
     });
 
     it("does not connect relay when relayClient not attached", async () => {

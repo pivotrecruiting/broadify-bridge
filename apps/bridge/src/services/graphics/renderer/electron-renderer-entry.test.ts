@@ -2619,7 +2619,8 @@ describe("electron-renderer-entry", () => {
         )
         .map((call) => (call[0] as { reason?: string }).reason ?? "");
 
-    return { writeFrame, firePaint, captureReasons };
+    const feed = (buffer: Buffer) => dataHandlers[0](buffer);
+    return { writeFrame, firePaint, captureReasons, feed };
   }
 
   it("studio: a layer mutation publishes through the paint path, not capturePage", async () => {
@@ -2640,9 +2641,11 @@ describe("electron-renderer-entry", () => {
   it("studio: captures once as a safety net when no paint arrives", async () => {
     // Static content can leave Chromium's offscreen pipeline without a paint
     // event - the reason the captures were added originally. One capture
-    // covers that case; the bursts must not come back.
+    // covers that case; the bursts must not come back. The window is 300 ms
+    // (a first paint takes 150-250 ms in the field, so 100 ms lost the race
+    // and captured on nearly every command).
     const { captureReasons } = await bootWithOneLayer("/test-shm");
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 500));
 
     expect(captureReasons()).toEqual(["create_layer_fallback"]);
   });
@@ -2660,6 +2663,38 @@ describe("electron-renderer-entry", () => {
       "create_layer_300ms",
       "create_layer_700ms",
     ]);
+  });
+
+  it("studio: drops a late paint after the last layer was removed", async () => {
+    // Field observation on key/fill: the graphic faded out, disappeared, and
+    // flashed back for a fraction of a second. Chromium paints are
+    // asynchronous - a fade frame generated BEFORE the removal arrived after
+    // the idle frame and re-published the removed graphic. With no live layer
+    // the correct picture IS the idle frame, so paints must not publish.
+    const { writeFrame, firePaint, captureReasons, feed } =
+      await bootWithOneLayer("/test-shm");
+
+    // Feed the remove for the only layer, then simulate the late fade paint.
+    mockDecodeNextIpcPacket.mockReset();
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "remove_layer", token: "test-token", layerId: "layer-1" },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+    feed(Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 30));
+
+    const writesAfterIdle = writeFrame.mock.calls.length;
+    firePaint();
+    await new Promise((r) => setImmediate(r));
+
+    // The late paint must not have reached the bus.
+    expect(writeFrame.mock.calls.length).toBe(writesAfterIdle);
+    expect(captureReasons()).toEqual([]);
   });
 
   it("forces the content size back when Windows clamps the offscreen window", async () => {

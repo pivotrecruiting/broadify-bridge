@@ -19,13 +19,32 @@ const MIGRATED_USER_FILES = [
   "network-config.json",
 ];
 
-function resolveDesktopAppName(): string {
-  const executableName = path.basename(process.execPath);
-  if (executableName === RC_APP_NAME || executableName.includes("Bridge RC")) {
+export function resolveDesktopAppNameFromExecutable(
+  executableName: string,
+): string | null {
+  // The Windows packager collapses the product name to "BroadifyBridgeRC.exe"
+  // (no spaces), so a space-based match never hit and the RC silently shared
+  // the PRODUCTION profile - log, output config, assets and bridge identity.
+  // Compare without separators so both spellings resolve identically.
+  const compact = executableName.toLowerCase().replace(/[\s._-]/g, "");
+  if (executableName === RC_APP_NAME || compact.includes("bridgerc")) {
     return RC_APP_NAME;
   }
-  if (executableName === DEFAULT_APP_NAME || executableName.includes("Broadify Bridge")) {
+  if (
+    executableName === DEFAULT_APP_NAME ||
+    compact.includes("broadifybridge")
+  ) {
     return DEFAULT_APP_NAME;
+  }
+  return null;
+}
+
+function resolveDesktopAppName(): string {
+  const resolved = resolveDesktopAppNameFromExecutable(
+    path.basename(process.execPath),
+  );
+  if (resolved) {
+    return resolved;
   }
 
   // An unpackaged run executes the bare Electron binary, so neither name above

@@ -43,7 +43,7 @@ const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
 /** Studio: how long to wait for a paint before capturing as a safety net. */
-const STUDIO_CAPTURE_FALLBACK_MS = 100;
+const STUDIO_CAPTURE_FALLBACK_MS = 300;
 const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
@@ -1054,6 +1054,18 @@ async function ensureSingleWindow(
       }
       paintCount += 1;
       perfPaintCount += 1;
+
+      // With no live layer the correct picture IS the idle frame, which is
+      // already on the bus. Chromium paints are asynchronous, so one or two
+      // fade frames generated BEFORE the removal can arrive after it - the
+      // removed graphic then flashed back on air for a fraction of a second
+      // (worst on key/fill, where the key snaps back up from 0). Meeting
+      // keeps its behaviour: its planes are alpha-blended over the camera,
+      // and the parity rule is to not touch that path.
+      if (singleLayerSnapshots.size === 0 && !isMeetingGraphicsBus()) {
+        logPerfIfNeeded();
+        return;
+      }
 
       const imageSize = image.getSize();
       if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {

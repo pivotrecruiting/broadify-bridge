@@ -9,6 +9,14 @@ import type {
 import { getBridgeContext } from "../bridge-context.js";
 
 type GraphicsRuntimeInitServiceDepsT = {
+  /**
+   * Whether this manager owns persisted output state. The meeting planes run
+   * through the SAME GraphicsManager class but are reconfigured explicitly on
+   * every meeting start - persisting their config only let them overwrite the
+   * studio selection in the shared store, so a meeting session cost the
+   * operator the studio output on the next bridge start.
+   */
+  usePersistedOutputConfig?: boolean;
   getRenderer: () => GraphicsRenderer;
   setRenderer: (renderer: GraphicsRenderer) => void;
   setOutputAdapter: (adapter: GraphicsOutputAdapter) => void;
@@ -35,6 +43,10 @@ export class GraphicsRuntimeInitService {
    */
   async initialize(): Promise<void> {
     await assetRegistry.initialize();
+    if (this.deps.usePersistedOutputConfig === false) {
+      await this.initializeRendererWithFallback();
+      return;
+    }
     await outputConfigStore.initialize();
     this.logPersistedRuntimeState();
 

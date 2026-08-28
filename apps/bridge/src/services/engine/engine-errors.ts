@@ -156,7 +156,7 @@ export function createNotConnectedError(operation: string): EngineError {
 export function createAtemSoftwareMissingError(): EngineError {
   return new EngineError(
     EngineErrorCode.DEVICE_NOT_FOUND,
-    "Blackmagic ATEM software is not installed. Install the ATEM software (which provides the USB driver runtime) and try again, or connect via network instead.",
+    "Blackmagic ATEM software is not installed or could not be loaded. Install or update ATEM Software Control (version 10.4 or newer provides the USB driver runtime) and try again, or connect via network instead.",
     { transport: "usb", reason: "atem_software_not_installed" }
   );
 }

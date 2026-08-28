@@ -26,6 +26,44 @@ jest.mock("node:fs", () => ({
   copyFileSync: (...args: unknown[]) => mockCopyFileSync(...args),
 }));
 
+describe("resolveDesktopAppNameFromExecutable", () => {
+  // app-bootstrap runs bootstrapDesktopAppIdentity() at import time, so the
+  // module must be required with working electron mocks in place.
+  let resolveDesktopAppNameFromExecutable: (name: string) => string | null;
+
+  beforeAll(() => {
+    jest.resetModules();
+    mockGetName.mockReturnValue("electron-vite-template");
+    mockGetPath.mockReturnValue("/Users/test/Library/Application Support");
+    ({ resolveDesktopAppNameFromExecutable } = require("./app-bootstrap"));
+  });
+
+  it("maps the space-less Windows RC executable to the RC profile", () => {
+    // The Windows packager collapses the product name, so the RC ran as
+    // BroadifyBridgeRC.exe, never matched "Bridge RC" and silently shared the
+    // PRODUCTION profile - log, output config, assets and bridge identity.
+    expect(resolveDesktopAppNameFromExecutable("BroadifyBridgeRC.exe")).toBe(
+      "Broadify Bridge RC"
+    );
+    expect(resolveDesktopAppNameFromExecutable("Broadify Bridge RC")).toBe(
+      "Broadify Bridge RC"
+    );
+  });
+
+  it("keeps the production executable on the production profile", () => {
+    expect(resolveDesktopAppNameFromExecutable("BroadifyBridge.exe")).toBe(
+      "Broadify Bridge"
+    );
+    expect(resolveDesktopAppNameFromExecutable("Broadify Bridge")).toBe(
+      "Broadify Bridge"
+    );
+  });
+
+  it("returns null for foreign executables", () => {
+    expect(resolveDesktopAppNameFromExecutable("Electron")).toBeNull();
+  });
+});
+
 describe("app-bootstrap", () => {
   const originalExecPath = process.execPath;
   const originalArgv = process.argv;
