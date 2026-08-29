@@ -488,6 +488,45 @@ describe("GraphicsManager with configured outputs", () => {
     });
   });
 
+  it("renders the incoming preset layer BEFORE removing the replaced category", async () => {
+    // Field flicker that survived the same-id fix: switching between presets
+    // whose graphics live in different categories (overlay <-> lower third)
+    // tore the old layer down first, so the output dropped to the idle frame
+    // between the two graphics. The removal is deferred until the new layer
+    // is live, which turns the switch into a crossfade.
+    const callOrder: string[] = [];
+    const renderer = createRenderer();
+    (renderer.renderLayer as jest.Mock).mockImplementation(async (data: { layerId: string }) => {
+      callOrder.push(`render:${data.layerId}`);
+    });
+    (renderer.removeLayer as jest.Mock).mockImplementation(async (layerId: string) => {
+      callOrder.push(`remove:${layerId}`);
+    });
+    const manager = createManagerWithRealTransition(renderer);
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+
+    const base = createTestPatternPayload();
+    await manager.sendLayer({
+      ...base,
+      layerId: "overlays-old",
+      category: "overlays",
+      presetId: "preset-a",
+    });
+    await manager.sendLayer({
+      ...base,
+      layerId: "lower-thirds-new",
+      category: "lower-thirds",
+      presetId: "preset-b",
+    });
+
+    const renderNew = callOrder.indexOf("render:lower-thirds-new");
+    const removeOld = callOrder.indexOf("remove:overlays-old");
+    expect(renderNew).toBeGreaterThanOrEqual(0);
+    expect(removeOld).toBeGreaterThanOrEqual(0);
+    expect(renderNew).toBeLessThan(removeOld);
+  });
+
   it("projects browser_input layers into browser runtime without renderer frames", async () => {
     const renderer = createRenderer();
     const browserInputRuntime = {

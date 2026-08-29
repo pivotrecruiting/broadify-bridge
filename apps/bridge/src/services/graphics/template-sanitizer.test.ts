@@ -41,6 +41,50 @@ describe("sanitizeTemplateCss", () => {
   });
 });
 
+describe("validateTemplate SVG and embedded images", () => {
+  it("accepts inline SVG with W3C namespace declarations", () => {
+    // Field blocker: a vector-logo template was rejected as "external URL"
+    // over xmlns="http://www.w3.org/2000/svg" - a namespace IDENTIFIER that
+    // is never fetched. Inline SVG is the primary way customer logos work.
+    const html =
+      '<div><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10"><path d="M0 0h10v10z"/></svg></div>';
+    expect(() => validateTemplate(html, "")).not.toThrow();
+  });
+
+  it("accepts base64 raster images and warns when they are large", () => {
+    const small = '<img src="data:image/png;base64,AAAA"/>';
+    expect(() => validateTemplate(small, "")).not.toThrow();
+
+    const big = `<img src="data:image/png;base64,${"A".repeat(300_000)}"/>`;
+    const result = validateTemplate(big, "");
+    expect(result.warnings.join(" ")).toContain("base64 image data");
+  });
+
+  it("still rejects genuinely external URLs", () => {
+    expect(() =>
+      validateTemplate('<img src="http://evil.example/logo.png"/>', "")
+    ).toThrow("external URL");
+    expect(() =>
+      validateTemplate("<div/>", "body{background:url(https://evil.example/a.png)}")
+    ).toThrow("external URL");
+  });
+
+  it("still rejects non-raster data URIs and foreign xmlns hosts", () => {
+    expect(() =>
+      validateTemplate('<iframe src="x"/><a href="data:text/html;base64,AA">x</a>', "")
+    ).toThrow();
+    expect(() =>
+      validateTemplate('<a href="data:text/html;base64,AA">x</a>', "")
+    ).toThrow("external URL");
+    expect(() =>
+      validateTemplate('<img src="data:image/svg+xml;base64,AA"/>', "")
+    ).toThrow("external URL");
+    expect(() =>
+      validateTemplate('<div xmlns="http://evil.example/ns">x</div>', "")
+    ).toThrow("external URL");
+  });
+});
+
 describe("validateTemplate", () => {
   const validHtml = "<div>Hello</div>";
   const validCss = ".foo { color: red; }";
@@ -116,9 +160,12 @@ describe("validateTemplate", () => {
     ).toThrow("Template contains external URLs");
   });
 
-  it("throws on data: URLs", () => {
+  it("throws on data: URLs that are not base64 raster images", () => {
+    // Deliberate behaviour change: data:image/(png|jpeg|...);base64 is now
+    // permitted - self-contained templates embed logos that way. Everything
+    // else stays blocked.
     expect(() =>
-      validateTemplate('<img src="data:image/png;base64,abc">', validCss)
+      validateTemplate('<img src="data:text/plain;base64,abc">', validCss)
     ).toThrow("Template contains external URLs");
   });
 

@@ -1,4 +1,5 @@
 import { engineAdapter } from "./engine-adapter.js";
+import { engineConnectionStore } from "./engine/engine-connection-store.js";
 import { deviceCache } from "./device-cache.js";
 import { runtimeConfig } from "./runtime-config.js";
 import { graphicsManager } from "./graphics/graphics-manager.js";
@@ -200,9 +201,12 @@ export class CommandRouter {
             "Invalid payload for engine_connect",
           );
 
-          await engineAdapter.connect(
-            normalizeEngineConnectPayload(parsedPayload),
-          );
+          const connectConfig = normalizeEngineConnectPayload(parsedPayload);
+          await engineAdapter.connect(connectConfig);
+          // A connection choice belongs to the operator: persist it so the
+          // bridge can bring the same connection back on the next start. Only
+          // a SUCCESSFUL connect overwrites the stored choice.
+          await engineConnectionStore.save(connectConfig);
 
           return {
             success: true,

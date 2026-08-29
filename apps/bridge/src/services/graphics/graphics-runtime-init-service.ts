@@ -9,6 +9,14 @@ import type {
 import { getBridgeContext } from "../bridge-context.js";
 
 type GraphicsRuntimeInitServiceDepsT = {
+  /**
+   * Whether this manager owns persisted output state. The meeting planes run
+   * through the SAME GraphicsManager class but are reconfigured explicitly on
+   * every meeting start - persisting their config only let them overwrite the
+   * studio selection in the shared store, so a meeting session cost the
+   * operator the studio output on the next bridge start.
+   */
+  usePersistedOutputConfig?: boolean;
   getRenderer: () => GraphicsRenderer;
   setRenderer: (renderer: GraphicsRenderer) => void;
   setOutputAdapter: (adapter: GraphicsOutputAdapter) => void;
@@ -35,6 +43,10 @@ export class GraphicsRuntimeInitService {
    */
   async initialize(): Promise<void> {
     await assetRegistry.initialize();
+    if (this.deps.usePersistedOutputConfig === false) {
+      await this.initializeRendererWithFallback();
+      return;
+    }
     await outputConfigStore.initialize();
     this.logPersistedRuntimeState();
 
@@ -123,18 +135,15 @@ export class GraphicsRuntimeInitService {
 
       this.deps.setOutputConfig(null);
       this.deps.setOutputAdapter(this.deps.createStubOutputAdapter());
-      try {
-        await outputConfigStore.clear();
-        getBridgeContext().logger.warn(
-          "[Graphics] Cleared persisted output config after startup failure"
-        );
-      } catch (clearError) {
-        const clearMessage =
-          clearError instanceof Error ? clearError.message : String(clearError);
-        getBridgeContext().logger.warn(
-          `[Graphics] Failed to clear persisted output config: ${clearMessage}`
-        );
-      }
+      // The persisted config is KEPT on purpose. Deleting it turned every
+      // transient startup failure (a helper not ready, a display not yet
+      // enumerated) into permanent data loss: the operator had to pick the
+      // output again after every restart. A config that is genuinely wrong
+      // fails again on the next start and is visible in the log; one that was
+      // only unlucky simply works again.
+      getBridgeContext().logger.warn(
+        "[Graphics] Kept persisted output config despite startup failure; reconfigure to replace it"
+      );
     }
   }
 }

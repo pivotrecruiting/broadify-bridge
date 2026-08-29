@@ -76,29 +76,80 @@ export class GraphicsPresetService {
    */
   async prepareBeforeRender(
     presetId: string | undefined,
-    category: GraphicsCategoryT
-  ): Promise<void> {
+    category: GraphicsCategoryT,
+    incomingLayerId?: string
+  ): Promise<{ deferredLayerIds: string[] }> {
     const activePreset = this.deps.getActivePreset();
     if (presetId) {
-      await this.removeLayersNotInPreset(presetId, category);
+      // The layer the incoming send is about to render is NOT torn down: the
+      // renderer replaces a layer with the same id in place, so removing it
+      // first only put a remove->create cycle on air - the graphic dropped to
+      // the idle frame and re-entered through its enter animation. Field
+      // recording: "full -> shimmer -> full -> out" on every preset switch.
+      const deferredLayerIds = await this.removeLayersNotInPreset(
+        presetId,
+        category,
+        incomingLayerId
+      );
       const existingLayerId = this.deps.categoryToLayer.get(category);
-      if (!existingLayerId) {
-        return;
+      if (!existingLayerId || existingLayerId === incomingLayerId) {
+        return { deferredLayerIds };
       }
       const existingLayer = this.deps.layers.get(existingLayerId);
       if (existingLayer?.presetId !== presetId) {
-        return;
+        return { deferredLayerIds };
       }
       await this.removeLayer(existingLayerId, "preset_resend");
       if (activePreset?.presetId === presetId) {
         activePreset.layerIds.delete(existingLayerId);
       }
-      return;
+      return { deferredLayerIds };
     }
 
     if (activePreset) {
-      await this.removePresetById(activePreset.presetId, "send_non_preset");
+      const deferredLayerIds = await this.removePresetLayersDeferred(
+        activePreset,
+        category,
+        incomingLayerId
+      );
+      return { deferredLayerIds };
     }
+    return { deferredLayerIds: [] };
+  }
+
+  /**
+   * Tear down an active preset for a non-preset send, deferring layers in
+   * OTHER categories so the caller can remove them after the new layer is
+   * live (see removeLayersNotInPreset for the rationale).
+   *
+   * @param activePreset Active preset being replaced.
+   * @param incomingCategory Category of the incoming layer.
+   * @param incomingLayerId Layer id the incoming send will render.
+   * @returns Layer ids the caller must remove after rendering.
+   */
+  private async removePresetLayersDeferred(
+    activePreset: GraphicsActivePresetT,
+    incomingCategory: GraphicsCategoryT,
+    incomingLayerId?: string
+  ): Promise<string[]> {
+    const presetLayers = Array.from(this.deps.layers.values()).filter(
+      (layer) =>
+        layer.presetId === activePreset.presetId &&
+        layer.layerId !== incomingLayerId
+    );
+    const deferred: string[] = [];
+    for (const layer of presetLayers) {
+      if (layer.category === incomingCategory) {
+        // Same category: the layer state store allows only one layer per
+        // category, so this one must go before the render.
+        await this.removeLayer(layer.layerId, "preset_remove");
+      } else {
+        deferred.push(layer.layerId);
+      }
+    }
+    this.clearActivePreset();
+    this.deps.publishStatus("preset_removed");
+    return deferred;
   }
 
   /**
@@ -261,10 +312,12 @@ export class GraphicsPresetService {
    */
   async removePresetById(
     presetId: string,
-    reason: RemovePresetReasonT = "manual"
+    reason: RemovePresetReasonT = "manual",
+    excludeLayerId?: string
   ): Promise<void> {
     const layersToRemove = Array.from(this.deps.layers.values()).filter(
-      (layer) => layer.presetId === presetId
+      (layer) =>
+        layer.presetId === presetId && layer.layerId !== excludeLayerId
     );
     const activePreset = this.deps.getActivePreset();
     const wasActive = activePreset?.presetId === presetId;
@@ -315,12 +368,25 @@ export class GraphicsPresetService {
 
   private async removeLayersNotInPreset(
     presetId: string,
-    incomingCategory: GraphicsCategoryT
-  ): Promise<void> {
+    incomingCategory: GraphicsCategoryT,
+    excludeLayerId?: string
+  ): Promise<string[]> {
     const layersToRemove = Array.from(this.deps.layers.values()).filter(
       (layer) =>
         layer.presetId !== presetId &&
+        layer.layerId !== excludeLayerId &&
         isSameReplaceGroup(layer.category, incomingCategory)
+    );
+    // A layer in ANOTHER category does not conflict with the incoming render,
+    // so its removal is DEFERRED until the new layer is live. Removing it
+    // first dropped the output to the idle frame between two graphics - the
+    // remaining field flicker after the same-id fix was exactly the
+    // cross-category preset switch (overlay <-> lower third).
+    const deferredLayerIds = layersToRemove
+      .filter((layer) => layer.category !== incomingCategory)
+      .map((layer) => layer.layerId);
+    const immediateRemovals = layersToRemove.filter(
+      (layer) => layer.category === incomingCategory
     );
     const presetIds = new Set<string>();
     let nonPresetCount = 0;
@@ -333,7 +399,7 @@ export class GraphicsPresetService {
       }
     }
 
-    for (const layer of layersToRemove) {
+    for (const layer of immediateRemovals) {
       await this.removeLayer(layer.layerId, "preset_replace");
     }
 
@@ -349,8 +415,10 @@ export class GraphicsPresetService {
           removedPresets: Array.from(presetIds),
           removedNonPresetLayers: nonPresetCount,
           removedLayerCount: layersToRemove.length,
+          deferredLayerCount: deferredLayerIds.length,
         })}`
       );
     }
+    return deferredLayerIds;
   }
 }

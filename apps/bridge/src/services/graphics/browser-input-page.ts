@@ -76,6 +76,42 @@ export function buildBrowserInputPageHtml(): string {
         return (root && root.querySelector('[data-root="graphic"]')) || root;
       };
 
+      const waitForExitAnimations = async (rootElement) => {
+        if (!rootElement) return;
+        await waitForNextFrame();
+        if (typeof rootElement.getAnimations !== "function") {
+          const animatedElements = getAnimatedElements(rootElement);
+          if (animatedElements.length > 0) {
+            const exitMs = getExitDurationMs(rootElement);
+            if (exitMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, exitMs));
+            }
+          }
+          return;
+        }
+        const running = rootElement
+          .getAnimations({ subtree: true })
+          .filter((animation) => {
+            if (animation.playState !== "running" && animation.playState !== "pending") {
+              return false;
+            }
+            try {
+              const timing = animation.effect && animation.effect.getTiming
+                ? animation.effect.getTiming()
+                : null;
+              if (timing && timing.iterations === Infinity) return false;
+            } catch (e) {}
+            return true;
+          });
+        if (running.length === 0) return;
+        await Promise.race([
+          Promise.allSettled(
+            running.map((animation) => animation.finished.catch(() => null))
+          ),
+          new Promise((resolve) => setTimeout(resolve, 2000)),
+        ]);
+      };
+
       const applyAnimationState = (element, animationClass, isExit) => {
         if (!element) return;
         if (!element.classList.contains("root")) {
@@ -85,16 +121,16 @@ export function buildBrowserInputPageHtml(): string {
           .split(/\\s+/)
           .filter((entry) => entry.length > 0);
         const currentAnimationClass = classes.find((entry) =>
-          entry.startsWith("anim-"),
+          entry.startsWith("bfy-anim-"),
         );
         const nextClasses = classes.filter(
           (entry) =>
-            !entry.startsWith("anim-") &&
+            !entry.startsWith("bfy-anim-") &&
             entry !== "state-enter" &&
             entry !== "state-exit",
         );
         const nextAnimationClass =
-          animationClass || currentAnimationClass || "anim-ease-out";
+          animationClass || currentAnimationClass || "bfy-anim-ease-out";
         if (nextAnimationClass) {
           nextClasses.push(nextAnimationClass);
         }
@@ -277,6 +313,7 @@ ${applyLayoutRuntimeScript}
           bindings: payload.bindings || {},
         };
 
+        layerState.legacyExitClass = /\.anim-out\b/.test(String(payload.css || ""));
         layers.set(payload.layerId, layerState);
 
         if (payload.backgroundMode) {
@@ -324,19 +361,15 @@ ${applyLayoutRuntimeScript}
         }
 
         const rootElement = getRootElement(layer?.container || null);
-        const shouldAnimate = getAnimatedElements(rootElement).length > 0;
         if (rootElement) {
           applyAnimationState(rootElement, layer?.bindings?.animationClass, true);
-        }
-
-        if (shouldAnimate) {
-          const exitMs = getExitDurationMs(rootElement);
-          if (exitMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, exitMs));
-          } else {
-            await waitForNextFrame();
+          if (layer && layer.legacyExitClass) {
+            rootElement.classList.remove("anim-in");
+            rootElement.classList.add("anim-out");
           }
         }
+
+        await waitForExitAnimations(rootElement);
 
         host.remove();
         layers.delete(layerId);

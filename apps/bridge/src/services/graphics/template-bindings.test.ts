@@ -5,28 +5,28 @@ import {
 
 describe("getAnimationClassFromValue", () => {
   it("returns anim-{value} for valid animation values", () => {
-    expect(getAnimationClassFromValue("ease")).toBe("anim-ease");
-    expect(getAnimationClassFromValue("ease-in")).toBe("anim-ease-in");
-    expect(getAnimationClassFromValue("ease-out")).toBe("anim-ease-out");
-    expect(getAnimationClassFromValue("linear")).toBe("anim-linear");
-    expect(getAnimationClassFromValue("slide-up")).toBe("anim-slide-up");
-    expect(getAnimationClassFromValue("slide-down")).toBe("anim-slide-down");
-    expect(getAnimationClassFromValue("slide-left")).toBe("anim-slide-left");
-    expect(getAnimationClassFromValue("slide-right")).toBe("anim-slide-right");
+    expect(getAnimationClassFromValue("ease")).toBe("bfy-anim-ease");
+    expect(getAnimationClassFromValue("ease-in")).toBe("bfy-anim-ease-in");
+    expect(getAnimationClassFromValue("ease-out")).toBe("bfy-anim-ease-out");
+    expect(getAnimationClassFromValue("linear")).toBe("bfy-anim-linear");
+    expect(getAnimationClassFromValue("slide-up")).toBe("bfy-anim-slide-up");
+    expect(getAnimationClassFromValue("slide-down")).toBe("bfy-anim-slide-down");
+    expect(getAnimationClassFromValue("slide-left")).toBe("bfy-anim-slide-left");
+    expect(getAnimationClassFromValue("slide-right")).toBe("bfy-anim-slide-right");
   });
 
   it("normalizes to lowercase", () => {
-    expect(getAnimationClassFromValue("EASE-OUT")).toBe("anim-ease-out");
+    expect(getAnimationClassFromValue("EASE-OUT")).toBe("bfy-anim-ease-out");
   });
 
   it("returns anim-ease-out for invalid values", () => {
-    expect(getAnimationClassFromValue("invalid")).toBe("anim-ease-out");
-    expect(getAnimationClassFromValue("")).toBe("anim-ease-out");
+    expect(getAnimationClassFromValue("invalid")).toBe("bfy-anim-ease-out");
+    expect(getAnimationClassFromValue("")).toBe("bfy-anim-ease-out");
   });
 
   it("returns anim-ease-out for null/undefined", () => {
-    expect(getAnimationClassFromValue(null)).toBe("anim-ease-out");
-    expect(getAnimationClassFromValue(undefined)).toBe("anim-ease-out");
+    expect(getAnimationClassFromValue(null)).toBe("bfy-anim-ease-out");
+    expect(getAnimationClassFromValue(undefined)).toBe("bfy-anim-ease-out");
   });
 });
 
@@ -40,7 +40,7 @@ describe("deriveTemplateBindings", () => {
       cssVariables: {},
       textContent: {},
       textTypes: {},
-      animationClass: "anim-ease-out",
+      animationClass: "bfy-anim-ease-out",
     });
   });
 
@@ -119,7 +119,7 @@ describe("deriveTemplateBindings", () => {
       },
       {}
     );
-    expect(result.animationClass).toBe("anim-slide-up");
+    expect(result.animationClass).toBe("bfy-anim-slide-up");
   });
 
   it("uses values.animation over defaults.animation", () => {
@@ -130,6 +130,6 @@ describe("deriveTemplateBindings", () => {
       },
       { animation: "slide-down" }
     );
-    expect(result.animationClass).toBe("anim-slide-down");
+    expect(result.animationClass).toBe("bfy-anim-slide-down");
   });
 });

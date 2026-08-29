@@ -19,6 +19,7 @@ import { outputConfigStore } from "./output-config-store.js";
 import { StubOutputAdapter } from "./output-adapters/stub-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { resolveSessionBackgroundMode } from "./session-background.js";
 import { isDevelopmentMode } from "../dev-mode.js";
 import { ElectronRendererClient } from "./renderer/electron-renderer-client.js";
 import { StubRenderer } from "./renderer/stub-renderer.js";
@@ -98,6 +99,8 @@ type GraphicsManagerDepsT = {
    * passes nothing here and keeps the env path bit-identical.
    */
   frameBusOverrides?: FrameBusOverridesT;
+  /** False for the meeting planes: never write or restore the shared output store. */
+  persistOutputConfig?: boolean;
   runtimeInitService?: GraphicsRuntimeInitServiceLikeT;
   outputTransitionService?: GraphicsOutputTransitionServiceLikeT;
   selectOutputAdapter?: (
@@ -209,8 +212,14 @@ export class GraphicsManager {
           this.outputAdapter = runtime.outputAdapter;
         },
         selectOutputAdapter,
-        persistConfig: (config) => outputConfigStore.setConfig(config),
-        clearPersistedConfig: () => outputConfigStore.clear(),
+        persistConfig: (config) =>
+          this.deps.persistOutputConfig === false
+            ? Promise.resolve()
+            : outputConfigStore.setConfig(config),
+        clearPersistedConfig: () =>
+          this.deps.persistOutputConfig === false
+            ? Promise.resolve()
+            : outputConfigStore.clear(),
         resolveFrameBusConfig: (config, previous) =>
           resolveFrameBusConfig(config, previous, this.deps.frameBusOverrides),
         buildRendererConfig: (config, frameBusConfig) =>
@@ -220,6 +229,7 @@ export class GraphicsManager {
     this.runtimeInitService =
       this.deps.runtimeInitService ??
       new GraphicsRuntimeInitService({
+        usePersistedOutputConfig: this.deps.persistOutputConfig !== false,
         getRenderer: () => this.renderer,
         setRenderer: (renderer) => {
           this.renderer = renderer;
@@ -523,9 +533,10 @@ export class GraphicsManager {
     }
     const durationMs =
       typeof data.durationMs === "number" ? data.durationMs : null;
-    await this.presetService.prepareBeforeRender(
+    const { deferredLayerIds } = await this.presetService.prepareBeforeRender(
       prepared.presetId,
       prepared.category,
+      prepared.layerId,
     );
 
     let renderedLayerIds: string[] = [];
@@ -548,6 +559,14 @@ export class GraphicsManager {
           renderedLayerIds = layerIds;
         },
       });
+    }
+
+    // Cross-category leftovers of the replaced preset go away only now that
+    // the new layer is live: removing them first dropped the output to the
+    // idle frame between two graphics. This order turns the switch into a
+    // crossfade - the old layer plays its exit while the new one is on air.
+    for (const layerId of deferredLayerIds) {
+      await this.removeLayerById(layerId, "preset_replace");
     }
 
     this.presetService.syncAfterRender(
@@ -846,7 +865,7 @@ export class GraphicsManager {
       framebusName: frameBusConfig?.name ?? "",
       framebusSlotCount: frameBusConfig?.slotCount ?? 0,
       framebusSize: frameBusConfig?.size ?? 0,
-      backgroundMode: "transparent",
+      backgroundMode: resolveSessionBackgroundMode(config.outputKey),
     };
   }
 

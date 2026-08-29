@@ -28,6 +28,13 @@ const mockExecuteJS = jest.fn().mockResolvedValue(undefined);
 const mockInvalidate = jest.fn();
 const mockStartPainting = jest.fn();
 const mockSetFrameRate = jest.fn();
+// No default implementation on purpose: an unconfigured capturePage resolves
+// to undefined, so writeCapturedWindowFrame throws internally and reports
+// failure — exactly how this harness behaved before capturePage existed.
+const mockCapturePage = jest.fn();
+// Default: no clamp. Windows-specific clamping is opted into per test.
+const mockGetContentSize = jest.fn<number[], []>(() => [1920, 1080]);
+const mockSetContentSize = jest.fn();
 let lastDidFinishLoadHandler: (() => void) | null = null;
 const paintHandlers: Array<(event: unknown, dirty: unknown, image: unknown) => void> = [];
 
@@ -52,6 +59,7 @@ const mockBrowserWindow = jest.fn().mockImplementation(() => {
     startPainting: mockStartPainting,
     stopPainting: mockStopPainting,
     setFrameRate: mockSetFrameRate,
+    capturePage: (...args: unknown[]) => (mockCapturePage as jest.Mock)(...args),
     isDestroyed: () => false,
     isPainting: () => true,
   };
@@ -60,6 +68,8 @@ const mockBrowserWindow = jest.fn().mockImplementation(() => {
     loadURL: loadURLImpl,
     isDestroyed: jest.fn().mockReturnValue(false),
     destroy: mockDestroy,
+    getContentSize: (...args: unknown[]) => (mockGetContentSize as jest.Mock)(...args),
+    setContentSize: (...args: unknown[]) => (mockSetContentSize as jest.Mock)(...args),
   };
 });
 const mockProtocol = {
@@ -181,6 +191,8 @@ describe("electron-renderer-entry", () => {
     enqueueSerialPending = Promise.resolve();
     lastDidFinishLoadHandler = null;
     paintHandlers.length = 0;
+    mockGetContentSize.mockReturnValue([1920, 1080]);
+    mockSetContentSize.mockReset();
     mockDecodeNextIpcPacket.mockReturnValue({ kind: "incomplete" as const });
     mockIsIpcBufferWithinLimit.mockReturnValue(true);
     mockSafeParse.mockReturnValue({ success: false });
@@ -2385,6 +2397,342 @@ describe("electron-renderer-entry", () => {
       expect.stringMatching(/__removeLayer.*layer-1/),
       true
     );
+  });
+
+  it("publishes a solid session-background frame when the last layer is removed", async () => {
+    // Regression, twice over. Removing the LAST layer first wrote hard zeros
+    // (black on an opaque output, which a chroma keyer cannot key), then a
+    // capture of the page - but the page keeps whatever background the layer
+    // set, so an opaque graphic background stayed on air after its graphic was
+    // gone, and the capture itself cost seconds on Windows. The idle frame is
+    // now derived from the session background and written directly.
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    const width = 8;
+    const height = 4;
+    const validConfig = {
+      width,
+      height,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "green" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    const writeFrame = jest.fn();
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "test",
+        size: 0,
+        header: { width, height, fps: 30, slotCount: 2, pixelFormat: 1 },
+        writeFrame,
+        close: jest.fn(),
+      }),
+    });
+    // A non-zero page: every byte 0x22 stands in for "background is painted".
+    const capturedBitmap = Buffer.alloc(width * height * 4, 0x22);
+    mockCapturePage.mockResolvedValue({
+      getSize: () => ({ width, height }),
+      isEmpty: () => false,
+      toBitmap: () => capturedBitmap,
+    });
+
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation((_opts: unknown, cb?: () => void) => {
+      if (cb) connectionCallback = cb;
+      return mockSocket;
+    });
+    const createLayerPayload = {
+      layerId: "layer-1",
+      html: "<div>test</div>",
+      css: "",
+      values: {},
+      layout: { x: 0, y: 0, scale: 1 },
+      backgroundMode: "green",
+      width,
+      height,
+      fps: 30,
+    };
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "renderer_configure", token: "test-token", ...validConfig },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "create_layer", token: "test-token", ...createLayerPayload },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "remove_layer", token: "test-token", layerId: "layer-1" },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 80));
+
+    const logMessages = mockPinoInfo.mock.calls.map((call) => call[1]);
+    expect(logMessages).toContain(
+      "[GraphicsRenderer] Idle FrameBus frame written"
+    );
+
+    // The removal path must not capture at all any more: no captured write may
+    // carry a remove_last_layer reason.
+    const capturedRemoveReasons = mockPinoInfo.mock.calls
+      .filter(
+        (call) => call[1] === "[GraphicsRenderer] Captured FrameBus frame written"
+      )
+      .map((call) => (call[0] as { reason?: string }).reason ?? "");
+    expect(
+      capturedRemoveReasons.filter((reason) => reason.startsWith("remove_last_layer"))
+    ).toEqual([]);
+
+    // What landed on the bus last must be the session background - here green,
+    // solid over every pixel - and not the page the removed layer left behind.
+    const lastFrame = writeFrame.mock.calls.at(-1)?.[0] as Buffer;
+    expect(lastFrame).toBeDefined();
+    expect(lastFrame.length).toBe(width * height * 4);
+    expect(lastFrame.equals(Buffer.concat(
+      Array.from({ length: width * height }, () => Buffer.from([0, 255, 0, 255]))
+    ))).toBe(true);
+  });
+
+  /**
+   * Boot the renderer with one create_layer for a given FrameBus name.
+   *
+   * @param framebusName Bus the renderer serves (decides studio vs meeting).
+   * @returns Handles for assertions.
+   */
+  async function bootWithOneLayer(framebusName: string) {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = framebusName;
+    const width = 8;
+    const height = 4;
+    const validConfig = {
+      width,
+      height,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName,
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "green" as const,
+    };
+    mockSafeParse.mockReturnValue({ success: true, data: validConfig });
+    const writeFrame = jest.fn();
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: framebusName,
+        size: 0,
+        header: { width, height, fps: 30, slotCount: 2, pixelFormat: 1 },
+        writeFrame,
+        close: jest.fn(),
+      }),
+    });
+    mockCapturePage.mockResolvedValue({
+      getSize: () => ({ width, height }),
+      isEmpty: () => false,
+      toBitmap: () => Buffer.alloc(width * height * 4, 0x22),
+    });
+
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation((_opts: unknown, cb?: () => void) => {
+      if (cb) connectionCallback = cb;
+      return mockSocket;
+    });
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "renderer_configure", token: "test-token", ...validConfig },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "create_layer",
+          token: "test-token",
+          layerId: "layer-1",
+          html: "<div>test</div>",
+          css: "",
+          values: {},
+          layout: { x: 0, y: 0, scale: 1 },
+          backgroundMode: "green",
+          width,
+          height,
+          fps: 30,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    const firePaint = () => {
+      const image = {
+        getSize: () => ({ width, height }),
+        isEmpty: () => false,
+        toBitmap: () => Buffer.alloc(width * height * 4, 0x11),
+      };
+      paintHandlers.forEach((handler) => handler({}, {}, image));
+    };
+    const captureReasons = () =>
+      mockPinoInfo.mock.calls
+        .filter(
+          (call) => call[1] === "[GraphicsRenderer] Captured FrameBus frame written"
+        )
+        .map((call) => (call[0] as { reason?: string }).reason ?? "");
+
+    const feed = (buffer: Buffer) => dataHandlers[0](buffer);
+    return { writeFrame, firePaint, captureReasons, feed };
+  }
+
+  it("studio: a layer mutation publishes through the paint path, not capturePage", async () => {
+    // Regression: the capture path arrived with the meeting work in June and
+    // was applied to every path, so each command produced four capturePage
+    // calls on top of the paint that invalidate() had already forced. On
+    // Windows one capture cost up to seconds, and the 120/300/700 ms taps
+    // landed inside fades of 450 ms (enter) and 300 ms (exit).
+    const { firePaint, captureReasons } = await bootWithOneLayer("/test-shm");
+    firePaint();
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(mockInvalidate).toHaveBeenCalled();
+    expect(mockCapturePage).not.toHaveBeenCalled();
+    expect(captureReasons()).toEqual([]);
+  });
+
+  it("studio: captures once as a safety net when no paint arrives", async () => {
+    // Static content can leave Chromium's offscreen pipeline without a paint
+    // event - the reason the captures were added originally. One capture
+    // covers that case; the bursts must not come back. The window is 300 ms
+    // (a first paint takes 150-250 ms in the field, so 100 ms lost the race
+    // and captured on nearly every command).
+    const { captureReasons } = await bootWithOneLayer("/test-shm");
+    await new Promise((r) => setTimeout(r, 500));
+
+    expect(captureReasons()).toEqual(["create_layer_fallback"]);
+  });
+
+  it("meeting planes keep the capture bursts unchanged", async () => {
+    // Parity guard. The meeting compositor has consumed this behaviour since
+    // the capture path was introduced; the rollback is studio-only.
+    const { firePaint, captureReasons } = await bootWithOneLayer("bfy-meet-gfx-back");
+    firePaint();
+    await new Promise((r) => setTimeout(r, 900));
+
+    expect(captureReasons()).toEqual([
+      "create_layer",
+      "create_layer_120ms",
+      "create_layer_300ms",
+      "create_layer_700ms",
+    ]);
+  });
+
+  it("studio: drops a late paint after the last layer was removed", async () => {
+    // Field observation on key/fill: the graphic faded out, disappeared, and
+    // flashed back for a fraction of a second. Chromium paints are
+    // asynchronous - a fade frame generated BEFORE the removal arrived after
+    // the idle frame and re-published the removed graphic. With no live layer
+    // the correct picture IS the idle frame, so paints must not publish.
+    const { writeFrame, firePaint, captureReasons, feed } =
+      await bootWithOneLayer("/test-shm");
+
+    // Feed the remove for the only layer, then simulate the late fade paint.
+    mockDecodeNextIpcPacket.mockReset();
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "remove_layer", token: "test-token", layerId: "layer-1" },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+    feed(Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 30));
+
+    const writesAfterIdle = writeFrame.mock.calls.length;
+    firePaint();
+    await new Promise((r) => setImmediate(r));
+
+    // The late paint must not have reached the bus.
+    expect(writeFrame.mock.calls.length).toBe(writesAfterIdle);
+    expect(captureReasons()).toEqual([]);
+  });
+
+  it("forces the content size back when Windows clamps the offscreen window", async () => {
+    // Windows clamps a new window to the work area, so a 1080-tall window
+    // comes back as 1032 next to a 48px taskbar. The page is laid out for the
+    // full height, so the bottom rows are never rendered - graphics are cut
+    // off at the bottom and what remains is stretched back up.
+    // A resize that Windows honours: report a clamped size first, then
+    // whatever the resize asked for. Deriving it from the call keeps the test
+    // independent of the supersample factor.
+    mockSetContentSize.mockImplementation((...args: unknown[]) => {
+      mockGetContentSize.mockReturnValue([
+        args[0] as number,
+        args[1] as number,
+      ]);
+    });
+    mockGetContentSize.mockReturnValueOnce([1, 1]);
+    await bootWithOneLayer("/test-shm");
+
+    expect(mockSetContentSize).toHaveBeenCalled();
+    const recovered = mockPinoInfo.mock.calls.some(
+      (call) =>
+        call[1] === "[GraphicsRenderer] Offscreen viewport recovered after work-area clamp"
+    );
+    expect(recovered).toBe(true);
+  });
+
+  it("reports a viewport that stays clamped instead of degrading silently", async () => {
+    mockGetContentSize.mockReturnValue([1920, 1032]);
+    await bootWithOneLayer("/test-shm");
+
+    expect(mockSetContentSize).toHaveBeenCalled();
+    const reported = mockPinoError.mock.calls.some(
+      (call) =>
+        call[1] ===
+        "[GraphicsRenderer] Offscreen viewport still clamped; graphics are cropped and resampled"
+    );
+    expect(reported).toBe(true);
   });
 
   it("shutdown after create_layer calls stopPainting and destroy on window", async () => {

@@ -1,5 +1,13 @@
 import { commandRouter } from "./command-router.js";
 
+const mockEngineConnectionSave = jest.fn().mockResolvedValue(undefined);
+jest.mock("./engine/engine-connection-store.js", () => ({
+  engineConnectionStore: {
+    save: (...args: unknown[]) => mockEngineConnectionSave(...args),
+    load: jest.fn().mockResolvedValue(null),
+  },
+}));
+
 jest.mock("./engine-adapter.js", () => ({
   engineAdapter: {
     getState: jest.fn(() => ({ status: "disconnected", macros: [] })),
@@ -283,6 +291,27 @@ describe("command-router", () => {
         ip: "192.168.1.10",
         port: 9910,
       });
+      // A successful connect persists the operator's choice so the bridge can
+      // bring the same connection back on the next start.
+      expect(mockEngineConnectionSave).toHaveBeenCalledWith({
+        type: "atem",
+        transport: "network",
+        ip: "192.168.1.10",
+        port: 9910,
+      });
+    });
+
+    it("engine_connect does not persist when the connect fails", async () => {
+      const { engineAdapter } = require("./engine-adapter.js");
+      mockEngineConnectionSave.mockClear();
+      engineAdapter.connect.mockRejectedValueOnce(new Error("no switcher"));
+
+      const result = await commandRouter.handleCommand("engine_connect", {
+        type: "atem",
+        transport: "usb",
+      });
+      expect(result.success).toBe(false);
+      expect(mockEngineConnectionSave).not.toHaveBeenCalled();
     });
 
     it("engine_connect accepts usb transport without ip/port", async () => {
