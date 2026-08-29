@@ -10,7 +10,27 @@ const BASE_RENDER_HEIGHT = 1080;
  *
  * @returns HTML payload loaded into the hidden Electron BrowserWindow.
  */
-export function buildSingleWindowDocument(renderScale = 1): string {
+/**
+ * Resolve the CSS colour for a background mode.
+ *
+ * Kept in lockstep with resolveBackgroundColor() in the generated page script
+ * below - the document needs the colour at BUILD time so the very first paint
+ * already carries it, while the script needs it at runtime for later changes.
+ *
+ * @param mode Background mode.
+ * @returns CSS colour value.
+ */
+export function resolveBackgroundCssColor(mode: string | null | undefined): string {
+  if (mode === "green") return "#00FF00";
+  if (mode === "black") return "#000000";
+  if (mode === "white") return "#FFFFFF";
+  return "transparent";
+}
+
+export function buildSingleWindowDocument(
+  renderScale = 1,
+  initialBackgroundMode: string | null = null,
+): string {
   const standardCss = JSON.stringify(getStandardAnimationCss());
   const applyLayoutRuntimeScript = getApplyLayoutRuntimeScript(renderScale);
   const perspectivePx = 1200 * renderScale;
@@ -30,7 +50,12 @@ export function buildSingleWindowDocument(renderScale = 1): string {
       #graphics-background {
         position: absolute;
         inset: 0;
-        background: transparent;
+        /* Baked in rather than applied by script afterwards: the offscreen
+           window starts painting the moment the page loads, and those first
+           paints go straight to the FrameBus. With a transparent start, an
+           output without alpha published black frames until the script ran -
+           a visible flash before the first graphic. */
+        background: ${resolveBackgroundCssColor(initialBackgroundMode)};
       }
       #graphics-root {
         position: absolute;
@@ -84,14 +109,18 @@ export function buildSingleWindowDocument(renderScale = 1): string {
         const classes = String(element.className || "")
           .split(/\\s+/)
           .filter((entry) => entry.length > 0);
+        // Strip ONLY the runtime's own namespaced classes. Foreign templates
+        // (AI-generated ones especially) carry their own anim-* classes for
+        // their hand-written keyframes; stripping those cancelled a running
+        // entrance mid-flight and the graphic visibly snapped.
         const currentAnimationClass = classes.find((entry) =>
-          entry.startsWith("anim-"),
+          entry.startsWith("bfy-anim-"),
         );
         const nextClasses = classes.filter(
-          (entry) => !entry.startsWith("anim-") && entry !== "state-enter" && entry !== "state-exit"
+          (entry) => !entry.startsWith("bfy-anim-") && entry !== "state-enter" && entry !== "state-exit"
         );
         const nextAnimationClass =
-          animationClass || currentAnimationClass || "anim-ease-out";
+          animationClass || currentAnimationClass || "bfy-anim-ease-out";
         if (nextAnimationClass) {
           nextClasses.push(nextAnimationClass);
         }
@@ -298,6 +327,9 @@ ${applyLayoutRuntimeScript}
           values: payload.values || {},
           bindings: payload.bindings || {},
         };
+        // Foreign-convention detection: a template that authors its own exit
+        // on an .anim-out rule expects someone to add that class on removal.
+        layerState.legacyExitClass = /\.anim-out\b/.test(String(payload.css || ""));
         layers.set(payload.layerId, layerState);
 
         if (payload.backgroundMode) {
@@ -336,6 +368,47 @@ ${applyLayoutRuntimeScript}
         applyLayout(layer.host, layout);
       };
 
+      // Convention-independent exit wait: ask Chromium which animations are
+      // actually running instead of requiring [data-animate]. Infinite
+      // (ambient) animations are ignored, and a 2s cap protects removal from
+      // a runaway exit. Falls back to the [data-animate] duration scan where
+      // getAnimations is unavailable.
+      const waitForExitAnimations = async (rootElement) => {
+        if (!rootElement) return;
+        await waitForNextFrame();
+        if (typeof rootElement.getAnimations !== "function") {
+          const animatedElements = getAnimatedElements(rootElement);
+          if (animatedElements.length > 0) {
+            const exitMs = getExitDurationMs(rootElement);
+            if (exitMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, exitMs));
+            }
+          }
+          return;
+        }
+        const running = rootElement
+          .getAnimations({ subtree: true })
+          .filter((animation) => {
+            if (animation.playState !== "running" && animation.playState !== "pending") {
+              return false;
+            }
+            try {
+              const timing = animation.effect && animation.effect.getTiming
+                ? animation.effect.getTiming()
+                : null;
+              if (timing && timing.iterations === Infinity) return false;
+            } catch (e) {}
+            return true;
+          });
+        if (running.length === 0) return;
+        await Promise.race([
+          Promise.allSettled(
+            running.map((animation) => animation.finished.catch(() => null))
+          ),
+          new Promise((resolve) => setTimeout(resolve, 2000)),
+        ]);
+      };
+
       window.__removeLayer = async (layerId) => {
         const layer = layers.get(layerId);
         const host =
@@ -351,21 +424,16 @@ ${applyLayoutRuntimeScript}
           layer?.container ||
           (host.shadowRoot ? host.shadowRoot.querySelector("#graphic-root") : null);
         const rootElement = getRootElement(container);
-        const shouldAnimate = getAnimatedElements(rootElement).length > 0;
         if (rootElement) {
           applyAnimationState(rootElement, layer?.bindings?.animationClass, true);
-        }
-
-        if (shouldAnimate) {
-          const exitMs = getExitDurationMs(rootElement);
-          if (exitMs > 0) {
-            await new Promise((resolve) => {
-              setTimeout(resolve, exitMs);
-            });
-          } else {
-            await waitForNextFrame();
+          if (layer && layer.legacyExitClass) {
+            // Trigger the template's own exit convention (anim-in -> anim-out).
+            rootElement.classList.remove("anim-in");
+            rootElement.classList.add("anim-out");
           }
         }
+
+        await waitForExitAnimations(rootElement);
 
         host.remove();
         layers.delete(layerId);

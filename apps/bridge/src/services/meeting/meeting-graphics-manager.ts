@@ -93,12 +93,18 @@ export const meetingBackGraphicsManager = new GraphicsManager({
     name: MEETING_GRAPHICS_BACK_FRAMEBUS_NAME,
     slotCount: MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT,
   },
+  // The meeting planes are reconfigured explicitly on every meeting start.
+  // Persisting their config only overwrote the studio selection in the shared
+  // store, so a meeting session cost the operator the studio output on the
+  // next bridge start (field: startup restored outputKey "framebus" -> black).
+  persistOutputConfig: false,
 });
 export const meetingFrontGraphicsManager = new GraphicsManager({
   frameBusOverrides: {
     name: MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
     slotCount: MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT,
   },
+  persistOutputConfig: false,
 });
 
 /**

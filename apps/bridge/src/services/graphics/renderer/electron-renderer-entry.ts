@@ -27,6 +27,12 @@ import {
   resampleRgbaBilinear,
 } from "./graphics-pixel-utils.js";
 import { frameBusWriterMatchesTarget } from "./framebus-writer-match.js";
+import { selectFrameBusSeedFrame } from "./framebus-seed-frame.js";
+import {
+  buildIdleFrameBuffer,
+  resolveIdleFrameColor,
+  type IdleFrameColorT,
+} from "./idle-frame.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -36,6 +42,8 @@ const logger = pino({
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
+/** Studio: how long to wait for a paint before capturing as a safety net. */
+const STUDIO_CAPTURE_FALLBACK_MS = 300;
 const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
@@ -209,6 +217,26 @@ function stopFrameBusHeartbeat(): void {
   lastWrittenFrameBuffer = null;
   lastWrittenFrameTimestampNs = 0n;
   lastWrittenFrameAtMs = 0;
+}
+
+// Paint dedup state. Module-scoped on purpose: it used to live in the paint
+// handler closure, so the direct write paths (idle frame, captured frame) left
+// a stale checksum behind. The very paint that had to repair such a frame then
+// looked like a duplicate and was dropped, and the heartbeat re-published the
+// stale frame once per second for as long as the page stayed unchanged.
+let lastPaintChecksum = -1;
+let lastPaintChecksumAtMs = 0;
+
+/**
+ * Forget the last painted frame's checksum.
+ *
+ * Every FrameBus write that does NOT come from the paint handler must call
+ * this: it changes what readers see, so the next paint is meaningful even when
+ * it is pixel-identical to the previously *painted* frame.
+ */
+function invalidatePaintDedup(): void {
+  lastPaintChecksum = -1;
+  lastPaintChecksumAtMs = 0;
 }
 
 const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
@@ -434,6 +462,13 @@ function ensureFrameBusWriter(
   fps: number,
 ): boolean {
   const nativeFrameRate = normalizeNativeFrameRate(fps);
+  // Snapshot the retained frame before the teardown below drops it: it seeds a
+  // freshly created writer so the swap does not blank a live output.
+  const carriedFrame = selectFrameBusSeedFrame(
+    lastWrittenFrameBuffer,
+    width,
+    height,
+  );
   if (frameBusWriter) {
     const header = frameBusWriter.header;
     const desiredPixelFormat = Number.isFinite(frameBusPixelFormat)
@@ -558,17 +593,28 @@ function ensureFrameBusWriter(
         forceRecreate: true,
       });
     }
-    const initBuffer = Buffer.alloc(width * height * 4, 0);
+    // Seed the fresh region. Hard zeros are only safe on an output that reads
+    // alpha: a writer swap also happens mid-show (geometry change, meeting
+    // reattach), and there a blank frame drops key/fill to key=0 and robs a
+    // downstream chroma keyer of its key colour, so the black frame gets keyed
+    // on air. Re-publish the retained frame whenever its geometry still fits,
+    // otherwise seed the session background - on a video output that is the
+    // key colour, so the very first frame is already keyable.
+    const initBuffer =
+      carriedFrame ?? buildIdleFrameBuffer(width, height, currentIdleFrameColor());
     const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(initBuffer, initTimestampNs);
     // Retain the init frame too: if no paint ever fires (idle renderer), the
     // heartbeat still keeps the seq advancing for readers.
     noteFrameBusFrameWritten(initBuffer, initTimestampNs);
+    invalidatePaintDedup();
     logger.info(
       {
         name: frameBusWriter.name,
         size: frameBusWriter.size,
         header: frameBusWriter.header,
+        seededFrom: carriedFrame ? "retained_frame" : "idle_color",
+        ...(carriedFrame ? {} : { idleColor: currentIdleFrameColor() }),
       },
       "[GraphicsRenderer] FrameBus writer initialized",
     );
@@ -813,6 +859,76 @@ function scheduleFrameBusReadyRetry(
   );
 }
 
+/**
+ * Force the offscreen window to the target content size.
+ *
+ * Windows clamps a NEW window to the work area - the screen minus the
+ * taskbar - so a 1080-tall window comes back as 1032 next to a 48px taskbar.
+ * That is not cosmetic: the page is laid out in a fixed 1920x1080 system, so
+ * the rows below the viewport are never rendered and never captured (graphics
+ * cut off at the bottom), and the short capture is then stretched back to the
+ * target, which distorts what is left and costs a full-frame resample on every
+ * frame. `enableLargerThanScreen` does not help here - it is macOS-only.
+ *
+ * The clamp applies to window creation; a resize afterwards is a separate
+ * request, so ask again. Whether Windows honours it is what the log records.
+ *
+ * @param window Offscreen renderer window.
+ * @param width Target content width.
+ * @param height Target content height.
+ */
+function ensureWindowContentSize(
+  window: BrowserWindow,
+  width: number,
+  height: number,
+): void {
+  let initialWidth: number;
+  let initialHeight: number;
+  try {
+    [initialWidth, initialHeight] = window.getContentSize();
+  } catch {
+    return;
+  }
+  if (initialWidth === width && initialHeight === height) {
+    return;
+  }
+
+  try {
+    window.setContentSize(width, height);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn({ message }, "[GraphicsRenderer] setContentSize failed");
+  }
+
+  let actualWidth = initialWidth;
+  let actualHeight = initialHeight;
+  try {
+    [actualWidth, actualHeight] = window.getContentSize();
+  } catch {
+    // Keep the pre-resize values for the log below.
+  }
+
+  const details = {
+    requestedWidth: width,
+    requestedHeight: height,
+    clampedWidth: initialWidth,
+    clampedHeight: initialHeight,
+    actualWidth,
+    actualHeight,
+  };
+  if (actualWidth === width && actualHeight === height) {
+    logger.info(
+      details,
+      "[GraphicsRenderer] Offscreen viewport recovered after work-area clamp",
+    );
+    return;
+  }
+  logger.error(
+    details,
+    "[GraphicsRenderer] Offscreen viewport still clamped; graphics are cropped and resampled",
+  );
+}
+
 async function destroySingleWindow(): Promise<void> {
   if (!singleWindow) {
     singleWindowReady = null;
@@ -927,11 +1043,10 @@ async function ensureSingleWindow(
     });
 
     singleWindowFormat = { width, height, fps, renderScale };
+    ensureWindowContentSize(singleWindow, renderWidth, renderHeight);
 
     singleWindow.webContents.setFrameRate(normalizeNativeFrameRate(fps));
 
-    let lastWrittenChecksum = -1;
-    let lastWrittenAtMs = 0;
     singleWindow.webContents.on("paint", (_event, _dirty, image) => {
       const frameStartAt = Date.now();
       if (paintCount === 0) {
@@ -939,6 +1054,18 @@ async function ensureSingleWindow(
       }
       paintCount += 1;
       perfPaintCount += 1;
+
+      // With no live layer the correct picture IS the idle frame, which is
+      // already on the bus. Chromium paints are asynchronous, so one or two
+      // fade frames generated BEFORE the removal can arrive after it - the
+      // removed graphic then flashed back on air for a fraction of a second
+      // (worst on key/fill, where the key snaps back up from 0). Meeting
+      // keeps its behaviour: its planes are alpha-blended over the camera,
+      // and the parity rule is to not touch that path.
+      if (singleLayerSnapshots.size === 0 && !isMeetingGraphicsBus()) {
+        logPerfIfNeeded();
+        return;
+      }
 
       const imageSize = image.getSize();
       if (image.isEmpty() || imageSize.width === 0 || imageSize.height === 0) {
@@ -1005,12 +1132,15 @@ async function ensureSingleWindow(
         checksum = ((checksum * 31) ^ (buffer[i] ?? 0)) >>> 0;
       }
       const writeNowMs = Date.now();
-      if (checksum === lastWrittenChecksum && writeNowMs - lastWrittenAtMs < 1000) {
+      if (
+        checksum === lastPaintChecksum &&
+        writeNowMs - lastPaintChecksumAtMs < 1000
+      ) {
         logPerfIfNeeded();
         return;
       }
-      lastWrittenChecksum = checksum;
-      lastWrittenAtMs = writeNowMs;
+      lastPaintChecksum = checksum;
+      lastPaintChecksumAtMs = writeNowMs;
 
       try {
         const frameTimestampNs = BigInt(writeNowMs) * 1_000_000n;
@@ -1064,7 +1194,10 @@ async function ensureSingleWindow(
       });
     });
 
-    const html = buildSingleWindowDocument(renderScale);
+    const html = buildSingleWindowDocument(
+      renderScale,
+      rendererBackgroundMode || backgroundMode,
+    );
     await singleWindow.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
     );
@@ -1105,6 +1238,30 @@ async function ensureSingleWindow(
 }
 
 /**
+ * Reset the renderer page to the session background.
+ *
+ * @returns Promise resolved once the page has been told, or immediately when
+ * there is no window.
+ */
+async function applySessionBackground(): Promise<void> {
+  if (!singleWindow || singleWindow.isDestroyed()) {
+    return;
+  }
+  const script = rendererClearColor
+    ? `window.__setClearColor && window.__setClearColor(${JSON.stringify(
+        rendererClearColor,
+      )});`
+    : `window.__setBackground && window.__setBackground(${JSON.stringify(
+        rendererBackgroundMode || "transparent",
+      )});`;
+  try {
+    await singleWindow.webContents.executeJavaScript(script, true);
+  } catch {
+    // Best-effort: the idle frame below is written either way.
+  }
+}
+
+/**
  * Force an offscreen repaint after a control-plane DOM mutation.
  *
  * Some Chromium offscreen scenarios may delay paint dispatch for non-animated
@@ -1121,7 +1278,26 @@ function requestSingleWindowRepaint(): void {
   }
 }
 
-function writeTransparentFrame(reason: string): void {
+/**
+ * Resolve the colour an empty frame must carry for the active session.
+ *
+ * @returns RGBA fill colour of the idle picture.
+ */
+function currentIdleFrameColor(): IdleFrameColorT {
+  return resolveIdleFrameColor(rendererBackgroundMode, rendererClearColor);
+}
+
+/**
+ * Publish the idle picture: a solid frame in the session background colour.
+ *
+ * Deterministic on purpose. The previous capture-based idle frame took
+ * seconds on Windows and reproduced whatever background the last layer had
+ * set, so an opaque graphic background stayed on air after its graphic was
+ * gone.
+ *
+ * @param reason Log tag identifying the trigger.
+ */
+function writeIdleFrame(reason: string): void {
   if (!rendererConfig) {
     return;
   }
@@ -1129,11 +1305,13 @@ function writeTransparentFrame(reason: string): void {
   if (!ensureFrameBusWriter(width, height, fps) || !frameBusWriter) {
     return;
   }
-  const buffer = Buffer.alloc(width * height * 4, 0);
+  const color = currentIdleFrameColor();
+  const buffer = buildIdleFrameBuffer(width, height, color);
   try {
     const timestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(buffer, timestampNs);
     noteFrameBusFrameWritten(buffer, timestampNs);
+    invalidatePaintDedup();
     logger.info(
       {
         reason,
@@ -1145,25 +1323,34 @@ function writeTransparentFrame(reason: string): void {
         width,
         height,
         fps,
+        backgroundMode: rendererBackgroundMode,
+        color,
       },
-      "[GraphicsRenderer] Transparent FrameBus frame written",
+      "[GraphicsRenderer] Idle FrameBus frame written",
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(
       { reason, message },
-      "[GraphicsRenderer] Transparent FrameBus write failed",
+      "[GraphicsRenderer] Idle FrameBus write failed",
     );
   }
 }
 
-async function writeCapturedWindowFrame(reason: string): Promise<void> {
+/**
+ * Capture the offscreen window and publish it to the FrameBus.
+ *
+ * @param reason Log tag identifying the trigger.
+ * @returns Whether a frame actually reached the bus. Callers that rely on the
+ * capture to leave correct content behind must fall back when this is false.
+ */
+async function writeCapturedWindowFrame(reason: string): Promise<boolean> {
   if (!rendererConfig || !singleWindow || singleWindow.isDestroyed()) {
-    return;
+    return false;
   }
   const { width, height, fps } = rendererConfig;
   if (!ensureFrameBusWriter(width, height, fps) || !frameBusWriter) {
-    return;
+    return false;
   }
 
   try {
@@ -1174,7 +1361,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         { reason, imageWidth: imageSize.width, imageHeight: imageSize.height },
         "[GraphicsRenderer] Captured frame empty",
       );
-      return;
+      return false;
     }
 
     const sourceBuffer = bgraToRgba(image.toBitmap());
@@ -1189,7 +1376,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         },
         "[GraphicsRenderer] Captured source frame buffer length mismatch",
       );
-      return;
+      return false;
     }
 
     let buffer: Buffer;
@@ -1213,7 +1400,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         },
         "[GraphicsRenderer] Captured frame downsample failed",
       );
-      return;
+      return false;
     }
 
     if (buffer.length !== width * height * 4) {
@@ -1227,7 +1414,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
         },
         "[GraphicsRenderer] Captured frame buffer length mismatch after downsample",
       );
-      return;
+      return false;
     }
 
     let nonTransparentPixels = 0;
@@ -1245,6 +1432,7 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
     const timestampNs = BigInt(Date.now()) * 1_000_000n;
     frameBusWriter.writeFrame(buffer, timestampNs);
     noteFrameBusFrameWritten(buffer, timestampNs);
+    invalidatePaintDedup();
     logger.info(
       {
         reason,
@@ -1264,22 +1452,80 @@ async function writeCapturedWindowFrame(reason: string): Promise<void> {
       },
       "[GraphicsRenderer] Captured FrameBus frame written",
     );
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(
       { reason, message },
       "[GraphicsRenderer] Captured FrameBus write failed",
     );
+    return false;
   }
 }
 
+/**
+ * Whether this renderer serves one of the meeting compositor planes.
+ *
+ * The capture path behaves differently per side, so this gate decides it.
+ * Meeting keeps exactly the behaviour it has had since the capture path was
+ * introduced; only the studio side is rolled back.
+ *
+ * @returns True when the active FrameBus is a meeting graphics plane.
+ */
+function isMeetingGraphicsBus(): boolean {
+  return MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
+}
+
+/**
+ * Publish the result of a layer mutation.
+ *
+ * Studio takes the paint path: invalidate() forces a repaint and the paint
+ * handler publishes it, exactly as the renderer worked before the capture path
+ * arrived with the meeting work. The extra captures duplicated that frame four
+ * times per command - each a full capturePage plus a pixel pass - and landed
+ * 120/300/700 ms into fades that run 450 ms (enter) and 300 ms (exit), so an
+ * older frame could overwrite a newer paint and the picture jumped back.
+ *
+ * @param reason Log tag identifying the trigger.
+ */
+async function publishLayerMutation(reason: string): Promise<void> {
+  requestSingleWindowRepaint();
+  if (isMeetingGraphicsBus()) {
+    await writeCapturedWindowFrame(reason);
+  }
+  scheduleCapturedWindowFrames(reason);
+}
+
 function scheduleCapturedWindowFrames(reason: string): void {
+  if (!isMeetingGraphicsBus()) {
+    scheduleStudioFallbackCapture(reason);
+    return;
+  }
   const delaysMs = [120, 300, 700];
   for (const delayMs of delaysMs) {
     setTimeout(() => {
       void writeCapturedWindowFrame(`${reason}_${delayMs}ms`);
     }, delayMs);
   }
+}
+
+/**
+ * Studio safety net: capture once if the invalidate produced no paint.
+ *
+ * Static content can leave Chromium's offscreen pipeline without a paint
+ * event - the reason the captures were added in the first place. One capture
+ * covers that, and only when it is actually needed.
+ *
+ * @param reason Log tag identifying the trigger.
+ */
+function scheduleStudioFallbackCapture(reason: string): void {
+  const paintsBefore = paintCount;
+  setTimeout(() => {
+    if (paintCount !== paintsBefore) {
+      return;
+    }
+    void writeCapturedWindowFrame(`${reason}_fallback`);
+  }, STUDIO_CAPTURE_FALLBACK_MS);
 }
 
 function registerAssetProtocol(): void {
@@ -1378,9 +1624,7 @@ async function createLayer(message: {
     },
     "[GraphicsRenderer] create_layer rendered",
   );
-  requestSingleWindowRepaint();
-  await writeCapturedWindowFrame("create_layer");
-  scheduleCapturedWindowFrames("create_layer");
+  await publishLayerMutation("create_layer");
 }
 
 /**
@@ -1410,9 +1654,7 @@ async function updateValues(message: {
     )}, ${JSON.stringify(message.bindings || {})});`,
     true,
   );
-  requestSingleWindowRepaint();
-  await writeCapturedWindowFrame("update_values");
-  scheduleCapturedWindowFrames("update_values");
+  await publishLayerMutation("update_values");
 }
 
 /**
@@ -1444,9 +1686,7 @@ async function updateLayout(message: {
     )}, ${JSON.stringify(zIndexValue)});`,
     true,
   );
-  requestSingleWindowRepaint();
-  await writeCapturedWindowFrame("update_layout");
-  scheduleCapturedWindowFrames("update_layout");
+  await publishLayerMutation("update_layout");
 }
 
 /**
@@ -1458,7 +1698,7 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
   singleLayerSnapshots.delete(message.layerId);
   if (!singleWindow) {
     if (singleLayerSnapshots.size === 0) {
-      writeTransparentFrame("remove_layer_no_window");
+      writeIdleFrame("remove_layer_no_window");
     }
     return;
   }
@@ -1467,10 +1707,15 @@ async function removeLayer(message: { layerId: string }): Promise<void> {
     true,
   );
   if (singleLayerSnapshots.size === 0) {
-    writeTransparentFrame("remove_last_layer");
+    // Nothing is live any more, so the idle picture follows entirely from the
+    // session background and needs no capture. Reset the page to that
+    // background first: a layer may have set an opaque one of its own, and it
+    // outlives the layer (__removeLayer never touches #graphics-background),
+    // so the next paint would put that colour back on the bus.
+    await applySessionBackground();
+    writeIdleFrame("remove_last_layer");
   } else {
-    await writeCapturedWindowFrame("remove_layer");
-    scheduleCapturedWindowFrames("remove_layer");
+    await publishLayerMutation("remove_layer");
   }
   requestSingleWindowRepaint();
 }

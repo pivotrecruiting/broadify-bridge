@@ -196,7 +196,54 @@ describe("GraphicsRuntimeInitService", () => {
     expect(mockAdapter.configure).toHaveBeenCalledWith(persistedConfig);
   });
 
-  it("on persisted config failure falls back to stub and clears store", async () => {
+  it("skips the shared store entirely when usePersistedOutputConfig is false", async () => {
+    // The meeting planes run through the same manager class. Restoring the
+    // shared store from them booted a meeting session config into a fresh
+    // start; combined with persisting it, a meeting session overwrote the
+    // studio output selection (field: startup restored "framebus" -> black).
+    mockGetConfig.mockReturnValue({
+      version: 1,
+      outputKey: "framebus",
+      targets: {},
+      format: { width: 1920, height: 1080, fps: 30 },
+      range: "full",
+      colorspace: "rec709",
+    });
+    const setOutputConfig = jest.fn();
+    const renderer = {
+      initialize: jest.fn().mockResolvedValue(undefined),
+      configureSession: jest.fn().mockResolvedValue(undefined),
+      setAssets: jest.fn().mockResolvedValue(undefined),
+      onError: jest.fn(),
+      renderLayer: jest.fn(),
+      updateValues: jest.fn(),
+      updateLayout: jest.fn(),
+      removeLayer: jest.fn(),
+      shutdown: jest.fn(),
+    };
+
+    const service = new GraphicsRuntimeInitService({
+      usePersistedOutputConfig: false,
+      getRenderer: () => renderer as never,
+      setRenderer: jest.fn(),
+      setOutputAdapter: jest.fn(),
+      setOutputConfig,
+      createStubRenderer: jest.fn(),
+      createStubOutputAdapter: jest.fn(),
+      selectOutputAdapter: jest.fn(),
+      applyFrameBusConfig: jest.fn(),
+      buildRendererConfig: jest.fn(),
+      publishGraphicsError: jest.fn(),
+    });
+
+    await service.initialize();
+
+    expect(renderer.initialize).toHaveBeenCalled();
+    expect(renderer.configureSession).not.toHaveBeenCalled();
+    expect(setOutputConfig).not.toHaveBeenCalled();
+  });
+
+  it("on persisted config failure falls back to stub but KEEPS the store", async () => {
     mockGetConfig.mockReturnValue({
       version: 1,
       outputKey: "stub",
@@ -241,6 +288,13 @@ describe("GraphicsRuntimeInitService", () => {
     );
     expect(setOutputConfig).toHaveBeenCalledWith(null);
     expect(setOutputAdapter).toHaveBeenCalledWith(stubAdapter);
-    expect(mockClear).toHaveBeenCalled();
+    // Regression: the store used to be wiped here, so any transient startup
+    // failure (helper not ready, display not yet enumerated) cost the operator
+    // the output selection permanently - it had to be picked again after every
+    // restart.
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Kept persisted output config")
+    );
   });
 });

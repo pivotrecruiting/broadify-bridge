@@ -6,6 +6,19 @@ const EMBED_PATTERN = /<embed\b/i;
 const LINK_PATTERN = /<link\b/i;
 const JAVASCRIPT_URL_PATTERN = /javascript:/i;
 const EXTERNAL_URL_PATTERN = /(https?:\/\/|data:|file:|ftp:)/i;
+// Inline SVG carries W3C namespace IDENTIFIERS (xmlns="http://www.w3.org/...")
+// that are never fetched - templates with vector logos were rejected as
+// "external URL" over them. Only the xmlns attribute form and only w3.org.
+const W3_NAMESPACE_ATTRIBUTE_PATTERN =
+  /\s(?:xmlns(?::[a-z0-9-]+)?|xml:\w+)\s*=\s*"http:\/\/www\.w3\.org\/[^"]*"/gi;
+// Embedded raster images are how self-contained (AI-generated) templates ship
+// logos. Only base64 raster formats - data:text/html and data:image/svg+xml
+// (which may carry script) stay blocked.
+const SAFE_DATA_IMAGE_PATTERN =
+  /data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]*/gi;
+// Above this much embedded image data the template still works, but every
+// graphics_send hauls it through the relay - warn like the filter warnings do.
+const EMBEDDED_IMAGE_WARN_BYTES = 262_144;
 const IMPORT_PATTERN = /@import/i;
 const STYLE_BREAKOUT_PATTERN = /<\/style>/i;
 const ASSET_URL_PATTERN = /asset:\/\/([a-zA-Z0-9_-]+)/g;
@@ -111,7 +124,16 @@ export function validateTemplate(html: string, css: string): TemplateValidationR
   if (JAVASCRIPT_URL_PATTERN.test(html) || JAVASCRIPT_URL_PATTERN.test(css)) {
     throw new Error("Template contains javascript: URLs");
   }
-  if (EXTERNAL_URL_PATTERN.test(html) || EXTERNAL_URL_PATTERN.test(css)) {
+  // The URL scan runs on a copy with the benign identifier forms removed;
+  // every structural check above ran on the ORIGINAL strings.
+  const scannableHtml = html
+    .replace(W3_NAMESPACE_ATTRIBUTE_PATTERN, " ")
+    .replace(SAFE_DATA_IMAGE_PATTERN, "");
+  const scannableCss = css.replace(SAFE_DATA_IMAGE_PATTERN, "");
+  const htmlUrlMatch =
+    scannableHtml.match(EXTERNAL_URL_PATTERN) ||
+    scannableCss.match(EXTERNAL_URL_PATTERN);
+  if (htmlUrlMatch) {
     throw new Error("Template contains external URLs");
   }
   if (STYLE_BREAKOUT_PATTERN.test(css)) {
@@ -123,6 +145,15 @@ export function validateTemplate(html: string, css: string): TemplateValidationR
 
   const assetIds = new Set<string>();
   const warnings: string[] = [];
+  let embeddedImageBytes = 0;
+  for (const match of `${html}\n${css}`.matchAll(SAFE_DATA_IMAGE_PATTERN)) {
+    embeddedImageBytes += match[0].length;
+  }
+  if (embeddedImageBytes > EMBEDDED_IMAGE_WARN_BYTES) {
+    warnings.push(
+      `Template embeds ${Math.round(embeddedImageBytes / 1024)}KB of base64 image data; every send hauls this through the relay - prefer asset:// references or inline SVG vectors`
+    );
+  }
   const combined = `${html}\n${css}`;
   for (const match of combined.matchAll(ASSET_URL_PATTERN)) {
     if (match[1]) {
