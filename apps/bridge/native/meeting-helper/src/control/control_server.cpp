@@ -325,6 +325,8 @@ std::string handleRpc(const std::string &line,
            << "\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode) << "\","
            << "\"keyer_provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"") << ","
            << "\"gpu_adapter\":" << (state.gpuAdapter.empty() ? "null" : "\"" + jsonEscape(state.gpuAdapter) + "\"") << ","
+           << "\"dml_queue\":" << (state.dmlQueue.empty() ? "null" : "\"" + jsonEscape(state.dmlQueue) + "\"") << ","
+           << "\"dml_path\":" << (state.dmlPath.empty() ? "null" : "\"" + jsonEscape(state.dmlPath) + "\"") << ","
            << "\"compositor_adapter\":" << (state.compositorAdapter.empty() ? "null" : "\"" + jsonEscape(state.compositorAdapter) + "\"") << ","
            << "\"preview_clients\":" << state.previewClientCount << ","
            << "\"vcam_clients\":" << state.vcamClientCount << ","
