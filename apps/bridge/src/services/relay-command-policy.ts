@@ -131,6 +131,8 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_media_list: readOnly("meeting_media_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.media"]),
   meeting_media_get: readOnly("meeting_media_get", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.media"]),
   meeting_media_rendering_status: readOnly("meeting_media_rendering_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.media"]),
+  meeting_content_video_set: sideEffect("meeting_content_video_set", "graphics", 20_000, 16_000, "meeting.graphics", ["meeting.graphics"]),
+  meeting_browser_source_set: sideEffect("meeting_browser_source_set", "graphics", 20_000, 16_000, "meeting.graphics", ["meeting.graphics"]),
   conference_display_start: sideEffect("conference_display_start", "helper_start", 20_000, 16_000, "conference.display", ["conference.display"]),
   conference_display_stop: sideEffect("conference_display_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "conference.display", ["conference.display"]),
   conference_display_status: readOnly("conference_display_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["conference.display"]),

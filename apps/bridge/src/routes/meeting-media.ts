@@ -1,8 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import type { Readable } from "node:stream";
 
-import { meetingMediaService } from "../services/meeting/meeting-media-service.js";
+import {
+  meetingMediaService,
+  videoMimeForFilename,
+} from "../services/meeting/meeting-media-service.js";
 import {
   BACKGROUND_IMAGE_MAX_BYTES,
   storeBackgroundImage,
@@ -14,6 +18,8 @@ const RAW_CONTENT_TYPES = new Set([
   "application/pdf",
   "application/octet-stream",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "video/mp4",
+  "video/webm",
 ]);
 
 const readHeader = (value: string | string[] | undefined): string | null => {
@@ -137,6 +143,57 @@ export async function registerMeetingMediaRoute(
       };
     }
   });
+
+  // Streams a stored video asset with Range support so the meeting graphics
+  // renderer's <video> element can seek. Local-only like every media route.
+  fastify.get(
+    "/meeting/media/assets/:assetId/video",
+    async (request, reply) => {
+      if (!enforceLocalOrToken(request, reply)) {
+        return;
+      }
+      const { assetId } = request.params as { assetId: string };
+      try {
+        const asset = await meetingMediaService.getAsset(assetId);
+        const mime = videoMimeForFilename(asset.filename);
+        if (asset.sourceFormat !== "video" || !mime) {
+          throw new Error("Asset is not a video.");
+        }
+        const { size } = await stat(asset.originalPath);
+        reply.header("Accept-Ranges", "bytes");
+        const rangeHeader = readHeader(request.headers.range);
+        const rangeMatch = rangeHeader
+          ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim())
+          : null;
+        if (rangeMatch && (rangeMatch[1] || rangeMatch[2])) {
+          const start = rangeMatch[1]
+            ? Number.parseInt(rangeMatch[1], 10)
+            : Math.max(0, size - Number.parseInt(rangeMatch[2], 10));
+          const end = rangeMatch[1] && rangeMatch[2]
+            ? Math.min(Number.parseInt(rangeMatch[2], 10), size - 1)
+            : size - 1;
+          if (!Number.isFinite(start) || start >= size || start > end) {
+            reply.code(416).header("Content-Range", `bytes */${size}`);
+            return { success: false, error: "Requested range not satisfiable." };
+          }
+          reply
+            .code(206)
+            .header("Content-Range", `bytes ${start}-${end}/${size}`)
+            .header("Content-Length", end - start + 1)
+            .type(mime);
+          return reply.send(createReadStream(asset.originalPath, { start, end }));
+        }
+        reply.header("Content-Length", size).type(mime);
+        return reply.send(createReadStream(asset.originalPath));
+      } catch (error) {
+        reply.code(404);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
 
   fastify.get(
     "/meeting/media/assets/:assetId/pages/:page/image.png",

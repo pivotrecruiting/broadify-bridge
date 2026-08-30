@@ -74,6 +74,9 @@ logger.info(
 );
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
+// Offscreen pages have no user gestures: internal video/browser layers must
+// be allowed to start playback on their own.
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 if (disableGpu) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
