@@ -69,18 +69,28 @@ const mockTcpConnectError = (error: NodeJS.ErrnoException) => {
 
 const responseWithText = (
   text: string,
-  init?: { ok?: boolean; status?: number; statusText?: string; livescope?: string | null },
+  init?: {
+    ok?: boolean;
+    status?: number;
+    statusText?: string;
+    livescope?: string | null;
+    wwwAuthenticate?: string | null;
+  },
 ) =>
   ({
     ok: init?.ok ?? true,
     status: init?.status ?? 200,
     statusText: init?.statusText ?? "OK",
     headers: {
-      get: jest.fn((name: string) =>
-        name.toLowerCase() === "livescope-status"
-          ? (init?.livescope ?? null)
-          : null,
-      ),
+      get: jest.fn((name: string) => {
+        if (name.toLowerCase() === "livescope-status") {
+          return init?.livescope ?? null;
+        }
+        if (name.toLowerCase() === "www-authenticate") {
+          return init?.wwwAuthenticate ?? null;
+        }
+        return null;
+      }),
     },
     text: jest.fn().mockResolvedValue(text),
   }) as unknown as Response;
@@ -129,12 +139,50 @@ describe("canon-xc-service", () => {
         enabled: true,
         ptzEnabled: true,
       });
+      // A NAMED slot is a stored preset the operator can recall, even when the
+      // camera reports its content flag as disabled (CR-N firmwares deviate
+      // from the 005 spec example here). It must stay visible and triggerable.
       expect(presets[1]).toMatchObject({
         preset: 2,
         label: "Close",
-        enabled: false,
+        enabled: true,
         contentEnabled: false,
       });
+    });
+
+    it("keeps occupied slots whose content value uses unknown vocabulary", () => {
+      // CR-N models not covered by spec 005 may report content as a stored-item
+      // list or other vocabulary instead of enabled/disabled. Anything that is
+      // not an explicit empty-slot marker counts as occupied.
+      const presets = presetsFromCanonInfo("canon-1", {
+        "p.count": "100",
+        "p.3.content": "ptz+focus+exp",
+        "p.7.name.utf8": "Buehne links",
+        "p.7.content": "unknown-value",
+      });
+
+      expect(presets.map((preset) => preset.preset)).toEqual([3, 7]);
+      expect(presets[0]).toMatchObject({ preset: 3, enabled: true });
+      expect(presets[1]).toMatchObject({
+        preset: 7,
+        label: "Buehne links",
+        enabled: true,
+      });
+    });
+
+    it("still drops spec-conform empty slots (content and sub-flags disabled, no name)", () => {
+      const presets = presetsFromCanonInfo("canon-1", {
+        "p.count": "100",
+        "p.1.name.utf8": "home",
+        "p.1.content": "enabled",
+        "p.2.content": "disabled",
+        "p.2.content.ptz": "disabled",
+        "p.2.content.focus": "disabled",
+        "p.3.content": "disabled",
+      });
+
+      expect(presets).toHaveLength(1);
+      expect(presets[0]).toMatchObject({ preset: 1, label: "home" });
     });
 
     it("includes presets in non-contiguous slots (p.count is a count, not a max slot)", () => {
@@ -209,7 +257,7 @@ describe("canon-xc-service", () => {
   });
 
   describe("Canon HTTP commands", () => {
-    it("loads presets from info.cgi?item=p", async () => {
+    it("loads presets and device info from info.cgi?item=s,p", async () => {
       mockReadFile.mockResolvedValueOnce(
         JSON.stringify({
           devices: [
@@ -230,7 +278,9 @@ describe("canon-xc-service", () => {
       );
       global.fetch = jest.fn().mockResolvedValue(
         responseWithText(`
-          p.count:=1
+          s.hardware:=CR-N400
+          s.firmware:=1.1.0
+          p.count:=100
           p.1.name.utf8=Wide
           p.1.content=enabled
         `),
@@ -241,8 +291,16 @@ describe("canon-xc-service", () => {
 
       expect(result.ok).toBe(true);
       expect(result.presets).toHaveLength(1);
+      // s.* fields only arrive with item=s; p.count is the slot capacity (100),
+      // not the number of stored presets - presetCount must reflect what we
+      // actually parsed.
+      expect(result.status).toMatchObject({
+        model: "CR-N400",
+        firmware: "1.1.0",
+        presetCount: 1,
+      });
       expect(global.fetch).toHaveBeenCalledWith(
-        "http://192.168.0.100/-wvhttp-01-/info.cgi?item=p",
+        "http://192.168.0.100/-wvhttp-01-/info.cgi?item=s%2Cp",
         expect.objectContaining({
           method: "GET",
           headers: expect.any(Headers),
@@ -253,6 +311,96 @@ describe("canon-xc-service", () => {
       expect(headers.get("Authorization")).toBe(
         `Basic ${Buffer.from("operator:secret", "utf8").toString("base64")}`,
       );
+    });
+
+    it("answers a Digest challenge and retries the request (CR-N factory default)", async () => {
+      mockReadFile.mockResolvedValueOnce(
+        JSON.stringify({
+          devices: [
+            {
+              deviceId: "canon-1",
+              name: "Canon 1",
+              host: "192.168.0.100",
+              port: 80,
+              protocol: "http",
+              type: "camera",
+              username: "operator",
+              password: "secret",
+              cameraNo: null,
+              enabled: true,
+            },
+          ],
+        }),
+      );
+      const challenge =
+        'Digest realm="camera", nonce="abc123", qop="auth", algorithm=MD5';
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce(
+          responseWithText("Unauthorized", {
+            ok: false,
+            status: 401,
+            statusText: "Unauthorized",
+            wwwAuthenticate: challenge,
+          }),
+        )
+        .mockResolvedValueOnce(
+          responseWithText("p.count:=1\np.1.name.utf8=Wide\np.1.content=enabled"),
+        ) as jest.Mock;
+      const service = new CanonXCService();
+
+      const result = await service.listPresets("canon-1");
+
+      expect(result.ok).toBe(true);
+      expect(result.presets).toHaveLength(1);
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      const retryHeaders = (global.fetch as jest.Mock).mock.calls[1][1]
+        .headers as Headers;
+      const authorization = retryHeaders.get("Authorization") ?? "";
+      expect(authorization).toMatch(/^Digest /);
+      expect(authorization).toContain('username="operator"');
+      expect(authorization).toContain('realm="camera"');
+      expect(authorization).toContain('nonce="abc123"');
+      expect(authorization).toContain('uri="/-wvhttp-01-/info.cgi?item=s%2Cp"');
+      expect(authorization).toContain("qop=auth");
+      expect(authorization).toMatch(/response="[0-9a-f]{32}"/);
+    });
+
+    it("keeps the authentication diagnostic when the Digest retry is rejected too", async () => {
+      mockReadFile.mockResolvedValueOnce(
+        JSON.stringify({
+          devices: [
+            {
+              deviceId: "canon-1",
+              name: "Canon 1",
+              host: "192.168.0.100",
+              port: 80,
+              protocol: "http",
+              type: "camera",
+              username: "operator",
+              password: "wrong",
+              cameraNo: null,
+              enabled: true,
+            },
+          ],
+        }),
+      );
+      global.fetch = jest.fn().mockResolvedValue(
+        responseWithText("Unauthorized", {
+          ok: false,
+          status: 401,
+          statusText: "Unauthorized",
+          wwwAuthenticate: 'Digest realm="camera", nonce="abc123", qop="auth"',
+        }),
+      ) as jest.Mock;
+      const service = new CanonXCService();
+
+      const result = await service.listPresets("canon-1");
+
+      expect(result.ok).toBe(false);
+      expect(result.diagnostic).toMatchObject({ code: "authentication" });
+      // one challenge + one retry, no endless loop
+      expect(global.fetch).toHaveBeenCalledTimes(2);
     });
 
     it("tests a connection without persisting it and preserves its saved password", async () => {
