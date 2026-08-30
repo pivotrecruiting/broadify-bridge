@@ -19,6 +19,14 @@ describe("browser input page animation tolerance", () => {
     expect(html).toContain('classList.add("anim-out")');
   });
 
+  it("emits the .anim-out detection regex intact (no backspace escape)", () => {
+    // The page script is emitted from a template literal: a single \b there
+    // becomes a literal backspace character in the generated source, so the
+    // regex never matches and the exit convention silently stops firing.
+    expect(html).not.toContain("\u0008");
+    expect(html).toContain("/\\.anim-out\\b/");
+  });
+
   it("waits for whatever exit animations actually run, capped at 2s", () => {
     expect(html).toContain("getAnimations({ subtree: true })");
     expect(html).toContain("2000");
