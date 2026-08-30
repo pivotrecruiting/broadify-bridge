@@ -313,7 +313,7 @@ ${applyLayoutRuntimeScript}
           bindings: payload.bindings || {},
         };
 
-        layerState.legacyExitClass = /\.anim-out\b/.test(String(payload.css || ""));
+        layerState.legacyExitClass = /\\.anim-out\\b/.test(String(payload.css || ""));
         layers.set(payload.layerId, layerState);
 
         if (payload.backgroundMode) {
