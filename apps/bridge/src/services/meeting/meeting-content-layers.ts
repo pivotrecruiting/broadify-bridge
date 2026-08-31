@@ -22,6 +22,9 @@ export type MeetingContentGeometryT = {
   height: number;
   /** Z rotation in degrees. */
   rotation: number;
+  /** 3D tilt in degrees (the builder's news style tilts around Y). */
+  rotationX?: number;
+  rotationY?: number;
 };
 
 const escapeHtmlAttribute = (value: string): string =>
@@ -41,10 +44,17 @@ const containerStyle = (geometry: MeetingContentGeometryT): string => {
   const top = Math.round(clamp01(geometry.y) * STAGE_HEIGHT);
   const width = Math.max(1, Math.round(clamp01(geometry.width) * STAGE_WIDTH));
   const height = Math.max(1, Math.round(clamp01(geometry.height) * STAGE_HEIGHT));
-  const rotation = Number.isFinite(geometry.rotation) ? geometry.rotation : 0;
+  const safeDeg = (value: number | undefined): number =>
+    Number.isFinite(value) ? (value as number) : 0;
+  const rotation = safeDeg(geometry.rotation);
+  const rotationX = safeDeg(geometry.rotationX);
+  const rotationY = safeDeg(geometry.rotationY);
+  // perspective() makes the X/Y tilt actually look 3D (news style) - without
+  // it rotateY renders as a flat horizontal squeeze.
   return (
     `position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;` +
-    `transform:rotate(${rotation}deg);transform-origin:center center;`
+    `transform:perspective(1200px) rotateX(${rotationX}deg) rotateY(${rotationY}deg) rotate(${rotation}deg);` +
+    `transform-origin:center center;`
   );
 };
 

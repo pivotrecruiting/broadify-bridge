@@ -705,6 +705,8 @@ export async function handleMeetingCommand(
           width: data.width,
           height: data.height,
           rotation: data.rotation,
+          rotationX: data.rotation_x,
+          rotationY: data.rotation_y,
         },
         { muted: data.muted, loop: data.loop },
       );
@@ -745,6 +747,8 @@ export async function handleMeetingCommand(
         width: data.width,
         height: data.height,
         rotation: data.rotation,
+        rotationX: data.rotation_x,
+        rotationY: data.rotation_y,
       });
       await meetingBackGraphicsManager.sendInternalLayer({
         layerId: MEETING_BROWSER_SOURCE_LAYER_ID,

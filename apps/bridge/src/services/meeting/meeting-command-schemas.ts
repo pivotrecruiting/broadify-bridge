@@ -165,6 +165,8 @@ const meetingContentPlacementFields = {
   width: z.number().min(0).max(1).default(0.35),
   height: z.number().min(0).max(1).default(0.35),
   rotation: z.number().min(-360).max(360).default(0),
+  rotation_x: z.number().min(-360).max(360).default(0),
+  rotation_y: z.number().min(-360).max(360).default(0),
 };
 
 export const MeetingContentVideoSetSchema = z
