@@ -44,6 +44,16 @@ describe("meeting-content-layers", () => {
       expect(html).not.toContain("loop");
     });
 
+    it("applies the news-style 3D tilt (rotationY) with perspective", () => {
+      const html = buildVideoLayerHtml(
+        "http://127.0.0.1:8787/v",
+        { ...pip, rotationY: 28, rotationX: 0 },
+        { muted: false, loop: true },
+      );
+      expect(html).toContain("perspective(1200px)");
+      expect(html).toContain("rotateY(28deg)");
+    });
+
     it("escapes attribute-breaking characters in the URL", () => {
       const html = buildVideoLayerHtml('http://127.0.0.1/x?"<>', pip, {
         muted: false,
