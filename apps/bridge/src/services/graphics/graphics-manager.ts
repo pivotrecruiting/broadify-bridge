@@ -1,6 +1,8 @@
 import type {
+  GraphicsBackgroundModeT,
   GraphicsCategoryT,
   GraphicsFormatT,
+  GraphicsLayoutT,
   GraphicsOutputConfigT,
   GraphicsOutputKeyT,
   GraphicsSendPayloadT,
@@ -577,6 +579,65 @@ export class GraphicsManager {
     this.presetService.maybeStartPresetTimers(
       renderedLayerIds.length > 0 ? renderedLayerIds : [prepared.layerId],
     );
+  }
+
+  /**
+   * Create or replace a bridge-internal layer with bridge-authored HTML.
+   *
+   * SECURITY: this path bypasses the customer-template sanitizer, so it must
+   * NEVER receive user- or relay-supplied HTML. Callers pass structured,
+   * validated inputs (asset ids, vetted URLs) into trusted builders such as
+   * meeting-content-layers.ts and hand only the resulting markup here.
+   *
+   * @param payload Trusted internal layer definition.
+   */
+  async sendInternalLayer(payload: {
+    layerId: string;
+    category: GraphicsCategoryT;
+    html: string;
+    css?: string;
+    zIndex?: number;
+    layout?: GraphicsLayoutT;
+    backgroundMode?: GraphicsBackgroundModeT;
+  }): Promise<void> {
+    await this.initialize();
+    await this.waitForOutputTransition();
+
+    if (!this.outputConfig) {
+      throw new Error("Outputs not configured");
+    }
+
+    const prepared: PreparedLayerT = {
+      layerId: payload.layerId,
+      category: payload.category,
+      backgroundMode: payload.backgroundMode ?? "transparent",
+      layout: payload.layout ?? { x: 0, y: 0, scale: 1 },
+      zIndex: payload.zIndex ?? 0,
+      bundle: {
+        manifest: { render: { ...this.outputConfig.format } },
+        html: payload.html,
+        css: payload.css ?? "",
+        schema: {},
+        defaults: {},
+        assets: [],
+      },
+      values: {},
+      bindings: {
+        cssVariables: {},
+        textContent: {},
+        textTypes: {},
+        animationClass: "",
+      },
+    };
+
+    await renderPreparedLayer({
+      renderer: this.renderer,
+      layers: this.layers,
+      categoryToLayer: this.categoryToLayer,
+      outputFormat: this.outputConfig.format,
+      data: prepared,
+      onRendered: () => undefined,
+    });
   }
 
   /**

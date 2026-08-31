@@ -52,6 +52,8 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_media_list",
   "meeting_media_get",
   "meeting_media_rendering_status",
+  "meeting_content_video_set",
+  "meeting_browser_source_set",
   "conference_display_start",
   "conference_display_stop",
   "conference_display_status",

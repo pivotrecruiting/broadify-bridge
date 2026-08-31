@@ -69,6 +69,12 @@ struct KeyerStatus {
   double probeInferenceMs256 = 0.0;
   bool modelHashOk = false;
   std::string gpuAdapter;
+  // Windows/DirectML diagnostics: which command queue the session uses and
+  // which of the append paths actually attached the provider. Field debugging
+  // of a slow keyer was blind without these (100ms inference on a GTX 1660 Ti
+  // with no way to see adapter/queue/path from a log line).
+  std::string dmlQueue;
+  std::string dmlPath;
   KeyerMetrics metrics;
 };
 
