@@ -28,6 +28,7 @@ import {
 } from "./graphics-pixel-utils.js";
 import { frameBusWriterMatchesTarget } from "./framebus-writer-match.js";
 import { selectFrameBusSeedFrame } from "./framebus-seed-frame.js";
+import { resolvePerfLogging } from "./perf-logging.js";
 import {
   buildIdleFrameBuffer,
   resolveIdleFrameColor,
@@ -42,7 +43,7 @@ const logger = pino({
 const FRAMEBUS_HEADER_SIZE = 128;
 const DEBUG_GRAPHICS = process.env.BRIDGE_GRAPHICS_DEBUG === "1";
 const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
-/** Studio: how long to wait for a paint before capturing as a safety net. */
+/** How long to wait for a paint before capturing as a safety net. */
 const STUDIO_CAPTURE_FALLBACK_MS = 300;
 const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
@@ -73,6 +74,9 @@ logger.info(
 );
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
+// Offscreen pages have no user gestures: internal video/browser layers must
+// be allowed to start playback on their own.
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 if (disableGpu) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
@@ -289,12 +293,13 @@ function normalizeCapturedRgbaFrame(
 }
 
 function logPerfIfNeeded(): void {
-  if (!LOG_PERF) {
+  const decision = resolvePerfLogging(LOG_PERF, isMeetingGraphicsBus());
+  if (!decision.enabled) {
     return;
   }
   const now = Date.now();
   const intervalMs = now - perfLastLogAt;
-  if (intervalMs < 1000) {
+  if (intervalMs < decision.intervalMs) {
     return;
   }
   const paintPerSec = Math.round((perfPaintCount * 1000) / intervalMs);
@@ -1489,24 +1494,19 @@ function isMeetingGraphicsBus(): boolean {
  * @param reason Log tag identifying the trigger.
  */
 async function publishLayerMutation(reason: string): Promise<void> {
+  // One path for studio AND meeting: invalidate() forces a repaint, the paint
+  // handler publishes it, and one fallback capture covers static content that
+  // produces no paint. Meeting used to keep the June capture bursts (one
+  // immediate capturePage plus 120/300/700ms taps) - four full captures per
+  // command, competing with the keyer for the same GPU on every graphics
+  // change. The studio rollback (rc.3) field-proved the paint path; WI-3 of
+  // the August quiet-plan applies it to the meeting planes.
   requestSingleWindowRepaint();
-  if (isMeetingGraphicsBus()) {
-    await writeCapturedWindowFrame(reason);
-  }
   scheduleCapturedWindowFrames(reason);
 }
 
 function scheduleCapturedWindowFrames(reason: string): void {
-  if (!isMeetingGraphicsBus()) {
-    scheduleStudioFallbackCapture(reason);
-    return;
-  }
-  const delaysMs = [120, 300, 700];
-  for (const delayMs of delaysMs) {
-    setTimeout(() => {
-      void writeCapturedWindowFrame(`${reason}_${delayMs}ms`);
-    }, delayMs);
-  }
+  scheduleStudioFallbackCapture(reason);
 }
 
 /**

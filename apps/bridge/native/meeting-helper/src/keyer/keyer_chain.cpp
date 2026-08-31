@@ -1,3 +1,4 @@
+#include <sstream>
 #include "keyer/keyer_chain.h"
 
 #include <cstdlib>
@@ -266,10 +267,26 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   std::lock_guard<std::mutex> lock(state.mutex);
   static std::string lastLoggedProvider;
   static std::string lastLoggedFallbackReason;
-  if (status.provider != lastLoggedProvider) {
-    lastLoggedProvider = status.provider;
-    emitHelperEvent("{\"type\":\"keyer_provider\",\"provider\":\"" +
-                    jsonEscape(status.provider) + "\"}");
+  // Signature includes adapter/queue/path and the (rounded) warmup probe, so
+  // the one keyer_provider line in the events log answers WHICH silicon runs
+  // the model, HOW it was attached, and what a session-build inference costs.
+  const std::string providerSignature =
+      status.provider + '|' + status.gpuAdapter + '|' + status.dmlQueue + '|' +
+      status.dmlPath + '|' +
+      std::to_string(static_cast<long long>(status.probeInferenceMs));
+  if (providerSignature != lastLoggedProvider) {
+    lastLoggedProvider = providerSignature;
+    std::ostringstream providerEvent;
+    providerEvent << "{\"type\":\"keyer_provider\",\"provider\":\""
+                  << jsonEscape(status.provider) << "\",\"gpu_adapter\":\""
+                  << jsonEscape(status.gpuAdapter) << "\",\"dml_queue\":\""
+                  << jsonEscape(status.dmlQueue) << "\",\"dml_path\":\""
+                  << jsonEscape(status.dmlPath) << "\",\"probe_ms\":"
+                  << static_cast<long long>(status.probeInferenceMs)
+                  << ",\"probe_ms_512\":"
+                  << static_cast<long long>(status.probeInferenceMs512)
+                  << "}";
+    emitHelperEvent(providerEvent.str());
   }
   if (status.fallbackReason != lastLoggedFallbackReason) {
     lastLoggedFallbackReason = status.fallbackReason;
@@ -283,6 +300,8 @@ void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
   state.activeQualityMode = status.qualityMode;
   state.provider = status.provider;
   state.gpuAdapter = status.gpuAdapter;
+  state.dmlQueue = status.dmlQueue;
+  state.dmlPath = status.dmlPath;
   state.modelPath = status.modelPath;
   state.inferenceMs = status.inferenceMs;
   state.keyerDegraded =

@@ -21,7 +21,7 @@ export type MeetingMediaRenderStatusT =
   | "ready"
   | "error";
 
-export type MeetingMediaSourceFormatT = "pptx" | "pdf";
+export type MeetingMediaSourceFormatT = "pptx" | "pdf" | "video";
 
 export type MeetingMediaRuntimeStatusT =
   | "ready"
@@ -92,8 +92,22 @@ const inferSourceFormat = (filename: string): MeetingMediaSourceFormatT => {
   if (suffix === ".pdf") {
     return "pdf";
   }
-  throw new Error("Only PPTX and PDF meeting content files are supported.");
+  if (suffix === ".mp4" || suffix === ".webm") {
+    return "video";
+  }
+  throw new Error(
+    "Only PPTX, PDF, MP4, and WebM meeting content files are supported.",
+  );
 };
+
+const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+};
+
+/** MIME type for a stored video asset, derived from its file extension. */
+export const videoMimeForFilename = (filename: string): string | null =>
+  VIDEO_MIME_BY_EXTENSION[extname(filename).toLowerCase()] ?? null;
 
 const getRuntimeDir = (): string => {
   try {
@@ -105,11 +119,25 @@ const getRuntimeDir = (): string => {
 
 const metadataPath = (assetDir: string): string => join(assetDir, "metadata.json");
 
-const resolveBundledLibreOffice = (): string | null => {
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
-    return null;
-  }
+/** Well-known system install locations of LibreOffice per platform. */
+const SYSTEM_LIBREOFFICE_CANDIDATES: Record<string, string[]> = {
+  darwin: ["/Applications/LibreOffice.app/Contents/MacOS/soffice"],
+  win32: [
+    "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+    "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
+  ],
+  linux: ["/usr/bin/soffice", "/usr/local/bin/soffice"],
+};
 
+/**
+ * Resolves the soffice binary used for PPTX->PDF conversion, in priority
+ * order: explicit binary override, dev runtime dir, bundled runtime
+ * (macOS Apple Silicon only), then a system-installed LibreOffice. The
+ * system fallback makes PPTX work on Windows and Intel Macs whenever
+ * LibreOffice is installed; the bundled runtime keeps working unchanged.
+ */
+const resolveLibreOffice = (): string | null => {
+  const configuredBinary = process.env.BROADIFY_SOFFICE_PATH;
   const configuredRuntimeRoot = process.env.BROADIFY_PRESENTATION_RUNTIME_DIR;
   const runtimeRoot = configuredRuntimeRoot
     ? isAbsolute(configuredRuntimeRoot)
@@ -117,21 +145,19 @@ const resolveBundledLibreOffice = (): string | null => {
       : resolve(configuredRuntimeRoot)
     : null;
   const candidates = [
+    configuredBinary || null,
     runtimeRoot ? join(runtimeRoot, "LibreOffice.app", "Contents", "MacOS", "soffice") : null,
-    process.resourcesPath
+    process.platform === "darwin" && process.arch === "arm64" && process.resourcesPath
       ? join(process.resourcesPath, BUNDLED_LIBREOFFICE_RELATIVE_PATH)
       : null,
+    ...(SYSTEM_LIBREOFFICE_CANDIDATES[process.platform] ?? []),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 };
 
-const getRuntimeStatus = (): MeetingMediaRuntimeStatusT => {
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
-    return "unsupported_platform";
-  }
-  return resolveBundledLibreOffice() ? "ready" : "unavailable";
-};
+const getRuntimeStatus = (): MeetingMediaRuntimeStatusT =>
+  resolveLibreOffice() ? "ready" : "unavailable";
 
 const runProcess = (
   command: string,
@@ -299,15 +325,25 @@ class MeetingMediaService {
     const logger = getLogger();
     try {
       let asset = await this.getAsset(assetId);
+      // Video files need no rendering: the meeting graphics renderer plays
+      // them directly. Mark them ready as soon as the upload is validated.
+      if (asset.sourceFormat === "video") {
+        await this.updateAsset(asset, {
+          renderStatus: "ready",
+          renderMessage: null,
+          pages: [],
+          pageCount: 0,
+        });
+        logger.info(`[MeetingMedia] Video asset ready ${asset.assetId}`);
+        return;
+      }
       const runtimeStatus = getRuntimeStatus();
-      // Only PPTX needs the bundled presentation runtime (LibreOffice) to
-      // convert to PDF first. PDF is rendered directly by pdf.js + @napi-rs/canvas,
+      // Only PPTX needs LibreOffice (bundled or system-installed) to convert
+      // to PDF first. PDF is rendered directly by pdf.js + @napi-rs/canvas,
       // which are cross-platform, so a PDF upload works on every platform.
       if (asset.sourceFormat === "pptx" && runtimeStatus !== "ready") {
         throw new Error(
-          runtimeStatus === "unsupported_platform"
-            ? "PPTX conversion needs the bundled presentation runtime (LibreOffice), which is currently macOS Apple Silicon only. Export the slides to PDF and upload that instead."
-            : "The bundled presentation runtime is unavailable.",
+          "PPTX conversion needs LibreOffice. Install LibreOffice (libreoffice.org) or export the slides to PDF and upload that instead.",
         );
       }
       asset = await this.updateAsset(asset, {
@@ -375,9 +411,9 @@ class MeetingMediaService {
   }
 
   private async convertPptxToPdf(asset: MeetingMediaAssetT): Promise<string> {
-    const libreOffice = resolveBundledLibreOffice();
+    const libreOffice = resolveLibreOffice();
     if (!libreOffice) {
-      throw new Error("The bundled PowerPoint conversion runtime is unavailable.");
+      throw new Error("No LibreOffice installation was found for PPTX conversion.");
     }
     const outDir = join(dirname(asset.originalPath), "converted");
     const profileDir = join(dirname(asset.originalPath), "libreoffice-profile");

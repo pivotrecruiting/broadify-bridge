@@ -123,20 +123,32 @@ struct DeviceEntry {
   std::string label;     // friendly name
 };
 
+struct EnumerationOutcome {
+  std::vector<DeviceEntry> devices;
+  HRESULT attributesHr = S_OK;
+  HRESULT enumHr = S_OK;
+};
+
 // Enumerate video capture devices. Requires COM + MFStartup on the caller.
-std::vector<DeviceEntry> enumerateDevices() {
-  std::vector<DeviceEntry> result;
+// Failures used to collapse into a silent empty list, which made "no camera
+// connected" and "enumeration broken" indistinguishable in the field - the
+// HRESULTs are reported so listCameras() can retry and emit diagnostics.
+EnumerationOutcome enumerateDevices() {
+  EnumerationOutcome outcome;
+  std::vector<DeviceEntry> &result = outcome.devices;
   ComPtr<IMFAttributes> attributes;
-  if (FAILED(MFCreateAttributes(&attributes, 1))) {
-    return result;
+  outcome.attributesHr = MFCreateAttributes(&attributes, 1);
+  if (FAILED(outcome.attributesHr)) {
+    return outcome;
   }
   attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
                       MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
 
   IMFActivate **devices = nullptr;
   UINT32 count = 0;
-  if (FAILED(MFEnumDeviceSources(attributes.Get(), &devices, &count))) {
-    return result;
+  outcome.enumHr = MFEnumDeviceSources(attributes.Get(), &devices, &count);
+  if (FAILED(outcome.enumHr)) {
+    return outcome;
   }
   for (UINT32 i = 0; i < count; i++) {
     DeviceEntry entry;
@@ -161,7 +173,7 @@ std::vector<DeviceEntry> enumerateDevices() {
     devices[i]->Release();
   }
   CoTaskMemFree(devices);
-  return result;
+  return outcome;
 }
 
 std::string guidToString(const GUID &guid) {
@@ -855,9 +867,63 @@ class MediaFoundationCameraSource final : public CameraSource {
     }
   }
 
+  /**
+   * Emit one camera_enumeration event whenever the outcome signature
+   * (device count + HRESULTs) changes - visible in meeting-helper-events.log
+   * so a field machine can show WHY a list was empty instead of just that it
+   * was.
+   */
+  void emitEnumerationDiagnosticsIfChanged(const EnumerationOutcome &outcome,
+                                           int attempts) {
+    std::ostringstream signature;
+    signature << outcome.devices.size() << ':' << std::hex
+              << static_cast<unsigned long>(outcome.enumHr) << ':'
+              << static_cast<unsigned long>(outcome.attributesHr);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (signature.str() == lastEnumerationSignature_) {
+        return;
+      }
+      lastEnumerationSignature_ = signature.str();
+    }
+    std::ostringstream event;
+    event << "{\"type\":\"camera_enumeration\",\"count\":"
+          << outcome.devices.size() << ",\"attempts\":" << attempts
+          << ",\"enum_hr\":\"0x" << std::hex << std::setw(8)
+          << std::setfill('0') << static_cast<unsigned long>(outcome.enumHr)
+          << "\",\"attributes_hr\":\"0x" << std::setw(8)
+          << static_cast<unsigned long>(outcome.attributesHr) << "\"}";
+    emitHelperEvent(event.str());
+  }
+
   std::vector<CameraInfo> listCameras() override {
     ComApartment com;
-    const std::vector<DeviceEntry> devices = enumerateDevices();
+    // Retry an empty/failed enumeration: right after installation the very
+    // first list races driver/Defender warm-up, and one silent empty answer
+    // aborted the webapp autostart with "no camera". Retries are skipped once
+    // a full round has settled on empty (machines without a camera must not
+    // pay the wait on every poll); any non-empty result re-arms them.
+    EnumerationOutcome outcome = enumerateDevices();
+    int attempts = 1;
+    const bool retryWorthwhile = [&]() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      return !enumerationSettledEmpty_;
+    }();
+    if (retryWorthwhile) {
+      while (attempts < 3 &&
+             (FAILED(outcome.enumHr) || FAILED(outcome.attributesHr) ||
+              outcome.devices.empty())) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        outcome = enumerateDevices();
+        attempts += 1;
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      enumerationSettledEmpty_ = outcome.devices.empty();
+    }
+    emitEnumerationDiagnosticsIfChanged(outcome, attempts);
+    const std::vector<DeviceEntry> &devices = outcome.devices;
 
     std::vector<CameraInfo> cameras;
     int index = 0;
@@ -1304,6 +1370,9 @@ class MediaFoundationCameraSource final : public CameraSource {
   // Windows has no camera prompt; startSet() flips this to "denied" only if the
   // global privacy setting blocks opening a device.
   std::string permissionStatus_ = "authorized";
+  // Enumeration retry/diagnostics state (guarded by mutex_).
+  bool enumerationSettledEmpty_ = false;
+  std::string lastEnumerationSignature_;
   // One capture session per open camera index. Conference mode holds several and
   // cuts between them by moving programIndex_ (no reopen); meeting holds one.
   std::map<int, std::shared_ptr<MfCaptureSession>> sessions_;

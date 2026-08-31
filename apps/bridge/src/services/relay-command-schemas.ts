@@ -95,14 +95,16 @@ export const StreamDeckActionResultSchema = z
 /**
  * Parse a relay payload with a schema and normalize errors.
  */
-export const parseRelayPayload = <T>(
-  schema: z.ZodType<T>,
+export const parseRelayPayload = <S extends z.ZodTypeAny>(
+  schema: S,
   payload: unknown,
   errorMessage: string
-): T => {
+): z.output<S> => {
   const parsed = schema.safeParse(payload);
   if (!parsed.success) {
     throw new Error(errorMessage);
   }
-  return parsed.data;
+  // Typed via z.output so schemas with .default() fields (input optional,
+  // output required) infer their parsed shape correctly.
+  return parsed.data as z.output<S>;
 };

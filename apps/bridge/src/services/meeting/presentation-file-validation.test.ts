@@ -64,4 +64,26 @@ describe("matchesPresentationFileSignature", () => {
     await expect(matchesPresentationFileSignature(validPath, "pptx")).resolves.toBe(true);
     await expect(matchesPresentationFileSignature(invalidPath, "pptx")).resolves.toBe(false);
   });
+
+  it("accepts MP4 (ftyp) and WebM (EBML) video signatures, rejects renamed text", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "broadify-presentation-"));
+    const mp4Path = join(directory, "clip.mp4");
+    const webmPath = join(directory, "clip.webm");
+    const fakePath = join(directory, "fake.mp4");
+    const mp4Header = Buffer.concat([
+      Buffer.from([0, 0, 0, 0x20]),
+      Buffer.from("ftypisom-rest-of-file", "ascii"),
+    ]);
+    const webmHeader = Buffer.concat([
+      Buffer.from([0x1a, 0x45, 0xdf, 0xa3]),
+      Buffer.alloc(16, 1),
+    ]);
+    await writeFile(mp4Path, mp4Header);
+    await writeFile(webmPath, webmHeader);
+    await writeFile(fakePath, "definitely not a video");
+
+    await expect(matchesPresentationFileSignature(mp4Path, "video")).resolves.toBe(true);
+    await expect(matchesPresentationFileSignature(webmPath, "video")).resolves.toBe(true);
+    await expect(matchesPresentationFileSignature(fakePath, "video")).resolves.toBe(false);
+  });
 });

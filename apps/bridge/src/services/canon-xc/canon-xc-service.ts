@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -171,6 +172,16 @@ const isEnabled = (value: string | undefined, fallback = false): boolean => {
   );
 };
 
+const isExplicitlyDisabled = (value: string | undefined): boolean => {
+  if (value == null) {
+    return false;
+  }
+
+  return ["disabled", "disable", "off", "0", "false", "no", "none"].includes(
+    value.trim().toLowerCase(),
+  );
+};
+
 /**
  * Builds UI-ready Canon presets from XC info.cgi preset fields.
  */
@@ -219,10 +230,21 @@ export function presetsFromCanonInfo(
       continue;
     }
 
-    const contentEnabled = isEnabled(content, Boolean(name || hasContentFields));
-    if (!contentEnabled && !name) {
+    // Occupied vs. empty slot: spec 005 marks empty slots with content:=disabled
+    // (and disabled sub-flags, no name). Some CR-N firmwares deviate from the
+    // spec example and report other content vocabulary for stored presets, so
+    // anything that is not an explicit empty-slot marker counts as occupied.
+    // A named slot is always a stored preset the operator can recall.
+    const subContentEnabled = [ptz, focus, exp, wb, imageStabilizer, cp, lenscorrect].some(
+      (value) => isEnabled(value),
+    );
+    const emptySlot =
+      !name && !subContentEnabled && (content == null || isExplicitlyDisabled(content));
+    if (emptySlot) {
       continue;
     }
+
+    const contentEnabled = !isExplicitlyDisabled(content);
 
     presets.push({
       id: `${deviceId}:preset:${presetNo}`,
@@ -231,7 +253,9 @@ export function presetsFromCanonInfo(
       presetNo,
       label: name || `Preset ${presetNo}`,
       name: name || `Preset ${presetNo}`,
-      enabled: contentEnabled,
+      // Every slot that survives the empty-slot filter is a stored preset and
+      // must be recallable from the UI, regardless of its content flag.
+      enabled: true,
       contentEnabled,
       ptzEnabled: isEnabled(ptz, contentEnabled),
       focusEnabled: isEnabled(focus, contentEnabled),
@@ -430,13 +454,15 @@ export class CanonXCService {
     device: CanonXCDeviceT,
     successMessage?: string,
   ): Promise<CanonXCResponseT> {
-    const response = await this.request(device, "info.cgi", { item: "p" });
+    // item=s,p: s.* carries model/firmware and only arrives when requested.
+    const response = await this.request(device, "info.cgi", { item: "s,p" });
     if (!response.ok) {
       return this.errorResponse(device, "Could not load Canon XC presets.", response);
     }
 
     const info = parseCanonInfo(response.text);
     const presets = presetsFromCanonInfo(device.deviceId, info);
+    this.logPresetParseDiagnostics(device, info, presets);
     return {
       ok: true,
       message: successMessage ?? `Loaded ${presets.length} Canon XC presets.`,
@@ -467,16 +493,45 @@ export class CanonXCService {
     presets: CanonXCPresetT[],
     connected: boolean,
   ): CanonXCStatusT {
-    const presetCount = Number.parseInt(info["p.count"] ?? `${presets.length}`, 10);
+    // p.count is the camera's slot capacity (always 100 on CR-N), not the
+    // number of stored presets - report what we actually parsed.
     return {
       connected,
       host: device.host,
       model: info["s.hardware"] ?? info["s.model"] ?? info["s.product"] ?? null,
       firmware: info["s.firmware"] ?? null,
-      presetCount: Number.isFinite(presetCount) ? presetCount : presets.length,
+      presetCount: presets.length,
       presetsReady: presets.length > 0,
       lastError: null,
     };
+  }
+
+  /**
+   * Logs raw preset keys when suspiciously few presets were parsed, so a
+   * firmware that deviates from spec 005 shows up in one field log line
+   * instead of another guessing round.
+   */
+  private logPresetParseDiagnostics(
+    device: CanonXCDeviceT,
+    info: Record<string, string>,
+    presets: CanonXCPresetT[],
+  ): void {
+    if (presets.length > 1) {
+      return;
+    }
+
+    const presetKeys = Object.keys(info).filter((key) => key.startsWith("p."));
+    getBridgeContext().logger?.info?.(
+      JSON.stringify({
+        component: "canon-xc",
+        message: "[CanonXC] Preset parse diagnostics",
+        host: device.host,
+        parsedPresets: presets.length,
+        reportedCount: info["p.count"] ?? null,
+        presetKeyCount: presetKeys.length,
+        presetKeySample: presetKeys.slice(0, 40),
+      }),
+    );
   }
 
   private errorResponse(
@@ -615,11 +670,34 @@ export class CanonXCService {
         return result;
       }
 
-      const response = await fetch(this.buildUrl(device, command, params), {
+      const url = this.buildUrl(device, command, params);
+      let response = await fetch(url, {
         method: "GET",
         headers,
         signal: controller.signal,
       });
+
+      // CR-N cameras default to Digest authentication, which fetch cannot
+      // negotiate on its own: answer the 401 challenge once (RFC 7616).
+      if (response.status === 401 && device.username && device.password) {
+        const digestHeader = this.buildDigestAuthorization(
+          device,
+          "GET",
+          url,
+          response.headers.get("www-authenticate"),
+        );
+        if (digestHeader) {
+          await response.text().catch(() => undefined);
+          const retryHeaders = new Headers(headers);
+          retryHeaders.set("Authorization", digestHeader);
+          response = await fetch(url, {
+            method: "GET",
+            headers: retryHeaders,
+            signal: controller.signal,
+          });
+        }
+      }
+
       const text = await response.text();
       const livescopeStatus = response.headers.get("livescope-status");
       const livescopeOk =
@@ -660,6 +738,80 @@ export class CanonXCService {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  /**
+   * Builds an RFC 7616 Digest Authorization header from a 401 challenge.
+   * Returns null when the challenge is absent or not a Digest scheme.
+   */
+  private buildDigestAuthorization(
+    device: CanonXCDeviceT,
+    method: string,
+    requestUrl: string,
+    wwwAuthenticate: string | null,
+  ): string | null {
+    if (!wwwAuthenticate || !/^\s*digest\b/i.test(wwwAuthenticate)) {
+      return null;
+    }
+    if (!device.username || !device.password) {
+      return null;
+    }
+
+    const challenge: Record<string, string> = {};
+    const paramPattern = /(\w+)=(?:"([^"]*)"|([^\s,]+))/g;
+    for (
+      let match = paramPattern.exec(wwwAuthenticate);
+      match;
+      match = paramPattern.exec(wwwAuthenticate)
+    ) {
+      challenge[match[1].toLowerCase()] = match[2] ?? match[3];
+    }
+    const realm = challenge.realm ?? "";
+    const nonce = challenge.nonce;
+    if (!nonce) {
+      return null;
+    }
+
+    const algorithm = (challenge.algorithm ?? "MD5").toUpperCase();
+    const hashName = algorithm.startsWith("SHA-256") ? "sha256" : "md5";
+    const hash = (value: string): string =>
+      createHash(hashName).update(value, "utf8").digest("hex");
+
+    const parsedUrl = new URL(requestUrl);
+    const uri = `${parsedUrl.pathname}${parsedUrl.search}`;
+    const cnonce = randomBytes(8).toString("hex");
+    const nc = "00000001";
+    const qop = (challenge.qop ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .includes("auth")
+      ? "auth"
+      : null;
+
+    let ha1 = hash(`${device.username}:${realm}:${device.password}`);
+    if (algorithm.endsWith("-SESS")) {
+      ha1 = hash(`${ha1}:${nonce}:${cnonce}`);
+    }
+    const ha2 = hash(`${method}:${uri}`);
+    const response = qop
+      ? hash(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
+      : hash(`${ha1}:${nonce}:${ha2}`);
+
+    const parts = [
+      `username="${device.username}"`,
+      `realm="${realm}"`,
+      `nonce="${nonce}"`,
+      `uri="${uri}"`,
+      `algorithm=${algorithm}`,
+      `response="${response}"`,
+    ];
+    if (qop) {
+      parts.push(`qop=${qop}`, `nc=${nc}`, `cnonce="${cnonce}"`);
+    }
+    if (challenge.opaque) {
+      parts.push(`opaque="${challenge.opaque}"`);
+    }
+    return `Digest ${parts.join(", ")}`;
   }
 
   private preflightTcpConnection(

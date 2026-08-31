@@ -148,9 +148,51 @@ export const MeetingMediaFetchSchema = z
       .string()
       .min(1)
       .max(200)
-      .regex(/\.(pdf|pptx)$/i, "Only .pdf or .pptx files are supported."),
+      .regex(
+        /\.(pdf|pptx|mp4|webm)$/i,
+        "Only .pdf, .pptx, .mp4, or .webm files are supported.",
+      ),
   })
   .strict();
+
+// Shared placement fields for bridge-internal content layers (video files
+// and browser sources) on the meeting BACK graphics plane. Fractions of the
+// 1920x1080 stage; ignored in fullscreen mode.
+const meetingContentPlacementFields = {
+  mode: z.enum(["pip", "fullscreen"]).default("pip"),
+  x: z.number().min(0).max(1).default(0.6),
+  y: z.number().min(0).max(1).default(0.6),
+  width: z.number().min(0).max(1).default(0.35),
+  height: z.number().min(0).max(1).default(0.35),
+  rotation: z.number().min(-360).max(360).default(0),
+  rotation_x: z.number().min(-360).max(360).default(0),
+  rotation_y: z.number().min(-360).max(360).default(0),
+};
+
+export const MeetingContentVideoSetSchema = z
+  .object({
+    // null stops playback and removes the layer.
+    asset_id: z.string().min(1).max(120).nullable(),
+    muted: z.boolean().default(false),
+    loop: z.boolean().default(true),
+    ...meetingContentPlacementFields,
+  })
+  .strict();
+
+export const MeetingBrowserSourceSetSchema = z
+  .object({
+    // null removes the browser source layer.
+    url: z.string().url().max(2048).nullable(),
+    ...meetingContentPlacementFields,
+  })
+  .strict();
+
+export type MeetingContentVideoSetPayloadT = z.output<
+  typeof MeetingContentVideoSetSchema
+>;
+export type MeetingBrowserSourceSetPayloadT = z.output<
+  typeof MeetingBrowserSourceSetSchema
+>;
 
 export const MeetingMediaGetSchema = z
   .object({

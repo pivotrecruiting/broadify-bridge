@@ -2650,19 +2650,21 @@ describe("electron-renderer-entry", () => {
     expect(captureReasons()).toEqual(["create_layer_fallback"]);
   });
 
-  it("meeting planes keep the capture bursts unchanged", async () => {
-    // Parity guard. The meeting compositor has consumed this behaviour since
-    // the capture path was introduced; the rollback is studio-only.
+  it("meeting planes publish through the paint path like studio", async () => {
+    // Deliberate contract change (WI-3 of the quiet plan): the June capture
+    // bursts cost four full capturePage calls per graphics command on the
+    // meeting planes, competing with the keyer for the same GPU. The paint
+    // path was field-proven by the studio rollback; meeting now follows.
     const { firePaint, captureReasons } = await bootWithOneLayer("bfy-meet-gfx-back");
     firePaint();
-    await new Promise((r) => setTimeout(r, 900));
+    await new Promise((r) => setTimeout(r, 500));
+    expect(captureReasons()).toEqual([]);
+  });
 
-    expect(captureReasons()).toEqual([
-      "create_layer",
-      "create_layer_120ms",
-      "create_layer_300ms",
-      "create_layer_700ms",
-    ]);
+  it("meeting planes still capture once as a safety net without a paint", async () => {
+    const { captureReasons } = await bootWithOneLayer("bfy-meet-gfx-back");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(captureReasons()).toEqual(["create_layer_fallback"]);
   });
 
   it("studio: drops a late paint after the last layer was removed", async () => {

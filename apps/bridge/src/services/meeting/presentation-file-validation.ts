@@ -106,6 +106,25 @@ const matchesPptxSignature = async (file: FileHandle, fileSize: number): Promise
   return containsRequiredPptxEntries(centralDirectory, entryCount);
 };
 
+const MP4_FTYP_SIGNATURE = Buffer.from("ftyp", "ascii");
+const WEBM_EBML_SIGNATURE = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
+
+const matchesVideoSignature = async (
+  file: FileHandle,
+  fileSize: number,
+): Promise<boolean> => {
+  if (fileSize < 12) {
+    return false;
+  }
+  const header = await readExactly(file, 0, 12);
+  // MP4/ISO-BMFF: box size (4 bytes) followed by "ftyp".
+  if (header.subarray(4, 8).equals(MP4_FTYP_SIGNATURE)) {
+    return true;
+  }
+  // WebM/Matroska: EBML magic at offset 0.
+  return header.subarray(0, 4).equals(WEBM_EBML_SIGNATURE);
+};
+
 export const matchesPresentationFileSignature = async (
   filePath: string,
   sourceFormat: MeetingMediaSourceFormatT,
@@ -118,6 +137,9 @@ export const matchesPresentationFileSignature = async (
         return false;
       }
       return (await readExactly(file, 0, PDF_SIGNATURE.length)).equals(PDF_SIGNATURE);
+    }
+    if (sourceFormat === "video") {
+      return matchesVideoSignature(file, size);
     }
     return await matchesPptxSignature(file, size);
   } finally {

@@ -134,6 +134,8 @@ struct MeetingState {
   // Which compositor produced the last program frame: "cpu", "d3d11", "metal".
   std::string compositorBackend = "cpu";
   std::string gpuAdapter;
+  std::string dmlQueue;
+  std::string dmlPath;
   std::string compositorAdapter;
   bool staleMaskActive = false;
   std::string provider;

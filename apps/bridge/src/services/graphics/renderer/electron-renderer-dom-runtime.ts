@@ -329,7 +329,7 @@ ${applyLayoutRuntimeScript}
         };
         // Foreign-convention detection: a template that authors its own exit
         // on an .anim-out rule expects someone to add that class on removal.
-        layerState.legacyExitClass = /\.anim-out\b/.test(String(payload.css || ""));
+        layerState.legacyExitClass = /\\.anim-out\\b/.test(String(payload.css || ""));
         layers.set(payload.layerId, layerState);
 
         if (payload.backgroundMode) {

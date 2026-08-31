@@ -9,7 +9,9 @@ import {
   ConferenceDisplayStartSchema,
   MeetingCameraSelectionSchema,
   MeetingBackgroundImageFetchSchema,
+  MeetingBrowserSourceSetSchema,
   MeetingCallControlSchema,
+  MeetingContentVideoSetSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
   MeetingKeyerConfigureSchema,
@@ -20,7 +22,18 @@ import {
   MeetingProgramUpdateSchema,
   MeetingRecordingStartSchema,
 } from "./meeting-command-schemas.js";
-import { meetingMediaService } from "./meeting-media-service.js";
+import {
+  meetingMediaService,
+  videoMimeForFilename,
+} from "./meeting-media-service.js";
+import {
+  MEETING_BROWSER_SOURCE_LAYER_ID,
+  MEETING_CONTENT_VIDEO_LAYER_ID,
+  buildBrowserSourceLayerHtml,
+  buildVideoLayerHtml,
+  validateBrowserSourceUrl,
+} from "./meeting-content-layers.js";
+import { getBridgeContext } from "../bridge-context.js";
 import { openGuardedDownload } from "./media-download.js";
 import { fetchBackgroundImage } from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
@@ -653,6 +666,97 @@ export async function handleMeetingCommand(
         success: true,
         data: await meetingMediaService.renderingStatus(),
       };
+    }
+
+    // Bridge-internal content layers on the meeting BACK graphics plane.
+    // The handler only accepts structured inputs (asset id / vetted URL);
+    // the HTML is bridge-authored in meeting-content-layers.ts.
+    case "meeting_content_video_set": {
+      const data = parseRelayPayload(
+        MeetingContentVideoSetSchema,
+        payload ?? {},
+        "Invalid payload for meeting_content_video_set",
+      );
+      if (data.asset_id === null) {
+        await meetingBackGraphicsManager.removeLayer({
+          layerId: MEETING_CONTENT_VIDEO_LAYER_ID,
+        });
+        return { success: true, data: { active: false } };
+      }
+      const asset = await meetingMediaService.getAsset(data.asset_id);
+      const mime = videoMimeForFilename(asset.filename);
+      if (asset.sourceFormat !== "video" || !mime) {
+        return { success: false, error: "Asset is not a video file." };
+      }
+      if (asset.renderStatus !== "ready") {
+        return { success: false, error: "Video asset is not ready yet." };
+      }
+      const { serverPort } = getBridgeContext();
+      if (!serverPort) {
+        return { success: false, error: "Bridge server port is unavailable." };
+      }
+      const videoUrl = `http://127.0.0.1:${serverPort}/meeting/media/assets/${asset.assetId}/video`;
+      const html = buildVideoLayerHtml(
+        videoUrl,
+        {
+          mode: data.mode,
+          x: data.x,
+          y: data.y,
+          width: data.width,
+          height: data.height,
+          rotation: data.rotation,
+          rotationX: data.rotation_x,
+          rotationY: data.rotation_y,
+        },
+        { muted: data.muted, loop: data.loop },
+      );
+      await meetingBackGraphicsManager.sendInternalLayer({
+        layerId: MEETING_CONTENT_VIDEO_LAYER_ID,
+        category: "slides",
+        html,
+        zIndex: 10,
+      });
+      return { success: true, data: { active: true, assetId: asset.assetId } };
+    }
+
+    case "meeting_browser_source_set": {
+      const data = parseRelayPayload(
+        MeetingBrowserSourceSetSchema,
+        payload ?? {},
+        "Invalid payload for meeting_browser_source_set",
+      );
+      if (data.url === null) {
+        await meetingBackGraphicsManager.removeLayer({
+          layerId: MEETING_BROWSER_SOURCE_LAYER_ID,
+        });
+        return { success: true, data: { active: false } };
+      }
+      let validatedUrl: string;
+      try {
+        validatedUrl = validateBrowserSourceUrl(data.url);
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      const html = buildBrowserSourceLayerHtml(validatedUrl, {
+        mode: data.mode,
+        x: data.x,
+        y: data.y,
+        width: data.width,
+        height: data.height,
+        rotation: data.rotation,
+        rotationX: data.rotation_x,
+        rotationY: data.rotation_y,
+      });
+      await meetingBackGraphicsManager.sendInternalLayer({
+        layerId: MEETING_BROWSER_SOURCE_LAYER_ID,
+        category: "slides",
+        html,
+        zIndex: 11,
+      });
+      return { success: true, data: { active: true, url: validatedUrl } };
     }
 
     case "meeting_call_control": {

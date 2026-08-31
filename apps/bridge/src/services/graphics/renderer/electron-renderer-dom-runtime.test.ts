@@ -24,6 +24,14 @@ describe("foreign template animation tolerance", () => {
     expect(script).toContain('classList.remove("anim-in")');
   });
 
+  it("emits the .anim-out detection regex intact (no backspace escape)", () => {
+    // The runtime script is emitted from a template literal: a single \b there
+    // becomes a literal backspace character in the generated source, so the
+    // regex never matches and the exit convention silently stops firing.
+    expect(script).not.toContain("\u0008");
+    expect(script).toContain("/\\.anim-out\\b/");
+  });
+
   it("waits for whatever exit animations actually run, capped at 2s", () => {
     expect(script).toContain("getAnimations({ subtree: true })");
     expect(script).toContain("2000");

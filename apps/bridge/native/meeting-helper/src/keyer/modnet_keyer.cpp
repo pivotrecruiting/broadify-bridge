@@ -623,6 +623,9 @@ class ModnetKeyer::Impl {
     }
 #elif defined(_WIN32)
     status_.provider = "cpu";
+    status_.dmlPath = "cpu";
+    status_.dmlQueue = directMlQueueTypeLabel(
+        parseDirectMlQueueType(std::getenv("BROADIFY_MEETING_DML_QUEUE")));
     const OrtSessionOptionsPolicy dmlPolicy =
         makeDirectMlSessionOptionsPolicy(inputWidth_, inputHeight_);
     sessionOptions.SetIntraOpNumThreads(inferenceThreadCount());
@@ -650,6 +653,7 @@ class ModnetKeyer::Impl {
     // The sequential / mem-pattern settings above are harmless for CPU.
     if (!selfTestForcesCpuProvider()) {
       OrtStatus *dmlStatus = nullptr;
+      const char *attemptedDmlPath = "cpu";
       const char *dmlLegacyEnv = std::getenv("BROADIFY_MEETING_KEYER_DML_LEGACY");
       const bool forceLegacyDevice0 =
           dmlLegacyEnv != nullptr && dmlLegacyEnv[0] == '1';
@@ -667,27 +671,34 @@ class ModnetKeyer::Impl {
                                                     &status_.gpuAdapter);
         if (dmlStatus == nullptr && !status_.gpuAdapter.empty()) {
           status_.provider = "directml";
+          status_.dmlPath = "dml1_selected_adapter";
         } else {
           if (dmlStatus != nullptr) {
             Ort::GetApi().ReleaseStatus(dmlStatus);
           }
           OrtDmlDeviceOptions deviceOptions{
               OrtDmlPerformancePreference::HighPerformance, OrtDmlDeviceFilter::Gpu};
+          attemptedDmlPath = "dml2_high_performance";
           dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML2(
               sessionOptions, &deviceOptions);
         }
         if (dmlStatus != nullptr) {
           // HighPerformance append failed: fall back to the legacy device 0.
           Ort::GetApi().ReleaseStatus(dmlStatus);
+          attemptedDmlPath = "legacy_device0";
           dmlStatus =
               OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
         }
       } else {
+        attemptedDmlPath = "legacy_device0";
         dmlStatus =
             OrtSessionOptionsAppendExecutionProvider_DML(sessionOptions, 0);
       }
       if (dmlStatus == nullptr) {
         status_.provider = "directml";
+        if (status_.dmlPath != std::string("dml1_selected_adapter")) {
+          status_.dmlPath = attemptedDmlPath;
+        }
         sessionOptions.SetIntraOpNumThreads(dmlPolicy.intraOpThreads);
         for (const auto &entry : dmlPolicy.configEntries) {
           sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
