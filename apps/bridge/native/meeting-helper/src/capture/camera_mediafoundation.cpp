@@ -4,6 +4,7 @@
 
 #include "capture/latest_frame_slot.h"
 #include "capture/camera_media_type_rank.h"
+#include "capture/camera_reopen_policy.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #include "util/pixel_swizzle.h"
@@ -955,12 +956,14 @@ class MediaFoundationCameraSource final : public CameraSource {
 
   bool selectCamera(int cameraIndex) override {
     const std::vector<CameraInfo> cameras = listCameras();
-    if (!findByIndex(cameras, cameraIndex)) {
+    const CameraInfo *camera = findByIndex(cameras, cameraIndex);
+    if (camera == nullptr) {
       setError("Requested camera index is not available.");
       return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     programIndex_ = cameraIndex;
+    programCameraId_ = camera->cameraId;
     lastError_.clear();
     return true;
   }
@@ -1045,6 +1048,11 @@ class MediaFoundationCameraSource final : public CameraSource {
       programIndex_ = sessions_.count(cameraIndices.front())
                           ? cameraIndices.front()
                           : sessions_.begin()->first;
+      const auto programSessionIt = sessions_.find(programIndex_);
+      programCameraId_ =
+          programSessionIt != sessions_.end() && programSessionIt->second
+              ? programSessionIt->second->cameraId()
+              : std::string();
       running_ = true;
       sessionGeneration_.fetch_add(1);
       permissionStatus_ = "authorized";
@@ -1061,6 +1069,9 @@ class MediaFoundationCameraSource final : public CameraSource {
     }
     // Seamless: every camera is already running; only the program pointer moves.
     programIndex_ = cameraIndex;
+    const auto sessionIt = sessions_.find(cameraIndex);
+    programCameraId_ = sessionIt->second ? sessionIt->second->cameraId()
+                                         : std::string();
     lastError_.clear();
     return true;
   }
@@ -1082,6 +1093,7 @@ class MediaFoundationCameraSource final : public CameraSource {
       std::lock_guard<std::mutex> lock(mutex_);
       sessions.swap(sessions_);
       running_ = false;
+      programCameraId_.clear();
       reopenPending_.store(false);
       sessionGeneration_.fetch_add(1);
       reopenThread = std::move(reopenThread_);
@@ -1273,6 +1285,7 @@ class MediaFoundationCameraSource final : public CameraSource {
                 },
                 error)) {
           std::shared_ptr<MfCaptureSession> oldSession;
+          std::shared_ptr<MfCaptureSession> staleSession;
           {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!running_ || generation != sessionGeneration_.load()) {
@@ -1280,16 +1293,39 @@ class MediaFoundationCameraSource final : public CameraSource {
               reopenThreadRunning_.store(false);
               return;
             }
+            std::map<int, std::string> sessionCameraIds;
+            for (const auto &entry : sessions_) {
+              if (entry.second) {
+                sessionCameraIds[entry.first] = entry.second->cameraId();
+              }
+            }
+            // A reopened standby/PiP camera must not hijack the program cut;
+            // only the program camera (matched by device id — the index may
+            // have shifted after replug) moves programIndex_ along.
+            const CameraReopenCommit commit = resolveCameraReopenCommit(
+                sessionCameraIds, programIndex_, programCameraId_, cameraId,
+                cameraIndex);
+            if (commit.staleSessionIndex >= 0) {
+              auto stale = sessions_.find(commit.staleSessionIndex);
+              if (stale != sessions_.end()) {
+                staleSession = std::move(stale->second);
+                sessions_.erase(stale);
+              }
+            }
             auto old = sessions_.find(cameraIndex);
             if (old != sessions_.end()) {
               oldSession = std::move(old->second);
             }
             sessions_[cameraIndex] = std::move(session);
-            programIndex_ = cameraIndex;
+            programIndex_ = commit.newProgramIndex;
+            if (commit.becomesProgram) {
+              programCameraId_ = cameraId;
+            }
             running_ = true;
             lastError_.clear();
           }
           oldSession.reset();
+          staleSession.reset();
           std::cout << "{\"type\":\"camera_reopen_success\",\"camera_index\":"
                     << cameraIndex << ",\"device_name\":\""
                     << jsonEscape(camera->label) << "\"}" << std::endl;
@@ -1366,6 +1402,10 @@ class MediaFoundationCameraSource final : public CameraSource {
   std::atomic<uint64_t> sessionGeneration_{0};
   std::thread reopenThread_;
   int programIndex_ = 0;
+  // Device id (symbolic link) of the current program camera. Index-stable
+  // across re-enumeration; the reopen commit uses it to decide whether the
+  // reopened camera may take the program slot.
+  std::string programCameraId_;
   std::string lastError_;
   // Windows has no camera prompt; startSet() flips this to "denied" only if the
   // global privacy setting blocks opening a device.
