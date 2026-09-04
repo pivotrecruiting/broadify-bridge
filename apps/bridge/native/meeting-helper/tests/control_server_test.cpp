@@ -88,9 +88,34 @@ class StubCameraSource final : public CameraSource {
     return true;
   }
 
+  bool startSet(const std::vector<int> &cameraIndices, uint32_t width,
+                uint32_t height, uint32_t fps) override {
+    ++startSetCalls;
+    lastStartSetIndices = cameraIndices;
+    lastWidth = width;
+    lastHeight = height;
+    lastFps = fps;
+    if (cameraIndices.empty()) {
+      return false;
+    }
+    openSet_ = cameraIndices;
+    running_ = true;
+    activeIndex_ = cameraIndices.front();
+    return true;
+  }
+
+  std::vector<int> activeCameraSet() const override { return openSet_; }
+
+  bool setProgramCamera(int cameraIndex) override {
+    programSelectIndex = cameraIndex;
+    activeIndex_ = cameraIndex;
+    return true;
+  }
+
   void stop() override {
     running_ = false;
     activeIndex_ = -1;
+    openSet_.clear();
   }
 
   bool isRunning() const override { return running_; }
@@ -107,14 +132,18 @@ class StubCameraSource final : public CameraSource {
   uint64_t stickyErrorAtMs = 0;
 
   int startCalls = 0;
+  int startSetCalls = 0;
+  int programSelectIndex = -1;
   uint32_t lastWidth = 0;
   uint32_t lastHeight = 0;
   uint32_t lastFps = 0;
   std::vector<int> startedIndices;
+  std::vector<int> lastStartSetIndices;
 
  private:
   bool running_ = false;
   int activeIndex_ = -1;
+  std::vector<int> openSet_;
 };
 
 #if defined(_WIN32)
@@ -318,6 +347,55 @@ int main() {
     }
   }
 
+  // camera.open_set resolves camera_stable_keys by device key, so a swapped
+  // index order in camera_indices must not decide which cameras open.
+  (void)sendRpc(endpoint, "{\"id\":\"7a\",\"method\":\"camera.stop\"}");
+  const std::string openSet = sendRpc(
+      endpoint,
+      "{\"id\":\"7b\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0],"
+      "\"camera_stable_keys\":[\"camera-a-key\",\"camera-b-key\"]}");
+  if (!contains(openSet, "\"ok\":true") ||
+      camera.lastStartSetIndices != std::vector<int>{0, 1}) {
+    running.store(false);
+    server.join();
+    fail("open_set did not resolve camera_stable_keys by device key");
+  }
+
+  // Without stable keys the positional indices are used unchanged.
+  (void)sendRpc(endpoint, "{\"id\":\"7c\",\"method\":\"camera.stop\"}");
+  const std::string openSetIdx = sendRpc(
+      endpoint,
+      "{\"id\":\"7d\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0]}");
+  if (!contains(openSetIdx, "\"ok\":true") ||
+      camera.lastStartSetIndices != std::vector<int>{1, 0}) {
+    running.store(false);
+    server.join();
+    fail("open_set without keys changed index behavior");
+  }
+
+  // program_select prefers stable_key over camera_index.
+  const std::string programSelect = sendRpc(
+      endpoint,
+      "{\"id\":\"7e\",\"method\":\"camera.program_select\",\"camera_index\":0,"
+      "\"stable_key\":\"camera-b-key\"}");
+  if (!contains(programSelect, "\"ok\":true") ||
+      camera.programSelectIndex != 1) {
+    running.store(false);
+    server.join();
+    fail("program_select did not prefer stable_key");
+  }
+
+  // An unknown stable_key is a clean error, not a silent wrong-camera cut.
+  const std::string badProgram = sendRpc(
+      endpoint,
+      "{\"id\":\"7f\",\"method\":\"camera.program_select\","
+      "\"stable_key\":\"missing-key\"}");
+  if (!contains(badProgram, "camera_program_select_failed")) {
+    running.store(false);
+    server.join();
+    fail("program_select accepted an unknown stable_key");
+  }
+
   // state.get surfaces the STICKY camera error (survives a camera list),
   // while last_error stays the live value. Decoupling is the whole point of
   // the sticky field: the UI must keep showing "camera stopped" after a scan.
@@ -325,7 +403,7 @@ int main() {
   camera.stickyErrorAtMs = 123456u;
   camera.liveError = "";  // e.g. just after a camera.list cleared the live one
   const std::string stateGet =
-      sendRpc(endpoint, "{\"id\":\"7a\",\"method\":\"state.get\"}");
+      sendRpc(endpoint, "{\"id\":\"7g\",\"method\":\"state.get\"}");
   if (!contains(stateGet,
                 "\"camera_last_error\":\"device_removed (0x80070490)\"") ||
       !contains(stateGet, "\"camera_last_error_at\":123456") ||
