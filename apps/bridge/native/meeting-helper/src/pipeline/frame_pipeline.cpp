@@ -1656,16 +1656,20 @@ class GraphicsFrameBusReader {
     close();
   }
 
-  bool copyLatest(VideoFrame &frame, bool enabled) {
+  // Returns the newest graphics frame, or nullptr when disabled / none read
+  // yet. The returned pointer aliases the reader's cached frame: it is valid
+  // only until the next latest() call on THIS reader and must not be retained
+  // across iterations. Program-loop single-threaded use only (no mutex).
+  const VideoFrame *latest(bool enabled) {
     if (!enabled) {
       close();
       hasLatestFrame_ = false;
       latestFrame_ = VideoFrame{};
-      return false;
+      return nullptr;
     }
     ensureOpen();
     if (reader_ == nullptr) {
-      return hasLatestFrame_;
+      return hasLatestFrame_ ? &latestFrame_ : nullptr;
     }
     if (lastProgressNs_ == 0u) {
       lastProgressNs_ = nowNs();
@@ -1677,7 +1681,7 @@ class GraphicsFrameBusReader {
     if (framebus_reader_get_info(reader_, &width, &height, &fps) != 0 || width == 0u || height == 0u) {
       logReaderEvent("info_failed", width, height, fps, 0, 0);
       close();
-      return hasLatestFrame_;
+      return hasLatestFrame_ ? &latestFrame_ : nullptr;
     }
 
     const size_t requiredSize = static_cast<size_t>(width) * height * 4u;
@@ -1688,7 +1692,7 @@ class GraphicsFrameBusReader {
     if (result == -1) {
       logReaderEvent("copy_failed", width, height, fps, 0, 0);
       close();
-      return hasLatestFrame_;
+      return hasLatestFrame_ ? &latestFrame_ : nullptr;
     }
     if (result == 1) {
       uint64_t nonTransparentPixels = 0;
@@ -1706,7 +1710,10 @@ class GraphicsFrameBusReader {
       latestFrame_.width = width;
       latestFrame_.height = height;
       latestFrame_.timestampNs = nowNs();
-      latestFrame_.rgba = scratch_;
+      // Swap instead of copy: the new frame moves into latestFrame_ and the
+      // previous (same-size) buffer moves back into scratch_ for reuse, so the
+      // steady state does no per-frame allocation and no per-frame RGBA copy.
+      latestFrame_.rgba.swap(scratch_);
       hasLatestFrame_ = true;
       lastProgressNs_ = nowNs();
       if (shouldSampleAlpha) {
@@ -1726,10 +1733,7 @@ class GraphicsFrameBusReader {
       }
     }
 
-    if (hasLatestFrame_) {
-      frame = latestFrame_;
-    }
-    return hasLatestFrame_;
+    return hasLatestFrame_ ? &latestFrame_ : nullptr;
   }
 
  private:
@@ -2232,13 +2236,13 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.maskAgeAvgMs = -1.0;
         }
       }
-      VideoFrame backGraphicsFrame;
-      VideoFrame frontGraphicsFrame;
       const bool graphicsOutputActive = isGraphicsOutputActive(snapshot);
+      // Pointers alias each reader's cached frame; valid until the reader's
+      // next latest() call, which does not happen again this iteration.
       const VideoFrame *backGraphicsFrameForCompositor =
-          backGraphicsReader.copyLatest(backGraphicsFrame, graphicsOutputActive) ? &backGraphicsFrame : nullptr;
+          backGraphicsReader.latest(graphicsOutputActive);
       const VideoFrame *frontGraphicsFrameForCompositor =
-          frontGraphicsReader.copyLatest(frontGraphicsFrame, graphicsOutputActive) ? &frontGraphicsFrame : nullptr;
+          frontGraphicsReader.latest(graphicsOutputActive);
       const bool hasNewBackGraphicsFrame = backGraphicsFrameForCompositor != nullptr &&
           backGraphicsFrameForCompositor->timestampNs != 0u &&
           backGraphicsFrameForCompositor->timestampNs != lastBackGraphicsTimestampNs;
