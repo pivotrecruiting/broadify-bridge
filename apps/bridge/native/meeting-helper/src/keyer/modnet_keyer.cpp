@@ -226,6 +226,14 @@ OrtStatus *appendDirectMlOnSelectedAdapter(Ort::SessionOptions &sessionOptions,
   }
   return status;
 }
+
+void applySessionOptionsPolicyConfig(Ort::SessionOptions &sessionOptions,
+                                     const OrtSessionOptionsPolicy &policy) {
+  sessionOptions.SetIntraOpNumThreads(policy.intraOpThreads);
+  for (const auto &entry : policy.configEntries) {
+    sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
+  }
+}
 #endif
 
 }  // namespace
@@ -699,15 +707,20 @@ class ModnetKeyer::Impl {
         if (status_.dmlPath != std::string("dml1_selected_adapter")) {
           status_.dmlPath = attemptedDmlPath;
         }
-        sessionOptions.SetIntraOpNumThreads(dmlPolicy.intraOpThreads);
-        for (const auto &entry : dmlPolicy.configEntries) {
-          sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
-        }
+        applySessionOptionsPolicyConfig(sessionOptions, dmlPolicy);
       } else {
         // No DirectML device (no DX12 GPU or driver): fall back to the CPU
         // provider.
         Ort::GetApi().ReleaseStatus(dmlStatus);
       }
+    }
+    if (status_.provider != std::string("directml")) {
+      // CPU execution provider (no DirectML device, or the self-test forcing
+      // CPU). Intra-op spinning must be off here too: ORT's default busy-wait
+      // between ops burns whole cores in the shared helper process, and the
+      // fallback hits exactly the machines weak enough to feel it.
+      applySessionOptionsPolicyConfig(
+          sessionOptions, makeCpuSessionOptionsPolicy(inferenceThreadCount()));
     }
 #else
     status_.provider = "cpu";
