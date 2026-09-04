@@ -35,6 +35,19 @@ const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
 /** Log one skipped-poll debug line per this many consecutive skips. */
 const STATUS_POLL_SKIP_LOG_EVERY = 10;
+// Camera health stdout events that must force a status publish so the webapp
+// can surface the camera state (stall/error) instead of showing a frozen
+// frame. camera_reopen_attempt is deliberately absent: it fires on every
+// backoff cycle and would flood the relay with no new information.
+const CAMERA_STATUS_EVENT_TYPES = new Set<string>([
+  "camera_stalled",
+  "camera_recovered",
+  "camera_reopen_scheduled",
+  "camera_reopen_success",
+  "camera_reopen_failure",
+  "camera_capture_error",
+  "camera_open_failure",
+]);
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
 // Consecutive connect-level RPC failures (helper_not_reachable) of the 2 s
@@ -1240,6 +1253,25 @@ export class MeetingHelperManager {
           publishMeetingErrorEvent(
             "camera_permission_denied",
             "Camera permission was not granted.",
+          );
+        }
+      }
+      // Camera health events: the helper detects stalls, capture errors and
+      // reopen outcomes but they used to die in a debug log, leaving the webapp
+      // showing a frozen frame with no explanation. Force a full status publish
+      // (the authoritative snapshot carries camera_stalled + the sticky
+      // camera_last_error) so the UI can render the state. camera_reopen_attempt
+      // and the periodic reopen ticker are intentionally excluded (they fire on
+      // every backoff cycle and would flood the relay).
+      if (CAMERA_STATUS_EVENT_TYPES.has(parsed.type ?? "")) {
+        logger.info(`[MeetingHelper] ${line}`);
+        void this.publishStatus(parsed.type ?? "camera_status", true);
+        // A fresh stall (not the periodic reopen re-trigger) also emits one
+        // error event so the webapp can raise a single toast per episode.
+        if (parsed.type === "camera_stalled" && parsed.event !== "reopen") {
+          publishMeetingErrorEvent(
+            "camera_stalled",
+            "Camera stopped delivering frames; attempting automatic recovery.",
           );
         }
       }

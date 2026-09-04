@@ -652,9 +652,12 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     }
     const HRESULT reported =
         FAILED(hr) ? hr : HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
-    std::cout << "{\"type\":\"camera_capture_error\",\"hr\":\""
-              << hresultHex(reported) << "\",\"reason\":\"" << reason
-              << "\"}" << std::endl;
+    // reason is free text (MF diagnostic / "device_removed") and must be
+    // escaped: an unescaped quote would corrupt the JSON line the bridge
+    // parses. emitHelperEvent also mirrors it into the --event-log sidecar.
+    emitHelperEvent("{\"type\":\"camera_capture_error\",\"hr\":\"" +
+                    hresultHex(reported) + "\",\"reason\":\"" +
+                    jsonEscape(reason) + "\"}");
     if (errorHandler) {
       errorHandler(reported, reason);
     }
@@ -1057,6 +1060,8 @@ class MediaFoundationCameraSource final : public CameraSource {
       sessionGeneration_.fetch_add(1);
       permissionStatus_ = "authorized";
       lastError_.clear();
+      stickyError_.clear();
+      stickyErrorAtMs_ = 0;
     }
     return true;
   }
@@ -1094,6 +1099,8 @@ class MediaFoundationCameraSource final : public CameraSource {
       sessions.swap(sessions_);
       running_ = false;
       programCameraId_.clear();
+      stickyError_.clear();
+      stickyErrorAtMs_ = 0;
       reopenPending_.store(false);
       sessionGeneration_.fetch_add(1);
       reopenThread = std::move(reopenThread_);
@@ -1157,6 +1164,16 @@ class MediaFoundationCameraSource final : public CameraSource {
     return lastError_;
   }
 
+  std::string stickyLastError() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stickyError_;
+  }
+
+  uint64_t stickyLastErrorAtMs() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stickyErrorAtMs_;
+  }
+
   std::string cameraPermissionStatus() const override {
     std::lock_guard<std::mutex> lock(mutex_);
     return permissionStatus_;
@@ -1204,6 +1221,13 @@ class MediaFoundationCameraSource final : public CameraSource {
     uint64_t generation = 0;
     bool expected = false;
     std::unique_lock<std::mutex> lock(mutex_);
+    // Record the capture failure stickily so state.get can surface it to the
+    // UI. Unlike lastError_, this survives listCameras()'s setError("") clear
+    // and only resets on a successful (re)open or an explicit stop.
+    stickyError_ = reason.empty()
+                       ? ("Camera capture error " + hresultHex(hr))
+                       : (reason + " (" + hresultHex(hr) + ")");
+    stickyErrorAtMs_ = nowNs() / 1000000ull;
     if (!running_) {
       return;
     }
@@ -1325,6 +1349,8 @@ class MediaFoundationCameraSource final : public CameraSource {
             }
             running_ = true;
             lastError_.clear();
+            stickyError_.clear();
+            stickyErrorAtMs_ = 0;
           }
           oldSession.reset();
           staleSession.reset();
@@ -1413,6 +1439,11 @@ class MediaFoundationCameraSource final : public CameraSource {
   // reopened camera may take the program slot.
   std::string programCameraId_;
   std::string lastError_;
+  // Sticky variant of lastError_ for UI surfacing: set on a capture failure,
+  // NOT cleared by listCameras() (which clears lastError_ via setError("")),
+  // cleared only on a successful (re)open or stop. 0 = no error recorded.
+  std::string stickyError_;
+  uint64_t stickyErrorAtMs_ = 0;
   // Windows has no camera prompt; startSet() flips this to "denied" only if the
   // global privacy setting blocks opening a device.
   std::string permissionStatus_ = "authorized";
