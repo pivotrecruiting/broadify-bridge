@@ -352,6 +352,9 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(frame_pipeline_stall_test
     tests/frame_pipeline_stall_test.cpp
   )
+  add_executable(inference_provider_test
+    tests/inference_provider_test.cpp
+  )
   add_executable(frame_pipeline_gating_test
     tests/frame_pipeline_gating_test.cpp
     src/pipeline/frame_pipeline_gating.cpp
@@ -478,6 +481,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     d3d_adapter_select_test
     pixel_swizzle_test
     ort_session_options_policy_test
+    inference_provider_test
     camera_media_type_rank_test
     latest_frame_slot_test
     keyer_governor_test
