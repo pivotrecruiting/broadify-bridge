@@ -510,6 +510,25 @@ std::string handleRpc(const std::string &line,
         }
       }
     }
+    // Prefer stable keys when present (device symbolic links survive
+    // re-enumeration; positional indices do not). camera_stable_keys is
+    // position-matched to camera_indices; an empty or unresolved key falls
+    // back to the positional index, unresolved-with-no-fallback is dropped.
+    const std::vector<std::string> stableKeys =
+        extractStringArrayField(line, "camera_stable_keys");
+    if (!stableKeys.empty()) {
+      std::vector<int> resolved;
+      resolved.reserve(stableKeys.size());
+      for (size_t i = 0; i < stableKeys.size(); ++i) {
+        const int fallback =
+            i < indices.size() ? indices[i] : -1;
+        const int index = resolveCameraIndex(camera, stableKeys[i], fallback);
+        if (index >= 0) {
+          resolved.push_back(index);
+        }
+      }
+      indices = std::move(resolved);
+    }
     const bool started =
         camera.startSet(indices, options.width, options.height, options.fps);
     {
@@ -539,7 +558,13 @@ std::string handleRpc(const std::string &line,
 
   // Conference: cut the program feed to an already-open camera (seamless).
   if (method == "camera.program_select") {
-    const int cameraIndex = extractIntField(line, "camera_index", 0);
+    const std::string stableKey = extractStringField(line, "stable_key");
+    const int cameraIndex =
+        resolveCameraIndex(camera, stableKey, extractIntField(line, "camera_index", 0));
+    if (cameraIndex < 0) {
+      return errorResponse(id, "camera_program_select_failed",
+                           "Requested camera stable_key is not available.");
+    }
     if (!camera.setProgramCamera(cameraIndex)) {
       return errorResponse(id, "camera_program_select_failed",
                            camera.lastError());
