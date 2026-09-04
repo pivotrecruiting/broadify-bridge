@@ -2690,6 +2690,12 @@ void runFramePipeline(const Options &options,
                 fusedHandover.phase() != TierHandover::Phase::Warming &&
                 !fusedWarmupBusy.load(std::memory_order_acquire)) {
               const KeyerStatus keyerStatus = fusedKeyer->status();
+              // Tell the governor which fused tier sessions actually exist
+              // (default prebuild is 512+256 - Balanced320 is usually a
+              // phantom) so ladder moves and seeds skip unavailable tiers.
+              fusedGovernor.setFusedTierAvailability(
+                  keyerStatus.tierBuilt512, keyerStatus.tierBuilt320,
+                  keyerStatus.tierBuilt256);
               if (keyerStatus.probeInferenceMs256 > 0.0) {
                 fusedGovernor.seedMeasuredProbes(
                     keyerStatus.probeInferenceMs512,

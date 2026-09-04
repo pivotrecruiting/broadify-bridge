@@ -42,22 +42,22 @@ GovernorTier tierAbove(GovernorTier tier) {
   return GovernorTier::Full512;
 }
 
-// Cost ratio of the tier above the given one relative to it (input pixel-area
-// scaling). Lite256 -> Performance256 keeps the input size, so the async EMA
-// carries over 1:1.
-double stepUpAreaRatio(GovernorTier tier) {
+// Input pixel-area of a tier relative to the 512 shape. Lite256 runs the
+// same 256 input as Performance256 (async vs fused), so the async EMA
+// carries over 1:1 on that step. Any step-up ratio — including skips over an
+// unavailable tier, e.g. 256 -> 512 = x4 — is areaScale(target)/areaScale(from).
+double areaScale(GovernorTier tier) {
   switch (tier) {
-    case GovernorTier::Balanced320:
-      return 1.0 / kAreaScale320;               // 320 -> 512: x2.56
-    case GovernorTier::Performance256:
-      return kAreaScale320 / kAreaScale256;     // 256 -> 320: x1.5625
-    case GovernorTier::Lite256:
-      return 1.0;                               // async 256 -> fused 256
     case GovernorTier::Full512:
+      return 1.0;
+    case GovernorTier::Balanced320:
+      return kAreaScale320;
+    case GovernorTier::Performance256:
+    case GovernorTier::Lite256:
     case GovernorTier::Off:
-      return 1.0;                               // no estimate-based step-up
+      return kAreaScale256;
   }
-  return 1.0;
+  return kAreaScale256;
 }
 
 }  // namespace
@@ -66,6 +66,50 @@ KeyerAutoGovernor::KeyerAutoGovernor(const KeyerGovernorConfig &config)
     : config_(config),
       stepUpHoldoff_(config.stepUpMinStableTime),
       reprobeInterval_(config.reprobeBaseInterval) {}
+
+void KeyerAutoGovernor::setFusedTierAvailability(bool full512,
+                                                 bool balanced320,
+                                                 bool performance256) {
+  full512Available_ = full512;
+  balanced320Available_ = balanced320;
+  performance256Available_ = performance256;
+}
+
+bool KeyerAutoGovernor::tierAvailable(GovernorTier tier) const {
+  switch (tier) {
+    case GovernorTier::Full512:
+      return full512Available_;
+    case GovernorTier::Balanced320:
+      return balanced320Available_;
+    case GovernorTier::Performance256:
+      return performance256Available_;
+    case GovernorTier::Lite256:
+    case GovernorTier::Off:
+      return true;
+  }
+  return true;
+}
+
+GovernorTier KeyerAutoGovernor::availableTierBelow(GovernorTier tier) const {
+  GovernorTier below = tierBelow(tier);
+  while (below != GovernorTier::Off && !tierAvailable(below)) {
+    below = tierBelow(below);
+  }
+  return below;
+}
+
+GovernorTier KeyerAutoGovernor::availableTierAbove(GovernorTier tier) const {
+  GovernorTier above = tierAbove(tier);
+  while (!tierAvailable(above)) {
+    const GovernorTier next = tierAbove(above);
+    if (next == above) {
+      // Topmost tier reached but unavailable: nothing to climb to.
+      return tier;
+    }
+    above = next;
+  }
+  return above == tier ? tier : above;
+}
 
 double KeyerAutoGovernor::stepDownThresholdMs() const {
   if (config_.stepDownOverrideMs > 0.0) {
@@ -83,7 +127,11 @@ double KeyerAutoGovernor::estimatedStepUpMs() const {
   if (emaMs_ <= 0.0) {
     return -1.0;
   }
-  return emaMs_ * stepUpAreaRatio(tier_);
+  const GovernorTier target = availableTierAbove(tier_);
+  if (target == tier_) {
+    return -1.0;
+  }
+  return emaMs_ * (areaScale(target) / areaScale(tier_));
 }
 
 void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
@@ -95,11 +143,11 @@ void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
   const double est512 = medianWarmupMs;
   const double est320 = medianWarmupMs * kAreaScale320;
   const double est256 = medianWarmupMs * kAreaScale256;
-  if (est512 <= threshold) {
+  if (est512 <= threshold && full512Available_) {
     tier_ = GovernorTier::Full512;
-  } else if (est320 <= threshold) {
+  } else if (est320 <= threshold && balanced320Available_) {
     tier_ = GovernorTier::Balanced320;
-  } else if (est256 <= threshold) {
+  } else if (est256 <= threshold && performance256Available_) {
     tier_ = GovernorTier::Performance256;
   } else if (est256 <= config_.offInferenceMs) {
     tier_ = GovernorTier::Lite256;
@@ -121,15 +169,20 @@ void KeyerAutoGovernor::seedMeasuredProbes(double full512Ms,
   }
   seeded_ = true;
   const double threshold = stepUpThresholdMs();
-  if (full512Ms > 0.0 && full512Ms <= threshold) {
+  if (full512Ms > 0.0 && full512Available_ && full512Ms <= threshold) {
     tier_ = GovernorTier::Full512;
-  } else if (balanced320Ms > 0.0 && balanced320Ms <= threshold) {
+  } else if (balanced320Ms > 0.0 && balanced320Available_ &&
+             balanced320Ms <= threshold) {
     tier_ = GovernorTier::Balanced320;
-  } else {
+  } else if (performance256Available_) {
     // Build-time probes run while sessions are being created and can be
     // distorted by first-load contention. Never seed below the fused 256 tier
     // from those probes; Lite/Off require live async samples.
     tier_ = GovernorTier::Performance256;
+  } else {
+    // No fused 256 session (exotic prebuild config): seed to the lowest
+    // available fused tier, or Lite256 when none exists at all.
+    tier_ = availableTierAbove(GovernorTier::Lite256);
   }
   degradeClockStarted_ = false;
   stepUpWatch_ = StepUpWatch::None;
@@ -186,7 +239,7 @@ void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
     liteStepUpPending_ = true;
     return;
   }
-  tier_ = tierAbove(tier_);
+  tier_ = availableTierAbove(tier_);
   emaMs_ = -1.0;
   samples_ = 0u;
   degradedAt_ = now;
@@ -199,8 +252,13 @@ void KeyerAutoGovernor::commitLiteStepUp(TimePoint now) {
     return;
   }
   liteStepUpPending_ = false;
-  // Exact semantics of the immediate Lite256 step-up above.
-  tier_ = GovernorTier::Performance256;
+  // Exact semantics of the immediate Lite256 step-up above; the target is
+  // the lowest available fused tier (Performance256 in every default config).
+  const GovernorTier target = availableTierAbove(GovernorTier::Lite256);
+  if (target == GovernorTier::Lite256) {
+    return;  // no fused session available at all — stay async.
+  }
+  tier_ = target;
   emaMs_ = -1.0;
   samples_ = 0u;
   degradedAt_ = now;
@@ -258,7 +316,7 @@ void KeyerAutoGovernor::addSample(double inferenceMs, TimePoint now) {
           return;
         }
       }
-      stepDown(tierBelow(tier_), now);
+      stepDown(availableTierBelow(tier_), now);
       return;
     }
   }

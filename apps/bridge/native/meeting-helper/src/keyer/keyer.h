@@ -38,6 +38,11 @@ struct KeyerMetrics {
   double droppedFramesPerSec = -1.0;
   uint32_t maskWidth = 0;
   uint32_t maskHeight = 0;
+  // MODNet input size the session ACTUALLY ran at. Can differ from the size
+  // the requested performance mode implies when that tier session was never
+  // prebuilt (apply() then keeps the existing session instead of hitting the
+  // per-Run DML recompile trap) - telemetry must report the real size.
+  uint32_t sessionInputSize = 0;
   uint64_t droppedFrames = 0;
   uint64_t skippedFrames = 0;
   uint64_t vcamPublishDropped = 0;
@@ -67,6 +72,13 @@ struct KeyerStatus {
   double probeInferenceMs512 = 0.0;
   double probeInferenceMs320 = 0.0;
   double probeInferenceMs256 = 0.0;
+  // Which fused tier sessions were actually prebuilt (Windows prebuild
+  // policy, default 512+256). The governor skips unavailable tiers instead
+  // of requesting a phantom size (probeMs alone is not a reliable signal:
+  // a session can exist with probeMs 0.0 after a warmup exception).
+  bool tierBuilt512 = false;
+  bool tierBuilt320 = false;
+  bool tierBuilt256 = false;
   bool modelHashOk = false;
   std::string gpuAdapter;
   // Windows/DirectML diagnostics: which command queue the session uses and
