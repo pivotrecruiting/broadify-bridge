@@ -109,6 +109,17 @@ class KeyerAutoGovernor {
                           double performance256Ms);
   bool seeded() const { return seeded_; }
 
+  // Which fused tiers have a prebuilt MODNet session (default prebuild is
+  // 512+256, so Balanced320 usually does NOT exist). Ladder moves, estimates
+  // and seeding skip unavailable fused tiers instead of requesting a phantom
+  // size that ModnetKeyer::apply() would silently substitute — the substitute
+  // ran at a different size than the governor's cost model assumed, so
+  // step-up estimates and the reported tier were both wrong. Lite256/Off are
+  // always reachable. Defaults keep every tier available (historical
+  // behavior and the BROADIFY_MEETING_KEYER_PREBUILD_TIERS=all path).
+  void setFusedTierAvailability(bool full512, bool balanced320,
+                                bool performance256);
+
   // Estimate-based step-up, one tier per step. Fused tiers and Lite256 climb
   // only when (a) at least minSamples were observed at the current tier,
   // (b) at least the step-up holdoff elapsed since the last tier change and
@@ -173,13 +184,23 @@ class KeyerAutoGovernor {
 
   double stepDownThresholdMs() const;
   double stepUpThresholdMs() const;
-  // Estimated cost of the tier ABOVE the current one, scaled from the
-  // current-tier EMA by the input pixel-area ratio (< 0 when no EMA exists).
+  // Estimated cost of the next AVAILABLE tier above the current one, scaled
+  // from the current-tier EMA by the input pixel-area ratio (< 0 when no EMA
+  // exists or nothing is available to climb to).
   double estimatedStepUpMs() const;
   void stepDown(GovernorTier target, TimePoint now);
+  bool tierAvailable(GovernorTier tier) const;
+  // Ladder neighbors constrained to available tiers. Below: skips towards
+  // Lite256/Off (always available). Above: skips towards Full512 and returns
+  // the input tier unchanged when no available fused tier exists above it.
+  GovernorTier availableTierBelow(GovernorTier tier) const;
+  GovernorTier availableTierAbove(GovernorTier tier) const;
 
   KeyerGovernorConfig config_{};
   GovernorTier tier_ = GovernorTier::Full512;
+  bool full512Available_ = true;
+  bool balanced320Available_ = true;
+  bool performance256Available_ = true;
   bool seeded_ = false;
   bool liteStepUpPending_ = false;
   double emaMs_ = -1.0;

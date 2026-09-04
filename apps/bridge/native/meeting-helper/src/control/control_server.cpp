@@ -182,6 +182,7 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
+         << ",\"session_input_size\":" << metrics.sessionInputSize
          << ",\"dropped_frames\":" << metrics.droppedFrames
          << ",\"skipped_frames\":" << metrics.skippedFrames
          << ",\"vcam_publish_dropped\":" << metrics.vcamPublishDropped

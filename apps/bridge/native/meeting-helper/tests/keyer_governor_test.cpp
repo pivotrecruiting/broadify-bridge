@@ -512,5 +512,59 @@ int main() {
                  "Lite256 -> performance");
   }
 
+
+  {
+    // Tier availability (default prebuild = 512+256): the ladder skips the
+    // phantom Balanced320 tier in both directions.
+    KeyerAutoGovernor governor(testConfig());
+    governor.setFusedTierAvailability(true, false, true);
+    feed(governor, 40.0, 10, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "descent skips unavailable Balanced320");
+    // Step-up estimate must use the real 256 -> 512 area ratio (x4), not the
+    // 256 -> 320 ratio of the skipped tier: ema 8ms -> est 32ms > 26.7ms
+    // threshold -> must NOT climb (the old x1.5625 ratio would have climbed).
+    feed(governor, 8.0, 10, at(2));
+    governor.maybeStepUp(at(12));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "skip step-up estimate uses x4 area ratio");
+    // ema 5ms -> est 20ms fits with margin -> climbs directly to Full512.
+    KeyerAutoGovernor climber(testConfig());
+    climber.setFusedTierAvailability(true, false, true);
+    feed(climber, 40.0, 10, at(1));
+    feed(climber, 5.0, 10, at(2));
+    climber.maybeStepUp(at(12));
+    ok &= expect(climber.tier() == GovernorTier::Full512,
+                 "step-up skips unavailable Balanced320 to Full512");
+  }
+
+  {
+    // Seeding skips unavailable tiers instead of seeding a phantom.
+    KeyerAutoGovernor governor(testConfig());
+    governor.setFusedTierAvailability(true, false, true);
+    // probe 60ms: est512=60 too big, est320=23.4 would fit but is
+    // unavailable, est256=15 fits -> Performance256.
+    governor.seedProbe(60.0);
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "seedProbe skips unavailable Balanced320");
+
+    KeyerAutoGovernor measured(testConfig());
+    measured.setFusedTierAvailability(true, false, true);
+    // 320 probe would fit the step-up threshold but the session is missing.
+    measured.seedMeasuredProbes(40.0, 20.0, 18.0);
+    ok &= expect(measured.tier() == GovernorTier::Performance256,
+                 "seedMeasuredProbes skips unavailable Balanced320");
+  }
+
+  {
+    // Default availability keeps the historical full ladder (also the
+    // BROADIFY_MEETING_KEYER_PREBUILD_TIERS=all path).
+    KeyerAutoGovernor governor(testConfig());
+    governor.setFusedTierAvailability(true, true, true);
+    feed(governor, 40.0, 10, at(1));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "full availability keeps Balanced320 in the ladder");
+  }
+
   return ok ? 0 : 1;
 }
