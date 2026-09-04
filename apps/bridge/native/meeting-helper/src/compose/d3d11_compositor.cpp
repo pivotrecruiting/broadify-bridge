@@ -8,7 +8,7 @@
 // keyed presenter (or cover camera), the media layer and front graphics into
 // an RGBA program frame. Default ON (matching the macOS Metal path); the
 // kill-switch BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 forces the CPU
-// compositor, and every failure also falls back to it.
+// compositor, and every failure also falls back to the CPU compositor.
 //
 // The HLSL kernel below is a line-for-line port of the MSL kernel so both
 // backends stay pixel-equivalent; keep them in sync.
