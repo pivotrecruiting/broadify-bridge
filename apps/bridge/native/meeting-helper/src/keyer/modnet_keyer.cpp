@@ -74,7 +74,13 @@ int inferenceThreadCount() {
 
 std::set<uint32_t> parseModnetPrebuildTierSizesInternal(const char *raw) {
   if (raw == nullptr || raw[0] == '\0') {
-    return {kFallbackInputSize, kPerformanceInputSize};
+    // Default prebuild is 512+320+256. Field finding (rc.2): with only 512+256
+    // built, the honest governor (fix 6) settled a mid machine on 256 -> coarse
+    // flickery edges. Building the real 320 tier gives the governor a fine
+    // middle step (320x180, ~30fps) between the crisp-but-heavy 512 and the
+    // coarse 256, and makes the fix-10b overrun step-down target 320, not 256.
+    // Cost: one extra DML session build + VRAM on first load.
+    return {kFallbackInputSize, kBalancedInputSize, kPerformanceInputSize};
   }
   if (std::string(raw) == "all") {
     return {kFallbackInputSize, kBalancedInputSize, kPerformanceInputSize};
