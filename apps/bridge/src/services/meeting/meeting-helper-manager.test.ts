@@ -189,6 +189,7 @@ describe("meeting-helper-manager", () => {
           BROADIFY_MEETING_COREML_UNITS: "cpuAndNeuralEngine",
           BROADIFY_MEETING_KEYER_PREBUILD_TIERS: "256,320",
           BROADIFY_MEETING_MASK_WORK_WIDTH: "512",
+          BROADIFY_MEETING_OVERRUN_STEPDOWN: "0",
           BROADIFY_MEETING_STAGING_RING: "1",
           BROADIFY_MEETING_FUTURE_SECRET: "do-not-forward",
           UNRELATED_VALUE: "ignored",
@@ -216,6 +217,8 @@ describe("meeting-helper-manager", () => {
         "BROADIFY_MEETING_MASK_WORK_WIDTH=512",
         "--env",
         "BROADIFY_MEETING_DML_QUEUE=compute",
+        "--env",
+        "BROADIFY_MEETING_OVERRUN_STEPDOWN=0",
         "--env",
         "BROADIFY_MEETING_STAGING_RING=1",
       ]);

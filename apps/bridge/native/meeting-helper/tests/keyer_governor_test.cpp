@@ -566,5 +566,47 @@ int main() {
                  "full availability keeps Balanced320 in the ladder");
   }
 
+
+  {
+    // Program-loop budget overrun sheds one fused tier even though the
+    // inference EMA still fits: default prebuild (512+256), so Full512 skips
+    // the phantom Balanced320 straight to Performance256.
+    KeyerAutoGovernor governor(testConfig());
+    governor.setFusedTierAvailability(true, false, true);
+    governor.seedProbe(10.0);  // seeds Full512 (10ms fits the budget)
+    ok &= expect(governor.tier() == GovernorTier::Full512,
+                 "overrun test seeds Full512");
+    governor.noteProgramBudgetOverrun(at(1));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "overrun steps Full512 down to Performance256 (skips 320)");
+  }
+
+  {
+    // With all tiers available the overrun steps one tier at a time.
+    KeyerAutoGovernor governor(testConfig());
+    governor.setFusedTierAvailability(true, true, true);
+    governor.seedProbe(10.0);
+    governor.noteProgramBudgetOverrun(at(1));
+    ok &= expect(governor.tier() == GovernorTier::Balanced320,
+                 "overrun steps Full512 -> Balanced320 when available");
+  }
+
+  {
+    // No-op at/below Performance256 (leaving fused is the liteGate's job) and
+    // before seeding.
+    KeyerAutoGovernor unseeded(testConfig());
+    unseeded.noteProgramBudgetOverrun(at(1));
+    ok &= expect(unseeded.tier() == GovernorTier::Full512,
+                 "overrun before seeding is a no-op");
+
+    KeyerAutoGovernor governor(testConfig());
+    governor.seedProbe(120.0);  // seeds Performance256
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "overrun test seeds Performance256");
+    governor.noteProgramBudgetOverrun(at(1));
+    ok &= expect(governor.tier() == GovernorTier::Performance256,
+                 "overrun at Performance256 is a no-op");
+  }
+
   return ok ? 0 : 1;
 }

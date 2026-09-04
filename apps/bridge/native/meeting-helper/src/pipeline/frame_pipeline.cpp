@@ -449,6 +449,17 @@ bool autoDegradeEnabled() {
   return enabled;
 }
 
+// Governor step-down on sustained program-loop budget overrun (default ON).
+// Set BROADIFY_MEETING_OVERRUN_STEPDOWN=0 to keep the pre-fix behavior where a
+// keyer_budget_overrun only logged and never demoted a tier. Read once.
+bool overrunStepDownEnabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BROADIFY_MEETING_OVERRUN_STEPDOWN");
+    return raw == nullptr || raw[0] != '0';
+  }();
+  return enabled;
+}
+
 // Warm handover on governor tier transitions (default ON). Make-before-break
 // between the fused synchronous keyer and the async worker: a step-up warms
 // the fused DirectML session on a background thread before the cutover, and a
@@ -1930,6 +1941,9 @@ void runFramePipeline(const Options &options,
 #if defined(_WIN32)
     static BudgetOverrunReporter fusedBudgetOverrunReporter;
     static double fusedOverheadEmaMs = 0.0;
+    // Set at frame end when the reporter confirms a sustained overrun; consumed
+    // by the governor at the top of the next frame (mirrors fusedOverheadEmaMs).
+    static bool fusedProgramOverrunPending = false;
     bool fusedInferenceRanThisFrame = false;
     double fusedInferenceSessionRunMs = -1.0;
     double fusedInferenceTensorMs = -1.0;
@@ -2679,6 +2693,12 @@ void runFramePipeline(const Options &options,
           const bool governorAutoEnabled = autoDegradeEnabled();
           if (governorAutoEnabled) {
             fusedGovernor.maybeStepUp(fusedNow);
+            // Sustained program-loop budget overrun observed last frame: shed
+            // one fused tier (CPU overload the GPU-cost samples cannot see).
+            if (fusedProgramOverrunPending) {
+              fusedProgramOverrunPending = false;
+              fusedGovernor.noteProgramBudgetOverrun(fusedNow);
+            }
             // Seed once from the session-build warmup probe (median steady
             // inference cost at the 512 shape); available after the first
             // apply() loaded the session, so seeding lands one frame later.
@@ -3215,6 +3235,7 @@ void runFramePipeline(const Options &options,
           fusedGovernor.reset();
           fusedCadence.reset();
           fusedBudgetOverrunReporter.reset();
+          fusedProgramOverrunPending = false;
           fusedOverheadEmaMs = 0.0;
           lastFusedRawMask = AlphaMask{};
           lastGoodMask = AlphaMask{};
@@ -3396,6 +3417,13 @@ void runFramePipeline(const Options &options,
               ",\"camera_upload_ms\":" + std::to_string(cameraUploadMs) +
               ",\"tier\":\"" + fusedTierForEvent + "\",\"cadence_n\":" +
               std::to_string(fusedCadenceNForEvent) + "}");
+          // Ask the governor to shed one fused tier: the program frame is over
+          // budget even though the inference EMA (sessionRunMs) still fits, so
+          // the GPU-only addSample() path would never demote. Consumed next
+          // frame. The reporter's 30-frame + 10s debounce rate-limits this.
+          if (overrunStepDownEnabled()) {
+            fusedProgramOverrunPending = true;
+          }
         } else if (budgetEvent == BudgetOverrunEvent::Recovered) {
           emitHelperEvent("{\"type\":\"keyer_budget_recovered\"}");
         }

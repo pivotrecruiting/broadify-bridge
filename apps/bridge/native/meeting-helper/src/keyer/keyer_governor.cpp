@@ -330,6 +330,18 @@ void KeyerAutoGovernor::setFrameOverheadMs(double overheadMs) {
   frameOverheadMs_ = std::max(0.0, overheadMs);
 }
 
+void KeyerAutoGovernor::noteProgramBudgetOverrun(TimePoint now) {
+  if (!seeded_) {
+    return;
+  }
+  // Only shed load by resolution from the upper fused tiers; the descent into
+  // Lite/Off is the sample-driven liteGate policy's job, not this trigger's.
+  if (tier_ != GovernorTier::Full512 && tier_ != GovernorTier::Balanced320) {
+    return;
+  }
+  stepDown(availableTierBelow(tier_), now);
+}
+
 void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
   // Any step-down invalidates a deferred (not yet committed) step-up.
   liteStepUpPending_ = false;
