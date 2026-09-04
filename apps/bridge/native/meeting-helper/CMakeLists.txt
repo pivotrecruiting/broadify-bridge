@@ -355,6 +355,9 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(inference_provider_test
     tests/inference_provider_test.cpp
   )
+  add_executable(camera_reopen_policy_test
+    tests/camera_reopen_policy_test.cpp
+  )
   add_executable(frame_pipeline_gating_test
     tests/frame_pipeline_gating_test.cpp
     src/pipeline/frame_pipeline_gating.cpp
@@ -483,6 +486,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     ort_session_options_policy_test
     inference_provider_test
     camera_media_type_rank_test
+    camera_reopen_policy_test
     latest_frame_slot_test
     keyer_governor_test
     keyer_cadence_test
