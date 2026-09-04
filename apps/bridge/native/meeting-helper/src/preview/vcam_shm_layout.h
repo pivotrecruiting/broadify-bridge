@@ -157,6 +157,7 @@ std::wstring serviceStreamMappingName(bool globalNamespace);
 std::wstring serviceStreamEventName(bool globalNamespace);
 std::wstring streamSecurityDescriptorSddl();
 std::wstring controlSecurityDescriptorSddl();
+std::wstring frameEventSecurityDescriptorSddl();
 std::wstring securityDescriptorSddl();
 
 bool initializeControlRecord(ControlRecord &record,

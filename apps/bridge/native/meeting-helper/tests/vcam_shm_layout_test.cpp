@@ -244,11 +244,20 @@ void testNamesAndSddl() {
   CHECK(serviceStreamEventName(false) == L"Local\\BroadifyVcam-frame");
   const std::wstring streamSddl = streamSecurityDescriptorSddl();
   const std::wstring controlSddl = controlSecurityDescriptorSddl();
+  const std::wstring eventSddl = frameEventSecurityDescriptorSddl();
+  // LOCAL SERVICE keeps full access; INTERACTIVE gets least privilege; no
+  // GENERIC_EXECUTE on the sections; and Authenticated Users is granted on
+  // none of them (the security fix: no local account can write the ring).
   CHECK(streamSddl.find(L"GA;;;LS") != std::wstring::npos);
-  CHECK(streamSddl.find(L"GRGWGX;;;IU") != std::wstring::npos);
-  CHECK(streamSddl.find(L"GRGWGX;;;AU") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GRGW;;;IU") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GX") == std::wstring::npos);
+  CHECK(streamSddl.find(L";;;AU") == std::wstring::npos);
+  CHECK(controlSddl.find(L"GA;;;LS") != std::wstring::npos);
   CHECK(controlSddl.find(L"GWGR;;;IU") != std::wstring::npos);
-  CHECK(controlSddl.find(L"GWGR;;;AU") != std::wstring::npos);
+  CHECK(controlSddl.find(L";;;AU") == std::wstring::npos);
+  CHECK(eventSddl.find(L"GA;;;LS") != std::wstring::npos);
+  CHECK(eventSddl.find(L"GWGX;;;IU") != std::wstring::npos);
+  CHECK(eventSddl.find(L";;;AU") == std::wstring::npos);
 }
 
 void testBgraToNv12Reference() {

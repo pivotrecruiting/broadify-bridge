@@ -43,18 +43,24 @@ Transport-Auswahl:
   nicht mehr blockierend in der Aktivierung; wie in rc.26 bietet sie RGB32
   standardmaessig als einzigen Media Type an.
 
-SHM-DACL: `LOCAL SERVICE` hat Vollzugriff; `IU` (Interactive Users) und `AU`
-(Authenticated Users) haben auf Stream-Mapping und Frame-Event
-Lese-/Schreib-/Execute-Synchronisierungsrechte (`GRGWGX`) und auf die
-Control-Mapping Lese-/Schreibzugriff (`GWGR`), keine weiteren SIDs werden
-eingetragen. Das ist lokal-only, aber jeder lokal
-authentifizierte Benutzer kann Frames und Control-Felder schreiben. Deshalb
-werden Mapping-/Event-Namen und alle Header-Felder als untrusted behandelt:
-Objekte werden nur read-only bzw. mit minimalem Schreibrecht geoeffnet, Namen
-werden laengenbegrenzt kopiert, und Frame-Copy/Publish validieren Magic,
-Version, Owner, Capacity, Geometrie, Format, Slot-Zahl, Slot-Stride und
-Payload-Groesse vor jedem Zugriff. Es werden keine Secrets oder
-Enrollment-Daten im Ring abgelegt.
+SHM-DACL (jedes Objekt eine eigene, least-privilege): `LOCAL SERVICE` (der
+Windows Frame Server, der die DLL hostet) hat Vollzugriff (`GA`); `IU`
+(Interactive Users -- der Helper als Writer und die DLL, wenn sie in einem
+User-Session-Consumer wie Teams laeuft) bekommt exakt die geoeffneten Rechte:
+Stream-Mapping `GRGW` (kein `GX` -- Map liest/schreibt ohne FILE_MAP_EXECUTE),
+Control-Mapping `GWGR`, Frame-Event `GWGX` (auf Events mappt GENERIC_WRITE ->
+EVENT_MODIFY_STATE fuer den Writer, GENERIC_EXECUTE -> SYNCHRONIZE fuer den
+Reader). **`AU` (Authenticated Users) wird auf keinem Objekt mehr eingetragen**
+-- vorher konnte damit jedes lokale Konto Frames und Control-Felder schreiben
+(Video-Spoofing / DoS). Zusaetzlich als Defense-in-Depth (unveraendert):
+Mapping-/Event-Namen und alle Header-Felder werden als untrusted behandelt,
+Objekte nur mit minimalem Recht geoeffnet, Namen laengenbegrenzt kopiert, und
+Frame-Copy/Publish validieren Magic, Version, Owner, Capacity, Geometrie,
+Format, Slot-Zahl, Slot-Stride und Payload-Groesse vor jedem Zugriff. Es werden
+keine Secrets oder Enrollment-Daten im Ring abgelegt. Der SHM-Selftest prueft
+die Stage `control_acl` (LS hat Write) und `control_acl_au` (AU hat KEIN
+Write). Feldtest-Hinweis: `IU` gilt pro Logon-Session -- RDP/Fast-User-Switching
+(Helper in Session A, Consumer in Session B) ist explizit zu testen.
 
 Der SHM-Ring hat drei Slots und wird mit maximaler Kapazitaet
 (`1920x1080 BGRA * 3 Slots`) angelegt. Jeder Slot nutzt eine Sequenznummer als seqlock:
