@@ -5,6 +5,7 @@
 #include "framebus_reader.h"
 #include "framebus_writer.h"
 #include "keyer/coreml_keyer.h"
+#include "keyer/inference_provider.h"
 #include "keyer/keyer_chain.h"
 #include "keyer/keyer_governor.h"
 #include "keyer/matting_backend.h"
@@ -1591,11 +1592,11 @@ class AsyncKeyerWorker {
 
       const double processingMs = static_cast<double>(nowNs() - keyerStartNs) / 1000000.0;
       // The duty-cycle cooldown leaves CPU headroom on machines where a keyer
-      // pass is CPU-bound. When inference runs on the GPU (CoreML/DirectML) the
-      // CPU is idle during the pass, so the cooldown would only add mask-age
-      // latency without protecting anything — skip it for GPU-backed keyers.
-      const bool gpuInference = keyed.status.provider == "coreml" ||
-                                keyed.status.provider == "directml";
+      // pass is CPU-bound. When inference runs off-CPU (CoreML/DirectML/
+      // OpenVINO GPU or NPU) the CPU is idle during the pass, so the cooldown
+      // would only add mask-age latency without protecting anything — skip it
+      // for GPU/NPU-backed keyers.
+      const bool gpuInference = isGpuInferenceProvider(keyed.status.provider);
       if (running_.load() && !gpuInference &&
           processingMs > frameIntervalMs_ * kKeyerCooldownTriggerFactor) {
         const double cooldownMs = std::min(kKeyerMaxCooldownMs, processingMs * kKeyerCooldownFraction);
@@ -2690,6 +2691,12 @@ void runFramePipeline(const Options &options,
                 fusedHandover.phase() != TierHandover::Phase::Warming &&
                 !fusedWarmupBusy.load(std::memory_order_acquire)) {
               const KeyerStatus keyerStatus = fusedKeyer->status();
+              // Tell the governor which fused tier sessions actually exist
+              // (default prebuild is 512+256 - Balanced320 is usually a
+              // phantom) so ladder moves and seeds skip unavailable tiers.
+              fusedGovernor.setFusedTierAvailability(
+                  keyerStatus.tierBuilt512, keyerStatus.tierBuilt320,
+                  keyerStatus.tierBuilt256);
               if (keyerStatus.probeInferenceMs256 > 0.0) {
                 fusedGovernor.seedMeasuredProbes(
                     keyerStatus.probeInferenceMs512,

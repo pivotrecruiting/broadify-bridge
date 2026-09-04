@@ -226,6 +226,14 @@ OrtStatus *appendDirectMlOnSelectedAdapter(Ort::SessionOptions &sessionOptions,
   }
   return status;
 }
+
+void applySessionOptionsPolicyConfig(Ort::SessionOptions &sessionOptions,
+                                     const OrtSessionOptionsPolicy &policy) {
+  sessionOptions.SetIntraOpNumThreads(policy.intraOpThreads);
+  for (const auto &entry : policy.configEntries) {
+    sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
+  }
+}
 #endif
 
 }  // namespace
@@ -307,10 +315,20 @@ class ModnetKeyer::Impl {
         effective = fallbackIt->first;
         status_.probeInferenceMs = fallbackIt->second.probeMs;
       }
+      if (effective != requested && loggedTierMisses_.insert(requested).second) {
+        // Once per requested size: the tier the caller asked for has no
+        // prebuilt session, so inference silently continues at `effective`.
+        // The governor avoids this via tierBuilt*, but an env pin or stale
+        // performance mode can still request a phantom size.
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":\"tier_session_missing\""
+                  << ",\"requested\":" << requested
+                  << ",\"effective\":" << effective << "}" << std::endl;
+      }
       inputWidth_ = effective;
       inputHeight_ = effective;
     }
 #endif
+    status_.metrics.sessionInputSize = inputWidth_;
     const auto tensorStart = std::chrono::steady_clock::now();
     ModnetLetterboxMapping letterbox;
     buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
@@ -534,6 +552,9 @@ class ModnetKeyer::Impl {
           status_.probeInferenceMs256 = probeMs;
         }
       }
+      status_.tierBuilt512 = tierSessions_.count(kFallbackInputSize) != 0u;
+      status_.tierBuilt320 = tierSessions_.count(kBalancedInputSize) != 0u;
+      status_.tierBuilt256 = tierSessions_.count(kPerformanceInputSize) != 0u;
       if (tierSessions_.empty()) {
         setFallback("model_path_invalid");
         return false;
@@ -699,15 +720,20 @@ class ModnetKeyer::Impl {
         if (status_.dmlPath != std::string("dml1_selected_adapter")) {
           status_.dmlPath = attemptedDmlPath;
         }
-        sessionOptions.SetIntraOpNumThreads(dmlPolicy.intraOpThreads);
-        for (const auto &entry : dmlPolicy.configEntries) {
-          sessionOptions.AddConfigEntry(entry.first.c_str(), entry.second.c_str());
-        }
+        applySessionOptionsPolicyConfig(sessionOptions, dmlPolicy);
       } else {
         // No DirectML device (no DX12 GPU or driver): fall back to the CPU
         // provider.
         Ort::GetApi().ReleaseStatus(dmlStatus);
       }
+    }
+    if (status_.provider != std::string("directml")) {
+      // CPU execution provider (no DirectML device, or the self-test forcing
+      // CPU). Intra-op spinning must be off here too: ORT's default busy-wait
+      // between ops burns whole cores in the shared helper process, and the
+      // fallback hits exactly the machines weak enough to feel it.
+      applySessionOptionsPolicyConfig(
+          sessionOptions, makeCpuSessionOptionsPolicy(inferenceThreadCount()));
     }
 #else
     status_.provider = "cpu";
@@ -757,6 +783,9 @@ class ModnetKeyer::Impl {
   std::unique_ptr<Ort::Env> env_;
   std::unique_ptr<Ort::Session> session_;
   std::map<uint32_t, TierSession> tierSessions_;
+  // Requested sizes without a prebuilt session that were already reported via
+  // the one-shot tier_session_missing event (guarded by mutex_ like all state).
+  std::set<uint32_t> loggedTierMisses_;
   Ort::Session *activeSession_ = nullptr;
   std::string inputName_;
   std::string outputName_;

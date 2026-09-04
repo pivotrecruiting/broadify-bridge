@@ -1098,6 +1098,9 @@ class MediaFoundationCameraSource final : public CameraSource {
       sessionGeneration_.fetch_add(1);
       reopenThread = std::move(reopenThread_);
     }
+    // Wake a reopen thread sleeping in its backoff so the join below returns
+    // immediately instead of waiting out up to 5 s of backoff.
+    reopenCv_.notify_all();
     if (reopenThread.joinable()) {
       reopenThread.join();
     }
@@ -1243,17 +1246,16 @@ class MediaFoundationCameraSource final : public CameraSource {
       size_t attempt = 0;
       while (true) {
         {
-          std::lock_guard<std::mutex> lock(mutex_);
-          if (!running_ || generation != sessionGeneration_.load()) {
-            reopenPending_.store(false);
-            reopenThreadRunning_.store(false);
-            return;
-          }
-        }
-        std::this_thread::sleep_for(
-            backoffs[std::min(attempt, std::size(backoffs) - 1)]);
-        {
-          std::lock_guard<std::mutex> lock(mutex_);
+          // Interruptible backoff: stop()/startSet() bump sessionGeneration_
+          // and notify reopenCv_, so joining this thread never waits out a
+          // sleep (up to 5 s at the deepest backoff step) — that stall was
+          // the main reason camera.start could blow the bridge RPC budget.
+          std::unique_lock<std::mutex> lock(mutex_);
+          reopenCv_.wait_for(
+              lock, backoffs[std::min(attempt, std::size(backoffs) - 1)],
+              [&] {
+                return !running_ || generation != sessionGeneration_.load();
+              });
           if (!running_ || generation != sessionGeneration_.load()) {
             reopenPending_.store(false);
             reopenThreadRunning_.store(false);
@@ -1395,6 +1397,10 @@ class MediaFoundationCameraSource final : public CameraSource {
   }
 
   mutable std::mutex mutex_;
+  // Wakes the reopen thread out of its backoff sleep when stop()/startSet()
+  // invalidate the session generation (predicate: !running_ or generation
+  // mismatch, both guarded by mutex_).
+  std::condition_variable reopenCv_;
   bool mfStarted_ = false;
   bool running_ = false;
   std::atomic<bool> reopenPending_{false};
