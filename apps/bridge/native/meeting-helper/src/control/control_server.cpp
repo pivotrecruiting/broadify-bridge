@@ -339,7 +339,12 @@ std::string handleRpc(const std::string &line,
            << "\"published_preview_frames\":" << state.publishedPreviewFrames << ","
            << "\"written_framebus_frames\":" << state.writtenFramebusFrames << ","
            << "\"camera_permission_status\":\"" << jsonEscape(camera.cameraPermissionStatus()) << "\","
-           << "\"camera_last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << ","
+           // camera_last_error is the STICKY error (survives a camera list so
+           // the UI can keep showing "camera stopped delivering frames");
+           // last_error stays live (cleared by listCameras) for existing
+           // consumers of the transient value.
+           << "\"camera_last_error\":" << (camera.stickyLastError().empty() ? "null" : "\"" + jsonEscape(camera.stickyLastError()) + "\"") << ","
+           << "\"camera_last_error_at\":" << (camera.stickyLastErrorAtMs() == 0 ? "null" : std::to_string(camera.stickyLastErrorAtMs())) << ","
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
     return okResponse(id, result.str());
   }

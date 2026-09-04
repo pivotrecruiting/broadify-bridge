@@ -121,9 +121,15 @@ class StubCameraSource final : public CameraSource {
   bool isRunning() const override { return running_; }
   int activeCameraIndex() const override { return activeIndex_; }
   bool copyLatestFrame(VideoFrame &) override { return false; }
-  std::string lastError() const override { return {}; }
+  std::string lastError() const override { return liveError; }
+  std::string stickyLastError() const override { return stickyError; }
+  uint64_t stickyLastErrorAtMs() const override { return stickyErrorAtMs; }
   std::string cameraPermissionStatus() const override { return "authorized"; }
   std::string requestCameraPermission() override { return "authorized"; }
+
+  std::string liveError;
+  std::string stickyError;
+  uint64_t stickyErrorAtMs = 0;
 
   int startCalls = 0;
   int startSetCalls = 0;
@@ -388,6 +394,23 @@ int main() {
     running.store(false);
     server.join();
     fail("program_select accepted an unknown stable_key");
+  }
+
+  // state.get surfaces the STICKY camera error (survives a camera list),
+  // while last_error stays the live value. Decoupling is the whole point of
+  // the sticky field: the UI must keep showing "camera stopped" after a scan.
+  camera.stickyError = "device_removed (0x80070490)";
+  camera.stickyErrorAtMs = 123456u;
+  camera.liveError = "";  // e.g. just after a camera.list cleared the live one
+  const std::string stateGet =
+      sendRpc(endpoint, "{\"id\":\"7g\",\"method\":\"state.get\"}");
+  if (!contains(stateGet,
+                "\"camera_last_error\":\"device_removed (0x80070490)\"") ||
+      !contains(stateGet, "\"camera_last_error_at\":123456") ||
+      !contains(stateGet, "\"last_error\":null")) {
+    running.store(false);
+    server.join();
+    fail("state.get did not surface sticky camera error decoupled from last_error");
   }
 
   (void)sendRpc(endpoint, "{\"id\":\"7\",\"method\":\"control.shutdown\"}");
