@@ -138,6 +138,16 @@ class KeyerAutoGovernor {
   void addSample(double inferenceMs, TimePoint now);
   void setFrameOverheadMs(double overheadMs);
 
+  // Sustained program-loop budget overrun (from the BudgetOverrunReporter):
+  // step ONE fused tier down even though the inference EMA still fits the
+  // budget. This is the CPU-overload path the GPU-only addSample() cannot see
+  // (tensor build, postprocess and readbacks live in the program loop, not in
+  // sessionRunMs). Only steps within the fused tiers (Full512/Balanced320 ->
+  // the next available lower fused tier); leaving fused for Lite/Off stays
+  // sample-driven (liteGate policy). No-op before seeding or at/below
+  // Performance256. Does NOT feed addSample(), so the GPU-cost invariant holds.
+  void noteProgramBudgetOverrun(TimePoint now);
+
   // Deferred Lite256 -> Performance256 step-up (config.deferLiteStepUp).
   // Pending means: the estimate approved the step-up, the tier stays Lite256
   // until the caller's warmup resolves. Cleared by any step-down, seed or

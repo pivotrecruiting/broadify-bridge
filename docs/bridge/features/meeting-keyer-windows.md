@@ -43,6 +43,7 @@ camera frame
 | --- | --- | --- |
 | `BROADIFY_MEETING_GPU_PIPELINE` | `1` | Enables the fused Windows GPU keyer path. Set `0` for async worker path. |
 | `BROADIFY_MEETING_AUTO_DEGRADE` | `1` | Enables the fused tier governor. |
+| `BROADIFY_MEETING_OVERRUN_STEPDOWN` | `1` | Lets a sustained program-loop budget overrun step one fused tier down (CPU overload the GPU-cost samples miss). Set `0` to keep overruns log-only. |
 | `BROADIFY_MEETING_WARM_HANDOVER` | `1` | Keeps make-before-break transitions between fused and async-lite. |
 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `active,256` | Prebuilds the current high tier plus 256 on first load. Accepts `all`, `active`, `512`, `320`, `256`, or mode names in a comma list. |
 | `BROADIFY_MEETING_DML_QUEUE` | `compute` | DirectML DML1 command queue type. Use `direct` for A/B against rc.21. |
