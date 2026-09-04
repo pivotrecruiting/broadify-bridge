@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 
+using broadify::meeting::makeCpuSessionOptionsPolicy;
 using broadify::meeting::makeDirectMlSessionOptionsPolicy;
 using broadify::meeting::DirectMlQueueType;
 using broadify::meeting::directMlQueueTypeLabel;
@@ -52,5 +53,22 @@ int main() {
   ok &= expect(std::string(directMlQueueTypeLabel(DirectMlQueueType::Direct)) ==
                    "direct",
                "direct DML queue label");
+
+  const auto cpuPolicy = makeCpuSessionOptionsPolicy(4);
+  ok &= expect(cpuPolicy.intraOpThreads == 4, "cpu policy keeps thread count");
+  ok &= expect(cpuPolicy.configEntries.size() == 1, "cpu policy one config entry");
+  ok &= expect(cpuPolicy.configEntries[0].first ==
+                   "session.intra_op.allow_spinning",
+               "cpu allow spinning key");
+  ok &= expect(cpuPolicy.configEntries[0].second == "0",
+               "cpu allow spinning disabled");
+  ok &= expect(!cpuPolicy.disableMemPattern, "cpu policy keeps mem pattern");
+  ok &= expect(!cpuPolicy.sequentialExecution, "cpu policy keeps parallel mode");
+  ok &= expect(cpuPolicy.freeDimensionOverrides.empty(),
+               "cpu policy has no free dim overrides");
+  ok &= expect(makeCpuSessionOptionsPolicy(0).intraOpThreads == 1,
+               "cpu policy clamps threads to >= 1");
+  ok &= expect(makeCpuSessionOptionsPolicy(-3).intraOpThreads == 1,
+               "cpu policy clamps negative threads");
   return ok ? 0 : 1;
 }
