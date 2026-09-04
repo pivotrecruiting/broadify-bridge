@@ -365,6 +365,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(retained_mask_selection_test
     tests/retained_mask_selection_test.cpp
   )
+  add_executable(json_utils_test
+    tests/json_utils_test.cpp
+    src/util/json_utils.cpp
+  )
   add_executable(compositor_input_selection_test
     tests/compositor_input_selection_test.cpp
     src/pipeline/compositor_input_selection.cpp
@@ -496,6 +500,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_stall_test
     frame_pipeline_gating_test
     retained_mask_selection_test
+    json_utils_test
     compositor_input_selection_test
     media_page_cache_test
     tier_handover_test

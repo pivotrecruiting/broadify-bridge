@@ -172,6 +172,54 @@ std::string extractStringField(const std::string &body, const std::string &field
   return unescapeJsonString(body.substr(pos + 1, end - pos - 1));
 }
 
+std::vector<std::string> extractStringArrayField(const std::string &body,
+                                                  const std::string &field) {
+  std::vector<std::string> values;
+  size_t pos = findValueStart(body, field);
+  if (pos == std::string::npos || pos >= body.size() || body[pos] != '[') {
+    return values;
+  }
+  ++pos;  // step past '['
+  while (pos < body.size()) {
+    while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t' ||
+                                 body[pos] == '\n' || body[pos] == '\r' ||
+                                 body[pos] == ',')) {
+      ++pos;
+    }
+    if (pos >= body.size() || body[pos] == ']') {
+      break;
+    }
+    if (body[pos] != '"') {
+      // Only string arrays are supported; anything else ends parsing.
+      break;
+    }
+    const size_t stringStart = pos + 1u;
+    size_t end = stringStart;
+    bool escaped = false;
+    for (; end < body.size(); ++end) {
+      const char ch = body[end];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch == '"') {
+        break;
+      }
+    }
+    if (end >= body.size()) {
+      break;  // unterminated string
+    }
+    values.push_back(
+        unescapeJsonString(body.substr(stringStart, end - stringStart)));
+    pos = end + 1u;
+  }
+  return values;
+}
+
 bool extractBoolField(const std::string &body, const std::string &field, bool fallback) {
   const size_t pos = findValueStart(body, field);
   if (pos == std::string::npos) {
