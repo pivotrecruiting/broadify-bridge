@@ -204,6 +204,61 @@ bool controlMappingAclGrantsLocalServiceWrite(const std::wstring &controlName) {
   LocalFree(descriptor);
   return ok;
 }
+
+// Security regression guard: the control mapping must NOT grant write access
+// to Authenticated Users (the vcam-SHM-ACL fix). Returns true when no
+// allow-ACE for the AU SID carries GENERIC_WRITE or FILE_MAP_WRITE.
+bool controlMappingAclDeniesAuthenticatedUsersWrite(
+    const std::wstring &controlName) {
+  HANDLE control = OpenFileMappingW(READ_CONTROL, FALSE, controlName.c_str());
+  if (control == nullptr) {
+    return false;
+  }
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  PACL dacl = nullptr;
+  const DWORD securityResult =
+      GetSecurityInfo(control, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                      nullptr, nullptr, &dacl, nullptr, &descriptor);
+  CloseHandle(control);
+  if (securityResult != ERROR_SUCCESS || dacl == nullptr) {
+    if (descriptor != nullptr) {
+      LocalFree(descriptor);
+    }
+    return false;
+  }
+
+  SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+  PSID authenticatedUsersSid = nullptr;
+  bool deniesWrite = true;
+  if (AllocateAndInitializeSid(&ntAuthority, 1, SECURITY_AUTHENTICATED_USER_RID,
+                               0, 0, 0, 0, 0, 0, 0, &authenticatedUsersSid)) {
+    for (DWORD i = 0; i < dacl->AceCount; ++i) {
+      void *ace = nullptr;
+      if (!GetAce(dacl, i, &ace)) {
+        continue;
+      }
+      const auto *header = static_cast<const ACE_HEADER *>(ace);
+      if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
+        continue;
+      }
+      const auto *allowed = static_cast<const ACCESS_ALLOWED_ACE *>(ace);
+      PSID sid = const_cast<DWORD *>(&allowed->SidStart);
+      if (!EqualSid(sid, authenticatedUsersSid)) {
+        continue;
+      }
+      const DWORD mask = allowed->Mask;
+      if ((mask & (GENERIC_WRITE | FILE_MAP_WRITE)) != 0) {
+        deniesWrite = false;
+        break;
+      }
+    }
+    FreeSid(authenticatedUsersSid);
+  } else {
+    deniesWrite = false;
+  }
+  LocalFree(descriptor);
+  return deniesWrite;
+}
 #endif
 
 void printEvent(const std::string &json) {
@@ -474,6 +529,12 @@ int runVcamShmSelfTest(const Options &options, const char *argv0) {
   }
   if (globalNamespace && !controlMappingAclGrantsLocalServiceWrite(controlName)) {
     printEvent("{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"control_acl\"}");
+    return 1;
+  }
+  if (globalNamespace &&
+      !controlMappingAclDeniesAuthenticatedUsersWrite(controlName)) {
+    printEvent(
+        "{\"type\":\"vcam_shm_selftest\",\"ok\":false,\"stage\":\"control_acl_au\"}");
     return 1;
   }
   if (!globalNamespace) {

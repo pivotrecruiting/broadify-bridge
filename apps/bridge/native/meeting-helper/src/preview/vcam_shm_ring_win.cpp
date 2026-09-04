@@ -601,6 +601,8 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
 
   SecurityAttributes streamSecurity(
       broadify::vcam_shm::streamSecurityDescriptorSddl());
+  SecurityAttributes eventSecurity(
+      broadify::vcam_shm::frameEventSecurityDescriptorSddl());
   SecurityAttributes controlSecurity(
       broadify::vcam_shm::controlSecurityDescriptorSddl());
   LARGE_INTEGER size{};
@@ -615,7 +617,7 @@ bool VcamShmRingWin::createWithNamespace(bool globalNamespace,
   }
 
   resources.eventHandle =
-      CreateEventW(streamSecurity.get(), FALSE, FALSE, resources.eventName.c_str());
+      CreateEventW(eventSecurity.get(), FALSE, FALSE, resources.eventName.c_str());
   if (resources.eventHandle == nullptr) {
     reason = lastErrorText("CreateEventW(frame)");
     closeResources(resources);

@@ -516,12 +516,28 @@ std::wstring serviceStreamEventName(bool globalNamespace) {
          L"BroadifyVcam-frame";
 }
 
+// Section (file-mapping) and event ACLs are least-privilege: LOCAL SERVICE
+// (the Windows Frame Server that hosts the DLL) gets full access, and the
+// INTERACTIVE logon group (the helper, and the DLL when it runs inside a
+// user-session consumer like Teams) gets exactly the rights it opens with.
+// Authenticated Users (AU) is deliberately NOT granted: it let any local
+// account write frames/control fields into the ring (video spoofing / DoS).
+// GENERIC_EXECUTE is dropped from the sections (Map read/write needs no
+// FILE_MAP_EXECUTE) and kept only on the event (see below).
 std::wstring streamSecurityDescriptorSddl() {
-  return L"D:P(A;;GA;;;LS)(A;;GRGWGX;;;IU)(A;;GRGWGX;;;AU)";
+  return L"D:P(A;;GA;;;LS)(A;;GRGW;;;IU)";
 }
 
 std::wstring controlSecurityDescriptorSddl() {
-  return L"D:P(A;;GA;;;LS)(A;;GWGR;;;IU)(A;;GWGR;;;AU)";
+  return L"D:P(A;;GA;;;LS)(A;;GWGR;;;IU)";
+}
+
+// Event object ACL. On synchronization objects GENERIC_WRITE maps to
+// EVENT_MODIFY_STATE (the writer's SetEvent) and GENERIC_EXECUTE maps to
+// SYNCHRONIZE (the reader's wait), so INTERACTIVE needs GW|GX to cover both
+// the helper writer and the DLL reader. LOCAL SERVICE keeps full access.
+std::wstring frameEventSecurityDescriptorSddl() {
+  return L"D:P(A;;GA;;;LS)(A;;GWGX;;;IU)";
 }
 
 std::wstring securityDescriptorSddl() {
