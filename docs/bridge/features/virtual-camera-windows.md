@@ -233,8 +233,9 @@ Blind Spot explizit; Feld- und Installer-Tests muessen
 `reason=global_namespace_privilege` auf normalen Desktops pruefen.
 
 Seit rc.18 field-fix liest der D3D11-Guided-Refine-Pfad die aktuelle Maske
-zurueck; der finale D3D11-Staging-Ring ist nur mit
-`BROADIFY_MEETING_STAGING_RING=1` aktiv. Fuer Hybrid-GPU-A/B-Tests gibt es
+zurueck; der finale D3D11-Staging-Ring ist **default aktiv** (Kill-Switch
+`BROADIFY_MEETING_STAGING_RING=0` stellt den blockierenden rc.18-Readback
+wieder her). Fuer Hybrid-GPU-A/B-Tests gibt es
 `BROADIFY_MEETING_GPU_POLICY=split` (Compositor Default-Adapter, DirectML
 High-Performance); `auto` bleibt der gemeinsame Adapterpfad.
 

@@ -6,8 +6,9 @@
 // D3D11 port of the Metal GPU compositor (metal_compositor.mm): one compute
 // dispatch composites background (mode/company image), back graphics, the
 // keyed presenter (or cover camera), the media layer and front graphics into
-// an RGBA program frame. Enabled ONLY with BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=1
-// (kill-switch default OFF); every failure falls back to the CPU compositor.
+// an RGBA program frame. Default ON (matching the macOS Metal path); the
+// kill-switch BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 forces the CPU
+// compositor, and every failure also falls back to it.
 //
 // The HLSL kernel below is a line-for-line port of the MSL kernel so both
 // backends stay pixel-equivalent; keep them in sync.
@@ -507,9 +508,16 @@ bool mapReadbackRing(ID3D11DeviceContext *context,
 }
 
 bool stagingRingEnabled() {
+  // Default ON: the compose readback pipelines through a depth-3 staging ring
+  // (maps frame N-1) instead of a blocking Map on the current frame, removing
+  // a full GPU sync from the program loop every frame. Kill-switch: set
+  // BROADIFY_MEETING_STAGING_RING=0 to restore the rc.18 blocking readback.
+  // (rc.18 disabled this while chasing a ghosting regression whose actual
+  // cause was the guided-mask readback, which stays current-frame here.)
+  // Costs at most one extra frame of output latency.
   static const bool enabled = [] {
     const char *value = std::getenv("BROADIFY_MEETING_STAGING_RING");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
+    return value == nullptr || std::strcmp(value, "0") != 0;
   }();
   return enabled;
 }

@@ -64,10 +64,15 @@ Der Guided-Refine-Readback liest immer die Maske des aktuellen Kamera-Frames
 zurueck. Dadurch wird die Kante nicht mit einer Maske aus Frame N-1 auf Frame
 N composited.
 
-Der finale D3D11-Compositor-Readback nutzt default den direkten blocking
-Copy/Map-Pfad (rc.12-Latenz). Die Staging-Ring-Variante ist nur per
-`BROADIFY_MEETING_STAGING_RING=1` aktiv. Wenn sie aktiv ist, meldet
-`metrics.staging_readback_depth` die Ring-Tiefe, sonst `0`.
+Der finale D3D11-Compositor-Readback nutzt **default den Staging-Ring**
+(Tiefe 3, mappt Frame N-1) statt eines blockierenden `Map` auf den aktuellen
+Frame — das entfernt pro Frame einen vollen GPU-Sync aus dem Program-Loop,
+kostet dafuer maximal einen Frame zusaetzliche Ausgabelatenz. Kill-Switch:
+`BROADIFY_MEETING_STAGING_RING=0` stellt den rc.18-Zustand (blockierender
+Copy/Map, rc.12-Latenz) wieder her. `metrics.staging_readback_depth` meldet
+die Ring-Tiefe (3 aktiv, `0` bei gesetztem Kill-Switch). Der
+Guided-Refine-Readback bleibt current-frame (das war die eigentliche
+rc.18-Ghost-Ursache), unabhaengig von diesem Schalter.
 
 ## Latenzpolitik
 
