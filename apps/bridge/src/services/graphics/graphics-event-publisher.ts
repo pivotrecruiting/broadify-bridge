@@ -20,6 +20,7 @@ export function publishGraphicsStatusEvent(
     event: "graphics_status",
     data: {
       reason,
+      source: status.source ?? "studio",
       outputsConfigured: status.outputsConfigured,
       outputStatus: status.outputStatus,
       rendererLifecycleState: status.rendererLifecycleState,
