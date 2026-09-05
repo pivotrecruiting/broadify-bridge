@@ -58,6 +58,59 @@ std::string programSectionJson(const MeetingState &state, const std::string &sec
   return "{\"enabled\":false}";
 }
 
+// Compact projection of the active program state for the meeting_status push:
+// only the parsed on/off + identity fields that other control clients need to
+// mirror "which button is active". Deliberately excludes heavy/volatile data
+// (cornerbug image_data_url, media rendered_page_path, all geometry) — those
+// stay retrievable via program.get so the 2s status push stays small.
+std::string programSummaryJson(const MeetingState &state) {
+  std::ostringstream out;
+  const bool cornerbugHasImage =
+      !extractStringField(state.cornerbug.rawJson, "image_data_url").empty();
+  out << "{"
+      << "\"media_layer\":{\"enabled\":"
+      << (state.mediaLayer.enabled ? "true" : "false") << ",\"mode\":\""
+      << jsonEscape(state.mediaLayer.mode) << "\",\"page\":" << state.mediaLayer.page
+      << ",\"page_count\":" << state.mediaLayer.pageCount << ",\"asset_id\":"
+      << (state.mediaLayer.assetId.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.mediaLayer.assetId) + "\"")
+      << ",\"render_status\":"
+      << (state.mediaLayer.renderStatus.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.mediaLayer.renderStatus) + "\"")
+      << "},"
+      << "\"camera_render\":{\"enabled\":"
+      << (state.cameraRender.enabled ? "true" : "false") << ",\"mirror\":"
+      << (state.cameraRender.mirror ? "true" : "false") << "},"
+      << "\"speaker_layout\":{\"enabled\":"
+      << (state.speakerLayout.enabled ? "true" : "false") << ",\"layout\":\""
+      << jsonEscape(state.speakerLayout.layout) << "\",\"scale\":"
+      << state.speakerLayout.scale << "},"
+      << "\"cornerbug\":{\"enabled\":"
+      << (state.cornerbug.enabled ? "true" : "false") << ",\"has_image\":"
+      << (cornerbugHasImage ? "true" : "false") << "},"
+      << "\"graphics\":{\"enabled\":"
+      << (state.graphics.enabled ? "true" : "false") << ",\"graphic_id\":"
+      << (state.graphics.graphicId.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.graphicId) + "\"")
+      << ",\"template\":"
+      << (state.graphics.templateName.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.templateName) + "\"")
+      << ",\"source\":"
+      << (state.graphics.source.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.source) + "\"")
+      << ",\"handoff_target\":"
+      << (state.graphics.handoffTarget.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.handoffTarget) + "\"")
+      << "}}";
+  return out.str();
+}
+
 bool isProgramSection(const std::string &section) {
   return section == "speaker_layout" || section == "cornerbug" || section == "media_layer" || section == "graphics" || section == "camera";
 }
@@ -334,6 +387,8 @@ std::string handleRpc(const std::string &line,
            << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
            << "\"program_dirty\":" << (state.programDirty ? "true" : "false") << ","
            << "\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false") << ","
+           << "\"program_revision\":" << state.programRevision << ","
+           << "\"program\":" << programSummaryJson(state) << ","
            << "\"rendered_frames\":" << state.renderedFrames << ","
            << "\"reused_frames\":" << state.reusedFrames << ","
            << "\"published_preview_frames\":" << state.publishedPreviewFrames << ","
