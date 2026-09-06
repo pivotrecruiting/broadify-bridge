@@ -45,6 +45,11 @@ export type GraphicsOutputStatusT =
   | "error";
 
 export type GraphicsStatusSnapshotT = {
+  // Which graphics plane this status belongs to: "studio" (default singleton)
+  // or the meeting planes ("meeting-back"/"meeting-front"). Lets a client keep
+  // meeting and studio active-preset state apart instead of one clobbering the
+  // other. Optional so an older bridge (no source) defaults to "studio".
+  source?: string;
   rendererLifecycleState: GraphicsRendererLifecycleStateT;
   outputsConfigured: boolean;
   outputStatus: GraphicsOutputStatusT;

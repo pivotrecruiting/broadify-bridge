@@ -92,6 +92,12 @@ type ValidateOutputFormatT = (
 ) => Promise<void>;
 
 type GraphicsManagerDepsT = {
+  /**
+   * Plane identity carried on every graphics_status event/snapshot so a client
+   * can keep this plane's active presets apart from the others. Default
+   * "studio" for the singleton; the meeting planes pass "meeting-back"/-front.
+   */
+  sourceId?: string;
   createRenderer?: () => GraphicsRenderer;
   /**
    * Explicit FrameBus name/slotCount for this manager instance. Wins over the
@@ -179,8 +185,11 @@ export class GraphicsManager {
     GraphicsManagerDepsT["browserInputRuntime"]
   >;
 
+  private readonly sourceId: string;
+
   constructor(deps: GraphicsManagerDepsT = {}) {
     this.deps = deps;
+    this.sourceId = deps.sourceId ?? "studio";
     this.browserInputRuntime =
       this.deps.browserInputRuntime ?? browserInputRuntime;
     this.renderer = this.deps.createRenderer?.() ?? this.selectRenderer();
@@ -794,6 +803,7 @@ export class GraphicsManager {
    * @returns Snapshot of output configuration and layer state.
    */
   getStatus(): {
+    source?: string;
     rendererLifecycleState: GraphicsStatusSnapshotT["rendererLifecycleState"];
     outputsConfigured: boolean;
     outputStatus: GraphicsStatusSnapshotT["outputStatus"];
@@ -830,6 +840,7 @@ export class GraphicsManager {
     const status = this.getStatusSnapshot();
 
     return {
+      source: status.source,
       rendererLifecycleState: status.rendererLifecycleState,
       outputsConfigured: status.outputsConfigured,
       outputStatus: status.outputStatus,
@@ -888,6 +899,7 @@ export class GraphicsManager {
     );
 
     return {
+      source: this.sourceId,
       rendererLifecycleState: this.renderer.getLifecycleState?.() ?? "ready",
       outputsConfigured:
         this.outputStatus === "ready" &&
