@@ -347,6 +347,51 @@ int main() {
     }
   }
 
+  // state.get carries the compact program summary + a monotonic
+  // program_revision so other control clients can mirror "what is active".
+  const std::string programState1 =
+      sendRpc(endpoint, "{\"id\":\"6a\",\"method\":\"state.get\"}");
+  if (!contains(programState1, "\"program\":") ||
+      !contains(programState1, "\"program_revision\":") ||
+      !contains(programState1, "\"media_layer\":{\"enabled\":true") ||
+      !contains(programState1, "\"page\":2") ||
+      !contains(programState1, "\"page_count\":4") ||
+      !contains(programState1, "\"render_status\":\"ready\"")) {
+    running.store(false);
+    server.join();
+    fail("state.get did not surface the program summary");
+  }
+  // Heavy fields must NOT be in the status push.
+  if (contains(programState1, "rendered_page_path")) {
+    running.store(false);
+    server.join();
+    fail("state.get program summary leaked rendered_page_path");
+  }
+
+  // A cornerbug logo reports has_image=true but never the base64 image itself.
+  const std::string logoUpdate = sendRpc(
+      endpoint,
+      "{\"id\":\"6b\",\"method\":\"program.update\",\"section\":\"cornerbug\","
+      "\"values\":{\"enabled\":true,\"image_data_url\":\"data:image/png;base64,AAAA\"}}");
+  if (!contains(logoUpdate, "\"ok\":true")) {
+    running.store(false);
+    server.join();
+    fail("cornerbug update failed");
+  }
+  const std::string programState2 =
+      sendRpc(endpoint, "{\"id\":\"6c\",\"method\":\"state.get\"}");
+  if (!contains(programState2, "\"cornerbug\":{\"enabled\":true,\"has_image\":true}")) {
+    running.store(false);
+    server.join();
+    fail("state.get did not report cornerbug has_image");
+  }
+  if (contains(programState2, "image_data_url") ||
+      contains(programState2, "base64")) {
+    running.store(false);
+    server.join();
+    fail("state.get leaked the cornerbug image_data_url");
+  }
+
   // camera.open_set resolves camera_stable_keys by device key, so a swapped
   // index order in camera_indices must not decide which cameras open.
   (void)sendRpc(endpoint, "{\"id\":\"7a\",\"method\":\"camera.stop\"}");
