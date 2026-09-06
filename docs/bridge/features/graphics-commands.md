@@ -92,6 +92,8 @@ Schema: `GraphicsSendSchema`
 
 **Validierung / Regeln**
 - `durationMs` erfordert `presetId`.
+- `presetId` ist **exklusiv**: ein Send mit `presetId` räumt konkurrierende Ebenen derselben Replace-Gruppe (alle Nicht-`backgrounds`) weg (`prepareBeforeRender` → `removeLayersNotInPreset`) und setzt das aktive Preset.
+- `reportPresetId` ist **reporting-only**: es lässt die Ebene unter `graphics_status.activePresets` erscheinen (damit Steuer-Clients den aktiven Preset-Zustand spiegeln), nimmt aber **nie** am exklusiven Ownership-Pfad teil und setzt kein aktives Preset. Additive Ebenen (Meeting-Presets, die mit der Content-Ebene und über Kategorien hinweg koexistieren) senden `reportPresetId` statt `presetId`. Nicht mit `durationMs` kombinieren (nur `presetId` erfüllt die durationMs-Regel).
 - `manifest.render` wird auf das aktive Output-Format normalisiert (`outputConfig.format`).
 - Bei Abweichung zwischen Payload und aktivem Output-Format wird ein Warn-Log geschrieben, der Send wird nicht abgebrochen.
 - HTML/CSS wird gesäubert und gegen gefährliche Inhalte geprüft.
@@ -159,12 +161,25 @@ Schema: `GraphicsRemovePresetSchema`
 **Antwort** (Auszug)
 ```json
 {
+  "source": "studio",
   "outputConfig": { ... },
-  "layers": [ { "layerId": "...", "category": "...", "layout": { ... }, "zIndex": 30 } ],
+  "layers": [ { "layerId": "...", "category": "...", "layout": { ... }, "zIndex": 30, "presetId": "...", "reportPresetId": "..." } ],
   "activePreset": { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] },
   "activePresets": [ { "presetId": "...", "durationMs": 5000, "layerIds": ["..."] } ]
 }
 ```
+- Deckt nur die **Studio**-Plane ab.
+
+## 9) graphics_list_meeting
+**Payload:** none
+
+**Antwort**
+```json
+{ "planes": [ { "source": "meeting-back", ... }, { "source": "meeting-front", ... } ] }
+```
+- Read-only Status der beiden Meeting-Graphics-Planes (jede Plane wie `graphics_list`, inkl. `source` und `activePresets` mit den per `reportPresetId` gemeldeten Meeting-Presets).
+- Initialisiert die Meeting-Manager **nicht** (sicher aufrufbar ohne laufendes Meeting → leere Planes).
+- Teil des Reconnect-Resync (`graphics_meeting_snapshot`), damit Preset-Badges nach einem Relay-Reconnect autoritativ bleiben (das Studio-`graphics_list` deckt die Meeting-Planes nicht ab).
 
 ## Sicherheitsregeln (Templates)
 - Keine `<script>` Tags, Inline‑Events, externe URLs oder `@import`.

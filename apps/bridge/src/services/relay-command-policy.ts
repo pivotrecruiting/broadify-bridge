@@ -100,6 +100,7 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   graphics_remove: sideEffect("graphics_remove", "graphics", 20_000, 16_000, "graphics", ["graphics"]),
   graphics_remove_preset: sideEffect("graphics_remove_preset", "graphics", 20_000, 16_000, "graphics", ["graphics"]),
   graphics_list: readOnly("graphics_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["graphics"]),
+  graphics_list_meeting: readOnly("graphics_list_meeting", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["graphics"]),
   meeting_get_state: readOnly("meeting_get_state", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.state"]),
   meeting_engine_start: sideEffect("meeting_engine_start", "helper_start", 35_000, 30_000, "meeting.engine", ["meeting.engine"], "after_state_check", "async", "join_existing"),
   meeting_engine_stop: sideEffect("meeting_engine_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.engine", ["meeting.engine"], "after_state_check"),

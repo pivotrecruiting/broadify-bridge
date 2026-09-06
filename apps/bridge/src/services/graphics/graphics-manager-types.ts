@@ -20,6 +20,9 @@ export type GraphicsLayerStateT = {
   schema: Record<string, unknown>;
   defaults: Record<string, unknown>;
   presetId?: string;
+  // Reporting-only preset id (see GraphicsSendSchema.reportPresetId): surfaces in
+  // status/activePresets but never drives preset ownership.
+  reportPresetId?: string;
 };
 
 export type GraphicsActivePresetT = {

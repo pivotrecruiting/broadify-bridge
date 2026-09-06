@@ -1044,6 +1044,11 @@ export class RelayClient {
       { command: "engine_get_status", event: "engine_status_snapshot" },
       { command: "list_outputs", event: "outputs_snapshot" },
       { command: "graphics_list", event: "graphics_snapshot" },
+      // The studio graphics_list only covers the studio plane. The meeting
+      // graphics planes (back/front) carry the additive preset "active" state
+      // that control clients mirror, so they must be re-published on reconnect
+      // too — otherwise a preset badge stays stale until the next live change.
+      { command: "graphics_list_meeting", event: "graphics_meeting_snapshot" },
       // Meeting + deck state joined the resync set with WP-2.4: after a relay
       // reconnect the webapp otherwise kept a stale recording/program view.
       // The webapp already listens for "meeting_status_snapshot".
