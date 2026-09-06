@@ -831,4 +831,56 @@ describe("GraphicsManager with configured outputs", () => {
     expect(status.layers).toHaveLength(2);
     expect(status.activePreset?.presetId).toBe("foreground-preset");
   });
+
+  it("surfaces reportPresetId in activePresets without owning the preset", async () => {
+    const manager = createManagerWithRealTransition();
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "report-layer",
+      category: "lower-thirds",
+      reportPresetId: "preset-meeting-1",
+    });
+
+    const status = manager.getStatus();
+
+    // Reported for cross-client badge sync...
+    expect(status.activePresets.map((preset) => preset.presetId)).toEqual([
+      "preset-meeting-1",
+    ]);
+    // ...but never taken as the owned/active preset (no ownership, no timer).
+    expect(status.activePreset).toBeNull();
+  });
+
+  it("does not remove other layers when a reportPresetId is sent (no ownership sweep)", async () => {
+    const manager = createManagerWithRealTransition();
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    // An independent, non-preset layer (mirrors the meeting content layer).
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "content-layer",
+      category: "overlays",
+      zIndex: 20,
+    });
+    // A reporting-only preset layer in the SAME (non-background) replace group:
+    // a real presetId here would sweep "content-layer"; reportPresetId must not.
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "report-layer",
+      category: "lower-thirds",
+      zIndex: 30,
+      reportPresetId: "preset-meeting-1",
+    });
+
+    const status = manager.getStatus();
+    const layerIds = status.layers.map(
+      (layer) => (layer as { layerId: string }).layerId
+    );
+
+    expect(layerIds).toContain("content-layer");
+    expect(layerIds).toContain("report-layer");
+    expect(status.activePreset).toBeNull();
+  });
 });

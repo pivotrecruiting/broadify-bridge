@@ -27,6 +27,8 @@ import {
 import {
   forgetMeetingGraphicsPlane,
   isMeetingGraphicsLayerPayload,
+  meetingBackGraphicsManager,
+  meetingFrontGraphicsManager,
   rememberMeetingGraphicsPlane,
   resolveMeetingGraphicsManager,
 } from "./meeting/meeting-graphics-manager.js";
@@ -503,6 +505,24 @@ export class CommandRouter {
           return {
             success: true,
             data: graphicsManager.getStatus(),
+          };
+        }
+
+        case "graphics_list_meeting": {
+          // Read-only status of the two meeting graphics planes (back/front),
+          // each getStatus() carries its own `source`. Deliberately does NOT
+          // initialize the managers: it must be safe to call when no meeting is
+          // running (returns empty planes), and it feeds the reconnect resync so
+          // preset badges stay authoritative after a relay reconnect (the studio
+          // graphics_list only covers the studio plane).
+          return {
+            success: true,
+            data: {
+              planes: [
+                meetingBackGraphicsManager.getStatus(),
+                meetingFrontGraphicsManager.getStatus(),
+              ],
+            },
           };
         }
 

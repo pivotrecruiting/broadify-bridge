@@ -836,6 +836,7 @@ export class GraphicsManager {
       layout: layer.layout,
       zIndex: layer.zIndex,
       presetId: layer.presetId,
+      reportPresetId: layer.reportPresetId,
     }));
     const status = this.getStatusSnapshot();
 
@@ -887,12 +888,17 @@ export class GraphicsManager {
       : null;
     const layerIdsByPreset = new Map<string, string[]>();
     Array.from(this.layers.values()).forEach((layer) => {
-      if (!layer.presetId) {
+      // Group by the owning preset id when present, otherwise by the
+      // reporting-only id. The latter lets additive meeting preset layers
+      // surface in activePresets WITHOUT going through preset ownership
+      // (they are sent with reportPresetId, never presetId).
+      const groupId = layer.presetId ?? layer.reportPresetId;
+      if (!groupId) {
         return;
       }
-      const layerIds = layerIdsByPreset.get(layer.presetId) ?? [];
+      const layerIds = layerIdsByPreset.get(groupId) ?? [];
       layerIds.push(layer.layerId);
-      layerIdsByPreset.set(layer.presetId, layerIds);
+      layerIdsByPreset.set(groupId, layerIds);
     });
     const activePresets = Array.from(layerIdsByPreset.entries()).map(
       ([presetId, layerIds]) => buildPresetStatus(presetId, layerIds)
