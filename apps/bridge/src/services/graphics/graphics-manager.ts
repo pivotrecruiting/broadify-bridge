@@ -588,6 +588,15 @@ export class GraphicsManager {
     this.presetService.maybeStartPresetTimers(
       renderedLayerIds.length > 0 ? renderedLayerIds : [prepared.layerId],
     );
+
+    // Reporting-only preset layers (meeting presets) deliberately skip the
+    // exclusive preset-ownership path (syncAfterRender returns early without a
+    // presetId), which is what normally publishes status. Broadcast the change
+    // here so control clients learn the preset became active live — otherwise
+    // the "active" state only appears on a reconnect resync.
+    if (prepared.reportPresetId) {
+      publishGraphicsStatusEvent("report_preset_send", this.getStatusSnapshot());
+    }
   }
 
   /**
@@ -753,6 +762,15 @@ export class GraphicsManager {
 
     await this.removeLayerById(data.layerId, "remove_layer");
     this.presetService.handleLayerRemoved(layer);
+
+    // Mirror the reporting-only send path: broadcast status when a reportPresetId
+    // layer is removed so control clients see the preset go inactive live.
+    if (layer.reportPresetId) {
+      publishGraphicsStatusEvent(
+        "report_preset_remove",
+        this.getStatusSnapshot(),
+      );
+    }
   }
 
   /**
