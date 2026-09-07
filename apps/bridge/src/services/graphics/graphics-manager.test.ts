@@ -466,6 +466,7 @@ describe("GraphicsManager with configured outputs", () => {
         warn: jest.fn(),
         error: jest.fn(),
       },
+      publishBridgeEvent: jest.fn(),
     });
     jest.clearAllMocks();
     mockValidateTemplate.mockReturnValue({ assetIds: new Set<string>() });
@@ -851,6 +852,37 @@ describe("GraphicsManager with configured outputs", () => {
     ]);
     // ...but never taken as the owned/active preset (no ownership, no timer).
     expect(status.activePreset).toBeNull();
+  });
+
+  it("publishes a graphics_status event on reportPresetId send and remove", async () => {
+    const manager = createManagerWithRealTransition();
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    const publish = getBridgeContext().publishBridgeEvent as jest.Mock;
+
+    const graphicsStatusEvents = () =>
+      publish.mock.calls.filter(([event]) => event?.event === "graphics_status");
+
+    const beforeSend = graphicsStatusEvents().length;
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "report-layer",
+      category: "lower-thirds",
+      reportPresetId: "preset-meeting-1",
+    });
+    // The reporting-only send must broadcast status so control clients see it
+    // become active live (regression: it previously only surfaced on resync).
+    expect(graphicsStatusEvents().length).toBeGreaterThan(beforeSend);
+    const sendEvent = graphicsStatusEvents().at(-1)?.[0];
+    expect(
+      sendEvent.data.activePresets.map((p: { presetId: string }) => p.presetId)
+    ).toContain("preset-meeting-1");
+
+    const beforeRemove = graphicsStatusEvents().length;
+    await manager.removeLayer({ layerId: "report-layer" });
+    expect(graphicsStatusEvents().length).toBeGreaterThan(beforeRemove);
+    const removeEvent = graphicsStatusEvents().at(-1)?.[0];
+    expect(removeEvent.data.activePresets).toHaveLength(0);
   });
 
   it("does not remove other layers when a reportPresetId is sent (no ownership sweep)", async () => {
