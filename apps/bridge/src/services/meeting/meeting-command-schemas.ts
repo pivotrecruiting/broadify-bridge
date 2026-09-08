@@ -73,7 +73,10 @@ export const MeetingKeyerConfigureSchema = z
     // over the un-keyed camera. Forwarded to the helper's keyer.configure.
     conference_mode: z.boolean().optional(),
   })
-  .strict()
+  // Forward-tolerant: unknown keys are stripped, not rejected, so a newer webapp
+  // field can never 400 this (soon-to-be-older) bridge version and take the
+  // whole keyer/background push down. Known fields stay fully validated.
+  .strip()
   .refine(
     (value) =>
       value.fresh_mask_age_ms === undefined ||
@@ -177,7 +180,9 @@ export const MeetingContentVideoSetSchema = z
     loop: z.boolean().default(true),
     ...meetingContentPlacementFields,
   })
-  .strict();
+  // Forward-tolerant: strip unknown keys instead of rejecting, so a newer
+  // webapp placement/style field never 400s an older bridge and drops content.
+  .strip();
 
 export const MeetingBrowserSourceSetSchema = z
   .object({
@@ -185,7 +190,8 @@ export const MeetingBrowserSourceSetSchema = z
     url: z.string().url().max(2048).nullable(),
     ...meetingContentPlacementFields,
   })
-  .strict();
+  // Forward-tolerant: strip unknown keys instead of rejecting (see video schema).
+  .strip();
 
 export type MeetingContentVideoSetPayloadT = z.output<
   typeof MeetingContentVideoSetSchema
