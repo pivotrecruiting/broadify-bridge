@@ -92,7 +92,11 @@ export const GraphicsSendSchema = z
     durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
     meetingPlane: MeetingGraphicsPlaneSchema.optional(),
   })
-  .strict();
+  // Forward-tolerant at the top level: strip unknown keys instead of rejecting,
+  // so a newer webapp graphics field never 400s an older bridge (the nested
+  // layout/bundle schemas stay strict — only structural, stable shapes). Known
+  // fields stay fully validated.
+  .strip();
 
 /**
  * Payload for updating layer values.
