@@ -4,15 +4,15 @@
   "files": [
     {
       "path": "Manifest.json",
-      "sha256": "8b6a58da5d94fa96f129ed471c7d11297cbcc2c8b3e0f540276e0edd10068a91"
+      "sha256": "88c8bd8f2956ae25fcfe6d8d4d2b37c5ca1f980f272b766eab6f986c177b43ae"
     },
     {
       "path": "Data/com.apple.CoreML/model.mlmodel",
-      "sha256": "aa5716096125bd4573f02b82da789147c2ee5505285ac3b857dbfaa11f34ec43"
+      "sha256": "c92cd069322b87af0b364b2ac7fc84ecb79d87313cd833ed8cae73cd57a08e93"
     },
     {
       "path": "Data/com.apple.CoreML/weights/weight.bin",
-      "sha256": "4fea2648996b6db19ba818594ad04a700b8a55ca4eca461240694a71f6c5ad25"
+      "sha256": "8ef98c4efdfb635d1b9d6f2c6584ac6afe2e141c1224a1b968612d68a5515bd4"
     }
   ]
 }
