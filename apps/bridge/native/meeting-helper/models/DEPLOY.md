@@ -60,3 +60,22 @@ Run **Test Release Build** (Windows matrix job) or re-run a failed release build
 3. Upload new asset to a new release tag
 4. Update `MODNET_MODEL_URL` to the new download URL
 5. Commit manifest change to the app repo
+
+## macOS Core ML model provenance
+
+`MODNet.mlpackage` (tracked in git) history:
+
+- **2026-09-09 — fine-tune ft-v2** (current): MODNet photographic checkpoint
+  fine-tuned on VideoMatte240K train split composited over CC0 backgrounds with
+  webcam-style degradation (2000 iters, lr 5e-5, frozen BatchNorm). Exported via
+  `scripts/export_coreml.py` in the `broadify-keyer-training` project (input
+  "image" 512x512 RGB, output "alpha" GRAYSCALE_FLOAT16, ML Program,
+  normalization baked into the image input). Internal benchmark (200 samples,
+  VM240K test split): clean MAD 8.2 vs 9.7 before; webcam-degraded MAD 12.9 vs
+  40.6 before. Windows `modnet.onnx` intentionally unchanged in this step.
+- Before: original MODNet *photographic* portrait matting weights (note: the
+  photographic variant, not the webcam variant), converted with coremltools 9.0.
+
+After swapping the package, refresh the three sha256 entries in
+`coreml-manifest.json` (hash `Manifest.json`, `model.mlmodel`, `weight.bin`);
+`scripts/prepare-modnet-coreml-model.sh` verifies them during dist builds.
