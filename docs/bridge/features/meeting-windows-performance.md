@@ -273,6 +273,15 @@ Output-Readback bleibt CPU. Randbedingungen:
 Der Keyer-Self-Test gibt zur Zuordnung zusaetzlich die Phasen-Mittel
 `tensor_ms`, `session_run_ms` und `mask_apply_ms` pro Groesse aus.
 
+**Feldbefund (Default-off):** Auf einer overhead-gebundenen GPU (GTX 1660 Ti,
+`split`-Policy, Live-1080p) bringt `ZEROCOPY` keinen Nettogewinn und kostet
+leicht mehr GPU-Takt/Luefter (+~2 W / +~140 MHz Boost gemessen). Der GPU-gebaute
+Tensor ist kanalweise identisch zum CPU-Pfad (R/B-Swap ausgeschlossen), aber die
+eingesparte CPU-Tensor-Arbeit ist hier nicht der Flaschenhals — `session_run`
+(der ~17-ms-Dispatch/Fence/Readback-Boden) bleibt unveraendert. Die Naht bleibt
+sinnvoll fuer CPU-Tensor-gebundene Hardware (schwache CPU, ORT-Input-Copy
+dominiert); dort lohnt ein erneutes A/B.
+
 ## Messen
 
 1. In Windows Task Manager die Spalten fuer GPU Engine/GPU-Auslastung oeffnen.
