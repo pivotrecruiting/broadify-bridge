@@ -1449,6 +1449,15 @@ class AsyncKeyerWorker {
 
  private:
   void run() {
+#if defined(_WIN32)
+    // The async keyer worker is the pipeline's heaviest thread (ML matting plus
+    // pre/post-processing). Register it with MMCSS so it is not descheduled
+    // behind background work under load — the program/render thread already gets
+    // the same class, and leaving the actual bottleneck unprioritized defeats
+    // the purpose. RAII: reverted when the thread exits. No-op on non-Windows
+    // and honours the shared BROADIFY_MEETING_WIN_QOS kill switch.
+    const ScopedWinMmcss keyerThreadQos(L"Capture");
+#endif
     while (running_.load()) {
       VideoFrame frame;
       uint64_t generation = 0;
