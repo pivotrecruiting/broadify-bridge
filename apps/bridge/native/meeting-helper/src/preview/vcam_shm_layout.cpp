@@ -1,10 +1,16 @@
 #include "preview/vcam_shm_layout.h"
 
+#include "util/cpu_simd.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <cwchar>
 #include <limits>
+
+#if defined(_WIN32) && (defined(_M_X64) || defined(_M_IX86))
+#include <immintrin.h>
+#endif
 
 namespace broadify::vcam_shm {
 namespace {
@@ -36,6 +42,67 @@ uint8_t lumaFromBgra(const uint8_t *pixel) {
   const int g = pixel[1];
   const int r = pixel[2];
   return clampByte(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+}
+
+// Scalar reference for a run of BGRA pixels -> contiguous BT.601 limited-range
+// luma bytes. Identical arithmetic to lumaFromBgra, per pixel.
+void bgraRowToLumaScalar(const uint8_t *bgra, uint8_t *luma, size_t pixelCount) {
+  for (size_t i = 0; i < pixelCount; ++i) {
+    luma[i] = lumaFromBgra(bgra + i * 4u);
+  }
+}
+
+#if defined(_WIN32) && (defined(_M_X64) || defined(_M_IX86))
+// AVX2 luma kernel: 8 BGRA pixels per iteration, bit-exact with the scalar path.
+// Each channel is isolated in a 32-bit lane (values 0..255), so 66*r+129*g+25*b
+// (max 56228) never overflows int32 and the logical >>8 matches the scalar
+// arithmetic >>8 on a guaranteed-positive value. Result is always in [16,235],
+// so no saturation is required; bytes are gathered with a shuffle+permute rather
+// than the lane-crossing packus chain to keep the extraction obviously correct.
+void bgraRowToLumaAvx2(const uint8_t *bgra, uint8_t *luma, size_t pixelCount) {
+  const __m256i maskFF = _mm256_set1_epi32(0xFF);
+  const __m256i coeffR = _mm256_set1_epi32(66);
+  const __m256i coeffG = _mm256_set1_epi32(129);
+  const __m256i coeffB = _mm256_set1_epi32(25);
+  const __m256i bias = _mm256_set1_epi32(128);
+  const __m256i offset16 = _mm256_set1_epi32(16);
+  // Within each 128-bit lane, pick byte 0 of dwords 0..3 into bytes 0..3.
+  const __m256i gatherLowByte = _mm256_setr_epi8(
+      0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+      0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+  // Bring dword0 (lane0: y0..3) and dword4 (lane1: y4..7) into dwords 0,1.
+  const __m256i mergeLanes = _mm256_setr_epi32(0, 4, 0, 0, 0, 0, 0, 0);
+
+  size_t i = 0;
+  for (; i + 8 <= pixelCount; i += 8) {
+    const __m256i px =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(bgra + i * 4u));
+    const __m256i b = _mm256_and_si256(px, maskFF);
+    const __m256i g = _mm256_and_si256(_mm256_srli_epi32(px, 8), maskFF);
+    const __m256i r = _mm256_and_si256(_mm256_srli_epi32(px, 16), maskFF);
+    __m256i acc = _mm256_add_epi32(
+        _mm256_add_epi32(_mm256_mullo_epi32(r, coeffR),
+                         _mm256_mullo_epi32(g, coeffG)),
+        _mm256_add_epi32(_mm256_mullo_epi32(b, coeffB), bias));
+    acc = _mm256_add_epi32(_mm256_srli_epi32(acc, 8), offset16);
+    const __m256i bytes = _mm256_shuffle_epi8(acc, gatherLowByte);
+    const __m256i merged = _mm256_permutevar8x32_epi32(bytes, mergeLanes);
+    _mm_storel_epi64(reinterpret_cast<__m128i *>(luma + i),
+                     _mm256_castsi256_si128(merged));
+  }
+  bgraRowToLumaScalar(bgra + i * 4u, luma + i, pixelCount - i);
+}
+#endif
+
+void bgraRowToLuma(const uint8_t *bgra, uint8_t *luma, size_t pixelCount) {
+#if defined(_WIN32) && (defined(_M_X64) || defined(_M_IX86))
+  static const bool hasAvx2 = broadify::meeting::cpuHasAvx2();
+  if (hasAvx2) {
+    bgraRowToLumaAvx2(bgra, luma, pixelCount);
+    return;
+  }
+#endif
+  bgraRowToLumaScalar(bgra, luma, pixelCount);
 }
 
 void chromaFromBgra2x2(const uint8_t *bgra,
@@ -706,10 +773,8 @@ void bgraToNv12(const uint8_t *bgra,
   uint8_t *yPlane = nv12;
   uint8_t *uvPlane = nv12 + yPlaneBytes;
   for (uint32_t y = 0; y < height; ++y) {
-    for (uint32_t x = 0; x < width; ++x) {
-      yPlane[static_cast<size_t>(y) * width + x] =
-          lumaFromBgra(bgra + (static_cast<size_t>(y) * width + x) * 4u);
-    }
+    const size_t rowOffset = static_cast<size_t>(y) * width;
+    bgraRowToLuma(bgra + rowOffset * 4u, yPlane + rowOffset, width);
   }
   const uint32_t chromaHeight = height / 2u;
   for (uint32_t y = 0; y < chromaHeight; ++y) {
