@@ -60,6 +60,12 @@ constexpr uint32_t kTemporalProtectionRadiusPx = 10;
 constexpr uint8_t kTemporalProtectionAlphaThreshold = 32;
 constexpr uint64_t kTemporalAlphaMaxAgeNs = 250000000u;
 constexpr double kStaleMaskAgeMs = 140.0;
+// Live-snap age gate (Auto mode): a mask older than this snapped onto the
+// current frame produces a visible ghost/edge-jitter (field finding: at
+// ~96ms async mask age the snap pulses and lags). Above it, compositing the
+// mask's own paired frame is stabler; below it the snap still removes motion
+// edge-lag as intended.
+constexpr double kLiveSnapMaxAgeMs = 40.0;
 // Softened low cutoff: 0.12 discarded faint hair/edge alpha before it ever
 // reached the compositor. 0.08 keeps more of the soft band (Fix 4).
 constexpr float kSmoothstepLow = 0.08f;
@@ -390,18 +396,47 @@ std::atomic<bool> g_fusedWarmupBusy{false};
 std::atomic<int> g_fusedWarmupOutcome{0};
 #endif
 
-// Live-frame edge-snap toggle (default ON). The keyer publishes a mask paired
-// with the OLD frame it was computed on; compositing that old frame is the
-// source of the visible latency on motion. When enabled, the program loop
-// instead composites the LIVE camera frame and snaps the (slightly old) mask
-// onto its real edges with the guided filter — removing both the latency and the
-// boundary flicker. Set BROADIFY_MEETING_LIVE_SNAP=0 to A/B against the old path.
-bool liveSnapEnabled() {
-  static const bool enabled = [] {
+// Live-frame edge-snap toggle. The keyer publishes a mask paired with the OLD
+// frame it was computed on; compositing that old frame is the source of the
+// visible latency on motion. When active, the program loop instead composites
+// the LIVE camera frame and snaps the (slightly old) mask onto its real edges
+// with the guided filter — removing the motion edge-lag. But snapping a STALE
+// mask (field finding: ~96ms async age) onto a much newer frame instead
+// produces a ghost + per-frame edge jitter ("pulsing"). So the default is now
+// age-gated (Auto): snap only while the mask is fresh (<= kLiveSnapMaxAgeMs),
+// otherwise composite the mask's own paired frame. Env BROADIFY_MEETING_LIVE_SNAP:
+// unset = Auto, "1" = always snap, "0" = never snap. Read once.
+enum class LiveSnapMode { Auto, ForceOn, ForceOff };
+
+LiveSnapMode liveSnapMode() {
+  static const LiveSnapMode mode = [] {
     const char *raw = std::getenv("BROADIFY_MEETING_LIVE_SNAP");
-    return raw == nullptr || raw[0] == '\0' || raw[0] != '0';
+    if (raw == nullptr || raw[0] == '\0') {
+      return LiveSnapMode::Auto;
+    }
+    if (raw[0] == '1') {
+      return LiveSnapMode::ForceOn;
+    }
+    if (raw[0] == '0') {
+      return LiveSnapMode::ForceOff;
+    }
+    return LiveSnapMode::Auto;
   }();
-  return enabled;
+  return mode;
+}
+
+// Whether to snap the mask onto the live frame this frame. ForceOff/ForceOn
+// ignore the age; Auto gates on the mask age so a stale mask is never snapped.
+bool liveSnapActive(double maskAgeMs) {
+  switch (liveSnapMode()) {
+    case LiveSnapMode::ForceOff:
+      return false;
+    case LiveSnapMode::ForceOn:
+      return true;
+    case LiveSnapMode::Auto:
+      break;
+  }
+  return maskAgeMs <= kLiveSnapMaxAgeMs;
 }
 
 // Fused synchronous GPU keyer path (default OFF). When enabled the program loop
@@ -2170,7 +2205,7 @@ void runFramePipeline(const Options &options,
                   selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
                                                   pairIsUsable,
                                                   guidedRefineAvailable() &&
-                                                      liveSnapEnabled()) ==
+                                                      liveSnapActive(maskAgeMs)) ==
                           AsyncKeyerCompositorFrame::PairedFrame
                       ? &selectedPair->frame
                       : &latestCameraFrame;
@@ -2329,7 +2364,7 @@ void runFramePipeline(const Options &options,
                 selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
                                                 pairIsUsable,
                                                 guidedRefineAvailable() &&
-                                                    liveSnapEnabled()) ==
+                                                    liveSnapActive(maskAgeMs)) ==
                         AsyncKeyerCompositorFrame::PairedFrame
                     ? &selectedPair->frame
                     : &latestCameraFrame;
@@ -2433,13 +2468,23 @@ void runFramePipeline(const Options &options,
           !selectedPair->mask.emptyValid && guidedRefineAvailable()) {
         const bool fresherFrame =
             latestCameraFrame.timestampNs > selectedPair->frame.timestampNs;
+        // Age of the mask relative to the frame we would composite: the mask's
+        // timestamp is the frame it was computed on, so this matches the async
+        // maskAgeMs above. Gates the Auto live-snap (stale mask -> no snap).
+        const double maskAgeMs =
+            fresherFrame
+                ? static_cast<double>(latestCameraFrame.timestampNs -
+                                      selectedPair->mask.timestampNs) /
+                      1000000.0
+                : 0.0;
         // Edge-live carries no worker-side refine, so it must clean the edge on
         // EVERY frame — otherwise the edge quality beats in and out as keyer and
         // program fps drift through phase (~1Hz). The plain live-snap only needs
         // to run when a fresher frame exists (else the paired mask already
         // carries the worker refine).
         const bool run =
-            edgeLiveEnabled() ? true : (liveSnapEnabled() && fresherFrame);
+            edgeLiveEnabled() ? true
+                              : (liveSnapActive(maskAgeMs) && fresherFrame);
         if (run) {
           liveRefinedMask = selectedPair->mask;  // pair is shared/immutable
           // Guide with the live frame when we have a fresher one (motion-
