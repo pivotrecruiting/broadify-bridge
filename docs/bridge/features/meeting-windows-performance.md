@@ -199,6 +199,112 @@ noch keinen Frame bekommen hat. Die VCam-DLL schreibt beim ersten Logeintrag
 einen Build-Stamp (`git_sha`, `build_time`) nach
 `%ProgramData%\Broadify\vcam.log`.
 
+## rc.11: Perf-Pakete (Keyer-Last / Luefter)
+
+Aufbauend auf rc.10. Ziel: Pro-Frame-CPU/GPU-Last senken — das ist der gemeinsame
+Hebel fuer Performance, Luefterlautstaerke und Qualitaet, weil der Keyer-Governor
+unter Last die Matte-Aufloesung senkt (512 -> 320 -> 256).
+
+- **Keyer-Thread-Prioritaet (A2):** Der Async-Keyer-Worker (schwerster Thread)
+  bekommt jetzt ebenfalls `AvSetMmThreadCharacteristicsW(L"Capture")`, nicht mehr
+  nur Program-/Sender-Thread. Unter dem `BROADIFY_MEETING_WIN_QOS`-Schalter.
+- **Weniger Pro-Frame-Allokationen (C2):** Der CPU-Guided-Filter und die
+  Masken-Morphologie im Keyer-Postprocess nutzen wiederverwendete Scratch-Puffer
+  statt pro Frame ~2 Dutzend Vektoren zu allozieren. Mathematik unveraendert.
+- **AVX2-Luma fuer VCam-NV12 (A3):** BGRA->NV12-Y-Ebene laeuft mit einem
+  AVX2-Kernel (Runtime-`cpuHasAvx2()`-Dispatch, Scalar-Fallback, bit-exakt). Kein
+  globales `/arch:AVX2`. Betrifft den echten Kamerapfad (die vcam-helper-DLL nutzt
+  dieselbe `bgraToNv12`).
+
+### fp16-Keyer (B2, Experiment)
+
+`BROADIFY_MEETING_KEYER_FP16=1` laesst den Keyer ein halbpraezises MODNet-Modell
+laden (DirectML, ~2x Durchsatz auf faehigen GPUs -> hoehere Tier-Haltung unter
+Last, weniger GPU-Zeit). **Default aus.** Die I/O-Praezision wird aus dem
+tatsaechlich geladenen Modelltyp abgeleitet, nie aus dem Flag allein — ein
+fp32-Modell nimmt immer den fp32-Pfad. Der Schalter greift nur, wenn zusaetzlich
+ein deployter `modnet-fp16`-Eintrag vorhanden ist; sonst bleibt der Keyer
+transparent auf fp32 (Log-Event `fp16_requested_no_model`).
+
+fp16-Modell bereitstellen:
+
+1. `python scripts/convert-modnet-fp16.py --input <modnet.onnx> --output modnet_fp16.onnx`
+   (benoetigt `pip install onnx onnxconverter-common`). Der Befehl gibt den
+   SHA-256 aus. Matte-Qualitaet einmal gegen fp32 pruefen.
+2. `modnet_fp16.onnx` hosten und `MODNET_FP16_MODEL_URL` als Secret setzen
+   (Windows-Job, analog `MODNET_MODEL_URL`).
+3. In `models/manifest.json` den `modnet-fp16`-`sha256` vom Platzhalter auf den
+   echten Hash setzen und committen. `download-modnet-model.sh` laedt das Modell
+   dann verifiziert; ohne Hash/URL ist der Schritt ein No-op (fp32 unveraendert).
+
+### IoBinding (B1, Experiment)
+
+`BROADIFY_MEETING_KEYER_IO_BINDING=1` fuehrt die DirectML-Inferenz ueber
+ORT-IoBinding. **Default aus.** Aktuell mit CPU-seitigem Input nur ein moderater
+Effekt; existiert als Naht fuer kuenftigen Zero-Copy-GPU-Input und als
+A/B-Toggle. Fail-safe: jeder Fehler deaktiviert den Pfad prozessweit und faellt
+auf den normalen `Run` zurueck; nur auf dem DirectML-Provider aktiv.
+
+### Zero-Copy-Device-Input (C3, Experiment)
+
+`BROADIFY_MEETING_KEYER_ZEROCOPY=1` baut den MODNet-Eingangs-Tensor per
+D3D12-Compute-Shader direkt aus dem hochgeladenen RGBA-Frame in einen
+Default-Heap-Buffer und bindet ihn ueber die IoBinding-Naht als DML-Device-Input
+(`keyer/dml_device_input.cpp`). **Default aus.** Ersetzt den CPU-Tensor-Build
+(`buildModnetInputTensor`) plus ORTs internen CPU->GPU-Input-Copy; der
+Output-Readback bleibt CPU. Randbedingungen:
+
+- Nur auf dem `dml1_selected_adapter`-Pfad aktiv: dort besitzt der Keyer das
+  D3D12-Device und die Command-Queue, auf der der DML-EP ausfuehrt; der
+  Preprocessing-Dispatch wird auf derselben Queue vor dem `Run` submittet und
+  ist damit ohne Cross-Queue-Fences geordnet. Auf `dml2`/`legacy_device0`
+  meldet `zerocopy_stage_unavailable` den Grund und der CPU-Pfad laeuft
+  unveraendert.
+- Der Shader repliziert die CPU-Referenz exakt (Letterbox, Integer-
+  Block-Average, `(x-0.5)/0.5`); ein einmaliges Paritaets-Gate pro Tier
+  (`zerocopy_parity`, max |Delta| <= 1e-2 elementweise gegen
+  `buildModnetInputTensor`) muss bestehen, bevor eine Maske aus dem GPU-Tensor
+  vertraut wird. fp16-Modelle schreiben den Tensor direkt als half
+  (R16_FLOAT-UAV), die CPU-seitige fp32->fp16-Konvertierung entfaellt.
+- Fail-safe: jeder D3D-/ORT-Fehler oder ein Paritaets-Miss deaktiviert den
+  Pfad prozessweit (`zerocopy_disabled`) und der Frame laeuft noch in
+  derselben apply() ueber den heutigen CPU-Tensor-Pfad weiter.
+
+Der Keyer-Self-Test gibt zur Zuordnung zusaetzlich die Phasen-Mittel
+`tensor_ms`, `session_run_ms` und `mask_apply_ms` pro Groesse aus.
+
+### Live-Snap: age-gated Default (C4)
+
+`BROADIFY_MEETING_LIVE_SNAP`: unset = **Auto** (Snap nur bei frischer Maske,
+`<= kLiveSnapMaxAgeMs` = 40 ms), `1` = immer, `0` = nie. Grund: der Async-Worker
+liefert die Maske gepaart mit dem *alten* Frame; snappt man diese auf den
+aktuellen Frame, entsteht bei **alter** Maske ein sichtbarer Ghost + Pro-Frame-
+Kanten-Jitter ("Pulsieren"). Auto komponiert daher bei alter Maske den Paar-
+Frame (stabil) und snappt nur bei frischer Maske (dann killt der Snap den
+Bewegungs-Kanten-Lag wie vorgesehen).
+
+**Feldbefund (Trade-off, noch NICHT final):** Bei ~96 ms Async-Mask-Age
+(GTX 1660 Ti, Keyer-Durchsatz ~14–20 fps) beseitigt Snap-aus (Auto/`0`)
+Pulsieren+Ghost und liefert saubere Kanten, **aber** eine sichtbare Lippen-
+Latenz, weil der aeltere Paar-Frame komponiert wird. Snap-an (`1`) senkt die
+Latenz nur *geringfuegig* und holt Ghost+schlechtere Kanten zurueck — netto
+schlechter. **Rest-Latenz bei Snap-aus = Mask-Age ~96 ms, HW-limitiert** (nicht
+vom Snap-Toggle behebbar). Optionen fuer echtes "latenzarm UND kein Ghost"
+(eigener Scope): Keyer-Tempo/leichteres Modell, um das Mask-Age zu senken,
+ODER Mask-Temporal-Blend gegen das Pulsieren bei Snap-an
+(`temporal_blend_enabled` aktuell `false`). Die Default-Wahl **Auto vs. bisheriges
+Snap-an** faellt erst beim rc.11-Schnitt nach einem Gegencheck an einer zweiten
+Szene/beim Kunden.
+
+**Feldbefund (Default-off):** Auf einer overhead-gebundenen GPU (GTX 1660 Ti,
+`split`-Policy, Live-1080p) bringt `ZEROCOPY` keinen Nettogewinn und kostet
+leicht mehr GPU-Takt/Luefter (+~2 W / +~140 MHz Boost gemessen). Der GPU-gebaute
+Tensor ist kanalweise identisch zum CPU-Pfad (R/B-Swap ausgeschlossen), aber die
+eingesparte CPU-Tensor-Arbeit ist hier nicht der Flaschenhals — `session_run`
+(der ~17-ms-Dispatch/Fence/Readback-Boden) bleibt unveraendert. Die Naht bleibt
+sinnvoll fuer CPU-Tensor-gebundene Hardware (schwache CPU, ORT-Input-Copy
+dominiert); dort lohnt ein erneutes A/B.
+
 ## Messen
 
 1. In Windows Task Manager die Spalten fuer GPU Engine/GPU-Auslastung oeffnen.

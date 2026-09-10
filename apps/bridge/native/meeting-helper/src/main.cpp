@@ -39,6 +39,7 @@
 #include <functional>
 #include <numeric>
 #include <vector>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -336,6 +337,13 @@ bool benchmarkKeyerBackend(
     std::vector<double> sampleMs;
     sampleMs.reserve(kRunsPerMode);
     KeyerStatus lastStatus;
+    // Phase means alongside the total: with the zero-copy/IoBinding
+    // experiments the interesting question is WHERE the time went
+    // (tensor build vs session Run vs mask copy), not just the sum.
+    double tensorMsSum = 0.0;
+    double sessionRunMsSum = 0.0;
+    double maskApplyMsSum = 0.0;
+    AlphaMask lastMask;
     for (int run = 0; run < kRunsPerMode; ++run) {
       const KeyerResult result = keyer->apply(frame, settings);
       lastStatus = result.status;
@@ -344,6 +352,26 @@ bool benchmarkKeyerBackend(
         break;
       }
       sampleMs.push_back(result.status.inferenceMs);
+      tensorMsSum += result.status.metrics.tensorMs;
+      sessionRunMsSum += result.status.metrics.sessionRunMs;
+      maskApplyMsSum += result.status.metrics.maskApplyMs;
+      lastMask = result.mask;
+    }
+    // A/B quality support (e.g. fp16 vs fp32): dump the last mask of each
+    // mode as a binary PGM so an external diff can quantify the deviation.
+    // Self-test only, off unless the directory env is set.
+    if (const char *dumpDir =
+            std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_MASK_DUMP_DIR");
+        dumpDir != nullptr && dumpDir[0] != '\0' && !lastMask.alpha.empty()) {
+      std::ostringstream dumpPath;
+      dumpPath << dumpDir << "/mask_" << backendName << "_" << mode.inputSize
+               << ".pgm";
+      std::ofstream dump(dumpPath.str(), std::ios::binary);
+      if (dump) {
+        dump << "P5\n" << lastMask.width << " " << lastMask.height << "\n255\n";
+        dump.write(reinterpret_cast<const char *>(lastMask.alpha.data()),
+                   static_cast<std::streamsize>(lastMask.alpha.size()));
+      }
     }
     if (sampleMs.empty()) {
       ok = false;
@@ -363,10 +391,14 @@ bool benchmarkKeyerBackend(
     const size_t p95Index = static_cast<size_t>(
         std::ceil(0.95 * static_cast<double>(sorted.size()))) - 1u;
     std::ostringstream line;
+    const double sampleCount = static_cast<double>(sampleMs.size());
     line << "{\"type\":\"keyer_self_test\",\"backend\":\"" << backendName
          << "\",\"provider\":\"" << jsonEscape(lastStatus.provider)
          << "\",\"input_size\":" << mode.inputSize
          << ",\"mean_ms\":" << meanMs << ",\"p95_ms\":" << sorted[p95Index]
+         << ",\"tensor_ms\":" << tensorMsSum / sampleCount
+         << ",\"session_run_ms\":" << sessionRunMsSum / sampleCount
+         << ",\"mask_apply_ms\":" << maskApplyMsSum / sampleCount
          << ",\"probe_inference_ms\":" << lastStatus.probeInferenceMs << "}";
     printEvent(line.str());
   }

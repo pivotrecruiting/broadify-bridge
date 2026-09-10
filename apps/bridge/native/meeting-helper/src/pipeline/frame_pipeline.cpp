@@ -60,6 +60,12 @@ constexpr uint32_t kTemporalProtectionRadiusPx = 10;
 constexpr uint8_t kTemporalProtectionAlphaThreshold = 32;
 constexpr uint64_t kTemporalAlphaMaxAgeNs = 250000000u;
 constexpr double kStaleMaskAgeMs = 140.0;
+// Live-snap age gate (Auto mode): a mask older than this snapped onto the
+// current frame produces a visible ghost/edge-jitter (field finding: at
+// ~96ms async mask age the snap pulses and lags). Above it, compositing the
+// mask's own paired frame is stabler; below it the snap still removes motion
+// edge-lag as intended.
+constexpr double kLiveSnapMaxAgeMs = 40.0;
 // Softened low cutoff: 0.12 discarded faint hair/edge alpha before it ever
 // reached the compositor. 0.08 keeps more of the soft band (Fix 4).
 constexpr float kSmoothstepLow = 0.08f;
@@ -390,18 +396,47 @@ std::atomic<bool> g_fusedWarmupBusy{false};
 std::atomic<int> g_fusedWarmupOutcome{0};
 #endif
 
-// Live-frame edge-snap toggle (default ON). The keyer publishes a mask paired
-// with the OLD frame it was computed on; compositing that old frame is the
-// source of the visible latency on motion. When enabled, the program loop
-// instead composites the LIVE camera frame and snaps the (slightly old) mask
-// onto its real edges with the guided filter — removing both the latency and the
-// boundary flicker. Set BROADIFY_MEETING_LIVE_SNAP=0 to A/B against the old path.
-bool liveSnapEnabled() {
-  static const bool enabled = [] {
+// Live-frame edge-snap toggle. The keyer publishes a mask paired with the OLD
+// frame it was computed on; compositing that old frame is the source of the
+// visible latency on motion. When active, the program loop instead composites
+// the LIVE camera frame and snaps the (slightly old) mask onto its real edges
+// with the guided filter — removing the motion edge-lag. But snapping a STALE
+// mask (field finding: ~96ms async age) onto a much newer frame instead
+// produces a ghost + per-frame edge jitter ("pulsing"). So the default is now
+// age-gated (Auto): snap only while the mask is fresh (<= kLiveSnapMaxAgeMs),
+// otherwise composite the mask's own paired frame. Env BROADIFY_MEETING_LIVE_SNAP:
+// unset = Auto, "1" = always snap, "0" = never snap. Read once.
+enum class LiveSnapMode { Auto, ForceOn, ForceOff };
+
+LiveSnapMode liveSnapMode() {
+  static const LiveSnapMode mode = [] {
     const char *raw = std::getenv("BROADIFY_MEETING_LIVE_SNAP");
-    return raw == nullptr || raw[0] == '\0' || raw[0] != '0';
+    if (raw == nullptr || raw[0] == '\0') {
+      return LiveSnapMode::Auto;
+    }
+    if (raw[0] == '1') {
+      return LiveSnapMode::ForceOn;
+    }
+    if (raw[0] == '0') {
+      return LiveSnapMode::ForceOff;
+    }
+    return LiveSnapMode::Auto;
   }();
-  return enabled;
+  return mode;
+}
+
+// Whether to snap the mask onto the live frame this frame. ForceOff/ForceOn
+// ignore the age; Auto gates on the mask age so a stale mask is never snapped.
+bool liveSnapActive(double maskAgeMs) {
+  switch (liveSnapMode()) {
+    case LiveSnapMode::ForceOff:
+      return false;
+    case LiveSnapMode::ForceOn:
+      return true;
+    case LiveSnapMode::Auto:
+      break;
+  }
+  return maskAgeMs <= kLiveSnapMaxAgeMs;
 }
 
 // Fused synchronous GPU keyer path (default OFF). When enabled the program loop
@@ -1098,7 +1133,12 @@ void slidingExtrema2d(const std::vector<uint8_t> &source,
                       uint32_t height,
                       uint32_t radius,
                       bool takeMax) {
-  std::vector<uint8_t> horizontal(source.size());
+  // Reused across the several morphology passes per frame; sized to the source
+  // and fully overwritten each call (every row/column is written), so it never
+  // heap-allocates after the first frame. Single-threaded keyer post-process;
+  // thread_local keeps it correct if ever driven from another thread.
+  static thread_local std::vector<uint8_t> horizontal;
+  horizontal.resize(source.size());
   std::vector<WedgeEntry> wedge;
   wedge.reserve(static_cast<size_t>(radius) * 2u + 2u);
   for (uint32_t y = 0; y < height; ++y) {
@@ -1116,9 +1156,11 @@ void dilateAlpha(AlphaMask &mask, uint32_t radius) {
     return;
   }
 
-  std::vector<uint8_t> dilatedAlpha;
+  // Swap the computed result into mask.alpha and keep the old buffer as reusable
+  // scratch — no per-frame allocation, no copy.
+  static thread_local std::vector<uint8_t> dilatedAlpha;
   slidingExtrema2d(mask.alpha, dilatedAlpha, mask.width, mask.height, radius, true);
-  mask.alpha = std::move(dilatedAlpha);
+  std::swap(mask.alpha, dilatedAlpha);
 }
 
 std::vector<uint8_t> erodedAlphaForRadius(const AlphaMask &mask, uint32_t radius) {
@@ -1141,8 +1183,9 @@ void erodeAlpha(AlphaMask &mask, double radius) {
     return;
   }
 
-  const std::vector<uint8_t> originalAlpha = mask.alpha;
-  std::vector<uint8_t> lowerAlpha = lowerRadius == 0u ? originalAlpha : erodedAlphaForRadius(mask, lowerRadius);
+  // Only copy the untouched alpha when the lower radius is a no-op; otherwise the
+  // eroded result is the buffer we need, and copying mask.alpha first was waste.
+  std::vector<uint8_t> lowerAlpha = lowerRadius == 0u ? mask.alpha : erodedAlphaForRadius(mask, lowerRadius);
   if (upperWeight <= 0.0 || lowerRadius == upperRadius) {
     mask.alpha = std::move(lowerAlpha);
     return;
@@ -1196,8 +1239,12 @@ void featherAlpha(AlphaMask &mask, uint32_t radius) {
   }
 
   const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
-  std::vector<uint8_t> horizontalAlpha(pixelCount);
-  std::vector<uint8_t> featheredAlpha(pixelCount);
+  // Both buffers are fully rewritten each frame; reuse them and swap the result
+  // into mask.alpha so feathering allocates nothing on the hot path.
+  static thread_local std::vector<uint8_t> horizontalAlpha;
+  static thread_local std::vector<uint8_t> featheredAlpha;
+  horizontalAlpha.resize(pixelCount);
+  featheredAlpha.resize(pixelCount);
 
   for (uint32_t y = 0; y < mask.height; ++y) {
     const size_t rowOffset = static_cast<size_t>(y) * mask.width;
@@ -1207,12 +1254,14 @@ void featherAlpha(AlphaMask &mask, uint32_t radius) {
     slidingBoxAverageLine(horizontalAlpha.data() + x, featheredAlpha.data() + x, mask.height, mask.width, radius);
   }
 
-  mask.alpha = std::move(featheredAlpha);
+  std::swap(mask.alpha, featheredAlpha);
 }
 
 std::vector<uint8_t> alphaProtectionMask(const AlphaMask &mask, uint32_t radius) {
   const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
-  std::vector<uint8_t> sourceMask(pixelCount);
+  // Binary source is rebuilt in full every call; reuse the buffer.
+  static thread_local std::vector<uint8_t> sourceMask;
+  sourceMask.resize(pixelCount);
   for (size_t index = 0; index < pixelCount; ++index) {
     sourceMask[index] = mask.alpha[index] >= kTemporalProtectionAlphaThreshold ? 1u : 0u;
   }
@@ -1449,6 +1498,15 @@ class AsyncKeyerWorker {
 
  private:
   void run() {
+#if defined(_WIN32)
+    // The async keyer worker is the pipeline's heaviest thread (ML matting plus
+    // pre/post-processing). Register it with MMCSS so it is not descheduled
+    // behind background work under load — the program/render thread already gets
+    // the same class, and leaving the actual bottleneck unprioritized defeats
+    // the purpose. RAII: reverted when the thread exits. No-op on non-Windows
+    // and honours the shared BROADIFY_MEETING_WIN_QOS kill switch.
+    const ScopedWinMmcss keyerThreadQos(L"Capture");
+#endif
     while (running_.load()) {
       VideoFrame frame;
       uint64_t generation = 0;
@@ -2147,7 +2205,7 @@ void runFramePipeline(const Options &options,
                   selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
                                                   pairIsUsable,
                                                   guidedRefineAvailable() &&
-                                                      liveSnapEnabled()) ==
+                                                      liveSnapActive(maskAgeMs)) ==
                           AsyncKeyerCompositorFrame::PairedFrame
                       ? &selectedPair->frame
                       : &latestCameraFrame;
@@ -2306,7 +2364,7 @@ void runFramePipeline(const Options &options,
                 selectAsyncKeyerCompositorFrame(runtime.vcamClients > 0,
                                                 pairIsUsable,
                                                 guidedRefineAvailable() &&
-                                                    liveSnapEnabled()) ==
+                                                    liveSnapActive(maskAgeMs)) ==
                         AsyncKeyerCompositorFrame::PairedFrame
                     ? &selectedPair->frame
                     : &latestCameraFrame;
@@ -2410,13 +2468,23 @@ void runFramePipeline(const Options &options,
           !selectedPair->mask.emptyValid && guidedRefineAvailable()) {
         const bool fresherFrame =
             latestCameraFrame.timestampNs > selectedPair->frame.timestampNs;
+        // Age of the mask relative to the frame we would composite: the mask's
+        // timestamp is the frame it was computed on, so this matches the async
+        // maskAgeMs above. Gates the Auto live-snap (stale mask -> no snap).
+        const double maskAgeMs =
+            fresherFrame
+                ? static_cast<double>(latestCameraFrame.timestampNs -
+                                      selectedPair->mask.timestampNs) /
+                      1000000.0
+                : 0.0;
         // Edge-live carries no worker-side refine, so it must clean the edge on
         // EVERY frame — otherwise the edge quality beats in and out as keyer and
         // program fps drift through phase (~1Hz). The plain live-snap only needs
         // to run when a fresher frame exists (else the paired mask already
         // carries the worker refine).
         const bool run =
-            edgeLiveEnabled() ? true : (liveSnapEnabled() && fresherFrame);
+            edgeLiveEnabled() ? true
+                              : (liveSnapActive(maskAgeMs) && fresherFrame);
         if (run) {
           liveRefinedMask = selectedPair->mask;  // pair is shared/immutable
           // Guide with the live frame when we have a fresher one (motion-

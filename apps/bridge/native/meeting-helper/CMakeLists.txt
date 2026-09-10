@@ -88,6 +88,7 @@ set(MEETING_HELPER_SOURCES
   src/common/options.cpp
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
+  src/keyer/dml_device_input.cpp
   src/keyer/keyer_chain.cpp
   src/keyer/keyer_governor.cpp
   src/keyer/matting_backend.cpp
