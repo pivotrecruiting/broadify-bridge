@@ -65,7 +65,11 @@ Run **Test Release Build** (Windows matrix job) or re-run a failed release build
 
 `MODNet.mlpackage` (tracked in git) history:
 
-- **2026-09-09 — fine-tune ft-v2** (current): MODNet photographic checkpoint
+- **2026-09-10 — fine-tune ft-v3** (current): continuation of ft-v2 with 12000
+  additional iterations and a 5x larger CC0 background pool (1806 views from
+  all 301 Poly Haven indoor HDRIs). Internal benchmark: clean MAD 6.6 (was 8.2),
+  webcam-degraded MAD 9.7 (was 12.9). Same export pipeline and interface.
+- **2026-09-09 — fine-tune ft-v2**: MODNet photographic checkpoint
   fine-tuned on VideoMatte240K train split composited over CC0 backgrounds with
   webcam-style degradation (2000 iters, lr 5e-5, frozen BatchNorm). Exported via
   `scripts/export_coreml.py` in the `broadify-keyer-training` project (input
