@@ -144,6 +144,22 @@ bool selfTestForcesCpuProvider() {
   }();
   return forced;
 }
+
+// Opt-in to the half-precision MODNet path (Windows/DirectML only). Off by
+// default: the shipped model is fp32 and flipping this only has an effect when a
+// converted "modnet-fp16" model is also present in the manifest — otherwise the
+// keyer transparently stays on fp32. Read once. See scripts/convert-modnet-fp16.py.
+// macOS keys via CoreML (ANE handles precision internally), so this is unused
+// there and left undefined to avoid an unused-function diagnostic.
+#if !defined(__APPLE__)
+bool keyerFp16Requested() {
+  static const bool requested = []() {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_FP16");
+    return value != nullptr && value[0] == '1';
+  }();
+  return requested;
+}
+#endif
 #endif
 
 #if BROADIFY_ENABLE_MODNET && defined(_WIN32)
@@ -342,8 +358,24 @@ class ModnetKeyer::Impl {
     const auto tensorEnd = std::chrono::steady_clock::now();
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-        memoryInfo, tensor_.data(), tensor_.size(), inputShape.data(), inputShape.size());
+    // Half-precision path (opt-in, Windows/DirectML): feed the model fp16 input,
+    // converting the fp32 tensor into a reused member buffer. modelInputIsFp16_
+    // is derived from the loaded model's declared input type, so an fp32 model
+    // always takes the fp32 branch — the flag only selects which model loads.
+    Ort::Value inputTensor{nullptr};
+    if (modelInputIsFp16_) {
+      tensorFp16_.resize(tensor_.size());
+      for (size_t i = 0, n = tensor_.size(); i < n; ++i) {
+        tensorFp16_[i] = Ort::Float16_t(tensor_[i]);
+      }
+      inputTensor = Ort::Value::CreateTensor<Ort::Float16_t>(
+          memoryInfo, tensorFp16_.data(), tensorFp16_.size(), inputShape.data(),
+          inputShape.size());
+    } else {
+      inputTensor = Ort::Value::CreateTensor<float>(
+          memoryInfo, tensor_.data(), tensor_.size(), inputShape.data(),
+          inputShape.size());
+    }
 
     try {
       const auto runStart = std::chrono::steady_clock::now();
@@ -369,9 +401,24 @@ class ModnetKeyer::Impl {
         result.status = status_;
         return result;
       }
-      const float *mask = outputs[0].GetTensorData<float>();
       const auto outputInfo = outputs[0].GetTensorTypeAndShapeInfo();
       const std::vector<int64_t> outputShape = outputInfo.GetShape();
+      // Read the mask as whatever the model emits. An fp16 model returns fp16;
+      // convert it into a reused fp32 buffer so the downstream mask copy is
+      // format-agnostic. fp32 models keep the original zero-copy data pointer.
+      const float *mask = nullptr;
+      if (outputInfo.GetElementType() ==
+          ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+        const Ort::Float16_t *maskFp16 = outputs[0].GetTensorData<Ort::Float16_t>();
+        const size_t count = outputInfo.GetElementCount();
+        maskFp32_.resize(count);
+        for (size_t i = 0; i < count; ++i) {
+          maskFp32_[i] = maskFp16[i].ToFloat();
+        }
+        mask = maskFp32_.data();
+      } else {
+        mask = outputs[0].GetTensorData<float>();
+      }
       uint32_t maskHeight = inputHeight_;
       uint32_t maskWidth = inputWidth_;
       if (outputShape.size() >= 2u) {
@@ -466,7 +513,23 @@ class ModnetKeyer::Impl {
     lastLoadAttemptAt_ = now;
     loadAttempted_ = true;
 
-    const ModelManifestEntry entry = findModelManifestEntry(options_.modelsDir, "modnet");
+    ModelManifestEntry entry;
+#if BROADIFY_ENABLE_MODNET && !defined(__APPLE__)
+    // Prefer the converted half-precision model when the operator opts in AND a
+    // "modnet-fp16" entry is actually shipped; otherwise transparently fall
+    // through to the fp32 model below.
+    if (keyerFp16Requested()) {
+      entry = findModelManifestEntry(options_.modelsDir, "modnet-fp16");
+      if (entry.file.empty()) {
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":"
+                     "\"fp16_requested_no_model\",\"fallback\":\"fp32\"}"
+                  << std::endl;
+      }
+    }
+#endif
+    if (entry.file.empty()) {
+      entry = findModelManifestEntry(options_.modelsDir, "modnet");
+    }
     if (entry.file.empty()) {
       setFallback("manifest_missing");
       return false;
@@ -524,18 +587,36 @@ class ModnetKeyer::Impl {
           outputName_ = outputNameAllocated.get();
           inputNames_[0] = inputName_.c_str();
           outputNames_[0] = outputName_.c_str();
+          // Derived once from the model itself: an fp16-converted model reports a
+          // FLOAT16 input type here, which drives the fp16 I/O path in apply().
+          modelInputIsFp16_ = builtSession->GetInputTypeInfo(0)
+                                  .GetTensorTypeAndShapeInfo()
+                                  .GetElementType() ==
+                              ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
         }
         double probeMs = 0.0;
         try {
-          std::vector<float> warmupTensor(
-              static_cast<size_t>(3u) * size * size, 0.0f);
+          const size_t warmupCount = static_cast<size_t>(3u) * size * size;
           std::array<int64_t, 4> warmupShape = {
               1, 3, static_cast<int64_t>(size), static_cast<int64_t>(size)};
           Ort::MemoryInfo memoryInfo =
               Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-          Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
-              memoryInfo, warmupTensor.data(), warmupTensor.size(),
-              warmupShape.data(), warmupShape.size());
+          // Warm the DML kernels with an input of the model's own type so the
+          // first real inference does not pay the shape/type compile cost.
+          std::vector<float> warmupTensor;
+          std::vector<Ort::Float16_t> warmupTensorFp16;
+          Ort::Value warmupInput{nullptr};
+          if (modelInputIsFp16_) {
+            warmupTensorFp16.assign(warmupCount, Ort::Float16_t(0.0f));
+            warmupInput = Ort::Value::CreateTensor<Ort::Float16_t>(
+                memoryInfo, warmupTensorFp16.data(), warmupTensorFp16.size(),
+                warmupShape.data(), warmupShape.size());
+          } else {
+            warmupTensor.assign(warmupCount, 0.0f);
+            warmupInput = Ort::Value::CreateTensor<float>(
+                memoryInfo, warmupTensor.data(), warmupTensor.size(),
+                warmupShape.data(), warmupShape.size());
+          }
           std::array<double, 3> warmupRunMs = {0.0, 0.0, 0.0};
           for (size_t warmupRun = 0; warmupRun < warmupRunMs.size(); ++warmupRun) {
             const auto runStart = std::chrono::steady_clock::now();
@@ -798,6 +879,12 @@ class ModnetKeyer::Impl {
   std::array<const char *, 1> inputNames_ = {nullptr};
   std::array<const char *, 1> outputNames_ = {nullptr};
   std::vector<float> tensor_;
+  // Half-precision keyer (opt-in). modelInputIsFp16_ is derived from the loaded
+  // model; the reused buffers convert fp32<->fp16 on the input/output edges so
+  // the tensor build and mask copy stay fp32 and format-agnostic.
+  bool modelInputIsFp16_ = false;
+  std::vector<Ort::Float16_t> tensorFp16_;
+  std::vector<float> maskFp32_;
 #endif
 };
 
