@@ -245,6 +245,34 @@ Effekt; existiert als Naht fuer kuenftigen Zero-Copy-GPU-Input und als
 A/B-Toggle. Fail-safe: jeder Fehler deaktiviert den Pfad prozessweit und faellt
 auf den normalen `Run` zurueck; nur auf dem DirectML-Provider aktiv.
 
+### Zero-Copy-Device-Input (C3, Experiment)
+
+`BROADIFY_MEETING_KEYER_ZEROCOPY=1` baut den MODNet-Eingangs-Tensor per
+D3D12-Compute-Shader direkt aus dem hochgeladenen RGBA-Frame in einen
+Default-Heap-Buffer und bindet ihn ueber die IoBinding-Naht als DML-Device-Input
+(`keyer/dml_device_input.cpp`). **Default aus.** Ersetzt den CPU-Tensor-Build
+(`buildModnetInputTensor`) plus ORTs internen CPU->GPU-Input-Copy; der
+Output-Readback bleibt CPU. Randbedingungen:
+
+- Nur auf dem `dml1_selected_adapter`-Pfad aktiv: dort besitzt der Keyer das
+  D3D12-Device und die Command-Queue, auf der der DML-EP ausfuehrt; der
+  Preprocessing-Dispatch wird auf derselben Queue vor dem `Run` submittet und
+  ist damit ohne Cross-Queue-Fences geordnet. Auf `dml2`/`legacy_device0`
+  meldet `zerocopy_stage_unavailable` den Grund und der CPU-Pfad laeuft
+  unveraendert.
+- Der Shader repliziert die CPU-Referenz exakt (Letterbox, Integer-
+  Block-Average, `(x-0.5)/0.5`); ein einmaliges Paritaets-Gate pro Tier
+  (`zerocopy_parity`, max |Delta| <= 1e-2 elementweise gegen
+  `buildModnetInputTensor`) muss bestehen, bevor eine Maske aus dem GPU-Tensor
+  vertraut wird. fp16-Modelle schreiben den Tensor direkt als half
+  (R16_FLOAT-UAV), die CPU-seitige fp32->fp16-Konvertierung entfaellt.
+- Fail-safe: jeder D3D-/ORT-Fehler oder ein Paritaets-Miss deaktiviert den
+  Pfad prozessweit (`zerocopy_disabled`) und der Frame laeuft noch in
+  derselben apply() ueber den heutigen CPU-Tensor-Pfad weiter.
+
+Der Keyer-Self-Test gibt zur Zuordnung zusaetzlich die Phasen-Mittel
+`tensor_ms`, `session_run_ms` und `mask_apply_ms` pro Groesse aus.
+
 ## Messen
 
 1. In Windows Task Manager die Spalten fuer GPU Engine/GPU-Auslastung oeffnen.

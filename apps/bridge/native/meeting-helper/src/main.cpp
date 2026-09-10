@@ -336,6 +336,12 @@ bool benchmarkKeyerBackend(
     std::vector<double> sampleMs;
     sampleMs.reserve(kRunsPerMode);
     KeyerStatus lastStatus;
+    // Phase means alongside the total: with the zero-copy/IoBinding
+    // experiments the interesting question is WHERE the time went
+    // (tensor build vs session Run vs mask copy), not just the sum.
+    double tensorMsSum = 0.0;
+    double sessionRunMsSum = 0.0;
+    double maskApplyMsSum = 0.0;
     for (int run = 0; run < kRunsPerMode; ++run) {
       const KeyerResult result = keyer->apply(frame, settings);
       lastStatus = result.status;
@@ -344,6 +350,9 @@ bool benchmarkKeyerBackend(
         break;
       }
       sampleMs.push_back(result.status.inferenceMs);
+      tensorMsSum += result.status.metrics.tensorMs;
+      sessionRunMsSum += result.status.metrics.sessionRunMs;
+      maskApplyMsSum += result.status.metrics.maskApplyMs;
     }
     if (sampleMs.empty()) {
       ok = false;
@@ -363,10 +372,14 @@ bool benchmarkKeyerBackend(
     const size_t p95Index = static_cast<size_t>(
         std::ceil(0.95 * static_cast<double>(sorted.size()))) - 1u;
     std::ostringstream line;
+    const double sampleCount = static_cast<double>(sampleMs.size());
     line << "{\"type\":\"keyer_self_test\",\"backend\":\"" << backendName
          << "\",\"provider\":\"" << jsonEscape(lastStatus.provider)
          << "\",\"input_size\":" << mode.inputSize
          << ",\"mean_ms\":" << meanMs << ",\"p95_ms\":" << sorted[p95Index]
+         << ",\"tensor_ms\":" << tensorMsSum / sampleCount
+         << ",\"session_run_ms\":" << sessionRunMsSum / sampleCount
+         << ",\"mask_apply_ms\":" << maskApplyMsSum / sampleCount
          << ",\"probe_inference_ms\":" << lastStatus.probeInferenceMs << "}";
     printEvent(line.str());
   }
