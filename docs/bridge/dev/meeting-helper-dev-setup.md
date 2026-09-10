@@ -82,7 +82,7 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_GPU_PIPELINE=0` | Fused CoreML-Pipeline deaktivieren |
 | `BROADIFY_MEETING_GPU_REFINE=0` | MPS-Maskenverfeinerung deaktivieren |
 | `BROADIFY_MEETING_GPU_GUIDED=0` | D3D11 Guided Refine deaktivieren |
-| `BROADIFY_MEETING_GUIDED_REFINE=0` | Guided Live Snap deaktivieren |
+| `BROADIFY_MEETING_LIVE_SNAP` | Live-Edge-Snap: unset = Auto (age-gated, Snap nur bei frischer Maske), `1` = immer an, `0` = immer aus (kein Ghost/Jitter bei alter Maske) |
 | `BROADIFY_MEETING_GPU_RADIUS` | Radius des MPS Guided Filters |
 | `BROADIFY_MEETING_GPU_EPSILON` | Epsilon des MPS Guided Filters |
 | `BROADIFY_MEETING_GPU_REFINE_WIDTH` | Zielbreite der MPS-Maske |
