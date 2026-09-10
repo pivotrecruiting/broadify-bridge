@@ -54,11 +54,38 @@ float guidedEpsilon() {
   return e;
 }
 
-// Bilinear-ish downscale of a planar float image into (dstW x dstH).
-std::vector<float> resamplePlane(const std::vector<float> &src, int srcW,
-                                 int srcH, int dstW, int dstH) {
-  std::vector<float> dst(static_cast<size_t>(dstW) * dstH, 0.0f);
-  if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return dst;
+// Reusable per-thread scratch. guidedRefineMask runs once per frame on a single
+// pipeline thread; holding its working buffers here lets them grow to the
+// working-grid size once and be reused for every subsequent frame instead of
+// heap-allocating roughly two dozen vectors per invocation. thread_local keeps
+// it correct even if the filter is ever driven from more than one thread (each
+// gets its own set). Buffers are resized (never shrunk) and fully overwritten
+// each frame, so no stale data leaks between frames.
+struct GuidedScratch {
+  std::vector<float> lumaFull;
+  std::vector<float> maskFull;
+  std::vector<float> I;
+  std::vector<float> p;
+  std::vector<float> meanI;
+  std::vector<float> meanP;
+  std::vector<float> corrI;
+  std::vector<float> corrIp;
+  std::vector<float> a;
+  std::vector<float> b;
+  std::vector<float> blurTmp;
+  std::vector<double> blurPre;
+  std::vector<uint8_t> refined;
+};
+
+// Bilinear-ish downscale of a planar float image into dst (sized dstW x dstH).
+// Writes every output pixel on the valid path, so dst needs no pre-clear there.
+void resamplePlaneInto(std::vector<float> &dst, const std::vector<float> &src,
+                       int srcW, int srcH, int dstW, int dstH) {
+  dst.resize(static_cast<size_t>(std::max(0, dstW)) * std::max(0, dstH));
+  if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) {
+    std::fill(dst.begin(), dst.end(), 0.0f);
+    return;
+  }
   const float sx = static_cast<float>(srcW) / dstW;
   const float sy = static_cast<float>(srcH) / dstH;
   for (int y = 0; y < dstH; ++y) {
@@ -80,15 +107,16 @@ std::vector<float> resamplePlane(const std::vector<float> &src, int srcW,
           c * (1 - wx) * wy + d * wx * wy;
     }
   }
-  return dst;
 }
 
 // Separable box blur (radius r) with border-correct averaging (divides by the
-// actual in-bounds sample count), via per-line prefix sums. O(W*H).
-void boxBlur(std::vector<float> &img, int W, int H, int r) {
+// actual in-bounds sample count), via per-line prefix sums. O(W*H). tmp and pre
+// are caller-owned scratch (grown as needed) so the hot path allocates nothing.
+void boxBlur(std::vector<float> &img, int W, int H, int r,
+             std::vector<float> &tmp, std::vector<double> &pre) {
   if (r < 1 || W <= 0 || H <= 0) return;
-  std::vector<float> tmp(img.size());
-  std::vector<double> pre(std::max(W, H) + 1);
+  tmp.resize(img.size());
+  pre.resize(static_cast<size_t>(std::max(W, H)) + 1);
   // Horizontal.
   for (int y = 0; y < H; ++y) {
     const float *src = &img[(size_t)y * W];
@@ -125,6 +153,8 @@ void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame) {
     return;
   }
 
+  static thread_local GuidedScratch s;
+
   const GuidedWorkSize workSize = selectGuidedWorkSize(
       guideFrame.width, guideFrame.height, guidedWorkWidthFromEnv());
   const int workW = static_cast<int>(workSize.width);
@@ -133,57 +163,59 @@ void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame) {
   // Guide luma (0..1) at full res, then resampled to the working grid.
   const int gW = static_cast<int>(guideFrame.width);
   const int gH = static_cast<int>(guideFrame.height);
-  std::vector<float> lumaFull(static_cast<size_t>(gW) * gH);
-  for (size_t i = 0, n = lumaFull.size(); i < n; ++i) {
+  s.lumaFull.resize(static_cast<size_t>(gW) * gH);
+  for (size_t i = 0, count = s.lumaFull.size(); i < count; ++i) {
     const uint8_t *px = &guideFrame.rgba[i * 4];
-    lumaFull[i] = (0.299f * px[0] + 0.587f * px[1] + 0.114f * px[2]) / 255.0f;
+    s.lumaFull[i] = (0.299f * px[0] + 0.587f * px[1] + 0.114f * px[2]) / 255.0f;
   }
-  std::vector<float> I = resamplePlane(lumaFull, gW, gH, workW, workH);
+  resamplePlaneInto(s.I, s.lumaFull, gW, gH, workW, workH);
 
   // Mask (0..1) resampled to the same working grid.
-  std::vector<float> maskFull(mask.alpha.size());
-  for (size_t i = 0, n = maskFull.size(); i < n; ++i)
-    maskFull[i] = mask.alpha[i] / 255.0f;
-  std::vector<float> p = resamplePlane(maskFull, static_cast<int>(mask.width),
-                                       static_cast<int>(mask.height), workW,
-                                       workH);
+  s.maskFull.resize(mask.alpha.size());
+  for (size_t i = 0, count = s.maskFull.size(); i < count; ++i)
+    s.maskFull[i] = mask.alpha[i] / 255.0f;
+  resamplePlaneInto(s.p, s.maskFull, static_cast<int>(mask.width),
+                    static_cast<int>(mask.height), workW, workH);
 
   const int r = guidedRadius();
   const float eps = guidedEpsilon();
   const size_t n = static_cast<size_t>(workW) * workH;
 
-  std::vector<float> meanI = I, meanP = p;
-  boxBlur(meanI, workW, workH, r);
-  boxBlur(meanP, workW, workH, r);
+  s.meanI.assign(s.I.begin(), s.I.end());
+  s.meanP.assign(s.p.begin(), s.p.end());
+  boxBlur(s.meanI, workW, workH, r, s.blurTmp, s.blurPre);
+  boxBlur(s.meanP, workW, workH, r, s.blurTmp, s.blurPre);
 
-  std::vector<float> corrI(n), corrIp(n);
+  s.corrI.resize(n);
+  s.corrIp.resize(n);
   for (size_t i = 0; i < n; ++i) {
-    corrI[i] = I[i] * I[i];
-    corrIp[i] = I[i] * p[i];
+    s.corrI[i] = s.I[i] * s.I[i];
+    s.corrIp[i] = s.I[i] * s.p[i];
   }
-  boxBlur(corrI, workW, workH, r);
-  boxBlur(corrIp, workW, workH, r);
+  boxBlur(s.corrI, workW, workH, r, s.blurTmp, s.blurPre);
+  boxBlur(s.corrIp, workW, workH, r, s.blurTmp, s.blurPre);
 
-  std::vector<float> a(n), b(n);
+  s.a.resize(n);
+  s.b.resize(n);
   for (size_t i = 0; i < n; ++i) {
-    const float varI = corrI[i] - meanI[i] * meanI[i];
-    const float covIp = corrIp[i] - meanI[i] * meanP[i];
-    a[i] = covIp / (varI + eps);
-    b[i] = meanP[i] - a[i] * meanI[i];
+    const float varI = s.corrI[i] - s.meanI[i] * s.meanI[i];
+    const float covIp = s.corrIp[i] - s.meanI[i] * s.meanP[i];
+    s.a[i] = covIp / (varI + eps);
+    s.b[i] = s.meanP[i] - s.a[i] * s.meanI[i];
   }
-  boxBlur(a, workW, workH, r);
-  boxBlur(b, workW, workH, r);
+  boxBlur(s.a, workW, workH, r, s.blurTmp, s.blurPre);
+  boxBlur(s.b, workW, workH, r, s.blurTmp, s.blurPre);
 
-  std::vector<uint8_t> refined(n);
+  s.refined.resize(n);
   for (size_t i = 0; i < n; ++i) {
-    const float q = a[i] * I[i] + b[i];
-    refined[i] = static_cast<uint8_t>(
+    const float q = s.a[i] * s.I[i] + s.b[i];
+    s.refined[i] = static_cast<uint8_t>(
         std::clamp(q, 0.0f, 1.0f) * 255.0f + 0.5f);
   }
 
   mask.width = static_cast<uint32_t>(workW);
   mask.height = static_cast<uint32_t>(workH);
-  mask.alpha = std::move(refined);
+  mask.alpha.assign(s.refined.begin(), s.refined.end());
 }
 
 }  // namespace broadify::meeting
