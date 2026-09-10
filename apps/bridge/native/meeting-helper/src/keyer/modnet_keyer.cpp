@@ -847,24 +847,26 @@ class ModnetKeyer::Impl {
       }
       ioBindingActive_ = (keyerIoBindingRequested() || zeroCopyEnabled_) &&
                          status_.provider == std::string("directml");
-      const auto inputInfo = activeSession_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+      // MODNet's ONNX graph is dynamic, but createSession() pins every tier to a
+      // concrete height/width through the DirectML free-dimension override, so
+      // GetInputTypeInfo() reports a *static* shape here regardless. Deriving
+      // dynamism from that reported shape (as we used to) silently latched the
+      // keyer to the fallback tier once the override landed, defeating the
+      // governor's step-down to 320/256. The reliable signal is that we built
+      // and warmed working sessions at more than one resolution — only a dynamic
+      // model lets the per-tier override produce distinct, runnable shapes. This
+      // re-enables apply()'s per-mode resolution switch.
+      modelDynamic_ = tierSessions_.size() > 1u;
 #endif
+#if defined(__APPLE__)
+      // macOS keeps the size frozen into the CoreML free-dimension override at
+      // load; dynamism is informational only there (apply() never switches
+      // resolution on macOS), so read it straight from the reported shape.
       const std::vector<int64_t> inputShape = inputInfo.GetShape();
       if (inputShape.size() >= 4u) {
-        // A dynamic model (dims reported as <= 0) lets us pick the input
-        // resolution per frame from the performance mode; a static model is
-        // pinned to its declared size.
         modelDynamic_ = inputShape[2] <= 0 || inputShape[3] <= 0;
-#if !defined(__APPLE__)
-        if (!modelDynamic_) {
-          inputHeight_ = dimensionOrFallback(inputShape[2]);
-          inputWidth_ = dimensionOrFallback(inputShape[3]);
-        }
-#else
-        // macOS keeps the size chosen in apply() (frozen into the CoreML
-        // free-dimension override); don't overwrite it with the model's dims.
-#endif
       }
+#endif
 
       loaded_ = true;
       status_.activeKeyer = "modnet";
