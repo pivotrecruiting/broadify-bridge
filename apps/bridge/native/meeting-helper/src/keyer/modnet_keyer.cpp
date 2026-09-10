@@ -159,6 +159,19 @@ bool keyerFp16Requested() {
   }();
   return requested;
 }
+
+// Opt-in to ORT IoBinding for the DirectML keyer (Windows only, default off).
+// With CPU-sourced input this is a modest win (binding reuse only); it exists as
+// the integration seam for a future zero-copy GPU-resident input tensor, and as
+// an A/B toggle for the teststrecke. Fail-safe: any error disables it for the
+// process and the keyer reverts to the plain Run path. Read once.
+bool keyerIoBindingRequested() {
+  static const bool requested = []() {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_IO_BINDING");
+    return value != nullptr && value[0] == '1';
+  }();
+  return requested;
+}
 #endif
 #endif
 
@@ -388,13 +401,34 @@ class ModnetKeyer::Impl {
         result.status = status_;
         return result;
       }
-      auto outputs = session->Run(
-          Ort::RunOptions{nullptr},
-          inputNames_.data(),
-          &inputTensor,
-          1,
-          outputNames_.data(),
-          1);
+      std::vector<Ort::Value> outputs;
+#if BROADIFY_ENABLE_MODNET && !defined(__APPLE__)
+      if (ioBindingActive_) {
+        try {
+          Ort::IoBinding binding(*session);
+          binding.BindInput(inputNames_[0], inputTensor);
+          const Ort::MemoryInfo cpuOutput = Ort::MemoryInfo::CreateCpu(
+              OrtDeviceAllocator, OrtMemTypeCPU);
+          binding.BindOutput(outputNames_[0], cpuOutput);
+          session->Run(Ort::RunOptions{nullptr}, binding);
+          outputs = binding.GetOutputValues();
+        } catch (...) {
+          // Disable IoBinding for the rest of the process and fall back to the
+          // plain Run below; keying must never fail because of an A/B toggle.
+          ioBindingActive_ = false;
+          outputs.clear();
+        }
+      }
+#endif
+      if (outputs.empty()) {
+        outputs = session->Run(
+            Ort::RunOptions{nullptr},
+            inputNames_.data(),
+            &inputTensor,
+            1,
+            outputNames_.data(),
+            1);
+      }
       const auto runEnd = std::chrono::steady_clock::now();
       if (outputs.empty() || !outputs[0].IsTensor()) {
         setFallback("invalid_output");
@@ -654,6 +688,10 @@ class ModnetKeyer::Impl {
       inputWidth_ = inputHeight_ = initialIt->first;
       status_.probeInferenceMs = initialIt->second.probeMs;
       sessionRunSize_ = initialIt->first;
+      // Only bind on the GPU provider: IoBinding buys nothing over a plain CPU
+      // Run when the CPU EP is active.
+      ioBindingActive_ = keyerIoBindingRequested() &&
+                         status_.provider == std::string("directml");
       const auto inputInfo = activeSession_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
 #endif
       const std::vector<int64_t> inputShape = inputInfo.GetShape();
@@ -885,6 +923,8 @@ class ModnetKeyer::Impl {
   bool modelInputIsFp16_ = false;
   std::vector<Ort::Float16_t> tensorFp16_;
   std::vector<float> maskFp32_;
+  // ORT IoBinding A/B toggle (Windows/DirectML only); cleared on first failure.
+  bool ioBindingActive_ = false;
 #endif
 };
 
