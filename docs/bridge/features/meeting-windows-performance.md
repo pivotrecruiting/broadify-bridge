@@ -199,6 +199,52 @@ noch keinen Frame bekommen hat. Die VCam-DLL schreibt beim ersten Logeintrag
 einen Build-Stamp (`git_sha`, `build_time`) nach
 `%ProgramData%\Broadify\vcam.log`.
 
+## rc.11: Perf-Pakete (Keyer-Last / Luefter)
+
+Aufbauend auf rc.10. Ziel: Pro-Frame-CPU/GPU-Last senken — das ist der gemeinsame
+Hebel fuer Performance, Luefterlautstaerke und Qualitaet, weil der Keyer-Governor
+unter Last die Matte-Aufloesung senkt (512 -> 320 -> 256).
+
+- **Keyer-Thread-Prioritaet (A2):** Der Async-Keyer-Worker (schwerster Thread)
+  bekommt jetzt ebenfalls `AvSetMmThreadCharacteristicsW(L"Capture")`, nicht mehr
+  nur Program-/Sender-Thread. Unter dem `BROADIFY_MEETING_WIN_QOS`-Schalter.
+- **Weniger Pro-Frame-Allokationen (C2):** Der CPU-Guided-Filter und die
+  Masken-Morphologie im Keyer-Postprocess nutzen wiederverwendete Scratch-Puffer
+  statt pro Frame ~2 Dutzend Vektoren zu allozieren. Mathematik unveraendert.
+- **AVX2-Luma fuer VCam-NV12 (A3):** BGRA->NV12-Y-Ebene laeuft mit einem
+  AVX2-Kernel (Runtime-`cpuHasAvx2()`-Dispatch, Scalar-Fallback, bit-exakt). Kein
+  globales `/arch:AVX2`. Betrifft den echten Kamerapfad (die vcam-helper-DLL nutzt
+  dieselbe `bgraToNv12`).
+
+### fp16-Keyer (B2, Experiment)
+
+`BROADIFY_MEETING_KEYER_FP16=1` laesst den Keyer ein halbpraezises MODNet-Modell
+laden (DirectML, ~2x Durchsatz auf faehigen GPUs -> hoehere Tier-Haltung unter
+Last, weniger GPU-Zeit). **Default aus.** Die I/O-Praezision wird aus dem
+tatsaechlich geladenen Modelltyp abgeleitet, nie aus dem Flag allein — ein
+fp32-Modell nimmt immer den fp32-Pfad. Der Schalter greift nur, wenn zusaetzlich
+ein deployter `modnet-fp16`-Eintrag vorhanden ist; sonst bleibt der Keyer
+transparent auf fp32 (Log-Event `fp16_requested_no_model`).
+
+fp16-Modell bereitstellen:
+
+1. `python scripts/convert-modnet-fp16.py --input <modnet.onnx> --output modnet_fp16.onnx`
+   (benoetigt `pip install onnx onnxconverter-common`). Der Befehl gibt den
+   SHA-256 aus. Matte-Qualitaet einmal gegen fp32 pruefen.
+2. `modnet_fp16.onnx` hosten und `MODNET_FP16_MODEL_URL` als Secret setzen
+   (Windows-Job, analog `MODNET_MODEL_URL`).
+3. In `models/manifest.json` den `modnet-fp16`-`sha256` vom Platzhalter auf den
+   echten Hash setzen und committen. `download-modnet-model.sh` laedt das Modell
+   dann verifiziert; ohne Hash/URL ist der Schritt ein No-op (fp32 unveraendert).
+
+### IoBinding (B1, Experiment)
+
+`BROADIFY_MEETING_KEYER_IO_BINDING=1` fuehrt die DirectML-Inferenz ueber
+ORT-IoBinding. **Default aus.** Aktuell mit CPU-seitigem Input nur ein moderater
+Effekt; existiert als Naht fuer kuenftigen Zero-Copy-GPU-Input und als
+A/B-Toggle. Fail-safe: jeder Fehler deaktiviert den Pfad prozessweit und faellt
+auf den normalen `Run` zurueck; nur auf dem DirectML-Provider aktiv.
+
 ## Messen
 
 1. In Windows Task Manager die Spalten fuer GPU Engine/GPU-Auslastung oeffnen.

@@ -51,6 +51,10 @@ jobs:
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
       MODNET_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_MODEL_URL || '' }}
+      # Optional fp16 MODNet variant for the BROADIFY_MEETING_KEYER_FP16 experiment.
+      # Empty until the secret is added; the downloader then skips fp16 and the
+      # keyer stays on fp32, so this is inert by default.
+      MODNET_FP16_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_FP16_MODEL_URL || '' }}
       MODNET_COREML_MODEL_URL: ${{ matrix.os == 'macos-15' && secrets.MODNET_COREML_MODEL_URL || '' }}
       AZURE_TENANT_ID: ${{ matrix.os == 'windows-2022' && secrets.AZURE_TENANT_ID || '' }}
       AZURE_CLIENT_ID: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CLIENT_ID || '' }}

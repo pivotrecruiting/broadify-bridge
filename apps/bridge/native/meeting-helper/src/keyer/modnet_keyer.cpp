@@ -550,11 +550,21 @@ class ModnetKeyer::Impl {
     ModelManifestEntry entry;
 #if BROADIFY_ENABLE_MODNET && !defined(__APPLE__)
     // Prefer the converted half-precision model when the operator opts in AND a
-    // "modnet-fp16" entry is actually shipped; otherwise transparently fall
-    // through to the fp32 model below.
+    // deployable "modnet-fp16" model is actually present; otherwise transparently
+    // fall through to the fp32 model below.
     if (keyerFp16Requested()) {
-      entry = findModelManifestEntry(options_.modelsDir, "modnet-fp16");
-      if (entry.file.empty()) {
+      const ModelManifestEntry fp16 =
+          findModelManifestEntry(options_.modelsDir, "modnet-fp16");
+      // A manifest entry alone (declared but not yet built/hashed) must NOT
+      // divert the keyer to a missing file — that would drop it to passthrough.
+      // Require a real pinned hash and the file actually on disk; else stay fp32.
+      const bool fp16Usable =
+          !fp16.file.empty() && !fp16.sha256.empty() &&
+          fp16.sha256 != "release-artifact-required" &&
+          fileExists(joinModelPath(options_.modelsDir, fp16.file));
+      if (fp16Usable) {
+        entry = fp16;
+      } else {
         std::cout << "{\"type\":\"meeting_keyer\",\"event\":"
                      "\"fp16_requested_no_model\",\"fallback\":\"fp32\"}"
                   << std::endl;

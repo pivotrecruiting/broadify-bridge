@@ -8,6 +8,12 @@
       "required": true
     },
     {
+      "name": "modnet-fp16",
+      "file": "modnet_fp16.onnx",
+      "sha256": "release-artifact-required",
+      "required": false
+    },
+    {
       "name": "mediapipe-selfie-segmenter",
       "file": "selfie_segmenter.task",
       "sha256": "release-artifact-required",
