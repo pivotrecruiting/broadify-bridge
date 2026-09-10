@@ -1098,7 +1098,12 @@ void slidingExtrema2d(const std::vector<uint8_t> &source,
                       uint32_t height,
                       uint32_t radius,
                       bool takeMax) {
-  std::vector<uint8_t> horizontal(source.size());
+  // Reused across the several morphology passes per frame; sized to the source
+  // and fully overwritten each call (every row/column is written), so it never
+  // heap-allocates after the first frame. Single-threaded keyer post-process;
+  // thread_local keeps it correct if ever driven from another thread.
+  static thread_local std::vector<uint8_t> horizontal;
+  horizontal.resize(source.size());
   std::vector<WedgeEntry> wedge;
   wedge.reserve(static_cast<size_t>(radius) * 2u + 2u);
   for (uint32_t y = 0; y < height; ++y) {
@@ -1116,9 +1121,11 @@ void dilateAlpha(AlphaMask &mask, uint32_t radius) {
     return;
   }
 
-  std::vector<uint8_t> dilatedAlpha;
+  // Swap the computed result into mask.alpha and keep the old buffer as reusable
+  // scratch — no per-frame allocation, no copy.
+  static thread_local std::vector<uint8_t> dilatedAlpha;
   slidingExtrema2d(mask.alpha, dilatedAlpha, mask.width, mask.height, radius, true);
-  mask.alpha = std::move(dilatedAlpha);
+  std::swap(mask.alpha, dilatedAlpha);
 }
 
 std::vector<uint8_t> erodedAlphaForRadius(const AlphaMask &mask, uint32_t radius) {
@@ -1141,8 +1148,9 @@ void erodeAlpha(AlphaMask &mask, double radius) {
     return;
   }
 
-  const std::vector<uint8_t> originalAlpha = mask.alpha;
-  std::vector<uint8_t> lowerAlpha = lowerRadius == 0u ? originalAlpha : erodedAlphaForRadius(mask, lowerRadius);
+  // Only copy the untouched alpha when the lower radius is a no-op; otherwise the
+  // eroded result is the buffer we need, and copying mask.alpha first was waste.
+  std::vector<uint8_t> lowerAlpha = lowerRadius == 0u ? mask.alpha : erodedAlphaForRadius(mask, lowerRadius);
   if (upperWeight <= 0.0 || lowerRadius == upperRadius) {
     mask.alpha = std::move(lowerAlpha);
     return;
@@ -1196,8 +1204,12 @@ void featherAlpha(AlphaMask &mask, uint32_t radius) {
   }
 
   const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
-  std::vector<uint8_t> horizontalAlpha(pixelCount);
-  std::vector<uint8_t> featheredAlpha(pixelCount);
+  // Both buffers are fully rewritten each frame; reuse them and swap the result
+  // into mask.alpha so feathering allocates nothing on the hot path.
+  static thread_local std::vector<uint8_t> horizontalAlpha;
+  static thread_local std::vector<uint8_t> featheredAlpha;
+  horizontalAlpha.resize(pixelCount);
+  featheredAlpha.resize(pixelCount);
 
   for (uint32_t y = 0; y < mask.height; ++y) {
     const size_t rowOffset = static_cast<size_t>(y) * mask.width;
@@ -1207,12 +1219,14 @@ void featherAlpha(AlphaMask &mask, uint32_t radius) {
     slidingBoxAverageLine(horizontalAlpha.data() + x, featheredAlpha.data() + x, mask.height, mask.width, radius);
   }
 
-  mask.alpha = std::move(featheredAlpha);
+  std::swap(mask.alpha, featheredAlpha);
 }
 
 std::vector<uint8_t> alphaProtectionMask(const AlphaMask &mask, uint32_t radius) {
   const size_t pixelCount = static_cast<size_t>(mask.width) * mask.height;
-  std::vector<uint8_t> sourceMask(pixelCount);
+  // Binary source is rebuilt in full every call; reuse the buffer.
+  static thread_local std::vector<uint8_t> sourceMask;
+  sourceMask.resize(pixelCount);
   for (size_t index = 0; index < pixelCount; ++index) {
     sourceMask[index] = mask.alpha[index] >= kTemporalProtectionAlphaThreshold ? 1u : 0u;
   }
