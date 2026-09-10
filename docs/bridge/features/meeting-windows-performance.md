@@ -273,6 +273,29 @@ Output-Readback bleibt CPU. Randbedingungen:
 Der Keyer-Self-Test gibt zur Zuordnung zusaetzlich die Phasen-Mittel
 `tensor_ms`, `session_run_ms` und `mask_apply_ms` pro Groesse aus.
 
+### Live-Snap: age-gated Default (C4)
+
+`BROADIFY_MEETING_LIVE_SNAP`: unset = **Auto** (Snap nur bei frischer Maske,
+`<= kLiveSnapMaxAgeMs` = 40 ms), `1` = immer, `0` = nie. Grund: der Async-Worker
+liefert die Maske gepaart mit dem *alten* Frame; snappt man diese auf den
+aktuellen Frame, entsteht bei **alter** Maske ein sichtbarer Ghost + Pro-Frame-
+Kanten-Jitter ("Pulsieren"). Auto komponiert daher bei alter Maske den Paar-
+Frame (stabil) und snappt nur bei frischer Maske (dann killt der Snap den
+Bewegungs-Kanten-Lag wie vorgesehen).
+
+**Feldbefund (Trade-off, noch NICHT final):** Bei ~96 ms Async-Mask-Age
+(GTX 1660 Ti, Keyer-Durchsatz ~14–20 fps) beseitigt Snap-aus (Auto/`0`)
+Pulsieren+Ghost und liefert saubere Kanten, **aber** eine sichtbare Lippen-
+Latenz, weil der aeltere Paar-Frame komponiert wird. Snap-an (`1`) senkt die
+Latenz nur *geringfuegig* und holt Ghost+schlechtere Kanten zurueck — netto
+schlechter. **Rest-Latenz bei Snap-aus = Mask-Age ~96 ms, HW-limitiert** (nicht
+vom Snap-Toggle behebbar). Optionen fuer echtes "latenzarm UND kein Ghost"
+(eigener Scope): Keyer-Tempo/leichteres Modell, um das Mask-Age zu senken,
+ODER Mask-Temporal-Blend gegen das Pulsieren bei Snap-an
+(`temporal_blend_enabled` aktuell `false`). Die Default-Wahl **Auto vs. bisheriges
+Snap-an** faellt erst beim rc.11-Schnitt nach einem Gegencheck an einer zweiten
+Szene/beim Kunden.
+
 **Feldbefund (Default-off):** Auf einer overhead-gebundenen GPU (GTX 1660 Ti,
 `split`-Policy, Live-1080p) bringt `ZEROCOPY` keinen Nettogewinn und kostet
 leicht mehr GPU-Takt/Luefter (+~2 W / +~140 MHz Boost gemessen). Der GPU-gebaute
