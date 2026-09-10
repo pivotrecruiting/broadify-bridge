@@ -39,6 +39,7 @@
 #include <functional>
 #include <numeric>
 #include <vector>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -342,6 +343,7 @@ bool benchmarkKeyerBackend(
     double tensorMsSum = 0.0;
     double sessionRunMsSum = 0.0;
     double maskApplyMsSum = 0.0;
+    AlphaMask lastMask;
     for (int run = 0; run < kRunsPerMode; ++run) {
       const KeyerResult result = keyer->apply(frame, settings);
       lastStatus = result.status;
@@ -353,6 +355,23 @@ bool benchmarkKeyerBackend(
       tensorMsSum += result.status.metrics.tensorMs;
       sessionRunMsSum += result.status.metrics.sessionRunMs;
       maskApplyMsSum += result.status.metrics.maskApplyMs;
+      lastMask = result.mask;
+    }
+    // A/B quality support (e.g. fp16 vs fp32): dump the last mask of each
+    // mode as a binary PGM so an external diff can quantify the deviation.
+    // Self-test only, off unless the directory env is set.
+    if (const char *dumpDir =
+            std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_MASK_DUMP_DIR");
+        dumpDir != nullptr && dumpDir[0] != '\0' && !lastMask.alpha.empty()) {
+      std::ostringstream dumpPath;
+      dumpPath << dumpDir << "/mask_" << backendName << "_" << mode.inputSize
+               << ".pgm";
+      std::ofstream dump(dumpPath.str(), std::ios::binary);
+      if (dump) {
+        dump << "P5\n" << lastMask.width << " " << lastMask.height << "\n255\n";
+        dump.write(reinterpret_cast<const char *>(lastMask.alpha.data()),
+                   static_cast<std::streamsize>(lastMask.alpha.size()));
+      }
     }
     if (sampleMs.empty()) {
       ok = false;
