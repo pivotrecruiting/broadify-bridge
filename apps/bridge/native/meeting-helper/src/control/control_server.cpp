@@ -452,8 +452,27 @@ std::string handleRpc(const std::string &line,
 
   if (method == "camera.start") {
     const std::string stableKey = extractStringField(line, "stable_key");
-    const int cameraIndex = resolveCameraIndex(
+    int cameraIndex = resolveCameraIndex(
         camera, stableKey, extractIntField(line, "camera_index", camera.activeCameraIndex()));
+    if (cameraIndex < 0 && stableKey.empty()) {
+      // Defensive fallback for an index-less start: a fresh machine's setup
+      // page can issue camera.start before any camera is selected
+      // (activeCameraIndex() is -1 when nothing runs), which used to fail to a
+      // black preview. Degrade to the first available camera (the built-in on
+      // most machines) instead of camera_start_failed. A concrete stable_key
+      // that does not resolve is still a hard error (below) — never silently
+      // open a different camera than the one that was asked for.
+      const std::vector<CameraInfo> cameras = camera.listCameras();
+      const auto firstAvailable = std::find_if(
+          cameras.begin(), cameras.end(),
+          [](const CameraInfo &info) { return info.available; });
+      if (firstAvailable != cameras.end()) {
+        cameraIndex = firstAvailable->cameraIndex;
+        std::cout << "{\"type\":\"meeting_camera\",\"event\":"
+                     "\"camera_start_default_fallback\",\"camera_index\":"
+                  << cameraIndex << "}" << std::endl;
+      }
+    }
     if (cameraIndex < 0) {
       return errorResponse(id, "camera_start_failed",
                            "Requested camera stable_key is not available.");
