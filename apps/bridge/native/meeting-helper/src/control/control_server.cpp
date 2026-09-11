@@ -184,6 +184,19 @@ bool activeCameraMatches(CameraSource &camera, const std::string &stableKey,
     return false;
   }
   const int activeIndex = camera.activeCameraIndex();
+  // camera.select moves the program pointer (activeCameraIndex) WITHOUT opening
+  // a capture session for it. Trusting the pointer alone made camera.start's
+  // idempotency guard short-circuit a select()-then-start() switch to a
+  // not-yet-opened camera — the session was never opened and the feed stayed
+  // black (external webcams, both platforms). Only treat the camera as already
+  // active when a live capture session actually exists for the program index;
+  // activeCameraSet() reports the truly-open cameras (keys of the backend's
+  // session/stream map), unlike activeCameraIndex().
+  const std::vector<int> openCameras = camera.activeCameraSet();
+  if (std::find(openCameras.begin(), openCameras.end(), activeIndex) ==
+      openCameras.end()) {
+    return false;
+  }
   if (stableKey.empty()) {
     return activeIndex == cameraIndex;
   }
