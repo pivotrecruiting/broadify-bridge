@@ -85,6 +85,11 @@ class StubCameraSource final : public CameraSource {
     lastFps = fps;
     running_ = true;
     activeIndex_ = cameraIndex;
+    // Mirror the real backends: start() opens a capture session, so the camera
+    // becomes visible in activeCameraSet(). selectCamera() deliberately does NOT
+    // do this — it only moves the program pointer — which is what the
+    // switch-camera regression below exercises.
+    openSet_ = {cameraIndex};
     return true;
   }
 
@@ -282,6 +287,24 @@ int main() {
     running.store(false);
     server.join();
     fail("stable_key did not take precedence over camera_index");
+  }
+
+  // Regression: switching to a not-yet-opened camera. camera.select moves the
+  // program pointer without opening a session; camera.start must still OPEN the
+  // target. The idempotency guard keys on activeCameraSet() (a live session),
+  // not on the moved activeCameraIndex() alone — trusting the pointer made
+  // start() short-circuit and left the switched-to camera (external webcams,
+  // both platforms) black.
+  (void)sendRpc(endpoint, "{\"id\":\"4a\",\"method\":\"camera.select\","
+                          "\"camera_index\":1}");
+  const std::string switched =
+      sendRpc(endpoint, "{\"id\":\"4b\",\"method\":\"camera.start\","
+                        "\"camera_index\":1}");
+  if (!contains(switched, "\"reopened\":true") || camera.startCalls != 3 ||
+      camera.startedIndices.back() != 1) {
+    running.store(false);
+    server.join();
+    fail("camera.start after select did not open the switched-to camera");
   }
 
   {
