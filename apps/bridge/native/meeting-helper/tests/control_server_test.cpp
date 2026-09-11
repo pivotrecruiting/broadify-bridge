@@ -307,6 +307,21 @@ int main() {
     fail("camera.start after select did not open the switched-to camera");
   }
 
+  // Defensive: an index-less camera.start (fresh machine, setup page starting
+  // before any selection, so activeCameraIndex() is -1 and no stable_key is
+  // sent) must fall back to the first available camera instead of failing to a
+  // black preview. A concrete-but-unresolvable stable_key stays a hard error
+  // (covered by the program_select case below).
+  (void)sendRpc(endpoint, "{\"id\":\"4c\",\"method\":\"camera.stop\"}");
+  const std::string defaulted =
+      sendRpc(endpoint, "{\"id\":\"4d\",\"method\":\"camera.start\"}");
+  if (!contains(defaulted, "\"reopened\":true") ||
+      camera.startedIndices.back() != 0) {
+    running.store(false);
+    server.join();
+    fail("index-less camera.start did not fall back to the first camera");
+  }
+
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.keyerMetrics.vcamPublishMs = 1.25;
