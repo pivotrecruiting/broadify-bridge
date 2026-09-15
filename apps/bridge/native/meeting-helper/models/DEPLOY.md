@@ -71,7 +71,8 @@ Run **Test Release Build** (Windows matrix job) or re-run a failed release build
   segments with decaying LR). Benchmark: 512 clean 6.5 / webcam 9.2 (ft-v3: 6.8 /
   9.7); 256 tier ~20% better than ft-v3. Windows: first model update - ONNX
   exported via export_onnx.py (broadify-keyer-training), asset
-  modnet-ft-v5d.onnx on the broadify-meeting-helper v1.0.0 release,
+  modnet-ft-v5d.onnx attached to the broadify-bridge v0.27.1-rc.10 release
+  (fallback location: no write access to the broadify-meeting-helper assets repo),
   MODNET_MODEL_URL updated, manifest.json sha256 refreshed.
 - **2026-09-10 — fine-tune ft-v3**: continuation of ft-v2 with 12000
   additional iterations and a 5x larger CC0 background pool (1806 views from
