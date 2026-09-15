@@ -65,7 +65,15 @@ Run **Test Release Build** (Windows matrix job) or re-run a failed release build
 
 `MODNet.mlpackage` (tracked in git) history:
 
-- **2026-09-10 — fine-tune ft-v3** (current): continuation of ft-v2 with 12000
+- **2026-09-15 — fine-tune ft-v5d** (current, macOS AND Windows): winner of the
+  2026-09-12 autonomous training night (weighted multi-resolution 512/384/320/256
+  + SD/HD VideoMatte240K composites + hardened webcam degradation, cooldown
+  segments with decaying LR). Benchmark: 512 clean 6.5 / webcam 9.2 (ft-v3: 6.8 /
+  9.7); 256 tier ~20% better than ft-v3. Windows: first model update - ONNX
+  exported via export_onnx.py (broadify-keyer-training), asset
+  modnet-ft-v5d.onnx on the broadify-meeting-helper v1.0.0 release,
+  MODNET_MODEL_URL updated, manifest.json sha256 refreshed.
+- **2026-09-10 — fine-tune ft-v3**: continuation of ft-v2 with 12000
   additional iterations and a 5x larger CC0 background pool (1806 views from
   all 301 Poly Haven indoor HDRIs). Internal benchmark: clean MAD 6.6 (was 8.2),
   webcam-degraded MAD 9.7 (was 12.9). Same export pipeline and interface.
