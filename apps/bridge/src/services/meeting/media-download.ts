@@ -181,7 +181,8 @@ export function parseGuardedUrl(rawUrl: string): URL {
 
 // Validates every address the socket would actually connect to, so a
 // hostname cannot resolve past the guard (no DNS rebinding window).
-const guardedLookup: LookupFunction = (hostname, options, callback) => {
+// Exported so the intelligence upload client shares the exact same guard.
+export const guardedLookup: LookupFunction = (hostname, options, callback) => {
   dnsLookup(hostname, { ...options, all: true }, (error, addresses) => {
     if (error) {
       callback(error, [], 0);

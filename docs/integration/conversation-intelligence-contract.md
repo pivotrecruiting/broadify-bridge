@@ -69,18 +69,41 @@ Known limitation (documented, accepted for v1): a call without the Broadify
 camera selected is invisible; a Teams/Zoom device-preview can arm the detector
 (the 5 s rising hysteresis filters most of it).
 
-## 3. Relay broker messages (Stufe 1b — NOT yet implemented)
+## 3. Relay broker messages (implemented: bridge + relay + RPCs)
 
-Reserved WS message types, bridge → relay, authenticated by the existing
-Ed25519 bridge session. The relay is a **broker, never a data pipe**: payloads
-stay < 1 KB; transcript/usage files never travel over the relay socket.
+WS message types, bridge → relay, authenticated by the existing Ed25519
+bridge session (the relay matches `wsToBridgeId` exactly like
+`bridge_event`). The relay is a **broker, never a data pipe**: payloads stay
+< 1 KB; transcript/usage files never travel over the relay socket. Relay side
+routes exclusively through service-role definer RPCs (webapp migration
+`20260918100400_add_conversation_intelligence_relay_rpcs.sql`).
 
-| Message | Payload | Relay behaviour |
+Requests (bridge → relay; all carry `bridgeId` + `callId` (UUID), timestamps
+are bridge epoch ms):
+
+| `type` | Extra fields | Relay behaviour |
 | --- | --- | --- |
-| `ci_call_start` | `{ call_id, started_at }` | Gate on org feature + consent, insert `meeting_calls` (org via bridgeId→orgId), ack. |
-| `ci_call_end` | `{ call_id, ended_at, reason }` | Update row, mark `awaiting_upload`. |
-| `ci_upload_request` | `{ call_id, kind: "graphics" \| "transcript" }` | Ownership check, mint `createSignedUploadUrl` for the server-side path, return URL. |
-| `ci_upload_complete` | `{ call_id, kind }` | Verify object exists, enqueue ingest job (deduped). |
+| `ci_call_start` | `startedAt`, `controlSessionId?` | Resolve org (`ci_resolve_bridge_org`), gate on org settings + entitlement (`ci_begin_call`), insert `meeting_calls` (id = callId, idempotent). |
+| `ci_call_end` | `endedAt`, `reason` | `ci_end_call` (ownership-gated, only open calls). |
+| `ci_upload_request` | `kind: "graphics" \| "transcript"` | `ci_register_upload` (server constructs the path), mint signed upload URL, return it. |
+| `ci_upload_complete` | `kind` | HEAD-verify the object, `ci_complete_upload` → deduped ingest job. |
+
+Response (relay → bridge): `ci_result { op, callId, success, accepted?,
+reason?, uploadUrl?, storagePath?, error? }`. Stable error codes:
+`invalid_call_id`, `bridge_not_linked`, `invalid_kind`, `internal_error`
+(detail only in the relay log). Gate rejections come as `success: true,
+accepted: false` with `reason` (`feature_disabled`, `bridge_not_linked`,
+`call_id_conflict`); the bridge then drops the upload task — data stays
+local.
+
+Bridge-side sequencing (`ci-session-coordinator.ts`): every finished call
+becomes one persistent queue task; the drain re-runs the FULL sequence
+(start → end → upload_request → guarded PUT with `x-upsert` →
+upload_complete) because every step is idempotent server-side. Uploaded
+usage slice: events with `at` in `[started_at − 5 min, ended_at + 5 s]`,
+call markers filtered to this `call_id`; intervals opened before the window
+appear as orphan `graphic_hidden` and are synthesized from call start at
+ingest (see §1).
 
 Storage paths (server-constructed, the bridge never chooses paths):
 `orgs/{orgId}/calls/{callId}/graphics.jsonl` and `…/transcript.jsonl` in the

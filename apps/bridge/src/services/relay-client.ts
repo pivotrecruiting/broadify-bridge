@@ -199,6 +199,39 @@ interface BridgeEventMessage {
 }
 
 /**
+ * Conversation Intelligence broker request (bridge -> relay). Control
+ * messages only; payload files upload directly to storage (contract §3 in
+ * docs/integration/conversation-intelligence-contract.md).
+ */
+export type CiRequestTypeT =
+  | "ci_call_start"
+  | "ci_call_end"
+  | "ci_upload_request"
+  | "ci_upload_complete";
+
+export type CiRequestMessageT = {
+  type: CiRequestTypeT;
+  callId: string;
+  startedAt?: number;
+  endedAt?: number;
+  reason?: string;
+  kind?: "graphics" | "transcript";
+  controlSessionId?: string;
+};
+
+export type CiResultMessageT = {
+  type: "ci_result";
+  op: CiRequestTypeT;
+  callId: string;
+  success: boolean;
+  accepted?: boolean;
+  reason?: string;
+  uploadUrl?: string;
+  storagePath?: string;
+  error?: string;
+};
+
+/**
  * Command payload received from relay.
  */
 interface RelayCommandMessage {
@@ -309,7 +342,8 @@ type RelayMessage =
   | RelayCommandMessage
   | RelayBridgeAuthChallengeMessage
   | RelayBridgeAuthOkMessage
-  | RelayBridgeAuthErrorMessage;
+  | RelayBridgeAuthErrorMessage
+  | CiResultMessageT;
 
 type PublicKeyCacheEntry = {
   kid: string;
@@ -514,6 +548,15 @@ export class RelayClient {
     ActiveOperationEntry
   >();
   private reconnectAttempts = 0;
+  private readonly pendingCiRequests = new Map<
+    string,
+    {
+      promise: Promise<CiResultMessageT>;
+      resolve: (result: CiResultMessageT) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }
+  >();
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 60000; // Max 60 seconds
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -583,6 +626,62 @@ export class RelayClient {
       timestamp: Date.now(),
     };
     this.send(message);
+  }
+
+  /**
+   * Send a Conversation Intelligence broker request and await its ci_result.
+   * Requests are joined per (op, callId): a duplicate while one is in flight
+   * returns the same promise. Rejections (not connected, timeout, socket
+   * loss) are retried by the upload queue's backoff, never here.
+   */
+  sendCiRequest(
+    request: CiRequestMessageT,
+    timeoutMs = 15_000,
+  ): Promise<CiResultMessageT> {
+    const key = `${request.type}:${request.callId}`;
+    const pending = this.pendingCiRequests.get(key);
+    if (pending) {
+      return pending.promise;
+    }
+    if (!this.isConnected()) {
+      return Promise.reject(new Error("Relay not connected"));
+    }
+
+    let resolve!: (result: CiResultMessageT) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<CiResultMessageT>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    const timer = setTimeout(() => {
+      this.pendingCiRequests.delete(key);
+      reject(new Error(`CI request timed out: ${key}`));
+    }, timeoutMs);
+    timer.unref?.();
+    this.pendingCiRequests.set(key, { promise, resolve, reject, timer });
+
+    this.send({ ...request, bridgeId: this.bridgeId });
+    return promise;
+  }
+
+  private handleCiResult(message: CiResultMessageT): void {
+    const key = `${message.op}:${message.callId}`;
+    const pending = this.pendingCiRequests.get(key);
+    if (!pending) {
+      this.logger.warn(`Unmatched ci_result for ${key}`);
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingCiRequests.delete(key);
+    pending.resolve(message);
+  }
+
+  private rejectPendingCiRequests(reason: string): void {
+    for (const [key, pending] of this.pendingCiRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(`${reason}: ${key}`));
+    }
+    this.pendingCiRequests.clear();
   }
 
   /**
@@ -1274,6 +1373,7 @@ export class RelayClient {
         }
         this.clearRelayHeartbeat();
         this.clearRelayLivenessWatchdog();
+        this.rejectPendingCiRequests("Relay disconnected");
         this.ws = null;
         this.isConnecting = false;
         this.lastSeen = null;
@@ -1376,6 +1476,8 @@ export class RelayClient {
         this.ws?.close();
       } else if (message.type === "command") {
         await this.handleCommand(message);
+      } else if (message.type === "ci_result") {
+        this.handleCiResult(message);
       } else {
         this.logger.warn(
           `Unknown message type: ${(message as { type: string }).type}`,

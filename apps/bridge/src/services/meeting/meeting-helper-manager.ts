@@ -29,6 +29,7 @@ import {
   type CallDetectorEventT,
 } from "../intelligence/call-detector.js";
 import { graphicsUsageRecorder } from "../intelligence/usage-event-recorder.js";
+import { ciSessionCoordinator } from "../intelligence/ci-session-coordinator.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
@@ -991,6 +992,7 @@ export class MeetingHelperManager {
           `[Meeting] Call detected (call_id: ${event.callId})`,
         );
         graphicsUsageRecorder.recordCallStarted(event.callId, event.at);
+        ciSessionCoordinator.noteCallStarted(event.callId, event.at);
       } else {
         getLogger().info(
           `[Meeting] Call ended (call_id: ${event.callId}, reason: ${event.reason})`,
@@ -999,6 +1001,11 @@ export class MeetingHelperManager {
           event.callId,
           event.reason,
           event.at,
+        );
+        ciSessionCoordinator.noteCallEnded(
+          event.callId,
+          event.at,
+          event.reason,
         );
       }
     }
