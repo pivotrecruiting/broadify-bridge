@@ -447,13 +447,26 @@ describe("GraphicsManager with configured outputs", () => {
     sendFrame: jest.fn(),
   };
 
-  function createManagerWithRealTransition(renderer?: GraphicsRenderer) {
+  function createManagerWithRealTransition(
+    renderer?: GraphicsRenderer,
+    extraDeps: Partial<ConstructorParameters<typeof GraphicsManager>[0]> = {},
+  ) {
     const r = renderer ?? createRenderer();
     return new GraphicsManager({
       createRenderer: () => r,
       selectOutputAdapter: async () => stubAdapter as never,
       isDevelopmentMode: () => true,
+      ...extraDeps,
     });
+  }
+
+  function createUsageRecorder() {
+    return {
+      recordLayerShown: jest.fn(),
+      recordLayerHidden: jest.fn(),
+      recordCallStarted: jest.fn(),
+      recordCallEnded: jest.fn(),
+    };
   }
 
   beforeEach(() => {
@@ -914,5 +927,134 @@ describe("GraphicsManager with configured outputs", () => {
     expect(layerIds).toContain("content-layer");
     expect(layerIds).toContain("report-layer");
     expect(status.activePreset).toBeNull();
+  });
+
+  describe("usage tracking", () => {
+    it("reports shown with plane identity and preset ids", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "overlays-tracked",
+        category: "overlays",
+        presetId: "preset-a",
+      });
+
+      expect(usageRecorder.recordLayerShown).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-tracked",
+        category: "overlays",
+        presetId: "preset-a",
+        reportPresetId: undefined,
+      });
+      expect(usageRecorder.recordLayerHidden).not.toHaveBeenCalled();
+    });
+
+    it("reports the replaced cross-category layer as hidden after the new one is shown", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+
+      const base = createTestPatternPayload();
+      await manager.sendLayer({
+        ...base,
+        layerId: "overlays-old",
+        category: "overlays",
+        presetId: "preset-a",
+      });
+      await manager.sendLayer({
+        ...base,
+        layerId: "lower-thirds-new",
+        category: "lower-thirds",
+        presetId: "preset-b",
+      });
+
+      expect(usageRecorder.recordLayerHidden).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-old",
+        reason: "preset_replace",
+      });
+      const shownOrder = usageRecorder.recordLayerShown.mock.invocationCallOrder;
+      const hiddenOrder =
+        usageRecorder.recordLayerHidden.mock.invocationCallOrder;
+      // Crossfade order: the new layer is on air before the old one closes.
+      expect(shownOrder[1]).toBeLessThan(hiddenOrder[0]);
+    });
+
+    it("closes all intervals when the test pattern clears active layers", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "overlays-active",
+        category: "overlays",
+      });
+
+      await manager.sendTestPattern();
+
+      expect(usageRecorder.recordLayerHidden).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-active",
+        reason: "clear_all_layers",
+      });
+    });
+
+    it("closes open intervals on shutdown", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "overlays-open",
+        category: "overlays",
+      });
+
+      await manager.shutdown();
+
+      expect(usageRecorder.recordLayerHidden).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-open",
+        reason: "shutdown",
+      });
+    });
+
+    it("does not report hidden for layers that never rendered", async () => {
+      const usageRecorder = createUsageRecorder();
+      const renderer = createRenderer();
+      (renderer.renderLayer as jest.Mock).mockRejectedValue(
+        new Error("render failed"),
+      );
+      const manager = createManagerWithRealTransition(renderer, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+
+      await expect(
+        manager.sendLayer({
+          ...createTestPatternPayload(),
+          layerId: "overlays-failed",
+          category: "overlays",
+        }),
+      ).rejects.toThrow("render failed");
+
+      expect(usageRecorder.recordLayerShown).not.toHaveBeenCalled();
+      expect(usageRecorder.recordLayerHidden).not.toHaveBeenCalled();
+    });
   });
 });
