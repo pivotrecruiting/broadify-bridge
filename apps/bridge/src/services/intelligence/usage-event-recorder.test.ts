@@ -51,14 +51,14 @@ describe("GraphicsUsageRecorder", () => {
   it("writes schema-valid shown/hidden pairs", async () => {
     const recorder = await createRecorder();
     recorder.recordLayerShown({
-      source: "studio",
-      layerId: "lower-third-abc",
+      source: "meeting-front",
+      layerId: "meeting-lower-third-abc",
       category: "lower-third",
       presetId: "preset-1",
     });
     recorder.recordLayerHidden({
-      source: "studio",
-      layerId: "lower-third-abc",
+      source: "meeting-front",
+      layerId: "meeting-lower-third-abc",
       reason: "remove_layer",
     });
     await recorder.shutdown();
@@ -67,15 +67,35 @@ describe("GraphicsUsageRecorder", () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({
       type: "graphic_shown",
-      source: "studio",
-      layer_id: "lower-third-abc",
+      source: "meeting-front",
+      layer_id: "meeting-lower-third-abc",
       category: "lower-third",
       preset_id: "preset-1",
     });
     expect(events[1]).toMatchObject({
       type: "graphic_hidden",
-      layer_id: "lower-third-abc",
+      layer_id: "meeting-lower-third-abc",
       reason: "remove_layer",
+    });
+  });
+
+  it("drops non-meeting sources (product scope: meeting mode only)", async () => {
+    const recorder = await createRecorder();
+    recorder.recordLayerShown({
+      source: "studio",
+      layerId: "overlays-studio",
+      category: "overlays",
+      presetId: "preset-1",
+    });
+    recorder.recordLayerHidden({
+      source: "studio",
+      layerId: "overlays-studio",
+      reason: "remove_layer",
+    });
+    await recorder.shutdown();
+
+    await expect(fs.readFile(usageFilePath(), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
     });
   });
 
@@ -134,7 +154,7 @@ describe("GraphicsUsageRecorder", () => {
   it("ignores hidden for layers that never opened", async () => {
     const recorder = await createRecorder();
     recorder.recordLayerHidden({
-      source: "studio",
+      source: "meeting-back",
       layerId: "ghost",
       reason: "remove_layer",
     });

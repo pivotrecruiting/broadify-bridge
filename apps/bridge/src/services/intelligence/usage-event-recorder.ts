@@ -9,6 +9,13 @@ import {
 } from "./intelligence-types.js";
 
 const USAGE_DIR_SEGMENTS = ["intelligence", "usage"] as const;
+/**
+ * Product scope (decision 2026-09-18): Conversation Intelligence covers the
+ * MEETING mode only. The GraphicsManager hooks stay mode-agnostic; this
+ * prefix gate is the single place that drops studio-plane events, so
+ * widening the scope later is a one-line change (plus contract §1).
+ */
+const TRACKED_SOURCE_PREFIX = "meeting-";
 const CURRENT_FILE_NAME = "usage-current.jsonl";
 const ROTATED_FILE_PREFIX = "usage-";
 const ROTATED_FILE_SUFFIX = ".jsonl";
@@ -130,6 +137,9 @@ export class GraphicsUsageRecorder implements GraphicsUsageRecorderLikeT {
   }
 
   recordLayerShown(input: UsageRecorderLayerShownT): void {
+    if (!input.source.startsWith(TRACKED_SOURCE_PREFIX)) {
+      return;
+    }
     const key = openLayerKey(input.source, input.layerId);
     const open = this.openLayers.get(key);
     if (open && sameLayerIdentity(open, input)) {
@@ -168,6 +178,9 @@ export class GraphicsUsageRecorder implements GraphicsUsageRecorderLikeT {
   }
 
   recordLayerHidden(input: UsageRecorderLayerHiddenT): void {
+    if (!input.source.startsWith(TRACKED_SOURCE_PREFIX)) {
+      return;
+    }
     const key = openLayerKey(input.source, input.layerId);
     if (!this.openLayers.delete(key)) {
       // Never opened (failed render, duplicate remove): nothing to close.

@@ -5,6 +5,13 @@ bridge-side; the relay/cloud counterparts consume this contract. Breaking
 changes bump the per-line `v` field, never mutate the meaning of an existing
 version.
 
+**Product scope (decision 2026-09-18): MEETING mode only.** Studio and
+Conference stay out for now. Bridge-side this is enforced by a single
+source-prefix gate in the usage recorder (`meeting-*` planes only; studio
+events are dropped before they ever hit disk); the GraphicsManager hooks and
+the SQL `source` constraint keep `studio` reserved so widening the scope
+later needs no schema or hook changes.
+
 Consumers: `broadify-bridge` (producer), `broadify-relay` (broker), `broadify`
 webapp/Supabase (ingest + UI).
 
@@ -26,7 +33,7 @@ Line shapes (discriminated on `type`, JSON keys `snake_case`):
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `graphic_shown` | `v`, `at`, `source`, `layer_id`, `category`, `preset_id?`, `report_preset_id?` | A layer became visible on plane `source` (`studio` \| `meeting-back` \| `meeting-front`). |
+| `graphic_shown` | `v`, `at`, `source`, `layer_id`, `category`, `preset_id?`, `report_preset_id?` | A layer became visible on plane `source` (`meeting-back` \| `meeting-front`; `studio` is reserved and currently never emitted — see product scope above). |
 | `graphic_hidden` | `v`, `at`, `source`, `layer_id`, `reason` | The layer left the air. `reason` vocabulary: `remove_layer`, `preset_replace`, `preset_expired`, `manual`, `clear_all_layers`, `replaced`, `shutdown`. |
 | `call_started` | `v`, `at`, `call_id` | Call detector rising edge (see §2). |
 | `call_ended` | `v`, `at`, `call_id`, `reason` | `reason`: `clients_gone` \| `engine_stopped`. |
