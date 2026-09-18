@@ -484,6 +484,7 @@ describe("meeting-helper-manager", () => {
         manager: expect.objectContaining({ state: "stopped" }),
         engine: null,
         recording: null,
+        call: { active: false, call_id: null },
       });
     });
 

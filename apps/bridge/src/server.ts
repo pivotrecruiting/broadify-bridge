@@ -24,6 +24,7 @@ import {
   setBridgeContext,
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
+import { graphicsUsageRecorder } from "./services/intelligence/usage-event-recorder.js";
 import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
 import { quitRunningVcamHelperApp } from "./modules/vcam/vcam-helper.js";
 import {
@@ -118,6 +119,11 @@ export async function createServer(config: BridgeConfigT) {
   // on a helper that does not exist on Windows.
   initializeModules();
   server.log.info("[Server] Device modules initialized");
+
+  // Usage recorder before graphicsManager.initialize(): a restored output
+  // config can render layers during init, and their on-air intervals belong
+  // in the log from the first frame on.
+  await graphicsUsageRecorder.initialize();
 
   await graphicsManager.initialize();
 
@@ -387,6 +393,21 @@ export async function startServer(
         quitRunningVcamHelperApp();
       } catch {
         // Best effort; the app may not be running.
+      }
+
+      // After graphics + meeting shutdown so their final hidden/call-ended
+      // events are part of the flush.
+      try {
+        await withTimeout(
+          "usage recorder flush",
+          graphicsUsageRecorder.shutdown(),
+          2000,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(
+          `[Intelligence] Usage recorder flush failed: ${message}`
+        );
       }
 
       await withTimeout("server close", server.close(), 2000);

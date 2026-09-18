@@ -71,6 +71,10 @@ import {
   resolveFrameBusConfig,
 } from "./graphics-framebus-session-service.js";
 import { browserInputRuntime } from "./browser-input-runtime.js";
+import {
+  graphicsUsageRecorder,
+  type GraphicsUsageRecorderLikeT,
+} from "../intelligence/usage-event-recorder.js";
 
 type GraphicsRuntimeInitServiceLikeT = Pick<
   GraphicsRuntimeInitService,
@@ -98,6 +102,12 @@ type GraphicsManagerDepsT = {
    * "studio" for the singleton; the meeting planes pass "meeting-back"/-front.
    */
   sourceId?: string;
+  /**
+   * Conversation-Intelligence observer for on-air intervals. Fire-and-forget
+   * on every visibility transition; never awaited, never allowed to affect
+   * the render path.
+   */
+  usageRecorder?: GraphicsUsageRecorderLikeT;
   createRenderer?: () => GraphicsRenderer;
   /**
    * Explicit FrameBus name/slotCount for this manager instance. Wins over the
@@ -186,10 +196,12 @@ export class GraphicsManager {
   >;
 
   private readonly sourceId: string;
+  private readonly usageRecorder: GraphicsUsageRecorderLikeT;
 
   constructor(deps: GraphicsManagerDepsT = {}) {
     this.deps = deps;
     this.sourceId = deps.sourceId ?? "studio";
+    this.usageRecorder = deps.usageRecorder ?? graphicsUsageRecorder;
     this.browserInputRuntime =
       this.deps.browserInputRuntime ?? browserInputRuntime;
     this.renderer = this.deps.createRenderer?.() ?? this.selectRenderer();
@@ -403,6 +415,15 @@ export class GraphicsManager {
    * @returns Promise resolved once resources are released.
    */
   async shutdown(): Promise<void> {
+    // layers.clear() below bypasses removeLayerById: close the usage
+    // intervals first so no on-air interval stays open across a restart.
+    for (const layerId of this.layers.keys()) {
+      this.usageRecorder.recordLayerHidden({
+        source: this.sourceId,
+        layerId,
+        reason: "shutdown",
+      });
+    }
     this.presetService.clearActivePreset();
     this.layers.clear();
     this.categoryToLayer.clear();
@@ -572,6 +593,14 @@ export class GraphicsManager {
       });
     }
 
+    this.usageRecorder.recordLayerShown({
+      source: this.sourceId,
+      layerId: prepared.layerId,
+      category: prepared.category,
+      presetId: prepared.presetId,
+      reportPresetId: prepared.reportPresetId,
+    });
+
     // Cross-category leftovers of the replaced preset go away only now that
     // the new layer is live: removing them first dropped the output to the
     // idle frame between two graphics. This order turns the switch into a
@@ -655,6 +684,12 @@ export class GraphicsManager {
       outputFormat: this.outputConfig.format,
       data: prepared,
       onRendered: () => undefined,
+    });
+
+    this.usageRecorder.recordLayerShown({
+      source: this.sourceId,
+      layerId: prepared.layerId,
+      category: prepared.category,
     });
   }
 
@@ -803,6 +838,9 @@ export class GraphicsManager {
       this.presetService.clearActivePreset();
       publishGraphicsStatusEvent("clear_all_layers", this.getStatusSnapshot());
     } else {
+      // clearAllLayers removes via the layer service, bypassing
+      // removeLayerById — close the on-air intervals explicitly.
+      const clearedLayerIds = Array.from(this.layers.keys());
       await clearAllLayers({
         renderer: this.renderer,
         layers: this.layers,
@@ -811,6 +849,13 @@ export class GraphicsManager {
         publishStatus: (reason) =>
           publishGraphicsStatusEvent(reason, this.getStatusSnapshot()),
       });
+      for (const layerId of clearedLayerIds) {
+        this.usageRecorder.recordLayerHidden({
+          source: this.sourceId,
+          layerId,
+          reason: "clear_all_layers",
+        });
+      }
     }
     await this.sendLayer(createTestPatternPayload());
   }
@@ -988,6 +1033,7 @@ export class GraphicsManager {
     layerId: string,
     reason: string,
   ): Promise<void> {
+    const wasActive = this.layers.has(layerId);
     if (this.outputConfig?.outputKey === "browser_input") {
       removeLayerState(
         {
@@ -997,18 +1043,25 @@ export class GraphicsManager {
         layerId,
       );
       this.browserInputRuntime.removeLayer(layerId);
-      return;
+    } else {
+      await removeLayerWithRenderer(
+        {
+          renderer: this.renderer,
+          layers: this.layers,
+          categoryToLayer: this.categoryToLayer,
+        },
+        layerId,
+        reason,
+      );
     }
 
-    await removeLayerWithRenderer(
-      {
-        renderer: this.renderer,
-        layers: this.layers,
-        categoryToLayer: this.categoryToLayer,
-      },
-      layerId,
-      reason,
-    );
+    if (wasActive) {
+      this.usageRecorder.recordLayerHidden({
+        source: this.sourceId,
+        layerId,
+        reason,
+      });
+    }
   }
 }
 
