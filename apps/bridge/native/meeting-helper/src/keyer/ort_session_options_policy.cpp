@@ -34,4 +34,11 @@ OrtSessionOptionsPolicy makeDirectMlSessionOptionsPolicy(uint32_t inputWidth,
   return policy;
 }
 
+OrtSessionOptionsPolicy makeCpuSessionOptionsPolicy(int intraOpThreads) {
+  OrtSessionOptionsPolicy policy;
+  policy.intraOpThreads = intraOpThreads < 1 ? 1 : intraOpThreads;
+  policy.configEntries.push_back({"session.intra_op.allow_spinning", "0"});
+  return policy;
+}
+
 }  // namespace broadify::meeting

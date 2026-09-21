@@ -82,10 +82,21 @@ export const GraphicsSendSchema = z
     bundle: GraphicsBundleSchema,
     values: z.record(z.unknown()).optional().default({}),
     presetId: z.string().min(1).optional(),
+    // Reporting-only preset id. Unlike `presetId`, this NEVER takes part in the
+    // exclusive preset-ownership path (prepareBeforeRender / removeLayersNotInPreset):
+    // it only lets a layer surface under graphics_status.activePresets so control
+    // clients can mirror which preset is active. Meeting graphics use this instead
+    // of `presetId` because their preset layers are additive and coexist with the
+    // content layer and with each other across categories.
+    reportPresetId: z.string().min(1).optional(),
     durationMs: z.number().int().nonnegative().max(MAX_DURATION_MS).optional(),
     meetingPlane: MeetingGraphicsPlaneSchema.optional(),
   })
-  .strict();
+  // Forward-tolerant at the top level: strip unknown keys instead of rejecting,
+  // so a newer webapp graphics field never 400s an older bridge (the nested
+  // layout/bundle schemas stay strict — only structural, stable shapes). Known
+  // fields stay fully validated.
+  .strip();
 
 /**
  * Payload for updating layer values.

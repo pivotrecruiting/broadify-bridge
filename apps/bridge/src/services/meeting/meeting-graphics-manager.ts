@@ -89,6 +89,7 @@ export function resolveMeetingGraphicsPlane(
  * env in buildFrameBusConfig; the env path stays untouched for Studio.
  */
 export const meetingBackGraphicsManager = new GraphicsManager({
+  sourceId: "meeting-back",
   frameBusOverrides: {
     name: MEETING_GRAPHICS_BACK_FRAMEBUS_NAME,
     slotCount: MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT,
@@ -100,6 +101,7 @@ export const meetingBackGraphicsManager = new GraphicsManager({
   persistOutputConfig: false,
 });
 export const meetingFrontGraphicsManager = new GraphicsManager({
+  sourceId: "meeting-front",
   frameBusOverrides: {
     name: MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME,
     slotCount: MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT,

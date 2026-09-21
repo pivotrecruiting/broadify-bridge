@@ -201,12 +201,20 @@ bool ShmFrameReader::createServiceRing() {
     return false;
   }
 
-  SecurityAttributes security(broadify::vcam_shm::streamSecurityDescriptorSddl());
+  // Each object gets its own least-privilege ACL. Previously one (stream)
+  // descriptor was reused for all three, so the control mapping was created
+  // with the wider stream ACL. AU is no longer granted on any of them.
+  SecurityAttributes streamSecurity(
+      broadify::vcam_shm::streamSecurityDescriptorSddl());
+  SecurityAttributes eventSecurity(
+      broadify::vcam_shm::frameEventSecurityDescriptorSddl());
+  SecurityAttributes controlSecurity(
+      broadify::vcam_shm::controlSecurityDescriptorSddl());
   LARGE_INTEGER size{};
   size.QuadPart = static_cast<LONGLONG>(ownerRingBytes_);
   const std::wstring streamName = broadify::vcam_shm::serviceStreamMappingName(true);
   HANDLE mapping = CreateFileMappingW(
-      INVALID_HANDLE_VALUE, security.get(), PAGE_READWRITE, size.HighPart,
+      INVALID_HANDLE_VALUE, streamSecurity.get(), PAGE_READWRITE, size.HighPart,
       size.LowPart, streamName.c_str());
   if (mapping == nullptr) {
     const DWORD error = GetLastError();
@@ -217,7 +225,7 @@ bool ShmFrameReader::createServiceRing() {
   const bool streamAlreadyExisted = GetLastError() == ERROR_ALREADY_EXISTS;
 
   const std::wstring eventName = broadify::vcam_shm::serviceStreamEventName(true);
-  HANDLE event = CreateEventW(security.get(), FALSE, FALSE, eventName.c_str());
+  HANDLE event = CreateEventW(eventSecurity.get(), FALSE, FALSE, eventName.c_str());
   if (event == nullptr) {
     const DWORD error = GetLastError();
     CloseHandle(mapping);
@@ -228,7 +236,7 @@ bool ShmFrameReader::createServiceRing() {
 
   const std::wstring controlName = broadify::vcam_shm::controlMappingName(true);
   HANDLE control = CreateFileMappingW(
-      INVALID_HANDLE_VALUE, security.get(), PAGE_READWRITE, 0,
+      INVALID_HANDLE_VALUE, controlSecurity.get(), PAGE_READWRITE, 0,
       static_cast<DWORD>(sizeof(broadify::vcam_shm::ControlRecord)),
       controlName.c_str());
   if (control == nullptr) {

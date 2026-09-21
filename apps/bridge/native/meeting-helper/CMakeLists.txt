@@ -88,6 +88,7 @@ set(MEETING_HELPER_SOURCES
   src/common/options.cpp
   src/control/control_server.cpp
   src/output/vcam_controller.cpp
+  src/keyer/dml_device_input.cpp
   src/keyer/keyer_chain.cpp
   src/keyer/keyer_governor.cpp
   src/keyer/matting_backend.cpp
@@ -352,12 +353,22 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(frame_pipeline_stall_test
     tests/frame_pipeline_stall_test.cpp
   )
+  add_executable(inference_provider_test
+    tests/inference_provider_test.cpp
+  )
+  add_executable(camera_reopen_policy_test
+    tests/camera_reopen_policy_test.cpp
+  )
   add_executable(frame_pipeline_gating_test
     tests/frame_pipeline_gating_test.cpp
     src/pipeline/frame_pipeline_gating.cpp
   )
   add_executable(retained_mask_selection_test
     tests/retained_mask_selection_test.cpp
+  )
+  add_executable(json_utils_test
+    tests/json_utils_test.cpp
+    src/util/json_utils.cpp
   )
   add_executable(compositor_input_selection_test
     tests/compositor_input_selection_test.cpp
@@ -478,7 +489,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     d3d_adapter_select_test
     pixel_swizzle_test
     ort_session_options_policy_test
+    inference_provider_test
     camera_media_type_rank_test
+    camera_reopen_policy_test
     latest_frame_slot_test
     keyer_governor_test
     keyer_cadence_test
@@ -488,6 +501,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_stall_test
     frame_pipeline_gating_test
     retained_mask_selection_test
+    json_utils_test
     compositor_input_selection_test
     media_page_cache_test
     tier_handover_test

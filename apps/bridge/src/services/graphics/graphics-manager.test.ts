@@ -447,13 +447,26 @@ describe("GraphicsManager with configured outputs", () => {
     sendFrame: jest.fn(),
   };
 
-  function createManagerWithRealTransition(renderer?: GraphicsRenderer) {
+  function createManagerWithRealTransition(
+    renderer?: GraphicsRenderer,
+    extraDeps: Partial<ConstructorParameters<typeof GraphicsManager>[0]> = {},
+  ) {
     const r = renderer ?? createRenderer();
     return new GraphicsManager({
       createRenderer: () => r,
       selectOutputAdapter: async () => stubAdapter as never,
       isDevelopmentMode: () => true,
+      ...extraDeps,
     });
+  }
+
+  function createUsageRecorder() {
+    return {
+      recordLayerShown: jest.fn(),
+      recordLayerHidden: jest.fn(),
+      recordCallStarted: jest.fn(),
+      recordCallEnded: jest.fn(),
+    };
   }
 
   beforeEach(() => {
@@ -466,6 +479,7 @@ describe("GraphicsManager with configured outputs", () => {
         warn: jest.fn(),
         error: jest.fn(),
       },
+      publishBridgeEvent: jest.fn(),
     });
     jest.clearAllMocks();
     mockValidateTemplate.mockReturnValue({ assetIds: new Set<string>() });
@@ -830,5 +844,217 @@ describe("GraphicsManager with configured outputs", () => {
     ]);
     expect(status.layers).toHaveLength(2);
     expect(status.activePreset?.presetId).toBe("foreground-preset");
+  });
+
+  it("surfaces reportPresetId in activePresets without owning the preset", async () => {
+    const manager = createManagerWithRealTransition();
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "report-layer",
+      category: "lower-thirds",
+      reportPresetId: "preset-meeting-1",
+    });
+
+    const status = manager.getStatus();
+
+    // Reported for cross-client badge sync...
+    expect(status.activePresets.map((preset) => preset.presetId)).toEqual([
+      "preset-meeting-1",
+    ]);
+    // ...but never taken as the owned/active preset (no ownership, no timer).
+    expect(status.activePreset).toBeNull();
+  });
+
+  it("publishes a graphics_status event on reportPresetId send and remove", async () => {
+    const manager = createManagerWithRealTransition();
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    const publish = getBridgeContext().publishBridgeEvent as jest.Mock;
+
+    const graphicsStatusEvents = () =>
+      publish.mock.calls.filter(([event]) => event?.event === "graphics_status");
+
+    const beforeSend = graphicsStatusEvents().length;
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "report-layer",
+      category: "lower-thirds",
+      reportPresetId: "preset-meeting-1",
+    });
+    // The reporting-only send must broadcast status so control clients see it
+    // become active live (regression: it previously only surfaced on resync).
+    expect(graphicsStatusEvents().length).toBeGreaterThan(beforeSend);
+    const sendEvent = graphicsStatusEvents().at(-1)?.[0];
+    expect(
+      sendEvent.data.activePresets.map((p: { presetId: string }) => p.presetId)
+    ).toContain("preset-meeting-1");
+
+    const beforeRemove = graphicsStatusEvents().length;
+    await manager.removeLayer({ layerId: "report-layer" });
+    expect(graphicsStatusEvents().length).toBeGreaterThan(beforeRemove);
+    const removeEvent = graphicsStatusEvents().at(-1)?.[0];
+    expect(removeEvent.data.activePresets).toHaveLength(0);
+  });
+
+  it("does not remove other layers when a reportPresetId is sent (no ownership sweep)", async () => {
+    const manager = createManagerWithRealTransition();
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    // An independent, non-preset layer (mirrors the meeting content layer).
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "content-layer",
+      category: "overlays",
+      zIndex: 20,
+    });
+    // A reporting-only preset layer in the SAME (non-background) replace group:
+    // a real presetId here would sweep "content-layer"; reportPresetId must not.
+    await manager.sendLayer({
+      ...createTestPatternPayload(),
+      layerId: "report-layer",
+      category: "lower-thirds",
+      zIndex: 30,
+      reportPresetId: "preset-meeting-1",
+    });
+
+    const status = manager.getStatus();
+    const layerIds = status.layers.map(
+      (layer) => (layer as { layerId: string }).layerId
+    );
+
+    expect(layerIds).toContain("content-layer");
+    expect(layerIds).toContain("report-layer");
+    expect(status.activePreset).toBeNull();
+  });
+
+  describe("usage tracking", () => {
+    it("reports shown with plane identity and preset ids", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "overlays-tracked",
+        category: "overlays",
+        presetId: "preset-a",
+      });
+
+      expect(usageRecorder.recordLayerShown).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-tracked",
+        category: "overlays",
+        presetId: "preset-a",
+        reportPresetId: undefined,
+      });
+      expect(usageRecorder.recordLayerHidden).not.toHaveBeenCalled();
+    });
+
+    it("reports the replaced cross-category layer as hidden after the new one is shown", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+
+      const base = createTestPatternPayload();
+      await manager.sendLayer({
+        ...base,
+        layerId: "overlays-old",
+        category: "overlays",
+        presetId: "preset-a",
+      });
+      await manager.sendLayer({
+        ...base,
+        layerId: "lower-thirds-new",
+        category: "lower-thirds",
+        presetId: "preset-b",
+      });
+
+      expect(usageRecorder.recordLayerHidden).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-old",
+        reason: "preset_replace",
+      });
+      const shownOrder = usageRecorder.recordLayerShown.mock.invocationCallOrder;
+      const hiddenOrder =
+        usageRecorder.recordLayerHidden.mock.invocationCallOrder;
+      // Crossfade order: the new layer is on air before the old one closes.
+      expect(shownOrder[1]).toBeLessThan(hiddenOrder[0]);
+    });
+
+    it("closes all intervals when the test pattern clears active layers", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "overlays-active",
+        category: "overlays",
+      });
+
+      await manager.sendTestPattern();
+
+      expect(usageRecorder.recordLayerHidden).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-active",
+        reason: "clear_all_layers",
+      });
+    });
+
+    it("closes open intervals on shutdown", async () => {
+      const usageRecorder = createUsageRecorder();
+      const manager = createManagerWithRealTransition(undefined, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "overlays-open",
+        category: "overlays",
+      });
+
+      await manager.shutdown();
+
+      expect(usageRecorder.recordLayerHidden).toHaveBeenCalledWith({
+        source: "studio",
+        layerId: "overlays-open",
+        reason: "shutdown",
+      });
+    });
+
+    it("does not report hidden for layers that never rendered", async () => {
+      const usageRecorder = createUsageRecorder();
+      const renderer = createRenderer();
+      (renderer.renderLayer as jest.Mock).mockRejectedValue(
+        new Error("render failed"),
+      );
+      const manager = createManagerWithRealTransition(renderer, {
+        usageRecorder,
+      });
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+
+      await expect(
+        manager.sendLayer({
+          ...createTestPatternPayload(),
+          layerId: "overlays-failed",
+          category: "overlays",
+        }),
+      ).rejects.toThrow("render failed");
+
+      expect(usageRecorder.recordLayerShown).not.toHaveBeenCalled();
+      expect(usageRecorder.recordLayerHidden).not.toHaveBeenCalled();
+    });
   });
 });

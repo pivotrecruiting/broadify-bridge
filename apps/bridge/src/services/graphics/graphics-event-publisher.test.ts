@@ -53,10 +53,12 @@ describe("graphics-event-publisher", () => {
       publishGraphicsStatusEvent("output_changed", status);
 
       expect(mockPublishBridgeEvent).toHaveBeenCalledTimes(1);
+      expect(mockPublishBridgeEvent).toHaveBeenCalledTimes(1);
       expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
         event: "graphics_status",
         data: {
           reason: "output_changed",
+          source: "studio",
           outputsConfigured: status.outputsConfigured,
           outputStatus: status.outputStatus,
           rendererLifecycleState: status.rendererLifecycleState,
@@ -68,6 +70,27 @@ describe("graphics-event-publisher", () => {
         },
       });
       expect(mockLogger.debug).toHaveBeenCalledWith("[Graphics] Publish status: output_changed");
+    });
+
+    it("forwards the plane source when set (meeting planes)", () => {
+      publishGraphicsStatusEvent("preset_changed", {
+        source: "meeting-back",
+        rendererLifecycleState: "ready",
+        outputsConfigured: false,
+        outputStatus: "unconfigured",
+        lastOutputError: null,
+        outputConfig: null,
+        browserInput: null,
+        activePreset: null,
+        activePresets: [],
+      });
+
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "graphics_status",
+          data: expect.objectContaining({ source: "meeting-back" }),
+        }),
+      );
     });
 
     it("does nothing when publishBridgeEvent is not set", () => {

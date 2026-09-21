@@ -135,6 +135,7 @@ export function storePreparedLayerState(
     schema: { ...(params.data.bundle.schema || {}) },
     defaults: { ...(params.data.bundle.defaults || {}) },
     presetId: params.data.presetId,
+    reportPresetId: params.data.reportPresetId,
   });
 
   if (!isMeetingScopedLayer(params.data.layerId)) {

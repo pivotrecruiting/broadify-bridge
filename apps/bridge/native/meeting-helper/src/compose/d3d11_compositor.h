@@ -9,9 +9,9 @@
 
 namespace broadify::meeting {
 
-// True when the D3D11 GPU compositor is available AND explicitly enabled via
-// BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=1 (default OFF while the Windows path
-// is being validated). Callers fall back to the CPU compositor otherwise.
+// True when the D3D11 GPU compositor is available AND not disabled. Default
+// ON; the kill-switch BROADIFY_MEETING_GPU_COMPOSITOR_D3D11=0 forces the CPU
+// compositor. Callers fall back to the CPU compositor when this is false.
 bool d3d11CompositorAvailable();
 
 // Composites the shared GPU compose plan (background + graphics + keyed
@@ -21,9 +21,10 @@ bool d3d11CompositorAvailable();
 bool renderProgramFrameD3D11(const MetalComposePlan &plan,
                              std::vector<uint8_t> &output);
 
-// True when the D3D11 guided mask refine is available AND explicitly enabled
-// via BROADIFY_MEETING_GPU_GUIDED=1 (default OFF). Independent kill-switch
-// from the compositor so the two stages can be validated separately.
+// True when the D3D11 guided mask refine is available AND not disabled.
+// Default ON; the kill-switch BROADIFY_MEETING_GPU_GUIDED=0 forces the CPU
+// guided filter. Independent kill-switch from the compositor so the two
+// stages can be validated separately.
 bool d3d11GuidedRefineAvailable();
 
 // GPU port of guidedRefineMask (guided_mask_refine.cpp): snaps the mask onto

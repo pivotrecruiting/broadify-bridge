@@ -67,9 +67,17 @@ export function createConnectionTimeoutError(
   port: number,
   timeoutMs: number
 ): EngineError {
+  // On macOS a granted-looking-but-blocked "Local Network" permission drops the
+  // app's local-subnet traffic silently, which surfaces here as a plain timeout
+  // even though the device is reachable (e.g. from ping / ATEM Software Control).
+  // Point the user at the permission so it isn't mistaken for a dead device.
+  const macHint =
+    process.platform === "darwin"
+      ? " On macOS, also check that Broadify Bridge is allowed under System Settings → Privacy & Security → Local Network — when that permission is off, the connection is blocked silently and looks like a timeout."
+      : "";
   return new EngineError(
     EngineErrorCode.CONNECTION_TIMEOUT,
-    `Connection timeout: Device at ${ip}:${port} did not respond within ${timeoutMs}ms. Check if the device is powered on and reachable.`,
+    `Connection timeout: Device at ${ip}:${port} did not respond within ${timeoutMs}ms. Check if the device is powered on and reachable.${macHint}`,
     { ip, port, timeoutMs }
   );
 }

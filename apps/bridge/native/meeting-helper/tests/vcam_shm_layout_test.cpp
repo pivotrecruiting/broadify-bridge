@@ -244,11 +244,20 @@ void testNamesAndSddl() {
   CHECK(serviceStreamEventName(false) == L"Local\\BroadifyVcam-frame");
   const std::wstring streamSddl = streamSecurityDescriptorSddl();
   const std::wstring controlSddl = controlSecurityDescriptorSddl();
+  const std::wstring eventSddl = frameEventSecurityDescriptorSddl();
+  // LOCAL SERVICE keeps full access; INTERACTIVE gets least privilege; no
+  // GENERIC_EXECUTE on the sections; and Authenticated Users is granted on
+  // none of them (the security fix: no local account can write the ring).
   CHECK(streamSddl.find(L"GA;;;LS") != std::wstring::npos);
-  CHECK(streamSddl.find(L"GRGWGX;;;IU") != std::wstring::npos);
-  CHECK(streamSddl.find(L"GRGWGX;;;AU") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GRGW;;;IU") != std::wstring::npos);
+  CHECK(streamSddl.find(L"GX") == std::wstring::npos);
+  CHECK(streamSddl.find(L";;;AU") == std::wstring::npos);
+  CHECK(controlSddl.find(L"GA;;;LS") != std::wstring::npos);
   CHECK(controlSddl.find(L"GWGR;;;IU") != std::wstring::npos);
-  CHECK(controlSddl.find(L"GWGR;;;AU") != std::wstring::npos);
+  CHECK(controlSddl.find(L";;;AU") == std::wstring::npos);
+  CHECK(eventSddl.find(L"GA;;;LS") != std::wstring::npos);
+  CHECK(eventSddl.find(L"GWGX;;;IU") != std::wstring::npos);
+  CHECK(eventSddl.find(L";;;AU") == std::wstring::npos);
 }
 
 void testBgraToNv12Reference() {
@@ -271,6 +280,34 @@ void testBgraToNv12Reference() {
   CHECK(nv12[5] == 152);
 }
 
+void testBgraToNv12LumaMatchesReference() {
+  // Width intentionally not a multiple of 8 so the AVX2 luma kernel exercises
+  // both its main loop and its scalar tail; height > 1 covers row striding.
+  const uint32_t width = 70;
+  const uint32_t height = 6;
+  std::vector<uint8_t> bgra(static_cast<size_t>(width) * height * 4u);
+  uint32_t lcg = 0x1234567u;  // deterministic pseudo-random fill (no rand()).
+  for (auto &byte : bgra) {
+    lcg = lcg * 1664525u + 1013904223u;
+    byte = static_cast<uint8_t>(lcg >> 24);
+  }
+
+  std::vector<uint8_t> nv12(bytesPerFrame(width, height, PixelFormat::Nv12), 0);
+  bgraToNv12(bgra.data(), width, height, nv12.data(), nv12.size());
+
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      const size_t i = static_cast<size_t>(y) * width + x;
+      const int b = bgra[i * 4u + 0u];
+      const int g = bgra[i * 4u + 1u];
+      const int r = bgra[i * 4u + 2u];
+      int expected = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+      expected = std::clamp(expected, 0, 255);
+      CHECK(nv12[i] == static_cast<uint8_t>(expected));
+    }
+  }
+}
+
 int main() {
   testRingNewestEvenRule();
   testRingRejectsTornSlot();
@@ -283,6 +320,7 @@ int main() {
   testServiceControlValidation();
   testNamesAndSddl();
   testBgraToNv12Reference();
+  testBgraToNv12LumaMatchesReference();
   std::cout << "vcam_shm_layout_test passed\n";
   return 0;
 }

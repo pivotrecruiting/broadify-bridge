@@ -24,6 +24,12 @@ import {
   publishMeetingStatusEvent,
 } from "./meeting-event-publisher.js";
 import { decideStatusPublish } from "./status-publish-policy.js";
+import {
+  CallDetector,
+  type CallDetectorEventT,
+} from "../intelligence/call-detector.js";
+import { graphicsUsageRecorder } from "../intelligence/usage-event-recorder.js";
+import { ciSessionCoordinator } from "../intelligence/ci-session-coordinator.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
@@ -35,6 +41,19 @@ const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
 /** Log one skipped-poll debug line per this many consecutive skips. */
 const STATUS_POLL_SKIP_LOG_EVERY = 10;
+// Camera health stdout events that must force a status publish so the webapp
+// can surface the camera state (stall/error) instead of showing a frozen
+// frame. camera_reopen_attempt is deliberately absent: it fires on every
+// backoff cycle and would flood the relay with no new information.
+const CAMERA_STATUS_EVENT_TYPES = new Set<string>([
+  "camera_stalled",
+  "camera_recovered",
+  "camera_reopen_scheduled",
+  "camera_reopen_success",
+  "camera_reopen_failure",
+  "camera_capture_error",
+  "camera_open_failure",
+]);
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
 // Consecutive connect-level RPC failures (helper_not_reachable) of the 2 s
@@ -78,13 +97,18 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_KEYER_BACKEND",
   "BROADIFY_MEETING_KEYER_CADENCE",
   "BROADIFY_MEETING_KEYER_DML_LEGACY",
+  "BROADIFY_MEETING_KEYER_FP16",
+  "BROADIFY_MEETING_KEYER_IO_BINDING",
   "BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS",
   "BROADIFY_MEETING_KEYER_OPENVINO",
   "BROADIFY_MEETING_KEYER_PERFORMANCE",
   "BROADIFY_MEETING_KEYER_PREBUILD_TIERS",
+  "BROADIFY_MEETING_KEYER_ZEROCOPY",
+  "BROADIFY_MEETING_LIVE_SNAP",
   "BROADIFY_MEETING_MASK_WORK_WIDTH",
   "BROADIFY_MEETING_DML_QUEUE",
   "BROADIFY_MEETING_OPENVINO_DEVICE",
+  "BROADIFY_MEETING_OVERRUN_STEPDOWN",
   "BROADIFY_MEETING_STAGING_RING",
   "BROADIFY_MEETING_WARM_HANDOVER",
 ] as const;
@@ -656,6 +680,20 @@ function resolveControlSocketPath(): string {
 }
 
 /**
+ * Read the VCam consumer count from a helper state snapshot. Older helpers
+ * without the field report 0 (call detection stays idle, never errors).
+ */
+function readVcamClientCount(engineState: unknown): number {
+  if (engineState && typeof engineState === "object") {
+    const value = (engineState as Record<string, unknown>)["vcam_clients"];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+/**
  * Native Meeting Helper Manager.
  *
  * Spawns and supervises the C++ meeting-helper process, keeps FrameBus as the
@@ -685,6 +723,11 @@ export class MeetingHelperManager {
   private restartTimer: NodeJS.Timeout | null = null;
   private consecutiveControlFailures = 0;
   private lastRunningSince: number | null = null;
+  // Conversation Intelligence: hysteresis over engine.vcam_clients. Fed by
+  // every getFullStatus (2 s poll, forced publishes, meeting_get_state), reset
+  // by the same call once the helper is gone — stop()/handleProcessExit both
+  // publish through getFullStatus, so no extra lifecycle wiring is needed.
+  private readonly callDetector = new CallDetector();
   private stopping = false;
   private vcamRawBindFailed: string | null = null;
   // Set once the bridge itself is shutting down. The helper usually dies from
@@ -870,7 +913,14 @@ export class MeetingHelperManager {
   async getFullStatus(): Promise<Record<string, unknown>> {
     const manager = this.getStatus();
     if (!this.client || this.state !== "running") {
-      return { platform: platform(), manager, engine: null, recording: null };
+      this.applyCallDetectorEvents(this.callDetector.reset(Date.now()));
+      return {
+        platform: platform(),
+        manager,
+        engine: null,
+        recording: null,
+        call: this.buildCallStatus(),
+      };
     }
     try {
       const [engineState, framebus, keyer, recordingResult, virtualCamera] =
@@ -889,6 +939,12 @@ export class MeetingHelperManager {
       const recording =
         recordingRaw && typeof recordingRaw === "object" ? recordingRaw : null;
       this.consecutiveControlFailures = 0;
+      this.applyCallDetectorEvents(
+        this.callDetector.observeClientCount(
+          readVcamClientCount(engineState),
+          Date.now(),
+        ),
+      );
       return {
         platform: platform(),
         manager,
@@ -897,6 +953,7 @@ export class MeetingHelperManager {
         keyer,
         recording,
         virtualCamera,
+        call: this.buildCallStatus(),
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -906,7 +963,51 @@ export class MeetingHelperManager {
       ) {
         this.noteControlChannelFailure(message);
       }
-      return { manager, engine: null, engineError: message, recording: null };
+      // Transient control failure: keep the call state, a helper that comes
+      // back within the falling hysteresis continues the same call.
+      return {
+        manager,
+        engine: null,
+        engineError: message,
+        recording: null,
+        call: this.buildCallStatus(),
+      };
+    }
+  }
+
+  /**
+   * Stable call projection for the status snapshot. Both fields are
+   * projection-stable (no per-tick churn), so every detector transition
+   * reaches clients immediately via the projection_changed publish path.
+   */
+  private buildCallStatus(): Record<string, unknown> {
+    const snapshot = this.callDetector.snapshot();
+    return { active: snapshot.active, call_id: snapshot.callId };
+  }
+
+  private applyCallDetectorEvents(events: CallDetectorEventT[]): void {
+    for (const event of events) {
+      if (event.type === "call_started") {
+        getLogger().info(
+          `[Meeting] Call detected (call_id: ${event.callId})`,
+        );
+        graphicsUsageRecorder.recordCallStarted(event.callId, event.at);
+        ciSessionCoordinator.noteCallStarted(event.callId, event.at);
+      } else {
+        getLogger().info(
+          `[Meeting] Call ended (call_id: ${event.callId}, reason: ${event.reason})`,
+        );
+        graphicsUsageRecorder.recordCallEnded(
+          event.callId,
+          event.reason,
+          event.at,
+        );
+        ciSessionCoordinator.noteCallEnded(
+          event.callId,
+          event.at,
+          event.reason,
+        );
+      }
     }
   }
 
@@ -1198,6 +1299,15 @@ export class MeetingHelperManager {
       }
       if (parsed.type === "meeting_vcam_raw") {
         logger.info(`[MeetingHelper] ${line}`);
+        if (
+          parsed.event === "client_connected" ||
+          parsed.event === "client_disconnected"
+        ) {
+          // Edge-triggered refresh: the very next snapshot feeds the call
+          // detector with the fresh vcam_clients count instead of waiting up
+          // to a full 2 s poll interval.
+          void this.publishStatus("vcam_client_edge", false);
+        }
         if (parsed.event === "error" && parsed.code === "vcam_raw_bind_failed") {
           const message =
             parsed.message || "Meeting helper could not bind the VCam raw frame port.";
@@ -1240,6 +1350,25 @@ export class MeetingHelperManager {
           publishMeetingErrorEvent(
             "camera_permission_denied",
             "Camera permission was not granted.",
+          );
+        }
+      }
+      // Camera health events: the helper detects stalls, capture errors and
+      // reopen outcomes but they used to die in a debug log, leaving the webapp
+      // showing a frozen frame with no explanation. Force a full status publish
+      // (the authoritative snapshot carries camera_stalled + the sticky
+      // camera_last_error) so the UI can render the state. camera_reopen_attempt
+      // and the periodic reopen ticker are intentionally excluded (they fire on
+      // every backoff cycle and would flood the relay).
+      if (CAMERA_STATUS_EVENT_TYPES.has(parsed.type ?? "")) {
+        logger.info(`[MeetingHelper] ${line}`);
+        void this.publishStatus(parsed.type ?? "camera_status", true);
+        // A fresh stall (not the periodic reopen re-trigger) also emits one
+        // error event so the webapp can raise a single toast per episode.
+        if (parsed.type === "camera_stalled" && parsed.event !== "reopen") {
+          publishMeetingErrorEvent(
+            "camera_stalled",
+            "Camera stopped delivering frames; attempting automatic recovery.",
           );
         }
       }

@@ -24,6 +24,8 @@ import {
   setBridgeContext,
 } from "./services/bridge-context.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
+import { graphicsUsageRecorder } from "./services/intelligence/usage-event-recorder.js";
+import { ciSessionCoordinator } from "./services/intelligence/ci-session-coordinator.js";
 import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
 import { quitRunningVcamHelperApp } from "./modules/vcam/vcam-helper.js";
 import {
@@ -119,6 +121,11 @@ export async function createServer(config: BridgeConfigT) {
   initializeModules();
   server.log.info("[Server] Device modules initialized");
 
+  // Usage recorder before graphicsManager.initialize(): a restored output
+  // config can render layers during init, and their on-air intervals belong
+  // in the log from the first frame on.
+  await graphicsUsageRecorder.initialize();
+
   await graphicsManager.initialize();
 
   // Register CORS + WebSocket plugins.
@@ -164,6 +171,18 @@ export async function createServer(config: BridgeConfigT) {
       ? (payload) => relayClient?.sendBridgeEvent(payload)
       : undefined,
   });
+
+  // CI upload queue: load persisted tasks, then wire the relay transport so
+  // finished calls drain their usage uploads (idempotent broker sequence).
+  await ciSessionCoordinator.initialize();
+  if (relayClient) {
+    const transportClient = relayClient;
+    ciSessionCoordinator.attachTransport({
+      isConnected: () => transportClient.isConnected(),
+      sendCiRequest: (request, timeoutMs) =>
+        transportClient.sendCiRequest(request, timeoutMs),
+    });
+  }
 
   // Register routes.
   await registerServerRoutes(server, {
@@ -387,6 +406,34 @@ export async function startServer(
         quitRunningVcamHelperApp();
       } catch {
         // Best effort; the app may not be running.
+      }
+
+      // After graphics + meeting shutdown so their final hidden/call-ended
+      // events are part of the flush.
+      try {
+        await withTimeout(
+          "usage recorder flush",
+          graphicsUsageRecorder.shutdown(),
+          2000,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(
+          `[Intelligence] Usage recorder flush failed: ${message}`
+        );
+      }
+
+      try {
+        await withTimeout(
+          "ci coordinator shutdown",
+          ciSessionCoordinator.shutdown(),
+          2000,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(
+          `[Intelligence] CI coordinator shutdown failed: ${message}`
+        );
       }
 
       await withTimeout("server close", server.close(), 2000);

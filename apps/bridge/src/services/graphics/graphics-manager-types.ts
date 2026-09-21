@@ -20,6 +20,9 @@ export type GraphicsLayerStateT = {
   schema: Record<string, unknown>;
   defaults: Record<string, unknown>;
   presetId?: string;
+  // Reporting-only preset id (see GraphicsSendSchema.reportPresetId): surfaces in
+  // status/activePresets but never drives preset ownership.
+  reportPresetId?: string;
 };
 
 export type GraphicsActivePresetT = {
@@ -45,6 +48,11 @@ export type GraphicsOutputStatusT =
   | "error";
 
 export type GraphicsStatusSnapshotT = {
+  // Which graphics plane this status belongs to: "studio" (default singleton)
+  // or the meeting planes ("meeting-back"/"meeting-front"). Lets a client keep
+  // meeting and studio active-preset state apart instead of one clobbering the
+  // other. Optional so an older bridge (no source) defaults to "studio".
+  source?: string;
   rendererLifecycleState: GraphicsRendererLifecycleStateT;
   outputsConfigured: boolean;
   outputStatus: GraphicsOutputStatusT;

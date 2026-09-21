@@ -85,30 +85,70 @@ class StubCameraSource final : public CameraSource {
     lastFps = fps;
     running_ = true;
     activeIndex_ = cameraIndex;
+    // Mirror the real backends: start() opens a capture session, so the camera
+    // becomes visible in activeCameraSet(). selectCamera() deliberately does NOT
+    // do this — it only moves the program pointer — which is what the
+    // switch-camera regression below exercises.
+    openSet_ = {cameraIndex};
+    return true;
+  }
+
+  bool startSet(const std::vector<int> &cameraIndices, uint32_t width,
+                uint32_t height, uint32_t fps) override {
+    ++startSetCalls;
+    lastStartSetIndices = cameraIndices;
+    lastWidth = width;
+    lastHeight = height;
+    lastFps = fps;
+    if (cameraIndices.empty()) {
+      return false;
+    }
+    openSet_ = cameraIndices;
+    running_ = true;
+    activeIndex_ = cameraIndices.front();
+    return true;
+  }
+
+  std::vector<int> activeCameraSet() const override { return openSet_; }
+
+  bool setProgramCamera(int cameraIndex) override {
+    programSelectIndex = cameraIndex;
+    activeIndex_ = cameraIndex;
     return true;
   }
 
   void stop() override {
     running_ = false;
     activeIndex_ = -1;
+    openSet_.clear();
   }
 
   bool isRunning() const override { return running_; }
   int activeCameraIndex() const override { return activeIndex_; }
   bool copyLatestFrame(VideoFrame &) override { return false; }
-  std::string lastError() const override { return {}; }
+  std::string lastError() const override { return liveError; }
+  std::string stickyLastError() const override { return stickyError; }
+  uint64_t stickyLastErrorAtMs() const override { return stickyErrorAtMs; }
   std::string cameraPermissionStatus() const override { return "authorized"; }
   std::string requestCameraPermission() override { return "authorized"; }
 
+  std::string liveError;
+  std::string stickyError;
+  uint64_t stickyErrorAtMs = 0;
+
   int startCalls = 0;
+  int startSetCalls = 0;
+  int programSelectIndex = -1;
   uint32_t lastWidth = 0;
   uint32_t lastHeight = 0;
   uint32_t lastFps = 0;
   std::vector<int> startedIndices;
+  std::vector<int> lastStartSetIndices;
 
  private:
   bool running_ = false;
   int activeIndex_ = -1;
+  std::vector<int> openSet_;
 };
 
 #if defined(_WIN32)
@@ -249,6 +289,39 @@ int main() {
     fail("stable_key did not take precedence over camera_index");
   }
 
+  // Regression: switching to a not-yet-opened camera. camera.select moves the
+  // program pointer without opening a session; camera.start must still OPEN the
+  // target. The idempotency guard keys on activeCameraSet() (a live session),
+  // not on the moved activeCameraIndex() alone — trusting the pointer made
+  // start() short-circuit and left the switched-to camera (external webcams,
+  // both platforms) black.
+  (void)sendRpc(endpoint, "{\"id\":\"4a\",\"method\":\"camera.select\","
+                          "\"camera_index\":1}");
+  const std::string switched =
+      sendRpc(endpoint, "{\"id\":\"4b\",\"method\":\"camera.start\","
+                        "\"camera_index\":1}");
+  if (!contains(switched, "\"reopened\":true") || camera.startCalls != 3 ||
+      camera.startedIndices.back() != 1) {
+    running.store(false);
+    server.join();
+    fail("camera.start after select did not open the switched-to camera");
+  }
+
+  // Defensive: an index-less camera.start (fresh machine, setup page starting
+  // before any selection, so activeCameraIndex() is -1 and no stable_key is
+  // sent) must fall back to the first available camera instead of failing to a
+  // black preview. A concrete-but-unresolvable stable_key stays a hard error
+  // (covered by the program_select case below).
+  (void)sendRpc(endpoint, "{\"id\":\"4c\",\"method\":\"camera.stop\"}");
+  const std::string defaulted =
+      sendRpc(endpoint, "{\"id\":\"4d\",\"method\":\"camera.start\"}");
+  if (!contains(defaulted, "\"reopened\":true") ||
+      camera.startedIndices.back() != 0) {
+    running.store(false);
+    server.join();
+    fail("index-less camera.start did not fall back to the first camera");
+  }
+
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.keyerMetrics.vcamPublishMs = 1.25;
@@ -310,6 +383,117 @@ int main() {
       server.join();
       fail("rendered_page_path was not JSON-unescaped");
     }
+  }
+
+  // state.get carries the compact program summary + a monotonic
+  // program_revision so other control clients can mirror "what is active".
+  const std::string programState1 =
+      sendRpc(endpoint, "{\"id\":\"6a\",\"method\":\"state.get\"}");
+  if (!contains(programState1, "\"program\":") ||
+      !contains(programState1, "\"program_revision\":") ||
+      !contains(programState1, "\"media_layer\":{\"enabled\":true") ||
+      !contains(programState1, "\"page\":2") ||
+      !contains(programState1, "\"page_count\":4") ||
+      !contains(programState1, "\"render_status\":\"ready\"")) {
+    running.store(false);
+    server.join();
+    fail("state.get did not surface the program summary");
+  }
+  // Heavy fields must NOT be in the status push.
+  if (contains(programState1, "rendered_page_path")) {
+    running.store(false);
+    server.join();
+    fail("state.get program summary leaked rendered_page_path");
+  }
+
+  // A cornerbug logo reports has_image=true but never the base64 image itself.
+  const std::string logoUpdate = sendRpc(
+      endpoint,
+      "{\"id\":\"6b\",\"method\":\"program.update\",\"section\":\"cornerbug\","
+      "\"values\":{\"enabled\":true,\"image_data_url\":\"data:image/png;base64,AAAA\"}}");
+  if (!contains(logoUpdate, "\"ok\":true")) {
+    running.store(false);
+    server.join();
+    fail("cornerbug update failed");
+  }
+  const std::string programState2 =
+      sendRpc(endpoint, "{\"id\":\"6c\",\"method\":\"state.get\"}");
+  if (!contains(programState2, "\"cornerbug\":{\"enabled\":true,\"has_image\":true}")) {
+    running.store(false);
+    server.join();
+    fail("state.get did not report cornerbug has_image");
+  }
+  if (contains(programState2, "image_data_url") ||
+      contains(programState2, "base64")) {
+    running.store(false);
+    server.join();
+    fail("state.get leaked the cornerbug image_data_url");
+  }
+
+  // camera.open_set resolves camera_stable_keys by device key, so a swapped
+  // index order in camera_indices must not decide which cameras open.
+  (void)sendRpc(endpoint, "{\"id\":\"7a\",\"method\":\"camera.stop\"}");
+  const std::string openSet = sendRpc(
+      endpoint,
+      "{\"id\":\"7b\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0],"
+      "\"camera_stable_keys\":[\"camera-a-key\",\"camera-b-key\"]}");
+  if (!contains(openSet, "\"ok\":true") ||
+      camera.lastStartSetIndices != std::vector<int>{0, 1}) {
+    running.store(false);
+    server.join();
+    fail("open_set did not resolve camera_stable_keys by device key");
+  }
+
+  // Without stable keys the positional indices are used unchanged.
+  (void)sendRpc(endpoint, "{\"id\":\"7c\",\"method\":\"camera.stop\"}");
+  const std::string openSetIdx = sendRpc(
+      endpoint,
+      "{\"id\":\"7d\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0]}");
+  if (!contains(openSetIdx, "\"ok\":true") ||
+      camera.lastStartSetIndices != std::vector<int>{1, 0}) {
+    running.store(false);
+    server.join();
+    fail("open_set without keys changed index behavior");
+  }
+
+  // program_select prefers stable_key over camera_index.
+  const std::string programSelect = sendRpc(
+      endpoint,
+      "{\"id\":\"7e\",\"method\":\"camera.program_select\",\"camera_index\":0,"
+      "\"stable_key\":\"camera-b-key\"}");
+  if (!contains(programSelect, "\"ok\":true") ||
+      camera.programSelectIndex != 1) {
+    running.store(false);
+    server.join();
+    fail("program_select did not prefer stable_key");
+  }
+
+  // An unknown stable_key is a clean error, not a silent wrong-camera cut.
+  const std::string badProgram = sendRpc(
+      endpoint,
+      "{\"id\":\"7f\",\"method\":\"camera.program_select\","
+      "\"stable_key\":\"missing-key\"}");
+  if (!contains(badProgram, "camera_program_select_failed")) {
+    running.store(false);
+    server.join();
+    fail("program_select accepted an unknown stable_key");
+  }
+
+  // state.get surfaces the STICKY camera error (survives a camera list),
+  // while last_error stays the live value. Decoupling is the whole point of
+  // the sticky field: the UI must keep showing "camera stopped" after a scan.
+  camera.stickyError = "device_removed (0x80070490)";
+  camera.stickyErrorAtMs = 123456u;
+  camera.liveError = "";  // e.g. just after a camera.list cleared the live one
+  const std::string stateGet =
+      sendRpc(endpoint, "{\"id\":\"7g\",\"method\":\"state.get\"}");
+  if (!contains(stateGet,
+                "\"camera_last_error\":\"device_removed (0x80070490)\"") ||
+      !contains(stateGet, "\"camera_last_error_at\":123456") ||
+      !contains(stateGet, "\"last_error\":null")) {
+    running.store(false);
+    server.join();
+    fail("state.get did not surface sticky camera error decoupled from last_error");
   }
 
   (void)sendRpc(endpoint, "{\"id\":\"7\",\"method\":\"control.shutdown\"}");

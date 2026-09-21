@@ -50,6 +50,12 @@ sequenceDiagram
   OA->>H: output via helper
 ```
 
+## Preset-Ownership vs. reporting-only (`presetId` vs. `reportPresetId`)
+- `presetId` ist **exklusiv/ownership**: löst `prepareBeforeRender` → `removeLayersNotInPreset` aus (fegt konkurrierende Nicht-`backgrounds`-Ebenen) und setzt das aktive Preset inkl. Timer. Für Studio-Presets (ein Preset ersetzt das andere).
+- `reportPresetId` ist **reporting-only**: erscheint in `graphics_status.activePresets` (Badge-Sync über Steuer-Clients), berührt aber **nie** den Ownership-Pfad. Für **additive** Meeting-Presets, die mit der Content-Ebene und über Kategorien hinweg koexistieren. Meeting sendet `reportPresetId`, nie `presetId`.
+- Single-Path bleibt gewahrt: `reportPresetId` sind reine Control-Plane-Metadaten (kein zweiter Render-Pfad/Fallback). Grouping in `GraphicsManager.getStatusSnapshot` nach `presetId ?? reportPresetId`; Ownership in `graphics-preset-service.ts` strikt `presetId`-only.
+- Meeting-Planes werden über den read-only Command `graphics_list_meeting` in den Reconnect-Resync einbezogen (`graphics_meeting_snapshot`).
+
 ## Validierung & Sicherheit
 - Zod‑Schemas: `apps/bridge/src/services/graphics/graphics-schemas.ts`
 - Template‑Sanitizing: `apps/bridge/src/services/graphics/template-sanitizer.ts`

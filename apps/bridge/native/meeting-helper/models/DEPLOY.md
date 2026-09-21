@@ -60,3 +60,35 @@ Run **Test Release Build** (Windows matrix job) or re-run a failed release build
 3. Upload new asset to a new release tag
 4. Update `MODNET_MODEL_URL` to the new download URL
 5. Commit manifest change to the app repo
+
+## macOS Core ML model provenance
+
+`MODNet.mlpackage` (tracked in git) history:
+
+- **2026-09-15 — fine-tune ft-v5d** (current, macOS AND Windows): winner of the
+  2026-09-12 autonomous training night (weighted multi-resolution 512/384/320/256
+  + SD/HD VideoMatte240K composites + hardened webcam degradation, cooldown
+  segments with decaying LR). Benchmark: 512 clean 6.5 / webcam 9.2 (ft-v3: 6.8 /
+  9.7); 256 tier ~20% better than ft-v3. Windows: first model update - ONNX
+  exported via export_onnx.py (broadify-keyer-training), asset
+  modnet-ft-v5d.onnx attached to the broadify-bridge v0.27.1-rc.10 release
+  (fallback location: no write access to the broadify-meeting-helper assets repo),
+  MODNET_MODEL_URL updated, manifest.json sha256 refreshed.
+- **2026-09-10 — fine-tune ft-v3**: continuation of ft-v2 with 12000
+  additional iterations and a 5x larger CC0 background pool (1806 views from
+  all 301 Poly Haven indoor HDRIs). Internal benchmark: clean MAD 6.6 (was 8.2),
+  webcam-degraded MAD 9.7 (was 12.9). Same export pipeline and interface.
+- **2026-09-09 — fine-tune ft-v2**: MODNet photographic checkpoint
+  fine-tuned on VideoMatte240K train split composited over CC0 backgrounds with
+  webcam-style degradation (2000 iters, lr 5e-5, frozen BatchNorm). Exported via
+  `scripts/export_coreml.py` in the `broadify-keyer-training` project (input
+  "image" 512x512 RGB, output "alpha" GRAYSCALE_FLOAT16, ML Program,
+  normalization baked into the image input). Internal benchmark (200 samples,
+  VM240K test split): clean MAD 8.2 vs 9.7 before; webcam-degraded MAD 12.9 vs
+  40.6 before. Windows `modnet.onnx` intentionally unchanged in this step.
+- Before: original MODNet *photographic* portrait matting weights (note: the
+  photographic variant, not the webcam variant), converted with coremltools 9.0.
+
+After swapping the package, refresh the three sha256 entries in
+`coreml-manifest.json` (hash `Manifest.json`, `model.mlmodel`, `weight.bin`);
+`scripts/prepare-modnet-coreml-model.sh` verifies them during dist builds.

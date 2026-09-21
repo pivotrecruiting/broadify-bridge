@@ -82,7 +82,7 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_GPU_PIPELINE=0` | Fused CoreML-Pipeline deaktivieren |
 | `BROADIFY_MEETING_GPU_REFINE=0` | MPS-Maskenverfeinerung deaktivieren |
 | `BROADIFY_MEETING_GPU_GUIDED=0` | D3D11 Guided Refine deaktivieren |
-| `BROADIFY_MEETING_GUIDED_REFINE=0` | Guided Live Snap deaktivieren |
+| `BROADIFY_MEETING_LIVE_SNAP` | Live-Edge-Snap: unset = Auto (age-gated, Snap nur bei frischer Maske), `1` = immer an, `0` = immer aus (kein Ghost/Jitter bei alter Maske) |
 | `BROADIFY_MEETING_GPU_RADIUS` | Radius des MPS Guided Filters |
 | `BROADIFY_MEETING_GPU_EPSILON` | Epsilon des MPS Guided Filters |
 | `BROADIFY_MEETING_GPU_REFINE_WIDTH` | Zielbreite der MPS-Maske |
@@ -96,6 +96,9 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | Test-Override fuer die Step-Down-Schwelle des Governors |
 | `BROADIFY_MEETING_KEYER_BACKEND` | `modnet`/`openvino_modnet` erzwingt das Matting-Backend (Windows-Factory) |
 | `BROADIFY_MEETING_KEYER_OPENVINO=0` | OpenVINO-Kill-Switch: immer ONNX Runtime/DirectML |
+| `BROADIFY_MEETING_KEYER_FP16=1` | Halbpraezises MODNet-Modell laden (Windows/DirectML; wirkt nur mit deploytem `modnet-fp16`, siehe `meeting-windows-performance.md`) |
+| `BROADIFY_MEETING_KEYER_IO_BINDING=1` | DirectML-Inferenz ueber ORT-IoBinding (A/B-Experiment, siehe `meeting-windows-performance.md`) |
+| `BROADIFY_MEETING_KEYER_ZEROCOPY=1` | Zero-Copy-Device-Input: MODNet-Tensor per D3D12-Compute auf der GPU bauen (Windows/DirectML, siehe `meeting-windows-performance.md`) |
 | `BROADIFY_MEETING_OPENVINO_DEVICE` | `AUTO` (Default, expandiert zu `AUTO:NPU,GPU,CPU`)/`NPU`/`GPU`/`CPU` |
 
 Beim Start des macOS-App-Bundles reicht die Bridge ausschließlich diese

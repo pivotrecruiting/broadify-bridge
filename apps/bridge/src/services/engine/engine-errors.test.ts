@@ -46,12 +46,32 @@ describe("engine-errors", () => {
   });
 
   describe("createConnectionTimeoutError", () => {
+    const originalPlatform = process.platform;
+    const setPlatform = (platform: NodeJS.Platform): void => {
+      Object.defineProperty(process, "platform", { value: platform });
+    };
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    });
+
     it("returns error with ip, port, timeoutMs in details", () => {
       const err = createConnectionTimeoutError("192.168.1.1", 9910, 5000);
       expect(err.code).toBe(EngineErrorCode.CONNECTION_TIMEOUT);
       expect(err.details).toEqual({ ip: "192.168.1.1", port: 9910, timeoutMs: 5000 });
       expect(err.message).toContain("192.168.1.1");
       expect(err.message).toContain("9910");
+    });
+
+    it("appends the Local Network hint on macOS", () => {
+      setPlatform("darwin");
+      const err = createConnectionTimeoutError("192.168.1.1", 9910, 5000);
+      expect(err.message).toContain("Local Network");
+    });
+
+    it("omits the Local Network hint off macOS", () => {
+      setPlatform("win32");
+      const err = createConnectionTimeoutError("192.168.1.1", 9910, 5000);
+      expect(err.message).not.toContain("Local Network");
     });
   });
 

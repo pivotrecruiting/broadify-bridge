@@ -21,6 +21,7 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "graphics_remove",
   "graphics_remove_preset",
   "graphics_list",
+  "graphics_list_meeting",
   "meeting_get_state",
   "meeting_engine_start",
   "meeting_engine_stop",

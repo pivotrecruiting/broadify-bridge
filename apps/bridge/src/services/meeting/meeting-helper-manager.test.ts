@@ -187,8 +187,13 @@ describe("meeting-helper-manager", () => {
           BROADIFY_MEETING_GPU_PIPELINE: "0",
           BROADIFY_MEETING_GPU_RESIDENT: "1",
           BROADIFY_MEETING_COREML_UNITS: "cpuAndNeuralEngine",
+          BROADIFY_MEETING_KEYER_FP16: "1",
+          BROADIFY_MEETING_KEYER_IO_BINDING: "1",
           BROADIFY_MEETING_KEYER_PREBUILD_TIERS: "256,320",
+          BROADIFY_MEETING_KEYER_ZEROCOPY: "1",
+          BROADIFY_MEETING_LIVE_SNAP: "0",
           BROADIFY_MEETING_MASK_WORK_WIDTH: "512",
+          BROADIFY_MEETING_OVERRUN_STEPDOWN: "0",
           BROADIFY_MEETING_STAGING_RING: "1",
           BROADIFY_MEETING_FUTURE_SECRET: "do-not-forward",
           UNRELATED_VALUE: "ignored",
@@ -211,11 +216,21 @@ describe("meeting-helper-manager", () => {
         "--env",
         "BROADIFY_MEETING_GUIDED_COEFF_EMA=0",
         "--env",
+        "BROADIFY_MEETING_KEYER_FP16=1",
+        "--env",
+        "BROADIFY_MEETING_KEYER_IO_BINDING=1",
+        "--env",
         "BROADIFY_MEETING_KEYER_PREBUILD_TIERS=256,320",
+        "--env",
+        "BROADIFY_MEETING_KEYER_ZEROCOPY=1",
+        "--env",
+        "BROADIFY_MEETING_LIVE_SNAP=0",
         "--env",
         "BROADIFY_MEETING_MASK_WORK_WIDTH=512",
         "--env",
         "BROADIFY_MEETING_DML_QUEUE=compute",
+        "--env",
+        "BROADIFY_MEETING_OVERRUN_STEPDOWN=0",
         "--env",
         "BROADIFY_MEETING_STAGING_RING=1",
       ]);
@@ -368,6 +383,98 @@ describe("meeting-helper-manager", () => {
       );
     });
 
+    it("forwards a camera stall as both a status publish and one error event", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({ type: "camera_stalled", age_ms: 2000 }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith("camera_stalled", true);
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({ code: "camera_stalled" }),
+        }),
+      );
+    });
+
+    it("does not raise an error event for the periodic reopen stall re-trigger", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "camera_stalled",
+          event: "reopen",
+          reopen_count_lifetime: 3,
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith("camera_stalled", true);
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "meeting_error" }),
+      );
+    });
+
+    it("forwards a reopen failure as a status publish without an error toast", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "camera_reopen_failure",
+          camera_index: 0,
+          attempt: 4,
+          error: "Could not reopen the camera.",
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith("camera_reopen_failure", true);
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "meeting_error" }),
+      );
+    });
+
+    it("ignores the noisy camera_reopen_attempt event", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+
+      internals.handleStdoutLine(
+        JSON.stringify({ type: "camera_reopen_attempt", attempt: 2 }),
+        mockLogger,
+      );
+
+      expect(publishStatus).not.toHaveBeenCalled();
+    });
+
     it("getFullStatus returns manager status without helper when stopped", async () => {
       const manager = new MeetingHelperManager();
       const status = await manager.getFullStatus();
@@ -377,6 +484,7 @@ describe("meeting-helper-manager", () => {
         manager: expect.objectContaining({ state: "stopped" }),
         engine: null,
         recording: null,
+        call: { active: false, call_id: null },
       });
     });
 

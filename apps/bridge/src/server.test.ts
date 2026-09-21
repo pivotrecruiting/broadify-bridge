@@ -13,6 +13,11 @@ const mockClampMaxLevel = jest.fn();
 
 const mockGraphicsInitialize = jest.fn().mockResolvedValue(undefined);
 const mockGraphicsShutdown = jest.fn().mockResolvedValue(undefined);
+const mockUsageRecorderInitialize = jest.fn().mockResolvedValue(undefined);
+const mockUsageRecorderShutdown = jest.fn().mockResolvedValue(undefined);
+const mockCiCoordinatorInitialize = jest.fn().mockResolvedValue(undefined);
+const mockCiCoordinatorAttachTransport = jest.fn();
+const mockCiCoordinatorShutdown = jest.fn().mockResolvedValue(undefined);
 const mockDeviceCacheInitializeWatchers = jest.fn();
 
 const mockRelayConnect = jest.fn().mockResolvedValue(undefined);
@@ -105,6 +110,22 @@ jest.mock("./services/graphics/graphics-manager.js", () => ({
   graphicsManager: {
     initialize: (...args: unknown[]) => mockGraphicsInitialize(...args),
     shutdown: (...args: unknown[]) => mockGraphicsShutdown(...args),
+  },
+}));
+
+jest.mock("./services/intelligence/usage-event-recorder.js", () => ({
+  graphicsUsageRecorder: {
+    initialize: (...args: unknown[]) => mockUsageRecorderInitialize(...args),
+    shutdown: (...args: unknown[]) => mockUsageRecorderShutdown(...args),
+  },
+}));
+
+jest.mock("./services/intelligence/ci-session-coordinator.js", () => ({
+  ciSessionCoordinator: {
+    initialize: (...args: unknown[]) => mockCiCoordinatorInitialize(...args),
+    attachTransport: (...args: unknown[]) =>
+      mockCiCoordinatorAttachTransport(...args),
+    shutdown: (...args: unknown[]) => mockCiCoordinatorShutdown(...args),
   },
 }));
 

@@ -88,6 +88,13 @@ class CameraSource {
     return false;
   }
   virtual std::string lastError() const = 0;
+  // Sticky last capture error for UI surfacing. Unlike lastError(), a camera
+  // enumeration (listCameras) must not clear it, so a "camera stopped
+  // delivering frames" state stays visible until a successful (re)open or
+  // stop. Default: mirror lastError() with no timestamp (backends without a
+  // sticky notion, e.g. macOS, keep their current behavior).
+  virtual std::string stickyLastError() const { return lastError(); }
+  virtual uint64_t stickyLastErrorAtMs() const { return 0; }
   virtual std::string cameraPermissionStatus() const = 0;
   virtual std::string requestCameraPermission() = 0;
 

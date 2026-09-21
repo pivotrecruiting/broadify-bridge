@@ -139,4 +139,56 @@ describe("status-publish-policy", () => {
     expect(decision.publish).toBe(true);
     expect(decision.reason).toBe("projection_changed");
   });
+
+  it("ignores program_dirty/graphics_dirty flips in the projection", () => {
+    const a = projectStableStatus(
+      makeStatus({
+        engine: {
+          active_camera_index: 0,
+          program_revision: 7,
+          program_dirty: true,
+          graphics_dirty: false,
+          program: { media_layer: { enabled: true, mode: "pip" } },
+        },
+      }),
+    );
+    const b = projectStableStatus(
+      makeStatus({
+        engine: {
+          active_camera_index: 0,
+          program_revision: 7,
+          program_dirty: false,
+          graphics_dirty: true,
+          program: { media_layer: { enabled: true, mode: "pip" } },
+        },
+      }),
+    );
+    expect(a).toBe(b);
+    expect(a).not.toContain("program_dirty");
+  });
+
+  it("publishes when program_revision changes", () => {
+    const before = makeStatus({
+      engine: {
+        active_camera_index: 0,
+        program_revision: 7,
+        program: { media_layer: { enabled: false, mode: "pip" } },
+      },
+    });
+    const decision = decideStatusPublish({
+      status: makeStatus({
+        engine: {
+          active_camera_index: 0,
+          program_revision: 8,
+          program: { media_layer: { enabled: true, mode: "fullscreen" } },
+        },
+      }),
+      force: false,
+      lastProjection: projectStableStatus(before),
+      lastPublishedAt: 10_000,
+      now: 10_001,
+    });
+    expect(decision.publish).toBe(true);
+    expect(decision.reason).toBe("projection_changed");
+  });
 });

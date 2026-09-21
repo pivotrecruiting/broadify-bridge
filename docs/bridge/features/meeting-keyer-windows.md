@@ -43,8 +43,9 @@ camera frame
 | --- | --- | --- |
 | `BROADIFY_MEETING_GPU_PIPELINE` | `1` | Enables the fused Windows GPU keyer path. Set `0` for async worker path. |
 | `BROADIFY_MEETING_AUTO_DEGRADE` | `1` | Enables the fused tier governor. |
+| `BROADIFY_MEETING_OVERRUN_STEPDOWN` | `1` | Lets a sustained program-loop budget overrun step one fused tier down (CPU overload the GPU-cost samples miss). Set `0` to keep overruns log-only. |
 | `BROADIFY_MEETING_WARM_HANDOVER` | `1` | Keeps make-before-break transitions between fused and async-lite. |
-| `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `active,256` | Prebuilds the current high tier plus 256 on first load. Accepts `all`, `active`, `512`, `320`, `256`, or mode names in a comma list. |
+| `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `512,320,256` | Prebuilds all three fused tiers on first load so the governor has a fine 320 middle step (avoids the coarse-256 edge flicker). Accepts `all`, `active`, `512`, `320`, `256`, or mode names in a comma list. |
 | `BROADIFY_MEETING_DML_QUEUE` | `compute` | DirectML DML1 command queue type. Use `direct` for A/B against rc.21. |
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | unset | Overrides the governor step-down threshold for tests/tuning. |
 | `BROADIFY_MEETING_KEYER_CADENCE` | `auto` | Auto cadence, `0` disabled, or integer frame interval. Auto defaults to maxN 2 and motion threshold 4. |
@@ -57,6 +58,7 @@ camera frame
 | `BROADIFY_MEETING_GUIDED_EPSILON` | `5e-4` | Guided-filter epsilon for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_COEFF_EMA` | `0` | D3D11 guided-filter coefficient EMA; default off to avoid silhouette trails. |
 | `BROADIFY_MEETING_GPU_GUIDED` | `1` | Enables D3D11 guided refine; set `0` for CPU fallback. |
+| `BROADIFY_MEETING_STAGING_RING` | `1` | Pipelines the compositor readback through a depth-3 staging ring (maps frame N-1, ~1 frame added latency). Set `0` to restore the rc.18 blocking current-frame readback. |
 | `BROADIFY_MEETING_CAMERA_MAX_HEIGHT` | `1080` | Clamps Windows MediaFoundation camera requests and reopen attempts to <=1080p at <=30 fps. `0` disables the height clamp. |
 | `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 400 ms below the foreground floor. |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY` | unset | Forces legacy DirectML device 0 selection. |

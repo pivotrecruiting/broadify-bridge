@@ -4,8 +4,14 @@
     {
       "name": "modnet",
       "file": "modnet.onnx",
-      "sha256": "07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9",
+      "sha256": "7ece666ea70a1860ceca6e61797a152d9d123465e28c9f80a8aa8e08ba6d0eab",
       "required": true
+    },
+    {
+      "name": "modnet-fp16",
+      "file": "modnet_fp16.onnx",
+      "sha256": "release-artifact-required",
+      "required": false
     },
     {
       "name": "mediapipe-selfie-segmenter",

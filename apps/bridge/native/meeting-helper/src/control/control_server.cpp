@@ -58,6 +58,59 @@ std::string programSectionJson(const MeetingState &state, const std::string &sec
   return "{\"enabled\":false}";
 }
 
+// Compact projection of the active program state for the meeting_status push:
+// only the parsed on/off + identity fields that other control clients need to
+// mirror "which button is active". Deliberately excludes heavy/volatile data
+// (cornerbug image_data_url, media rendered_page_path, all geometry) — those
+// stay retrievable via program.get so the 2s status push stays small.
+std::string programSummaryJson(const MeetingState &state) {
+  std::ostringstream out;
+  const bool cornerbugHasImage =
+      !extractStringField(state.cornerbug.rawJson, "image_data_url").empty();
+  out << "{"
+      << "\"media_layer\":{\"enabled\":"
+      << (state.mediaLayer.enabled ? "true" : "false") << ",\"mode\":\""
+      << jsonEscape(state.mediaLayer.mode) << "\",\"page\":" << state.mediaLayer.page
+      << ",\"page_count\":" << state.mediaLayer.pageCount << ",\"asset_id\":"
+      << (state.mediaLayer.assetId.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.mediaLayer.assetId) + "\"")
+      << ",\"render_status\":"
+      << (state.mediaLayer.renderStatus.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.mediaLayer.renderStatus) + "\"")
+      << "},"
+      << "\"camera_render\":{\"enabled\":"
+      << (state.cameraRender.enabled ? "true" : "false") << ",\"mirror\":"
+      << (state.cameraRender.mirror ? "true" : "false") << "},"
+      << "\"speaker_layout\":{\"enabled\":"
+      << (state.speakerLayout.enabled ? "true" : "false") << ",\"layout\":\""
+      << jsonEscape(state.speakerLayout.layout) << "\",\"scale\":"
+      << state.speakerLayout.scale << "},"
+      << "\"cornerbug\":{\"enabled\":"
+      << (state.cornerbug.enabled ? "true" : "false") << ",\"has_image\":"
+      << (cornerbugHasImage ? "true" : "false") << "},"
+      << "\"graphics\":{\"enabled\":"
+      << (state.graphics.enabled ? "true" : "false") << ",\"graphic_id\":"
+      << (state.graphics.graphicId.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.graphicId) + "\"")
+      << ",\"template\":"
+      << (state.graphics.templateName.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.templateName) + "\"")
+      << ",\"source\":"
+      << (state.graphics.source.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.source) + "\"")
+      << ",\"handoff_target\":"
+      << (state.graphics.handoffTarget.empty()
+              ? "null"
+              : "\"" + jsonEscape(state.graphics.handoffTarget) + "\"")
+      << "}}";
+  return out.str();
+}
+
 bool isProgramSection(const std::string &section) {
   return section == "speaker_layout" || section == "cornerbug" || section == "media_layer" || section == "graphics" || section == "camera";
 }
@@ -131,6 +184,19 @@ bool activeCameraMatches(CameraSource &camera, const std::string &stableKey,
     return false;
   }
   const int activeIndex = camera.activeCameraIndex();
+  // camera.select moves the program pointer (activeCameraIndex) WITHOUT opening
+  // a capture session for it. Trusting the pointer alone made camera.start's
+  // idempotency guard short-circuit a select()-then-start() switch to a
+  // not-yet-opened camera — the session was never opened and the feed stayed
+  // black (external webcams, both platforms). Only treat the camera as already
+  // active when a live capture session actually exists for the program index;
+  // activeCameraSet() reports the truly-open cameras (keys of the backend's
+  // session/stream map), unlike activeCameraIndex().
+  const std::vector<int> openCameras = camera.activeCameraSet();
+  if (std::find(openCameras.begin(), openCameras.end(), activeIndex) ==
+      openCameras.end()) {
+    return false;
+  }
   if (stableKey.empty()) {
     return activeIndex == cameraIndex;
   }
@@ -182,6 +248,7 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
+         << ",\"session_input_size\":" << metrics.sessionInputSize
          << ",\"dropped_frames\":" << metrics.droppedFrames
          << ",\"skipped_frames\":" << metrics.skippedFrames
          << ",\"vcam_publish_dropped\":" << metrics.vcamPublishDropped
@@ -333,12 +400,19 @@ std::string handleRpc(const std::string &line,
            << "\"framebus_running\":" << (state.framebusRunning ? "true" : "false") << ","
            << "\"program_dirty\":" << (state.programDirty ? "true" : "false") << ","
            << "\"graphics_dirty\":" << (state.graphicsDirty ? "true" : "false") << ","
+           << "\"program_revision\":" << state.programRevision << ","
+           << "\"program\":" << programSummaryJson(state) << ","
            << "\"rendered_frames\":" << state.renderedFrames << ","
            << "\"reused_frames\":" << state.reusedFrames << ","
            << "\"published_preview_frames\":" << state.publishedPreviewFrames << ","
            << "\"written_framebus_frames\":" << state.writtenFramebusFrames << ","
            << "\"camera_permission_status\":\"" << jsonEscape(camera.cameraPermissionStatus()) << "\","
-           << "\"camera_last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << ","
+           // camera_last_error is the STICKY error (survives a camera list so
+           // the UI can keep showing "camera stopped delivering frames");
+           // last_error stays live (cleared by listCameras) for existing
+           // consumers of the transient value.
+           << "\"camera_last_error\":" << (camera.stickyLastError().empty() ? "null" : "\"" + jsonEscape(camera.stickyLastError()) + "\"") << ","
+           << "\"camera_last_error_at\":" << (camera.stickyLastErrorAtMs() == 0 ? "null" : std::to_string(camera.stickyLastErrorAtMs())) << ","
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
     return okResponse(id, result.str());
   }
@@ -378,8 +452,27 @@ std::string handleRpc(const std::string &line,
 
   if (method == "camera.start") {
     const std::string stableKey = extractStringField(line, "stable_key");
-    const int cameraIndex = resolveCameraIndex(
+    int cameraIndex = resolveCameraIndex(
         camera, stableKey, extractIntField(line, "camera_index", camera.activeCameraIndex()));
+    if (cameraIndex < 0 && stableKey.empty()) {
+      // Defensive fallback for an index-less start: a fresh machine's setup
+      // page can issue camera.start before any camera is selected
+      // (activeCameraIndex() is -1 when nothing runs), which used to fail to a
+      // black preview. Degrade to the first available camera (the built-in on
+      // most machines) instead of camera_start_failed. A concrete stable_key
+      // that does not resolve is still a hard error (below) — never silently
+      // open a different camera than the one that was asked for.
+      const std::vector<CameraInfo> cameras = camera.listCameras();
+      const auto firstAvailable = std::find_if(
+          cameras.begin(), cameras.end(),
+          [](const CameraInfo &info) { return info.available; });
+      if (firstAvailable != cameras.end()) {
+        cameraIndex = firstAvailable->cameraIndex;
+        std::cout << "{\"type\":\"meeting_camera\",\"event\":"
+                     "\"camera_start_default_fallback\",\"camera_index\":"
+                  << cameraIndex << "}" << std::endl;
+      }
+    }
     if (cameraIndex < 0) {
       return errorResponse(id, "camera_start_failed",
                            "Requested camera stable_key is not available.");
@@ -509,6 +602,25 @@ std::string handleRpc(const std::string &line,
         }
       }
     }
+    // Prefer stable keys when present (device symbolic links survive
+    // re-enumeration; positional indices do not). camera_stable_keys is
+    // position-matched to camera_indices; an empty or unresolved key falls
+    // back to the positional index, unresolved-with-no-fallback is dropped.
+    const std::vector<std::string> stableKeys =
+        extractStringArrayField(line, "camera_stable_keys");
+    if (!stableKeys.empty()) {
+      std::vector<int> resolved;
+      resolved.reserve(stableKeys.size());
+      for (size_t i = 0; i < stableKeys.size(); ++i) {
+        const int fallback =
+            i < indices.size() ? indices[i] : -1;
+        const int index = resolveCameraIndex(camera, stableKeys[i], fallback);
+        if (index >= 0) {
+          resolved.push_back(index);
+        }
+      }
+      indices = std::move(resolved);
+    }
     const bool started =
         camera.startSet(indices, options.width, options.height, options.fps);
     {
@@ -538,7 +650,13 @@ std::string handleRpc(const std::string &line,
 
   // Conference: cut the program feed to an already-open camera (seamless).
   if (method == "camera.program_select") {
-    const int cameraIndex = extractIntField(line, "camera_index", 0);
+    const std::string stableKey = extractStringField(line, "stable_key");
+    const int cameraIndex =
+        resolveCameraIndex(camera, stableKey, extractIntField(line, "camera_index", 0));
+    if (cameraIndex < 0) {
+      return errorResponse(id, "camera_program_select_failed",
+                           "Requested camera stable_key is not available.");
+    }
     if (!camera.setProgramCamera(cameraIndex)) {
       return errorResponse(id, "camera_program_select_failed",
                            camera.lastError());

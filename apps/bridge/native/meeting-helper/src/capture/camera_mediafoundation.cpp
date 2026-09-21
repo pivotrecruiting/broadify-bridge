@@ -4,6 +4,7 @@
 
 #include "capture/latest_frame_slot.h"
 #include "capture/camera_media_type_rank.h"
+#include "capture/camera_reopen_policy.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #include "util/pixel_swizzle.h"
@@ -651,9 +652,12 @@ class MfReaderCallback final : public IMFSourceReaderCallback {
     }
     const HRESULT reported =
         FAILED(hr) ? hr : HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
-    std::cout << "{\"type\":\"camera_capture_error\",\"hr\":\""
-              << hresultHex(reported) << "\",\"reason\":\"" << reason
-              << "\"}" << std::endl;
+    // reason is free text (MF diagnostic / "device_removed") and must be
+    // escaped: an unescaped quote would corrupt the JSON line the bridge
+    // parses. emitHelperEvent also mirrors it into the --event-log sidecar.
+    emitHelperEvent("{\"type\":\"camera_capture_error\",\"hr\":\"" +
+                    hresultHex(reported) + "\",\"reason\":\"" +
+                    jsonEscape(reason) + "\"}");
     if (errorHandler) {
       errorHandler(reported, reason);
     }
@@ -955,12 +959,14 @@ class MediaFoundationCameraSource final : public CameraSource {
 
   bool selectCamera(int cameraIndex) override {
     const std::vector<CameraInfo> cameras = listCameras();
-    if (!findByIndex(cameras, cameraIndex)) {
+    const CameraInfo *camera = findByIndex(cameras, cameraIndex);
+    if (camera == nullptr) {
       setError("Requested camera index is not available.");
       return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     programIndex_ = cameraIndex;
+    programCameraId_ = camera->cameraId;
     lastError_.clear();
     return true;
   }
@@ -1045,10 +1051,17 @@ class MediaFoundationCameraSource final : public CameraSource {
       programIndex_ = sessions_.count(cameraIndices.front())
                           ? cameraIndices.front()
                           : sessions_.begin()->first;
+      const auto programSessionIt = sessions_.find(programIndex_);
+      programCameraId_ =
+          programSessionIt != sessions_.end() && programSessionIt->second
+              ? programSessionIt->second->cameraId()
+              : std::string();
       running_ = true;
       sessionGeneration_.fetch_add(1);
       permissionStatus_ = "authorized";
       lastError_.clear();
+      stickyError_.clear();
+      stickyErrorAtMs_ = 0;
     }
     return true;
   }
@@ -1061,6 +1074,9 @@ class MediaFoundationCameraSource final : public CameraSource {
     }
     // Seamless: every camera is already running; only the program pointer moves.
     programIndex_ = cameraIndex;
+    const auto sessionIt = sessions_.find(cameraIndex);
+    programCameraId_ = sessionIt->second ? sessionIt->second->cameraId()
+                                         : std::string();
     lastError_.clear();
     return true;
   }
@@ -1082,10 +1098,16 @@ class MediaFoundationCameraSource final : public CameraSource {
       std::lock_guard<std::mutex> lock(mutex_);
       sessions.swap(sessions_);
       running_ = false;
+      programCameraId_.clear();
+      stickyError_.clear();
+      stickyErrorAtMs_ = 0;
       reopenPending_.store(false);
       sessionGeneration_.fetch_add(1);
       reopenThread = std::move(reopenThread_);
     }
+    // Wake a reopen thread sleeping in its backoff so the join below returns
+    // immediately instead of waiting out up to 5 s of backoff.
+    reopenCv_.notify_all();
     if (reopenThread.joinable()) {
       reopenThread.join();
     }
@@ -1142,6 +1164,16 @@ class MediaFoundationCameraSource final : public CameraSource {
     return lastError_;
   }
 
+  std::string stickyLastError() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stickyError_;
+  }
+
+  uint64_t stickyLastErrorAtMs() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stickyErrorAtMs_;
+  }
+
   std::string cameraPermissionStatus() const override {
     std::lock_guard<std::mutex> lock(mutex_);
     return permissionStatus_;
@@ -1189,6 +1221,13 @@ class MediaFoundationCameraSource final : public CameraSource {
     uint64_t generation = 0;
     bool expected = false;
     std::unique_lock<std::mutex> lock(mutex_);
+    // Record the capture failure stickily so state.get can surface it to the
+    // UI. Unlike lastError_, this survives listCameras()'s setError("") clear
+    // and only resets on a successful (re)open or an explicit stop.
+    stickyError_ = reason.empty()
+                       ? ("Camera capture error " + hresultHex(hr))
+                       : (reason + " (" + hresultHex(hr) + ")");
+    stickyErrorAtMs_ = nowNs() / 1000000ull;
     if (!running_) {
       return;
     }
@@ -1231,17 +1270,16 @@ class MediaFoundationCameraSource final : public CameraSource {
       size_t attempt = 0;
       while (true) {
         {
-          std::lock_guard<std::mutex> lock(mutex_);
-          if (!running_ || generation != sessionGeneration_.load()) {
-            reopenPending_.store(false);
-            reopenThreadRunning_.store(false);
-            return;
-          }
-        }
-        std::this_thread::sleep_for(
-            backoffs[std::min(attempt, std::size(backoffs) - 1)]);
-        {
-          std::lock_guard<std::mutex> lock(mutex_);
+          // Interruptible backoff: stop()/startSet() bump sessionGeneration_
+          // and notify reopenCv_, so joining this thread never waits out a
+          // sleep (up to 5 s at the deepest backoff step) — that stall was
+          // the main reason camera.start could blow the bridge RPC budget.
+          std::unique_lock<std::mutex> lock(mutex_);
+          reopenCv_.wait_for(
+              lock, backoffs[std::min(attempt, std::size(backoffs) - 1)],
+              [&] {
+                return !running_ || generation != sessionGeneration_.load();
+              });
           if (!running_ || generation != sessionGeneration_.load()) {
             reopenPending_.store(false);
             reopenThreadRunning_.store(false);
@@ -1273,6 +1311,7 @@ class MediaFoundationCameraSource final : public CameraSource {
                 },
                 error)) {
           std::shared_ptr<MfCaptureSession> oldSession;
+          std::shared_ptr<MfCaptureSession> staleSession;
           {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!running_ || generation != sessionGeneration_.load()) {
@@ -1280,16 +1319,41 @@ class MediaFoundationCameraSource final : public CameraSource {
               reopenThreadRunning_.store(false);
               return;
             }
+            std::map<int, std::string> sessionCameraIds;
+            for (const auto &entry : sessions_) {
+              if (entry.second) {
+                sessionCameraIds[entry.first] = entry.second->cameraId();
+              }
+            }
+            // A reopened standby/PiP camera must not hijack the program cut;
+            // only the program camera (matched by device id — the index may
+            // have shifted after replug) moves programIndex_ along.
+            const CameraReopenCommit commit = resolveCameraReopenCommit(
+                sessionCameraIds, programIndex_, programCameraId_, cameraId,
+                cameraIndex);
+            if (commit.staleSessionIndex >= 0) {
+              auto stale = sessions_.find(commit.staleSessionIndex);
+              if (stale != sessions_.end()) {
+                staleSession = std::move(stale->second);
+                sessions_.erase(stale);
+              }
+            }
             auto old = sessions_.find(cameraIndex);
             if (old != sessions_.end()) {
               oldSession = std::move(old->second);
             }
             sessions_[cameraIndex] = std::move(session);
-            programIndex_ = cameraIndex;
+            programIndex_ = commit.newProgramIndex;
+            if (commit.becomesProgram) {
+              programCameraId_ = cameraId;
+            }
             running_ = true;
             lastError_.clear();
+            stickyError_.clear();
+            stickyErrorAtMs_ = 0;
           }
           oldSession.reset();
+          staleSession.reset();
           std::cout << "{\"type\":\"camera_reopen_success\",\"camera_index\":"
                     << cameraIndex << ",\"device_name\":\""
                     << jsonEscape(camera->label) << "\"}" << std::endl;
@@ -1359,6 +1423,10 @@ class MediaFoundationCameraSource final : public CameraSource {
   }
 
   mutable std::mutex mutex_;
+  // Wakes the reopen thread out of its backoff sleep when stop()/startSet()
+  // invalidate the session generation (predicate: !running_ or generation
+  // mismatch, both guarded by mutex_).
+  std::condition_variable reopenCv_;
   bool mfStarted_ = false;
   bool running_ = false;
   std::atomic<bool> reopenPending_{false};
@@ -1366,7 +1434,16 @@ class MediaFoundationCameraSource final : public CameraSource {
   std::atomic<uint64_t> sessionGeneration_{0};
   std::thread reopenThread_;
   int programIndex_ = 0;
+  // Device id (symbolic link) of the current program camera. Index-stable
+  // across re-enumeration; the reopen commit uses it to decide whether the
+  // reopened camera may take the program slot.
+  std::string programCameraId_;
   std::string lastError_;
+  // Sticky variant of lastError_ for UI surfacing: set on a capture failure,
+  // NOT cleared by listCameras() (which clears lastError_ via setError("")),
+  // cleared only on a successful (re)open or stop. 0 = no error recorded.
+  std::string stickyError_;
+  uint64_t stickyErrorAtMs_ = 0;
   // Windows has no camera prompt; startSet() flips this to "denied" only if the
   // global privacy setting blocks opening a device.
   std::string permissionStatus_ = "authorized";
