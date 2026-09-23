@@ -377,6 +377,12 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
         if (this.state.status === "connected") {
           this.setState({ status: "disconnected" });
         }
+        // The helper keeps running (and keeps the switcher claimed) after an
+        // unsolicited drop — it only reports the event and holds its SDK
+        // objects. Stop it so the USB claim is released; otherwise the next
+        // connect fails ("No ATEM switcher found on USB") until the cable is
+        // physically re-plugged. Idempotent: a no-op if already stopped.
+        this.stopHelper();
         break;
       case "error":
         this.handleHelperError(event.error ?? "unknown", event.detail);

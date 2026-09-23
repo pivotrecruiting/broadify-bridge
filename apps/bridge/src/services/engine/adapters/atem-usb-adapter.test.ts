@@ -179,13 +179,16 @@ describe("AtemUsbAdapter", () => {
     expect(child.stdin.write).toHaveBeenCalledWith('{"command":"macro_stop"}\n');
   });
 
-  it("marks the state disconnected when the switcher drops off USB", async () => {
+  it("marks the state disconnected and stops the helper when the switcher drops off USB", async () => {
     const adapter = new AtemUsbAdapter();
     await connectAdapter(adapter);
 
     emitHelperLine(child, { type: "disconnected" });
     await flush();
     expect(adapter.getStatus()).toBe("disconnected");
+    // The lingering helper must be told to shut down so it releases the USB
+    // claim; otherwise the next connect fails until a physical replug.
+    expect(child.stdin.write).toHaveBeenCalledWith('{"command":"shutdown"}\n');
   });
 
   it("sends shutdown on disconnect and resets state", async () => {

@@ -130,6 +130,27 @@ export class EngineAdapterService {
         this.unsubscribeAdapterState = null;
       }
 
+      // Tear down any lingering previous adapter before creating a new one.
+      // After an unsolicited drop the status is "disconnected" but the old
+      // adapter (and, for USB, its helper process) is still around and keeps
+      // the switcher claimed — so the reconnect would otherwise fail
+      // ("No ATEM switcher found on USB") until a physical replug. Best-effort:
+      // proceed with the new connection regardless of cleanup errors.
+      if (this.adapter) {
+        const previousAdapter = this.adapter;
+        this.adapter = null;
+        try {
+          await previousAdapter.disconnect();
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          console.error(
+            "[EngineAdapterService] Failed to disconnect previous adapter before reconnect:",
+            message
+          );
+        }
+      }
+
       // Create adapter using factory
       this.adapter = this.deps.createAdapter(config.type, config.transport);
 
