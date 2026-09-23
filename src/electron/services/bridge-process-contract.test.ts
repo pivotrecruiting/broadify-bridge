@@ -140,4 +140,38 @@ describe("buildBridgeSpawnEnv", () => {
     expect(env.BROADIFY_DESKTOP_APP_VERSION).toBe("0.11.0");
     expect(env.ELECTRON_RUN_AS_NODE).toBe("1");
   });
+
+  it("opts the bridge into the OS trust store in development and production", () => {
+    for (const isDev of [true, false]) {
+      const env = buildBridgeSpawnEnv({
+        processEnv: { PATH: "/usr/bin" },
+        isDev,
+        relayEnabled: true,
+        appVersion: "0.11.0",
+      });
+      expect(env.NODE_USE_SYSTEM_CA).toBe("1");
+    }
+  });
+
+  it("keeps an explicit NODE_USE_SYSTEM_CA from the parent environment", () => {
+    for (const value of ["0", "", "1"]) {
+      const env = buildBridgeSpawnEnv({
+        processEnv: { NODE_USE_SYSTEM_CA: value },
+        isDev: false,
+        relayEnabled: true,
+        appVersion: "0.11.0",
+      });
+      expect(env.NODE_USE_SYSTEM_CA).toBe(value);
+    }
+  });
+
+  it("passes NODE_EXTRA_CA_CERTS through untouched", () => {
+    const env = buildBridgeSpawnEnv({
+      processEnv: { NODE_EXTRA_CA_CERTS: "/etc/corp-root.pem" },
+      isDev: false,
+      relayEnabled: true,
+      appVersion: "0.11.0",
+    });
+    expect(env.NODE_EXTRA_CA_CERTS).toBe("/etc/corp-root.pem");
+  });
 });

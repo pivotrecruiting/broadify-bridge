@@ -45,6 +45,15 @@ describe("runtime-diagnostics", () => {
     );
   });
 
+  it("logs the TLS trust store status", () => {
+    logRuntimeDiagnostics(mockLogger);
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /^\[RuntimeDiagnostics\] TLS trust store \{"systemCaEnabled":(true|false),"systemCaSource":"(flag|node_options|env|off)"/
+      )
+    );
+  });
+
   it("logs bridge entry check", () => {
     logRuntimeDiagnostics(mockLogger);
     expect(mockLogger.info).toHaveBeenCalledWith(

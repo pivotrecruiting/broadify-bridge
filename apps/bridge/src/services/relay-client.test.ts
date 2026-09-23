@@ -1647,6 +1647,35 @@ describe("RelayClient", () => {
     expect(logger.error).toHaveBeenCalledWith("WebSocket error: network error");
   });
 
+  it("adds an operator hint when the relay TLS chain is untrusted", async () => {
+    const socket = new FakeWebSocket();
+    const logger = createLogger();
+    const client = new RelayClient("bridge-1", "wss://relay.test", logger, undefined, {
+      createWebSocket: () => socket,
+      getEnrollmentPublicKey: async () => {
+        throw new Error("no identity");
+      },
+    });
+
+    await client.connect();
+    socket.emit(
+      "error",
+      Object.assign(new Error("self signed certificate in certificate chain"), {
+        code: "SELF_SIGNED_CERT_IN_CHAIN",
+      })
+    );
+    await flushAsync();
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "WebSocket error: self signed certificate in certificate chain (code: SELF_SIGNED_CERT_IN_CHAIN)"
+      )
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining("TLS-inspecting proxy")
+    );
+  });
+
   it("schedules reconnect after createWebSocket throws", async () => {
     const logger = createLogger();
     const sockets: FakeWebSocket[] = [];

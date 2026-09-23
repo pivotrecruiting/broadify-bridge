@@ -231,6 +231,26 @@ sequenceDiagram
 - Bridge authentisiert sich gegen Relay per lokalem Ed25519-Keypair + Challenge‑Response (`bridge_hello`-Pfad)
 - Fuer ungepairte Bridges erlaubt das Relay einen `pairing-only` Bootstrap-Pfad (nur `bridge_pair_validate`)
 
+## Transport-Trust (TLS)
+- Der Relay-Client nutzt `ws` ohne eigene CA-Optionen; die Zertifikatsprüfung
+  folgt dem Trust Store des Node-Prozesses.
+- Der Desktop-Prozess startet die Bridge mit `NODE_USE_SYSTEM_CA=1`
+  (`bridge-process-contract.ts`), damit Node zusätzlich zur eingebauten
+  Mozilla-Liste die Root-CAs des Betriebssystems lädt. Nur so ist das Relay
+  hinter Firmen-TLS-Inspection erreichbar. Ein extern gesetzter Wert wird
+  respektiert; `NODE_EXTRA_CA_CERTS` wird durchgereicht.
+- Startdiagnose: `[RuntimeDiagnostics] TLS trust store {...}`
+  (`tls-trust-store.ts`). Socket-Fehler werden mit Node-Fehlercode und, bei
+  nicht vertrauter Kette, mit Handlungshinweis geloggt
+  (`relay-socket-error.ts`).
+- Die Erweiterung gilt prozessweit für alle TLS-Clients der Bridge (Relay,
+  JWKS-Abruf, HTTPS zu Geräten); die Zertifikatsprüfung selbst bleibt
+  unverändert streng, es wächst nur die Menge vertrauter Root-CAs.
+- Kein Certificate Pinning (Browser-Trust-Modell): Ein Proxy mit einer im OS
+  vertrauten CA kann mitlesen, aber keine Bridge fälschen, weil die
+  Bridge-Identität per Ed25519 signiert ist.
+- Support: `docs/bridge/support/relay-tls-trust-runbook.md`
+
 ## Key Distribution
 - Relay stellt Public Keys via `/.well-known/jwks.json` bereit (`kid` fuer Rotation).
 - Bridge erwartet `BRIDGE_RELAY_SIGNING_PUBLIC_KEY` (PEM) oder `BRIDGE_RELAY_JWKS_URL`.
