@@ -189,6 +189,31 @@ describe("EngineAdapterService", () => {
     ).toBe(true);
   });
 
+  it("disconnects a lingering previous adapter before reconnecting", async () => {
+    const adapter1 = new FakeAdapter();
+    const adapter2 = new FakeAdapter();
+    const nextAdapters = [adapter1, adapter2];
+    const service = new EngineAdapterService({
+      createAdapter: () => nextAdapters.shift() as FakeAdapter,
+      broadcast: () => {},
+    });
+
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+    expect(service.getStatus()).toBe("connected");
+
+    // Simulate an unsolicited drop: the status goes disconnected but the
+    // service still holds adapter1 (its helper/socket lingers).
+    adapter1.emitState({ status: "disconnected", type: "atem", macros: [] });
+    expect(service.getStatus()).toBe("disconnected");
+
+    // Reconnecting must tear down the lingering adapter1 before creating
+    // adapter2, so the USB helper releases its claim on the switcher.
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+    expect(adapter1.disconnectCalls).toBe(1);
+    expect(adapter2.connectCalls).toHaveLength(1);
+    expect(service.getStatus()).toBe("connected");
+  });
+
   it("rejects connect when already connected", async () => {
     const { service } = createService();
     await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
