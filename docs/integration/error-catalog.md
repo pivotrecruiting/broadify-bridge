@@ -26,3 +26,7 @@
 
 ## Relay
 - **command_result success=false**: Fehler im CommandRouter oder Validation
+- **WebSocket error: self signed certificate in certificate chain (code: SELF_SIGNED_CERT_IN_CHAIN)** (auch `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `DEPTH_ZERO_SELF_SIGNED_CERT`): Firmen-Firewall/Proxy signiert die Relay-Verbindung mit eigener Root-CA (TLS-Inspection) → Root-CA muss im OS-Zertifikatspeicher liegen (Bridge lädt ihn mit `NODE_USE_SYSTEM_CA=1`), alternativ `NODE_EXTRA_CA_CERTS` oder Relay-Host von der Inspection ausnehmen; Runbook `docs/bridge/support/relay-tls-trust-runbook.md`
+- **WebSocket error … (code: CERT_HAS_EXPIRED / CERT_NOT_YET_VALID / ERR_TLS_CERT_ALTNAME_INVALID)**: Zertifikat ungültig → Systemuhr und Proxy-Konfiguration prüfen
+- **Disconnected from relay server (code: 1006)** direkt nach `WebSocket error`: Folge des Handshake-Fehlers, Ursache steht in der Fehlerzeile davor
+- **[RuntimeDiagnostics] TLS trust store {…"systemCaEnabled":false…}**: OS-Zertifikatspeicher nicht aktiv (alte Version oder `NODE_USE_SYSTEM_CA` extern auf anderen Wert gesetzt)

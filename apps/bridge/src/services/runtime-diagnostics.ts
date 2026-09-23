@@ -5,6 +5,7 @@ import { resolveDecklinkHelperPath } from "../modules/decklink/decklink-helper.j
 import { resolveDisplayHelperPath } from "../modules/display/display-helper.js";
 import { resolveFrameBusNativeCandidates } from "./graphics/framebus/framebus-client.js";
 import { resolveMeetingHelperPath } from "./meeting/meeting-helper-manager.js";
+import { resolveTlsTrustStoreStatus } from "./tls-trust-store.js";
 
 type ArtifactCheckT = {
   label: string;
@@ -80,6 +81,11 @@ export function logRuntimeDiagnostics(logger: LoggerLikeT): void {
   };
   logger.info(
     `[RuntimeDiagnostics] Context ${JSON.stringify(runtimeContext)}`
+  );
+  // Which CA stores this process trusts: decides whether the relay is
+  // reachable behind enterprise TLS inspection (see relay-tls-trust runbook).
+  logger.info(
+    `[RuntimeDiagnostics] TLS trust store ${JSON.stringify(resolveTlsTrustStoreStatus())}`
   );
 
   const checks: ArtifactCheckT[] = [

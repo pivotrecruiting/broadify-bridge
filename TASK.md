@@ -1,43 +1,68 @@
-# TASK — HF1 (v0.25.2 hotfix + rc line): restore BFRG v1 for legacy VCam clients; tolerant camera-select schema
+# Task: Relay hinter Firmen-TLS-Inspection erreichbar machen (OS Trust Store)
 
-Base: feature/vcam-rc13 @ 17132d34 (rc.32). Round: 1/3 — PASS. PRODUCTION bugs on macOS v0.25.1; fixes must be minimal and surgical.
+## Raw request
+Neukunde, Erstinstallation auf verwaltetem Windows-Laptop: Bridge-Pairing in
+Broadify Meeting schlägt fehl. Bridge-Log: `[Relay] WebSocket error: self signed
+certificate in certificate chain` im Reconnect-Backoff, Close-Code 1006. Alles
+Lokale gesund. Auftrag: Enterprise-Lösung auf RC bauen, hohe Sicherheit, DRY,
+keine Annahmen, ganze Kette prüfen, keine anderen Funktionen ändern.
 
-## Bug 1 — Mac Teams black picture (root cause, verified in field + code)
-Commit f7baffa0 (bfrg v2, 22.08.) made `raw_frame_server.cpp` write 40-byte v2 records (`writeBfrgHeaderV2`) to EVERY TCP client. The macOS
-CMIO extension (`BroadifyVCamExtension/RawFrameStreamReader.swift:13-17,211-220` — v1-only, headerSize 32, hard-rejects version != 1)
-disconnects on the first record and loops reconnects → Teams shows the splash. Only the Windows DLL was taught v1/v2. The extension
-advertises nothing; the Windows DLL sends `X-Broadify-Accepts: keepalive-v2` (server sniff exists at raw_frame_server.cpp:384-386).
+## Context
+- Customer / project: Neukunde, Windows, Firmen-Netz mit SSL-Inspection
+- Worktree / branch: `../broadify-bridge-worktrees/relay-system-ca-trust` / `feature/relay-system-ca-trust`
+- Base branch: `dev` (v0.27.1-rc.17)
 
-### Fix HF1-1 (server, meeting-helper)
-- In `apps/bridge/native/meeting-helper/src/preview/raw_frame_server.cpp`: per-client protocol version derived from the existing
-  `X-Broadify-Accepts` sniff — clients advertising `keepalive-v2` get v2 records + zero-length keep-alives (unchanged, Windows DLL);
-  clients WITHOUT it get BFRG **v1** 32-byte records (exact pre-f7baffa0 layout — verify against `git show v0.23.5:...raw_frame_server.cpp`
-  writeRawFramePayload) and NO zero-length keep-alives (heartbeat via full-frame resend as before). `captureNs` dropped for v1 clients.
-- ctest: raw_frame_server (or a pure record-writer helper) — v1 client handshake → first record has version 1 + headerSize 32 and
-  byte-layout equal to the v0.23.5 writer for the same frame; v2 client → version 2 + 40 bytes; keep-alives only for v2.
-- Do NOT touch the Swift extension in this hotfix (its v2 upgrade + activation-flow fix is a separate follow-up WP).
+## Plan
+1. Root Cause belegen: Bridge läuft als Node-Prozess (ELECTRON_RUN_AS_NODE), `ws`
+   ohne CA-Optionen, Node vertraut nur der eingebauten CA-Liste; Firmen-Root-CA
+   liegt nur im OS-Speicher. Lokal nachgestellt (Kette mit fremder Root gegen
+   Electron-als-Node): exakt `SELF_SIGNED_CERT_IN_CHAIN`.
+2. Fix an der Quelle: Spawn-Vertrag setzt `NODE_USE_SYSTEM_CA=1` (Node >= 22.19,
+   Electron 39 bringt Node 22.22.1), expliziter Elternwert wird respektiert,
+   `NODE_EXTRA_CA_CERTS` bleibt durchgereicht.
+3. Diagnose statt stiller Schleife: Startzeile `[RuntimeDiagnostics] TLS trust
+   store {...}`; Relay-Socket-Fehler mit Node-Code und Handlungshinweis.
+4. Doku: Support-Runbook, Fehlerkatalog, Relay-Protokoll, README.
+5. Nicht in diesem Task (bewusst): Proxy-Unterstützung, UI-Anzeige des Grundes.
 
-## Bug 2 — "Invalid payload for meeting_camera_select" (webapp builder page broken since rc.28)
-Commit da6405e3 made `MeetingCameraSelectionSchema` `.strict()` with only `camera_index`/`stable_key`; the webapp builder sends additionally
-`width`, `height`, `fps`, `selection_source`, `lock_mode` (meeting-builder-camera.ts:27-35, unchanged since June) → strict reject in
-`parseRelayPayload` → builder camera select AND "Start Live Test" (meeting_camera_start) broken against bridge ≥ rc.28.
+## Acceptance criteria
+1. `buildBridgeSpawnEnv` liefert `NODE_USE_SYSTEM_CA=1` in Dev und Prod; ein
+   vorhandener Wert (`0`, ``, `1`) bleibt unverändert; `NODE_EXTRA_CA_CERTS`
+   wird durchgereicht. (Test: bridge-process-contract.test.ts)
+2. Bridge loggt beim Start den Trust-Store-Status, ohne jemals zu werfen, auch
+   auf Runtimes ohne `tls.getCACertificates`. (Tests: tls-trust-store.test.ts,
+   runtime-diagnostics.test.ts)
+3. Relay-Fehler ohne Code werden byte-identisch wie bisher geloggt; Fehler mit
+   Code enthalten `(code: X)`; nicht vertraute Ketten enthalten Hinweis mit
+   Trust-Store-Zustand; keine Umgebungswerte im Text. (Tests:
+   relay-socket-error.test.ts, relay-client.test.ts)
+4. Keine Verhaltensänderung außer Env-Variable und Log-Zeilen; voller Jest,
+   Lint, Bridge-Build, Electron-Typecheck grün.
 
-### Fix HF1-2 (bridge TS)
-- `apps/bridge/src/services/meeting/meeting-command-schemas.ts`: keep `camera_index` (int ≥0) and `stable_key` (1..1024) typed, additionally
-  type the known webapp fields (`width`/`height`/`fps` bounded ints, `selection_source`/`lock_mode` bounded strings) as optional, and replace
-  `.strict()` with `.passthrough()` so future additive webapp fields never brick production again. Applies to both meeting_camera_select and
-  meeting_camera_start.
-- jest: a test that feeds the EXACT real webapp builder payload (`{camera_index, stable_key, width:1920, height:1080, fps:30,
-  selection_source:"user", lock_mode:"manual_index"}`) through the relay parse path for both commands and asserts acceptance; plus the
-  connections-page payload `{camera_index: 2}`; plus a rejection case (camera_index: -1).
+## Review
+- Round: 1/3
+- Verdict: PASS (unabhängiger Verifier, read-only: Lint 0, Zielsuiten 81/81,
+  build:bridge 0, tsc src/electron 0; Electron-Node 22.22.1 honoriert
+  NODE_USE_SYSTEM_CA=1 empirisch 144 → 156)
+- Must-fix (open): none
+- Notes (non-blocking, umgesetzt): DRY-Helfer `isSystemCaEnabled`;
+  relay-protocol.md-Formulierung auf Runbook-Niveau angeglichen; prozessweite
+  Wirkung der Trust-Erweiterung dokumentiert; Typecheck-Ziel korrigiert auf
+  `src/electron/tsconfig.json`
+- Notes (non-blocking, offen): Windows-Feldtest hinter echter Inspection;
+  vorbestehende tsc-Fehler in Bridge-Testdateien (nicht Teil dieses Tasks)
+- Handoff to human (if any): Merge-Go für PR gegen dev, danach RC-Schnitt
 
-## Parity / must NOT change
-- Windows DLL path byte-identical (v2 + keep-alive negotiation as today). Preview/MJPEG paths untouched. macOS helper otherwise untouched.
-- No other schema changes; no helper protocol version bump.
-
-## Acceptance
-- lint/jest/build/helper build/ctest green (recorder audio_input_rejected known); CI Mac+Win green (test-release/hf1-vcam-v1).
-- Field (Mac v0.25.1-Extension v17 gegen neuen Helper): Teams zeigt Bild; `lsof -nP -iTCP:18787` zeigt ESTABLISHED während Teams streamt.
-- Field (Builder-Seite): Kamera-Wechsel + Live-Test ohne "Invalid payload".
-
-## Review round 1 (HEAD cfb093ff) — PASS, no MUST-FIX. v1 layout byte-identical to v0.23.5 (field-by-field); rc.26/rc.31 Win-DLLs unaffected (send header, get v2); pre-v2 DLLs (rc.16) repaired as bonus; mixed clients per-thread state; schema passthrough = pre-rc.28 contract, tighter. Notes: single-recv sniff (pre-existing), v1 heartbeat vs 1-s Swift timeout (no worse than v0.23.5), fps int-only. Verifier grün (1954 Jest, 30/30 ctest).
+## Verification
+- [x] Tests pass: voller Lauf 185 Suites grün; Zielsuiten 82 Tests
+      grün; Vorher-Beweis: mit Produktionsdateien auf dev-Stand schlagen die
+      drei erweiterten Suiten fehl (3 failed / 61 passed), danach grün
+- [x] Lint / type-check pass: `npm run lint` exit 0, `npm run build:bridge`
+      exit 0, `npx tsc --noEmit -p src/electron/tsconfig.json` exit 0
+- [ ] Browser-verified: nicht UI-relevant
+- [x] Bug reproduced before the fix, gone after: lokal mit nachgestellter
+      Inspection-Kette (Electron-als-Node + echte `ws`):
+      `SELF_SIGNED_CERT_IN_CHAIN` reproduziert; `NODE_EXTRA_CA_CERTS`-Weg
+      verbindet (OPEN); `NODE_USE_SYSTEM_CA=1` erweitert die effektive
+      CA-Liste (144 → 156). Der OS-Store-Weg selbst ist auf macOS ohne
+      Admin-Rechte nicht end-to-end testbar → BLOCKED, Windows-Feldtest nötig

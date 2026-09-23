@@ -147,6 +147,14 @@ export function buildBridgeSpawnEnv(params: {
   if (!isDev) {
     env.ELECTRON_RUN_AS_NODE = "1";
   }
+  // Node.js only trusts its bundled CA list. Enterprise networks that
+  // inspect TLS re-sign the relay connection with a private root CA that is
+  // rolled out via the OS trust store, so opt the bridge into that store
+  // (honoured by Node >= 22.19, ignored by older runtimes). An explicit
+  // value in the parent environment (e.g. an IT policy) is left untouched.
+  if (processEnv.NODE_USE_SYSTEM_CA === undefined) {
+    env.NODE_USE_SYSTEM_CA = "1";
+  }
 
   return env;
 }

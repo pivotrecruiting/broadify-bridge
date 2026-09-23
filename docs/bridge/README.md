@@ -19,6 +19,7 @@
 - Feature: Device Outputs: `docs/bridge/features/device-outputs.md`
 - Feature: macOS Display Output Detection: `docs/bridge/features/display-output-detection-macos.md`
 - Feature: Relay-Protokoll: `docs/bridge/features/relay-protocol.md`
+- Support: Relay hinter TLS-Inspection (Firmennetz): `docs/bridge/support/relay-tls-trust-runbook.md`
 - Refactor: Graphics Realtime Plan: `docs/bridge/refactor/README.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
