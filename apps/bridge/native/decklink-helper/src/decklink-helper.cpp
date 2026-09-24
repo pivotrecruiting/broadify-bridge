@@ -44,7 +44,9 @@ std::atomic<int> gExitCode{0};
 std::atomic<bool> gFatalEmitted{false};
 std::mutex gStdoutMutex;
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
-constexpr const char* kHelperVersion = "1.1.0";
+// Follows the release-tag numbering of the helper asset repository
+// (broadify-decklink-helper: v1.2.1 was the last asset before this line).
+constexpr const char* kHelperVersion = "1.3.0";
 constexpr uint8_t kLegalMin = 16;
 constexpr uint8_t kLegalMax = 235;
 constexpr int kFullRange = 255;
