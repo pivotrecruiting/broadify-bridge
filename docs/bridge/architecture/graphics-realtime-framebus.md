@@ -11,6 +11,14 @@ Siehe: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
 - Double-Buffer oder Ring-Buffer (latest-frame-wins).
 - Atomics für Writer-Seq.
 
+## Lifecycle-Regel
+FrameBus-Regionen werden im normalen Renderer-Lifecycle per Name
+wiederverwendet. Das gilt besonders für Studio-Recovery: ein neu gestarteter
+Renderer darf die Region nicht unlinken, weil laufende Output-Helper noch das
+bestehende Mapping lesen. `forceRecreate` ist nur für bewusst neu angelegte
+Meeting-Regionen oder als Self-Heal bei inkompatiblem Header bzw. inkompatibler
+Größe erlaubt.
+
 ## Minimaler Header (Vorschlag)
 - magic
 - version
