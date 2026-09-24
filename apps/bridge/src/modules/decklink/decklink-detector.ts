@@ -5,11 +5,15 @@ import type {
   PortDescriptorT,
 } from "@broadify/protocol";
 import {
-  listDecklinkDevices,
+  listDecklinkDevicesWithDiagnostics,
   listDecklinkDisplayModes,
+  type DecklinkDiagnosticsT,
   type DecklinkDisplayModeT,
 } from "./decklink-helper.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
+
+const MODE_CACHE_TTL_MS = 60_000;
+const MODE_QUERY_DEVICE_CONCURRENCY = 2;
 
 const helperDeviceSchema = z.object({
   id: z.string().min(1),
@@ -205,6 +209,35 @@ export function parseDecklinkHelperDevices(
  * DeckLink device detector (macOS-only).
  */
 export class DecklinkDetector {
+  private readonly modeCache = new Map<
+    string,
+    { modes: DecklinkDisplayModeT[]; cachedAt: number }
+  >();
+  private lastDiagnostics: DecklinkDiagnosticsT | null = null;
+
+  getLastDiagnostics(): DecklinkDiagnosticsT | null {
+    return this.lastDiagnostics;
+  }
+
+  invalidateModeCache(): void {
+    this.modeCache.clear();
+  }
+
+  private async listDisplayModesWithCache(
+    deviceId: string,
+    portId: string,
+  ): Promise<DecklinkDisplayModeT[]> {
+    const now = Date.now();
+    const cached = this.modeCache.get(portId);
+    if (cached && now - cached.cachedAt < MODE_CACHE_TTL_MS) {
+      return cached.modes;
+    }
+
+    const modes = await listDecklinkDisplayModes(deviceId, portId);
+    this.modeCache.set(portId, { modes, cachedAt: now });
+    return modes;
+  }
+
   /**
    * Detect DeckLink devices via helper process.
    *
@@ -212,11 +245,20 @@ export class DecklinkDetector {
    */
   async detect(): Promise<DeviceDescriptorT[]> {
     try {
-      const rawDevices = await listDecklinkDevices();
+      const { devices: rawDevices, diagnostics } =
+        await listDecklinkDevicesWithDiagnostics();
+      this.lastDiagnostics = diagnostics;
       const devices = parseDecklinkHelperDevices(rawDevices);
 
-      const enriched = await Promise.all(
-        devices.map(async (device) => {
+      const enriched: DeviceDescriptorT[] = [];
+      for (
+        let index = 0;
+        index < devices.length;
+        index += MODE_QUERY_DEVICE_CONCURRENCY
+      ) {
+        const batch = devices.slice(index, index + MODE_QUERY_DEVICE_CONCURRENCY);
+        const batchResults = await Promise.all(
+          batch.map(async (device) => {
           const sdiPort =
             device.ports.find((port) => port.type === "sdi" && port.role !== "key") ??
             device.ports.find((port) => port.type === "sdi");
@@ -224,10 +266,10 @@ export class DecklinkDetector {
 
           const [sdiModes, hdmiModes] = await Promise.all([
             sdiPort
-              ? listDecklinkDisplayModes(device.id, sdiPort.id)
+              ? this.listDisplayModesWithCache(device.id, sdiPort.id)
               : Promise.resolve([]),
             hdmiPort
-              ? listDecklinkDisplayModes(device.id, hdmiPort.id)
+              ? this.listDisplayModesWithCache(device.id, hdmiPort.id)
               : Promise.resolve([]),
           ]);
 
@@ -251,8 +293,10 @@ export class DecklinkDetector {
             ...device,
             ports: nextPorts,
           };
-        })
-      );
+          })
+        );
+        enriched.push(...batchResults);
+      }
 
       if (enriched.length > 0) {
         try {

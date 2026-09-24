@@ -42,7 +42,7 @@ sequenceDiagram
   Display-->>Registry: Display devices
   Registry-->>Cache: combined devices
   Cache-->>Outputs: devices
-  Outputs-->>UI: outputs {output1, output2}
+  Outputs-->>UI: outputs {output1, output2, diagnostics}
 ```
 
 ## Cache & Refresh
@@ -55,6 +55,19 @@ sequenceDiagram
   6s. Spawn-, Exit- und Parsefehler werden als Fehlerstatus an den Cache weitergegeben.
 - Output-Abfragen erkennen nur `display` und `decklink`. USB-Capture kann dadurch
   weder `/outputs` noch Graphics-Konfiguration blockieren.
+
+## Detection-Budget & Diagnostics
+| Bereich | Budget |
+| --- | ---: |
+| DeckLink-Modul-Timeout | 12s |
+| Einzelner DeckLink-Helper-Aufruf | 4s |
+| DeckLink-Display-Mode-Cache | 60s |
+
+`/outputs` und `list_outputs` enthalten `diagnostics.platform` und
+`diagnostics.decklink.state`. Mögliche DeckLink-Zustände sind `ok`,
+`unsupported_platform`, `helper_missing`, `api_unavailable` und `no_devices`.
+Ein fehlender oder alter Desktop-Video-Treiber wird über die Helper-Diagnose
+sichtbar statt als stille leere Liste zu erscheinen.
 
 ## Security & Risiken
 - **Native Helper:** DeckLink‑Helper wird per Child‑Process ausgeführt.

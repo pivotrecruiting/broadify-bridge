@@ -4,6 +4,7 @@ import { accessSync, constants } from "node:fs";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import { getBridgeContext } from "../../services/bridge-context.js";
 
 const DEFAULT_HELPER_TIMEOUT_MS = 4000;
@@ -12,6 +13,15 @@ const HELPER_PATH_ENV = "DECKLINK_HELPER_PATH";
 export type DecklinkHelperEvent = {
   type: "devices" | "device_added" | "device_removed";
   devices: unknown[];
+};
+
+export type DecklinkDiagnosticsT = {
+  apiAvailable?: boolean;
+  helperMissing?: boolean;
+  apiVersion?: string;
+  helperVersion?: string;
+  message?: string;
+  error?: string;
 };
 
 export type DecklinkDisplayModeT = {
@@ -44,6 +54,47 @@ const getLogger = () => {
       error: (msg: string) => console.error(msg),
     };
   }
+};
+
+const decklinkDiagnosticsSchema = z
+  .object({
+    apiAvailable: z.boolean().optional(),
+    helperMissing: z.boolean().optional(),
+    apiVersion: z.string().optional(),
+    helperVersion: z.string().optional(),
+    message: z.string().optional(),
+    error: z.string().optional(),
+  })
+  .passthrough();
+
+const listEnvelopeSchema = z.object({
+  devices: z.array(z.unknown()),
+  diagnostics: decklinkDiagnosticsSchema.optional(),
+});
+
+const ITERATOR_UNAVAILABLE_HINT = "DeckLink iterator could not be created";
+
+const trimToUndefined = (value: string): string | undefined => {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const diagnosticsFromStderr = (
+  stderr: string,
+  base: DecklinkDiagnosticsT,
+): DecklinkDiagnosticsT => {
+  const message = trimToUndefined(stderr);
+  if (!message) {
+    return base;
+  }
+  return {
+    ...base,
+    apiAvailable: message.includes(ITERATOR_UNAVAILABLE_HINT)
+      ? false
+      : base.apiAvailable,
+    message: base.message ?? message,
+    error: base.error ?? message,
+  };
 };
 
 /** Test-only override; set to non-null in tests to bypass import.meta. */
@@ -107,8 +158,24 @@ export function __setDecklinkHelperPathForTesting(path: string | null): void {
  * @returns Array of raw device objects from helper output.
  */
 export async function listDecklinkDevices(): Promise<unknown[]> {
+  const result = await listDecklinkDevicesWithDiagnostics();
+  return result.devices;
+}
+
+/**
+ * Execute the DeckLink helper in list mode and preserve diagnostics.
+ *
+ * @returns Raw device objects and helper/API diagnostics.
+ */
+export async function listDecklinkDevicesWithDiagnostics(): Promise<{
+  devices: unknown[];
+  diagnostics: DecklinkDiagnosticsT;
+}> {
   if (platform() !== "darwin") {
-    return [];
+    return {
+      devices: [],
+      diagnostics: { apiAvailable: false, helperMissing: false },
+    };
   }
 
   const logger = getLogger();
@@ -119,7 +186,14 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
     logger.warn(
       `[DecklinkHelper] Helper not found or not executable at ${helperPath}`
     );
-    return [];
+    return {
+      devices: [],
+      diagnostics: {
+        apiAvailable: false,
+        helperMissing: true,
+        message: `Helper not found or not executable at ${helperPath}`,
+      },
+    };
   }
 
   return new Promise((resolve) => {
@@ -132,7 +206,15 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
 
     const timeout = setTimeout(() => {
       processRef.kill("SIGTERM");
-      resolve([]);
+      resolve({
+        devices: [],
+        diagnostics: {
+          apiAvailable: false,
+          helperMissing: false,
+          message: "DeckLink helper timed out",
+          error: "DeckLink helper timed out",
+        },
+      });
     }, DEFAULT_HELPER_TIMEOUT_MS);
 
     processRef.stdout.on("data", (data) => {
@@ -147,30 +229,88 @@ export async function listDecklinkDevices(): Promise<unknown[]> {
       clearTimeout(timeout);
 
       if (code !== 0) {
+        const stderrMessage = trimToUndefined(stderr);
         logger.warn(
           `[DecklinkHelper] Helper exited with code ${code}: ${stderr.trim()}`
         );
-        resolve([]);
+        resolve({
+          devices: [],
+          diagnostics: {
+            apiAvailable: false,
+            helperMissing: false,
+            message: stderrMessage,
+            error: stderrMessage,
+          },
+        });
         return;
       }
 
       try {
-        const parsed = JSON.parse(stdout);
-        resolve(Array.isArray(parsed) ? parsed : []);
+        const parsed = JSON.parse(stdout) as unknown;
+        if (Array.isArray(parsed)) {
+          resolve({
+            devices: parsed,
+            diagnostics: diagnosticsFromStderr(stderr, {
+              apiAvailable: true,
+              helperMissing: false,
+            }),
+          });
+          return;
+        }
+
+        const envelope = listEnvelopeSchema.safeParse(parsed);
+        if (envelope.success) {
+          resolve({
+            devices: envelope.data.devices,
+            diagnostics: diagnosticsFromStderr(stderr, {
+              apiAvailable: true,
+              helperMissing: false,
+              ...envelope.data.diagnostics,
+            }),
+          });
+          return;
+        }
+
+        resolve({
+          devices: [],
+          diagnostics: diagnosticsFromStderr(stderr, {
+            apiAvailable: false,
+            helperMissing: false,
+            error: "Unknown helper list output shape",
+          }),
+        });
       } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
         logger.warn(
-          `[DecklinkHelper] Failed to parse helper output: ${error instanceof Error ? error.message : String(error)}`
+          `[DecklinkHelper] Failed to parse helper output: ${message}`
         );
-        resolve([]);
+        resolve({
+          devices: [],
+          diagnostics: diagnosticsFromStderr(stderr, {
+            apiAvailable: false,
+            helperMissing: false,
+            error: message,
+          }),
+        });
       }
     });
 
     processRef.on("error", (error) => {
       clearTimeout(timeout);
+      const message = error instanceof Error ? error.message : String(error);
       logger.warn(
-        `[DecklinkHelper] Failed to start helper: ${error instanceof Error ? error.message : String(error)}`
+        `[DecklinkHelper] Failed to start helper: ${message}`
       );
-      resolve([]);
+      resolve({
+        devices: [],
+        diagnostics: {
+          apiAvailable: false,
+          helperMissing: true,
+          message,
+          error: message,
+        },
+      });
     });
   });
 }
@@ -336,6 +476,19 @@ export function watchDecklinkDevices(
       `[DecklinkHelper] Helper failed: ${error instanceof Error ? error.message : String(error)}`
     );
   });
+
+  let exitLogged = false;
+  const logExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (exitLogged) {
+      return;
+    }
+    exitLogged = true;
+    logger.warn(
+      `[DecklinkHelper] Watch process exited (code ${code}, signal ${signal})`
+    );
+  };
+  processRef.on("exit", logExit);
+  processRef.on("close", logExit);
 
   return () => {
     processRef.kill("SIGTERM");

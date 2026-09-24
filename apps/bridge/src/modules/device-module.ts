@@ -1,4 +1,5 @@
 import type { DeviceDescriptorT } from "@broadify/protocol";
+import type { DecklinkDiagnosticsT } from "./decklink/decklink-helper.js";
 
 /**
  * Unsubscribe function for device watch callbacks
@@ -52,6 +53,14 @@ export interface DeviceModule {
    * @returns Array of detected device descriptors
    */
   detect(): Promise<DeviceDescriptorT[]>;
+
+  /**
+   * Optional: Return the last module diagnostics captured during detection.
+   *
+   * Modules without diagnostics support should omit this method. The bridge
+   * uses this metadata for additive health fields on output discovery views.
+   */
+  getLastDiagnostics?(): DecklinkDiagnosticsT | null;
 
   /**
    * Optional: Watch for device hotplug events
