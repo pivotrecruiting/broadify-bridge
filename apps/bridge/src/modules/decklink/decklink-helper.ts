@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { getBridgeContext } from "../../services/bridge-context.js";
+import { ReconnectScheduler } from "../../services/shared/backoff.js";
 
 const DEFAULT_HELPER_TIMEOUT_MS = 4000;
 const HELPER_PATH_ENV = "DECKLINK_HELPER_PATH";
@@ -217,11 +218,11 @@ export async function listDecklinkDevicesWithDiagnostics(): Promise<{
       });
     }, DEFAULT_HELPER_TIMEOUT_MS);
 
-    processRef.stdout.on("data", (data) => {
+    processRef.stdout?.on("data", (data) => {
       stdout += data.toString();
     });
 
-    processRef.stderr.on("data", (data) => {
+    processRef.stderr?.on("data", (data) => {
       stderr += data.toString();
     });
 
@@ -371,11 +372,11 @@ export async function listDecklinkDisplayModes(
       resolve([]);
     }, DEFAULT_HELPER_TIMEOUT_MS);
 
-    processRef.stdout.on("data", (data) => {
+    processRef.stdout?.on("data", (data) => {
       stdout += data.toString();
     });
 
-    processRef.stderr.on("data", (data) => {
+    processRef.stderr?.on("data", (data) => {
       stderr += data.toString();
     });
 
@@ -438,59 +439,86 @@ export function watchDecklinkDevices(
     );
     return () => undefined;
   }
-  const processRef = spawn(helperPath, ["--watch"], {
-    stdio: ["ignore", "pipe", "pipe"],
+  const scheduler = new ReconnectScheduler({
+    baseMs: 1000,
+    maxMs: 30_000,
+    jitterRatio: 0,
+    maxAttempts: 8,
   });
+  let processRef: ReturnType<typeof spawn> | null = null;
+  let unsubscribed = false;
 
-  let buffer = "";
-
-  processRef.stdout.on("data", (data) => {
-    buffer += data.toString();
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex !== -1) {
-      const line = buffer.slice(0, newlineIndex).trim();
-      buffer = buffer.slice(newlineIndex + 1);
-      newlineIndex = buffer.indexOf("\n");
-
-      if (!line) {
-        continue;
-      }
-
-      try {
-        const event = JSON.parse(line) as DecklinkHelperEvent;
-        onEvent(event);
-      } catch (error) {
-        logger.warn(
-          `[DecklinkHelper] Ignoring invalid event line: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-  });
-
-  processRef.stderr.on("data", (data) => {
-    logger.warn(`[DecklinkHelper] ${data.toString().trim()}`);
-  });
-
-  processRef.on("error", (error) => {
-    logger.warn(
-      `[DecklinkHelper] Helper failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-  });
-
-  let exitLogged = false;
-  const logExit = (code: number | null, signal: NodeJS.Signals | null) => {
-    if (exitLogged) {
+  const startWatch = () => {
+    if (unsubscribed) {
       return;
     }
-    exitLogged = true;
-    logger.warn(
-      `[DecklinkHelper] Watch process exited (code ${code}, signal ${signal})`
-    );
+    processRef = spawn(helperPath, ["--watch"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let buffer = "";
+    let exitHandled = false;
+
+    processRef.stdout?.on("data", (data) => {
+      buffer += data.toString();
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf("\n");
+
+        if (!line) {
+          continue;
+        }
+
+        try {
+          const event = JSON.parse(line) as DecklinkHelperEvent;
+          onEvent(event);
+        } catch (error) {
+          logger.warn(
+            `[DecklinkHelper] Ignoring invalid event line: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    });
+
+    processRef.stderr?.on("data", (data) => {
+      logger.warn(`[DecklinkHelper] ${data.toString().trim()}`);
+    });
+
+    processRef.on("error", (error) => {
+      logger.warn(
+        `[DecklinkHelper] Helper failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+    const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (exitHandled) {
+        return;
+      }
+      exitHandled = true;
+      logger.warn(
+        `[DecklinkHelper] Watch process exited (code ${code}, signal ${signal})`
+      );
+      if (unsubscribed) {
+        return;
+      }
+      const scheduled = scheduler.schedule(() => startWatch());
+      if (!scheduled) {
+        logger.error(
+          "[DecklinkHelper] Watch process restart attempts exhausted",
+        );
+      }
+    };
+    processRef.on("exit", handleExit);
+    processRef.on("close", handleExit);
   };
-  processRef.on("exit", logExit);
-  processRef.on("close", logExit);
+
+  startWatch();
 
   return () => {
-    processRef.kill("SIGTERM");
+    unsubscribed = true;
+    scheduler.cancel();
+    processRef?.kill("SIGTERM");
   };
 }

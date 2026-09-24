@@ -393,6 +393,139 @@ describe("GraphicsManager", () => {
     );
   });
 
+  it("reports output_helper_error and starts the supervisor when the active adapter exits after ready", async () => {
+    let lifecycleHandler: ((event: unknown) => void) | null = null;
+    const adapter = {
+      configure: jest.fn().mockResolvedValue(undefined),
+      stop: jest.fn().mockResolvedValue(undefined),
+      sendFrame: jest.fn(),
+      onLifecycle: jest.fn((handler: (event: unknown) => void) => {
+        lifecycleHandler = handler;
+        return () => undefined;
+      }),
+    };
+    const outputSupervisor = {
+      start: jest.fn(),
+      cancel: jest.fn(),
+      reset: jest.fn(),
+      getState: jest.fn(() => ({ active: false, reason: null, attempt: 0, nextRetryAt: null })),
+    };
+    const publishGraphicsError = jest.fn();
+    const manager = new GraphicsManager({
+      createRenderer,
+      selectOutputAdapter: async () => adapter as never,
+      isDevelopmentMode: () => true,
+      outputSupervisor: outputSupervisor as never,
+      publishGraphicsError,
+    });
+
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    lifecycleHandler?.({
+      type: "exited",
+      code: 1,
+      signal: null,
+      requested: false,
+      lastStderr: ["DeckLink device not found"],
+    });
+
+    expect(publishGraphicsError).toHaveBeenCalledWith(
+      "output_helper_error",
+      expect.stringContaining("DeckLink device not found"),
+    );
+    expect(outputSupervisor.start).toHaveBeenCalledWith({
+      reason: "helper_exit",
+      config: expect.objectContaining({ outputKey: "stub" }),
+    });
+  });
+
+  it("keeps lastOutputError and outputStatus=error when the persisted apply fails during initialize", async () => {
+    const persistedConfig = createValidConfig();
+    const outputSupervisor = {
+      start: jest.fn(),
+      cancel: jest.fn(),
+      reset: jest.fn(),
+      getState: jest.fn(() => ({ active: true, reason: "init_failed", attempt: 0, nextRetryAt: null })),
+    };
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => ({
+          persistedApplyFailed: true,
+          persistedConfig,
+        })),
+      },
+      outputSupervisor: outputSupervisor as never,
+    });
+
+    await manager.initialize();
+
+    expect(manager.getStatus()).toMatchObject({
+      outputStatus: "error",
+      lastOutputError: expect.objectContaining({ code: "output_helper_error" }),
+    });
+    expect(outputSupervisor.start).toHaveBeenCalledWith({
+      reason: "init_failed",
+      config: persistedConfig,
+    });
+  });
+
+  it("publishes pendingOutputConfig while recovery is active", async () => {
+    const pendingConfig = createValidConfig();
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: { initialize: jest.fn(async () => undefined) },
+      outputSupervisor: {
+        start: jest.fn(),
+        cancel: jest.fn(),
+        reset: jest.fn(),
+        getState: jest.fn(() => ({
+          active: true,
+          reason: "init_failed",
+          attempt: 2,
+          nextRetryAt: 1234,
+          config: pendingConfig,
+        })),
+      } as never,
+    });
+
+    await manager.initialize();
+
+    expect(manager.getStatus()).toMatchObject({
+      pendingOutputConfig: pendingConfig,
+      outputRecovery: {
+        active: true,
+        reason: "init_failed",
+        attempt: 2,
+        nextRetryAt: 1234,
+      },
+    });
+  });
+
+  it("manual configureOutputs cancels the supervisor", async () => {
+    const outputSupervisor = {
+      start: jest.fn(),
+      cancel: jest.fn(),
+      reset: jest.fn(),
+      getState: jest.fn(() => ({ active: false, reason: null, attempt: 0, nextRetryAt: null })),
+    };
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: { initialize: jest.fn(async () => undefined) },
+      outputTransitionService: {
+        waitForTransition: jest.fn(async () => undefined),
+        runAtomicTransition: jest.fn(async () => undefined),
+      },
+      isDevelopmentMode: () => true,
+      outputSupervisor: outputSupervisor as never,
+    });
+
+    await manager.configureOutputs(createValidConfig());
+
+    expect(outputSupervisor.cancel).toHaveBeenCalledWith("manual");
+    expect(outputSupervisor.reset).toHaveBeenCalled();
+  });
+
   it("handles output adapter stop failure during shutdown", async () => {
     const stubAdapterForShutdown = {
       configure: jest.fn().mockResolvedValue(undefined),

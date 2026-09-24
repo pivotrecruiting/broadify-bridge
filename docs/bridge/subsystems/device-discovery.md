@@ -51,6 +51,14 @@ sequenceDiagram
 - Watcher: debounced refresh (250ms)
 - Cache wird pro Modul geführt. Timeout/Fehler behalten den letzten erfolgreichen
   Modulstand; ein erfolgreicher leerer Scan entfernt abgezogene Geräte.
+- Erfolgreiche Detection/Watch-Refreshes, die den Modul-Fingerprint
+  (`id|present|ready|inUse`) aendern, emittieren `onDevicesChanged` mit
+  hinzugefuegten und entfernten Output-Port-IDs. Der Graphics-Output-Supervisor
+  nutzt diese Events, um eine pending Output-Konfiguration sofort neu
+  anzuwenden, wenn der Zielport wieder auftaucht.
+- Der DeckLink-`--watch`-Helper wird nach unerwartetem Exit mit Backoff neu
+  gestartet (1s bis 30s, maximal 8 Versuche). Unsubscribe bricht geplante
+  Restarts ab.
 - macOS `system_profiler` hat einen 5s-Kindprozess-Timeout; das Display-Modul erhält
   6s. Spawn-, Exit- und Parsefehler werden als Fehlerstatus an den Cache weitergegeben.
 - Output-Abfragen erkennen nur `display` und `decklink`. USB-Capture kann dadurch

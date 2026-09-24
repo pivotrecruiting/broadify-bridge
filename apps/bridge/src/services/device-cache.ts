@@ -25,6 +25,13 @@ type DeviceCacheOptionsT = Partial<DeviceCacheDepsT> & {
   watchDebounceMs?: number;
 };
 
+export type DeviceCacheChangeT = {
+  moduleName: string;
+  added: string[];
+  removed: string[];
+  devices: DeviceDescriptorT[];
+};
+
 const defaultDeps: DeviceCacheDepsT = {
   moduleRegistry,
   getLogger: () => getBridgeContext().logger,
@@ -48,6 +55,7 @@ export class DeviceCache {
   private watchUnsubscribe: (() => void) | undefined;
   private watchRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingWatchModules = new Set<string>();
+  private listeners = new Set<(change: DeviceCacheChangeT) => void>();
   private deps: DeviceCacheDepsT;
 
   /**
@@ -143,7 +151,7 @@ export class DeviceCache {
           this.lastDetectionTime,
         );
         if (result.status === "success") {
-          this.cachedDevicesByModule.set(result.moduleName, result.devices);
+          this.updateModuleDevices(result.moduleName, result.devices);
           continue;
         }
         const cachedCount =
@@ -235,7 +243,7 @@ export class DeviceCache {
         for (const result of results) {
           this.lastDetectionTimeByModule.set(result.moduleName, detectedAt);
           if (result.status === "success") {
-            this.cachedDevicesByModule.set(result.moduleName, result.devices);
+            this.updateModuleDevices(result.moduleName, result.devices);
           } else {
             logger.warn(
               `[Devices] Watch refresh for ${result.moduleName} ${result.status}; preserving cached devices`,
@@ -263,6 +271,13 @@ export class DeviceCache {
     );
   }
 
+  onDevicesChanged(cb: (change: DeviceCacheChangeT) => void): () => void {
+    this.listeners.add(cb);
+    return () => {
+      this.listeners.delete(cb);
+    };
+  }
+
   /**
    * Clear cache and stop watchers.
    */
@@ -280,6 +295,7 @@ export class DeviceCache {
     }
     this.watchInitialized = false;
     this.pendingWatchModules.clear();
+    this.listeners.clear();
   }
 
   /**
@@ -304,6 +320,48 @@ export class DeviceCache {
     return moduleNames.flatMap(
       (name) => this.cachedDevicesByModule.get(name) ?? [],
     );
+  }
+
+  private updateModuleDevices(
+    moduleName: string,
+    devices: DeviceDescriptorT[],
+  ): void {
+    const previous = this.cachedDevicesByModule.get(moduleName) ?? [];
+    const previousFingerprint = this.buildFingerprint(previous);
+    const nextFingerprint = this.buildFingerprint(devices);
+    this.cachedDevicesByModule.set(moduleName, devices);
+    if (previous.length === 0 && previousFingerprint === nextFingerprint) {
+      return;
+    }
+    if (previousFingerprint === nextFingerprint) {
+      return;
+    }
+    const previousPorts = new Set(this.collectPortIds(previous));
+    const nextPorts = new Set(this.collectPortIds(devices));
+    const added = Array.from(nextPorts).filter((id) => !previousPorts.has(id));
+    const removed = Array.from(previousPorts).filter((id) => !nextPorts.has(id));
+    const change = { moduleName, added, removed, devices };
+    for (const listener of this.listeners) {
+      listener(change);
+    }
+  }
+
+  private buildFingerprint(devices: DeviceDescriptorT[]): string {
+    return devices
+      .map((device) =>
+        [
+          device.id,
+          device.status.present,
+          device.status.ready,
+          device.status.inUse,
+        ].join("|"),
+      )
+      .sort()
+      .join("\n");
+  }
+
+  private collectPortIds(devices: DeviceDescriptorT[]): string[] {
+    return devices.flatMap((device) => device.ports.map((port) => port.id));
   }
 }
 

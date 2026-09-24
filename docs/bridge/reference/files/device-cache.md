@@ -14,3 +14,7 @@ Cached Device‑Detection Ergebnisse, schützt vor Overload und liefert Outputs 
 - Startet Watcher (Hotplug)
 - Rate‑limit bei Refresh
 - Hält Ergebnisse pro Modul; Timeout/Fehler überschreiben keinen erfolgreichen Cache
+- Benachrichtigt `onDevicesChanged`-Listener nach erfolgreicher Detection, wenn
+  sich der Modul-Fingerprint (`id|present|ready|inUse`) geaendert hat
+- Watch-Refresh-Events liefern hinzugefuegte/entfernte Output-Port-IDs fuer
+  Recovery-Trigger; `clear()` entfernt auch Listener

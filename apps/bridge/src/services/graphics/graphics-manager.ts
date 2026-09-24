@@ -66,6 +66,9 @@ import {
 } from "./graphics-payload-diagnostics.js";
 import { GraphicsRuntimeInitService } from "./graphics-runtime-init-service.js";
 import {
+  GraphicsOutputSupervisor,
+} from "./graphics-output-supervisor.js";
+import {
   applyFrameBusSessionConfig,
   logFrameBusConfigChange,
   resolveFrameBusConfig,
@@ -75,10 +78,17 @@ import {
   graphicsUsageRecorder,
   type GraphicsUsageRecorderLikeT,
 } from "../intelligence/usage-event-recorder.js";
+import { ReconnectScheduler } from "../shared/backoff.js";
+import { deviceCache } from "../device-cache.js";
+import { findCachedDevicePortById } from "./graphics-device-port-resolver.js";
 
 type GraphicsRuntimeInitServiceLikeT = Pick<
   GraphicsRuntimeInitService,
   "initialize"
+>;
+type GraphicsOutputSupervisorLikeT = Pick<
+  GraphicsOutputSupervisor,
+  "start" | "cancel" | "reset" | "getState"
 >;
 type GraphicsOutputTransitionServiceLikeT = Pick<
   GraphicsOutputTransitionService,
@@ -128,6 +138,7 @@ type GraphicsManagerDepsT = {
   validateOutputTargets?: ValidateOutputTargetsT;
   validateOutputFormat?: ValidateOutputFormatT;
   publishGraphicsError?: (code: GraphicsErrorCodeT, message: string) => void;
+  outputSupervisor?: GraphicsOutputSupervisorLikeT;
   browserInputRuntime?: Pick<
     typeof browserInputRuntime,
     | "configure"
@@ -191,6 +202,8 @@ export class GraphicsManager {
   private presetService: GraphicsPresetService;
   private outputTransitionService: GraphicsOutputTransitionServiceLikeT;
   private runtimeInitService: GraphicsRuntimeInitServiceLikeT;
+  private outputSupervisor: GraphicsOutputSupervisorLikeT;
+  private outputAdapterLifecycleUnsubscribe: (() => void) | null = null;
   private browserInputRuntime: NonNullable<
     GraphicsManagerDepsT["browserInputRuntime"]
   >;
@@ -233,6 +246,7 @@ export class GraphicsManager {
           this.outputConfig = runtime.outputConfig;
           this.frameBusConfig = runtime.frameBusConfig;
           this.outputAdapter = runtime.outputAdapter;
+          this.attachOutputAdapterLifecycle(runtime.outputAdapter);
         },
         selectOutputAdapter,
         persistConfig: (config) =>
@@ -259,6 +273,7 @@ export class GraphicsManager {
         },
         setOutputAdapter: (adapter) => {
           this.outputAdapter = adapter;
+          this.attachOutputAdapterLifecycle(adapter);
         },
         setOutputConfig: (config) => {
           this.outputConfig = config;
@@ -277,6 +292,8 @@ export class GraphicsManager {
         publishGraphicsError: (code, message) =>
           this.reportGraphicsError(code, message),
       });
+    this.outputSupervisor =
+      this.deps.outputSupervisor ?? this.createOutputSupervisor();
 
     this.browserInputRuntime.subscribe(() => {
       if (!this.initialized) {
@@ -305,9 +322,22 @@ export class GraphicsManager {
     }
     this.initializePromise = (async () => {
       try {
-        await this.runtimeInitService.initialize();
-        this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
-        this.lastOutputError = null;
+        const initResult = await this.runtimeInitService.initialize();
+        if (initResult?.persistedApplyFailed && initResult.persistedConfig) {
+          this.outputStatus = "error";
+          this.lastOutputError ??= {
+            code: "output_helper_error",
+            message: "Persisted output config failed during startup",
+            at: Date.now(),
+          };
+          this.outputSupervisor.start({
+            reason: "init_failed",
+            config: initResult.persistedConfig,
+          });
+        } else {
+          this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
+          this.lastOutputError = null;
+        }
         this.initialized = true;
       } finally {
         this.initializePromise = null;
@@ -367,46 +397,8 @@ export class GraphicsManager {
         this.failGraphics("output_config_error", message);
       }
     }
-    try {
-      this.outputStatus = "configuring";
-      this.lastOutputError = null;
-      publishGraphicsStatusEvent(
-        "outputs_configuring",
-        this.getStatusSnapshot(),
-      );
-      await this.outputTransitionService.runAtomicTransition(config);
-      this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
-      this.lastOutputError = null;
-      this.browserInputRuntime.configure(this.outputConfig);
-      publishGraphicsStatusEvent(
-        "outputs_configured",
-        this.getStatusSnapshot(),
-      );
-    } catch (error) {
-      if (error instanceof GraphicsOutputTransitionError) {
-        const code =
-          error.stage === "renderer_configure"
-            ? "renderer_error"
-            : error.stage === "persist"
-              ? "output_config_error"
-              : "output_helper_error";
-        this.outputStatus = "error";
-        this.lastOutputError = {
-          code,
-          message: error.message,
-          at: Date.now(),
-        };
-        this.failGraphics(code, error.message);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.outputStatus = "error";
-      this.lastOutputError = {
-        code: "output_config_error",
-        message,
-        at: Date.now(),
-      };
-      this.failGraphics("output_config_error", message);
-    }
+    this.outputSupervisor.cancel("manual");
+    await this.applyOutputConfig(config, { source: "manual" });
   }
 
   /**
@@ -431,6 +423,7 @@ export class GraphicsManager {
     this.outputStatus = "unconfigured";
     this.lastOutputError = null;
     this.browserInputRuntime.configure(null);
+    this.outputSupervisor.cancel("shutdown");
 
     try {
       await this.outputAdapter.stop();
@@ -872,6 +865,8 @@ export class GraphicsManager {
     outputStatus: GraphicsStatusSnapshotT["outputStatus"];
     lastOutputError: GraphicsStatusSnapshotT["lastOutputError"];
     outputConfig: GraphicsOutputConfigT | null;
+    pendingOutputConfig: GraphicsOutputConfigT | null;
+    outputRecovery: GraphicsStatusSnapshotT["outputRecovery"];
     browserInput: GraphicsStatusSnapshotT["browserInput"];
     layers: unknown[];
     activePreset: {
@@ -910,6 +905,8 @@ export class GraphicsManager {
       outputStatus: status.outputStatus,
       lastOutputError: status.lastOutputError,
       outputConfig: this.outputConfig,
+      pendingOutputConfig: status.pendingOutputConfig,
+      outputRecovery: status.outputRecovery,
       browserInput: status.browserInput,
       layers,
       activePreset: status.activePreset,
@@ -966,6 +963,7 @@ export class GraphicsManager {
     const activePresets = Array.from(layerIdsByPreset.entries()).map(
       ([presetId, layerIds]) => buildPresetStatus(presetId, layerIds)
     );
+    const recoveryState = this.outputSupervisor.getState();
 
     return {
       source: this.sourceId,
@@ -977,6 +975,15 @@ export class GraphicsManager {
       outputStatus: this.outputStatus,
       lastOutputError: this.lastOutputError,
       outputConfig: this.outputConfig,
+      pendingOutputConfig: recoveryState.active ? recoveryState.config : null,
+      outputRecovery: recoveryState.active
+        ? {
+            active: recoveryState.active,
+            reason: recoveryState.reason,
+            attempt: recoveryState.attempt,
+            nextRetryAt: recoveryState.nextRetryAt,
+          }
+        : null,
       browserInput: this.browserInputRuntime.getStatus(),
       activePreset,
       activePresets,
@@ -985,6 +992,122 @@ export class GraphicsManager {
 
   private async waitForOutputTransition(): Promise<void> {
     await this.outputTransitionService.waitForTransition();
+  }
+
+  private async applyOutputConfig(
+    config: GraphicsOutputConfigT,
+    options: { source: "manual" | "supervisor" },
+  ): Promise<void> {
+    try {
+      this.outputStatus = "configuring";
+      this.lastOutputError = null;
+      publishGraphicsStatusEvent(
+        "outputs_configuring",
+        this.getStatusSnapshot(),
+      );
+      await this.outputTransitionService.runAtomicTransition(config);
+      this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
+      this.lastOutputError = null;
+      this.browserInputRuntime.configure(this.outputConfig);
+      if (options.source === "manual") {
+        this.outputSupervisor.reset();
+      }
+      publishGraphicsStatusEvent(
+        "outputs_configured",
+        this.getStatusSnapshot(),
+      );
+    } catch (error) {
+      if (error instanceof GraphicsOutputTransitionError) {
+        const code =
+          error.stage === "renderer_configure"
+            ? "renderer_error"
+            : error.stage === "persist"
+              ? "output_config_error"
+              : "output_helper_error";
+        this.failGraphics(code, error.message);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.failGraphics("output_config_error", message);
+    }
+  }
+
+  private createOutputSupervisor(): GraphicsOutputSupervisor {
+    return new GraphicsOutputSupervisor({
+      reapply: (config) =>
+        this.applyOutputConfig(config, { source: "supervisor" }),
+      subscribeDevices: (cb) => deviceCache.onDevicesChanged(cb),
+      createScheduler: () =>
+        new ReconnectScheduler({
+          baseMs: 2000,
+          maxMs: 60_000,
+          jitterRatio: 0.2,
+          maxAttempts: 6,
+        }),
+      isTargetPresent: async (config) => {
+        const targetIds = [
+          config.targets.output1Id,
+          config.targets.output2Id,
+        ].filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (targetIds.length === 0) {
+          return false;
+        }
+        const matches = await Promise.all(
+          targetIds.map((id) => findCachedDevicePortById(id)),
+        );
+        return matches.every(Boolean);
+      },
+      publishStatus: (reason) =>
+        publishGraphicsStatusEvent(reason, this.getStatusSnapshot()),
+      logger: {
+        debug: (message) => getBridgeContext().logger.debug?.(message),
+        info: (message) => getBridgeContext().logger.info(message),
+        warn: (message) => getBridgeContext().logger.warn(message),
+        error: (message) => getBridgeContext().logger.error(message),
+      },
+      now: () => Date.now(),
+    });
+  }
+
+  private attachOutputAdapterLifecycle(adapter: GraphicsOutputAdapter): void {
+    this.outputAdapterLifecycleUnsubscribe?.();
+    this.outputAdapterLifecycleUnsubscribe = null;
+    if (!adapter.onLifecycle) {
+      return;
+    }
+    this.outputAdapterLifecycleUnsubscribe = adapter.onLifecycle((event) => {
+      if (event.type === "playback_started") {
+        getBridgeContext().logger.info("[Graphics] Output helper playback started");
+        return;
+      }
+      if (event.type === "fatal") {
+        getBridgeContext().logger.error(
+          `[Graphics] Output helper fatal: ${event.code} ${event.message}`,
+        );
+        return;
+      }
+      if (
+        event.type !== "exited" ||
+        event.requested ||
+        this.outputConfig === null
+      ) {
+        return;
+      }
+      const messageParts = [
+        `Output helper exited (code ${event.code}, signal ${event.signal})`,
+      ];
+      if (event.fatal) {
+        messageParts.push(`fatal=${event.fatal.code}: ${event.fatal.message}`);
+      }
+      if (event.lastStderr.length > 0) {
+        messageParts.push(`stderr=${event.lastStderr.join(" | ")}`);
+      }
+      const message = messageParts.join(" ");
+      this.reportGraphicsError("output_helper_error", message);
+      this.outputSupervisor.start({
+        reason: "helper_exit",
+        config: this.outputConfig,
+      });
+    });
   }
 
   private selectRenderer(): GraphicsRenderer {

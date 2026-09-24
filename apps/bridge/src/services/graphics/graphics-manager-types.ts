@@ -62,6 +62,13 @@ export type GraphicsStatusSnapshotT = {
     at: number;
   } | null;
   outputConfig: GraphicsOutputConfigT | null;
+  pendingOutputConfig: GraphicsOutputConfigT | null;
+  outputRecovery: {
+    active: boolean;
+    reason: "init_failed" | "helper_exit" | "device_changed" | null;
+    attempt: number;
+    nextRetryAt: number | null;
+  } | null;
   browserInput: {
     mode: "browser_input";
     ready: boolean;
