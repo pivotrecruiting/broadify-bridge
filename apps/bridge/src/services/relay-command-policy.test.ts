@@ -46,6 +46,7 @@ describe("relay-command-policy", () => {
       expect.objectContaining({
         timeoutClass: "engine_connect",
         relayTimeoutMs: 18_000,
+        bridgeLocalSlaMs: 17_000,
         executionMode: "side_effect",
       }),
     );

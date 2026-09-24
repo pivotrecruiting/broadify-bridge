@@ -94,3 +94,18 @@ export function describeEngineConnectTarget(
 ): string {
   return config.transport === "usb" ? "USB" : `${config.ip}:${config.port}`;
 }
+
+export function isSameEngineConnectConfig(
+  a: EngineConnectConfig,
+  b: EngineConnectConfig
+): boolean {
+  const aTransport = a.transport ?? "network";
+  const bTransport = b.transport ?? "network";
+  if (a.type !== b.type || aTransport !== bTransport) {
+    return false;
+  }
+  if (aTransport === "usb") {
+    return true;
+  }
+  return a.ip === b.ip && a.port === b.port;
+}

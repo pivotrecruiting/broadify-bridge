@@ -66,6 +66,7 @@ describe("engine-event-publisher", () => {
         lastCompletedMacroExecution: null,
         error: null,
         errorCode: null,
+        reconnect: null,
         lastUpdate: 123,
       },
     });

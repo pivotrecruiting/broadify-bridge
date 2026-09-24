@@ -115,3 +115,9 @@ mutex-serialized; session state is torn down only by explicit
 
 The bridge-side `AtemUsbAdapter` consumes this mode (transport "usb" in the
 engine connect contract).
+
+Lifecycle: the bridge adapter awaits helper shutdown before reporting the
+session as disconnected, so the SDK USB claim has time to release. Shutdown
+starts with `{"command":"shutdown"}`, escalates to `SIGTERM` after 4 seconds,
+then to `SIGKILL` 2 seconds later if the helper is still running. A new USB
+connect waits for any pending helper stop before spawning another helper.
