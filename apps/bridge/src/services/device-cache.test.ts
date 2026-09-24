@@ -271,6 +271,90 @@ describe("DeviceCache", () => {
     jest.useRealTimers();
   });
 
+  it("notifies onDevicesChanged after a watch refresh that changes the device set", async () => {
+    jest.useFakeTimers();
+    const deps = createDeps();
+    deps.detectModules
+      .mockResolvedValueOnce([success("decklink", [createDevice("deck-1")])])
+      .mockResolvedValueOnce([success("decklink", [createDevice("deck-2")])]);
+    const cache = new DeviceCache({
+      moduleRegistry: deps.moduleRegistry as any,
+      getLogger: () => deps.logger,
+      now: () => deps.getNow(),
+      wait: async () => undefined,
+      setTimeoutFn: setTimeout,
+      clearTimeoutFn: clearTimeout,
+      watchDebounceMs: 250,
+    });
+    await cache.getDevices();
+    const listener = jest.fn();
+    cache.onDevicesChanged(listener);
+    cache.initializeWatchers();
+    deps.triggerWatch("decklink");
+    await jest.advanceTimersByTimeAsync(250);
+
+    expect(listener).toHaveBeenCalledWith({
+      moduleName: "decklink",
+      added: ["deck-2-port"],
+      removed: ["deck-1-port"],
+      devices: [expect.objectContaining({ id: "deck-2" })],
+    });
+    jest.useRealTimers();
+  });
+
+  it("does not notify when the fingerprint is unchanged", async () => {
+    jest.useFakeTimers();
+    const deps = createDeps();
+    deps.detectModules.mockResolvedValue([
+      success("decklink", [createDevice("deck-1")]),
+    ]);
+    const cache = new DeviceCache({
+      moduleRegistry: deps.moduleRegistry as any,
+      getLogger: () => deps.logger,
+      now: () => deps.getNow(),
+      wait: async () => undefined,
+      setTimeoutFn: setTimeout,
+      clearTimeoutFn: clearTimeout,
+      watchDebounceMs: 250,
+    });
+    await cache.getDevices();
+    const listener = jest.fn();
+    cache.onDevicesChanged(listener);
+    cache.initializeWatchers();
+    deps.triggerWatch("decklink");
+    await jest.advanceTimersByTimeAsync(250);
+
+    expect(listener).not.toHaveBeenCalled();
+    jest.useRealTimers();
+  });
+
+  it("unsubscribe stops notifications", async () => {
+    jest.useFakeTimers();
+    const deps = createDeps();
+    deps.detectModules
+      .mockResolvedValueOnce([success("decklink", [createDevice("deck-1")])])
+      .mockResolvedValueOnce([success("decklink", [createDevice("deck-2")])]);
+    const cache = new DeviceCache({
+      moduleRegistry: deps.moduleRegistry as any,
+      getLogger: () => deps.logger,
+      now: () => deps.getNow(),
+      wait: async () => undefined,
+      setTimeoutFn: setTimeout,
+      clearTimeoutFn: clearTimeout,
+      watchDebounceMs: 250,
+    });
+    await cache.getDevices();
+    const listener = jest.fn();
+    const unsubscribe = cache.onDevicesChanged(listener);
+    unsubscribe();
+    cache.initializeWatchers();
+    deps.triggerWatch("decklink");
+    await jest.advanceTimersByTimeAsync(250);
+
+    expect(listener).not.toHaveBeenCalled();
+    jest.useRealTimers();
+  });
+
   it("clear resets cache, clears pending watch timer, and unsubscribes", async () => {
     jest.useFakeTimers();
     const deps = createDeps();

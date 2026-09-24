@@ -21,7 +21,7 @@ Diese Doku beschreibt, wie Outputs konfiguriert, validiert und für Hardware‑A
     "output1Id": "<device>-sdi-a",
     "output2Id": "<device>-sdi-b"
   },
-  "format": { "width": 1920, "height": 1080, "fps": 50 },
+  "format": { "width": 1920, "height": 1080, "fps": 50, "displayModeId": 13 },
   "range": "legal",
   "colorspace": "auto"
 }
@@ -49,12 +49,19 @@ Validierung erfolgt über `validateOutputFormat` in `graphics-output-validation-
 - Für DeckLink‑Outputs wird der Helper nach Display‑Modes abgefragt
 - Für Display‑Outputs werden Port‑Modes aus der Device-Detection geprüft
 - `requireKeying` wird gesetzt, wenn Key/Fill genutzt wird
+- `format.displayModeId` ist optional und DeckLink-spezifisch. Wenn es gesetzt
+  ist, muss der ausgewählte Port diesen Helper-Mode anbieten; der Adapter gibt
+  ihn als `--display-mode <id>` an den Helper weiter. Ohne `displayModeId`
+  bleibt der bisherige `{width,height,fps}`-Abgleich aktiv.
+- Interlaced Modes bleiben containerbasiert: progressive 25-fps-Frames werden
+  in einem 50i-Container ausgegeben; es gibt keine feldgenaue Bewegungsphasen-
+  Erzeugung in der Bridge.
 - Pixel‑Formate werden gegen die Policy geprüft
 - In Development‑Mode wird Validierung übersprungen (Stub‑Output)
 
 ### Pixel‑Policy
 - Video: `VIDEO_PIXEL_FORMAT_PRIORITY = ["10bit_yuv", "8bit_yuv"]`
-- Key/Fill: `KEY_FILL_PIXEL_FORMAT_PRIORITY = ["8bit_argb", "8bit_bgra"]`
+- Key/Fill: `KEY_FILL_PIXEL_FORMAT_PRIORITY = ["8bit_argb"]`
 
 ## Range & Colorspace
 - `range` und `colorspace` werden an den DeckLink Helper übergeben

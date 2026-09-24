@@ -8,7 +8,7 @@ Dieses Subsystem liefert gerenderte Frames an die jeweilige Ausgabe. Die Data-Pl
 - Start/Stop von Helper‑Prozessen
 - FrameBus-basierter Output für DeckLink und Display
 - Validierung von Port‑IDs und Output‑Konfiguration
-- Handshake + Diagnostics für Display‑Output Helper
+- Handshake, Ready-Timeouts, stderr-Diagnostics und Lifecycle-Events für Helper
 
 ## Hauptkomponenten
 - Adapter Interface: `apps/bridge/src/services/graphics/output-adapter.ts`
@@ -41,10 +41,27 @@ sequenceDiagram
   end
 ```
 
-## Plattformstatus (Display Output)
-- **macOS:** Unterstützt (nativer `display-helper`, SDL2, FrameBus)
-- **Windows:** Unterstützt (nativer `display-helper.exe`, SDL2, FrameBus)
-- **Linux:** Nicht implementiert
+## Plattformstatus
+| Output-Pfad | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| DeckLink | Unterstützt (DeckLink Helper, FrameBus) | Nicht implementiert | Nicht implementiert |
+| Display Output | Unterstützt (nativer `display-helper`, SDL2, FrameBus) | Unterstützt (nativer `display-helper.exe`, SDL2, FrameBus) | Nicht implementiert |
+
+## HelperProcessSession
+DeckLink- und Display-Adapter nutzen eine gemeinsame
+`HelperProcessSession`. Sie startet den Child-Process, parst stdout zeilenweise
+als JSON, haelt die letzten stderr-Zeilen als Ringpuffer und begrenzt den
+Ready-Handshake. DeckLink-Helper muessen innerhalb von 12s `{"type":"ready"}`
+senden, Display-Helper innerhalb von 8s. Bei Spawn-, Exit- oder Timeout-Fehlern
+enthaelt die configure()-Fehlermeldung die letzten stderr-Zeilen und, falls ein
+Helper sie vorher gesendet hat, den `fatal.code`.
+
+Nach `ready` werden unerwartete Exits als Adapter-Lifecycle an den
+`GraphicsManager` weitergereicht. Ein angeforderter `stop()` unterdrueckt dieses
+Recovery-Signal. Zukuenftige Helper duerfen additiv `playback_started`,
+`fatal` und `helperVersion` senden; aktuelle Helper, die nur `ready` und
+`metrics` ausgeben, bleiben kompatibel. Unbekannte JSON-Events werden
+toleriert.
 
 ## Meeting-Helper Kamera- und VCam-Lifecycle
 
@@ -87,7 +104,8 @@ Kameraframe loescht den Zustand und emittiert `camera_recovered`.
 ## Fehlerbilder
 - Helper nicht vorhanden/kein Execute‑Bit → configure() Fehler
 - Port‑ID ungültig → parseDecklinkPortId() Fehler
-- Helper exit vor Ready → configure() schlägt fehl
+- Helper exit vor Ready oder Ready-Timeout → configure() schlägt fehl, inklusive stderr-Kontext
+- Helper exit nach Ready → `output_helper_error` und Output-Supervisor-Recovery
 - Display‑Output auf nicht unterstützter Plattform → `Display output is only supported on macOS and Windows`
 - Display‑Helper fehlt/nicht ausführbar → configure() Fehler
 - `BRIDGE_FRAMEBUS_NAME` fehlt → configure() Fehler

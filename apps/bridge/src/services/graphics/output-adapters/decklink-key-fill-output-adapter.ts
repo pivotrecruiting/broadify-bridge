@@ -1,15 +1,16 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import type {
   GraphicsOutputAdapter,
   GraphicsOutputFrameT,
+  HelperLifecycleEventT,
 } from "../output-adapter.js";
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
 import { KEY_FILL_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
 import { parseDecklinkPortId } from "./decklink-port.js";
+import { HelperProcessSession } from "./helper-process-session.js";
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
@@ -21,11 +22,8 @@ const FRAME_HEADER_LENGTH = 28;
  * Streams raw RGBA frames to the native helper which performs key/fill output.
  */
 export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
-  private child: ChildProcess | null = null;
-  private readyPromise: Promise<void> | null = null;
-  private readyResolver: (() => void) | null = null;
-  private readyRejecter: ((error: Error) => void) | null = null;
-  private stdoutBuffer = "";
+  private session: HelperProcessSession | null = null;
+  private lifecycleListeners = new Set<(event: HelperLifecycleEventT) => void>();
 
   /**
    * Configure helper process for key/fill output.
@@ -60,11 +58,6 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`DeckLink helper not executable: ${message}`);
     }
-    this.readyPromise = new Promise((resolve, reject) => {
-      this.readyResolver = resolve;
-      this.readyRejecter = reject;
-    });
-
     const args = [
       "--playback",
       "--device",
@@ -86,6 +79,10 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       "--colorspace",
       config.colorspace,
     ];
+
+    if (config.format.displayModeId) {
+      args.push("--display-mode", String(config.format.displayModeId));
+    }
 
     if (process.env.BRIDGE_FRAMEBUS_NAME) {
       args.push("--framebus-name", process.env.BRIDGE_FRAMEBUS_NAME);
@@ -111,48 +108,28 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       env.BRIDGE_FRAME_PIXEL_FORMAT = process.env.BRIDGE_FRAME_PIXEL_FORMAT;
     }
 
-    this.child = spawn(helperPath, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env,
-    });
-
     this.getLogger().debug?.(
       `[DeckLinkOutput] Pixel format priority: ${KEY_FILL_PIXEL_FORMAT_PRIORITY.join(",")}`
     );
 
-    this.child.stdout?.on("data", (data) => this.handleStdout(data));
-    this.child.stderr?.on("data", (data) => {
-      const text = data.toString().trim();
-      if (text.length > 0) {
-        this.getLogger().error(`[DeckLinkOutput] ${text}`);
-      }
+    this.session = new HelperProcessSession({
+      label: "DeckLinkOutput",
+      helperPath,
+      args,
+      env,
+      stdin: "pipe",
+      readyTimeoutMs: 12_000,
+      stderrLogLevel: "error",
+      logUnknownMessages: false,
+      stopStrategy: {
+        shutdownHeader: this.createShutdownHeader(),
+        gracefulMs: 4000,
+        forceMs: 2000,
+      },
+      logger: this.getLogger(),
     });
-
-    this.child.on("error", (error) => {
-      if (this.readyRejecter) {
-        this.readyRejecter(error);
-      }
-      this.readyRejecter = null;
-      this.readyResolver = null;
-    });
-
-    this.child.on("exit", (code, signal) => {
-      if (this.readyRejecter) {
-        this.readyRejecter(
-          new Error(
-            `DeckLink output helper exited before ready (code ${code}, signal ${signal})`
-          )
-        );
-      }
-      this.readyRejecter = null;
-      this.readyResolver = null;
-      this.child = null;
-      this.getLogger().error(
-        `[DeckLinkOutput] Helper exited (code ${code}, signal ${signal})`
-      );
-    });
-
-    await this.readyPromise;
+    this.session.onLifecycle((event) => this.emitLifecycle(event));
+    await this.session.start();
   }
 
   /**
@@ -172,94 +149,32 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
    * Stop helper process and release resources.
    */
   async stop(): Promise<void> {
-    if (!this.child) {
-      return;
-    }
-
-    const child = this.child;
-    const stdin = child.stdin;
-    if (stdin) {
-      const header = Buffer.alloc(FRAME_HEADER_LENGTH);
-      header.writeUInt32BE(FRAME_MAGIC, 0);
-      header.writeUInt16BE(FRAME_VERSION, 4);
-      header.writeUInt16BE(FRAME_TYPE_SHUTDOWN, 6);
-      header.writeUInt32BE(0, 8);
-      header.writeUInt32BE(0, 12);
-      header.writeBigUInt64BE(BigInt(Date.now()), 16);
-      header.writeUInt32BE(0, 24);
-      stdin.write(header);
-      stdin.end();
-    }
-
-    const hasExited = () =>
-      child.exitCode !== null || child.signalCode !== null;
-    const awaitExit = () =>
-      new Promise<void>((resolve) => {
-        if (hasExited()) {
-          resolve();
-          return;
-        }
-        child.once("exit", () => resolve());
-      });
-
-    const gracefulTimeoutMs = 4000;
-    const forceTimeoutMs = 2000;
-
-    await Promise.race([
-      awaitExit(),
-      new Promise<void>((resolve) => {
-        const timeoutId = setTimeout(() => resolve(), gracefulTimeoutMs);
-        void awaitExit().then(() => clearTimeout(timeoutId));
-      }),
-    ]);
-
-    if (!hasExited()) {
-      child.kill("SIGTERM");
-      await Promise.race([
-        awaitExit(),
-        new Promise<void>((resolve) => {
-          const timeoutId = setTimeout(() => resolve(), forceTimeoutMs);
-          void awaitExit().then(() => clearTimeout(timeoutId));
-        }),
-      ]);
-    }
-
-    if (!hasExited()) {
-      child.kill("SIGKILL");
-      await awaitExit();
-    }
-
-    this.child = null;
-    this.readyPromise = null;
-    this.readyResolver = null;
-    this.readyRejecter = null;
-    this.stdoutBuffer = "";
+    await this.session?.stop();
+    this.session = null;
   }
 
-  private handleStdout(data: Buffer): void {
-    this.stdoutBuffer += data.toString("utf-8");
-    let newlineIndex = this.stdoutBuffer.indexOf("\n");
-    while (newlineIndex !== -1) {
-      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
-      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
-      newlineIndex = this.stdoutBuffer.indexOf("\n");
+  onLifecycle(cb: (event: HelperLifecycleEventT) => void): () => void {
+    this.lifecycleListeners.add(cb);
+    return () => {
+      this.lifecycleListeners.delete(cb);
+    };
+  }
 
-      if (!line) {
-        continue;
-      }
+  private createShutdownHeader(): Buffer {
+    const header = Buffer.alloc(FRAME_HEADER_LENGTH);
+    header.writeUInt32BE(FRAME_MAGIC, 0);
+    header.writeUInt16BE(FRAME_VERSION, 4);
+    header.writeUInt16BE(FRAME_TYPE_SHUTDOWN, 6);
+    header.writeUInt32BE(0, 8);
+    header.writeUInt32BE(0, 12);
+    header.writeBigUInt64BE(BigInt(Date.now()), 16);
+    header.writeUInt32BE(0, 24);
+    return header;
+  }
 
-      try {
-        const message = JSON.parse(line) as { type?: string };
-        if (message.type === "ready" && this.readyResolver) {
-          this.readyResolver();
-          this.readyResolver = null;
-          this.readyRejecter = null;
-        } else if (message.type === "metrics") {
-          this.getLogger().debug?.(`[DeckLinkOutput] ${line}`);
-        }
-      } catch {
-        this.getLogger().warn(`[DeckLinkOutput] Non-JSON output: ${line}`);
-      }
+  private emitLifecycle(event: HelperLifecycleEventT): void {
+    for (const listener of this.lifecycleListeners) {
+      listener(event);
     }
   }
 

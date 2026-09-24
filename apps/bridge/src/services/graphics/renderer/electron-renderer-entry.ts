@@ -21,13 +21,17 @@ import {
   FRAMEBUS_HEARTBEAT_INTERVAL_MS,
   shouldRepublishHeartbeatFrame,
 } from "./framebus-heartbeat.js";
+import { shouldSkipIdenticalPaint } from "./paint-dedup.js";
 import {
   bgraToRgba,
   downsampleRgbaBox,
   resampleRgbaBilinear,
 } from "./graphics-pixel-utils.js";
 import { frameBusWriterMatchesTarget } from "./framebus-writer-match.js";
-import { selectFrameBusSeedFrame } from "./framebus-seed-frame.js";
+import {
+  selectFrameBusSeedFrame,
+  shouldSeedFreshWriter,
+} from "./framebus-seed-frame.js";
 import { resolvePerfLogging } from "./perf-logging.js";
 import {
   buildIdleFrameBuffer,
@@ -47,6 +51,8 @@ const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
 const STUDIO_CAPTURE_FALLBACK_MS = 300;
 const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
+const RENDERER_WINDOW_FAILURE_WINDOW_MS = 60_000;
+const RENDERER_WINDOW_UNRESPONSIVE_RECOVERY_MS = 5_000;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
@@ -158,6 +164,9 @@ let singleWindowFormat: {
   fps: number;
   renderScale: number;
 } | null = null;
+let singleWindowRecoveryInFlight = false;
+let singleWindowLastFailureAtMs = 0;
+let singleWindowUnresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
 const singleLayerSnapshots = new Map<string, SingleLayerSnapshotT>();
 let frameBusModule: FrameBusModuleT | null = null;
 let frameBusWriter: FrameBusWriterT | null = null;
@@ -225,22 +234,22 @@ function stopFrameBusHeartbeat(): void {
 
 // Paint dedup state. Module-scoped on purpose: it used to live in the paint
 // handler closure, so the direct write paths (idle frame, captured frame) left
-// a stale checksum behind. The very paint that had to repair such a frame then
+// stale dedup state behind. The very paint that had to repair such a frame then
 // looked like a duplicate and was dropped, and the heartbeat re-published the
 // stale frame once per second for as long as the page stayed unchanged.
-let lastPaintChecksum = -1;
-let lastPaintChecksumAtMs = 0;
+let lastPaintBuffer: Buffer | null = null;
+let lastPaintBufferAtMs = 0;
 
 /**
- * Forget the last painted frame's checksum.
+ * Forget the last painted frame.
  *
  * Every FrameBus write that does NOT come from the paint handler must call
  * this: it changes what readers see, so the next paint is meaningful even when
  * it is pixel-identical to the previously *painted* frame.
  */
 function invalidatePaintDedup(): void {
-  lastPaintChecksum = -1;
-  lastPaintChecksumAtMs = 0;
+  lastPaintBuffer = null;
+  lastPaintBufferAtMs = 0;
 }
 
 const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
@@ -454,10 +463,6 @@ function resolveFrameBusCandidatesForLog(): string[] {
   }
 }
 
-function shouldForceRecreateFrameBus(): boolean {
-  return !MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
-}
-
 const normalizeNativeFrameRate = (fps: number): number =>
   Math.min(240, Math.max(1, Math.round(fps)));
 
@@ -573,7 +578,10 @@ function ensureFrameBusWriter(
         ? (frameBusPixelFormat as 1 | 2 | 3)
         : 1,
       slotCount: frameBusSlotCount,
-      forceRecreate: shouldForceRecreateFrameBus(),
+      // Reuse by name is the normal recovery path: a replacement renderer must
+      // attach to the live region that helpers already map. Only incompatible
+      // stale regions are force-recreated in the self-heal below.
+      forceRecreate: false,
     };
     try {
       frameBusWriter = frameBusModule.createWriter(writerOptions);
@@ -598,28 +606,40 @@ function ensureFrameBusWriter(
         forceRecreate: true,
       });
     }
-    // Seed the fresh region. Hard zeros are only safe on an output that reads
-    // alpha: a writer swap also happens mid-show (geometry change, meeting
-    // reattach), and there a blank frame drops key/fill to key=0 and robs a
-    // downstream chroma keyer of its key colour, so the black frame gets keyed
-    // on air. Re-publish the retained frame whenever its geometry still fits,
-    // otherwise seed the session background - on a video output that is the
-    // key colour, so the very first frame is already keyable.
-    const initBuffer =
-      carriedFrame ?? buildIdleFrameBuffer(width, height, currentIdleFrameColor());
-    const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
-    frameBusWriter.writeFrame(initBuffer, initTimestampNs);
-    // Retain the init frame too: if no paint ever fires (idle renderer), the
-    // heartbeat still keeps the seq advancing for readers.
-    noteFrameBusFrameWritten(initBuffer, initTimestampNs);
+    const existingSeq =
+      typeof frameBusWriter.header.seq === "bigint"
+        ? frameBusWriter.header.seq
+        : 0n;
+    const seedDecision = shouldSeedFreshWriter({
+      carriedFrame: carriedFrame !== null,
+      existingSeq,
+    });
+    if (seedDecision !== "existing_region") {
+      // Seed the fresh region. Hard zeros are only safe on an output that reads
+      // alpha: a writer swap also happens mid-show (geometry change, meeting
+      // reattach), and there a blank frame drops key/fill to key=0 and robs a
+      // downstream chroma keyer of its key colour, so the black frame gets keyed
+      // on air. Re-publish the retained frame whenever its geometry still fits,
+      // otherwise seed the session background - on a video output that is the
+      // key colour, so the very first frame is already keyable.
+      const initBuffer =
+        carriedFrame ?? buildIdleFrameBuffer(width, height, currentIdleFrameColor());
+      const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
+      frameBusWriter.writeFrame(initBuffer, initTimestampNs);
+      // Retain the init frame too: if no paint ever fires (idle renderer), the
+      // heartbeat still keeps the seq advancing for readers.
+      noteFrameBusFrameWritten(initBuffer, initTimestampNs);
+    }
     invalidatePaintDedup();
     logger.info(
       {
         name: frameBusWriter.name,
         size: frameBusWriter.size,
         header: frameBusWriter.header,
-        seededFrom: carriedFrame ? "retained_frame" : "idle_color",
-        ...(carriedFrame ? {} : { idleColor: currentIdleFrameColor() }),
+        seededFrom: seedDecision,
+        ...(seedDecision === "idle_color"
+          ? { idleColor: currentIdleFrameColor() }
+          : {}),
       },
       "[GraphicsRenderer] FrameBus writer initialized",
     );
@@ -637,7 +657,6 @@ function ensureFrameBusWriter(
         fps,
         frameBusPixelFormat,
         frameBusSlotCount,
-        frameBusForceRecreate: shouldForceRecreateFrameBus(),
         candidates: resolveFrameBusCandidatesForLog(),
       },
       "[GraphicsRenderer] FrameBus init failed details",
@@ -935,6 +954,10 @@ function ensureWindowContentSize(
 }
 
 async function destroySingleWindow(): Promise<void> {
+  if (singleWindowUnresponsiveTimer) {
+    clearTimeout(singleWindowUnresponsiveTimer);
+    singleWindowUnresponsiveTimer = null;
+  }
   if (!singleWindow) {
     singleWindowReady = null;
     singleWindowFormat = null;
@@ -957,6 +980,66 @@ async function destroySingleWindow(): Promise<void> {
     }
   } catch {
     // Ignore teardown errors; the renderer process is ephemeral.
+  }
+}
+
+async function recoverSingleWindow(reason: string): Promise<void> {
+  if (singleWindowRecoveryInFlight) {
+    logger.warn(
+      { reason },
+      "[GraphicsRenderer] Offscreen renderer recovery already in flight",
+    );
+    return;
+  }
+
+  const now = Date.now();
+  const repeated =
+    singleWindowLastFailureAtMs > 0 &&
+    now - singleWindowLastFailureAtMs <= RENDERER_WINDOW_FAILURE_WINDOW_MS;
+  singleWindowLastFailureAtMs = now;
+
+  if (repeated) {
+    logger.error(
+      { reason },
+      "[GraphicsRenderer] Repeated offscreen renderer failures; exiting",
+    );
+    process.exit(3);
+    return;
+  }
+
+  if (!rendererConfig) {
+    logger.warn(
+      { reason },
+      "[GraphicsRenderer] Offscreen renderer recovery skipped without config",
+    );
+    return;
+  }
+
+  singleWindowRecoveryInFlight = true;
+  logger.warn(
+    { reason },
+    "[GraphicsRenderer] Recovering offscreen renderer window",
+  );
+  stopFrameBusHeartbeat();
+
+  try {
+    await destroySingleWindow();
+    await ensureSingleWindow(
+      rendererConfig.width,
+      rendererConfig.height,
+      rendererConfig.fps,
+      rendererConfig.backgroundMode,
+    );
+  } catch (error) {
+    logger.error(
+      {
+        reason,
+        message: error instanceof Error ? error.message : String(error),
+      },
+      "[GraphicsRenderer] Offscreen renderer recovery failed",
+    );
+  } finally {
+    singleWindowRecoveryInFlight = false;
   }
 }
 
@@ -1130,22 +1213,21 @@ async function ensureSingleWindow(
         return;
       }
 
-      // Skip FrameBus writes for pixel-identical frames (static content),
-      // with a 1s heartbeat so readers still see a live stream.
-      let checksum = buffer.length >>> 0;
-      for (let i = 0; i < buffer.length; i += 4093) {
-        checksum = ((checksum * 31) ^ (buffer[i] ?? 0)) >>> 0;
-      }
       const writeNowMs = Date.now();
-      if (
-        checksum === lastPaintChecksum &&
-        writeNowMs - lastPaintChecksumAtMs < 1000
-      ) {
+      // Skip FrameBus writes only for pixel-identical frames (static content),
+      // with a 1s heartbeat so readers still see a live stream.
+      if (shouldSkipIdenticalPaint({
+        buffer,
+        lastWritten: lastPaintBuffer,
+        nowMs: writeNowMs,
+        lastWrittenAtMs: lastPaintBufferAtMs,
+        windowMs: 1000,
+      })) {
         logPerfIfNeeded();
         return;
       }
-      lastPaintChecksum = checksum;
-      lastPaintChecksumAtMs = writeNowMs;
+      lastPaintBuffer = buffer;
+      lastPaintBufferAtMs = writeNowMs;
 
       try {
         const frameTimestampNs = BigInt(writeNowMs) * 1_000_000n;
@@ -1187,6 +1269,27 @@ async function ensureSingleWindow(
         );
       }
       logPerfIfNeeded();
+    });
+
+    singleWindow.webContents.on("render-process-gone", (_event, details) => {
+      void recoverSingleWindow(`render_process_gone:${details.reason}`);
+    });
+    singleWindow.on("unresponsive", () => {
+      if (singleWindowUnresponsiveTimer) {
+        clearTimeout(singleWindowUnresponsiveTimer);
+      }
+      singleWindowUnresponsiveTimer = setTimeout(() => {
+        singleWindowUnresponsiveTimer = null;
+        void recoverSingleWindow("unresponsive");
+      }, RENDERER_WINDOW_UNRESPONSIVE_RECOVERY_MS);
+      singleWindowUnresponsiveTimer.unref?.();
+    });
+    singleWindow.on("responsive", () => {
+      if (!singleWindowUnresponsiveTimer) {
+        return;
+      }
+      clearTimeout(singleWindowUnresponsiveTimer);
+      singleWindowUnresponsiveTimer = null;
     });
 
     singleWindowReady = new Promise((resolve) => {

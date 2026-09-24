@@ -35,3 +35,31 @@ export function selectFrameBusSeedFrame(
   }
   return retainedFrame.length === width * height * 4 ? retainedFrame : null;
 }
+
+export type FrameBusSeedDecisionT =
+  | "retained_frame"
+  | "idle_color"
+  | "existing_region";
+
+/**
+ * Decide whether a newly opened writer should publish a seed frame.
+ *
+ * Reused regions may already carry the previous renderer's last frame. In that
+ * case an idle seed would blank the live output before the client replays the
+ * current layer state.
+ */
+export function shouldSeedFreshWriter({
+  carriedFrame,
+  existingSeq,
+}: {
+  carriedFrame: boolean;
+  existingSeq: bigint;
+}): FrameBusSeedDecisionT {
+  if (carriedFrame) {
+    return "retained_frame";
+  }
+  if (existingSeq > 0n) {
+    return "existing_region";
+  }
+  return "idle_color";
+}
