@@ -74,10 +74,16 @@ describe("AtemUsbAdapter", () => {
     transport: "usb",
   } as const;
 
-  async function connectAdapter(adapter: AtemUsbAdapter): Promise<void> {
+  async function connectAdapter(
+    adapter: AtemUsbAdapter,
+    options: { protocolVersion?: number } = {}
+  ): Promise<void> {
     const connectPromise = adapter.connect(usbConfig);
     await flush();
-    emitHelperLine(child, { type: "ready" });
+    emitHelperLine(child, {
+      type: "ready",
+      ...(options.protocolVersion ? { protocol_version: options.protocolVersion } : {}),
+    });
     await flush();
     emitHelperLine(child, { type: "connected", product_name: "ATEM Mini Extreme" });
     emitHelperLine(child, {
@@ -141,6 +147,29 @@ describe("AtemUsbAdapter", () => {
     await expect(connectPromise).rejects.toBeInstanceOf(EngineError);
   });
 
+  it("maps device_busy to DEVICE_BUSY and keeps hr in details", async () => {
+    const adapter = new AtemUsbAdapter();
+    const connectPromise = adapter.connect(usbConfig);
+    await flush();
+    emitHelperLine(child, { type: "ready", protocol_version: 2 });
+    await flush();
+    emitHelperLine(child, {
+      type: "error",
+      error: "device_busy",
+      detail: "hr=0x80000009 fail_reason=no_response",
+      hr: "0x80000009",
+      fail_reason: "no_response",
+    });
+
+    await expect(connectPromise).rejects.toMatchObject({
+      code: EngineErrorCode.DEVICE_BUSY,
+      details: {
+        hr: "0x80000009",
+        failReason: "no_response",
+      },
+    });
+  });
+
   it("rejects when the helper exits before connecting", async () => {
     const adapter = new AtemUsbAdapter();
     const connectPromise = adapter.connect(usbConfig);
@@ -179,6 +208,137 @@ describe("AtemUsbAdapter", () => {
       macroId: 7,
       status: "completed",
     });
+  });
+
+  it("sends ping every 5s and treats two missed pongs as a helper drop", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate"] });
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter, { protocolVersion: 2 });
+
+    expect(child.stdin.write).not.toHaveBeenCalledWith('{"command":"ping","seq":1}\n');
+
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(child.stdin.write).toHaveBeenCalledWith('{"command":"ping","seq":1}\n');
+    expect(adapter.getStatus()).toBe("connected");
+
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(child.stdin.write).toHaveBeenCalledWith('{"command":"ping","seq":2}\n');
+    expect(adapter.getStatus()).toBe("connected");
+
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(adapter.getStatus()).toBe("disconnected");
+    expect(child.stdin.write).toHaveBeenCalledWith('{"command":"shutdown"}\n');
+
+    jest.useRealTimers();
+  });
+
+  it("does not send pings to a protocol v1 helper", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate"] });
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter);
+
+    await jest.advanceTimersByTimeAsync(15000);
+
+    expect(child.stdin.write).not.toHaveBeenCalledWith(
+      expect.stringContaining('"command":"ping"')
+    );
+    expect(adapter.getStatus()).toBe("connected");
+
+    jest.useRealTimers();
+  });
+
+  it("runMacro resolves on ack and marks the execution accepted", async () => {
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter, { protocolVersion: 2 });
+
+    const runPromise = adapter.runMacro(7);
+    await flush();
+    expect(child.stdin.write).toHaveBeenCalledWith(
+      '{"command":"macro_run","index":7,"req":1}\n'
+    );
+    expect(adapter.getState().macroExecution).toMatchObject({
+      macroId: 7,
+      status: "pending",
+      acceptedAt: null,
+    });
+
+    emitHelperLine(child, {
+      type: "ack",
+      command: "macro_run",
+      req: 1,
+      index: 7,
+    });
+    await runPromise;
+
+    expect(adapter.getState().macroExecution).toMatchObject({
+      macroId: 7,
+      status: "pending",
+      acceptedAt: expect.any(Number),
+    });
+  });
+
+  it("rejects with PROTOCOL_ERROR on nack and fails the execution", async () => {
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter, { protocolVersion: 2 });
+
+    const runPromise = adapter.runMacro(7);
+    await flush();
+    emitHelperLine(child, {
+      type: "nack",
+      command: "macro_run",
+      req: 1,
+      index: 7,
+      error: "invalid_macro_index",
+    });
+
+    await expect(runPromise).rejects.toMatchObject({
+      code: EngineErrorCode.PROTOCOL_ERROR,
+      details: { reason: "invalid_macro_index" },
+    });
+    expect(adapter.getState().macroExecution).toMatchObject({
+      macroId: 7,
+      status: "failed",
+      error: "invalid_macro_index",
+    });
+    expect(adapter.getState().lastCompletedMacroExecution).toBeNull();
+  });
+
+  it("rejects when no ack arrives within 2s", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate"] });
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter, { protocolVersion: 2 });
+
+    const runPromise = adapter.runMacro(7);
+    await flush();
+    const expectation = expect(runPromise).rejects.toMatchObject({
+      code: EngineErrorCode.PROTOCOL_ERROR,
+      details: { reason: "macro_ack_timeout" },
+    });
+    await jest.advanceTimersByTimeAsync(2000);
+
+    await expectation;
+    expect(adapter.getState().macroExecution).toMatchObject({
+      macroId: 7,
+      status: "failed",
+      error: "macro_ack_timeout",
+    });
+    expect(adapter.getState().lastCompletedMacroExecution).toBeNull();
+
+    jest.useRealTimers();
+  });
+
+  it("ignores unknown_command errors from older helpers", async () => {
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter);
+
+    emitHelperLine(child, {
+      type: "error",
+      error: "unknown_command",
+      detail: "ping",
+    });
+    await flush();
+
+    expect(adapter.getState().error).toBeUndefined();
   });
 
   it("stops a macro through the helper", async () => {
