@@ -2787,11 +2787,11 @@ describe("electron-renderer-entry", () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
-    const firePaint = () => {
+    const firePaint = (bitmap = Buffer.alloc(width * height * 4, 0x11)) => {
       const image = {
         getSize: () => ({ width, height }),
         isEmpty: () => false,
-        toBitmap: () => Buffer.alloc(width * height * 4, 0x11),
+        toBitmap: () => bitmap,
       };
       paintHandlers.forEach((handler) => handler({}, {}, image));
     };
@@ -2848,6 +2848,33 @@ describe("electron-renderer-entry", () => {
     const { captureReasons } = await bootWithOneLayer("bfy-meet-gfx-back");
     await new Promise((r) => setTimeout(r, 500));
     expect(captureReasons()).toEqual(["create_layer_fallback"]);
+  });
+
+  it("writes a paint that differs from the last frame in a single pixel within 1 s", async () => {
+    const { writeFrame, firePaint } = await bootWithOneLayer("/test-shm");
+    const firstPaint = Buffer.alloc(8 * 4 * 4, 0x11);
+    const changedPaint = Buffer.from(firstPaint);
+    changedPaint[1] = 0x22;
+
+    firePaint(firstPaint);
+    const writesAfterFirstPaint = writeFrame.mock.calls.length;
+    firePaint(changedPaint);
+    await new Promise((r) => setImmediate(r));
+
+    expect(writeFrame.mock.calls.length).toBe(writesAfterFirstPaint + 1);
+    expect(writeFrame.mock.calls.at(-1)?.[0].equals(changedPaint)).toBe(true);
+  });
+
+  it("skips a pixel-identical paint within 1 s", async () => {
+    const { writeFrame, firePaint } = await bootWithOneLayer("/test-shm");
+    const paint = Buffer.alloc(8 * 4 * 4, 0x11);
+
+    firePaint(paint);
+    const writesAfterFirstPaint = writeFrame.mock.calls.length;
+    firePaint(Buffer.from(paint));
+    await new Promise((r) => setImmediate(r));
+
+    expect(writeFrame.mock.calls.length).toBe(writesAfterFirstPaint);
   });
 
   it("studio: drops a late paint after the last layer was removed", async () => {

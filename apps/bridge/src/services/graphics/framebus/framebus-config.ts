@@ -16,8 +16,7 @@ export type FrameBusConfigT = {
   size: number;
 };
 
-// TODO: Tune slot count per hardware/output if drops persist.
-const DEFAULT_SLOT_COUNT = 2;
+const DEFAULT_SLOT_COUNT = 3;
 const DEFAULT_PIXEL_FORMAT: FrameBusPixelFormatT = 1;
 
 const parseSlotCount = (value: string | undefined): number | null => {

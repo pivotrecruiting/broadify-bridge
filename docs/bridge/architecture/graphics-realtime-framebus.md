@@ -8,7 +8,8 @@ Siehe: `docs/bridge/refactor/graphics-realtime-framebus-api.md`
 
 ## Design
 - Shared Memory Segment pro Session.
-- Double-Buffer oder Ring-Buffer (latest-frame-wins).
+- Ring-Buffer (latest-frame-wins); Studio nutzt standardmäßig 3 Slots, kann aber
+  über `BRIDGE_FRAMEBUS_SLOT_COUNT` explizit überschrieben werden.
 - Atomics für Writer-Seq.
 
 ## Lifecycle-Regel

@@ -93,6 +93,8 @@ Renderer‑Entry: `apps/bridge/src/services/graphics/renderer/electron-renderer-
 - Ein Offscreen BrowserWindow (Single-Window) mit Layern via Shadow DOM
 - `paint`‑Event liefert BGRA → RGBA
 - Schreibt Frames in FrameBus; keine Frame-Payload über IPC
+- Dedupliziert nur pixel-identische Paints per exaktem Buffer-Vergleich für
+  maximal 1 s; schon ein einzelnes abweichendes Byte wird sofort geschrieben.
 - Registriert `render-process-gone` und `unresponsive` auf dem Offscreen-Fenster:
   Der Renderer stoppt den FrameBus-Heartbeat, zerstört das Fenster, erstellt
   genau ein neues Offscreen-Fenster und spielt die gespeicherten Layer-Snapshots
@@ -121,6 +123,10 @@ des alten Renderers stehen, bis der Client die aktuellen Layer erneut ausspielt.
 Eine Force-Recreation passiert nur als Self-Heal bei inkompatiblen Headern oder
 Größen, weil diese Region dann für die aktuelle Geometrie ohnehin nicht nutzbar
 ist.
+
+Studio nutzt standardmäßig drei FrameBus-Slots. Das reduziert das Risiko, dass
+ein schneller Writer den Slot überschreibt, den ein Output-Helper gerade liest.
+`BRIDGE_FRAMEBUS_SLOT_COUNT` bleibt als expliziter Override erhalten.
 
 ### Writer-Reattach nach Bus-Neuanlage (Meeting-Engine-Start)
 `meeting_engine_start` legt die Meeting-Grafik-Regionen (`bfy-meet-gfx-back`/

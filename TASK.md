@@ -1,141 +1,61 @@
-# Task: DeckLink device/protocol hardening — displayModeId, diagnostics, detection budget, owned ports, platform (PR C3)
+# Task: Renderer paint dedup by exact compare; Studio FrameBus slot count 3 (PR C4 — G15 + G14-TS)
 
 ## Raw request
-Audit rc.19 (24.9.2026), Studio graphics / UltraStudio detection (macOS-only DeckLink path):
-- G4 (HIGH): the output format is `{width,height,fps}` only (`apps/bridge/src/services/graphics/schemas/output-schemas.ts:24-28`),
-  so 1080i50 and 1080p25 are indistinguishable; the helper picks the first `{w,h,fps}` match
-  (`native/decklink-helper/src/decklink-helper.cpp:1292-1371`). `--list-modes` already emits `id` and `fieldDominance`
-  and the webapp has them in the select value but drops them from the payload.
-- G10 (MEDIUM): missing/old Desktop Video driver → helper `--list` prints `[]` with exit 0 and a stderr hint that TS
-  discards (`apps/bridge/src/modules/decklink/decklink-helper.ts:146-166`) → silent empty list, no cause anywhere.
-- G11 (MEDIUM): `DecklinkModule` has no `detectionTimeoutMs` (default 5 s, `modules/module-registry.ts:8`) while
-  `detect()` spawns 1 + 2×N helper calls with 4 s each (`decklink-detector.ts:213-284`) → structural timeout risk.
-- G12 (MEDIUM): the bridge's own playback marks the device busy, so `list_outputs` shows all of its ports as
-  unavailable (`decklink-detector.ts:110-113`, `routes/outputs.ts:46-50`); `routes/outputs.ts:20-75` also duplicates
-  `services/device-to-output-transform.ts`.
-- G13 (HIGH gap): Windows has no DeckLink module at all (`modules/index.ts:19-22`); neither the bridge status nor the
-  outputs list tells the webapp, so Windows users see "no outputs" without explanation.
+Audit rc.19 (24.9.2026), LOW:
+- G15: the paint dedup in `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts` (~1135-1148 on rc.19)
+  samples every 4093rd byte for a checksum and suppresses a frame for up to 1 s when the sample matches; small changes
+  (e.g. a clock's seconds digits) can miss every sample and stall for up to a second.
+- G14 (TS part): the Studio FrameBus uses `DEFAULT_SLOT_COUNT = 2` (`renderer/../framebus/framebus-config.ts:20`) while the
+  DeckLink helper copies slot `(seq-1) % N` without re-checking `seq` after the copy — with two slots a fast writer can
+  overwrite the slot being read (torn frame). Meeting buses already use 3 slots (`meeting-graphics-manager.ts:16`). The
+  helper reads `slot_count` from the region header, so 3 is compatible with the current helper binary; the reader-side
+  `seq` re-check itself belongs to the helper batch.
 
 ## Context
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/device-protocol-diagnostics / feature/device-protocol-diagnostics
-- Base branch: dev (origin/dev dd5d6932 == v0.27.1-rc.19)
-- Hard rules (AGENTS.md): Graphics Single-Path; all inputs Zod-validated; JSON keys snake_case where that is the
-  established convention of the payload (bridge status / outputs use camelCase today — keep each payload's existing
-  style); docs under docs/bridge/* updated in the same change.
-- Compatibility facts (verified): nested Zod objects strip unknown keys, so an OLD bridge silently drops
-  `format.displayModeId`; the helper's `--playback` argument loop has no else-branch, so an OLD helper binary skips
-  `--display-mode <id>` silently (decklink-helper.cpp:2385-2488) and `--list` ignores all extra args (2281-2294);
-  the persisted config store parses with `GraphicsConfigureOutputsSchema` (`output-config-store.ts:123`), so an
-  optional field added there flows through. NO native helper change in this PR (helper batch is a separate PR).
-  The webapp side (sending `displayModeId`, rendering hints) is a separate webapp PR — this PR must be safe with the
-  current webapp.
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/renderer-dedup-slots / feature/renderer-dedup-slots
+- Base: feature/renderer-framebus-reuse (PR C1, 0065ee27). Target dev after C1 merges.
+- Hard rules (AGENTS.md): Graphics Single-Path; docs under docs/bridge/* updated. Renderer entry tests exist
+  (`electron-renderer-entry.test.ts`, `framebus-heartbeat.test.ts`, `framebus-writer-match.test.ts`).
 
 ## Plan
-### 1. G4 — optional `displayModeId` end-to-end (bridge side)
-- `output-schemas.ts:24-28`: `displayModeId: z.number().int().positive().optional()` on `GraphicsFormatSchema`.
-- `graphics-output-validation-service.ts` `validateOutputFormat` (~183-261): DeckLink path — when
-  `format.displayModeId` is set, require `modes.some((mode) => mode.id === format.displayModeId)` among the modes
-  returned by `listDecklinkDisplayModes(...)`, else throw `Error("Selected display mode is not offered by the device")`;
-  display path ignores the field. Keep the existing w/h/fps checks.
-- Adapter args: `graphics/output-adapters/decklink-key-fill-output-adapter.ts` (~68-88) and
-  `decklink-video-output-adapter.ts` (~64-82): append `"--display-mode", String(config.format.displayModeId)` only
-  when set.
-- Protocol: no payload type lives in `packages/protocol` for this command (only `OutputDisplayModeT`), so no change
-  there beyond G12/G13 below.
+1. New pure module `renderer/paint-dedup.ts` (+ test): `shouldSkipIdenticalPaint({ buffer, lastWritten, nowMs,
+   lastWrittenAtMs, windowMs })` → true only when `lastWritten` exists, `buffer.equals(lastWritten)` and
+   `nowMs - lastWrittenAtMs < windowMs`. Replace the stride-4093 checksum in the entry with it; `invalidatePaintDedup()`
+   drops the reference. `Buffer.equals` early-exits on the first differing byte (cheap for changed frames; ~1 ms memcmp
+   for identical 8 MB frames).
+2. `framebus-config.ts:20`: `DEFAULT_SLOT_COUNT = 3` (env override `BRIDGE_FRAMEBUS_SLOT_COUNT` unchanged). Check
+   `framebus-layout.ts` size computation and the renderer client's ready gate (`electron-renderer-client.ts` ~862-867
+   compares slot count with config) — both derive from the same config, keep them consistent. Update
+   `framebus-config.test.ts` and any test asserting the old size.
+3. Docs: `docs/bridge/subsystems/graphics.md` (dedup rule, slot count), `docs/bridge/architecture/graphics-realtime-framebus.md`
+   (slot count default), `docs/bridge/dev/framebus-dev-setup.md` if it mentions the size.
 
-### 2. G10 — diagnostics instead of a silent empty list (TS only)
-- `modules/decklink/decklink-helper.ts`: add `listDecklinkDevicesWithDiagnostics(): Promise<{ devices: unknown[];
-  diagnostics: DecklinkDiagnosticsT }>` that accepts BOTH the current array output and a future envelope
-  `{ devices: [...], diagnostics: {...} }` (validate with Zod; unknown shape → `[]` + diagnostics.error), captures
-  stderr even on exit 0 (today dropped at ~146-166) into `diagnostics.error`/`message`, maps the known stderr hint
-  "DeckLink iterator could not be created" to `apiAvailable: false`, and records `helperMissing` when the helper path
-  is not executable. Keep `listDecklinkDevices()` as a thin wrapper.
-- `modules/decklink/decklink-detector.ts`: remember the last diagnostics (`getLastDiagnostics()`); `DecklinkModule`
-  (`modules/decklink/index.ts`) exposes it.
-- New `apps/bridge/src/services/output-diagnostics.ts` (+ test): `buildOutputsDiagnostics()` →
-  `{ platform: NodeJS.Platform; decklink: { state: "ok" | "unsupported_platform" | "helper_missing" | "api_unavailable" | "no_devices"; apiVersion?: string; helperVersion?: string; message?: string } }`
-  (`unsupported_platform` when the module is not registered for this platform, i.e. non-darwin).
-- Attach `diagnostics` to the outputs payload in `services/command-router.ts` (`list_outputs`, ~177-197) and
-  `routes/outputs.ts`. Protocol `packages/protocol/src/index.ts` `BridgeOutputsT` (~137-140) gets optional
-  `diagnostics?: BridgeOutputsDiagnosticsT` (export the type). Rebuild protocol (`npm run build:protocol`).
-- Do NOT implement a watch-process restart here (it needs the shared backoff scheduler from the engine PRs; it is
-  scheduled for PR C2). Only add an `exit`/`close` handler to `watchDecklinkDevices` (~280-343) that logs at warn once
-  with code/signal so a dead watcher is at least visible.
-
-### 3. G11 — detection budget
-- `modules/decklink/index.ts`: `readonly detectionTimeoutMs = 12_000` (pattern `modules/display/display-module.ts:295-297`).
-- `decklink-detector.ts`: cache display modes per port (`Map<portId, { modes; cachedAt }>`, TTL 60 s), invalidated
-  from the module's watch callback on `device_added`/`device_removed`; limit concurrent per-device mode queries to 2
-  devices at a time (SDI + HDMI of one device may stay parallel as today).
-
-### 4. G12 — own playback must not hide the device
-- `services/device-to-output-transform.ts`: add `options?: { ownedPortIds?: ReadonlySet<string> }`;
-  `available = (present && ready && !inUse && port.status.available) || owned`; set `ownedByBridge: owned` on the
-  entry. Protocol `OutputDeviceT` (~110-121) gets optional `ownedByBridge?: boolean`.
-- `routes/outputs.ts:20-75`: delete the duplicated mapping, import and use the transform; pass owned ports from
-  `graphicsManager.getStatus().outputConfig?.targets` (`output1Id`, `output2Id`). Same in `command-router.ts`
-  `list_outputs`.
-
-### 5. G13 — platform + capabilities visible
-- `get_status` in `command-router.ts` (~104-125) and `routes/status.ts` (~59-75): add `platform: process.platform` and
-  `outputCapabilities: { decklink: process.platform === "darwin" }`. Protocol `BridgeStatus` (~27-45) additive,
-  optional fields.
-- `diagnostics.decklink.state === "unsupported_platform"` on win32 (from §2).
-
-### 6. Docs (same change)
-- `docs/bridge/features/output-config.md`: `displayModeId` (semantics, fallback to the w/h/fps heuristic, interlaced
-  limitation: progressive 25 fps frames are delivered inside a 50i container, no field-accurate motion); fix the stale
-  line ~57 (`KEY_FILL_PIXEL_FORMAT_PRIORITY` is `["8bit_argb"]` only, see `output-format-policy.ts:12-16`).
-- `docs/bridge/subsystems/device-discovery.md` (~48-58): budget table (module timeout 12 s, helper call 4 s, mode cache
-  60 s), diagnostics field.
-- `docs/bridge/features/device-outputs.md`: `available` formula with `ownedByBridge`, `diagnostics`.
-- `docs/bridge/subsystems/output-helper.md` (~44-48): platform matrix gets a DeckLink row "macOS only";
-  `docs/bridge/features/relay-protocol.md` / `graphics-commands.md`: new `get_status` fields and `list_outputs.diagnostics`.
-
-## Acceptance criteria
-1. `schemas/output-schemas.test.ts`: NEW "accepts optional displayModeId" and "rejects a non-integer displayModeId".
-   Second RED before (today unknown key is stripped, not rejected — assert the parsed output contains the id).
-2. `graphics-output-validation-service.test.ts`: NEW "rejects a displayModeId that the device does not offer" (RED
-   before: passes today) and "accepts a matching displayModeId".
-3. Adapter tests (`decklink-key-fill-output-adapter.test.ts`, `decklink-video-output-adapter.test.ts`): NEW "passes
-   --display-mode when format.displayModeId is set" (RED before) and "omits --display-mode otherwise".
-4. `decklink-helper.test.ts`: NEW "parses the diagnostics envelope", "falls back to array output from older helpers",
-   "reports api_unavailable when the helper prints the iterator hint on stderr with exit 0" (RED before: stderr
-   dropped), "logs once when the watch process exits" (RED before: no handler).
-5. `output-diagnostics.test.ts`: states ok / unsupported_platform / helper_missing / api_unavailable / no_devices.
-6. `command-router.test.ts`: NEW "list_outputs includes diagnostics", "list_outputs marks the active output ports as
-   owned and available" (RED before), "get_status exposes platform and outputCapabilities" (RED before).
-   `routes/outputs.integration.test.ts` and `routes/status` tests updated accordingly.
-7. `device-to-output-transform.test.ts`: NEW "marks owned ports available and flags ownedByBridge" (RED before).
-8. `modules/decklink/index.test.ts` (create if missing): "exposes detectionTimeoutMs 12000" (RED before);
-   `decklink-detector.test.ts`: "reuses cached display modes within TTL", "refreshes modes after invalidation".
-9. Existing suites stay green: `device-cache.test.ts`, `graphics-manager.test.ts`, `graphics-output-transition-service.test.ts`,
-   `outputs.integration.test.ts`.
-10. `npx jest apps/bridge/src/services/graphics/schemas apps/bridge/src/services/graphics/graphics-output-validation-service.test.ts
-    apps/bridge/src/services/graphics/output-adapters apps/bridge/src/modules/decklink apps/bridge/src/services/device-to-output-transform.test.ts
-    apps/bridge/src/services/output-diagnostics.test.ts apps/bridge/src/services/command-router.test.ts apps/bridge/src/routes --runInBand`
-    green; FULL `npm run test:jest` green; `npm run lint` clean; `npm run build:protocol`, `npm run build:bridge` clean.
-11. Behaviour with the CURRENT webapp and CURRENT helper binary is unchanged except: outputs of the active config are
-    now selectable, `get_status`/`list_outputs` carry additive fields.
+## Acceptance criteria (RED before unless guard)
+1. `paint-dedup.test.ts`: identical within window → skip; identical after window → write; differing single byte outside
+   the old stride raster (e.g. index 1) → write (RED before when ported against the old checksum helper — document as
+   red on the old implementation, or as guard if you cannot exercise the old code path).
+2. `electron-renderer-entry.test.ts`: "writes a paint that differs from the last frame in a single pixel within 1 s"
+   (RED before with the sampled checksum when the differing byte is not on the 4093 raster) and "skips a pixel-identical
+   paint within 1 s" (guard).
+3. `framebus-config.test.ts`: default slot count 3 (RED before).
+4. Existing renderer/framebus suites green; `npx jest apps/bridge/src/services/graphics/renderer apps/bridge/src/services/graphics/framebus --runInBand`;
+   FULL `npm run test:jest` (verifier); `npm run lint`; `npm run build:bridge`; `npm run build:graphics-renderer`.
 
 ## Review
-- Round: 1/3
-- Verdict: Applied review fixes; pending re-verification.
-- Must-fix (applied):
-  - Extracted shared outputs assembly into `apps/bridge/src/services/outputs-view.ts`; both `list_outputs` and
-    `GET /outputs` now use `buildBridgeOutputsView()`.
-  - Removed production `unknown` diagnostics casts by adding optional `getLastDiagnostics?()` to `DeviceModule`.
+- Round: 0/3
+- Verdict: (pending)
+- Must-fix (open):
 - Notes (non-blocking):
 - Handoff to human (if any):
 
 ### Implementation notes
-- Files changed: bridge DeckLink helper/detector/module, output diagnostics, command router, outputs/status routes, graphics schema/validation/adapters, protocol types, targeted tests, and the docs listed in this task.
-- No native helper protocol changes, no new graphics fallback paths.
-- Full `npm run test:jest` is blocked in this sandbox by pre-existing `listen EPERM: operation not permitted 127.0.0.1` failures in `electron-renderer-client.test.ts`; reproduced from a clean `HEAD` archive in `/private/tmp`.
+- Changed `paint-dedup.ts`, `electron-renderer-entry.ts`, `framebus-config.ts`, colocated tests, and the three requested docs.
+- Paint dedup now skips only exact pixel-identical buffers within the 1 s window; invalidation drops the retained paint buffer.
+- Studio FrameBus default slot count is now 3; `BRIDGE_FRAMEBUS_SLOT_COUNT` override behavior is unchanged.
+- Deviation: targeted/full Jest are blocked in this sandbox by pre-existing `listen EPERM: operation not permitted 127.0.0.1` in `electron-renderer-client.test.ts`; proven by reversing the working-tree patch and rerunning the same targeted command.
 
 ## Verification
-- [ ] Tests pass (targeted + full `npm run test:jest`)
-- [x] Lint / type-check pass (`npm run lint`, `npm run build:protocol`, `npm run build:bridge`)
-- [ ] Hardware outcome check (verifier): with UltraStudio attached and Key&Fill running, `list_outputs` shows its
-      ports `available: true, ownedByBridge: true`; selecting the 1080i50 mode sends `displayModeId` (after the webapp PR)
+- [ ] Tests pass (targeted + full; blocked by pre-existing `listen EPERM` in `electron-renderer-client.test.ts`)
+- [x] Lint / builds pass
+- [ ] Hardware outcome check (verifier): clock graphic ticks every second on the SDI output without stalls
 - [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after
