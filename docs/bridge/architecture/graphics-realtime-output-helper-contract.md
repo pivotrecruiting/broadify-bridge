@@ -30,9 +30,13 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 - Helper sendet `{"type":"ready"}` erst nach erfolgreicher FrameBus-Validierung.
 - `ready` darf additiv `helperVersion` enthalten. Die Bridge speichert die
   Version, verlangt sie aber nicht.
+- DeckLink sendet nach erfolgreichem `StartScheduledPlayback` additiv
+  `{"type":"playback_started"}`. Ein fehlgeschlagener Start oder ein
+  unerwarteter Scheduled-Playback-Stop fuehrt zu
+  `{"type":"fatal","code":"...","message":"..."}` und Exit-Code 3.
 - Die Bridge begrenzt den Ready-Handshake: DeckLink 12s, Display 8s. Bei
   Timeout beendet sie den Helper und meldet den Fehler mit stderr-Kontext.
-- Zukuenftige Helper duerfen `{"type":"playback_started"}` und
+- Helper duerfen `{"type":"playback_started"}` und
   `{"type":"fatal","code":"...","message":"..."}` senden. Aktuelle Helper,
   die nur `ready`/`metrics` senden, bleiben gueltig; unbekannte Events werden
   toleriert.
@@ -51,6 +55,18 @@ Output-Helper werden wie bisher als Child-Process gestartet, erhalten aber zusä
 - Bei Key/Fill werden zwei Outputs synchronisiert.
 - Pixel-Format-Prioritäten bleiben unverändert (SSOT: `output-format-policy.ts`).
 - Eingangsformat aus Renderer/FrameBus ist immer RGBA8.
+- `--display-mode <id>` bevorzugt den exakten DeckLink SDK Display-Mode vor der
+  Breite/Hoehe/FPS-Heuristik. Wenn die ID nicht nutzbar ist, sendet der Helper
+  `warning.display_mode_id_not_found` und faellt auf die Heuristik zurueck.
+- Der FrameBus-Reader oeffnet die Shared-Memory-Region nach 2s ohne
+  `seq`-Fortschritt erneut. Bei fehlgeschlagenem Reopen bleibt das letzte
+  geplante Frame aktiv; weitere Versuche laufen alle 5s. Voraussetzung ist der
+  1s-Writer-Heartbeat des Renderers (`framebus-heartbeat.ts`), der bei
+  statischem Bild das letzte Frame erneut publiziert; das Heartbeat-Intervall
+  muss unter der 2s-Stale-Schwelle des Helpers bleiben.
+- FrameBus-Metriken enthalten `tornFrames`; der Helper verwirft Slot-Kopien,
+  deren `seq`-Recheck zeigt, dass der Slot waehrend des Kopierens ueberschrieben
+  worden sein koennte.
 - Key/Fill-Output ist ARGB8-only. BGRA ist nicht erlaubt; bei fehlender ARGB-Unterstützung muss die Konfiguration fehlschlagen.
 
 ### Display
