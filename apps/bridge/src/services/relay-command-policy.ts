@@ -84,7 +84,7 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   get_status: readOnly("get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["bridge.status"]),
   bridge_pair_validate: readOnly("bridge_pair_validate", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["bridge.identity"]),
   list_outputs: readOnly("list_outputs", "list_outputs", 15_000, 11_000, ["outputs"]),
-  engine_connect: sideEffect("engine_connect", "engine_connect", 18_000, 11_000, "engine", ["engine.status"], "after_state_check"),
+  engine_connect: sideEffect("engine_connect", "engine_connect", 18_000, 17_000, "engine", ["engine.status"], "after_state_check"),
   engine_disconnect: sideEffect("engine_disconnect", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "engine", ["engine.status"], "after_state_check"),
   engine_get_status: readOnly("engine_get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["engine.status"]),
   engine_get_macros: readOnly("engine_get_macros", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["engine.macros"]),

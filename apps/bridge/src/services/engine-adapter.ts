@@ -25,6 +25,15 @@ import {
   publishEngineMacroExecutionEvent,
   publishEngineStatusEvent,
 } from "./engine/engine-event-publisher.js";
+import {
+  EngineConnectionSupervisor,
+  RECONNECT_BASE_DELAY_MS,
+  RECONNECT_JITTER_RATIO,
+  RECONNECT_MAX_DELAY_MS,
+  STARTUP_AUTO_CONNECT_DELAY_MS,
+} from "./engine/engine-connection-supervisor.js";
+import { ReconnectScheduler } from "./shared/backoff.js";
+import { isSameEngineConnectConfig } from "./engine/engine-connect-schema.js";
 
 type EngineBroadcastTopicT = Parameters<typeof websocketManager.broadcast>[0];
 type EngineBroadcastMessageT = Parameters<typeof websocketManager.broadcast>[1];
@@ -36,13 +45,21 @@ type EngineAdapterServiceDepsT = {
   ) => EngineAdapter;
   broadcast: (topic: EngineBroadcastTopicT, message: EngineBroadcastMessageT) => void;
   persistConnection?: (config: EngineConnectConfig) => Promise<void>;
+  loadPersistedConnection?: () => Promise<EngineConnectConfig | null>;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
+  random?: () => number;
 };
 
 const defaultDeps: EngineAdapterServiceDepsT = {
   createAdapter: (type, transport) => createEngineAdapter(type, transport),
   broadcast: (topic, message) => websocketManager.broadcast(topic, message),
   persistConnection: (config) => engineConnectionStore.save(config),
+  loadPersistedConnection: () => engineConnectionStore.load(),
 };
+
+type EngineConnectOriginT = "manual" | "startup";
+type TimerT = ReturnType<typeof setTimeout>;
 
 type VmixBrowserInputCapableAdapterT = EngineAdapter & {
   ensureVmixBrowserInput: (
@@ -79,10 +96,43 @@ export class EngineAdapterService {
   private previousState: EngineStateT | null = null;
   private unsubscribeAdapterState: (() => void) | null = null;
   private deps: EngineAdapterServiceDepsT;
+  private supervisor: EngineConnectionSupervisor;
+  private connectPromise: Promise<void> | null = null;
+  private connectConfig: EngineConnectConfig | null = null;
+  private connectOrigin: EngineConnectOriginT | null = null;
+  private startupAutoConnectTimer: TimerT | null = null;
+  private reconnectInfo: EngineStateT["reconnect"] = null;
 
   constructor(deps: EngineAdapterServiceDepsT = defaultDeps) {
     this.deps = { ...defaultDeps, ...deps };
     this.stateStore = new EngineStateStore();
+    this.supervisor = new EngineConnectionSupervisor({
+      driver: {
+        open: (config, origin = "manual") => this.openSession(config, origin),
+        close: () => this.closeSession({ resetState: true }),
+      },
+      getStatus: () => this.getStatus(),
+      onReconnectStateChange: (info) => this.setReconnectInfo(info),
+      createScheduler: (kind) =>
+        new ReconnectScheduler({
+          baseMs: RECONNECT_BASE_DELAY_MS,
+          maxMs: RECONNECT_MAX_DELAY_MS,
+          jitterRatio: kind === "session" ? RECONNECT_JITTER_RATIO : 0,
+          setTimeoutFn: this.deps.setTimeoutFn ?? setTimeout,
+          clearTimeoutFn: this.deps.clearTimeoutFn ?? clearTimeout,
+          now: Date.now,
+          random: this.deps.random,
+        }),
+      logger: {
+        info: (message) => getBridgeContext().logger.info(message),
+        warn: (message) => getBridgeContext().logger.warn(message),
+        error: (message) => getBridgeContext().logger.error(message),
+        debug: (message) => getBridgeContext().logger.debug?.(message),
+      },
+      setTimeoutFn: this.deps.setTimeoutFn ?? setTimeout,
+      clearTimeoutFn: this.deps.clearTimeoutFn ?? clearTimeout,
+      random: this.deps.random,
+    });
   }
 
   /**
@@ -109,78 +159,126 @@ export class EngineAdapterService {
   /**
    * Connect to engine
    */
-  async connect(config: EngineConnectConfig): Promise<void> {
+  async connect(
+    config: EngineConnectConfig,
+    origin: EngineConnectOriginT = "manual"
+  ): Promise<void> {
     const currentState = this.stateStore.getState();
 
     if (currentState.status === "connected") {
       throw createAlreadyConnectedError();
     }
-    if (currentState.status === "connecting") {
-      throw createAlreadyConnectingError();
+
+    if (this.connectPromise && this.connectConfig) {
+      if (isSameEngineConnectConfig(this.connectConfig, config)) {
+        return this.connectPromise;
+      }
+      if (this.connectOrigin === "manual" || origin !== "manual") {
+        throw createAlreadyConnectingError();
+      }
+      this.supervisor.cancelPending();
+      await this.closeSession();
     }
 
-    // Update state (ip/port are meaningless for the USB transport)
+    this.cancelStartupAutoConnectTimer();
+
+    this.connectConfig = config;
+    this.connectOrigin = origin;
+    this.connectPromise = this.supervisor.connect(config, origin).finally(() => {
+      if (this.connectConfig === config) {
+        this.connectPromise = null;
+        this.connectConfig = null;
+        this.connectOrigin = null;
+      }
+    });
+    return this.connectPromise;
+  }
+
+  startPersistedAutoConnect(): void {
+    this.cancelStartupAutoConnectTimer();
+    const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
+    this.startupAutoConnectTimer = setTimeoutFn(() => {
+      this.startupAutoConnectTimer = null;
+      void (async () => {
+        const persisted = await this.deps.loadPersistedConnection?.();
+        if (!persisted || this.getStatus() !== "disconnected") {
+          return;
+        }
+        await this.connect(persisted, "startup").catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          getBridgeContext().logger.info(
+            `[Engine] Startup auto-connect skipped: ${message}`
+          );
+        });
+      })();
+    }, STARTUP_AUTO_CONNECT_DELAY_MS);
+    this.startupAutoConnectTimer.unref?.();
+  }
+
+  beginShutdown(): void {
+    this.supervisor.beginShutdown();
+    this.cancelStartupAutoConnectTimer();
+  }
+
+  private async openSession(
+    config: EngineConnectConfig,
+    origin: EngineConnectOriginT
+  ): Promise<void> {
     this.stateStore.setState({
       status: "connecting",
       type: config.type,
       transport: config.transport ?? "network",
       ip: config.transport === "usb" ? undefined : config.ip,
       port: config.transport === "usb" ? undefined : config.port,
+      error: undefined,
+      errorCode: undefined,
+      reconnect: this.reconnectInfo ?? null,
     });
+    this.broadcastStateChanges(this.stateStore.getState());
 
+    let adapter: EngineAdapter | null = null;
+    let unsubscribeAdapterState: (() => void) | null = null;
     try {
-      // Unsubscribe from previous adapter if exists
-      if (this.unsubscribeAdapterState) {
-        this.unsubscribeAdapterState();
-        this.unsubscribeAdapterState = null;
-      }
-
-      // Tear down any lingering previous adapter before creating a new one.
-      // After an unsolicited drop the status is "disconnected" but the old
-      // adapter (and, for USB, its helper process) is still around and keeps
-      // the switcher claimed — so the reconnect would otherwise fail
-      // ("No ATEM switcher found on USB") until a physical replug. Best-effort:
-      // proceed with the new connection regardless of cleanup errors.
-      if (this.adapter) {
-        const previousAdapter = this.adapter;
-        this.adapter = null;
-        try {
-          await previousAdapter.disconnect();
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          console.error(
-            "[EngineAdapterService] Failed to disconnect previous adapter before reconnect:",
-            message
-          );
-        }
-      }
-
-      // Create adapter using factory
-      this.adapter = this.deps.createAdapter(config.type, config.transport);
-
-      // Subscribe to adapter state changes and store unsubscribe function
-      this.unsubscribeAdapterState = this.adapter.onStateChange(
+      await this.closeSession();
+      adapter = this.deps.createAdapter(config.type, config.transport);
+      this.adapter = adapter;
+      const unsubscribe = adapter.onStateChange(
         (state: EngineStateT) => {
-          this.stateStore.setState(state);
-          this.broadcastStateChanges(state);
+          if (this.adapter !== adapter) {
+            return;
+          }
+          const previous = this.stateStore.getState();
+          const next = {
+            ...state,
+            reconnect: state.status === "connected" ? null : this.reconnectInfo ?? null,
+          };
+          this.stateStore.setState(next);
+          this.broadcastStateChanges(this.stateStore.getState());
+          this.supervisor.handleSessionStatus(previous.status, state.status);
         }
       );
-
-      // Connect adapter
-      await this.adapter.connect(config);
-      await this.persistConnection(config);
-
-      // Note: State will be updated via adapter's onStateChange callback
-    } catch (error: unknown) {
-      // Clean up adapter on connection failure
-      if (this.unsubscribeAdapterState) {
-        this.unsubscribeAdapterState();
-        this.unsubscribeAdapterState = null;
+      unsubscribeAdapterState = () => {
+        unsubscribe();
+        unsubscribeAdapterState = null;
+      };
+      this.unsubscribeAdapterState = unsubscribeAdapterState;
+      await adapter.connect(config);
+      if (origin === "manual") {
+        await this.persistConnection(config);
       }
-      this.adapter = null;
+    } catch (error: unknown) {
+      if (adapter && this.adapter === adapter) {
+        await this.closeSession();
+      } else if (adapter) {
+        if (unsubscribeAdapterState) {
+          unsubscribeAdapterState();
+          await adapter.disconnect().catch(() => {});
+        }
+      }
 
-      // Re-throw EngineError as-is, wrap others
+      if (origin !== "manual") {
+        throw error;
+      }
       if (error instanceof EngineError) {
         const errorState: EngineStateT = {
           status: "error",
@@ -190,9 +288,10 @@ export class EngineAdapterService {
           error: error.message,
           errorCode: getErrorCode(error),
           macros: [],
+          reconnect: null,
         };
         this.stateStore.setState(errorState);
-        this.broadcastStateChanges(errorState);
+        this.broadcastStateChanges(this.stateStore.getState());
         throw error;
       }
 
@@ -213,10 +312,38 @@ export class EngineAdapterService {
         error: engineError.message,
         errorCode: engineError.code,
         macros: [],
+        reconnect: null,
       };
       this.stateStore.setState(errorState);
-      this.broadcastStateChanges(errorState);
+      this.broadcastStateChanges(this.stateStore.getState());
       throw engineError;
+    }
+  }
+
+  private async closeSession(options: { resetState?: boolean } = {}): Promise<void> {
+    if (this.unsubscribeAdapterState) {
+      this.unsubscribeAdapterState();
+      this.unsubscribeAdapterState = null;
+    }
+
+    if (this.adapter) {
+      const previousAdapter = this.adapter;
+      this.adapter = null;
+      try {
+        await previousAdapter.disconnect();
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(
+          "[EngineAdapterService] Error during disconnect:",
+          errorMessage
+        );
+      }
+    }
+
+    if (options.resetState) {
+      this.reconnectInfo = null;
+      this.stateStore.reset();
+      this.broadcastStateChanges(this.stateStore.getState());
     }
   }
 
@@ -224,26 +351,11 @@ export class EngineAdapterService {
    * Disconnect from engine
    */
   async disconnect(): Promise<void> {
-    // Unsubscribe from adapter state changes first
-    if (this.unsubscribeAdapterState) {
-      this.unsubscribeAdapterState();
-      this.unsubscribeAdapterState = null;
-    }
-
-    if (this.adapter) {
-      try {
-        await this.adapter.disconnect();
-      } catch (error) {
-        // Log disconnect errors but don't throw - disconnect should always succeed
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        console.error(
-          "[EngineAdapterService] Error during disconnect:",
-          errorMessage
-        );
-      }
-      this.adapter = null;
-    }
+    this.cancelStartupAutoConnectTimer();
+    await this.supervisor.disconnect();
+    this.connectPromise = null;
+    this.connectConfig = null;
+    this.connectOrigin = null;
 
     // Reset state
     this.stateStore.reset();
@@ -359,7 +471,9 @@ export class EngineAdapterService {
       !this.previousState ||
       this.previousState.status !== state.status ||
       this.previousState.error !== state.error ||
-      this.previousState.errorCode !== state.errorCode;
+      this.previousState.errorCode !== state.errorCode ||
+      JSON.stringify(this.previousState.reconnect ?? null) !==
+        JSON.stringify(state.reconnect ?? null);
     const didMacrosChange =
       !this.previousState ||
       JSON.stringify(this.previousState.macros) !== JSON.stringify(state.macros);
@@ -377,6 +491,7 @@ export class EngineAdapterService {
         status: state.status,
         error: state.error,
         errorCode: state.errorCode,
+        reconnect: state.reconnect ?? null,
       });
     }
 
@@ -454,6 +569,8 @@ export class EngineAdapterService {
         ? "macro_execution_changed"
         : didMacrosChange
           ? "macros_changed"
+          : state.reconnect
+            ? "reconnecting"
           : state.status === "disconnected"
             ? "disconnected"
             : state.status === "connected" && this.previousState?.status !== "connected"
@@ -479,6 +596,30 @@ export class EngineAdapterService {
     }
 
     this.previousState = { ...state };
+  }
+
+  private setReconnectInfo(info: EngineStateT["reconnect"]): void {
+    this.reconnectInfo = info;
+    const current = this.stateStore.getState();
+    if (current.reconnect === info) {
+      return;
+    }
+    this.stateStore.setState({
+      status: info ? "connecting" : current.status,
+      reconnect: info,
+      error: info?.lastError,
+      errorCode: info ? current.errorCode : current.errorCode,
+    });
+    this.broadcastStateChanges(this.stateStore.getState());
+  }
+
+  private cancelStartupAutoConnectTimer(): void {
+    if (!this.startupAutoConnectTimer) {
+      return;
+    }
+    const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;
+    clearTimeoutFn(this.startupAutoConnectTimer);
+    this.startupAutoConnectTimer = null;
   }
 
   private async persistConnection(config: EngineConnectConfig): Promise<void> {

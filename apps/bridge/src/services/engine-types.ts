@@ -51,6 +51,12 @@ export type MacroExecutionT = {
   error?: string;
 };
 
+export type EngineReconnectInfoT = {
+  attempt: number;
+  nextRetryAt: number | null;
+  lastError?: string;
+};
+
 /**
  * Engine state information
  */
@@ -66,6 +72,7 @@ export type EngineStateT = {
   lastUpdate?: number;
   error?: string;
   errorCode?: string;
+  reconnect?: EngineReconnectInfoT | null;
 };
 
 /**
