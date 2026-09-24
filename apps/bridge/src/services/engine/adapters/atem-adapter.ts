@@ -31,9 +31,13 @@ import {
  */
 export class AtemAdapter extends EventEmitter implements EngineAdapter {
   private atemConnection: Atem | null = null;
+  private atemConnectedListener: (() => void) | null = null;
   private atemErrorListener: ((error: Error | string) => void) | null = null;
   private atemStateChangedListener: (() => void) | null = null;
   private atemDisconnectedListener: (() => void) | null = null;
+  private connectSettled = false;
+  private connectResolve: (() => void) | null = null;
+  private connectReject: ((error: Error) => void) | null = null;
   private state: EngineStateT = {
     status: "disconnected",
     macros: [],
@@ -75,15 +79,15 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     const atem = new Atem({ debugBuffers: false });
     this.atemConnection = atem;
 
-    // Set up event handlers
-    let connectionResolve: (() => void) | null = null;
-    let connectionReject: ((error: Error) => void) | null = null;
     let timeoutId: NodeJS.Timeout | null = null;
+    this.connectSettled = false;
+    this.connectResolve = null;
+    this.connectReject = null;
 
     // Promise that resolves when "connected" event fires
     const connectionPromise = new Promise<void>((resolve, reject) => {
-      connectionResolve = resolve;
-      connectionReject = reject;
+      this.connectResolve = resolve;
+      this.connectReject = reject;
     });
 
     // Set up connected handler
@@ -92,22 +96,41 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         clearTimeout(timeoutId);
         timeoutId = null;
       }
-      atem.removeListener("error", onError);
-      this.setState({ status: "connected" });
+      this.setState({
+        status: "connected",
+        error: undefined,
+        errorCode: undefined,
+      });
       this.updateMacrosFromState();
-      if (connectionResolve) {
-        connectionResolve();
+      if (!this.connectSettled) {
+        this.connectSettled = true;
+        this.connectResolve?.();
+        this.connectResolve = null;
+        this.connectReject = null;
       }
     };
 
     // Set up error handler
-    const onError = (error: Error | string) => {
+    const onAtemError = (error: Error | string) => {
+      if (this.connectSettled) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+
+        if (this.state.status === "connected") {
+          this.setState({ error: errorMessage });
+        }
+        return;
+      }
+
+      if (!(error instanceof Error)) {
+        return;
+      }
+
       if (timeoutId) {
         clearTimeout(timeoutId);
         timeoutId = null;
       }
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error.message;
 
       // Determine error type from message
       let engineError: EngineError;
@@ -143,24 +166,20 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         error: engineError.message,
         errorCode: engineError.code,
       });
-      if (connectionReject) {
-        connectionReject(engineError);
-      }
+      this.connectSettled = true;
+      this.connectReject?.(engineError);
+      this.connectResolve = null;
+      this.connectReject = null;
     };
 
     // Set up disconnected handler
     const onDisconnected = () => {
       if (this.state.status === "connected") {
-        this.setState({ status: "disconnected" });
-      }
-    };
-
-    const onRuntimeError = (error: Error | string) => {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-
-      if (this.state.status === "connected") {
-        this.setState({ error: errorMessage });
+        this.setState({
+          status: "connecting",
+          error: undefined,
+          errorCode: undefined,
+        });
       }
     };
 
@@ -168,39 +187,23 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       this.updateMacrosFromState();
     };
 
-    atem.once("connected", onConnected);
-    atem.once("error", onError);
+    atem.on("connected", onConnected);
     atem.on("disconnected", onDisconnected);
     atem.on("stateChanged", onStateChanged);
-    atem.on("error", onRuntimeError);
-    this.atemErrorListener = onRuntimeError;
+    atem.on("error", onAtemError);
+    this.atemConnectedListener = onConnected;
+    this.atemErrorListener = onAtemError;
     this.atemDisconnectedListener = onDisconnected;
     this.atemStateChangedListener = onStateChanged;
 
     try {
       // Start connection
-      atem.connect(config.ip, config.port);
+      void atem.connect(config.ip, config.port).catch((error: unknown) => {
+        onAtemError(error instanceof Error ? error : new Error(String(error)));
+      });
 
       // Set up timeout
       timeoutId = setTimeout(() => {
-        // Clean up connection attempt on timeout
-        try {
-          atem.disconnect();
-        } catch {
-          // Ignore disconnect errors during timeout cleanup
-        }
-        this.atemConnection = null;
-
-        // Remove event listeners
-        atem.removeListener("connected", onConnected);
-        atem.removeListener("error", onError);
-        atem.removeListener("error", onRuntimeError);
-        atem.removeListener("disconnected", onDisconnected);
-        atem.removeListener("stateChanged", onStateChanged);
-        this.atemErrorListener = null;
-        this.atemDisconnectedListener = null;
-        this.atemStateChangedListener = null;
-
         const timeoutError = createConnectionTimeoutError(
           config.ip,
           config.port,
@@ -211,9 +214,10 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
           error: timeoutError.message,
           errorCode: timeoutError.code,
         });
-        if (connectionReject) {
-          connectionReject(timeoutError);
-        }
+        this.connectSettled = true;
+        this.connectReject?.(timeoutError);
+        this.connectResolve = null;
+        this.connectReject = null;
       }, this.connectTimeoutMs);
 
       // Wait for connection or timeout
@@ -225,19 +229,8 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         timeoutId = null;
       }
       if (atem) {
-        try {
-          atem.removeListener("connected", onConnected);
-          atem.removeListener("error", onError);
-          atem.removeListener("error", onRuntimeError);
-          atem.removeListener("disconnected", onDisconnected);
-          atem.removeListener("stateChanged", onStateChanged);
-          atem.disconnect();
-        } catch {
-          // Ignore cleanup errors
-        }
-        this.atemErrorListener = null;
-        this.atemDisconnectedListener = null;
-        this.atemStateChangedListener = null;
+        this.detachAtemListeners(atem);
+        await atem.destroy().catch(() => {});
       }
       this.atemConnection = null;
 
@@ -265,25 +258,8 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
 
     if (this.atemConnection) {
       try {
-        if (this.atemErrorListener) {
-          this.atemConnection.removeListener("error", this.atemErrorListener);
-          this.atemErrorListener = null;
-        }
-        if (this.atemDisconnectedListener) {
-          this.atemConnection.removeListener(
-            "disconnected",
-            this.atemDisconnectedListener
-          );
-          this.atemDisconnectedListener = null;
-        }
-        if (this.atemStateChangedListener) {
-          this.atemConnection.removeListener(
-            "stateChanged",
-            this.atemStateChangedListener
-          );
-          this.atemStateChangedListener = null;
-        }
-        await this.atemConnection.disconnect();
+        this.detachAtemListeners(this.atemConnection);
+        await this.atemConnection.destroy();
       } catch {
         // Ignore disconnect errors
       }
@@ -302,6 +278,25 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       lastCompletedMacroExecution: null,
     });
     this.macroExecutionStore.reset();
+  }
+
+  private detachAtemListeners(atem: Atem): void {
+    if (this.atemConnectedListener) {
+      atem.removeListener("connected", this.atemConnectedListener);
+      this.atemConnectedListener = null;
+    }
+    if (this.atemErrorListener) {
+      atem.removeListener("error", this.atemErrorListener);
+      this.atemErrorListener = null;
+    }
+    if (this.atemDisconnectedListener) {
+      atem.removeListener("disconnected", this.atemDisconnectedListener);
+      this.atemDisconnectedListener = null;
+    }
+    if (this.atemStateChangedListener) {
+      atem.removeListener("stateChanged", this.atemStateChangedListener);
+      this.atemStateChangedListener = null;
+    }
   }
 
   /**

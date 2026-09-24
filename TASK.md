@@ -1,91 +1,100 @@
-# Task: Engine error codes end-to-end, connection persistence in service, IPv4 trim (PR B1)
+# Task: ATEM IP adapter — survive library reconnects, destroy on cleanup, tolerant connect errors (PR B2)
 
 ## Raw request
-Audit rc.19 (24.9.2026): engine errors reach the webapp without their machine-readable code
-(`command-router.ts` narrows on `GraphicsError` only), `EngineAdapterService.runMacro/stopMacro` wrap
-`EngineError` into a plain `Error`, `publishEngineErrorEvent` is only ever called with the literal
-`"engine_error"`, HTTP `POST /engine/connect` does not persist the connection (only the relay command does),
-and the `ip` schema rejects surrounding whitespace.
+Audit rc.19 (24.9.2026), CRITICAL: `apps/bridge/src/services/engine/adapters/atem-adapter.ts` registers the
+atem-connection `connected` event with `.once` (line ~170). The library reconnects by itself after any short outage
+(`node_modules/atem-connection/dist/lib/atemSocketChild.js:47-66, 96-113`: reconnect loop every 1 s, `restartConnection`
+also after ~600 ms packet loss with a command in flight) and emits `connected` again (`dist/atem.js:52-55, 127-131`),
+but the adapter has no listener left: status stays `disconnected`, every macro run fails with "Engine is not connected"
+although the ATEM answers again; `stateChanged` (registered with `.on`) keeps updating the macro list of a "disconnected"
+engine. Only manual disconnect + connect helps. MEDIUM: `disconnect()` calls `atemConnection.disconnect()` (~284) but never
+`destroy()` — `destroy()` (`dist/lib/atemSocket.js:39-51`) is what kills the threadedclass worker and removes the exit
+hook, so every connect cycle leaks a worker thread + UDP socket. LOW (verified): the library emits `error` only as
+STRINGS (`atemSocket.js:117,148`, `atem.js:117` "MutateState failed…", "Failed to deserialize command…"); UDP socket
+errors are only logged (`atemSocketChild.js:150-157`). The adapter's connect-phase `once("error")` therefore rejects the
+connect on harmless library strings; the ECONNREFUSED/ENOTFOUND branches (~114-139) are never hit in practice (IP
+connects fail only via the 10 s timeout). `atem.connect()` returns a Promise (`dist/atem.d.ts:52`) that is neither
+awaited nor caught (~181).
 
 ## Context
-- Customer / project: Broadify Bridge (apps/bridge), all ATEM/vMix/Tricaster users
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/engine-error-codes / feature/engine-error-codes
-- Base branch: dev (origin/dev dd5d6932 == v0.27.1-rc.19)
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/atem-ip-reconnect-listeners / feature/atem-ip-reconnect-listeners
+- Base: feature/engine-error-codes (PR B1, commit 84b14e34 — stacked; B1 already adds `errorCode` to the state and
+  keeps EngineError codes). Target after B1 merges: dev.
+- No supervisor / bridge-side reconnect loop in this PR (that is PR B4). No helper/USB changes.
+- Conventions: kebab-case, camelCase, `T`-suffixed type aliases where established, English comments/JSDoc, Zod for
+  inputs, colocated tests, `npx jest <path> --runInBand`, fake timers via `jest.useFakeTimers()` +
+  `await jest.advanceTimersByTimeAsync()` (existing precedent in atem-adapter.test.ts ~140-150, 338-347).
 
 ## Plan
-Scope is EXACTLY the four items below. No supervisor, no reconnect logic, no adapter protocol changes.
+1. Listener lifecycle in `atem-adapter.ts`:
+   - Replace the connect()-local promise handles with instance fields `connectSettled`, `connectResolve`,
+     `connectReject`; add `atemConnectedListener` next to the existing listener fields (33-46).
+   - Register `atem.on("connected", onConnected)` (not once). Merge `once("error", onError)` and
+     `on("error", onRuntimeError)` into ONE `on("error", onAtemError)` handler that dispatches by phase
+     (`connectSettled ? runtime : connectPhase`).
+   - `onConnected`: clear the connect timeout, `setState({ status: "connected", error: undefined, errorCode: undefined })`,
+     `updateMacrosFromState()`; resolve the connect promise only the first time (`connectSettled` guard). Every later
+     `connected` (library reconnect) re-applies status + macros.
+   - `onDisconnected` (~151-155): when `status === "connected"` → `setState({ status: "connecting", error: undefined })`
+     (the library is healing itself; the supervisor in B4 will treat `connected→connecting` as self-heal). Do NOT clear
+     the macro list (the library sets `_state = undefined`; `updateMacrosFromState` returns early ~468-470; the refresh
+     comes with the next `connected`).
+   - `void atem.connect(ip, port).catch((error) => onAtemError(error instanceof Error ? error : new Error(String(error))))`
+     instead of the bare call (~181).
+   - Centralise listener removal in `detachAtemListeners(atem)` (today duplicated at ~194-201, ~227-238, ~266-283) and
+     make sure `connected`/`error` listeners are removed in `disconnect()` too.
+2. Cleanup with `destroy()`: `disconnect()` (~284) → `await this.atemConnection.destroy()` (destroy calls disconnect
+   internally first — verified in `atemSocket.js:39-51`); timeout cleanup (~187) and catch cleanup (~232) →
+   `void atem.destroy().catch(() => {})`. Detach listeners BEFORE destroy so the internal `disconnected` does not flip
+   status to `connecting`.
+3. Tolerant connect errors: during the connect phase, only `Error` instances (from the `.catch` above) and the timeout
+   reject the connect; library STRING errors are logged at debug and ignored. After connect, keep today's runtime
+   behaviour (`onRuntimeError` sets `error` only). Keep the existing message-based classification for real `Error`s.
+4. Test mock (`atem-adapter.test.ts` ~33-62): `connect` returns a Promise, add `destroy: mockAtemDestroy`, allow emitting
+   a second `connected` and a `disconnected` from the test; `listenerCount` accessible for the duplicate-listener test.
 
-### 1. Shared error-code helper (new)
-- New file `apps/bridge/src/services/shared/error-code.ts` exporting
-  `getErrorCode(error: unknown): string | undefined` — returns `error.code` when `error` is an object whose
-  `code` property is a non-empty string (covers `GraphicsError` (graphics/graphics-errors.ts:7-15),
-  `EngineError` (engine/engine-errors.ts:30-), Node system errors). Duck-typed on purpose (jest module mocks
-  break `instanceof`). Colocated test `error-code.test.ts`.
-- `apps/bridge/src/services/command-router.ts:746`: replace
-  `const errorCode = error instanceof GraphicsError ? error.code : undefined;` with `getErrorCode(error)`.
-  Keep the `GraphicsError` import only if still used elsewhere in the file.
-
-### 2. EngineError codes survive the service and the event publisher
-- `apps/bridge/src/services/engine-adapter.ts` `runMacro` (~249-267) and `stopMacro` (~272-290): if the adapter
-  throws an `EngineError`, rethrow it unchanged; otherwise wrap as today but as
-  `new EngineError(EngineErrorCode.UNKNOWN_ERROR, "Failed to run macro N: <msg>")` (same message text as today).
-- Add optional `errorCode?: string` to `EngineStateT` (`apps/bridge/src/services/engine-types.ts:57-68`).
-  Set it wherever an `EngineError` is turned into `status: "error"`:
-  `engine/adapters/atem-usb-adapter.ts` `failConnect` (~432-445: `errorCode: error.code`),
-  `engine/adapters/atem-adapter.ts` connect error/timeout paths (~141-144, ~208-211),
-  `engine-adapter.ts` connect catch blocks (~179-188, ~201-210: `errorCode: getErrorCode(error)`).
-  Clear it (`errorCode: undefined`) on transitions to `connected`/`disconnected` where `error: undefined` is set today.
-- `engine-adapter.ts` `broadcastStateChanges` (~337-459): `publishEngineErrorEvent(state.errorCode ?? "engine_error",
-  state.error)` instead of the literal; include `code: state.errorCode` in the WS `engine.error` broadcast
-  (~382-395). Treat an `errorCode` change like a status change for `didStatusChange`.
-- `engine/engine-event-publisher.ts` `publishEngineStatusEvent` (~10-36): add `errorCode: state.errorCode ?? null`.
-
-### 3. Persistence moves into the service (E10)
-- `EngineAdapterServiceDepsT` (`engine-adapter.ts:29-35`) gets `persistConnection?: (config: EngineConnectConfig)
-  => Promise<void>` (default `engineConnectionStore.save`). After a SUCCESSFUL `connect()` call
-  `await deps.persistConnection(config)` (errors logged via bridge context logger at warn level, never thrown —
-  `engineConnectionStore.save` already swallows).
-- Remove the `await engineConnectionStore.save(connectConfig)` block from `command-router.ts` (~208-211) and the
-  now-unused import. Adjust `command-router.test.ts` (~274-315) accordingly (the store mock may stay).
-- HTTP `routes/engine.ts` needs no change: it calls the service and therefore persists now.
-
-### 4. IPv4 trim (E11)
-- `apps/bridge/src/services/engine/engine-connect-schema.ts:15`: `ip: z.string().trim().ip({ version: "v4" }).optional()`
-  (zod 3.25.76 — `.trim()` before `.ip()` verified chainable).
-
-## Acceptance criteria
-1. `command-router.test.ts`: NEW "propagates EngineError code as errorCode" — a handler throwing
-   `new EngineError(EngineErrorCode.NOT_CONNECTED, ...)` yields `{ success: false, errorCode: "NOT_CONNECTED" }`.
-   Must be RED before the fix (errorCode undefined) and GREEN after. Existing GraphicsError test stays green.
-2. `engine-adapter.test.ts`: NEW "rethrows EngineError from adapter.runMacro unchanged" (RED before: plain Error),
-   NEW "publishes engine_error with the adapter's EngineErrorCode" (RED before: literal "engine_error"),
-   NEW "persists the config after a successful manual connect" and "does not persist when connect fails"
-   (RED before: dep never called). Existing test around ~496-500 stays green via the `?? "engine_error"` fallback.
-3. `engine-event-publisher.test.ts`: `engine_status` payload contains `errorCode` (null when unset).
-4. `engine-connect-schema` test (create `engine-connect-schema.test.ts` if missing): "accepts an IPv4 with surrounding
-   whitespace and returns it trimmed" (RED before).
-5. `error-code.test.ts`: EngineError, GraphicsError, `{ code: "X" }`, plain Error (undefined), non-object (undefined).
-6. `command-router.test.ts` no longer asserts persistence via the router; a service-level test covers it.
-7. `npx jest apps/bridge/src/services/shared apps/bridge/src/services/engine apps/bridge/src/services/engine-adapter.test.ts
-   apps/bridge/src/services/command-router.test.ts apps/bridge/src/routes --runInBand` green; then FULL
-   `npm run test:jest` green; `npm run lint` clean; `npm run build:bridge` (tsc) clean.
-8. No behaviour change for graphics, relay, meeting. Webapp contract only gains optional fields.
-9. Docs: `docs/bridge/dataflows.md` (engine_error.code = EngineErrorCode; engine_status.errorCode) and
-   `docs/bridge/reference/files/command-router.md` (errorCode propagation, persistence now in service) updated.
+## Acceptance criteria (each "RED before" must be shown failing before the fix)
+1. "re-enters connected and refreshes macros after a library-internal reconnect": emit `disconnected`, change the
+   mock state (new macro name), emit `connected` → `getStatus() === "connected"`, macros reflect the new state. RED before
+   (status stays disconnected, once-listener).
+2. "reports connecting while the library reconnects": after `disconnected` from a connected state → `connecting`.
+   RED before (`disconnected`).
+3. "resolves the connect promise only once across repeated connected events" (resolve spy / promise settles once).
+4. "does not register duplicate listeners across connect cycles": after connect → disconnect → connect,
+   `listenerCount("connected") === 1` and `listenerCount("error") === 1`. RED before for `error` (two listeners) if the
+   test is written against the combined handler; otherwise document as guard.
+5. "routes a rejected atem.connect() promise into the connect error path": mock `connect` → `Promise.reject(new
+   Error("ECONNREFUSED"))` → connect rejects with `CONNECTION_REFUSED` without waiting for the 10 s timeout. RED before
+   (unhandled rejection / timeout).
+6. "disconnect destroys the atem instance (not just disconnect)", "connect timeout destroys the half-open instance",
+   "connect failure destroys the instance". RED before (`destroy` never called).
+7. "does not reject the connect attempt on a library-internal string error": emit `"MutateState failed: …"` before
+   `connected` → connect still resolves on `connected`. RED before. The existing test "handles string error in onError"
+   (~131) must be rewritten to the new behaviour (it documented the bug).
+8. Existing suites green: `atem-adapter.test.ts`, `engine-adapter.test.ts`, `adapter-factory.test.ts`,
+   `routes/engine*.test.ts`.
+9. `npx jest apps/bridge/src/services/engine apps/bridge/src/services/engine-adapter.test.ts apps/bridge/src/routes --runInBand`
+   green; FULL `npm run test:jest` green (verifier runs it outside the sandbox); `npm run lint`; `npm run build:bridge`.
+10. Docs: new `docs/bridge/features/engine-connection-lifecycle.md` (section "ATEM IP: library self-heal → status
+    connecting → connected"; note that a bridge-side supervisor follows in a later PR) linked from `docs/bridge/README.md`;
+    `docs/bridge/reference/files/atem-adapter.md` (if present) updated.
 
 ## Review
-- Round: 1/3
-- Verdict: PASS (note applied)
+- Round: 0/3
+- Verdict: (pending)
 - Must-fix (open):
 - Notes (non-blocking):
 - Handoff to human (if any):
 
 ### Implementation notes
-- Files changed: engine error-code helper/tests, engine adapter service/adapters, command router/tests, engine event publisher/tests, engine connect schema/test, websocket contract/test, bridge docs.
-- Deviations: full `npm run test:jest` is not green in this sandbox due pre-existing `electron-renderer-client.test.ts` `listen EPERM 127.0.0.1` failures; verified on a temporary base-state run after reversing this worktree's changes.
+- Files changed: `apps/bridge/src/services/engine/adapters/atem-adapter.ts`, `apps/bridge/src/services/engine/adapters/atem-adapter.test.ts`, `docs/bridge/README.md`, `docs/bridge/features/engine-connection-lifecycle.md`, `TASK.md`.
+- Implemented persistent ATEM `connected` handling, phase-aware single `error` handling, listener detach helper, `destroy()` cleanup for disconnect/failed connect/timeout, and tolerant connect-phase string errors.
+- No `docs/bridge/reference/files/atem-adapter.md` update was made because that file is not present in this worktree.
+- Full `npm run test:jest` is red in this sandbox due to pre-existing `listen EPERM: operation not permitted 127.0.0.1` failures in `apps/bridge/src/services/graphics/renderer/electron-renderer-client.test.ts`; the same failure reproduced with the ATEM adapter/test patch temporarily reversed.
 
 ## Verification
 - [ ] Tests pass (targeted + full `npm run test:jest`)
 - [x] Lint / type-check pass (`npm run lint`, `npm run build:bridge`)
-- [x] Browser-verified (n/a — bridge only)
+- [ ] Hardware outcome check (verifier, ATEM 192.168.178.70 reachable on this Mac): connect via IP, disable Wi-Fi/LAN
+      for 10 s, re-enable → status `connecting` then `connected`, macros refreshed, no manual reconnect
 - [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after
