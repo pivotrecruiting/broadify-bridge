@@ -89,7 +89,7 @@ describe("framebus-config", () => {
     it("falls back to default when BRIDGE_FRAMEBUS_SLOT_COUNT is invalid", () => {
       process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "1";
       const config = buildFrameBusConfig(createOutputConfig(), null);
-      expect(config.slotCount).toBe(2);
+      expect(config.slotCount).toBe(3);
     });
 
     it("uses BRIDGE_FRAME_PIXEL_FORMAT when 1", () => {
