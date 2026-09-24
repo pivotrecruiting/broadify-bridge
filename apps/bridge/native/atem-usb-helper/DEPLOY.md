@@ -17,7 +17,7 @@ macOS (both architectures; requires the ATEM software or ATEM_SDK_ROOT):
 
 ```bash
 npm run prepare:atem-usb-helper-release   # on an arm64 machine
-# repeat on an x64 machine (or build.sh under Rosetta with an x64 toolchain)
+ATEM_HELPER_ARCH=x86_64 npm run prepare:atem-usb-helper-release   # x64 cross-build on the same machine
 ```
 
 Windows (x64 Native Tools shell; no ATEM SDK required):
