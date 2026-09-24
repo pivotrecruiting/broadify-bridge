@@ -1,102 +1,61 @@
-# Task: Studio FrameBus reuse-by-name on renderer recovery + WebContents crash handling (PR C1)
+# Task: Renderer paint dedup by exact compare; Studio FrameBus slot count 3 (PR C4 — G15 + G14-TS)
 
 ## Raw request
-Audit rc.19 (24.9.2026), CRITICAL: when the graphics renderer process dies mid-show and the client restarts it,
-the new renderer creates the Studio FrameBus writer with `forceRecreate: true`
-(`electron-renderer-entry.ts:457-459` `shouldForceRecreateFrameBus()` returns true for every non-meeting bus,
-used at `:576`). The native addon then `shm_unlink`s the region and creates a NEW one
-(`native/framebus/src/framebus-addon.cc:441-473`). The running DeckLink helper stays mapped to the OLD inode and
-only polls `seq` (`native/decklink-helper/src/decklink-helper.cpp:2080-2085`) → output freezes on the last frame
-(key stays on air), status remains "ready". Meeting buses already use `forceRecreate:false` and reuse the region
-by name (proven in production). Second finding (MEDIUM): a Chromium render-process crash inside the offscreen
-window (process survives) is not handled — no `render-process-gone`/`unresponsive` handler — and the 1 s heartbeat
-keeps republishing the last frame, so the output silently freezes while everything reports healthy.
+Audit rc.19 (24.9.2026), LOW:
+- G15: the paint dedup in `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts` (~1135-1148 on rc.19)
+  samples every 4093rd byte for a checksum and suppresses a frame for up to 1 s when the sample matches; small changes
+  (e.g. a clock's seconds digits) can miss every sample and stall for up to a second.
+- G14 (TS part): the Studio FrameBus uses `DEFAULT_SLOT_COUNT = 2` (`renderer/../framebus/framebus-config.ts:20`) while the
+  DeckLink helper copies slot `(seq-1) % N` without re-checking `seq` after the copy — with two slots a fast writer can
+  overwrite the slot being read (torn frame). Meeting buses already use 3 slots (`meeting-graphics-manager.ts:16`). The
+  helper reads `slot_count` from the region header, so 3 is compatible with the current helper binary; the reader-side
+  `seq` re-check itself belongs to the helper batch.
 
 ## Context
-- Customer / project: Broadify Bridge Studio graphics (Key&Fill / video via DeckLink, display output)
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/renderer-framebus-reuse / feature/renderer-framebus-reuse
-- Base branch: dev (origin/dev dd5d6932 == v0.27.1-rc.19)
-- Hard rules (AGENTS.md): Graphics Single-Path — ONE renderer, FrameBus = data plane; NO multi-window fallback, NO
-  bridge-side compositing, NO `BRIDGE_GRAPHICS_RENDERER_SINGLE` switch. Update docs under docs/bridge/*.
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/renderer-dedup-slots / feature/renderer-dedup-slots
+- Base: feature/renderer-framebus-reuse (PR C1, 0065ee27). Target dev after C1 merges.
+- Hard rules (AGENTS.md): Graphics Single-Path; docs under docs/bridge/* updated. Renderer entry tests exist
+  (`electron-renderer-entry.test.ts`, `framebus-heartbeat.test.ts`, `framebus-writer-match.test.ts`).
 
 ## Plan
-Verified facts to rely on: the addon reuse path (`framebus-addon.cc:446-460, 483-504`) opens an existing region with
-`shm_open(O_RDWR)` and accepts it when magic/version/header_size/width/height/fps/pixel_format/frame_size/
-slot_count/slot_stride match; otherwise it throws "Existing shared memory has incompatible header|size", which the
-renderer entry already self-heals by recreating with `forceRecreate: true` (`electron-renderer-entry.ts:578-600`).
-Studio bus names are random per bridge run (`framebus-config.ts:45-47`), so cross-run collisions are impossible.
-`writer.header.seq` is exposed to JS as a bigint (`framebus-client.ts` `FrameBusHeaderT.seq`). The forced recreate
-was introduced in commit db93df0b ("updated keying pipeline for meeting") without a Studio rationale.
+1. New pure module `renderer/paint-dedup.ts` (+ test): `shouldSkipIdenticalPaint({ buffer, lastWritten, nowMs,
+   lastWrittenAtMs, windowMs })` → true only when `lastWritten` exists, `buffer.equals(lastWritten)` and
+   `nowMs - lastWrittenAtMs < windowMs`. Replace the stride-4093 checksum in the entry with it; `invalidatePaintDedup()`
+   drops the reference. `Buffer.equals` early-exits on the first differing byte (cheap for changed frames; ~1 ms memcmp
+   for identical 8 MB frames).
+2. `framebus-config.ts:20`: `DEFAULT_SLOT_COUNT = 3` (env override `BRIDGE_FRAMEBUS_SLOT_COUNT` unchanged). Check
+   `framebus-layout.ts` size computation and the renderer client's ready gate (`electron-renderer-client.ts` ~862-867
+   compares slot count with config) — both derive from the same config, keep them consistent. Update
+   `framebus-config.test.ts` and any test asserting the old size.
+3. Docs: `docs/bridge/subsystems/graphics.md` (dedup rule, slot count), `docs/bridge/architecture/graphics-realtime-framebus.md`
+   (slot count default), `docs/bridge/dev/framebus-dev-setup.md` if it mentions the size.
 
-### 1. G1(a) Reuse by name (CRITICAL)
-- `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`: delete `shouldForceRecreateFrameBus()`
-  (457-459); in `writerOptions` (~576) set `forceRecreate: false`; remove the corresponding log field (~640) if it
-  only reported that flag; extend the comment near 583-588: reuse by name is the normal case (renderer recovery
-  attaches to the live region); recreate happens ONLY in the incompatible-region self-heal.
-- Seed-skip: after the writer is created (~579/596), compute `const reusedRegionHasFrame = frameBusWriter.header.seq > 0n`.
-  If there is no `carriedFrame` and `reusedRegionHasFrame`, do NOT write the idle/background seed frame (the region
-  still holds the last frame of the previous renderer until `replayLatestLayers()` from the client arrives); call the
-  existing paint-dedup invalidation so the next real paint is written; log `seededFrom: "existing_region"`.
-  Put the decision into a pure helper `renderer/framebus-seed-frame.ts`:
-  `shouldSeedFreshWriter({ carriedFrame: boolean, existingSeq: bigint }): "retained_frame" | "idle_color" | "existing_region"`
-  with colocated test.
-- Keep `framebusReattach` handling (718-733, 754-764) unchanged (meeting still needs it). `MEETING_GRAPHICS_FRAMEBUS_NAMES`
-  may still be used by `isMeetingGraphicsBus()` (~1480) — do not remove that.
-
-### 2. G8 WebContents crash / unresponsive (MEDIUM)
-- In `ensureSingleWindow` (after the existing `paint` / `did-finish-load` wiring, ~1053-1060 / ~1193):
-  register `webContents.on("render-process-gone", (_e, details) => void recoverSingleWindow(\`render_process_gone:${details.reason}\`))`,
-  `window.on("unresponsive", ...)` arming a 5 s timer → `recoverSingleWindow("unresponsive")`, `window.on("responsive", ...)`
-  clearing it.
-- `recoverSingleWindow(reason)`: stop the FrameBus heartbeat (do not keep republishing a dead frame), destroy the
-  window, call `ensureSingleWindow(...)` again with the current renderer config, replay layers from the existing
-  in-entry snapshots (`singleLayerSnapshots`, ~161; reuse the existing replay/publish helpers — do NOT add a second
-  window or any compositing path), log at warn with the reason. Count incidents: a SECOND incident within 60 s →
-  `logger.error` and `process.exit(3)` so the client's bounded recovery (`electron-renderer-client.ts:497-515` treats
-  code 3 / no signal as recoverable) takes over — safe only because of §1.
-- Guard against re-entrancy (a recovery already in flight ignores further events).
-
-## Acceptance criteria
-1. `electron-renderer-entry.test.ts`: NEW "attaches to the existing FrameBus region by name without forceRecreate
-   (studio bus)" — setup like the existing reattach test (~1428-1534): `createWriter` called once with
-   `expect.objectContaining({ forceRecreate: false })` for a non-meeting bus name. RED before the fix.
-2. NEW "skips the idle seed when the reused region already carries frames" — writer mock `header.seq = 5n`:
-   `writeFrame` not called for the seed, log carries `seededFrom: "existing_region"`. RED before.
-3. NEW "still force-recreates an incompatible region (self-heal)" — first `createWriter` throws
-   `Error("Existing shared memory has incompatible header")`, second call has `forceRecreate: true`. (Guard, green before
-   and after — document as guard.)
-4. `framebus-seed-frame.test.ts`: three outcomes covered.
-5. NEW "recreates the offscreen window and replays layers after render-process-gone" (mock `webContents.on` capture in
-   the test harness, ~52-55), NEW "exits the process on the second render-process-gone within 60s" (`process.exit` spy),
-   NEW "stops the heartbeat while the window is gone". RED before (no handler registered).
-6. Existing suites stay green: `electron-renderer-entry.test.ts` (incl. meeting reattach case), `electron-renderer-client.test.ts`
-   (recovery describe 627-727), `framebus-writer-match.test.ts`, `framebus-heartbeat.test.ts`.
-7. `npx jest apps/bridge/src/services/graphics/renderer --runInBand` green; FULL `npm run test:jest` green; `npm run lint`
-   clean; `npm run build:bridge` and `npm run build:graphics-renderer` clean.
-8. Docs updated in the same change: `docs/bridge/subsystems/graphics.md` (new paragraph "Studio: Writer-Reuse by Name
-   (Renderer-Recovery)" next to the existing 97-120 heartbeat/reattach section; renderer section mentions
-   render-process-gone handling), `docs/bridge/architecture/graphics-realtime-framebus.md` (lifecycle rule: regions are
-   reused by name, recreate only on incompatibility), `docs/bridge/reference/files/renderer-entry.md`.
-9. Manual outcome check to be run by the verifier (documented in the report, not by you): with a DeckLink or display
-   output running, `kill -9` the renderer process → output resumes after client recovery without helper restart; the
-   bridge log shows no "recreating" line for the studio bus.
+## Acceptance criteria (RED before unless guard)
+1. `paint-dedup.test.ts`: identical within window → skip; identical after window → write; differing single byte outside
+   the old stride raster (e.g. index 1) → write (RED before when ported against the old checksum helper — document as
+   red on the old implementation, or as guard if you cannot exercise the old code path).
+2. `electron-renderer-entry.test.ts`: "writes a paint that differs from the last frame in a single pixel within 1 s"
+   (RED before with the sampled checksum when the differing byte is not on the 4093 raster) and "skips a pixel-identical
+   paint within 1 s" (guard).
+3. `framebus-config.test.ts`: default slot count 3 (RED before).
+4. Existing renderer/framebus suites green; `npx jest apps/bridge/src/services/graphics/renderer apps/bridge/src/services/graphics/framebus --runInBand`;
+   FULL `npm run test:jest` (verifier); `npm run lint`; `npm run build:bridge`; `npm run build:graphics-renderer`.
 
 ## Review
-- Round: 1/3
+- Round: 0/3
 - Verdict: (pending)
 - Must-fix (open):
 - Notes (non-blocking):
 - Handoff to human (if any):
 
 ### Implementation notes
-- Changed `electron-renderer-entry.ts`, `framebus-seed-frame.ts`, colocated renderer tests, and the three requested docs.
-- Studio FrameBus writer creation now reuses by name (`forceRecreate: false`), skips idle seeding when an existing region has `seq > 0`, and still force-recreates only incompatible regions.
-- Added offscreen `render-process-gone` / `unresponsive` recovery with heartbeat stop, single-window recreation, layer replay, and exit-code 3 escalation on repeated failures within 60s.
-- Review round 1 MUST-FIX: `recoverSingleWindow()` now ignores recovery events that arrive while recovery is already in flight before updating the repeat-failure timestamp, so same-incident follow-on events do not trigger `exit(3)`. Added regression coverage for an in-flight `render-process-gone` event and kept the repeated-incident exit test scoped to a second event after recovery completes.
-- Deviation: full Jest and renderer-folder Jest are blocked in this sandbox by pre-existing `listen EPERM: operation not permitted 127.0.0.1` in `electron-renderer-client.test.ts`; proven with implementation/test/doc patch reversed via `/tmp/codex-renderer-framebus-reuse.patch`.
+- Changed `paint-dedup.ts`, `electron-renderer-entry.ts`, `framebus-config.ts`, colocated tests, and the three requested docs.
+- Paint dedup now skips only exact pixel-identical buffers within the 1 s window; invalidation drops the retained paint buffer.
+- Studio FrameBus default slot count is now 3; `BRIDGE_FRAMEBUS_SLOT_COUNT` override behavior is unchanged.
+- Deviation: targeted/full Jest are blocked in this sandbox by pre-existing `listen EPERM: operation not permitted 127.0.0.1` in `electron-renderer-client.test.ts`; proven by reversing the working-tree patch and rerunning the same targeted command.
 
 ## Verification
-- [ ] Tests pass (targeted + full `npm run test:jest`)
-- [x] Lint / type-check pass (`npm run lint`, `npm run build:bridge`, `npm run build:graphics-renderer`)
-- [ ] Browser-verified (n/a) / hardware outcome check (verifier)
+- [ ] Tests pass (targeted + full; blocked by pre-existing `listen EPERM` in `electron-renderer-client.test.ts`)
+- [x] Lint / builds pass
+- [ ] Hardware outcome check (verifier): clock graphic ticks every second on the SDI output without stalls
 - [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after

@@ -21,6 +21,7 @@ import {
   FRAMEBUS_HEARTBEAT_INTERVAL_MS,
   shouldRepublishHeartbeatFrame,
 } from "./framebus-heartbeat.js";
+import { shouldSkipIdenticalPaint } from "./paint-dedup.js";
 import {
   bgraToRgba,
   downsampleRgbaBox,
@@ -233,22 +234,22 @@ function stopFrameBusHeartbeat(): void {
 
 // Paint dedup state. Module-scoped on purpose: it used to live in the paint
 // handler closure, so the direct write paths (idle frame, captured frame) left
-// a stale checksum behind. The very paint that had to repair such a frame then
+// stale dedup state behind. The very paint that had to repair such a frame then
 // looked like a duplicate and was dropped, and the heartbeat re-published the
 // stale frame once per second for as long as the page stayed unchanged.
-let lastPaintChecksum = -1;
-let lastPaintChecksumAtMs = 0;
+let lastPaintBuffer: Buffer | null = null;
+let lastPaintBufferAtMs = 0;
 
 /**
- * Forget the last painted frame's checksum.
+ * Forget the last painted frame.
  *
  * Every FrameBus write that does NOT come from the paint handler must call
  * this: it changes what readers see, so the next paint is meaningful even when
  * it is pixel-identical to the previously *painted* frame.
  */
 function invalidatePaintDedup(): void {
-  lastPaintChecksum = -1;
-  lastPaintChecksumAtMs = 0;
+  lastPaintBuffer = null;
+  lastPaintBufferAtMs = 0;
 }
 
 const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
@@ -1212,22 +1213,21 @@ async function ensureSingleWindow(
         return;
       }
 
-      // Skip FrameBus writes for pixel-identical frames (static content),
-      // with a 1s heartbeat so readers still see a live stream.
-      let checksum = buffer.length >>> 0;
-      for (let i = 0; i < buffer.length; i += 4093) {
-        checksum = ((checksum * 31) ^ (buffer[i] ?? 0)) >>> 0;
-      }
       const writeNowMs = Date.now();
-      if (
-        checksum === lastPaintChecksum &&
-        writeNowMs - lastPaintChecksumAtMs < 1000
-      ) {
+      // Skip FrameBus writes only for pixel-identical frames (static content),
+      // with a 1s heartbeat so readers still see a live stream.
+      if (shouldSkipIdenticalPaint({
+        buffer,
+        lastWritten: lastPaintBuffer,
+        nowMs: writeNowMs,
+        lastWrittenAtMs: lastPaintBufferAtMs,
+        windowMs: 1000,
+      })) {
         logPerfIfNeeded();
         return;
       }
-      lastPaintChecksum = checksum;
-      lastPaintChecksumAtMs = writeNowMs;
+      lastPaintBuffer = buffer;
+      lastPaintBufferAtMs = writeNowMs;
 
       try {
         const frameTimestampNs = BigInt(writeNowMs) * 1_000_000n;
