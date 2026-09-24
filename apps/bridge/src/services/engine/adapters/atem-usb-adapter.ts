@@ -174,6 +174,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
       macroExecution: null,
       lastCompletedMacroExecution: null,
       error: undefined,
+      errorCode: undefined,
     });
 
     const connectionPromise = new Promise<void>((resolve, reject) => {
@@ -232,6 +233,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
       type: undefined,
       transport: undefined,
       error: undefined,
+      errorCode: undefined,
       macroExecution: null,
       lastCompletedMacroExecution: null,
     });
@@ -357,7 +359,11 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
         break;
       case "connected":
         this.resolveConnect();
-        this.setState({ status: "connected", error: undefined });
+        this.setState({
+          status: "connected",
+          error: undefined,
+          errorCode: undefined,
+        });
         break;
       case "macros":
         this.helperMacros = Array.isArray(event.macros) ? event.macros : [];
@@ -439,7 +445,11 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
     this.connectReject = null;
     if (reject) {
       this.stopHelper();
-      this.setState({ status: "error", error: error.message });
+      this.setState({
+        status: "error",
+        error: error.message,
+        errorCode: error.code,
+      });
       reject(error);
     }
   }

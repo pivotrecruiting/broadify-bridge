@@ -7,9 +7,12 @@ import type {
   VmixActionResultT,
 } from "./engine/engine-adapter-interface.js";
 import { createEngineAdapter } from "./engine/adapter-factory.js";
+import { engineConnectionStore } from "./engine/engine-connection-store.js";
 import { EngineStateStore } from "./engine/engine-state-store.js";
 import { websocketManager } from "./websocket-manager.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
+import { getBridgeContext } from "./bridge-context.js";
+import { getErrorCode } from "./shared/error-code.js";
 import {
   EngineError,
   EngineErrorCode,
@@ -32,11 +35,13 @@ type EngineAdapterServiceDepsT = {
     transport?: EngineConnectConfig["transport"]
   ) => EngineAdapter;
   broadcast: (topic: EngineBroadcastTopicT, message: EngineBroadcastMessageT) => void;
+  persistConnection?: (config: EngineConnectConfig) => Promise<void>;
 };
 
 const defaultDeps: EngineAdapterServiceDepsT = {
   createAdapter: (type, transport) => createEngineAdapter(type, transport),
   broadcast: (topic, message) => websocketManager.broadcast(topic, message),
+  persistConnection: (config) => engineConnectionStore.save(config),
 };
 
 type VmixBrowserInputCapableAdapterT = EngineAdapter & {
@@ -76,7 +81,7 @@ export class EngineAdapterService {
   private deps: EngineAdapterServiceDepsT;
 
   constructor(deps: EngineAdapterServiceDepsT = defaultDeps) {
-    this.deps = deps;
+    this.deps = { ...defaultDeps, ...deps };
     this.stateStore = new EngineStateStore();
   }
 
@@ -164,6 +169,7 @@ export class EngineAdapterService {
 
       // Connect adapter
       await this.adapter.connect(config);
+      await this.persistConnection(config);
 
       // Note: State will be updated via adapter's onStateChange callback
     } catch (error: unknown) {
@@ -182,6 +188,7 @@ export class EngineAdapterService {
           ip: config.ip,
           port: config.port,
           error: error.message,
+          errorCode: getErrorCode(error),
           macros: [],
         };
         this.stateStore.setState(errorState);
@@ -204,6 +211,7 @@ export class EngineAdapterService {
         ip: config.ip,
         port: config.port,
         error: engineError.message,
+        errorCode: engineError.code,
         macros: [],
       };
       this.stateStore.setState(errorState);
@@ -260,9 +268,15 @@ export class EngineAdapterService {
       await this.adapter.runMacro(macroId);
       // State update will come via adapter's onStateChange callback
     } catch (error: unknown) {
+      if (error instanceof EngineError) {
+        throw error;
+      }
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to run macro ${macroId}: ${errorMessage}`);
+      throw new EngineError(
+        EngineErrorCode.UNKNOWN_ERROR,
+        `Failed to run macro ${macroId}: ${errorMessage}`
+      );
     }
   }
 
@@ -283,9 +297,15 @@ export class EngineAdapterService {
       await this.adapter.stopMacro(macroId);
       // State update will come via adapter's onStateChange callback
     } catch (error: unknown) {
+      if (error instanceof EngineError) {
+        throw error;
+      }
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to stop macro ${macroId}: ${errorMessage}`);
+      throw new EngineError(
+        EngineErrorCode.UNKNOWN_ERROR,
+        `Failed to stop macro ${macroId}: ${errorMessage}`
+      );
     }
   }
 
@@ -338,7 +358,8 @@ export class EngineAdapterService {
     const didStatusChange =
       !this.previousState ||
       this.previousState.status !== state.status ||
-      this.previousState.error !== state.error;
+      this.previousState.error !== state.error ||
+      this.previousState.errorCode !== state.errorCode;
     const didMacrosChange =
       !this.previousState ||
       JSON.stringify(this.previousState.macros) !== JSON.stringify(state.macros);
@@ -355,6 +376,7 @@ export class EngineAdapterService {
         type: "engine.status",
         status: state.status,
         error: state.error,
+        errorCode: state.errorCode,
       });
     }
 
@@ -389,6 +411,7 @@ export class EngineAdapterService {
       this.deps.broadcast("engine", {
         type: "engine.error",
         error: {
+          code: state.errorCode,
           message: state.error,
         },
       });
@@ -452,10 +475,28 @@ export class EngineAdapterService {
         this.previousState.status !== "error" ||
         this.previousState.error !== state.error)
     ) {
-      publishEngineErrorEvent("engine_error", state.error);
+      publishEngineErrorEvent(state.errorCode ?? "engine_error", state.error);
     }
 
     this.previousState = { ...state };
+  }
+
+  private async persistConnection(config: EngineConnectConfig): Promise<void> {
+    try {
+      await this.deps.persistConnection?.(config);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        getBridgeContext().logger.warn(
+          `[EngineAdapterService] Failed to persist engine connection: ${message}`
+        );
+      } catch {
+        console.warn(
+          "[EngineAdapterService] Failed to persist engine connection:",
+          message
+        );
+      }
+    }
   }
 
   /**

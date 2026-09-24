@@ -14,6 +14,13 @@ import type {
 } from "./engine/engine-adapter-interface.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
 
+const mockEngineConnectionSave = jest.fn().mockResolvedValue(undefined);
+jest.mock("./engine/engine-connection-store.js", () => ({
+  engineConnectionStore: {
+    save: (...args: unknown[]) => mockEngineConnectionSave(...args),
+  },
+}));
+
 type BroadcastCallT = {
   topic: "engine" | "video";
   message: Record<string, unknown>;
@@ -138,13 +145,17 @@ class FakeAdapter implements EngineAdapter {
 const createService = () => {
   const adapter = new FakeAdapter();
   const broadcasts: BroadcastCallT[] = [];
+  const persistConnection = jest.fn().mockResolvedValue(undefined);
   const service = new EngineAdapterService({
     createAdapter: () => adapter,
     broadcast: (topic, message) => {
       broadcasts.push({ topic, message: message as Record<string, unknown> });
     },
+    persistConnection,
+  } as ConstructorParameters<typeof EngineAdapterService>[0] & {
+    persistConnection: typeof persistConnection;
   });
-  return { service, adapter, broadcasts };
+  return { service, adapter, broadcasts, persistConnection };
 };
 
 describe("EngineAdapterService", () => {
@@ -164,6 +175,10 @@ describe("EngineAdapterService", () => {
       logger: mockLogger,
       publishBridgeEvent: mockPublishBridgeEvent,
     });
+  });
+
+  afterEach(() => {
+    expect(mockEngineConnectionSave).not.toHaveBeenCalled();
   });
 
   it("connects successfully and updates state", async () => {
@@ -196,6 +211,7 @@ describe("EngineAdapterService", () => {
     const service = new EngineAdapterService({
       createAdapter: () => nextAdapters.shift() as FakeAdapter,
       broadcast: () => {},
+      persistConnection: jest.fn().mockResolvedValue(undefined),
     });
 
     await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
@@ -242,6 +258,20 @@ describe("EngineAdapterService", () => {
     expect(adapter.runMacroCalls).toEqual([7]);
   });
 
+  it("rethrows EngineError from adapter.runMacro unchanged", async () => {
+    const { service, adapter } = createService();
+    const engineError = new EngineError(
+      EngineErrorCode.NOT_CONNECTED,
+      "macro transport disconnected",
+    );
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+    adapter.runMacroImpl = async () => {
+      throw engineError;
+    };
+
+    await expect(service.runMacro(7)).rejects.toBe(engineError);
+  });
+
   it("wraps unknown connect errors into EngineError with UNKNOWN_ERROR", async () => {
     const { service, adapter, broadcasts } = createService();
     adapter.connectImpl = async () => {
@@ -266,6 +296,26 @@ describe("EngineAdapterService", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("persists the config after a successful manual connect", async () => {
+    const { service, persistConnection } = createService();
+    const config = { type: "atem" as const, ip: "10.0.0.10", port: 9910 };
+
+    await service.connect(config);
+
+    expect(persistConnection).toHaveBeenCalledWith(config);
+  });
+
+  it("does not persist when connect fails", async () => {
+    const { service, adapter, persistConnection } = createService();
+    adapter.connectImpl = async () => {
+      throw new EngineError(EngineErrorCode.CONNECTION_REFUSED, "refused");
+    };
+
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 }).catch(() => {});
+
+    expect(persistConnection).not.toHaveBeenCalled();
   });
 
   it("disconnects, unsubscribes adapter state, and resets service state", async () => {
@@ -498,6 +548,42 @@ describe("EngineAdapterService", () => {
       data: {
         code: "engine_error",
         message: "dial failed",
+      },
+    });
+  });
+
+  it("publishes engine_error with the adapter's EngineErrorCode", async () => {
+    const { service, adapter, broadcasts } = createService();
+
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    adapter.emitState({
+      status: "error",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      error: "timed out",
+      errorCode: EngineErrorCode.CONNECTION_TIMEOUT,
+      macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
+    });
+
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_error",
+      data: {
+        code: EngineErrorCode.CONNECTION_TIMEOUT,
+        message: "timed out",
+      },
+    });
+    expect(broadcasts).toContainEqual({
+      topic: "engine",
+      message: {
+        type: "engine.error",
+        error: {
+          code: EngineErrorCode.CONNECTION_TIMEOUT,
+          message: "timed out",
+        },
       },
     });
   });

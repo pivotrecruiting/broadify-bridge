@@ -65,12 +65,30 @@ describe("engine-event-publisher", () => {
         macroExecution: state.macroExecution,
         lastCompletedMacroExecution: null,
         error: null,
+        errorCode: null,
         lastUpdate: 123,
       },
     });
     expect(mockLogger.debug).toHaveBeenCalledWith(
       "[Engine] Publish status: macro_execution_changed"
     );
+  });
+
+  it("publishes engine_status event with errorCode", () => {
+    publishEngineStatusEvent("error", {
+      ...state,
+      status: "error",
+      error: "timed out",
+      errorCode: "CONNECTION_TIMEOUT",
+    });
+
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_status",
+      data: expect.objectContaining({
+        error: "timed out",
+        errorCode: "CONNECTION_TIMEOUT",
+      }),
+    });
   });
 
   it("publishes engine_macro_execution event with execution state", () => {
