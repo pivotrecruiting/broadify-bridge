@@ -14,6 +14,13 @@ import type {
 } from "./engine/engine-adapter-interface.js";
 import type { EngineStateT, EngineStatusT, MacroT } from "./engine-types.js";
 
+const mockEngineConnectionSave = jest.fn().mockResolvedValue(undefined);
+jest.mock("./engine/engine-connection-store.js", () => ({
+  engineConnectionStore: {
+    save: (...args: unknown[]) => mockEngineConnectionSave(...args),
+  },
+}));
+
 type BroadcastCallT = {
   topic: "engine" | "video";
   message: Record<string, unknown>;
@@ -138,13 +145,40 @@ class FakeAdapter implements EngineAdapter {
 const createService = () => {
   const adapter = new FakeAdapter();
   const broadcasts: BroadcastCallT[] = [];
+  const persistConnection = jest.fn().mockResolvedValue(undefined);
   const service = new EngineAdapterService({
     createAdapter: () => adapter,
     broadcast: (topic, message) => {
       broadcasts.push({ topic, message: message as Record<string, unknown> });
     },
+    persistConnection,
+  } as ConstructorParameters<typeof EngineAdapterService>[0] & {
+    persistConnection: typeof persistConnection;
   });
-  return { service, adapter, broadcasts };
+  return { service, adapter, broadcasts, persistConnection };
+};
+
+const createServiceWithAdapters = (adapters: FakeAdapter[], extraDeps = {}) => {
+  const broadcasts: BroadcastCallT[] = [];
+  const persistConnection = jest.fn().mockResolvedValue(undefined);
+  const createAdapter = jest.fn(() => {
+    const adapter = adapters.shift();
+    if (!adapter) {
+      throw new Error("No fake adapter left");
+    }
+    return adapter;
+  });
+  const service = new EngineAdapterService({
+    createAdapter,
+    broadcast: (topic, message) => {
+      broadcasts.push({ topic, message: message as Record<string, unknown> });
+    },
+    persistConnection,
+    ...extraDeps,
+  } as ConstructorParameters<typeof EngineAdapterService>[0] & {
+    persistConnection: typeof persistConnection;
+  });
+  return { service, broadcasts, persistConnection, createAdapter };
 };
 
 describe("EngineAdapterService", () => {
@@ -163,6 +197,249 @@ describe("EngineAdapterService", () => {
       logPath: "/tmp/bridge.log",
       logger: mockLogger,
       publishBridgeEvent: mockPublishBridgeEvent,
+    });
+  });
+
+  afterEach(() => {
+    expect(mockEngineConnectionSave).not.toHaveBeenCalled();
+  });
+
+  describe("connection supervisor", () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("publishes connecting with reconnect info while an auto-reconnect is pending", async () => {
+      const adapter1 = new FakeAdapter();
+      const adapter2 = new FakeAdapter();
+      adapter2.connectImpl = async () => {
+        throw new Error("no switcher");
+      };
+      const { service, broadcasts } = createServiceWithAdapters([adapter1, adapter2], {
+        random: () => 0.5,
+      });
+
+      await service.connect({ type: "atem", transport: "usb", ip: "", port: 0 });
+      adapter1.emitState({ status: "disconnected", type: "atem", transport: "usb", macros: [] });
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(service.getState()).toMatchObject({
+        status: "connecting",
+        reconnect: { attempt: 2, lastError: "no switcher" },
+      });
+      expect(
+        broadcasts.some((entry) => entry.message.type === "engine.error"),
+      ).toBe(false);
+      expect(
+        mockPublishBridgeEvent.mock.calls.some(
+          ([payload]) =>
+            payload.event === "engine_status" &&
+            payload.data?.reason === "reconnecting" &&
+            payload.data?.reconnect?.attempt >= 1,
+        ),
+      ).toBe(true);
+    });
+
+    it("auto-reconnects a usb drop through a fresh adapter", async () => {
+      const adapter1 = new FakeAdapter();
+      const adapter2 = new FakeAdapter();
+      const order: string[] = [];
+      adapter1.disconnectImpl = async () => {
+        order.push("adapter1.disconnect");
+      };
+      adapter2.connectImpl = async () => {
+        order.push("adapter2.connect");
+        adapter2.emitState({ status: "connected", type: "atem", transport: "usb", macros: [] });
+      };
+      const { service, createAdapter } = createServiceWithAdapters([adapter1, adapter2], {
+        random: () => 0.5,
+      });
+
+      await service.connect({ type: "atem", transport: "usb", ip: "", port: 0 });
+      adapter1.emitState({ status: "disconnected", type: "atem", transport: "usb", macros: [] });
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(createAdapter).toHaveBeenCalledTimes(2);
+      expect(order).toEqual(["adapter1.disconnect", "adapter2.connect"]);
+      expect(service.getStatus()).toBe("connected");
+    });
+
+    it("startPersistedAutoConnect connects the persisted config after the delay", async () => {
+      const adapter = new FakeAdapter();
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        transport: "usb",
+        ip: "",
+        port: 0,
+      });
+      const { service } = createServiceWithAdapters([adapter], {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+      });
+
+      service.startPersistedAutoConnect();
+      expect(adapter.connectCalls).toHaveLength(0);
+      await jest.advanceTimersByTimeAsync(3000);
+
+      expect(loadPersistedConnection).toHaveBeenCalled();
+      expect(adapter.connectCalls).toEqual([
+        { type: "atem", transport: "usb", ip: "", port: 0 },
+      ]);
+    });
+
+    it("startPersistedAutoConnect does nothing when already connecting", async () => {
+      const adapter = new FakeAdapter();
+      adapter.connectImpl = () => new Promise<void>(() => {});
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        transport: "usb",
+        ip: "",
+        port: 0,
+      });
+      const { service } = createServiceWithAdapters([adapter], {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+      });
+
+      void service.connect({ type: "atem", transport: "usb", ip: "", port: 0 });
+      service.startPersistedAutoConnect();
+      await jest.advanceTimersByTimeAsync(3000);
+
+      expect(loadPersistedConnection).toHaveBeenCalled();
+      expect(adapter.connectCalls).toHaveLength(1);
+    });
+
+    it("joins an in-flight auto attempt with the same config instead of throwing ALREADY_CONNECTING", async () => {
+      const adapter = new FakeAdapter();
+      let resolveConnect: () => void;
+      adapter.connectImpl = () =>
+        new Promise<void>((resolve) => {
+          resolveConnect = resolve;
+        });
+      const { service } = createServiceWithAdapters([adapter]);
+      const connectPromise = service.connect(
+        { type: "atem", transport: "usb", ip: "", port: 0 },
+        "startup",
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const joined = service.connect({ type: "atem", transport: "usb", ip: "", port: 0 });
+
+      resolveConnect!();
+      await expect(joined).resolves.toBeUndefined();
+      await expect(connectPromise).resolves.toBeUndefined();
+    });
+
+    it("supersedes an in-flight startup attempt when the manual config differs", async () => {
+      const adapter1 = new FakeAdapter();
+      const adapter2 = new FakeAdapter();
+      adapter1.connectImpl = () => new Promise<void>(() => {});
+      const { service } = createServiceWithAdapters([adapter1, adapter2]);
+
+      void service.connect({ type: "atem", transport: "usb", ip: "", port: 0 }, "startup");
+      await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+      expect(adapter1.disconnectCalls).toBe(1);
+      expect(adapter2.connectCalls).toEqual([
+        { type: "atem", ip: "10.0.0.10", port: 9910 },
+      ]);
+    });
+
+    it("a failed superseded attempt does not tear down the newer manual session", async () => {
+      const adapter1 = new FakeAdapter();
+      const adapter2 = new FakeAdapter();
+      let rejectStartup: (error: Error) => void;
+      adapter1.connectImpl = () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStartup = reject;
+        });
+      const { service } = createServiceWithAdapters([adapter1, adapter2]);
+
+      void service.connect({ type: "atem", transport: "usb", ip: "", port: 0 }, "startup");
+      await Promise.resolve();
+      await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+      rejectStartup!(new Error("superseded miss"));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(service.getStatus()).toBe("connected");
+      expect(adapter2.disconnectCalls).toBe(0);
+      expect(adapter1.disconnectCalls).toBe(1);
+    });
+
+    it("startup auto-connect gives up silently and leaves the state disconnected", async () => {
+      const adapters = Array.from({ length: 5 }, () => {
+        const adapter = new FakeAdapter();
+        adapter.connectImpl = async () => {
+          throw new Error("no switcher");
+        };
+        return adapter;
+      });
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        transport: "usb",
+        ip: "",
+        port: 0,
+      });
+      const { service, broadcasts, createAdapter } = createServiceWithAdapters(adapters, {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+      });
+
+      service.startPersistedAutoConnect();
+      await jest.advanceTimersByTimeAsync(3000 + 1000 + 2000 + 4000 + 8000 + 100);
+
+      expect(createAdapter).toHaveBeenCalledTimes(5);
+      expect(service.getStatus()).toBe("disconnected");
+      expect(service.getState().reconnect).toBeNull();
+      expect(
+        broadcasts.some((entry) => entry.message.type === "engine.error"),
+      ).toBe(false);
+    });
+
+    it("still rejects a second manual connect with a different config while connecting", async () => {
+      const adapter = new FakeAdapter();
+      adapter.connectImpl = () => new Promise<void>(() => {});
+      const { service } = createServiceWithAdapters([adapter]);
+
+      void service.connect({ type: "atem", transport: "usb", ip: "", port: 0 });
+
+      await expect(
+        service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 }),
+      ).rejects.toMatchObject({
+        code: EngineErrorCode.ALREADY_CONNECTING,
+      });
+    });
+
+    it("a manual disconnect cancels the startup auto-connect timer", async () => {
+      const adapter = new FakeAdapter();
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        transport: "usb",
+        ip: "",
+        port: 0,
+      });
+      const { service } = createServiceWithAdapters([adapter], {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+      });
+
+      service.startPersistedAutoConnect();
+      await service.disconnect();
+      await jest.advanceTimersByTimeAsync(3000);
+
+      expect(loadPersistedConnection).not.toHaveBeenCalled();
+      expect(adapter.connectCalls).toHaveLength(0);
     });
   });
 
@@ -196,6 +473,7 @@ describe("EngineAdapterService", () => {
     const service = new EngineAdapterService({
       createAdapter: () => nextAdapters.shift() as FakeAdapter,
       broadcast: () => {},
+      persistConnection: jest.fn().mockResolvedValue(undefined),
     });
 
     await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
@@ -204,7 +482,7 @@ describe("EngineAdapterService", () => {
     // Simulate an unsolicited drop: the status goes disconnected but the
     // service still holds adapter1 (its helper/socket lingers).
     adapter1.emitState({ status: "disconnected", type: "atem", macros: [] });
-    expect(service.getStatus()).toBe("disconnected");
+    expect(service.getStatus()).toBe("connecting");
 
     // Reconnecting must tear down the lingering adapter1 before creating
     // adapter2, so the USB helper releases its claim on the switcher.
@@ -242,6 +520,20 @@ describe("EngineAdapterService", () => {
     expect(adapter.runMacroCalls).toEqual([7]);
   });
 
+  it("rethrows EngineError from adapter.runMacro unchanged", async () => {
+    const { service, adapter } = createService();
+    const engineError = new EngineError(
+      EngineErrorCode.NOT_CONNECTED,
+      "macro transport disconnected",
+    );
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+    adapter.runMacroImpl = async () => {
+      throw engineError;
+    };
+
+    await expect(service.runMacro(7)).rejects.toBe(engineError);
+  });
+
   it("wraps unknown connect errors into EngineError with UNKNOWN_ERROR", async () => {
     const { service, adapter, broadcasts } = createService();
     adapter.connectImpl = async () => {
@@ -266,6 +558,26 @@ describe("EngineAdapterService", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("persists the config after a successful manual connect", async () => {
+    const { service, persistConnection } = createService();
+    const config = { type: "atem" as const, ip: "10.0.0.10", port: 9910 };
+
+    await service.connect(config);
+
+    expect(persistConnection).toHaveBeenCalledWith(config);
+  });
+
+  it("does not persist when connect fails", async () => {
+    const { service, adapter, persistConnection } = createService();
+    adapter.connectImpl = async () => {
+      throw new EngineError(EngineErrorCode.CONNECTION_REFUSED, "refused");
+    };
+
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 }).catch(() => {});
+
+    expect(persistConnection).not.toHaveBeenCalled();
   });
 
   it("disconnects, unsubscribes adapter state, and resets service state", async () => {
@@ -498,6 +810,42 @@ describe("EngineAdapterService", () => {
       data: {
         code: "engine_error",
         message: "dial failed",
+      },
+    });
+  });
+
+  it("publishes engine_error with the adapter's EngineErrorCode", async () => {
+    const { service, adapter, broadcasts } = createService();
+
+    await service.connect({ type: "atem", ip: "10.0.0.10", port: 9910 });
+
+    adapter.emitState({
+      status: "error",
+      type: "atem",
+      ip: "10.0.0.10",
+      port: 9910,
+      error: "timed out",
+      errorCode: EngineErrorCode.CONNECTION_TIMEOUT,
+      macros: [],
+      macroExecution: null,
+      lastCompletedMacroExecution: null,
+    });
+
+    expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+      event: "engine_error",
+      data: {
+        code: EngineErrorCode.CONNECTION_TIMEOUT,
+        message: "timed out",
+      },
+    });
+    expect(broadcasts).toContainEqual({
+      topic: "engine",
+      message: {
+        type: "engine.error",
+        error: {
+          code: EngineErrorCode.CONNECTION_TIMEOUT,
+          message: "timed out",
+        },
       },
     });
   });

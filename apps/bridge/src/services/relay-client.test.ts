@@ -1053,7 +1053,7 @@ describe("RelayClient", () => {
     });
     await flushAsync();
 
-    await jest.advanceTimersByTimeAsync(11_000);
+    await jest.advanceTimersByTimeAsync(17_000);
 
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("command_sla_exceeded"),
