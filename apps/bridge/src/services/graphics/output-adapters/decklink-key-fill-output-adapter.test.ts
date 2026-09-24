@@ -197,6 +197,33 @@ describe("DecklinkKeyFillOutputAdapter", () => {
       );
     });
 
+    it("forwards helper exit after ready to onLifecycle", async () => {
+      const child = createMockChild({ autoExitOnEnd: false });
+      mockSpawn.mockReturnValue(child);
+      const lifecycle = jest.fn();
+      adapter.onLifecycle(lifecycle);
+
+      const configured = adapter.configure({
+        ...baseConfig,
+        targets: validTargets,
+      });
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configured;
+
+      child.exitCode = 1;
+      child.emit("exit", 1, null);
+
+      expect(lifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "exited",
+          requested: false,
+          code: 1,
+        }),
+      );
+    });
+
     it("passes --range and --colorspace in args", async () => {
       mockSpawn.mockImplementation(() => {
         const child = createMockChild();

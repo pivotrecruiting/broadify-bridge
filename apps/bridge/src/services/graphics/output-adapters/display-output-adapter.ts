@@ -1,9 +1,9 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import type {
   GraphicsOutputAdapter,
   GraphicsOutputFrameT,
+  HelperLifecycleEventT,
 } from "../output-adapter.js";
 import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
@@ -12,6 +12,7 @@ import type { DeviceDescriptorT } from "@broadify/protocol";
 import { resolveDisplayHelperPath } from "../../../modules/display/display-helper.js";
 import { displayTargetRegistry } from "../../../modules/display/display-target-registry.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "../../output-device-modules.js";
+import { HelperProcessSession } from "./helper-process-session.js";
 
 type OutputPortMatchT = {
   device: DeviceDescriptorT;
@@ -27,12 +28,8 @@ const normalizeNativeFrameRate = (fps: number): number =>
  * Streams raw RGBA frames to fullscreen via the native C++ SDL2 helper (FrameBus).
  */
 export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
-  private child: ChildProcess | null = null;
-  // Handshake promise resolved when helper signals readiness via stdout JSON.
-  private readyPromise: Promise<void> | null = null;
-  private readyResolver: (() => void) | null = null;
-  private readyRejecter: ((error: Error) => void) | null = null;
-  private stdoutBuffer = "";
+  private session: HelperProcessSession | null = null;
+  private lifecycleListeners = new Set<(event: HelperLifecycleEventT) => void>();
 
   async configure(config: GraphicsOutputConfigT): Promise<void> {
     await this.stop();
@@ -93,11 +90,6 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       );
     }
 
-    this.readyPromise = new Promise((resolve, reject) => {
-      this.readyResolver = resolve;
-      this.readyRejecter = reject;
-    });
-
     const args = [
       "--framebus-name",
       frameBusName,
@@ -129,44 +121,18 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       env.BRIDGE_DISPLAY_MATCH_HEIGHT = String(matchMode.height);
     }
 
-    this.child = spawn(helperPath, args, {
-      stdio: ["ignore", "pipe", "pipe"],
+    this.session = new HelperProcessSession({
+      label: "DisplayOutput",
+      helperPath,
+      args,
       env,
+      stdin: "ignore",
+      readyTimeoutMs: 8_000,
+      stopStrategy: { gracefulMs: 2000, forceMs: 2000 },
+      logger: this.getLogger(),
     });
-
-    this.child.stdout?.on("data", (data) => this.handleStdout(data));
-    this.child.stderr?.on("data", (data) => {
-      const text = data.toString().trim();
-      if (text.length > 0) {
-        this.getLogger().warn(`[DisplayOutput] ${text}`);
-      }
-    });
-
-    this.child.on("error", (error) => {
-      if (this.readyRejecter) {
-        this.readyRejecter(error);
-      }
-      this.readyRejecter = null;
-      this.readyResolver = null;
-    });
-
-    this.child.on("exit", (code, signal) => {
-      if (this.readyRejecter) {
-        this.readyRejecter(
-          new Error(
-            `Display helper exited before ready (code ${code}, signal ${signal})`
-          )
-        );
-      }
-      this.readyRejecter = null;
-      this.readyResolver = null;
-      this.child = null;
-      this.getLogger().error(
-        `[DisplayOutput] Helper exited (code ${code}, signal ${signal})`
-      );
-    });
-
-    await this.readyPromise;
+    this.session.onLifecycle((event) => this.emitLifecycle(event));
+    await this.session.start();
   }
 
   async sendFrame(
@@ -177,47 +143,8 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
   }
 
   async stop(): Promise<void> {
-    if (!this.child) {
-      return;
-    }
-
-    const child = this.child;
-    const hasExited = () =>
-      child.exitCode !== null || child.signalCode !== null;
-    const awaitExit = (timeoutMs: number) =>
-      new Promise<void>((resolve) => {
-        if (hasExited()) {
-          resolve();
-          return;
-        }
-        const timeoutId = setTimeout(() => resolve(), timeoutMs);
-        child.once("exit", () => {
-          clearTimeout(timeoutId);
-          resolve();
-        });
-      });
-
-    const gracefulTimeoutMs = 2000;
-    const forceTimeoutMs = 2000;
-
-    // Signal the helper to exit immediately; waiting for a self-exit without
-    // sending a signal only delays shutdown and risks the helper being orphaned
-    // (window stays open) if the bridge is force-killed before stop() finishes.
-    if (!hasExited()) {
-      child.kill("SIGTERM");
-      await awaitExit(gracefulTimeoutMs);
-    }
-
-    if (!hasExited()) {
-      child.kill("SIGKILL");
-      await awaitExit(forceTimeoutMs);
-    }
-
-    this.child = null;
-    this.readyPromise = null;
-    this.readyResolver = null;
-    this.readyRejecter = null;
-    this.stdoutBuffer = "";
+    await this.session?.stop();
+    this.session = null;
   }
 
   private async findOutputPort(
@@ -236,33 +163,16 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
     return null;
   }
 
-  private handleStdout(data: Buffer): void {
-    this.stdoutBuffer += data.toString("utf-8");
-    let newlineIndex = this.stdoutBuffer.indexOf("\n");
-    while (newlineIndex !== -1) {
-      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
-      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
-      if (line.length === 0) {
-        newlineIndex = this.stdoutBuffer.indexOf("\n");
-        continue;
-      }
-      try {
-        const message = JSON.parse(line) as { type?: string };
-        if (message.type === "ready") {
-          if (this.readyResolver) {
-            this.readyResolver();
-            this.readyResolver = null;
-            this.readyRejecter = null;
-          }
-        } else if (message.type === "metrics") {
-          this.getLogger().debug?.(`[DisplayOutput] ${line}`);
-        } else {
-          this.getLogger().debug?.(`[DisplayOutput] ${line}`);
-        }
-      } catch {
-        this.getLogger().warn(`[DisplayOutput] Non-JSON output: ${line}`);
-      }
-      newlineIndex = this.stdoutBuffer.indexOf("\n");
+  onLifecycle(cb: (event: HelperLifecycleEventT) => void): () => void {
+    this.lifecycleListeners.add(cb);
+    return () => {
+      this.lifecycleListeners.delete(cb);
+    };
+  }
+
+  private emitLifecycle(event: HelperLifecycleEventT): void {
+    for (const listener of this.lifecycleListeners) {
+      listener(event);
     }
   }
 

@@ -29,6 +29,11 @@ type GraphicsRuntimeInitServiceDepsT = {
   publishGraphicsError: (code: string, message: string) => void;
 };
 
+export type GraphicsRuntimeInitResultT = {
+  persistedApplyFailed: boolean;
+  persistedConfig: GraphicsOutputConfigT | null;
+};
+
 /**
  * Runtime initializer and startup recovery workflow for graphics services.
  *
@@ -41,17 +46,17 @@ export class GraphicsRuntimeInitService {
   /**
    * Initialize graphics runtime once at process startup.
    */
-  async initialize(): Promise<void> {
+  async initialize(): Promise<GraphicsRuntimeInitResultT> {
     await assetRegistry.initialize();
     if (this.deps.usePersistedOutputConfig === false) {
       await this.initializeRendererWithFallback();
-      return;
+      return { persistedApplyFailed: false, persistedConfig: null };
     }
     await outputConfigStore.initialize();
     this.logPersistedRuntimeState();
 
     await this.initializeRendererWithFallback();
-    await this.applyPersistedOutputConfigIfPresent();
+    return this.applyPersistedOutputConfigIfPresent();
   }
 
   private logPersistedRuntimeState(): void {
@@ -93,10 +98,10 @@ export class GraphicsRuntimeInitService {
     await renderer.setAssets(assetRegistry.getAssetMap());
   }
 
-  private async applyPersistedOutputConfigIfPresent(): Promise<void> {
+  private async applyPersistedOutputConfigIfPresent(): Promise<GraphicsRuntimeInitResultT> {
     const persisted = outputConfigStore.getConfig();
     if (!persisted) {
-      return;
+      return { persistedApplyFailed: false, persistedConfig: null };
     }
 
     this.deps.setOutputConfig(persisted);
@@ -144,6 +149,8 @@ export class GraphicsRuntimeInitService {
       getBridgeContext().logger.warn(
         "[Graphics] Kept persisted output config despite startup failure; reconfigure to replace it"
       );
+      return { persistedApplyFailed: true, persistedConfig: persisted };
     }
+    return { persistedApplyFailed: false, persistedConfig: persisted };
   }
 }

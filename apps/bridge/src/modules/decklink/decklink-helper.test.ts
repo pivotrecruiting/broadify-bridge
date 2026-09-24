@@ -622,6 +622,48 @@ describe("decklink-helper", () => {
       );
     });
 
+    it("restarts the watch helper with backoff after exit", async () => {
+      jest.useFakeTimers();
+      const first = createMockChild();
+      const second = createMockChild();
+      mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+      const { watchDecklinkDevices } = require("./decklink-helper.js");
+      watchDecklinkDevices(() => {});
+      first.emit("exit", 1, null);
+
+      await jest.advanceTimersByTimeAsync(1_000);
+
+      expect(mockSpawn).toHaveBeenCalledTimes(2);
+      expect(mockSpawn).toHaveBeenLastCalledWith(
+        "/fake/helper/path",
+        ["--watch"],
+        expect.any(Object),
+      );
+      jest.useRealTimers();
+    });
+
+    it("stops restarting after maxAttempts", async () => {
+      jest.useFakeTimers();
+      const children = Array.from({ length: 9 }, () => createMockChild());
+      mockSpawn.mockImplementation(
+        () => children[mockSpawn.mock.calls.length - 1],
+      );
+
+      const { watchDecklinkDevices } = require("./decklink-helper.js");
+      watchDecklinkDevices(() => {});
+      for (let index = 0; index < 9; index += 1) {
+        children[index]?.emit("exit", 1, null);
+        await jest.advanceTimersByTimeAsync(30_000);
+      }
+
+      expect(mockSpawn).toHaveBeenCalledTimes(9);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("Watch process restart attempts exhausted"),
+      );
+      jest.useRealTimers();
+    });
+
     it("uses console when getBridgeContext throws", () => {
       mockGetBridgeContext.mockImplementation(() => {
         throw new Error("no context");

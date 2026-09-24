@@ -153,11 +153,29 @@ den forceRecreate-Clear).
 
 DeckLink und Display-Output nutzen FrameBus als Data-Plane. IPC bleibt Control-Plane.
 
+## Output-Supervisor (Self-Heal)
+Der `GraphicsOutputSupervisor` beobachtet den aktiven Output-Adapter ueber dessen
+Lifecycle-Hook. Wenn ein DeckLink- oder Display-Helper nach `ready` unerwartet
+endet, setzt der `GraphicsManager` `outputStatus: "error"`, veroeffentlicht
+`output_helper_error` inklusive letzter Helper-stderr-Zeilen und plant eine
+Re-Apply-Schleife mit Backoff. Die Transition laeuft weiterhin ueber
+`GraphicsOutputTransitionService.runAtomicTransition`; es gibt keinen zweiten
+Renderer, kein Bridge-Compositing und keinen Output-Fallback.
+
+Wenn ein persistierter Output beim Start nicht angewendet werden kann, bleibt
+der Status ebenfalls auf `error` statt auf `unconfigured` zurueckzufallen.
+Snapshots tragen dann zusaetzlich `pendingOutputConfig` und `outputRecovery`
+(`active`, `reason`, `attempt`, `nextRetryAt`). Kommt der konfigurierte Zielport
+ueber die Device-Watcher wieder zurueck, versucht der Supervisor sofort ein
+Re-Apply und wartet nach ausgeschoepften Backoff-Versuchen auf weitere
+Device-Change-Events.
+
 ## Fehlerbilder (typisch)
 - Output nicht konfiguriert → `Outputs not configured`
 - Format/Port ungültig → Validation Fehler
 - Renderer nicht verfügbar → Fallback auf Stub Renderer
 - DeckLink Helper fehlt/keine Rechte → configure() Fehler
+- Output-Helper endet nach Ready → `output_helper_error`, Supervisor-Recovery
 - FrameBus nicht konfiguriert/verfügbar → `renderer_configure` schlägt fehl
 
 ## Relevante Dateien
