@@ -102,3 +102,11 @@ packaged output.
 4. Upload assets to the private assets release and update
    `ATEM_USB_HELPER_URL_*` / `ATEM_USB_HELPER_SHA256_*`.
 5. Cut the RC and verify the bridge log contains `[AtemUsb] Helper protocol v2`.
+
+## Asset location (as of 2026-09-24)
+
+The assets currently pinned in the secrets live in the `helper-assets-20260924`
+release of the bridge repository (`pivotrecruiting/broadify-bridge`) because the
+helper asset repository is not writable for the CI account. That release is
+deliberately not marked "Latest" and carries no `v*` tag, so neither the app
+updater nor the release workflow reacts to it.
