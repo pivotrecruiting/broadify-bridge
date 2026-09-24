@@ -70,6 +70,7 @@ describe("mapEngineErrorToStatusCode", () => {
     expect(mapEngineErrorToStatusCode(EngineErrorCode.ALREADY_CONNECTING)).toBe(
       409,
     );
+    expect(mapEngineErrorToStatusCode(EngineErrorCode.DEVICE_BUSY)).toBe(409);
   });
 
   it("maps timeout/unreachable errors to 504", () => {
