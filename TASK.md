@@ -1,118 +1,102 @@
-# Task: Engine connection supervisor — mid-session auto-reconnect, cancellable startup connect, join semantics, shutdown disconnect (PR B4)
+# Task: Studio FrameBus reuse-by-name on renderer recovery + WebContents crash handling (PR C1)
 
 ## Raw request
-Audit rc.19 (24.9.2026), HIGH: a dropped ATEM connection (USB cable, hub hiccup, ATEM reboot, IP worker death) stays
-`disconnected` until an operator reconnects in the webapp. The only automatic attempt is a one-shot `setTimeout` 3 s after
-bridge start (`apps/bridge/src/server.ts` `ENGINE_AUTO_RECONNECT_DELAY_MS` ~226, `scheduleEngineAutoReconnect` ~239-269,
-called ~292) that is not cancellable and collides with the webapp Autostart (`ALREADY_CONNECTING` toast for the loser).
-The bridge shutdown (`server.ts` ~354-456) never disconnects the engine. Relay `engine_connect` local SLA is 11 s
-(`relay-command-policy.ts:87`) while a USB connect after the awaited helper stop (PR B3) can take ≈16 s (< 18 s relay
-timeout; the SLA is log-only, `relay-client.ts:865-875`).
+Audit rc.19 (24.9.2026), CRITICAL: when the graphics renderer process dies mid-show and the client restarts it,
+the new renderer creates the Studio FrameBus writer with `forceRecreate: true`
+(`electron-renderer-entry.ts:457-459` `shouldForceRecreateFrameBus()` returns true for every non-meeting bus,
+used at `:576`). The native addon then `shm_unlink`s the region and creates a NEW one
+(`native/framebus/src/framebus-addon.cc:441-473`). The running DeckLink helper stays mapped to the OLD inode and
+only polls `seq` (`native/decklink-helper/src/decklink-helper.cpp:2080-2085`) → output freezes on the last frame
+(key stays on air), status remains "ready". Meeting buses already use `forceRecreate:false` and reuse the region
+by name (proven in production). Second finding (MEDIUM): a Chromium render-process crash inside the offscreen
+window (process survives) is not handled — no `render-process-gone`/`unresponsive` handler — and the 1 s heartbeat
+keeps republishing the last frame, so the output silently freezes while everything reports healthy.
 
 ## Context
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/engine-connection-supervisor / feature/engine-connection-supervisor
-- Base: be0ccfd9 = merge of feature/atem-ip-reconnect-listeners (PR B2, 61e23854) and feature/atem-usb-helper-stop (PR B3, 04204a37), both on top of
-  PR B1. Target dev after those merge.
-- Facts to rely on (verified): after B2 the IP adapter reports `connected → connecting` while the atem-connection library
-  heals itself (its own 1 s reconnect loop) and `connected` again afterwards; a USB drop reports `connected → disconnected`
-  and stops the helper (B3 makes `stopHelper()` awaitable). `EngineAdapterService` (`services/engine-adapter.ts`) is the
-  singleton facade used by command-router, routes and server; it has no subscribe API, state changes leave via
-  `broadcastStateChanges` (WS + relay events). Webapp tolerates additive fields in `engine_status` (no Zod on engine
-  payloads) and maps `connecting` to spinner/locked form. `meeting-helper-manager.ts` has the precedent for
-  `beginShutdown()` (~1613-1616) and bounded restart with backoff (~69-73, ~1555-1656); `relay-client.ts` for injectable
-  timers (`setTimeoutFn/clearTimeoutFn`, ~368-395) and exponential 1 s→60 s (~1695-1724). vMix adapter flips to `error`
-  after polling failures (`vmix-adapter.ts:356-363`) → the supervisor will auto-reconnect vMix too (intended; mention in
-  docs).
-- Conventions: kebab-case, camelCase, UPPER_SNAKE constants, `T`-suffixed type aliases, English comments/JSDoc, colocated
-  tests, fake timers via `jest.useFakeTimers()` + `await jest.advanceTimersByTimeAsync()`.
+- Customer / project: Broadify Bridge Studio graphics (Key&Fill / video via DeckLink, display output)
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/renderer-framebus-reuse / feature/renderer-framebus-reuse
+- Base branch: dev (origin/dev dd5d6932 == v0.27.1-rc.19)
+- Hard rules (AGENTS.md): Graphics Single-Path — ONE renderer, FrameBus = data plane; NO multi-window fallback, NO
+  bridge-side compositing, NO `BRIDGE_GRAPHICS_RENDERER_SINGLE` switch. Update docs under docs/bridge/*.
 
 ## Plan
-### 1. Shared backoff (`apps/bridge/src/services/shared/backoff.ts` + test) — the ONE implementation other PRs reuse
-- `computeBackoffDelayMs({ attempt, baseMs, maxMs, jitterRatio, random })` pure: `min(baseMs * 2^(attempt-1), maxMs)`
-  then `delay * (1 + (random()*2-1) * jitterRatio)`, clamped ≥ 0.
-- `class ReconnectScheduler` with ctor `{ baseMs, maxMs, jitterRatio, maxAttempts?, setTimeoutFn?, clearTimeoutFn?,
-  now?, random? }` and API `schedule(run: () => Promise<void> | void): boolean` (false when maxAttempts exhausted),
-  `cancel()`, `reset()`, `isArmed()`, `get attempt`, `getNextRetryAt(): number | null`. Timers `unref`'d.
-### 2. Types (`services/engine-types.ts`)
-- `export type EngineReconnectInfoT = { attempt: number; nextRetryAt: number | null; lastError?: string }`;
-  `EngineStateT += reconnect?: EngineReconnectInfoT | null`. Publisher (`engine-event-publisher.ts`) adds
-  `reconnect: state.reconnect ?? null` to `engine_status`.
-### 3. `EngineConnectionSupervisor` (`services/engine/engine-connection-supervisor.ts` + test)
-- Deps: `driver: { open(config): Promise<void>; close(): Promise<void> }`, `getStatus(): EngineStatusT`,
-  `onReconnectStateChange(info: EngineReconnectInfoT | null)`, `createScheduler(kind: "startup" | "session")`, `logger`,
-  `now`, timers.
-- Constants: `STARTUP_AUTO_CONNECT_DELAY_MS = 3000`, `STARTUP_MAX_ATTEMPTS = 5` (1/2/4/8/16 s), `RECONNECT_BASE_DELAY_MS =
-  1000`, `RECONNECT_MAX_DELAY_MS = 30_000`, `RECONNECT_JITTER_RATIO = 0.2`, `SELF_HEAL_GRACE_MS = 30_000`.
-- API: `connect(config, origin: "manual" | "startup"): Promise<void>` (manual = one attempt, throws on failure as today;
-  startup = bounded loop, silent give-up), `disconnect(): Promise<void>` (desired=null, cancel timers, abandon in-flight,
-  `driver.close()`), `handleSessionStatus(prev, next)`, `beginShutdown()`, `cancelPending()`.
-- Transitions (only when `desired !== null && !shutdownRequested`): `connected → disconnected|error` unsolicited → Drop →
-  session loop: `close()` → fresh adapter → `open(desired)`; on failure `reconnect = { attempt, nextRetryAt, lastError }`
-  and next tick; success → `reset()`, `reconnect = null`. `connected → connecting` → Self-Heal: passive, arm grace timer;
-  `connected` again → clear; grace expires → Takeover (`close()` = destroy + session loop). `disconnected → disconnected`
-  (USB double event) ignored (schedule only when `prev === "connected"`).
-### 4. `EngineAdapterService` (`services/engine-adapter.ts`)
-- Split today's `connect()` body into `private openSession(config, origin)` and `private closeSession()` (replaces the
-  previous-adapter teardown block too). During non-manual attempts do not write `status: "error"`; write `connecting` +
-  `reconnect.lastError`.
-- Public `connect(config, origin = "manual")`: guards → Join semantics: same config in-flight → return the in-flight
-  promise; in-flight non-manual with different config → cancel it and start the manual one; in-flight manual with different
-  config → `ALREADY_CONNECTING` (unchanged); pending retry/self-heal → cancel and take over `desired`. `disconnect()` cancels
-  everything. `startPersistedAutoConnect()` (3 s timer, injectable) → `deps.loadPersistedConnection()` → if `status ===
-  "disconnected"` → `connect(cfg, "startup")`. `beginShutdown()`. Deps += `loadPersistedConnection`, timers, `random`.
-- `broadcastStateChanges`: a change of `reconnect` counts as status change; reason `"reconnecting"` when `reconnect` set.
-- Helper `isSameEngineConnectConfig(a, b)` in `engine/engine-connect-schema.ts`.
-### 5. `server.ts`
-- Remove `scheduleEngineAutoReconnect` + constant + call; call `engineAdapter.startPersistedAutoConnect()` after listen.
-- Shutdown: `engineAdapter.beginShutdown()` as the FIRST line (next to `meetingHelperManager.beginShutdown()`), and after
-  `stopCommandRouter()` add `await withTimeout("engine disconnect", engineAdapter.disconnect(), 7000)` before the relay
-  disconnect (so the final `engine_status disconnected` still reaches the relay).
-- `server.test.ts`: engine mock gains `startPersistedAutoConnect`, `beginShutdown`, `disconnect`; the old timer tests
-  (~543-598) move to `engine-adapter.test.ts`; shutdown test asserts order.
-### 6. Relay SLA
-- `relay-command-policy.ts:87`: `engine_connect` `bridgeLocalSlaMs` 11_000 → 17_000 (relay timeout stays 18 s); update the
-  table in `docs/bridge/features/relay-protocol.md` (~154-160).
-### 7. Docs
-- `docs/bridge/features/engine-connection-lifecycle.md` (created in B2): supervisor state machine, constants, join table
-  (manual vs startup vs in-flight), vMix note; `docs/bridge/reference/files/server.md` (startup auto-connect moved,
-  shutdown order); `docs/bridge/dataflows.md` (`reconnect` field).
+Verified facts to rely on: the addon reuse path (`framebus-addon.cc:446-460, 483-504`) opens an existing region with
+`shm_open(O_RDWR)` and accepts it when magic/version/header_size/width/height/fps/pixel_format/frame_size/
+slot_count/slot_stride match; otherwise it throws "Existing shared memory has incompatible header|size", which the
+renderer entry already self-heals by recreating with `forceRecreate: true` (`electron-renderer-entry.ts:578-600`).
+Studio bus names are random per bridge run (`framebus-config.ts:45-47`), so cross-run collisions are impossible.
+`writer.header.seq` is exposed to JS as a bigint (`framebus-client.ts` `FrameBusHeaderT.seq`). The forced recreate
+was introduced in commit db93df0b ("updated keying pipeline for meeting") without a Studio rationale.
 
-## Acceptance criteria (RED before unless guard)
-1. `backoff.test.ts`: caps at maxMs, symmetric jitter within ratio, deterministic with injected random, `cancel()` prevents
-   the callback, `schedule` returns false after maxAttempts.
-2. `engine-connection-supervisor.test.ts` (fake timers): "reconnects after an unsolicited drop with exponential backoff"
-   (close→open order, delays 1 s/2 s/4 s); "stays passive during self-heal and takes over after the grace period"; "manual
-   disconnect cancels a pending retry"; "beginShutdown suppresses reconnects on later drops"; "startup gives up after
-   STARTUP_MAX_ATTEMPTS and closes silently"; "resets backoff after a successful reconnect"; "ignores disconnected→disconnected".
-3. `engine-adapter.test.ts`: "publishes connecting with reconnect info while an auto-reconnect is pending" (no `engine.error`
-   broadcast) — RED before; "auto-reconnects a usb drop through a fresh adapter" (createAdapter twice, old adapter
-   disconnected first) — RED before; "startPersistedAutoConnect connects the persisted config after the delay" (migrated
-   from server.test.ts); "startPersistedAutoConnect does nothing when already connecting"; "joins an in-flight auto attempt
-   with the same config instead of throwing ALREADY_CONNECTING" — RED before; "supersedes an in-flight startup attempt when
-   the manual config differs" — RED before; "still rejects a second manual connect with a different config while
-   connecting" (guard); "a manual disconnect cancels the startup auto-connect timer" — RED before.
-4. `server.test.ts`: "shutdown begins engine shutdown first and disconnects the engine before the relay" — RED before.
-5. All existing engine/adapter/router/route suites green; `relay-command-policy.test.ts` green.
-6. `npx jest apps/bridge/src/services/shared apps/bridge/src/services/engine apps/bridge/src/services/engine-adapter.test.ts
-   apps/bridge/src/services/command-router.test.ts apps/bridge/src/server.test.ts apps/bridge/src/services/relay-command-policy.test.ts --runInBand`
-   green; FULL `npm run test:jest` (verifier); `npm run lint`; `npm run build:bridge`.
+### 1. G1(a) Reuse by name (CRITICAL)
+- `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`: delete `shouldForceRecreateFrameBus()`
+  (457-459); in `writerOptions` (~576) set `forceRecreate: false`; remove the corresponding log field (~640) if it
+  only reported that flag; extend the comment near 583-588: reuse by name is the normal case (renderer recovery
+  attaches to the live region); recreate happens ONLY in the incompatible-region self-heal.
+- Seed-skip: after the writer is created (~579/596), compute `const reusedRegionHasFrame = frameBusWriter.header.seq > 0n`.
+  If there is no `carriedFrame` and `reusedRegionHasFrame`, do NOT write the idle/background seed frame (the region
+  still holds the last frame of the previous renderer until `replayLatestLayers()` from the client arrives); call the
+  existing paint-dedup invalidation so the next real paint is written; log `seededFrom: "existing_region"`.
+  Put the decision into a pure helper `renderer/framebus-seed-frame.ts`:
+  `shouldSeedFreshWriter({ carriedFrame: boolean, existingSeq: bigint }): "retained_frame" | "idle_color" | "existing_region"`
+  with colocated test.
+- Keep `framebusReattach` handling (718-733, 754-764) unchanged (meeting still needs it). `MEETING_GRAPHICS_FRAMEBUS_NAMES`
+  may still be used by `isMeetingGraphicsBus()` (~1480) — do not remove that.
+
+### 2. G8 WebContents crash / unresponsive (MEDIUM)
+- In `ensureSingleWindow` (after the existing `paint` / `did-finish-load` wiring, ~1053-1060 / ~1193):
+  register `webContents.on("render-process-gone", (_e, details) => void recoverSingleWindow(\`render_process_gone:${details.reason}\`))`,
+  `window.on("unresponsive", ...)` arming a 5 s timer → `recoverSingleWindow("unresponsive")`, `window.on("responsive", ...)`
+  clearing it.
+- `recoverSingleWindow(reason)`: stop the FrameBus heartbeat (do not keep republishing a dead frame), destroy the
+  window, call `ensureSingleWindow(...)` again with the current renderer config, replay layers from the existing
+  in-entry snapshots (`singleLayerSnapshots`, ~161; reuse the existing replay/publish helpers — do NOT add a second
+  window or any compositing path), log at warn with the reason. Count incidents: a SECOND incident within 60 s →
+  `logger.error` and `process.exit(3)` so the client's bounded recovery (`electron-renderer-client.ts:497-515` treats
+  code 3 / no signal as recoverable) takes over — safe only because of §1.
+- Guard against re-entrancy (a recovery already in flight ignores further events).
+
+## Acceptance criteria
+1. `electron-renderer-entry.test.ts`: NEW "attaches to the existing FrameBus region by name without forceRecreate
+   (studio bus)" — setup like the existing reattach test (~1428-1534): `createWriter` called once with
+   `expect.objectContaining({ forceRecreate: false })` for a non-meeting bus name. RED before the fix.
+2. NEW "skips the idle seed when the reused region already carries frames" — writer mock `header.seq = 5n`:
+   `writeFrame` not called for the seed, log carries `seededFrom: "existing_region"`. RED before.
+3. NEW "still force-recreates an incompatible region (self-heal)" — first `createWriter` throws
+   `Error("Existing shared memory has incompatible header")`, second call has `forceRecreate: true`. (Guard, green before
+   and after — document as guard.)
+4. `framebus-seed-frame.test.ts`: three outcomes covered.
+5. NEW "recreates the offscreen window and replays layers after render-process-gone" (mock `webContents.on` capture in
+   the test harness, ~52-55), NEW "exits the process on the second render-process-gone within 60s" (`process.exit` spy),
+   NEW "stops the heartbeat while the window is gone". RED before (no handler registered).
+6. Existing suites stay green: `electron-renderer-entry.test.ts` (incl. meeting reattach case), `electron-renderer-client.test.ts`
+   (recovery describe 627-727), `framebus-writer-match.test.ts`, `framebus-heartbeat.test.ts`.
+7. `npx jest apps/bridge/src/services/graphics/renderer --runInBand` green; FULL `npm run test:jest` green; `npm run lint`
+   clean; `npm run build:bridge` and `npm run build:graphics-renderer` clean.
+8. Docs updated in the same change: `docs/bridge/subsystems/graphics.md` (new paragraph "Studio: Writer-Reuse by Name
+   (Renderer-Recovery)" next to the existing 97-120 heartbeat/reattach section; renderer section mentions
+   render-process-gone handling), `docs/bridge/architecture/graphics-realtime-framebus.md` (lifecycle rule: regions are
+   reused by name, recreate only on incompatibility), `docs/bridge/reference/files/renderer-entry.md`.
+9. Manual outcome check to be run by the verifier (documented in the report, not by you): with a DeckLink or display
+   output running, `kill -9` the renderer process → output resumes after client recovery without helper restart; the
+   bridge log shows no "recreating" line for the studio bus.
 
 ## Review
 - Round: 1/3
-- Verdict: Applied review round 1 MUST-FIX items.
-- Must-fix (applied): identity-guarded superseded adapter cleanup; generation invalidation for new desired configs; startup give-up resets service state to disconnected; startup attempt budget owned by supervisor.
+- Verdict: (pending)
+- Must-fix (open):
 - Notes (non-blocking):
 - Handoff to human (if any):
 
 ### Implementation notes
-- Files changed: shared backoff/scheduler, engine connection supervisor, EngineAdapterService integration, server startup/shutdown lifecycle, relay SLA/tests, engine event payload tests, and the docs listed in the task.
-- Deviation: full `npm run test:jest` remains red only for pre-existing `electron-renderer-client.test.ts` `listen EPERM 127.0.0.1`; confirmed by temporarily reversing this task's changes and rerunning the same command.
+- Changed `electron-renderer-entry.ts`, `framebus-seed-frame.ts`, colocated renderer tests, and the three requested docs.
+- Studio FrameBus writer creation now reuses by name (`forceRecreate: false`), skips idle seeding when an existing region has `seq > 0`, and still force-recreates only incompatible regions.
+- Added offscreen `render-process-gone` / `unresponsive` recovery with heartbeat stop, single-window recreation, layer replay, and exit-code 3 escalation on repeated failures within 60s.
+- Review round 1 MUST-FIX: `recoverSingleWindow()` now ignores recovery events that arrive while recovery is already in flight before updating the repeat-failure timestamp, so same-incident follow-on events do not trigger `exit(3)`. Added regression coverage for an in-flight `render-process-gone` event and kept the repeated-incident exit test scoped to a second event after recovery completes.
+- Deviation: full Jest and renderer-folder Jest are blocked in this sandbox by pre-existing `listen EPERM: operation not permitted 127.0.0.1` in `electron-renderer-client.test.ts`; proven with implementation/test/doc patch reversed via `/tmp/codex-renderer-framebus-reuse.patch`.
 
 ## Verification
-- [ ] Tests pass (targeted + full)
-- [x] Lint / type-check pass
-- [ ] Hardware outcome check (verifier): USB cable pull 20 s → `connecting` + rising `reconnect.attempt` → `connected`
-      within ≤30 s after replug, exactly one helper; IP: Wi-Fi off 10 s → self-heal; ATEM off 2 min → takeover; bridge
-      restart with ATEM → connected after ~3 s; without ATEM → 5 attempts then quiet `disconnected`; Autostart collision →
-      no ALREADY_CONNECTING
+- [ ] Tests pass (targeted + full `npm run test:jest`)
+- [x] Lint / type-check pass (`npm run lint`, `npm run build:bridge`, `npm run build:graphics-renderer`)
+- [ ] Browser-verified (n/a) / hardware outcome check (verifier)
 - [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after
