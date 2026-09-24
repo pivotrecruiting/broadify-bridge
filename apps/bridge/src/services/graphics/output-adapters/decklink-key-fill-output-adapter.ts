@@ -87,6 +87,10 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       config.colorspace,
     ];
 
+    if (config.format.displayModeId) {
+      args.push("--display-mode", String(config.format.displayModeId));
+    }
+
     if (process.env.BRIDGE_FRAMEBUS_NAME) {
       args.push("--framebus-name", process.env.BRIDGE_FRAMEBUS_NAME);
     }

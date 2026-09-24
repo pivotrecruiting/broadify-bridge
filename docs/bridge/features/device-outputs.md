@@ -23,11 +23,17 @@ Quelle: `packages/protocol/src/index.ts`
 Die Route `/outputs` mappt Devices/Ports auf UI‑Outputs:
 - `output1`: alle non‑key Output‑Ports
 - `output2`: nur `role === key`
-- `available`: `device.present && device.ready && !device.inUse && port.available`
+- `available`: `(device.present && device.ready && !device.inUse && port.available) || ownedByBridge`
+- `ownedByBridge`: `true`, wenn der Port zur aktuell aktiven Graphics-Konfiguration
+  gehört. Dadurch bleiben die eigenen laufenden DeckLink-Ports für Reconfigure-
+  Workflows auswählbar, obwohl der Helper sie exklusiv geöffnet hat.
+- `diagnostics`: Plattform- und DeckLink-Zustand für leere Listen oder fehlende
+  lokale Voraussetzungen.
 
 Implementierung:
+- `apps/bridge/src/services/device-to-output-transform.ts`
 - `apps/bridge/src/routes/outputs.ts`
-- `apps/bridge/src/services/command-router.ts` (transformDevicesToOutputs)
+- `apps/bridge/src/services/command-router.ts`
 
 ## Display Modes
 DeckLink‑Ports erhalten Display‑Modes aus dem Helper:

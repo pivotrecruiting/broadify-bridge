@@ -1,15 +1,29 @@
+const mockListDecklinkDevicesWithDiagnostics = jest.fn();
+const mockListDecklinkDisplayModes = jest.fn();
 jest.mock("./decklink-helper.js", () => ({
   listDecklinkDevices: jest.fn(),
-  listDecklinkDisplayModes: jest.fn(),
+  listDecklinkDevicesWithDiagnostics: (...args: unknown[]) =>
+    mockListDecklinkDevicesWithDiagnostics(...args),
+  listDecklinkDisplayModes: (...args: unknown[]) =>
+    mockListDecklinkDisplayModes(...args),
 }));
 
 jest.mock("../../services/bridge-context.js", () => ({
   getBridgeContext: () => ({ logger: { warn: jest.fn() } }),
 }));
 
-import { parseDecklinkHelperDevices } from "./decklink-detector.js";
+import { DecklinkDetector, parseDecklinkHelperDevices } from "./decklink-detector.js";
 
 describe("decklink-detector", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockListDecklinkDevicesWithDiagnostics.mockResolvedValue({
+      devices: [],
+      diagnostics: { apiAvailable: true, helperMissing: false },
+    });
+    mockListDecklinkDisplayModes.mockResolvedValue([]);
+  });
+
   describe("parseDecklinkHelperDevices", () => {
     it("parses valid device list", () => {
       const raw = [
@@ -82,6 +96,55 @@ describe("decklink-detector", () => {
 
     it("returns empty array for empty array", () => {
       expect(parseDecklinkHelperDevices([])).toEqual([]);
+    });
+  });
+
+  describe("DecklinkDetector", () => {
+    const rawDevice = {
+      id: "decklink-1",
+      displayName: "DeckLink",
+      videoOutputConnections: ["sdi"],
+    };
+    const mode = {
+      name: "1080p50",
+      id: 13,
+      width: 1920,
+      height: 1080,
+      fps: 50,
+      frameDuration: 1,
+      timeScale: 50,
+      fieldDominance: "progressive",
+      connection: "sdi",
+      pixelFormats: ["8bit_yuv"],
+    };
+
+    it("reuses cached display modes within TTL", async () => {
+      mockListDecklinkDevicesWithDiagnostics.mockResolvedValue({
+        devices: [rawDevice],
+        diagnostics: { apiAvailable: true, helperMissing: false },
+      });
+      mockListDecklinkDisplayModes.mockResolvedValue([mode]);
+
+      const detector = new DecklinkDetector();
+      await detector.detect();
+      await detector.detect();
+
+      expect(mockListDecklinkDisplayModes).toHaveBeenCalledTimes(1);
+    });
+
+    it("refreshes modes after invalidation", async () => {
+      mockListDecklinkDevicesWithDiagnostics.mockResolvedValue({
+        devices: [rawDevice],
+        diagnostics: { apiAvailable: true, helperMissing: false },
+      });
+      mockListDecklinkDisplayModes.mockResolvedValue([mode]);
+
+      const detector = new DecklinkDetector();
+      await detector.detect();
+      detector.invalidateModeCache();
+      await detector.detect();
+
+      expect(mockListDecklinkDisplayModes).toHaveBeenCalledTimes(2);
     });
   });
 });

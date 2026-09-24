@@ -33,7 +33,7 @@ import {
 } from "./meeting/meeting-graphics-manager.js";
 import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
-import { transformDevicesToOutputs } from "./device-to-output-transform.js";
+import { buildBridgeOutputsView } from "./outputs-view.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
@@ -110,6 +110,10 @@ export class CommandRouter {
               outputsConfigured: graphicsStatus.outputsConfigured,
               outputStatus: graphicsStatus.outputStatus,
               lastOutputError: graphicsStatus.lastOutputError,
+              platform: process.platform,
+              outputCapabilities: {
+                decklink: process.platform === "darwin",
+              },
               engine: {
                 configured: !!runtimeConfigData?.engine,
                 status: engineState.status,
@@ -187,7 +191,7 @@ export class CommandRouter {
           const devices = refresh
             ? await deviceCache.getDevices(true, OUTPUT_DEVICE_MODULE_NAMES)
             : deviceCache.getCachedDevices(OUTPUT_DEVICE_MODULE_NAMES);
-          const outputs = transformDevicesToOutputs(devices);
+          const outputs = buildBridgeOutputsView(devices);
 
           return {
             success: true,

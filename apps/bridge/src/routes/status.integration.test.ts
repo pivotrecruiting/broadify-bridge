@@ -45,6 +45,10 @@ describe("registerStatusRoute integration", () => {
       bridgeName: "Studio A",
       state: "configured",
       outputsConfigured: true,
+      platform: process.platform,
+      outputCapabilities: {
+        decklink: process.platform === "darwin",
+      },
       engine: {
         configured: true,
         status: "connected",
