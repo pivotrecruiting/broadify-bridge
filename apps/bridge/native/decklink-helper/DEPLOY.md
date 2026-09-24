@@ -75,3 +75,11 @@ Wenn ein x64 Binary benoetigt wird, Build auf einem x86_64 Mac wiederholen:
 
 - SDK Dateien niemals als Release Asset hochladen.
 - Die Bridge laedt das Binary zur Build-Zeit und verifiziert per SHA256.
+
+## Asset-Standort (Stand 24.9.2026)
+
+Die aktuell in den Secrets referenzierten Assets liegen im Release
+`helper-assets-20260924` des Bridge-Repos (`pivotrecruiting/broadify-bridge`),
+weil das Helper-Repo fuer den CI-Account nicht beschreibbar ist. Das Release ist
+bewusst nicht als „Latest" markiert und traegt kein `v*`-Tag, damit weder der
+App-Updater noch der Release-Workflow darauf reagieren.
