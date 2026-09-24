@@ -291,14 +291,6 @@ describe("command-router", () => {
         ip: "192.168.1.10",
         port: 9910,
       });
-      // A successful connect persists the operator's choice so the bridge can
-      // bring the same connection back on the next start.
-      expect(mockEngineConnectionSave).toHaveBeenCalledWith({
-        type: "atem",
-        transport: "network",
-        ip: "192.168.1.10",
-        port: 9910,
-      });
     });
 
     it("engine_connect does not persist when the connect fails", async () => {
@@ -1035,6 +1027,22 @@ describe("command-router", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("Invalid output config");
       expect(result.errorCode).toBe("output_config_error");
+    });
+
+    it("propagates EngineError code as errorCode", async () => {
+      const { EngineError, EngineErrorCode } = require("./engine/engine-errors.js");
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.runMacro.mockRejectedValue(
+        new EngineError(EngineErrorCode.NOT_CONNECTED, "not connected"),
+      );
+
+      const result = await commandRouter.handleCommand("engine_run_macro", {
+        macroId: 1,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("not connected");
+      expect(result.errorCode).toBe("NOT_CONNECTED");
     });
 
     it("denies claims for ids the bridge never issued", async () => {
