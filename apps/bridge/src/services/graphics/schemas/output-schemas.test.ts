@@ -42,6 +42,32 @@ describe("output-schemas", () => {
         GraphicsFormatSchema.parse({ width: 0, height: 1080, fps: 30 }),
       ).toThrow();
     });
+
+    it("accepts optional displayModeId", () => {
+      const result = GraphicsFormatSchema.parse({
+        width: 1920,
+        height: 1080,
+        fps: 25,
+        displayModeId: 13,
+      });
+      expect(result).toEqual({
+        width: 1920,
+        height: 1080,
+        fps: 25,
+        displayModeId: 13,
+      });
+    });
+
+    it("rejects a non-integer displayModeId", () => {
+      expect(() =>
+        GraphicsFormatSchema.parse({
+          width: 1920,
+          height: 1080,
+          fps: 25,
+          displayModeId: 13.5,
+        })
+      ).toThrow();
+    });
   });
 
   describe("GraphicsConfigureOutputsSchema", () => {

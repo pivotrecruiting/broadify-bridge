@@ -41,10 +41,11 @@ sequenceDiagram
   end
 ```
 
-## Plattformstatus (Display Output)
-- **macOS:** Unterstützt (nativer `display-helper`, SDL2, FrameBus)
-- **Windows:** Unterstützt (nativer `display-helper.exe`, SDL2, FrameBus)
-- **Linux:** Nicht implementiert
+## Plattformstatus
+| Output-Pfad | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| DeckLink | Unterstützt (DeckLink Helper, FrameBus) | Nicht implementiert | Nicht implementiert |
+| Display Output | Unterstützt (nativer `display-helper`, SDL2, FrameBus) | Unterstützt (nativer `display-helper.exe`, SDL2, FrameBus) | Nicht implementiert |
 
 ## Meeting-Helper Kamera- und VCam-Lifecycle
 

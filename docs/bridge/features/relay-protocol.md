@@ -133,6 +133,39 @@ Antwort (success):
 }
 ```
 
+#### get_status
+Antwortdaten enthalten neben Laufzeit, Engine und Graphics-Status auch die
+lokale Plattform und Output-Fähigkeiten:
+
+```json
+{
+  "running": true,
+  "version": "0.27.1",
+  "platform": "darwin",
+  "outputCapabilities": { "decklink": true }
+}
+```
+
+`outputCapabilities.decklink` ist nur auf macOS `true`; Windows/Linux können
+damit "keine DeckLink-Outputs" von "DeckLink nicht unterstützt" unterscheiden.
+
+#### list_outputs
+Antwortdaten enthalten `output1`, `output2` und additive Diagnostics:
+
+```json
+{
+  "output1": [],
+  "output2": [],
+  "diagnostics": {
+    "platform": "win32",
+    "decklink": { "state": "unsupported_platform" }
+  }
+}
+```
+
+Mögliche DeckLink-Zustände: `ok`, `unsupported_platform`, `helper_missing`,
+`api_unavailable`, `no_devices`.
+
 ### command_result
 Antwort der Bridge.
 ```json

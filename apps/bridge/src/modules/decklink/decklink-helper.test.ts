@@ -152,6 +152,85 @@ describe("decklink-helper", () => {
       );
     });
 
+    it("parses the diagnostics envelope", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { listDecklinkDevicesWithDiagnostics } = require("./decklink-helper.js");
+      const promise = listDecklinkDevicesWithDiagnostics();
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit(
+          "data",
+          JSON.stringify({
+            devices: [{ id: "decklink-1" }],
+            diagnostics: {
+              apiAvailable: true,
+              apiVersion: "12.8",
+              helperVersion: "0.1.0",
+              message: "ok",
+            },
+          })
+        );
+        child.emit("close", 0);
+      });
+
+      await expect(promise).resolves.toEqual({
+        devices: [{ id: "decklink-1" }],
+        diagnostics: {
+          apiAvailable: true,
+          helperMissing: false,
+          apiVersion: "12.8",
+          helperVersion: "0.1.0",
+          message: "ok",
+        },
+      });
+    });
+
+    it("falls back to array output from older helpers", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { listDecklinkDevicesWithDiagnostics } = require("./decklink-helper.js");
+      const promise = listDecklinkDevicesWithDiagnostics();
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", JSON.stringify([{ id: "decklink-1" }]));
+        child.emit("close", 0);
+      });
+
+      await expect(promise).resolves.toEqual({
+        devices: [{ id: "decklink-1" }],
+        diagnostics: { apiAvailable: true, helperMissing: false },
+      });
+    });
+
+    it("reports api_unavailable when the helper prints the iterator hint on stderr with exit 0", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { listDecklinkDevicesWithDiagnostics } = require("./decklink-helper.js");
+      const promise = listDecklinkDevicesWithDiagnostics();
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", "[]");
+        (child.stderr as EventEmitter).emit(
+          "data",
+          "DeckLink iterator could not be created. Is Desktop Video installed?"
+        );
+        child.emit("close", 0);
+      });
+
+      const result = await promise;
+      expect(result.devices).toEqual([]);
+      expect(result.diagnostics).toMatchObject({
+        apiAvailable: false,
+        helperMissing: false,
+        message: expect.stringContaining("DeckLink iterator could not be created"),
+        error: expect.stringContaining("DeckLink iterator could not be created"),
+      });
+    });
+
     it("returns empty array when helper exits with non-zero code", async () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
@@ -524,6 +603,22 @@ describe("decklink-helper", () => {
       child.emit("error", new Error("helper crashed"));
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining("Helper failed")
+      );
+    });
+
+    it("logs once when the watch process exits", () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { watchDecklinkDevices } = require("./decklink-helper.js");
+      watchDecklinkDevices(() => {});
+
+      child.emit("exit", 1, null);
+      child.emit("close", 1, null);
+
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Watch process exited")
       );
     });
 

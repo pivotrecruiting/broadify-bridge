@@ -25,6 +25,7 @@ export const GraphicsFormatSchema = z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   fps: z.number().positive(),
+  displayModeId: z.number().int().positive().optional(),
 });
 
 /**
