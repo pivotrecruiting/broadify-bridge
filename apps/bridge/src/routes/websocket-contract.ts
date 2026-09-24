@@ -3,14 +3,19 @@ import type { EngineStateT } from "../services/engine-types.js";
 export type WebSocketTopicT = "engine" | "video";
 
 export type WebSocketServerMessageT =
-  | { type: "engine.status"; status: EngineStateT["status"]; error?: string }
+  | {
+      type: "engine.status";
+      status: EngineStateT["status"];
+      error?: string;
+      errorCode?: string;
+    }
   | {
       type: "engine.macroExecution";
       execution: EngineStateT["macroExecution"];
       lastCompletedExecution?: EngineStateT["lastCompletedMacroExecution"];
     }
   | { type: "engine.connected"; state: EngineStateT }
-  | { type: "engine.error"; error: string }
+  | { type: "engine.error"; error: { message: string; code?: string } }
   | { type: "video.status"; status: "not-configured" };
 
 /**
@@ -40,7 +45,10 @@ export function buildWebSocketSnapshot(
     if (engineState.status === "error") {
       return {
         type: "engine.error",
-        error: engineState.error || "Unknown error",
+        error: {
+          message: engineState.error || "Unknown error",
+          code: engineState.errorCode,
+        },
       };
     }
 
@@ -48,6 +56,7 @@ export function buildWebSocketSnapshot(
       type: "engine.status",
       status: engineState.status,
       error: engineState.error,
+      errorCode: engineState.errorCode,
     };
   }
 

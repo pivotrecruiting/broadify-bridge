@@ -12,7 +12,7 @@ import type { EngineConnectConfig } from "./engine-adapter-interface.js";
 const engineConnectFields = {
   type: z.enum(["atem", "tricaster", "vmix"]),
   transport: z.enum(["network", "usb"]).optional(),
-  ip: z.string().ip({ version: "v4" }).optional(),
+  ip: z.string().trim().ip({ version: "v4" }).optional(),
   port: z.number().int().min(1).max(65535).optional(),
 };
 
@@ -93,4 +93,19 @@ export function describeEngineConnectTarget(
   config: EngineConnectConfig
 ): string {
   return config.transport === "usb" ? "USB" : `${config.ip}:${config.port}`;
+}
+
+export function isSameEngineConnectConfig(
+  a: EngineConnectConfig,
+  b: EngineConnectConfig
+): boolean {
+  const aTransport = a.transport ?? "network";
+  const bTransport = b.transport ?? "network";
+  if (a.type !== b.type || aTransport !== bTransport) {
+    return false;
+  }
+  if (aTransport === "usb") {
+    return true;
+  }
+  return a.ip === b.ip && a.port === b.port;
 }

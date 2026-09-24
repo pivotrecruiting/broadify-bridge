@@ -18,7 +18,6 @@ import { initializeModules } from "./modules/index.js";
 import { RelayClient } from "./services/relay-client.js";
 import { deviceCache } from "./services/device-cache.js";
 import { engineAdapter } from "./services/engine-adapter.js";
-import { engineConnectionStore } from "./services/engine/engine-connection-store.js";
 import {
   resolveUserDataDir,
   setBridgeContext,
@@ -211,61 +210,15 @@ export async function createServer(config: BridgeConfigT) {
   initCommandRouter();
   server.log.info("[Server] Command router initialized");
 
-  // Note: Engine connection is now controlled by the Web-App
-  // The Web-App handles auto-connect and stores config in localStorage
-  // Bridge no longer auto-connects on startup
+  // Engine startup reconnect is owned by EngineAdapterService so manual
+  // connects, persisted startup connects and shutdown cancellation share one
+  // supervisor.
 
   // Store relay client in server instance for later use
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (server as any).relayClient = relayClient;
 
   return server;
-}
-
-/** Give USB enumeration and helpers a moment before the reconnect attempt. */
-const ENGINE_AUTO_RECONNECT_DELAY_MS = 3_000;
-
-/**
- * Reconnect the engine with the operator's last persisted connection.
- *
- * A connection choice belongs to the operator, not to the session: after a
- * bridge restart the previous connection (USB or network) comes back on its
- * own. A failed attempt - switcher off, cable gone - stays SILENT apart from
- * a log line: the state is reset to disconnected instead of parking an error
- * in the UI, and the stored choice is kept for the next start.
- *
- * @param server Fastify instance used for logging.
- */
-function scheduleEngineAutoReconnect(
-  server: Awaited<ReturnType<typeof createServer>>
-): void {
-  const timer = setTimeout(() => {
-    void (async () => {
-      const persisted = await engineConnectionStore.load();
-      if (!persisted) {
-        return;
-      }
-      if (engineAdapter.getStatus() !== "disconnected") {
-        return;
-      }
-      server.log.info(
-        `[Engine] Auto-reconnecting last connection (type=${persisted.type}, transport=${persisted.transport ?? "network"})`
-      );
-      try {
-        await engineAdapter.connect(persisted);
-        server.log.info("[Engine] Auto-reconnect successful");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        server.log.info(`[Engine] Auto-reconnect skipped: ${message}`);
-        try {
-          await engineAdapter.disconnect();
-        } catch {
-          // Best-effort reset; the operator can connect manually.
-        }
-      }
-    })();
-  }, ENGINE_AUTO_RECONNECT_DELAY_MS);
-  timer.unref?.();
 }
 
 /**
@@ -289,7 +242,7 @@ export async function startServer(
       await relayClient.connect();
     }
 
-    scheduleEngineAutoReconnect(server);
+    engineAdapter.startPersistedAutoConnect();
   } catch (err: unknown) {
     // Check for port already in use
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -355,6 +308,7 @@ export async function startServer(
     // FIRST: the process-group SIGTERM may kill the meeting helper before the
     // meeting stop step below runs; without this its exit would be classified
     // as a crash and a restart would be armed mid-shutdown.
+    engineAdapter.beginShutdown();
     meetingHelperManager.beginShutdown();
     server.log.info(`Received ${signal}, shutting down gracefully...`);
     // Budget must cover MP4 finalization on quit-while-recording: the meeting
@@ -367,6 +321,8 @@ export async function startServer(
     try {
       // Stop the Stream Deck USB hot-plug watch.
       stopCommandRouter();
+
+      await withTimeout("engine disconnect", engineAdapter.disconnect(), 7000);
 
       // Disconnect relay client
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

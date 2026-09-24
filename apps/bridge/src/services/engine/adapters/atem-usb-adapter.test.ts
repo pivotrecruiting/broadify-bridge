@@ -21,6 +21,8 @@ type MockChildT = EventEmitter & {
   stderr: EventEmitter;
   stdin: { writable: boolean; write: jest.Mock };
   kill: jest.Mock;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
 };
 
 function createMockChild(): MockChildT {
@@ -29,11 +31,23 @@ function createMockChild(): MockChildT {
   child.stderr = new EventEmitter();
   child.stdin = { writable: true, write: jest.fn().mockReturnValue(true) };
   child.kill = jest.fn();
+  child.exitCode = null;
+  child.signalCode = null;
   return child;
 }
 
 function emitHelperLine(child: MockChildT, event: Record<string, unknown>): void {
   child.stdout.emit("data", Buffer.from(`${JSON.stringify(event)}\n`, "utf8"));
+}
+
+function emitExit(
+  child: MockChildT,
+  code: number | null = 0,
+  signal: NodeJS.Signals | null = null
+): void {
+  child.exitCode = code;
+  child.signalCode = signal;
+  child.emit("exit", code, signal);
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -195,12 +209,90 @@ describe("AtemUsbAdapter", () => {
     const adapter = new AtemUsbAdapter();
     await connectAdapter(adapter);
 
-    await adapter.disconnect();
+    const disconnectPromise = adapter.disconnect();
+    await flush();
+    emitExit(child);
+    await disconnectPromise;
 
     expect(child.stdin.write).toHaveBeenCalledWith('{"command":"shutdown"}\n');
     expect(adapter.getStatus()).toBe("disconnected");
     expect(adapter.getMacros()).toEqual([]);
     expect(adapter.getState().transport).toBeUndefined();
+  });
+
+  it("disconnect resolves only after the helper exited", async () => {
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter);
+
+    let resolved = false;
+    const disconnectPromise = adapter.disconnect().then(() => {
+      resolved = true;
+    });
+
+    await flush();
+    expect(resolved).toBe(false);
+
+    emitExit(child);
+    await disconnectPromise;
+
+    expect(resolved).toBe(true);
+    expect(adapter.getStatus()).toBe("disconnected");
+  });
+
+  it("escalates to SIGTERM and SIGKILL when the helper ignores shutdown", async () => {
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter);
+    jest.useFakeTimers();
+
+    let resolved = false;
+    const disconnectPromise = adapter.disconnect().then(() => {
+      resolved = true;
+    });
+
+    await Promise.resolve();
+    expect(child.stdin.write).toHaveBeenCalledWith('{"command":"shutdown"}\n');
+    expect(resolved).toBe(false);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(4000);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(resolved).toBe(false);
+
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+
+    emitExit(child, null, "SIGKILL");
+    await disconnectPromise;
+    expect(resolved).toBe(true);
+
+    jest.useRealTimers();
+  });
+
+  it("connect waits for a pending helper stop before spawning again", async () => {
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter);
+
+    const oldChild = child;
+    const nextChild = createMockChild();
+    mockSpawn.mockReturnValue(nextChild);
+
+    const disconnectPromise = adapter.disconnect();
+    await flush();
+
+    const connectPromise = adapter.connect(usbConfig);
+    await flush();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+
+    emitExit(oldChild);
+    await disconnectPromise;
+    await flush();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    emitHelperLine(nextChild, { type: "ready" });
+    await flush();
+    emitHelperLine(nextChild, { type: "connected", product_name: "ATEM Mini Extreme" });
+    await connectPromise;
   });
 
   it("throws when running a macro while disconnected", async () => {

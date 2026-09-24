@@ -129,6 +129,6 @@ sequenceDiagram
 ```
 
 Wesentliche Punkte:
-- `engine_status` transportiert den resync-faehigen Engine-Snapshot inklusive `macros`, `macroExecution` und `lastCompletedMacroExecution`.
+- `engine_status` transportiert den resync-faehigen Engine-Snapshot inklusive `macros`, `macroExecution`, `lastCompletedMacroExecution`, `errorCode` (`null`, solange kein maschinenlesbarer Engine-Fehlercode vorliegt) und `reconnect` (`null` oder `{ attempt, nextRetryAt, lastError? }` waehrend Engine-Auto-Reconnects).
 - `engine_macro_execution` liefert feingranulare Lifecycle-Updates fuer `pending`, `running`, `waiting`, `completed`, `stopped` und `failed`.
-- `engine_error` bildet den separaten Fehlerpfad fuer Relay/Webapp analog zu Graphics ab.
+- `engine_error` bildet den separaten Fehlerpfad fuer Relay/Webapp analog zu Graphics ab; `engine_error.code` transportiert den konkreten `EngineErrorCode` aus Adapter/Service, mit `engine_error` als Fallback fuer Fehler ohne Code.

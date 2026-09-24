@@ -187,7 +187,7 @@ Timeout-Policy der Bridge-SSOT: `apps/bridge/src/services/relay-command-policy.t
 | Command-Klasse | Relay-Timeout | Bridge lokale SLA |
 | --- | ---: | ---: |
 | Fast commands | 12s | 8s |
-| `engine_connect` | 18s | 11s |
+| `engine_connect` | 18s | 17s |
 | `list_outputs` | 15s | 11s |
 | Graphics configure/send/update/remove | 20s | 16s |
 | Helper-start Commands | 35s | 30s |
