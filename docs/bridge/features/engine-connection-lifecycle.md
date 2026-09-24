@@ -21,6 +21,23 @@ error message without forcing a disconnect.
 Disconnect and failed connect cleanup destroy the ATEM library instance so the
 threaded worker and UDP socket are released.
 
+## ATEM USB helper liveness
+
+The USB adapter feature-detects the native helper protocol from the `ready`
+event. Helpers without `protocol_version` are treated as v1 and keep the legacy
+fire-and-forget macro path so old release assets remain compatible.
+
+Protocol v2 starts a heartbeat after `connected`: the bridge writes
+`{"command":"ping","seq":N}` every 5 seconds and expects `pong`. Two missed
+pongs mark the adapter `disconnected` and stop the helper; the supervisor then
+owns reconnect. Protocol v2 macro runs include `req` and complete the adapter
+promise only after helper `ack`; `nack` and 2 second ack timeouts fail the
+macro execution with a protocol error.
+
+Connect diagnostics preserve the helper HRESULT and SDK fail reason. A busy
+USB switcher, for example when ATEM Software Control owns it, is mapped to
+`DEVICE_BUSY` / HTTP 409 instead of the generic no-switcher path.
+
 ## Bridge supervisor
 
 `EngineAdapterService` owns an `EngineConnectionSupervisor` around the current

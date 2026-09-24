@@ -31,9 +31,10 @@ can offer `transport: "usb"` next to the existing network transport
 
 Prints a single JSON object:
 
-- SDK missing: `{"mode":"probe","sdk_available":false,"connected":false,"error":"atem_software_not_installed","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
-- No switcher on USB: `{"mode":"probe","sdk_available":true,"connected":false,"error":"no_usb_switcher_found","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
-- Connected: `{"mode":"probe","sdk_available":true,"connected":true,"product_name":"...","macro_slots":100,"valid_macros":3,"helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
+- SDK missing: `{"mode":"probe","sdk_available":false,"connected":false,"protocol_version":2,"error":"atem_software_not_installed","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
+- No switcher on USB: `{"mode":"probe","sdk_available":true,"connected":false,"protocol_version":2,"error":"no_usb_switcher_found","hr":"0x...","fail_reason":"no_response","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
+- Device busy: `{"mode":"probe","sdk_available":true,"connected":false,"protocol_version":2,"error":"device_busy","hr":"0x80000009","fail_reason":"no_response","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
+- Connected: `{"mode":"probe","sdk_available":true,"connected":true,"protocol_version":2,"product_name":"...","macro_slots":100,"valid_macros":3,"helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}`
 
 Windows probe output also includes `sdk_generation` and `discovery_hr`. When
 the SDK COM object is missing, it includes `discovery_hr_v97`,
@@ -42,7 +43,7 @@ in `detail`. If the ATEM runtime DLL is present but all supported Discovery
 generations fail, `detail` reports that the installed version is unsupported.
 
 Stable error identifiers: `atem_software_not_installed`,
-`no_usb_switcher_found`, `incompatible_firmware`, `corrupt_data`,
+`no_usb_switcher_found`, `device_busy`, `incompatible_firmware`, `corrupt_data`,
 `state_sync_failed`, `state_sync_timed_out`.
 
 ## Build
@@ -90,24 +91,31 @@ Commands:
 {"command":"disconnect"}
 {"command":"list_macros"}
 {"command":"macro_run","index":3}
+{"command":"macro_run","index":3,"req":1}
 {"command":"macro_stop"}
+{"command":"ping","seq":1}
 {"command":"shutdown"}
 ```
 
 Events:
 
-- `{"type":"ready","helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}` — emitted once at startup. Windows also includes `sdk_generation`, which is `"none"` before a USB connection selects a Discovery generation.
+- `{"type":"ready","protocol_version":2,"helper_build":{"sdk_idl_sha":"...","sdk_discovery_clsid":"...","sdk_version":"..."}}` — emitted once at startup. Windows also includes `sdk_generation`, which is `"none"` before a USB connection selects a Discovery generation. Missing `protocol_version` means v1 and the TypeScript adapter falls back to legacy behavior.
 - `{"type":"connected","product_name":"ATEM Mini Extreme"}`
+- `{"type":"pong","seq":1}` — immediate response to `ping`; `seq` is echoed when present.
 - `{"type":"macros","macros":[{"id":0,"name":"...","description":"..."}]}` —
   after connect, on `list_macros`, and on every macro-pool change.
 - `{"type":"macro_state","status":"idle|running|waiting","loop":false,"index":0}` —
   after connect and on every run-status change (`index` 65535 = none).
+- `{"type":"ack","command":"macro_run","req":1,"index":3}` — v2 acknowledgement after a requested macro run was accepted by the SDK.
+- `{"type":"nack","command":"macro_run","req":1,"index":3,"error":"invalid_macro_index"}` — v2 rejection for `invalid_macro_index`, `macro_run_failed`, or `not_connected`.
 - `{"type":"disconnected"}` — on explicit disconnect and when the switcher
   drops off USB.
-- `{"type":"error","error":"<identifier>","detail":"..."}` — identifiers:
+- `{"type":"error","error":"<identifier>","detail":"...","hr":"0x...","fail_reason":"no_response"}` — identifiers:
   the connect errors above plus `already_connected`, `not_connected`,
   `invalid_macro_index`, `missing_macro_index`, `macro_run_failed`,
-  `macro_stop_failed`, `unknown_command`.
+  `macro_stop_failed`, `unknown_command`. Connect errors include `hr` and
+  `fail_reason` when the SDK returned a connect HRESULT; `device_busy` is
+  classified from the HRESULT because the SDK failure enum has no busy value.
 
 Threading contract: SDK callbacks arrive on SDK threads; stdout writes are
 mutex-serialized; session state is torn down only by explicit
@@ -121,3 +129,6 @@ session as disconnected, so the SDK USB claim has time to release. Shutdown
 starts with `{"command":"shutdown"}`, escalates to `SIGTERM` after 4 seconds,
 then to `SIGKILL` 2 seconds later if the helper is still running. A new USB
 connect waits for any pending helper stop before spawning another helper.
+On macOS, direct `SIGTERM`/`SIGINT`/`SIGHUP` delivery is handled by a dedicated
+signal thread: the helper disconnects the SDK session, emits `disconnected`
+when applicable, flushes stdout, and exits 0.
