@@ -41,7 +41,14 @@ SDK_VERSION="$(
 )"
 SDK_VERSION="${SDK_VERSION:-unknown}"
 
-clang++ -std=c++17 -O2 -Wall -Wextra \
+# Optional cross-build target, e.g. ATEM_HELPER_ARCH=x86_64 on Apple Silicon
+# (the dispatch shim links no SDK framework, so only the toolchain matters).
+ARCH_FLAGS=()
+if [[ -n "${ATEM_HELPER_ARCH:-}" ]]; then
+  ARCH_FLAGS=(-arch "${ATEM_HELPER_ARCH}")
+fi
+
+clang++ -std=c++17 -O2 -Wall -Wextra ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} \
   -I "${INCLUDE_DIR}" \
   -DHELPER_SDK_IDL_SHA=\"${SDK_IDL_SHA}\" \
   -DHELPER_SDK_DISCOVERY_CLSID=\"${SDK_DISCOVERY_CLSID}\" \
