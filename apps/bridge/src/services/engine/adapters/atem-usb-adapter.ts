@@ -23,6 +23,7 @@ import {
   createUsbConnectFailedError,
 } from "../engine-errors.js";
 import { getBridgeContext } from "../../bridge-context.js";
+import { stopChildProcessWithEscalation } from "../../shared/child-process-exit.js";
 
 const HELPER_PATH_ENV = "ATEM_USB_HELPER_PATH";
 const CONNECT_TIMEOUT_MS = 10000;
@@ -142,12 +143,21 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private connectTimeout: NodeJS.Timeout | null = null;
-  private shutdownTimers: NodeJS.Timeout[] = [];
+  private stopping: Promise<void> | null = null;
 
   async connect(config: EngineConnectConfig): Promise<void> {
     if (config.type !== "atem" || config.transport !== "usb") {
       throw new Error(
         `AtemUsbAdapter only supports type "atem" with transport "usb", got "${config.type}"/"${config.transport ?? "network"}"`
+      );
+    }
+    if (this.stopping) {
+      await this.stopping;
+    }
+    if (this.process) {
+      throw new EngineError(
+        EngineErrorCode.UNKNOWN_ERROR,
+        "ATEM USB helper is still running"
       );
     }
     if (this.state.status === "connected" || this.state.status === "connecting") {
@@ -174,6 +184,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
       macroExecution: null,
       lastCompletedMacroExecution: null,
       error: undefined,
+      errorCode: undefined,
     });
 
     const connectionPromise = new Promise<void>((resolve, reject) => {
@@ -204,7 +215,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
       getLogger().info(
         `[AtemUsb] Helper exited (code ${code ?? "null"}, signal ${signal ?? "null"})`
       );
-      this.handleHelperExit();
+      this.handleHelperExit(child);
     });
 
     this.connectTimeout = setTimeout(() => {
@@ -223,7 +234,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
 
   async disconnect(): Promise<void> {
     this.clearPendingCompletionTimer();
-    this.stopHelper();
+    await this.stopHelper();
     this.setState({
       status: "disconnected",
       macros: [],
@@ -232,6 +243,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
       type: undefined,
       transport: undefined,
       error: undefined,
+      errorCode: undefined,
       macroExecution: null,
       lastCompletedMacroExecution: null,
     });
@@ -357,7 +369,11 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
         break;
       case "connected":
         this.resolveConnect();
-        this.setState({ status: "connected", error: undefined });
+        this.setState({
+          status: "connected",
+          error: undefined,
+          errorCode: undefined,
+        });
         break;
       case "macros":
         this.helperMacros = Array.isArray(event.macros) ? event.macros : [];
@@ -382,7 +398,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
         // objects. Stop it so the USB claim is released; otherwise the next
         // connect fails ("No ATEM switcher found on USB") until the cable is
         // physically re-plugged. Idempotent: a no-op if already stopped.
-        this.stopHelper();
+        void this.stopHelper();
         break;
       case "error":
         this.handleHelperError(event.error ?? "unknown", event.detail);
@@ -438,15 +454,21 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
     this.connectResolve = null;
     this.connectReject = null;
     if (reject) {
-      this.stopHelper();
-      this.setState({ status: "error", error: error.message });
+      void this.stopHelper();
+      this.setState({
+        status: "error",
+        error: error.message,
+        errorCode: error.code,
+      });
       reject(error);
     }
   }
 
-  private handleHelperExit(): void {
+  private handleHelperExit(child: ChildProcess): void {
+    if (this.process !== child) {
+      return;
+    }
     this.process = null;
-    this.clearShutdownTimers();
     if (this.connectReject) {
       this.failConnect(
         new EngineError(
@@ -465,42 +487,26 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
    * Ask the helper to shut down, escalating SIGTERM -> SIGKILL if it does
    * not exit in time (same escalation as the DeckLink key/fill adapter).
    */
-  private stopHelper(): void {
+  private stopHelper(): Promise<void> {
+    if (this.stopping) {
+      return this.stopping;
+    }
     const child = this.process;
     if (!child) {
-      return;
+      return Promise.resolve();
     }
     this.process = null;
-    try {
-      child.stdin?.write('{"command":"shutdown"}\n');
-    } catch {
-      // Helper stdin already gone; escalation below covers it.
-    }
-    const sigtermTimer = setTimeout(() => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // Process already gone.
-      }
-    }, SHUTDOWN_SIGTERM_DELAY_MS);
-    sigtermTimer.unref?.();
-    const sigkillTimer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Process already gone.
-      }
-    }, SHUTDOWN_SIGTERM_DELAY_MS + SHUTDOWN_SIGKILL_DELAY_MS);
-    sigkillTimer.unref?.();
-    this.shutdownTimers.push(sigtermTimer, sigkillTimer);
-    child.once("exit", () => this.clearShutdownTimers());
-  }
-
-  private clearShutdownTimers(): void {
-    for (const timer of this.shutdownTimers) {
-      clearTimeout(timer);
-    }
-    this.shutdownTimers = [];
+    const stopping = stopChildProcessWithEscalation(child, {
+      requestShutdown: () => {
+        child.stdin?.write('{"command":"shutdown"}\n');
+      },
+      gracefulMs: SHUTDOWN_SIGTERM_DELAY_MS,
+      forceMs: SHUTDOWN_SIGKILL_DELAY_MS,
+    }).finally(() => {
+      this.stopping = null;
+    });
+    this.stopping = stopping;
+    return stopping;
   }
 
   private setState(updates: Partial<EngineStateT>): void {

@@ -1,5 +1,4 @@
 import { engineAdapter } from "./engine-adapter.js";
-import { engineConnectionStore } from "./engine/engine-connection-store.js";
 import { deviceCache } from "./device-cache.js";
 import { runtimeConfig } from "./runtime-config.js";
 import { graphicsManager } from "./graphics/graphics-manager.js";
@@ -19,7 +18,7 @@ import {
 } from "./relay-command-schemas.js";
 import { normalizeEngineConnectPayload } from "./engine/engine-connect-schema.js";
 import { getBridgeContext } from "./bridge-context.js";
-import { GraphicsError } from "./graphics/graphics-errors.js";
+import { getErrorCode } from "./shared/error-code.js";
 import {
   handleMeetingCommand,
   isMeetingCommand,
@@ -209,10 +208,6 @@ export class CommandRouter {
 
           const connectConfig = normalizeEngineConnectPayload(parsedPayload);
           await engineAdapter.connect(connectConfig);
-          // A connection choice belongs to the operator: persist it so the
-          // bridge can bring the same connection back on the next start. Only
-          // a SUCCESSFUL connect overwrites the stored choice.
-          await engineConnectionStore.save(connectConfig);
 
           return {
             success: true,
@@ -747,7 +742,7 @@ export class CommandRouter {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      const errorCode = error instanceof GraphicsError ? error.code : undefined;
+      const errorCode = getErrorCode(error);
       // Without this log line a handler crash is invisible on the bridge: the
       // caller gets a generic failure message while the server log shows
       // nothing - support cannot reconstruct the incident.
