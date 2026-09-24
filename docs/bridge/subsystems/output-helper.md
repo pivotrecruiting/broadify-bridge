@@ -58,10 +58,26 @@ Helper sie vorher gesendet hat, den `fatal.code`.
 
 Nach `ready` werden unerwartete Exits als Adapter-Lifecycle an den
 `GraphicsManager` weitergereicht. Ein angeforderter `stop()` unterdrueckt dieses
-Recovery-Signal. Zukuenftige Helper duerfen additiv `playback_started`,
-`fatal` und `helperVersion` senden; aktuelle Helper, die nur `ready` und
-`metrics` ausgeben, bleiben kompatibel. Unbekannte JSON-Events werden
-toleriert.
+Recovery-Signal. Helper duerfen additiv `playback_started`, `fatal` und
+`helperVersion` senden; alte Helper, die nur `ready` und `metrics` ausgeben,
+bleiben kompatibel. Unbekannte JSON-Events werden toleriert. DeckLink `fatal`
+enthaelt einen stabilen `code` wie `device_busy`, `framebus_open_failed`,
+`start_scheduled_playback_failed`, `playback_stopped` oder
+`schedule_frame_failed`; wenn DeckLink ein HRESULT liefert, wird es im Event
+mitgegeben.
+
+DeckLink `ready` behaelt seine Semantik und wird nach Output-Setup und
+FrameBus-Validierung gesendet. `playback_started` folgt erst nach erfolgreichem
+`StartScheduledPlayback`. `--list --with-diagnostics` liefert eine
+Diagnose-Huelle mit API-Verfuegbarkeit, DeckLink-API-Version, Helper-Version und
+optionalem Fehlertext; plain `--list` bleibt die alte Device-Array-Form.
+
+Der DeckLink-Helper kann einen SDK-Display-Mode per `--display-mode <id>`
+erzwingen. Wenn die ID nicht gefunden oder fuer Verbindung/Pixel-Format nicht
+unterstuetzt wird, sendet der Helper `warning.display_mode_id_not_found` und
+nutzt die bestehende Breite/Hoehe/FPS-Auswahl. Der FrameBus-Reader oeffnet eine
+stale Shared-Memory-Region nach 2s ohne `seq`-Fortschritt erneut und zaehlt
+verworfene potentielle Torn Reads in `metrics.tornFrames`.
 
 ## Meeting-Helper Kamera- und VCam-Lifecycle
 
