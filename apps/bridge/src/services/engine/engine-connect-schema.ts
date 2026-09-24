@@ -12,7 +12,7 @@ import type { EngineConnectConfig } from "./engine-adapter-interface.js";
 const engineConnectFields = {
   type: z.enum(["atem", "tricaster", "vmix"]),
   transport: z.enum(["network", "usb"]).optional(),
-  ip: z.string().ip({ version: "v4" }).optional(),
+  ip: z.string().trim().ip({ version: "v4" }).optional(),
   port: z.number().int().min(1).max(65535).optional(),
 };
 

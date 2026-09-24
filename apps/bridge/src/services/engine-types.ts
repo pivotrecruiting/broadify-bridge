@@ -65,6 +65,7 @@ export type EngineStateT = {
   lastCompletedMacroExecution?: MacroExecutionT | null;
   lastUpdate?: number;
   error?: string;
+  errorCode?: string;
 };
 
 /**

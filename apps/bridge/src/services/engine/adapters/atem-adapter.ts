@@ -141,6 +141,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       this.setState({
         status: "error",
         error: engineError.message,
+        errorCode: engineError.code,
       });
       if (connectionReject) {
         connectionReject(engineError);
@@ -208,6 +209,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         this.setState({
           status: "error",
           error: timeoutError.message,
+          errorCode: timeoutError.code,
         });
         if (connectionReject) {
           connectionReject(timeoutError);
@@ -295,6 +297,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       port: undefined,
       type: undefined,
       error: undefined,
+      errorCode: undefined,
       macroExecution: null,
       lastCompletedMacroExecution: null,
     });
