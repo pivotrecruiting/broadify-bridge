@@ -58,6 +58,16 @@ describe("output-schemas", () => {
       });
     });
 
+    it("accepts displayModeId 0 (display targets enumerate modes from index 0)", () => {
+      const result = GraphicsFormatSchema.parse({
+        width: 1920,
+        height: 1080,
+        fps: 25,
+        displayModeId: 0,
+      });
+      expect(result.displayModeId).toBe(0);
+    });
+
     it("rejects a non-integer displayModeId", () => {
       expect(() =>
         GraphicsFormatSchema.parse({
@@ -65,6 +75,17 @@ describe("output-schemas", () => {
           height: 1080,
           fps: 25,
           displayModeId: 13.5,
+        })
+      ).toThrow();
+    });
+
+    it("rejects a negative displayModeId", () => {
+      expect(() =>
+        GraphicsFormatSchema.parse({
+          width: 1920,
+          height: 1080,
+          fps: 25,
+          displayModeId: -1,
         })
       ).toThrow();
     });

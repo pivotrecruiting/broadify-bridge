@@ -53,6 +53,10 @@ Validierung erfolgt über `validateOutputFormat` in `graphics-output-validation-
   ist, muss der ausgewählte Port diesen Helper-Mode anbieten; der Adapter gibt
   ihn als `--display-mode <id>` an den Helper weiter. Ohne `displayModeId`
   bleibt der bisherige `{width,height,fps}`-Abgleich aktiv.
+- Display-Targets tragen Listen-Indizes ab `0`; die Bridge akzeptiert diese
+  Werte und ignoriert sie fuer Display-Ausgaben.
+- Ungueltige Payloads liefern ein lesbares `output_config_error` statt der
+  rohen Zod-Issue-Liste.
 - Interlaced Modes bleiben containerbasiert: progressive 25-fps-Frames werden
   in einem 50i-Container ausgegeben; es gibt keine feldgenaue Bewegungsphasen-
   Erzeugung in der Bridge.

@@ -67,6 +67,9 @@ Schema: `GraphicsConfigureOutputsSchema`
 - `format.displayModeId` ist optional und nur für DeckLink relevant. Wenn gesetzt,
   muss der Helper diesen Mode für den Zielport melden; die Adapter übergeben ihn
   als `--display-mode`.
+- Display-Targets tragen Listen-Indizes ab `0`; die Bridge akzeptiert diese
+  Werte, ignoriert sie fuer Display-Ausgaben und meldet ungueltige Payloads als
+  lesbares `output_config_error`.
 
 ## Read-only Output/Status Commands
 - `get_status` liefert zusätzlich `platform` und

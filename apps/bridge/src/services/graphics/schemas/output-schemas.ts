@@ -25,7 +25,11 @@ export const GraphicsFormatSchema = z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   fps: z.number().positive(),
-  displayModeId: z.number().int().positive().optional(),
+  /**
+   * DeckLink SDK mode id (> 0); display targets enumerate modes by list index
+   * from 0 and ignore the field, so 0 must be accepted.
+   */
+  displayModeId: z.number().int().nonnegative().optional(),
 });
 
 /**
