@@ -115,6 +115,32 @@ describe("GraphicsManager", () => {
     expect(runAtomicTransition).not.toHaveBeenCalled();
   });
 
+  it("fails configureOutputs with a readable output_config_error for an invalid payload", async () => {
+    const runAtomicTransition = jest.fn(async () => undefined);
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => undefined),
+      },
+      outputTransitionService: {
+        waitForTransition: jest.fn(async () => undefined),
+        runAtomicTransition,
+      },
+    });
+
+    await expect(
+      manager.configureOutputs({
+        outputKey: "video_hdmi",
+        targets: { output1Id: "display-1" },
+        format: { width: 1920, height: 1080, fps: 25, displayModeId: 13.5 },
+      }),
+    ).rejects.toMatchObject({
+      code: "output_config_error",
+      message: expect.stringMatching(/^(?!\[).*format\.displayModeId/),
+    });
+    expect(runAtomicTransition).not.toHaveBeenCalled();
+  });
+
   it("rejects unsupported config versions", async () => {
     const runAtomicTransition = jest.fn(async () => undefined);
     const manager = new GraphicsManager({

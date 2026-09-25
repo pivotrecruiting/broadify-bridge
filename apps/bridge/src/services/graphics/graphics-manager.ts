@@ -79,6 +79,7 @@ import {
   type GraphicsUsageRecorderLikeT,
 } from "../intelligence/usage-event-recorder.js";
 import { ReconnectScheduler } from "../shared/backoff.js";
+import { formatZodError } from "../shared/zod-error-message.js";
 import { deviceCache } from "../device-cache.js";
 import { findCachedDevicePortById } from "./graphics-device-port-resolver.js";
 
@@ -354,13 +355,14 @@ export class GraphicsManager {
    */
   async configureOutputs(payload: unknown): Promise<void> {
     await this.initialize();
-    let config: GraphicsOutputConfigT;
-    try {
-      config = GraphicsConfigureOutputsSchema.parse(payload);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.failGraphics("output_config_error", message);
+    const parseResult = GraphicsConfigureOutputsSchema.safeParse(payload);
+    if (!parseResult.success) {
+      this.failGraphics(
+        "output_config_error",
+        formatZodError(parseResult.error, "Invalid output configuration"),
+      );
     }
+    const config: GraphicsOutputConfigT = parseResult.data;
     getBridgeContext().logger.info(
       `[Graphics] Configure outputs ${JSON.stringify({
         outputKey: config.outputKey,
