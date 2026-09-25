@@ -51,7 +51,7 @@ Schema: `GraphicsConfigureOutputsSchema`
     "output1Id": "<device>-sdi-a",
     "output2Id": "<device>-sdi-b"
   },
-  "format": { "width": 1920, "height": 1080, "fps": 50 },
+  "format": { "width": 1920, "height": 1080, "fps": 50, "displayModeId": 13 },
   "range": "legal",
   "colorspace": "auto"
 }
@@ -64,6 +64,19 @@ Schema: `GraphicsConfigureOutputsSchema`
 - `video_hdmi`: ein HDMI/DisplayPort/Thunderbolt‑Port.
 - `key_fill_ndi` & `stub`: keine zusätzliche Port‑Validierung.
 - `format` wird gegen unterstützte Modes geprüft (DeckLink und Display-Ports).
+- `format.displayModeId` ist optional und nur für DeckLink relevant. Wenn gesetzt,
+  muss der Helper diesen Mode für den Zielport melden; die Adapter übergeben ihn
+  als `--display-mode`.
+- Display-Targets tragen Listen-Indizes ab `0`; die Bridge akzeptiert diese
+  Werte, ignoriert sie fuer Display-Ausgaben und meldet ungueltige Payloads als
+  lesbares `output_config_error`.
+
+## Read-only Output/Status Commands
+- `get_status` liefert zusätzlich `platform` und
+  `outputCapabilities.decklink`.
+- `list_outputs` liefert zusätzlich `diagnostics.platform` und
+  `diagnostics.decklink.state` (`ok`, `unsupported_platform`,
+  `helper_missing`, `api_unavailable`, `no_devices`).
 
 ## 2) graphics_send
 Schema: `GraphicsSendSchema`

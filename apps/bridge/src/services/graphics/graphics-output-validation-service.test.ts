@@ -450,6 +450,69 @@ describe("validateOutputFormat", () => {
     ).rejects.toThrow("Output pixel format not supported by selected device");
   });
 
+  it("rejects a displayModeId that the device does not offer", async () => {
+    mockGetDevices.mockResolvedValue([
+      makeDecklinkDevice({
+        ports: [{ id: "p1", type: "sdi", status: { available: true } }],
+      }),
+    ]);
+    mockListDecklinkDisplayModes.mockResolvedValue([
+      { id: 12, pixelFormats: ["10bit_yuv", "8bit_yuv"] },
+    ]);
+
+    await expect(
+      validateOutputFormat(
+        "video_sdi",
+        { output1Id: "p1" },
+        { width: 1920, height: 1080, fps: 25, displayModeId: 13 }
+      )
+    ).rejects.toThrow("Selected display mode is not offered by the device");
+  });
+
+  it("accepts a matching displayModeId", async () => {
+    mockGetDevices.mockResolvedValue([
+      makeDecklinkDevice({
+        ports: [{ id: "p1", type: "sdi", status: { available: true } }],
+      }),
+    ]);
+    mockListDecklinkDisplayModes.mockResolvedValue([
+      { id: 13, pixelFormats: ["10bit_yuv", "8bit_yuv"] },
+    ]);
+
+    await expect(
+      validateOutputFormat(
+        "video_sdi",
+        { output1Id: "p1" },
+        { width: 1920, height: 1080, fps: 25, displayModeId: 13 }
+      )
+    ).resolves.toBeUndefined();
+  });
+
+  it("ignores displayModeId for display devices", async () => {
+    mockGetDevices.mockResolvedValue([
+      makeDisplayDevice({
+        ports: [
+          {
+            id: "display-1",
+            type: "hdmi",
+            capabilities: {
+              modes: [{ width: 1920, height: 1080, fps: 25 }],
+            },
+          },
+        ],
+      }),
+    ]);
+
+    await expect(
+      validateOutputFormat(
+        "video_hdmi",
+        { output1Id: "display-1" },
+        { width: 1920, height: 1080, fps: 25, displayModeId: 0 },
+      ),
+    ).resolves.toBeUndefined();
+    expect(mockListDecklinkDisplayModes).not.toHaveBeenCalled();
+  });
+
   it("resolves when DeckLink returns supported pixel format", async () => {
     mockGetDevices.mockResolvedValue([
       makeDecklinkDevice({

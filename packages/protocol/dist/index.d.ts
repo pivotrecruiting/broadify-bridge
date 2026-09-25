@@ -39,6 +39,10 @@ export type BridgeStatus = {
     pairingCode?: string;
     pairingExpiresAt?: string;
     pairingExpired?: boolean;
+    platform?: NodeJS.Platform;
+    outputCapabilities?: {
+        decklink: boolean;
+    };
 };
 /**
  * Port status information
@@ -102,11 +106,22 @@ export type OutputDeviceT = {
     name: string;
     type: "decklink" | "display" | "capture" | "connection";
     available: boolean;
+    ownedByBridge?: boolean;
     deviceId?: string;
     portType?: PortDescriptorT["type"];
     portRole?: PortDescriptorT["role"];
     formats?: string[];
     modes?: OutputDisplayModeT[];
+};
+export type BridgeOutputsDiagnosticsDecklinkStateT = "ok" | "unsupported_platform" | "helper_missing" | "api_unavailable" | "no_devices";
+export type BridgeOutputsDiagnosticsT = {
+    platform: NodeJS.Platform;
+    decklink: {
+        state: BridgeOutputsDiagnosticsDecklinkStateT;
+        apiVersion?: string;
+        helperVersion?: string;
+        message?: string;
+    };
 };
 export type OutputDisplayModeT = {
     id: number;
@@ -124,6 +139,7 @@ export type OutputDisplayModeT = {
 export type BridgeOutputsT = {
     output1: OutputDeviceT[];
     output2: OutputDeviceT[];
+    diagnostics?: BridgeOutputsDiagnosticsT;
 };
 export type LogFetchOptionsT = {
     lines?: number;

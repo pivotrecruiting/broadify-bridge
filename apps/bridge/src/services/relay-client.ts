@@ -17,6 +17,7 @@ import {
 import { lookup } from "node:dns/promises";
 import net from "node:net";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
+import { describeRelaySocketError } from "./relay-socket-error.js";
 
 const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
 const RELAY_COMMAND_TTL_SECONDS = 30;
@@ -1385,7 +1386,7 @@ export class RelayClient {
       });
 
       this.ws.on("error", (error: Error) => {
-        this.logger.error(`WebSocket error: ${error.message}`);
+        this.logger.error(`WebSocket error: ${describeRelaySocketError(error)}`);
         this.clearRelayHeartbeat();
         this.clearRelayLivenessWatchdog();
         this.isConnecting = false;

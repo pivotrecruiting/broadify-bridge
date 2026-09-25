@@ -66,6 +66,10 @@ export async function registerStatusRoute(
       bridgeName: config.bridgeName || null,
       state: deps.runtimeConfig.getState(),
       outputsConfigured: deps.runtimeConfig.hasOutputs(),
+      platform: process.platform,
+      outputCapabilities: {
+        decklink: process.platform === "darwin",
+      },
       engine: {
         configured: !!runtimeConfigData?.engine,
         status: engineState.status,

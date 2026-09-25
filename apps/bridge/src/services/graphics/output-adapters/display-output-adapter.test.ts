@@ -387,6 +387,34 @@ describe("DisplayVideoOutputAdapter", () => {
       );
     });
 
+    it("forwards helper exit after ready to onLifecycle", async () => {
+      const { deviceCache } = require("../../device-cache.js");
+      deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);
+      const child = createMockChild();
+      setSpawnChild(child);
+      const lifecycle = jest.fn();
+      adapter.onLifecycle(lifecycle);
+
+      const configurePromise = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "display-1-hdmi" },
+      });
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configurePromise;
+
+      emitExit(child, 9, null);
+
+      expect(lifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "exited",
+          requested: false,
+          code: 9,
+        }),
+      );
+    });
+
     it("rounds fractional broadcast fps for the integer-only display helper", async () => {
       const { deviceCache } = require("../../device-cache.js");
       deviceCache.getDevices.mockResolvedValue([validDisplayDevice]);

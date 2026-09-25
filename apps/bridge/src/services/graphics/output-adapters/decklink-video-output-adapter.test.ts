@@ -185,6 +185,33 @@ describe("DecklinkVideoOutputAdapter", () => {
       );
     });
 
+    it("forwards helper exit after ready to onLifecycle", async () => {
+      const child = createMockChild({ autoExitOnEnd: false });
+      mockSpawn.mockReturnValue(child);
+      const lifecycle = jest.fn();
+      adapter.onLifecycle(lifecycle);
+
+      const configured = adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      });
+      await configured;
+
+      child.exitCode = 1;
+      child.emit("exit", 1, null);
+
+      expect(lifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "exited",
+          requested: false,
+          code: 1,
+        }),
+      );
+    });
+
     it("passes BRIDGE_FRAMEBUS_NAME when set", async () => {
       const originalEnv = process.env.BRIDGE_FRAMEBUS_NAME;
       process.env.BRIDGE_FRAMEBUS_NAME = "test-shm";
@@ -201,6 +228,39 @@ describe("DecklinkVideoOutputAdapter", () => {
       });
       expect(mockSpawn.mock.calls[0]?.[2]?.env?.BRIDGE_FRAMEBUS_NAME).toBe("test-shm");
       process.env.BRIDGE_FRAMEBUS_NAME = originalEnv;
+    });
+
+    it("passes --display-mode when format.displayModeId is set", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+        format: { ...baseConfig.format, displayModeId: 13 },
+      });
+      const args = mockSpawn.mock.calls[0]?.[1] as string[];
+      expect(args).toEqual(expect.arrayContaining(["--display-mode", "13"]));
+    });
+
+    it("omits --display-mode otherwise", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const args = mockSpawn.mock.calls[0]?.[1] as string[];
+      expect(args).not.toContain("--display-mode");
     });
 
     it("passes all BRIDGE_FRAME env vars when set", async () => {

@@ -29,6 +29,11 @@ describe("DecklinkModule", () => {
       const module = new DecklinkModule();
       expect(module.name).toBe("decklink");
     });
+
+    it("exposes detectionTimeoutMs 12000", () => {
+      const module = new DecklinkModule();
+      expect(module.detectionTimeoutMs).toBe(12000);
+    });
   });
 
   describe("detect", () => {

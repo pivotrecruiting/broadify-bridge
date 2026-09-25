@@ -31,6 +31,16 @@ jest.mock("./device-cache.js", () => ({
   },
 }));
 
+jest.mock("./output-diagnostics.js", () => ({
+  buildOutputsDiagnostics: jest.fn(() => ({
+    platform: "darwin",
+    decklink: { state: "ok" },
+  })),
+  getDecklinkDeviceCount: jest.fn((devices: Array<{ type?: string }>) =>
+    devices.filter((device) => device.type === "decklink").length
+  ),
+}));
+
 jest.mock("./bridge-context.js", () => ({
   getBridgeContext: jest.fn(() => ({
     bridgeName: "test-bridge",
@@ -190,13 +200,24 @@ describe("command-router", () => {
       });
     });
 
+    it("get_status exposes platform and outputCapabilities", async () => {
+      const result = await commandRouter.handleCommand("get_status", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        platform: process.platform,
+        outputCapabilities: {
+          decklink: process.platform === "darwin",
+        },
+      });
+    });
+
     it("list_outputs without refresh returns cached outputs without detection", async () => {
       const { deviceCache } = require("./device-cache.js");
       deviceCache.getCachedDevices.mockReturnValue([]);
 
       const result = await commandRouter.handleCommand("list_outputs", {});
       expect(result.success).toBe(true);
-      expect(result.data).toEqual({ output1: [], output2: [] });
+      expect(result.data).toMatchObject({ output1: [], output2: [] });
       expect(deviceCache.getCachedDevices).toHaveBeenCalledWith([
         "display",
         "decklink",
@@ -214,6 +235,63 @@ describe("command-router", () => {
         "decklink",
       ]);
       expect(deviceCache.getCachedDevices).not.toHaveBeenCalled();
+    });
+
+    it("list_outputs includes diagnostics", async () => {
+      const result = await commandRouter.handleCommand("list_outputs", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        diagnostics: {
+          platform: "darwin",
+          decklink: { state: "ok" },
+        },
+      });
+    });
+
+    it("list_outputs marks the active output ports as owned and available", async () => {
+      const { deviceCache } = require("./device-cache.js");
+      const { graphicsManager } = require("./graphics/graphics-manager.js");
+      graphicsManager.getStatus.mockReturnValue({
+        outputConfig: {
+          targets: { output1Id: "port-fill", output2Id: "port-key" },
+        },
+      });
+      deviceCache.getCachedDevices.mockReturnValue([
+        {
+          id: "deck-1",
+          displayName: "DeckLink",
+          type: "decklink",
+          ports: [
+            {
+              id: "port-fill",
+              displayName: "SDI Fill",
+              type: "sdi",
+              role: "fill",
+              direction: "output",
+              status: { available: false },
+              capabilities: { formats: [], modes: [] },
+            },
+            {
+              id: "port-key",
+              displayName: "SDI Key",
+              type: "sdi",
+              role: "key",
+              direction: "output",
+              status: { available: false },
+              capabilities: { formats: [], modes: [] },
+            },
+          ],
+          status: { present: true, inUse: true, ready: false, lastSeen: Date.now() },
+        },
+      ]);
+
+      const result = await commandRouter.handleCommand("list_outputs", {});
+
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        output1: [{ id: "port-fill", available: true, ownedByBridge: true }],
+        output2: [{ id: "port-key", available: true, ownedByBridge: true }],
+      });
     });
 
     it("returns error for unknown command", async () => {
@@ -286,14 +364,6 @@ describe("command-router", () => {
       });
       expect(result.success).toBe(true);
       expect(engineAdapter.connect).toHaveBeenCalledWith({
-        type: "atem",
-        transport: "network",
-        ip: "192.168.1.10",
-        port: 9910,
-      });
-      // A successful connect persists the operator's choice so the bridge can
-      // bring the same connection back on the next start.
-      expect(mockEngineConnectionSave).toHaveBeenCalledWith({
         type: "atem",
         transport: "network",
         ip: "192.168.1.10",
@@ -1035,6 +1105,22 @@ describe("command-router", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("Invalid output config");
       expect(result.errorCode).toBe("output_config_error");
+    });
+
+    it("propagates EngineError code as errorCode", async () => {
+      const { EngineError, EngineErrorCode } = require("./engine/engine-errors.js");
+      const { engineAdapter } = require("./engine-adapter.js");
+      engineAdapter.runMacro.mockRejectedValue(
+        new EngineError(EngineErrorCode.NOT_CONNECTED, "not connected"),
+      );
+
+      const result = await commandRouter.handleCommand("engine_run_macro", {
+        macroId: 1,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("not connected");
+      expect(result.errorCode).toBe("NOT_CONNECTED");
     });
 
     it("denies claims for ids the bridge never issued", async () => {

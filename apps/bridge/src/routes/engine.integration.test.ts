@@ -340,6 +340,34 @@ describe("registerEngineRoute integration", () => {
     await app.close();
   });
 
+  it("macro run while disconnected returns code NOT_CONNECTED", async () => {
+    const app = Fastify();
+    const engineAdapter = createEngineAdapterFake();
+    engineAdapter.__setState({ status: "disconnected" });
+    engineAdapter.runMacro.mockRejectedValueOnce(
+      new EngineError(EngineErrorCode.NOT_CONNECTED, "Cannot run macro: Engine is not connected.")
+    );
+    await app.register(registerEngineRoute, {
+      engineAdapter,
+      getAuthFailure: () => null,
+    } as any);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/engine/macros/1/run",
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      success: false,
+      error: {
+        code: "NOT_CONNECTED",
+        message: "Cannot run macro: Engine is not connected.",
+      },
+    });
+    await app.close();
+  });
+
   it("POST /engine/macros/:id/stop returns 400 for invalid macro ID", async () => {
     const app = Fastify();
     const engineAdapter = createEngineAdapterFake();

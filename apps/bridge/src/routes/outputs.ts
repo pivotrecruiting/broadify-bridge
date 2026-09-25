@@ -1,78 +1,8 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
-import type {
-  OutputDeviceT,
-  BridgeOutputsT,
-  DeviceDescriptorT,
-} from "@broadify/protocol";
 import { deviceCache } from "../services/device-cache.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "../services/output-device-modules.js";
 import { enforceLocalOrToken } from "./route-guards.js";
-
-/**
- * Transform Device/Port model to UI-compatible output format.
- *
- * This is a view on the internal Device/Port model that provides
- * the simple output1/output2 structure expected by the UI.
- *
- * @param devices Device descriptors from detection layer.
- * @returns UI-friendly outputs list.
- */
-function transformDevicesToOutputs(devices: DeviceDescriptorT[]): BridgeOutputsT {
-  const output1Devices: OutputDeviceT[] = [];
-  const output2Devices: OutputDeviceT[] = [];
-  const mapDeviceTypeToOutputType = (
-    deviceType: DeviceDescriptorT["type"]
-  ): OutputDeviceT["type"] => {
-    if (deviceType === "decklink") {
-      return "decklink";
-    }
-    if (deviceType === "display") {
-      // External display outputs (HDMI/DP/Thunderbolt).
-      return "display";
-    }
-    return "capture";
-  };
-
-  // Process each device and expose output ports directly
-  for (const device of devices) {
-    for (const port of device.ports) {
-      const outputCapable =
-        port.direction === "output" || port.direction === "bidirectional";
-      if (!outputCapable) {
-        continue;
-      }
-
-      // Availability is derived from device + port status (UI-friendly flag).
-      const available =
-        device.status.present &&
-        device.status.ready &&
-        !device.status.inUse &&
-        port.status.available;
-      const outputEntry: OutputDeviceT = {
-        id: port.id,
-        name: `${device.displayName} - ${port.displayName}`,
-        type: mapDeviceTypeToOutputType(device.type),
-        available,
-        deviceId: device.id,
-        portType: port.type,
-        portRole: port.role,
-        formats: port.capabilities.formats,
-        modes: port.capabilities.modes,
-      };
-
-      if (port.role === "key") {
-        output2Devices.push(outputEntry);
-      } else {
-        output1Devices.push(outputEntry);
-      }
-    }
-  }
-
-  return {
-    output1: output1Devices,
-    output2: output2Devices,
-  };
-}
+import { buildBridgeOutputsView } from "../services/outputs-view.js";
 
 /**
  * Register outputs route
@@ -101,8 +31,7 @@ export async function registerOutputsRoute(
         OUTPUT_DEVICE_MODULE_NAMES,
       );
 
-      // Transform to UI-compatible format
-      const outputs = transformDevicesToOutputs(devices);
+      const outputs = buildBridgeOutputsView(devices);
 
       fastify.log.debug(
         `[Outputs] Returning ${outputs.output1.length} output1 devices and ${outputs.output2.length} output2 connection types`

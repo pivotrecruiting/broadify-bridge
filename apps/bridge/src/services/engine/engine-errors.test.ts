@@ -8,6 +8,7 @@ import {
   createAlreadyConnectedError,
   createAlreadyConnectingError,
   createNotConnectedError,
+  createUsbDeviceBusyError,
 } from "./engine-errors.js";
 
 describe("engine-errors", () => {
@@ -118,6 +119,21 @@ describe("engine-errors", () => {
       expect(err.code).toBe(EngineErrorCode.NOT_CONNECTED);
       expect(err.details?.operation).toBe("runMacro");
       expect(err.message).toContain("runMacro");
+    });
+  });
+
+  describe("createUsbDeviceBusyError", () => {
+    it("maps device_busy to DEVICE_BUSY and keeps hr in details", () => {
+      const err = createUsbDeviceBusyError("0x80000009", "no_response");
+
+      expect(err.code).toBe(EngineErrorCode.DEVICE_BUSY);
+      expect(err.message).toContain("already in use");
+      expect(err.details).toEqual({
+        transport: "usb",
+        reason: "device_busy",
+        hr: "0x80000009",
+        failReason: "no_response",
+      });
     });
   });
 });

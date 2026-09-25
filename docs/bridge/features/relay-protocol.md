@@ -133,6 +133,39 @@ Antwort (success):
 }
 ```
 
+#### get_status
+Antwortdaten enthalten neben Laufzeit, Engine und Graphics-Status auch die
+lokale Plattform und Output-Fähigkeiten:
+
+```json
+{
+  "running": true,
+  "version": "0.27.1",
+  "platform": "darwin",
+  "outputCapabilities": { "decklink": true }
+}
+```
+
+`outputCapabilities.decklink` ist nur auf macOS `true`; Windows/Linux können
+damit "keine DeckLink-Outputs" von "DeckLink nicht unterstützt" unterscheiden.
+
+#### list_outputs
+Antwortdaten enthalten `output1`, `output2` und additive Diagnostics:
+
+```json
+{
+  "output1": [],
+  "output2": [],
+  "diagnostics": {
+    "platform": "win32",
+    "decklink": { "state": "unsupported_platform" }
+  }
+}
+```
+
+Mögliche DeckLink-Zustände: `ok`, `unsupported_platform`, `helper_missing`,
+`api_unavailable`, `no_devices`.
+
 ### command_result
 Antwort der Bridge.
 ```json
@@ -154,7 +187,7 @@ Timeout-Policy der Bridge-SSOT: `apps/bridge/src/services/relay-command-policy.t
 | Command-Klasse | Relay-Timeout | Bridge lokale SLA |
 | --- | ---: | ---: |
 | Fast commands | 12s | 8s |
-| `engine_connect` | 18s | 11s |
+| `engine_connect` | 18s | 17s |
 | `list_outputs` | 15s | 11s |
 | Graphics configure/send/update/remove | 20s | 16s |
 | Helper-start Commands | 35s | 30s |
@@ -230,6 +263,26 @@ sequenceDiagram
 - Bridge validiert Signatur, TTL und Replay‑Schutz (jti‑Cache)
 - Bridge authentisiert sich gegen Relay per lokalem Ed25519-Keypair + Challenge‑Response (`bridge_hello`-Pfad)
 - Fuer ungepairte Bridges erlaubt das Relay einen `pairing-only` Bootstrap-Pfad (nur `bridge_pair_validate`)
+
+## Transport-Trust (TLS)
+- Der Relay-Client nutzt `ws` ohne eigene CA-Optionen; die Zertifikatsprüfung
+  folgt dem Trust Store des Node-Prozesses.
+- Der Desktop-Prozess startet die Bridge mit `NODE_USE_SYSTEM_CA=1`
+  (`bridge-process-contract.ts`), damit Node zusätzlich zur eingebauten
+  Mozilla-Liste die Root-CAs des Betriebssystems lädt. Nur so ist das Relay
+  hinter Firmen-TLS-Inspection erreichbar. Ein extern gesetzter Wert wird
+  respektiert; `NODE_EXTRA_CA_CERTS` wird durchgereicht.
+- Startdiagnose: `[RuntimeDiagnostics] TLS trust store {...}`
+  (`tls-trust-store.ts`). Socket-Fehler werden mit Node-Fehlercode und, bei
+  nicht vertrauter Kette, mit Handlungshinweis geloggt
+  (`relay-socket-error.ts`).
+- Die Erweiterung gilt prozessweit für alle TLS-Clients der Bridge (Relay,
+  JWKS-Abruf, HTTPS zu Geräten); die Zertifikatsprüfung selbst bleibt
+  unverändert streng, es wächst nur die Menge vertrauter Root-CAs.
+- Kein Certificate Pinning (Browser-Trust-Modell): Ein Proxy mit einer im OS
+  vertrauten CA kann mitlesen, aber keine Bridge fälschen, weil die
+  Bridge-Identität per Ed25519 signiert ist.
+- Support: `docs/bridge/support/relay-tls-trust-runbook.md`
 
 ## Key Distribution
 - Relay stellt Public Keys via `/.well-known/jwks.json` bereit (`kid` fuer Rotation).

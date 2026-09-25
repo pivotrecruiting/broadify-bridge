@@ -297,4 +297,46 @@ describe("GraphicsRuntimeInitService", () => {
       expect.stringContaining("Kept persisted output config")
     );
   });
+
+  it("returns persistedApplyFailed=true and keeps the persisted config", async () => {
+    const persistedConfig = {
+      version: 1,
+      outputKey: "stub",
+      targets: {},
+      format: { width: 1920, height: 1080, fps: 50 },
+      range: "legal",
+      colorspace: "auto",
+    };
+    mockGetConfig.mockReturnValue(persistedConfig);
+    const stubAdapter = { configure: jest.fn(), stop: jest.fn(), sendFrame: jest.fn() };
+    const renderer = {
+      initialize: jest.fn().mockResolvedValue(undefined),
+      configureSession: jest.fn().mockRejectedValue(new Error("session failed")),
+      setAssets: jest.fn().mockResolvedValue(undefined),
+      onError: jest.fn(),
+      renderLayer: jest.fn(),
+      updateValues: jest.fn(),
+      updateLayout: jest.fn(),
+      removeLayer: jest.fn(),
+      shutdown: jest.fn(),
+    };
+    const service = new GraphicsRuntimeInitService({
+      getRenderer: () => renderer as never,
+      setRenderer: jest.fn(),
+      setOutputAdapter: jest.fn(),
+      setOutputConfig: jest.fn(),
+      createStubRenderer: jest.fn(),
+      createStubOutputAdapter: jest.fn().mockReturnValue(stubAdapter),
+      selectOutputAdapter: jest.fn(),
+      applyFrameBusConfig: jest.fn(),
+      buildRendererConfig: jest.fn().mockReturnValue({}),
+      publishGraphicsError: jest.fn(),
+    });
+
+    await expect(service.initialize()).resolves.toEqual({
+      persistedApplyFailed: true,
+      persistedConfig,
+    });
+    expect(mockClear).not.toHaveBeenCalled();
+  });
 });

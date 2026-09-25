@@ -34,17 +34,33 @@
 #include <sys/stat.h>
 
 #include "../../framebus/include/framebus.h"
+#include "framebus-reader-policy.h"
 
 namespace {
 
 std::atomic<bool> gShouldExit{false};
+std::atomic<bool> gStopRequested{false};
+std::atomic<int> gExitCode{0};
+std::atomic<bool> gFatalEmitted{false};
+std::mutex gStdoutMutex;
 const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
+// Follows the release-tag numbering of the helper asset repository
+// (broadify-decklink-helper: v1.2.1 was the last asset before this line).
+constexpr const char* kHelperVersion = "1.3.0";
 constexpr uint8_t kLegalMin = 16;
 constexpr uint8_t kLegalMax = 235;
 constexpr int kFullRange = 255;
 constexpr int kLegalRange = kLegalMax - kLegalMin;
-constexpr int kEnableVideoOutputRetryCount = 3;
-constexpr auto kEnableVideoOutputRetryDelay = std::chrono::milliseconds(250);
+constexpr int kFindDeckLinkRetryCount = 6;
+constexpr auto kFindDeckLinkRetryDelay = std::chrono::milliseconds(500);
+constexpr int kEnableVideoOutputRetryCount = 10;
+constexpr auto kEnableVideoOutputRetryDelay = std::chrono::milliseconds(500);
+constexpr int kKeyerEnableRetryCount = 4;
+constexpr auto kKeyerEnableRetryDelay = std::chrono::milliseconds(250);
+constexpr int kScheduleFrameFailureLimit = 30;
+constexpr uint64_t kFrameBusStaleThresholdNs = 2'000'000'000ULL;
+constexpr uint64_t kFrameBusReopenRetryNs = 5'000'000'000ULL;
+constexpr int kFrameBusTornReadAttempts = 3;
 
 struct DeviceInfo {
   std::string id;
@@ -108,6 +124,61 @@ std::string jsonEscape(const std::string& input) {
     }
   }
   return out.str();
+}
+
+std::string hresultHex(HRESULT result) {
+  std::ostringstream out;
+  out << "0x" << std::hex << std::uppercase
+      << static_cast<uint32_t>(result);
+  return out.str();
+}
+
+void emitJsonLine(const std::string& line) {
+  std::lock_guard<std::mutex> lock(gStdoutMutex);
+  std::cout << line << std::endl;
+  std::cout.flush();
+}
+
+void emitReady() {
+  std::ostringstream out;
+  out << "{\"type\":\"ready\",\"helperVersion\":\""
+      << jsonEscape(kHelperVersion) << "\"}";
+  emitJsonLine(out.str());
+}
+
+void emitPlaybackStarted() {
+  emitJsonLine("{\"type\":\"playback_started\"}");
+}
+
+void emitWarning(const std::string& code, const std::string& message = "") {
+  std::ostringstream out;
+  out << "{\"type\":\"warning\",\"code\":\"" << jsonEscape(code) << "\"";
+  if (!message.empty()) {
+    out << ",\"message\":\"" << jsonEscape(message) << "\"";
+  }
+  out << "}";
+  emitJsonLine(out.str());
+}
+
+void emitFatal(const std::string& code,
+               const std::string& message,
+               int exitCode,
+               HRESULT result = S_OK) {
+  bool expected = false;
+  if (!gFatalEmitted.compare_exchange_strong(expected, true)) {
+    return;
+  }
+
+  std::ostringstream out;
+  out << "{\"type\":\"fatal\",\"code\":\"" << jsonEscape(code)
+      << "\",\"message\":\"" << jsonEscape(message) << "\"";
+  if (result != S_OK) {
+    out << ",\"hresult\":\"" << hresultHex(result) << "\"";
+  }
+  out << "}";
+  emitJsonLine(out.str());
+  gExitCode.store(exitCode);
+  gShouldExit.store(true);
 }
 
 std::string fieldDominanceLabel(BMDFieldDominance dominance) {
@@ -473,13 +544,27 @@ void printDeviceJson(std::ostream& out, const DeviceInfo& device) {
   out << "}";
 }
 
-std::vector<DeviceInfo> enumerateDevices() {
+std::vector<DeviceInfo> enumerateDevices(bool* apiAvailable = nullptr,
+                                         std::string* error = nullptr) {
   std::vector<DeviceInfo> devices;
   IDeckLinkIterator* iterator = CreateDeckLinkIteratorInstance();
   if (!iterator) {
-    std::cerr << "DeckLink iterator could not be created. Check drivers."
-              << std::endl;
+    if (apiAvailable) {
+      *apiAvailable = false;
+    }
+    if (error) {
+      *error = "DeckLink iterator could not be created. Check drivers.";
+    } else {
+      std::cerr << "DeckLink iterator could not be created. Check drivers."
+                << std::endl;
+    }
     return devices;
+  }
+  if (apiAvailable) {
+    *apiAvailable = true;
+  }
+  if (error) {
+    error->clear();
   }
 
   IDeckLink* deckLink = nullptr;
@@ -490,6 +575,27 @@ std::vector<DeviceInfo> enumerateDevices() {
 
   iterator->Release();
   return devices;
+}
+
+std::string getDeckLinkApiVersion() {
+  IDeckLinkAPIInformation* apiInformation =
+      CreateDeckLinkAPIInformationInstance();
+  if (!apiInformation) {
+    return "";
+  }
+
+  int64_t version = 0;
+  std::string result;
+  if (apiInformation->GetInt(BMDDeckLinkAPIVersion, &version) == S_OK) {
+    const int major = static_cast<int>((version >> 24) & 0xff);
+    const int minor = static_cast<int>((version >> 16) & 0xff);
+    const int patch = static_cast<int>((version >> 8) & 0xff);
+    std::ostringstream out;
+    out << major << "." << minor << "." << patch;
+    result = out.str();
+  }
+  apiInformation->Release();
+  return result;
 }
 
 class DeckLinkNotificationCallback : public IDeckLinkDeviceNotificationCallback {
@@ -588,6 +694,7 @@ struct PlaybackConfig {
   int width = 0;
   int height = 0;
   double fps = 0;
+  BMDDisplayMode displayModeId = bmdModeUnknown;
   std::string outputPortId;
   std::string fillPortId;
   std::string keyPortId;
@@ -736,6 +843,65 @@ void closeFrameBusReader(FrameBusReader& reader) {
   reader.slots = nullptr;
 }
 
+bool validateFrameBusReader(const FrameBusReader& reader,
+                            const PlaybackConfig& config,
+                            size_t expectedBytes,
+                            bool emitFatalOnFailure) {
+  const size_t headerExpectedSize =
+      static_cast<size_t>(reader.header->header_size) +
+      static_cast<size_t>(reader.header->slot_stride) *
+          static_cast<size_t>(reader.header->slot_count);
+  if (reader.size < headerExpectedSize) {
+    std::cerr << "FrameBus size mismatch (too small). expected="
+              << headerExpectedSize << " got=" << reader.size << std::endl;
+    if (emitFatalOnFailure) {
+      emitFatal("framebus_geometry_mismatch",
+                "FrameBus shared memory is smaller than its header declares.",
+                1);
+    }
+    return false;
+  }
+  if (reader.size > headerExpectedSize) {
+    std::cerr << "FrameBus size mismatch (tolerated). expected="
+              << headerExpectedSize << " got=" << reader.size << std::endl;
+  }
+
+  if (config.frameBusSize > 0 && config.frameBusSize != headerExpectedSize) {
+    std::cerr << "FrameBus expected size differs from config. expected="
+              << headerExpectedSize << " config=" << config.frameBusSize
+              << std::endl;
+  }
+
+  if (reader.header->frame_size != expectedBytes ||
+      reader.header->width != static_cast<uint32_t>(config.width) ||
+      reader.header->height != static_cast<uint32_t>(config.height)) {
+    std::cerr << "FrameBus header mismatch. expected="
+              << config.width << "x" << config.height
+              << " bytes=" << expectedBytes
+              << " got=" << reader.header->width << "x"
+              << reader.header->height
+              << " bytes=" << reader.header->frame_size << std::endl;
+    if (emitFatalOnFailure) {
+      emitFatal("framebus_geometry_mismatch",
+                "FrameBus header does not match playback geometry.",
+                1);
+    }
+    return false;
+  }
+
+  if (reader.header->pixel_format != FRAMEBUS_PIXELFORMAT_RGBA8) {
+    std::cerr << "FrameBus pixel format mismatch (expected RGBA8)." << std::endl;
+    if (emitFatalOnFailure) {
+      emitFatal("framebus_geometry_mismatch",
+                "FrameBus pixel format mismatch.",
+                1);
+    }
+    return false;
+  }
+
+  return true;
+}
+
 bool readExact(int fd, uint8_t* buffer, size_t length) {
   size_t total = 0;
   while (total < length) {
@@ -822,6 +988,8 @@ struct PlaybackState {
   uint64_t completedFrames = 0;
   uint64_t lateFrames = 0;
   uint64_t droppedFrames = 0;
+  uint64_t scheduleFailures = 0;
+  int consecutiveScheduleFailures = 0;
   bool sampleLogged = false;
   int debugLogFramesRemaining = 2;
 };
@@ -1233,12 +1401,28 @@ public:
     if (!frameData.empty()) {
       playbackState->lastFrame = frameData;
       playbackState->hasLastFrame = true;
-      scheduleFrame(*playbackState, frameData);
+      if (scheduleFrame(*playbackState, frameData)) {
+        playbackState->consecutiveScheduleFailures = 0;
+      } else {
+        playbackState->scheduleFailures += 1;
+        playbackState->consecutiveScheduleFailures += 1;
+        if (playbackState->consecutiveScheduleFailures >=
+            kScheduleFrameFailureLimit) {
+          emitFatal("schedule_frame_failed",
+                    "ScheduleVideoFrame failed repeatedly.",
+                    3);
+        }
+      }
     }
     return S_OK;
   }
 
   HRESULT ScheduledPlaybackHasStopped() override {
+    if (!gStopRequested.load()) {
+      emitFatal("playback_stopped",
+                "Scheduled playback stopped unexpectedly.",
+                3);
+    }
     return S_OK;
   }
 
@@ -1289,10 +1473,26 @@ IDeckLink* findDeckLinkById(const std::string& targetId) {
   return nullptr;
 }
 
+IDeckLink* findDeckLinkByIdWithRetry(const std::string& targetId) {
+  for (int attempt = 1; attempt <= kFindDeckLinkRetryCount; ++attempt) {
+    IDeckLink* deckLink = findDeckLinkById(targetId);
+    if (deckLink) {
+      return deckLink;
+    }
+    if (attempt < kFindDeckLinkRetryCount) {
+      std::cerr << "DeckLink device not found yet; waiting for device. attempt="
+                << attempt << " device=" << targetId << std::endl;
+      std::this_thread::sleep_for(kFindDeckLinkRetryDelay);
+    }
+  }
+  return nullptr;
+}
+
 bool findDisplayMode(IDeckLinkOutput* output,
                      int width,
                      int height,
                      double fps,
+                     BMDDisplayMode requestedDisplayMode,
                      const std::vector<BMDPixelFormat>& pixelFormats,
                      BMDVideoConnection connection,
                      BMDSupportedVideoModeFlags modeFlags,
@@ -1311,8 +1511,18 @@ bool findDisplayMode(IDeckLinkOutput* output,
   }
 
   bool found = false;
+  bool requestedIdSeen = false;
   IDeckLinkDisplayMode* mode = nullptr;
   while (iterator->Next(&mode) == S_OK) {
+    if (requestedDisplayMode != bmdModeUnknown &&
+        mode->GetDisplayMode() != requestedDisplayMode) {
+      mode->Release();
+      continue;
+    }
+    if (requestedDisplayMode != bmdModeUnknown) {
+      requestedIdSeen = true;
+    }
+
     if (mode->GetWidth() != width || mode->GetHeight() != height) {
       mode->Release();
       continue;
@@ -1367,6 +1577,25 @@ bool findDisplayMode(IDeckLinkOutput* output,
   }
 
   iterator->Release();
+  if (requestedDisplayMode != bmdModeUnknown && !found) {
+    emitWarning("display_mode_id_not_found",
+                requestedIdSeen
+                    ? "Requested display mode id is not supported for the requested output."
+                    : "Requested display mode id was not found.");
+    return findDisplayMode(output,
+                           width,
+                           height,
+                           fps,
+                           bmdModeUnknown,
+                           pixelFormats,
+                           connection,
+                           modeFlags,
+                           outDisplayMode,
+                           outPixelFormat,
+                           outFrameDuration,
+                           outTimeScale,
+                           outModeFlags);
+  }
   return found;
 }
 
@@ -1697,9 +1926,15 @@ bool configureOutputConnection(IDeckLink* deckLink,
 }
 
 int runPlayback(const PlaybackConfig& config) {
+  gExitCode.store(0);
+  gFatalEmitted.store(false);
+  gShouldExit.store(false);
+  gStopRequested.store(false);
+
   if (config.deviceId.empty() || config.width <= 0 || config.height <= 0 ||
       config.fps <= 0) {
     std::cerr << "Invalid playback configuration." << std::endl;
+    emitFatal("invalid_config", "Invalid playback configuration.", 1);
     return 1;
   }
 
@@ -1714,6 +1949,9 @@ int runPlayback(const PlaybackConfig& config) {
     if (config.fillPortId != expectedFill || config.keyPortId != expectedKey) {
       std::cerr << "Fill/key ports do not match the selected device."
                 << std::endl;
+      emitFatal("invalid_config",
+                "Fill/key ports do not match the selected device.",
+                1);
       return 1;
     }
     outputDeviceId = config.deviceId;
@@ -1722,15 +1960,24 @@ int runPlayback(const PlaybackConfig& config) {
     if (!parseOutputPort(config, outputDeviceId, outputConnection)) {
       std::cerr << "Output port does not match the selected device."
                 << std::endl;
+      emitFatal("invalid_config",
+                "Output port does not match the selected device.",
+                1);
       return 1;
     }
     if (outputDeviceId != config.deviceId) {
       std::cerr << "Output port does not match the selected device."
                 << std::endl;
+      emitFatal("invalid_config",
+                "Output port does not match the selected device.",
+                1);
       return 1;
     }
   } else {
     std::cerr << "Output port is required for video playback." << std::endl;
+    emitFatal("invalid_config",
+              "Output port is required for video playback.",
+              1);
     return 1;
   }
 
@@ -1746,9 +1993,10 @@ int runPlayback(const PlaybackConfig& config) {
             << " fps=" << std::fixed << std::setprecision(3) << config.fps
             << std::endl;
 
-  IDeckLink* deckLink = findDeckLinkById(config.deviceId);
+  IDeckLink* deckLink = findDeckLinkByIdWithRetry(config.deviceId);
   if (!deckLink) {
     std::cerr << "DeckLink device not found: " << config.deviceId << std::endl;
+    emitFatal("device_not_found", "DeckLink device not found.", 1);
     return 1;
   }
 
@@ -1756,6 +2004,9 @@ int runPlayback(const PlaybackConfig& config) {
   if (deckLink->QueryInterface(IID_IDeckLinkOutput, (void**)&output) != S_OK ||
       !output) {
     std::cerr << "Failed to acquire IDeckLinkOutput." << std::endl;
+    emitFatal("output_interface_unavailable",
+              "Failed to acquire IDeckLinkOutput.",
+              1);
     deckLink->Release();
     return 1;
   }
@@ -1765,6 +2016,9 @@ int runPlayback(const PlaybackConfig& config) {
     if (deckLink->QueryInterface(IID_IDeckLinkKeyer, (void**)&keyer) != S_OK ||
         !keyer) {
       std::cerr << "Failed to acquire IDeckLinkKeyer." << std::endl;
+      emitFatal("no_external_keying",
+                "Failed to acquire IDeckLinkKeyer.",
+                1);
       output->Release();
       deckLink->Release();
       return 1;
@@ -1781,6 +2035,9 @@ int runPlayback(const PlaybackConfig& config) {
 
     if (!supportsExternalKeying) {
       std::cerr << "External keying not supported by device." << std::endl;
+      emitFatal("no_external_keying",
+                "External keying not supported by device.",
+                1);
       keyer->Release();
       output->Release();
       deckLink->Release();
@@ -1810,6 +2067,7 @@ int runPlayback(const PlaybackConfig& config) {
                        config.width,
                        config.height,
                        config.fps,
+                       config.displayModeId,
                        pixelFormats,
                        outputConnection,
                        modeFlags,
@@ -1819,6 +2077,9 @@ int runPlayback(const PlaybackConfig& config) {
                        state.timeScale,
                        displayModeFlags)) {
     std::cerr << "No supported display mode for requested format." << std::endl;
+    emitFatal("no_supported_mode",
+              "No supported display mode for requested format.",
+              1);
     if (keyer) {
       keyer->Release();
     }
@@ -1871,6 +2132,7 @@ int runPlayback(const PlaybackConfig& config) {
               : 0.0;
       std::cerr << "Selected display mode: "
                 << (modeName.empty() ? "unknown" : modeName) << " ("
+                << "id=" << static_cast<uint32_t>(displayMode) << ", "
                 << config.width << "x" << config.height << " @ " << std::fixed
                 << std::setprecision(3) << fps << ", "
                 << fieldDominanceLabel(dominance) << ", pixelFormat "
@@ -1884,6 +2146,9 @@ int runPlayback(const PlaybackConfig& config) {
   if (!supportsOutputConnection(deckLink, outputConnection)) {
     std::cerr << "Requested output connection not supported by device."
               << std::endl;
+    emitFatal("connection_unsupported",
+              "Requested output connection not supported by device.",
+              1);
     if (keyer) {
       keyer->Release();
     }
@@ -1894,6 +2159,9 @@ int runPlayback(const PlaybackConfig& config) {
 
   if (!configureOutputConnection(deckLink, outputConnection)) {
     std::cerr << "Failed to set output connection." << std::endl;
+    emitFatal("connection_unsupported",
+              "Failed to set output connection.",
+              1);
     if (keyer) {
       keyer->Release();
     }
@@ -1915,14 +2183,15 @@ int runPlayback(const PlaybackConfig& config) {
               << hresultLabel(enableResult) << ")" << std::endl;
 
     const bool shouldRetry =
-        enableResult == E_ACCESSDENIED &&
+        (enableResult == E_ACCESSDENIED ||
+         (enableResult == E_FAIL && attempt <= 3)) &&
         attempt < kEnableVideoOutputRetryCount;
     if (!shouldRetry) {
       break;
     }
 
     std::cerr
-        << "Retrying EnableVideoOutput after transient access denial."
+        << "Retrying EnableVideoOutput after transient failure."
         << std::endl;
     std::this_thread::sleep_for(kEnableVideoOutputRetryDelay);
   }
@@ -1931,6 +2200,11 @@ int runPlayback(const PlaybackConfig& config) {
     std::cerr << "EnableVideoOutput failed. HRESULT=0x" << std::hex
               << static_cast<uint32_t>(enableResult) << std::dec << " ("
               << hresultLabel(enableResult) << ")" << std::endl;
+    emitFatal(enableResult == E_ACCESSDENIED ? "device_busy"
+                                             : "enable_video_output_failed",
+              "EnableVideoOutput failed.",
+              1,
+              enableResult);
     if (keyer) {
       keyer->Release();
     }
@@ -1940,11 +2214,29 @@ int runPlayback(const PlaybackConfig& config) {
   }
 
   if (keyer) {
-    const HRESULT keyerEnableResult = keyer->Enable(true);
+    HRESULT keyerEnableResult = E_FAIL;
+    for (int attempt = 1; attempt <= kKeyerEnableRetryCount; ++attempt) {
+      keyerEnableResult = keyer->Enable(true);
+      if (keyerEnableResult == S_OK) {
+        break;
+      }
+      std::cerr << "Keyer enable attempt " << attempt
+                << " failed. HRESULT=0x" << std::hex
+                << static_cast<uint32_t>(keyerEnableResult) << std::dec
+                << " (" << hresultLabel(keyerEnableResult) << ")"
+                << std::endl;
+      if (attempt < kKeyerEnableRetryCount) {
+        std::this_thread::sleep_for(kKeyerEnableRetryDelay);
+      }
+    }
     if (keyerEnableResult != S_OK) {
       std::cerr << "Keyer enable failed. HRESULT=0x" << std::hex
                 << static_cast<uint32_t>(keyerEnableResult) << std::dec
                 << std::endl;
+      emitFatal("keyer_enable_failed",
+                "Keyer enable failed.",
+                1,
+                keyerEnableResult);
       output->DisableVideoOutput();
       keyer->Release();
       output->Release();
@@ -1988,10 +2280,15 @@ int runPlayback(const PlaybackConfig& config) {
           output->StartScheduledPlayback(0, state.timeScale, 1.0);
       if (startResult == S_OK) {
         state.started = true;
+        emitPlaybackStarted();
       } else {
         std::cerr << "StartScheduledPlayback failed. HRESULT=0x" << std::hex
                   << static_cast<uint32_t>(startResult) << std::dec
                   << std::endl;
+        emitFatal("start_scheduled_playback_failed",
+                  "StartScheduledPlayback failed.",
+                  3,
+                  startResult);
       }
     }
   };
@@ -2001,121 +2298,162 @@ int runPlayback(const PlaybackConfig& config) {
     std::string frameBusError;
     if (!openFrameBusReader(config.frameBusName, reader, frameBusError)) {
       std::cerr << "FrameBus open failed: " << frameBusError << std::endl;
-      gShouldExit.store(true);
+      emitFatal("framebus_open_failed", frameBusError, 1);
+    } else if (!validateFrameBusReader(reader, config, expectedBytes, true)) {
+      closeFrameBusReader(reader);
     } else {
-      const size_t headerExpectedSize =
-          static_cast<size_t>(reader.header->header_size) +
-          static_cast<size_t>(reader.header->slot_stride) *
-              static_cast<size_t>(reader.header->slot_count);
-      if (reader.size < headerExpectedSize) {
-        std::cerr << "FrameBus size mismatch (too small). expected="
-                  << headerExpectedSize << " got=" << reader.size << std::endl;
+      emitReady();
+
+      uint64_t lastSeq = 0;
+      uint64_t droppedFrames = 0;
+      uint64_t tornFrames = 0;
+      uint64_t framesObserved = 0;
+      double latencyTotalMs = 0.0;
+      double latencyMaxMs = 0.0;
+      uint64_t lastProgressNs = nowSystemNs();
+      uint64_t lastReopenAttemptNs = 0;
+      bool reopenFailureLogged = false;
+      auto lastLogAt = std::chrono::steady_clock::now();
+
+      auto logMetricsIfNeeded = [&]() {
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLogAt)
+                .count();
+        if (elapsedMs < 1000) {
+          return;
+        }
+        const double fps = elapsedMs > 0 ? (framesObserved * 1000.0) / elapsedMs : 0.0;
+        const double latencyAvg = framesObserved > 0 ? latencyTotalMs / framesObserved : 0.0;
+        std::ostringstream out;
+        out << "{\"type\":\"metrics\",\"source\":\"framebus\""
+            << ",\"fps\":" << std::fixed << std::setprecision(1) << fps
+            << ",\"drops\":" << droppedFrames
+            << ",\"tornFrames\":" << tornFrames
+            << ",\"latencyMsAvg\":" << std::fixed << std::setprecision(1)
+            << latencyAvg
+            << ",\"latencyMsMax\":" << std::fixed << std::setprecision(1)
+            << latencyMaxMs
+            << "}";
+        emitJsonLine(out.str());
+        framesObserved = 0;
+        droppedFrames = 0;
+        tornFrames = 0;
+        latencyTotalMs = 0.0;
+        latencyMaxMs = 0.0;
+        lastLogAt = now;
+      };
+
+      auto reopenReader = [&]() -> bool {
         closeFrameBusReader(reader);
-        gShouldExit.store(true);
-      } else if (reader.size > headerExpectedSize) {
-        std::cerr << "FrameBus size mismatch (tolerated). expected="
-                  << headerExpectedSize << " got=" << reader.size << std::endl;
-      }
-
-      if (config.frameBusSize > 0 && config.frameBusSize != headerExpectedSize) {
-        std::cerr << "FrameBus expected size differs from config. expected="
-                  << headerExpectedSize << " config=" << config.frameBusSize
-                  << std::endl;
-      }
-
-      if (reader.header->frame_size != expectedBytes ||
-                 reader.header->width != static_cast<uint32_t>(config.width) ||
-                 reader.header->height != static_cast<uint32_t>(config.height)) {
-        std::cerr << "FrameBus header mismatch. expected="
-                  << config.width << "x" << config.height
-                  << " bytes=" << expectedBytes
-                  << " got=" << reader.header->width << "x"
-                  << reader.header->height
-                  << " bytes=" << reader.header->frame_size << std::endl;
-        closeFrameBusReader(reader);
-        gShouldExit.store(true);
-      } else if (reader.header->pixel_format != FRAMEBUS_PIXELFORMAT_RGBA8) {
-        std::cerr << "FrameBus pixel format mismatch (expected RGBA8)." << std::endl;
-        closeFrameBusReader(reader);
-        gShouldExit.store(true);
-      } else {
-        std::cout << "{\"type\":\"ready\"}" << std::endl;
-        std::cout.flush();
-
-        uint64_t lastSeq = 0;
-        uint64_t droppedFrames = 0;
-        uint64_t framesObserved = 0;
-        double latencyTotalMs = 0.0;
-        double latencyMaxMs = 0.0;
-        auto lastLogAt = std::chrono::steady_clock::now();
-
-        auto logMetricsIfNeeded = [&]() {
-          const auto now = std::chrono::steady_clock::now();
-          const auto elapsedMs =
-              std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLogAt)
-                  .count();
-          if (elapsedMs < 1000) {
-            return;
+        FrameBusReader reopened;
+        std::string reopenError;
+        if (!openFrameBusReader(config.frameBusName, reopened, reopenError)) {
+          if (!reopenFailureLogged) {
+            std::cerr << "FrameBus stale reopen failed: " << reopenError
+                      << std::endl;
+            reopenFailureLogged = true;
           }
-          const double fps = elapsedMs > 0 ? (framesObserved * 1000.0) / elapsedMs : 0.0;
-          const double latencyAvg = framesObserved > 0 ? latencyTotalMs / framesObserved : 0.0;
-          std::ostringstream out;
-          out << "{\"type\":\"metrics\",\"source\":\"framebus\""
-              << ",\"fps\":" << std::fixed << std::setprecision(1) << fps
-              << ",\"drops\":" << droppedFrames
-              << ",\"latencyMsAvg\":" << std::fixed << std::setprecision(1)
-              << latencyAvg
-              << ",\"latencyMsMax\":" << std::fixed << std::setprecision(1)
-              << latencyMaxMs
-              << "}";
-          std::cout << out.str() << std::endl;
-          std::cout.flush();
-          framesObserved = 0;
-          droppedFrames = 0;
-          latencyTotalMs = 0.0;
-          latencyMaxMs = 0.0;
-          lastLogAt = now;
-        };
+          return false;
+        }
+        if (!validateFrameBusReader(reopened, config, expectedBytes, false)) {
+          closeFrameBusReader(reopened);
+          if (!reopenFailureLogged) {
+            std::cerr << "FrameBus stale reopen failed: geometry mismatch."
+                      << std::endl;
+            reopenFailureLogged = true;
+          }
+          return false;
+        }
+        reader = reopened;
+        lastSeq = 0;
+        lastProgressNs = nowSystemNs();
+        reopenFailureLogged = false;
+        std::cerr << "FrameBus stale reader reopened." << std::endl;
+        return true;
+      };
 
-        while (!gShouldExit.load()) {
-          const uint64_t seq = atomicLoad64(&reader.header->seq);
-          if (seq == 0 || seq == lastSeq) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
+      while (!gShouldExit.load()) {
+        const uint64_t nowNs = nowSystemNs();
+        if (!reader.header) {
+          if (lastReopenAttemptNs == 0 ||
+              nowNs - lastReopenAttemptNs >= kFrameBusReopenRetryNs) {
+            lastReopenAttemptNs = nowNs;
+            reopenReader();
           }
-          if (lastSeq > 0 && seq > lastSeq + 1) {
-            droppedFrames += (seq - lastSeq - 1);
-          }
-          lastSeq = seq;
-          const uint64_t timestampNs = atomicLoad64(&reader.header->last_write_ns);
-          if (timestampNs > 0) {
-            const uint64_t nowNs = nowSystemNs();
-            if (nowNs >= timestampNs) {
-              const double latencyMs =
-                  static_cast<double>(nowNs - timestampNs) / 1'000'000.0;
-              latencyTotalMs += latencyMs;
-              if (latencyMs > latencyMaxMs) {
-                latencyMaxMs = latencyMs;
-              }
-            }
-          }
-          framesObserved += 1;
           logMetricsIfNeeded();
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          continue;
+        }
+
+        if (decklink_helper::shouldReopenStaleReader(nowNs,
+                                                     lastProgressNs,
+                                                     kFrameBusStaleThresholdNs)) {
+          std::cerr << "FrameBus reader stale; attempting reopen." << std::endl;
+          lastReopenAttemptNs = nowNs;
+          reopenReader();
+          logMetricsIfNeeded();
+          continue;
+        }
+
+        bool copiedFrame = false;
+        uint64_t seq = 0;
+        uint64_t timestampNs = 0;
+        std::vector<uint8_t> frameBuffer;
+        for (int attempt = 0; attempt < kFrameBusTornReadAttempts; ++attempt) {
+          seq = atomicLoad64(&reader.header->seq);
+          if (seq == 0 || seq == lastSeq) {
+            break;
+          }
+
           const uint32_t slotIndex =
               static_cast<uint32_t>((seq - 1) % reader.header->slot_count);
           const uint8_t* slotPtr =
-              reader.slots + (static_cast<size_t>(slotIndex) * reader.header->slot_stride);
-          std::vector<uint8_t> frameBuffer(reader.header->frame_size);
+              reader.slots +
+              (static_cast<size_t>(slotIndex) * reader.header->slot_stride);
+          frameBuffer.assign(reader.header->frame_size, 0);
           std::memcpy(frameBuffer.data(), slotPtr, frameBuffer.size());
-          state.queue.push(std::move(frameBuffer));
-          maybeStartPlayback();
+          const uint64_t seqAfter = atomicLoad64(&reader.header->seq);
+          if (decklink_helper::isTornRead(seq, seqAfter, reader.header->slot_count)) {
+            tornFrames += 1;
+            continue;
+          }
+          timestampNs = atomicLoad64(&reader.header->last_write_ns);
+          copiedFrame = true;
+          break;
         }
-        closeFrameBusReader(reader);
+
+        if (!copiedFrame) {
+          logMetricsIfNeeded();
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          continue;
+        }
+
+        if (lastSeq > 0 && seq > lastSeq + 1) {
+          droppedFrames += (seq - lastSeq - 1);
+        }
+        lastSeq = seq;
+        lastProgressNs = nowSystemNs();
+        if (timestampNs > 0) {
+          const uint64_t latencyNowNs = nowSystemNs();
+          if (latencyNowNs >= timestampNs) {
+            const double latencyMs =
+                static_cast<double>(latencyNowNs - timestampNs) / 1'000'000.0;
+            latencyTotalMs += latencyMs;
+            if (latencyMs > latencyMaxMs) {
+              latencyMaxMs = latencyMs;
+            }
+          }
+        }
+        framesObserved += 1;
+        logMetricsIfNeeded();
+        state.queue.push(std::move(frameBuffer));
+        maybeStartPlayback();
       }
+      closeFrameBusReader(reader);
     }
   } else {
-    std::cout << "{\"type\":\"ready\"}" << std::endl;
-    std::cout.flush();
+    emitReady();
 
     uint64_t droppedFrames = 0;
     uint64_t framesObserved = 0;
@@ -2238,6 +2576,7 @@ int runPlayback(const PlaybackConfig& config) {
     }
   }
 
+  gStopRequested.store(true);
   output->StopScheduledPlayback(0, nullptr, 0);
   if (keyer) {
     keyer->Disable();
@@ -2255,7 +2594,7 @@ int runPlayback(const PlaybackConfig& config) {
   }
   output->Release();
   deckLink->Release();
-  return 0;
+  return gExitCode.load();
 }
 
 }  // namespace
@@ -2272,15 +2611,38 @@ int main(int argc, char** argv) {
 
   if (argc < 2) {
     std::cerr
-        << "Usage: decklink-helper --list|--watch|--list-modes|--playback"
+        << "Usage: decklink-helper --list|--watch|--list-modes|--playback|--version"
         << std::endl;
     return 1;
   }
 
   std::string mode = argv[1];
-  if (mode == "--list") {
-    std::vector<DeviceInfo> devices = enumerateDevices();
+  if (mode == "--version") {
     std::ostringstream out;
+    out << "{\"type\":\"version\",\"helperVersion\":\""
+        << jsonEscape(kHelperVersion) << "\",\"builtAt\":\""
+        << jsonEscape(std::string(__DATE__) + " " + __TIME__) << "\"}";
+    std::cout << out.str() << std::endl;
+    return 0;
+  }
+
+  if (mode == "--list") {
+    bool withDiagnostics = false;
+    for (int i = 2; i < argc; ++i) {
+      if (std::string(argv[i]) == "--with-diagnostics") {
+        withDiagnostics = true;
+      }
+    }
+
+    bool apiAvailable = true;
+    std::string apiError;
+    std::vector<DeviceInfo> devices =
+        enumerateDevices(withDiagnostics ? &apiAvailable : nullptr,
+                         withDiagnostics ? &apiError : nullptr);
+    std::ostringstream out;
+    if (withDiagnostics) {
+      out << "{\"devices\":";
+    }
     out << "[";
     for (size_t i = 0; i < devices.size(); ++i) {
       printDeviceJson(out, devices[i]);
@@ -2289,6 +2651,25 @@ int main(int argc, char** argv) {
       }
     }
     out << "]";
+    if (withDiagnostics) {
+      out << ",\"diagnostics\":{";
+      out << "\"apiAvailable\":" << (apiAvailable ? "true" : "false") << ",";
+      out << "\"apiVersion\":";
+      const std::string apiVersion = getDeckLinkApiVersion();
+      if (apiVersion.empty()) {
+        out << "null";
+      } else {
+        out << "\"" << jsonEscape(apiVersion) << "\"";
+      }
+      out << ",\"helperVersion\":\"" << jsonEscape(kHelperVersion) << "\",";
+      out << "\"error\":";
+      if (apiError.empty()) {
+        out << "null";
+      } else {
+        out << "\"" << jsonEscape(apiError) << "\"";
+      }
+      out << "}}";
+    }
     std::cout << out.str() << std::endl;
     return 0;
   }
@@ -2297,7 +2678,10 @@ int main(int argc, char** argv) {
     IDeckLinkDiscovery* discovery = CreateDeckLinkDiscoveryInstance();
     if (!discovery) {
       std::cerr << "DeckLink discovery could not be created." << std::endl;
-      return 1;
+      emitFatal("api_unavailable",
+                "DeckLink discovery could not be created.",
+                2);
+      return 2;
     }
 
     DeckLinkNotificationCallback* callback = new DeckLinkNotificationCallback();
@@ -2411,6 +2795,15 @@ int main(int argc, char** argv) {
           config.fps = std::stod(argv[++i]);
         } catch (...) {
           config.fps = 0;
+        }
+        continue;
+      }
+      if (arg == "--display-mode" && i + 1 < argc) {
+        try {
+          config.displayModeId =
+              static_cast<BMDDisplayMode>(std::stoul(argv[++i], nullptr, 0));
+        } catch (...) {
+          config.displayModeId = bmdModeUnknown;
         }
         continue;
       }
@@ -2531,6 +2924,17 @@ int main(int argc, char** argv) {
     }
     if (config.fps <= 0) {
       config.fps = readEnvDouble("BRIDGE_FRAME_FPS");
+    }
+    if (config.displayModeId == bmdModeUnknown) {
+      const char* envDisplayMode = std::getenv("BRIDGE_DECKLINK_DISPLAY_MODE");
+      if (envDisplayMode && *envDisplayMode) {
+        try {
+          config.displayModeId =
+              static_cast<BMDDisplayMode>(std::stoul(envDisplayMode, nullptr, 0));
+        } catch (...) {
+          config.displayModeId = bmdModeUnknown;
+        }
+      }
     }
     if (config.frameBusName.empty()) {
       const char* envFrameBusName = std::getenv("BRIDGE_FRAMEBUS_NAME");
