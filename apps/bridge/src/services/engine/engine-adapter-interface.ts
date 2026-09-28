@@ -12,7 +12,7 @@ export type EngineTransportT = "network" | "usb";
  * Engine connection configuration
  */
 export interface EngineConnectConfig {
-  type: "atem" | "tricaster" | "vmix";
+  type: "atem" | "tricaster" | "vmix" | "rodecaster";
   ip: string;
   port: number;
   transport?: EngineTransportT;

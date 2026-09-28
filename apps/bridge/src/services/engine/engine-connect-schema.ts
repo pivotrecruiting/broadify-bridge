@@ -10,7 +10,7 @@ import type { EngineConnectConfig } from "./engine-adapter-interface.js";
  * - transport "usb" is ATEM-only and needs no ip/port (both are ignored)
  */
 const engineConnectFields = {
-  type: z.enum(["atem", "tricaster", "vmix"]),
+  type: z.enum(["atem", "tricaster", "vmix", "rodecaster"]),
   transport: z.enum(["network", "usb"]).optional(),
   ip: z.string().trim().ip({ version: "v4" }).optional(),
   port: z.number().int().min(1).max(65535).optional(),
@@ -18,7 +18,7 @@ const engineConnectFields = {
 
 function refineEngineConnect(
   value: {
-    type: "atem" | "tricaster" | "vmix";
+    type: "atem" | "tricaster" | "vmix" | "rodecaster";
     transport?: "network" | "usb";
     ip?: string;
     port?: number;
