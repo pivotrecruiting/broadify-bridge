@@ -2,6 +2,7 @@ import { AtemAdapter } from "./adapters/atem-adapter.js";
 import { AtemUsbAdapter } from "./adapters/atem-usb-adapter.js";
 import { VmixAdapter } from "./adapters/vmix-adapter.js";
 import { TricasterAdapter } from "./adapters/tricaster-adapter.js";
+import { RodecasterAdapter } from "./adapters/rodecaster-adapter.js";
 import { createEngineAdapter } from "./adapter-factory.js";
 
 describe("createEngineAdapter", () => {
@@ -34,6 +35,17 @@ describe("createEngineAdapter", () => {
   it("returns TricasterAdapter for tricaster type", () => {
     const adapter = createEngineAdapter("tricaster");
     expect(adapter).toBeInstanceOf(TricasterAdapter);
+  });
+
+  it("returns RodecasterAdapter for rodecaster type", () => {
+    const adapter = createEngineAdapter("rodecaster");
+    expect(adapter).toBeInstanceOf(RodecasterAdapter);
+  });
+
+  it("throws for usb transport on rodecaster type", () => {
+    expect(() => createEngineAdapter("rodecaster", "usb")).toThrow(
+      'Unsupported engine transport "usb" for type: rodecaster'
+    );
   });
 
   it("throws for unsupported engine type", () => {

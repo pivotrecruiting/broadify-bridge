@@ -294,7 +294,7 @@ export type MacroExecutionT = {
     runId: string;
     macroId: number;
     macroName?: string;
-    engineType: "atem" | "tricaster" | "vmix";
+    engineType: "atem" | "tricaster" | "vmix" | "rodecaster";
     status: MacroExecutionStatusT;
     triggeredAt: number;
     acceptedAt?: number | null;
@@ -311,7 +311,7 @@ export type MacroExecutionT = {
  */
 export type EngineStateT = {
     status: EngineStatusT;
-    type?: "atem" | "tricaster" | "vmix";
+    type?: "atem" | "tricaster" | "vmix" | "rodecaster";
     transport?: "network" | "usb";
     ip?: string;
     port?: number;
