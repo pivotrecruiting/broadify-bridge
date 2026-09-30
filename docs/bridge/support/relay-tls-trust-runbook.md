@@ -128,6 +128,12 @@ Zertifikatsprüfung vollständig ab.
   Feldtest auf einem Windows-Gerät hinter echter Inspection mit Root-CA im
   Windows-Speicher.
 
+## Nachstellen ohne Firmen-Firewall
+
+Testkit und Anleitung: `docs/bridge/dev/tls-inspection-replica.md`
+(`scripts/tls-inspection-replica/`). Stufe 1 prüft den TLS-Schritt auf einem
+Rechner, Stufe 2 das komplette Pairing durch einen nachgebauten Pförtner.
+
 ## Relevante Dateien
 
 - `src/electron/services/bridge-process-contract.ts` (Spawn-Umgebung)
