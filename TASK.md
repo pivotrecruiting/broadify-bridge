@@ -59,5 +59,5 @@ Konventionen: Code-Kommentare Englisch; keine Secrets in Logs; keine weiteren Da
 ## Verification
 - [x] Tests pass — `npx jest apps/bridge/src/modules/vcam --runInBand`: 25 passed (Verifier)
 - [x] Lint / type-check pass — `npm run lint` Exit 0; `tsc --noEmit -p apps/bridge/tsconfig.build.json` Exit 0 (Verifier)
-- [ ] `npm run build:vcam-helper` signiert: lokal BLOCKED (Signing-Identität), unsigniert BUILD SUCCEEDED (Verifier); Developer-ID-Modus wird vom Orchestrator versucht, sonst CI
+- [x] `npm run build:vcam-helper` — mit `VCAM_SIGNING_MODE=developer-id` (wie CI) BUILD SUCCEEDED, codesign valid (Team PG38DC5RG9), CFBundleVersion 20 in App und Extension (Orchestrator); im Default-Modus "development" lokal BLOCKED (keine "Apple Development"-Identität)
 - [ ] Bug reproduced before the fix, gone after (Enumeration 1280x720 → 1920x1080; Extension (1.0/17) → (1.0/20) nach Engine-Start) — RC-Feldtest
