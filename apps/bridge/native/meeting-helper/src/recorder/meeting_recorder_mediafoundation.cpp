@@ -15,6 +15,9 @@
 #include <windows.h>
 
 #include <initguid.h>
+// cguid.h must follow initguid.h so GUID_NULL (used for GetServiceForStream)
+// is defined in this translation unit; windows.h alone does not declare it.
+#include <cguid.h>
 #include <codecapi.h>
 #include <icodecapi.h>
 #include <mfapi.h>
