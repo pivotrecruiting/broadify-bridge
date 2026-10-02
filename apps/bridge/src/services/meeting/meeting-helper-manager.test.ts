@@ -180,6 +180,7 @@ describe("meeting-helper-manager", () => {
         resolveMeetingHelperForwardedEnvArgs({
           BROADIFY_MEETING_CAMERA_MAX_HEIGHT: "720",
           BROADIFY_MEETING_DML_QUEUE: "compute",
+          BROADIFY_MEETING_RECORDER_CFR: "0",
           BROADIFY_MEETING_FUSED_EMA_STATIC: "0.85",
           BROADIFY_MEETING_FUSED_PIPELINE_DEPTH: "0",
           BROADIFY_MEETING_GUIDED_COEFF_EMA: "0",
@@ -204,6 +205,8 @@ describe("meeting-helper-manager", () => {
         "BROADIFY_MEETING_CAMERA_MAX_HEIGHT=720",
         "--env",
         "BROADIFY_MEETING_COREML_UNITS=cpuAndNeuralEngine",
+        "--env",
+        "BROADIFY_MEETING_RECORDER_CFR=0",
         "--env",
         "BROADIFY_MEETING_FUSED_EMA_STATIC=0.85",
         "--env",
