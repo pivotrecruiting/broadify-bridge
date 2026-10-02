@@ -43,6 +43,7 @@ import {
   parseInjectReading,
 } from "../conference/director/conference-director-service.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
+import { meetingContentSourceState } from "./meeting-content-source-state.js";
 import { mapVcamStartError } from "./vcam-error-mapper.js";
 import { publishMeetingErrorEvent } from "./meeting-event-publisher.js";
 import {
@@ -91,6 +92,15 @@ const MEETING_GRAPHICS_FRAMEBUS_NAMES = [
 const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1920, height: 1080, fps: 30 };
 const MEETING_GRAPHICS_SLOT_COUNT = MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT;
 const MEETING_GRAPHICS_PIXEL_FORMAT = 1;
+
+meetingContentSourceState.setLayerPresenceProbe((layerId) =>
+  meetingBackGraphicsManager.getStatus().layers.some(
+    (layer) =>
+      !!layer &&
+      typeof layer === "object" &&
+      (layer as { layerId?: unknown }).layerId === layerId,
+  ),
+);
 
 function requireClient(): MeetingHelperClient {
   const client = meetingHelperManager.getClient();
@@ -238,6 +248,7 @@ function autoArmVirtualCamera(): void {
       const client = requireClient();
       await client.virtualCameraStart({ allowElevation: false });
       meetingHelperManager.noteVirtualCameraStarted();
+      meetingHelperManager.requestStatusPublish("vcam_auto_armed");
       console.info("[meeting] virtual camera auto-armed with engine start");
     } catch (error: unknown) {
       // A background arm must never take the process down — not even when
@@ -476,6 +487,7 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraSelect", options);
+        meetingHelperManager.requestStatusPublish("camera_select");
       }
       return result;
     }
@@ -491,6 +503,7 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraStart", options);
+        meetingHelperManager.requestStatusPublish("camera_start");
       }
       return result;
     }
@@ -499,6 +512,7 @@ export async function handleMeetingCommand(
       const result = await runMeetingRpc(() => requireClient().cameraStop());
       if (result.success) {
         meetingHelperManager.noteCameraStopped();
+        meetingHelperManager.requestStatusPublish("camera_stop");
       }
       return result;
     }
@@ -529,6 +543,7 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraProgramSelect", options);
+        meetingHelperManager.requestStatusPublish("camera_program_select");
       }
       return result;
     }
@@ -720,6 +735,8 @@ export async function handleMeetingCommand(
         await meetingBackGraphicsManager.removeLayer({
           layerId: MEETING_CONTENT_VIDEO_LAYER_ID,
         });
+        meetingContentSourceState.clearVideo();
+        meetingHelperManager.requestStatusPublish("content_video_set");
         return { success: true, data: { active: false } };
       }
       const asset = await meetingMediaService.getAsset(data.asset_id);
@@ -755,6 +772,11 @@ export async function handleMeetingCommand(
         html,
         zIndex: 10,
       });
+      meetingContentSourceState.setVideo({
+        ...data,
+        asset_id: data.asset_id,
+      });
+      meetingHelperManager.requestStatusPublish("content_video_set");
       return { success: true, data: { active: true, assetId: asset.assetId } };
     }
 
@@ -768,6 +790,8 @@ export async function handleMeetingCommand(
         await meetingBackGraphicsManager.removeLayer({
           layerId: MEETING_BROWSER_SOURCE_LAYER_ID,
         });
+        meetingContentSourceState.clearBrowser();
+        meetingHelperManager.requestStatusPublish("browser_source_set");
         return { success: true, data: { active: false } };
       }
       let validatedUrl: string;
@@ -779,6 +803,7 @@ export async function handleMeetingCommand(
           error: error instanceof Error ? error.message : String(error),
         };
       }
+      // Browser-source URLs must never be interpolated into logs or errors.
       const html = buildBrowserSourceLayerHtml(validatedUrl, {
         mode: data.mode,
         x: data.x,
@@ -795,6 +820,8 @@ export async function handleMeetingCommand(
         html,
         zIndex: 11,
       });
+      meetingContentSourceState.setBrowser(validatedUrl, data);
+      meetingHelperManager.requestStatusPublish("browser_source_set");
       return { success: true, data: { active: true, url: validatedUrl } };
     }
 
@@ -944,11 +971,14 @@ export async function handleMeetingCommand(
       );
       const data = await requireClient().keyerConfigure(patch);
       meetingHelperManager.noteKeyerConfigured(patch);
+      meetingHelperManager.requestStatusPublish("keyer_configure");
       return { success: true, data };
     }
 
     case "meeting_keyer_reset": {
-      return { success: true, data: await requireClient().keyerReset() };
+      const data = await requireClient().keyerReset();
+      meetingHelperManager.requestStatusPublish("keyer_reset");
+      return { success: true, data };
     }
 
     case "meeting_program_get": {
@@ -966,10 +996,9 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_program_update",
       );
-      return {
-        success: true,
-        data: await requireClient().programUpdate(section, values),
-      };
+      const data = await requireClient().programUpdate(section, values);
+      meetingHelperManager.requestStatusPublish("program_update");
+      return { success: true, data };
     }
 
     case "meeting_output_configure": {
@@ -999,13 +1028,17 @@ export async function handleMeetingCommand(
           const mapped = mapVcamStartError(result.error);
           return { ...result, error: mapped.error, errorCode: mapped.errorCode };
         }
-        meetingHelperManager.noteVirtualCameraStarted();
+        if (result.success) {
+          meetingHelperManager.noteVirtualCameraStarted();
+          meetingHelperManager.requestStatusPublish("vcam_start");
+        }
         return result;
       }
       if (action === "stop") {
         const result = await runMeetingRpc(() => client.virtualCameraStop());
         if (result.success) {
           meetingHelperManager.noteVirtualCameraStopped();
+          meetingHelperManager.requestStatusPublish("vcam_stop");
         }
         return result;
       }
