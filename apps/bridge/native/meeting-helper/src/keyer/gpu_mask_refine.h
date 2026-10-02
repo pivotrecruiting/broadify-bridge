@@ -27,6 +27,7 @@ class GpuMaskRefiner {
   // (full-res RGBA), writing the result into `out`. Returns false on any failure
   // so the caller can fall back to the CPU path.
   bool refine(CVPixelBufferRef alpha, const VideoFrame &camera, AlphaMask &out);
+  void setMaxOutputWidth(uint32_t width);
 
   // Same guided-filter refinement, but leaves the result on the GPU and returns
   // a BORROWED handle to the refined-mask MTLTexture (r16Float, valid until the

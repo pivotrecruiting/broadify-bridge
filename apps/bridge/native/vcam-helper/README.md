@@ -23,12 +23,14 @@ die aktivierte SystemExtension nicht der zuverlaessige Transport.
   `/stream.rgba`; startet nur waehrend aktiver CMIO-Streams, puffert den
   neuesten Frame im Hintergrund und kopiert ihn pro Live-Tick in den PixelBuffer.
 - `BroadifyVCamExtension/` — Camera Extension (Swift, `CMIOExtensionProvider`).
-  Wechselt zwischen 1-FPS-Idle und 30-FPS-Live-Timer. Ohne aktive Engine wird
-  ein gecachter "No Signal"-Frame gesendet, damit die Kamera auswählbar bleibt.
+  Meldet genau ein Format (`1920x1080` BGRA, 30 fps), wechselt zwischen
+  1-FPS-Idle und 30-FPS-Live-Timer und skaliert abweichende Raw-Frames in diese
+  feste Programmgeometrie. Ohne aktive Engine wird ein gecachter "No Signal"-
+  Frame gesendet, damit die Kamera auswählbar bleibt.
 - `BroadifyVCam/` — Container-App (SwiftUI-Stub), aktiviert/deaktiviert die
-  System Extension über `OSSystemExtensionManager`. Beim Start prüft sie nur
-  den App-Standort (App-Translocation-Banner); die Aktivierung wird bewusst
-  nicht automatisch angefordert, sondern über den Button ausgelöst.
+  System Extension über `OSSystemExtensionManager`. Beim Start prüft sie den
+  App-Standort (App-Translocation-Banner); mit `--activate` fordert sie die
+  Aktivierung automatisch für die Bridge an.
 - `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen)-Definition.
 
 Die WebApp-Preview nutzt den internen MJPEG-Preview-Store des Meeting-Helpers;
@@ -91,8 +93,8 @@ systemextensionsctl developer on   # erfordert Neustart von SIP-Einstellungen gg
    Die Container-App kann diese Seite per Button **Open System Settings** direkt öffnen.
    Eine reine In-App-Freigabe ist von Apple für System Extensions nicht erlaubt.
 4. Falls kein Dialog erscheint, auf "Activate extension" klicken.
-5. Prüfen: `systemextensionsctl list` zeigt `com.broadify.vcam.extension` als
-   `[activated enabled]`.
+5. Prüfen: `systemextensionsctl list` zeigt `com.broadify.vcam.extension`
+   als `(1.0/20)` und `[activated enabled]`.
 6. In Teams/Zoom/Meet als Kamera "broadify Camera" auswählen.
 
 Deaktivieren: App → "Deactivate extension" oder
@@ -122,10 +124,13 @@ strings /Library/SystemExtensions/*/com.broadify.vcam.extension.systemextension/
 
 Die MeetingHelper-Logs müssen `meeting_vcam_raw` mit `event:"listening"` zeigen.
 Die Extension-Logs müssen `Connected to raw VCam frame stream` zeigen. Fehlt der
-`strings`-Treffer, läuft noch eine alte SystemExtension.
+`strings`-Treffer oder zeigt `systemextensionsctl list` einen Build vor `(1.0/20)`,
+läuft noch eine alte SystemExtension; beim nächsten Engine-Start fordert die
+Bridge die Ersetzung automatisch an, sofern `BRIDGE_VCAM_AUTO_UPGRADE_ON_START`
+nicht auf `0` gesetzt ist.
 
 ## Offene Punkte (bewusst nicht Teil des Scaffolds)
 
-- Dynamische FPS/Format-Verhandlung (aktuell fix 30 fps, Größe folgt FrameBus-Header).
+- Dynamische FPS/Format-Verhandlung (aktuell fix `1920x1080` BGRA bei 30 fps).
 - Windows-Pendant (Media Foundation Virtual Camera, `MFCreateVirtualCamera`).
 - Automatisierter Build/Release im electron-builder-Packaging der Bridge.

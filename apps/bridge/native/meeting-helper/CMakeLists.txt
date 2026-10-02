@@ -306,6 +306,9 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/guided_work_size_test.cpp
     src/pipeline/guided_work_size.cpp
   )
+  add_executable(recorder_encode_policy_test
+    tests/recorder_encode_policy_test.cpp
+  )
   add_executable(framebus_reader_log_gate_test
     tests/framebus_reader_log_gate_test.cpp
     src/pipeline/framebus_reader_log_gate.cpp
@@ -484,6 +487,7 @@ if(MEETING_HELPER_BUILD_TESTS)
   foreach(helper_test
     guided_mask_refine_test
     guided_work_size_test
+    recorder_encode_policy_test
     framebus_reader_log_gate_test
     staging_readback_ring_test
     d3d_adapter_select_test

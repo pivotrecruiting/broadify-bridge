@@ -127,6 +127,40 @@ type ConfigureGraphicsOutputsResultT = {
   alreadySatisfiedOrPending: boolean;
 };
 
+type MeetingGraphicsFrameBusEnvSnapshotT = {
+  name: string | undefined;
+  slotCount: string | undefined;
+  pixelFormat: string | undefined;
+};
+
+function snapshotMeetingGraphicsFrameBusEnv(): MeetingGraphicsFrameBusEnvSnapshotT {
+  return {
+    name: process.env.BRIDGE_FRAMEBUS_NAME,
+    slotCount: process.env.BRIDGE_FRAMEBUS_SLOT_COUNT,
+    pixelFormat: process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT,
+  };
+}
+
+function restoreMeetingGraphicsFrameBusEnv(
+  snapshot: MeetingGraphicsFrameBusEnvSnapshotT,
+): void {
+  if (snapshot.name === undefined) {
+    delete process.env.BRIDGE_FRAMEBUS_NAME;
+  } else {
+    process.env.BRIDGE_FRAMEBUS_NAME = snapshot.name;
+  }
+  if (snapshot.slotCount === undefined) {
+    delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+  } else {
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = snapshot.slotCount;
+  }
+  if (snapshot.pixelFormat === undefined) {
+    delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
+  } else {
+    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = snapshot.pixelFormat;
+  }
+}
+
 function configureMeetingGraphicsOutputs(
   width: number,
   height: number,
@@ -140,38 +174,43 @@ function configureMeetingGraphicsOutputs(
     if (lastConfiguredGraphicsOutputsKey === configKey) {
       return;
     }
-    // Belt & braces: the managers now carry their bus name/slotCount as
-    // explicit constructor overrides (meeting-graphics-manager.ts), which win
-    // over these env vars in every resolve. The env sets are kept anyway
-    // because other meeting-path consumers still read the ambient env on
-    // spawn (e.g. the renderer child's initial BRIDGE_FRAMEBUS_NAME before
-    // its first renderer_configure) — removing them is a follow-up once those
-    // consumers are audited one by one.
-    process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
-    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
-      MEETING_GRAPHICS_SLOT_COUNT,
-    );
-    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
-    await meetingBackGraphicsManager.configureOutputs({
-      outputKey: "framebus",
-      targets: {},
-      format: { width, height, fps },
-      range: "full",
-      colorspace: "rec709",
-    });
-    process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
-    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
-      MEETING_GRAPHICS_SLOT_COUNT,
-    );
-    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
-    await meetingFrontGraphicsManager.configureOutputs({
-      outputKey: "framebus",
-      targets: {},
-      format: { width, height, fps },
-      range: "full",
-      colorspace: "rec709",
-    });
-    lastConfiguredGraphicsOutputsKey = configKey;
+    const frameBusEnvSnapshot = snapshotMeetingGraphicsFrameBusEnv();
+    try {
+      // Meeting managers own fixed names through constructor overrides and do
+      // not publish them to process env. These temporary env values are only
+      // for meeting renderer process spawn and must be restored afterwards.
+      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
+        MEETING_GRAPHICS_SLOT_COUNT,
+      );
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = String(
+        MEETING_GRAPHICS_PIXEL_FORMAT,
+      );
+      await meetingBackGraphicsManager.configureOutputs({
+        outputKey: "framebus",
+        targets: {},
+        format: { width, height, fps },
+        range: "full",
+        colorspace: "rec709",
+      });
+      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
+        MEETING_GRAPHICS_SLOT_COUNT,
+      );
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = String(
+        MEETING_GRAPHICS_PIXEL_FORMAT,
+      );
+      await meetingFrontGraphicsManager.configureOutputs({
+        outputKey: "framebus",
+        targets: {},
+        format: { width, height, fps },
+        range: "full",
+        colorspace: "rec709",
+      });
+      lastConfiguredGraphicsOutputsKey = configKey;
+    } finally {
+      restoreMeetingGraphicsFrameBusEnv(frameBusEnvSnapshot);
+    }
   });
   // Keep the queue alive even if this run fails; the failure still surfaces
   // to the caller through `completion`.

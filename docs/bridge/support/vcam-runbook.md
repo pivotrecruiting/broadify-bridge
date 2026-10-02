@@ -143,7 +143,7 @@ sc query FrameServer; sc query FrameServerMonitor
 
 ## macOS
 
-### Der normale Ablauf (seit v19)
+### Der normale Ablauf (seit v20)
 
 1. Engine-Start → Bridge startet `BroadifyVCam.app` mit `--activate` — die
    Freigabe-Anfrage wird **automatisch** gestellt.
@@ -151,8 +151,12 @@ sc query FrameServer; sc query FrameServerMonitor
    Allgemein → Anmeldeobjekte & Erweiterungen → Kamera-Erweiterungen →
    „broadify Virtual Camera" aktivieren.** Die Webapp zeigt genau diesen
    Hinweis an, solange die Freigabe fehlt.
-3. Nach der Freigabe meldet die Bridge `activation_completed`; bei künftigen
-   Updates ersetzt macOS die Erweiterung ohne weitere Klicks.
+3. Nach der Freigabe meldet die Bridge `activation_completed`.
+4. Ab Build 20 prüft die Bridge beim Engine-Start die aktive Extension-Version.
+   Ist die aktive Extension älter als die installierte `BroadifyVCam.app`, öffnet
+   sie die App erneut mit `--activate` und macOS ersetzt die Extension. Je nach
+   Systemzustand kann macOS dabei erneut eine Freigabe in den Kamera-Erweiterungen
+   verlangen.
 
 ### Wenn kein Dialog erscheint / Kamera fehlt
 
@@ -174,7 +178,7 @@ systemextensionsctl list | grep broadify     # Zustand der Erweiterung
 ls /Applications | grep BroadifyVCam         # Genau EINE Kopie erwartet
 ```
 
-Erwarteter guter Zustand: `[activated enabled]` in der eigenen Zeile.
+Erwarteter guter Zustand: `(1.0/20)` und `[activated enabled]` in der eigenen Zeile.
 `[activated waiting for user]` = Freigabe fehlt (siehe oben).
 
 ## Eskalation

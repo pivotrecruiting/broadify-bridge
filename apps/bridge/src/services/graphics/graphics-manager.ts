@@ -263,6 +263,7 @@ export class GraphicsManager {
         buildRendererConfig: (config, frameBusConfig) =>
           this.buildRendererConfig(config, frameBusConfig),
         logFrameBusConfigChange,
+        ownsProcessFrameBusEnv: !this.deps.frameBusOverrides?.name,
       });
     this.runtimeInitService =
       this.deps.runtimeInitService ??
