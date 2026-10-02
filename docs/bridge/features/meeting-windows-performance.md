@@ -134,6 +134,15 @@ Zeitbasierte Hintergruende werden nur auf Kamera-, Programm- oder
 Grafik-Aenderungen fortgeschrieben; ohne solche Aenderung gibt es keinen
 separaten Render-Tick.
 
+Meeting-Grafik-Planes (`bfy-meet-gfx-back`/`bfy-meet-gfx-front`) rendern bei
+1920x1080 standardmaessig als 3840x2160-Offscreen-Back-Plane und skalieren vor
+dem FrameBus-Publish nativ auf 1920x1080 zurueck. Das verbessert Kanten und
+Text, erhoeht aber GPU- und Speicherbandbreitenlast pro Grafik-Frame. Fuer
+Feldtests stehen `BRIDGE_GRAPHICS_SUPERSAMPLE` als globaler Override und
+`BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE` fuer Meeting-only Tuning zur Verfuegung;
+bei Windows-Work-Area-Clamps faellt der Renderer automatisch auf Scale 1
+zurueck.
+
 Der Windows-Program-Loop darf durch eine fruehe Kamera-CV-Wake frueher
 aufwachen, sobald mindestens 0,75 x Frame-Intervall seit Renderstart
 vergangen sind; er rendert aber nie schneller als `1 / targetFps`. Eine

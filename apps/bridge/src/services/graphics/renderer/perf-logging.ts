@@ -16,6 +16,13 @@ export type PerfLoggingDecisionT = {
   intervalMs: number;
 };
 
+export type PerfResizePathT = "native" | "js";
+
+export type PerfLogFieldsT = {
+  renderScale: number;
+  resizePath: PerfResizePathT;
+};
+
 /**
  * Decide whether and how often to emit renderer perf lines.
  *
@@ -34,4 +41,8 @@ export function resolvePerfLogging(
     return { enabled: true, intervalMs: MEETING_PERF_INTERVAL_MS };
   }
   return { enabled: false, intervalMs: DEBUG_PERF_INTERVAL_MS };
+}
+
+export function buildPerfLogFields(fields: PerfLogFieldsT): PerfLogFieldsT {
+  return fields;
 }

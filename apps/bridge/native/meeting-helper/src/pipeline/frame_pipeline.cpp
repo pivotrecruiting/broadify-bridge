@@ -14,6 +14,7 @@
 #include "pipeline/compositor_input_selection.h"
 #include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
+#include "pipeline/guided_work_size.h"
 #include "pipeline/keyer_cadence.h"
 #include "pipeline/retained_mask_selection.h"
 #include "pipeline/subject_presence.h"
@@ -2804,6 +2805,8 @@ void runFramePipeline(const Options &options,
             if (!fusedKeyerPerformanceOverrideActive()) {
               keyerSettings.performanceMode = fusedGovernor.performanceModeForTier();
             }
+            setGuidedWorkWidthTierCap(
+                guidedWorkWidthCapForTier(fusedGovernor.tier()));
           }
           // Warm-handover step-up management (make-before-break): poll the
           // one-shot warmup thread, commit/cancel the governor's deferred
@@ -3301,6 +3304,8 @@ void runFramePipeline(const Options &options,
           // a re-enable starts from a clean probe (spec'd reset point). Not
           // reset on camera hiccups - those must not wipe governor learning.
           fusedGovernor.reset();
+          setGuidedWorkWidthTierCap(
+              guidedWorkWidthCapForTier(fusedGovernor.tier()));
           fusedCadence.reset();
           fusedBudgetOverrunReporter.reset();
           fusedProgramOverrunPending = false;
