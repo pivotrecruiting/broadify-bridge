@@ -485,13 +485,91 @@ describe("meeting-helper-manager", () => {
       const manager = new MeetingHelperManager();
       const status = await manager.getFullStatus();
 
-      expect(status).toEqual({
+      expect(status).toMatchObject({
         platform: process.platform,
         manager: expect.objectContaining({ state: "stopped" }),
         engine: null,
         recording: null,
         call: { active: false, call_id: null },
+        content_source: { video: null, browser: null },
+        camera_permission_status: null,
       });
+    });
+
+    it("camera_permission_completed publishes a full snapshot", async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        jest.spyOn(manager, "getFullStatus").mockResolvedValue({
+          manager: { state: "running" },
+          engine: { program: { camera_render: { enabled: true } } },
+          recording: null,
+          call: { active: false, call_id: null },
+          content_source: { video: null, browser: null },
+          camera_permission_status: "authorized",
+        });
+        const internals = manager as unknown as {
+          handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+        };
+
+        internals.handleStdoutLine(
+          JSON.stringify({
+            type: "camera_permission_completed",
+            camera_permission_status: "authorized",
+          }),
+          mockLogger,
+        );
+        await jest.advanceTimersByTimeAsync(150);
+
+        const statusEvents = mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => event?.event === "meeting_status",
+        );
+        const lastEvent = statusEvents.at(-1)?.[0];
+        expect(lastEvent?.data?.status?.engine?.program).toEqual({
+          camera_render: { enabled: true },
+        });
+        expect(lastEvent?.data?.status?.camera_permission_status).toBe(
+          "authorized",
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("requestStatusPublish coalesces", async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        jest.spyOn(manager, "getFullStatus").mockResolvedValue({
+          manager: { state: "running" },
+          engine: null,
+          recording: null,
+          call: { active: false, call_id: null },
+          content_source: { video: null, browser: null },
+          camera_permission_status: null,
+        });
+
+        manager.requestStatusPublish("program_update");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("keyer_configure");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("program_update");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("keyer_configure");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("program_update");
+        await jest.advanceTimersByTimeAsync(110);
+
+        const statusEvents = mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => event?.event === "meeting_status",
+        );
+        expect(statusEvents).toHaveLength(1);
+        expect(statusEvents[0]?.[0]?.data?.reason).toBe(
+          "program_update+keyer_configure",
+        );
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it("stop publishes a meeting_status event", async () => {
@@ -741,13 +819,18 @@ describe("meeting-helper-manager", () => {
     });
 
     it("notifyRecordingChanged force-publishes a status snapshot", async () => {
-      const manager = new MeetingHelperManager();
-      manager.notifyRecordingChanged();
-      await new Promise((resolve) => setImmediate(resolve));
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        manager.notifyRecordingChanged();
+        await jest.advanceTimersByTimeAsync(150);
 
-      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
-        expect.objectContaining({ event: "meeting_status" }),
-      );
+        expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ event: "meeting_status" }),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
   describe("status polling", () => {

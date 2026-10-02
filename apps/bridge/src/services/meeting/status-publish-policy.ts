@@ -35,6 +35,7 @@ const VOLATILE_COUNTER_KEYS: ReadonlySet<string> = new Set([
   "inference_ms",
   "elapsed_seconds",
   "video_frames",
+  "updated_at",
   // Dirty flags flip true->false->true while the frame pipeline consumes them,
   // so they add projection noise. program_revision (monotonic) is the stable
   // on-change discriminator for program mutations instead.

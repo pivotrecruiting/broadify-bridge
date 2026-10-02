@@ -191,4 +191,88 @@ describe("status-publish-policy", () => {
     expect(decision.publish).toBe(true);
     expect(decision.reason).toBe("projection_changed");
   });
+
+  it("publishes when content_source changes", () => {
+    const before = makeStatus({
+      content_source: { video: null, browser: null },
+    });
+    const decision = decideStatusPublish({
+      status: makeStatus({
+        content_source: {
+          video: {
+            asset_id: "asset-1",
+            muted: false,
+            loop: true,
+            mode: "pip",
+            x: 0.6,
+            y: 0.6,
+            width: 0.35,
+            height: 0.35,
+            rotation: 0,
+            rotation_x: 0,
+            rotation_y: 0,
+            updated_at: 100,
+          },
+          browser: null,
+        },
+      }),
+      force: false,
+      lastProjection: projectStableStatus(before),
+      lastPublishedAt: 10_000,
+      now: 10_001,
+    });
+
+    expect(decision.publish).toBe(true);
+    expect(decision.reason).toBe("projection_changed");
+  });
+
+  it("ignores updated_at-only changes in the projection", () => {
+    const before = makeStatus({
+      content_source: {
+        video: {
+          asset_id: "asset-1",
+          muted: false,
+          loop: true,
+          mode: "pip",
+          x: 0.6,
+          y: 0.6,
+          width: 0.35,
+          height: 0.35,
+          rotation: 0,
+          rotation_x: 0,
+          rotation_y: 0,
+          updated_at: 100,
+        },
+        browser: null,
+      },
+    });
+    const decision = decideStatusPublish({
+      status: makeStatus({
+        content_source: {
+          video: {
+            asset_id: "asset-1",
+            muted: false,
+            loop: true,
+            mode: "pip",
+            x: 0.6,
+            y: 0.6,
+            width: 0.35,
+            height: 0.35,
+            rotation: 0,
+            rotation_x: 0,
+            rotation_y: 0,
+            updated_at: 200,
+          },
+          browser: null,
+        },
+      }),
+      force: false,
+      lastProjection: projectStableStatus(before),
+      lastPublishedAt: 10_000,
+      now: 10_001,
+    });
+
+    expect(decision.publish).toBe(false);
+    expect(decision.reason).toBe("unchanged");
+  });
 });
