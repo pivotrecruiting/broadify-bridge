@@ -1,55 +1,49 @@
-# Task: Keyer-Refine-Plumbing (PR D1): Tier-Cap für Windows-Work-Width, macOS Refine-Budget und Modus-Kopplung, Envs weiterleiten (Defaults unverändert)
+# Task: Meeting-FrameBus gegen Studio-Reconfigure isolieren (FrameBus-Name-Leak über process.env) (PR F)
 
 ## Raw request
-Gabriel (Product Owner, 1.10.2026): Keyer-Default anheben (macOS Refine 1920 statt 960, Windows Work-Width höher), aber mit Messung vor dem Default-Flip und Governor-Absicherung. Dieser PR liefert NUR das Plumbing und die Absicherung; die Defaults (960 / 512) bleiben in diesem PR unverändert. Der Flip folgt in D2 nach der Messung.
+Gabriel, 29.9.2026: Meeting in Bridge 0.27.2 bringt keine Grafiken mehr ins Bild. Read-only-Audit (29./30.9., Prod-Log + Code): Der Studio-`GraphicsOutputSupervisor` (neu in 0.27.2) wiederholt eine fehlgeschlagene persistierte Studio-Ausgabe (key_fill_sdi auf nicht angeschlossenem DeckLink) mit Backoff. Während eines Meetings steht `process.env.BRIDGE_FRAMEBUS_NAME` auf dem Meeting-Bus (`bfy-meet-gfx-front`), weil `configureMeetingGraphicsOutputs` die Env explizit setzt und `applyFrameBusSessionConfig`/die Transition-Service für JEDEN Manager `applyFrameBusEnv` aufruft. Der Studio-Singleton hat keine `frameBusOverrides`; `buildFrameBusConfig` löst mit Präzedenz overrides → env → previous → generate den Namen `bfy-meet-gfx-front` auf, sendet `renderer_configure` (50 fps) dorthin → "Stale incompatible FrameBus region found; recreating" → der Studio-Renderer zerstört den Meeting-Front-Bus; Lower Thirds/Overlays verschwinden. Nicht-deterministisch, weil der Rollback in `graphics-output-transition-service.ts` nach jedem fehlgeschlagenen Retry die Env auf die Studio-Config zurücksetzt. Gabriel-Go am 2.10.2026 für diesen Fix (PR F).
 
 ## Context
-- Customer / project: Broadify Bridge, Meeting-Helper Keyer (`apps/bridge/native/meeting-helper/src/keyer`, `src/pipeline`, `src/compose`)
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/keyer-refine-plumbing, feature/keyer-refine-plumbing
+- Customer / project: Broadify Bridge, Graphics FrameBus / Meeting-Grafik
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/framebus-meeting-bus-isolation, feature/framebus-meeting-bus-isolation
 - Base branch: dev (573454e5)
-- macOS fused CoreML hat KEINEN Governor (Governor-Block ist `#elif defined(_WIN32)` in `pipeline/frame_pipeline.cpp:2615`); Windows hat die Tier-Leiter Full512/Balanced320/Performance256/Lite256/Off (`keyer/keyer_governor.h:14`).
+- Relevante Dateien (Basis-Zeilen): `apps/bridge/src/services/graphics/framebus/framebus-config.ts` (`buildFrameBusConfig` Z. 66-107, `applyFrameBusEnv` Z. 110-119, `clearFrameBusEnv`), `apps/bridge/src/services/graphics/graphics-framebus-session-service.ts` (`applyFrameBusSessionConfig` Z. 79-88), `apps/bridge/src/services/graphics/graphics-output-transition-service.ts` (`applyAtomic` Z. 98-146: `applyFrameBusEnv(nextFrameBusConfig)` Z. 121; `rollback` Z. 148-175: `applyFrameBusEnv(previous)`/`clearFrameBusEnv()` Z. 163-171), `apps/bridge/src/services/graphics/graphics-manager.ts` (Deps-Aufbau ~Z. 255-265, `applyFrameBusSessionConfig` Z. 286-290, `frameBusOverrides` Z. 130), `apps/bridge/src/services/meeting/meeting-command-handler.ts` (`configureMeetingGraphicsOutputs` Z. 130-185 mit den `process.env.BRIDGE_FRAMEBUS_*`-Sets Z. 147-170), `apps/bridge/src/services/meeting/meeting-graphics-manager.ts` (Meeting-Manager mit `frameBusOverrides`). Tests: `framebus/framebus-config.test.ts`, `graphics-framebus-session-service.test.ts`, `graphics-output-transition-service.test.ts`, `graphics-manager.test.ts`, `services/meeting/meeting-command-handler.test.ts`.
 
 ## Plan
-Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS4 (PR D1/D2)", Teil D1. Kurzfassung:
+1. `framebus-config.ts` `buildFrameBusConfig`: Präzedenz für `name` und `slotCount` auf **overrides → previous → env → generate/default** ändern (ein Manager, der bereits einen Bus besitzt, behält ihn; die Env seeded nur den allerersten Resolve eines Managers ohne Overrides, z. B. ein in `.env` gepinnter Studio-Name). `pixelFormat` unverändert. JSDoc-Kommentar (Englisch) mit dem Grund (Env ist prozessweiter, zwischen Managern geteilter Zustand; Studio-Supervisor-Retry während eines Meetings).
+2. `graphics-framebus-session-service.ts` `applyFrameBusSessionConfig`: `applyFrameBusEnv(next)` nur, wenn KEINE `overrides?.name` gesetzt sind (Manager mit eigenem Bus-Namen = Meeting-Planes schreiben die Prozess-Env nicht). Log-Zeile unverändert.
+3. `graphics-output-transition-service.ts`: neues Dep `ownsProcessFrameBusEnv: boolean` (Studio-Singleton = true, Manager mit `frameBusOverrides.name` = false; in `graphics-manager.ts` beim Deps-Aufbau aus `!this.deps.frameBusOverrides?.name` ableiten). `applyFrameBusEnv(nextFrameBusConfig)` in `applyAtomic` und `applyFrameBusEnv(previous)`/`clearFrameBusEnv()` im `rollback` nur ausführen, wenn `ownsProcessFrameBusEnv` true ist. Die Output-Helper (DeckLink/Display) lesen die Env nur im Studio-Pfad; Meeting-Manager nutzen `outputKey: "framebus"` ohne Helper.
+4. `meeting-command-handler.ts` `configureMeetingGraphicsOutputs`: die Env-Sets bleiben für den Renderer-Spawn (Kind erbt `process.env` beim Start), werden aber mit Save/Restore gekapselt: vor dem ersten Set einen Snapshot von `BRIDGE_FRAMEBUS_NAME`, `BRIDGE_FRAMEBUS_SLOT_COUNT`, `BRIDGE_FRAMEBUS_PIXEL_FORMAT` nehmen und in einem `finally` nach beiden `configureOutputs`-Aufrufen exakt wiederherstellen (fehlende Variablen wieder löschen). Kommentar aktualisieren (Belt-and-braces-Text ersetzen durch die neue Regel).
+5. Tests:
+   - `framebus-config.test.ts`: (a) env = `bfy-meet-gfx-front`, previous.name = `broadify-framebus-abc`, keine Overrides → Name bleibt `broadify-framebus-abc`; (b) ohne previous → env wird genutzt; (c) Overrides gewinnen weiterhin über previous und env; (d) slotCount analog.
+   - `graphics-framebus-session-service.test.ts`: mit `overrides.name` wird `process.env.BRIDGE_FRAMEBUS_NAME` NICHT verändert; ohne Overrides wie bisher gesetzt.
+   - `graphics-output-transition-service.test.ts`: `ownsProcessFrameBusEnv: false` → weder `applyAtomic` noch `rollback` schreiben die Env; `true` → bisheriges Verhalten (bestehende Tests anpassen).
+   - `graphics-manager.test.ts`: Manager mit `frameBusOverrides` schreibt keine Env; Studio-Singleton-Verhalten unverändert (bestehende Tests müssen grün bleiben).
+   - `meeting-command-handler.test.ts`: nach `meeting_graphics_configure_outputs` (bzw. Engine-Start-Pre-Warm) ist `process.env.BRIDGE_FRAMEBUS_NAME` wieder auf dem Vorwert (gesetzt und ungesetzt testen).
+   - Regressionsszenario (in `framebus-config.test.ts` oder `graphics-manager.test.ts`): "studio resolve while env points at the meeting front bus keeps its own bus name".
+6. Doku: `docs/bridge/architecture/graphics-realtime-framebus.md` (oder `graphics-realtime-architecture.md`, je nachdem wo FrameBus-Namen beschrieben sind) Abschnitt "FrameBus-Name: Präzedenz und Env-Besitz" (overrides → previous → env → generate; nur der Studio-Singleton schreibt die Prozess-Env; Meeting-Planes nutzen Overrides; Hintergrund 0.27.2-Vorfall). `docs/bridge/features/graphics-commands.md` nur anpassen, falls dort die Env-Präzedenz steht.
 
-1. Allowlist `apps/bridge/src/services/meeting/meeting-helper-manager.ts` (`MEETING_HELPER_FORWARDED_ENV_KEYS`, Z. 74-114): `BROADIFY_MEETING_GPU_REFINE_BUDGET_MS` ergänzen (alphabetisch); Test `meeting-helper-manager.test.ts` (Z. 177-215) erweitern.
-2. Windows Work-Width mit Tier-Cap:
-   - `apps/bridge/native/meeting-helper/src/pipeline/guided_work_size.{h,cpp}`: neue Funktionen `void setGuidedWorkWidthTierCap(uint32_t cap)` (atomic, 0 = unbegrenzt) und `uint32_t guidedWorkWidth()` = Env-Pin (`BROADIFY_MEETING_MASK_WORK_WIDTH`, wenn gesetzt → gewinnt, A/B-Regel) sonst `min(kDefaultMaskWorkWidth, cap)`; Pure-Function `uint32_t guidedWorkWidthCapForTier(GovernorTier tier)` (Full512 → 0/unbegrenzt, Balanced320 → 640, Performance256/Lite256/Off → 512). `guidedWorkWidthFromEnv()` bleibt für Rückwärtskompatibilität (oder wird auf `guidedWorkWidth()` umgeleitet). Default `kDefaultMaskWorkWidth` bleibt 512.
-   - `compose/d3d11_compositor.cpp:1190-1191` und `pipeline/guided_mask_refine.cpp:158-159`: `guidedWorkWidthFromEnv()` → `guidedWorkWidth()`.
-   - `pipeline/frame_pipeline.cpp` Windows-Block (ab Z. 2622, `fusedGovernor`): bei Tier-Wechsel `setGuidedWorkWidthTierCap(guidedWorkWidthCapForTier(tier))` setzen (an der Stelle, wo das Tier-Label/`performanceModeForTier` übernommen wird).
-3. macOS Refine-Budget und Modus-Kopplung:
-   - `keyer/gpu_mask_refine.{h,mm}`: `void setMaxOutputWidth(uint32_t)` (Env-Pin `BROADIFY_MEETING_GPU_REFINE_WIDTH` gewinnt, wenn gesetzt); EMA der `encodeRefine`-Wandzeit (Z. 165-167 misst `waitUntilCompleted` ohnehin); Env `BROADIFY_MEETING_GPU_REFINE_BUDGET_MS` (Default 8.0); liegt die EMA über ≥30 Samples über dem Budget → einmalige, sessionweite Stufe auf 960 (nur wenn aktuell > 960) + eine `emitHelperEvent`-Zeile `{"type":"keyer_refine_stepdown",...}`; kein erneuter Step-up in derselben Session.
-   - `keyer/coreml_keyer.mm:69`: den bisher ignorierten `settings`-Parameter nutzen: `settings.performanceMode == "performance"` → `setMaxOutputWidth(960)`, sonst Default (unverändert 960 in diesem PR; D2 hebt den Default auf 1920).
-   - Effektive Breite erscheint bereits als `mask_width x mask_height` in den Metriken; zusätzlich `refine_width` im Keyer-Status-JSON (`control/control_server.cpp:225-258`) additiv ausgeben.
-4. Tests: `apps/bridge/native/meeting-helper/tests/guided_work_size_test.cpp` (Z. 21-33) um Tier-Caps (Full512 unbegrenzt, Balanced320 → 640, Performance256 → 512) und Env-Pin-Vorrang erweitern; `guided_mask_refine_test.cpp` auf 512-Annahmen prüfen und ggf. anpassen. Jest für die Allowlist.
-5. Messprotokoll als Doku: `docs/bridge/dev/meeting-helper-dev-setup.md` neuer Abschnitt "Refine-Width-Messung (vor Default-Flip)": Geräte (Apple Silicon, Intel-Mac, Windows-iGPU), Pins `BROADIFY_MEETING_GPU_REFINE_WIDTH=1920` (mac) / `BROADIFY_MEETING_MASK_WORK_WIDTH=960` (win), 2 min, Gate `program_fps ≥ 29.5`, `program_frame_ms` p95 < 25, `mask_apply_ms` (mac) < 8, `mask_width x mask_height` = 1920x1080 / 960x540, Windows ohne Tier-Wechsel-Events. Außerdem `docs/bridge/features/meeting-keyer-windows.md` (Tier-Cap in der Env-Tabelle) und `docs/bridge/architecture/meeting-keyer-auto-degradation.md` (Work-Width-Spalte in der Tier-Ladder; Zahlen korrigieren: `stepUpFactor` ist 0.8 nicht 0.7, `reprobeMaxInterval` ist 120 s nicht 600 s).
-
-Konventionen: Code-Kommentare Englisch; keine Default-Änderungen (960/512 bleiben); keine Änderungen außerhalb der genannten Dateien; Windows-Code wird lokal nicht kompiliert (CI), daher besonders sorgfältig; macOS-Build + ctest macht der Verifier.
+Konventionen: Code-Kommentare Englisch; keine neuen Dependencies; nur die genannten Dateien; keine Änderung am Supervisor selbst (`graphics-output-supervisor.ts`) und nicht an der Renderer-Entry.
 
 ## Acceptance criteria
-1. `guidedWorkWidth()` respektiert Env-Pin > Tier-Cap > Default; D3D11- und CPU-Refine nutzen es; der Windows-Governor setzt den Cap bei Tier-Wechsel.
-2. macOS: Refine-Breite ist über `setMaxOutputWidth` steuerbar, `performance`-Modus → 960; Budget-Stepdown greift einmalig bei EMA > Budget über ≥30 Samples und emittiert ein Event; Env-Pin gewinnt.
-3. Defaults unverändert (macOS 960, Windows 512); Verhalten ohne Envs ist bis auf die neue Metrik identisch.
-4. `guided_work_size_test` erweitert und grün; Jest-Allowlist-Test grün; `npm run lint` grün.
-5. Doku (Messprotokoll + Korrekturen) vorhanden.
+1. `buildFrameBusConfig` liefert bei vorhandenem `previous` dessen Namen/slotCount, auch wenn `process.env.BRIDGE_FRAMEBUS_NAME` auf einen anderen Bus zeigt; Overrides gewinnen weiterhin; ohne previous greift die Env; ohne beides wird generiert.
+2. Manager mit `frameBusOverrides.name` schreiben an keiner Stelle (Session-Service, Transition-Service inkl. Rollback) die `BRIDGE_FRAMEBUS_*`-Env; der Studio-Singleton verhält sich bit-identisch zu heute.
+3. `configureMeetingGraphicsOutputs` stellt die drei Env-Variablen nach Abschluss (auch im Fehlerfall) exakt wieder her.
+4. Alle genannten Tests existieren und sind grün: `npx jest apps/bridge/src/services/graphics apps/bridge/src/services/meeting/meeting-command-handler.test.ts --runInBand`; `npm run lint` grün.
+5. Doku aktualisiert.
 
 ## Review
-- Round: 2/3
-- Verdict: PASS nach Runde 2 (Runde 1 Verifier 2.10.2026: 1 MUST-FIX; Runde 2 Fix durch Codex, Re-Verifikation durch Orchestrator: `npm run build:meeting-helper` Exit 0, `npm run test:meeting-helper-native` 33/33 passed, `npm run lint` Exit 0).
+- Round: 1/3
+- Verdict: PASS (Verifier 2.10.2026, separater Agent; alle 5 Akzeptanzkriterien PASS)
 - Must-fix (open): keine
-- Must-fix (resolved):
-  1. `gpu_mask_refine.mm` `setMaxOutputWidth(0)` (jeden Frame aus `CoreMLKeyer::apply`) machte den einmaligen Budget-Stepdown still rückgängig. Fix: Stepdown ist jetzt ein sessionweiter Floor (`if (steppedDown_) outWidth_ = min(outWidth_, 960)`); Test `guided_work_size_test` zusätzlich mit Cap 256 → 256.
 - Notes (non-blocking):
-  1. `refine_width` im Status ist Alias von `mask_width` (effektive Breite), nicht der konfigurierte Zielwert.
-  2. EMA misst nur `commit`→`waitUntilCompleted` (GPU), nicht Readback/Upload.
-  3. Ungültiger Env-Pin (`abc`/`5000`) gilt als gepinnt (960) und deaktiviert Stepdown/Modus-Kopplung.
-  4. Cap wird jeden Frame idempotent gesetzt (nicht nur bei Tier-Wechsel); folgt dem Governor-Tier auch bei Env-Performance-Override.
-  5. Test deckte keinen Cap unterhalb des Defaults ab (Runde 2 ergänzt 256 → 256).
-  6. "in this PR"-Formulierung in `meeting-keyer-windows.md`.
-- Handoff to human (if any): Windows-Compile BLOCKED lokal (statisch keine Befunde) → CI/Windows-Build; Messprotokoll ist Doku-Stand, Ausführung im RC-Feldtest (D2).
+  1. JSDoc-Reste beschreiben nur "overrides win over env", nicht die neue previous-vor-env-Ordnung (`graphics-framebus-session-service.ts:15,76`, `graphics-manager.ts:123-129`, `meeting-graphics-manager.ts:82-89`).
+  2. Restrisiko (Plan-bekannt): ein Studio-Manager ohne `previous` (allererster Resolve) nähme im Meeting-Set-Fenster weiterhin die Meeting-Env als Seed; Fenster ist jetzt auf die zwei `configureOutputs`-Aufrufe begrenzt.
+  3. Kosmetik: Leerzeile in `meeting-command-handler.test.ts`.
+- Handoff to human (if any): keiner.
 
 ## Verification
-- [ ] Tests pass (ctest + Jest)
-- [ ] Lint / type-check pass
-- [ ] `npm run build:meeting-helper && npm run test:meeting-helper-native` (Verifier, macOS)
-- [ ] Messprotokoll ausführbar (RC-Feldtest, D2 erst danach)
+- [x] Tests pass — `npx jest apps/bridge/src/services/graphics apps/bridge/src/services/meeting/meeting-command-handler.test.ts --runInBand`: 59 suites, 801 tests passed (Verifier)
+- [x] Lint / type-check pass — `npm run lint` Exit 0; `tsc --noEmit -p apps/bridge/tsconfig.build.json` Exit 0 (Verifier)
+- [x] `npm run build:bridge` Exit 0 (Verifier)
+- [x] Regressionstest rot ohne Fix / grün mit Fix — Verifier führte das Szenario gegen die Basis-`framebus-config.ts` aus: `[base] bfy-meet-gfx-front` (RED), `[fixed] broadify-framebus-studio` (GREEN); Implementierer-Lauf: Test vor dem Fix rot, danach 17/17 grün
