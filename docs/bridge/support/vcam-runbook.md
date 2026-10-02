@@ -164,6 +164,9 @@ sc query FrameServer; sc query FrameServerMonitor
 | `reboot_required` | Alte Deinstallation wartet auf Neustart | Mac neu starten, dann erneut aktivieren |
 | Kamera fehlt in Teams/Zoom trotz „aktiv" | App-Kamera-Cache | Die jeweilige App (Teams/Zoom/Browser) neu starten |
 
+Für sichtbare Qualität in Teams/Zoom siehe zusätzlich
+`docs/bridge/support/meeting-apps-teams-zoom.md`.
+
 ### Diagnose-Kommandos (Terminal)
 
 ```bash
@@ -178,4 +181,6 @@ Erwarteter guter Zustand: `[activated enabled]` in der eigenen Zeile.
 
 Wenn keiner der Punkte greift: Bridge-Log beilegen (Hilfe → Logs bzw.
 `logs/bridge.log` im Profilordner) — seit dem Härtungsprogramm enthalten
-alle VCam-Fehler dort Fehlercode + Original-Systemcode.
+alle VCam-Fehler dort Fehlercode + Original-Systemcode. Wenn die Kamera lokal
+funktioniert, aber nur Teams/Zoom weich wirkt, zuerst
+`docs/bridge/support/meeting-apps-teams-zoom.md` prüfen.

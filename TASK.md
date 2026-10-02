@@ -1,74 +1,47 @@
-# Task: Accept displayModeId 0 for display targets and report readable output-config validation errors (PR D1)
+# Task: Kunden-/Support-Doku "Bildqualität in Teams und Zoom" (PR E, docs-only)
 
 ## Raw request
-Field report 25.9.2026 (Gabriel, RC v0.27.2-rc.1 + webapp dev): configuring the HDMI output ("video_hdmi") for a Blackmagic
-display fails with the raw Zod issue list
-`[{"code":"too_small","minimum":0,"type":"number","inclusive":false,"exact":false,"message":"Number must be greater than 0","path":["format","displayModeId"]}]`.
-Root cause (verified): `GraphicsFormatSchema.displayModeId` is `z.number().int().positive().optional()`
-(`apps/bridge/src/services/graphics/schemas/output-schemas.ts:28`, PR #209). The display module enumerates HDMI/DP modes with
-list indices starting at 0 (`apps/bridge/src/modules/display/display-module-utils.ts` — `modes.map((mode, id) => …)`), and the
-webapp (dev) now sends `format.displayModeId = mode.id` for every port once the bridge reports >= 0.27.2. The first (native)
-display mode therefore has id 0 and is rejected by the schema before `validateOutputFormat` runs; modes with index > 0 pass
-because the validation service only checks `displayModeId` for DeckLink devices (`graphics-output-validation-service.ts:235-258`).
-Second defect: `GraphicsManager.configureOutputs` (`graphics-manager.ts:~359`) uses `.parse()` and forwards the ZodError's
-message (the JSON issue array) verbatim as the `output_config_error` text shown to the user.
+Gabriel (Product Owner, 1./2.10.2026): Teil des Plans "besseres Bild live + Recording, Grafik echt 1080p". Nachdem Bridge-seitig die Virtual Camera 1920x1080 meldet (VCam-Build 20, PR #221), Grafiken 2x supersampled werden (PR #222) und Aufnahmen 0,35 bit/px, BT.709 und 30 fps CFR haben (PR #225), bleibt die Verschlechterung durch die Meeting-App selbst. Diese Doku erklärt Support und Kunden, was Teams/Zoom mit dem Bild machen und was man dagegen tun kann.
 
 ## Context
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/hdmi-display-mode-id / feature/hdmi-display-mode-id
-- Base: dev 54df1113 (0.27.2-rc.1). Target dev. Prod webapp (main) never sends `displayModeId`; only dev webapp + bridge >= 0.27.2 hit this.
-- Semantics to keep: `displayModeId` is a DeckLink SDK display mode id (BMDDisplayMode, never 0) and is ignored for display
-  targets. The DeckLink adapters already skip falsy ids (`if (config.format.displayModeId)`), the validation service already
-  returns before the id check for non-DeckLink devices. The persisted output config reuses `GraphicsConfigureOutputsSchema`
-  (`output-config-store.ts:123`), so the schema change also makes persisted display configs with id 0 loadable.
-- Existing ZodError handling pattern: `apps/bridge/src/routes/engine.ts:100-114` (duck-typed `error.name === "ZodError"`,
-  `zodError.errors.map(e => ({ path: e.path.join("."), message: e.message }))`). Reuse the idea in a shared helper; do NOT
-  refactor the routes in this PR.
-- Conventions: kebab-case files, English comments/JSDoc, Jest ESM (`npx jest <path> --runInBand`), no new dependencies.
-  Docs under `docs/bridge/*` must be updated in the same PR.
+- Customer / project: Broadify Bridge, Support-Doku unter `docs/bridge/support/`
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-apps-quality-docs, feature/meeting-apps-quality-docs
+- Base branch: dev (573454e5)
+- Recherchierte Fakten (28.9.2026, Quellen unten): Teams optimiert bis 1080p/30 fps je nach Bandbreite, liefert "HD unter 1,5 Mbit/s", nutzt Simulcast (Stufen 1080p/720p/540p/360p/240p/180p), die gesendete Auflösung hängt davon ab, wie groß die Empfänger das Video rendern (Spotlight/Anpinnen → größer → höhere Stufe); Teams-Videofilter "Soft focus" (Weichzeichner) und "Adjust brightness" existieren, Standard aus; Teams-Aufnahmen in OneDrive/SharePoint sind 1080p, in Stream geringer. Zoom: "HD" in den Videoeinstellungen = 720p; 1080p nur Business/Enterprise auf Anfrage (Gruppen-HD), ~2 Mbit/s, bei virtuellem Hintergrund ohne Greenscreen Deckel 720p. Broadify selbst: VCam 1920x1080 BGRA 30 fps (ab Build 20), Aufnahme 1080p30 CFR ≈ 22 Mbit/s H.264 BT.709 (≈ 10 GB/h).
+- Quellen (im Dokument verlinken, Zahlen nicht als Broadify-Garantie formulieren): https://learn.microsoft.com/en-us/azure/communication-services/concepts/voice-video-calling/simulcast ; https://learn.microsoft.com/en-us/answers/questions/4398515/1080p-on-microsoft-teams ; https://support.microsoft.com/en-us/teams/meetings/use-video-in-microsoft-teams ; https://petri.com/microsoft-changelog/m365-changelog-soft-focus-and-adjust-brightness-in-teams-video-meetings/ ; https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0066166 ; https://learn.microsoft.com/en-us/answers/questions/4423721/high-quality-video-of-teams-meeting-recording
 
 ## Plan
-1. `apps/bridge/src/services/graphics/schemas/output-schemas.ts`: `displayModeId: z.number().int().nonnegative().optional()`
-   with a JSDoc line: DeckLink SDK mode id (> 0); display targets enumerate modes by list index from 0 and ignore the field,
-   so 0 must be accepted.
-2. NEW `apps/bridge/src/services/shared/zod-error-message.ts`: `isZodError(error: unknown): error is ZodError` (duck-typed by
-   `name`, same as routes/engine.ts) and `formatZodError(error: ZodError, prefix: string): string` →
-   `"<prefix>: <path>: <message>"` joined with `"; "` for several issues (path via `issue.path.join(".")`, empty path → `"payload"`).
-3. `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs`: `safeParse`; on failure
-   `this.failGraphics("output_config_error", formatZodError(result.error, "Invalid output configuration"))`. Keep the
-   non-Zod error path unchanged.
-4. Docs: `docs/bridge/features/output-config.md` (~52) and `docs/bridge/features/graphics-commands.md` (~67): one sentence each —
-   display targets carry list indices starting at 0, the bridge accepts and ignores them; invalid payloads now yield a readable
-   `output_config_error` text.
+1. Neue Datei `docs/bridge/support/meeting-apps-teams-zoom.md` (Deutsch, Stil wie `docs/bridge/support/vcam-runbook.md`: Überschrift, Zielgruppe "Support und Kunden-IT", Tabellen, Kommandos in Codeblöcken). Gliederung:
+   1. Was Broadify liefert (VCam 1920x1080@30 ab VCam-Build 20; Aufnahme 1080p30 CFR, ≈ 22 Mbit/s H.264 High, BT.709, ≈ 10 GB/h; Vorschau in der Webapp ist verkleinert und wirkt deshalb schärfer als 1:1).
+   2. Was die Meeting-App daraus macht (Sendeauflösung adaptiv nach Bandbreite, CPU, Teilnehmerzahl und Layout; Empfänger sehen in der Galerie oft 720p/540p oder weniger; Selbstansicht ≠ Remote-Bild; nicht durch Broadify beeinflussbar).
+   3. Teams: keine Nutzer-Einstellung für die Sendeauflösung; Spotlight/Anpinnen des Broadify-Teilnehmers erhöht die gesendete Stufe; "Anrufintegrität"/Anrufdaten zeigen Sende-Auflösung und Bitrate; Admin-Meeting-Richtlinie (Medienbitrate); Videofilter "Soft focus" und "Adjust brightness" ausschalten; Kamera nach einem VCam-Update in Teams einmal neu auswählen; Teams-Aufnahme: OneDrive/SharePoint 1080p.
+   4. Zoom: Einstellungen → Video → "HD" aktivieren (720p); 1080p nur mit Konto-Freigabe (Business/Enterprise, Gruppen-HD), meist nur in der Sprecheransicht; virtueller Hintergrund ohne Greenscreen deckelt auf 720p (Broadify-Keyer statt Zoom-Hintergrund nutzen); Statistik → Video zeigt Sendeauflösung/fps.
+   5. Prüfen, ob die Kamera 1080p liefert: macOS QuickTime "Neue Filmaufnahme" mit "broadify Camera" (Aufnahme → Informationen zeigen 1920x1080) und `systemextensionsctl list | grep broadify` → `(1.0/20)`; Windows Kamera-App → Einstellungen → Videoqualität 1080p.
+   6. Aufnahmequalität prüfen: ffprobe-Zeile aus `docs/bridge/features/meeting-recording.md` übernehmen (Auflösung, `avg_frame_rate 30/1`, `bit_rate`, `color_primaries bt709`); Speicherbedarf ≈ 10 GB/h.
+   7. Gestaltung für Downscale: Mindestschriftgrößen für Lower Thirds (Faustregel: Schrift ≥ 40 px auf dem 1080p-Canvas, Linien ≥ 3 px, hoher Kontrast), weil Teams/Zoom auf 720p oder weniger skalieren und 4:2:0-Chroma dünne farbige Kanten verwischt.
+   8. Checkliste "Bild wirkt matschig": VCam-Build ≥ 20, App-Statistik (gesendete Auflösung), Upload ≥ 4 Mbit/s stabil (LAN statt WLAN), Soft-Focus aus, Spotlight/Pin, Display-Skalierung beim Betrachter, Preset-Schriftgrößen.
+   9. Paste-fertiger Support-Text (DE, 6–8 Sätze) für Kundenantworten.
+   Hinweis-Box am Anfang: Vendor-Verhalten ändert sich; Quellen mit Datum (28.9.2026) verlinken.
+2. Verlinkung: `docs/bridge/support/vcam-runbook.md` (im macOS-Abschnitt und in der Eskalation ein Satz "Bildqualität in Teams/Zoom → meeting-apps-teams-zoom.md"), `docs/bridge/features/meeting-field-checklist.md` (Zeile zum Teams-Bild, falls vorhanden; sonst kurzer Eintrag), `docs/bridge/README.md` (Index-Eintrag unter Support).
+3. Keine Code-Änderungen. Keine Zahlen erfinden; was nicht aus den Quellen oder dem Repo belegt ist, als Einschätzung kennzeichnen.
 
-## Acceptance criteria (RED before unless marked guard)
-1. `output-schemas.test.ts`: "accepts displayModeId 0 (display targets enumerate modes from index 0)" — RED before.
-   Keep "rejects a non-integer displayModeId"; add "rejects a negative displayModeId".
-2. `shared/zod-error-message.test.ts`: formats a single issue, joins several issues, uses "payload" for an empty path,
-   `isZodError` accepts a real ZodError and rejects a plain Error.
-3. `graphics-manager.test.ts`: "fails configureOutputs with a readable output_config_error for an invalid payload" — asserts the
-   message contains `format.displayModeId` and does NOT start with `[` — RED before (today the message is the JSON array).
-4. `graphics-output-validation-service.test.ts`: "ignores displayModeId for display devices" (guard; add only if not covered).
-5. `npx jest apps/bridge/src/services/graphics apps/bridge/src/services/shared --runInBand` green; `npm run lint`;
-   `npm run build:bridge`. FULL `npm run test:jest` is run by the verifier (outside the Codex sandbox).
+## Acceptance criteria
+1. `docs/bridge/support/meeting-apps-teams-zoom.md` existiert mit den 9 Abschnitten, Deutsch, Quellen verlinkt, Datum der Recherche genannt.
+2. Verlinkungen in `vcam-runbook.md`, `meeting-field-checklist.md` und `docs/bridge/README.md` vorhanden.
+3. Keine Änderungen außerhalb von `docs/`. `npm run lint` bleibt grün (Docs sind nicht gelintet, Kommando trotzdem einmal ausführen).
 
 ## Review
-- Round: 1/3
-- Verdict: PASS (Claude review 25.9.: schema semantics preserved, safeParse path keeps failGraphics contract, helper mirrors routes/engine.ts pattern)
-- Must-fix (open): none
-- Notes (non-blocking): `isZodError` has no caller yet (kept for the routes cleanup that should reuse the helper later).
-- Handoff to human (if any):
-
-### Implementation notes
-
-- Changed `apps/bridge/src/services/graphics/schemas/output-schemas.ts` to accept nonnegative `displayModeId` and documented why display mode index `0` is valid for display targets.
-- Added `apps/bridge/src/services/shared/zod-error-message.ts` and tests for readable Zod validation messages.
-- Changed `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs` schema handling to use `safeParse` and emit readable `output_config_error` messages.
-- Added RED/green schema and manager tests, shared formatter tests, and a guard test that display devices ignore `displayModeId`.
-- Updated `docs/bridge/features/output-config.md` and `docs/bridge/features/graphics-commands.md` with display-target index and readable error behavior.
-- Deviation: the required services Jest command is blocked in this sandbox by `listen EPERM: operation not permitted 127.0.0.1` in `apps/bridge/src/services/graphics/renderer/electron-renderer-client.test.ts`; focused tests for the changed behavior pass.
+- Round: 2/3
+- Verdict: PASS nach Runde 2 (Runde 1 Verifier 2.10.2026: Struktur/Verlinkung/Lint PASS, Fakten FAIL → 4 MUST-FIX; Runde 2 Fixes durch Codex, Spot-Check durch Orchestrator: Zoom 2 Mbit/s → HD/720p, 1080p 3,0/3,8 Mbit/s; Teams-Aufnahme-Zahl gestrichen; Capture-Event als Eingangskamera; Einschätzungs-Markierungen + Microsoft-Links; `npm run lint` Exit 0).
+- Must-fix (open): keine
+- Must-fix (resolved in Runde 2):
+  1. Z. 69 Zoom: "~2 Mbit/s" gehört laut KB0066166 zum HD-Setting (720p); 1080p braucht mind. 3,0 Mbit/s Empfang / 3,8 Mbit/s Senden.
+  2. Z. 54 Teams-Aufnahme "OneDrive/SharePoint 1080p": Q&A 4423721 sagt das nicht; einzige Fundstelle ist eine Tech-Community-Antwort (MVP, 3.11.2020). Als Community-Angabe (2020) kennzeichnen und verlinken oder neutral formulieren.
+  3. Z. 103-105 `camera_native_media_type_selected` ist das Event der Eingangskamera (`camera_mediafoundation.cpp`), nicht der VCam → als "Eingangskamera öffnet 1080p-Nativtyp" formulieren.
+  4. Unbelegte Aussagen kennzeichnen/belegen: Simulcast-Stufen stammen aus der Azure-Communication-Services-Doku (Übertragung auf Teams = Einschätzung); "keine Nutzer-Einstellung für Sendeauflösung" (Einschätzung); Zoom "meist nur Sprecheransicht" (Einschätzung); Anrufintegrität und Medienbitrate-Policy mit Quellen belegen (https://support.microsoft.com/de-de/office/7bb1747c-d91a-4fbb-84f6-ad3f48e73511 ; https://learn.microsoft.com/en-us/microsoftteams/meeting-policies-audio-and-video); Zoom "Statistik → Video" kennzeichnen.
+- Notes (non-blocking, in Runde 2 mit erledigt, wenn billig): "ab VCam-Build 20" nur macOS (Windows lieferte schon 1080p); ffprobe-Zeile an `meeting-recording.md` angleichen + Link; "Broadify-Release-Kontext" durch Verweise auf Repo-Doku ersetzen; Soft-Focus-Default dem MC352623-Post zuordnen; Zoom "muss durch Zoom-Support aktiviert werden"; `->` statt `→`; Support-Text: "Anrufintegrität" als UI-Begriff.
+- Handoff to human (if any): Petri-Link per WebFetch 403 (Bot-Sperre), inhaltlich durch MC352623-Spiegel gedeckt; deutsche UI-Labels der Teams-Filter unverifiziert.
 
 ## Verification
-- [ ] Tests pass (targeted + full)
-- [x] Lint / type-check pass
-- [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after
-- [x] Docs updated
+- [ ] Doku-Review durch Verifier (Fakten gegen Quellen und Repo, Links auflösbar, Stil)
+- [ ] `npm run lint` grün

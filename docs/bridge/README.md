@@ -21,6 +21,8 @@
 - Feature: macOS Display Output Detection: `docs/bridge/features/display-output-detection-macos.md`
 - Feature: Relay-Protokoll: `docs/bridge/features/relay-protocol.md`
 - Support: Relay hinter TLS-Inspection (Firmennetz): `docs/bridge/support/relay-tls-trust-runbook.md`
+- Support: Bildqualität in Teams und Zoom: `docs/bridge/support/meeting-apps-teams-zoom.md`
+- Support: Virtuelle Kamera: `docs/bridge/support/vcam-runbook.md`
 - Refactor: Graphics Realtime Plan: `docs/bridge/refactor/README.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`
