@@ -26,8 +26,8 @@ std::string recorderSidecarPath(const std::string &finalPath);
 
 // Builds the H.264+AAC writer pipeline for the given output file. Extracted
 // from MeetingRecorder::start so the exact production configuration (file
-// type, fragmenting, bitrate, input settings) is exercisable by ctest without
-// microphone access.
+// type, fragmenting, bitrate, color tags, input settings) is exercisable by
+// ctest without microphone access.
 RecorderWriterBundle makeRecorderWriter(const std::string &outputPath,
                                         uint32_t width, uint32_t height,
                                         uint32_t fps);

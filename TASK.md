@@ -1,74 +1,59 @@
-# Task: Accept displayModeId 0 for display targets and report readable output-config validation errors (PR D1)
+# Task: Meeting-Aufnahme mit 0,35 bit/px, BT.709-Tags und konstanter Frame-Rate (macOS + Windows) (PR C)
 
 ## Raw request
-Field report 25.9.2026 (Gabriel, RC v0.27.2-rc.1 + webapp dev): configuring the HDMI output ("video_hdmi") for a Blackmagic
-display fails with the raw Zod issue list
-`[{"code":"too_small","minimum":0,"type":"number","inclusive":false,"exact":false,"message":"Number must be greater than 0","path":["format","displayModeId"]}]`.
-Root cause (verified): `GraphicsFormatSchema.displayModeId` is `z.number().int().positive().optional()`
-(`apps/bridge/src/services/graphics/schemas/output-schemas.ts:28`, PR #209). The display module enumerates HDMI/DP modes with
-list indices starting at 0 (`apps/bridge/src/modules/display/display-module-utils.ts` — `modes.map((mode, id) => …)`), and the
-webapp (dev) now sends `format.displayModeId = mode.id` for every port once the bridge reports >= 0.27.2. The first (native)
-display mode therefore has id 0 and is rejected by the schema before `validateOutputFormat` runs; modes with index > 0 pass
-because the validation service only checks `displayModeId` for DeckLink devices (`graphics-output-validation-service.ts:235-258`).
-Second defect: `GraphicsManager.configureOutputs` (`graphics-manager.ts:~359`) uses `.parse()` and forwards the ZodError's
-message (the JSON issue array) verbatim as the `output_config_error` text shown to the user.
+Gabriel (Product Owner, 1.10.2026): Aufnahmen aus dem Meeting Mode sehen matschig aus. Befund: H.264 mit 0,2 bit/px (≈12,4 Mbit/s bei 1080p30), keine Farbraum-Tags, PTS = Host-Clock → reale Dateien laufen mit ~26 fps VFR. Entscheidung PO: H.264 bleibt, ca. 0,35 bit/px (~10 GB/h akzeptiert), BT.709-Tags, konstante Frame-Rate.
 
 ## Context
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/hdmi-display-mode-id / feature/hdmi-display-mode-id
-- Base: dev 54df1113 (0.27.2-rc.1). Target dev. Prod webapp (main) never sends `displayModeId`; only dev webapp + bridge >= 0.27.2 hit this.
-- Semantics to keep: `displayModeId` is a DeckLink SDK display mode id (BMDDisplayMode, never 0) and is ignored for display
-  targets. The DeckLink adapters already skip falsy ids (`if (config.format.displayModeId)`), the validation service already
-  returns before the id check for non-DeckLink devices. The persisted output config reuses `GraphicsConfigureOutputsSchema`
-  (`output-config-store.ts:123`), so the schema change also makes persisted display configs with id 0 loadable.
-- Existing ZodError handling pattern: `apps/bridge/src/routes/engine.ts:100-114` (duck-typed `error.name === "ZodError"`,
-  `zodError.errors.map(e => ({ path: e.path.join("."), message: e.message }))`). Reuse the idea in a shared helper; do NOT
-  refactor the routes in this PR.
-- Conventions: kebab-case files, English comments/JSDoc, Jest ESM (`npx jest <path> --runInBand`), no new dependencies.
-  Docs under `docs/bridge/*` must be updated in the same PR.
+- Customer / project: Broadify Bridge, Meeting-Helper Recorder (`apps/bridge/native/meeting-helper/src/recorder/`)
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-recorder-quality, feature/meeting-recorder-quality
+- Base branch: dev (573454e5)
+- Beide Plattformen: macOS (AVAssetWriter, `.mm`) und Windows (Media Foundation, `.cpp`). Windows kann lokal nicht kompiliert werden (nur Code-Review + CI); macOS wird lokal gebaut und per ctest geprüft.
 
 ## Plan
-1. `apps/bridge/src/services/graphics/schemas/output-schemas.ts`: `displayModeId: z.number().int().nonnegative().optional()`
-   with a JSDoc line: DeckLink SDK mode id (> 0); display targets enumerate modes by list index from 0 and ignore the field,
-   so 0 must be accepted.
-2. NEW `apps/bridge/src/services/shared/zod-error-message.ts`: `isZodError(error: unknown): error is ZodError` (duck-typed by
-   `name`, same as routes/engine.ts) and `formatZodError(error: ZodError, prefix: string): string` →
-   `"<prefix>: <path>: <message>"` joined with `"; "` for several issues (path via `issue.path.join(".")`, empty path → `"payload"`).
-3. `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs`: `safeParse`; on failure
-   `this.failGraphics("output_config_error", formatZodError(result.error, "Invalid output configuration"))`. Keep the
-   non-Zod error path unchanged.
-4. Docs: `docs/bridge/features/output-config.md` (~52) and `docs/bridge/features/graphics-commands.md` (~67): one sentence each —
-   display targets carry list indices starting at 0, the bridge accepts and ignores them; invalid payloads now yield a readable
-   `output_config_error` text.
+Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS3 (PR C)". Kurzfassung:
 
-## Acceptance criteria (RED before unless marked guard)
-1. `output-schemas.test.ts`: "accepts displayModeId 0 (display targets enumerate modes from index 0)" — RED before.
-   Keep "rejects a non-integer displayModeId"; add "rejects a negative displayModeId".
-2. `shared/zod-error-message.test.ts`: formats a single issue, joins several issues, uses "payload" for an empty path,
-   `isZodError` accepts a real ZodError and rejects a plain Error.
-3. `graphics-manager.test.ts`: "fails configureOutputs with a readable output_config_error for an invalid payload" — asserts the
-   message contains `format.displayModeId` and does NOT start with `[` — RED before (today the message is the JSON array).
-4. `graphics-output-validation-service.test.ts`: "ignores displayModeId for display devices" (guard; add only if not covered).
-5. `npx jest apps/bridge/src/services/graphics apps/bridge/src/services/shared --runInBand` green; `npm run lint`;
-   `npm run build:bridge`. FULL `npm run test:jest` is run by the verifier (outside the Codex sandbox).
+1. Neu `apps/bridge/native/meeting-helper/src/recorder/recorder_encode_policy.h` (header-only, plattformfrei, `constexpr`/inline, Namespace `broadify::meeting`):
+   - `kRecorderBitsPerPixel = 0.35`, `kRecorderMinBitrateBps = 2'000'000`, `kRecorderMaxBitrateBps = 40'000'000`.
+   - `uint64_t recorderVideoBitrateBps(uint32_t width, uint32_t height, uint32_t fps)` (fps 0 → 30), `uint32_t recorderKeyframeInterval(uint32_t fps)` = fps*2.
+   - `class RecorderFrameClock { explicit RecorderFrameClock(uint32_t fps); struct Plan { uint64_t firstIndex; uint32_t count; bool discontinuity; }; Plan plan(uint64_t elapsedNs) const; void commit(uint32_t written); }`: `target = round(elapsedNs * fps / 1e9)`; `target < nextIndex` → `count 0`; sonst `gap = target - nextIndex + 1`, `count = min(gap, 4)`, `firstIndex = nextIndex`; Lücke > 1 s (`gap > fps`) → `discontinuity = true`, `firstIndex = target`, `count = 1`. `commit(written)` setzt `nextIndex = firstIndex + written` (nur für geschriebene Frames; nicht geschriebene Slots füllt der nächste Aufruf). Kurzer englischer Header-Kommentar mit der Semantik.
+2. macOS `recorder_writer_factory.mm` (Z. 39-57): Bitrate aus der Policy (Formel + Clamp entfernen); Compression-Properties zusätzlich `AVVideoExpectedSourceFrameRateKey: fps`, `AVVideoAllowFrameReorderingKey: @NO`, `AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC`, `AVVideoMaxKeyFrameIntervalKey: recorderKeyframeInterval(fps)`; `AVVideoColorPropertiesKey: @{ AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2, AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2, AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2 }` in `videoSettings`. Kommentar in `recorder_writer_factory.h:27-30` ergänzen.
+3. macOS `meeting_recorder.mm`: `Impl` + `RecorderFrameClock frameClock{30}`, Zähler `duplicatedFrames`, `droppedFrames` (intern, `RecordingStatus`-Shape NICHT ändern). `start` initialisiert `frameClock = RecorderFrameClock(safeFps)`. `appendVideoFrame`: `elapsedNs` aus `CMTimeSubtract(CMClockGetTime(host), sessionStart)`; Pool-Buffer wie heute füllen, danach `CVBufferSetAttachment` mit `kCVImageBufferColorPrimariesKey/TransferFunctionKey/YCbCrMatrixKey` = `..._ITU_R_709_2`; `plan = frameClock.plan(elapsedNs)`; Schleife `i < plan.count`: `if (!videoInput.isReadyForMoreMediaData) break;` → PTS `CMTimeAdd(sessionStart, CMTimeMake(plan.firstIndex + i, fps))` → `appendPixelBuffer`; danach `frameClock.commit(written)`; `videoFrames += written`. Env `BROADIFY_MEETING_RECORDER_CFR=0` (gelesen beim `start`) → heutiges Host-Clock-PTS ohne Fill. Drops/Discontinuities einmal pro Aufnahme über `logRecorderEvent` sichtbar machen (kein Log-Spam).
+4. Windows `meeting_recorder_mediafoundation.cpp`: Bitrate aus Policy (Z. 486-495); Output-Type (Z. 497-506) + `MF_MT_VIDEO_NOMINAL_RANGE = MFNominalRange_16_235`, `MF_MT_YUV_MATRIX = MFVideoTransferMatrix_BT709`, `MF_MT_TRANSFER_FUNCTION = MFVideoTransFunc_709`, `MF_MT_VIDEO_PRIMARIES = MFVideoPrimaries_BT709`; Input-Type (Z. 514-523) + `MF_MT_VIDEO_NOMINAL_RANGE = MFNominalRange_0_255`; nach `SetInputMediaType` best-effort `ICodecAPI` über `writer->GetServiceForStream(videoStream, GUID_NULL, IID_PPV_ARGS(&codecApi))`: `CODECAPI_AVEncMPVGOPSize = fps*2`, `CODECAPI_AVEncMPVDefaultBPictureCount = 0` (Fehler nur loggen). `Impl` + Clock; Video-PTS (Z. 655-657): pro Index ein `IMFSample` mit demselben `IMFMediaBuffer`, `SetSampleTime(MFllMulDiv(index, 10000000, fps, 0))`, `SetSampleDuration(MFllMulDiv(1, 10000000, fps, 0))`; `WriteSample`-Fehler → nicht committen. Gleicher CFR-Kill-Switch. fMP4-Container bleibt.
+5. Allowlist `apps/bridge/src/services/meeting/meeting-helper-manager.ts` (`MEETING_HELPER_FORWARDED_ENV_KEYS`, Z. 74-114): `BROADIFY_MEETING_RECORDER_CFR` ergänzen; Test `meeting-helper-manager.test.ts` (Z. 177-215) erweitern.
+6. Tests:
+   - Neu `apps/bridge/native/meeting-helper/tests/recorder_encode_policy_test.cpp` (plattformfrei, in `CMakeLists.txt` nach dem Muster `guided_work_size_test` Z. 305-308 als `add_executable` + in die `foreach(helper_test …)`-Liste Z. 484 ff. aufnehmen): 1080p30 → 21,0–22,5 Mbit; 720p30 ≈ 9,7 Mbit; 4K30 → 40 Mbit (Clamp); 160x90 → 2 Mbit (Clamp); Keyframe 30 → 60; Clock: On-Grid-Ticks → je count 1; 3-Frame-Lücke → 3; 6-Frame-Lücke → 4 dann 2; 1,5-s-Lücke → discontinuity + 1; früher Tick → 0; nicht committete Slots füllt der nächste Plan.
+   - `tests/meeting_recorder_writer_test.mm` (nur APPLE): nach `makeRecorderWriter` `videoInput.outputSettings` prüfen (Bitrate == Policy, `AVVideoColorPropertiesKey` vorhanden, `AVVideoAllowFrameReorderingKey` NO); Frame-Schleife über die Clock treiben; nach `finishWriting` per `AVAsset` `nominalFrameRate == 30 ± 0.05` prüfen (Color-Extension-Check optional).
+   - Jest/Zod unverändert (kein neues Payload-Feld).
+7. Doku `docs/bridge/features/meeting-recording.md`: neuer Abschnitt "Encoding" (H.264 High, 0,35 bpp, Clamp 2–40 Mbit/s, CFR-Gitter + Fill-Regeln, BT.709-Tags, ffprobe-Prüfzeile, ~10 GB/h, Env `BROADIFY_MEETING_RECORDER_CFR`) + Windows-Dateilebenszyklus (fMP4).
+
+Konventionen: Code-Kommentare Englisch; keine Secrets; keine Änderungen außerhalb der genannten Dateien; `npm run build:meeting-helper && npm run test:meeting-helper-native` wird vom Verifier ausgeführt, du darfst `cmake`/ctest für die neuen Tests lokal laufen lassen, wenn es schnell geht.
+
+## Acceptance criteria
+1. Beide Writer nutzen `recorder_encode_policy.h`; keine doppelte Bitrate-Formel mehr.
+2. macOS-Writer setzt ColorProperties 709, Reordering NO, CABAC, ExpectedSourceFrameRate, Keyframe fps*2.
+3. Video-PTS liegen auf dem `1/fps`-Gitter relativ zu `sessionStart`; Lücken werden bis 4 Frames gefüllt, >1 s springt; Drops durch `isReadyForMoreMediaData` committen nicht; Kill-Switch `BROADIFY_MEETING_RECORDER_CFR=0` stellt Host-Clock-PTS her.
+4. Windows-Writer setzt die vier Farbraum-Attribute, Input-Range 0-255, GOP best-effort, CFR-Gitter.
+5. `recorder_encode_policy_test` ist in CMake registriert und grün; `meeting_recorder_writer_test` grün (macOS).
+6. Allowlist + Jest-Test erweitert; `npm run lint` grün.
+7. Doku aktualisiert.
 
 ## Review
-- Round: 1/3
-- Verdict: PASS (Claude review 25.9.: schema semantics preserved, safeParse path keeps failGraphics contract, helper mirrors routes/engine.ts pattern)
-- Must-fix (open): none
-- Notes (non-blocking): `isZodError` has no caller yet (kept for the routes cleanup that should reuse the helper later).
-- Handoff to human (if any):
-
-### Implementation notes
-
-- Changed `apps/bridge/src/services/graphics/schemas/output-schemas.ts` to accept nonnegative `displayModeId` and documented why display mode index `0` is valid for display targets.
-- Added `apps/bridge/src/services/shared/zod-error-message.ts` and tests for readable Zod validation messages.
-- Changed `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs` schema handling to use `safeParse` and emit readable `output_config_error` messages.
-- Added RED/green schema and manager tests, shared formatter tests, and a guard test that display devices ignore `displayModeId`.
-- Updated `docs/bridge/features/output-config.md` and `docs/bridge/features/graphics-commands.md` with display-target index and readable error behavior.
-- Deviation: the required services Jest command is blocked in this sandbox by `listen EPERM: operation not permitted 127.0.0.1` in `apps/bridge/src/services/graphics/renderer/electron-renderer-client.test.ts`; focused tests for the changed behavior pass.
+- Round: 2/3
+- Verdict: PASS nach Runde 2 (Runde 1 Verifier 2.10.2026: AC1/2/3/6/7 PASS, AC4 PASS per Code-Review, AC5 Teil-FAIL → 2 MUST-FIX; Runde 2 Fixes durch Codex, Re-Verifikation durch Orchestrator: `npm run build:meeting-helper` Exit 0, `npm run test:meeting-helper-native` 34/34 passed inkl. `meeting_recorder_writer_test` (2,55 s) und `recorder_encode_policy_test`, `npm run lint` Exit 0).
+- Must-fix (open): keine
+- Must-fix (resolved):
+  1. `tests/meeting_recorder_writer_test.mm` öffnete `AVAsset` auf der `.mp4.part`-Sidecar (AVFoundation verweigert die Endung, AVError -11828). Fix: Sidecar wie in Produktion auf den finalen `.mp4`-Pfad verschieben und dort sondieren. (Das in der Codex-Sandbox gemeldete `audio_input_rejected` war ein Sandbox-Artefakt.)
+  2. `meeting_recorder_mediafoundation.cpp` ICodecAPI: `#include <initguid.h>` vor `<codecapi.h>` plus `<icodecapi.h>` (Windows-only, Muster `vcam-helper/windows/dllmain.cpp`); die TU definiert sonst keine GUIDs. Windows-Compile weiterhin nur über CI/Windows-Laptop belegbar.
+- Notes (non-blocking):
+  1. `RecorderFrameClock::plan` nicht `const` (braucht `firstIndex` für `commit`) — sinnvolle Abweichung.
+  2. macOS `droppedFrames` überzeichnet bei Backpressure (nur intern).
+  3. `appendVideoFrame` hält den Impl-Mutex über bis zu 4 Appends; Audio-Delegate konkurriert (begrenzt).
+  4. Bei `plan.count == 0` wird der Pool-Buffer trotzdem gefüllt (nur CPU).
+  5. Windows-`logRecorderEvent` ohne `jsonEscape`; Allowlist-Eintrag nicht alphabetisch.
+- Handoff to human (if any): Windows-Compile nur über `test-release/**`-Push oder Windows-Laptop; echte Aufnahme-Probe (12 Mbit/s/~26 fps → ~22 Mbit/s/30 CFR/bt709) braucht Hardware → RC-Feldtest. Verifier-Sonde: 709-Tags, nominalFrameRate 30.000, 90/90 Samples exakt auf dem 1/30-Gitter nachgewiesen.
 
 ## Verification
-- [ ] Tests pass (targeted + full)
-- [x] Lint / type-check pass
-- [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after
-- [x] Docs updated
+- [ ] Tests pass (ctest + Jest)
+- [ ] Lint / type-check pass
+- [ ] `npm run build:meeting-helper && npm run test:meeting-helper-native` (Verifier, macOS)
+- [ ] Bug reproduced before the fix, gone after (Probe: 12 Mbit/s / ~26 fps VFR / ohne colr → ~22 Mbit/s / 30 fps CFR / bt709)
