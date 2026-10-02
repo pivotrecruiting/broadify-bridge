@@ -395,6 +395,25 @@ describe("meeting-command-handler", () => {
       expect(result.success).toBe(true);
     });
 
+    it("forwards background identity fields and strips unknown keys", async () => {
+      mockClient.keyerConfigure.mockResolvedValue({ enabled: true });
+
+      const result = await handleMeetingCommand("meeting_keyer_configure", {
+        background_asset_id: "asset-1",
+        background_template_id: "template-1",
+        unknown_key: "strip-me",
+      });
+
+      expect(mockClient.keyerConfigure).toHaveBeenCalledWith({
+        background_asset_id: "asset-1",
+        background_template_id: "template-1",
+      });
+      expect(mockClient.keyerConfigure.mock.calls[0]?.[0]).not.toHaveProperty(
+        "unknown_key",
+      );
+      expect(result.success).toBe(true);
+    });
+
     it("rejects invalid keyer configuration", async () => {
       await expect(
         handleMeetingCommand("meeting_keyer_configure", {
