@@ -1,74 +1,63 @@
-# Task: Accept displayModeId 0 for display targets and report readable output-config validation errors (PR D1)
+# Task: macOS Virtual Camera meldet fest 1920x1080 und Extension-Upgrades greifen beim Kunden (PR A)
 
 ## Raw request
-Field report 25.9.2026 (Gabriel, RC v0.27.2-rc.1 + webapp dev): configuring the HDMI output ("video_hdmi") for a Blackmagic
-display fails with the raw Zod issue list
-`[{"code":"too_small","minimum":0,"type":"number","inclusive":false,"exact":false,"message":"Number must be greater than 0","path":["format","displayModeId"]}]`.
-Root cause (verified): `GraphicsFormatSchema.displayModeId` is `z.number().int().positive().optional()`
-(`apps/bridge/src/services/graphics/schemas/output-schemas.ts:28`, PR #209). The display module enumerates HDMI/DP modes with
-list indices starting at 0 (`apps/bridge/src/modules/display/display-module-utils.ts` — `modes.map((mode, id) => …)`), and the
-webapp (dev) now sends `format.displayModeId = mode.id` for every port once the bridge reports >= 0.27.2. The first (native)
-display mode therefore has id 0 and is rejected by the schema before `validateOutputFormat` runs; modes with index > 0 pass
-because the validation service only checks `displayModeId` for DeckLink devices (`graphics-output-validation-service.ts:235-258`).
-Second defect: `GraphicsManager.configureOutputs` (`graphics-manager.ts:~359`) uses `.parse()` and forwards the ZodError's
-message (the JSON issue array) verbatim as the `output_config_error` text shown to the user.
+Gabriel (Product Owner, 1.10.2026): "Plan, wie wir ein besseres Bild live (Teams/Zoom) bekommen und wie unsere Graphics wirklich in 1080p ausgespielt werden." Befund: Die macOS CMIO-Extension meldet Clients fest 1280x720 BGRA (live per AVFoundation-Enumeration bestätigt), liefert aber 1080p-Buffer. Außerdem läuft auf Gabriels Mac Extension-Build 17, obwohl App-Build 19 installiert ist: die Bridge aktiviert eine neuere Extension nie, solange die alte aktiv ist.
 
 ## Context
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/hdmi-display-mode-id / feature/hdmi-display-mode-id
-- Base: dev 54df1113 (0.27.2-rc.1). Target dev. Prod webapp (main) never sends `displayModeId`; only dev webapp + bridge >= 0.27.2 hit this.
-- Semantics to keep: `displayModeId` is a DeckLink SDK display mode id (BMDDisplayMode, never 0) and is ignored for display
-  targets. The DeckLink adapters already skip falsy ids (`if (config.format.displayModeId)`), the validation service already
-  returns before the id check for non-DeckLink devices. The persisted output config reuses `GraphicsConfigureOutputsSchema`
-  (`output-config-store.ts:123`), so the schema change also makes persisted display configs with id 0 loadable.
-- Existing ZodError handling pattern: `apps/bridge/src/routes/engine.ts:100-114` (duck-typed `error.name === "ZodError"`,
-  `zodError.errors.map(e => ({ path: e.path.join("."), message: e.message }))`). Reuse the idea in a shared helper; do NOT
-  refactor the routes in this PR.
-- Conventions: kebab-case files, English comments/JSDoc, Jest ESM (`npx jest <path> --runInBand`), no new dependencies.
-  Docs under `docs/bridge/*` must be updated in the same PR.
+- Customer / project: Broadify Bridge, Meeting Mode, macOS
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/vcam-1080p, feature/vcam-1080p
+- Base branch: dev (573454e5)
+- Entscheidung PO: VCam meldet NUR 1920x1080 (wie OBS), keine Formatliste.
 
 ## Plan
-1. `apps/bridge/src/services/graphics/schemas/output-schemas.ts`: `displayModeId: z.number().int().nonnegative().optional()`
-   with a JSDoc line: DeckLink SDK mode id (> 0); display targets enumerate modes by list index from 0 and ignore the field,
-   so 0 must be accepted.
-2. NEW `apps/bridge/src/services/shared/zod-error-message.ts`: `isZodError(error: unknown): error is ZodError` (duck-typed by
-   `name`, same as routes/engine.ts) and `formatZodError(error: ZodError, prefix: string): string` →
-   `"<prefix>: <path>: <message>"` joined with `"; "` for several issues (path via `issue.path.join(".")`, empty path → `"payload"`).
-3. `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs`: `safeParse`; on failure
-   `this.failGraphics("output_config_error", formatZodError(result.error, "Invalid output configuration"))`. Keep the
-   non-Zod error path unchanged.
-4. Docs: `docs/bridge/features/output-config.md` (~52) and `docs/bridge/features/graphics-commands.md` (~67): one sentence each —
-   display targets carry list indices starting at 0, the bridge accepts and ignores them; invalid payloads now yield a readable
-   `output_config_error` text.
+Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS1 (PR A)". Kurzfassung:
 
-## Acceptance criteria (RED before unless marked guard)
-1. `output-schemas.test.ts`: "accepts displayModeId 0 (display targets enumerate modes from index 0)" — RED before.
-   Keep "rejects a non-integer displayModeId"; add "rejects a negative displayModeId".
-2. `shared/zod-error-message.test.ts`: formats a single issue, joins several issues, uses "payload" for an empty path,
-   `isZodError` accepts a real ZodError and rejects a plain Error.
-3. `graphics-manager.test.ts`: "fails configureOutputs with a readable output_config_error for an invalid payload" — asserts the
-   message contains `format.displayModeId` and does NOT start with `[` — RED before (today the message is the JSON array).
-4. `graphics-output-validation-service.test.ts`: "ignores displayModeId for display devices" (guard; add only if not covered).
-5. `npx jest apps/bridge/src/services/graphics apps/bridge/src/services/shared --runInBand` green; `npm run lint`;
-   `npm run build:bridge`. FULL `npm run test:jest` is run by the verifier (outside the Codex sandbox).
+1. `apps/bridge/native/vcam-helper/BroadifyVCamExtension/VCamDeviceSource.swift`
+   - Z. 7-9: `kDefaultWidth/Height` → `kOutputWidth = 1920`, `kOutputHeight = 1080` (Kommentar: fixed advertised format matching the meeting program geometry; no format list, like OBS).
+   - `currentWidth/Height` (Z. 41-42) durch die Konstanten ersetzen; Splash (Z. 263-279) nutzt die Konstanten.
+   - Den dynamischen Rebuild in `emitFrame` (Z. 162-169) ENTFERNEN. `rebuildVideoFormat` → `buildVideoFormat(width:height:)`, nur aus `init` (Z. 56) aufgerufen.
+   - Aufruf Z. 191: `copyLatestFrame(into:stride:dstWidth:dstHeight:)` mit der Pool-Geometrie.
+2. `apps/bridge/native/vcam-helper/BroadifyVCamExtension/RawFrameStreamReader.swift`
+   - `import Accelerate`.
+   - `copyLatestFrame(into dst: UnsafeMutablePointer<UInt8>, stride: Int, dstWidth: Int, dstHeight: Int) -> Bool`: Guard `stride >= dstWidth*4`; bei gleicher Geometrie Row-memcpy wie heute; sonst `vImageScale_ARGB8888` (`kvImageHighQualityResampling`, scale-to-fill) mit einmaligem `os_log(.info)` pro Geometriewechsel. Nie mehr als `dstHeight` Zeilen / `dstWidth*4` Bytes pro Zeile schreiben.
+   - RGBA→BGRA-Schleife (Z. 237-249) durch `vImagePermuteChannels_ARGB8888` (Map `[2,1,0,3]`) ersetzen.
+3. Version 19 → 20: `apps/bridge/native/vcam-helper/project.yml` (Z. 39 und Z. 73), `apps/bridge/native/vcam-helper/BroadifyVCam/Info.plist` (Z. 20), `apps/bridge/native/vcam-helper/BroadifyVCamExtension/Info.plist` (Z. 20). Alle drei Stellen müssen identisch sein (Vorbild-Commit 661fdad6).
+4. `apps/bridge/src/modules/vcam/vcam-helper.ts`
+   - `SystemExtensionActivationStateT` + `activeExtensionVersion: number | null`.
+   - Exportierte Pure-Function `parseActiveVcamExtensionVersion(listOutput: string): number | null` (nur Zeilen mit `com.broadify.vcam.extension`; Regex `\(([^)]*)\)`; Build = letztes Segment nach `/`; `(1.0)` ohne Build → null; mehrere eigene Zeilen → höchste Version mit `enabled`). Vorbild: `scripts/install-vcam-helper-macos.sh:105-112`.
+   - `getSystemExtensionActivationState` ZEILENWEISE auswerten (nicht `join`): während eines Replace stehen zwei eigene Zeilen (alt `[activated enabled]`, neu `[activated waiting for user]`); Regel: Zeile mit höchster Version bestimmt die Flags; `activeExtensionVersion` = höchste `enabled`-Version.
+   - Exportierte Pure-Function `shouldReactivateVcamForUpgrade(installedAppVersion, activeExtensionVersion, autoUpgradeOnStart = process.env.BRIDGE_VCAM_AUTO_UPGRADE_ON_START !== "0"): boolean` → beide non-null und `installed > active`.
+   - `openVcamHelperApp`: `already_active` nur, wenn kein Upgrade fällig (`shouldReactivateVcamForUpgrade(readBundleVersion(helperAppPath), activationState.activeExtensionVersion)`); sonst den bestehenden Launch-Pfad (`quitRunningVcamHelperApp()` + `open <app> --args --activate`) durchlaufen, Log "upgrading VCam extension build X -> Y"; höchstens EIN Upgrade-Versuch pro Bridge-Prozess (Modul-Flag), weil der Engine-Start das bei jedem Start anstößt.
+   - `waitForVcamActivation(attempts, intervalMs, minVersion?)`: fertig bei `activated && (minVersion == null || activeExtensionVersion >= minVersion)` → `activation_completed` mit Message "…upgraded to build N"; sonst wie heute `activation_requested`.
+   - `VcamHelperStatusT` + optionale Felder `helperAppVersion`, `extensionVersion` (Diagnose).
+   - `ContentView.swift` NICHT ändern.
+5. Doku: `docs/bridge/features/virtual-camera-macos.md` (Format 1920x1080 BGRA 30 fps = Programmgeometrie; Versionszeile `(1.0/20)`; Upgrade-Ablauf; mögliche erneute Freigabe), `docs/bridge/support/vcam-runbook.md` macOS-Abschnitt (Z. 146-156: ab Build 20 automatische Ersetzung beim Engine-Start, wenn Extension älter als App), `apps/bridge/native/vcam-helper/README.md` (Z. 26-31 veraltet, Z. 129 Format), `docs/bridge/dev/vcam-local-commands.md` (Z. 164-168 widersprüchlich → korrigieren).
+
+Konventionen: Code-Kommentare Englisch; keine Secrets in Logs; keine weiteren Dateien anfassen; keine Builds von xcodebuild starten (macht der Verifier).
+
+## Acceptance criteria
+1. `VCamDeviceSource.swift` baut genau ein Stream-Format 1920x1080 BGRA 30 fps beim Init; kein dynamischer Rebuild mehr; Splash und Pool sind 1080p.
+2. `RawFrameStreamReader.copyLatestFrame` kennt die Zielgröße, kann nie über den Zielpuffer hinaus schreiben und skaliert abweichende Frames per vImage.
+3. CFBundleVersion ist an allen drei Stellen 20.
+4. `vcam-helper.ts`: `parseActiveVcamExtensionVersion` und `shouldReactivateVcamForUpgrade` sind exportiert und getestet; `openVcamHelperApp` löst bei älterer aktiver Extension `open --args --activate` aus (einmal pro Prozess) und meldet nach erfolgreicher Ersetzung `activation_completed`; bei gleicher/neuerer Version weiterhin `already_active`.
+5. `apps/bridge/src/modules/vcam/vcam-helper.test.ts`: bestehender "already active"-Test auf `(1.0/20)` + gemockte PlistBuddy-Ausgabe `"20"`; neue Tests: Upgrade-Reopen (`(1.0/17)` aktiv, App 20, zweiter Listenaufruf `(1.0/20)` → spawn `open [path, "--args", "--activate"]`, Code `activation_completed`), Parsing-Fälle (17, `(1.0)` → null, Fremdvendor ignoriert, zwei eigene Zeilen → höchste enabled), `shouldReactivateVcamForUpgrade`-Wahrheitstabelle inkl. Opt-out-Env, Status mit zwei eigenen Zeilen → `available: true`, `requiresUserApproval: false`, kein zweiter Upgrade-Versuch pro Prozess.
+6. `npx jest apps/bridge/src/modules/vcam --runInBand` grün; `npm run lint` grün für die geänderten TS-Dateien.
+7. Doku-Dateien aus Schritt 5 aktualisiert.
 
 ## Review
 - Round: 1/3
-- Verdict: PASS (Claude review 25.9.: schema semantics preserved, safeParse path keeps failGraphics contract, helper mirrors routes/engine.ts pattern)
-- Must-fix (open): none
-- Notes (non-blocking): `isZodError` has no caller yet (kept for the routes cleanup that should reuse the helper later).
-- Handoff to human (if any):
-
-### Implementation notes
-
-- Changed `apps/bridge/src/services/graphics/schemas/output-schemas.ts` to accept nonnegative `displayModeId` and documented why display mode index `0` is valid for display targets.
-- Added `apps/bridge/src/services/shared/zod-error-message.ts` and tests for readable Zod validation messages.
-- Changed `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs` schema handling to use `safeParse` and emit readable `output_config_error` messages.
-- Added RED/green schema and manager tests, shared formatter tests, and a guard test that display devices ignore `displayModeId`.
-- Updated `docs/bridge/features/output-config.md` and `docs/bridge/features/graphics-commands.md` with display-target index and readable error behavior.
-- Deviation: the required services Jest command is blocked in this sandbox by `listen EPERM: operation not permitted 127.0.0.1` in `apps/bridge/src/services/graphics/renderer/electron-renderer-client.test.ts`; focused tests for the changed behavior pass.
+- Verdict: PASS (Verifier 2.10.2026, separater Agent; alle 7 Akzeptanzkriterien PASS)
+- Must-fix (open): keine
+- Notes (non-blocking):
+  1. Während eines laufenden Replace ("17 enabled" + "20 waiting for user") bestimmt die neueste Zeile die Flags → `activated=false`, `MEETING_VCAM_NATIVE_AVAILABLE=0`, Status `user_activation_required`, obwohl Build 17 weiter Frames liefert (Spec-konform; vorher ergab `requiresUserApproval` ebenfalls `user_activation_required`).
+  2. Nach dem einen Upgrade-Versuch liefern weitere `openVcamHelperApp`-Aufrufe im selben Prozess `activation_requested` ("already requested") statt `already_active`; Webapp konsumiert die Codes nicht.
+  3. Rückgabewert von `vImagePermuteChannels_ARGB8888` wird ignoriert (Pfad kalt, Server sendet BGRA); `vImageScale` alloziert Tempbuffer pro Frame (nur bei Quelle ≠ 1080p); Stretch-to-fill bei Nicht-16:9.
+  4. `getVcamHelperStatus` startet pro Aufruf einen PlistBuddy-Prozess; `console.info` statt pino (Modul ohne Logger).
+  5. Doku-Kleinigkeiten (Runbook "seit v20" vs. Schritte seit v19; Umlaut in ASCII-Dokument).
+- Handoff to human (if any): Signierter Build lokal BLOCKED (keine "Apple Development"-Identität für PG38DC5RG9; nur Developer-ID-Zertifikat vorhanden) → CI baut mit `VCAM_SIGNING_MODE=developer-id`; unsignierter Compile BUILD SUCCEEDED, Version 20 in App + Extension verifiziert. Vorher/Nachher am Gerät erst mit RC-Installer.
 
 ## Verification
-- [ ] Tests pass (targeted + full)
-- [x] Lint / type-check pass
-- [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after
-- [x] Docs updated
+- [x] Tests pass — `npx jest apps/bridge/src/modules/vcam --runInBand`: 25 passed (Verifier)
+- [x] Lint / type-check pass — `npm run lint` Exit 0; `tsc --noEmit -p apps/bridge/tsconfig.build.json` Exit 0 (Verifier)
+- [x] `npm run build:vcam-helper` — mit `VCAM_SIGNING_MODE=developer-id` (wie CI) BUILD SUCCEEDED, codesign valid (Team PG38DC5RG9), CFBundleVersion 20 in App und Extension (Orchestrator); im Default-Modus "development" lokal BLOCKED (keine "Apple Development"-Identität)
+- [ ] Bug reproduced before the fix, gone after (Enumeration 1280x720 → 1920x1080; Extension (1.0/17) → (1.0/20) nach Engine-Start) — RC-Feldtest
