@@ -6,8 +6,10 @@ Endnutzer- und Support-Dokumentation für die macOS-Virtual-Camera. Entwickler-D
 
 - `BroadifyVCam.app` wird **mit der Bridge ausgeliefert** (in den App-Ressourcen) und beim ersten Start der virtuellen Kamera automatisch nach `/Applications/BroadifyVCam.app` installiert.
 - Der Installationspfad der Bridge entfernt dabei das Gatekeeper-Quarantäne-Attribut und repariert es auch bei Bestandsinstallationen selbst (Self-Heal beim Start der virtuellen Kamera).
+- Seit Build 20 ersetzt die Bridge beim Engine-Start eine ältere aktive Extension automatisch, wenn die installierte App einen neueren Build enthält. Während des macOS-Replacements können kurz zwei `com.broadify.vcam.extension`-Zeilen in `systemextensionsctl list` stehen.
 - **Niemals** `BroadifyVCam.app` direkt aus einem DMG, dem Downloads-Ordner oder per „Paketinhalt zeigen" aus der Bridge-App starten. macOS führt quarantänierte Apps App-Transloziert aus einem zufälligen, schreibgeschützten Pfad aus — die Aktivierung der Kamera-Erweiterung schlägt dann immer fehl.
-- Nach der Aktivierung muss die Erweiterung einmalig freigegeben werden: **Systemeinstellungen → Allgemein → Anmeldeobjekte & Erweiterungen → Kamera-Erweiterungen → broadify Virtual Camera**.
+- Nach der Aktivierung muss die Erweiterung einmalig freigegeben werden: **Systemeinstellungen → Allgemein → Anmeldeobjekte & Erweiterungen → Kamera-Erweiterungen → broadify Virtual Camera**. Bei einem Extension-Upgrade kann macOS diese Freigabe erneut verlangen.
+- Die Kamera meldet Meeting-Apps fest `1920x1080` BGRA bei 30 fps, passend zur Programmgeometrie. Es gibt keine Formatliste mit alternativen Auflösungen.
 
 ## Fehlercodes (Bridge-Status `meeting_output_configure` → `data.code`)
 
@@ -32,5 +34,5 @@ Ursache: Die App wurde aus einer quarantänierten Quelle gestartet. Lösung: App
 
 ```bash
 xattr -p com.apple.quarantine /Applications/BroadifyVCam.app  # kein Output = sauber
-systemextensionsctl list | grep com.broadify.vcam             # [activated enabled] = ok
+systemextensionsctl list | grep com.broadify.vcam             # (1.0/20) [activated enabled] = ok
 ```
