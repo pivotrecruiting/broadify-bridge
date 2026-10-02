@@ -155,7 +155,11 @@ require_entitlement_key() {
 }
 
 team_id() {
-  codesign -dv --verbose=4 "$1" 2>&1 | awk -F= '/TeamIdentifier=/ { print $2; exit }'
+  # Consume the whole codesign stream: an early `exit` in awk closed the pipe
+  # while codesign was still writing, which killed it with SIGPIPE and - under
+  # `set -o pipefail` - aborted the release verification with exit code 141
+  # (seen on the v0.27.3-rc.2 macOS release build).
+  codesign -dv --verbose=4 "$1" 2>&1 | awk -F= '/TeamIdentifier=/ && !found { print $2; found = 1 }'
 }
 
 NORMALIZED_ARCH="$(normalize_arch "$EXPECTED_ARCH")"
