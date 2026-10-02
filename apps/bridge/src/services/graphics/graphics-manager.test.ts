@@ -69,6 +69,9 @@ const createValidConfig = () => ({
 
 describe("GraphicsManager", () => {
   beforeEach(() => {
+    delete process.env.BRIDGE_FRAMEBUS_NAME;
+    delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+    delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
     setBridgeContext({
       userDataDir: "/tmp/bridge-data",
       logPath: "/tmp/bridge.log",
@@ -463,6 +466,64 @@ describe("GraphicsManager", () => {
       reason: "helper_exit",
       config: expect.objectContaining({ outputKey: "stub" }),
     });
+  });
+
+  it("writes process FrameBus env for the default Studio manager path", async () => {
+    const renderer = createRenderer();
+    const adapter = {
+      configure: jest.fn().mockResolvedValue(undefined),
+      stop: jest.fn().mockResolvedValue(undefined),
+      sendFrame: jest.fn(),
+    };
+    const manager = new GraphicsManager({
+      createRenderer: () => renderer,
+      selectOutputAdapter: async () => adapter as never,
+      isDevelopmentMode: () => true,
+    });
+
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+
+    expect(process.env.BRIDGE_FRAMEBUS_NAME).toMatch(
+      /^broadify-framebus-[a-f0-9]{12}$/,
+    );
+    expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("3");
+    expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBe("1");
+  });
+
+  it("keeps process FrameBus env untouched for managers with FrameBus overrides", async () => {
+    process.env.BRIDGE_FRAMEBUS_NAME = "studio-bus";
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+    const renderer = createRenderer();
+    const adapter = {
+      configure: jest.fn().mockResolvedValue(undefined),
+      stop: jest.fn().mockResolvedValue(undefined),
+      sendFrame: jest.fn(),
+    };
+    const manager = new GraphicsManager({
+      createRenderer: () => renderer,
+      selectOutputAdapter: async () => adapter as never,
+      isDevelopmentMode: () => true,
+      frameBusOverrides: {
+        name: "bfy-meet-gfx-front",
+        slotCount: 3,
+      },
+      persistOutputConfig: false,
+    });
+
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+
+    expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe("studio-bus");
+    expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("4");
+    expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBe("1");
+    expect(renderer.configureSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        framebusName: "bfy-meet-gfx-front",
+        framebusSlotCount: 3,
+      }),
+    );
   });
 
   it("keeps lastOutputError and outputStatus=error when the persisted apply fails during initialize", async () => {

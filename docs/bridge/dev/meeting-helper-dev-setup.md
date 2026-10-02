@@ -85,6 +85,7 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_LIVE_SNAP` | Live-Edge-Snap: unset = Auto (age-gated, Snap nur bei frischer Maske), `1` = immer an, `0` = immer aus (kein Ghost/Jitter bei alter Maske) |
 | `BROADIFY_MEETING_GPU_RADIUS` | Radius des MPS Guided Filters |
 | `BROADIFY_MEETING_GPU_EPSILON` | Epsilon des MPS Guided Filters |
+| `BROADIFY_MEETING_GPU_REFINE_BUDGET_MS` | macOS-Budget fuer automatische Refine-Stepdowns |
 | `BROADIFY_MEETING_GPU_REFINE_WIDTH` | Zielbreite der MPS-Maske |
 | `BROADIFY_MEETING_GPU_EMA` | EMA-Staerke der MPS-Koeffizienten |
 | `BROADIFY_MEETING_COREML_UNITS` | CoreML Compute Units waehlen |
@@ -106,6 +107,27 @@ dokumentierten `BROADIFY_MEETING_*`-Variablen als validierte `--env`-Argumente
 weiter. Die Werte werden in Lifecycle-Logs nicht ausgegeben. `--parent-pid`
 aktiviert den Orphan-Watchdog, damit der Helper nach einem Bridge-Absturz Kamera
 und VCam nicht weiter belegt.
+
+## Refine-Width-Messung (vor Default-Flip)
+
+Vor einer Anhebung der Defaults muss das Feldprotokoll auf mindestens diesen
+Geraeten laufen: Apple Silicon Mac, Intel-Mac und Windows-iGPU.
+
+Messpins:
+
+| Plattform | Pin |
+| --- | --- |
+| macOS | `BROADIFY_MEETING_GPU_REFINE_WIDTH=1920` |
+| Windows | `BROADIFY_MEETING_MASK_WORK_WIDTH=960` |
+
+Pro Messung: 2 Minuten stabile Meeting-Helper-Nutzung mit Keyer und Program
+Output. Gate fuer den Default-Flip:
+
+- `program_fps >= 29.5`
+- `program_frame_ms` p95 < 25
+- macOS: `mask_apply_ms` p95 < 8
+- `mask_width x mask_height` = 1920x1080 auf macOS und 960x540 auf Windows
+- Windows: keine Tier-Wechsel-Events waehrend des Messfensters
 
 Der macOS-VCam-Reader verwendet denselben Standardnamen:
 `broadify-meeting-framebus`. Wenn `BRIDGE_MEETING_FRAMEBUS_NAME` gesetzt wird,

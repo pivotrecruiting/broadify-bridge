@@ -53,7 +53,7 @@ camera frame
 | `BROADIFY_MEETING_FUSED_POSTPROCESS` | `1` | Applies the postprocess chain on fused masks. |
 | `BROADIFY_MEETING_FUSED_SMOOTHER` | `ema` | `ema` uses motion-adaptive EMA and disables edge stabilization for fused masks; `edge` uses edge stabilization instead. |
 | `BROADIFY_MEETING_FUSED_EMA_STATIC` | `0.92` | Static-subject EMA weight for fused-mask stabilization. |
-| `BROADIFY_MEETING_MASK_WORK_WIDTH` | `512` | Guided-refine/postprocess work width cap. 16:9 defaults to 512x288. |
+| `BROADIFY_MEETING_MASK_WORK_WIDTH` | `512` | Guided-refine/postprocess work width pin. When unset, the governor caps the effective work width by tier: Full512 unrestricted, Balanced320 640, Performance256/Lite256/Off 512. 16:9 defaults to 512x288 in this PR. |
 | `BROADIFY_MEETING_GUIDED_RADIUS` | `4` | Guided-filter radius for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_EPSILON` | `5e-4` | Guided-filter epsilon for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_COEFF_EMA` | `0` | D3D11 guided-filter coefficient EMA; default off to avoid silhouette trails. |
