@@ -1,59 +1,47 @@
-# Task: Meeting-Aufnahme mit 0,35 bit/px, BT.709-Tags und konstanter Frame-Rate (macOS + Windows) (PR C)
+# Task: Kunden-/Support-Doku "Bildqualität in Teams und Zoom" (PR E, docs-only)
 
 ## Raw request
-Gabriel (Product Owner, 1.10.2026): Aufnahmen aus dem Meeting Mode sehen matschig aus. Befund: H.264 mit 0,2 bit/px (≈12,4 Mbit/s bei 1080p30), keine Farbraum-Tags, PTS = Host-Clock → reale Dateien laufen mit ~26 fps VFR. Entscheidung PO: H.264 bleibt, ca. 0,35 bit/px (~10 GB/h akzeptiert), BT.709-Tags, konstante Frame-Rate.
+Gabriel (Product Owner, 1./2.10.2026): Teil des Plans "besseres Bild live + Recording, Grafik echt 1080p". Nachdem Bridge-seitig die Virtual Camera 1920x1080 meldet (VCam-Build 20, PR #221), Grafiken 2x supersampled werden (PR #222) und Aufnahmen 0,35 bit/px, BT.709 und 30 fps CFR haben (PR #225), bleibt die Verschlechterung durch die Meeting-App selbst. Diese Doku erklärt Support und Kunden, was Teams/Zoom mit dem Bild machen und was man dagegen tun kann.
 
 ## Context
-- Customer / project: Broadify Bridge, Meeting-Helper Recorder (`apps/bridge/native/meeting-helper/src/recorder/`)
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-recorder-quality, feature/meeting-recorder-quality
+- Customer / project: Broadify Bridge, Support-Doku unter `docs/bridge/support/`
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-apps-quality-docs, feature/meeting-apps-quality-docs
 - Base branch: dev (573454e5)
-- Beide Plattformen: macOS (AVAssetWriter, `.mm`) und Windows (Media Foundation, `.cpp`). Windows kann lokal nicht kompiliert werden (nur Code-Review + CI); macOS wird lokal gebaut und per ctest geprüft.
+- Recherchierte Fakten (28.9.2026, Quellen unten): Teams optimiert bis 1080p/30 fps je nach Bandbreite, liefert "HD unter 1,5 Mbit/s", nutzt Simulcast (Stufen 1080p/720p/540p/360p/240p/180p), die gesendete Auflösung hängt davon ab, wie groß die Empfänger das Video rendern (Spotlight/Anpinnen → größer → höhere Stufe); Teams-Videofilter "Soft focus" (Weichzeichner) und "Adjust brightness" existieren, Standard aus; Teams-Aufnahmen in OneDrive/SharePoint sind 1080p, in Stream geringer. Zoom: "HD" in den Videoeinstellungen = 720p; 1080p nur Business/Enterprise auf Anfrage (Gruppen-HD), ~2 Mbit/s, bei virtuellem Hintergrund ohne Greenscreen Deckel 720p. Broadify selbst: VCam 1920x1080 BGRA 30 fps (ab Build 20), Aufnahme 1080p30 CFR ≈ 22 Mbit/s H.264 BT.709 (≈ 10 GB/h).
+- Quellen (im Dokument verlinken, Zahlen nicht als Broadify-Garantie formulieren): https://learn.microsoft.com/en-us/azure/communication-services/concepts/voice-video-calling/simulcast ; https://learn.microsoft.com/en-us/answers/questions/4398515/1080p-on-microsoft-teams ; https://support.microsoft.com/en-us/teams/meetings/use-video-in-microsoft-teams ; https://petri.com/microsoft-changelog/m365-changelog-soft-focus-and-adjust-brightness-in-teams-video-meetings/ ; https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0066166 ; https://learn.microsoft.com/en-us/answers/questions/4423721/high-quality-video-of-teams-meeting-recording
 
 ## Plan
-Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS3 (PR C)". Kurzfassung:
-
-1. Neu `apps/bridge/native/meeting-helper/src/recorder/recorder_encode_policy.h` (header-only, plattformfrei, `constexpr`/inline, Namespace `broadify::meeting`):
-   - `kRecorderBitsPerPixel = 0.35`, `kRecorderMinBitrateBps = 2'000'000`, `kRecorderMaxBitrateBps = 40'000'000`.
-   - `uint64_t recorderVideoBitrateBps(uint32_t width, uint32_t height, uint32_t fps)` (fps 0 → 30), `uint32_t recorderKeyframeInterval(uint32_t fps)` = fps*2.
-   - `class RecorderFrameClock { explicit RecorderFrameClock(uint32_t fps); struct Plan { uint64_t firstIndex; uint32_t count; bool discontinuity; }; Plan plan(uint64_t elapsedNs) const; void commit(uint32_t written); }`: `target = round(elapsedNs * fps / 1e9)`; `target < nextIndex` → `count 0`; sonst `gap = target - nextIndex + 1`, `count = min(gap, 4)`, `firstIndex = nextIndex`; Lücke > 1 s (`gap > fps`) → `discontinuity = true`, `firstIndex = target`, `count = 1`. `commit(written)` setzt `nextIndex = firstIndex + written` (nur für geschriebene Frames; nicht geschriebene Slots füllt der nächste Aufruf). Kurzer englischer Header-Kommentar mit der Semantik.
-2. macOS `recorder_writer_factory.mm` (Z. 39-57): Bitrate aus der Policy (Formel + Clamp entfernen); Compression-Properties zusätzlich `AVVideoExpectedSourceFrameRateKey: fps`, `AVVideoAllowFrameReorderingKey: @NO`, `AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC`, `AVVideoMaxKeyFrameIntervalKey: recorderKeyframeInterval(fps)`; `AVVideoColorPropertiesKey: @{ AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2, AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2, AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2 }` in `videoSettings`. Kommentar in `recorder_writer_factory.h:27-30` ergänzen.
-3. macOS `meeting_recorder.mm`: `Impl` + `RecorderFrameClock frameClock{30}`, Zähler `duplicatedFrames`, `droppedFrames` (intern, `RecordingStatus`-Shape NICHT ändern). `start` initialisiert `frameClock = RecorderFrameClock(safeFps)`. `appendVideoFrame`: `elapsedNs` aus `CMTimeSubtract(CMClockGetTime(host), sessionStart)`; Pool-Buffer wie heute füllen, danach `CVBufferSetAttachment` mit `kCVImageBufferColorPrimariesKey/TransferFunctionKey/YCbCrMatrixKey` = `..._ITU_R_709_2`; `plan = frameClock.plan(elapsedNs)`; Schleife `i < plan.count`: `if (!videoInput.isReadyForMoreMediaData) break;` → PTS `CMTimeAdd(sessionStart, CMTimeMake(plan.firstIndex + i, fps))` → `appendPixelBuffer`; danach `frameClock.commit(written)`; `videoFrames += written`. Env `BROADIFY_MEETING_RECORDER_CFR=0` (gelesen beim `start`) → heutiges Host-Clock-PTS ohne Fill. Drops/Discontinuities einmal pro Aufnahme über `logRecorderEvent` sichtbar machen (kein Log-Spam).
-4. Windows `meeting_recorder_mediafoundation.cpp`: Bitrate aus Policy (Z. 486-495); Output-Type (Z. 497-506) + `MF_MT_VIDEO_NOMINAL_RANGE = MFNominalRange_16_235`, `MF_MT_YUV_MATRIX = MFVideoTransferMatrix_BT709`, `MF_MT_TRANSFER_FUNCTION = MFVideoTransFunc_709`, `MF_MT_VIDEO_PRIMARIES = MFVideoPrimaries_BT709`; Input-Type (Z. 514-523) + `MF_MT_VIDEO_NOMINAL_RANGE = MFNominalRange_0_255`; nach `SetInputMediaType` best-effort `ICodecAPI` über `writer->GetServiceForStream(videoStream, GUID_NULL, IID_PPV_ARGS(&codecApi))`: `CODECAPI_AVEncMPVGOPSize = fps*2`, `CODECAPI_AVEncMPVDefaultBPictureCount = 0` (Fehler nur loggen). `Impl` + Clock; Video-PTS (Z. 655-657): pro Index ein `IMFSample` mit demselben `IMFMediaBuffer`, `SetSampleTime(MFllMulDiv(index, 10000000, fps, 0))`, `SetSampleDuration(MFllMulDiv(1, 10000000, fps, 0))`; `WriteSample`-Fehler → nicht committen. Gleicher CFR-Kill-Switch. fMP4-Container bleibt.
-5. Allowlist `apps/bridge/src/services/meeting/meeting-helper-manager.ts` (`MEETING_HELPER_FORWARDED_ENV_KEYS`, Z. 74-114): `BROADIFY_MEETING_RECORDER_CFR` ergänzen; Test `meeting-helper-manager.test.ts` (Z. 177-215) erweitern.
-6. Tests:
-   - Neu `apps/bridge/native/meeting-helper/tests/recorder_encode_policy_test.cpp` (plattformfrei, in `CMakeLists.txt` nach dem Muster `guided_work_size_test` Z. 305-308 als `add_executable` + in die `foreach(helper_test …)`-Liste Z. 484 ff. aufnehmen): 1080p30 → 21,0–22,5 Mbit; 720p30 ≈ 9,7 Mbit; 4K30 → 40 Mbit (Clamp); 160x90 → 2 Mbit (Clamp); Keyframe 30 → 60; Clock: On-Grid-Ticks → je count 1; 3-Frame-Lücke → 3; 6-Frame-Lücke → 4 dann 2; 1,5-s-Lücke → discontinuity + 1; früher Tick → 0; nicht committete Slots füllt der nächste Plan.
-   - `tests/meeting_recorder_writer_test.mm` (nur APPLE): nach `makeRecorderWriter` `videoInput.outputSettings` prüfen (Bitrate == Policy, `AVVideoColorPropertiesKey` vorhanden, `AVVideoAllowFrameReorderingKey` NO); Frame-Schleife über die Clock treiben; nach `finishWriting` per `AVAsset` `nominalFrameRate == 30 ± 0.05` prüfen (Color-Extension-Check optional).
-   - Jest/Zod unverändert (kein neues Payload-Feld).
-7. Doku `docs/bridge/features/meeting-recording.md`: neuer Abschnitt "Encoding" (H.264 High, 0,35 bpp, Clamp 2–40 Mbit/s, CFR-Gitter + Fill-Regeln, BT.709-Tags, ffprobe-Prüfzeile, ~10 GB/h, Env `BROADIFY_MEETING_RECORDER_CFR`) + Windows-Dateilebenszyklus (fMP4).
-
-Konventionen: Code-Kommentare Englisch; keine Secrets; keine Änderungen außerhalb der genannten Dateien; `npm run build:meeting-helper && npm run test:meeting-helper-native` wird vom Verifier ausgeführt, du darfst `cmake`/ctest für die neuen Tests lokal laufen lassen, wenn es schnell geht.
+1. Neue Datei `docs/bridge/support/meeting-apps-teams-zoom.md` (Deutsch, Stil wie `docs/bridge/support/vcam-runbook.md`: Überschrift, Zielgruppe "Support und Kunden-IT", Tabellen, Kommandos in Codeblöcken). Gliederung:
+   1. Was Broadify liefert (VCam 1920x1080@30 ab VCam-Build 20; Aufnahme 1080p30 CFR, ≈ 22 Mbit/s H.264 High, BT.709, ≈ 10 GB/h; Vorschau in der Webapp ist verkleinert und wirkt deshalb schärfer als 1:1).
+   2. Was die Meeting-App daraus macht (Sendeauflösung adaptiv nach Bandbreite, CPU, Teilnehmerzahl und Layout; Empfänger sehen in der Galerie oft 720p/540p oder weniger; Selbstansicht ≠ Remote-Bild; nicht durch Broadify beeinflussbar).
+   3. Teams: keine Nutzer-Einstellung für die Sendeauflösung; Spotlight/Anpinnen des Broadify-Teilnehmers erhöht die gesendete Stufe; "Anrufintegrität"/Anrufdaten zeigen Sende-Auflösung und Bitrate; Admin-Meeting-Richtlinie (Medienbitrate); Videofilter "Soft focus" und "Adjust brightness" ausschalten; Kamera nach einem VCam-Update in Teams einmal neu auswählen; Teams-Aufnahme: OneDrive/SharePoint 1080p.
+   4. Zoom: Einstellungen → Video → "HD" aktivieren (720p); 1080p nur mit Konto-Freigabe (Business/Enterprise, Gruppen-HD), meist nur in der Sprecheransicht; virtueller Hintergrund ohne Greenscreen deckelt auf 720p (Broadify-Keyer statt Zoom-Hintergrund nutzen); Statistik → Video zeigt Sendeauflösung/fps.
+   5. Prüfen, ob die Kamera 1080p liefert: macOS QuickTime "Neue Filmaufnahme" mit "broadify Camera" (Aufnahme → Informationen zeigen 1920x1080) und `systemextensionsctl list | grep broadify` → `(1.0/20)`; Windows Kamera-App → Einstellungen → Videoqualität 1080p.
+   6. Aufnahmequalität prüfen: ffprobe-Zeile aus `docs/bridge/features/meeting-recording.md` übernehmen (Auflösung, `avg_frame_rate 30/1`, `bit_rate`, `color_primaries bt709`); Speicherbedarf ≈ 10 GB/h.
+   7. Gestaltung für Downscale: Mindestschriftgrößen für Lower Thirds (Faustregel: Schrift ≥ 40 px auf dem 1080p-Canvas, Linien ≥ 3 px, hoher Kontrast), weil Teams/Zoom auf 720p oder weniger skalieren und 4:2:0-Chroma dünne farbige Kanten verwischt.
+   8. Checkliste "Bild wirkt matschig": VCam-Build ≥ 20, App-Statistik (gesendete Auflösung), Upload ≥ 4 Mbit/s stabil (LAN statt WLAN), Soft-Focus aus, Spotlight/Pin, Display-Skalierung beim Betrachter, Preset-Schriftgrößen.
+   9. Paste-fertiger Support-Text (DE, 6–8 Sätze) für Kundenantworten.
+   Hinweis-Box am Anfang: Vendor-Verhalten ändert sich; Quellen mit Datum (28.9.2026) verlinken.
+2. Verlinkung: `docs/bridge/support/vcam-runbook.md` (im macOS-Abschnitt und in der Eskalation ein Satz "Bildqualität in Teams/Zoom → meeting-apps-teams-zoom.md"), `docs/bridge/features/meeting-field-checklist.md` (Zeile zum Teams-Bild, falls vorhanden; sonst kurzer Eintrag), `docs/bridge/README.md` (Index-Eintrag unter Support).
+3. Keine Code-Änderungen. Keine Zahlen erfinden; was nicht aus den Quellen oder dem Repo belegt ist, als Einschätzung kennzeichnen.
 
 ## Acceptance criteria
-1. Beide Writer nutzen `recorder_encode_policy.h`; keine doppelte Bitrate-Formel mehr.
-2. macOS-Writer setzt ColorProperties 709, Reordering NO, CABAC, ExpectedSourceFrameRate, Keyframe fps*2.
-3. Video-PTS liegen auf dem `1/fps`-Gitter relativ zu `sessionStart`; Lücken werden bis 4 Frames gefüllt, >1 s springt; Drops durch `isReadyForMoreMediaData` committen nicht; Kill-Switch `BROADIFY_MEETING_RECORDER_CFR=0` stellt Host-Clock-PTS her.
-4. Windows-Writer setzt die vier Farbraum-Attribute, Input-Range 0-255, GOP best-effort, CFR-Gitter.
-5. `recorder_encode_policy_test` ist in CMake registriert und grün; `meeting_recorder_writer_test` grün (macOS).
-6. Allowlist + Jest-Test erweitert; `npm run lint` grün.
-7. Doku aktualisiert.
+1. `docs/bridge/support/meeting-apps-teams-zoom.md` existiert mit den 9 Abschnitten, Deutsch, Quellen verlinkt, Datum der Recherche genannt.
+2. Verlinkungen in `vcam-runbook.md`, `meeting-field-checklist.md` und `docs/bridge/README.md` vorhanden.
+3. Keine Änderungen außerhalb von `docs/`. `npm run lint` bleibt grün (Docs sind nicht gelintet, Kommando trotzdem einmal ausführen).
 
 ## Review
 - Round: 2/3
-- Verdict: PASS nach Runde 2 (Runde 1 Verifier 2.10.2026: AC1/2/3/6/7 PASS, AC4 PASS per Code-Review, AC5 Teil-FAIL → 2 MUST-FIX; Runde 2 Fixes durch Codex, Re-Verifikation durch Orchestrator: `npm run build:meeting-helper` Exit 0, `npm run test:meeting-helper-native` 34/34 passed inkl. `meeting_recorder_writer_test` (2,55 s) und `recorder_encode_policy_test`, `npm run lint` Exit 0).
+- Verdict: PASS nach Runde 2 (Runde 1 Verifier 2.10.2026: Struktur/Verlinkung/Lint PASS, Fakten FAIL → 4 MUST-FIX; Runde 2 Fixes durch Codex, Spot-Check durch Orchestrator: Zoom 2 Mbit/s → HD/720p, 1080p 3,0/3,8 Mbit/s; Teams-Aufnahme-Zahl gestrichen; Capture-Event als Eingangskamera; Einschätzungs-Markierungen + Microsoft-Links; `npm run lint` Exit 0).
 - Must-fix (open): keine
-- Must-fix (resolved):
-  1. `tests/meeting_recorder_writer_test.mm` öffnete `AVAsset` auf der `.mp4.part`-Sidecar (AVFoundation verweigert die Endung, AVError -11828). Fix: Sidecar wie in Produktion auf den finalen `.mp4`-Pfad verschieben und dort sondieren. (Das in der Codex-Sandbox gemeldete `audio_input_rejected` war ein Sandbox-Artefakt.)
-  2. `meeting_recorder_mediafoundation.cpp` ICodecAPI: `#include <initguid.h>` vor `<codecapi.h>` plus `<icodecapi.h>` (Windows-only, Muster `vcam-helper/windows/dllmain.cpp`); die TU definiert sonst keine GUIDs. Windows-Compile weiterhin nur über CI/Windows-Laptop belegbar.
-- Notes (non-blocking):
-  1. `RecorderFrameClock::plan` nicht `const` (braucht `firstIndex` für `commit`) — sinnvolle Abweichung.
-  2. macOS `droppedFrames` überzeichnet bei Backpressure (nur intern).
-  3. `appendVideoFrame` hält den Impl-Mutex über bis zu 4 Appends; Audio-Delegate konkurriert (begrenzt).
-  4. Bei `plan.count == 0` wird der Pool-Buffer trotzdem gefüllt (nur CPU).
-  5. Windows-`logRecorderEvent` ohne `jsonEscape`; Allowlist-Eintrag nicht alphabetisch.
-- Handoff to human (if any): Windows-Compile nur über `test-release/**`-Push oder Windows-Laptop; echte Aufnahme-Probe (12 Mbit/s/~26 fps → ~22 Mbit/s/30 CFR/bt709) braucht Hardware → RC-Feldtest. Verifier-Sonde: 709-Tags, nominalFrameRate 30.000, 90/90 Samples exakt auf dem 1/30-Gitter nachgewiesen.
+- Must-fix (resolved in Runde 2):
+  1. Z. 69 Zoom: "~2 Mbit/s" gehört laut KB0066166 zum HD-Setting (720p); 1080p braucht mind. 3,0 Mbit/s Empfang / 3,8 Mbit/s Senden.
+  2. Z. 54 Teams-Aufnahme "OneDrive/SharePoint 1080p": Q&A 4423721 sagt das nicht; einzige Fundstelle ist eine Tech-Community-Antwort (MVP, 3.11.2020). Als Community-Angabe (2020) kennzeichnen und verlinken oder neutral formulieren.
+  3. Z. 103-105 `camera_native_media_type_selected` ist das Event der Eingangskamera (`camera_mediafoundation.cpp`), nicht der VCam → als "Eingangskamera öffnet 1080p-Nativtyp" formulieren.
+  4. Unbelegte Aussagen kennzeichnen/belegen: Simulcast-Stufen stammen aus der Azure-Communication-Services-Doku (Übertragung auf Teams = Einschätzung); "keine Nutzer-Einstellung für Sendeauflösung" (Einschätzung); Zoom "meist nur Sprecheransicht" (Einschätzung); Anrufintegrität und Medienbitrate-Policy mit Quellen belegen (https://support.microsoft.com/de-de/office/7bb1747c-d91a-4fbb-84f6-ad3f48e73511 ; https://learn.microsoft.com/en-us/microsoftteams/meeting-policies-audio-and-video); Zoom "Statistik → Video" kennzeichnen.
+- Notes (non-blocking, in Runde 2 mit erledigt, wenn billig): "ab VCam-Build 20" nur macOS (Windows lieferte schon 1080p); ffprobe-Zeile an `meeting-recording.md` angleichen + Link; "Broadify-Release-Kontext" durch Verweise auf Repo-Doku ersetzen; Soft-Focus-Default dem MC352623-Post zuordnen; Zoom "muss durch Zoom-Support aktiviert werden"; `->` statt `→`; Support-Text: "Anrufintegrität" als UI-Begriff.
+- Handoff to human (if any): Petri-Link per WebFetch 403 (Bot-Sperre), inhaltlich durch MC352623-Spiegel gedeckt; deutsche UI-Labels der Teams-Filter unverifiziert.
 
 ## Verification
-- [ ] Tests pass (ctest + Jest)
-- [ ] Lint / type-check pass
-- [ ] `npm run build:meeting-helper && npm run test:meeting-helper-native` (Verifier, macOS)
-- [ ] Bug reproduced before the fix, gone after (Probe: 12 Mbit/s / ~26 fps VFR / ohne colr → ~22 Mbit/s / 30 fps CFR / bt709)
+- [ ] Doku-Review durch Verifier (Fakten gegen Quellen und Repo, Links auflösbar, Stil)
+- [ ] `npm run lint` grün
