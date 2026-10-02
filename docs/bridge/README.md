@@ -11,6 +11,7 @@
 - Subsystem Output & Helper: `docs/bridge/subsystems/output-helper.md`
 - Subsystem Config & Logging: `docs/bridge/subsystems/config-logging.md`
 - Feature: Graphics Commands & Payloads: `docs/bridge/features/graphics-commands.md`
+- Feature: Meeting Status Contract: `docs/bridge/features/meeting-status-contract.md`
 - Feature: Output-Konfiguration & Pixel-Policy: `docs/bridge/features/output-config.md`
 - Feature: Assets & Template-Security: `docs/bridge/features/assets-and-template-security.md`
 - Feature: Engine Connection Lifecycle: `docs/bridge/features/engine-connection-lifecycle.md`
