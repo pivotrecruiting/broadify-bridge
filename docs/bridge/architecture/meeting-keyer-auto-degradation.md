@@ -24,13 +24,13 @@ backoff), generalized to a multi-tier ladder; step-UPS are estimate-based
 Best tier first. The governor only ever steps one tier at a time (except the
 initial seed, which may jump).
 
-| Tier | MODNet input | Execution |
-| --- | --- | --- |
-| `Full512` | 512 (`high_quality`) | fused synchronous, mask age 0 |
-| `Balanced320` | 320 (`balanced`) | fused synchronous, mask age 0 |
-| `Performance256` | 256 (`performance`) | fused synchronous, mask age 0 |
-| `Lite256` | 256 | async worker (mask reuse keeps program at frame rate) |
-| `Off` | – | passthrough, keyer status reports `gpu_too_slow` |
+| Tier | MODNet input | Work-width cap | Execution |
+| --- | --- | --- | --- |
+| `Full512` | 512 (`high_quality`) | unrestricted | fused synchronous, mask age 0 |
+| `Balanced320` | 320 (`balanced`) | 640 | fused synchronous, mask age 0 |
+| `Performance256` | 256 (`performance`) | 512 | fused synchronous, mask age 0 |
+| `Lite256` | 256 | 512 | async worker (mask reuse keeps program at frame rate) |
+| `Off` | - | 512 | passthrough, keyer status reports `gpu_too_slow` |
 
 ## Thresholds
 
@@ -45,7 +45,7 @@ initial seed, which may jump).
   this guard and the step-up estimate judge the live cost.
 - Step up (estimate-based, NO live probes): the governor climbs one tier only
   when the higher tier's cost ESTIMATE fits the budget with strong margin:
-  `estimatedMs(nextTierUp) <= stepUpFactor (0.7) x frameBudgetMs`. The
+  `estimatedMs(nextTierUp) <= stepUpFactor (0.8) x frameBudgetMs`. The
   estimate scales the current-tier EMA by the input pixel-area ratio
   (validated within ~10%): `320 -> 512` = x2.56, `256 -> 320` = x1.5625,
   `Lite256 -> Performance256` = x1.0 (same input size – the async-measured
@@ -54,12 +54,12 @@ initial seed, which may jump).
   Additional requirements: at least 10 samples at the current tier AND at
   least the step-up holdoff (base 10 s) since the last tier change.
 - Wrong estimate: if a step-up is followed by a step-down within 30 samples,
-  the step-up holdoff doubles (capped at 600 s) persistently for the session
+  the step-up holdoff doubles (capped at 120 s) persistently for the session
   – it never resets downward, so a borderline machine cannot re-enter a
   visible wobble at a fixed period.
 - `Off -> Lite256`: stays time-based (async cannot stall the program loop and
   Off produces no samples to estimate from): backoff starts at 60 s, doubles
-  (capped at 600 s) on every relapse to Off, never resets within a session.
+  (capped at 120 s) on every relapse to Off, never resets within a session.
 - Reset: disabling the keyer resets governor (including the learned
   backoffs), cadence and mask retention (clean probe on re-enable). Camera
   hiccups do not reset learned state.

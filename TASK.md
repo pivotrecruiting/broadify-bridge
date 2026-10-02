@@ -1,62 +1,55 @@
-# Task: 2x Supersampling für Meeting-Grafik-Planes bei 1080p, nativer Downscale, Windows-Clamp-Fallback (PR B)
+# Task: Keyer-Refine-Plumbing (PR D1): Tier-Cap für Windows-Work-Width, macOS Refine-Budget und Modus-Kopplung, Envs weiterleiten (Defaults unverändert)
 
 ## Raw request
-Gabriel (Product Owner, 1.10.2026): Meeting-Grafiken (Lower Thirds, Logos, Slides) sollen "wirklich in 1080p" sauber ankommen. Befund: Der Electron-Offscreen-Renderer rastert die Meeting-Planes bei 1920x1080 mit Render-Scale 1 (Supersampling nur bis 1280x720), Downscale läuft in reinen JS-Schleifen.
+Gabriel (Product Owner, 1.10.2026): Keyer-Default anheben (macOS Refine 1920 statt 960, Windows Work-Width höher), aber mit Messung vor dem Default-Flip und Governor-Absicherung. Dieser PR liefert NUR das Plumbing und die Absicherung; die Defaults (960 / 512) bleiben in diesem PR unverändert. Der Flip folgt in D2 nach der Messung.
 
 ## Context
-- Customer / project: Broadify Bridge, Graphics-Renderer (Electron offscreen), Meeting-Planes `bfy-meet-gfx-back` / `bfy-meet-gfx-front`
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-graphics-supersample, feature/meeting-graphics-supersample
+- Customer / project: Broadify Bridge, Meeting-Helper Keyer (`apps/bridge/native/meeting-helper/src/keyer`, `src/pipeline`, `src/compose`)
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/keyer-refine-plumbing, feature/keyer-refine-plumbing
 - Base branch: dev (573454e5)
-- Studio-Renderer (1080p50/60) darf sich NICHT ändern (Scale 1 bleibt).
+- macOS fused CoreML hat KEINEN Governor (Governor-Block ist `#elif defined(_WIN32)` in `pipeline/frame_pipeline.cpp:2615`); Windows hat die Tier-Leiter Full512/Balanced320/Performance256/Lite256/Off (`keyer/keyer_governor.h:14`).
 
 ## Plan
-Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS2 (PR B)". Kurzfassung:
+Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS4 (PR D1/D2)", Teil D1. Kurzfassung:
 
-Dateien: `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts` (+ `.test.ts`), `apps/bridge/src/services/graphics/renderer/perf-logging.ts` (+ `.test.ts`), Doku.
+1. Allowlist `apps/bridge/src/services/meeting/meeting-helper-manager.ts` (`MEETING_HELPER_FORWARDED_ENV_KEYS`, Z. 74-114): `BROADIFY_MEETING_GPU_REFINE_BUDGET_MS` ergänzen (alphabetisch); Test `meeting-helper-manager.test.ts` (Z. 177-215) erweitern.
+2. Windows Work-Width mit Tier-Cap:
+   - `apps/bridge/native/meeting-helper/src/pipeline/guided_work_size.{h,cpp}`: neue Funktionen `void setGuidedWorkWidthTierCap(uint32_t cap)` (atomic, 0 = unbegrenzt) und `uint32_t guidedWorkWidth()` = Env-Pin (`BROADIFY_MEETING_MASK_WORK_WIDTH`, wenn gesetzt → gewinnt, A/B-Regel) sonst `min(kDefaultMaskWorkWidth, cap)`; Pure-Function `uint32_t guidedWorkWidthCapForTier(GovernorTier tier)` (Full512 → 0/unbegrenzt, Balanced320 → 640, Performance256/Lite256/Off → 512). `guidedWorkWidthFromEnv()` bleibt für Rückwärtskompatibilität (oder wird auf `guidedWorkWidth()` umgeleitet). Default `kDefaultMaskWorkWidth` bleibt 512.
+   - `compose/d3d11_compositor.cpp:1190-1191` und `pipeline/guided_mask_refine.cpp:158-159`: `guidedWorkWidthFromEnv()` → `guidedWorkWidth()`.
+   - `pipeline/frame_pipeline.cpp` Windows-Block (ab Z. 2622, `fusedGovernor`): bei Tier-Wechsel `setGuidedWorkWidthTierCap(guidedWorkWidthCapForTier(tier))` setzen (an der Stelle, wo das Tier-Label/`performanceModeForTier` übernommen wird).
+3. macOS Refine-Budget und Modus-Kopplung:
+   - `keyer/gpu_mask_refine.{h,mm}`: `void setMaxOutputWidth(uint32_t)` (Env-Pin `BROADIFY_MEETING_GPU_REFINE_WIDTH` gewinnt, wenn gesetzt); EMA der `encodeRefine`-Wandzeit (Z. 165-167 misst `waitUntilCompleted` ohnehin); Env `BROADIFY_MEETING_GPU_REFINE_BUDGET_MS` (Default 8.0); liegt die EMA über ≥30 Samples über dem Budget → einmalige, sessionweite Stufe auf 960 (nur wenn aktuell > 960) + eine `emitHelperEvent`-Zeile `{"type":"keyer_refine_stepdown",...}`; kein erneuter Step-up in derselben Session.
+   - `keyer/coreml_keyer.mm:69`: den bisher ignorierten `settings`-Parameter nutzen: `settings.performanceMode == "performance"` → `setMaxOutputWidth(960)`, sonst Default (unverändert 960 in diesem PR; D2 hebt den Default auf 1920).
+   - Effektive Breite erscheint bereits als `mask_width x mask_height` in den Metriken; zusätzlich `refine_width` im Keyer-Status-JSON (`control/control_server.cpp:225-258`) additiv ausgeben.
+4. Tests: `apps/bridge/native/meeting-helper/tests/guided_work_size_test.cpp` (Z. 21-33) um Tier-Caps (Full512 unbegrenzt, Balanced320 → 640, Performance256 → 512) und Env-Pin-Vorrang erweitern; `guided_mask_refine_test.cpp` auf 512-Annahmen prüfen und ggf. anpassen. Jest für die Allowlist.
+5. Messprotokoll als Doku: `docs/bridge/dev/meeting-helper-dev-setup.md` neuer Abschnitt "Refine-Width-Messung (vor Default-Flip)": Geräte (Apple Silicon, Intel-Mac, Windows-iGPU), Pins `BROADIFY_MEETING_GPU_REFINE_WIDTH=1920` (mac) / `BROADIFY_MEETING_MASK_WORK_WIDTH=960` (win), 2 min, Gate `program_fps ≥ 29.5`, `program_frame_ms` p95 < 25, `mask_apply_ms` (mac) < 8, `mask_width x mask_height` = 1920x1080 / 960x540, Windows ohne Tier-Wechsel-Events. Außerdem `docs/bridge/features/meeting-keyer-windows.md` (Tier-Cap in der Env-Tabelle) und `docs/bridge/architecture/meeting-keyer-auto-degradation.md` (Work-Width-Spalte in der Tier-Ladder; Zahlen korrigieren: `stepUpFactor` ist 0.8 nicht 0.7, `reprobeMaxInterval` ist 120 s nicht 600 s).
 
-1. `resolveRenderScale(width, height, meetingBus: boolean, clampFallback: boolean)` (heute Z. 255-263), Reihenfolge:
-   a. Env `BRIDGE_GRAPHICS_SUPERSAMPLE` explizit gesetzt → 1..3 wie heute (globaler Vertrag, auch globaler Kill-Switch).
-   b. `clampFallback` → 1.
-   c. `meetingBus && width*height <= 1920*1080` → Env `BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE` (Default 2; `0`/`1` deaktiviert; Clamp 1..3).
-   d. sonst bestehende Regel (≤1280x720 → 2, sonst 1).
-   Aufruf in `ensureSingleWindow` (Z. 1085) mit `isMeetingGraphicsBus()`; der Format-Mismatch-Vergleich (Z. 1088-1105) enthält `renderScale` bereits.
-2. Neuer Helper `captureImageToRgba(image, width, height): { buffer: Buffer; resizePath: "native" | "js" } | null`, genutzt im Paint-Handler (Z. 1176-1197) UND in `writeCapturedWindowFrame` (Z. 1475-1497): bei `image.getSize() != target` und vorhandener `image.resize`-Funktion → `image.resize({ width, height, quality: "best" })` → `bgraToRgba(resized.toBitmap())`; ist `resize` nicht vorhanden oder die Ergebnisgröße falsch → bestehender `normalizeCapturedRgbaFrame`-Pfad (JS-Fallback). `toBitmap()` darf nie auf dem großen Bild laufen, wenn `resize` verfügbar ist.
-3. `resizePath` und `renderScale` in das Log "First FrameBus frame written" (Z. 1236-1256) und in die Perf-Zeile (`perf-logging.ts`) aufnehmen.
-4. Clamp-Fallback: `ensureWindowContentSize` (Z. 904-954) gibt `boolean` zurück (Content passt). In `ensureSingleWindow` nach dem Aufruf: passt der Content nicht und `renderScale > 1` → Modul-Flag `supersampleClampFallback = true`, `logger.warn(..., "[GraphicsRenderer] Supersampling disabled after work-area clamp")`, `destroySingleWindow()` und GENAU EIN Retry; Flag-Reset nur in `applyRendererConfig` bei Formatwechsel (nicht in `destroySingleWindow`, damit der Recover-Pfad Z. 1027 es behält). Bleibt es bei Scale 1 geklemmt, greift der bestehende Error-Log.
-5. NICHT ändern: `electron-renderer-dom-runtime.ts`, `layout-runtime.ts`, `graphics-pixel-utils.ts` (bleibt Fallback), Alpha-Semantik.
-6. Tests `electron-renderer-entry.test.ts`: Image-Mocks (Z. 2620-2622, 2738-2740, 2790-2797) um `resize: jest.fn(({width,height}) => ({ getSize, isEmpty, toBitmap: () => Buffer.alloc(width*height*4, fill) }))` erweitern, plus Variante ohne `resize` für den JS-Fallback. Neue Tests:
-   - "meeting bus at 1080p supersamples 2x and downsamples natively": Bus `bfy-meet-gfx-back`, BrowserWindow 3840x2160, Paint 3840x2160 → `resize` mit `{width:1920,height:1080,quality:"best"}`, `writeFrame`-Buffer 1920*1080*4, Log `renderScale: 2`, `resizePath: "native"`.
-   - "studio 1080p keeps scale 1": bestehender Test Z. 4021 bleibt grün, zusätzlich `renderScale: 1` asserten.
-   - "falls back to scale 1 when Windows clamps the supersampled window": Meeting-Bus, `mockGetContentSize` liefert `[1920,1032]` → zweiter `BrowserWindow`-Aufruf mit 1920x1080 + Warn-Log.
-   - `BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE=1` deaktiviert; `BRIDGE_GRAPHICS_SUPERSAMPLE=1` gewinnt global.
-   - JS-Fallback, wenn `resize` fehlt.
-   Bestehende Tests Z. 2912/2937/3640 bleiben unverändert grün. `perf-logging.test.ts` um das neue Feld ergänzen.
-7. Doku: `docs/bridge/architecture/graphics-realtime-renderer.md` neuer Abschnitt "Supersampling & Capture-Downscale" (Regeln, Envs, nativer Resize, Clamp-Fallback); `docs/bridge/features/meeting-windows-performance.md` Hinweis auf zusätzliche GPU-Last der 4K-Offscreen-Back-Plane.
-
-Konventionen: Code-Kommentare Englisch; keine neuen Dependencies; keine Änderungen außerhalb der genannten Dateien.
+Konventionen: Code-Kommentare Englisch; keine Default-Änderungen (960/512 bleiben); keine Änderungen außerhalb der genannten Dateien; Windows-Code wird lokal nicht kompiliert (CI), daher besonders sorgfältig; macOS-Build + ctest macht der Verifier.
 
 ## Acceptance criteria
-1. Meeting-Bus bei 1920x1080 → BrowserWindow 3840x2160, `renderScale: 2`; Studio-Bus bei 1920x1080 → 1920x1080, `renderScale: 1`; 720p-Regel unverändert.
-2. Env-Vorrang: `BRIDGE_GRAPHICS_SUPERSAMPLE` global vor `BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE` (Default 2, `0`/`1` aus).
-3. Paint- und Capture-Pfad skalieren per `NativeImage.resize({quality:"best"})` und fallen ohne `resize` auf den JS-Pfad zurück; `resizePath` wird geloggt.
-4. Windows-Clamp bei Scale 2 → genau ein Neuaufbau mit Scale 1 + Warn-Log; Clamp bei Scale 1 → bestehendes Verhalten.
-5. `npx jest apps/bridge/src/services/graphics/renderer --runInBand` grün; `npm run lint` grün für geänderte Dateien.
-6. Doku aktualisiert.
+1. `guidedWorkWidth()` respektiert Env-Pin > Tier-Cap > Default; D3D11- und CPU-Refine nutzen es; der Windows-Governor setzt den Cap bei Tier-Wechsel.
+2. macOS: Refine-Breite ist über `setMaxOutputWidth` steuerbar, `performance`-Modus → 960; Budget-Stepdown greift einmalig bei EMA > Budget über ≥30 Samples und emittiert ein Event; Env-Pin gewinnt.
+3. Defaults unverändert (macOS 960, Windows 512); Verhalten ohne Envs ist bis auf die neue Metrik identisch.
+4. `guided_work_size_test` erweitert und grün; Jest-Allowlist-Test grün; `npm run lint` grün.
+5. Doku (Messprotokoll + Korrekturen) vorhanden.
 
 ## Review
-- Round: 1/3
-- Verdict: PASS (Verifier 2.10.2026, separater Agent; alle 6 Akzeptanzkriterien PASS)
+- Round: 2/3
+- Verdict: PASS nach Runde 2 (Runde 1 Verifier 2.10.2026: 1 MUST-FIX; Runde 2 Fix durch Codex, Re-Verifikation durch Orchestrator: `npm run build:meeting-helper` Exit 0, `npm run test:meeting-helper-native` 33/33 passed, `npm run lint` Exit 0).
 - Must-fix (open): keine
+- Must-fix (resolved):
+  1. `gpu_mask_refine.mm` `setMaxOutputWidth(0)` (jeden Frame aus `CoreMLKeyer::apply`) machte den einmaligen Budget-Stepdown still rückgängig. Fix: Stepdown ist jetzt ein sessionweiter Floor (`if (steppedDown_) outWidth_ = min(outWidth_, 960)`); Test `guided_work_size_test` zusätzlich mit Cap 256 → 256.
 - Notes (non-blocking):
-  1. Globaler Override `BRIDGE_GRAPHICS_SUPERSAMPLE=2|3` + Windows-Clamp: Retry baut mit gleichem Scale neu, Warn-Text "Supersampling disabled" dann irreführend, "still clamped"-Error im 2. Versuch unterdrückt (`logClampedError = renderScale === 1`). Follow-up: `logClampedError: renderScale === 1 || supersampleClampFallback`.
-  2. Diagnose reduziert: "Source frame buffer length mismatch"-Warnungen entfallen; Exception aus `normalizeCapturedRgbaFrame` wird ohne `message` geschluckt. Follow-up: Message ins "Frame downsample failed"-Log.
-  3. `buildPerfLogFields` ist Identität, Perf-Zeile selbst nicht getestet; `perfLastResizePath` startet mit "native".
-  4. Bestehender Test "paint handler logs buffer length mismatch when toBitmap size wrong" wurde an den neuen Helper angepasst (im Implementierer-Bericht nicht als Abweichung genannt).
-  5. `BRIDGE_GRAPHICS_SUPERSAMPLE=0` ist jetzt Kill-Switch (1) statt Default-Regel; entspricht Spec.
-- Handoff to human (if any): Live-Kriterium (renderScale 2 / resizePath native, Perf-Gate C0) nur im RC-Feldtest prüfbar.
+  1. `refine_width` im Status ist Alias von `mask_width` (effektive Breite), nicht der konfigurierte Zielwert.
+  2. EMA misst nur `commit`→`waitUntilCompleted` (GPU), nicht Readback/Upload.
+  3. Ungültiger Env-Pin (`abc`/`5000`) gilt als gepinnt (960) und deaktiviert Stepdown/Modus-Kopplung.
+  4. Cap wird jeden Frame idempotent gesetzt (nicht nur bei Tier-Wechsel); folgt dem Governor-Tier auch bei Env-Performance-Override.
+  5. Test deckte keinen Cap unterhalb des Defaults ab (Runde 2 ergänzt 256 → 256).
+  6. "in this PR"-Formulierung in `meeting-keyer-windows.md`.
+- Handoff to human (if any): Windows-Compile BLOCKED lokal (statisch keine Befunde) → CI/Windows-Build; Messprotokoll ist Doku-Stand, Ausführung im RC-Feldtest (D2).
 
 ## Verification
-- [x] Tests pass — `npx jest apps/bridge/src/services/graphics/renderer --runInBand`: 18 suites, 251 tests passed (Verifier)
-- [x] Lint / type-check pass — `npm run lint` Exit 0; `tsc --noEmit` für `tsconfig.build.json` und `tsconfig-graphics-renderer.json` Exit 0 (Verifier)
-- [ ] `npm run build:graphics-renderer` + `npm run build:bridge` (Orchestrator, läuft)
-- [ ] Live: "First FrameBus frame written" zeigt `renderScale: 2`, `resizePath: "native"` auf `bfy-meet-gfx-front` (RC-Feldtest)
+- [ ] Tests pass (ctest + Jest)
+- [ ] Lint / type-check pass
+- [ ] `npm run build:meeting-helper && npm run test:meeting-helper-native` (Verifier, macOS)
+- [ ] Messprotokoll ausführbar (RC-Feldtest, D2 erst danach)
