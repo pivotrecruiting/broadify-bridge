@@ -20,6 +20,23 @@ bestehende Mapping lesen. `forceRecreate` ist nur für bewusst neu angelegte
 Meeting-Regionen oder als Self-Heal bei inkompatiblem Header bzw. inkompatibler
 Größe erlaubt.
 
+## FrameBus-Name: Präzedenz und Env-Besitz
+FrameBus-Name und SlotCount werden pro Graphics-Manager mit dieser Präzedenz
+aufgelöst: explizite Overrides, vorherige Manager-Config, Prozess-Env,
+generierter Name bzw. Default. Die Prozess-Env ist nur Seed für den ersten
+Resolve eines Managers ohne bestehenden Bus; ein Manager mit laufender Session
+behält seinen eigenen Bus auch dann, wenn `BRIDGE_FRAMEBUS_NAME` gerade auf
+einen Meeting-Bus zeigt.
+
+Nur der Studio-Singleton besitzt die prozessweiten `BRIDGE_FRAMEBUS_*`-Variablen
+und schreibt sie für Studio-Output-Helper. Meeting-Planes nutzen feste
+FrameBus-Overrides (`bfy-meet-gfx-back` und `bfy-meet-gfx-front`) und schreiben
+diese Namen nicht in die Prozess-Env. Der Meeting-Command-Pfad darf Env-Werte
+temporär für den Renderer-Spawn setzen, stellt sie danach aber exakt wieder her.
+Diese Trennung verhindert den 0.27.2-Vorfall, bei dem ein Studio-Reconfigure
+während eines Meetings den Meeting-Front-Bus aus der Env übernommen und die
+Meeting-Region neu angelegt hat.
+
 ## Minimaler Header (Vorschlag)
 - magic
 - version

@@ -112,6 +112,9 @@ const mockClient = {
 describe("meeting-command-handler", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.BRIDGE_FRAMEBUS_NAME;
+    delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+    delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
     mockGetClient.mockReturnValue(mockClient);
     mockIsRunning.mockReturnValue(true);
     mockClient.getState.mockResolvedValue({ camera_permission_status: "authorized" });
@@ -161,6 +164,7 @@ describe("meeting-command-handler", () => {
         },
       });
     });
+
   });
 
   describe("meeting_engine_start", () => {
@@ -573,6 +577,63 @@ describe("meeting-command-handler", () => {
         height: 720,
         fps: 30,
       });
+    });
+
+    it("restores the previous FrameBus env after configuring meeting graphics", async () => {
+      process.env.BRIDGE_FRAMEBUS_NAME = "studio-bus";
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+
+      const result = await handleMeetingCommand(
+        "meeting_graphics_configure_outputs",
+        {
+          width: 1290,
+          height: 720,
+          fps: 30,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe("studio-bus");
+      expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("4");
+      expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBe("1");
+    });
+
+    it("removes temporary FrameBus env when it was unset before configuring meeting graphics", async () => {
+      const result = await handleMeetingCommand(
+        "meeting_graphics_configure_outputs",
+        {
+          width: 1291,
+          height: 720,
+          fps: 30,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(process.env.BRIDGE_FRAMEBUS_NAME).toBeUndefined();
+      expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBeUndefined();
+      expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBeUndefined();
+    });
+
+    it("restores FrameBus env when meeting graphics configuration fails", async () => {
+      process.env.BRIDGE_FRAMEBUS_NAME = "studio-bus";
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+      mockMeetingFrontGraphicsConfigureOutputs.mockRejectedValueOnce(
+        new Error("front failed"),
+      );
+
+      await expect(
+        handleMeetingCommand("meeting_graphics_configure_outputs", {
+          width: 1292,
+          height: 720,
+          fps: 30,
+        }),
+      ).rejects.toThrow("front failed");
+
+      expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe("studio-bus");
+      expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("4");
+      expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBe("1");
     });
   });
 

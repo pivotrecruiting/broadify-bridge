@@ -46,12 +46,11 @@ const buildFrameBusName = (): string => {
 };
 
 /**
- * Explicit per-manager FrameBus overrides. They WIN over the process-global
- * BRIDGE_FRAMEBUS_* env vars: the env vars are process state mutated around
- * awaits, so a GraphicsManager that resolves its config outside the mutation
- * window (e.g. the front meeting renderer initializing via a persisted-config
- * restore) picked up the ambient name of the OTHER meeting bus. Callers that
- * pass no overrides (the Studio singleton) keep the env path bit-identical.
+ * Explicit per-manager FrameBus overrides. Name and slot count resolve as
+ * overrides -> previous -> env -> generated/default because BRIDGE_FRAMEBUS_*
+ * is process-wide state shared by all managers. A Studio supervisor retry
+ * during a meeting must keep its existing Studio bus instead of inheriting the
+ * meeting front bus from the ambient env.
  */
 export type FrameBusOverridesT = {
   name?: string;
@@ -72,13 +71,13 @@ export const buildFrameBusConfig = (
 ): FrameBusConfigT => {
   const name =
     overrides?.name?.trim() ||
-    process.env.BRIDGE_FRAMEBUS_NAME?.trim() ||
     previous?.name ||
+    process.env.BRIDGE_FRAMEBUS_NAME?.trim() ||
     buildFrameBusName();
   const slotCount =
     normalizeOverrideSlotCount(overrides?.slotCount) ??
-    parseSlotCount(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT) ??
     previous?.slotCount ??
+    parseSlotCount(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT) ??
     DEFAULT_SLOT_COUNT;
   const pixelFormat =
     parsePixelFormat(
