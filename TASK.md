@@ -1,63 +1,62 @@
-# Task: macOS Virtual Camera meldet fest 1920x1080 und Extension-Upgrades greifen beim Kunden (PR A)
+# Task: 2x Supersampling für Meeting-Grafik-Planes bei 1080p, nativer Downscale, Windows-Clamp-Fallback (PR B)
 
 ## Raw request
-Gabriel (Product Owner, 1.10.2026): "Plan, wie wir ein besseres Bild live (Teams/Zoom) bekommen und wie unsere Graphics wirklich in 1080p ausgespielt werden." Befund: Die macOS CMIO-Extension meldet Clients fest 1280x720 BGRA (live per AVFoundation-Enumeration bestätigt), liefert aber 1080p-Buffer. Außerdem läuft auf Gabriels Mac Extension-Build 17, obwohl App-Build 19 installiert ist: die Bridge aktiviert eine neuere Extension nie, solange die alte aktiv ist.
+Gabriel (Product Owner, 1.10.2026): Meeting-Grafiken (Lower Thirds, Logos, Slides) sollen "wirklich in 1080p" sauber ankommen. Befund: Der Electron-Offscreen-Renderer rastert die Meeting-Planes bei 1920x1080 mit Render-Scale 1 (Supersampling nur bis 1280x720), Downscale läuft in reinen JS-Schleifen.
 
 ## Context
-- Customer / project: Broadify Bridge, Meeting Mode, macOS
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/vcam-1080p, feature/vcam-1080p
+- Customer / project: Broadify Bridge, Graphics-Renderer (Electron offscreen), Meeting-Planes `bfy-meet-gfx-back` / `bfy-meet-gfx-front`
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-graphics-supersample, feature/meeting-graphics-supersample
 - Base branch: dev (573454e5)
-- Entscheidung PO: VCam meldet NUR 1920x1080 (wie OBS), keine Formatliste.
+- Studio-Renderer (1080p50/60) darf sich NICHT ändern (Scale 1 bleibt).
 
 ## Plan
-Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS1 (PR A)". Kurzfassung:
+Siehe /Users/gabrielbaeuerle/.claude/plans/okay-dann-mache-bitte-linear-sunset.md, Abschnitt "WS2 (PR B)". Kurzfassung:
 
-1. `apps/bridge/native/vcam-helper/BroadifyVCamExtension/VCamDeviceSource.swift`
-   - Z. 7-9: `kDefaultWidth/Height` → `kOutputWidth = 1920`, `kOutputHeight = 1080` (Kommentar: fixed advertised format matching the meeting program geometry; no format list, like OBS).
-   - `currentWidth/Height` (Z. 41-42) durch die Konstanten ersetzen; Splash (Z. 263-279) nutzt die Konstanten.
-   - Den dynamischen Rebuild in `emitFrame` (Z. 162-169) ENTFERNEN. `rebuildVideoFormat` → `buildVideoFormat(width:height:)`, nur aus `init` (Z. 56) aufgerufen.
-   - Aufruf Z. 191: `copyLatestFrame(into:stride:dstWidth:dstHeight:)` mit der Pool-Geometrie.
-2. `apps/bridge/native/vcam-helper/BroadifyVCamExtension/RawFrameStreamReader.swift`
-   - `import Accelerate`.
-   - `copyLatestFrame(into dst: UnsafeMutablePointer<UInt8>, stride: Int, dstWidth: Int, dstHeight: Int) -> Bool`: Guard `stride >= dstWidth*4`; bei gleicher Geometrie Row-memcpy wie heute; sonst `vImageScale_ARGB8888` (`kvImageHighQualityResampling`, scale-to-fill) mit einmaligem `os_log(.info)` pro Geometriewechsel. Nie mehr als `dstHeight` Zeilen / `dstWidth*4` Bytes pro Zeile schreiben.
-   - RGBA→BGRA-Schleife (Z. 237-249) durch `vImagePermuteChannels_ARGB8888` (Map `[2,1,0,3]`) ersetzen.
-3. Version 19 → 20: `apps/bridge/native/vcam-helper/project.yml` (Z. 39 und Z. 73), `apps/bridge/native/vcam-helper/BroadifyVCam/Info.plist` (Z. 20), `apps/bridge/native/vcam-helper/BroadifyVCamExtension/Info.plist` (Z. 20). Alle drei Stellen müssen identisch sein (Vorbild-Commit 661fdad6).
-4. `apps/bridge/src/modules/vcam/vcam-helper.ts`
-   - `SystemExtensionActivationStateT` + `activeExtensionVersion: number | null`.
-   - Exportierte Pure-Function `parseActiveVcamExtensionVersion(listOutput: string): number | null` (nur Zeilen mit `com.broadify.vcam.extension`; Regex `\(([^)]*)\)`; Build = letztes Segment nach `/`; `(1.0)` ohne Build → null; mehrere eigene Zeilen → höchste Version mit `enabled`). Vorbild: `scripts/install-vcam-helper-macos.sh:105-112`.
-   - `getSystemExtensionActivationState` ZEILENWEISE auswerten (nicht `join`): während eines Replace stehen zwei eigene Zeilen (alt `[activated enabled]`, neu `[activated waiting for user]`); Regel: Zeile mit höchster Version bestimmt die Flags; `activeExtensionVersion` = höchste `enabled`-Version.
-   - Exportierte Pure-Function `shouldReactivateVcamForUpgrade(installedAppVersion, activeExtensionVersion, autoUpgradeOnStart = process.env.BRIDGE_VCAM_AUTO_UPGRADE_ON_START !== "0"): boolean` → beide non-null und `installed > active`.
-   - `openVcamHelperApp`: `already_active` nur, wenn kein Upgrade fällig (`shouldReactivateVcamForUpgrade(readBundleVersion(helperAppPath), activationState.activeExtensionVersion)`); sonst den bestehenden Launch-Pfad (`quitRunningVcamHelperApp()` + `open <app> --args --activate`) durchlaufen, Log "upgrading VCam extension build X -> Y"; höchstens EIN Upgrade-Versuch pro Bridge-Prozess (Modul-Flag), weil der Engine-Start das bei jedem Start anstößt.
-   - `waitForVcamActivation(attempts, intervalMs, minVersion?)`: fertig bei `activated && (minVersion == null || activeExtensionVersion >= minVersion)` → `activation_completed` mit Message "…upgraded to build N"; sonst wie heute `activation_requested`.
-   - `VcamHelperStatusT` + optionale Felder `helperAppVersion`, `extensionVersion` (Diagnose).
-   - `ContentView.swift` NICHT ändern.
-5. Doku: `docs/bridge/features/virtual-camera-macos.md` (Format 1920x1080 BGRA 30 fps = Programmgeometrie; Versionszeile `(1.0/20)`; Upgrade-Ablauf; mögliche erneute Freigabe), `docs/bridge/support/vcam-runbook.md` macOS-Abschnitt (Z. 146-156: ab Build 20 automatische Ersetzung beim Engine-Start, wenn Extension älter als App), `apps/bridge/native/vcam-helper/README.md` (Z. 26-31 veraltet, Z. 129 Format), `docs/bridge/dev/vcam-local-commands.md` (Z. 164-168 widersprüchlich → korrigieren).
+Dateien: `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts` (+ `.test.ts`), `apps/bridge/src/services/graphics/renderer/perf-logging.ts` (+ `.test.ts`), Doku.
 
-Konventionen: Code-Kommentare Englisch; keine Secrets in Logs; keine weiteren Dateien anfassen; keine Builds von xcodebuild starten (macht der Verifier).
+1. `resolveRenderScale(width, height, meetingBus: boolean, clampFallback: boolean)` (heute Z. 255-263), Reihenfolge:
+   a. Env `BRIDGE_GRAPHICS_SUPERSAMPLE` explizit gesetzt → 1..3 wie heute (globaler Vertrag, auch globaler Kill-Switch).
+   b. `clampFallback` → 1.
+   c. `meetingBus && width*height <= 1920*1080` → Env `BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE` (Default 2; `0`/`1` deaktiviert; Clamp 1..3).
+   d. sonst bestehende Regel (≤1280x720 → 2, sonst 1).
+   Aufruf in `ensureSingleWindow` (Z. 1085) mit `isMeetingGraphicsBus()`; der Format-Mismatch-Vergleich (Z. 1088-1105) enthält `renderScale` bereits.
+2. Neuer Helper `captureImageToRgba(image, width, height): { buffer: Buffer; resizePath: "native" | "js" } | null`, genutzt im Paint-Handler (Z. 1176-1197) UND in `writeCapturedWindowFrame` (Z. 1475-1497): bei `image.getSize() != target` und vorhandener `image.resize`-Funktion → `image.resize({ width, height, quality: "best" })` → `bgraToRgba(resized.toBitmap())`; ist `resize` nicht vorhanden oder die Ergebnisgröße falsch → bestehender `normalizeCapturedRgbaFrame`-Pfad (JS-Fallback). `toBitmap()` darf nie auf dem großen Bild laufen, wenn `resize` verfügbar ist.
+3. `resizePath` und `renderScale` in das Log "First FrameBus frame written" (Z. 1236-1256) und in die Perf-Zeile (`perf-logging.ts`) aufnehmen.
+4. Clamp-Fallback: `ensureWindowContentSize` (Z. 904-954) gibt `boolean` zurück (Content passt). In `ensureSingleWindow` nach dem Aufruf: passt der Content nicht und `renderScale > 1` → Modul-Flag `supersampleClampFallback = true`, `logger.warn(..., "[GraphicsRenderer] Supersampling disabled after work-area clamp")`, `destroySingleWindow()` und GENAU EIN Retry; Flag-Reset nur in `applyRendererConfig` bei Formatwechsel (nicht in `destroySingleWindow`, damit der Recover-Pfad Z. 1027 es behält). Bleibt es bei Scale 1 geklemmt, greift der bestehende Error-Log.
+5. NICHT ändern: `electron-renderer-dom-runtime.ts`, `layout-runtime.ts`, `graphics-pixel-utils.ts` (bleibt Fallback), Alpha-Semantik.
+6. Tests `electron-renderer-entry.test.ts`: Image-Mocks (Z. 2620-2622, 2738-2740, 2790-2797) um `resize: jest.fn(({width,height}) => ({ getSize, isEmpty, toBitmap: () => Buffer.alloc(width*height*4, fill) }))` erweitern, plus Variante ohne `resize` für den JS-Fallback. Neue Tests:
+   - "meeting bus at 1080p supersamples 2x and downsamples natively": Bus `bfy-meet-gfx-back`, BrowserWindow 3840x2160, Paint 3840x2160 → `resize` mit `{width:1920,height:1080,quality:"best"}`, `writeFrame`-Buffer 1920*1080*4, Log `renderScale: 2`, `resizePath: "native"`.
+   - "studio 1080p keeps scale 1": bestehender Test Z. 4021 bleibt grün, zusätzlich `renderScale: 1` asserten.
+   - "falls back to scale 1 when Windows clamps the supersampled window": Meeting-Bus, `mockGetContentSize` liefert `[1920,1032]` → zweiter `BrowserWindow`-Aufruf mit 1920x1080 + Warn-Log.
+   - `BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE=1` deaktiviert; `BRIDGE_GRAPHICS_SUPERSAMPLE=1` gewinnt global.
+   - JS-Fallback, wenn `resize` fehlt.
+   Bestehende Tests Z. 2912/2937/3640 bleiben unverändert grün. `perf-logging.test.ts` um das neue Feld ergänzen.
+7. Doku: `docs/bridge/architecture/graphics-realtime-renderer.md` neuer Abschnitt "Supersampling & Capture-Downscale" (Regeln, Envs, nativer Resize, Clamp-Fallback); `docs/bridge/features/meeting-windows-performance.md` Hinweis auf zusätzliche GPU-Last der 4K-Offscreen-Back-Plane.
+
+Konventionen: Code-Kommentare Englisch; keine neuen Dependencies; keine Änderungen außerhalb der genannten Dateien.
 
 ## Acceptance criteria
-1. `VCamDeviceSource.swift` baut genau ein Stream-Format 1920x1080 BGRA 30 fps beim Init; kein dynamischer Rebuild mehr; Splash und Pool sind 1080p.
-2. `RawFrameStreamReader.copyLatestFrame` kennt die Zielgröße, kann nie über den Zielpuffer hinaus schreiben und skaliert abweichende Frames per vImage.
-3. CFBundleVersion ist an allen drei Stellen 20.
-4. `vcam-helper.ts`: `parseActiveVcamExtensionVersion` und `shouldReactivateVcamForUpgrade` sind exportiert und getestet; `openVcamHelperApp` löst bei älterer aktiver Extension `open --args --activate` aus (einmal pro Prozess) und meldet nach erfolgreicher Ersetzung `activation_completed`; bei gleicher/neuerer Version weiterhin `already_active`.
-5. `apps/bridge/src/modules/vcam/vcam-helper.test.ts`: bestehender "already active"-Test auf `(1.0/20)` + gemockte PlistBuddy-Ausgabe `"20"`; neue Tests: Upgrade-Reopen (`(1.0/17)` aktiv, App 20, zweiter Listenaufruf `(1.0/20)` → spawn `open [path, "--args", "--activate"]`, Code `activation_completed`), Parsing-Fälle (17, `(1.0)` → null, Fremdvendor ignoriert, zwei eigene Zeilen → höchste enabled), `shouldReactivateVcamForUpgrade`-Wahrheitstabelle inkl. Opt-out-Env, Status mit zwei eigenen Zeilen → `available: true`, `requiresUserApproval: false`, kein zweiter Upgrade-Versuch pro Prozess.
-6. `npx jest apps/bridge/src/modules/vcam --runInBand` grün; `npm run lint` grün für die geänderten TS-Dateien.
-7. Doku-Dateien aus Schritt 5 aktualisiert.
+1. Meeting-Bus bei 1920x1080 → BrowserWindow 3840x2160, `renderScale: 2`; Studio-Bus bei 1920x1080 → 1920x1080, `renderScale: 1`; 720p-Regel unverändert.
+2. Env-Vorrang: `BRIDGE_GRAPHICS_SUPERSAMPLE` global vor `BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE` (Default 2, `0`/`1` aus).
+3. Paint- und Capture-Pfad skalieren per `NativeImage.resize({quality:"best"})` und fallen ohne `resize` auf den JS-Pfad zurück; `resizePath` wird geloggt.
+4. Windows-Clamp bei Scale 2 → genau ein Neuaufbau mit Scale 1 + Warn-Log; Clamp bei Scale 1 → bestehendes Verhalten.
+5. `npx jest apps/bridge/src/services/graphics/renderer --runInBand` grün; `npm run lint` grün für geänderte Dateien.
+6. Doku aktualisiert.
 
 ## Review
 - Round: 1/3
-- Verdict: PASS (Verifier 2.10.2026, separater Agent; alle 7 Akzeptanzkriterien PASS)
+- Verdict: PASS (Verifier 2.10.2026, separater Agent; alle 6 Akzeptanzkriterien PASS)
 - Must-fix (open): keine
 - Notes (non-blocking):
-  1. Während eines laufenden Replace ("17 enabled" + "20 waiting for user") bestimmt die neueste Zeile die Flags → `activated=false`, `MEETING_VCAM_NATIVE_AVAILABLE=0`, Status `user_activation_required`, obwohl Build 17 weiter Frames liefert (Spec-konform; vorher ergab `requiresUserApproval` ebenfalls `user_activation_required`).
-  2. Nach dem einen Upgrade-Versuch liefern weitere `openVcamHelperApp`-Aufrufe im selben Prozess `activation_requested` ("already requested") statt `already_active`; Webapp konsumiert die Codes nicht.
-  3. Rückgabewert von `vImagePermuteChannels_ARGB8888` wird ignoriert (Pfad kalt, Server sendet BGRA); `vImageScale` alloziert Tempbuffer pro Frame (nur bei Quelle ≠ 1080p); Stretch-to-fill bei Nicht-16:9.
-  4. `getVcamHelperStatus` startet pro Aufruf einen PlistBuddy-Prozess; `console.info` statt pino (Modul ohne Logger).
-  5. Doku-Kleinigkeiten (Runbook "seit v20" vs. Schritte seit v19; Umlaut in ASCII-Dokument).
-- Handoff to human (if any): Signierter Build lokal BLOCKED (keine "Apple Development"-Identität für PG38DC5RG9; nur Developer-ID-Zertifikat vorhanden) → CI baut mit `VCAM_SIGNING_MODE=developer-id`; unsignierter Compile BUILD SUCCEEDED, Version 20 in App + Extension verifiziert. Vorher/Nachher am Gerät erst mit RC-Installer.
+  1. Globaler Override `BRIDGE_GRAPHICS_SUPERSAMPLE=2|3` + Windows-Clamp: Retry baut mit gleichem Scale neu, Warn-Text "Supersampling disabled" dann irreführend, "still clamped"-Error im 2. Versuch unterdrückt (`logClampedError = renderScale === 1`). Follow-up: `logClampedError: renderScale === 1 || supersampleClampFallback`.
+  2. Diagnose reduziert: "Source frame buffer length mismatch"-Warnungen entfallen; Exception aus `normalizeCapturedRgbaFrame` wird ohne `message` geschluckt. Follow-up: Message ins "Frame downsample failed"-Log.
+  3. `buildPerfLogFields` ist Identität, Perf-Zeile selbst nicht getestet; `perfLastResizePath` startet mit "native".
+  4. Bestehender Test "paint handler logs buffer length mismatch when toBitmap size wrong" wurde an den neuen Helper angepasst (im Implementierer-Bericht nicht als Abweichung genannt).
+  5. `BRIDGE_GRAPHICS_SUPERSAMPLE=0` ist jetzt Kill-Switch (1) statt Default-Regel; entspricht Spec.
+- Handoff to human (if any): Live-Kriterium (renderScale 2 / resizePath native, Perf-Gate C0) nur im RC-Feldtest prüfbar.
 
 ## Verification
-- [x] Tests pass — `npx jest apps/bridge/src/modules/vcam --runInBand`: 25 passed (Verifier)
-- [x] Lint / type-check pass — `npm run lint` Exit 0; `tsc --noEmit -p apps/bridge/tsconfig.build.json` Exit 0 (Verifier)
-- [x] `npm run build:vcam-helper` — mit `VCAM_SIGNING_MODE=developer-id` (wie CI) BUILD SUCCEEDED, codesign valid (Team PG38DC5RG9), CFBundleVersion 20 in App und Extension (Orchestrator); im Default-Modus "development" lokal BLOCKED (keine "Apple Development"-Identität)
-- [ ] Bug reproduced before the fix, gone after (Enumeration 1280x720 → 1920x1080; Extension (1.0/17) → (1.0/20) nach Engine-Start) — RC-Feldtest
+- [x] Tests pass — `npx jest apps/bridge/src/services/graphics/renderer --runInBand`: 18 suites, 251 tests passed (Verifier)
+- [x] Lint / type-check pass — `npm run lint` Exit 0; `tsc --noEmit` für `tsconfig.build.json` und `tsconfig-graphics-renderer.json` Exit 0 (Verifier)
+- [ ] `npm run build:graphics-renderer` + `npm run build:bridge` (Orchestrator, läuft)
+- [ ] Live: "First FrameBus frame written" zeigt `renderScale: 2`, `resizePath: "native"` auf `bfy-meet-gfx-front` (RC-Feldtest)
