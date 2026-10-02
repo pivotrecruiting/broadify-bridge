@@ -114,6 +114,7 @@ sequenceDiagram
 Wesentliche Punkte:
 - `graphics_status` und `graphics_error` werden ueber Relay als Bridge-Events publiziert.
 - Fehlercodes: `output_config_error`, `renderer_error`, `output_helper_error`, `graphics_error`.
+- Meeting-Mutationen publizieren ihren autoritativen Zustand Push-on-Write ueber `meeting_status`; reine Poll-Zaehler bleiben ueber die stabile Projektion gedrosselt.
 
 ## 6) Engine- und Macro-Runtime-Events
 ```mermaid
