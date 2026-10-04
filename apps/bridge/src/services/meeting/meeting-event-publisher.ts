@@ -1,4 +1,5 @@
 import { getBridgeContext } from "../bridge-context.js";
+import type { MeetingStatusT } from "./meeting-status-types.js";
 
 /**
  * Publish a meeting status snapshot as bridge_event over the relay.
@@ -8,7 +9,7 @@ import { getBridgeContext } from "../bridge-context.js";
  */
 export function publishMeetingStatusEvent(
   reason: string,
-  status: Record<string, unknown>,
+  status: MeetingStatusT,
 ): void {
   const publishBridgeEvent = getBridgeContext().publishBridgeEvent;
   if (!publishBridgeEvent) {
