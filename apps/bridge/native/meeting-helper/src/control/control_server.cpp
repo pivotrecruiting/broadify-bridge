@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -58,27 +59,42 @@ std::string programSectionJson(const MeetingState &state, const std::string &sec
   return "{\"enabled\":false}";
 }
 
+std::string jsonNumber(double value) {
+  if (!std::isfinite(value)) {
+    return "0";
+  }
+  std::ostringstream out;
+  out << value;
+  return out.str();
+}
+
+std::string nullableJsonString(const std::string &value) {
+  return value.empty() ? "null" : "\"" + jsonEscape(value) + "\"";
+}
+
 // Compact projection of the active program state for the meeting_status push:
 // only the parsed on/off + identity fields that other control clients need to
-// mirror "which button is active". Deliberately excludes heavy/volatile data
-// (cornerbug image_data_url, media rendered_page_path, all geometry) — those
-// stay retrievable via program.get so the 2s status push stays small.
+// mirror "which button is active" and geometry. Deliberately excludes
+// heavy/volatile data (cornerbug image_data_url, media rendered_page_path) —
+// those stay retrievable via program.get so the 2s status push stays small.
 std::string programSummaryJson(const MeetingState &state) {
   std::ostringstream out;
-  const bool cornerbugHasImage =
-      !extractStringField(state.cornerbug.rawJson, "image_data_url").empty();
   out << "{"
       << "\"media_layer\":{\"enabled\":"
       << (state.mediaLayer.enabled ? "true" : "false") << ",\"mode\":\""
       << jsonEscape(state.mediaLayer.mode) << "\",\"page\":" << state.mediaLayer.page
       << ",\"page_count\":" << state.mediaLayer.pageCount << ",\"asset_id\":"
-      << (state.mediaLayer.assetId.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.mediaLayer.assetId) + "\"")
+      << nullableJsonString(state.mediaLayer.assetId)
+      << ",\"template_id\":" << nullableJsonString(state.mediaLayer.templateId)
       << ",\"render_status\":"
-      << (state.mediaLayer.renderStatus.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.mediaLayer.renderStatus) + "\"")
+      << nullableJsonString(state.mediaLayer.renderStatus)
+      << ",\"x\":" << jsonNumber(state.mediaLayer.x)
+      << ",\"y\":" << jsonNumber(state.mediaLayer.y)
+      << ",\"width\":" << jsonNumber(state.mediaLayer.width)
+      << ",\"height\":" << jsonNumber(state.mediaLayer.height)
+      << ",\"rotation\":" << jsonNumber(state.mediaLayer.rotation)
+      << ",\"rotation_x\":" << jsonNumber(state.mediaLayer.rotationX)
+      << ",\"rotation_y\":" << jsonNumber(state.mediaLayer.rotationY)
       << "},"
       << "\"camera_render\":{\"enabled\":"
       << (state.cameraRender.enabled ? "true" : "false") << ",\"mirror\":"
@@ -86,27 +102,24 @@ std::string programSummaryJson(const MeetingState &state) {
       << "\"speaker_layout\":{\"enabled\":"
       << (state.speakerLayout.enabled ? "true" : "false") << ",\"layout\":\""
       << jsonEscape(state.speakerLayout.layout) << "\",\"scale\":"
-      << state.speakerLayout.scale << "},"
+      << jsonNumber(state.speakerLayout.scale) << "},"
       << "\"cornerbug\":{\"enabled\":"
       << (state.cornerbug.enabled ? "true" : "false") << ",\"has_image\":"
-      << (cornerbugHasImage ? "true" : "false") << "},"
+      << (state.cornerbug.hasImage ? "true" : "false")
+      << ",\"x\":" << jsonNumber(state.cornerbug.x)
+      << ",\"y\":" << jsonNumber(state.cornerbug.y)
+      << ",\"size\":" << jsonNumber(state.cornerbug.size)
+      << ",\"logo_asset_id\":" << nullableJsonString(state.cornerbug.logoAssetId)
+      << "},"
       << "\"graphics\":{\"enabled\":"
       << (state.graphics.enabled ? "true" : "false") << ",\"graphic_id\":"
-      << (state.graphics.graphicId.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.graphicId) + "\"")
+      << nullableJsonString(state.graphics.graphicId)
       << ",\"template\":"
-      << (state.graphics.templateName.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.templateName) + "\"")
+      << nullableJsonString(state.graphics.templateName)
       << ",\"source\":"
-      << (state.graphics.source.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.source) + "\"")
+      << nullableJsonString(state.graphics.source)
       << ",\"handoff_target\":"
-      << (state.graphics.handoffTarget.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.handoffTarget) + "\"")
+      << nullableJsonString(state.graphics.handoffTarget)
       << "}}";
   return out.str();
 }
@@ -153,6 +166,7 @@ KeyerDegradationSettings normalizedDegradationSettings(KeyerDegradationSettings 
 // not actually change anything (idempotent re-sends from the web app).
 std::string keyerConfigSignature(const MeetingState &state) {
   std::ostringstream signature;
+  // Identity metadata does not change rendering and must not trigger the signature-driven keyer reset.
   signature << state.keyerEnabled << '|' << state.requestedKeyerModel << '|'
             << state.backgroundMode << '|' << state.backgroundImagePath << '|'
             << state.qualityMode << '|' << state.performanceMode << '|'
@@ -277,6 +291,7 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.cornerbug.x = extractDoubleField(safeValues, "x", state.cornerbug.x);
     state.cornerbug.y = extractDoubleField(safeValues, "y", state.cornerbug.y);
     state.cornerbug.size = extractDoubleField(safeValues, "size", state.cornerbug.size);
+    state.cornerbug.logoAssetId = extractStringField(safeValues, "logo_asset_id");
     // Presence-guarded logo image: while the webapp re-fetches the logo's
     // data URL (signed URLs refresh after reconnects) it omits the field —
     // carry the current image over instead of wiping the on-air logo. An
@@ -290,6 +305,8 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
         nextRawJson.insert(1, "\"image_data_url\":\"" + previousImage + "\",");
       }
     }
+    state.cornerbug.hasImage =
+        !extractStringField(nextRawJson, "image_data_url").empty();
     state.cornerbug.rawJson = nextRawJson;
     return;
   }
@@ -300,6 +317,7 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
       state.mediaLayer.mode = mode;
     }
     state.mediaLayer.assetId = extractStringField(safeValues, "asset_id");
+    state.mediaLayer.templateId = extractStringField(safeValues, "template_id");
     state.mediaLayer.renderedPagePath = extractStringField(safeValues, "rendered_page_path");
     state.mediaLayer.renderStatus = extractStringField(safeValues, "render_status");
     state.mediaLayer.page = extractIntField(safeValues, "page", state.mediaLayer.page);
@@ -720,7 +738,10 @@ std::string handleRpc(const std::string &line,
     result << "{\"settings\":{\"enabled\":" << (state.keyerEnabled ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel) << "\",\"background_type\":\"mode\",\"background_mode\":\""
            << jsonEscape(state.backgroundMode)
-           << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
+           << "\",\"background_asset_id\":" << nullableJsonString(state.backgroundAssetId)
+           << ",\"background_template_id\":" << nullableJsonString(state.backgroundTemplateId)
+           << ",\"background_image_set\":" << (state.backgroundImagePath.empty() ? "false" : "true")
+           << ",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
            << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
            << "\",\"mask_erode_px\":" << state.maskErodePx
            << ",\"mask_dilate_px\":" << state.maskDilatePx
@@ -799,6 +820,12 @@ std::string handleRpc(const std::string &line,
       if (line.find("\"background_image_path\"") != std::string::npos) {
         state.backgroundImagePath = extractStringField(line, "background_image_path");
       }
+      if (line.find("\"background_asset_id\"") != std::string::npos) {
+        state.backgroundAssetId = extractStringField(line, "background_asset_id");
+      }
+      if (line.find("\"background_template_id\"") != std::string::npos) {
+        state.backgroundTemplateId = extractStringField(line, "background_template_id");
+      }
       const std::string qualityMode = extractStringField(line, "quality_mode");
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);
@@ -851,6 +878,8 @@ std::string handleRpc(const std::string &line,
     state.qualityMode = "balanced";
     state.activeQualityMode = "balanced";
     state.backgroundImagePath.clear();
+    state.backgroundAssetId.clear();
+    state.backgroundTemplateId.clear();
     state.performanceMode = kDefaultKeyerPerformanceMode;
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
