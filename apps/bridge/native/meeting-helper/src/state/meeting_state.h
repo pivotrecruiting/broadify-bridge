@@ -32,6 +32,7 @@ struct CornerbugState {
 struct MediaLayerState {
   bool enabled = false;
   std::string mode = "pip";
+  std::string source = "page";
   std::string assetId;
   std::string templateId;
   std::string renderedPagePath;
@@ -48,6 +49,18 @@ struct MediaLayerState {
   double rotationX = 0.0;
   double rotationY = 0.0;
   std::string rawJson = "{\"enabled\":false,\"mode\":\"pip\",\"x\":0.58,\"y\":0.12,\"width\":0.34,\"height\":0.28,\"rotation\":0}";
+};
+
+struct ScreenCaptureState {
+  bool running = false;
+  bool pickerPending = false;
+  std::string sourceId;
+  std::string kind;
+  std::string title;
+  std::string appName;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint64_t capturedFrames = 0;
 };
 
 struct GraphicsState {
@@ -154,6 +167,8 @@ struct MeetingState {
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;
   MediaLayerState mediaLayer;
+  // Written only by the pipeline mirror; read by state.get.
+  ScreenCaptureState screenCapture;
   GraphicsState graphics;
   CameraRenderState cameraRender;
 };

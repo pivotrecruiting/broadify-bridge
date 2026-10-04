@@ -82,7 +82,8 @@ std::string programSummaryJson(const MeetingState &state) {
   out << "{"
       << "\"media_layer\":{\"enabled\":"
       << (state.mediaLayer.enabled ? "true" : "false") << ",\"mode\":\""
-      << jsonEscape(state.mediaLayer.mode) << "\",\"page\":" << state.mediaLayer.page
+      << jsonEscape(state.mediaLayer.mode) << "\",\"source\":\""
+      << jsonEscape(state.mediaLayer.source) << "\",\"page\":" << state.mediaLayer.page
       << ",\"page_count\":" << state.mediaLayer.pageCount << ",\"asset_id\":"
       << nullableJsonString(state.mediaLayer.assetId)
       << ",\"template_id\":" << nullableJsonString(state.mediaLayer.templateId)
@@ -316,6 +317,8 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     if (!mode.empty()) {
       state.mediaLayer.mode = mode;
     }
+    const std::string source = extractStringField(safeValues, "source");
+    state.mediaLayer.source = source == "screen" ? "screen" : "page";
     state.mediaLayer.assetId = extractStringField(safeValues, "asset_id");
     state.mediaLayer.templateId = extractStringField(safeValues, "template_id");
     state.mediaLayer.renderedPagePath = extractStringField(safeValues, "rendered_page_path");
@@ -361,9 +364,12 @@ std::string recordingStatusJson(MeetingRecorder &recorder) {
   return out.str();
 }
 
+}  // namespace
+
 std::string handleRpc(const std::string &line,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       VcamShmRingWin *vcamShm,
@@ -398,6 +404,10 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "state.get") {
+    const ScreenCaptureStatus screenStatus = screen.status();
+    const ScreenCaptureCapabilities screenCapabilities = screen.capabilities();
+    const std::string screenLastError = screen.stickyLastError();
+    const uint64_t screenLastErrorAtMs = screen.stickyLastErrorAtMs();
     std::lock_guard<std::mutex> lock(state.mutex);
     std::ostringstream result;
     result << "{\"bridge_running\":true,"
@@ -432,6 +442,21 @@ std::string handleRpc(const std::string &line,
            // consumers of the transient value.
            << "\"camera_last_error\":" << (camera.stickyLastError().empty() ? "null" : "\"" + jsonEscape(camera.stickyLastError()) + "\"") << ","
            << "\"camera_last_error_at\":" << (camera.stickyLastErrorAtMs() == 0 ? "null" : std::to_string(camera.stickyLastErrorAtMs())) << ","
+           << "\"screen_capture\":{"
+           << "\"running\":" << (screenStatus.running ? "true" : "false")
+           << ",\"picker_pending\":" << (screenStatus.pickerPending ? "true" : "false")
+           << ",\"source_id\":" << nullableJsonString(screenStatus.sourceId)
+           << ",\"kind\":" << nullableJsonString(screenStatus.kind)
+           << ",\"title\":" << nullableJsonString(screenStatus.title)
+           << ",\"app_name\":" << nullableJsonString(screenStatus.appName)
+           << ",\"width\":" << screenStatus.width
+           << ",\"height\":" << screenStatus.height
+           << ",\"captured_frames\":" << screenStatus.capturedFrames
+           << ",\"last_error\":" << nullableJsonString(screenLastError)
+           << ",\"last_error_at\":"
+           << (screenLastErrorAtMs == 0u ? "null" : std::to_string(screenLastErrorAtMs))
+           << ",\"capabilities\":" << screenCapabilitiesToJson(screenCapabilities)
+           << "},"
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
     return okResponse(id, result.str());
   }
@@ -553,6 +578,96 @@ std::string handleRpc(const std::string &line,
     state.activeCameraIndex = -1;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true}");
+  }
+
+  if (method == "screen.list") {
+    const ScreenCaptureCapabilities caps = screen.capabilities();
+    std::vector<ScreenSourceInfo> sources;
+    if (caps.enumeration) {
+      sources = screen.listSources();
+      const std::string lastError = screen.lastError();
+      if (sources.empty() && !lastError.empty()) {
+        return errorResponse(id, "screen_discovery_failed", lastError);
+      }
+    }
+    return okResponse(id, "{\"sources\":" + screenSourcesToJson(sources) +
+                              ",\"capabilities\":" +
+                              screenCapabilitiesToJson(caps) + "}");
+  }
+
+  if (method == "screen.start") {
+    const ScreenCaptureCapabilities caps = screen.capabilities();
+    if (!caps.supported) {
+      return errorResponse(id, "screen_capture_unsupported",
+                           caps.unsupportedReason);
+    }
+    if (!caps.enumeration) {
+      return errorResponse(id, "screen_capture_unsupported",
+                           "source_ids_unavailable_use_picker");
+    }
+    const std::string sourceId = extractStringField(line, "source_id");
+    if (sourceId.empty()) {
+      return errorResponse(id, "invalid_request",
+                           "screen.start requires source_id.");
+    }
+    const ScreenCaptureStatus beforeStatus = screen.status();
+    const bool reopened =
+        beforeStatus.running && beforeStatus.sourceId != sourceId;
+    const bool started = screen.start(
+        sourceId,
+        ScreenCaptureStartOptions{
+            options.width, options.height, options.fps,
+            extractBoolField(line, "include_cursor", true)});
+    if (!started) {
+      const std::string lastError = screen.lastError();
+      return errorResponse(
+          id, lastError == "source_not_found" ? "screen_source_not_found"
+                                              : "screen_start_failed",
+          lastError);
+    }
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      markProgramDirty(state);
+    }
+    const ScreenCaptureStatus status = screen.status();
+    std::ostringstream result;
+    result << "{\"ok\":true,\"source_id\":\"" << jsonEscape(status.sourceId)
+           << "\",\"kind\":\"" << jsonEscape(status.kind)
+           << "\",\"width\":" << status.width
+           << ",\"height\":" << status.height
+           << ",\"reopened\":"
+           << (reopened ? "true" : "false")
+           << "}";
+    return okResponse(id, result.str());
+  }
+
+  if (method == "screen.stop") {
+    screen.stop();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    markProgramDirty(state);
+    return okResponse(id, "{\"ok\":true}");
+  }
+
+  if (method == "screen.pick") {
+    const ScreenCaptureCapabilities caps = screen.capabilities();
+    if (!caps.systemPicker) {
+      return errorResponse(
+          id, "screen_capture_unsupported",
+          caps.unsupportedReason.empty() ? "system_picker_unavailable"
+                                         : caps.unsupportedReason);
+    }
+    const bool picked = screen.presentPicker(
+        ScreenCaptureStartOptions{
+            options.width, options.height, options.fps,
+            extractBoolField(line, "include_cursor", true)});
+    if (!picked) {
+      const std::string lastError = screen.lastError();
+      return errorResponse(id,
+                           lastError == "picker_busy" ? "screen_picker_busy"
+                                                      : "screen_picker_failed",
+                           lastError);
+    }
+    return okResponse(id, "{\"ok\":true,\"picker_pending\":true}");
   }
 
   if (method == "recording.microphones") {
@@ -864,8 +979,8 @@ std::string handleRpc(const std::string &line,
       }
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}",
-                     state, camera, previewFrames, recorder, vcamShm, options,
-                     running);
+                     state, camera, screen, previewFrames, recorder, vcamShm,
+                     options, running);
   }
 
   if (method == "keyer.reset") {
@@ -1015,8 +1130,6 @@ std::string handleRpc(const std::string &line,
   return errorResponse(id, "unknown_method", "Unknown meeting-helper method: " + method);
 }
 
-}  // namespace
-
 #if defined(_WIN32)
 namespace {
 
@@ -1064,6 +1177,7 @@ HANDLE createControlPipeInstance(const std::string &pipeName, std::atomic<bool> 
 void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       const Options &options,
@@ -1101,7 +1215,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
+      const std::string response = handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           // Block until the client has read the response; without this,
@@ -1128,6 +1242,7 @@ void runControlServer(const std::string &pipeName,
 void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       const Options &options,
@@ -1168,7 +1283,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
+      const std::string response = handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running);
         if (write(client, response.c_str(), response.size()) < 0) {
           // The bridge destroyed its socket first (RPC timeout). Before
           // SIGPIPE was ignored this write ended the whole process silently;

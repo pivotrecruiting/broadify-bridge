@@ -4,7 +4,7 @@ namespace broadify::meeting {
 
 bool shouldRunProgramWork(const PipelineWorkTriggers &triggers) {
   return triggers.hasNewCameraFrame || triggers.programChanged ||
-         triggers.graphicsChanged;
+         triggers.graphicsChanged || triggers.hasNewScreenFrame;
 }
 
 bool shouldRunFusedKeyerWork(const PipelineWorkTriggers &triggers) {

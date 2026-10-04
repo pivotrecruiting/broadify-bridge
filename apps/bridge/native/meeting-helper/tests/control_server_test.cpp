@@ -1,8 +1,10 @@
 #include "control/control_server.h"
+#include "capture/screen_capture_stub.h"
 #include "preview/preview_frame_store.h"
 #include "recorder/meeting_recorder.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -36,7 +38,9 @@ using broadify::meeting::MeetingRecorder;
 using broadify::meeting::MeetingState;
 using broadify::meeting::Options;
 using broadify::meeting::PreviewFrameStore;
+using broadify::meeting::StubScreenCaptureSource;
 using broadify::meeting::VideoFrame;
+using broadify::meeting::handleRpc;
 using broadify::meeting::runControlServer;
 
 void fail(const char *message) {
@@ -152,6 +156,10 @@ class StubCameraSource final : public CameraSource {
 };
 
 #if defined(_WIN32)
+bool canBindControlEndpoint(const std::string &) {
+  return true;
+}
+
 std::string controlEndpoint() {
   return "\\\\.\\pipe\\broadify-control-server-test-" +
          std::to_string(GetCurrentProcessId());
@@ -188,6 +196,22 @@ std::string sendRpc(const std::string &endpoint, const std::string &request) {
   return response;
 }
 #else
+bool canBindControlEndpoint(const std::string &endpoint) {
+  const int socketHandle = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
+  if (socketHandle < 0) {
+    return false;
+  }
+  unlink(endpoint.c_str());
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", endpoint.c_str());
+  const bool ok =
+      bind(socketHandle, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0;
+  close(socketHandle);
+  unlink(endpoint.c_str());
+  return ok;
+}
+
 std::string controlEndpoint() {
   const char *tmpDir = std::getenv("TMPDIR");
   const std::string base = tmpDir && *tmpDir ? tmpDir : "/tmp";
@@ -228,6 +252,7 @@ std::string sendRpc(const std::string &endpoint, const std::string &request) {
 
 int main() {
   StubCameraSource camera;
+  StubScreenCaptureSource screen;
   MeetingState state;
   PreviewFrameStore previewFrames;
   MeetingRecorder recorder;
@@ -240,52 +265,73 @@ int main() {
   std::condition_variable readyCv;
   bool ready = false;
   const std::string endpoint = controlEndpoint();
+  const bool socketMode = canBindControlEndpoint(endpoint);
 
-  std::thread server([&] {
-    runControlServer(endpoint, state, camera, previewFrames, recorder, options,
-                     running, [&] {
-                       std::lock_guard<std::mutex> lock(readyMutex);
-                       ready = true;
-                       readyCv.notify_all();
-                     });
-  });
+  std::thread server;
+  if (socketMode) {
+    server = std::thread([&] {
+      runControlServer(endpoint, state, camera, screen, previewFrames, recorder,
+                       options, running, [&] {
+                         std::lock_guard<std::mutex> lock(readyMutex);
+                         ready = true;
+                         readyCv.notify_all();
+                       });
+    });
 
-  {
-    std::unique_lock<std::mutex> lock(readyMutex);
-    if (!readyCv.wait_for(lock, std::chrono::seconds(3),
-                          [&] { return ready; })) {
-      running.store(false);
-      server.join();
-      fail("server did not start");
+    {
+      std::unique_lock<std::mutex> lock(readyMutex);
+      if (!readyCv.wait_for(lock, std::chrono::seconds(3),
+                            [&] { return ready; })) {
+        running.store(false);
+        if (server.joinable()) {
+          server.join();
+        }
+        fail("server did not start");
+      }
     }
+  } else {
+    std::cout << "control_server_test: socket bind unavailable, using direct RPC"
+              << std::endl;
   }
 
+  auto stopServer = [&] {
+    running.store(false);
+    if (server.joinable()) {
+      server.join();
+    }
+  };
+
+  auto rpc = [&](const std::string &request) {
+    if (socketMode) {
+      return sendRpc(endpoint, request);
+    }
+    return handleRpc(request, state, camera, screen, previewFrames, recorder,
+                     nullptr, options, running);
+  };
+
   const std::string first =
-      sendRpc(endpoint, "{\"id\":\"1\",\"method\":\"camera.start\","
+      rpc("{\"id\":\"1\",\"method\":\"camera.start\","
                         "\"camera_index\":0}");
   if (!contains(first, "\"reopened\":true") || camera.startCalls != 1) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("first camera.start did not open camera 0");
   }
 
   const std::string second =
-      sendRpc(endpoint, "{\"id\":\"2\",\"method\":\"camera.start\","
+      rpc("{\"id\":\"2\",\"method\":\"camera.start\","
                         "\"camera_index\":0}");
   if (!contains(second, "\"reopened\":false") || camera.startCalls != 1) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("second camera.start was not idempotent");
   }
 
-  (void)sendRpc(endpoint, "{\"id\":\"3\",\"method\":\"camera.stop\"}");
+  (void)rpc("{\"id\":\"3\",\"method\":\"camera.stop\"}");
   const std::string stable =
-      sendRpc(endpoint, "{\"id\":\"4\",\"method\":\"camera.start\","
+      rpc("{\"id\":\"4\",\"method\":\"camera.start\","
                         "\"camera_index\":1,\"stable_key\":\"camera-a-key\"}");
   if (!contains(stable, "\"reopened\":true") || camera.startCalls != 2 ||
       camera.startedIndices.back() != 0) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("stable_key did not take precedence over camera_index");
   }
 
@@ -295,15 +341,14 @@ int main() {
   // not on the moved activeCameraIndex() alone — trusting the pointer made
   // start() short-circuit and left the switched-to camera (external webcams,
   // both platforms) black.
-  (void)sendRpc(endpoint, "{\"id\":\"4a\",\"method\":\"camera.select\","
+  (void)rpc("{\"id\":\"4a\",\"method\":\"camera.select\","
                           "\"camera_index\":1}");
   const std::string switched =
-      sendRpc(endpoint, "{\"id\":\"4b\",\"method\":\"camera.start\","
+      rpc("{\"id\":\"4b\",\"method\":\"camera.start\","
                         "\"camera_index\":1}");
   if (!contains(switched, "\"reopened\":true") || camera.startCalls != 3 ||
       camera.startedIndices.back() != 1) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("camera.start after select did not open the switched-to camera");
   }
 
@@ -312,13 +357,12 @@ int main() {
   // sent) must fall back to the first available camera instead of failing to a
   // black preview. A concrete-but-unresolvable stable_key stays a hard error
   // (covered by the program_select case below).
-  (void)sendRpc(endpoint, "{\"id\":\"4c\",\"method\":\"camera.stop\"}");
+  (void)rpc("{\"id\":\"4c\",\"method\":\"camera.stop\"}");
   const std::string defaulted =
-      sendRpc(endpoint, "{\"id\":\"4d\",\"method\":\"camera.start\"}");
+      rpc("{\"id\":\"4d\",\"method\":\"camera.start\"}");
   if (!contains(defaulted, "\"reopened\":true") ||
       camera.startedIndices.back() != 0) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("index-less camera.start did not fall back to the first camera");
   }
 
@@ -335,13 +379,12 @@ int main() {
     state.degradationStage = "no_subject";
   }
   const std::string keyer =
-      sendRpc(endpoint, "{\"id\":\"5\",\"method\":\"keyer.get\"}");
+      rpc("{\"id\":\"5\",\"method\":\"keyer.get\"}");
   if (!contains(keyer, "\"vcam_publish_ms\":1.250000") ||
       !contains(keyer, "\"vcam_publish_dropped\":7") ||
       !contains(keyer, "\"empty_valid\":true") ||
       !contains(keyer, "\"no_subject\":true")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.get did not include vcam publish/no-subject fields");
   }
 #if defined(_WIN32)
@@ -349,8 +392,7 @@ int main() {
       !contains(keyer, "\"frame_overhead_ms\":4.500000") ||
       !contains(keyer, "\"budget_threshold_ms\":18.000000") ||
       !contains(keyer, "\"prepass_gpu\":false")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.get did not include Windows budget/upload metrics");
   }
 #else
@@ -358,76 +400,63 @@ int main() {
       contains(keyer, "\"frame_overhead_ms\"") ||
       contains(keyer, "\"budget_threshold_ms\"") ||
       contains(keyer, "\"prepass_gpu\"")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.get changed macOS metric JSON");
   }
 #endif
 
-  const std::string keyerBackground = sendRpc(
-      endpoint,
-      "{\"id\":\"5a\",\"method\":\"keyer.configure\","
+  const std::string keyerBackground = rpc("{\"id\":\"5a\",\"method\":\"keyer.configure\","
       "\"background_image_path\":\"/tmp/bg.png\","
       "\"background_asset_id\":\"a1\","
       "\"background_template_id\":\"t1\"}");
   if (!contains(keyerBackground, "\"background_image_set\":true") ||
       !contains(keyerBackground, "\"background_asset_id\":\"a1\"") ||
       !contains(keyerBackground, "\"background_template_id\":\"t1\"")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.configure did not surface background identity");
   }
   if (contains(keyerBackground, "/tmp/bg.png")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.get leaked background_image_path");
   }
-  const std::string keyerTemplateClear = sendRpc(
-      endpoint,
-      "{\"id\":\"5b\",\"method\":\"keyer.configure\","
+  const std::string keyerTemplateClear = rpc("{\"id\":\"5b\",\"method\":\"keyer.configure\","
       "\"background_template_id\":null}");
   if (!contains(keyerTemplateClear, "\"background_asset_id\":\"a1\"") ||
       !contains(keyerTemplateClear, "\"background_template_id\":null")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.configure did not clear only the background template id");
   }
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.activeKeyer = "vision_person_segmentation";
   }
-  const std::string keyerAssetChange = sendRpc(
-      endpoint,
-      "{\"id\":\"5c\",\"method\":\"keyer.configure\","
+  const std::string keyerAssetChange = rpc("{\"id\":\"5c\",\"method\":\"keyer.configure\","
       "\"background_asset_id\":\"a2\"}");
   if (!contains(keyerAssetChange, "\"background_asset_id\":\"a2\"") ||
       !contains(keyerAssetChange, "\"background_template_id\":null") ||
       !contains(keyerAssetChange,
                 "\"active_keyer\":\"vision_person_segmentation\"")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("background asset identity change reset active_keyer");
   }
   const std::string keyerReset =
-      sendRpc(endpoint, "{\"id\":\"5d\",\"method\":\"keyer.reset\"}");
+      rpc("{\"id\":\"5d\",\"method\":\"keyer.reset\"}");
   if (!contains(keyerReset, "\"ok\":true")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.reset failed");
   }
   const std::string keyerAfterReset =
-      sendRpc(endpoint, "{\"id\":\"5e\",\"method\":\"keyer.get\"}");
+      rpc("{\"id\":\"5e\",\"method\":\"keyer.get\"}");
   if (!contains(keyerAfterReset, "\"background_image_set\":false") ||
       !contains(keyerAfterReset, "\"background_asset_id\":null") ||
       !contains(keyerAfterReset, "\"background_template_id\":null")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("keyer.reset did not clear background identity");
   }
 
   const std::string mediaPath = "C:\\Users\\J\303\266rg\\Decks\\page-02.png";
   const std::string mediaUpdate =
-      sendRpc(endpoint, "{\"id\":\"6\",\"method\":\"program.update\","
+      rpc("{\"id\":\"6\",\"method\":\"program.update\","
                         "\"section\":\"media_layer\",\"values\":{"
                         "\"enabled\":true,\"render_status\":\"ready\","
                         "\"template_id\":\"tpl-1\","
@@ -437,15 +466,13 @@ int main() {
                         "\"height\":0.4,\"rotation\":5,"
                         "\"rotation_y\":-10}}");
   if (!contains(mediaUpdate, "\"ok\":true")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("media_layer update failed");
   }
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     if (state.mediaLayer.renderedPagePath != mediaPath) {
-      running.store(false);
-      server.join();
+      stopServer();
       fail("rendered_page_path was not JSON-unescaped");
     }
   }
@@ -453,121 +480,129 @@ int main() {
   // state.get carries the compact program summary + a monotonic
   // program_revision so other control clients can mirror "what is active".
   const std::string programState1 =
-      sendRpc(endpoint, "{\"id\":\"6a\",\"method\":\"state.get\"}");
+      rpc("{\"id\":\"6a\",\"method\":\"state.get\"}");
   if (!contains(programState1, "\"program\":") ||
       !contains(programState1, "\"program_revision\":") ||
       !contains(programState1, "\"media_layer\":{\"enabled\":true") ||
+      !contains(programState1, "\"source\":\"page\"") ||
       !contains(programState1, "\"page\":2") ||
       !contains(programState1, "\"page_count\":4") ||
       !contains(programState1, "\"template_id\":\"tpl-1\"") ||
       !contains(programState1, "\"x\":0.1") ||
       !contains(programState1, "\"rotation_y\":-10") ||
       !contains(programState1, "\"render_status\":\"ready\"")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("state.get did not surface the program summary");
   }
   // Heavy fields must NOT be in the status push.
   if (contains(programState1, "rendered_page_path")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("state.get program summary leaked rendered_page_path");
   }
 
+  const std::string mediaScreenUpdate =
+      rpc("{\"id\":\"6s\",\"method\":\"program.update\","
+                        "\"section\":\"media_layer\",\"values\":{"
+                        "\"enabled\":true,\"mode\":\"pip\","
+                        "\"source\":\"screen\"}}");
+  const std::string mediaScreenState =
+      rpc("{\"id\":\"6t\",\"method\":\"state.get\"}");
+  const std::string mediaScreenRaw =
+      rpc("{\"id\":\"6u\",\"method\":\"program.get\","
+                        "\"section\":\"media_layer\"}");
+  if (!contains(mediaScreenUpdate, "\"ok\":true") ||
+      !contains(mediaScreenState, "\"source\":\"screen\"") ||
+      !contains(mediaScreenRaw, "\"source\":\"screen\"")) {
+    stopServer();
+    fail("media_layer source=screen did not round-trip");
+  }
+  const std::string mediaBogusUpdate =
+      rpc("{\"id\":\"6v\",\"method\":\"program.update\","
+                        "\"section\":\"media_layer\",\"values\":{"
+                        "\"enabled\":true,\"source\":\"bogus\"}}");
+  const std::string mediaBogusState =
+      rpc("{\"id\":\"6w\",\"method\":\"state.get\"}");
+  if (!contains(mediaBogusUpdate, "\"ok\":true") ||
+      !contains(mediaBogusState, "\"source\":\"page\"")) {
+    stopServer();
+    fail("media_layer bogus source did not normalize to page");
+  }
+
   const std::string finiteUpdate =
-      sendRpc(endpoint, "{\"id\":\"6aa\",\"method\":\"program.update\","
+      rpc("{\"id\":\"6aa\",\"method\":\"program.update\","
                         "\"section\":\"media_layer\",\"values\":{"
                         "\"enabled\":true,\"x\":1e999}}");
   if (!contains(finiteUpdate, "\"ok\":true")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("media_layer non-finite update failed");
   }
   const std::string programStateFinite =
-      sendRpc(endpoint, "{\"id\":\"6ab\",\"method\":\"state.get\"}");
+      rpc("{\"id\":\"6ab\",\"method\":\"state.get\"}");
   if (!contains(programStateFinite, "\"x\":0") ||
       contains(programStateFinite, "inf")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("state.get emitted invalid JSON for non-finite media geometry");
   }
 
   // A cornerbug logo reports has_image=true but never the base64 image itself.
-  const std::string logoUpdate = sendRpc(
-      endpoint,
-      "{\"id\":\"6b\",\"method\":\"program.update\",\"section\":\"cornerbug\","
+  const std::string logoUpdate = rpc("{\"id\":\"6b\",\"method\":\"program.update\",\"section\":\"cornerbug\","
       "\"values\":{\"enabled\":true,\"logo_asset_id\":\"logo-9\","
       "\"image_url\":\"https://x/y.png?token=abc\","
       "\"x\":0.8,\"image_data_url\":\"data:image/png;base64,AAAA\"}}");
   if (!contains(logoUpdate, "\"ok\":true")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("cornerbug update failed");
   }
   const std::string programState2 =
-      sendRpc(endpoint, "{\"id\":\"6c\",\"method\":\"state.get\"}");
+      rpc("{\"id\":\"6c\",\"method\":\"state.get\"}");
   if (!contains(programState2, "\"cornerbug\":{\"enabled\":true,\"has_image\":true") ||
       !contains(programState2, "\"logo_asset_id\":\"logo-9\"") ||
       !contains(programState2, "\"x\":0.8")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("state.get did not report cornerbug has_image");
   }
   if (contains(programState2, "image_data_url") ||
       contains(programState2, "base64") ||
       contains(programState2, "image_url") ||
       contains(programState2, "token=")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("state.get leaked the cornerbug image_data_url");
   }
 
   // camera.open_set resolves camera_stable_keys by device key, so a swapped
   // index order in camera_indices must not decide which cameras open.
-  (void)sendRpc(endpoint, "{\"id\":\"7a\",\"method\":\"camera.stop\"}");
-  const std::string openSet = sendRpc(
-      endpoint,
-      "{\"id\":\"7b\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0],"
+  (void)rpc("{\"id\":\"7a\",\"method\":\"camera.stop\"}");
+  const std::string openSet = rpc("{\"id\":\"7b\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0],"
       "\"camera_stable_keys\":[\"camera-a-key\",\"camera-b-key\"]}");
   if (!contains(openSet, "\"ok\":true") ||
       camera.lastStartSetIndices != std::vector<int>{0, 1}) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("open_set did not resolve camera_stable_keys by device key");
   }
 
   // Without stable keys the positional indices are used unchanged.
-  (void)sendRpc(endpoint, "{\"id\":\"7c\",\"method\":\"camera.stop\"}");
-  const std::string openSetIdx = sendRpc(
-      endpoint,
-      "{\"id\":\"7d\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0]}");
+  (void)rpc("{\"id\":\"7c\",\"method\":\"camera.stop\"}");
+  const std::string openSetIdx = rpc("{\"id\":\"7d\",\"method\":\"camera.open_set\",\"camera_indices\":[1,0]}");
   if (!contains(openSetIdx, "\"ok\":true") ||
       camera.lastStartSetIndices != std::vector<int>{1, 0}) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("open_set without keys changed index behavior");
   }
 
   // program_select prefers stable_key over camera_index.
-  const std::string programSelect = sendRpc(
-      endpoint,
-      "{\"id\":\"7e\",\"method\":\"camera.program_select\",\"camera_index\":0,"
+  const std::string programSelect = rpc("{\"id\":\"7e\",\"method\":\"camera.program_select\",\"camera_index\":0,"
       "\"stable_key\":\"camera-b-key\"}");
   if (!contains(programSelect, "\"ok\":true") ||
       camera.programSelectIndex != 1) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("program_select did not prefer stable_key");
   }
 
   // An unknown stable_key is a clean error, not a silent wrong-camera cut.
-  const std::string badProgram = sendRpc(
-      endpoint,
-      "{\"id\":\"7f\",\"method\":\"camera.program_select\","
+  const std::string badProgram = rpc("{\"id\":\"7f\",\"method\":\"camera.program_select\","
       "\"stable_key\":\"missing-key\"}");
   if (!contains(badProgram, "camera_program_select_failed")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("program_select accepted an unknown stable_key");
   }
 
@@ -578,18 +613,110 @@ int main() {
   camera.stickyErrorAtMs = 123456u;
   camera.liveError = "";  // e.g. just after a camera.list cleared the live one
   const std::string stateGet =
-      sendRpc(endpoint, "{\"id\":\"7g\",\"method\":\"state.get\"}");
+      rpc("{\"id\":\"7g\",\"method\":\"state.get\"}");
   if (!contains(stateGet,
                 "\"camera_last_error\":\"device_removed (0x80070490)\"") ||
       !contains(stateGet, "\"camera_last_error_at\":123456") ||
+      !contains(stateGet, "\"screen_capture\":{\"running\":false") ||
+      !contains(stateGet, "\"captured_frames\":") ||
+      !contains(stateGet, "\"title\":null") ||
       !contains(stateGet, "\"last_error\":null")) {
-    running.store(false);
-    server.join();
+    stopServer();
     fail("state.get did not surface sticky camera error decoupled from last_error");
   }
 
-  (void)sendRpc(endpoint, "{\"id\":\"7\",\"method\":\"control.shutdown\"}");
-  server.join();
+  const std::string screenListUnsupported =
+      rpc("{\"id\":\"8a\",\"method\":\"screen.list\"}");
+  if (!contains(screenListUnsupported, "\"sources\":[") ||
+      !contains(screenListUnsupported,
+                "\"capabilities\":{\"supported\":false")) {
+    stopServer();
+    fail("screen.list did not return sources/capabilities shape");
+  }
+  const std::string screenStartUnsupported =
+      rpc("{\"id\":\"8b\",\"method\":\"screen.start\","
+              "\"source_id\":\"monitor:0x1\"}");
+  if (!contains(screenStartUnsupported, "screen_capture_unsupported")) {
+    stopServer();
+    fail("screen.start without enumeration was not unsupported");
+  }
+  const std::string screenPickUnsupported =
+      rpc("{\"id\":\"8c\",\"method\":\"screen.pick\"}");
+  if (!contains(screenPickUnsupported, "screen_capture_unsupported")) {
+    stopServer();
+    fail("screen.pick without system picker was not unsupported");
+  }
+  const std::string screenStopIdle =
+      rpc("{\"id\":\"8d\",\"method\":\"screen.stop\"}");
+  if (!contains(screenStopIdle, "\"ok\":true")) {
+    stopServer();
+    fail("screen.stop was not idempotent");
+  }
+
+  screen.capabilitiesOverride.supported = true;
+  screen.capabilitiesOverride.enumeration = true;
+  screen.capabilitiesOverride.permissionStatus = "authorized";
+  screen.capabilitiesOverride.unsupportedReason.clear();
+  screen.knownSourceIds = {"monitor:0x1", "window:0x2"};
+  const std::string screenList =
+      rpc("{\"id\":\"8e\",\"method\":\"screen.list\"}");
+  if (!contains(screenList, "\"source_id\":\"monitor:0x1\"") ||
+      !contains(screenList, "\"capabilities\":{\"supported\":true")) {
+    stopServer();
+    fail("screen.list did not include known sources");
+  }
+  const std::string screenStart =
+      rpc("{\"id\":\"8f\",\"method\":\"screen.start\","
+              "\"source_id\":\"monitor:0x1\"}");
+  if (!contains(screenStart, "\"ok\":true") ||
+      !contains(screenStart, "\"source_id\":\"monitor:0x1\"") ||
+      !contains(screenStart, "\"reopened\":false") ||
+      screen.lastStartOptions.maxWidth != options.width ||
+      screen.lastStartOptions.maxHeight != options.height ||
+      screen.lastStartOptions.fps != options.fps ||
+      !screen.lastStartOptions.includeCursor) {
+    stopServer();
+    fail("screen.start did not open known source with helper options");
+  }
+  const std::string screenReopen =
+      rpc("{\"id\":\"8g\",\"method\":\"screen.start\","
+              "\"source_id\":\"window:0x2\",\"include_cursor\":false}");
+  if (!contains(screenReopen, "\"reopened\":true") ||
+      screen.lastStartOptions.includeCursor) {
+    stopServer();
+    fail("screen.start did not mark different source as reopened");
+  }
+  const std::string screenUnknown =
+      rpc("{\"id\":\"8h\",\"method\":\"screen.start\","
+              "\"source_id\":\"monitor:0x9\"}");
+  if (!contains(screenUnknown, "screen_source_not_found")) {
+    stopServer();
+    fail("screen.start accepted unknown source");
+  }
+  (void)rpc("{\"id\":\"8i\",\"method\":\"screen.stop\"}");
+  screen.capabilitiesOverride.enumeration = false;
+  const std::string screenNoEnumeration =
+      rpc("{\"id\":\"8j\",\"method\":\"screen.start\","
+              "\"source_id\":\"monitor:0x1\"}");
+  if (!contains(screenNoEnumeration, "screen_capture_unsupported") ||
+      !contains(screenNoEnumeration, "source_ids_unavailable_use_picker")) {
+    stopServer();
+    fail("screen.start without enumeration did not guide to picker");
+  }
+
+  screen.capabilitiesOverride.systemPicker = true;
+  const std::string screenPick =
+      rpc("{\"id\":\"8k\",\"method\":\"screen.pick\"}");
+  const std::string screenPickBusy =
+      rpc("{\"id\":\"8l\",\"method\":\"screen.pick\"}");
+  if (!contains(screenPick, "\"picker_pending\":true") ||
+      !contains(screenPickBusy, "screen_picker_busy")) {
+    stopServer();
+    fail("screen.pick did not return pending then busy");
+  }
+
+  (void)rpc("{\"id\":\"7\",\"method\":\"control.shutdown\"}");
+  stopServer();
   std::cout << "control_server_test passed" << std::endl;
   return 0;
 }
