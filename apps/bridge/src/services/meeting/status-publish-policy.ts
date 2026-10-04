@@ -36,6 +36,8 @@ const VOLATILE_COUNTER_KEYS: ReadonlySet<string> = new Set([
   "elapsed_seconds",
   "video_frames",
   "updated_at",
+  // Screen capture frame ticks are telemetry, not a state transition.
+  "captured_frames",
   // Dirty flags flip true->false->true while the frame pipeline consumes them,
   // so they add projection noise. program_revision (monotonic) is the stable
   // on-change discriminator for program mutations instead.

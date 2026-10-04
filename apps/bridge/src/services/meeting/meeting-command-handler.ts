@@ -21,6 +21,8 @@ import {
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
   MeetingRecordingStartSchema,
+  MeetingScreenPickSchema,
+  MeetingScreenStartSchema,
 } from "./meeting-command-schemas.js";
 import {
   meetingMediaService,
@@ -578,6 +580,48 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraAutoDirector", options);
+      }
+      return result;
+    }
+
+    case "meeting_screen_list": {
+      return runMeetingRpc(() => requireClient().screenList());
+    }
+
+    case "meeting_screen_start": {
+      const options = parseRelayPayload(
+        MeetingScreenStartSchema,
+        payload ?? {},
+        "Invalid payload for meeting_screen_start",
+      );
+      const result = await runMeetingRpc(() =>
+        requireClient().screenStart(options),
+      );
+      if (result.success) {
+        meetingHelperManager.requestStatusPublish("screen_start");
+      }
+      return result;
+    }
+
+    case "meeting_screen_stop": {
+      const result = await runMeetingRpc(() => requireClient().screenStop());
+      if (result.success) {
+        meetingHelperManager.requestStatusPublish("screen_stop");
+      }
+      return result;
+    }
+
+    case "meeting_screen_pick": {
+      const options = parseRelayPayload(
+        MeetingScreenPickSchema,
+        payload ?? {},
+        "Invalid payload for meeting_screen_pick",
+      );
+      const result = await runMeetingRpc(() =>
+        requireClient().screenPick(options),
+      );
+      if (result.success) {
+        meetingHelperManager.requestStatusPublish("screen_pick");
       }
       return result;
     }
