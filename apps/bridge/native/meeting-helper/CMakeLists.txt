@@ -135,6 +135,7 @@ if(APPLE)
   enable_language(OBJCXX)
   list(APPEND MEETING_HELPER_SOURCES
     src/capture/camera_avfoundation.mm
+    src/capture/screen_capture_sck.mm
     src/compose/metal_compositor.mm
     src/compose/metal_device.mm
     src/keyer/vision_keyer.mm
@@ -157,6 +158,9 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/capture/screen_capture_sck.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/compose/metal_compositor.mm PROPERTIES
@@ -269,6 +273,7 @@ else()
 endif()
 
 if(APPLE)
+  target_compile_definitions(meeting-helper PRIVATE BROADIFY_HAS_SCREEN_CAPTURE_BACKEND=1)
   target_link_libraries(meeting-helper PRIVATE
     "-framework Accelerate"
     "-framework AppKit"
@@ -283,6 +288,7 @@ if(APPLE)
     "-framework ImageIO"
     "-framework Metal"
     "-framework MetalPerformanceShaders"
+    "-framework ScreenCaptureKit"
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES

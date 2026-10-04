@@ -155,6 +155,37 @@ blockiert nicht auf die Nutzerentscheidung. `camera.list` und `camera.start`
 bleiben permission-gated und liefern bei fehlender oder eingeschraenkter
 Freigabe den stabilen Fehlercode `camera_permission_denied`.
 
+## Bildschirmfreigabe macOS
+
+Die Bildschirmfreigabe nutzt auf macOS 14+ den System-Picker von
+ScreenCaptureKit (`SCContentSharingPicker`). Dieser Picker braucht keine
+Screen-Recording-Freigabe in System Settings und soll deshalb keinen TCC-Dialog
+fuer Bildschirmaufnahme ausloesen. Auf macOS 13 meldet der Helper
+`unsupported_os`; Enumeration ist in dieser Stufe nicht aktiv.
+
+Manueller Test ueber den Control-Socket:
+
+1. `screen.pick` senden und im System-Picker Display, Fenster oder App waehlen.
+2. `program.update` fuer `media_layer` senden:
+
+   ```json
+   {"section":"media_layer","values":{"enabled":true,"source":"screen","mode":"fullscreen"}}
+   ```
+
+3. MJPEG-Preview oeffnen und pruefen, dass die Freigabe im Program-Bild
+   sichtbar ist.
+
+Relevante Events:
+
+- `screen_capture_picker` mit `event: "presented"`, `"cancelled"` oder
+  `"failed"`.
+- `screen_capture_started` mit `kind`, `width`, `height` und `fps`.
+- `screen_capture_source_changed`, wenn der Nutzer die Auswahl ueber den
+  Picker-Menueleistenpfad aendert.
+- `screen_capture_stopped` mit `reason: "user_stop"`, `"stream_stopped"` oder
+  `"item_closed"`.
+- `screen_capture_error` mit stabilem Fehlercode und Diagnose-Message.
+
 ## Virtuelle Kamera macOS
 
 Die virtuelle Kamera ist eine CoreMediaIO Camera Extension unter
