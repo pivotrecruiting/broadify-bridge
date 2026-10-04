@@ -312,7 +312,8 @@ Fehlercodes des Control-Kanals:
 
 Die Bridge pollt den laufenden Helper alle `STATUS_POLL_INTERVAL_MS` (2000 ms)
 und publiziert das Ergebnis als `bridge_event` `meeting_status`
-(`reason: "status_poll"`). Zwei Schutzregeln
+(`reason: "status_poll"`). Der vollstaendige Relay-Vertrag steht im
+[Meeting Status Contract](../features/meeting-status-contract.md). Zwei Schutzregeln
 (`apps/bridge/src/services/meeting/meeting-helper-manager.ts`,
 `apps/bridge/src/services/meeting/status-publish-policy.ts`):
 
@@ -322,7 +323,8 @@ und publiziert das Ergebnis als `bridge_event` `meeting_status`
 - **Dedupe ueber stabile Projektion:** Verglichen wird der Snapshot ohne
   Per-Frame-Zaehler (`rendered_frames`, `reused_frames`,
   `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
-  `elapsed_seconds`, `video_frames`) und ohne `keyer.status.metrics`.
+  `elapsed_seconds`, `video_frames`, `updated_at`, `program_dirty`,
+  `graphics_dirty`) und ohne `keyer.status.metrics`.
   `published_preview_frames` steigt nur fuer MJPEG/TCP-Preview-Consumer; bei
   reinen SHM-VCam-Readern stoppt der Zaehler.
   Publiziert wird sofort bei `force` (Lifecycle, Recording-Wechsel), immer
@@ -331,6 +333,10 @@ und publiziert das Ergebnis als `bridge_event` `meeting_status`
   mindestens alle `STATUS_METRICS_PUBLISH_INTERVAL_MS` (6000 ms), damit
   Performance-Panels weiterlaufen. Es werden also nie Updates stillgelegt,
   nur reine Zaehler-Aenderungen gedrosselt.
+- **Push-on-Write:** Schreibende Meeting-Kommandos rufen nach erfolgreicher
+  Mutation `requestStatusPublish(reason)` auf. Die Bridge sammelt diese
+  Forced-Reasons fuer `STATUS_PUBLISH_COALESCE_MS` (120 ms), verbindet sie mit
+  `+` und serialisiert die resultierenden Publishes.
 
 ### Company-Background-Fetch (`meeting_background_image_fetch`)
 
