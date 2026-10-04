@@ -1,38 +1,36 @@
-# Task: Meeting screen sharing — PR1: helper abstraction, stub, state/RPC, pipeline + compositor integration
+# Task: Meeting screen sharing — PR3: Windows.Graphics.Capture backend (enumeration + capture by source id)
 
 ## Raw request
-Gabriel (4.10.2026): "Wie bekommen wir Screensharing im Meeting Mode auf Windows und Mac hin? Also dass im Content-Fenster der Screen geshared werden kann?" → research done, plan approved 4.10.2026: `~/.claude/plans/ich-gehe-davon-aus-woolly-toast.md` (Weg A: native capture in the meeting helper feeding the existing `media_layer` with `source: "screen"`). Decisions: macOS 14+ only (system picker, no TCC), spike before platform backends, Windows source list in the webapp without thumbnails.
+Gabriel (4.10.2026): screen sharing in Meeting Mode on macOS and Windows. Plan approved 4.10.2026: `~/.claude/plans/ich-gehe-davon-aus-woolly-toast.md`. Decision: Windows source list in the webapp (no thumbnails), capture by `source_id`; Windows test device available for the Stage-0 spike.
 
 ## Context
-- Customer / project: Broadify Bridge, meeting helper (`apps/bridge/native/meeting-helper`).
-- Worktree / branch: `broadify-bridge-worktrees/meeting-screenshare-helper` / `feature/meeting-screenshare-helper`
-- Base branch: `dev` (origin/dev @ 973ab212, 0.27.3-rc.4).
-- Scope of this PR: NO platform capture backend. Introduces the `ScreenCaptureSource` abstraction + stub, `media_layer.source`, `screen.*` control RPCs, `state.get.screen_capture`, pipeline trigger + compositor live-frame path (GPU + CPU), Metal upload overload, tests. Behaviour for page media must stay pixel-identical.
+- Customer / project: Broadify Bridge meeting helper (`apps/bridge/native/meeting-helper`), Windows only.
+- Worktree / branch: `broadify-bridge-worktrees/meeting-screenshare-windows` / `feature/meeting-screenshare-windows` (stacked on `feature/meeting-screenshare-helper`, PR1 commit 58e9ab14).
+- Base branch: `dev` (after PR1 merges).
+- Constraint: written on macOS; `screen_capture_wgc.cpp` is compile-verified only by CI (`windows-2022`) and the Windows test device.
 
 ## Plan
-See plan file section "PR1". Contract (names, JSON keys, error codes) is the plan's "Kontrakt" section and is binding.
+Plan file section "PR3" + "Stufe 0: Spike". Brief: scratchpad `codex/pr3-windows-wgc.md`.
 
 ## Acceptance criteria
-1. `npm run test:meeting-helper-native` green on macOS (ctest incl. new `screen_capture_source_test`, `guarded_frame_slot_test`, extended `frame_pipeline_gating_test`, extended `control_server_test`).
-2. `program.update media_layer` with `source:"screen"` / without `source` / with `source:"bogus"` round-trips as `screen` / `page` / `page` in `state.get` program summary.
-3. `screen.list|start|stop|pick` exist; with the stub they answer per contract (`screen_capture_unsupported` with `unsupported_os`, `screen.stop` idempotent ok).
-4. `state.get` contains the `screen_capture` block per contract (`captured_frames` the only volatile counter).
-5. Page media rendering unchanged (GPU on, `BROADIFY_MEETING_GPU_COMPOSITOR=0`, and D3D11 off on Windows) — manual MJPEG check by the verifier.
-6. Helper builds via `bash apps/bridge/native/meeting-helper/build.sh` on macOS; Windows build only verified by CI/Windows device later (stub compiles on all platforms in this PR).
-7. No Info.plist / entitlement changes; `scripts/verify-macos-release-signing.sh` unaffected.
+1. `screen_capture_wgc.cpp` implements `ScreenCaptureSource` with EnumWindows/EnumDisplayMonitors enumeration (bridge/helper windows excluded), WGC capture via `CreateFreeThreaded` pool, cursor flag guarded by ApiInformation, `ContentSize` change → `Recreate`, `item.Closed` → stopped event, mip-level downscale policy for sources larger than the program size, BGRA→RGBA via `swizzleBgraToRgba`, `GuardedFrameSlot` publish.
+2. macOS build + ctest stay green (CMake changes WIN32-scoped); any pure helper added (window-candidate filter, id formatting) is unit-tested in ctest.
+3. Windows: `build.ps1` + ctest green on the test device / CI; Stage-0 go criteria met (≥ 25 fps 1080p share of a 1080p and a 4K display, CPU ≤ 20 % of a core for capture+convert, FrameArrived ≤ 8 ms, window close → stopped ≤ 2 s, no crash).
+4. Docs: dev-setup "Bildschirmfreigabe (Windows)" section + README line; spike numbers into `docs/bridge/features/meeting-screen-sharing.md` (PR4).
 
 ## Review
 - Round: 1/3
-- Verdict: PASS round 1 (4.10.2026, reviewer: Claude; verifier: separate agent). Verifier: build.sh exit 0; ctest 36/36; before-proof = configure fails without src (missing screen_capture_source.cpp); control-socket live check of screen.list/pick/stop/start, program.update source round-trip, state.get block order; static checks OK.
-- Must-fix (open): none.
+- Verdict: PASS round 1 on the macOS side (4.10.2026; reviewer: Claude; verifier: separate agent — build.sh exit 0, ctest 36/36, before-proof: 4 compile errors naming WindowCandidate/isShareableWindowCandidate → green after restore, CMake WIN32-scoped, static review a–l met). Windows compile + runtime: OPEN (CI windows-2022 / test device). Orchestrator applied the verifier's zero-risk hardening (`winrt::guid_of<GraphicsCaptureItem>()` instead of the ABI namespace).
+- Must-fix (open): none. Windows prerequisites to verify: Windows SDK ≥ 10.0.19041 projection headers (`IsCursorCaptureEnabled`), `cppwinrt` include dir + `windowsapp.lib` in the build environment (first C++/WinRT use in the helper); CI runner windows-2022 ships a newer SDK.
 - Notes (non-blocking):
-  - Reviewer reverted three sandbox-only deviations the implementer made (Codex ran under a seatbelt sandbox): `build.sh` `|| true` after `security find-identity`, EPERM-skip in `raw_frame_server_test.cpp`, `audio_input_rejected`-skip in `meeting_recorder_writer_test.mm`. Verifier runs outside the sandbox; these tests must pass unchanged.
-  - `control_server_test.cpp` gained a socket-or-direct RPC mode (`canBindControlEndpoint`); outside sandboxes the socket path runs as before. This required exporting `handleRpc` in `control_server.h` (moved out of the anonymous namespace). Accepted as harmless; documented here.
-  - Stub reports `unsupported_os` on every platform until PR2/PR3 land (by design for PR1).
-- Handoff to human (if any): merge only after explicit chat go.
+  - Reviewer fixed the dev-setup doc example (`program.update` used an invented `patch` shape; now `section`/`values`).
+  - Spike check: `onFrameArrived` holds the checked-out frame while calling `Recreate` on a size change (libobs does the same); if frames stall after a resize, close the frame before `Recreate`.
+  - Event codes `screen_capture_start_failed` / `screen_capture_frame_failed` are helper event codes (RPC error code stays `screen_start_failed` per contract). Extra diagnostic events `screen_capture_metrics`, `screen_capture_close_error`, `screen_capture_winrt_apartment` are not in the bridge's forced-publish set (intended).
+  - `winrtDevice_` is dropped on stop, so the D3D11 device is recreated on the next start (cheap; acceptable).
+- Handoff to human (if any): Windows runtime verification needs the Windows device; merge only after explicit chat go.
 
 ## Verification
-- [x] Tests pass (ctest 36/36 via build.sh + ctest, verifier run 4.10.)
-- [x] Helper build passes (verifier run 4.10.)
-- [ ] Manual MJPEG check: page media unchanged, screen source = layer absent with stub
-- [x] Before/after: configure fails without the production sources (verifier run 4.10.)
+- [x] macOS build + ctest 36/36 green (verifier 4.10.)
+- [ ] Windows build (build.ps1) + ctest green (device/CI)
+- [ ] Spike go/no-go table with measured numbers (Windows device)
+- [ ] Manual: list → start → share visible in MJPEG preview/VCam; window close → stopped + toast

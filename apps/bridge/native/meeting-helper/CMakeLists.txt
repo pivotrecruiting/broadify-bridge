@@ -172,7 +172,15 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
 elseif(WIN32)
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_mediafoundation.cpp src/recorder/meeting_recorder_mediafoundation.cpp src/compose/d3d11_compositor.cpp)
+  list(APPEND MEETING_HELPER_SOURCES
+    src/capture/camera_mediafoundation.cpp
+    src/capture/screen_capture_wgc.cpp
+    src/recorder/meeting_recorder_mediafoundation.cpp
+    src/compose/d3d11_compositor.cpp
+  )
+  set_source_files_properties(src/capture/screen_capture_wgc.cpp PROPERTIES
+    COMPILE_OPTIONS "/permissive-;/bigobj"
+  )
 else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
 endif()
@@ -256,11 +264,15 @@ else()
 endif()
 
 if(WIN32)
-  target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_definitions(meeting-helper PRIVATE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+    BROADIFY_HAS_SCREEN_CAPTURE_BACKEND=1
+  )
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32 windowsapp dwmapi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)

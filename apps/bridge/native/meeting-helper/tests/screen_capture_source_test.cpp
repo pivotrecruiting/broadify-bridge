@@ -9,7 +9,9 @@ using broadify::meeting::ScreenCaptureStartOptions;
 using broadify::meeting::ScreenSourceInfo;
 using broadify::meeting::StubScreenCaptureSource;
 using broadify::meeting::VideoFrame;
+using broadify::meeting::WindowCandidate;
 using broadify::meeting::clampScreenCaptureSize;
+using broadify::meeting::isShareableWindowCandidate;
 using broadify::meeting::parseScreenSourceId;
 using broadify::meeting::screenCapabilitiesToJson;
 using broadify::meeting::screenSourceToJson;
@@ -78,6 +80,41 @@ int main() {
                "reject bad hex");
   ok &= expect(!parseScreenSourceId("monitor:1A", kind, handle),
                "reject missing hex prefix");
+
+  WindowCandidate candidate;
+  candidate.visible = true;
+  candidate.rootWindow = true;
+  candidate.hasTitle = true;
+  candidate.ownerPid = 101;
+  candidate.currentPid = 202;
+  candidate.parentPid = 303;
+  candidate.className = "ApplicationFrameWindow";
+  ok &= expect(isShareableWindowCandidate(candidate),
+               "shareable window candidate accepted");
+  WindowCandidate rejected = candidate;
+  rejected.visible = false;
+  ok &= expect(!isShareableWindowCandidate(rejected),
+               "invisible window candidate rejected");
+  rejected = candidate;
+  rejected.toolWindow = true;
+  ok &= expect(!isShareableWindowCandidate(rejected),
+               "tool window candidate rejected");
+  rejected = candidate;
+  rejected.cloaked = true;
+  ok &= expect(!isShareableWindowCandidate(rejected),
+               "cloaked window candidate rejected");
+  rejected = candidate;
+  rejected.ownerPid = candidate.currentPid;
+  ok &= expect(!isShareableWindowCandidate(rejected),
+               "helper-owned window candidate rejected");
+  rejected = candidate;
+  rejected.ownerPid = candidate.parentPid;
+  ok &= expect(!isShareableWindowCandidate(rejected),
+               "bridge-owned window candidate rejected");
+  rejected = candidate;
+  rejected.className = "Windows.UI.Core.CoreWindow";
+  ok &= expect(!isShareableWindowCandidate(rejected),
+               "shell/core window candidate rejected");
 
   ScreenSourceInfo source;
   source.sourceId = "monitor:0x10001";

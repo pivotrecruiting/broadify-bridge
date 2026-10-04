@@ -17,6 +17,7 @@ The current implementation is native-only:
 - captures macOS cameras through AVFoundation,
 - writes composited RGBA frames into FrameBus,
 - exposes all stable control methods with structured responses,
+- captures Windows screen/window sources through Windows.Graphics.Capture,
 - stores and renders `speaker_layout`, `cornerbug`, `media_layer` and
   `graphics` program sections,
 - runs MODNet through ONNX Runtime as the primary keyer,

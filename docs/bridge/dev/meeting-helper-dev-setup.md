@@ -51,6 +51,28 @@ apps\bridge\native\meeting-helper\meeting-helper.exe --keyer-self-test --models-
 
 INT8-IR (optional, offline): `scripts/quantize-modnet-openvino.md`.
 
+### Bildschirmfreigabe (Windows)
+
+Der Windows-Helper verwendet Windows.Graphics.Capture (WGC) fuer
+Bildschirm- und Fensterquellen. Mindestversion ist Windows 10 1903 (Build
+18362) fuer `CreateForWindow`/`CreateForMonitor`; der Cursor-Schalter wird nur
+gesetzt, wenn Windows 10 2004 (Build 19041) die Eigenschaft
+`IsCursorCaptureEnabled` meldet. Es gibt keinen Permission-Prompt. Der gelbe
+Systemrahmen ist Windows-Verhalten und wird im Helper nicht abgeschaltet.
+
+Manueller Smoke-Test ueber die Control-Pipe:
+
+```json
+{"id":"screen-list","method":"screen.list","params":{}}
+{"id":"screen-start","method":"screen.start","params":{"source_id":"monitor:0x...","include_cursor":true}}
+{"id":"media","method":"program.update","section":"media_layer","values":{"enabled":true,"source":"screen","mode":"fullscreen"}}
+```
+
+Danach die lokale MJPEG-Preview (`/preview.mjpg`) oder VCam-Ausgabe pruefen.
+`screen_capture_metrics` erscheint ungefaehr alle 300 Capture-Frames und
+berichtet `map_swizzle_ms`, `content_width`, `content_height` und `mip_level`;
+diese Werte dienen dem Windows-Spike fuer FrameArrived-/Readback-Spitzen.
+
 ## Runtime-Vertrag
 
 Die Bridge spawnt:

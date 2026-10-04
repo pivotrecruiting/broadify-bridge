@@ -136,4 +136,17 @@ bool parseScreenSourceId(const std::string &id, std::string &kind,
   return true;
 }
 
+bool isShareableWindowCandidate(const WindowCandidate &candidate) {
+  if (!candidate.visible || !candidate.rootWindow || !candidate.hasTitle ||
+      candidate.toolWindow || candidate.cloaked) {
+    return false;
+  }
+  if (candidate.ownerPid == 0u || candidate.ownerPid == candidate.currentPid ||
+      (candidate.parentPid != 0u && candidate.ownerPid == candidate.parentPid)) {
+    return false;
+  }
+  return candidate.className != "Progman" && candidate.className != "WorkerW" &&
+         candidate.className != "Windows.UI.Core.CoreWindow";
+}
+
 }  // namespace broadify::meeting
