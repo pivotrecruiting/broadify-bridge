@@ -5,10 +5,14 @@ const mockStart = jest.fn();
 const mockStop = jest.fn();
 const mockGetFullStatus = jest.fn();
 const mockNotifyRecordingChanged = jest.fn();
+const mockRequestStatusPublish = jest.fn();
 const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
 const mockMeetingFrontGraphicsConfigureOutputs = jest.fn();
 const mockMeetingBackGraphicsInvalidate = jest.fn();
 const mockMeetingFrontGraphicsInvalidate = jest.fn();
+const mockMeetingBackGraphicsSendInternalLayer = jest.fn();
+const mockMeetingBackGraphicsRemoveLayer = jest.fn();
+const mockMeetingBackGraphicsGetStatus = jest.fn(() => ({ layers: [] }));
 const mockFrameBusWriteFrame = jest.fn();
 const mockFrameBusClose = jest.fn();
 const mockFrameBusCreateWriter = jest.fn(() => ({
@@ -34,6 +38,8 @@ jest.mock("./meeting-helper-manager.js", () => ({
     noteKeyerConfigured: () => undefined,
     notifyRecordingChanged: (...args: unknown[]) =>
       mockNotifyRecordingChanged(...args),
+    requestStatusPublish: (...args: unknown[]) =>
+      mockRequestStatusPublish(...args),
   },
 }));
 
@@ -45,6 +51,11 @@ jest.mock("./meeting-graphics-manager.js", () => ({
       mockMeetingBackGraphicsConfigureOutputs(...args),
     invalidateRendererFrameBusAttachment: (...args: unknown[]) =>
       mockMeetingBackGraphicsInvalidate(...args),
+    sendInternalLayer: (...args: unknown[]) =>
+      mockMeetingBackGraphicsSendInternalLayer(...args),
+    removeLayer: (...args: unknown[]) =>
+      mockMeetingBackGraphicsRemoveLayer(...args),
+    getStatus: (...args: unknown[]) => mockMeetingBackGraphicsGetStatus(...args),
   },
   meetingFrontGraphicsManager: {
     configureOutputs: (...args: unknown[]) =>
@@ -56,6 +67,26 @@ jest.mock("./meeting-graphics-manager.js", () => ({
 
 jest.mock("../graphics/framebus/framebus-client.js", () => ({
   loadFrameBusModule: (...args: unknown[]) => mockLoadFrameBusModule(...args),
+}));
+
+const mockMeetingMediaGetAsset = jest.fn();
+const mockMeetingMediaListAssets = jest.fn();
+const mockMeetingMediaSaveUpload = jest.fn();
+const mockMeetingMediaRenderingStatus = jest.fn();
+jest.mock("./meeting-media-service.js", () => ({
+  meetingMediaService: {
+    getAsset: (...args: unknown[]) => mockMeetingMediaGetAsset(...args),
+    listAssets: (...args: unknown[]) => mockMeetingMediaListAssets(...args),
+    saveUpload: (...args: unknown[]) => mockMeetingMediaSaveUpload(...args),
+    renderingStatus: (...args: unknown[]) =>
+      mockMeetingMediaRenderingStatus(...args),
+  },
+  videoMimeForFilename: (filename: string) =>
+    filename.endsWith(".mp4")
+      ? "video/mp4"
+      : filename.endsWith(".webm")
+        ? "video/webm"
+        : null,
 }));
 
 const mockConferenceDisplayStart = jest.fn();
@@ -79,6 +110,8 @@ import {
   isMeetingCommand,
 } from "./meeting-command-handler.js";
 import { MeetingHelperRequestError } from "./meeting-helper-client.js";
+import { meetingContentSourceState } from "./meeting-content-source-state.js";
+import { setBridgeContext } from "../bridge-context.js";
 
 const mockClient = {
   getState: jest.fn(),
@@ -120,6 +153,31 @@ describe("meeting-command-handler", () => {
     mockClient.getState.mockResolvedValue({ camera_permission_status: "authorized" });
     mockMeetingBackGraphicsConfigureOutputs.mockResolvedValue(undefined);
     mockMeetingFrontGraphicsConfigureOutputs.mockResolvedValue(undefined);
+    mockMeetingBackGraphicsSendInternalLayer.mockResolvedValue(undefined);
+    mockMeetingBackGraphicsRemoveLayer.mockResolvedValue(undefined);
+    mockMeetingBackGraphicsGetStatus.mockReturnValue({ layers: [] });
+    mockMeetingMediaGetAsset.mockResolvedValue({
+      assetId: "asset-video",
+      filename: "clip.mp4",
+      sourceFormat: "video",
+      renderStatus: "ready",
+    });
+    mockMeetingMediaListAssets.mockResolvedValue([]);
+    mockMeetingMediaSaveUpload.mockResolvedValue({});
+    mockMeetingMediaRenderingStatus.mockResolvedValue({});
+    meetingContentSourceState.reset();
+    setBridgeContext({
+      userDataDir: "/tmp",
+      logPath: "/tmp/bridge.log",
+      serverPort: 32123,
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      },
+      publishBridgeEvent: jest.fn(),
+    });
     mockLoadFrameBusModule.mockReturnValue({
       createWriter: mockFrameBusCreateWriter,
     });
@@ -363,6 +421,7 @@ describe("meeting-command-handler", () => {
         max_mask_age_ms: 220,
       });
       expect(result.success).toBe(true);
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("keyer_configure");
     });
 
     it("forwards automatic keyer configuration without forcing a model", async () => {
@@ -391,6 +450,25 @@ describe("meeting-command-handler", () => {
       });
       expect(mockClient.keyerConfigure.mock.calls[0]?.[0]).not.toHaveProperty(
         "model",
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("forwards background identity fields and strips unknown keys", async () => {
+      mockClient.keyerConfigure.mockResolvedValue({ enabled: true });
+
+      const result = await handleMeetingCommand("meeting_keyer_configure", {
+        background_asset_id: "asset-1",
+        background_template_id: "template-1",
+        unknown_key: "strip-me",
+      });
+
+      expect(mockClient.keyerConfigure).toHaveBeenCalledWith({
+        background_asset_id: "asset-1",
+        background_template_id: "template-1",
+      });
+      expect(mockClient.keyerConfigure.mock.calls[0]?.[0]).not.toHaveProperty(
+        "unknown_key",
       );
       expect(result.success).toBe(true);
     });
@@ -443,6 +521,19 @@ describe("meeting-command-handler", () => {
         enabled: true,
       });
       expect(result.success).toBe(true);
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("program_update");
+    });
+
+    it("meeting_program_update requests a status publish", async () => {
+      mockClient.programUpdate.mockResolvedValue({ ok: true });
+
+      const result = await handleMeetingCommand("meeting_program_update", {
+        section: "graphics",
+        values: { enabled: true },
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("program_update");
     });
 
     it("updates camera render settings", async () => {
@@ -457,6 +548,7 @@ describe("meeting-command-handler", () => {
         mirror: false,
       });
       expect(result.success).toBe(true);
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("program_update");
     });
 
     it("rejects unknown program sections", async () => {
@@ -523,6 +615,19 @@ describe("meeting-command-handler", () => {
       expect(result.success).toBe(true);
       // Only the explicit start may raise the one-shot UAC prompt.
       expect(mockClient.virtualCameraStart).toHaveBeenCalledWith();
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("vcam_start");
+    });
+
+    it("stops the virtual camera and requests a status publish", async () => {
+      mockClient.virtualCameraStop.mockResolvedValue({ active: false });
+
+      const result = await handleMeetingCommand("meeting_output_configure", {
+        target: "virtual_camera",
+        action: "stop",
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("vcam_stop");
     });
 
     it("configures the virtual camera", async () => {
@@ -770,6 +875,115 @@ describe("meeting-command-handler", () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.recordingStatus).toHaveBeenCalled();
+    });
+  });
+
+  describe("push-on-write meeting commands", () => {
+    it.each([
+      ["meeting_camera_select", { stable_key: "cam-a" }, "camera_select"],
+      ["meeting_camera_start", { stable_key: "cam-a" }, "camera_start"],
+      ["meeting_camera_stop", {}, "camera_stop"],
+      [
+        "meeting_camera_program_select",
+        { camera_index: 1 },
+        "camera_program_select",
+      ],
+    ])("%s requests a status publish", async (command, payload, reason) => {
+      mockClient.cameraSelect.mockResolvedValue({ ok: true });
+      mockClient.cameraStart.mockResolvedValue({ ok: true });
+      mockClient.cameraStop.mockResolvedValue({ ok: true });
+      mockClient.cameraProgramSelect.mockResolvedValue({ ok: true });
+
+      const result = await handleMeetingCommand(command, payload);
+
+      expect(result.success).toBe(true);
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith(reason);
+    });
+
+    it("meeting_keyer_reset requests a status publish", async () => {
+      mockClient.keyerReset.mockResolvedValue({ ok: true });
+
+      const result = await handleMeetingCommand("meeting_keyer_reset", {});
+
+      expect(result.success).toBe(true);
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("keyer_reset");
+    });
+
+    it("meeting_content_video_set records content_source.video and null clears it; both request a publish", async () => {
+      mockMeetingBackGraphicsGetStatus.mockReturnValue({
+        layers: [{ layerId: "meeting-content-video" }],
+      });
+
+      const setResult = await handleMeetingCommand("meeting_content_video_set", {
+        asset_id: "asset-video",
+        muted: true,
+        loop: false,
+      });
+
+      expect(setResult.success).toBe(true);
+      expect(mockMeetingBackGraphicsSendInternalLayer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          layerId: "meeting-content-video",
+          zIndex: 10,
+        }),
+      );
+      expect(meetingContentSourceState.snapshot().video).toMatchObject({
+        asset_id: "asset-video",
+        muted: true,
+        loop: false,
+      });
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith(
+        "content_video_set",
+      );
+
+      mockMeetingBackGraphicsGetStatus.mockReturnValue({ layers: [] });
+      const clearResult = await handleMeetingCommand("meeting_content_video_set", {
+        asset_id: null,
+      });
+
+      expect(clearResult.success).toBe(true);
+      expect(mockMeetingBackGraphicsRemoveLayer).toHaveBeenCalledWith({
+        layerId: "meeting-content-video",
+      });
+      expect(meetingContentSourceState.snapshot().video).toBeNull();
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith(
+        "content_video_set",
+      );
+    });
+
+    it("meeting_browser_source_set records and clears content_source.browser", async () => {
+      mockMeetingBackGraphicsGetStatus.mockReturnValue({
+        layers: [{ layerId: "meeting-browser-source" }],
+      });
+
+      const setResult = await handleMeetingCommand("meeting_browser_source_set", {
+        url: "https://example.test/source",
+      });
+
+      expect(setResult.success).toBe(true);
+      expect(mockMeetingBackGraphicsSendInternalLayer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          layerId: "meeting-browser-source",
+          zIndex: 11,
+        }),
+      );
+      expect(meetingContentSourceState.snapshot().browser).toMatchObject({
+        url: "https://example.test/source",
+      });
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith(
+        "browser_source_set",
+      );
+
+      mockMeetingBackGraphicsGetStatus.mockReturnValue({ layers: [] });
+      const clearResult = await handleMeetingCommand("meeting_browser_source_set", {
+        url: null,
+      });
+
+      expect(clearResult.success).toBe(true);
+      expect(meetingContentSourceState.snapshot().browser).toBeNull();
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith(
+        "browser_source_set",
+      );
     });
   });
 

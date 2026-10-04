@@ -364,13 +364,78 @@ int main() {
   }
 #endif
 
+  const std::string keyerBackground = sendRpc(
+      endpoint,
+      "{\"id\":\"5a\",\"method\":\"keyer.configure\","
+      "\"background_image_path\":\"/tmp/bg.png\","
+      "\"background_asset_id\":\"a1\","
+      "\"background_template_id\":\"t1\"}");
+  if (!contains(keyerBackground, "\"background_image_set\":true") ||
+      !contains(keyerBackground, "\"background_asset_id\":\"a1\"") ||
+      !contains(keyerBackground, "\"background_template_id\":\"t1\"")) {
+    running.store(false);
+    server.join();
+    fail("keyer.configure did not surface background identity");
+  }
+  if (contains(keyerBackground, "/tmp/bg.png")) {
+    running.store(false);
+    server.join();
+    fail("keyer.get leaked background_image_path");
+  }
+  const std::string keyerTemplateClear = sendRpc(
+      endpoint,
+      "{\"id\":\"5b\",\"method\":\"keyer.configure\","
+      "\"background_template_id\":null}");
+  if (!contains(keyerTemplateClear, "\"background_asset_id\":\"a1\"") ||
+      !contains(keyerTemplateClear, "\"background_template_id\":null")) {
+    running.store(false);
+    server.join();
+    fail("keyer.configure did not clear only the background template id");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.activeKeyer = "vision_person_segmentation";
+  }
+  const std::string keyerAssetChange = sendRpc(
+      endpoint,
+      "{\"id\":\"5c\",\"method\":\"keyer.configure\","
+      "\"background_asset_id\":\"a2\"}");
+  if (!contains(keyerAssetChange, "\"background_asset_id\":\"a2\"") ||
+      !contains(keyerAssetChange, "\"background_template_id\":null") ||
+      !contains(keyerAssetChange,
+                "\"active_keyer\":\"vision_person_segmentation\"")) {
+    running.store(false);
+    server.join();
+    fail("background asset identity change reset active_keyer");
+  }
+  const std::string keyerReset =
+      sendRpc(endpoint, "{\"id\":\"5d\",\"method\":\"keyer.reset\"}");
+  if (!contains(keyerReset, "\"ok\":true")) {
+    running.store(false);
+    server.join();
+    fail("keyer.reset failed");
+  }
+  const std::string keyerAfterReset =
+      sendRpc(endpoint, "{\"id\":\"5e\",\"method\":\"keyer.get\"}");
+  if (!contains(keyerAfterReset, "\"background_image_set\":false") ||
+      !contains(keyerAfterReset, "\"background_asset_id\":null") ||
+      !contains(keyerAfterReset, "\"background_template_id\":null")) {
+    running.store(false);
+    server.join();
+    fail("keyer.reset did not clear background identity");
+  }
+
   const std::string mediaPath = "C:\\Users\\J\303\266rg\\Decks\\page-02.png";
   const std::string mediaUpdate =
       sendRpc(endpoint, "{\"id\":\"6\",\"method\":\"program.update\","
                         "\"section\":\"media_layer\",\"values\":{"
                         "\"enabled\":true,\"render_status\":\"ready\","
+                        "\"template_id\":\"tpl-1\","
                         "\"rendered_page_path\":\"C:\\\\Users\\\\J\\u00f6rg\\\\Decks\\\\page-02.png\","
-                        "\"page\":2,\"page_count\":4}}");
+                        "\"page\":2,\"page_count\":4,"
+                        "\"x\":0.1,\"y\":0.2,\"width\":0.5,"
+                        "\"height\":0.4,\"rotation\":5,"
+                        "\"rotation_y\":-10}}");
   if (!contains(mediaUpdate, "\"ok\":true")) {
     running.store(false);
     server.join();
@@ -394,6 +459,9 @@ int main() {
       !contains(programState1, "\"media_layer\":{\"enabled\":true") ||
       !contains(programState1, "\"page\":2") ||
       !contains(programState1, "\"page_count\":4") ||
+      !contains(programState1, "\"template_id\":\"tpl-1\"") ||
+      !contains(programState1, "\"x\":0.1") ||
+      !contains(programState1, "\"rotation_y\":-10") ||
       !contains(programState1, "\"render_status\":\"ready\"")) {
     running.store(false);
     server.join();
@@ -406,11 +474,31 @@ int main() {
     fail("state.get program summary leaked rendered_page_path");
   }
 
+  const std::string finiteUpdate =
+      sendRpc(endpoint, "{\"id\":\"6aa\",\"method\":\"program.update\","
+                        "\"section\":\"media_layer\",\"values\":{"
+                        "\"enabled\":true,\"x\":1e999}}");
+  if (!contains(finiteUpdate, "\"ok\":true")) {
+    running.store(false);
+    server.join();
+    fail("media_layer non-finite update failed");
+  }
+  const std::string programStateFinite =
+      sendRpc(endpoint, "{\"id\":\"6ab\",\"method\":\"state.get\"}");
+  if (!contains(programStateFinite, "\"x\":0") ||
+      contains(programStateFinite, "inf")) {
+    running.store(false);
+    server.join();
+    fail("state.get emitted invalid JSON for non-finite media geometry");
+  }
+
   // A cornerbug logo reports has_image=true but never the base64 image itself.
   const std::string logoUpdate = sendRpc(
       endpoint,
       "{\"id\":\"6b\",\"method\":\"program.update\",\"section\":\"cornerbug\","
-      "\"values\":{\"enabled\":true,\"image_data_url\":\"data:image/png;base64,AAAA\"}}");
+      "\"values\":{\"enabled\":true,\"logo_asset_id\":\"logo-9\","
+      "\"image_url\":\"https://x/y.png?token=abc\","
+      "\"x\":0.8,\"image_data_url\":\"data:image/png;base64,AAAA\"}}");
   if (!contains(logoUpdate, "\"ok\":true")) {
     running.store(false);
     server.join();
@@ -418,13 +506,17 @@ int main() {
   }
   const std::string programState2 =
       sendRpc(endpoint, "{\"id\":\"6c\",\"method\":\"state.get\"}");
-  if (!contains(programState2, "\"cornerbug\":{\"enabled\":true,\"has_image\":true}")) {
+  if (!contains(programState2, "\"cornerbug\":{\"enabled\":true,\"has_image\":true") ||
+      !contains(programState2, "\"logo_asset_id\":\"logo-9\"") ||
+      !contains(programState2, "\"x\":0.8")) {
     running.store(false);
     server.join();
     fail("state.get did not report cornerbug has_image");
   }
   if (contains(programState2, "image_data_url") ||
-      contains(programState2, "base64")) {
+      contains(programState2, "base64") ||
+      contains(programState2, "image_url") ||
+      contains(programState2, "token=")) {
     running.store(false);
     server.join();
     fail("state.get leaked the cornerbug image_data_url");

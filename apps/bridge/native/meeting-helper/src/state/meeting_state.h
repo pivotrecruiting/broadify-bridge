@@ -21,9 +21,11 @@ struct SpeakerLayoutState {
 
 struct CornerbugState {
   bool enabled = false;
+  bool hasImage = false;
   double x = 0.84;
   double y = 0.08;
   double size = 0.12;
+  std::string logoAssetId;
   std::string rawJson = "{\"enabled\":false,\"x\":0.84,\"y\":0.08,\"size\":0.12}";
 };
 
@@ -31,6 +33,7 @@ struct MediaLayerState {
   bool enabled = false;
   std::string mode = "pip";
   std::string assetId;
+  std::string templateId;
   std::string renderedPagePath;
   std::string renderStatus;
   int page = 0;
@@ -97,6 +100,8 @@ struct MeetingState {
   std::string backgroundMode = "transparent";
   // Absolute file path of an uploaded company background image; empty = none.
   std::string backgroundImagePath;
+  std::string backgroundAssetId;
+  std::string backgroundTemplateId;
   std::string activeKeyer = "passthrough";
   // Default backend: Apple Vision runs hardware-accelerated on every Mac and
   // needs no model download; MODNet stays available as an opt-in high-quality
