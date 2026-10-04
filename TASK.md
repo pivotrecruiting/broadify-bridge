@@ -34,5 +34,5 @@ See plan file section "PR1". Contract (names, JSON keys, error codes) is the pla
 ## Verification
 - [x] Tests pass (ctest 36/36 via build.sh + ctest, verifier run 4.10.)
 - [x] Helper build passes (verifier run 4.10.)
-- [ ] Manual MJPEG check: page media unchanged, screen source = layer absent with stub
+- [x] Page media unchanged: automated old-vs-new comparison (origin/dev 973ab212 vs 58e9ab14), PiP + fullscreen × GPU + CPU, raw BGRA program frames and MJPEG byte-identical (separate verifier agent, 4.10.); screen source with stub = layer absent (control-socket check)
 - [x] Before/after: configure fails without the production sources (verifier run 4.10.)
