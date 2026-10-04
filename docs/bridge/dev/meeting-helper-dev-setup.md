@@ -73,6 +73,26 @@ Danach die lokale MJPEG-Preview (`/preview.mjpg`) oder VCam-Ausgabe pruefen.
 berichtet `map_swizzle_ms`, `content_width`, `content_height` und `mip_level`;
 diese Werte dienen dem Windows-Spike fuer FrameArrived-/Readback-Spitzen.
 
+### Spike-Skript fuer Bildschirmfreigabe (macOS + Windows)
+
+`apps/bridge/native/meeting-helper/tools/spike-screen-share.py` startet einen
+Helper-Build, spricht den Control-Kanal direkt an (Unix-Socket bzw. Named Pipe)
+und misst den Screen-Share-Pfad. Es braucht nur Python 3 (keine Pakete).
+
+```bash
+# Nur Kontrakt pruefen (kein UI, keine Aufnahme):
+python3 tools/spike-screen-share.py --list-only --helper <helper-binary> --out ./list1
+# macOS: System-Picker, danach 60 s Messung mit automatischer Bewegung:
+python3 tools/spike-screen-share.py --full --motion --helper "<.app>/Contents/MacOS/BroadifyMeetingHelper" --out ./full1
+# Windows: Quelle aus screen.list waehlen und messen:
+python tools\spike-screen-share.py --full --motion --source monitor:0x10001 --helper .\meeting-helper.exe --out .\full1
+```
+
+Ausgabe: `SUMMARY render_fps/capture_fps/cpu`, `screen_capture_metrics`-Events
+(Windows), `share-fullscreen.jpg` und `share-pip.jpg` aus der MJPEG-Preview.
+Go-Kriterien des Stage-0-Spikes stehen in
+`docs/bridge/features/meeting-screen-sharing.md`.
+
 ## Runtime-Vertrag
 
 Die Bridge spawnt:
