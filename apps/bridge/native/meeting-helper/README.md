@@ -15,6 +15,7 @@ Python/FastAPI sidecar and keeps frame transport on FrameBus shared memory.
 The current implementation is native-only:
 
 - captures macOS cameras through AVFoundation,
+- captures macOS 14+ screen shares through the ScreenCaptureKit system picker,
 - writes composited RGBA frames into FrameBus,
 - exposes all stable control methods with structured responses,
 - stores and renders `speaker_layout`, `cornerbug`, `media_layer` and
