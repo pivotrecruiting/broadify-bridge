@@ -1,6 +1,7 @@
 #pragma once
 
 #include "capture/camera_source.h"
+#include "capture/screen_capture_source.h"
 #include "common/options.h"
 #include "preview/preview_frame_store.h"
 #include "preview/vcam_shm_ring_win.h"
@@ -73,6 +74,7 @@ inline bool shouldReopenStalledCamera(
 void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       VcamShmRingWin *vcamShm,
 #if defined(_WIN32)

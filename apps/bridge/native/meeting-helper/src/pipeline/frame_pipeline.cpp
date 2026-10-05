@@ -727,6 +727,7 @@ struct KeyerRuntimeStats {
 
 struct PipelineRuntimeState {
   bool cameraRunning = false;
+  bool screenRunning = false;
   bool keyerEnabled = false;
   bool framebusRunning = false;
   int previewClients = 0;
@@ -761,6 +762,9 @@ std::string determinePipelineMode(const PipelineRuntimeState &runtime,
                                   const CompositorSnapshot &snapshot) {
   if (runtime.cameraRunning) {
     return runtime.keyerEnabled ? "keyer_live" : "live";
+  }
+  if (runtime.screenRunning) {
+    return "live";
   }
   if (isGraphicsOutputActive(snapshot)) {
     return "live";
@@ -1870,6 +1874,7 @@ class GraphicsFrameBusReader {
 void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       VcamShmRingWin *vcamShm,
 #if defined(_WIN32)
@@ -1899,8 +1904,10 @@ void runFramePipeline(const Options &options,
 #endif
   VideoFrame latestCameraFrame;
   VideoFrame latestPipFrame;
+  VideoFrame latestScreenFrame;
   uint64_t lastPipCameraTimestampNs = 0u;
   uint64_t lastCameraTimestampNs = 0u;
+  uint64_t lastScreenTimestampNs = 0u;
   uint64_t lastProgramRevision = 0u;
   uint64_t lastUsedKeyerPublishedNs = 0u;
   uint64_t lastBackGraphicsTimestampNs = 0u;
@@ -1931,13 +1938,30 @@ void runFramePipeline(const Options &options,
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
   auto lastRenderStartAt = std::chrono::steady_clock::time_point{};
+  bool lastScreenRunning = false;
   while (running.load()) {
     PipelineRuntimeState runtime;
+    const ScreenCaptureStatus screenStatus = screen.status();
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = camera.isRunning();
       state.activeCameraIndex = camera.activeCameraIndex();
+      state.screenCapture.running = screenStatus.running;
+      state.screenCapture.pickerPending = screenStatus.pickerPending;
+      state.screenCapture.sourceId = screenStatus.sourceId;
+      state.screenCapture.kind = screenStatus.kind;
+      state.screenCapture.title = screenStatus.title;
+      state.screenCapture.appName = screenStatus.appName;
+      state.screenCapture.width = screenStatus.width;
+      state.screenCapture.height = screenStatus.height;
+      state.screenCapture.capturedFrames = screenStatus.capturedFrames;
+      if (screenStatus.running != lastScreenRunning) {
+        state.programDirty = true;
+        ++state.programRevision;
+        lastScreenRunning = screenStatus.running;
+      }
       runtime.cameraRunning = state.cameraRunning;
+      runtime.screenRunning = screenStatus.running;
       runtime.keyerEnabled = state.keyerEnabled;
       runtime.framebusRunning = state.framebusRunning;
       runtime.previewClients = state.previewClientCount;
@@ -2123,6 +2147,22 @@ void runFramePipeline(const Options &options,
         latestPipFrame = VideoFrame{};
         lastPipCameraTimestampNs = 0u;
       }
+      const bool screenWanted = runtime.screenRunning &&
+          snapshot.mediaLayer.enabled && snapshot.mediaLayer.source == "screen";
+      bool hasNewScreenFrame = runtime.screenRunning &&
+          screen.takeLatestFrameIfNew(lastScreenTimestampNs, latestScreenFrame) &&
+          !latestScreenFrame.rgba.empty();
+      if (hasNewScreenFrame) {
+        lastScreenTimestampNs = latestScreenFrame.timestampNs;
+      }
+      if (!runtime.screenRunning && !latestScreenFrame.rgba.empty()) {
+        latestScreenFrame = VideoFrame{};
+        lastScreenTimestampNs = 0u;
+      }
+      const VideoFrame *screenFrameForCompositor =
+          (screenWanted && !latestScreenFrame.rgba.empty()) ? &latestScreenFrame
+                                                            : nullptr;
+      hasNewScreenFrame = hasNewScreenFrame && screenWanted;
       const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
       const VideoFrame *frameForCompositor = nullptr;
@@ -2331,7 +2371,7 @@ void runFramePipeline(const Options &options,
       const bool graphicsChanged = runtime.graphicsDirty ||
           hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
       const PipelineWorkTriggers workTriggers{
-          hasNewCameraFrame, programChanged, graphicsChanged};
+          hasNewCameraFrame, programChanged, graphicsChanged, hasNewScreenFrame};
       const bool programWorkDue = shouldRunProgramWork(workTriggers);
       const bool fusedKeyerWorkDue = shouldRunFusedKeyerWork(workTriggers);
       // Same-frame re-evaluation only while the async path is the active
@@ -3401,6 +3441,7 @@ void runFramePipeline(const Options &options,
             frontGraphicsFrameForCompositor,
             (pipActive && !latestPipFrame.rgba.empty()) ? &latestPipFrame
                                                         : nullptr,
+            screenFrameForCompositor,
             frameIndex++,
             programFrame);
         if (selectedPair != nullptr) {
@@ -3548,6 +3589,8 @@ void runFramePipeline(const Options &options,
             std::this_thread::sleep_until(nextFrameAt);
           }
         }
+      } else if (runtime.screenRunning) {
+        screen.waitForFrameOrTimeout(lastScreenTimestampNs, nextFrameAt);
       } else {
         std::this_thread::sleep_until(nextFrameAt);
       }
@@ -3558,6 +3601,8 @@ void runFramePipeline(const Options &options,
     if (nextFrameAt > now) {
       if (runtime.cameraRunning) {
         camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+      } else if (runtime.screenRunning) {
+        screen.waitForFrameOrTimeout(lastScreenTimestampNs, nextFrameAt);
       } else {
         std::this_thread::sleep_until(nextFrameAt);
       }

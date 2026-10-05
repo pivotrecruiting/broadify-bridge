@@ -82,6 +82,8 @@ set(MEETING_HELPER_SOURCES
   ../vcam-helper/Shared/src/framebus_reader.c
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
+  src/capture/screen_capture_source.cpp
+  src/capture/screen_capture_stub.cpp
   src/compose/compositor.cpp
   src/compose/d3d_adapter_select.cpp
   src/compose/media_page_cache.cpp
@@ -334,6 +336,15 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(latest_frame_slot_test
     tests/latest_frame_slot_test.cpp
   )
+  add_executable(guarded_frame_slot_test
+    tests/guarded_frame_slot_test.cpp
+  )
+  add_executable(screen_capture_source_test
+    tests/screen_capture_source_test.cpp
+    src/capture/screen_capture_source.cpp
+    src/capture/screen_capture_stub.cpp
+    src/util/json_utils.cpp
+  )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
@@ -447,6 +458,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/control_server_test.cpp
     src/control/control_server.cpp
     src/capture/camera_source.cpp
+    src/capture/screen_capture_source.cpp
+    src/capture/screen_capture_stub.cpp
     src/output/vcam_controller.cpp
     src/preview/preview_frame_store.cpp
     src/preview/vcam_shm_layout.cpp
@@ -497,6 +510,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     camera_media_type_rank_test
     camera_reopen_policy_test
     latest_frame_slot_test
+    guarded_frame_slot_test
+    screen_capture_source_test
     keyer_governor_test
     keyer_cadence_test
     budget_overrun_reporter_test
