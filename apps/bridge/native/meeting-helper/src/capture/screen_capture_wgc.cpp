@@ -20,6 +20,7 @@
 
 #include "capture/screen_capture_source.h"
 #include "capture/guarded_frame_slot.h"
+#include "capture/liveness_watchdog.h"
 #include "util/pixel_swizzle.h"
 #include "util/json_utils.h"
 #include "util/helper_event_log.h"
@@ -387,17 +388,18 @@ class WgcScreenCaptureSource final : public ScreenCaptureSource {
       return false;
     }
     const bool windowSource = kind == "window";
+    const HWND hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(rawHandle));
+    const HMONITOR hmon =
+        reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(rawHandle));
     if (windowSource) {
-      if (!IsWindow(reinterpret_cast<HWND>(static_cast<uintptr_t>(rawHandle)))) {
+      if (!IsWindow(hwnd)) {
         setLastError("source_not_found");
         return false;
       }
     } else {
       MONITORINFOEXW info{};
       info.cbSize = sizeof(info);
-      if (!GetMonitorInfoW(
-              reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(rawHandle)),
-              &info)) {
+      if (!GetMonitorInfoW(hmon, &info)) {
         setLastError("source_not_found");
         return false;
       }
@@ -415,74 +417,100 @@ class WgcScreenCaptureSource final : public ScreenCaptureSource {
     }
 
     SourceDescription description =
-        windowSource
-            ? describeWindow(reinterpret_cast<HWND>(
-                  static_cast<uintptr_t>(rawHandle)))
-            : describeMonitor(reinterpret_cast<HMONITOR>(
-                  static_cast<uintptr_t>(rawHandle)));
+        windowSource ? describeWindow(hwnd) : describeMonitor(hmon);
     description.sourceId = sourceId;
     description.kind = windowSource ? "window" : "display";
 
+    // GraphicsCaptureItem.Closed is not reliably delivered in this helper
+    // process. Polling the native source handle every 250 ms meets the <= 2 s
+    // window/monitor loss requirement while keeping Closed as the fast path.
+    auto watchdog = std::make_unique<LivenessWatchdog>(
+        windowSource
+            ? LivenessWatchdog::Probe(
+                  [hwnd]() { return IsWindow(hwnd) != FALSE; })
+            : LivenessWatchdog::Probe([hmon]() {
+                MONITORINFO info{};
+                info.cbSize = sizeof(info);
+                return GetMonitorInfoW(hmon, &info) != FALSE;
+              }),
+        [this]() {
+          // Runs on the watchdog's plain std::thread: enter a WinRT apartment
+          // like stop() does before stopInternal() closes session and pool.
+          try {
+            WinRtApartment apartment;
+          } catch (...) {
+          }
+          handleItemLost();
+        },
+        std::chrono::milliseconds(250));
+
     try {
-      std::lock_guard<std::mutex> lock(mutex_);
-      ensureDeviceLocked();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ensureDeviceLocked();
 
-      item_ = windowSource
-                  ? createItemForWindow(reinterpret_cast<HWND>(
-                        static_cast<uintptr_t>(rawHandle)))
-                  : createItemForMonitor(reinterpret_cast<HMONITOR>(
-                        static_cast<uintptr_t>(rawHandle)));
-      lastSize_ = item_.Size();
-      if (lastSize_.Width <= 0 || lastSize_.Height <= 0) {
-        throw winrt::hresult_error(E_INVALIDARG,
-                                   L"Capture item has an empty size.");
+        item_ = windowSource ? createItemForWindow(hwnd)
+                             : createItemForMonitor(hmon);
+        lastSize_ = item_.Size();
+        if (lastSize_.Width <= 0 || lastSize_.Height <= 0) {
+          throw winrt::hresult_error(E_INVALIDARG,
+                                     L"Capture item has an empty size.");
+        }
+
+        options_ = options;
+        mipLevel_ =
+            mipAutogenSupported_
+                ? selectCaptureMipLevel(static_cast<uint32_t>(lastSize_.Width),
+                                        static_cast<uint32_t>(lastSize_.Height),
+                                        options.maxWidth, options.maxHeight)
+                : 0u;
+        width_ = halvedDimension(static_cast<uint32_t>(lastSize_.Width),
+                                 mipLevel_);
+        height_ = halvedDimension(static_cast<uint32_t>(lastSize_.Height),
+                                  mipLevel_);
+
+        // FreeThreaded pools (Windows 10 1809+) raise FrameArrived on the pool's
+        // worker thread and do not require a DispatcherQueue.
+        pool_ = capture::Direct3D11CaptureFramePool::CreateFreeThreaded(
+            winrtDevice_, kCaptureFormat, 2, lastSize_);
+        session_ = pool_.CreateCaptureSession(item_);
+
+        cursorToggleSupported_ = metadata::ApiInformation::IsPropertyPresent(
+            L"Windows.Graphics.Capture.GraphicsCaptureSession",
+            L"IsCursorCaptureEnabled");
+        if (cursorToggleSupported_) {
+          session_.IsCursorCaptureEnabled(options.includeCursor);
+        }
+
+        frameArrivedRevoker_ = pool_.FrameArrived(
+            winrt::auto_revoke, {this, &WgcScreenCaptureSource::onFrameArrived});
+        closedRevoker_ = item_.Closed(
+            winrt::auto_revoke, {this, &WgcScreenCaptureSource::onItemClosed});
+
+        session_.StartCapture();
+        running_ = true;
+        sourceId_ = sourceId;
+        kind_ = description.kind;
+        title_ = description.title;
+        appName_ = description.appName;
+        capturedFrames_.store(0u);
+        frameErrorEmitted_ = false;
+        lastError_.clear();
+        emitHelperEvent("{\"type\":\"" +
+                        std::string(kScreenCaptureStartedEvent) +
+                        "\",\"kind\":\"" + jsonEscape(kind_) +
+                        "\",\"width\":" + std::to_string(width_) +
+                        ",\"height\":" + std::to_string(height_) +
+                        ",\"fps\":" + std::to_string(options.fps) + "}");
       }
 
-      options_ = options;
-      mipLevel_ =
-          mipAutogenSupported_
-              ? selectCaptureMipLevel(static_cast<uint32_t>(lastSize_.Width),
-                                      static_cast<uint32_t>(lastSize_.Height),
-                                      options.maxWidth, options.maxHeight)
-              : 0u;
-      width_ = halvedDimension(static_cast<uint32_t>(lastSize_.Width),
-                               mipLevel_);
-      height_ = halvedDimension(static_cast<uint32_t>(lastSize_.Height),
-                                mipLevel_);
-
-      // FreeThreaded pools (Windows 10 1809+) raise FrameArrived on the pool's
-      // worker thread and do not require a DispatcherQueue.
-      pool_ = capture::Direct3D11CaptureFramePool::CreateFreeThreaded(
-          winrtDevice_, kCaptureFormat, 2, lastSize_);
-      session_ = pool_.CreateCaptureSession(item_);
-
-      cursorToggleSupported_ = metadata::ApiInformation::IsPropertyPresent(
-          L"Windows.Graphics.Capture.GraphicsCaptureSession",
-          L"IsCursorCaptureEnabled");
-      if (cursorToggleSupported_) {
-        session_.IsCursorCaptureEnabled(options.includeCursor);
+      watchdog->start();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (running_ && sourceId_ == sourceId) {
+          watchdog_ = std::move(watchdog);
+        }
       }
-
-      frameArrivedRevoker_ = pool_.FrameArrived(
-          winrt::auto_revoke, {this, &WgcScreenCaptureSource::onFrameArrived});
-      closedRevoker_ = item_.Closed(
-          winrt::auto_revoke, {this, &WgcScreenCaptureSource::onItemClosed});
-
-      session_.StartCapture();
-      running_ = true;
-      sourceId_ = sourceId;
-      kind_ = description.kind;
-      title_ = description.title;
-      appName_ = description.appName;
-      capturedFrames_.store(0u);
-      frameErrorEmitted_ = false;
-      lastError_.clear();
-      emitHelperEvent("{\"type\":\"" +
-                      std::string(kScreenCaptureStartedEvent) +
-                      "\",\"kind\":\"" + jsonEscape(kind_) +
-                      "\",\"width\":" + std::to_string(width_) +
-                      ",\"height\":" + std::to_string(height_) +
-                      ",\"fps\":" + std::to_string(options.fps) + "}");
       return true;
     } catch (const winrt::hresult_error &error) {
       handleStartError("wgc: " + hresultHex(winrtErrorCode(error)) + " " +
@@ -797,10 +825,13 @@ class WgcScreenCaptureSource final : public ScreenCaptureSource {
 
   void onItemClosed(const capture::GraphicsCaptureItem &,
                     const foundation::IInspectable &) {
+    handleItemLost();
+  }
+
+  void handleItemLost() {
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      stickyError_ = "item_closed";
-      stickyErrorAtMs_ = nowNs() / 1000000ull;
+      setStickyErrorLocked("item_closed");
     }
     stopInternal("item_closed", true);
   }
@@ -808,10 +839,12 @@ class WgcScreenCaptureSource final : public ScreenCaptureSource {
   void stopInternal(const char *reason, bool emit) {
     capture::GraphicsCaptureSession session{nullptr};
     capture::Direct3D11CaptureFramePool pool{nullptr};
+    std::unique_ptr<LivenessWatchdog> watchdog;
     bool wasRunning = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       wasRunning = running_;
+      watchdog = std::move(watchdog_);
       if (frameArrivedRevoker_) {
         frameArrivedRevoker_.revoke();
       }
@@ -837,6 +870,9 @@ class WgcScreenCaptureSource final : public ScreenCaptureSource {
       cursorToggleSupported_ = false;
       frameErrorEmitted_ = false;
       capturedFrames_.store(0u);
+    }
+    if (watchdog) {
+      watchdog->stop();
     }
     try {
       if (session) {
@@ -916,6 +952,7 @@ class WgcScreenCaptureSource final : public ScreenCaptureSource {
   capture::Direct3D11CaptureFramePool::FrameArrived_revoker
       frameArrivedRevoker_{};
   capture::GraphicsCaptureItem::Closed_revoker closedRevoker_{};
+  std::unique_ptr<LivenessWatchdog> watchdog_;
 
   bool running_ = false;
   std::string sourceId_;

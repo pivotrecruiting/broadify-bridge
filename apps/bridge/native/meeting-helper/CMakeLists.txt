@@ -82,6 +82,7 @@ set(MEETING_HELPER_SOURCES
   ../vcam-helper/Shared/src/framebus_reader.c
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
+  src/capture/liveness_watchdog.cpp
   src/capture/screen_capture_source.cpp
   src/capture/screen_capture_stub.cpp
   src/compose/compositor.cpp
@@ -357,6 +358,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/capture/screen_capture_stub.cpp
     src/util/json_utils.cpp
   )
+  add_executable(liveness_watchdog_test
+    tests/liveness_watchdog_test.cpp
+    src/capture/liveness_watchdog.cpp
+  )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
     src/keyer/keyer_governor.cpp
@@ -524,6 +529,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     latest_frame_slot_test
     guarded_frame_slot_test
     screen_capture_source_test
+    liveness_watchdog_test
     keyer_governor_test
     keyer_cadence_test
     budget_overrun_reporter_test
@@ -560,6 +566,9 @@ if(MEETING_HELPER_BUILD_TESTS)
       endif()
     elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
+    endif()
+    if(NOT WIN32 AND helper_test STREQUAL "liveness_watchdog_test")
+      target_link_libraries(${helper_test} PRIVATE pthread)
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
   endforeach()
