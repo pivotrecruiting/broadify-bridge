@@ -57,6 +57,13 @@ const CAMERA_STATUS_EVENT_TYPES = new Set<string>([
   "camera_capture_error",
   "camera_open_failure",
 ]);
+const SCREEN_CAPTURE_STATUS_EVENT_TYPES = new Set<string>([
+  "screen_capture_started",
+  "screen_capture_stopped",
+  "screen_capture_source_changed",
+  "screen_capture_picker",
+  "screen_capture_error",
+]);
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
 // Consecutive connect-level RPC failures (helper_not_reachable) of the 2 s
@@ -140,6 +147,11 @@ const RESTORABLE_CAMERA_METHOD_ORDER = [
   "cameraPipSet",
   "cameraAutoDirector",
 ] as const;
+// Screen capture is deliberately not replayed after a helper restart. A macOS
+// selection exists only inside the dead helper's picker session; on Windows an
+// HWND/HMONITOR can refer to a different window after the gap, and silently
+// sharing the wrong window is a privacy failure. Sharing is a per-session,
+// consent-like action, so the webapp offers "share again" instead.
 
 export type RestorableCameraMethodT =
   (typeof RESTORABLE_CAMERA_METHOD_ORDER)[number];
@@ -1323,6 +1335,7 @@ export class MeetingHelperManager {
         event?: string;
         code?: string;
         message?: string;
+        reason?: string;
         camera_permission_status?: string;
       };
       if (parsed.type === "meeting_graphics_framebus") {
@@ -1396,6 +1409,35 @@ export class MeetingHelperManager {
           publishMeetingErrorEvent(
             "camera_stalled",
             "Camera stopped delivering frames; attempting automatic recovery.",
+          );
+        }
+      }
+      // On macOS the helper is launched via /usr/bin/open and stdout is not
+      // connected, so these forced publishes fire only on Windows/dev spawns;
+      // the 2 s status poll carries the projection change on macOS.
+      if (SCREEN_CAPTURE_STATUS_EVENT_TYPES.has(parsed.type ?? "")) {
+        logger.info(`[MeetingHelper] ${line}`);
+        void this.publishStatus(parsed.type ?? "screen_capture_status", true);
+        if (parsed.type === "screen_capture_error") {
+          const code =
+            typeof parsed.code === "string"
+              ? parsed.code
+              : "screen_capture_error";
+          const message =
+            typeof parsed.message === "string"
+              ? parsed.message
+              : "Screen sharing reported an error.";
+          publishMeetingErrorEvent(code, message);
+        }
+        if (
+          parsed.type === "screen_capture_stopped" &&
+          parsed.reason !== "user_stop"
+        ) {
+          const reason =
+            typeof parsed.reason === "string" ? parsed.reason : "unknown";
+          publishMeetingErrorEvent(
+            "screen_capture_stopped",
+            `Screen sharing stopped (${reason})`,
           );
         }
       }
