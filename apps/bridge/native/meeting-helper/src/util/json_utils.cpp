@@ -10,18 +10,29 @@ namespace {
 size_t findValueStart(const std::string &body, const std::string &field) {
   const std::string needle = "\"" + field + "\"";
   size_t pos = body.find(needle);
-  if (pos == std::string::npos) {
-    return std::string::npos;
+  while (pos != std::string::npos) {
+    // A matching field name must be an unescaped string token followed by a colon;
+    // string values can equal the field name, but valid JSON values are not followed by ':'.
+    if (pos == 0u || body[pos - 1u] != '\\') {
+      size_t colon = pos + needle.size();
+      while (colon < body.size() &&
+             (body[colon] == ' ' || body[colon] == '\t' ||
+              body[colon] == '\n' || body[colon] == '\r')) {
+        ++colon;
+      }
+      if (colon < body.size() && body[colon] == ':') {
+        ++colon;
+        while (colon < body.size() &&
+               (body[colon] == ' ' || body[colon] == '\t' ||
+                body[colon] == '\n' || body[colon] == '\r')) {
+          ++colon;
+        }
+        return colon;
+      }
+    }
+    pos = body.find(needle, pos + needle.size());
   }
-  pos = body.find(':', pos + needle.size());
-  if (pos == std::string::npos) {
-    return std::string::npos;
-  }
-  ++pos;
-  while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t' || body[pos] == '\n' || body[pos] == '\r')) {
-    ++pos;
-  }
-  return pos;
+  return std::string::npos;
 }
 
 void appendUtf8(std::string &out, uint32_t codepoint) {

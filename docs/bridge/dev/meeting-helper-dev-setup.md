@@ -155,6 +155,35 @@ blockiert nicht auf die Nutzerentscheidung. `camera.list` und `camera.start`
 bleiben permission-gated und liefern bei fehlender oder eingeschraenkter
 Freigabe den stabilen Fehlercode `camera_permission_denied`.
 
+## Bildschirmfreigabe
+
+Die Bildschirmfreigabe laeuft ueber die Helper-RPCs `screen.list`,
+`screen.start`, `screen.stop` und `screen.pick`. Die Bridge reicht sie als
+`meeting_screen_list`, `meeting_screen_start`, `meeting_screen_stop` und
+`meeting_screen_pick` weiter. Der Status liegt unter
+`engine.screen_capture`; die aktive Programmebene meldet
+`engine.program.media_layer.source: "screen"`.
+
+macOS 14+ nutzt den ScreenCaptureKit-Systempicker (Backend in PR2/PR3). Dieser
+Picker-Pfad benoetigt keinen klassischen Screen-Recording-TCC-Dialog. macOS 13
+meldet `unsupported_os` ueber `screen_capture.capabilities.unsupported_reason`;
+der alte TCC-Capture-Pfad ist bewusst nicht Teil dieses PRs.
+
+Windows nutzt Windows Graphics Capture (Backend in PR2/PR3) und erwartet
+Windows 10 1903 oder neuer. `include_cursor` ist ab Windows 10 2004
+plattformseitig verfuegbar.
+
+Manueller Smoke-Test gegen den Control-Socket:
+
+```json
+{"id":"req-1","method":"screen.list","params":{}}
+{"id":"req-2","method":"screen.pick","params":{"include_cursor":true}}
+```
+
+Danach die MJPEG-Preview oeffnen und `meeting_get_state` pruefen:
+`engine.screen_capture.running` muss nach Auswahl `true` werden und
+`engine.program.media_layer.source` muss `screen` melden.
+
 ## Bildschirmfreigabe macOS
 
 Die Bildschirmfreigabe nutzt auf macOS 14+ den System-Picker von
@@ -269,6 +298,11 @@ Der Helper schreibt Async-Events auf stdout:
 {"type":"ready","framebus":"broadify-meeting-framebus","preview_port":9123}
 {"type":"metrics","fps":30,"keyer":"passthrough","inference_ms":null,"drops":0}
 {"type":"error","code":"model_missing","message":"modnet.onnx not found"}
+{"type":"screen_capture_started","source_id":"display:1"}
+{"type":"screen_capture_stopped","reason":"item_closed"}
+{"type":"screen_capture_source_changed","source_id":"display:2"}
+{"type":"screen_capture_picker","event":"opened"}
+{"type":"screen_capture_error","code":"screen_start_failed","message":"Could not start screen sharing."}
 ```
 
 Bei einem Launch ueber macOS LaunchServices wird Helper-stdout nicht
@@ -354,7 +388,8 @@ und publiziert das Ergebnis als `bridge_event` `meeting_status`
 - **Dedupe ueber stabile Projektion:** Verglichen wird der Snapshot ohne
   Per-Frame-Zaehler (`rendered_frames`, `reused_frames`,
   `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
-  `elapsed_seconds`, `video_frames`, `updated_at`, `program_dirty`,
+  `elapsed_seconds`, `video_frames`, `updated_at`, `captured_frames`,
+  `program_dirty`,
   `graphics_dirty`) und ohne `keyer.status.metrics`.
   `published_preview_frames` steigt nur fuer MJPEG/TCP-Preview-Consumer; bei
   reinen SHM-VCam-Readern stoppt der Zaehler.

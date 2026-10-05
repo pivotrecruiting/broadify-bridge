@@ -481,6 +481,100 @@ describe("meeting-helper-manager", () => {
       expect(publishStatus).not.toHaveBeenCalled();
     });
 
+    it("forwards item-closed screen capture stops as a forced publish and error event", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "screen_capture_stopped",
+          reason: "item_closed",
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith(
+        "screen_capture_stopped",
+        true,
+      );
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({
+            code: "screen_capture_stopped",
+            message: "Screen sharing stopped (item_closed)",
+          }),
+        }),
+      );
+    });
+
+    it("forwards user-stopped screen capture stops without an error event", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "screen_capture_stopped",
+          reason: "user_stop",
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith(
+        "screen_capture_stopped",
+        true,
+      );
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "meeting_error" }),
+      );
+    });
+
+    it("forwards screen capture errors with the helper error code", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "screen_capture_error",
+          code: "screen_start_failed",
+          message: "Could not start screen sharing.",
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith(
+        "screen_capture_error",
+        true,
+      );
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({
+            code: "screen_start_failed",
+            message: "Could not start screen sharing.",
+          }),
+        }),
+      );
+    });
+
     it("getFullStatus returns manager status without helper when stopped", async () => {
       const manager = new MeetingHelperManager();
       const status = await manager.getFullStatus();

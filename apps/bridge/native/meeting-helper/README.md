@@ -20,6 +20,7 @@ The current implementation is native-only:
 - exposes all stable control methods with structured responses,
 - stores and renders `speaker_layout`, `cornerbug`, `media_layer` and
   `graphics` program sections,
+- exposes the screen-capture abstraction and current stub,
 - runs MODNet through ONNX Runtime as the primary keyer,
 - keeps call-control and legacy prototype features disabled.
 

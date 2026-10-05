@@ -47,6 +47,7 @@ export type MeetingProgramSummaryT = {
       page_count?: number;
       asset_id?: string | null;
       render_status?: string | null;
+      source?: "page" | "screen" | string;
       template_id?: string | null;
     };
   camera_render?: Record<string, unknown> & {
@@ -82,6 +83,29 @@ export type MeetingKeyerSettingsT = Record<string, unknown> & {
   background_image_set?: boolean;
 };
 
+export type MeetingScreenCaptureCapabilitiesT = {
+  supported: boolean;
+  system_picker: boolean;
+  enumeration: boolean;
+  permission_status: string;
+  unsupported_reason: string | null;
+};
+
+export type MeetingScreenCaptureStatusT = {
+  running: boolean;
+  picker_pending: boolean;
+  source_id: string | null;
+  kind: string | null;
+  title: string | null;
+  app_name: string | null;
+  width: number | null;
+  height: number | null;
+  captured_frames: number;
+  last_error: string | null;
+  last_error_at: number | null;
+  capabilities: MeetingScreenCaptureCapabilitiesT;
+};
+
 export type MeetingStatusT = {
   platform?: NodeJS.Platform;
   manager: MeetingHelperManagerStatusT;
@@ -90,6 +114,7 @@ export type MeetingStatusT = {
         program?: MeetingProgramSummaryT;
         program_revision?: number;
         camera_permission_status?: string;
+        screen_capture?: MeetingScreenCaptureStatusT;
       })
     | null;
   engineError?: string;
