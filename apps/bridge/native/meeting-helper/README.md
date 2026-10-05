@@ -15,11 +15,13 @@ Python/FastAPI sidecar and keeps frame transport on FrameBus shared memory.
 The current implementation is native-only:
 
 - captures macOS cameras through AVFoundation,
+- captures macOS 14+ screen shares through the ScreenCaptureKit system picker,
 - writes composited RGBA frames into FrameBus,
 - exposes all stable control methods with structured responses,
 - captures Windows screen/window sources through Windows.Graphics.Capture,
 - stores and renders `speaker_layout`, `cornerbug`, `media_layer` and
   `graphics` program sections,
+- exposes the screen-capture abstraction and current stub,
 - runs MODNet through ONNX Runtime as the primary keyer,
 - keeps call-control and legacy prototype features disabled.
 

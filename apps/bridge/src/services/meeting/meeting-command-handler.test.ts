@@ -124,6 +124,10 @@ const mockClient = {
   cameraPipSet: jest.fn(),
   cameraAudioLevels: jest.fn(),
   cameraAutoDirector: jest.fn(),
+  screenList: jest.fn(),
+  screenStart: jest.fn(),
+  screenStop: jest.fn(),
+  screenPick: jest.fn(),
   keyerGet: jest.fn(),
   keyerConfigure: jest.fn(),
   keyerReset: jest.fn(),
@@ -318,6 +322,9 @@ describe("meeting-command-handler", () => {
       await expect(
         handleMeetingCommand("meeting_camera_list", {}),
       ).rejects.toThrow("Meeting engine is not running");
+      await expect(
+        handleMeetingCommand("meeting_screen_start", { source_id: "display:1" }),
+      ).rejects.toThrow("Meeting engine is not running");
     });
 
     it("lists cameras via the client", async () => {
@@ -376,6 +383,102 @@ describe("meeting-command-handler", () => {
         error: "Camera permission was not granted.",
         errorCode: "camera_permission_denied",
       });
+    });
+
+    it("lists screen sources via the client", async () => {
+      mockClient.screenList.mockResolvedValue({
+        sources: [{ source_id: "display:1", title: "Display 1" }],
+        capabilities: { supported: true },
+      });
+
+      const result = await handleMeetingCommand("meeting_screen_list", {});
+
+      expect(result).toEqual({
+        success: true,
+        data: {
+          sources: [{ source_id: "display:1", title: "Display 1" }],
+          capabilities: { supported: true },
+        },
+      });
+    });
+
+    it("starts screen sharing and requests a status publish", async () => {
+      mockClient.screenStart.mockResolvedValue({
+        ok: true,
+        source_id: "display:1",
+        kind: "display",
+        width: 1920,
+        height: 1080,
+        reopened: false,
+      });
+
+      const result = await handleMeetingCommand("meeting_screen_start", {
+        source_id: "display:1",
+        include_cursor: true,
+        future_field: "strip-me",
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockClient.screenStart).toHaveBeenCalledWith({
+        source_id: "display:1",
+        include_cursor: true,
+      });
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("screen_start");
+    });
+
+    it("returns structured screen start errors from the helper", async () => {
+      mockClient.screenStart.mockRejectedValue(
+        new MeetingHelperRequestError(
+          "screen_source_not_found",
+          "Screen source not found.",
+        ),
+      );
+
+      const result = await handleMeetingCommand("meeting_screen_start", {
+        source_id: "missing",
+      });
+
+      expect(result).toEqual({
+        success: false,
+        error: "Screen source not found.",
+        errorCode: "screen_source_not_found",
+      });
+    });
+
+    it("rejects invalid screen start payloads", async () => {
+      await expect(
+        handleMeetingCommand("meeting_screen_start", { source_id: "" }),
+      ).rejects.toThrow("Invalid payload for meeting_screen_start");
+      expect(mockClient.screenStart).not.toHaveBeenCalled();
+    });
+
+    it("picks a screen source and requests a status publish", async () => {
+      mockClient.screenPick.mockResolvedValue({
+        ok: true,
+        picker_pending: true,
+      });
+
+      const result = await handleMeetingCommand("meeting_screen_pick", {
+        include_cursor: false,
+      });
+
+      expect(result).toEqual({
+        success: true,
+        data: { ok: true, picker_pending: true },
+      });
+      expect(mockClient.screenPick).toHaveBeenCalledWith({
+        include_cursor: false,
+      });
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("screen_pick");
+    });
+
+    it("stops screen sharing and requests a status publish", async () => {
+      mockClient.screenStop.mockResolvedValue({ ok: true });
+
+      const result = await handleMeetingCommand("meeting_screen_stop", {});
+
+      expect(result).toEqual({ success: true, data: { ok: true } });
+      expect(mockRequestStatusPublish).toHaveBeenCalledWith("screen_stop");
     });
 
     it("forwards keyer configuration", async () => {
@@ -883,6 +986,9 @@ describe("meeting-command-handler", () => {
       ["meeting_camera_select", { stable_key: "cam-a" }, "camera_select"],
       ["meeting_camera_start", { stable_key: "cam-a" }, "camera_start"],
       ["meeting_camera_stop", {}, "camera_stop"],
+      ["meeting_screen_start", { source_id: "display:1" }, "screen_start"],
+      ["meeting_screen_stop", {}, "screen_stop"],
+      ["meeting_screen_pick", {}, "screen_pick"],
       [
         "meeting_camera_program_select",
         { camera_index: 1 },
@@ -893,6 +999,9 @@ describe("meeting-command-handler", () => {
       mockClient.cameraStart.mockResolvedValue({ ok: true });
       mockClient.cameraStop.mockResolvedValue({ ok: true });
       mockClient.cameraProgramSelect.mockResolvedValue({ ok: true });
+      mockClient.screenStart.mockResolvedValue({ ok: true });
+      mockClient.screenStop.mockResolvedValue({ ok: true });
+      mockClient.screenPick.mockResolvedValue({ ok: true });
 
       const result = await handleMeetingCommand(command, payload);
 

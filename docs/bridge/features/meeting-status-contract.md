@@ -45,12 +45,12 @@ Resync nach `bridge_auth_ok` nutzt dieselbe Relay-Huelle, aber ein Snapshot-Even
 ## Status-Form
 
 Neue Felder in dieser Stage-2-Version sind fuer aeltere Clients optional:
-`content_source`, top-level `camera_permission_status`, Geometrie/IDs in
-`engine.program`, sowie `background_asset_id`, `background_template_id` und
-`background_image_set` in `keyer.settings`. Neu hinzugefuegte Keys sind
-`snake_case`. Die bestehenden Compatibility-Ausnahmen bleiben camelCase:
-`virtualCamera` und `engineError`. Das Manager-Objekt traegt zusaetzlich seine
-historischen camelCase-Keys weiter.
+`content_source`, top-level `camera_permission_status`, `engine.screen_capture`,
+Geometrie/IDs in `engine.program`, `engine.program.media_layer.source`, sowie
+`background_asset_id`, `background_template_id` und `background_image_set` in
+`keyer.settings`. Neu hinzugefuegte Keys sind `snake_case`. Die bestehenden
+Compatibility-Ausnahmen bleiben camelCase: `virtualCamera` und `engineError`.
+Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
 
 ### Laufender Helper
 
@@ -105,6 +105,7 @@ historischen camelCase-Keys weiter.
         "page": 1, // number, required in Summary, seit Stage 2
         "page_count": 12, // number, required in Summary, seit Stage 2
         "asset_id": "asset-1", // string|null, required in Summary, seit Stage 2
+        "source": "screen", // "page"|"screen"|string, optional fuer aeltere Clients, seit Screen Sharing
         "template_id": "template-1", // string|null, required in Summary, seit Stage 2
         "render_status": "ready", // string|null, required in Summary, seit Stage 2
         "x": 0.1, // number, required in Summary, seit Stage 2
@@ -145,6 +146,26 @@ historischen camelCase-Keys weiter.
     "published_preview_frames": 250, // number, required, volatil, seit Bestand
     "written_framebus_frames": 1000, // number, required, volatil, seit Bestand
     "camera_permission_status": "authorized", // string, optional fuer aeltere Clients, seit Stage 2
+    "screen_capture": { // object, optional fuer aeltere Clients, seit Screen Sharing
+      "running": true, // boolean, required wenn vorhanden
+      "picker_pending": false, // boolean, required wenn vorhanden
+      "source_id": "display:1", // string|null, required wenn vorhanden
+      "kind": "display", // string|null, required wenn vorhanden
+      "title": "Built-in Display", // string|null, required wenn vorhanden
+      "app_name": null, // string|null, required wenn vorhanden
+      "width": 1920, // number|null, required wenn vorhanden
+      "height": 1080, // number|null, required wenn vorhanden
+      "captured_frames": 123, // number, required wenn vorhanden, volatil
+      "last_error": null, // string|null, required wenn vorhanden
+      "last_error_at": null, // number|null, required wenn vorhanden
+      "capabilities": {
+        "supported": true, // boolean, required wenn vorhanden
+        "system_picker": true, // boolean, required wenn vorhanden
+        "enumeration": true, // boolean, required wenn vorhanden
+        "permission_status": "authorized", // string, required wenn vorhanden
+        "unsupported_reason": null // string|null, required wenn vorhanden
+      }
+    },
     "camera_last_error": null, // string|null, required, seit Bestand
     "camera_last_error_at": null, // number|null, required, seit Bestand
     "last_error": null // string|null, required, seit Bestand
@@ -305,7 +326,7 @@ Auswahlzustand und Geometrie. Pro Sektion enthaelt sie exakt:
 
 | Sektion | Keys |
 | --- | --- |
-| `media_layer` | `enabled`, `mode`, `page`, `page_count`, `asset_id`, `template_id`, `render_status`, `x`, `y`, `width`, `height`, `rotation`, `rotation_x`, `rotation_y` |
+| `media_layer` | `enabled`, `mode`, `page`, `page_count`, `asset_id`, `source`, `template_id`, `render_status`, `x`, `y`, `width`, `height`, `rotation`, `rotation_x`, `rotation_y` |
 | `camera_render` | `enabled`, `mirror` |
 | `speaker_layout` | `enabled`, `layout`, `scale` |
 | `cornerbug` | `enabled`, `has_image`, `x`, `y`, `size`, `logo_asset_id` |
@@ -348,9 +369,9 @@ Relay-Event wird:
 
 Volatile Keys auf beliebiger Tiefe sind `rendered_frames`, `reused_frames`,
 `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
-`elapsed_seconds`, `video_frames`, `updated_at`, `program_dirty` und
-`graphics_dirty`; zusaetzlich wird `keyer.status.metrics` aus der stabilen
-Projektion entfernt.
+`elapsed_seconds`, `video_frames`, `updated_at`, `captured_frames`,
+`program_dirty` und `graphics_dirty`; zusaetzlich wird `keyer.status.metrics`
+aus der stabilen Projektion entfernt.
 
 `requestStatusPublish(reason)` sammelt Forced-Reasons in einem festen
 `STATUS_PUBLISH_COALESCE_MS` = 120-ms-Fenster. Reasons werden per `+`
@@ -368,6 +389,10 @@ Belegte Forced-/Edge-Reasons:
   `camera_program_select`.
 - Kamera-Permission: `camera_permission_preflight`,
   `camera_permission_completed`.
+- Screen: `screen_start`, `screen_stop`, `screen_pick`,
+  `screen_capture_started`, `screen_capture_stopped`,
+  `screen_capture_source_changed`, `screen_capture_picker`,
+  `screen_capture_error`.
 - Recording: `recording_changed` fuer Start/Stop/Toggle.
 - Content: `content_video_set`, `browser_source_set`.
 - Keyer/Program/VCam: `keyer_configure`, `keyer_reset`, `program_update`,
@@ -404,7 +429,8 @@ presence-guarded: fehlt ein Feld, bleibt der aktuelle Wert erhalten.
 
 Aeltere WebApps ignorieren unbekannte Keys. Neuere WebApps muessen alle
 Stage-2-Felder optional behandeln, insbesondere `content_source`,
-`camera_permission_status`, `engine.program.*`-Erweiterungen und die
+`camera_permission_status`, `engine.screen_capture`,
+`engine.program.media_layer.source`, `engine.program.*`-Erweiterungen und die
 Keyer-Hintergrund-IDs.
 
 Quellen fuer die belegten Keys: `meeting-status-types.ts`, `meeting-content-source-state.ts`,

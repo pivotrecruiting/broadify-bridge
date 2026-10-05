@@ -28,6 +28,30 @@ function makeStatus(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
+const makeScreenCapture = (
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  running: true,
+  picker_pending: false,
+  source_id: "display:1",
+  kind: "display",
+  title: "Display 1",
+  app_name: null,
+  width: 1920,
+  height: 1080,
+  captured_frames: 10,
+  last_error: null,
+  last_error_at: null,
+  capabilities: {
+    supported: true,
+    system_picker: true,
+    enumeration: true,
+    permission_status: "authorized",
+    unsupported_reason: null,
+  },
+  ...overrides,
+});
+
 describe("status-publish-policy", () => {
   it("projection ignores per-frame counters and keyer metrics", () => {
     const a = projectStableStatus(makeStatus());
@@ -188,6 +212,52 @@ describe("status-publish-policy", () => {
       lastPublishedAt: 10_000,
       now: 10_001,
     });
+    expect(decision.publish).toBe(true);
+    expect(decision.reason).toBe("projection_changed");
+  });
+
+  it("ignores screen captured_frames-only changes inside the metrics interval", () => {
+    const before = makeStatus({
+      engine: { screen_capture: makeScreenCapture({ captured_frames: 10 }) },
+    });
+    const decision = decideStatusPublish({
+      status: makeStatus({
+        engine: { screen_capture: makeScreenCapture({ captured_frames: 99 }) },
+      }),
+      force: false,
+      lastProjection: projectStableStatus(before),
+      lastPublishedAt: 10_000,
+      now: 10_001,
+    });
+
+    expect(decision.publish).toBe(false);
+    expect(decision.reason).toBe("unchanged");
+  });
+
+  it("publishes immediately when screen capture running flips", () => {
+    const before = makeStatus({
+      engine: {
+        screen_capture: makeScreenCapture({
+          running: false,
+          source_id: null,
+          kind: null,
+          title: null,
+          width: null,
+          height: null,
+          captured_frames: 0,
+        }),
+      },
+    });
+    const decision = decideStatusPublish({
+      status: makeStatus({
+        engine: { screen_capture: makeScreenCapture({ captured_frames: 1 }) },
+      }),
+      force: false,
+      lastProjection: projectStableStatus(before),
+      lastPublishedAt: 10_000,
+      now: 10_001,
+    });
+
     expect(decision.publish).toBe(true);
     expect(decision.reason).toBe("projection_changed");
   });
