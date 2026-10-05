@@ -82,6 +82,7 @@ set(MEETING_HELPER_SOURCES
   ../vcam-helper/Shared/src/framebus_reader.c
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
+  src/capture/liveness_watchdog.cpp
   src/capture/screen_capture_source.cpp
   src/capture/screen_capture_stub.cpp
   src/compose/compositor.cpp
@@ -176,7 +177,15 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
 elseif(WIN32)
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_mediafoundation.cpp src/recorder/meeting_recorder_mediafoundation.cpp src/compose/d3d11_compositor.cpp)
+  list(APPEND MEETING_HELPER_SOURCES
+    src/capture/camera_mediafoundation.cpp
+    src/capture/screen_capture_wgc.cpp
+    src/recorder/meeting_recorder_mediafoundation.cpp
+    src/compose/d3d11_compositor.cpp
+  )
+  set_source_files_properties(src/capture/screen_capture_wgc.cpp PROPERTIES
+    COMPILE_OPTIONS "/permissive-;/bigobj"
+  )
 else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
 endif()
@@ -260,11 +269,15 @@ else()
 endif()
 
 if(WIN32)
-  target_compile_definitions(meeting-helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_definitions(meeting-helper PRIVATE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+    BROADIFY_HAS_SCREEN_CAPTURE_BACKEND=1
+  )
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32)
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32 windowsapp dwmapi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -350,6 +363,10 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/capture/screen_capture_source.cpp
     src/capture/screen_capture_stub.cpp
     src/util/json_utils.cpp
+  )
+  add_executable(liveness_watchdog_test
+    tests/liveness_watchdog_test.cpp
+    src/capture/liveness_watchdog.cpp
   )
   add_executable(keyer_governor_test
     tests/keyer_governor_test.cpp
@@ -518,6 +535,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     latest_frame_slot_test
     guarded_frame_slot_test
     screen_capture_source_test
+    liveness_watchdog_test
     keyer_governor_test
     keyer_cadence_test
     budget_overrun_reporter_test
@@ -554,6 +572,9 @@ if(MEETING_HELPER_BUILD_TESTS)
       endif()
     elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
+    endif()
+    if(NOT WIN32 AND helper_test STREQUAL "liveness_watchdog_test")
+      target_link_libraries(${helper_test} PRIVATE pthread)
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
   endforeach()

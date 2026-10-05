@@ -60,6 +60,18 @@ struct CaptureSize {
   uint32_t height = 0;
 };
 
+struct WindowCandidate {
+  bool visible = false;
+  bool rootWindow = false;
+  bool hasTitle = false;
+  bool toolWindow = false;
+  bool cloaked = false;
+  std::string className;
+  uint32_t ownerPid = 0;
+  uint32_t currentPid = 0;
+  uint32_t parentPid = 0;
+};
+
 class ScreenCaptureSource {
  public:
   virtual ~ScreenCaptureSource() = default;
@@ -100,5 +112,6 @@ uint32_t selectCaptureMipLevel(uint32_t srcW, uint32_t srcH,
                                uint32_t minW, uint32_t minH);
 bool parseScreenSourceId(const std::string &id, std::string &kind,
                          uint64_t &handle);
+bool isShareableWindowCandidate(const WindowCandidate &candidate);
 
 }  // namespace broadify::meeting

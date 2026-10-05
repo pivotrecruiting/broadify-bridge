@@ -51,6 +51,48 @@ apps\bridge\native\meeting-helper\meeting-helper.exe --keyer-self-test --models-
 
 INT8-IR (optional, offline): `scripts/quantize-modnet-openvino.md`.
 
+### Bildschirmfreigabe (Windows)
+
+Der Windows-Helper verwendet Windows.Graphics.Capture (WGC) fuer
+Bildschirm- und Fensterquellen. Mindestversion ist Windows 10 1903 (Build
+18362) fuer `CreateForWindow`/`CreateForMonitor`; der Cursor-Schalter wird nur
+gesetzt, wenn Windows 10 2004 (Build 19041) die Eigenschaft
+`IsCursorCaptureEnabled` meldet. Es gibt keinen Permission-Prompt. Der gelbe
+Systemrahmen ist Windows-Verhalten und wird im Helper nicht abgeschaltet.
+
+Manueller Smoke-Test ueber die Control-Pipe:
+
+```json
+{"id":"screen-list","method":"screen.list","params":{}}
+{"id":"screen-start","method":"screen.start","params":{"source_id":"monitor:0x...","include_cursor":true}}
+{"id":"media","method":"program.update","section":"media_layer","values":{"enabled":true,"source":"screen","mode":"fullscreen"}}
+```
+
+Danach die lokale MJPEG-Preview (`/preview.mjpg`) oder VCam-Ausgabe pruefen.
+`screen_capture_metrics` erscheint ungefaehr alle 300 Capture-Frames und
+berichtet `map_swizzle_ms`, `content_width`, `content_height` und `mip_level`;
+diese Werte dienen dem Windows-Spike fuer FrameArrived-/Readback-Spitzen.
+
+### Spike-Skript fuer Bildschirmfreigabe (macOS + Windows)
+
+`apps/bridge/native/meeting-helper/tools/spike-screen-share.py` startet einen
+Helper-Build, spricht den Control-Kanal direkt an (Unix-Socket bzw. Named Pipe)
+und misst den Screen-Share-Pfad. Es braucht nur Python 3 (keine Pakete).
+
+```bash
+# Nur Kontrakt pruefen (kein UI, keine Aufnahme):
+python3 tools/spike-screen-share.py --list-only --helper <helper-binary> --out ./list1
+# macOS: System-Picker, danach 60 s Messung mit automatischer Bewegung:
+python3 tools/spike-screen-share.py --full --motion --helper "<.app>/Contents/MacOS/BroadifyMeetingHelper" --out ./full1
+# Windows: Quelle aus screen.list waehlen und messen:
+python tools\spike-screen-share.py --full --motion --source monitor:0x10001 --helper .\meeting-helper.exe --out .\full1
+```
+
+Ausgabe: `SUMMARY render_fps/capture_fps/cpu`, `screen_capture_metrics`-Events
+(Windows), `share-fullscreen.jpg` und `share-pip.jpg` aus der MJPEG-Preview.
+Go-Kriterien des Stage-0-Spikes stehen in
+`docs/bridge/features/meeting-screen-sharing.md`.
+
 ## Runtime-Vertrag
 
 Die Bridge spawnt:
