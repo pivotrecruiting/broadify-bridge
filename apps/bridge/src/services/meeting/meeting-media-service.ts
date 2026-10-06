@@ -147,8 +147,21 @@ const resolveLibreOffice = (): string | null => {
   const candidates = [
     configuredBinary || null,
     runtimeRoot ? join(runtimeRoot, "LibreOffice.app", "Contents", "MacOS", "soffice") : null,
+    // Dev override for a bundled Windows runtime dir (win-x64/program).
+    runtimeRoot ? join(runtimeRoot, "program", "soffice.exe") : null,
     process.platform === "darwin" && process.arch === "arm64" && process.resourcesPath
       ? join(process.resourcesPath, BUNDLED_LIBREOFFICE_RELATIVE_PATH)
+      : null,
+    // Bundled LibreOffice for packaged Windows builds (see electron-builder win
+    // extraResources + scripts/prepare-windows-presentation-runtime.ps1).
+    process.platform === "win32" && process.resourcesPath
+      ? join(
+          process.resourcesPath,
+          "presentation-runtime",
+          "win-x64",
+          "program",
+          "soffice.exe",
+        )
       : null,
     ...(SYSTEM_LIBREOFFICE_CANDIDATES[process.platform] ?? []),
   ].filter((candidate): candidate is string => Boolean(candidate));
