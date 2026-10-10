@@ -21,8 +21,20 @@ Repo `broadify-postpro`.
   sich beim Trennen ab.
 - Replay-Fixture `fixtures/atem-replay-basic.json` und Tests.
 
+- **ATEM-Timecode**: `atem-connection` 2.5 liefert keinen Timecode-Strom, antwortet aber auf `requestTime()` mit
+  `state.info.lastTime`. Der Adapter fragt einmal pro Sekunde, `atem-timecode.ts` rechnet Lesung + Wanduhr-Differenz
+  in `hh:mm:ss:ff` um (Framerate aus `settings.videoMode`). Jedes Ereignis trägt diesen Haus-Timecode; ohne Lesung
+  bleibt der Aufnahme-Dauer-Timecode aus dem Diff.
+- **vMix**: zusätzlich zur HTTP-Abfrage (2 s, Makros) ein TCP-Abo auf Port 8099 (`SUBSCRIBE ACTS`,
+  `vmix-activators-client.ts`): Program/Preview, Overlays 1–4, Recording, Streaming in Echtzeit; Eingangsnamen aus
+  der Inputs-Liste. Verbindungsfehler werden still wiederholt und erreichen nie den Engine-Status.
+- **RØDECaster Video**: `/show/pgmcurrent`, `/show/PgmOverlay`, `/show/record`, `/show/live` werden als Ereignisse
+  gemeldet (`input_id` = `scene:3`, `media:2`, `videoIn:1`).
+- **Grafiken**: `GraphicsManager` meldet `graphic_shown/updated/hidden` für alle Ebenen (Studio und Meeting) mit
+  Template-ID (Preset oder Kategorie) und den Textfeldern (`fields`, Strings ≤ 500 Zeichen). Der bestehende
+  Usage-Recorder (Abrechnung, nur Meeting) bleibt unverändert.
+
 ## Noch nicht verdrahtet
 
-ATEM USB (C++-Helper-Callbacks); vMix über TCP 8099 (`SUBSCRIBE ACTS/TALLY`); RØDECaster-OSC typisiert;
-Meeting-Program-Wechsel; Grafik-Usage-Recorder für Studio mit Textfeldern; Upload über den Relay-Broker
-(Muster `ci_*`) und Ingest per Definer-RPC.
+ATEM USB (C++-Helper-Callbacks); Meeting-Program-Wechsel (Auto-Director) als Ereignis; Upload über den
+Relay-Broker (Muster `ci_*`) und Ingest per Definer-RPC.

@@ -27,6 +27,9 @@ import { VmixHttpClient, type VmixInputSummaryT } from "./vmix-http-client.js";
  * Important: Macro IDs are 1-based (Macro 1 = ID 1, Macro 2 = ID 2, etc.)
  * This differs from ATEM which uses 0-based IDs.
  */
+import type { SwitcherEventT } from "../../session-log/session-log-types.js";
+import { VmixActivatorsClient } from "./vmix-activators-client.js";
+
 export class VmixAdapter extends EventEmitter implements EngineAdapter {
   private state: EngineStateT = {
     status: "disconnected",
@@ -38,6 +41,9 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   private readonly maxPollingFailures = 2;
   private consecutivePollingFailures = 0;
   private client: VmixHttpClient | null = null;
+  private activators: VmixActivatorsClient | null = null;
+  private readonly switcherEventListeners = new Set<(event: SwitcherEventT) => void>();
+  private inputNames = new Map<number, string>();
 
   /**
    * Connect to vMix instance
@@ -84,6 +90,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
 
       // Start polling for status updates
       this.startPolling();
+      this.startActivators(config.ip);
     } catch (error: unknown) {
       const engineError =
         error instanceof EngineError
@@ -111,6 +118,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   async disconnect(): Promise<void> {
     // Stop polling
     this.stopPolling();
+    this.stopActivators();
 
     this.setState({
       status: "disconnected",
@@ -333,6 +341,44 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   }
 
   /**
+   * Subscribe to switcher events from the vMix TCP activator feed (session log).
+   */
+  onSwitcherEvent(callback: (event: SwitcherEventT) => void): () => void {
+    this.switcherEventListeners.add(callback);
+    return () => {
+      this.switcherEventListeners.delete(callback);
+    };
+  }
+
+  private startActivators(ip: string): void {
+    this.stopActivators();
+    try {
+      this.activators = new VmixActivatorsClient({
+        ip,
+        inputName: (input) => this.inputNames.get(input) ?? null,
+        onEvent: (event) => {
+          for (const listener of this.switcherEventListeners) {
+            try {
+              listener(event);
+            } catch {
+              // listeners never affect the engine
+            }
+          }
+        },
+      });
+      this.activators.start();
+    } catch {
+      this.activators = null;
+    }
+  }
+
+  private stopActivators(): void {
+    this.activators?.close();
+    this.activators = null;
+    this.inputNames.clear();
+  }
+
+  /**
    * Update macros from vMix API
    */
   private async updateMacrosFromApi(
@@ -347,6 +393,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     try {
       const macros = await this.client.getMacros();
       this.consecutivePollingFailures = 0;
+      void this.refreshInputNames();
       this.setState({
         macros,
         error: undefined,
@@ -367,6 +414,26 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
         });
         return;
       }
+    }
+  }
+
+  private async refreshInputNames(): Promise<void> {
+    if (!this.client || this.switcherEventListeners.size === 0) {
+      return;
+    }
+    try {
+      const inputs = await this.client.getInputs();
+      const names = new Map<number, string>();
+      for (const input of inputs) {
+        const number = Number((input as { number?: number | string }).number);
+        const title = (input as { title?: string; name?: string }).title ?? (input as { name?: string }).name;
+        if (Number.isFinite(number) && title) {
+          names.set(number, title);
+        }
+      }
+      this.inputNames = names;
+    } catch {
+      // names are optional
     }
   }
 

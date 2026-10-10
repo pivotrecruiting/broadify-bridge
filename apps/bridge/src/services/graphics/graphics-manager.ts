@@ -78,6 +78,7 @@ import {
   graphicsUsageRecorder,
   type GraphicsUsageRecorderLikeT,
 } from "../intelligence/usage-event-recorder.js";
+import { recordSwitcherEvent } from "../session-log/session-log-service.js";
 import { ReconnectScheduler } from "../shared/backoff.js";
 import { formatZodError } from "../shared/zod-error-message.js";
 import { deviceCache } from "../device-cache.js";
@@ -409,10 +410,43 @@ export class GraphicsManager {
    *
    * @returns Promise resolved once resources are released.
    */
+  /**
+   * Post-production SessionEventLog: every plane (studio and meeting), with
+   * template id and the text fields that were on air so the edit can place
+   * the same graphic again. Fire-and-forget, never throws.
+   */
+  private recordSessionGraphic(
+    type: "graphic_shown" | "graphic_hidden" | "graphic_updated",
+    layerId: string,
+    templateId: string | null,
+    values: Record<string, unknown> | null,
+  ): void {
+    try {
+      const fields: Record<string, string> = {};
+      if (values) {
+        for (const [key, value] of Object.entries(values)) {
+          if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+            fields[key] = String(value).slice(0, 500);
+          }
+        }
+      }
+      recordSwitcherEvent({
+        type,
+        source: this.sourceId,
+        graphic_id: layerId,
+        template_id: templateId,
+        fields: values ? fields : null,
+      });
+    } catch {
+      // observability only
+    }
+  }
+
   async shutdown(): Promise<void> {
     // layers.clear() below bypasses removeLayerById: close the usage
     // intervals first so no on-air interval stays open across a restart.
     for (const layerId of this.layers.keys()) {
+      this.recordSessionGraphic("graphic_hidden", layerId, null, null);
       this.usageRecorder.recordLayerHidden({
         source: this.sourceId,
         layerId,
@@ -596,6 +630,7 @@ export class GraphicsManager {
       presetId: prepared.presetId,
       reportPresetId: prepared.reportPresetId,
     });
+    this.recordSessionGraphic("graphic_shown", prepared.layerId, prepared.presetId ?? prepared.category, prepared.values);
 
     // Cross-category leftovers of the replaced preset go away only now that
     // the new layer is live: removing them first dropped the output to the
@@ -687,6 +722,7 @@ export class GraphicsManager {
       layerId: prepared.layerId,
       category: prepared.category,
     });
+    this.recordSessionGraphic("graphic_shown", prepared.layerId, prepared.category, prepared.values);
   }
 
   /**
@@ -712,6 +748,7 @@ export class GraphicsManager {
     }
 
     layer.values = { ...layer.values, ...data.values };
+    this.recordSessionGraphic("graphic_updated", data.layerId, layer.presetId ?? null, layer.values);
     layer.bindings = deriveTemplateBindings(
       {
         schema: layer.schema,
@@ -846,6 +883,7 @@ export class GraphicsManager {
           publishGraphicsStatusEvent(reason, this.getStatusSnapshot()),
       });
       for (const layerId of clearedLayerIds) {
+        this.recordSessionGraphic("graphic_hidden", layerId, null, null);
         this.usageRecorder.recordLayerHidden({
           source: this.sourceId,
           layerId,
@@ -1182,6 +1220,7 @@ export class GraphicsManager {
     }
 
     if (wasActive) {
+      this.recordSessionGraphic("graphic_hidden", layerId, null, null);
       this.usageRecorder.recordLayerHidden({
         source: this.sourceId,
         layerId,

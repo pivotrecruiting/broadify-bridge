@@ -12,6 +12,7 @@ import type {
 import { EventEmitter } from "events";
 import { EngineMacroExecutionStore } from "../engine-macro-execution-store.js";
 import { diffAtemState, snapshotAtemState, type AtemStateLikeT } from "../../session-log/atem-state-diff.js";
+import { extrapolateTimecode, sameAtemTime, videoModeFps, type AtemTimeT, type TimecodeReadingT } from "../../session-log/atem-timecode.js";
 import type { SwitcherEventT } from "../../session-log/session-log-types.js";
 import {
   EngineError,
@@ -52,6 +53,10 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
   private pendingCompletionTimeout: NodeJS.Timeout | null = null;
   private readonly switcherEventListeners = new Set<(event: SwitcherEventT) => void>();
   private lastSwitcherState: AtemStateLikeT | undefined = undefined;
+  /** House timecode: last `TimeCommand` reading, polled once a second while connected. */
+  private timecodeReading: TimecodeReadingT | null = null;
+  private timecodeTimer: NodeJS.Timeout | null = null;
+  private readonly timecodePollMs = 1000;
 
   /**
    * Connect to ATEM switcher
@@ -96,6 +101,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
 
     // Set up connected handler
     const onConnected = () => {
+      this.startTimecodePolling();
       if (timeoutId) {
         clearTimeout(timeoutId);
         timeoutId = null;
@@ -189,6 +195,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
 
     const onStateChanged = () => {
       this.updateMacrosFromState();
+      this.trackTimecode();
       this.emitSwitcherEvents();
     };
 
@@ -303,6 +310,43 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
       this.atemStateChangedListener = null;
     }
     this.lastSwitcherState = undefined;
+    this.stopTimecodePolling();
+  }
+
+  /** Current house timecode (extrapolated from the last reading) or null when the ATEM sent none yet. */
+  getTimecode(): string | null {
+    const fps = videoModeFps((this.atemConnection?.state as { settings?: { videoMode?: number } } | undefined)?.settings?.videoMode);
+    return extrapolateTimecode(this.timecodeReading, Date.now(), fps);
+  }
+
+  private startTimecodePolling(): void {
+    this.stopTimecodePolling();
+    const poll = () => {
+      const atem = this.atemConnection as { requestTime?: () => Promise<void> } | null;
+      if (!atem?.requestTime) {
+        return;
+      }
+      void atem.requestTime().catch(() => undefined);
+    };
+    poll();
+    this.timecodeTimer = setInterval(poll, this.timecodePollMs);
+    this.timecodeTimer.unref?.();
+  }
+
+  private stopTimecodePolling(): void {
+    if (this.timecodeTimer) {
+      clearInterval(this.timecodeTimer);
+      this.timecodeTimer = null;
+    }
+    this.timecodeReading = null;
+  }
+
+  private trackTimecode(): void {
+    const lastTime = (this.atemConnection?.state as { info?: { lastTime?: AtemTimeT } } | undefined)?.info?.lastTime;
+    if (!lastTime || sameAtemTime(lastTime, this.timecodeReading?.time)) {
+      return;
+    }
+    this.timecodeReading = { time: { ...lastTime }, atMs: Date.now() };
   }
 
   /**
@@ -330,10 +374,13 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
         return;
       }
       const at_ms = Date.now();
+      const timecode = this.getTimecode();
       for (const event of events) {
+        // House timecode wins over the recording-duration timecode from the diff.
+        const stamped = timecode ? { ...event, at_ms, timecode } : { ...event, at_ms };
         for (const listener of this.switcherEventListeners) {
           try {
-            listener({ ...event, at_ms });
+            listener(stamped);
           } catch {
             // listeners must never break switcher handling
           }

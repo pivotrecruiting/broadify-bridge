@@ -44,6 +44,8 @@ import { frameRcvPacket, RcvFrameSplitter } from "./rcv-frame-codec.js";
  * the state drops to "error" and the EngineConnectionSupervisor above the
  * adapter drives the reconnect attempts.
  */
+import type { SwitcherEventT } from "../../session-log/session-log-types.js";
+
 export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
   private state: EngineStateT = {
     status: "disconnected",
@@ -63,6 +65,7 @@ export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
   private liveMediaMacroId: number | null = null;
   private recording = false;
   private streaming = false;
+  private readonly switcherEventListeners = new Set<(event: SwitcherEventT) => void>();
 
   /**
    * Connect to a RØDECaster Video on the network.
@@ -314,6 +317,7 @@ export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
     if (address.startsWith("/show/pgmcurrent")) {
       const inputType = String(args[0]);
       const inputId = Number(args[1]); // 1-based
+      this.emitSwitcherEvent({ type: "program_changed", source: "rodecaster", me: 0, input_id: `${inputType}:${inputId}`, input_name: `${inputType} ${inputId}` });
       if (inputType === "scene") {
         this.liveSceneMacroId = toMacroId(inputId, SCENE_MACRO_BASE);
         this.liveMediaMacroId = null;
@@ -331,19 +335,34 @@ export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
 
     if (address.startsWith("/show/PgmOverlay")) {
       const overlayIndex = Number(args[0]); // 0-based, -1 = none
+      const previousOverlay = this.liveOverlayMacroId;
       this.liveOverlayMacroId = toMacroId(overlayIndex + 1, OVERLAY_MACRO_BASE);
+      if (previousOverlay !== null && previousOverlay !== this.liveOverlayMacroId) {
+        this.emitSwitcherEvent({ type: "overlay_off_air", source: "rodecaster", keyer: "overlay", input_id: String(previousOverlay - OVERLAY_MACRO_BASE) });
+      }
+      if (this.liveOverlayMacroId !== null && this.liveOverlayMacroId !== previousOverlay) {
+        this.emitSwitcherEvent({ type: "overlay_on_air", source: "rodecaster", keyer: "overlay", input_id: String(overlayIndex + 1) });
+      }
       this.applyLiveState();
       return;
     }
 
     if (address === "/show/record") {
-      this.recording = Number(args[0]) === 1;
+      const recording = Number(args[0]) === 1;
+      if (recording !== this.recording) {
+        this.emitSwitcherEvent({ type: recording ? "recording_started" : "recording_stopped", source: "rodecaster" });
+      }
+      this.recording = recording;
       this.applyLiveState();
       return;
     }
 
     if (address === "/show/live") {
-      this.streaming = Number(args[0]) === 1;
+      const streaming = Number(args[0]) === 1;
+      if (streaming !== this.streaming) {
+        this.emitSwitcherEvent({ type: streaming ? "streaming_started" : "streaming_stopped", source: "rodecaster" });
+      }
+      this.streaming = streaming;
       this.applyLiveState();
       return;
     }
@@ -503,6 +522,28 @@ export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
       this.socket = null;
     }
     this.splitter.reset();
+  }
+
+  /** Switcher events for the post-production session log (observability only). */
+  onSwitcherEvent(callback: (event: SwitcherEventT) => void): () => void {
+    this.switcherEventListeners.add(callback);
+    return () => {
+      this.switcherEventListeners.delete(callback);
+    };
+  }
+
+  private emitSwitcherEvent(event: SwitcherEventT): void {
+    if (this.switcherEventListeners.size === 0) {
+      return;
+    }
+    const stamped = { ...event, at_ms: Date.now() };
+    for (const listener of this.switcherEventListeners) {
+      try {
+        listener(stamped);
+      } catch {
+        // listeners never affect the engine
+      }
+    }
   }
 
   private resetLiveState(): void {
