@@ -105,6 +105,7 @@ export async function createServer(config: BridgeConfigT) {
     serverPort: config.port,
     serverMode: config.mode,
     bridgeId: config.bridgeId,
+    postproApiUrl: config.postproApiUrl,
     bridgeName: config.bridgeName,
     pairingCode: config.pairingCode,
     pairingExpiresAt: config.pairingExpiresAt,

@@ -34,7 +34,12 @@ Repo `broadify-postpro`.
   Template-ID (Preset oder Kategorie) und den Textfeldern (`fields`, Strings ≤ 500 Zeichen). Der bestehende
   Usage-Recorder (Abrechnung, nur Meeting) bleibt unverändert.
 
+- **Upload zur Plattform** (`session-log-uploader.ts`): nach `recording_stopped` (Datei komplett) direkt an die
+  Web-App, signiert mit dem Enrollment-Schlüssel der Bridge (`bridge-assertion.ts`, Format wie die Worker-Assertion,
+  `iss: broadify-bridge`): `POST /api/postpro/bridge/sessions/upload-url` → `PUT` Signed URL →
+  `POST …/sessions/complete`. Marker `<session>.uploaded.json` verhindert Doppel-Uploads, Startscan holt Reste nach.
+  Aktiv nur mit `--postpro-api-url` bzw. `POSTPRO_API_URL` (Web-App-Basis-URL); sonst bleiben die Logs lokal.
+
 ## Noch nicht verdrahtet
 
-ATEM USB (C++-Helper-Callbacks); Meeting-Program-Wechsel (Auto-Director) als Ereignis; Upload über den
-Relay-Broker (Muster `ci_*`) und Ingest per Definer-RPC.
+ATEM USB (C++-Helper-Callbacks); Meeting-Program-Wechsel (Auto-Director) als Ereignis.

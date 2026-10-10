@@ -14,6 +14,8 @@ const ConfigSchema = z.object({
   pairingCode: z.string().min(4).max(32).optional(),
   pairingExpiresAt: z.number().int().positive().optional(),
   userDataDir: z.string().min(1).optional(),
+  /** Web-app base URL for post-production uploads (session logs); unset = keep logs local only. */
+  postproApiUrl: z.string().url().optional(),
 });
 
 export type BridgeConfigT = z.infer<typeof ConfigSchema>;
@@ -33,6 +35,7 @@ export function parseConfig(args: string[]): BridgeConfigT {
     pairingCode?: string;
     pairingExpiresAt?: number;
     userDataDir?: string;
+    postproApiUrl?: string;
   }> = {
     host: "127.0.0.1",
     port: 8787,
@@ -43,7 +46,10 @@ export function parseConfig(args: string[]): BridgeConfigT {
     const arg = args[i];
     const nextArg = args[i + 1];
 
-    if (arg === "--host" && nextArg) {
+    if (arg === "--postpro-api-url" && nextArg) {
+      config.postproApiUrl = nextArg;
+      i++;
+    } else if (arg === "--host" && nextArg) {
       config.host = nextArg;
       i++; // Skip next argument as it's the value
     } else if (arg === "--port" && nextArg) {
@@ -118,6 +124,9 @@ export function parseConfig(args: string[]): BridgeConfigT {
 
   if (!config.userDataDir && process.env.BRIDGE_USER_DATA_DIR) {
     config.userDataDir = process.env.BRIDGE_USER_DATA_DIR;
+  }
+  if (!config.postproApiUrl && process.env.POSTPRO_API_URL) {
+    config.postproApiUrl = process.env.POSTPRO_API_URL;
   }
 
   if (!config.relayEnabled) {

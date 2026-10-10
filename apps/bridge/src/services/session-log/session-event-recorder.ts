@@ -20,6 +20,8 @@ type SessionRecorderOptionsT = {
   now?: () => number;
   flushDelayMs?: number;
   newSessionId?: () => string;
+  /** Called after a session file is complete on disk (upload hook). */
+  onSessionClosed?: (sessionId: string) => void;
 };
 
 type OpenSessionT = {
@@ -45,6 +47,7 @@ export class SessionEventRecorder {
   private readonly now: () => number;
   private readonly flushDelayMs: number;
   private readonly newSessionId: () => string;
+  private readonly onSessionClosed: ((sessionId: string) => void) | null;
 
   private session: OpenSessionT | null = null;
   private readonly onAirState = new Map<string, SessionEventT>();
@@ -58,6 +61,7 @@ export class SessionEventRecorder {
     this.now = options.now ?? Date.now;
     this.flushDelayMs = options.flushDelayMs ?? FLUSH_DELAY_MS;
     this.newSessionId = options.newSessionId ?? randomUUID;
+    this.onSessionClosed = options.onSessionClosed ?? null;
   }
 
   get currentSessionId(): string | null {
@@ -116,6 +120,12 @@ export class SessionEventRecorder {
     const id = this.currentSessionId;
     this.scheduleFlush();
     this.session = null;
+    if (id && this.onSessionClosed) {
+      const callback = this.onSessionClosed;
+      void this.flush()
+        .then(() => callback(id))
+        .catch(() => undefined);
+    }
     return id;
   }
 
