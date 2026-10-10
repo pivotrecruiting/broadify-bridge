@@ -40,6 +40,9 @@ Repo `broadify-postpro`.
   `POST …/sessions/complete`. Marker `<session>.uploaded.json` verhindert Doppel-Uploads, Startscan holt Reste nach.
   Aktiv nur mit `--postpro-api-url` bzw. `POSTPRO_API_URL` (Web-App-Basis-URL); sonst bleiben die Logs lokal.
 
+- **Meeting**: aus dem veröffentlichten Helper-Status werden `recording_started/stopped` (Meeting-Recorder) und
+  `program_changed` je `program_revision` (Kamera vs. Medienebene/Seite) abgeleitet (`meeting-session-events.ts`).
+
 ## Noch nicht verdrahtet
 
-ATEM USB (C++-Helper-Callbacks); Meeting-Program-Wechsel (Auto-Director) als Ereignis.
+ATEM USB (C++-Helper-Callbacks).
