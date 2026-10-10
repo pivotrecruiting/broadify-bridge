@@ -34,6 +34,8 @@ import {
 } from "./engine/engine-connection-supervisor.js";
 import { ReconnectScheduler } from "./shared/backoff.js";
 import { isSameEngineConnectConfig } from "./engine/engine-connect-schema.js";
+import { recordSwitcherEvent } from "./session-log/session-log-service.js";
+import type { SwitcherEventT } from "./session-log/session-log-types.js";
 
 type EngineBroadcastTopicT = Parameters<typeof websocketManager.broadcast>[0];
 type EngineBroadcastMessageT = Parameters<typeof websocketManager.broadcast>[1];
@@ -49,10 +51,13 @@ type EngineAdapterServiceDepsT = {
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
   random?: () => number;
+  /** Sink for switcher events (post-production SessionEventLog). */
+  switcherEventSink?: (event: SwitcherEventT) => void;
 };
 
 const defaultDeps: EngineAdapterServiceDepsT = {
   createAdapter: (type, transport) => createEngineAdapter(type, transport),
+  switcherEventSink: (event) => recordSwitcherEvent(event),
   broadcast: (topic, message) => websocketManager.broadcast(topic, message),
   persistConnection: (config) => engineConnectionStore.save(config),
   loadPersistedConnection: () => engineConnectionStore.load(),
@@ -257,8 +262,12 @@ export class EngineAdapterService {
           this.supervisor.handleSessionStatus(previous.status, state.status);
         }
       );
+      const sink = this.deps.switcherEventSink;
+      const unsubscribeSwitcherEvents =
+        sink && adapter.onSwitcherEvent ? adapter.onSwitcherEvent((event) => sink(event)) : null;
       unsubscribeAdapterState = () => {
         unsubscribe();
+        unsubscribeSwitcherEvents?.();
         unsubscribeAdapterState = null;
       };
       this.unsubscribeAdapterState = unsubscribeAdapterState;

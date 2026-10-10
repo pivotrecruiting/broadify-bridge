@@ -106,3 +106,37 @@ export function diffAtemState(
 
   return events;
 }
+
+/**
+ * Plain, detached copy of the parts of an atem-connection state that
+ * diffAtemState reads. atem-connection mutates its state object in place, so
+ * the previous snapshot must be an independent copy.
+ */
+export function snapshotAtemState(state: AtemStateLikeT | null | undefined): AtemStateLikeT {
+  if (!state) {
+    return {};
+  }
+  const mixEffects = (state.video?.mixEffects ?? []).map((me) =>
+    me
+      ? {
+          programInput: me.programInput,
+          previewInput: me.previewInput,
+          upstreamKeyers: (me.upstreamKeyers ?? []).map((usk) => (usk ? { onAir: Boolean(usk.onAir) } : undefined)),
+        }
+      : undefined,
+  );
+  const downstreamKeyers = (state.video?.downstreamKeyers ?? []).map((dsk) => (dsk ? { onAir: Boolean(dsk.onAir) } : undefined));
+  const inputs: AtemStateLikeT["inputs"] = {};
+  for (const [id, input] of Object.entries(state.inputs ?? {})) {
+    if (input) {
+      inputs[Number(id)] = { longName: input.longName, shortName: input.shortName };
+    }
+  }
+  const copyTc = (tc: { hours: number; minutes: number; seconds: number; frames: number } | undefined) => (tc ? { ...tc } : undefined);
+  return {
+    video: { mixEffects, downstreamKeyers },
+    recording: state.recording ? { status: state.recording.status ? { state: state.recording.status.state } : undefined, duration: copyTc(state.recording.duration) } : undefined,
+    streaming: state.streaming ? { status: state.streaming.status ? { state: state.streaming.status.state } : undefined, duration: copyTc(state.streaming.duration) } : undefined,
+    inputs,
+  };
+}

@@ -11,6 +11,8 @@ import type {
 } from "../../engine-types.js";
 import { EventEmitter } from "events";
 import { EngineMacroExecutionStore } from "../engine-macro-execution-store.js";
+import { diffAtemState, snapshotAtemState, type AtemStateLikeT } from "../../session-log/atem-state-diff.js";
+import type { SwitcherEventT } from "../../session-log/session-log-types.js";
 import {
   EngineError,
   EngineErrorCode,
@@ -48,6 +50,8 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
   private readonly macroExecutionStore = new EngineMacroExecutionStore();
   private readonly pendingCompletionGraceMs = 750;
   private pendingCompletionTimeout: NodeJS.Timeout | null = null;
+  private readonly switcherEventListeners = new Set<(event: SwitcherEventT) => void>();
+  private lastSwitcherState: AtemStateLikeT | undefined = undefined;
 
   /**
    * Connect to ATEM switcher
@@ -185,6 +189,7 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
 
     const onStateChanged = () => {
       this.updateMacrosFromState();
+      this.emitSwitcherEvents();
     };
 
     atem.on("connected", onConnected);
@@ -296,6 +301,46 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
     if (this.atemStateChangedListener) {
       atem.removeListener("stateChanged", this.atemStateChangedListener);
       this.atemStateChangedListener = null;
+    }
+    this.lastSwitcherState = undefined;
+  }
+
+  /**
+   * Subscribe to switcher events (program/preview, keyers, recording,
+   * streaming) derived from atem-connection state changes. Observability
+   * only: listeners never affect macro control.
+   */
+  onSwitcherEvent(callback: (event: SwitcherEventT) => void): () => void {
+    this.switcherEventListeners.add(callback);
+    return () => {
+      this.switcherEventListeners.delete(callback);
+    };
+  }
+
+  private emitSwitcherEvents(): void {
+    const state = this.atemConnection?.state as AtemStateLikeT | undefined;
+    if (!state) {
+      return;
+    }
+    try {
+      const next = snapshotAtemState(state);
+      const events = diffAtemState(this.lastSwitcherState, next);
+      this.lastSwitcherState = next;
+      if (events.length === 0 || this.switcherEventListeners.size === 0) {
+        return;
+      }
+      const at_ms = Date.now();
+      for (const event of events) {
+        for (const listener of this.switcherEventListeners) {
+          try {
+            listener({ ...event, at_ms });
+          } catch {
+            // listeners must never break switcher handling
+          }
+        }
+      }
+    } catch {
+      // diffing is best effort
     }
   }
 

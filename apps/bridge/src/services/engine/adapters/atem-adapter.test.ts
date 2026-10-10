@@ -569,3 +569,44 @@ describe("AtemAdapter", () => {
     });
   });
 });
+
+describe("AtemAdapter switcher events (session log)", () => {
+  type MockConnectionT = {
+    state: ReturnType<typeof createMockState> & {
+      video?: unknown;
+      recording?: unknown;
+      inputs?: unknown;
+    };
+    emit: (event: string, payload?: unknown) => void;
+  };
+
+  it("emits diffed program/keyer/recording events on stateChanged and stops after unsubscribe", async () => {
+    mockAtemBehavior = "connect";
+    const adapter = new AtemAdapter();
+    await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+    const connection = (adapter as unknown as { atemConnection: MockConnectionT }).atemConnection;
+    connection.state.video = { mixEffects: [{ programInput: 1, previewInput: 2, upstreamKeyers: [{ onAir: false }] }], downstreamKeyers: [{ onAir: false }] };
+    connection.state.inputs = { 1: { longName: "Cam 1" }, 2: { longName: "Cam 2" } };
+    connection.emit("stateChanged");      // initial snapshot, no listeners yet
+
+    const received: Array<{ type: string; input_id?: string | null; keyer?: string | null; at_ms?: number }> = [];
+    const unsubscribe = adapter.onSwitcherEvent((event) => received.push(event));
+
+    connection.state.video = { mixEffects: [{ programInput: 2, previewInput: 1, upstreamKeyers: [{ onAir: true }] }], downstreamKeyers: [{ onAir: false }] };
+    connection.state.recording = { status: { state: 1 }, duration: { hours: 0, minutes: 0, seconds: 5, frames: 0 } };
+    connection.emit("stateChanged");
+    expect(received.map((e) => e.type)).toEqual(["program_changed", "preview_changed", "keyer_on_air", "recording_started"]);
+    expect(received[0]).toMatchObject({ input_id: "2", input_name: "Cam 2", me: 0 });
+    expect(received[2]).toMatchObject({ keyer: "usk1" });
+    expect(typeof received[0].at_ms).toBe("number");
+
+    connection.emit("stateChanged");      // unchanged -> nothing
+    expect(received).toHaveLength(4);
+
+    unsubscribe();
+    connection.state.video = { mixEffects: [{ programInput: 3, previewInput: 1, upstreamKeyers: [{ onAir: true }] }], downstreamKeyers: [{ onAir: false }] };
+    connection.emit("stateChanged");
+    expect(received).toHaveLength(4);
+    await adapter.disconnect();
+  });
+});
