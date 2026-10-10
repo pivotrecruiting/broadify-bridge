@@ -318,11 +318,11 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
   }
 
   private emitSwitcherEvents(): void {
-    const state = this.atemConnection?.state as AtemStateLikeT | undefined;
-    if (!state) {
-      return;
-    }
     try {
+      const state = this.atemConnection?.state as AtemStateLikeT | undefined;
+      if (!state) {
+        return;
+      }
       const next = snapshotAtemState(state);
       const events = diffAtemState(this.lastSwitcherState, next);
       this.lastSwitcherState = next;
