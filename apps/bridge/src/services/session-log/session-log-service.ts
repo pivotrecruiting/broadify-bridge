@@ -21,22 +21,26 @@ export function getSessionEventRecorder(): SessionEventRecorder | null {
   try {
     const context = getBridgeContext();
     const dir = path.join(context.userDataDir, SESSION_LOG_DIR);
-    if (context.postproApiUrl && context.bridgeId) {
-      uploader = new SessionLogUploader({
-        apiBaseUrl: context.postproApiUrl,
-        dir,
-        getIdentity: getRelayBridgeSigningIdentity,
-        logger: { info: (m) => context.logger.info(m), warn: (m) => context.logger.warn(m) },
-      });
-      void uploader.scan();
-    }
-    recorder = new SessionEventRecorder({
+    const created = new SessionEventRecorder({
       dir,
       bridgeId: context.bridgeId ?? null,
       onSessionClosed: (sessionId) => {
         void uploader?.enqueue(sessionId);
       },
     });
+    recorder = created;
+    if (context.postproApiUrl && context.bridgeId) {
+      uploader = new SessionLogUploader({
+        apiBaseUrl: context.postproApiUrl,
+        dir,
+        getIdentity: getRelayBridgeSigningIdentity,
+        logger: { info: (m) => context.logger.info(m), warn: (m) => context.logger.warn(m) },
+        // The recorder may be opening a session on this very event: never upload a file still being written.
+        isSessionOpen: (sessionId) => created.currentSessionId === sessionId,
+      });
+      void uploader.scan();
+      uploader.startPeriodicScan();
+    }
     return recorder;
   } catch {
     return null;
@@ -50,6 +54,7 @@ export function recordSwitcherEvent(event: SwitcherEventT): void {
 
 /** Test hook. */
 export function resetSessionEventRecorderForTests(): void {
+  uploader?.stopPeriodicScan();
   recorder = null;
   uploader = null;
 }

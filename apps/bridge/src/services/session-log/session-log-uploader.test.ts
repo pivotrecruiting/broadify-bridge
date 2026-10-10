@@ -44,6 +44,14 @@ describe("SessionLogUploader", () => {
     expect(calls).toHaveLength(3);                     // marker prevents re-upload
   });
 
+  test("scan skips the session that is currently open", async () => {
+    const dir = await makeDir();
+    const fetchFn = jest.fn();
+    const uploader = new SessionLogUploader({ apiBaseUrl: "https://app.example", dir, getIdentity: async () => identity, fetchFn, isSessionOpen: (id) => id === "sess-0001-abcd" });
+    await uploader.scan();
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   test("failures are logged, bounded and retried on the next scan", async () => {
     const dir = await makeDir();
     let attempts = 0;

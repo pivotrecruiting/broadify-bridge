@@ -55,6 +55,7 @@ export class VmixActivatorsClient {
     socket.once("timeout", () => socket.destroy(new Error("vMix TCP connect timeout")));
     socket.on("connect", () => {
       socket.setTimeout(0);
+      socket.setKeepAlive(true, 30_000);     // a silently dropped link is noticed and reconnected
       socket.write("SUBSCRIBE ACTS\r\n");
     });
     socket.on("data", (chunk: Buffer) => {

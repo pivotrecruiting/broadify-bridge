@@ -5,6 +5,7 @@ import { SessionHeaderSchema } from "./session-log-types.js";
 
 const MARKER_SUFFIX = ".uploaded.json";
 const MAX_ATTEMPTS = 5;
+const RESCAN_INTERVAL_MS = 10 * 60 * 1000;
 
 type FetchLikeT = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string | Buffer }) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
 
@@ -15,6 +16,8 @@ export type SessionLogUploaderOptionsT = {
   getIdentity: () => Promise<BridgeSigningIdentityT>;
   fetchFn?: FetchLikeT;
   logger?: { info: (m: string) => void; warn: (m: string) => void };
+  /** Session currently being written; never uploaded by a scan. */
+  isSessionOpen?: (sessionId: string) => boolean;
 };
 
 /**
@@ -28,6 +31,7 @@ export class SessionLogUploader {
   private readonly fetchFn: FetchLikeT;
   private readonly attempts = new Map<string, number>();
   private chain: Promise<void> = Promise.resolve();
+  private rescanTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: SessionLogUploaderOptionsT) {
     this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
@@ -41,7 +45,24 @@ export class SessionLogUploader {
     return this.chain;
   }
 
-  /** Upload every finished session file without a marker (startup / retry). */
+  /** Periodic retry of leftovers (attempt counters reset so a long-running bridge recovers). */
+  startPeriodicScan(intervalMs = RESCAN_INTERVAL_MS): void {
+    this.stopPeriodicScan();
+    this.rescanTimer = setInterval(() => {
+      this.attempts.clear();
+      void this.scan();
+    }, intervalMs);
+    this.rescanTimer.unref?.();
+  }
+
+  stopPeriodicScan(): void {
+    if (this.rescanTimer) {
+      clearInterval(this.rescanTimer);
+      this.rescanTimer = null;
+    }
+  }
+
+  /** Upload every finished session file without a marker (startup / retry). Open sessions are skipped. */
   async scan(): Promise<void> {
     let names: string[] = [];
     try {
@@ -54,7 +75,7 @@ export class SessionLogUploader {
         continue;
       }
       const sessionId = name.slice(0, -".jsonl".length);
-      if (names.includes(`${sessionId}${MARKER_SUFFIX}`)) {
+      if (names.includes(`${sessionId}${MARKER_SUFFIX}`) || this.options.isSessionOpen?.(sessionId)) {
         continue;
       }
       await this.enqueue(sessionId);
