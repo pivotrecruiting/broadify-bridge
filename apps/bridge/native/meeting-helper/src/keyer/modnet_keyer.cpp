@@ -5,6 +5,7 @@
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
 #include "keyer/ort_session_options_policy.h"
+#include "util/helper_event_log.h"
 #include "util/sha256.h"
 
 #include <algorithm>
@@ -395,6 +396,13 @@ class ModnetKeyer::Impl {
 #endif
     status_.metrics.sessionInputSize = inputWidth_;
     const auto tensorStart = std::chrono::steady_clock::now();
+    // One input geometry per process (Fill on Windows unless
+    // BROADIFY_MEETING_KEYER_LETTERBOX=1, Letterbox elsewhere). Every tensor
+    // build below - CPU, fp16, zero-copy and its CPU parity reference - uses
+    // it, and `letterbox` holds the mapping that built the tensor (letterbox
+    // or fill) for the mask readback.
+    const ModnetInputGeometry inputGeometry =
+        modnetInputGeometryForThisPlatform();
     ModnetLetterboxMapping letterbox;
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -431,8 +439,8 @@ class ModnetKeyer::Impl {
       }
     }
     if (zeroCopyStage != nullptr) {
-      letterbox = modnetLetterboxMapping(input.width, input.height,
-                                         inputWidth_, inputHeight_);
+      letterbox = modnetInputMapping(input.width, input.height, inputWidth_,
+                                     inputHeight_, inputGeometry);
       deviceInput = zeroCopyStage->buildDeviceTensor(input, letterbox);
       if (!deviceInput) {
         // Process-wide fail-safe: never retry a broken GPU stage per frame.
@@ -444,7 +452,7 @@ class ModnetKeyer::Impl {
         // One-time parity gate per tier: the GPU tensor must match the CPU
         // reference elementwise before any mask produced from it is trusted.
         buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
-                               nullptr);
+                               nullptr, inputGeometry);
         std::vector<float> gpuTensor;
         double maxAbsDiff = -1.0;
         bool parityOk = zeroCopyStage->readbackTensorFp32(gpuTensor) &&
@@ -473,7 +481,7 @@ class ModnetKeyer::Impl {
 #endif
     if (!deviceInput) {
       buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
-                             &letterbox);
+                             &letterbox, inputGeometry);
       createCpuInputTensor();
     }
     const auto tensorEnd = std::chrono::steady_clock::now();
@@ -524,7 +532,7 @@ class ModnetKeyer::Impl {
           // The zero-copy binding failed after the GPU tensor build: the
           // plain Run needs a CPU input tensor, which was skipped above.
           buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
-                                 &letterbox);
+                                 &letterbox, inputGeometry);
           createCpuInputTensor();
           deviceInput = false;
         }
@@ -857,6 +865,21 @@ class ModnetKeyer::Impl {
       // model lets the per-tier override produce distinct, runnable shapes. This
       // re-enables apply()'s per-mode resolution switch.
       modelDynamic_ = tierSessions_.size() > 1u;
+      // Once per process: the MODNet input geometry every tier session is fed.
+      // The events-log copy (emitHelperEvent also writes stdout) is what a
+      // user can read in meeting-helper-events.log.
+      static const bool inputGeometryLogged = []() {
+        const char *geometry = modnetInputGeometryForThisPlatform() ==
+                                       ModnetInputGeometry::Fill
+                                   ? "fill"
+                                   : "letterbox";
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":\"input_geometry\""
+                  << ",\"geometry\":\"" << geometry << "\"}" << std::endl;
+        emitHelperEvent(std::string("{\"type\":\"keyer_input_geometry\",\"geometry\":\"") +
+                        geometry + "\",\"backend\":\"modnet\"}");
+        return true;
+      }();
+      (void)inputGeometryLogged;
 #endif
 #if defined(__APPLE__)
       // macOS keeps the size frozen into the CoreML free-dimension override at

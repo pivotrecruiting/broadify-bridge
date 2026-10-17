@@ -17,7 +17,14 @@ using Microsoft::WRL::ComPtr;
 // load-bearing: the integer block bounds, the clamps, the uint sums and the
 // (x-0.5)/0.5 normalization mirror writeIntegerBlockAverage exactly, so the
 // zerocopy_parity gate in modnet_keyer can diff the two tensors elementwise.
-// Letterbox padding writes 0.0 = normalized mid-gray, same as the CPU fill.
+// The content rect comes from the mapping (letterbox, or fill = the whole
+// tensor) and x/y are mapped independently, so both geometries share this
+// shader. Letterbox padding writes 0.0 = normalized mid-gray, same as the
+// CPU tensor's 0.0 initialization; a fill mapping has no padding. For fill
+// mappings the CPU applies these exact block bounds before averaging
+// (clampFillBlockBounds), so upscaled extents match too; for letterbox the
+// CPU still writes empty blocks of tiny sources as mid-gray, which fails the
+// parity gate and disables zero-copy for the process (CPU path continues).
 // dstTensor is a typed UAV (R32_FLOAT or R16_FLOAT for the fp16 model); the
 // store conversion happens in hardware.
 constexpr char kBuildInputShader[] = R"HLSL(
