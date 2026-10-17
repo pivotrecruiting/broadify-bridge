@@ -1,3 +1,4 @@
+import Accelerate
 import Darwin
 import Foundation
 import os.log
@@ -30,6 +31,7 @@ final class RawFrameStreamReader {
     private var reconnectDelaySeconds = reconnectInitialDelaySeconds
     private var latestBgra = [UInt8]()
     private var latestAt = Date.distantPast
+    private var lastScaleLogKey: String?
 
     private(set) var width: UInt32 = 0
     private(set) var height: UInt32 = 0
@@ -77,7 +79,12 @@ final class RawFrameStreamReader {
         return hasFrame
     }
 
-    func copyLatestFrame(into dst: UnsafeMutablePointer<UInt8>, stride: Int) -> Bool {
+    func copyLatestFrame(
+        into dst: UnsafeMutablePointer<UInt8>,
+        stride: Int,
+        dstWidth: Int,
+        dstHeight: Int
+    ) -> Bool {
         lock.lock()
         let frame = latestBgra
         let frameWidth = width
@@ -89,21 +96,58 @@ final class RawFrameStreamReader {
               age <= Self.frameMaxAgeSeconds,
               frameWidth > 0,
               frameHeight > 0,
-              stride >= Int(frameWidth) * 4 else {
+              dstWidth > 0,
+              dstHeight > 0,
+              stride >= dstWidth * 4 else {
             return false
         }
 
-        frame.withUnsafeBytes { rawBytes in
-            guard let srcBase = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return
-            }
-            let rowBytes = Int(frameWidth) * 4
-            for y in 0..<Int(frameHeight) {
-                memcpy(dst + y * stride, srcBase + y * rowBytes, rowBytes)
-            }
+        let srcWidth = Int(frameWidth)
+        let srcHeight = Int(frameHeight)
+        let srcRowBytes = srcWidth * 4
+        guard frame.count >= srcRowBytes * srcHeight else {
+            return false
         }
 
-        return true
+        if srcWidth == dstWidth && srcHeight == dstHeight {
+            frame.withUnsafeBytes { rawBytes in
+                guard let srcBase = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    return
+                }
+                let rowBytes = dstWidth * 4
+                for y in 0..<dstHeight {
+                    memcpy(dst + y * stride, srcBase + y * rowBytes, rowBytes)
+                }
+            }
+            return true
+        }
+
+        logScaleIfNeeded(srcWidth: srcWidth, srcHeight: srcHeight, dstWidth: dstWidth, dstHeight: dstHeight)
+        let result = frame.withUnsafeBytes { rawBytes -> vImage_Error in
+            guard let srcBase = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return kvImageInvalidParameter
+            }
+            var srcBuffer = vImage_Buffer(
+                data: UnsafeMutableRawPointer(mutating: srcBase),
+                height: vImagePixelCount(srcHeight),
+                width: vImagePixelCount(srcWidth),
+                rowBytes: srcRowBytes
+            )
+            var dstBuffer = vImage_Buffer(
+                data: dst,
+                height: vImagePixelCount(dstHeight),
+                width: vImagePixelCount(dstWidth),
+                rowBytes: stride
+            )
+            return vImageScale_ARGB8888(
+                &srcBuffer,
+                &dstBuffer,
+                nil,
+                vImage_Flags(kvImageHighQualityResampling)
+            )
+        }
+
+        return result == kvImageNoError
     }
 
     private func isRunning() -> Bool {
@@ -235,16 +279,31 @@ final class RawFrameStreamReader {
             bgra = bytes
         } else {
             var converted = [UInt8](repeating: 0, count: bytes.count)
-            let rowBytes = Int(frameWidth) * 4
-            for y in 0..<Int(frameHeight) {
-                let rowOffset = y * rowBytes
-                for x in 0..<Int(frameWidth) {
-                    let srcIndex = rowOffset + x * 4
-                    let dstIndex = rowOffset + x * 4
-                    converted[dstIndex + 0] = bytes[srcIndex + 2]
-                    converted[dstIndex + 1] = bytes[srcIndex + 1]
-                    converted[dstIndex + 2] = bytes[srcIndex + 0]
-                    converted[dstIndex + 3] = bytes[srcIndex + 3]
+            bytes.withUnsafeBytes { srcRawBuffer in
+                converted.withUnsafeMutableBytes { dstRawBuffer in
+                    guard let srcBase = srcRawBuffer.baseAddress,
+                          let dstBase = dstRawBuffer.baseAddress else {
+                        return
+                    }
+                    var srcBuffer = vImage_Buffer(
+                        data: UnsafeMutableRawPointer(mutating: srcBase),
+                        height: vImagePixelCount(frameHeight),
+                        width: vImagePixelCount(frameWidth),
+                        rowBytes: Int(frameWidth) * 4
+                    )
+                    var dstBuffer = vImage_Buffer(
+                        data: dstBase,
+                        height: vImagePixelCount(frameHeight),
+                        width: vImagePixelCount(frameWidth),
+                        rowBytes: Int(frameWidth) * 4
+                    )
+                    let channelMap: [UInt8] = [2, 1, 0, 3]
+                    vImagePermuteChannels_ARGB8888(
+                        &srcBuffer,
+                        &dstBuffer,
+                        channelMap,
+                        vImage_Flags(kvImageNoFlags)
+                    )
                 }
             }
             bgra = converted
@@ -271,6 +330,21 @@ final class RawFrameStreamReader {
         height = 0
         latestAt = Date.distantPast
         lock.unlock()
+    }
+
+    private func logScaleIfNeeded(srcWidth: Int, srcHeight: Int, dstWidth: Int, dstHeight: Int) {
+        let scaleLogKey = "\(srcWidth)x\(srcHeight)->\(dstWidth)x\(dstHeight)"
+        lock.lock()
+        let shouldLog = lastScaleLogKey != scaleLogKey
+        if shouldLog {
+            lastScaleLogKey = scaleLogKey
+        }
+        lock.unlock()
+
+        if shouldLog {
+            os_log(.info, log: Self.log, "Scaling raw VCam frame %{public}dx%{public}d -> %{public}dx%{public}d",
+                   srcWidth, srcHeight, dstWidth, dstHeight)
+        }
     }
 
     private func readHttpHeaders(socketFd: Int32) -> Bool {

@@ -51,6 +51,48 @@ apps\bridge\native\meeting-helper\meeting-helper.exe --keyer-self-test --models-
 
 INT8-IR (optional, offline): `scripts/quantize-modnet-openvino.md`.
 
+### Bildschirmfreigabe (Windows)
+
+Der Windows-Helper verwendet Windows.Graphics.Capture (WGC) fuer
+Bildschirm- und Fensterquellen. Mindestversion ist Windows 10 1903 (Build
+18362) fuer `CreateForWindow`/`CreateForMonitor`; der Cursor-Schalter wird nur
+gesetzt, wenn Windows 10 2004 (Build 19041) die Eigenschaft
+`IsCursorCaptureEnabled` meldet. Es gibt keinen Permission-Prompt. Der gelbe
+Systemrahmen ist Windows-Verhalten und wird im Helper nicht abgeschaltet.
+
+Manueller Smoke-Test ueber die Control-Pipe:
+
+```json
+{"id":"screen-list","method":"screen.list","params":{}}
+{"id":"screen-start","method":"screen.start","params":{"source_id":"monitor:0x...","include_cursor":true}}
+{"id":"media","method":"program.update","section":"media_layer","values":{"enabled":true,"source":"screen","mode":"fullscreen"}}
+```
+
+Danach die lokale MJPEG-Preview (`/preview.mjpg`) oder VCam-Ausgabe pruefen.
+`screen_capture_metrics` erscheint ungefaehr alle 300 Capture-Frames und
+berichtet `map_swizzle_ms`, `content_width`, `content_height` und `mip_level`;
+diese Werte dienen dem Windows-Spike fuer FrameArrived-/Readback-Spitzen.
+
+### Spike-Skript fuer Bildschirmfreigabe (macOS + Windows)
+
+`apps/bridge/native/meeting-helper/tools/spike-screen-share.py` startet einen
+Helper-Build, spricht den Control-Kanal direkt an (Unix-Socket bzw. Named Pipe)
+und misst den Screen-Share-Pfad. Es braucht nur Python 3 (keine Pakete).
+
+```bash
+# Nur Kontrakt pruefen (kein UI, keine Aufnahme):
+python3 tools/spike-screen-share.py --list-only --helper <helper-binary> --out ./list1
+# macOS: System-Picker, danach 60 s Messung mit automatischer Bewegung:
+python3 tools/spike-screen-share.py --full --motion --helper "<.app>/Contents/MacOS/BroadifyMeetingHelper" --out ./full1
+# Windows: Quelle aus screen.list waehlen und messen:
+python tools\spike-screen-share.py --full --motion --source monitor:0x10001 --helper .\meeting-helper.exe --out .\full1
+```
+
+Ausgabe: `SUMMARY render_fps/capture_fps/cpu`, `screen_capture_metrics`-Events
+(Windows), `share-fullscreen.jpg` und `share-pip.jpg` aus der MJPEG-Preview.
+Go-Kriterien des Stage-0-Spikes stehen in
+`docs/bridge/features/meeting-screen-sharing.md`.
+
 ## Runtime-Vertrag
 
 Die Bridge spawnt:
@@ -85,6 +127,7 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_LIVE_SNAP` | Live-Edge-Snap: unset = Auto (age-gated, Snap nur bei frischer Maske), `1` = immer an, `0` = immer aus (kein Ghost/Jitter bei alter Maske) |
 | `BROADIFY_MEETING_GPU_RADIUS` | Radius des MPS Guided Filters |
 | `BROADIFY_MEETING_GPU_EPSILON` | Epsilon des MPS Guided Filters |
+| `BROADIFY_MEETING_GPU_REFINE_BUDGET_MS` | macOS-Budget fuer automatische Refine-Stepdowns |
 | `BROADIFY_MEETING_GPU_REFINE_WIDTH` | Zielbreite der MPS-Maske |
 | `BROADIFY_MEETING_GPU_EMA` | EMA-Staerke der MPS-Koeffizienten |
 | `BROADIFY_MEETING_COREML_UNITS` | CoreML Compute Units waehlen |
@@ -106,6 +149,27 @@ dokumentierten `BROADIFY_MEETING_*`-Variablen als validierte `--env`-Argumente
 weiter. Die Werte werden in Lifecycle-Logs nicht ausgegeben. `--parent-pid`
 aktiviert den Orphan-Watchdog, damit der Helper nach einem Bridge-Absturz Kamera
 und VCam nicht weiter belegt.
+
+## Refine-Width-Messung (vor Default-Flip)
+
+Vor einer Anhebung der Defaults muss das Feldprotokoll auf mindestens diesen
+Geraeten laufen: Apple Silicon Mac, Intel-Mac und Windows-iGPU.
+
+Messpins:
+
+| Plattform | Pin |
+| --- | --- |
+| macOS | `BROADIFY_MEETING_GPU_REFINE_WIDTH=1920` |
+| Windows | `BROADIFY_MEETING_MASK_WORK_WIDTH=960` |
+
+Pro Messung: 2 Minuten stabile Meeting-Helper-Nutzung mit Keyer und Program
+Output. Gate fuer den Default-Flip:
+
+- `program_fps >= 29.5`
+- `program_frame_ms` p95 < 25
+- macOS: `mask_apply_ms` p95 < 8
+- `mask_width x mask_height` = 1920x1080 auf macOS und 960x540 auf Windows
+- Windows: keine Tier-Wechsel-Events waehrend des Messfensters
 
 Der macOS-VCam-Reader verwendet denselben Standardnamen:
 `broadify-meeting-framebus`. Wenn `BRIDGE_MEETING_FRAMEBUS_NAME` gesetzt wird,
@@ -132,6 +196,66 @@ Nach `meeting_engine_start` ruft die Bridge den Helper-RPC
 blockiert nicht auf die Nutzerentscheidung. `camera.list` und `camera.start`
 bleiben permission-gated und liefern bei fehlender oder eingeschraenkter
 Freigabe den stabilen Fehlercode `camera_permission_denied`.
+
+## Bildschirmfreigabe
+
+Die Bildschirmfreigabe laeuft ueber die Helper-RPCs `screen.list`,
+`screen.start`, `screen.stop` und `screen.pick`. Die Bridge reicht sie als
+`meeting_screen_list`, `meeting_screen_start`, `meeting_screen_stop` und
+`meeting_screen_pick` weiter. Der Status liegt unter
+`engine.screen_capture`; die aktive Programmebene meldet
+`engine.program.media_layer.source: "screen"`.
+
+macOS 14+ nutzt den ScreenCaptureKit-Systempicker (Backend in PR2/PR3). Dieser
+Picker-Pfad benoetigt keinen klassischen Screen-Recording-TCC-Dialog. macOS 13
+meldet `unsupported_os` ueber `screen_capture.capabilities.unsupported_reason`;
+der alte TCC-Capture-Pfad ist bewusst nicht Teil dieses PRs.
+
+Windows nutzt Windows Graphics Capture (Backend in PR2/PR3) und erwartet
+Windows 10 1903 oder neuer. `include_cursor` ist ab Windows 10 2004
+plattformseitig verfuegbar.
+
+Manueller Smoke-Test gegen den Control-Socket:
+
+```json
+{"id":"req-1","method":"screen.list","params":{}}
+{"id":"req-2","method":"screen.pick","params":{"include_cursor":true}}
+```
+
+Danach die MJPEG-Preview oeffnen und `meeting_get_state` pruefen:
+`engine.screen_capture.running` muss nach Auswahl `true` werden und
+`engine.program.media_layer.source` muss `screen` melden.
+
+## Bildschirmfreigabe macOS
+
+Die Bildschirmfreigabe nutzt auf macOS 14+ den System-Picker von
+ScreenCaptureKit (`SCContentSharingPicker`). Dieser Picker braucht keine
+Screen-Recording-Freigabe in System Settings und soll deshalb keinen TCC-Dialog
+fuer Bildschirmaufnahme ausloesen. Auf macOS 13 meldet der Helper
+`unsupported_os`; Enumeration ist in dieser Stufe nicht aktiv.
+
+Manueller Test ueber den Control-Socket:
+
+1. `screen.pick` senden und im System-Picker Display, Fenster oder App waehlen.
+2. `program.update` fuer `media_layer` senden:
+
+   ```json
+   {"section":"media_layer","values":{"enabled":true,"source":"screen","mode":"fullscreen"}}
+   ```
+
+3. MJPEG-Preview oeffnen und pruefen, dass die Freigabe im Program-Bild
+   sichtbar ist.
+
+Relevante Events:
+
+- `screen_capture_picker` mit `event: "presented"`, `"cancelled"` oder
+  `"failed"`.
+- `screen_capture_started` mit `kind`, `width`, `height` und `fps`.
+- `screen_capture_source_changed`, wenn der Nutzer die Auswahl ueber den
+  Picker-Menueleistenpfad aendert.
+- `screen_capture_stopped` mit `reason: "user_stop"`, `"stream_stopped"` oder
+  `"item_closed"`.
+- `screen_capture_error` mit stabilem Fehlercode und Diagnose-Message.
 
 ## Virtuelle Kamera macOS
 
@@ -216,6 +340,11 @@ Der Helper schreibt Async-Events auf stdout:
 {"type":"ready","framebus":"broadify-meeting-framebus","preview_port":9123}
 {"type":"metrics","fps":30,"keyer":"passthrough","inference_ms":null,"drops":0}
 {"type":"error","code":"model_missing","message":"modnet.onnx not found"}
+{"type":"screen_capture_started","source_id":"display:1"}
+{"type":"screen_capture_stopped","reason":"item_closed"}
+{"type":"screen_capture_source_changed","source_id":"display:2"}
+{"type":"screen_capture_picker","event":"opened"}
+{"type":"screen_capture_error","code":"screen_start_failed","message":"Could not start screen sharing."}
 ```
 
 Bei einem Launch ueber macOS LaunchServices wird Helper-stdout nicht
@@ -290,7 +419,8 @@ Fehlercodes des Control-Kanals:
 
 Die Bridge pollt den laufenden Helper alle `STATUS_POLL_INTERVAL_MS` (2000 ms)
 und publiziert das Ergebnis als `bridge_event` `meeting_status`
-(`reason: "status_poll"`). Zwei Schutzregeln
+(`reason: "status_poll"`). Der vollstaendige Relay-Vertrag steht im
+[Meeting Status Contract](../features/meeting-status-contract.md). Zwei Schutzregeln
 (`apps/bridge/src/services/meeting/meeting-helper-manager.ts`,
 `apps/bridge/src/services/meeting/status-publish-policy.ts`):
 
@@ -300,7 +430,9 @@ und publiziert das Ergebnis als `bridge_event` `meeting_status`
 - **Dedupe ueber stabile Projektion:** Verglichen wird der Snapshot ohne
   Per-Frame-Zaehler (`rendered_frames`, `reused_frames`,
   `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
-  `elapsed_seconds`, `video_frames`) und ohne `keyer.status.metrics`.
+  `elapsed_seconds`, `video_frames`, `updated_at`, `captured_frames`,
+  `program_dirty`,
+  `graphics_dirty`) und ohne `keyer.status.metrics`.
   `published_preview_frames` steigt nur fuer MJPEG/TCP-Preview-Consumer; bei
   reinen SHM-VCam-Readern stoppt der Zaehler.
   Publiziert wird sofort bei `force` (Lifecycle, Recording-Wechsel), immer
@@ -309,6 +441,10 @@ und publiziert das Ergebnis als `bridge_event` `meeting_status`
   mindestens alle `STATUS_METRICS_PUBLISH_INTERVAL_MS` (6000 ms), damit
   Performance-Panels weiterlaufen. Es werden also nie Updates stillgelegt,
   nur reine Zaehler-Aenderungen gedrosselt.
+- **Push-on-Write:** Schreibende Meeting-Kommandos rufen nach erfolgreicher
+  Mutation `requestStatusPublish(reason)` auf. Die Bridge sammelt diese
+  Forced-Reasons fuer `STATUS_PUBLISH_COALESCE_MS` (120 ms), verbindet sie mit
+  `+` und serialisiert die resultierenden Publishes.
 
 ### Company-Background-Fetch (`meeting_background_image_fetch`)
 

@@ -107,6 +107,7 @@ Schema: `GraphicsSendSchema`
 - `durationMs` erfordert `presetId`.
 - `presetId` ist **exklusiv**: ein Send mit `presetId` räumt konkurrierende Ebenen derselben Replace-Gruppe (alle Nicht-`backgrounds`) weg (`prepareBeforeRender` → `removeLayersNotInPreset`) und setzt das aktive Preset.
 - `reportPresetId` ist **reporting-only**: es lässt die Ebene unter `graphics_status.activePresets` erscheinen (damit Steuer-Clients den aktiven Preset-Zustand spiegeln), nimmt aber **nie** am exklusiven Ownership-Pfad teil und setzt kein aktives Preset. Additive Ebenen (Meeting-Presets, die mit der Content-Ebene und über Kategorien hinweg koexistieren) senden `reportPresetId` statt `presetId`. Nicht mit `durationMs` kombinieren (nur `presetId` erfüllt die durationMs-Regel).
+- Interne Meeting-Content-Layer (`meeting-content-video`, `meeting-browser-source`) werden nicht ueber `graphics_status` gemeldet. Ihr autoritativer Zustand steht in `meeting_status.content_source` (siehe [Meeting Status Contract](./meeting-status-contract.md)).
 - `manifest.render` wird auf das aktive Output-Format normalisiert (`outputConfig.format`).
 - Bei Abweichung zwischen Payload und aktivem Output-Format wird ein Warn-Log geschrieben, der Send wird nicht abgebrochen.
 - HTML/CSS wird gesäubert und gegen gefährliche Inhalte geprüft.

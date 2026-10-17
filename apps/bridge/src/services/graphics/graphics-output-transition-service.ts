@@ -43,6 +43,7 @@ type GraphicsOutputTransitionServiceDepsT = {
     previous: FrameBusConfigT | null,
     next: FrameBusConfigT
   ) => void;
+  ownsProcessFrameBusEnv: boolean;
 };
 
 /**
@@ -68,6 +69,10 @@ export class GraphicsOutputTransitionService {
   private transitionChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: GraphicsOutputTransitionServiceDepsT) {}
+
+  private ownsProcessFrameBusEnv(): boolean {
+    return this.deps.ownsProcessFrameBusEnv;
+  }
 
   /**
    * Wait for currently running output transition to complete.
@@ -117,8 +122,10 @@ export class GraphicsOutputTransitionService {
       stage = "previous_adapter_stop";
       await previous.outputAdapter.stop();
 
-      // Output helpers consume FrameBus env vars on configure/start.
-      applyFrameBusEnv(nextFrameBusConfig);
+      if (this.ownsProcessFrameBusEnv()) {
+        // Studio output helpers consume FrameBus env vars on configure/start.
+        applyFrameBusEnv(nextFrameBusConfig);
+      }
 
       stage = "next_adapter_configure";
       await nextOutputAdapter.configure(config);
@@ -161,10 +168,12 @@ export class GraphicsOutputTransitionService {
     }
 
     try {
-      if (params.previous.frameBusConfig) {
-        applyFrameBusEnv(params.previous.frameBusConfig);
-      } else {
-        clearFrameBusEnv();
+      if (this.ownsProcessFrameBusEnv()) {
+        if (params.previous.frameBusConfig) {
+          applyFrameBusEnv(params.previous.frameBusConfig);
+        } else {
+          clearFrameBusEnv();
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -201,7 +210,9 @@ export class GraphicsOutputTransitionService {
       `[Graphics] Output transition rollback failed: ${rollbackErrors.join(" | ")}`
     );
 
-    clearFrameBusEnv();
+    if (this.ownsProcessFrameBusEnv()) {
+      clearFrameBusEnv();
+    }
     try {
       await this.deps.clearPersistedConfig();
       getBridgeContext().logger.warn(

@@ -61,6 +61,41 @@ on macOS, where the `open`-based launch swallows helper stdio; the bridge
 forwards stdout lines when it can (`meeting-helper-manager.ts`) and dumps the
 sidecar tail into its process log whenever the helper dies unexpectedly.
 
+## File lifecycle (Windows)
+
+The Media Foundation recorder also writes to `<final>.mp4.part` first and only
+renames it after `Finalize()` succeeds. The Windows container remains
+fragmented MP4, so a hard kill can still leave playable fragments in the
+sidecar while the final path is reserved for completed recordings.
+
+## Encoding
+
+Meeting recordings use H.264 High Profile plus AAC audio. Video bitrate is set
+from a shared native policy at 0.35 bit/px and clamped to 2-40 Mbit/s: 1080p30
+lands at about 21.8 Mbit/s, which is roughly 10 GB/h including audio and
+container overhead. GOP/keyframes are targeted at two seconds (`fps * 2`),
+frame reordering is disabled, and macOS requests CABAC.
+
+Video timestamps are written on a constant-frame-rate grid relative to the
+writer session start. If the program frame source arrives late, the recorder
+fills up to four missing frame slots with the latest frame. Gaps longer than
+one second jump to the current grid position and emit one recorder event for
+diagnostics. Encoder backpressure only commits frames that were actually
+written, so unfilled slots are retried on the next program frame. Set
+`BROADIFY_MEETING_RECORDER_CFR=0` to restore the legacy host-clock video PTS
+path for diagnosis.
+
+Both platform writers tag video as BT.709. macOS sets AVFoundation color
+properties on the video settings and pixel buffers; Windows sets BT.709
+matrix, transfer function, primaries and limited-range output media type while
+keeping the RGB input range full-range.
+
+Quick probe after recording:
+
+```bash
+ffprobe -hide_banner -select_streams v:0 -show_entries stream=codec_name,profile,bit_rate,avg_frame_rate,r_frame_rate,color_space,color_transfer,color_primaries -of default=noprint_wrappers=1 recording.mp4
+```
+
 ## WebApp
 
 `MeetingRecordingControl` (meeting builder, below the preview panel) drives the

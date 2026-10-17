@@ -52,6 +52,7 @@ export const MeetingKeyerConfigureSchema = z
       .enum(["transparent", "gradient", "solid_light", "checkerboard"])
       .optional(),
     background_type: z.enum(["mode"]).optional(),
+    background_asset_id: z.string().max(200).nullable().optional(),
     background_template_id: z.string().nullable().optional(),
     background_template_name: z.string().nullable().optional(),
     // Absolute local path of an uploaded company background image ("" clears).
@@ -89,6 +90,19 @@ export const MeetingProgramUpdateSchema = z.object({
   section: z.enum(["camera", "cornerbug", "graphics", "speaker_layout", "media_layer"]),
   values: z.record(z.unknown()),
 });
+
+export const MeetingScreenStartSchema = z
+  .object({
+    source_id: z.string().min(1).max(256),
+    include_cursor: z.boolean().optional(),
+  })
+  .strip();
+
+export const MeetingScreenPickSchema = z
+  .object({
+    include_cursor: z.boolean().optional(),
+  })
+  .strip();
 
 export const MeetingOutputConfigureSchema = z.object({
   target: z.enum(["framebus", "virtual_camera"]),
@@ -198,6 +212,12 @@ export type MeetingContentVideoSetPayloadT = z.output<
 >;
 export type MeetingBrowserSourceSetPayloadT = z.output<
   typeof MeetingBrowserSourceSetSchema
+>;
+export type MeetingScreenStartPayloadT = z.output<
+  typeof MeetingScreenStartSchema
+>;
+export type MeetingScreenPickPayloadT = z.output<
+  typeof MeetingScreenPickSchema
 >;
 
 export const MeetingMediaGetSchema = z

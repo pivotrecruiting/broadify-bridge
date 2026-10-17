@@ -177,15 +177,18 @@ The GPU compose plan supports the production single-renderer path:
 
 1. Background mode
 2. Back graphics FrameBus layer
-3. Camera layer with optional alpha mask
-4. Front graphics FrameBus layer
-5. Generated placeholder graphics
-6. Cornerbug
+3. Media layer (`source: "page"` for rendered document pages or
+   `source: "screen"` for the live frame from `ScreenCaptureSource`)
+4. Camera layer with optional alpha mask
+5. Front graphics FrameBus layer
+6. Generated placeholder graphics
+7. Cornerbug
 
 Generated graphics and the cornerbug are drawn as cheap CPU overlays after the
-Metal or D3D11 frame. They no longer disable the GPU compositor. An enabled
-media layer still forces complete CPU composition because it does not yet have
-a pixel-equivalent GPU implementation.
+Metal or D3D11 frame. They no longer disable the GPU compositor. The GPU plan
+has a `media` slot; for screen sharing the captured frame is uploaded with
+`cacheKey = timestampNs`, drawn below the keyed presenter and above the plain
+camera/background layer.
 
 Metal and D3D11 cache layer textures by dimensions and timestamps. A required
 camera, FrameBus graphics, or mask upload failure returns `false`. The caller

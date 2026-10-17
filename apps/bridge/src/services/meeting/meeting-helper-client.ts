@@ -206,6 +206,26 @@ export class MeetingHelperClient {
     return this.rpc("camera.auto_director", options);
   }
 
+  async screenList(): Promise<Record<string, unknown>> {
+    return this.rpc("screen.list");
+  }
+
+  async screenStart(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("screen.start", options);
+  }
+
+  async screenStop(): Promise<Record<string, unknown>> {
+    return this.rpc("screen.stop");
+  }
+
+  async screenPick(
+    options: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.rpc("screen.pick", options);
+  }
+
   async keyerGet(): Promise<Record<string, unknown>> {
     return this.rpc("keyer.get");
   }

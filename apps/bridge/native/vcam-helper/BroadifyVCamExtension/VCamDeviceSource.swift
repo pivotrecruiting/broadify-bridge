@@ -4,9 +4,9 @@ import Foundation
 import IOKit.audio
 import os.log
 
-/// Output format used until the raw frame stream reports its own geometry.
-private let kDefaultWidth = 1280
-private let kDefaultHeight = 720
+/// Fixed advertised format matching the meeting program geometry; no format list, like OBS.
+private let kOutputWidth = 1920
+private let kOutputHeight = 1080
 private let kDefaultFps = 30
 private let kIdleSplashFps = 1.0
 
@@ -38,8 +38,6 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private var outputPixelBuffer: CVPixelBuffer?
     private var splashPixelBuffer: CVPixelBuffer?
     private var timerMode: VCamTimerMode = .idle
-    private var currentWidth = kDefaultWidth
-    private var currentHeight = kDefaultHeight
     private var streamingCounter = 0
 
     init(localizedName: String) {
@@ -53,7 +51,7 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
             source: self
         )
 
-        rebuildVideoFormat(width: kDefaultWidth, height: kDefaultHeight)
+        buildVideoFormat(width: kOutputWidth, height: kOutputHeight)
 
         let videoStreamFormat = CMIOExtensionStreamFormat(
             formatDescription: formatDescription!,
@@ -159,15 +157,6 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         }
 
         switchTimerModeIfNeeded(.live)
-        let streamWidth = Int(rawFrameStreamReader.width)
-        let streamHeight = Int(rawFrameStreamReader.height)
-        if streamWidth > 0,
-           streamHeight > 0,
-           streamWidth != currentWidth || streamHeight != currentHeight {
-            rebuildVideoFormat(width: streamWidth, height: streamHeight)
-            return
-        }
-
         let pixelBuffer: CVPixelBuffer
         if let cachedPixelBuffer = outputPixelBuffer {
             pixelBuffer = cachedPixelBuffer
@@ -189,7 +178,12 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
         let dst = baseAddress.assumingMemoryBound(to: UInt8.self)
 
-        let hasFrame = rawFrameStreamReader.copyLatestFrame(into: dst, stride: stride)
+        let hasFrame = rawFrameStreamReader.copyLatestFrame(
+            into: dst,
+            stride: stride,
+            dstWidth: kOutputWidth,
+            dstHeight: kOutputHeight
+        )
         if hasFrame {
             sendPixelBuffer(pixelBuffer, formatDescription: formatDescription)
             return
@@ -261,8 +255,8 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
 
     /// Dark gray frame with a centered lighter block, signalling "no signal".
     private func drawSplashFrame(dst: UnsafeMutablePointer<UInt8>, stride: Int) {
-        let width = currentWidth
-        let height = currentHeight
+        let width = kOutputWidth
+        let height = kOutputHeight
         for y in 0..<height {
             let row = dst + y * stride
             for x in 0..<width {
@@ -278,10 +272,7 @@ final class VCamDeviceSource: NSObject, CMIOExtensionDeviceSource {
         }
     }
 
-    private func rebuildVideoFormat(width: Int, height: Int) {
-        currentWidth = width
-        currentHeight = height
-
+    private func buildVideoFormat(width: Int, height: Int) {
         var description: CMFormatDescription?
         CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,

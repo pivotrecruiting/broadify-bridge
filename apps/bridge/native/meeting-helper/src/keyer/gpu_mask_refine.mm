@@ -3,13 +3,16 @@
 #if defined(__APPLE__)
 
 #include "compose/metal_device.h"
+#include "util/helper_event_log.h"
 
 #import <Accelerate/Accelerate.h>
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <sstream>
 #include <vector>
 
 namespace broadify::meeting {
@@ -27,6 +30,10 @@ double envDouble(const char *name, double fallback) {
   char *end = nullptr;
   const double v = std::strtod(raw, &end);
   return (end != raw && v > 0.0) ? v : fallback;
+}
+bool envIsSet(const char *name) {
+  const char *raw = std::getenv(name);
+  return raw != nullptr && raw[0] != '\0';
 }
 
 }  // namespace
@@ -49,8 +56,13 @@ class GpuMaskRefiner::Impl {
       scale_ = [[MPSImageBilinearScale alloc] initWithDevice:device_];
       ema_ = [[MPSImageAdd alloc] initWithDevice:device_];
     }
+    envPinnedOutWidth_ = envIsSet("BROADIFY_MEETING_GPU_REFINE_WIDTH");
     outWidth_ = static_cast<uint32_t>(
         envInt("BROADIFY_MEETING_GPU_REFINE_WIDTH", 960, 320, 1920));
+    if (!envPinnedOutWidth_) {
+      defaultOutWidth_ = outWidth_;
+    }
+    budgetMs_ = envDouble("BROADIFY_MEETING_GPU_REFINE_BUDGET_MS", 8.0);
     // Temporal EMA on the guided-filter coefficients (Apple's recommended way to
     // kill edge flicker without smearing moving edges or softening the matte).
     // The value is the new-frame weight: 1.0 disables it, lower = steadier but
@@ -67,6 +79,16 @@ class GpuMaskRefiner::Impl {
   ~Impl() = default;
 
   bool available() const { return ready_; }
+
+  void setMaxOutputWidth(uint32_t width) {
+    if (envPinnedOutWidth_) return;
+    outWidth_ = width == 0u ? defaultOutWidth_ : std::clamp(width, 320u, 1920u);
+    // Budget step-down is a one-way session floor; repeated mode updates must
+    // not restore the default width after the event has fired.
+    if (steppedDown_) {
+      outWidth_ = std::min(outWidth_, 960u);
+    }
+  }
 
   // Encodes the full guided-filter refinement on the GPU (mask + camera in,
   // result left in outMask_). Returns false on any failure; outW/outH receive
@@ -163,9 +185,16 @@ class GpuMaskRefiner::Impl {
         coeffPrevReady_ = true;
       }
 
+      const auto waitStart = std::chrono::steady_clock::now();
       [cb commit];
       [cb waitUntilCompleted];
-      return cb.status != MTLCommandBufferStatusError;
+      const auto waitEnd = std::chrono::steady_clock::now();
+      const bool ok = cb.status != MTLCommandBufferStatusError;
+      if (ok) {
+        observeRefineCost(
+            std::chrono::duration<double, std::milli>(waitEnd - waitStart).count());
+      }
+      return ok;
     }
     return false;
   }
@@ -252,6 +281,28 @@ class GpuMaskRefiner::Impl {
     return true;
   }
 
+  void observeRefineCost(double refineMs) {
+    if (envPinnedOutWidth_ || steppedDown_ || refineMs <= 0.0) return;
+    if (refineSamples_ == 0u) {
+      refineEmaMs_ = refineMs;
+    } else {
+      refineEmaMs_ = refineEmaMs_ * 0.8 + refineMs * 0.2;
+    }
+    ++refineSamples_;
+    if (refineSamples_ < 30u || refineEmaMs_ <= budgetMs_ || outWidth_ <= 960u) {
+      return;
+    }
+    const uint32_t previousWidth = outWidth_;
+    outWidth_ = 960u;
+    steppedDown_ = true;
+    std::ostringstream event;
+    event << "{\"type\":\"keyer_refine_stepdown\",\"previous_refine_width\":"
+          << previousWidth << ",\"refine_width\":" << outWidth_
+          << ",\"budget_ms\":" << budgetMs_ << ",\"ema_ms\":"
+          << refineEmaMs_ << ",\"samples\":" << refineSamples_ << "}";
+    emitHelperEvent(event.str());
+  }
+
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
   CVMetalTextureCacheRef textureCache_ = nullptr;
@@ -268,8 +319,14 @@ class GpuMaskRefiner::Impl {
   std::vector<uint16_t> halfScratch_;
   std::vector<float> floatScratch_;
   uint32_t outWidth_ = 960u;
+  uint32_t defaultOutWidth_ = 960u;
+  double budgetMs_ = 8.0;
+  double refineEmaMs_ = 0.0;
+  uint64_t refineSamples_ = 0u;
   float emaAlpha_ = 0.5f;
   bool emaEnabled_ = true;
+  bool envPinnedOutWidth_ = false;
+  bool steppedDown_ = false;
   bool coeffPrevReady_ = false;
   bool ready_ = false;
 };
@@ -277,6 +334,9 @@ class GpuMaskRefiner::Impl {
 GpuMaskRefiner::GpuMaskRefiner() : impl_(std::make_unique<Impl>()) {}
 GpuMaskRefiner::~GpuMaskRefiner() = default;
 bool GpuMaskRefiner::available() const { return impl_->available(); }
+void GpuMaskRefiner::setMaxOutputWidth(uint32_t width) {
+  impl_->setMaxOutputWidth(width);
+}
 bool GpuMaskRefiner::refine(CVPixelBufferRef alpha, const VideoFrame &camera, AlphaMask &out) {
   return impl_->refine(alpha, camera, out);
 }

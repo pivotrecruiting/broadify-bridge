@@ -47,6 +47,10 @@ sequenceDiagram
 | DeckLink | Unterstützt (DeckLink Helper, FrameBus) | Nicht implementiert | Nicht implementiert |
 | Display Output | Unterstützt (nativer `display-helper`, SDL2, FrameBus) | Unterstützt (nativer `display-helper.exe`, SDL2, FrameBus) | Nicht implementiert |
 
+Der Display-Output ist auch der Zuspielweg für externe Mischer mit
+Chroma-/Luma-Key am HDMI-Eingang (z. B. RØDECaster Video), siehe
+`docs/integration/rodecaster-video-integration.md`.
+
 ## HelperProcessSession
 DeckLink- und Display-Adapter nutzen eine gemeinsame
 `HelperProcessSession`. Sie startet den Child-Process, parst stdout zeilenweise

@@ -377,35 +377,44 @@ bool initializeContext() {
 
 // Uploads the frame into the cached slot texture; skips the copy when the
 // timestamp is unchanged (graphics layers repeat frames between updates).
-bool uploadLayer(LayerTexture &slot, const VideoFrame *frame) {
-  if (frame == nullptr || frame->rgba.empty() || frame->width == 0u || frame->height == 0u) {
+bool uploadLayer(LayerTexture &slot, const uint8_t *pixels, uint32_t width,
+                 uint32_t height, uint64_t timestampNs) {
+  if (pixels == nullptr || width == 0u || height == 0u) {
     return false;
   }
   MetalContext &ctx = context();
-  if (slot.texture == nil || slot.width != frame->width || slot.height != frame->height) {
+  if (slot.texture == nil || slot.width != width || slot.height != height) {
     MTLTextureDescriptor *descriptor =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                                           width:frame->width
-                                                          height:frame->height
+                                                           width:width
+                                                          height:height
                                                        mipmapped:NO];
     descriptor.usage = MTLTextureUsageShaderRead;
     descriptor.storageMode = MTLStorageModeManaged;
     slot.texture = [ctx.device newTextureWithDescriptor:descriptor];
-    slot.width = frame->width;
-    slot.height = frame->height;
+    slot.width = width;
+    slot.height = height;
     slot.timestampNs = 0;
     if (slot.texture == nil) {
       return false;
     }
   }
-  if (frame->timestampNs == 0u || frame->timestampNs != slot.timestampNs) {
-    [slot.texture replaceRegion:MTLRegionMake2D(0, 0, frame->width, frame->height)
+  if (timestampNs == 0u || timestampNs != slot.timestampNs) {
+    [slot.texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
                     mipmapLevel:0
-                      withBytes:frame->rgba.data()
-                    bytesPerRow:static_cast<NSUInteger>(frame->width) * 4u];
-    slot.timestampNs = frame->timestampNs;
+                      withBytes:pixels
+                    bytesPerRow:static_cast<NSUInteger>(width) * 4u];
+    slot.timestampNs = timestampNs;
   }
   return true;
+}
+
+bool uploadLayer(LayerTexture &slot, const VideoFrame *frame) {
+  if (frame == nullptr || frame->rgba.empty()) {
+    return false;
+  }
+  return uploadLayer(slot, frame->rgba.data(), frame->width, frame->height,
+                     frame->timestampNs);
 }
 
 }  // namespace
@@ -455,13 +464,9 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
     }
 
     if (plan.backgroundImage != nullptr && plan.backgroundImageWidth > 0u && plan.backgroundImageHeight > 0u) {
-      VideoFrame bgFrame;
-      bgFrame.width = plan.backgroundImageWidth;
-      bgFrame.height = plan.backgroundImageHeight;
-      bgFrame.timestampNs = plan.backgroundImageCacheKey;
-      bgFrame.rgba.assign(plan.backgroundImage,
-                          plan.backgroundImage + static_cast<size_t>(plan.backgroundImageWidth) * plan.backgroundImageHeight * 4u);
-      if (uploadLayer(ctx.backgroundImage, &bgFrame)) {
+      if (uploadLayer(ctx.backgroundImage, plan.backgroundImage,
+                      plan.backgroundImageWidth, plan.backgroundImageHeight,
+                      plan.backgroundImageCacheKey)) {
         uniforms.bgImagePresent = 1u;
         uniforms.bgImgScaleX = plan.backgroundImageMapping.scaleX;
         uniforms.bgImgScaleY = plan.backgroundImageMapping.scaleY;
@@ -471,15 +476,8 @@ bool renderProgramFrameMetal(const MetalComposePlan &plan, std::vector<uint8_t> 
     }
 
     if (plan.media.present && plan.media.rgba != nullptr && plan.media.width > 0u && plan.media.height > 0u) {
-      VideoFrame mediaFrame;
-      mediaFrame.width = plan.media.width;
-      mediaFrame.height = plan.media.height;
-      mediaFrame.timestampNs = plan.media.cacheKey;
-      // NOTE: assign() COPIES the full pixel buffer (up to ~8 MB per layer per
-      // frame). A true zero-copy upload (shared MTLBuffer/IOSurface) is the
-      // planned WP-4.5 optimization; the D3D11 compositor already avoids it.
-      mediaFrame.rgba.assign(plan.media.rgba, plan.media.rgba + static_cast<size_t>(plan.media.width) * plan.media.height * 4u);
-      if (uploadLayer(ctx.media, &mediaFrame)) {
+      if (uploadLayer(ctx.media, plan.media.rgba, plan.media.width,
+                      plan.media.height, plan.media.cacheKey)) {
         uniforms.mediaPresent = 1u;
         uniforms.mediaBelowCamera = plan.media.belowCamera ? 1u : 0u;
         uniforms.shadowPresent = plan.media.shadowPresent ? 1u : 0u;

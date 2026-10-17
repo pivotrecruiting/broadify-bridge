@@ -38,6 +38,9 @@ Diese Doku beschreibt, wie Outputs konfiguriert, validiert und für Hardware‑A
 - `video_hdmi`
   - Output1 erforderlich
   - HDMI/DisplayPort/Thunderbolt‑Port
+  - Opak (kein Alpha): externe Mischer (z. B. RØDECaster Video, ATEM) keyen
+    auf die Hintergrundfarbe; Default Grün, siehe
+    `docs/integration/rodecaster-video-integration.md`
 - `key_fill_ndi`
   - NDI Streamname optional (derzeit nicht validiert)
   - Output‑Adapter ist aktuell Stub (NDI nicht implementiert)

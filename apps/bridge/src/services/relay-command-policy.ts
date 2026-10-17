@@ -113,6 +113,13 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_camera_pip_set: sideEffect("meeting_camera_pip_set", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
   meeting_camera_audio_levels: readOnly("meeting_camera_audio_levels", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.camera"]),
   meeting_camera_auto_director: sideEffect("meeting_camera_auto_director", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
+  // Pick returns immediately while the operator may spend minutes in the OS
+  // picker. Completion is observed through engine.screen_capture.running, and
+  // relay retries must never open a second system dialog.
+  meeting_screen_list: readOnly("meeting_screen_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.screen"]),
+  meeting_screen_start: sideEffect("meeting_screen_start", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.screen", ["meeting.screen", "meeting.program"], "after_state_check"),
+  meeting_screen_stop: sideEffect("meeting_screen_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.screen", ["meeting.screen", "meeting.program"], "after_state_check"),
+  meeting_screen_pick: sideEffect("meeting_screen_pick", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.screen", ["meeting.screen"], "never"),
   meeting_recording_microphones: readOnly("meeting_recording_microphones", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.recording"]),
   meeting_recording_pick_path: sideEffect("meeting_recording_pick_path", "helper_start", 130_000, 125_000, "meeting.recording.dialog", ["meeting.recording"]),
   meeting_recording_start: sideEffect("meeting_recording_start", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),

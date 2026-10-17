@@ -36,6 +36,7 @@ Diese Seite beschreibt die wichtigsten Schnittstellen zwischen Desktop‑App und
   - `engine_error`
   - `graphics_status`
   - `graphics_error`
+  - `meeting_status`
 
 ## Engine Macro Runtime Contract
 

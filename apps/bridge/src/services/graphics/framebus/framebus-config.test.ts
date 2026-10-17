@@ -68,6 +68,46 @@ describe("framebus-config", () => {
       expect(config.name).toBe("previous-bus");
     });
 
+    it("uses previous name when env points at a different bus", () => {
+      process.env.BRIDGE_FRAMEBUS_NAME = "bfy-meet-gfx-front";
+      const previous: FrameBusConfigT = {
+        name: "broadify-framebus-abc",
+        slotCount: 2,
+        pixelFormat: 1,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        frameSize: 0,
+        slotStride: 0,
+        headerSize: 128,
+        size: 0,
+      };
+
+      const config = buildFrameBusConfig(createOutputConfig(), previous);
+
+      expect(config.name).toBe("broadify-framebus-abc");
+    });
+
+    it("studio resolve while env points at the meeting front bus keeps its own bus name", () => {
+      process.env.BRIDGE_FRAMEBUS_NAME = "bfy-meet-gfx-front";
+      const previous: FrameBusConfigT = {
+        name: "broadify-framebus-studio",
+        slotCount: 3,
+        pixelFormat: 1,
+        width: 1920,
+        height: 1080,
+        fps: 50,
+        frameSize: 0,
+        slotStride: 0,
+        headerSize: 128,
+        size: 0,
+      };
+
+      const config = buildFrameBusConfig(createOutputConfig(), previous);
+
+      expect(config.name).toBe("broadify-framebus-studio");
+    });
+
     it("generates new name when no env and no previous", () => {
       const config = buildFrameBusConfig(createOutputConfig(), null);
       expect(config.name).toMatch(/^broadify-framebus-[a-f0-9]{12}$/);
@@ -126,9 +166,21 @@ describe("framebus-config", () => {
       expect(config.name).toBe("bfy-meet-gfx-front");
     });
 
-    it("explicit slotCount override wins over env", () => {
+    it("explicit slotCount override wins over previous and env", () => {
       process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "2";
-      const config = buildFrameBusConfig(createOutputConfig(), null, {
+      const previous: FrameBusConfigT = {
+        name: "previous-bus",
+        slotCount: 4,
+        pixelFormat: 1,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        frameSize: 0,
+        slotStride: 0,
+        headerSize: 128,
+        size: 0,
+      };
+      const config = buildFrameBusConfig(createOutputConfig(), previous, {
         slotCount: 3,
       });
       expect(config.slotCount).toBe(3);
@@ -155,7 +207,7 @@ describe("framebus-config", () => {
       expect(withUndefined.slotCount).toBe(4);
     });
 
-    it("uses previous slotCount when env invalid", () => {
+    it("uses previous slotCount when env is set", () => {
       const previous: FrameBusConfigT = {
         name: "prev",
         slotCount: 3,
@@ -168,7 +220,7 @@ describe("framebus-config", () => {
         headerSize: 128,
         size: 0,
       };
-      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "x";
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
       const config = buildFrameBusConfig(createOutputConfig(), previous);
       expect(config.slotCount).toBe(3);
     });

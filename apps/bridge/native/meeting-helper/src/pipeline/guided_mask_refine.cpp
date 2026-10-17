@@ -156,7 +156,7 @@ void guidedRefineMask(AlphaMask &mask, const VideoFrame &guideFrame) {
   static thread_local GuidedScratch s;
 
   const GuidedWorkSize workSize = selectGuidedWorkSize(
-      guideFrame.width, guideFrame.height, guidedWorkWidthFromEnv());
+      guideFrame.width, guideFrame.height, guidedWorkWidth());
   const int workW = static_cast<int>(workSize.width);
   const int workH = static_cast<int>(workSize.height);
 

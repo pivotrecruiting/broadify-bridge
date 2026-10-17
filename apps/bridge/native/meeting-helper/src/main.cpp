@@ -1,4 +1,5 @@
 #include "capture/camera_source.h"
+#include "capture/screen_capture_source.h"
 #include "common/options.h"
 #include "control/control_server.h"
 #include "keyer/matting_backend.h"
@@ -742,6 +743,8 @@ int main(int argc, char **argv) {
 
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
+  std::unique_ptr<ScreenCaptureSource> screen =
+      createScreenCaptureSource(options.parentPid);
   PreviewFrameStore previewFrames;
   VcamShmRingWin vcamShm;
   MeetingRecorder recorder;
@@ -811,7 +814,7 @@ int main(int argc, char **argv) {
 #if defined(_WIN32)
   VcamShmPublisher vcamShmPublisher;
 #endif
-  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), &vcamShm,
+  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(*screen), std::ref(previewFrames), &vcamShm,
 #if defined(_WIN32)
                      &vcamShmPublisher,
 #endif
@@ -953,6 +956,7 @@ int main(int argc, char **argv) {
       options.controlSocket,
       std::ref(state),
       std::ref(*camera),
+      std::ref(*screen),
       std::ref(previewFrames),
       std::ref(recorder),
       std::cref(options),
@@ -985,6 +989,7 @@ int main(int argc, char **argv) {
 
   stopVirtualCamera();
   camera->stop();
+  screen->stop();
   previewFrames.clear();
   {
     std::lock_guard<std::mutex> lock(state.mutex);

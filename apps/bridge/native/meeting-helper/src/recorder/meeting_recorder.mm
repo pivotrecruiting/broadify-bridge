@@ -1,12 +1,14 @@
 #include "recorder/meeting_recorder.h"
 
 #if defined(__APPLE__)
+#include "recorder/recorder_encode_policy.h"
 #include "recorder/recorder_writer_factory.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #endif
 
 #include <chrono>
+#include <cstdlib>
 #include <mutex>
 
 #if defined(__APPLE__)
@@ -115,6 +117,12 @@ struct MeetingRecorder::Impl {
   uint32_t height = 0;
   uint32_t fps = 30;
   uint64_t videoFrames = 0;
+  uint64_t duplicatedFrames = 0;
+  uint64_t droppedFrames = 0;
+  bool cfrEnabled = true;
+  bool cfrDropLogged = false;
+  bool cfrDiscontinuityLogged = false;
+  RecorderFrameClock frameClock{30};
   std::chrono::steady_clock::time_point startedAt;
 
   AVAssetWriter *writer = nil;
@@ -139,6 +147,9 @@ struct MeetingRecorder::Impl {
     audioQueue = nil;
     sessionStart = kCMTimeInvalid;
     partPath.clear();
+    cfrEnabled = true;
+    cfrDropLogged = false;
+    cfrDiscontinuityLogged = false;
   }
 };
 
@@ -336,6 +347,13 @@ bool MeetingRecorder::start(const std::string &filePath,
     impl_->height = height;
     impl_->fps = safeFps;
     impl_->videoFrames = 0;
+    impl_->duplicatedFrames = 0;
+    impl_->droppedFrames = 0;
+    const char *cfrEnv = getenv("BROADIFY_MEETING_RECORDER_CFR");
+    impl_->cfrEnabled = !(cfrEnv != nullptr && std::string(cfrEnv) == "0");
+    impl_->cfrDropLogged = false;
+    impl_->cfrDiscontinuityLogged = false;
+    impl_->frameClock = RecorderFrameClock(safeFps);
     impl_->startedAt = std::chrono::steady_clock::now();
     impl_->lastError.clear();
     impl_->starting = false;
@@ -353,13 +371,20 @@ void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
   if (width != impl_->width || height != impl_->height) {
     return;  // geometry changed mid-recording; skip until it matches
   }
-  if (impl_->videoInput == nil || !impl_->videoInput.isReadyForMoreMediaData) {
-    return;  // encoder busy; drop this frame
+  if (impl_->videoInput == nil || !CMTIME_IS_VALID(impl_->sessionStart)) {
+    return;
   }
   CVPixelBufferPoolRef pool = impl_->videoAdaptor.pixelBufferPool;
   if (pool == nullptr) {
     return;
   }
+  const CMTime now = CMClockGetTime(CMClockGetHostTimeClock());
+  const CMTime elapsed = CMTimeSubtract(now, impl_->sessionStart);
+  const double elapsedSeconds = CMTimeGetSeconds(elapsed);
+  const uint64_t elapsedNs =
+      elapsedSeconds > 0.0
+          ? static_cast<uint64_t>(elapsedSeconds * 1000000000.0)
+          : 0ull;
   @autoreleasepool {
     CVPixelBufferRef pixelBuffer = nullptr;
     if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool,
@@ -378,25 +403,86 @@ void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
     const uint8_t permuteMap[4] = {2, 1, 0, 3};
     vImagePermuteChannels_ARGB8888(&src, &out, permuteMap, kvImageNoFlags);
     CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    CVBufferSetAttachment(
+        pixelBuffer, kCVImageBufferColorPrimariesKey,
+        kCVImageBufferColorPrimaries_ITU_R_709_2,
+        kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(
+        pixelBuffer, kCVImageBufferTransferFunctionKey,
+        kCVImageBufferTransferFunction_ITU_R_709_2,
+        kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
+                          kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
 
-    const CMTime presentationTime = CMClockGetTime(CMClockGetHostTimeClock());
-    if ([impl_->videoAdaptor appendPixelBuffer:pixelBuffer
-                          withPresentationTime:presentationTime]) {
-      ++impl_->videoFrames;
-    } else if (impl_->writer.status == AVAssetWriterStatusFailed &&
-               impl_->lastError.empty()) {
-      // REC-02: a failed writer (disk full, I/O error) used to be silently
-      // ignored - the recording looked healthy while writing nothing. Surface
-      // it once via recording.status (which streams to the webapp).
-      impl_->lastError = impl_->writer.error != nil
-                             ? ([[impl_->writer.error localizedDescription]
-                                    UTF8String]
-                                    ?: "writer_failed")
-                             : "writer_failed";
-      logRecorderEvent(
-          "writer_failed",
-          describeError(impl_->writer.error, "writer_failed") +
-              " after " + std::to_string(impl_->videoFrames) + " frames");
+    const auto handleWriterFailure = [&] {
+      if (impl_->writer.status == AVAssetWriterStatusFailed &&
+          impl_->lastError.empty()) {
+        // REC-02: a failed writer (disk full, I/O error) used to be silently
+        // ignored - the recording looked healthy while writing nothing.
+        // Surface it once via recording.status (which streams to the webapp).
+        impl_->lastError = impl_->writer.error != nil
+                               ? ([[impl_->writer.error localizedDescription]
+                                      UTF8String]
+                                      ?: "writer_failed")
+                               : "writer_failed";
+        logRecorderEvent(
+            "writer_failed",
+            describeError(impl_->writer.error, "writer_failed") +
+                " after " + std::to_string(impl_->videoFrames) + " frames");
+      }
+    };
+
+    if (!impl_->cfrEnabled) {
+      if (!impl_->videoInput.isReadyForMoreMediaData) {
+        ++impl_->droppedFrames;
+        CVPixelBufferRelease(pixelBuffer);
+        return;
+      }
+      if ([impl_->videoAdaptor appendPixelBuffer:pixelBuffer
+                            withPresentationTime:now]) {
+        ++impl_->videoFrames;
+      } else {
+        handleWriterFailure();
+      }
+      CVPixelBufferRelease(pixelBuffer);
+      return;
+    }
+
+    const RecorderFrameClock::Plan plan = impl_->frameClock.plan(elapsedNs);
+    if (plan.discontinuity && !impl_->cfrDiscontinuityLogged) {
+      logRecorderEvent("cfr_discontinuity",
+                       "jumped to frame " + std::to_string(plan.firstIndex));
+      impl_->cfrDiscontinuityLogged = true;
+    }
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < plan.count; ++i) {
+      if (!impl_->videoInput.isReadyForMoreMediaData) {
+        impl_->droppedFrames += plan.count - i;
+        if (!impl_->cfrDropLogged) {
+          logRecorderEvent("cfr_drop",
+                           "encoder busy at frame " +
+                               std::to_string(plan.firstIndex + i));
+          impl_->cfrDropLogged = true;
+        }
+        break;
+      }
+      const CMTime presentationTime =
+          CMTimeAdd(impl_->sessionStart,
+                    CMTimeMake(static_cast<int64_t>(plan.firstIndex + i),
+                               static_cast<int32_t>(impl_->fps)));
+      if ([impl_->videoAdaptor appendPixelBuffer:pixelBuffer
+                            withPresentationTime:presentationTime]) {
+        ++written;
+      } else {
+        handleWriterFailure();
+        break;
+      }
+    }
+    impl_->frameClock.commit(written);
+    impl_->videoFrames += written;
+    if (written > 1) {
+      impl_->duplicatedFrames += written - 1;
     }
     CVPixelBufferRelease(pixelBuffer);
   }

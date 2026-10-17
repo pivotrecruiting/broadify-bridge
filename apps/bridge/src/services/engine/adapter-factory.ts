@@ -7,12 +7,14 @@ import { AtemAdapter } from "./adapters/atem-adapter.js";
 import { AtemUsbAdapter } from "./adapters/atem-usb-adapter.js";
 import { VmixAdapter } from "./adapters/vmix-adapter.js";
 import { TricasterAdapter } from "./adapters/tricaster-adapter.js";
+import { RodecasterAdapter } from "./adapters/rodecaster-adapter.js";
 
 /**
  * Create an engine adapter instance based on type and transport
  *
  * Factory function for creating engine adapters.
- * Currently supports ATEM (network + USB), vMix, and Tricaster adapters.
+ * Currently supports ATEM (network + USB), vMix, Tricaster and
+ * RØDECaster Video adapters.
  *
  * @param type Engine type
  * @param transport Engine transport (default "network"; "usb" is ATEM-only)
@@ -33,6 +35,8 @@ export function createEngineAdapter(
       return new VmixAdapter();
     case "tricaster":
       return new TricasterAdapter();
+    case "rodecaster":
+      return new RodecasterAdapter();
     default:
       throw new Error(`Unsupported engine type: ${type}`);
   }

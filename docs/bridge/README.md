@@ -11,6 +11,8 @@
 - Subsystem Output & Helper: `docs/bridge/subsystems/output-helper.md`
 - Subsystem Config & Logging: `docs/bridge/subsystems/config-logging.md`
 - Feature: Graphics Commands & Payloads: `docs/bridge/features/graphics-commands.md`
+- Feature: Meeting Status Contract: `docs/bridge/features/meeting-status-contract.md`
+- Feature: Meeting Screen Sharing: `docs/bridge/features/meeting-screen-sharing.md`
 - Feature: Output-Konfiguration & Pixel-Policy: `docs/bridge/features/output-config.md`
 - Feature: Assets & Template-Security: `docs/bridge/features/assets-and-template-security.md`
 - Feature: Engine Connection Lifecycle: `docs/bridge/features/engine-connection-lifecycle.md`
@@ -21,6 +23,8 @@
 - Feature: macOS Display Output Detection: `docs/bridge/features/display-output-detection-macos.md`
 - Feature: Relay-Protokoll: `docs/bridge/features/relay-protocol.md`
 - Support: Relay hinter TLS-Inspection (Firmennetz): `docs/bridge/support/relay-tls-trust-runbook.md`
+- Support: Bildqualität in Teams und Zoom: `docs/bridge/support/meeting-apps-teams-zoom.md`
+- Support: Virtuelle Kamera: `docs/bridge/support/vcam-runbook.md`
 - Refactor: Graphics Realtime Plan: `docs/bridge/refactor/README.md`
 - To-do Tracking: `docs/bridge/TODO.md`
 - Vorab-Review & Inline-Doku: `docs/DOC-PREP-TODO.md`

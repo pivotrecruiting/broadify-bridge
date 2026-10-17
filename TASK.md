@@ -1,74 +1,36 @@
-# Task: Accept displayModeId 0 for display targets and report readable output-config validation errors (PR D1)
+# Task: Meeting screen sharing — PR3: Windows.Graphics.Capture backend (enumeration + capture by source id)
 
 ## Raw request
-Field report 25.9.2026 (Gabriel, RC v0.27.2-rc.1 + webapp dev): configuring the HDMI output ("video_hdmi") for a Blackmagic
-display fails with the raw Zod issue list
-`[{"code":"too_small","minimum":0,"type":"number","inclusive":false,"exact":false,"message":"Number must be greater than 0","path":["format","displayModeId"]}]`.
-Root cause (verified): `GraphicsFormatSchema.displayModeId` is `z.number().int().positive().optional()`
-(`apps/bridge/src/services/graphics/schemas/output-schemas.ts:28`, PR #209). The display module enumerates HDMI/DP modes with
-list indices starting at 0 (`apps/bridge/src/modules/display/display-module-utils.ts` — `modes.map((mode, id) => …)`), and the
-webapp (dev) now sends `format.displayModeId = mode.id` for every port once the bridge reports >= 0.27.2. The first (native)
-display mode therefore has id 0 and is rejected by the schema before `validateOutputFormat` runs; modes with index > 0 pass
-because the validation service only checks `displayModeId` for DeckLink devices (`graphics-output-validation-service.ts:235-258`).
-Second defect: `GraphicsManager.configureOutputs` (`graphics-manager.ts:~359`) uses `.parse()` and forwards the ZodError's
-message (the JSON issue array) verbatim as the `output_config_error` text shown to the user.
+Gabriel (4.10.2026): screen sharing in Meeting Mode on macOS and Windows. Plan approved 4.10.2026: `~/.claude/plans/ich-gehe-davon-aus-woolly-toast.md`. Decision: Windows source list in the webapp (no thumbnails), capture by `source_id`; Windows test device available for the Stage-0 spike.
 
 ## Context
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/hdmi-display-mode-id / feature/hdmi-display-mode-id
-- Base: dev 54df1113 (0.27.2-rc.1). Target dev. Prod webapp (main) never sends `displayModeId`; only dev webapp + bridge >= 0.27.2 hit this.
-- Semantics to keep: `displayModeId` is a DeckLink SDK display mode id (BMDDisplayMode, never 0) and is ignored for display
-  targets. The DeckLink adapters already skip falsy ids (`if (config.format.displayModeId)`), the validation service already
-  returns before the id check for non-DeckLink devices. The persisted output config reuses `GraphicsConfigureOutputsSchema`
-  (`output-config-store.ts:123`), so the schema change also makes persisted display configs with id 0 loadable.
-- Existing ZodError handling pattern: `apps/bridge/src/routes/engine.ts:100-114` (duck-typed `error.name === "ZodError"`,
-  `zodError.errors.map(e => ({ path: e.path.join("."), message: e.message }))`). Reuse the idea in a shared helper; do NOT
-  refactor the routes in this PR.
-- Conventions: kebab-case files, English comments/JSDoc, Jest ESM (`npx jest <path> --runInBand`), no new dependencies.
-  Docs under `docs/bridge/*` must be updated in the same PR.
+- Customer / project: Broadify Bridge meeting helper (`apps/bridge/native/meeting-helper`), Windows only.
+- Worktree / branch: `broadify-bridge-worktrees/meeting-screenshare-windows` / `feature/meeting-screenshare-windows` (stacked on `feature/meeting-screenshare-helper`, PR1 commit 58e9ab14).
+- Base branch: `dev` (after PR1 merges).
+- Constraint: written on macOS; `screen_capture_wgc.cpp` is compile-verified only by CI (`windows-2022`) and the Windows test device.
 
 ## Plan
-1. `apps/bridge/src/services/graphics/schemas/output-schemas.ts`: `displayModeId: z.number().int().nonnegative().optional()`
-   with a JSDoc line: DeckLink SDK mode id (> 0); display targets enumerate modes by list index from 0 and ignore the field,
-   so 0 must be accepted.
-2. NEW `apps/bridge/src/services/shared/zod-error-message.ts`: `isZodError(error: unknown): error is ZodError` (duck-typed by
-   `name`, same as routes/engine.ts) and `formatZodError(error: ZodError, prefix: string): string` →
-   `"<prefix>: <path>: <message>"` joined with `"; "` for several issues (path via `issue.path.join(".")`, empty path → `"payload"`).
-3. `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs`: `safeParse`; on failure
-   `this.failGraphics("output_config_error", formatZodError(result.error, "Invalid output configuration"))`. Keep the
-   non-Zod error path unchanged.
-4. Docs: `docs/bridge/features/output-config.md` (~52) and `docs/bridge/features/graphics-commands.md` (~67): one sentence each —
-   display targets carry list indices starting at 0, the bridge accepts and ignores them; invalid payloads now yield a readable
-   `output_config_error` text.
+Plan file section "PR3" + "Stufe 0: Spike". Brief: scratchpad `codex/pr3-windows-wgc.md`.
 
-## Acceptance criteria (RED before unless marked guard)
-1. `output-schemas.test.ts`: "accepts displayModeId 0 (display targets enumerate modes from index 0)" — RED before.
-   Keep "rejects a non-integer displayModeId"; add "rejects a negative displayModeId".
-2. `shared/zod-error-message.test.ts`: formats a single issue, joins several issues, uses "payload" for an empty path,
-   `isZodError` accepts a real ZodError and rejects a plain Error.
-3. `graphics-manager.test.ts`: "fails configureOutputs with a readable output_config_error for an invalid payload" — asserts the
-   message contains `format.displayModeId` and does NOT start with `[` — RED before (today the message is the JSON array).
-4. `graphics-output-validation-service.test.ts`: "ignores displayModeId for display devices" (guard; add only if not covered).
-5. `npx jest apps/bridge/src/services/graphics apps/bridge/src/services/shared --runInBand` green; `npm run lint`;
-   `npm run build:bridge`. FULL `npm run test:jest` is run by the verifier (outside the Codex sandbox).
+## Acceptance criteria
+1. `screen_capture_wgc.cpp` implements `ScreenCaptureSource` with EnumWindows/EnumDisplayMonitors enumeration (bridge/helper windows excluded), WGC capture via `CreateFreeThreaded` pool, cursor flag guarded by ApiInformation, `ContentSize` change → `Recreate`, `item.Closed` → stopped event, mip-level downscale policy for sources larger than the program size, BGRA→RGBA via `swizzleBgraToRgba`, `GuardedFrameSlot` publish.
+2. macOS build + ctest stay green (CMake changes WIN32-scoped); any pure helper added (window-candidate filter, id formatting) is unit-tested in ctest.
+3. Windows: `build.ps1` + ctest green on the test device / CI; Stage-0 go criteria met (≥ 25 fps 1080p share of a 1080p and a 4K display, CPU ≤ 20 % of a core for capture+convert, FrameArrived ≤ 8 ms, window close → stopped ≤ 2 s, no crash).
+4. Docs: dev-setup "Bildschirmfreigabe (Windows)" section + README line; spike numbers into `docs/bridge/features/meeting-screen-sharing.md` (PR4).
 
 ## Review
 - Round: 1/3
-- Verdict: PASS (Claude review 25.9.: schema semantics preserved, safeParse path keeps failGraphics contract, helper mirrors routes/engine.ts pattern)
-- Must-fix (open): none
-- Notes (non-blocking): `isZodError` has no caller yet (kept for the routes cleanup that should reuse the helper later).
-- Handoff to human (if any):
-
-### Implementation notes
-
-- Changed `apps/bridge/src/services/graphics/schemas/output-schemas.ts` to accept nonnegative `displayModeId` and documented why display mode index `0` is valid for display targets.
-- Added `apps/bridge/src/services/shared/zod-error-message.ts` and tests for readable Zod validation messages.
-- Changed `apps/bridge/src/services/graphics/graphics-manager.ts` `configureOutputs` schema handling to use `safeParse` and emit readable `output_config_error` messages.
-- Added RED/green schema and manager tests, shared formatter tests, and a guard test that display devices ignore `displayModeId`.
-- Updated `docs/bridge/features/output-config.md` and `docs/bridge/features/graphics-commands.md` with display-target index and readable error behavior.
-- Deviation: the required services Jest command is blocked in this sandbox by `listen EPERM: operation not permitted 127.0.0.1` in `apps/bridge/src/services/graphics/renderer/electron-renderer-client.test.ts`; focused tests for the changed behavior pass.
+- Verdict: PASS round 1 on the macOS side (4.10.2026; reviewer: Claude; verifier: separate agent — build.sh exit 0, ctest 36/36, before-proof: 4 compile errors naming WindowCandidate/isShareableWindowCandidate → green after restore, CMake WIN32-scoped, static review a–l met). Windows compile + runtime: OPEN (CI windows-2022 / test device). Orchestrator applied the verifier's zero-risk hardening (`winrt::guid_of<GraphicsCaptureItem>()` instead of the ABI namespace).
+- Must-fix (open): none. Windows prerequisites to verify: Windows SDK ≥ 10.0.19041 projection headers (`IsCursorCaptureEnabled`), `cppwinrt` include dir + `windowsapp.lib` in the build environment (first C++/WinRT use in the helper); CI runner windows-2022 ships a newer SDK.
+- Notes (non-blocking):
+  - Reviewer fixed the dev-setup doc example (`program.update` used an invented `patch` shape; now `section`/`values`).
+  - Spike check: `onFrameArrived` holds the checked-out frame while calling `Recreate` on a size change (libobs does the same); if frames stall after a resize, close the frame before `Recreate`.
+  - Event codes `screen_capture_start_failed` / `screen_capture_frame_failed` are helper event codes (RPC error code stays `screen_start_failed` per contract). Extra diagnostic events `screen_capture_metrics`, `screen_capture_close_error`, `screen_capture_winrt_apartment` are not in the bridge's forced-publish set (intended).
+  - `winrtDevice_` is dropped on stop, so the D3D11 device is recreated on the next start (cheap; acceptable).
+- Handoff to human (if any): Windows runtime verification needs the Windows device; merge only after explicit chat go.
 
 ## Verification
-- [ ] Tests pass (targeted + full)
-- [x] Lint / type-check pass
-- [x] Bug reproduced before the fix (RED test runs recorded in the report), gone after
-- [x] Docs updated
+- [x] macOS build + ctest 36/36 green (verifier 4.10.)
+- [ ] Windows build (build.ps1) + ctest green (device/CI)
+- [ ] Spike go/no-go table with measured numbers (Windows device)
+- [ ] Manual: list → start → share visible in MJPEG preview/VCam; window close → stopped + toast

@@ -227,12 +227,17 @@ Asynchrones Event der Bridge an das Relay. Wird fuer Live-Status und Resync-Snap
 }
 ```
 
-Wichtige Engine-Events:
+Wichtige Bridge-Events:
 
 - `engine_status`: Engine-Snapshot inklusive Macro-Katalog und Runtime.
 - `engine_macro_execution`: Lifecycle-Update fuer `pending`, `running`, `waiting`, `completed`, `stopped`, `failed`.
 - `engine_error`: Engine-Fehler.
 - `engine_status_snapshot`: Snapshot beim Resync nach `bridge_auth_ok`.
+- `meeting_status`: autoritativer Meeting-Live-Zustand; Envelope und Status-Form siehe [Meeting Status Contract](./meeting-status-contract.md).
+- `meeting_error`: Meeting-/Helper-Fehler mit stabilem Fehlercode.
+- `graphics_status`: Graphics-Live-Zustand inklusive `source` (`studio`, `meeting-back`, `meeting-front`).
+- `graphics_meeting_snapshot`: Resync-Snapshot der Meeting-Graphics-Planes nach `bridge_auth_ok`.
+- `meeting_status_snapshot`: Resync-Snapshot von `meeting_get_state` nach `bridge_auth_ok`; Payload `{ reason, snapshot, at }`.
 
 ## Ablauf (Mermaid)
 ```mermaid

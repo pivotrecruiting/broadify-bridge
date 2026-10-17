@@ -28,6 +28,8 @@ export type VcamHelperStatusT = {
   backend: "coremediaio_camera_extension";
   framebusName: string;
   helperAppPath: string | null;
+  helperAppVersion?: number | null;
+  extensionVersion?: number | null;
   requiresUserApproval: boolean;
   launchRequested?: boolean;
   code?: string;
@@ -43,6 +45,7 @@ type SystemExtensionActivationStateT = {
   activated: boolean;
   requiresUserApproval: boolean;
   waitingForUninstallAfterReboot: boolean;
+  activeExtensionVersion: number | null;
 };
 
 /**
@@ -207,6 +210,43 @@ function readSystemExtensionsList(): string | null {
   }
 }
 
+function parseVcamExtensionBuild(line: string): number | null {
+  const versionMatch = line.match(/\(([^)]*)\)/);
+  if (!versionMatch) {
+    return null;
+  }
+
+  const segments = versionMatch[1].split("/");
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(segments[segments.length - 1], 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function parseActiveVcamExtensionVersion(listOutput: string): number | null {
+  const enabledVersions = listOutput
+    .split("\n")
+    .filter((line) => line.includes(VCAM_EXTENSION_BUNDLE_ID))
+    .filter((line) => line.toLowerCase().includes("enabled"))
+    .map(parseVcamExtensionBuild)
+    .filter((version): version is number => version !== null);
+
+  return enabledVersions.length > 0 ? Math.max(...enabledVersions) : null;
+}
+
+export function shouldReactivateVcamForUpgrade(
+  installedAppVersion: number | null,
+  activeExtensionVersion: number | null,
+  autoUpgradeOnStart = process.env[VCAM_AUTO_UPGRADE_ON_START_ENV] !== "0",
+): boolean {
+  if (!autoUpgradeOnStart || installedAppVersion === null || activeExtensionVersion === null) {
+    return false;
+  }
+  return installedAppVersion > activeExtensionVersion;
+}
+
 function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
   const listOutput = readSystemExtensionsList();
   if (!listOutput || !listOutput.includes(VCAM_EXTENSION_BUNDLE_ID)) {
@@ -215,17 +255,35 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
       activated: false,
       requiresUserApproval: false,
       waitingForUninstallAfterReboot: false,
+      activeExtensionVersion: null,
     };
   }
 
-  // Evaluate ONLY the lines describing our extension: matching the whole
-  // output made any other vendor's "[activated enabled]" extension count as
-  // ours (false available/running, wrong MEETING_VCAM_NATIVE_AVAILABLE).
-  const ownLines = listOutput
+  const activeExtensionVersion = parseActiveVcamExtensionVersion(listOutput);
+  const ownLineStates = listOutput
     .split("\n")
     .filter((line) => line.includes(VCAM_EXTENSION_BUNDLE_ID))
-    .map((line) => line.toLowerCase());
-  const normalized = ownLines.join("\n");
+    .map((line, index) => ({
+      index,
+      build: parseVcamExtensionBuild(line),
+      normalized: line.toLowerCase(),
+    }));
+  const newestOwnLine = ownLineStates.reduce((selected, candidate) => {
+    if (selected === null) {
+      return candidate;
+    }
+    if (candidate.build !== null && selected.build !== null) {
+      return candidate.build > selected.build ? candidate : selected;
+    }
+    if (candidate.build !== null) {
+      return candidate;
+    }
+    if (selected.build !== null) {
+      return selected;
+    }
+    return candidate.index > selected.index ? candidate : selected;
+  }, null as (typeof ownLineStates)[number] | null);
+  const normalized = newestOwnLine?.normalized ?? "";
   const activated = normalized.includes("activated enabled");
   const waitingForUser =
     normalized.includes("waiting for user") ||
@@ -241,6 +299,7 @@ function getSystemExtensionActivationState(): SystemExtensionActivationStateT {
     requiresUserApproval:
       (waitingForUser || !activated) && !waitingForUninstallAfterReboot,
     waitingForUninstallAfterReboot,
+    activeExtensionVersion,
   };
 }
 
@@ -334,6 +393,11 @@ export function getVcamHelperStatus(
     !hasEmbeddedVcamSystemExtension(configuredAppPath);
   const installed = markerInstalled || helperAppPath !== null || activationState.installed;
   const framebusName = options.framebusName || DEFAULT_MEETING_FRAMEBUS_NAME;
+  const helperAppVersion = helperAppPath ? readBundleVersion(helperAppPath) : null;
+  const statusVersions = {
+    helperAppVersion,
+    extensionVersion: activationState.activeExtensionVersion,
+  };
 
   if (!platformSupported) {
     return {
@@ -345,6 +409,7 @@ export function getVcamHelperStatus(
       backend: "coremediaio_camera_extension",
       framebusName,
       helperAppPath,
+      ...statusVersions,
       requiresUserApproval: false,
       code: "platform_not_supported",
       message: "Virtual camera is currently implemented for macOS only.",
@@ -361,6 +426,7 @@ export function getVcamHelperStatus(
       backend: "coremediaio_camera_extension",
       framebusName,
       helperAppPath: null,
+      ...statusVersions,
       requiresUserApproval: true,
       code: "helper_app_invalid",
       message:
@@ -379,6 +445,7 @@ export function getVcamHelperStatus(
       backend: "coremediaio_camera_extension",
       framebusName,
       helperAppPath,
+      ...statusVersions,
       requiresUserApproval: true,
       code: "helper_app_not_in_applications",
       message:
@@ -396,6 +463,7 @@ export function getVcamHelperStatus(
       backend: "coremediaio_camera_extension",
       framebusName,
       helperAppPath,
+      ...statusVersions,
       requiresUserApproval: true,
       code: "helper_app_missing",
       message: "BroadifyVCam.app was not found. Build the macOS VCam helper first.",
@@ -412,6 +480,7 @@ export function getVcamHelperStatus(
       backend: "coremediaio_camera_extension",
       framebusName,
       helperAppPath,
+      ...statusVersions,
       requiresUserApproval: false,
       code: undefined,
       message: markerInstalled
@@ -437,6 +506,7 @@ export function getVcamHelperStatus(
       backend: "coremediaio_camera_extension",
       framebusName,
       helperAppPath,
+      ...statusVersions,
       requiresUserApproval: true,
       code: "helper_app_quarantined",
       message:
@@ -455,6 +525,7 @@ export function getVcamHelperStatus(
       backend: "coremediaio_camera_extension",
       framebusName,
       helperAppPath,
+      ...statusVersions,
       requiresUserApproval: false,
       code: "reboot_required",
       message:
@@ -471,6 +542,7 @@ export function getVcamHelperStatus(
     backend: "coremediaio_camera_extension",
     framebusName,
     helperAppPath,
+    ...statusVersions,
     requiresUserApproval: activationState.requiresUserApproval || !markerInstalled,
     code: "user_activation_required",
     message: activationState.requiresUserApproval
@@ -504,7 +576,13 @@ export async function openVcamHelperApp(
     return status;
   }
 
-  if (status.available && !status.requiresUserApproval) {
+  const installedAppVersion = status.helperAppVersion ?? readBundleVersion(helperAppPath);
+  const upgradeNeeded = shouldReactivateVcamForUpgrade(
+    installedAppVersion,
+    status.extensionVersion ?? null,
+  );
+
+  if (status.available && !status.requiresUserApproval && !upgradeNeeded) {
     return {
       ...status,
       launchRequested: false,
@@ -513,9 +591,24 @@ export async function openVcamHelperApp(
     };
   }
 
+  if (upgradeNeeded && vcamExtensionUpgradeAttempted) {
+    return {
+      ...status,
+      launchRequested: false,
+      code: "activation_requested",
+      message: "Virtual camera extension upgrade was already requested for this Bridge process.",
+    };
+  }
+
   try {
     // macOS reuses an already running parent app. Quit stale copies first so
     // activation always uses the embedded extension from the resolved bundle.
+    if (upgradeNeeded) {
+      vcamExtensionUpgradeAttempted = true;
+      console.info(
+        `[vcam] upgrading VCam extension build ${status.extensionVersion} -> ${installedAppVersion}`,
+      );
+    }
     quitRunningVcamHelperApp();
 
     // Self-heal existing installs: the install step above is skipped when a
@@ -573,6 +666,7 @@ export async function openVcamHelperApp(
   const activated = await waitForVcamActivation(
     vcamActivationPollAttempts,
     vcamActivationPollIntervalMs,
+    upgradeNeeded ? installedAppVersion : undefined,
   );
   if (activated) {
     return {
@@ -580,7 +674,9 @@ export async function openVcamHelperApp(
       launchRequested: true,
       requiresUserApproval: false,
       code: "activation_completed",
-      message: "Virtual camera extension is active.",
+      message: upgradeNeeded && installedAppVersion !== null
+        ? `Virtual camera extension upgraded to build ${installedAppVersion}.`
+        : "Virtual camera extension is active.",
     };
   }
 
@@ -595,6 +691,7 @@ export async function openVcamHelperApp(
 
 let vcamActivationPollAttempts = 5;
 let vcamActivationPollIntervalMs = 1_500;
+let vcamExtensionUpgradeAttempted = false;
 
 /**
  * Test-only: shrink the post-launch activation polling. Call with null to
@@ -607,11 +704,13 @@ export function __setVcamActivationPollForTesting(
 ): void {
   vcamActivationPollAttempts = attempts ?? 5;
   vcamActivationPollIntervalMs = intervalMs ?? 1_500;
+  vcamExtensionUpgradeAttempted = false;
 }
 
 async function waitForVcamActivation(
   attempts: number,
   intervalMs: number,
+  minVersion?: number | null,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await new Promise<void>((resolve) => {
@@ -619,7 +718,11 @@ async function waitForVcamActivation(
       timer.unref?.();
     });
     const state = getSystemExtensionActivationState();
-    if (state.activated) {
+    if (
+      state.activated &&
+      (minVersion == null ||
+        (state.activeExtensionVersion !== null && state.activeExtensionVersion >= minVersion))
+    ) {
       return true;
     }
   }

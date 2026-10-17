@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -58,27 +59,43 @@ std::string programSectionJson(const MeetingState &state, const std::string &sec
   return "{\"enabled\":false}";
 }
 
+std::string jsonNumber(double value) {
+  if (!std::isfinite(value)) {
+    return "0";
+  }
+  std::ostringstream out;
+  out << value;
+  return out.str();
+}
+
+std::string nullableJsonString(const std::string &value) {
+  return value.empty() ? "null" : "\"" + jsonEscape(value) + "\"";
+}
+
 // Compact projection of the active program state for the meeting_status push:
 // only the parsed on/off + identity fields that other control clients need to
-// mirror "which button is active". Deliberately excludes heavy/volatile data
-// (cornerbug image_data_url, media rendered_page_path, all geometry) — those
-// stay retrievable via program.get so the 2s status push stays small.
+// mirror "which button is active" and geometry. Deliberately excludes
+// heavy/volatile data (cornerbug image_data_url, media rendered_page_path) —
+// those stay retrievable via program.get so the 2s status push stays small.
 std::string programSummaryJson(const MeetingState &state) {
   std::ostringstream out;
-  const bool cornerbugHasImage =
-      !extractStringField(state.cornerbug.rawJson, "image_data_url").empty();
   out << "{"
       << "\"media_layer\":{\"enabled\":"
       << (state.mediaLayer.enabled ? "true" : "false") << ",\"mode\":\""
-      << jsonEscape(state.mediaLayer.mode) << "\",\"page\":" << state.mediaLayer.page
+      << jsonEscape(state.mediaLayer.mode) << "\",\"source\":\""
+      << jsonEscape(state.mediaLayer.source) << "\",\"page\":" << state.mediaLayer.page
       << ",\"page_count\":" << state.mediaLayer.pageCount << ",\"asset_id\":"
-      << (state.mediaLayer.assetId.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.mediaLayer.assetId) + "\"")
+      << nullableJsonString(state.mediaLayer.assetId)
+      << ",\"template_id\":" << nullableJsonString(state.mediaLayer.templateId)
       << ",\"render_status\":"
-      << (state.mediaLayer.renderStatus.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.mediaLayer.renderStatus) + "\"")
+      << nullableJsonString(state.mediaLayer.renderStatus)
+      << ",\"x\":" << jsonNumber(state.mediaLayer.x)
+      << ",\"y\":" << jsonNumber(state.mediaLayer.y)
+      << ",\"width\":" << jsonNumber(state.mediaLayer.width)
+      << ",\"height\":" << jsonNumber(state.mediaLayer.height)
+      << ",\"rotation\":" << jsonNumber(state.mediaLayer.rotation)
+      << ",\"rotation_x\":" << jsonNumber(state.mediaLayer.rotationX)
+      << ",\"rotation_y\":" << jsonNumber(state.mediaLayer.rotationY)
       << "},"
       << "\"camera_render\":{\"enabled\":"
       << (state.cameraRender.enabled ? "true" : "false") << ",\"mirror\":"
@@ -86,27 +103,24 @@ std::string programSummaryJson(const MeetingState &state) {
       << "\"speaker_layout\":{\"enabled\":"
       << (state.speakerLayout.enabled ? "true" : "false") << ",\"layout\":\""
       << jsonEscape(state.speakerLayout.layout) << "\",\"scale\":"
-      << state.speakerLayout.scale << "},"
+      << jsonNumber(state.speakerLayout.scale) << "},"
       << "\"cornerbug\":{\"enabled\":"
       << (state.cornerbug.enabled ? "true" : "false") << ",\"has_image\":"
-      << (cornerbugHasImage ? "true" : "false") << "},"
+      << (state.cornerbug.hasImage ? "true" : "false")
+      << ",\"x\":" << jsonNumber(state.cornerbug.x)
+      << ",\"y\":" << jsonNumber(state.cornerbug.y)
+      << ",\"size\":" << jsonNumber(state.cornerbug.size)
+      << ",\"logo_asset_id\":" << nullableJsonString(state.cornerbug.logoAssetId)
+      << "},"
       << "\"graphics\":{\"enabled\":"
       << (state.graphics.enabled ? "true" : "false") << ",\"graphic_id\":"
-      << (state.graphics.graphicId.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.graphicId) + "\"")
+      << nullableJsonString(state.graphics.graphicId)
       << ",\"template\":"
-      << (state.graphics.templateName.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.templateName) + "\"")
+      << nullableJsonString(state.graphics.templateName)
       << ",\"source\":"
-      << (state.graphics.source.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.source) + "\"")
+      << nullableJsonString(state.graphics.source)
       << ",\"handoff_target\":"
-      << (state.graphics.handoffTarget.empty()
-              ? "null"
-              : "\"" + jsonEscape(state.graphics.handoffTarget) + "\"")
+      << nullableJsonString(state.graphics.handoffTarget)
       << "}}";
   return out.str();
 }
@@ -153,6 +167,7 @@ KeyerDegradationSettings normalizedDegradationSettings(KeyerDegradationSettings 
 // not actually change anything (idempotent re-sends from the web app).
 std::string keyerConfigSignature(const MeetingState &state) {
   std::ostringstream signature;
+  // Identity metadata does not change rendering and must not trigger the signature-driven keyer reset.
   signature << state.keyerEnabled << '|' << state.requestedKeyerModel << '|'
             << state.backgroundMode << '|' << state.backgroundImagePath << '|'
             << state.qualityMode << '|' << state.performanceMode << '|'
@@ -248,6 +263,7 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"dropped_frames_per_sec\":" << metricNumber(metrics.droppedFramesPerSec)
          << ",\"mask_width\":" << metrics.maskWidth
          << ",\"mask_height\":" << metrics.maskHeight
+         << ",\"refine_width\":" << metrics.maskWidth
          << ",\"session_input_size\":" << metrics.sessionInputSize
          << ",\"dropped_frames\":" << metrics.droppedFrames
          << ",\"skipped_frames\":" << metrics.skippedFrames
@@ -276,6 +292,7 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     state.cornerbug.x = extractDoubleField(safeValues, "x", state.cornerbug.x);
     state.cornerbug.y = extractDoubleField(safeValues, "y", state.cornerbug.y);
     state.cornerbug.size = extractDoubleField(safeValues, "size", state.cornerbug.size);
+    state.cornerbug.logoAssetId = extractStringField(safeValues, "logo_asset_id");
     // Presence-guarded logo image: while the webapp re-fetches the logo's
     // data URL (signed URLs refresh after reconnects) it omits the field —
     // carry the current image over instead of wiping the on-air logo. An
@@ -289,6 +306,8 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
         nextRawJson.insert(1, "\"image_data_url\":\"" + previousImage + "\",");
       }
     }
+    state.cornerbug.hasImage =
+        !extractStringField(nextRawJson, "image_data_url").empty();
     state.cornerbug.rawJson = nextRawJson;
     return;
   }
@@ -298,7 +317,10 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
     if (!mode.empty()) {
       state.mediaLayer.mode = mode;
     }
+    const std::string source = extractStringField(safeValues, "source");
+    state.mediaLayer.source = source == "screen" ? "screen" : "page";
     state.mediaLayer.assetId = extractStringField(safeValues, "asset_id");
+    state.mediaLayer.templateId = extractStringField(safeValues, "template_id");
     state.mediaLayer.renderedPagePath = extractStringField(safeValues, "rendered_page_path");
     state.mediaLayer.renderStatus = extractStringField(safeValues, "render_status");
     state.mediaLayer.page = extractIntField(safeValues, "page", state.mediaLayer.page);
@@ -342,9 +364,12 @@ std::string recordingStatusJson(MeetingRecorder &recorder) {
   return out.str();
 }
 
+}  // namespace
+
 std::string handleRpc(const std::string &line,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       VcamShmRingWin *vcamShm,
@@ -379,6 +404,10 @@ std::string handleRpc(const std::string &line,
   }
 
   if (method == "state.get") {
+    const ScreenCaptureStatus screenStatus = screen.status();
+    const ScreenCaptureCapabilities screenCapabilities = screen.capabilities();
+    const std::string screenLastError = screen.stickyLastError();
+    const uint64_t screenLastErrorAtMs = screen.stickyLastErrorAtMs();
     std::lock_guard<std::mutex> lock(state.mutex);
     std::ostringstream result;
     result << "{\"bridge_running\":true,"
@@ -413,6 +442,21 @@ std::string handleRpc(const std::string &line,
            // consumers of the transient value.
            << "\"camera_last_error\":" << (camera.stickyLastError().empty() ? "null" : "\"" + jsonEscape(camera.stickyLastError()) + "\"") << ","
            << "\"camera_last_error_at\":" << (camera.stickyLastErrorAtMs() == 0 ? "null" : std::to_string(camera.stickyLastErrorAtMs())) << ","
+           << "\"screen_capture\":{"
+           << "\"running\":" << (screenStatus.running ? "true" : "false")
+           << ",\"picker_pending\":" << (screenStatus.pickerPending ? "true" : "false")
+           << ",\"source_id\":" << nullableJsonString(screenStatus.sourceId)
+           << ",\"kind\":" << nullableJsonString(screenStatus.kind)
+           << ",\"title\":" << nullableJsonString(screenStatus.title)
+           << ",\"app_name\":" << nullableJsonString(screenStatus.appName)
+           << ",\"width\":" << screenStatus.width
+           << ",\"height\":" << screenStatus.height
+           << ",\"captured_frames\":" << screenStatus.capturedFrames
+           << ",\"last_error\":" << nullableJsonString(screenLastError)
+           << ",\"last_error_at\":"
+           << (screenLastErrorAtMs == 0u ? "null" : std::to_string(screenLastErrorAtMs))
+           << ",\"capabilities\":" << screenCapabilitiesToJson(screenCapabilities)
+           << "},"
            << "\"last_error\":" << (camera.lastError().empty() ? "null" : "\"" + jsonEscape(camera.lastError()) + "\"") << "}";
     return okResponse(id, result.str());
   }
@@ -534,6 +578,96 @@ std::string handleRpc(const std::string &line,
     state.activeCameraIndex = -1;
     markProgramDirty(state);
     return okResponse(id, "{\"ok\":true}");
+  }
+
+  if (method == "screen.list") {
+    const ScreenCaptureCapabilities caps = screen.capabilities();
+    std::vector<ScreenSourceInfo> sources;
+    if (caps.enumeration) {
+      sources = screen.listSources();
+      const std::string lastError = screen.lastError();
+      if (sources.empty() && !lastError.empty()) {
+        return errorResponse(id, "screen_discovery_failed", lastError);
+      }
+    }
+    return okResponse(id, "{\"sources\":" + screenSourcesToJson(sources) +
+                              ",\"capabilities\":" +
+                              screenCapabilitiesToJson(caps) + "}");
+  }
+
+  if (method == "screen.start") {
+    const ScreenCaptureCapabilities caps = screen.capabilities();
+    if (!caps.supported) {
+      return errorResponse(id, "screen_capture_unsupported",
+                           caps.unsupportedReason);
+    }
+    if (!caps.enumeration) {
+      return errorResponse(id, "screen_capture_unsupported",
+                           "source_ids_unavailable_use_picker");
+    }
+    const std::string sourceId = extractStringField(line, "source_id");
+    if (sourceId.empty()) {
+      return errorResponse(id, "invalid_request",
+                           "screen.start requires source_id.");
+    }
+    const ScreenCaptureStatus beforeStatus = screen.status();
+    const bool reopened =
+        beforeStatus.running && beforeStatus.sourceId != sourceId;
+    const bool started = screen.start(
+        sourceId,
+        ScreenCaptureStartOptions{
+            options.width, options.height, options.fps,
+            extractBoolField(line, "include_cursor", true)});
+    if (!started) {
+      const std::string lastError = screen.lastError();
+      return errorResponse(
+          id, lastError == "source_not_found" ? "screen_source_not_found"
+                                              : "screen_start_failed",
+          lastError);
+    }
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      markProgramDirty(state);
+    }
+    const ScreenCaptureStatus status = screen.status();
+    std::ostringstream result;
+    result << "{\"ok\":true,\"source_id\":\"" << jsonEscape(status.sourceId)
+           << "\",\"kind\":\"" << jsonEscape(status.kind)
+           << "\",\"width\":" << status.width
+           << ",\"height\":" << status.height
+           << ",\"reopened\":"
+           << (reopened ? "true" : "false")
+           << "}";
+    return okResponse(id, result.str());
+  }
+
+  if (method == "screen.stop") {
+    screen.stop();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    markProgramDirty(state);
+    return okResponse(id, "{\"ok\":true}");
+  }
+
+  if (method == "screen.pick") {
+    const ScreenCaptureCapabilities caps = screen.capabilities();
+    if (!caps.systemPicker) {
+      return errorResponse(
+          id, "screen_capture_unsupported",
+          caps.unsupportedReason.empty() ? "system_picker_unavailable"
+                                         : caps.unsupportedReason);
+    }
+    const bool picked = screen.presentPicker(
+        ScreenCaptureStartOptions{
+            options.width, options.height, options.fps,
+            extractBoolField(line, "include_cursor", true)});
+    if (!picked) {
+      const std::string lastError = screen.lastError();
+      return errorResponse(id,
+                           lastError == "picker_busy" ? "screen_picker_busy"
+                                                      : "screen_picker_failed",
+                           lastError);
+    }
+    return okResponse(id, "{\"ok\":true,\"picker_pending\":true}");
   }
 
   if (method == "recording.microphones") {
@@ -719,7 +853,10 @@ std::string handleRpc(const std::string &line,
     result << "{\"settings\":{\"enabled\":" << (state.keyerEnabled ? "true" : "false")
            << ",\"model\":\"" << jsonEscape(state.requestedKeyerModel) << "\",\"background_type\":\"mode\",\"background_mode\":\""
            << jsonEscape(state.backgroundMode)
-           << "\",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
+           << "\",\"background_asset_id\":" << nullableJsonString(state.backgroundAssetId)
+           << ",\"background_template_id\":" << nullableJsonString(state.backgroundTemplateId)
+           << ",\"background_image_set\":" << (state.backgroundImagePath.empty() ? "false" : "true")
+           << ",\"quality_mode\":\"" << jsonEscape(state.qualityMode)
            << "\",\"performance_mode\":\"" << jsonEscape(state.performanceMode)
            << "\",\"mask_erode_px\":" << state.maskErodePx
            << ",\"mask_dilate_px\":" << state.maskDilatePx
@@ -798,6 +935,12 @@ std::string handleRpc(const std::string &line,
       if (line.find("\"background_image_path\"") != std::string::npos) {
         state.backgroundImagePath = extractStringField(line, "background_image_path");
       }
+      if (line.find("\"background_asset_id\"") != std::string::npos) {
+        state.backgroundAssetId = extractStringField(line, "background_asset_id");
+      }
+      if (line.find("\"background_template_id\"") != std::string::npos) {
+        state.backgroundTemplateId = extractStringField(line, "background_template_id");
+      }
       const std::string qualityMode = extractStringField(line, "quality_mode");
       if (!qualityMode.empty()) {
         state.qualityMode = normalizedQualityMode(qualityMode);
@@ -836,8 +979,8 @@ std::string handleRpc(const std::string &line,
       }
     }
     return handleRpc("{\"id\":\"" + id + "\",\"method\":\"keyer.get\"}",
-                     state, camera, previewFrames, recorder, vcamShm, options,
-                     running);
+                     state, camera, screen, previewFrames, recorder, vcamShm,
+                     options, running);
   }
 
   if (method == "keyer.reset") {
@@ -850,6 +993,8 @@ std::string handleRpc(const std::string &line,
     state.qualityMode = "balanced";
     state.activeQualityMode = "balanced";
     state.backgroundImagePath.clear();
+    state.backgroundAssetId.clear();
+    state.backgroundTemplateId.clear();
     state.performanceMode = kDefaultKeyerPerformanceMode;
     state.maskErodePx = 0.0;
     state.maskDilatePx = 0u;
@@ -985,8 +1130,6 @@ std::string handleRpc(const std::string &line,
   return errorResponse(id, "unknown_method", "Unknown meeting-helper method: " + method);
 }
 
-}  // namespace
-
 #if defined(_WIN32)
 namespace {
 
@@ -1034,6 +1177,7 @@ HANDLE createControlPipeInstance(const std::string &pipeName, std::atomic<bool> 
 void runControlServer(const std::string &pipeName,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       const Options &options,
@@ -1071,7 +1215,7 @@ void runControlServer(const std::string &pipeName,
         size_t pos = pending.find('\n');
         if (pos != std::string::npos) {
           const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
+      const std::string response = handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running);
           DWORD written = 0;
           WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
           // Block until the client has read the response; without this,
@@ -1098,6 +1242,7 @@ void runControlServer(const std::string &pipeName,
 void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       MeetingRecorder &recorder,
                       const Options &options,
@@ -1138,7 +1283,7 @@ void runControlServer(const std::string &socketPath,
       const size_t pos = pending.find('\n');
       if (pos != std::string::npos) {
         const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, previewFrames, recorder, vcamShm, options, running);
+      const std::string response = handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running);
         if (write(client, response.c_str(), response.size()) < 0) {
           // The bridge destroyed its socket first (RPC timeout). Before
           // SIGPIPE was ignored this write ended the whole process silently;

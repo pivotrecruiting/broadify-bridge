@@ -82,7 +82,9 @@ export function applyFrameBusSessionConfig(
   overrides?: FrameBusOverridesT
 ): FrameBusConfigT {
   const next = resolveFrameBusConfig(config, previous, overrides);
-  applyFrameBusEnv(next);
+  if (!overrides?.name) {
+    applyFrameBusEnv(next);
+  }
   logFrameBusConfigChange(previous, next);
   return next;
 }

@@ -107,4 +107,13 @@ describe("relay-command-policy", () => {
       }),
     );
   });
+
+  it("never replays the system screen picker command", () => {
+    expect(getRelayCommandPolicy("meeting_screen_pick")).toEqual(
+      expect.objectContaining({
+        replayPolicy: "never",
+        replayable: false,
+      }),
+    );
+  });
 });

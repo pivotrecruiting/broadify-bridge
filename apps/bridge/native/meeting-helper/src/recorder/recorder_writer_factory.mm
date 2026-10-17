@@ -1,6 +1,7 @@
 #include "recorder/recorder_writer_factory.h"
 
 #if defined(__APPLE__)
+#include "recorder/recorder_encode_policy.h"
 
 namespace broadify::meeting {
 
@@ -34,25 +35,24 @@ RecorderWriterBundle makeRecorderWriter(const std::string &outputPath,
   // of successful field recordings; crash recovery is covered by the ".part"
   // sidecar + atomic rename instead.
 
-  // ~0.2 bits/pixel is visually clean for screen+camera content; cap so 4K
-  // never balloons.
-  const uint64_t pixels = static_cast<uint64_t>(width) * height;
   const uint32_t safeFps = fps > 0 ? fps : 30;
-  uint64_t bitrate = pixels * safeFps / 5;  // 0.2 bpp
-  if (bitrate > 24000000ull) {
-    bitrate = 24000000ull;
-  }
-  if (bitrate < 2000000ull) {
-    bitrate = 2000000ull;
-  }
+  const uint64_t bitrate = recorderVideoBitrateBps(width, height, safeFps);
   NSDictionary *videoSettings = @{
     AVVideoCodecKey : AVVideoCodecTypeH264,
     AVVideoWidthKey : @(width),
     AVVideoHeightKey : @(height),
     AVVideoCompressionPropertiesKey : @{
       AVVideoAverageBitRateKey : @(bitrate),
-      AVVideoMaxKeyFrameIntervalKey : @(safeFps * 2),
+      AVVideoExpectedSourceFrameRateKey : @(safeFps),
+      AVVideoAllowFrameReorderingKey : @NO,
+      AVVideoH264EntropyModeKey : AVVideoH264EntropyModeCABAC,
+      AVVideoMaxKeyFrameIntervalKey : @(recorderKeyframeInterval(safeFps)),
       AVVideoProfileLevelKey : AVVideoProfileLevelH264HighAutoLevel,
+    },
+    AVVideoColorPropertiesKey : @{
+      AVVideoColorPrimariesKey : AVVideoColorPrimaries_ITU_R_709_2,
+      AVVideoTransferFunctionKey : AVVideoTransferFunction_ITU_R_709_2,
+      AVVideoYCbCrMatrixKey : AVVideoYCbCrMatrix_ITU_R_709_2,
     },
   };
   AVAssetWriterInput *videoInput =

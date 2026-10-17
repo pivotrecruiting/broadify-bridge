@@ -180,11 +180,13 @@ describe("meeting-helper-manager", () => {
         resolveMeetingHelperForwardedEnvArgs({
           BROADIFY_MEETING_CAMERA_MAX_HEIGHT: "720",
           BROADIFY_MEETING_DML_QUEUE: "compute",
+          BROADIFY_MEETING_RECORDER_CFR: "0",
           BROADIFY_MEETING_FUSED_EMA_STATIC: "0.85",
           BROADIFY_MEETING_FUSED_PIPELINE_DEPTH: "0",
           BROADIFY_MEETING_GUIDED_COEFF_EMA: "0",
           BROADIFY_MEETING_GPU_POLICY: "auto",
           BROADIFY_MEETING_GPU_PIPELINE: "0",
+          BROADIFY_MEETING_GPU_REFINE_BUDGET_MS: "8.5",
           BROADIFY_MEETING_GPU_RESIDENT: "1",
           BROADIFY_MEETING_COREML_UNITS: "cpuAndNeuralEngine",
           BROADIFY_MEETING_KEYER_FP16: "1",
@@ -204,6 +206,8 @@ describe("meeting-helper-manager", () => {
         "--env",
         "BROADIFY_MEETING_COREML_UNITS=cpuAndNeuralEngine",
         "--env",
+        "BROADIFY_MEETING_RECORDER_CFR=0",
+        "--env",
         "BROADIFY_MEETING_FUSED_EMA_STATIC=0.85",
         "--env",
         "BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0",
@@ -211,6 +215,8 @@ describe("meeting-helper-manager", () => {
         "BROADIFY_MEETING_GPU_PIPELINE=0",
         "--env",
         "BROADIFY_MEETING_GPU_POLICY=auto",
+        "--env",
+        "BROADIFY_MEETING_GPU_REFINE_BUDGET_MS=8.5",
         "--env",
         "BROADIFY_MEETING_GPU_RESIDENT=1",
         "--env",
@@ -475,17 +481,189 @@ describe("meeting-helper-manager", () => {
       expect(publishStatus).not.toHaveBeenCalled();
     });
 
+    it("forwards item-closed screen capture stops as a forced publish and error event", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "screen_capture_stopped",
+          reason: "item_closed",
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith(
+        "screen_capture_stopped",
+        true,
+      );
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({
+            code: "screen_capture_stopped",
+            message: "Screen sharing stopped (item_closed)",
+          }),
+        }),
+      );
+    });
+
+    it("forwards user-stopped screen capture stops without an error event", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "screen_capture_stopped",
+          reason: "user_stop",
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith(
+        "screen_capture_stopped",
+        true,
+      );
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "meeting_error" }),
+      );
+    });
+
+    it("forwards screen capture errors with the helper error code", () => {
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockPublishBridgeEvent.mockClear();
+
+      internals.handleStdoutLine(
+        JSON.stringify({
+          type: "screen_capture_error",
+          code: "screen_start_failed",
+          message: "Could not start screen sharing.",
+        }),
+        mockLogger,
+      );
+
+      expect(publishStatus).toHaveBeenCalledWith(
+        "screen_capture_error",
+        true,
+      );
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meeting_error",
+          data: expect.objectContaining({
+            code: "screen_start_failed",
+            message: "Could not start screen sharing.",
+          }),
+        }),
+      );
+    });
+
     it("getFullStatus returns manager status without helper when stopped", async () => {
       const manager = new MeetingHelperManager();
       const status = await manager.getFullStatus();
 
-      expect(status).toEqual({
+      expect(status).toMatchObject({
         platform: process.platform,
         manager: expect.objectContaining({ state: "stopped" }),
         engine: null,
         recording: null,
         call: { active: false, call_id: null },
+        content_source: { video: null, browser: null },
+        camera_permission_status: null,
       });
+    });
+
+    it("camera_permission_completed publishes a full snapshot", async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        jest.spyOn(manager, "getFullStatus").mockResolvedValue({
+          manager: { state: "running" },
+          engine: { program: { camera_render: { enabled: true } } },
+          recording: null,
+          call: { active: false, call_id: null },
+          content_source: { video: null, browser: null },
+          camera_permission_status: "authorized",
+        });
+        const internals = manager as unknown as {
+          handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+        };
+
+        internals.handleStdoutLine(
+          JSON.stringify({
+            type: "camera_permission_completed",
+            camera_permission_status: "authorized",
+          }),
+          mockLogger,
+        );
+        await jest.advanceTimersByTimeAsync(150);
+
+        const statusEvents = mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => event?.event === "meeting_status",
+        );
+        const lastEvent = statusEvents.at(-1)?.[0];
+        expect(lastEvent?.data?.status?.engine?.program).toEqual({
+          camera_render: { enabled: true },
+        });
+        expect(lastEvent?.data?.status?.camera_permission_status).toBe(
+          "authorized",
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("requestStatusPublish coalesces", async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        jest.spyOn(manager, "getFullStatus").mockResolvedValue({
+          manager: { state: "running" },
+          engine: null,
+          recording: null,
+          call: { active: false, call_id: null },
+          content_source: { video: null, browser: null },
+          camera_permission_status: null,
+        });
+
+        manager.requestStatusPublish("program_update");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("keyer_configure");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("program_update");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("keyer_configure");
+        await jest.advanceTimersByTimeAsync(10);
+        manager.requestStatusPublish("program_update");
+        await jest.advanceTimersByTimeAsync(110);
+
+        const statusEvents = mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => event?.event === "meeting_status",
+        );
+        expect(statusEvents).toHaveLength(1);
+        expect(statusEvents[0]?.[0]?.data?.reason).toBe(
+          "program_update+keyer_configure",
+        );
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it("stop publishes a meeting_status event", async () => {
@@ -735,13 +913,18 @@ describe("meeting-helper-manager", () => {
     });
 
     it("notifyRecordingChanged force-publishes a status snapshot", async () => {
-      const manager = new MeetingHelperManager();
-      manager.notifyRecordingChanged();
-      await new Promise((resolve) => setImmediate(resolve));
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        manager.notifyRecordingChanged();
+        await jest.advanceTimersByTimeAsync(150);
 
-      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
-        expect.objectContaining({ event: "meeting_status" }),
-      );
+        expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ event: "meeting_status" }),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
   describe("status polling", () => {

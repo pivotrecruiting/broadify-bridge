@@ -11,11 +11,13 @@
 // shipped configuration against similar duration-dependent regressions.
 
 #include "recorder/recorder_writer_factory.h"
+#include "recorder/recorder_encode_policy.h"
 
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -23,7 +25,10 @@
 #include <unistd.h>
 
 using broadify::meeting::makeRecorderWriter;
+using broadify::meeting::RecorderFrameClock;
+using broadify::meeting::recorderKeyframeInterval;
 using broadify::meeting::recorderSidecarPath;
+using broadify::meeting::recorderVideoBitrateBps;
 
 namespace {
 
@@ -90,6 +95,12 @@ CMSampleBufferRef makeSilentAudioChunk(CMAudioFormatDescriptionRef format,
   return sample;
 }
 
+uint64_t nsForFrame(uint64_t frame, uint32_t fps) {
+  return static_cast<uint64_t>(
+      std::llround((static_cast<long double>(frame) * 1'000'000'000.0L) /
+                   static_cast<long double>(fps)));
+}
+
 }  // namespace
 
 int main() {
@@ -120,6 +131,35 @@ int main() {
     if (bundle.writer == nil) {
       return 1;
     }
+    NSDictionary *outputSettings = bundle.videoInput.outputSettings;
+    NSDictionary *compression =
+        outputSettings[AVVideoCompressionPropertiesKey];
+    NSNumber *bitrate = compression[AVVideoAverageBitRateKey];
+    ok &= expect([bitrate unsignedLongLongValue] ==
+                     recorderVideoBitrateBps(kWidth, kHeight, kFps),
+                 "video bitrate matches recorder policy");
+    ok &= expect([compression[AVVideoExpectedSourceFrameRateKey]
+                     unsignedIntValue] == kFps,
+                 "expected source frame rate is set");
+    ok &= expect([compression[AVVideoMaxKeyFrameIntervalKey]
+                     unsignedIntValue] == recorderKeyframeInterval(kFps),
+                 "keyframe interval matches recorder policy");
+    ok &= expect([compression[AVVideoAllowFrameReorderingKey] boolValue] == NO,
+                 "frame reordering is disabled");
+    ok &= expect([compression[AVVideoH264EntropyModeKey]
+                     isEqualToString:AVVideoH264EntropyModeCABAC],
+                 "CABAC entropy mode is set");
+    NSDictionary *colorProperties = outputSettings[AVVideoColorPropertiesKey];
+    ok &= expect(colorProperties != nil, "BT.709 color properties exist");
+    ok &= expect([colorProperties[AVVideoColorPrimariesKey]
+                     isEqualToString:AVVideoColorPrimaries_ITU_R_709_2],
+                 "BT.709 color primaries are set");
+    ok &= expect([colorProperties[AVVideoTransferFunctionKey]
+                     isEqualToString:AVVideoTransferFunction_ITU_R_709_2],
+                 "BT.709 transfer function is set");
+    ok &= expect([colorProperties[AVVideoYCbCrMatrixKey]
+                     isEqualToString:AVVideoYCbCrMatrix_ITU_R_709_2],
+                 "BT.709 YCbCr matrix is set");
 
     // PCM format matching the mic capture output the production delegate
     // forwards (mono 16-bit 48 kHz).
@@ -151,10 +191,19 @@ int main() {
     uint32_t appendedFrames = 0;
     uint64_t audioFramesWritten = 0;
     int64_t firstFailureFrame = -1;
+    RecorderFrameClock frameClock(kFps);
     for (uint32_t frame = 0; frame < totalFrames; ++frame) {
+      const RecorderFrameClock::Plan plan =
+          frameClock.plan(nsForFrame(frame, kFps));
+      if (!expect(plan.count == 1 && plan.firstIndex == frame &&
+                      !plan.discontinuity,
+                  "frame clock emits one on-grid frame")) {
+        ok = false;
+        break;
+      }
       const CMTime framePts = CMTimeAdd(
           sessionStart,
-          CMTimeMake(static_cast<int64_t>(frame) * kAudioRate / kFps,
+          CMTimeMake(static_cast<int64_t>(plan.firstIndex) * kAudioRate / kFps,
                      kAudioRate));
 
       // Interleave silent audio up to the video frame's timestamp, like the
@@ -224,6 +273,7 @@ int main() {
       if ([bundle.videoAdaptor appendPixelBuffer:pixelBuffer
                             withPresentationTime:framePts]) {
         ++appendedFrames;
+        frameClock.commit(1);
       } else if (firstFailureFrame < 0) {
         firstFailureFrame = frame;
         CVPixelBufferRelease(pixelBuffer);
@@ -257,19 +307,36 @@ int main() {
                  ("finishWriting reports Completed (" +
                   describeStatus(bundle.writer) + ")")
                      .c_str());
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *sidecar = [NSString stringWithUTF8String:sidecarPath.c_str()];
+    NSString *final = [NSString stringWithUTF8String:finalPath.c_str()];
+    [fm removeItemAtPath:final error:nil];
+    NSError *renameError = nil;
+    ok &= expect([fm moveItemAtPath:sidecar toPath:final error:&renameError],
+                 "sidecar renames to final mp4 path");
+    AVAsset *asset = [AVAsset
+        assetWithURL:[NSURL fileURLWithPath:[NSString
+                                                stringWithUTF8String:
+                                                    finalPath.c_str()]]];
+    NSArray<AVAssetTrack *> *videoTracks =
+        [asset tracksWithMediaType:AVMediaTypeVideo];
+    ok &= expect([videoTracks count] == 1, "encoded file has one video track");
+    if ([videoTracks count] == 1) {
+      const float nominalFrameRate = videoTracks[0].nominalFrameRate;
+      ok &= expect(std::fabs(nominalFrameRate - static_cast<float>(kFps)) <=
+                       0.05f,
+                   "encoded file reports 30 fps nominal frame rate");
+    }
     CFRelease(audioFormat);
 
-    NSDictionary *attrs = [[NSFileManager defaultManager]
-        attributesOfItemAtPath:[NSString
-                                   stringWithUTF8String:sidecarPath.c_str()]
-                         error:nil];
+    NSDictionary *attrs = [fm attributesOfItemAtPath:final error:nil];
     // Silence + flat synthetic frames compress to well under production
     // bitrates; the floor only guards against an empty/headers-only file.
     const unsigned long long size = attrs != nil ? [attrs fileSize] : 0ull;
-    if (!expect(size > 20000ull, "sidecar file holds the encoded media")) {
+    if (!expect(size > 20000ull, "final file holds the encoded media")) {
       ok = false;
-      std::cerr << "meeting_recorder_writer_test: sidecar size=" << size
-                << " path=" << sidecarPath << std::endl;
+      std::cerr << "meeting_recorder_writer_test: final size=" << size
+                << " path=" << finalPath << std::endl;
     }
 
     [[NSFileManager defaultManager] removeItemAtPath:dir error:nil];

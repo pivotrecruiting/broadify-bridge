@@ -1,4 +1,8 @@
-import { MeetingCameraSelectionSchema } from "./meeting-command-schemas.js";
+import {
+  MeetingCameraSelectionSchema,
+  MeetingScreenPickSchema,
+  MeetingScreenStartSchema,
+} from "./meeting-command-schemas.js";
 import { parseRelayPayload } from "../relay-command-schemas.js";
 
 describe("MeetingCameraSelectionSchema", () => {
@@ -71,5 +75,60 @@ describe("MeetingCameraSelectionSchema", () => {
     expect(() =>
       MeetingCameraSelectionSchema.parse({ stable_key: "" }),
     ).toThrow();
+  });
+});
+
+describe("MeetingScreenStartSchema", () => {
+  it("accepts source_id and optional include_cursor", () => {
+    expect(MeetingScreenStartSchema.parse({ source_id: "display:1" })).toEqual({
+      source_id: "display:1",
+    });
+    expect(
+      MeetingScreenStartSchema.parse({
+        source_id: "window:42",
+        include_cursor: true,
+      }),
+    ).toEqual({ source_id: "window:42", include_cursor: true });
+  });
+
+  it("strips unknown keys", () => {
+    expect(
+      MeetingScreenStartSchema.parse({
+        source_id: "display:1",
+        include_cursor: false,
+        future_field: "strip-me",
+      }),
+    ).toEqual({ source_id: "display:1", include_cursor: false });
+  });
+
+  it("rejects empty and overlong source ids", () => {
+    expect(() => MeetingScreenStartSchema.parse({ source_id: "" })).toThrow();
+    expect(() =>
+      MeetingScreenStartSchema.parse({ source_id: "x".repeat(257) }),
+    ).toThrow();
+  });
+
+  it("rejects non-boolean include_cursor", () => {
+    expect(() =>
+      MeetingScreenStartSchema.parse({
+        source_id: "display:1",
+        include_cursor: "yes",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("MeetingScreenPickSchema", () => {
+  it("accepts an empty payload", () => {
+    expect(MeetingScreenPickSchema.parse({})).toEqual({});
+  });
+
+  it("strips unknown keys", () => {
+    expect(
+      MeetingScreenPickSchema.parse({
+        include_cursor: true,
+        future_field: "strip-me",
+      }),
+    ).toEqual({ include_cursor: true });
   });
 });

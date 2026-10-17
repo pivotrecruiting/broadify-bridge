@@ -66,7 +66,7 @@ class CoreMLKeyer::Impl {
   }
 #endif
 
-  KeyerResult apply(const VideoFrame &input, const KeyerSettings & /*settings*/) {
+  KeyerResult apply(const VideoFrame &input, const KeyerSettings &settings) {
     KeyerResult result;
 #if defined(__APPLE__)
     if (@available(macOS 13.0, *)) {
@@ -124,6 +124,8 @@ class CoreMLKeyer::Impl {
         const auto maskStart = std::chrono::steady_clock::now();
         bool refined = false;
         if (refiner_ != nullptr && refiner_->available()) {
+          refiner_->setMaxOutputWidth(
+              settings.performanceMode == "performance" ? 960u : 0u);
           refined = refiner_->refine(maskBuffer, input, result.mask);
         }
         if (!refined) {
