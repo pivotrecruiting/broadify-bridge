@@ -60,6 +60,13 @@ double areaScale(GovernorTier tier) {
   return kAreaScale256;
 }
 
+// Tiers that run the fused synchronous MODNet session (and therefore have a
+// build-time probe and a session cost the program loop pays directly).
+bool isFusedTier(GovernorTier tier) {
+  return tier == GovernorTier::Full512 || tier == GovernorTier::Balanced320 ||
+         tier == GovernorTier::Performance256;
+}
+
 }  // namespace
 
 KeyerAutoGovernor::KeyerAutoGovernor(const KeyerGovernorConfig &config)
@@ -131,7 +138,132 @@ double KeyerAutoGovernor::estimatedStepUpMs() const {
   if (target == tier_) {
     return -1.0;
   }
-  return emaMs_ * (areaScale(target) / areaScale(tier_));
+  // Lite256 -> Performance256 is not a fused-to-fused move, so the ratio is
+  // the area ratio 1.0 (same input size): the async EMA carries over 1:1.
+  return emaMs_ * sessionCostRatio(tier_, target);
+}
+
+double KeyerAutoGovernor::storedProbeMs(GovernorTier tier) const {
+  switch (tier) {
+    case GovernorTier::Full512:
+      return probe512Ms_;
+    case GovernorTier::Balanced320:
+      return probe320Ms_;
+    case GovernorTier::Performance256:
+      return probe256Ms_;
+    case GovernorTier::Lite256:
+    case GovernorTier::Off:
+      return -1.0;
+  }
+  return -1.0;
+}
+
+double KeyerAutoGovernor::storedLiveCostMs(GovernorTier tier) const {
+  switch (tier) {
+    case GovernorTier::Full512:
+      return liveCost512Ms_;
+    case GovernorTier::Balanced320:
+      return liveCost320Ms_;
+    case GovernorTier::Performance256:
+      return liveCost256Ms_;
+    case GovernorTier::Lite256:
+    case GovernorTier::Off:
+      return -1.0;
+  }
+  return -1.0;
+}
+
+void KeyerAutoGovernor::rememberLiveCostOfCurrentTier() {
+  // A partial window is too noisy to trust: keep the previous value then.
+  if (!config_.measuredCostPolicy || samples_ < config_.minSamples ||
+      emaMs_ <= 0.0) {
+    return;
+  }
+  switch (tier_) {
+    case GovernorTier::Full512:
+      liveCost512Ms_ = emaMs_;
+      break;
+    case GovernorTier::Balanced320:
+      liveCost320Ms_ = emaMs_;
+      break;
+    case GovernorTier::Performance256:
+      liveCost256Ms_ = emaMs_;
+      break;
+    case GovernorTier::Lite256:
+    case GovernorTier::Off:
+      break;  // not a fused session cost
+  }
+}
+
+double KeyerAutoGovernor::sessionCostRatio(GovernorTier from,
+                                           GovernorTier to) const {
+  const double area = areaScale(to) / areaScale(from);
+  // Policy off (BROADIFY_MEETING_OVERRUN_STEPDOWN=always): the historical
+  // area ratio everywhere, stored probes are ignored.
+  if (!config_.measuredCostPolicy || !isFusedTier(from) || !isFusedTier(to)) {
+    return area;
+  }
+  // 1. Live costs measured on this machine under the current load (the
+  //    current tier's EMA once it has a full sample window, else the cost
+  //    stored when the governor last left `from`).
+  double fromCostMs = (from == tier_ && samples_ >= config_.minSamples)
+                          ? emaMs_
+                          : storedLiveCostMs(from);
+  double toCostMs = storedLiveCostMs(to);
+  if (fromCostMs <= 0.0 || toCostMs <= 0.0) {
+    // 2. Build-time probes.
+    fromCostMs = storedProbeMs(from);
+    toCostMs = storedProbeMs(to);
+    if (fromCostMs <= 0.0 || toCostMs <= 0.0) {
+      // 3. Pixel-area scaling.
+      return area;
+    }
+  }
+  const double ratio = toCostMs / fromCostMs;
+  if (area <= 1.0) {
+    // Step down (to a cheaper input): a smaller tier never costs more than
+    // the current one, nor less than the pixel-area scaling predicts.
+    return std::min(1.0, std::max(area, ratio));
+  }
+  // Step up: a larger tier never costs less than the current one, nor more
+  // than the pixel-area scaling predicts.
+  return std::max(1.0, std::min(area, ratio));
+}
+
+bool KeyerAutoGovernor::stepUpBlockedByProgramFrame(GovernorTier target,
+                                                    double estimatedMs) const {
+  // Only fused -> fused climbs (incl. skips over unavailable tiers): the
+  // Lite256 -> Performance256 and Off -> Lite256 paths keep their rules.
+  if (!config_.measuredCostPolicy || !isFusedTier(tier_) ||
+      !isFusedTier(target) || target == tier_) {
+    return false;
+  }
+  // Unknown program state -> historical behavior.
+  if (programFrameEmaMs_ <= 0.0 || programBudgetMs_ <= 0.0) {
+    return false;
+  }
+  // Already over budget at the current tier: the frame is over budget at
+  // both tiers, and the measured overrun rule keeps the higher tier.
+  if (programFrameEmaMs_ > programBudgetMs_) {
+    return false;
+  }
+  // Extra program-frame cost of the climb: the larger session plus the
+  // larger input tensor build.
+  const double extraMs =
+      std::max(0.0, estimatedMs - emaMs_) +
+      std::max(0.0, programTensorMs_) *
+          (areaScale(target) / areaScale(tier_) - 1.0);
+  // Fits now, would not after the climb: the measured overrun step-down
+  // would undo it (a periodic 320 <-> 256 flap). Stay.
+  return programFrameEmaMs_ + extraMs > programBudgetMs_;
+}
+
+void KeyerAutoGovernor::setProgramFrameState(double programFrameEmaMs,
+                                             double budgetMs,
+                                             double tensorMs) {
+  programFrameEmaMs_ = programFrameEmaMs;
+  programBudgetMs_ = budgetMs;
+  programTensorMs_ = tensorMs;
 }
 
 void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
@@ -164,7 +296,15 @@ void KeyerAutoGovernor::seedProbe(double medianWarmupMs) {
 void KeyerAutoGovernor::seedMeasuredProbes(double full512Ms,
                                            double balanced320Ms,
                                            double performance256Ms) {
-  if (seeded_ || samples_ > 0u || performance256Ms <= 0.0) {
+  if (seeded_ || samples_ > 0u) {
+    return;
+  }
+  // Stored before the 256 guard below, including values <= 0 (= unknown):
+  // the session cost ratio falls back to the area ratio for unknown probes.
+  probe512Ms_ = full512Ms;
+  probe320Ms_ = balanced320Ms;
+  probe256Ms_ = performance256Ms;
+  if (performance256Ms <= 0.0) {
     return;
   }
   seeded_ = true;
@@ -212,6 +352,7 @@ void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
     if (now - degradedAt_ < reprobeInterval_) {
       return;
     }
+    rememberLiveCostOfCurrentTier();  // no-op for Off, kept for uniformity
     tier_ = GovernorTier::Lite256;
     emaMs_ = -1.0;
     samples_ = 0u;
@@ -232,6 +373,11 @@ void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
   if (estimated < 0.0 || estimated > stepUpThresholdMs()) {
     return;
   }
+  if (stepUpBlockedByProgramFrame(availableTierAbove(tier_), estimated)) {
+    // The climb would push an in-budget program frame over budget. No state
+    // change: no backoff doubling, no clock restart; re-evaluated next frame.
+    return;
+  }
   if (config_.deferLiteStepUp && tier_ == GovernorTier::Lite256) {
     // Warm handover: do NOT transition yet. The caller warms the fused
     // session in the background (async stays on air) and then commits or
@@ -239,11 +385,18 @@ void KeyerAutoGovernor::maybeStepUp(TimePoint now) {
     liteStepUpPending_ = true;
     return;
   }
+  const bool fusedClimb = isFusedTier(tier_);
+  rememberLiveCostOfCurrentTier();
   tier_ = availableTierAbove(tier_);
   emaMs_ = -1.0;
   samples_ = 0u;
   degradedAt_ = now;
   stepUpWatch_ = StepUpWatch::Fused;
+  if (config_.measuredCostPolicy && fusedClimb) {
+    // Start of the overrun wrong-estimate window (measured overload).
+    lastFusedStepUpAt_ = now;
+    fusedStepUpAtValid_ = true;
+  }
 }
 
 void KeyerAutoGovernor::commitLiteStepUp(TimePoint now) {
@@ -258,6 +411,7 @@ void KeyerAutoGovernor::commitLiteStepUp(TimePoint now) {
   if (target == GovernorTier::Lite256) {
     return;  // no fused session available at all — stay async.
   }
+  rememberLiveCostOfCurrentTier();  // no-op for Lite256, kept for uniformity
   tier_ = target;
   emaMs_ = -1.0;
   samples_ = 0u;
@@ -342,6 +496,70 @@ void KeyerAutoGovernor::noteProgramBudgetOverrun(TimePoint now) {
   stepDown(availableTierBelow(tier_), now);
 }
 
+OverrunOutcome KeyerAutoGovernor::noteProgramBudgetOverrun(
+    TimePoint now, const ProgramOverrunSample &sample) {
+  OverrunOutcome outcome;
+  // Same Ignored cases as the unconditional overload above.
+  if (!seeded_) {
+    return outcome;
+  }
+  // Stale sample: the tier moved since the costs were measured (a step-up on
+  // the consuming frame, or a sample-driven step-down within the event
+  // frame). Its costs describe another tier -> discard, no state change.
+  if (sample.tierAtEvent != tier_) {
+    return outcome;
+  }
+  if (tier_ != GovernorTier::Full512 && tier_ != GovernorTier::Balanced320) {
+    return outcome;
+  }
+  const GovernorTier target = availableTierBelow(tier_);
+  // Every SteppedDown of this overload goes through here: the wrong-estimate
+  // net doubles the step-up holdoff when the step-down comes within
+  // overrunWrongEstimateWindow of the last fused -> fused climb. Evaluated
+  // BEFORE stepDown(), which consumes the climb; when stepDown()'s own
+  // 30-sample watch already doubles for this step-down, the net does not
+  // double a second time (one doubling per wrong estimate).
+  const auto measuredStepDown = [this, target, now]() {
+    const bool watchDoubles = stepUpWatch_ != StepUpWatch::None;
+    const bool withinNet = config_.measuredCostPolicy && fusedStepUpAtValid_ &&
+                           now - lastFusedStepUpAt_ <=
+                               config_.overrunWrongEstimateWindow;
+    stepDown(target, now);
+    if (withinNet && !watchDoubles) {
+      stepUpHoldoff_ = std::min<std::chrono::steady_clock::duration>(
+          stepUpHoldoff_ * 2, config_.reprobeMaxInterval);
+    }
+  };
+  if (!isFusedTier(target) || sample.programFrameEmaMs <= 0.0 ||
+      sample.budgetMs <= 0.0 || sample.sessionRunMs <= 0.0) {
+    // No fused target to project onto, or no usable evidence: keep the
+    // unconditional behavior.
+    measuredStepDown();
+    outcome.decision = OverrunDecision::SteppedDown;
+    return outcome;
+  }
+  // Only the model session and the input tensor build scale with the input
+  // size; everything else in the program frame (compositing, readbacks,
+  // recorder, preview, VCam) costs the same at the lower tier.
+  const double savingsMs =
+      sample.sessionRunMs * (1.0 - sessionCostRatio(tier_, target)) +
+      std::max(0.0, sample.tensorMs) *
+          (1.0 - areaScale(target) / areaScale(tier_));
+  const double projectedMs = sample.programFrameEmaMs - savingsMs;
+  outcome.estimatedSavingsMs = savingsMs;
+  outcome.projectedMs = projectedMs;
+  if (projectedMs <= sample.budgetMs) {
+    measuredStepDown();
+    outcome.decision = OverrunDecision::SteppedDown;
+    return outcome;
+  }
+  // The overrun is not bound to the model resolution: shedding resolution
+  // would cost quality without bringing the frame into budget. Leave every
+  // piece of state untouched (no EMA/sample reset, no clock restart).
+  outcome.decision = OverrunDecision::NotTierBound;
+  return outcome;
+}
+
 void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
   // Any step-down invalidates a deferred (not yet committed) step-up.
   liteStepUpPending_ = false;
@@ -359,6 +577,10 @@ void KeyerAutoGovernor::stepDown(GovernorTier target, TimePoint now) {
     }
     stepUpWatch_ = StepUpWatch::None;
   }
+  // Any step-down resolves the last fused climb (like the watch above): the
+  // overrun wrong-estimate net can fire at most once per climb.
+  fusedStepUpAtValid_ = false;
+  rememberLiveCostOfCurrentTier();
   tier_ = target;
   emaMs_ = -1.0;
   samples_ = 0u;
@@ -397,6 +619,17 @@ void KeyerAutoGovernor::reset() {
   seeded_ = false;
   liteStepUpPending_ = false;
   emaMs_ = -1.0;
+  probe512Ms_ = -1.0;
+  probe320Ms_ = -1.0;
+  probe256Ms_ = -1.0;
+  programFrameEmaMs_ = -1.0;
+  programBudgetMs_ = -1.0;
+  programTensorMs_ = -1.0;
+  liveCost512Ms_ = -1.0;
+  liveCost320Ms_ = -1.0;
+  liveCost256Ms_ = -1.0;
+  fusedStepUpAtValid_ = false;
+  lastFusedStepUpAt_ = TimePoint{};
   frameOverheadMs_ = 0.0;
   samples_ = 0u;
   liteGateOverBudgetSamples_ = 0u;

@@ -46,13 +46,28 @@ initial seed, which may jump).
 - Step up (estimate-based, NO live probes): the governor climbs one tier only
   when the higher tier's cost ESTIMATE fits the budget with strong margin:
   `estimatedMs(nextTierUp) <= stepUpFactor (0.8) x frameBudgetMs`. The
-  estimate scales the current-tier EMA by the input pixel-area ratio
-  (validated within ~10%): `320 -> 512` = x2.56, `256 -> 320` = x1.5625,
-  `Lite256 -> Performance256` = x1.0 (same input size – the async-measured
-  EMA carries over directly). Step-down stays at `1.0 x budget`, so the
-  hysteresis band between climbing and falling is wide by construction.
+  estimate scales the current-tier EMA by the session cost ratio of the two
+  tiers. When both are fused tiers, the ratio prefers LIVE costs (the
+  current EMA once it has 10 samples, and the live cost stored when the
+  governor last left the target tier, see Live-Cost Memory), then the stored
+  build-time probes (`seedMeasuredProbes`, see Seed Heuristic) – either way
+  `cost(target) / cost(current)` clamped to `[1, area ratio]`;
+  otherwise it is the input pixel-area ratio: `320 -> 512` = x2.56,
+  `256 -> 320` = x1.5625, `Lite256 -> Performance256` = x1.0 (same input
+  size, not a fused-to-fused move – the async-measured EMA carries over
+  directly, with or without probes). Without stored probes the estimate is
+  bit-identical to the pre-2026-10-17 area math. Field reason (RC
+  v0.27.3-rc.6, GTX 1660 Ti): 320 and 256 cost the same there, but the x1.5625
+  area estimate never fit the overhead-reduced step-up threshold, so a tier
+  that had dropped to 256 never recovered. Step-down stays at
+  `1.0 x budget`, so the hysteresis band between climbing and falling is wide
+  by construction.
   Additional requirements: at least 10 samples at the current tier AND at
-  least the step-up holdoff (base 10 s) since the last tier change.
+  least the step-up holdoff (base 10 s) since the last tier change. Fused
+  -> fused climbs additionally pass the program-frame guard (see
+  Program-Loop Overrun Step-Down). With `measuredCostPolicy` off
+  (`BROADIFY_MEETING_OVERRUN_STEPDOWN=always`) the ratio is always the area
+  ratio and there is no guard.
 - Wrong estimate: if a step-up is followed by a step-down within 30 samples,
   the step-up holdoff doubles (capped at 120 s) persistently for the session
   – it never resets downward, so a borderline machine cannot re-enter a
@@ -79,6 +94,165 @@ threshold. Example, probe 194 ms at 30 fps (budget 33.3 ms): 512 = 194 ms,
 320 ≈ 76 ms, 256 ≈ 48.5 ms – none fits the budget, but 48.5 ms ≤ 120 ms, so
 the seed lands on `Lite256` instead of blocking the program loop for a full
 observation window at 512.
+
+When the keyer status reports a 256 probe (`probeInferenceMs256 > 0`; the
+512/320 probes are passed along as reported), `seedMeasuredProbes` seeds from
+the measured costs instead
+(best tier whose probe fits the step-UP threshold, never below
+`Performance256`) and STORES the three probes (`<= 0` = unknown, also stored
+when the 256 probe is missing and seeding is skipped). The stored probes feed
+the session cost ratio of step-up estimates and of the measured-cost overrun
+step-down below; `reset()` clears them, `seedProbe` never sets them.
+
+## Program-Loop Overrun Step-Down (measured cost, 2026-10-17)
+
+The fused tier is also judged on the WHOLE program frame, not only on the
+GPU session cost: `BudgetOverrunReporter` (EMA of `program_frame_ms`, 30
+consecutive over-budget frames, 10 s repeat) emits `keyer_budget_overrun`
+and asks the governor to shed one fused tier on the next frame
+(`Full512`/`Balanced320` only; leaving fused for Lite/Off stays the
+sample-driven liteGate's job).
+
+Field finding (RC v0.27.3-rc.6, GTX 1660 Ti): `program_frame_ms` 33–45 ms
+with `session_run_ms` 10–13 ms and `tensor_ms` 2–4.5 ms – 20–30 ms per frame
+were spent outside the model, and 320 cost the same as 256 there. The old
+unconditional step-down dropped 320 -> 256 anyway, which cut more of the
+person away without bringing the frame into budget.
+
+Rule (default mode): the overrun frame's evidence travels with the request
+(`ProgramOverrunSample`: reporter EMA, budget, that frame's `session_run_ms`
+and `tensor_ms`), and the governor projects the program frame at the next
+lower available fused tier:
+
+```text
+savings   = session_run_ms * (1 - sessionCostRatio(tier, lower))
+          + max(0, tensor_ms) * (1 - area(lower) / area(tier))
+projected = program_frame_ema_ms - savings
+```
+
+`sessionCostRatio` is the live cost ratio, else the probe ratio, clamped to
+`[area ratio, 1]` (falls back to the area ratio, 0.64 for `320 -> 256` and
+0.390625 for `512 -> 320`, when neither is known). Only the model session
+and the input tensor scale with the input size; compositing, readbacks,
+recorder, preview and VCam cost the same at the lower tier.
+
+- `projected <= budget`: step one tier down (as before).
+- `projected > budget`: the overrun is not tier-bound – the tier stays and
+  NO governor state changes (EMA, samples, dwell clock, watches). The helper
+  emits `keyer_overrun_stepdown_skipped` with `tier`,
+  `program_frame_ema_ms`, `budget_ms`, `session_run_ms`, `tensor_ms`,
+  `estimated_savings_ms` and `projected_ms`.
+- An invalid sample (EMA, budget or session cost `<= 0`) or a non-fused
+  target (e.g. no 256 session) keeps the unconditional step-down.
+- Stale sample: the sample is tagged with the governor tier its costs were
+  measured at (`tierAtEvent` = the tier of the event frame's fused
+  inference, read before that frame's `addSample()` could step down). It is
+  consumed one frame later, after `maybeStepUp()` (order unchanged). If the
+  governor tier differs from the tag by then (a step-up on the consuming
+  frame, or a sample-driven step-down within the event frame), the sample is
+  discarded: decision `Ignored`, NO state change, no skip event.
+
+Program-frame step-up guard (Round 2, verifier finding): with probe-based
+step-up estimates alone, a machine whose 256 frame fits the budget but whose
+320 frame does not (verifier loop sim, non-model overhead ~19 ms) flapped
+`320 -> 256 -> 320` every ~11 s: the estimate let 256 climb back, the overrun
+rule stepped it down again. The pipeline therefore feeds the governor the
+program-frame state every frame before `maybeStepUp()`
+(`setProgramFrameState(reporter EMA, budget, tensor ms of the last fused
+inference)`), and a fused -> fused climb (incl. skips over unavailable tiers)
+whose estimate already fits is still NOT taken when
+
+```text
+extra = max(0, estimate - EMA) + max(0, tensor_ms) * (area(target) / area(tier) - 1)
+program_frame_ema <= budget  &&  program_frame_ema + extra > budget
+```
+
+i.e. the frame fits now and would not after the climb (the measured overrun
+step-down would undo it). A blocked climb changes no state (no backoff
+doubling, no clock restart). An unknown program state (EMA or budget
+`<= 0`) climbs as before, and so does an already over-budget frame (over
+budget at both tiers: the measured overrun rule keeps the higher tier).
+`Lite256 -> Performance256` and `Off -> Lite256` are not guarded.
+`reset()` forgets the program state. With probe ratios alone a ~1 ms
+overhead band remained (verifier cost model, 256 session 11.5 ms, 320
+session 12 ms, probes 13.7/12; overhead ~19.9–20.9 ms): the 256 frame was
+just over budget, so the climb was allowed, while the probe ratio 0.876
+over-predicted the session savings (live ratio 0.958) and the overrun rule
+stepped back down – a 20 s periodic flap. Fixed by the live-cost memory and
+the wrong-estimate net below (Round 3).
+
+Live-cost memory (Round 3): whenever the governor LEAVES a fused tier
+(any step-down, any step-up incl. `commitLiteStepUp`; seeding does not
+count) with at least 10 samples there, it stores that tier's session-cost
+EMA as the tier's live cost (with fewer samples the previous value is
+kept). `sessionCostRatio(from, to)` uses `cost(from)` = the current EMA when
+`from` is the current tier with >= 10 samples, else the stored live cost of
+`from`, and `cost(to)` = the stored live cost of `to`; when both are known
+it uses `cost(to) / cost(from)` with the same clamps, else the probes, else
+the area ratio. Both the overrun projection and the step-up estimate (and
+thus the guard) then judge with costs measured on this machine under real
+load. Staleness: a stored live cost is only refreshed when the governor
+visits that tier again (it is never decayed or re-probed while the
+governor sits elsewhere). `reset()` clears it.
+
+Wrong-estimate net (Round 3, defense in depth): the governor remembers the
+time of the last fused -> fused step-up. A `SteppedDown` from the measured
+overrun overload within `overrunWrongEstimateWindow` (30 s) of that climb
+doubles the step-up holdoff exactly like the existing wrong-estimate rule
+(capped at 120 s, never reset within the session). The existing 30-sample
+watch cannot see these step-downs because the overrun reporter only fires
+every ~10 s. One doubling per wrong estimate: when the 30-sample watch is
+still armed and already doubles for the same step-down, the net does not
+double again; any step-down consumes the remembered climb. `reset()` clears
+it.
+
+Loop simulation (10 simulated minutes, overhead 16–30 ms in 0.5 ms steps,
+verifier cost models with a 256 session of 11.5 ms and 10.5 ms). With FIXED
+per-frame costs, measured mode makes at most 2 tier transitions per run
+(only at 20.0/20.5 ms in the 11.5 ms model: `320 -> 256` at 1 s, back to
+`320` at 11 s, then stable) and shows no periodic pattern; `always` mode
+output is byte-identical to origin/dev at every point.
+
+With frame-to-frame NOISE (verifier run: ±2 ms overhead, ±0.5 ms session)
+measured mode is not flap-free: in a band of about 18.5–21.5 ms non-model
+overhead it still makes 5–16 tier transitions per 10 minutes – short 320
+visits about every 2 minutes once the step-up holdoff has reached its 120 s
+cap, and at 20.5/21.5 ms some ~10 s dips to 256 every 2–3 minutes that fall
+outside the 30 s wrong-estimate window – while origin/dev stays at 256
+there. Above ~22 ms measured mode holds 320 with 0 transitions.
+
+Field testing: look for repeating `keyer_policy_change` lines in
+`meeting-helper-events.log` (tier going back and forth every few minutes).
+`BROADIFY_MEETING_OVERRUN_STEPDOWN=always` restores the previous governor
+completely; restart Broadify Bridge after changing it (the `.env` is read at
+app start).
+
+`BROADIFY_MEETING_OVERRUN_STEPDOWN`: unset/any other value = the measured
+rule above; `always` = full rollback to the pre-2026-10-17 governor: the
+unconditional one-tier step-down (it takes no sample, so the stale-sample
+guard does not apply) AND `KeyerGovernorConfig::measuredCostPolicy = false`
+(area cost ratios everywhere, stored probes and live costs ignored/not
+stored, no program-frame step-up guard, no wrong-estimate net) – in the loop
+simulation it reproduces origin/dev's tier sequence exactly; `0` = overruns
+are log-only (no step-down; the measured step-up estimate, live-cost memory
+and guard stay active).
+
+Stage timings: `keyer_budget_overrun` keeps all previous fields in their
+order (`program_frame_ms`, `session_run_ms`, `tensor_ms`, `camera_copy_ms`,
+`camera_upload_ms`, `tier`, `cadence_n`) and appends wall-time stages of the
+SAME program frame (Windows only):
+
+| Field | Measures |
+| --- | --- |
+| `keyer_section_ms` | the whole keyer section, two spans summed: (1) async submit + async pair selection, (2) same-frame async re-evaluation, live-snap and the complete fused section (inference, stabilize, guided refine, postprocess) |
+| `guided_refine_ms` | sum of all guided refine calls (D3D11 or CPU fallback); part of `keyer_section_ms` |
+| `postprocess_ms` | sum of the fused `postprocessAlpha` calls; part of `keyer_section_ms` |
+| `graphics_ms` | the one contiguous block between the two keyer spans: graphics-output gate (`isGraphicsOutputActive`), back and front graphics FrameBus reads (`backGraphicsReader.latest()` / `frontGraphicsReader.latest()`), their new-frame timestamp checks and the program work-trigger checks (`shouldRunProgramWork` / `shouldRunFusedKeyerWork`, pure boolean logic) |
+| `render_ms` | `renderProgramFrame` (the compositor call that fills the program frame buffer) |
+| `recorder_ms` | `recorder.appendVideoFrame` |
+| `preview_ms` | `previewFrames.publish` |
+| `vcam_ms` | the VCam shared-memory publish block (copy + submit) |
+| `other_ms` | `max(0, program_frame_ms - (keyer_section + graphics + render + recorder + preview + vcam))`: camera copy, FrameBus program write, loop overhead |
 
 ## Inference Cadence (fused tiers)
 
@@ -183,7 +357,8 @@ Fixes:
 - New additive status field `active_performance_mode` (`keyer.get`, next to
   the requested `performance_mode`): the mode actually driving the keyer –
   the governor's tier on the fused path, the async-lite floor
-  (`performance`), or the webapp mode when auto-degradation is off. `null`
+  (`performance`), the `BROADIFY_MEETING_KEYER_PERFORMANCE` pin when set, or
+  the webapp mode when auto-degradation is off. `null`
   on macOS / keyer disabled. The webapp metrics mapper reads only known
   keys, so the extra field is ignored safely until the UI adopts it.
 
@@ -374,10 +549,11 @@ All variables are forwarded by the bridge (allowlist in
 
 | Variable | Effect |
 | --- | --- |
-| `BROADIFY_MEETING_AUTO_DEGRADE=0` | Kill switch: resolution follows the webapp performance mode, no self-demote to async/off |
+| `BROADIFY_MEETING_AUTO_DEGRADE=0` | Kill switch: resolution follows the webapp performance mode (or the `BROADIFY_MEETING_KEYER_PERFORMANCE` pin when set), no self-demote to async/off |
 | `BROADIFY_MEETING_KEYER_CADENCE` | unset/`auto` = auto N; `0` = cadence inert (infer every frame); `N>=1` = pin N |
 | `BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS` | Testing override for the governor's step-down threshold |
-| `BROADIFY_MEETING_KEYER_PERFORMANCE` | Pins the input resolution (A/B testing); the governor keeps sampling but stops driving `performanceMode` |
+| `BROADIFY_MEETING_KEYER_PERFORMANCE` | Pins the input resolution (`high_quality`/`balanced`/`performance`, A/B testing); the governor keeps sampling but stops driving `performanceMode`. Since 2026-10-17 the fused path applies the pin over both the governor mode and the webapp mode, with or without auto-degradation (`BROADIFY_MEETING_AUTO_DEGRADE=0` included), so the fused `apply()`, the warmups and `active_performance_mode` all run/report the pinned mode (before, the fused path silently ran the webapp mode) |
+| `BROADIFY_MEETING_OVERRUN_STEPDOWN` | unset = measured-cost overrun step-down + measured step-up estimates + program-frame step-up guard (see Program-Loop Overrun Step-Down); `always` = full rollback to the pre-2026-10-17 governor (unconditional one-tier step-down, area ratios, no guard); `0` = overruns log-only |
 | `BROADIFY_MEETING_GPU_PIPELINE=0` | Disables the fused path entirely (async worker path only) |
 | `BROADIFY_MEETING_FUSED_POSTPROCESS=0` | Fused postprocess parity kill switch: the fused matte skips the erode/dilate/feather/edge-stabilization chain again |
 | `BROADIFY_MEETING_EMPTY_SUBJECT=0` | Empty-subject (Option A) kill switch: an absent person is never confirmed; collapse-hold/anchor-fallback behavior as before |
@@ -403,7 +579,16 @@ All variables are forwarded by the bridge (allowlist in
   `degradation_stage`, `stale_mask_active` and `keyer_pipeline_mode`.
 - Unit tests: `keyer_governor_test` (incl. the 2026-08-09 field-regression
   scenario: async EMA 62 ms at a 33.3 ms budget must stay `async_lite` with
-  zero transitions), `keyer_cadence_test`, `mask_retention_test` (adaptive
+  zero transitions, and the 2026-10-17 measured-cost overrun cases: tier-bound
+  vs not-tier-bound projections, probe-ratio clamping, unknown/zero probes,
+  invalid samples, stale (tier-changed) and untagged samples, the
+  unconditional `always` overload, clamped step-up
+  estimates, `reset()` clearing the probes, the program-frame step-up guard
+  – blocked / over budget / unknown state –, the live-cost memory overriding
+  probes in estimate and projection, the minSamples rule, the overrun
+  wrong-estimate net inside/at/outside its 30 s window, and
+  `measuredCostPolicy = false` reproducing the area numbers without live
+  memory or net), `keyer_cadence_test`, `mask_retention_test` (adaptive
   gate, stale-hold window, hard-cap hysteresis), `subject_presence_test`
   (streak accumulation, dropout-vs-empty distinction, cadence-independent
   time-based acceptance, re-entry reset, inert kill-switch config) and

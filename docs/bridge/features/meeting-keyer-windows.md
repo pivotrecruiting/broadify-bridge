@@ -47,7 +47,8 @@ camera frame
 | --- | --- | --- |
 | `BROADIFY_MEETING_GPU_PIPELINE` | `1` | Enables the fused Windows GPU keyer path. Set `0` for async worker path. |
 | `BROADIFY_MEETING_AUTO_DEGRADE` | `1` | Enables the fused tier governor. |
-| `BROADIFY_MEETING_OVERRUN_STEPDOWN` | `1` | Lets a sustained program-loop budget overrun step one fused tier down (CPU overload the GPU-cost samples miss). Set `0` to keep overruns log-only. |
+| `BROADIFY_MEETING_OVERRUN_STEPDOWN` | unset (measured) | Sustained program-loop budget overrun handling. Default: step one fused tier down only when the measured-cost projection of the lower tier (`program_frame_ema_ms - savings` from the smaller session and tensor) fits the budget; otherwise keep the tier and log `keyer_overrun_stepdown_skipped`. Cost ratios between fused tiers use the live session costs remembered per tier (refreshed only when the governor visits a tier), else the build-time probes; fused step-ups are not taken when they would push an in-budget program frame over budget; a measured step-down within 30 s of a fused climb doubles the step-up holdoff. `always` is the full rollback to the pre-2026-10-17 governor (unconditional one-tier step-down, area cost ratios, no live-cost memory, no step-up guard, no wrong-estimate net); `0` keeps overruns log-only. |
+| `BROADIFY_MEETING_KEYER_PERFORMANCE` | unset | Pins the MODNet input resolution (`high_quality` / `balanced` / `performance`) for A/B tests. The fused path now runs and reports the pinned mode (`apply()`, warmups, `active_performance_mode`); the governor keeps sampling but no longer drives the mode. The pin also wins over the webapp mode with `BROADIFY_MEETING_AUTO_DEGRADE=0`. |
 | `BROADIFY_MEETING_WARM_HANDOVER` | `1` | Keeps make-before-break transitions between fused and async-lite. |
 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `512,320,256` | Prebuilds all three fused tiers on first load so the governor has a fine 320 middle step (avoids the coarse-256 edge flicker). Accepts `all`, `active`, `512`, `320`, `256`, or mode names in a comma list. |
 | `BROADIFY_MEETING_DML_QUEUE` | `compute` | DirectML DML1 command queue type. Use `direct` for A/B against rc.21. |
@@ -144,6 +145,8 @@ ONNX, lab frames 768x432, 60 + 60 frames):
 | Governor disabled | `BROADIFY_MEETING_AUTO_DEGRADE=0` | `keyer_pipeline_mode` stays fused/fused_cadence unless the keyer fails. |
 | No fused cadence reuse | `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` | `metrics.mask_age_ms` stays near 0 on fused frames. |
 | Prebuild only 256 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS=256` | First-load memory lower; step-up to missing tiers cannot warm. |
+| Pre-2026-10-17 governor (full rollback) | `BROADIFY_MEETING_OVERRUN_STEPDOWN=always` | Every confirmed `keyer_budget_overrun` drops one fused tier again; no `keyer_overrun_stepdown_skipped` lines; step-up estimates use the area ratio again (no program-frame guard). |
+| Fixed fused resolution | `BROADIFY_MEETING_KEYER_PERFORMANCE=balanced` | `active_performance_mode` stays `balanced` on the fused path regardless of the governor tier. |
 | Letterbox input (pre-fill) | `BROADIFY_MEETING_KEYER_LETTERBOX=1` in `%APPDATA%\Broadify Bridge RC\.env`, then restart Broadify Bridge | Look for `keyer_input_geometry` in `%APPDATA%\Broadify Bridge RC\meeting-helper-events.log`: `"geometry":"letterbox"` (default: `"fill"`); more of the person is cut away at 320/256. |
 
 ## Tuning
@@ -191,6 +194,46 @@ Native logs include `keyer_provider` changes and fallback-reason changes so
 provider selection and degradation transitions are visible in helper logs.
 The `meeting_keyer` `input_geometry` event reports `fill` or `letterbox` once
 per helper process.
+
+Program-loop budget events (`meeting-helper-events.log`):
+
+- `keyer_budget_overrun`: sustained program-frame overrun (reporter EMA over
+  budget for 30 frames, at most every 10 s). Fields, in order:
+  `program_frame_ms`, `session_run_ms`, `tensor_ms`, `camera_copy_ms`,
+  `camera_upload_ms`, `tier`, `cadence_n`, then the stage timings of the SAME
+  frame: `keyer_section_ms` (async submit/selection, live-snap and the whole
+  fused section), `guided_refine_ms` and `postprocess_ms` (both already
+  included in `keyer_section_ms`), `graphics_ms` (graphics-output gate, back
+  and front graphics FrameBus reads with their new-frame checks, and the
+  work-trigger checks between the two keyer spans), `render_ms`,
+  `recorder_ms`, `preview_ms`, `vcam_ms` and `other_ms` =
+  `max(0, program_frame_ms - (keyer_section + graphics + render + recorder +
+  preview + vcam))`.
+- `keyer_overrun_stepdown_skipped`: the measured-cost projection says the
+  next lower fused tier would not bring the frame into budget, so the tier
+  stays. Fields: `tier`, `program_frame_ema_ms`, `budget_ms`,
+  `session_run_ms`, `tensor_ms`, `estimated_savings_ms`, `projected_ms`.
+  A sample whose tier changed before it was consumed is discarded silently
+  (no step-down, no event). Details:
+  `docs/bridge/architecture/meeting-keyer-auto-degradation.md`
+  (Program-Loop Overrun Step-Down).
+- `keyer_budget_recovered`: the reporter EMA is back within budget.
+
+Known residual of the measured governor (loop simulation, 2026-10-17): with
+fixed per-frame costs it makes at most 2 tier transitions per 10 minutes and
+shows no periodic pattern. With frame-to-frame noise (±2 ms overhead, ±0.5 ms
+session) it still makes 5–16 tier transitions per 10 minutes in a band of
+about 18.5–21.5 ms non-model overhead (short 320 visits about every 2 minutes
+once the step-up holdoff reaches its 120 s cap; at 20.5/21.5 ms some ~10 s
+dips to 256 every 2–3 minutes outside the 30 s wrong-estimate window), where
+the previous governor stays at 256. Above ~22 ms it holds 320 with 0
+transitions.
+
+Field testers: look for repeating `keyer_policy_change` lines in
+`meeting-helper-events.log` (the tier going back and forth every few
+minutes). `BROADIFY_MEETING_OVERRUN_STEPDOWN=always` restores the previous
+governor completely; restart Broadify Bridge after setting it (the `.env` is
+read at app start).
 
 ## Teams Grey Triage
 

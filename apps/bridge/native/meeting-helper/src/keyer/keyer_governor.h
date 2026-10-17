@@ -73,6 +73,55 @@ struct KeyerGovernorConfig {
   // the wrong-estimate treatment). Default false = the historical immediate
   // step-up (also the BROADIFY_MEETING_WARM_HANDOVER=0 kill-switch path).
   bool deferLiteStepUp = false;
+  // Measured-cost policy (2026-10-17, default true): session cost ratios use
+  // live per-tier session costs, else the stored build-time probes (both
+  // clamped); fused -> fused step-ups are guarded against climbs that would
+  // push an in-budget program frame over budget (setProgramFrameState); and a
+  // measured overrun step-down soon after a fused climb counts as a wrong
+  // estimate (overrunWrongEstimateWindow). false = full rollback to the
+  // historical behavior: area ratios everywhere, no live-cost memory, no
+  // program-frame step-up guard, no overrun wrong-estimate net
+  // (BROADIFY_MEETING_OVERRUN_STEPDOWN=always).
+  bool measuredCostPolicy = true;
+  // Wrong-estimate net for measured overrun step-downs (measuredCostPolicy
+  // only): a SteppedDown from the measured noteProgramBudgetOverrun()
+  // overload within this window after the last fused -> fused step-up
+  // doubles the step-up holdoff like the existing wrong-estimate doubling.
+  // The existing 30-sample watch cannot see these step-downs: the overrun
+  // reporter only fires every ~10 s.
+  std::chrono::steady_clock::duration overrunWrongEstimateWindow =
+      std::chrono::seconds(30);
+};
+
+// Evidence of one sustained program-loop budget overrun, taken from the SAME
+// program frame that confirmed it (BudgetOverrunReporter). A value <= 0 means
+// "unknown" (tensorMs < 0 counts as 0).
+struct ProgramOverrunSample {
+  double programFrameEmaMs = -1.0;
+  double budgetMs = -1.0;
+  double sessionRunMs = -1.0;
+  double tensorMs = -1.0;
+  // Governor tier the sample's costs were measured at (the event frame's
+  // fused inference). The sample is consumed one frame later; if the tier
+  // moved in between, the costs belong to another tier and the sample is
+  // stale -> Ignored. Default Off = untagged: Off never matches an upper
+  // fused tier, so an untagged sample can never step down.
+  GovernorTier tierAtEvent = GovernorTier::Off;
+};
+
+// Ignored: no step-down possible/allowed (not seeded, stale sample, or not
+// an upper fused tier). SteppedDown: the tier moved one available tier down.
+// NotTierBound: the measured-cost projection says the lower tier cannot bring
+// the program frame into budget, so the tier (and all governor state) stayed
+// unchanged.
+enum class OverrunDecision { Ignored, SteppedDown, NotTierBound };
+
+struct OverrunOutcome {
+  OverrunDecision decision = OverrunDecision::Ignored;
+  // Projection inputs/outputs; -1 when the decision did not use the
+  // measured-cost projection (Ignored, invalid sample, non-fused target).
+  double estimatedSavingsMs = -1.0;
+  double projectedMs = -1.0;
 };
 
 // Auto-degradation governor for the Windows fused keyer path. Pure logic,
@@ -83,10 +132,17 @@ struct KeyerGovernorConfig {
 //
 // Step-UP policy (field fix 2026-08-09): the governor never probes a higher
 // tier in the live path. It climbs only when the higher tier's cost ESTIMATE
-// (current-tier EMA scaled by the input pixel-area ratio, validated within
-// ~10%) fits the frame budget with strong margin (stepUpFactor). A borderline
-// machine therefore stays put instead of oscillating through user-visible
-// tier changes every backoff interval.
+// fits the frame budget with strong margin (stepUpFactor). The estimate is
+// the current-tier EMA scaled by the session cost ratio (sessionCostRatio):
+// with measuredCostPolicy (default) the live per-tier session costs
+// remembered when the governor last left a tier, else the build-time probe
+// ratio, else the input pixel-area ratio - clamped to [1, area ratio].
+// Fused -> fused climbs additionally pass the program-frame guard
+// (setProgramFrameState): a climb that would push an in-budget program frame
+// over budget is not taken. measuredCostPolicy = false (the "always" mode)
+// restores the pure area-ratio estimate without guard. A borderline machine
+// therefore stays put instead of oscillating through user-visible tier
+// changes every backoff interval.
 class KeyerAutoGovernor {
  public:
   using TimePoint = std::chrono::steady_clock::time_point;
@@ -103,6 +159,11 @@ class KeyerAutoGovernor {
   // measured-probe variant clamps to Performance256 because build-time probes
   // can be distorted by first-load contention. Lite/Off only come from live
   // samples. No-op once seeded or after samples arrived.
+  // seedMeasuredProbes() additionally stores the three probes (<= 0 =
+  // unknown) whenever the governor is not yet seeded and has no samples -
+  // even when performance256Ms <= 0 skips the seeding itself. They feed the
+  // session cost ratio of step-up estimates and of the measured-cost overrun
+  // step-down; reset() clears them, seedProbe() never sets them.
   void seedProbe(double medianWarmupMs);
   void seedMeasuredProbes(double full512Ms,
                           double balanced320Ms,
@@ -128,8 +189,24 @@ class KeyerAutoGovernor {
   // input size). Off -> Lite256 stays time-based (async cannot stall the
   // program loop, and Off produces no samples to estimate from) but never
   // fires faster than the doubling, never-session-reset re-entry backoff.
+  // Program-frame guard (measuredCostPolicy, fused -> fused climbs only,
+  // incl. skips over unavailable tiers): with a known program state, a climb
+  // whose estimate passed (c) is still NOT taken when the program frame fits
+  // the budget now but would not after the climb:
+  //   extra = max(0, estimate - EMA)
+  //         + max(0, tensorMs) * (areaScale(target) / areaScale(tier) - 1)
+  //   blocked when programFrameEma <= budget && programFrameEma + extra > budget
+  // (the measured overrun step-down would undo it). A blocked climb changes
+  // no state. Over budget already, or unknown program state -> climb as
+  // before. Lite256 -> Performance256 and Off -> Lite256 are not guarded.
   // Call once per frame before consulting tier().
   void maybeStepUp(TimePoint now);
+
+  // Latest program-frame state for the step-up guard: the BudgetOverrunReporter
+  // EMA of the program frame, its budget and the latest fused tensor build
+  // time. Values <= 0 mean unknown. Call every frame before maybeStepUp().
+  void setProgramFrameState(double programFrameEmaMs, double budgetMs,
+                            double tensorMs);
 
   // Feeds one measured inference cost. Fused tiers: only real fused inference
   // runs (not cadence-reused frames). Lite256: the async worker's measured
@@ -146,7 +223,27 @@ class KeyerAutoGovernor {
   // the next available lower fused tier); leaving fused for Lite/Off stays
   // sample-driven (liteGate policy). No-op before seeding or at/below
   // Performance256. Does NOT feed addSample(), so the GPU-cost invariant holds.
+  // This overload steps down UNCONDITIONALLY (the "always" mode,
+  // BROADIFY_MEETING_OVERRUN_STEPDOWN=always).
   void noteProgramBudgetOverrun(TimePoint now);
+  // Measured-cost variant (default mode): steps down only when the lower
+  // tier can bring the program frame into budget. Projection:
+  //   savings = sessionRunMs * (1 - sessionCostRatio(tier, target))
+  //           + max(0, tensorMs) * (1 - areaScale(target) / areaScale(tier))
+  //   projected = programFrameEmaMs - savings
+  // projected <= budgetMs -> SteppedDown; otherwise NotTierBound and NO state
+  // change (EMA, samples, clocks and watches stay as they are). Same
+  // Ignored cases as the unconditional overload, plus a stale sample
+  // (sample.tierAtEvent != tier()): Ignored with NO state change. Falls back to the
+  // unconditional step-down (SteppedDown, savings/projected -1) when the
+  // target is not a fused tier or the sample is invalid
+  // (programFrameEmaMs/budgetMs/sessionRunMs <= 0). Wrong-estimate net
+  // (measuredCostPolicy): any SteppedDown within overrunWrongEstimateWindow
+  // of the last fused -> fused step-up doubles the step-up holdoff (capped at
+  // reprobeMaxInterval, never reset within the session) unless stepDown()'s
+  // own 30-sample watch already doubled for this step-down.
+  OverrunOutcome noteProgramBudgetOverrun(TimePoint now,
+                                          const ProgramOverrunSample &sample);
 
   // Deferred Lite256 -> Performance256 step-up (config.deferLiteStepUp).
   // Pending means: the estimate approved the step-up, the tier stays Lite256
@@ -180,6 +277,9 @@ class KeyerAutoGovernor {
   // Introspection for tests/telemetry.
   double inferenceEmaMs() const { return emaMs_; }
   double budgetThresholdMs() const { return stepDownThresholdMs(); }
+  // Estimated cost of the next available tier above the current one (< 0
+  // when no EMA exists or nothing is available to climb to).
+  double stepUpEstimateMs() const { return estimatedStepUpMs(); }
   std::chrono::steady_clock::duration reprobeInterval() const {
     return reprobeInterval_;
   }
@@ -195,9 +295,37 @@ class KeyerAutoGovernor {
   double stepDownThresholdMs() const;
   double stepUpThresholdMs() const;
   // Estimated cost of the next AVAILABLE tier above the current one, scaled
-  // from the current-tier EMA by the input pixel-area ratio (< 0 when no EMA
-  // exists or nothing is available to climb to).
+  // from the current-tier EMA by sessionCostRatio() (< 0 when no EMA exists
+  // or nothing is available to climb to).
   double estimatedStepUpMs() const;
+  // Relative MODNet session cost of `to` vs `from` (both fused tiers,
+  // measuredCostPolicy on), in this order of preference:
+  //   1. live/live: cost(from) = the current EMA when `from` is the current
+  //      tier with >= minSamples samples, else the stored live cost of
+  //      `from`; cost(to) = the stored live cost of `to`; both > 0;
+  //   2. probe(to) / probe(from), both stored probes > 0;
+  // clamped to [area, 1] for a step down and [1, area] for a step up (area =
+  // areaScale(to) / areaScale(from)). Otherwise the area ratio itself (the
+  // historical assumption, so behavior without live costs/probes or with
+  // the policy off is unchanged).
+  double sessionCostRatio(GovernorTier from, GovernorTier to) const;
+  // Stored live session cost of a fused tier (<= 0 = never measured;
+  // Lite256/Off have none).
+  double storedLiveCostMs(GovernorTier tier) const;
+  // Called right before every tier change (step-downs, step-ups incl.
+  // commitLiteStepUp; NOT seeding): when leaving a fused tier with
+  // >= minSamples samples, store its EMA as that tier's live cost; with fewer
+  // samples the previously stored value is kept. measuredCostPolicy only.
+  // Staleness: a stored value is only refreshed when the governor visits
+  // that tier again.
+  void rememberLiveCostOfCurrentTier();
+  // Program-frame step-up guard (see maybeStepUp): true when the climb from
+  // the current tier to `target` with the given estimate must not happen.
+  bool stepUpBlockedByProgramFrame(GovernorTier target,
+                                   double estimatedMs) const;
+  // Stored build-time probe of a fused tier (<= 0 = unknown; Lite256/Off
+  // have no probe).
+  double storedProbeMs(GovernorTier tier) const;
   void stepDown(GovernorTier target, TimePoint now);
   bool tierAvailable(GovernorTier tier) const;
   // Ladder neighbors constrained to available tiers. Below: skips towards
@@ -214,6 +342,23 @@ class KeyerAutoGovernor {
   bool seeded_ = false;
   bool liteStepUpPending_ = false;
   double emaMs_ = -1.0;
+  // Build-time probes from seedMeasuredProbes() (<= 0 = unknown).
+  double probe512Ms_ = -1.0;
+  double probe320Ms_ = -1.0;
+  double probe256Ms_ = -1.0;
+  // Program-frame state from setProgramFrameState() (<= 0 = unknown).
+  double programFrameEmaMs_ = -1.0;
+  double programBudgetMs_ = -1.0;
+  double programTensorMs_ = -1.0;
+  // Live session-cost EMA per fused tier, stored when leaving the tier
+  // (<= 0 = never measured).
+  double liveCost512Ms_ = -1.0;
+  double liveCost320Ms_ = -1.0;
+  double liveCost256Ms_ = -1.0;
+  // Time of the last fused -> fused step-up (overrun wrong-estimate net);
+  // only meaningful while fusedStepUpAtValid_ is true.
+  bool fusedStepUpAtValid_ = false;
+  TimePoint lastFusedStepUpAt_{};
   double frameOverheadMs_ = 0.0;
   uint64_t samples_ = 0u;
   uint64_t liteGateOverBudgetSamples_ = 0u;
