@@ -142,6 +142,7 @@ Wichtige Env-Fallbacks:
 | `BROADIFY_MEETING_KEYER_FP16=1` | Halbpraezises MODNet-Modell laden (Windows/DirectML; wirkt nur mit deploytem `modnet-fp16`, siehe `meeting-windows-performance.md`) |
 | `BROADIFY_MEETING_KEYER_IO_BINDING=1` | DirectML-Inferenz ueber ORT-IoBinding (A/B-Experiment, siehe `meeting-windows-performance.md`) |
 | `BROADIFY_MEETING_KEYER_ZEROCOPY=1` | Zero-Copy-Device-Input: MODNet-Tensor per D3D12-Compute auf der GPU bauen (Windows/DirectML, siehe `meeting-windows-performance.md`) |
+| `BROADIFY_MEETING_KEYER_LETTERBOX=1` | Windows-Kill-Switch: MODNet-Eingang wieder als Letterbox mit grauen Balken statt Fill (ganzer Frame auf den N x N-Tensor gestreckt, Default); einmal pro Helper-Prozess gelesen. Erreicht den Windows-Helper ueber die geerbte Umgebung (z. B. Zeile in `%APPDATA%\Broadify Bridge RC\.env`, wirkt nach Neustart von Broadify Bridge, da die `.env` beim App-Start gelesen wird); aktive Geometrie: `keyer_input_geometry` in `meeting-helper-events.log`. Nicht-Windows-Builds ignorieren ihn. Siehe `meeting-keyer-windows.md` |
 | `BROADIFY_MEETING_OPENVINO_DEVICE` | `AUTO` (Default, expandiert zu `AUTO:NPU,GPU,CPU`)/`NPU`/`GPU`/`CPU` |
 
 Beim Start des macOS-App-Bundles reicht die Bridge ausschließlich diese

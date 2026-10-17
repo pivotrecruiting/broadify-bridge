@@ -3,7 +3,8 @@
 // GPU-resident MODNet input build for the Windows/DirectML keyer (opt-in via
 // BROADIFY_MEETING_KEYER_ZEROCOPY, default off). One stage per prebuilt tier
 // session: a D3D12 compute shader replicates buildModnetInputTensor
-// (letterbox + integer block-average + (x-0.5)/0.5 normalization, NCHW) from
+// (letterbox or fill placement from the passed ModnetLetterboxMapping +
+// integer block-average + (x-0.5)/0.5 normalization, NCHW) from
 // the uploaded RGBA frame straight into a default-heap buffer that is bound
 // as a DML device input through ORT IoBinding - removing the per-frame CPU
 // tensor build and ORT's internal CPU->GPU input copy. Output readback stays

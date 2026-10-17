@@ -269,8 +269,15 @@ Output-Readback bleibt CPU. Randbedingungen:
   ist damit ohne Cross-Queue-Fences geordnet. Auf `dml2`/`legacy_device0`
   meldet `zerocopy_stage_unavailable` den Grund und der CPU-Pfad laeuft
   unveraendert.
-- Der Shader repliziert die CPU-Referenz exakt (Letterbox, Integer-
-  Block-Average, `(x-0.5)/0.5`); ein einmaliges Paritaets-Gate pro Tier
+- Der Shader repliziert die CPU-Referenz (Content-Rechteck aus dem Mapping:
+  Fill = ganzer Tensor als Windows-Default, Letterbox per
+  `BROADIFY_MEETING_KEYER_LETTERBOX=1`; Integer-Block-Average,
+  `(x-0.5)/0.5`). Im Fill-Pfad nutzt die CPU dieselbe Blockgrenzen-Regel wie
+  der Shader (leere Bloecke beim Hochskalieren -> naechste Quellzeile/-spalte).
+  Im Letterbox-Pfad schreibt die CPU leere Bloecke winziger Quellen (z. B.
+  320x240 bei 512) weiter als Mittelgrau, der Shader nicht; dort faellt das
+  Paritaets-Gate durch und Zero-Copy schaltet sich ab. Ein einmaliges
+  Paritaets-Gate pro Tier
   (`zerocopy_parity`, max |Delta| <= 1e-2 elementweise gegen
   `buildModnetInputTensor`) muss bestehen, bevor eine Maske aus dem GPU-Tensor
   vertraut wird. fp16-Modelle schreiben den Tensor direkt als half
