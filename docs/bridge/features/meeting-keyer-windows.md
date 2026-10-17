@@ -8,17 +8,21 @@ tensor helpers unless MODNet is explicitly selected.
 
 ```text
 camera frame
-  -> MODNet input tensor
-       - aspect-preserving square letterbox
-       - mean-color padding, normalized to 0
+  -> MODNet input tensor (N x N, N = 512 / 320 / 256)
+       - default (fill): whole frame stretched over the full square, no bars
+         (same geometry as the macOS CoreML path and the training data)
+       - kill switch BROADIFY_MEETING_KEYER_LETTERBOX=1: aspect-preserving
+         square letterbox with mean-color padding, normalized to 0
        - area-average downsample
   -> MODNet inference
        - prebuilt 512 / 320 / 256 sessions when enabled
        - DirectML by default, OpenVINO when selected and compiled in
   -> alpha readback
-       - crop out letterbox padding
-       - emit the model-resolution content crop; compositor/guided refine
-         resample it against the live camera
+       - fill: bilinear resample of the full model alpha to the letterbox
+         content size (e.g. 512x288 / 320x180 / 256x144 for 16:9)
+       - letterbox: crop out the padding
+       - either way the emitted mask has the same size; compositor/guided
+         refine resample it against the live camera
   -> fused or async-lite governor path
        - fused: current-frame inference when sustainable
        - async-lite: worker publishes mask/frame pairs
@@ -63,6 +67,74 @@ camera frame
 | `BROADIFY_MEETING_CAMERA_MAX_HEIGHT` | `1080` | Clamps Windows MediaFoundation camera requests and reopen attempts to <=1080p at <=30 fps. `0` disables the height clamp. |
 | `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 400 ms below the foreground floor. |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY` | unset | Forces legacy DirectML device 0 selection. |
+| `BROADIFY_MEETING_KEYER_LETTERBOX` | unset | `1` restores the letterbox input geometry used up to 0.27.3-rc.6 (grey bars, byte-identical tensor and mask). Any other value or unset keeps the default fill geometry. Read once per helper process. |
+
+## Input Geometry
+
+Windows feeds MODNet the whole camera frame stretched over the N x N tensor
+(`ModnetInputGeometry::Fill` in `keyer/matting_common.cpp`), like the macOS
+CoreML path (`coreml_keyer.mm`) and the training geometry
+(`broadify-keyer-training/scripts/fabrik.py`). Before, the frame was
+letterboxed with mid-grey bars: at N = 256 a 1920x1080 frame kept only
+256x144 content pixels, and the governor commonly runs 256 (`performance`) or
+320 (`balanced`) on weaker laptops.
+
+- Tensor shapes, tier sizes, prebuilt sessions and probes are unchanged
+  (DirectML compiles kernels for the first Run shape; a different shape would
+  recompile every Run).
+- The emitted `AlphaMask` keeps the letterbox content size (512x288,
+  320x180, 256x144 for 1920x1080), so everything downstream sees the same
+  dimensions as before.
+- CPU, fp16, zero-copy (including its CPU parity reference) and OpenVINO use
+  the same geometry per process. The zero-copy shader needs no change: a fill
+  mapping is a content rect covering the whole tensor.
+- The helper reports the active geometry once per process when the keyer
+  session loads, on stdout as
+  `{"type":"meeting_keyer","event":"input_geometry","geometry":"fill"}`
+  (or `"letterbox"`) and in the helper events log
+  (`%APPDATA%\Broadify Bridge RC\meeting-helper-events.log`, rewritten on
+  every helper start) as
+  `{"type":"keyer_input_geometry","geometry":"fill","backend":"modnet"}`
+  (`backend` is `openvino` for the OpenVINO keyer).
+- Kill switch: `BROADIFY_MEETING_KEYER_LETTERBOX=1`. The helper inherits the
+  bridge environment, so a line `BROADIFY_MEETING_KEYER_LETTERBOX=1` in
+  `%APPDATA%\Broadify Bridge RC\.env` restores the letterbox after restarting
+  Broadify Bridge (the `.env` is read at app start).
+- Non-Windows builds always use the letterbox helpers unchanged.
+- Frames smaller than N in a dimension (for example 640x480 or 640x360 at
+  N = 512): in fill, an empty source block is widened to its nearest source
+  row/column with the zero-copy shader's bounds rule, so every tensor element
+  averages at least one real pixel and no grey rows appear; CPU and shader use
+  identical block bounds. The letterbox kill switch keeps the old behavior
+  (empty blocks of tiny sources such as 320x240 at N = 512 stay mid-grey on
+  the CPU, so the opt-in zero-copy parity gate turns zero-copy off there).
+- Known limitation: sources with fewer rows than the tier (for example
+  768x432, 640x480 or 848x480 at tier 512) are upscaled by nearest-row
+  duplication (the GPU shader's bounds rule, kept for CPU/GPU parity) and are
+  marginally worse at 512 than letterbox (about +0.2 points on the lab set,
+  see the real-code table below). 1080p and 720p cameras are unaffected.
+
+Share of the true person cut away ("eaten", model ft-v7d, clean / webcam).
+
+Python emulation of both geometries (lab set, 60 frames each, ONNX export on
+CPU; source `broadify-keyer-training/models/results/win-fressen-20261017/`
+`BEFUND.md` plus the raw `lab*.json`, script
+`broadify-keyer-training/scripts/win_fressen.py`):
+
+| Tensor | Letterbox (before) | Fill (now) |
+| --- | --- | --- |
+| 256 | 8.84 % / 11.17 % | 3.87 % / 4.89 % |
+| 320 | 3.37 % / 5.94 % | 2.64 % / 3.48 % |
+| 512 | 1.24 % / 2.64 % | 1.19 % / 2.44 % |
+
+Real code (independent verification run: C++ `matting_common.cpp` + ft-v7d
+ONNX, lab frames 768x432, 60 + 60 frames):
+
+| Tensor | 768x432 Letterbox | 768x432 Fill | upscaled to 1080p Letterbox | upscaled to 1080p Fill |
+| --- | --- | --- | --- | --- |
+| 512 | 1.41 % / 2.76 % | 1.63 % / 2.91 % | 1.28 % / 2.72 % | 1.24 % / 2.48 % |
+| 320 | 3.70 % / 5.89 % | 2.76 % / 3.79 % | 3.33 % / 5.97 % | 2.62 % / 3.49 % |
+| 256 | 8.84 % / 11.17 % | 3.83 % / 5.31 % | 8.63 % / 11.26 % | 3.84 % / 5.01 % |
 
 ## Field A/B
 
@@ -75,6 +147,7 @@ camera frame
 | Prebuild only 256 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS=256` | First-load memory lower; step-up to missing tiers cannot warm. |
 | Pre-2026-10-17 governor (full rollback) | `BROADIFY_MEETING_OVERRUN_STEPDOWN=always` | Every confirmed `keyer_budget_overrun` drops one fused tier again; no `keyer_overrun_stepdown_skipped` lines; step-up estimates use the area ratio again (no program-frame guard). |
 | Fixed fused resolution | `BROADIFY_MEETING_KEYER_PERFORMANCE=balanced` | `active_performance_mode` stays `balanced` on the fused path regardless of the governor tier. |
+| Letterbox input (pre-fill) | `BROADIFY_MEETING_KEYER_LETTERBOX=1` in `%APPDATA%\Broadify Bridge RC\.env`, then restart Broadify Bridge | Look for `keyer_input_geometry` in `%APPDATA%\Broadify Bridge RC\meeting-helper-events.log`: `"geometry":"letterbox"` (default: `"fill"`); more of the person is cut away at 320/256. |
 
 ## Tuning
 
@@ -119,6 +192,8 @@ Bridge status exposes:
 
 Native logs include `keyer_provider` changes and fallback-reason changes so
 provider selection and degradation transitions are visible in helper logs.
+The `meeting_keyer` `input_geometry` event reports `fill` or `letterbox` once
+per helper process.
 
 Program-loop budget events (`meeting-helper-events.log`):
 

@@ -6,6 +6,7 @@
 
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
+#include "util/helper_event_log.h"
 #include "util/sha256.h"
 
 #include <algorithm>
@@ -151,8 +152,12 @@ class OpenVinoKeyer::Impl {
     status_.provider = entry.provider;
 
     const auto tensorStart = std::chrono::steady_clock::now();
+    // Same process-wide input geometry as ModnetKeyer (Fill on Windows unless
+    // BROADIFY_MEETING_KEYER_LETTERBOX=1); `letterbox` holds the mapping that
+    // built the tensor (letterbox or fill) for the mask readback.
     ModnetLetterboxMapping letterbox;
-    buildModnetInputTensor(input, effective, effective, tensor_, &letterbox);
+    buildModnetInputTensor(input, effective, effective, tensor_, &letterbox,
+                           modnetInputGeometryForThisPlatform());
     const auto tensorEnd = std::chrono::steady_clock::now();
     try {
       // Zero-copy input: the ov::Tensor wraps tensor_, which outlives the
@@ -294,6 +299,21 @@ class OpenVinoKeyer::Impl {
       currentSize_ = kInitialInputSize;
       failedCompileSize_ = 0u;
       status_.probeInferenceMs = probeMedianMs;
+      // Once per process: the MODNet input geometry every compiled size is fed.
+      // The events-log copy (emitHelperEvent also writes stdout) is what a
+      // user can read in meeting-helper-events.log.
+      static const bool inputGeometryLogged = []() {
+        const char *geometry = modnetInputGeometryForThisPlatform() ==
+                                       ModnetInputGeometry::Fill
+                                   ? "fill"
+                                   : "letterbox";
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":\"input_geometry\""
+                  << ",\"geometry\":\"" << geometry << "\"}" << std::endl;
+        emitHelperEvent(std::string("{\"type\":\"keyer_input_geometry\",\"geometry\":\"") +
+                        geometry + "\",\"backend\":\"openvino\"}");
+        return true;
+      }();
+      (void)inputGeometryLogged;
       loaded_ = true;
       status_.activeKeyer = "modnet";
       status_.fallbackActive = false;
