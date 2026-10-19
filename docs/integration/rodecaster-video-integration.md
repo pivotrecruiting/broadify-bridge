@@ -13,7 +13,7 @@ HDMI-Ausspielweg zu.
 - **Adapter:** `apps/bridge/src/services/engine/adapters/rodecaster-adapter.ts`
   (Codec: `rcv-osc.ts`, Framing: `rcv-frame-codec.ts`).
 - **Subscription:** Nach dem Connect sendet der Adapter `/show` und `/remote`.
-  Das Gerät antwortet mit einem XML-Dump (`RcvShow`, als OSC-Blob) und pusht
+  Das Gerät antwortet mit einem XML-Dump (`RcvShow`, als OSC-Blob oder -String) und pusht
   danach Zustandsänderungen (`/show/pgmcurrent`, `/show/PgmOverlay`,
   `/show/record`, `/show/live`).
 - **Geräteinfo:** Best-effort Unicast-UDP-Probe (`RodeBroadcast`) an Port
@@ -54,8 +54,19 @@ landen über den bestehenden Broadcast-Diff auf Buttons/StreamDeck.
 **Toggle-Verhalten:** Die Controls-UI sendet für ein laufendes Makro
 `engine_stop_macro` statt `run`. Der Adapter nutzt das als Toggle-Off:
 Klick auf ein aktives Overlay togglet es aus, Klick auf „Record Start"
-während einer Aufnahme stoppt sie (`/show/record 0`), analog Stream. Szenen/
-Media/Cut/Auto/Transitions sind momentane Makros — `stop` ist dort ein No-op.
+während einer Aufnahme stoppt sie (`/show/record 0`), analog Stream. Cut/Auto/
+Transitions sind momentane Makros — `stop` ist dort ein No-op. Für Szenen- und
+Media-Slots entscheidet der Live-Zustand: Ist der Slot **nicht** auf Programm,
+schaltet `stop` ihn (`/device/scene|media <n>`); ist er auf Programm, bleibt
+`stop` ein No-op, das Programm wird also nie erneut getriggert. Hintergrund:
+Die Controls-Seite hält den Makro-Status als Snapshot und sendet für die beim
+Laden live gewesene Szene dauerhaft `stop`; ohne das Schalten wäre diese Szene
+nach einem Programmwechsel nicht mehr anwählbar.
+
+**Firmware-Unterschied beim `/show`-Dump:** Firmware 1.3 liefert den
+`RcvShow`-Dump als OSC-Blob, Firmware 1.4 als OSC-String. Der Adapter
+akzeptiert beides; damit ist der Programm-Zustand direkt nach dem Verbinden
+bekannt.
 
 **Modelle:** Alle drei Modelle adressieren 7 Szenen/Overlays/Media-Slots über
 das Remote-Protokoll; nicht belegte Slots sind am Gerät No-ops. Das erkannte
