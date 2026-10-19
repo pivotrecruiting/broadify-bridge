@@ -368,15 +368,17 @@ describe("RodecasterAdapter", () => {
     ).toEqual([{ address: "/device/scene", args: [2] }]);
   });
 
-  it("re-selects scene and media slots when the UI sends stop for them", async () => {
+  it("selects a scene/media slot on stop when it is not on program", async () => {
     // The controls page sends stop for a macro it still holds as "running".
-    // For a scene that was live when the page loaded this must not swallow
-    // the click, otherwise the scene is no longer selectable.
+    // For a scene that was live when the page loaded but is not any more,
+    // this must not swallow the click, otherwise the scene is stuck.
     await connect();
+    server.push("/show/pgmcurrent", ["scene", 1]);
+    await waitForState(adapter, (s) => macroStatus(s, 1) === "running");
     const before = server.received.length;
 
-    await adapter.stopMacro(3); // scene 3
-    await adapter.stopMacro(24); // media 4
+    await adapter.stopMacro(3); // scene 3, not on program
+    await adapter.stopMacro(24); // media 4, not on program
     await server.waitForMessage(
       (m) => m.address === "/device/media" && m.args[0] === 4
     );
@@ -388,6 +390,44 @@ describe("RodecasterAdapter", () => {
       { address: "/device/scene", args: [3] },
       { address: "/device/media", args: [4] },
     ]);
+  });
+
+  it("never re-selects the slot that is on program when the UI sends stop", async () => {
+    await connect();
+    server.push("/show/pgmcurrent", ["scene", 3]);
+    await waitForState(adapter, (s) => macroStatus(s, 3) === "running");
+    const before = server.received.length;
+
+    await adapter.stopMacro(3); // scene 3 is live: nothing may be sent
+
+    server.push("/show/pgmcurrent", ["media", 4]);
+    await waitForState(adapter, (s) => macroStatus(s, 24) === "running");
+    await adapter.stopMacro(24); // media 4 is live: nothing may be sent
+
+    // A sentinel command proves nothing was sent in between.
+    await adapter.runMacro(2);
+    await server.waitForMessage(
+      (m) => m.address === "/device/scene" && m.args[0] === 2
+    );
+    const sent = server.received.slice(before);
+    expect(
+      sent.filter((m) => !["/show", "/remote"].includes(m.address))
+    ).toEqual([{ address: "/device/scene", args: [2] }]);
+  });
+
+  it("applies the initial /show XML dump sent as a string (firmware 1.4)", async () => {
+    await connect();
+
+    server.push("/show", [
+      '<RcvShow name="Test" PgmScene="2" PvwScene="0" PgmOverlay="-1" PvwOverlay="-1"></RcvShow>',
+    ]);
+
+    const state = await waitForState(
+      adapter,
+      (s) => macroStatus(s, 3) === "running"
+    );
+    expect(macroStatus(state, 1)).toBe("idle");
+    expect(macroStatus(state, 11)).toBe("idle");
   });
 
   it("drops to an error state with NETWORK_ERROR when the socket dies", async () => {
