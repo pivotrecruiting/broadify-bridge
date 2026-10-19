@@ -54,8 +54,13 @@ landen über den bestehenden Broadcast-Diff auf Buttons/StreamDeck.
 **Toggle-Verhalten:** Die Controls-UI sendet für ein laufendes Makro
 `engine_stop_macro` statt `run`. Der Adapter nutzt das als Toggle-Off:
 Klick auf ein aktives Overlay togglet es aus, Klick auf „Record Start"
-während einer Aufnahme stoppt sie (`/show/record 0`), analog Stream. Szenen/
-Media/Cut/Auto/Transitions sind momentane Makros — `stop` ist dort ein No-op.
+während einer Aufnahme stoppt sie (`/show/record 0`), analog Stream. Cut/Auto/
+Transitions sind momentane Makros — `stop` ist dort ein No-op. Für Szenen- und
+Media-Slots schaltet `stop` den Slot erneut (`/device/scene|media <n>`):
+Die Controls-Seite hält den Makro-Status als Snapshot und sendet für die beim
+Laden live gewesene Szene dauerhaft `stop`; ohne das erneute Schalten wäre
+diese Szene nicht mehr anwählbar. Am Gerät ist das erneute Anwählen des
+Programm-Slots wirkungslos.
 
 **Modelle:** Alle drei Modelle adressieren 7 Szenen/Overlays/Media-Slots über
 das Remote-Protokoll; nicht belegte Slots sind am Gerät No-ops. Das erkannte

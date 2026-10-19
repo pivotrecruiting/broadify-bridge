@@ -173,10 +173,15 @@ export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
   }
 
   /**
-   * Stop a macro by ID. Scenes/media/cut/auto/transitions are momentary and
-   * resolve as a no-op; overlays toggle off again, record/stream stop. The
+   * Stop a macro by ID. Overlays toggle off again, record/stream stop. The
    * controls UI sends stop for a macro whose status is "running", so this
    * doubles as the toggle-off path.
+   *
+   * Scene/media slots are reported as "running" while they are on program, so
+   * a controls page holding a stale macro snapshot keeps sending stop for the
+   * slot that was live when the page loaded. Re-selecting the slot keeps that
+   * button operable (selecting the live slot again is harmless on the device).
+   * Cut/auto/transitions stay a no-op: re-sending them would fire again.
    */
   async stopMacro(id: number): Promise<void> {
     if (this.state.status !== "connected") {
@@ -673,13 +678,20 @@ function resolveRunCommands(id: number): OscCommandT[] | null {
 }
 
 /**
- * OSC command sequence for stopMacro: [] = momentary macro, stop is a no-op;
+ * OSC command sequence for stopMacro: toggles turn off, scene/media slots are
+ * re-selected, [] = momentary macro (cut/auto/transitions), stop is a no-op;
  * undefined = unknown ID.
  */
 function resolveStopCommands(id: number): OscCommandT[] | undefined {
   const overlaySlot = slotFromRange(id, OVERLAY_MACRO_BASE);
   if (overlaySlot !== null) {
     return [["/device/toggleOverlay", [overlaySlot]]];
+  }
+  if (
+    slotFromRange(id, SCENE_MACRO_BASE) !== null ||
+    slotFromRange(id, MEDIA_MACRO_BASE) !== null
+  ) {
+    return resolveRunCommands(id) ?? undefined;
   }
   if (id === MACRO_ID_RECORD_START) {
     return [["/show/record", [0]]];
