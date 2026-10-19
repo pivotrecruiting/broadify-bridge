@@ -349,12 +349,13 @@ describe("RodecasterAdapter", () => {
     );
   });
 
-  it("treats stop for momentary macros as a no-op", async () => {
+  it("treats stop for cut/auto/transitions as a no-op", async () => {
     await connect();
     const before = server.received.length;
 
-    await adapter.stopMacro(1); // scene
     await adapter.stopMacro(31); // cut
+    await adapter.stopMacro(32); // auto
+    await adapter.stopMacro(41); // transition fade
 
     // A sentinel command proves nothing was sent in between.
     await adapter.runMacro(2);
@@ -365,6 +366,28 @@ describe("RodecasterAdapter", () => {
     expect(
       sent.filter((m) => !["/show", "/remote"].includes(m.address))
     ).toEqual([{ address: "/device/scene", args: [2] }]);
+  });
+
+  it("re-selects scene and media slots when the UI sends stop for them", async () => {
+    // The controls page sends stop for a macro it still holds as "running".
+    // For a scene that was live when the page loaded this must not swallow
+    // the click, otherwise the scene is no longer selectable.
+    await connect();
+    const before = server.received.length;
+
+    await adapter.stopMacro(3); // scene 3
+    await adapter.stopMacro(24); // media 4
+    await server.waitForMessage(
+      (m) => m.address === "/device/media" && m.args[0] === 4
+    );
+
+    const sent = server.received.slice(before);
+    expect(
+      sent.filter((m) => !["/show", "/remote"].includes(m.address))
+    ).toEqual([
+      { address: "/device/scene", args: [3] },
+      { address: "/device/media", args: [4] },
+    ]);
   });
 
   it("drops to an error state with NETWORK_ERROR when the socket dies", async () => {
