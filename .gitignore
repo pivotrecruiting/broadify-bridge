@@ -54,6 +54,8 @@ apps/bridge/native/meeting-helper/build/
 apps/bridge/native/meeting-helper/meeting-helper
 apps/bridge/native/meeting-helper/meeting-helper.exe
 apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/
+# Also as a symlink (dev worktrees link the primary checkout's signed app).
+apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app
 apps/bridge/native/meeting-helper/libonnxruntime.dylib
 apps/bridge/native/meeting-helper/libonnxruntime.1.dylib
 apps/bridge/native/meeting-helper/onnxruntime.dll
@@ -88,3 +90,4 @@ apps/bridge/native/pgm-helper/build/
 apps/bridge/native/pgm-helper/pgm-helper
 apps/bridge/native/pgm-helper/pgm-helper.exe
 apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app/
+apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app

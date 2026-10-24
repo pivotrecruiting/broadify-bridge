@@ -1,1 +1,0 @@
-/Users/gabrielbaeuerle/broadify-bridge/apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app
