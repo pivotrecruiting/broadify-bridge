@@ -21,6 +21,8 @@ if(NOT DEFINED HELPER_COMMON_BUILD_TESTS)
 endif()
 
 add_library(helper_common STATIC
+  src/helper_event_log.cpp
+  src/json_utils.cpp
   src/rpc_transport.cpp
 )
 target_include_directories(helper_common PUBLIC include)

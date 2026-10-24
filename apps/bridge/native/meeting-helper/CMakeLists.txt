@@ -119,8 +119,6 @@ set(MEETING_HELPER_SOURCES
   src/preview/vcam_shm_layout.cpp
   src/preview/vcam_shm_ring_win.cpp
   src/util/sha256.cpp
-  src/util/json_utils.cpp
-  src/util/helper_event_log.cpp
   src/util/pixel_swizzle.cpp
   src/util/win_qos.cpp
 )
@@ -366,7 +364,6 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/screen_capture_source_test.cpp
     src/capture/screen_capture_source.cpp
     src/capture/screen_capture_stub.cpp
-    src/util/json_utils.cpp
   )
   add_executable(liveness_watchdog_test
     tests/liveness_watchdog_test.cpp
@@ -409,7 +406,6 @@ if(MEETING_HELPER_BUILD_TESTS)
   )
   add_executable(json_utils_test
     tests/json_utils_test.cpp
-    src/util/json_utils.cpp
   )
   add_executable(compositor_input_selection_test
     tests/compositor_input_selection_test.cpp
@@ -418,8 +414,6 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(media_page_cache_test
     tests/media_page_cache_test.cpp
     src/compose/media_page_cache.cpp
-    src/util/helper_event_log.cpp
-    src/util/json_utils.cpp
   )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
@@ -451,7 +445,6 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/raw_frame_server.cpp
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
-    src/util/helper_event_log.cpp
     src/util/pixel_swizzle.cpp
     src/util/win_qos.cpp
   )
@@ -466,7 +459,6 @@ if(MEETING_HELPER_BUILD_TESTS)
       tests/vcam_shm_service_ring_test.cpp
       src/preview/vcam_shm_layout.cpp
       src/preview/vcam_shm_ring_win.cpp
-      src/util/helper_event_log.cpp
       src/util/pixel_swizzle.cpp
     )
     add_executable(vcam_shm_publisher_test
@@ -474,7 +466,6 @@ if(MEETING_HELPER_BUILD_TESTS)
       src/preview/vcam_shm_layout.cpp
       src/preview/vcam_shm_publisher.cpp
       src/preview/vcam_shm_ring_win.cpp
-      src/util/helper_event_log.cpp
       src/util/pixel_swizzle.cpp
     )
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE
@@ -492,8 +483,6 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/vcam_shm_layout.cpp
     src/preview/vcam_shm_ring_win.cpp
     src/recorder/meeting_recorder_stub.cpp
-    src/util/helper_event_log.cpp
-    src/util/json_utils.cpp
     src/util/pixel_swizzle.cpp
   )
   if(WIN32)
@@ -502,7 +491,6 @@ if(MEETING_HELPER_BUILD_TESTS)
     )
   endif()
   add_executable(control_server_test ${CONTROL_SERVER_TEST_SOURCES})
-  target_link_libraries(control_server_test PRIVATE helper_common)
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -515,7 +503,6 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/keyer/modnet_keyer.cpp
     src/keyer/openvino_keyer.cpp
     src/keyer/ort_session_options_policy.cpp
-    src/util/json_utils.cpp
     src/util/sha256.cpp
   )
   target_compile_definitions(matting_backend_test PRIVATE
@@ -564,6 +551,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     raw_frame_server_test
   )
     target_include_directories(${helper_test} PRIVATE src)
+    target_link_libraries(${helper_test} PRIVATE helper_common)
     if(WIN32)
       target_compile_definitions(${helper_test} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
       if(helper_test STREQUAL "raw_frame_server_test")
@@ -586,14 +574,17 @@ if(MEETING_HELPER_BUILD_TESTS)
 
   if(WIN32)
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE src)
+    target_link_libraries(shm_frame_reader_no_frame_test PRIVATE helper_common)
     target_compile_definitions(shm_frame_reader_no_frame_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(shm_frame_reader_no_frame_test PRIVATE advapi32)
     add_test(NAME shm_frame_reader_no_frame_test COMMAND shm_frame_reader_no_frame_test)
     target_include_directories(vcam_shm_service_ring_test PRIVATE src)
+    target_link_libraries(vcam_shm_service_ring_test PRIVATE helper_common)
     target_compile_definitions(vcam_shm_service_ring_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(vcam_shm_service_ring_test PRIVATE advapi32)
     add_test(NAME vcam_shm_service_ring_test COMMAND vcam_shm_service_ring_test)
     target_include_directories(vcam_shm_publisher_test PRIVATE src)
+    target_link_libraries(vcam_shm_publisher_test PRIVATE helper_common)
     target_compile_definitions(vcam_shm_publisher_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(vcam_shm_publisher_test PRIVATE advapi32)
     add_test(NAME vcam_shm_publisher_test COMMAND vcam_shm_publisher_test)
@@ -611,6 +602,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       COMPILE_FLAGS "-fobjc-arc"
     )
     target_include_directories(meeting_recorder_writer_test PRIVATE src)
+    target_link_libraries(meeting_recorder_writer_test PRIVATE helper_common)
     target_link_libraries(meeting_recorder_writer_test PRIVATE
       "-framework AVFoundation"
       "-framework CoreMedia"

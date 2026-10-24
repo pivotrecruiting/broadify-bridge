@@ -1,26 +1,20 @@
 #pragma once
 
-#include <cstdint>
-#include <string>
-#include <vector>
+// Implementation lives in helper-common (shared with the PGM helper); the
+// meeting namespace re-exports it so call sites stay unchanged.
+#include "helper_common/json_utils.h"
 
 namespace broadify::meeting {
 
-std::string jsonEscape(const std::string &value);
-std::string extractStringField(const std::string &body, const std::string &field);
-// Parses a flat JSON string array ("field":["a","b",...]) into its unescaped
-// elements. Quote- and escape-aware, so array elements may contain commas,
-// brackets or quotes (camera stable keys are Windows device symbolic links
-// with #, {, } and other punctuation). Returns empty when the field is absent
-// or is not an array.
-std::vector<std::string> extractStringArrayField(const std::string &body,
-                                                  const std::string &field);
-bool extractBoolField(const std::string &body, const std::string &field, bool fallback);
-int extractIntField(const std::string &body, const std::string &field, int fallback);
-double extractDoubleField(const std::string &body, const std::string &field, double fallback);
-std::string extractObjectField(const std::string &body, const std::string &field);
-std::string okResponse(const std::string &id, const std::string &result);
-std::string errorResponse(const std::string &id, const std::string &code, const std::string &message);
-uint64_t nowNs();
+using broadify::helper::errorResponse;
+using broadify::helper::extractBoolField;
+using broadify::helper::extractDoubleField;
+using broadify::helper::extractIntField;
+using broadify::helper::extractObjectField;
+using broadify::helper::extractStringArrayField;
+using broadify::helper::extractStringField;
+using broadify::helper::jsonEscape;
+using broadify::helper::nowNs;
+using broadify::helper::okResponse;
 
 }  // namespace broadify::meeting
