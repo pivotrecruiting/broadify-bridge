@@ -173,6 +173,17 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   power_socket_delete: sideEffect("power_socket_delete", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"]),
   power_socket_set: sideEffect("power_socket_set", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"], "never"),
   power_socket_test: readOnly("power_socket_test", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["power.sockets"]),
+  // Live program preview. The offer answers synchronously after ICE gathering
+  // (bounded at 3 s on the bridge), so it stays inside the fast class; one
+  // "pgm" lane keeps offer/close ordered per bridge. Replaying an offer would
+  // build a second PeerConnection for a dead viewer: same request id only.
+  pgm_get_status: readOnly("pgm_get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.status"]),
+  pgm_inputs_list: readOnly("pgm_inputs_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.inputs"]),
+  pgm_source_select: sideEffect("pgm_source_select", "helper_start", 35_000, 30_000, "pgm", ["pgm.status", "pgm.inputs"], "after_state_check"),
+  pgm_source_clear: sideEffect("pgm_source_clear", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.status", "pgm.inputs"], "after_state_check"),
+  pgm_session_list: readOnly("pgm_session_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.sessions"]),
+  pgm_webrtc_offer: sideEffect("pgm_webrtc_offer", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
+  pgm_webrtc_close: sideEffect("pgm_webrtc_close", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
 };
 
 /**

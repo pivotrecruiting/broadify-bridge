@@ -1,0 +1,12 @@
+# Architecture Decision Records (ADR)
+
+Entscheidungen, die eine bestehende Doktrin berühren (Prozessgrenzen, Data Plane, Drittbibliotheken), werden hier
+festgehalten: ein Dokument je Entscheidung, nummeriert, nie umgeschrieben. Ersetzt eine neue Entscheidung eine alte,
+bekommt die alte den Status „abgelöst durch ADR-NNNN“.
+
+| ADR | Titel | Status |
+|---|---|---|
+| [0001](0001-adr-prozess.md) | ADR-Prozess | akzeptiert |
+| [0002](0002-pgm-helper-eigener-prozess.md) | Live-PGM: eigener nativer Helper-Prozess | akzeptiert |
+| [0003](0003-framebus-v2-yuv-capture-ring.md) | FrameBus v2 als YUV-Ring für DeckLink-Eingang | akzeptiert |
+| [0004](0004-libdatachannel-fuer-pgm-webrtc.md) | libdatachannel als WebRTC-Stack des PGM-Helpers | akzeptiert |

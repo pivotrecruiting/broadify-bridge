@@ -36,6 +36,7 @@ import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { buildBridgeOutputsView } from "./outputs-view.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm/pgm-command-handler.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 import { powerSocketService } from "./power/power-socket-service.js";
 import {
@@ -87,6 +88,9 @@ export class CommandRouter {
       if (isMeetingCommand(command)) {
         return await handleMeetingCommand(command, payload);
       }
+      if (isPgmCommand(command)) {
+        return await handlePgmCommand(command, payload);
+      }
 
       switch (command) {
         case "get_status": {
@@ -127,6 +131,7 @@ export class CommandRouter {
                   presetDiscovery: true,
                   presetRecall: true,
                 },
+                live_program: getLiveProgramCapabilities(),
               },
             },
           };

@@ -38,6 +38,8 @@ Diese Regeln gelten fuer `broadify-bridge`. Globale persoenliche Regeln liegen i
 - Kein Bridge-Compositing/Ticker als Fallback.
 - Keine Runtime-Umschaltung ueber `BRIDGE_GRAPHICS_RENDERER_SINGLE`.
 - Bei Graphics-/Helper-Aenderungen die passende Doku unter `docs/bridge/*` aktualisieren.
+- Entscheidungen mit Doktrin-Wirkung als ADR unter `docs/bridge/architecture/adr/` festhalten (ADR-0001).
+- PGM-Medien (Live-Vorschau) laufen nie ueber den Relay; nur Signalisierung ueber den signierten Befehlsweg (ADR-0004).
 
 ## Security
 
