@@ -16,3 +16,14 @@ describe("PgmSessionManager", () => {
     expect(m.count()).toBe(0);
   });
 });
+
+describe("PgmSessionManager.has", () => {
+  it("reports reserved ids only", () => {
+    const sessions = new PgmSessionManager(2);
+    expect(sessions.has("a")).toBe(false);
+    sessions.reserve("a", "u", null);
+    expect(sessions.has("a")).toBe(true);
+    sessions.release("a");
+    expect(sessions.has("a")).toBe(false);
+  });
+});

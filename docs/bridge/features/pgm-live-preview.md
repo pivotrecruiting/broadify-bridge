@@ -24,9 +24,21 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   (`apps/bridge/src/services/pgm/pgm-helper-manager.ts`: Start bei Bedarf, Ready/Ping, Event-Log-Tail auf macOS,
   Neustart nach Absturz mit Re-Selektion, Sessions mit Zuschauergrenze, persistierte Quelle), Packaging als signierte
   App `Broadify Bridge PGM Helper.app`.
-- Signalcheck-Karte auf der Verbindungsseite (Eingänge, Quelle wählen, gemessenes Format, Live-Bild), Kachel in der
-  Kopfzeile der Steuerung, schwebende Kachel über alle Seiten (eine Verbindung je Browser, Zuschauerzählung im Store),
-  natives Bild-im-Bild. Erster Durchlauf mit der eingebauten FaceTime-Kamera am 2026-10-24 erfolgreich.
+- Zuschauer-Sessions: Die Bridge reserviert je Offer einen Platz (Grenze `BRIDGE_PGM_MAX_VIEWERS`). Browser, die neu
+  laden oder Strom verlieren, schicken kein `pgm_webrtc_close`; deshalb gibt die Bridge den Platz frei, sobald der
+  Helper `pgm_viewer_state` mit `closed`/`failed` meldet, gleicht alle 10 s gegen `pgm.sessions.list` ab und fragt
+  vor einer `pgm_viewer_limit`-Ablehnung noch einmal nach (der Helper räumt selbst: 10 s `disconnected`, 15 s nie
+  verbunden). Ohne diesen Abgleich sperrte ein paar Mal Neuladen alle Zuschauer aus (Befund 2026-10-24).
+- Quelle: `<userData>/pgm/pgm-source.json` wird beim Wählen/Entfernen geschrieben und beim Bridge-Start wieder
+  gewählt (`restoreOnBoot`). Der Store entsteht erst beim ersten Zugriff, weil der Manager-Singleton vor dem
+  Bridge-Kontext (userDataDir) importiert wird.
+- Web: Das schwebende Fenster (`components/live-program/live-program-dock.tsx`, im App-Layout) ist der einzige
+  Viewer: standardmäßig sichtbar, sobald der Nutzer das Live-Programm sehen darf und eine Bridge konfiguriert ist,
+  per Navbar-Knopf ein-/ausblendbar, frei verschiebbar, Position je Browser gemerkt; Bridge-Probleme erscheinen als
+  Overlay statt das Fenster abzubauen. Eine WebRTC-Verbindung je Browser, Freigabe erst 5 s nach dem letzten
+  Konsumenten (Seitenwechsel, kurzes Schließen) und Berechtigungen einmal je Seitenladung gecacht. Die
+  Signalcheck-Karte auf der Verbindungsseite wählt Eingang, Standbild und Aufnahme; natives Bild-im-Bild aus dem
+  Fenster. Erster Durchlauf mit der eingebauten FaceTime-Kamera am 2026-10-24 erfolgreich.
 - Aufnahme (vorgezogen aus Phase 6): MP4 ohne Neukodierung (VideoToolbox-Samples im Passthrough, Ton als AAC),
   startet am ersten Keyframe, `<datei>.mp4.part` bis zum sauberen Stopp, läuft unabhängig von Zuschauern.
   Befehle `pgm_recording_pick_path` (Speicherdialog auf dem Bridge-Rechner), `pgm_recording_start {file_path?}`

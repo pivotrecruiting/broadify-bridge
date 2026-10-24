@@ -24,7 +24,7 @@ import { PgmError } from "./pgm-errors.js";
 import { publishPgmErrorEvent, publishPgmStatusEvent } from "./pgm-event-publisher.js";
 import { PgmHelperClient, PgmHelperRequestError } from "./pgm-helper-client.js";
 import { PgmSessionManager } from "./pgm-session-manager.js";
-import { PgmSourceStore, type PgmSourceFileT } from "./pgm-source-store.js";
+import { EMPTY_PGM_SOURCE, PgmSourceStore, type PgmSourceFileT } from "./pgm-source-store.js";
 import type { PgmWebrtcOfferT } from "./pgm-command-schemas.js";
 
 export const PGM_HELPER_SPEC: HelperSpecT = {
@@ -52,12 +52,20 @@ const getLogger = (): LoggerT => {
   }
 };
 
+/** How often the bridge-side session map is checked against the helper's live viewers. */
+const SESSION_RECONCILE_MS = 10_000;
+
+/** PeerConnection states after which the helper drops the viewer (see WebRtcPublisher::reapDead). */
+export function isDeadViewerState(state: string): boolean {
+  return state === "closed" || state === "failed";
+}
+
 export function idlePgmStatus(enabled: boolean, lastError: { code: string; message: string } | null = null): PgmStatusT {
   return { enabled, state: lastError ? "error" : "idle", input: null, signal: null, encoder: null, audio: false, viewers: 0, last_error: lastError };
 }
 
 /** A helper stdout/event-log line; the status projection the manager keeps. */
-export function applyHelperEvent(current: PgmStatusT, line: string): { status: PgmStatusT; kind: string } | null {
+export function applyHelperEvent(current: PgmStatusT, line: string): { status: PgmStatusT; kind: string; event: Record<string, unknown> } | null {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -66,15 +74,15 @@ export function applyHelperEvent(current: PgmStatusT, line: string): { status: P
   }
   const type = typeof event.type === "string" ? event.type : "";
   if (type === "pgm_status" && event.status && typeof event.status === "object") {
-    return { status: { ...(event.status as PgmStatusT), enabled: current.enabled }, kind: type };
+    return { status: { ...(event.status as PgmStatusT), enabled: current.enabled }, kind: type, event };
   }
   if (type === "pgm_signal" && event.signal && typeof event.signal === "object") {
-    return { status: { ...current, signal: event.signal as PgmStatusT["signal"] }, kind: type };
+    return { status: { ...current, signal: event.signal as PgmStatusT["signal"] }, kind: type, event };
   }
   if (type === "pgm_error" && typeof event.code === "string") {
-    return { status: { ...current, state: "error", last_error: { code: event.code, message: String(event.message ?? "") } }, kind: type };
+    return { status: { ...current, state: "error", last_error: { code: event.code, message: String(event.message ?? "") } }, kind: type, event };
   }
-  return { status: current, kind: type };
+  return { status: current, kind: type, event };
 }
 
 export type PgmHelperManagerDepsT = {
@@ -113,22 +121,50 @@ export class PgmHelperManager {
   private publishTimer: NodeJS.Timeout | null = null;
   private eventLogOffset = 0;
   private eventLogTimer: NodeJS.Timeout | null = null;
+  private reconcileTimer: NodeJS.Timeout | null = null;
   private readonly sessions: PgmSessionManager;
-  private readonly store: PgmSourceStore | null;
-  private source: PgmSourceFileT;
+  /** Resolved lazily: the singleton is created at import time, before the bridge context (userDataDir) exists. */
+  private store: PgmSourceStore | null = null;
+  private source: PgmSourceFileT = EMPTY_PGM_SOURCE;
+  private sourceLoaded = false;
 
   constructor(private readonly deps: PgmHelperManagerDepsT = defaultDeps) {
     const env = parsePgmEnv(deps.env);
     this.status = idlePgmStatus(env.enabled);
     this.sessions = new PgmSessionManager(env.maxViewers);
-    let store: PgmSourceStore | null = null;
-    try {
-      store = new PgmSourceStore(deps.userDataDir());
-    } catch {
-      store = null;
+  }
+
+  private getStore(): PgmSourceStore | null {
+    if (!this.store) {
+      try {
+        this.store = new PgmSourceStore(this.deps.userDataDir());
+      } catch {
+        return null; // context not ready yet; retried on the next call
+      }
     }
-    this.store = store;
-    this.source = store ? store.load() : { version: 1, input: null, profile: "auto" };
+    return this.store;
+  }
+
+  /** The persisted program source (loaded from disk on first use). */
+  getSource(): PgmSourceFileT {
+    if (!this.sourceLoaded) {
+      const store = this.getStore();
+      if (store) {
+        this.source = store.load();
+        this.sourceLoaded = true;
+      }
+    }
+    return this.source;
+  }
+
+  private async persistSource(next: PgmSourceFileT): Promise<void> {
+    this.source = next;
+    this.sourceLoaded = true;
+    try {
+      await this.getStore()?.save(next);
+    } catch (error: unknown) {
+      getLogger().warn(`[PGM] Persisting the program source failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   getStatus(): PgmStatusT {
@@ -155,19 +191,17 @@ export class PgmHelperManager {
   async selectSource(inputId: string, profile: "auto" | "lan" | "remote"): Promise<PgmStatusT> {
     const client = await this.ensureRunning();
     const status = await client.sourceSelect(inputId, profile).catch((error) => this.rethrow(error));
-    this.source = {
+    await this.persistSource({
       version: 1,
       input: status.input ? { kind: status.input.kind, stable_key: status.input.stable_key, display_name: status.input.display_name } : null,
       profile,
-    };
-    await this.store?.save(this.source).catch(() => undefined);
+    });
     this.setStatus(status, "source_selected", true);
     return this.getStatus();
   }
 
   async clearSource(): Promise<PgmStatusT> {
-    this.source = { version: 1, input: null, profile: this.source.profile };
-    await this.store?.save(this.source).catch(() => undefined);
+    await this.persistSource({ version: 1, input: null, profile: this.getSource().profile });
     if (this.client) {
       const status = await this.client.sourceClear().catch((error) => this.rethrow(error));
       this.setStatus(status, "source_cleared", true);
@@ -180,15 +214,21 @@ export class PgmHelperManager {
 
   async offer(payload: PgmWebrtcOfferT): Promise<{ sdp: string; max_viewers: number; active_viewers: number }> {
     const env = parsePgmEnv(this.deps.env);
-    if (!this.source.input) {
+    const source = this.getSource();
+    if (!source.input) {
       throw new PgmError("pgm_no_signal", "No program source is selected on this bridge.");
     }
     if (!this.sessions.reserve(payload.session_id, payload.viewer_user_id, payload.label ?? null)) {
-      throw new PgmError("pgm_viewer_limit", `Viewer limit reached (${env.maxViewers}).`, { max_viewers: env.maxViewers, active_viewers: this.sessions.count() });
+      // Browsers that reloaded or lost power never sent pgm_webrtc_close: ask the helper
+      // which viewers are really alive before refusing.
+      await this.reconcileSessions();
+      if (!this.sessions.reserve(payload.session_id, payload.viewer_user_id, payload.label ?? null)) {
+        throw new PgmError("pgm_viewer_limit", `Viewer limit reached (${env.maxViewers}).`, { max_viewers: env.maxViewers, active_viewers: this.sessions.count() });
+      }
     }
     try {
       const client = await this.ensureRunning();
-      const { sdp } = await client.viewerOffer(payload, this.source.profile);
+      const { sdp } = await client.viewerOffer(payload, source.profile);
       this.requestStatusPublish("viewer_added");
       return { sdp, max_viewers: env.maxViewers, active_viewers: this.sessions.count() };
     } catch (error: unknown) {
@@ -237,11 +277,12 @@ export class PgmHelperManager {
 
   /** Restores a persisted source on bridge start (helper starts lazily). */
   async restoreOnBoot(): Promise<void> {
-    if (!parsePgmEnv(this.deps.env).enabled || !this.source.input) {
+    const source = this.getSource();
+    if (!parsePgmEnv(this.deps.env).enabled || !source.input) {
       return;
     }
     try {
-      await this.selectSource(`${this.source.input.kind}:${this.source.input.stable_key}`, this.source.profile);
+      await this.selectSource(`${source.input.kind}:${source.input.stable_key}`, source.profile);
     } catch (error: unknown) {
       getLogger().warn(`[PGM] Restoring the program source failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -250,6 +291,7 @@ export class PgmHelperManager {
   async stop(): Promise<void> {
     this.clearRestartTimer();
     this.stopEventLogTail();
+    this.stopSessionReconcile();
     const client = this.client;
     this.client = null;
     if (client) {
@@ -346,6 +388,7 @@ export class PgmHelperManager {
     this.client = client;
     this.state = "running";
     this.runningSince = Date.now();
+    this.startSessionReconcile();
     const status = await client.status().catch(() => null);
     if (status) {
       this.setStatus(status, "helper_started", true);
@@ -372,11 +415,59 @@ export class PgmHelperManager {
     }
     if (applied.kind === "pgm_status" || applied.kind === "pgm_signal" || applied.kind === "pgm_error") {
       this.setStatus(applied.status, applied.kind, false);
+    } else if (applied.kind === "pgm_viewer_state") {
+      const viewerId = typeof applied.event.viewer_id === "string" ? applied.event.viewer_id : null;
+      const viewerState = typeof applied.event.state === "string" ? applied.event.state : "";
+      if (viewerId && isDeadViewerState(viewerState) && this.sessions.has(viewerId)) {
+        this.sessions.release(viewerId);
+        this.requestStatusPublish("viewer_closed");
+      }
     } else if (applied.kind === "pgm_inputs_changed") {
       const publish = getBridgeContext().publishBridgeEvent;
       publish?.({ event: "pgm_inputs_changed", data: { at: Date.now() } });
     } else if (applied.kind === "pgm_perf") {
       getLogger().debug?.(`[PGM] perf ${line}`);
+    }
+  }
+
+  /**
+   * Drops bridge-side sessions whose PeerConnection the helper no longer has
+   * (closed/failed, or reaped after 10 s disconnected / 15 s never connected).
+   * Without this a browser that reloads or loses power keeps its slot forever
+   * and the viewer cap locks everyone out.
+   */
+  async reconcileSessions(): Promise<string[]> {
+    const client = this.client;
+    if (!client || this.state !== "running") {
+      return [];
+    }
+    let result: Awaited<ReturnType<PgmHelperClient["sessionsList"]>>;
+    try {
+      result = await client.sessionsList();
+    } catch {
+      return [];
+    }
+    const live = new Set(result.sessions.filter((s) => !isDeadViewerState(s.state)).map((s) => s.viewer_id));
+    const dropped = this.sessions.reconcile(live);
+    if (dropped.length > 0) {
+      getLogger().info(`[PGM] Released ${dropped.length} viewer session(s) the helper no longer serves`);
+      this.requestStatusPublish("viewer_closed");
+    }
+    return dropped;
+  }
+
+  private startSessionReconcile(): void {
+    this.stopSessionReconcile();
+    this.reconcileTimer = setInterval(() => {
+      void this.reconcileSessions();
+    }, SESSION_RECONCILE_MS);
+    this.reconcileTimer.unref?.();
+  }
+
+  private stopSessionReconcile(): void {
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = null;
     }
   }
 
@@ -438,6 +529,7 @@ export class PgmHelperManager {
     this.process = null;
     this.client = null;
     this.stopEventLogTail();
+    this.stopSessionReconcile();
     if (this.state !== "stopped") {
       this.state = crashed ? "error" : "stopped";
     }
@@ -459,10 +551,11 @@ export class PgmHelperManager {
     this.setStatus(idlePgmStatus(true, { code: "helper_not_reachable", message: "PGM helper restarting after a crash." }), "helper_crashed", true);
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      if (this.shutdownRequested || !this.source.input) {
+      const source = this.getSource();
+      if (this.shutdownRequested || !source.input) {
         return;
       }
-      void this.selectSource(`${this.source.input.kind}:${this.source.input.stable_key}`, this.source.profile).catch((error) => {
+      void this.selectSource(`${source.input.kind}:${source.input.stable_key}`, source.profile).catch((error) => {
         getLogger().warn(`[PGM] Restart failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     }, decision.delayMs);

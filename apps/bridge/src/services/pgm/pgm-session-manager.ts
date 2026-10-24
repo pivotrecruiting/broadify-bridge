@@ -33,6 +33,10 @@ export class PgmSessionManager {
     return true;
   }
 
+  has(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   release(sessionId: string): void {
     this.sessions.delete(sessionId);
   }
