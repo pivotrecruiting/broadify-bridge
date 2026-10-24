@@ -89,6 +89,8 @@ int main(int argc, char **argv) {
   runMacosApplicationLoop(g_running);
 
   engine.stop();
+  // The server blocks in accept(); poke it so it sees g_running == false (else the process lingers as an orphan).
+  broadify::helper::wakeLineRpcServer(options.controlSocket);
   control.join();
   const std::string reason = broadify::helper::helperExitReason();
   broadify::helper::emitHelperEvent("{\"type\":\"shutdown\",\"reason\":\"" + broadify::helper::jsonEscape(reason.empty() ? "signal" : reason) + "\"}");

@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #if defined(_WIN32)
@@ -196,5 +197,26 @@ void runLineRpcServer(const std::string &endpoint,
 }
 
 #endif
+
+void wakeLineRpcServer(const std::string &endpoint) {
+#if defined(_WIN32)
+  HANDLE pipe = CreateFileA(endpoint.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+  if (pipe != INVALID_HANDLE_VALUE) {
+    CloseHandle(pipe);
+  }
+#else
+  const int fd = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
+  if (fd < 0) {
+    return;
+  }
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  if (endpoint.size() < sizeof(addr.sun_path)) {
+    std::strncpy(addr.sun_path, endpoint.c_str(), sizeof(addr.sun_path) - 1);
+    (void)connect(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr));
+  }
+  close(fd);
+#endif
+}
 
 }  // namespace broadify::helper

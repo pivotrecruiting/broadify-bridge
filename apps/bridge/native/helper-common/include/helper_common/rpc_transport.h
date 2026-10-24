@@ -32,4 +32,13 @@ void runLineRpcServer(const std::string &endpoint,
                       std::atomic<bool> &running,
                       const RpcTransportCallbacks &callbacks);
 
+/**
+ * Unblocks a server waiting in accept()/ConnectNamedPipe so it observes
+ * `running == false`: connects to the endpoint once and closes. Call after
+ * clearing the flag and before joining the server thread; without it a helper
+ * whose bridge died lingers forever at the join (observed as orphan PGM
+ * helpers on 2026-10-24).
+ */
+void wakeLineRpcServer(const std::string &endpoint);
+
 }  // namespace broadify::helper
