@@ -1,7 +1,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 
-#include "common/monotonic_clock.h"
+#include "common/live_types.h"
+#include "live_stream/monotonic_clock.h"
 #include "audio/audio_source.h"
 
 #include <mutex>

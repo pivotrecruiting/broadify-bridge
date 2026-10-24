@@ -1,9 +1,9 @@
-#include "encode/bitrate_ladder.h"
+#include "live_stream/bitrate_ladder.h"
 
 #include <cstdlib>
 #include <iostream>
 
-using namespace broadify::pgm;
+using namespace broadify::live;
 
 static void fail(const char *m) { std::cerr << "bitrate_ladder_test failed: " << m << std::endl; std::exit(1); }
 

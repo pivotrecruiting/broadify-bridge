@@ -1,24 +1,12 @@
 #pragma once
 
+#include "common/live_types.h"
+
 #include <atomic>
 #include <string>
 #include <vector>
 
 namespace broadify::pgm {
-
-/** One ICE server as the bridge passes it (STUN or TURN with credentials). */
-struct IceServerSpec {
-  std::string url;
-  std::string username;
-  std::string credential;
-};
-
-struct ViewerOfferRequest {
-  std::string viewerId;
-  std::string sdp;
-  std::vector<IceServerSpec> iceServers;
-  std::string profile;  // "auto" | "lan" | "remote"
-};
 
 /**
  * What the RPC layer needs from the engine. Narrow on purpose so the dispatch
@@ -26,11 +14,6 @@ struct ViewerOfferRequest {
  * and WebRTC. Every method returns a JSON object body (without envelope) or
  * throws RpcFailure with a stable code.
  */
-struct RpcFailure {
-  std::string code;
-  std::string message;
-};
-
 class PgmEngineApi {
  public:
   virtual ~PgmEngineApi() = default;
@@ -50,9 +33,6 @@ class PgmEngineApi {
   /** JSON {jpeg_base64,width,height} of the latest frame. */
   virtual std::string snapshotJson(double quality) = 0;
 };
-
-/** Parses the ice_servers array of an offer payload; tolerant of missing credentials. */
-std::vector<IceServerSpec> parseIceServers(const std::string &body);
 
 /** Handles one JSON-RPC line ({"id","method","params"}) and returns the response line. */
 std::string handlePgmRpc(const std::string &line, PgmEngineApi &engine, std::atomic<bool> &running);

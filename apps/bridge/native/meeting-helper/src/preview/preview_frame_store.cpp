@@ -72,4 +72,14 @@ uint64_t PreviewFrameStore::sequence() const {
   return frame_.sequence;
 }
 
+bool PreviewFrameStore::visitLatestIfNew(uint64_t lastSequence,
+                                          const std::function<void(const PreviewFrame &)> &visitor) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (frame_.sequence == 0 || frame_.sequence == lastSequence || frame_.rgba.empty()) {
+    return false;
+  }
+  visitor(frame_);
+  return true;
+}
+
 }  // namespace broadify::meeting

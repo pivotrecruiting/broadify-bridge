@@ -29,6 +29,18 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   Helper `pgm_viewer_state` mit `closed`/`failed` meldet, gleicht alle 10 s gegen `pgm.sessions.list` ab und fragt
   vor einer `pgm_viewer_limit`-Ablehnung noch einmal nach (der Helper räumt selbst: 10 s `disconnected`, 15 s nie
   verbunden). Ohne diesen Abgleich sperrte ein paar Mal Neuladen alle Zuschauer aus (Befund 2026-10-24).
+- Meeting-Programm im selben Viewer (ADR-0005): Encoder, Annex B, Bitraten-Leiter und WebRTC-Publisher liegen in
+  `apps/bridge/native/live-stream` (`broadify::live`), genutzt vom PGM-Helper und vom Meeting-Helper. Der Meeting-
+  Helper streamt sein zusammengesetztes Kamerabild über `ProgramStream` (`src/live/program_stream.mm`): eigener
+  Thread am `PreviewFrameStore`, ohne Zuschauer keine Kopie und kein Encoder, mit Zuschauern ein Durchgang
+  RGBA→BGRA in einen gepoolten IOSurface-`CVPixelBuffer` und asynchrone VideoToolbox-Kodierung; die Frame-Pipeline
+  (virtuelle Kamera, Aufnahme) wartet nie auf den Encoder. RPC `program.viewer.offer/close`,
+  `program.sessions.list`, `program.stream.status`; Bridge-Befehle `meeting_program_offer/close/sessions/status`
+  (gleiche Schemata wie `pgm_webrtc_*`, Mode-Gate Meeting, `bridges:view_program`, Sessions in
+  `services/meeting/meeting-program-stream.ts` mit Grenze, Nutzerbindung und Abgleich). Fähigkeit
+  `get_status.capabilities.live_program.meeting_preview`. Web: das schwebende Fenster wählt die Quelle je Modus
+  (Studio/Postproduction → Mischer-PGM, Meeting/Conference → Meeting-Programm) und startet die Session beim
+  Moduswechsel einmal neu. Windows: `program_stream_unavailable` bis zum Media-Foundation-Encoder (Phase 2).
 - Quelle: `<userData>/pgm/pgm-source.json` wird beim Wählen/Entfernen geschrieben und beim Bridge-Start wieder
   gewählt (`restoreOnBoot`). Der Store entsteht erst beim ersten Zugriff, weil der Manager-Singleton vor dem
   Bridge-Kontext (userDataDir) importiert wird.

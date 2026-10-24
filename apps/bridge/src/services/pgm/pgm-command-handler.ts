@@ -45,7 +45,8 @@ const defaultDeps: PgmCommandDepsT = {
 export function getLiveProgramCapabilities(deps: Pick<PgmCommandDepsT, "env" | "platform"> = defaultDeps): LiveProgramCapabilitiesT {
   const env = parsePgmEnv(deps.env);
   const supported = env.enabled && deps.platform === "darwin";
-  return { supported, audio: supported, max_viewers: env.maxViewers, decklink_input: false };
+  // The meeting helper streams its composited program with the same shared encoder/WebRTC library (macOS first).
+  return { supported, audio: supported, max_viewers: env.maxViewers, decklink_input: false, meeting_preview: supported };
 }
 
 export function idlePgmStatus(deps: Pick<PgmCommandDepsT, "env"> = defaultDeps): PgmStatusT {

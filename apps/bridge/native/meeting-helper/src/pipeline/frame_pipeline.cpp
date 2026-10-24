@@ -1992,7 +1992,8 @@ void runFramePipeline(const Options &options,
       runtime.screenRunning = screenStatus.running;
       runtime.keyerEnabled = state.keyerEnabled;
       runtime.framebusRunning = state.framebusRunning;
-      runtime.previewClients = state.previewClientCount;
+      // MJPEG clients and the WebRTC program stream both consume PreviewFrameStore.
+      runtime.previewClients = state.previewClientCount + state.programStreamClientCount;
       runtime.vcamClients = state.vcamClientCount;
       runtime.vcamTcpClients = state.vcamTcpClientCount;
       runtime.vcamShmReaders = state.vcamShmReaderCount;

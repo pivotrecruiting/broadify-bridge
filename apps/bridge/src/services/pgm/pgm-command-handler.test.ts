@@ -36,7 +36,8 @@ describe("pgm command handler", () => {
   });
 
   it("advertises the capability from the env gate and platform", () => {
-    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: false, audio: false, max_viewers: 4, decklink_input: false });
+    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: false, audio: false, max_viewers: 4, decklink_input: false, meeting_preview: false });
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "darwin" }).meeting_preview).toBe(true);
     expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "darwin" }).supported).toBe(true);
     expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "win32" }).supported).toBe(false);
   });

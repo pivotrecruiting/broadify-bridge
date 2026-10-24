@@ -12,7 +12,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
   endif()
 endif()
 
-project(broadify_meeting_helper LANGUAGES C CXX)
+project(broadify_meeting_helper VERSION 0.1.0 LANGUAGES C CXX)
 
 if(WIN32)
   execute_process(
@@ -190,11 +190,18 @@ endif()
 
 # Shared helper code (RPC transport, ...) - see apps/bridge/native/helper-common.
 add_subdirectory(../helper-common helper-common)
+# Shared hardware encoder + WebRTC publisher (apps/bridge/native/live-stream), also used by the PGM helper.
+add_subdirectory(../live-stream live-stream)
 
 if(APPLE)
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.mm)
+  set_source_files_properties(src/live/program_stream.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
+  target_link_libraries(meeting-helper PRIVATE live_stream)
 else()
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream_stub.cpp)
   add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+  target_link_libraries(meeting-helper PRIVATE live_stream_core)
 endif()
 target_link_libraries(meeting-helper PRIVATE helper_common)
 
@@ -475,6 +482,7 @@ if(MEETING_HELPER_BUILD_TESTS)
   set(CONTROL_SERVER_TEST_SOURCES
     tests/control_server_test.cpp
     src/control/control_server.cpp
+    src/live/program_stream_stub.cpp
     src/capture/camera_source.cpp
     src/capture/screen_capture_source.cpp
     src/capture/screen_capture_stub.cpp
@@ -491,6 +499,13 @@ if(MEETING_HELPER_BUILD_TESTS)
     )
   endif()
   add_executable(control_server_test ${CONTROL_SERVER_TEST_SOURCES})
+  target_link_libraries(control_server_test PRIVATE live_stream_core)
+  # Same production sources with the stub stream: the RPC surface of the WebRTC program stream.
+  set(PROGRAM_STREAM_RPC_TEST_SOURCES ${CONTROL_SERVER_TEST_SOURCES})
+  list(REMOVE_ITEM PROGRAM_STREAM_RPC_TEST_SOURCES tests/control_server_test.cpp)
+  list(APPEND PROGRAM_STREAM_RPC_TEST_SOURCES tests/program_stream_rpc_test.cpp)
+  add_executable(program_stream_rpc_test ${PROGRAM_STREAM_RPC_TEST_SOURCES})
+  target_link_libraries(program_stream_rpc_test PRIVATE live_stream_core)
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
@@ -543,6 +558,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     matting_backend_test
     matting_common_test
     control_server_test
+    program_stream_rpc_test
     raw_frame_stream_header_test
     raw_frame_record_test
     vcam_shm_layout_test

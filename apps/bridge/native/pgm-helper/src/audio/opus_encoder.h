@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/audio_source.h"
+#include "common/live_types.h"
 
 #include <cstdint>
 #include <functional>
@@ -9,13 +10,6 @@
 
 namespace broadify::pgm {
 
-struct EncodedAudioPacket {
-  std::vector<uint8_t> opus;
-  uint64_t captureNs = 0;  // capture time of the first sample in the packet
-  uint32_t frames = 960;   // 20 ms at 48 kHz
-};
-
-/** Opus 48 kHz stereo, 20 ms frames, ~96 kbps, low delay. Buffers PCM until a full frame is available. */
 class OpusAudioEncoder {
  public:
   OpusAudioEncoder();

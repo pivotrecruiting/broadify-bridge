@@ -1,6 +1,6 @@
-#include "encode/h264_annexb.h"
+#include "live_stream/h264_annexb.h"
 
-namespace broadify::pgm {
+namespace broadify::live {
 namespace {
 
 constexpr uint8_t START_CODE[4] = {0, 0, 0, 1};
@@ -89,4 +89,4 @@ bool containsIdr(const std::vector<uint8_t> &annexB) {
   return idr;
 }
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

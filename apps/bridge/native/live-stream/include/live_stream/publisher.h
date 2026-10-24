@@ -1,8 +1,8 @@
 #pragma once
 
-#include "control/pgm_rpc.h"
-#include "encode/video_encoder.h"
-#include "audio/opus_encoder.h"
+#include "live_stream/viewer_types.h"
+#include "live_stream/video_encoder.h"
+#include "live_stream/audio_packet.h"
 
 #include <cstdint>
 #include <functional>
@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace broadify::pgm {
+namespace broadify::live {
 
 struct ViewerStats {
   std::string viewerId;
@@ -29,7 +29,8 @@ struct ViewerStats {
  */
 class WebRtcPublisher {
  public:
-  explicit WebRtcPublisher(std::function<void()> onKeyframeRequest);
+  /** `eventType` names the helper event emitted on viewer state changes (e.g. "pgm_viewer_state"). */
+  explicit WebRtcPublisher(std::function<void()> onKeyframeRequest, std::string eventType = "pgm_viewer_state");
   ~WebRtcPublisher();
 
   /** Returns the answer SDP; throws RpcFailure on invalid offers. */
@@ -49,9 +50,10 @@ class WebRtcPublisher {
  private:
   struct Viewer;
   std::function<void()> onKeyframeRequest_;
+  std::string eventType_;
   std::vector<std::shared_ptr<Viewer>> viewers_;
   mutable std::mutex mutex_;
   uint64_t lastVideoPtsUs_ = 0;
 };
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

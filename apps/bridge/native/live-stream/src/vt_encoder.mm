@@ -1,12 +1,12 @@
 #import <CoreMedia/CoreMedia.h>
 #import <VideoToolbox/VideoToolbox.h>
 
-#include "encode/video_encoder.h"
+#include "live_stream/video_encoder.h"
 
 #include <atomic>
 #include <mutex>
 
-namespace broadify::pgm {
+namespace broadify::live {
 namespace {
 
 /**
@@ -190,4 +190,4 @@ class VideoToolboxEncoder final : public VideoEncoder {
 
 std::unique_ptr<VideoEncoder> createVideoToolboxEncoder() { return std::make_unique<VideoToolboxEncoder>(); }
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

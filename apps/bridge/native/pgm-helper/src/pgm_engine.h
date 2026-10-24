@@ -4,10 +4,10 @@
 #include "audio/opus_encoder.h"
 #include "capture/video_source.h"
 #include "control/pgm_rpc.h"
-#include "encode/video_encoder.h"
+#include "live_stream/video_encoder.h"
 #include "recorder/mp4_recorder.h"
 #include "signal/video_signal_tracker.h"
-#include "webrtc/publisher.h"
+#include "live_stream/publisher.h"
 
 #include <atomic>
 #include <memory>

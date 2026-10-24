@@ -1,8 +1,8 @@
-#include "encode/bitrate_ladder.h"
+#include "live_stream/bitrate_ladder.h"
 
 #include <algorithm>
 
-namespace broadify::pgm {
+namespace broadify::live {
 
 EncodeProfile parseEncodeProfile(const std::string &value) {
   if (value == "remote") {
@@ -73,4 +73,4 @@ EncodeTarget selectEncodeTarget(uint32_t srcWidth, uint32_t srcHeight, uint32_t 
   return target;
 }
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

@@ -481,4 +481,6 @@ export type LiveProgramCapabilitiesT = {
   audio: boolean;
   max_viewers: number;
   decklink_input: boolean;
+  /** The meeting helper streams its composited program over WebRTC (meeting_program_* commands). */
+  meeting_preview?: boolean;
 };

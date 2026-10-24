@@ -1,10 +1,10 @@
-#include "encode/h264_annexb.h"
+#include "live_stream/h264_annexb.h"
 
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 
-using namespace broadify::pgm;
+using namespace broadify::live;
 
 static void fail(const char *m) { std::cerr << "h264_annexb_test failed: " << m << std::endl; std::exit(1); }
 

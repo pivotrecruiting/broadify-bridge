@@ -1,4 +1,4 @@
-#include "webrtc/publisher.h"
+#include "live_stream/publisher.h"
 
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
@@ -10,7 +10,7 @@
 #include <condition_variable>
 #include <random>
 
-namespace broadify::pgm {
+namespace broadify::live {
 
 using broadify::helper::emitHelperEvent;
 using broadify::helper::jsonEscape;
@@ -90,7 +90,8 @@ struct WebRtcPublisher::Viewer {
   bool audioOpen = false;
 };
 
-WebRtcPublisher::WebRtcPublisher(std::function<void()> onKeyframeRequest) : onKeyframeRequest_(std::move(onKeyframeRequest)) {
+WebRtcPublisher::WebRtcPublisher(std::function<void()> onKeyframeRequest, std::string eventType)
+    : onKeyframeRequest_(std::move(onKeyframeRequest)), eventType_(std::move(eventType)) {
   rtc::InitLogger(rtc::LogLevel::Warning);
 }
 
@@ -202,11 +203,12 @@ std::string WebRtcPublisher::addViewer(const ViewerOfferRequest &request, bool a
     }
   });
   const std::string viewerId = request.viewerId;
-  viewer->pc->onStateChange([weak, viewerId](rtc::PeerConnection::State state) {
+  const std::string eventType = eventType_;
+  viewer->pc->onStateChange([weak, viewerId, eventType](rtc::PeerConnection::State state) {
     if (auto v = weak.lock()) {
       v->state = stateName(state);
     }
-    emitHelperEvent("{\"type\":\"pgm_viewer_state\",\"viewer_id\":\"" + jsonEscape(viewerId) + "\",\"state\":\"" + stateName(state) + "\"}");
+    emitHelperEvent("{\"type\":\"" + eventType + "\",\"viewer_id\":\"" + jsonEscape(viewerId) + "\",\"state\":\"" + stateName(state) + "\"}");
   });
 
   try {
@@ -365,4 +367,4 @@ size_t WebRtcPublisher::reapDead() {
   return dead.size();
 }
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

@@ -190,6 +190,12 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   pgm_recording_pick_path: sideEffect("pgm_recording_pick_path", "helper_start", 130_000, 125_000, "pgm.recording.dialog", ["pgm.status"]),
   pgm_recording_start: sideEffect("pgm_recording_start", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm.recording", ["pgm.status"], "after_state_check"),
   pgm_recording_stop: sideEffect("pgm_recording_stop", "helper_start", 35_000, 30_000, "pgm.recording", ["pgm.status"], "after_state_check"),
+  // Meeting program stream: the composited camera picture over WebRTC, same
+  // bounded ICE answer as pgm_webrtc_offer, on its own lane.
+  meeting_program_status: readOnly("meeting_program_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.program"]),
+  meeting_program_sessions: readOnly("meeting_program_sessions", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.program.sessions"]),
+  meeting_program_offer: sideEffect("meeting_program_offer", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.program", ["meeting.program.sessions"]),
+  meeting_program_close: sideEffect("meeting_program_close", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.program", ["meeting.program.sessions"]),
 };
 
 /**

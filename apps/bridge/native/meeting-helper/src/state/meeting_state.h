@@ -99,6 +99,8 @@ struct MeetingState {
   std::string vcamTransport = "tcp";
   uint64_t vcamWriterGeneration = 0;
   int previewClientCount = 0;
+  // 1 while the WebRTC program stream (ProgramStream) has viewers: the pipeline then publishes preview frames.
+  int programStreamClientCount = 0;
   int vcamShmReaderCount = 0;
   int vcamTcpClientCount = 0;
   int vcamClientCount = 0;

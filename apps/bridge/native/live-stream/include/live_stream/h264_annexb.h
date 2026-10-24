@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace broadify::pgm {
+namespace broadify::live {
 
 /**
  * Converts an AVCC (length-prefixed) H.264 access unit into Annex B (start
@@ -27,4 +27,4 @@ int firstNalType(const std::vector<uint8_t> &annexB);
 /** True if any NAL in the Annex B buffer is an IDR slice (type 5). */
 bool containsIdr(const std::vector<uint8_t> &annexB);
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

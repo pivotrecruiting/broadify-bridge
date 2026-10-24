@@ -1,12 +1,12 @@
 #pragma once
 
-#include "capture/video_source.h"
+#include "live_stream/video_frame.h"
 
 #if defined(__APPLE__)
 #include <CoreMedia/CoreMedia.h>
 #endif
-#include "encode/bitrate_ladder.h"
-#include "encode/h264_annexb.h"
+#include "live_stream/bitrate_ladder.h"
+#include "live_stream/h264_annexb.h"
 
 #include <cstdint>
 #include <functional>
@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace broadify::pgm {
+namespace broadify::live {
 
 /** One encoded H.264 access unit in Annex B (SPS/PPS prepended on keyframes). */
 struct EncodedAccessUnit {
@@ -54,4 +54,4 @@ class VideoEncoder {
 std::unique_ptr<VideoEncoder> createVideoToolboxEncoder();
 #endif
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

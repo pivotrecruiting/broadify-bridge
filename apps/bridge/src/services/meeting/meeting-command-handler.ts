@@ -36,6 +36,8 @@ import {
   validateBrowserSourceUrl,
 } from "./meeting-content-layers.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { PgmWebrtcCloseSchema, PgmWebrtcOfferSchema } from "../pgm/pgm-command-schemas.js";
+import { MeetingProgramStreamError, meetingProgramStream } from "./meeting-program-stream.js";
 import { openGuardedDownload } from "./media-download.js";
 import { fetchBackgroundImage } from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
@@ -1127,10 +1129,52 @@ export async function handleMeetingCommand(
       };
     }
 
+    // --- WebRTC program stream (composited camera picture for the web app's floating viewer) ---
+    case "meeting_program_status": {
+      parseRelayPayload(EmptyPayloadSchema, payload ?? {}, "Invalid payload for meeting_program_status");
+      return { success: true, data: await meetingProgramStream.status() };
+    }
+    case "meeting_program_sessions": {
+      parseRelayPayload(EmptyPayloadSchema, payload ?? {}, "Invalid payload for meeting_program_sessions");
+      return { success: true, data: meetingProgramStream.getSessions() };
+    }
+    case "meeting_program_offer": {
+      const offer = parseRelayPayload(PgmWebrtcOfferSchema, payload ?? {}, "Invalid payload for meeting_program_offer");
+      return runProgramStream(async () => {
+        const answer = await meetingProgramStream.offer(offer);
+        return {
+          session_id: offer.session_id,
+          sdp: answer.sdp,
+          expires_at: Date.now() + 2 * 60 * 60 * 1000,
+          max_viewers: answer.max_viewers,
+          active_viewers: answer.active_viewers,
+          stream: { codec: "h264", audio: false },
+        };
+      });
+    }
+    case "meeting_program_close": {
+      const close = parseRelayPayload(PgmWebrtcCloseSchema, payload ?? {}, "Invalid payload for meeting_program_close");
+      return runProgramStream(async () => {
+        await meetingProgramStream.close(close);
+        return { closed: true };
+      });
+    }
+
     default:
       return {
         success: false,
         error: `Unknown meeting command: ${command}`,
       };
+  }
+}
+
+async function runProgramStream(operation: () => Promise<unknown>): Promise<MeetingCommandResultT> {
+  try {
+    return { success: true, data: await operation() };
+  } catch (error: unknown) {
+    if (error instanceof MeetingProgramStreamError) {
+      return { success: false, error: error.message, errorCode: error.code };
+    }
+    throw error;
   }
 }

@@ -6,22 +6,9 @@
 #include <string>
 #include <vector>
 
-#if defined(__APPLE__)
-#include <CoreVideo/CoreVideo.h>
-#endif
+#include "common/live_types.h"
 
 namespace broadify::pgm {
-
-/** A captured frame in its native pixel format; the buffer is retained for the callback's duration only. */
-struct CapturedFrame {
-#if defined(__APPLE__)
-  CVPixelBufferRef pixelBuffer = nullptr;
-#endif
-  uint32_t width = 0;
-  uint32_t height = 0;
-  std::string pixelFormat;  // "nv12" | "uyvy" | "yuy2" | "bgra"
-  uint64_t captureNs = 0;   // host clock (mach_absolute_time based), monotonic
-};
 
 using FrameSink = std::function<void(const CapturedFrame &frame)>;
 

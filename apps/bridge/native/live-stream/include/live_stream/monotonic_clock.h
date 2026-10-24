@@ -8,7 +8,7 @@
 #include <chrono>
 #endif
 
-namespace broadify::pgm {
+namespace broadify::live {
 
 /**
  * One clock for everything time-related in the helper. On macOS this is the
@@ -27,4 +27,4 @@ inline uint64_t monotonicNowNs() {
 #endif
 }
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

@@ -2,7 +2,7 @@
 // (+audio) section, the publisher answers, ICE connects over loopback and the
 // receiver sees RTP for a synthetic IDR access unit. Exercises the real
 // answer path (mid/payload-type mirroring, SSRC, packetizer chain).
-#include "webrtc/publisher.h"
+#include "live_stream/publisher.h"
 
 #include <rtc/rtc.hpp>
 
@@ -14,7 +14,7 @@
 #include <mutex>
 #include <thread>
 
-using namespace broadify::pgm;
+using namespace broadify::live;
 
 static void fail(const char *m) { std::cerr << "webrtc_loopback_test failed: " << m << std::endl; std::exit(1); }
 

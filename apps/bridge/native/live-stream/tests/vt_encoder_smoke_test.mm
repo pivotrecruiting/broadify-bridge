@@ -4,7 +4,7 @@
 // hardware encoder so CI on VMs stays green but local runs on Apple Silicon verify it.
 #import <CoreVideo/CoreVideo.h>
 
-#include "encode/video_encoder.h"
+#include "live_stream/video_encoder.h"
 
 #include <atomic>
 #include <chrono>
@@ -14,7 +14,7 @@
 #include <thread>
 #include <vector>
 
-using namespace broadify::pgm;
+using namespace broadify::live;
 
 static void fail(const char *m) { std::cerr << "vt_encoder_smoke_test failed: " << m << std::endl; std::exit(1); }
 

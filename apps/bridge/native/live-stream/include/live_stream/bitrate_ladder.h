@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-namespace broadify::pgm {
+namespace broadify::live {
 
 /** Encoding profile: lan = source-native up to 1080p, remote = 720p30 for TURN paths, auto = lan. */
 enum class EncodeProfile { Auto, Lan, Remote };
@@ -31,4 +31,4 @@ std::string encodeProfileName(EncodeProfile profile);
 EncodeTarget selectEncodeTarget(uint32_t srcWidth, uint32_t srcHeight, uint32_t fpsNum, uint32_t fpsDen,
                                 EncodeProfile profile);
 
-}  // namespace broadify::pgm
+}  // namespace broadify::live

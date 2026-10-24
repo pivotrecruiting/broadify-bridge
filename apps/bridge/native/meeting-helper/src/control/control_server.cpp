@@ -1,5 +1,8 @@
 #include "control/control_server.h"
 
+#include "live/program_stream.h"
+#include "live_stream/viewer_offer_parse.h"
+
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
 #include "preview/vcam_shm_ring_win.h"
@@ -359,11 +362,53 @@ std::string handleRpc(const std::string &line,
                       MeetingRecorder &recorder,
                       VcamShmRingWin *vcamShm,
                       const Options &options,
-                      std::atomic<bool> &running) {
+                      std::atomic<bool> &running,
+                      ProgramStream *programStream) {
   const std::string id = extractStringField(line, "id");
   const std::string method = extractStringField(line, "method");
   if (method.empty()) {
     return errorResponse(id, "invalid_request", "Missing JSON-RPC method.");
+  }
+
+  // WebRTC program stream (the composited picture, for the web app's floating viewer).
+  if (method == "program.stream.status") {
+    return okResponse(id, programStream != nullptr
+                              ? programStream->statusJson()
+                              : std::string("{\"supported\":false,\"active\":false,\"viewers\":0,\"encoder\":null,\"encoded_frames\":0,\"dropped_frames\":0}"));
+  }
+  if (method == "program.sessions.list") {
+    return okResponse(id, "{\"sessions\":" + (programStream != nullptr ? programStream->sessionsJson() : std::string("[]")) + "}");
+  }
+  if (method == "program.viewer.offer") {
+    const std::string params = extractObjectField(line, "params");
+    broadify::live::ViewerOfferRequest request;
+    request.viewerId = extractStringField(params, "viewer_id");
+    request.sdp = extractStringField(params, "sdp");
+    request.profile = extractStringField(params, "profile");
+    request.iceServers = broadify::live::parseIceServers(params);
+    if (request.viewerId.empty() || request.sdp.empty()) {
+      return errorResponse(id, "invalid_params", "viewer_id and sdp are required");
+    }
+    if (programStream == nullptr || !programStream->supported()) {
+      return errorResponse(id, "program_stream_unavailable", "The program stream is not available on this helper.");
+    }
+    try {
+      const std::string answer = programStream->viewerOffer(request);
+      return okResponse(id, "{\"sdp\":\"" + jsonEscape(answer) + "\"}");
+    } catch (const broadify::live::RpcFailure &failure) {
+      return errorResponse(id, failure.code, failure.message);
+    }
+  }
+  if (method == "program.viewer.close") {
+    const std::string params = extractObjectField(line, "params");
+    const std::string viewerId = extractStringField(params, "viewer_id");
+    if (viewerId.empty()) {
+      return errorResponse(id, "invalid_params", "viewer_id is required");
+    }
+    if (programStream != nullptr) {
+      programStream->viewerClose(viewerId);
+    }
+    return okResponse(id, "{\"closed\":true}");
   }
 
   if (method == "control.ping") {
@@ -1126,10 +1171,11 @@ void runControlServer(const std::string &socketPath,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening,
-                      VcamShmRingWin *vcamShm) {
+                      VcamShmRingWin *vcamShm,
+                      ProgramStream *programStream) {
   broadify::helper::RpcTransportCallbacks callbacks;
   callbacks.handle = [&](const std::string &line) {
-    return handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running);
+    return handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running, programStream);
   };
   callbacks.emitEvent = [](const std::string &jsonLine) { emitHelperEvent(jsonLine); };
   callbacks.onListening = onListening;

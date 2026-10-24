@@ -335,4 +335,37 @@ export class MeetingHelperClient extends LineRpcClient {
   private async vcamRawStop(): Promise<Record<string, unknown>> {
     return this.rpc("output.vcam.raw.stop");
   }
+
+  // --- WebRTC program stream (the composited picture for the web app's floating viewer) ---
+
+  /** Answer to a browser's recvonly offer; `sessionId` doubles as the helper-side viewer id. */
+  programViewerOffer(input: {
+    sessionId: string;
+    sdp: string;
+    profile: string;
+    iceServers: Array<{ urls: string[]; username?: string; credential?: string }>;
+  }): Promise<{ sdp: string }> {
+    return this.rpc<{ sdp: string }>("program.viewer.offer", {
+      viewer_id: input.sessionId,
+      sdp: input.sdp,
+      profile: input.profile,
+      ice_servers: input.iceServers.map((server) => ({
+        url: server.urls[0],
+        username: server.username ?? "",
+        credential: server.credential ?? "",
+      })),
+    });
+  }
+
+  programViewerClose(sessionId: string): Promise<Record<string, unknown>> {
+    return this.rpc("program.viewer.close", { viewer_id: sessionId });
+  }
+
+  programSessionsList(): Promise<{ sessions: Array<{ viewer_id: string; state: string; candidate_type: string; audio: boolean; age_ms: number }> }> {
+    return this.rpc("program.sessions.list");
+  }
+
+  programStreamStatus(): Promise<Record<string, unknown> & { supported?: boolean; viewers?: number }> {
+    return this.rpc("program.stream.status");
+  }
 }

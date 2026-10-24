@@ -26,4 +26,6 @@ export const MEETING_HELPER_RPC_TIMEOUTS_MS: Readonly<Record<string, number>> = 
   "recording.stop": 20_000,
   "control.shutdown": 20_000,
   "keyer.configure": 15_000,
+  // The helper answers after its ICE gathering finished (bounded at 3 s).
+  "program.viewer.offer": 8_000,
 };
