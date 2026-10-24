@@ -24,7 +24,15 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   (`apps/bridge/src/services/pgm/pgm-helper-manager.ts`: Start bei Bedarf, Ready/Ping, Event-Log-Tail auf macOS,
   Neustart nach Absturz mit Re-Selektion, Sessions mit Zuschauergrenze, persistierte Quelle), Packaging als signierte
   App `Broadify Bridge PGM Helper.app`.
-- Noch offen in Phase 1: Browser-Test mit echtem ATEM/RØDECaster (Latenz, TURN), Signalcheck auf der Verbindungsseite.
+- Signalcheck-Karte auf der Verbindungsseite (Eingänge, Quelle wählen, gemessenes Format, Live-Bild), Kachel in der
+  Kopfzeile der Steuerung, schwebende Kachel über alle Seiten (eine Verbindung je Browser, Zuschauerzählung im Store),
+  natives Bild-im-Bild. Erster Durchlauf mit der eingebauten FaceTime-Kamera am 2026-10-24 erfolgreich.
+- Aufnahme (vorgezogen aus Phase 6): MP4 ohne Neukodierung (VideoToolbox-Samples im Passthrough, Ton als AAC),
+  startet am ersten Keyframe, `<datei>.mp4.part` bis zum sauberen Stopp, läuft unabhängig von Zuschauern.
+  Befehle `pgm_recording_pick_path` (Speicherdialog auf dem Bridge-Rechner), `pgm_recording_start {file_path?}`
+  (Standard `~/Movies/Broadify/Broadify-PGM-<zeit>.mp4`), `pgm_recording_stop`; Status in `pgm_status.recording`.
+- Standbild: `pgm_snapshot {quality?}` liefert JPEG als Base64 (Relay-Grenze 2 MB beachtet), Download im Browser.
+- Noch offen in Phase 1: Browser-Test mit echtem ATEM/RØDECaster (Ton, TURN von außerhalb), Latenzmessung.
 - Phase 2: Windows UVC. Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
 
 ## Betrieb
@@ -36,8 +44,9 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
 ## Helper-RPC (JSON-Zeilen über `helper-common`-Transport)
 `control.ping`, `control.shutdown`, `pgm.inputs.list`, `pgm.source.select {input_id, profile}`, `pgm.source.clear`,
 `pgm.status`, `pgm.sessions.list`, `pgm.perf.get`, `pgm.viewer.offer {viewer_id, sdp, profile, ice_servers[{url,username,credential}]}`
-→ `{sdp}`, `pgm.viewer.close {viewer_id}`. Ereignisse: `ready`, `pgm_status`, `pgm_signal`, `pgm_error`,
-`pgm_encoder_configured`, `pgm_inputs_changed`, `pgm_viewer_state`, `pgm_audio_unavailable`, `pgm_perf`, `shutdown`.
+→ `{sdp}`, `pgm.viewer.close {viewer_id}`, `pgm.recording.start {file_path}`, `pgm.recording.stop`, `pgm.recording.status`,
+`pgm.snapshot {quality}` → `{jpeg_base64,width,height,captured_at_ms}`. Ereignisse: `ready`, `pgm_status`, `pgm_signal`, `pgm_error`,
+`pgm_encoder_configured`, `pgm_recording`, `pgm_inputs_changed`, `pgm_viewer_state`, `pgm_audio_unavailable`, `pgm_perf`, `shutdown`.
 
 ## Build
 - `npm run build:pgm-helper` (macOS): CMake, libdatachannel v0.22.6 und libopus 1.5.2 per FetchContent (fester Tag),
