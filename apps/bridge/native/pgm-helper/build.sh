@@ -9,7 +9,7 @@ BUILD_DIR="${ROOT_DIR}/build"
 
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ${PGM_HELPER_CMAKE_EXTRA_ARGS:-}
 cmake --build "${BUILD_DIR}" --config "${CMAKE_BUILD_TYPE:-Release}" --target pgm-helper
 if [[ "${PGM_HELPER_BUILD_TESTS:-1}" == "1" ]]; then
   cmake --build "${BUILD_DIR}" --config "${CMAKE_BUILD_TYPE:-Release}"

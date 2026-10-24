@@ -49,12 +49,20 @@ target_link_libraries(pgm_core PUBLIC helper_common)
 
 if(PGM_HELPER_BUILD_BINARY AND APPLE)
   include(FetchContent)
-  # libdatachannel (MIT) with MbedTLS: static, no extra dylib to sign. Pinned.
+  # libdatachannel (MIT), static, pinned. TLS via OpenSSL linked statically
+  # (Homebrew openssl@3 on macOS: no extra dylib to sign; MbedTLS is not vendored
+  # by libdatachannel and would need its own distribution).
   # Offline builds: set FETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL / _OPUS.
+  # plog (libdatachannel dep) still declares cmake_minimum_required < 3.5.
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+  if(NOT DEFINED OPENSSL_ROOT_DIR AND EXISTS "/opt/homebrew/opt/openssl@3")
+    set(OPENSSL_ROOT_DIR "/opt/homebrew/opt/openssl@3" CACHE PATH "" FORCE)
+  endif()
+  set(OPENSSL_USE_STATIC_LIBS TRUE CACHE BOOL "" FORCE)
   set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
   set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
   set(NO_TESTS ON CACHE BOOL "" FORCE)
-  set(USE_MBEDTLS ON CACHE BOOL "" FORCE)
+  set(USE_MBEDTLS OFF CACHE BOOL "" FORCE)
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(libdatachannel
     GIT_REPOSITORY https://github.com/paullouisageneau/libdatachannel.git

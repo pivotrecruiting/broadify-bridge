@@ -1,42 +1,70 @@
-import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm-command-handler.js";
+import { PgmError } from "./pgm-errors.js";
+import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand, type PgmCommandDepsT } from "./pgm-command-handler.js";
 
 const OFFER = ["v=0", "o=- 1 1 IN IP4 127.0.0.1", "s=-", "t=0 0", "m=video 9 UDP/TLS/RTP/SAVPF 96", "a=recvonly"].join("\r\n");
 const offerPayload = { session_id: "6f1d2c1e-9c2a-4a8e-9a0e-1b2c3d4e5f60", sdp: OFFER, viewer_user_id: "0b5a7f6e-3c4d-4e5f-8a9b-0c1d2e3f4a5b", ice_servers: [] };
-const off = { env: {}, platform: "darwin" as const };
-const on = { env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "darwin" as const };
 
-describe("pgm command handler (phase 0)", () => {
+function fakeManager() {
+  const status = { enabled: true, state: "idle" as const, input: null, signal: null, encoder: null, audio: true, viewers: 0, last_error: null };
+  return {
+    calls: [] as string[],
+    getStatus: () => status,
+    getSessions: () => ({ sessions: [], max_viewers: 4, active_viewers: 0 }),
+    listInputs: async () => ({ inputs: [], camera_permission: "authorized" }),
+    selectSource: async (inputId: string, profile: string) => {
+      if (inputId === "uvc:missing") throw new PgmError("input_not_found", "nope");
+      return { ...status, state: "running" as const, input: { id: inputId, kind: "uvc" as const, display_name: profile, device_id: "", stable_key: "k", available: true, in_use: false } };
+    },
+    clearSource: async () => status,
+    offer: async () => ({ sdp: "v=0\r\nanswer", max_viewers: 4, active_viewers: 1 }),
+    close: async () => undefined,
+  };
+}
+
+const deps = (enabled: boolean, platform: NodeJS.Platform = "darwin"): PgmCommandDepsT & { m: ReturnType<typeof fakeManager> } => {
+  const m = fakeManager();
+  return { env: enabled ? { BRIDGE_PGM_PREVIEW: "1" } : {}, platform, manager: () => m, m };
+};
+
+describe("pgm command handler", () => {
   it("owns the pgm_ namespace", () => {
     expect(isPgmCommand("pgm_get_status")).toBe(true);
     expect(isPgmCommand("meeting_get_state")).toBe(false);
   });
 
-  it("advertises the capability from the env gate", () => {
-    expect(getLiveProgramCapabilities(off)).toEqual({ supported: false, audio: false, max_viewers: 4, decklink_input: false });
-    expect(getLiveProgramCapabilities({ ...on, env: { ...on.env, BRIDGE_PGM_MAX_VIEWERS: "2" } }).max_viewers).toBe(2);
+  it("advertises the capability from the env gate and platform", () => {
+    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: false, audio: false, max_viewers: 4, decklink_input: false });
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "darwin" }).supported).toBe(true);
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "win32" }).supported).toBe(false);
   });
 
   it("answers status and sessions even while disabled", async () => {
-    const status = await handlePgmCommand("pgm_get_status", {}, off);
-    expect(status).toMatchObject({ success: true, data: { enabled: false, state: "idle", viewers: 0 } });
-    const sessions = await handlePgmCommand("pgm_session_list", undefined, off);
-    expect(sessions).toMatchObject({ success: true, data: { sessions: [], active_viewers: 0 } });
+    const d = deps(false);
+    expect(await handlePgmCommand("pgm_get_status", {}, d)).toMatchObject({ success: true, data: { enabled: false, state: "idle" } });
+    expect(await handlePgmCommand("pgm_session_list", undefined, d)).toMatchObject({ success: true, data: { active_viewers: 0 } });
   });
 
-  it("refuses side effects with pgm_disabled while the gate is off", async () => {
+  it("refuses side effects with pgm_disabled while the gate is off and on unsupported platforms", async () => {
+    const off = deps(false);
     for (const [command, payload] of [["pgm_inputs_list", {}], ["pgm_source_select", { input_id: "uvc:1" }], ["pgm_source_clear", {}], ["pgm_webrtc_offer", offerPayload]] as const) {
       expect(await handlePgmCommand(command, payload, off)).toMatchObject({ success: false, errorCode: "pgm_disabled" });
     }
+    expect(await handlePgmCommand("pgm_inputs_list", {}, deps(true, "win32"))).toMatchObject({ success: false, errorCode: "pgm_unsupported_bridge" });
   });
 
   it("validates payloads before anything else", async () => {
-    expect(await handlePgmCommand("pgm_webrtc_offer", { ...offerPayload, sdp: "garbage" }, on)).toMatchObject({ success: false, errorCode: "pgm_sdp_invalid" });
-    expect(await handlePgmCommand("pgm_get_status", { extra: true }, on)).toMatchObject({ success: false });
+    const d = deps(true);
+    expect(await handlePgmCommand("pgm_webrtc_offer", { ...offerPayload, sdp: "garbage" }, d)).toMatchObject({ success: false, errorCode: "pgm_sdp_invalid" });
+    expect(await handlePgmCommand("pgm_get_status", { extra: true }, d)).toMatchObject({ success: false });
   });
 
-  it("reports not_implemented for the parts that ship with the helper", async () => {
-    expect(await handlePgmCommand("pgm_webrtc_offer", offerPayload, on)).toMatchObject({ success: false, errorCode: "pgm_not_implemented" });
-    expect(await handlePgmCommand("pgm_webrtc_close", { session_id: offerPayload.session_id, viewer_user_id: offerPayload.viewer_user_id }, on)).toMatchObject({ success: false, errorCode: "pgm_session_not_found" });
-    expect(await handlePgmCommand("pgm_unknown", {}, on)).toMatchObject({ success: false, error: "Unknown command: pgm_unknown" });
+  it("routes to the manager and maps its errors to stable codes", async () => {
+    const d = deps(true);
+    expect(await handlePgmCommand("pgm_source_select", { input_id: "uvc:a", profile: "remote" }, d)).toMatchObject({ success: true, data: { state: "running" } });
+    expect(await handlePgmCommand("pgm_source_select", { input_id: "uvc:missing" }, d)).toMatchObject({ success: false, errorCode: "input_not_found" });
+    const answer = await handlePgmCommand("pgm_webrtc_offer", offerPayload, d);
+    expect(answer).toMatchObject({ success: true, data: { session_id: offerPayload.session_id, sdp: "v=0\r\nanswer", active_viewers: 1, stream: { codec: "h264", audio: true } } });
+    expect(await handlePgmCommand("pgm_webrtc_close", { session_id: offerPayload.session_id, viewer_user_id: offerPayload.viewer_user_id }, d)).toMatchObject({ success: true });
+    expect(await handlePgmCommand("pgm_unknown", {}, d)).toMatchObject({ success: false, error: "Unknown command: pgm_unknown" });
   });
 });
