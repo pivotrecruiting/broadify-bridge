@@ -97,7 +97,7 @@ describe("registerServerRoutes", () => {
       { plugin: routes.registerOutputsRoute, options: undefined },
       { plugin: routes.registerConfigRoute, options: undefined },
       { plugin: routes.registerEngineRoute, options: undefined },
-      { plugin: routes.registerVideoRoute, options: undefined },
+      { plugin: routes.registerVideoRoute, options: { getStatus: expect.any(Function) } },
       { plugin: routes.registerGraphicsBrowserInputRoute, options: undefined },
       { plugin: routes.registerMeetingCameraRoute, options: undefined },
       { plugin: routes.registerMeetingMediaRoute, options: undefined },
