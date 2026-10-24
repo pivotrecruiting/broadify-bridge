@@ -190,11 +190,15 @@ else()
   list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
 endif()
 
+# Shared helper code (RPC transport, ...) - see apps/bridge/native/helper-common.
+add_subdirectory(../helper-common helper-common)
+
 if(APPLE)
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
 else()
   add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
 endif()
+target_link_libraries(meeting-helper PRIVATE helper_common)
 
 target_include_directories(meeting-helper PRIVATE
   src
@@ -498,6 +502,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     )
   endif()
   add_executable(control_server_test ${CONTROL_SERVER_TEST_SOURCES})
+  target_link_libraries(control_server_test PRIVATE helper_common)
   # The backend-factory test compiles the production sources WITHOUT the
   # BROADIFY_ENABLE_MODNET/BROADIFY_ENABLE_OPENVINO defines, so the factory
   # policy and the ModnetKeyer fallback wiring are exercised dependency-free
