@@ -9,7 +9,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
   endif()
 endif()
 
-project(broadify_pgm_helper LANGUAGES C CXX)
+project(broadify_pgm_helper VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -59,6 +59,8 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
     set(OPENSSL_ROOT_DIR "/opt/homebrew/opt/openssl@3" CACHE PATH "" FORCE)
   endif()
   set(OPENSSL_USE_STATIC_LIBS TRUE CACHE BOOL "" FORCE)
+  # Dependencies' own test suites stay out of our ctest run.
+  set(TEST_APPS OFF CACHE BOOL "" FORCE)
   set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
   set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
   set(NO_TESTS ON CACHE BOOL "" FORCE)
@@ -85,7 +87,6 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
     src/encode/vt_encoder.mm
     src/audio/audio_capture_avfoundation.mm
     src/audio/opus_encoder.cpp
-    src/webrtc/publisher.cpp
     src/macos/macos_app.mm
   )
   set_source_files_properties(
@@ -96,6 +97,22 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
   target_link_libraries(pgm-helper PRIVATE pgm_core LibDataChannel::LibDataChannelStatic opus
     "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox"
     "-framework Foundation" "-framework AppKit" "-framework CoreAudio" "-framework AudioToolbox")
+  # Publisher as a library so the loopback test links the real answer path.
+  add_library(pgm_webrtc STATIC src/webrtc/publisher.cpp)
+  target_include_directories(pgm_webrtc PUBLIC src)
+  target_link_libraries(pgm_webrtc PUBLIC pgm_core LibDataChannel::LibDataChannelStatic opus)
+  target_link_libraries(pgm-helper PRIVATE pgm_webrtc)
+  if(PGM_HELPER_BUILD_TESTS)
+    add_executable(vt_encoder_smoke_test tests/vt_encoder_smoke_test.mm src/encode/vt_encoder.mm)
+    set_source_files_properties(tests/vt_encoder_smoke_test.mm src/encode/vt_encoder.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(vt_encoder_smoke_test PRIVATE pgm_core "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox" "-framework Foundation")
+    add_test(NAME vt_encoder_smoke_test COMMAND vt_encoder_smoke_test)
+    set_tests_properties(vt_encoder_smoke_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    add_executable(webrtc_loopback_test tests/webrtc_loopback_test.cpp)
+    target_link_libraries(webrtc_loopback_test PRIVATE pgm_webrtc)
+    add_test(NAME webrtc_loopback_test COMMAND webrtc_loopback_test)
+    set_tests_properties(webrtc_loopback_test PROPERTIES TIMEOUT 60)
+  endif()
   set_target_properties(pgm-helper PROPERTIES
     OUTPUT_NAME "BroadifyPgmHelper"
     MACOSX_BUNDLE_BUNDLE_NAME "Broadify Bridge PGM Helper"

@@ -32,6 +32,21 @@ int main() {
   if (!tracker.onTick(ts + 1'100'000'000ULL) || !tracker.signal().noSignal) fail("no-signal not fired");
   if (tracker.onTick(ts + 2'000'000'000ULL)) fail("no-signal reported twice");
   if (!tracker.onFrame(1280, 720, "nv12", ts + 3'000'000'000ULL) || tracker.signal().noSignal) fail("signal back");
+  // Jittery 30 fps source (intervals 31..35 ms) snaps to 30 and stays there.
+  VideoSignalTracker jittery(1'000'000'000ULL, 30);
+  uint64_t jt = 1'000'000ULL;
+  const uint64_t pattern[] = {31'000'000ULL, 35'000'000ULL, 33'000'000ULL, 32'000'000ULL, 34'000'000ULL};
+  for (int i = 0; i < 40; ++i) {
+    jt += pattern[i % 5];
+    jittery.onFrame(1280, 720, "nv12", jt);
+  }
+  if (jittery.signal().fpsNum != 30 || jittery.signal().fpsDen != 1) fail("jittery 30 fps not snapped");
+  bool flapped = false;
+  for (int i = 0; i < 40; ++i) {
+    jt += pattern[(i + 2) % 5];
+    flapped = jittery.onFrame(1280, 720, "nv12", jt) || flapped;
+  }
+  if (flapped || jittery.signal().fpsNum != 30) fail("fps flapped on jitter");
   if (!tracker.markNoSignal() || tracker.markNoSignal()) fail("explicit no-signal idempotent");
   std::cout << "video_signal_tracker_test passed" << std::endl;
   return 0;

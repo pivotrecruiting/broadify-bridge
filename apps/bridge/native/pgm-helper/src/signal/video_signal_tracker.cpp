@@ -25,8 +25,10 @@ void VideoSignalTracker::snapFps(double fps, uint32_t &num, uint32_t &den) {
       best = &rate;
     }
   }
-  // Within 1.5 % of a known rate: snap; otherwise report the measured integer rate.
-  if (best != nullptr && bestDelta <= best->fps * 0.015) {
+  // Within 8 % of a known rate: snap (timer jitter on software sources and
+  // USB scheduling never hit 30.00 exactly); otherwise report the measured
+  // integer rate.
+  if (best != nullptr && bestDelta <= best->fps * 0.08) {
     num = best->num;
     den = best->den;
     return;
@@ -68,10 +70,16 @@ bool VideoSignalTracker::onFrame(uint32_t width, uint32_t height, const std::str
       uint32_t num = 0;
       uint32_t den = 1;
       snapFps(1e9 / static_cast<double>(median), num, den);
-      if (num != signal_.fpsNum || den != signal_.fpsDen) {
-        signal_.fpsNum = num;
-        signal_.fpsDen = den;
-        changed = true;
+      const double current = signal_.fpsDen > 0 ? static_cast<double>(signal_.fpsNum) / signal_.fpsDen : 0.0;
+      const double measured = static_cast<double>(num) / den;
+      // Hysteresis: the encoder reconfigures on every reported change, so a
+      // new rate must differ by more than 10 % (23.976 vs 24 are both "24ish").
+      if (signal_.fpsNum == 0 || std::abs(measured - current) > current * 0.10) {
+        if (num != signal_.fpsNum || den != signal_.fpsDen) {
+          signal_.fpsNum = num;
+          signal_.fpsDen = den;
+          changed = true;
+        }
       }
     }
   }
