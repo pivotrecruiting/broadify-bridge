@@ -321,3 +321,64 @@ export type EngineStateT = {
     lastUpdate?: number;
     error?: string;
 };
+/**
+ * Live program (PGM) preview: the bridge captures the switcher's program
+ * output (UVC or DeckLink input) and streams it to the web app over WebRTC.
+ * Wire keys are snake_case (bridge <-> web app contract).
+ */
+export type VideoPixelFormatT = "nv12" | "uyvy" | "yuy2" | "bgra" | "mjpeg" | "unknown";
+export type VideoScanT = "progressive" | "interlaced_tff" | "interlaced_bff" | "psf";
+/** The signal currently present on a video input, as measured from real frames. */
+export type VideoSignalT = {
+    width: number;
+    height: number;
+    fps_num: number;
+    fps_den: number;
+    scan: VideoScanT;
+    pixel_format: VideoPixelFormatT;
+    no_signal: boolean;
+};
+export type VideoInputKindT = "uvc" | "decklink";
+/** One selectable program source: a UVC device or a DeckLink input port. */
+export type VideoInputDescriptorT = {
+    id: string;
+    kind: VideoInputKindT;
+    display_name: string;
+    device_id: string;
+    port_id?: string;
+    /** Survives re-enumeration and reboots (vendor/product/serial or port path). */
+    stable_key: string;
+    available: boolean;
+    in_use: boolean;
+    signal?: VideoSignalT;
+};
+export type PgmEncoderBackendT = "videotoolbox" | "mediafoundation";
+export type PgmEncoderStatusT = {
+    backend: PgmEncoderBackendT;
+    hardware: boolean;
+    bitrate_kbps: number;
+    profile: string;
+};
+export type PgmLifecycleStateT = "idle" | "starting" | "running" | "no_signal" | "error";
+export type PgmErrorT = {
+    code: string;
+    message: string;
+};
+/** Snapshot published as `bridge_event pgm_status` and returned by `pgm_get_status`. */
+export type PgmStatusT = {
+    enabled: boolean;
+    state: PgmLifecycleStateT;
+    input: VideoInputDescriptorT | null;
+    signal: VideoSignalT | null;
+    encoder: PgmEncoderStatusT | null;
+    audio: boolean;
+    viewers: number;
+    last_error: PgmErrorT | null;
+};
+/** Advertised in `get_status.capabilities.live_program`; the web app gates the tile on it. */
+export type LiveProgramCapabilitiesT = {
+    supported: boolean;
+    audio: boolean;
+    max_viewers: number;
+    decklink_input: boolean;
+};
