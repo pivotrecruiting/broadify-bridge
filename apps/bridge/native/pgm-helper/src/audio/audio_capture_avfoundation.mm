@@ -142,6 +142,7 @@ class AvFoundationAudioSource final : public AudioSource {
     chunk.frames = static_cast<uint32_t>(length / (sizeof(float) * 2));
     const CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
     chunk.captureNs = CMTIME_IS_VALID(pts) ? static_cast<uint64_t>(CMTimeGetSeconds(pts) * 1e9) : monotonicNowNs();
+    chunk.sample = sample;
     sink(chunk);
   }
 

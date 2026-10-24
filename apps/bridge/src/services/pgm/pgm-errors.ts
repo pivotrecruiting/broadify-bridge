@@ -16,6 +16,8 @@ export const PGM_ERROR_CODES = [
   "camera_permission_denied",
   "encoder_unavailable",
   "helper_not_reachable",
+  "recording_failed",
+  "snapshot_failed",
 ] as const;
 
 export type PgmErrorCodeT = (typeof PGM_ERROR_CODES)[number];

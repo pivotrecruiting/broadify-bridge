@@ -1,4 +1,4 @@
-import type { PgmStatusT, VideoInputDescriptorT } from "@broadify/protocol";
+import type { PgmRecordingT, PgmStatusT, VideoInputDescriptorT } from "@broadify/protocol";
 
 import { HelperRequestError, LineRpcClient } from "../helpers/helper-rpc-client.js";
 import type { PgmWebrtcOfferT } from "./pgm-command-schemas.js";
@@ -13,6 +13,8 @@ export class PgmHelperRequestError extends HelperRequestError {
 /** Slow-by-design RPCs: the offer waits for ICE gathering (bounded at 3 s), source select may prompt for camera access. */
 const PGM_HELPER_RPC_TIMEOUTS_MS: Record<string, number> = {
   "pgm.viewer.offer": 6_000,
+  "pgm.recording.stop": 20_000,
+  "pgm.snapshot": 8_000,
   "pgm.source.select": 130_000,
   "pgm.inputs.list": 130_000,
 };
@@ -79,5 +81,17 @@ export class PgmHelperClient extends LineRpcClient {
 
   perfGet(): Promise<Record<string, unknown>> {
     return this.rpc("pgm.perf.get");
+  }
+
+  snapshot(quality: number): Promise<{ jpeg_base64: string; width: number; height: number; captured_at_ms: number }> {
+    return this.rpc("pgm.snapshot", { quality });
+  }
+
+  recordingStart(filePath: string): Promise<PgmRecordingT> {
+    return this.rpc<PgmRecordingT>("pgm.recording.start", { file_path: filePath });
+  }
+
+  recordingStop(): Promise<PgmRecordingT> {
+    return this.rpc<PgmRecordingT>("pgm.recording.stop");
   }
 }

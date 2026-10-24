@@ -43,6 +43,12 @@ class PgmEngineApi {
   virtual std::string viewerOffer(const ViewerOfferRequest &request) = 0;
   virtual void viewerClose(const std::string &viewerId) = 0;
   virtual std::string sessionsJson() = 0;
+  /** Starts the MP4 recording of the program; returns the recording status JSON. */
+  virtual std::string recordingStart(const std::string &filePath) = 0;
+  virtual std::string recordingStop() = 0;
+  virtual std::string recordingStatusJson() = 0;
+  /** JSON {jpeg_base64,width,height} of the latest frame. */
+  virtual std::string snapshotJson(double quality) = 0;
 };
 
 /** Parses the ice_servers array of an offer payload; tolerant of missing credentials. */

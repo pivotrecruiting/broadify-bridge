@@ -151,6 +151,23 @@ std::string handlePgmRpc(const std::string &line, PgmEngineApi &engine, std::ato
       const std::string answer = engine.viewerOffer(request);
       return okResponse(id, "{\"sdp\":\"" + jsonEscape(answer) + "\"}");
     }
+    if (method == "pgm.recording.start") {
+      const std::string filePath = extractStringField(params, "file_path");
+      if (filePath.empty()) {
+        return errorResponse(id, "invalid_params", "file_path is required");
+      }
+      return okResponse(id, engine.recordingStart(filePath));
+    }
+    if (method == "pgm.recording.stop") {
+      return okResponse(id, engine.recordingStop());
+    }
+    if (method == "pgm.recording.status") {
+      return okResponse(id, engine.recordingStatusJson());
+    }
+    if (method == "pgm.snapshot") {
+      const double quality = broadify::helper::extractDoubleField(params, "quality", 0.8);
+      return okResponse(id, engine.snapshotJson(quality));
+    }
     if (method == "pgm.viewer.close") {
       const std::string viewerId = extractStringField(params, "viewer_id");
       if (viewerId.empty()) {

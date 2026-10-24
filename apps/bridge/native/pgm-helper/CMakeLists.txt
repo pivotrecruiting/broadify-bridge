@@ -87,16 +87,18 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
     src/encode/vt_encoder.mm
     src/audio/audio_capture_avfoundation.mm
     src/audio/opus_encoder.cpp
+    src/capture/snapshot.mm
+    src/recorder/mp4_recorder.mm
     src/macos/macos_app.mm
   )
   set_source_files_properties(
     src/main.mm src/capture/uvc_avfoundation.mm src/capture/synthetic_source.mm src/encode/vt_encoder.mm
-    src/audio/audio_capture_avfoundation.mm src/macos/macos_app.mm
+    src/audio/audio_capture_avfoundation.mm src/macos/macos_app.mm src/capture/snapshot.mm src/recorder/mp4_recorder.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   target_include_directories(pgm-helper PRIVATE src)
   target_link_libraries(pgm-helper PRIVATE pgm_core LibDataChannel::LibDataChannelStatic opus
     "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox"
-    "-framework Foundation" "-framework AppKit" "-framework CoreAudio" "-framework AudioToolbox")
+    "-framework Foundation" "-framework AppKit" "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreImage" "-framework ImageIO")
   # Publisher as a library so the loopback test links the real answer path.
   add_library(pgm_webrtc STATIC src/webrtc/publisher.cpp)
   target_include_directories(pgm_webrtc PUBLIC src)

@@ -93,6 +93,10 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "pgm_session_list",
   "pgm_webrtc_offer",
   "pgm_webrtc_close",
+  "pgm_snapshot",
+  "pgm_recording_pick_path",
+  "pgm_recording_start",
+  "pgm_recording_stop",
 ] as const;
 
 const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);

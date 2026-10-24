@@ -171,8 +171,12 @@ class VideoToolboxEncoder final : public VideoEncoder {
     if (keyframe) {
       prependParameterSets(sets, unit.annexB);
     }
+    CFRetain(sample);
+    unit.sample = sample;
     if (onAccessUnit) {
       onAccessUnit(std::move(unit));
+    } else {
+      CFRelease(unit.sample);
     }
   }
 

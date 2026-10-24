@@ -365,6 +365,13 @@ export type PgmErrorT = {
     message: string;
 };
 /** Snapshot published as `bridge_event pgm_status` and returned by `pgm_get_status`. */
+export type PgmRecordingT = {
+    active: boolean;
+    file_path: string | null;
+    started_at_ms: number | null;
+    bytes: number;
+    error: string | null;
+};
 export type PgmStatusT = {
     enabled: boolean;
     state: PgmLifecycleStateT;
@@ -374,6 +381,8 @@ export type PgmStatusT = {
     audio: boolean;
     viewers: number;
     last_error: PgmErrorT | null;
+    /** MP4 recording on the bridge machine (absent on older helpers). */
+    recording?: PgmRecordingT | null;
 };
 /** Advertised in `get_status.capabilities.live_program`; the web app gates the tile on it. */
 export type LiveProgramCapabilitiesT = {

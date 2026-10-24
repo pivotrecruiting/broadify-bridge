@@ -208,6 +208,33 @@ export class PgmHelperManager {
     this.requestStatusPublish("viewer_closed");
   }
 
+  async snapshot(quality: number): Promise<{ jpeg_base64: string; width: number; height: number; captured_at_ms: number }> {
+    const client = await this.ensureRunning();
+    return client.snapshot(quality).catch((error) => this.rethrow(error));
+  }
+
+  async recordingStart(filePath: string): Promise<PgmStatusT> {
+    const client = await this.ensureRunning();
+    await client.recordingStart(filePath).catch((error) => this.rethrow(error));
+    const status = await client.status().catch(() => null);
+    if (status) {
+      this.setStatus(status, "recording_started", true);
+    }
+    return this.getStatus();
+  }
+
+  async recordingStop(): Promise<PgmStatusT> {
+    if (!this.client) {
+      throw new PgmError("pgm_session_not_found", "No recording is running (helper is not active).");
+    }
+    await this.client.recordingStop().catch((error) => this.rethrow(error));
+    const status = await this.client.status().catch(() => null);
+    if (status) {
+      this.setStatus(status, "recording_stopped", true);
+    }
+    return this.getStatus();
+  }
+
   /** Restores a persisted source on bridge start (helper starts lazily). */
   async restoreOnBoot(): Promise<void> {
     if (!parsePgmEnv(this.deps.env).enabled || !this.source.input) {
@@ -475,6 +502,7 @@ export class PgmHelperManager {
 const KNOWN_PGM_CODES = new Set([
   "pgm_disabled", "pgm_unsupported_bridge", "pgm_not_implemented", "pgm_viewer_limit", "pgm_no_signal", "pgm_sdp_invalid",
   "pgm_session_not_found", "input_not_found", "device_in_use", "camera_permission_denied", "encoder_unavailable", "helper_not_reachable",
+  "recording_failed", "snapshot_failed",
 ]);
 
 function isKnownPgmCode(code: string): code is import("./pgm-errors.js").PgmErrorCodeT {

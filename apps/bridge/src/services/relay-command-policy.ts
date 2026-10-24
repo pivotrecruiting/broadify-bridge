@@ -184,6 +184,12 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   pgm_session_list: readOnly("pgm_session_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.sessions"]),
   pgm_webrtc_offer: sideEffect("pgm_webrtc_offer", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
   pgm_webrtc_close: sideEffect("pgm_webrtc_close", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
+  // Snapshot is a read (JPEG in the result, < 2 MB); recording start/stop
+  // touch the file system, the save panel can stay open for minutes.
+  pgm_snapshot: readOnly("pgm_snapshot", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.snapshot"]),
+  pgm_recording_pick_path: sideEffect("pgm_recording_pick_path", "helper_start", 130_000, 125_000, "pgm.recording.dialog", ["pgm.status"]),
+  pgm_recording_start: sideEffect("pgm_recording_start", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm.recording", ["pgm.status"], "after_state_check"),
+  pgm_recording_stop: sideEffect("pgm_recording_stop", "helper_start", 35_000, 30_000, "pgm.recording", ["pgm.status"], "after_state_check"),
 };
 
 /**

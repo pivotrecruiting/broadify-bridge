@@ -5,6 +5,10 @@
 #include <memory>
 #include <string>
 
+#if defined(__APPLE__)
+#include <CoreMedia/CoreMedia.h>
+#endif
+
 namespace broadify::pgm {
 
 /** Interleaved float32 PCM, 48 kHz, 2 channels. */
@@ -12,6 +16,10 @@ struct AudioChunk {
   const float *samples = nullptr;
   uint32_t frames = 0;  // frames per channel
   uint64_t captureNs = 0;
+#if defined(__APPLE__)
+  /** Original capture sample buffer (valid for the callback's duration; AAC recording appends it). */
+  CMSampleBufferRef sample = nullptr;
+#endif
 };
 
 using AudioSink = std::function<void(const AudioChunk &chunk)>;

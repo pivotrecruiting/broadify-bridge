@@ -18,12 +18,15 @@ function fakeManager() {
     clearSource: async () => status,
     offer: async () => ({ sdp: "v=0\r\nanswer", max_viewers: 4, active_viewers: 1 }),
     close: async () => undefined,
+    snapshot: async (quality: number) => ({ jpeg_base64: "abc", width: 2, height: 2, captured_at_ms: 1, quality }),
+    recordingStart: async (filePath: string) => ({ ...status, recording: { active: true, file_path: filePath, started_at_ms: 1, bytes: 0, error: null } }),
+    recordingStop: async () => ({ ...status, recording: { active: false, file_path: null, started_at_ms: null, bytes: 0, error: null } }),
   };
 }
 
 const deps = (enabled: boolean, platform: NodeJS.Platform = "darwin"): PgmCommandDepsT & { m: ReturnType<typeof fakeManager> } => {
   const m = fakeManager();
-  return { env: enabled ? { BRIDGE_PGM_PREVIEW: "1" } : {}, platform, manager: () => m, m };
+  return { env: enabled ? { BRIDGE_PGM_PREVIEW: "1" } : {}, platform, manager: () => m, m, pickPath: async (name: string) => `/tmp/${name}`, defaultPath: () => "/tmp/default.mp4" };
 };
 
 describe("pgm command handler", () => {
@@ -66,5 +69,16 @@ describe("pgm command handler", () => {
     expect(answer).toMatchObject({ success: true, data: { session_id: offerPayload.session_id, sdp: "v=0\r\nanswer", active_viewers: 1, stream: { codec: "h264", audio: true } } });
     expect(await handlePgmCommand("pgm_webrtc_close", { session_id: offerPayload.session_id, viewer_user_id: offerPayload.viewer_user_id }, d)).toMatchObject({ success: true });
     expect(await handlePgmCommand("pgm_unknown", {}, d)).toMatchObject({ success: false, error: "Unknown command: pgm_unknown" });
+  });
+
+  it("takes snapshots and records with a chosen or default path", async () => {
+    const d = deps(true);
+    expect(await handlePgmCommand("pgm_snapshot", { quality: 0.5 }, d)).toMatchObject({ success: true, data: { jpeg_base64: "abc", quality: 0.5 } });
+    expect(await handlePgmCommand("pgm_snapshot", { quality: 2 }, d)).toMatchObject({ success: false });
+    expect(await handlePgmCommand("pgm_recording_pick_path", { default_name: "x.mp4" }, d)).toMatchObject({ success: true, data: { cancelled: false, file_path: "/tmp/x.mp4" } });
+    expect(await handlePgmCommand("pgm_recording_start", {}, d)).toMatchObject({ success: true, data: { recording: { active: true, file_path: "/tmp/default.mp4" } } });
+    expect(await handlePgmCommand("pgm_recording_start", { file_path: "/Users/me/rec.mp4" }, d)).toMatchObject({ success: true, data: { recording: { file_path: "/Users/me/rec.mp4" } } });
+    expect(await handlePgmCommand("pgm_recording_start", { file_path: "../x.mp4" }, d)).toMatchObject({ success: false });
+    expect(await handlePgmCommand("pgm_recording_stop", {}, d)).toMatchObject({ success: true, data: { recording: { active: false } } });
   });
 });

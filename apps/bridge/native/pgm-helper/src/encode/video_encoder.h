@@ -1,6 +1,10 @@
 #pragma once
 
 #include "capture/video_source.h"
+
+#if defined(__APPLE__)
+#include <CoreMedia/CoreMedia.h>
+#endif
 #include "encode/bitrate_ladder.h"
 #include "encode/h264_annexb.h"
 
@@ -17,6 +21,10 @@ struct EncodedAccessUnit {
   std::vector<uint8_t> annexB;
   bool keyframe = false;
   uint64_t captureNs = 0;
+#if defined(__APPLE__)
+  /** The encoder's own sample (AVCC) for passthrough recording; retained, released by the receiver. */
+  CMSampleBufferRef sample = nullptr;
+#endif
 };
 
 struct EncoderInfo {

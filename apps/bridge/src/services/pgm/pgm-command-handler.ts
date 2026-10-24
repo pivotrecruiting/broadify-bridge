@@ -8,10 +8,14 @@ import { pgmHelperManager, type PgmHelperManager } from "./pgm-helper-manager.js
 import {
   PGM_COMMAND_PREFIX,
   PgmEmptyPayloadSchema,
+  PgmRecordingPickPathSchema,
+  PgmRecordingStartSchema,
+  PgmSnapshotSchema,
   PgmSourceSelectSchema,
   PgmWebrtcCloseSchema,
   PgmWebrtcOfferSchema,
 } from "./pgm-command-schemas.js";
+import { buildDefaultProgramRecordingPath, pickProgramRecordingPath } from "./pgm-recording-paths.js";
 
 /** `pgm_*` is the live program namespace (mirrors `meeting_` / `conference_`). */
 export function isPgmCommand(command: string): boolean {
@@ -21,10 +25,18 @@ export function isPgmCommand(command: string): boolean {
 export type PgmCommandDepsT = {
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
-  manager: () => Pick<PgmHelperManager, "getStatus" | "getSessions" | "listInputs" | "selectSource" | "clearSource" | "offer" | "close">;
+  manager: () => Pick<PgmHelperManager, "getStatus" | "getSessions" | "listInputs" | "selectSource" | "clearSource" | "offer" | "close" | "snapshot" | "recordingStart" | "recordingStop">;
+  pickPath: (defaultName: string, locale: string) => Promise<string | null>;
+  defaultPath: () => string;
 };
 
-const defaultDeps: PgmCommandDepsT = { env: process.env, platform: process.platform, manager: () => pgmHelperManager };
+const defaultDeps: PgmCommandDepsT = {
+  env: process.env,
+  platform: process.platform,
+  manager: () => pgmHelperManager,
+  pickPath: pickProgramRecordingPath,
+  defaultPath: buildDefaultProgramRecordingPath,
+};
 
 /**
  * Capability block for `get_status`. The gate decides `supported`; audio and
@@ -106,6 +118,28 @@ export async function handlePgmCommand(command: string, payload: unknown, deps: 
             stream: { codec: "h264", audio: deps.manager().getStatus().audio },
           },
         };
+      }
+      case "pgm_snapshot": {
+        const input = parsePayload(PgmSnapshotSchema, payload, command);
+        assertSupported(deps);
+        return { success: true, data: await deps.manager().snapshot(input.quality ?? 0.8) };
+      }
+      case "pgm_recording_pick_path": {
+        // Bridge-local: the file lands on this machine, so the save panel opens here (cancel → { cancelled: true }).
+        const input = parsePayload(PgmRecordingPickPathSchema, payload, command);
+        assertSupported(deps);
+        const filePath = await deps.pickPath(input.default_name ?? "Broadify-PGM.mp4", input.locale ?? "de");
+        return { success: true, data: filePath ? { cancelled: false, file_path: filePath } : { cancelled: true } };
+      }
+      case "pgm_recording_start": {
+        const input = parsePayload(PgmRecordingStartSchema, payload, command);
+        assertSupported(deps);
+        return { success: true, data: await deps.manager().recordingStart(input.file_path ?? deps.defaultPath()) };
+      }
+      case "pgm_recording_stop": {
+        parsePayload(PgmEmptyPayloadSchema, payload, command);
+        assertSupported(deps);
+        return { success: true, data: await deps.manager().recordingStop() };
       }
       case "pgm_webrtc_close": {
         const close = parsePayload(PgmWebrtcCloseSchema, payload, command);

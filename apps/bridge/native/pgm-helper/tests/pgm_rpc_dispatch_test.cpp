@@ -26,6 +26,12 @@ class FakeEngine final : public PgmEngineApi {
     return "v=0\r\nanswer";
   }
   void viewerClose(const std::string &viewerId) override { closed = viewerId; }
+  std::string recordingStart(const std::string &filePath) override { recordingPath = filePath; return "{\"active\":true}"; }
+  std::string recordingStop() override { recordingPath.clear(); return "{\"active\":false}"; }
+  std::string recordingStatusJson() override { return "{\"active\":false}"; }
+  std::string snapshotJson(double quality) override { lastQuality = quality; return "{\"jpeg_base64\":\"abc\",\"width\":2,\"height\":2}"; }
+  std::string recordingPath;
+  double lastQuality = 0.0;
   std::string state = "idle", selected, selectedProfile, closed;
   ViewerOfferRequest lastOffer;
 };
@@ -52,6 +58,12 @@ int main() {
   if (engine.lastOffer.iceServers.size() != 2 || engine.lastOffer.iceServers[1].username != "u,1" || engine.lastOffer.iceServers[1].credential != "p}w") fail("ice servers");
   r = handlePgmRpc("{\"id\":\"7\",\"method\":\"pgm.viewer.close\",\"params\":{\"viewer_id\":\"v1\"}}", engine, running);
   if (engine.closed != "v1" || !has(r, "\"closed\":true")) fail("close");
+  r = handlePgmRpc("{\"id\":\"10\",\"method\":\"pgm.recording.start\",\"params\":{\"file_path\":\"/tmp/x.mp4\"}}", engine, running);
+  if (engine.recordingPath != "/tmp/x.mp4" || !has(r, "\"active\":true")) fail("recording start");
+  r = handlePgmRpc("{\"id\":\"11\",\"method\":\"pgm.recording.start\",\"params\":{}}", engine, running);
+  if (!has(r, "invalid_params")) fail("recording start without path");
+  r = handlePgmRpc("{\"id\":\"12\",\"method\":\"pgm.snapshot\",\"params\":{\"quality\":0.5}}", engine, running);
+  if (engine.lastQuality != 0.5 || !has(r, "jpeg_base64")) fail("snapshot");
   r = handlePgmRpc("{\"id\":\"8\",\"method\":\"nope\"}", engine, running);
   if (!has(r, "unknown_method")) fail("unknown");
   r = handlePgmRpc("{\"id\":\"9\",\"method\":\"control.shutdown\"}", engine, running);

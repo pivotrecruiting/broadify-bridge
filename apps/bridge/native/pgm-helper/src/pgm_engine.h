@@ -5,6 +5,7 @@
 #include "capture/video_source.h"
 #include "control/pgm_rpc.h"
 #include "encode/video_encoder.h"
+#include "recorder/mp4_recorder.h"
 #include "signal/video_signal_tracker.h"
 #include "webrtc/publisher.h"
 
@@ -45,6 +46,10 @@ class PgmEngine final : public PgmEngineApi {
   void clearSource() override;
   std::string viewerOffer(const ViewerOfferRequest &request) override;
   void viewerClose(const std::string &viewerId) override;
+  std::string recordingStart(const std::string &filePath) override;
+  std::string recordingStop() override;
+  std::string recordingStatusJson() override;
+  std::string snapshotJson(double quality) override;
 
  private:
   void onFrame(const CapturedFrame &frame);
@@ -57,6 +62,8 @@ class PgmEngine final : public PgmEngineApi {
   void emitStatus();
   void startAudioLocked(const std::string &displayName);
   void stopAudioLocked();
+  std::string recordingJsonLocked() const;
+  void keepLatestFrameLocked(const CapturedFrame &frame);
 
   PgmEngineConfig config_;
   std::unique_ptr<VideoInputEnumerator> enumerator_;
@@ -65,6 +72,10 @@ class PgmEngine final : public PgmEngineApi {
   std::unique_ptr<AudioSource> audioSource_;
   std::unique_ptr<OpusAudioEncoder> opus_;
   std::unique_ptr<WebRtcPublisher> publisher_;
+  Mp4Recorder recorder_;
+#if defined(__APPLE__)
+  CVPixelBufferRef latestFrame_ = nullptr;  // retained; snapshots
+#endif
   VideoSignalTracker tracker_;
   EncodeTarget target_;
   EncodeProfile profile_ = EncodeProfile::Auto;
