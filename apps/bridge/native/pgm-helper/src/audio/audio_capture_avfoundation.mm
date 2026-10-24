@@ -1,9 +1,9 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 
+#include "common/monotonic_clock.h"
 #include "audio/audio_source.h"
 
-#include <mach/mach_time.h>
 #include <mutex>
 #include <vector>
 
@@ -23,14 +23,6 @@
 
 namespace broadify::pgm {
 namespace {
-
-uint64_t hostNowNs() {
-  static mach_timebase_info_data_t info = {0, 0};
-  if (info.denom == 0) {
-    mach_timebase_info(&info);
-  }
-  return mach_absolute_time() * info.numer / info.denom;
-}
 
 AVCaptureDevice *findPairedAudioDevice(const std::string &videoDisplayName) {
   NSMutableArray<AVCaptureDeviceType> *types = [NSMutableArray arrayWithObject:AVCaptureDeviceTypeBuiltInMicrophone];
@@ -149,7 +141,7 @@ class AvFoundationAudioSource final : public AudioSource {
     chunk.samples = reinterpret_cast<const float *>(data);
     chunk.frames = static_cast<uint32_t>(length / (sizeof(float) * 2));
     const CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
-    chunk.captureNs = CMTIME_IS_VALID(pts) ? static_cast<uint64_t>(CMTimeGetSeconds(pts) * 1e9) : hostNowNs();
+    chunk.captureNs = CMTIME_IS_VALID(pts) ? static_cast<uint64_t>(CMTimeGetSeconds(pts) * 1e9) : monotonicNowNs();
     sink(chunk);
   }
 

@@ -1,23 +1,15 @@
 #import <CoreVideo/CoreVideo.h>
 
+#include "common/monotonic_clock.h"
 #include "capture/video_source.h"
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <mach/mach_time.h>
 #include <thread>
 
 namespace broadify::pgm {
 namespace {
-
-uint64_t hostNowNs() {
-  static mach_timebase_info_data_t info = {0, 0};
-  if (info.denom == 0) {
-    mach_timebase_info(&info);
-  }
-  return mach_absolute_time() * info.numer / info.denom;
-}
 
 /**
  * Colour bars with a moving block and a binary frame counter in the top-left
@@ -65,7 +57,7 @@ class SyntheticSource final : public VideoSource {
         frame.width = width_;
         frame.height = height_;
         frame.pixelFormat = "nv12";
-        frame.captureNs = hostNowNs();
+        frame.captureNs = monotonicNowNs();
         sink_(frame);
         CVPixelBufferRelease(buffer);
       }

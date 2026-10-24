@@ -1,5 +1,6 @@
 #include "pgm_engine.h"
 
+#include "common/monotonic_clock.h"
 #include "common/pgm_options.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
@@ -11,7 +12,6 @@ namespace broadify::pgm {
 
 using broadify::helper::emitHelperEvent;
 using broadify::helper::jsonEscape;
-using broadify::helper::nowNs;
 
 namespace {
 
@@ -379,7 +379,7 @@ void PgmEngine::onAccessUnit(EncodedAccessUnit &&unit) {
 }
 
 void PgmEngine::housekeeping() {
-  uint64_t lastPerf = nowNs();
+  uint64_t lastPerf = monotonicNowNs();
   uint64_t lastCaptured = 0;
   uint64_t lastEncoded = 0;
   uint64_t lastBytes = 0;
@@ -388,7 +388,7 @@ void PgmEngine::housekeeping() {
     bool changed = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (hasInput_ && tracker_.onTick(nowNs())) {
+      if (hasInput_ && tracker_.onTick(monotonicNowNs())) {
         emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJson(tracker_.signal()) + "}");
         changed = true;
       }
@@ -396,7 +396,7 @@ void PgmEngine::housekeeping() {
     if (publisher_->reapDead() > 0) {
       changed = true;
     }
-    const uint64_t now = nowNs();
+    const uint64_t now = monotonicNowNs();
     if (now - lastPerf >= 1'000'000'000ULL) {
       const double seconds = static_cast<double>(now - lastPerf) / 1e9;
       const uint64_t captured = capturedFrames_.load();

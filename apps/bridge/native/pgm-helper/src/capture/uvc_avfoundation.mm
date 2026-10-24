@@ -1,29 +1,21 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 
+#include "common/monotonic_clock.h"
 #include "capture/video_source.h"
 
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
 
 #include <algorithm>
-#include <mach/mach_time.h>
 #include <mutex>
 
 namespace broadify::pgm {
 namespace {
 
-uint64_t hostNowNs() {
-  static mach_timebase_info_data_t info = {0, 0};
-  if (info.denom == 0) {
-    mach_timebase_info(&info);
-  }
-  return mach_absolute_time() * info.numer / info.denom;
-}
-
 uint64_t cmTimeToHostNs(CMTime time) {
   if (!CMTIME_IS_VALID(time) || time.timescale <= 0) {
-    return hostNowNs();
+    return monotonicNowNs();
   }
   // Presentation timestamps of AVCaptureVideoDataOutput are on the host clock.
   return static_cast<uint64_t>(CMTimeGetSeconds(time) * 1e9);
