@@ -14,6 +14,7 @@ const MAC_ONLY_NATIVE_RESOURCES = new Set([
   "apps/bridge/native/display-helper/display-helper",
   "apps/bridge/native/display-helper/libSDL2-2.0.0.dylib",
   "apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app",
+  "apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app",
   "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
 ]);
 const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [

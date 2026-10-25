@@ -10,6 +10,9 @@ HELPER_BUNDLE_ID="com.broadify.bridge.meeting-helper"
 HELPER_APP_REL="Contents/Resources/native/meeting-helper/Broadify Bridge Meeting Helper.app"
 HELPER_EXEC_REL="${HELPER_APP_REL}/Contents/MacOS/BroadifyMeetingHelper"
 HELPER_MODELS_REL="Contents/Resources/native/meeting-helper/models"
+PGM_HELPER_BUNDLE_ID="com.broadify.bridge.pgm-helper"
+PGM_HELPER_APP_REL="Contents/Resources/native/pgm-helper/Broadify Bridge PGM Helper.app"
+PGM_HELPER_EXEC_REL="${PGM_HELPER_APP_REL}/Contents/MacOS/BroadifyPgmHelper"
 PRESENTATION_RUNTIME_REL="Contents/Resources/presentation-runtime/macos-arm64/LibreOffice.app"
 PRESENTATION_RUNTIME_EXEC_REL="${PRESENTATION_RUNTIME_REL}/Contents/MacOS/soffice"
 
@@ -226,6 +229,34 @@ echo "[MacSignVerify] NSMicrophoneUsageDescription present"
 
 verify_codesign "$HELPER_APP_PATH" "deep"
 verify_codesign "$HELPER_EXEC_PATH" "nodeep"
+
+# PGM helper (live program preview): optional while SKIP_PGM_HELPER_BUILD=1.
+PGM_HELPER_APP_PATH="${APP_PATH}/${PGM_HELPER_APP_REL}"
+PGM_HELPER_EXEC_PATH="${APP_PATH}/${PGM_HELPER_EXEC_REL}"
+if [[ "${SKIP_PGM_HELPER_BUILD:-}" != "1" ]]; then
+  [[ -d "$PGM_HELPER_APP_PATH" ]] || {
+    echo "[MacSignVerify] Missing PGM Helper app at ${PGM_HELPER_APP_PATH}" >&2
+    exit 1
+  }
+  [[ -x "$PGM_HELPER_EXEC_PATH" ]] || {
+    echo "[MacSignVerify] Missing executable PGM Helper at ${PGM_HELPER_EXEC_PATH}" >&2
+    exit 1
+  }
+  PGM_HELPER_INFO="${PGM_HELPER_APP_PATH}/Contents/Info.plist"
+  require_plist_value "$PGM_HELPER_INFO" "CFBundleIdentifier" "$PGM_HELPER_BUNDLE_ID"
+  require_plist_value "$PGM_HELPER_INFO" "CFBundleExecutable" "BroadifyPgmHelper"
+  if ! plist_value "$PGM_HELPER_INFO" "NSCameraUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSCameraUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSMicrophoneUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSMicrophoneUsageDescription" >&2
+    exit 1
+  fi
+  verify_codesign "$PGM_HELPER_APP_PATH" "deep"
+  verify_codesign "$PGM_HELPER_EXEC_PATH" "nodeep"
+  echo "[MacSignVerify] PGM Helper verified"
+fi
 if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
   verify_codesign "$PRESENTATION_RUNTIME_PATH" "deep"
   verify_codesign "$PRESENTATION_RUNTIME_EXEC_PATH" "nodeep"

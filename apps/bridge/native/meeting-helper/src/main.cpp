@@ -7,6 +7,7 @@
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
 #include "keyer/openvino_keyer.h"
 #endif
+#include "live/program_stream.h"
 #include "pipeline/frame_pipeline.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
@@ -748,6 +749,9 @@ int main(int argc, char **argv) {
   PreviewFrameStore previewFrames;
   VcamShmRingWin vcamShm;
   MeetingRecorder recorder;
+  // WebRTC program stream for the web app's viewer; idle (no copies, no encoder) without viewers.
+  ProgramStream programStream(previewFrames, state, ProgramStreamConfig{options.width, options.height, options.fps});
+  programStream.start();
 
   std::promise<void> controlListening;
   std::future<void> controlListeningFuture = controlListening.get_future();
@@ -962,7 +966,8 @@ int main(int argc, char **argv) {
       std::cref(options),
       std::ref(g_running),
       [&controlListening]() { controlListening.set_value(); },
-      &vcamShm);
+      &vcamShm,
+      &programStream);
 
   controlListeningFuture.wait();
 
@@ -1006,6 +1011,8 @@ int main(int argc, char **argv) {
   // runs after the frame pipeline has stopped, so no appendVideoFrame can
   // race the writer teardown. stop() is a no-op when nothing is recording.
   recorder.stop();
+  // Close viewer PeerConnections and flush the stream encoder (joins its thread).
+  programStream.stop();
   // The preview/vcam/control servers block in accept() and never observe
   // g_running; joining them would hang forever (the historical reason this
   // helper survived every shutdown). Their sockets are closed by the OS.

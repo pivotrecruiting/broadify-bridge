@@ -166,6 +166,11 @@ if [[ "$UNAME_S" == "Darwin" ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/libSDL2-2.0.0.dylib")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
+  if [[ "${SKIP_PGM_HELPER_BUILD:-}" != "1" ]]; then
+    REQUIRED_FILES+=("apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app")
+    REQUIRED_FILES+=("apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app/Contents/MacOS/BroadifyPgmHelper")
+    EXECUTABLE_FILES+=("apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app/Contents/MacOS/BroadifyPgmHelper")
+  fi
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Manifest.json")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Data/com.apple.CoreML/model.mlmodel")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Data/com.apple.CoreML/weights/weight.bin")

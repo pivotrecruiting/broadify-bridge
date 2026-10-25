@@ -1,5 +1,8 @@
 #include "control/control_server.h"
 
+#include "live/program_stream.h"
+#include "live_stream/viewer_offer_parse.h"
+
 #include "output/vcam_controller.h"
 #include "preview/preview_frame_store.h"
 #include "preview/vcam_shm_ring_win.h"
@@ -7,6 +10,8 @@
 #include "recorder/meeting_recorder.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
+
+#include "helper_common/rpc_transport.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,25 +25,8 @@
 #include <sstream>
 #include <vector>
 
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#endif
-
 namespace broadify::meeting {
 namespace {
-
-#if !defined(_WIN32)
-void configureSocketForShutdownChecks(int socketHandle) {
-  timeval timeout{};
-  timeout.tv_sec = 0;
-  timeout.tv_usec = 250000;
-  setsockopt(socketHandle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
-}
-#endif
 
 std::string programSectionJson(const MeetingState &state, const std::string &section) {
   if (section == "speaker_layout") {
@@ -374,11 +362,53 @@ std::string handleRpc(const std::string &line,
                       MeetingRecorder &recorder,
                       VcamShmRingWin *vcamShm,
                       const Options &options,
-                      std::atomic<bool> &running) {
+                      std::atomic<bool> &running,
+                      ProgramStream *programStream) {
   const std::string id = extractStringField(line, "id");
   const std::string method = extractStringField(line, "method");
   if (method.empty()) {
     return errorResponse(id, "invalid_request", "Missing JSON-RPC method.");
+  }
+
+  // WebRTC program stream (the composited picture, for the web app's floating viewer).
+  if (method == "program.stream.status") {
+    return okResponse(id, programStream != nullptr
+                              ? programStream->statusJson()
+                              : std::string("{\"supported\":false,\"active\":false,\"viewers\":0,\"encoder\":null,\"encoded_frames\":0,\"dropped_frames\":0}"));
+  }
+  if (method == "program.sessions.list") {
+    return okResponse(id, "{\"sessions\":" + (programStream != nullptr ? programStream->sessionsJson() : std::string("[]")) + "}");
+  }
+  if (method == "program.viewer.offer") {
+    const std::string params = extractObjectField(line, "params");
+    broadify::live::ViewerOfferRequest request;
+    request.viewerId = extractStringField(params, "viewer_id");
+    request.sdp = extractStringField(params, "sdp");
+    request.profile = extractStringField(params, "profile");
+    request.iceServers = broadify::live::parseIceServers(params);
+    if (request.viewerId.empty() || request.sdp.empty()) {
+      return errorResponse(id, "invalid_params", "viewer_id and sdp are required");
+    }
+    if (programStream == nullptr || !programStream->supported()) {
+      return errorResponse(id, "program_stream_unavailable", "The program stream is not available on this helper.");
+    }
+    try {
+      const std::string answer = programStream->viewerOffer(request);
+      return okResponse(id, "{\"sdp\":\"" + jsonEscape(answer) + "\"}");
+    } catch (const broadify::live::RpcFailure &failure) {
+      return errorResponse(id, failure.code, failure.message);
+    }
+  }
+  if (method == "program.viewer.close") {
+    const std::string params = extractObjectField(line, "params");
+    const std::string viewerId = extractStringField(params, "viewer_id");
+    if (viewerId.empty()) {
+      return errorResponse(id, "invalid_params", "viewer_id is required");
+    }
+    if (programStream != nullptr) {
+      programStream->viewerClose(viewerId);
+    }
+    return okResponse(id, "{\"closed\":true}");
   }
 
   if (method == "control.ping") {
@@ -1130,115 +1160,8 @@ std::string handleRpc(const std::string &line,
   return errorResponse(id, "unknown_method", "Unknown meeting-helper method: " + method);
 }
 
-#if defined(_WIN32)
-namespace {
-
-constexpr DWORD CONTROL_PIPE_BUFFER_BYTES = 65536;
-// ~10 s of 50 ms retries before the control channel is declared dead.
-constexpr int CONTROL_PIPE_CREATE_MAX_CONSECUTIVE_FAILURES = 200;
-constexpr DWORD CONTROL_PIPE_CREATE_RETRY_DELAY_MS = 50;
-
-// Creates one listening instance of the control pipe. CreateNamedPipeA can
-// fail transiently (e.g. ERROR_PIPE_BUSY while libuv is still closing the
-// previous client handle); a single such failure used to end the control
-// thread for good while the helper process kept running - a silent, permanent
-// ENOENT for every later bridge RPC. Retry with a bounded budget instead and
-// report control_pipe_failed only once that budget is exhausted. Returns
-// INVALID_HANDLE_VALUE after the final failure or when `running` turned false.
-HANDLE createControlPipeInstance(const std::string &pipeName, std::atomic<bool> &running) {
-  int consecutiveFailures = 0;
-  while (running.load()) {
-    HANDLE pipe = CreateNamedPipeA(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
-                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                                   PIPE_UNLIMITED_INSTANCES, CONTROL_PIPE_BUFFER_BYTES,
-                                   CONTROL_PIPE_BUFFER_BYTES, 0, NULL);
-    if (pipe != INVALID_HANDLE_VALUE) {
-      return pipe;
-    }
-    const DWORD lastError = GetLastError();
-    consecutiveFailures += 1;
-    if (consecutiveFailures >= CONTROL_PIPE_CREATE_MAX_CONSECUTIVE_FAILURES) {
-      emitHelperEvent(
-          "{\"type\":\"error\",\"code\":\"control_pipe_failed\","
-          "\"message\":\"Could not create control pipe.\",\"win32_error\":" +
-          std::to_string(lastError) + ",\"attempts\":" + std::to_string(consecutiveFailures) + "}");
-      return INVALID_HANDLE_VALUE;
-    }
-    emitHelperEvent(
-        "{\"type\":\"control_pipe_retry\",\"win32_error\":" + std::to_string(lastError) +
-        ",\"attempt\":" + std::to_string(consecutiveFailures) + "}");
-    Sleep(CONTROL_PIPE_CREATE_RETRY_DELAY_MS);
-  }
-  return INVALID_HANDLE_VALUE;
-}
-
-}  // namespace
-
-void runControlServer(const std::string &pipeName,
-                      MeetingState &state,
-                      CameraSource &camera,
-                      ScreenCaptureSource &screen,
-                      PreviewFrameStore &previewFrames,
-                      MeetingRecorder &recorder,
-                      const Options &options,
-                      std::atomic<bool> &running,
-                      const std::function<void()> &onListening,
-                      VcamShmRingWin *vcamShm) {
-  // Create the first instance BEFORE signalling readiness: the bridge starts
-  // pinging as soon as it sees `ready`, and a pipe that does not exist yet is
-  // indistinguishable (ENOENT) from a dead helper. If no instance can be
-  // created the ready signal is withheld on purpose, so the bridge's start
-  // timeout fires with control_pipe_failed as the visible cause.
-  HANDLE pipe = createControlPipeInstance(pipeName, running);
-  if (pipe == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  if (onListening) {
-    onListening();
-  }
-  while (running.load()) {
-    BOOL connected = ConnectNamedPipe(pipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
-    // Open the next instance before serving this client. With a single
-    // instance there was a window between DisconnectNamedPipe/CloseHandle and
-    // the next CreateNamedPipeA in which no pipe existed at all, and bridge
-    // RPC bursts (engine start, status polls) hit ENOENT there - libuv retries
-    // ERROR_PIPE_BUSY on its own but not ERROR_FILE_NOT_FOUND. RPC handling
-    // stays sequential: the spare instance only parks the next client until
-    // this loop comes back around.
-    HANDLE nextPipe = createControlPipeInstance(pipeName, running);
-    if (connected) {
-      char buffer[8192];
-      DWORD readBytes = 0;
-      std::string pending;
-      while (ReadFile(pipe, buffer, sizeof(buffer), &readBytes, NULL) && readBytes > 0) {
-        pending.append(buffer, buffer + readBytes);
-        size_t pos = pending.find('\n');
-        if (pos != std::string::npos) {
-          const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running);
-          DWORD written = 0;
-          WriteFile(pipe, response.c_str(), (DWORD)response.size(), &written, NULL);
-          // Block until the client has read the response; without this,
-          // DisconnectNamedPipe below discards any unread data and the
-          // client sees an empty reply (lost fast-command responses).
-          FlushFileBuffers(pipe);
-          break;
-        }
-      }
-    }
-    DisconnectNamedPipe(pipe);
-    CloseHandle(pipe);
-    if (nextPipe == INVALID_HANDLE_VALUE) {
-      // Either shutting down (running == false) or control_pipe_failed was
-      // already reported by createControlPipeInstance.
-      return;
-    }
-    pipe = nextPipe;
-  }
-  // Loop left via control.shutdown: release the parked spare instance.
-  CloseHandle(pipe);
-}
-#else
+// The socket / named-pipe accept loop lives in helper-common (shared with the
+// PGM helper); this keeps the meeting-specific dispatch and the transport apart.
 void runControlServer(const std::string &socketPath,
                       MeetingState &state,
                       CameraSource &camera,
@@ -1248,58 +1171,15 @@ void runControlServer(const std::string &socketPath,
                       const Options &options,
                       std::atomic<bool> &running,
                       const std::function<void()> &onListening,
-                      VcamShmRingWin *vcamShm) {
-  unlink(socketPath.c_str());
-  int serverFd = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
-  if (serverFd < 0) {
-    std::cout << "{\"type\":\"error\",\"code\":\"control_socket_failed\",\"message\":\"Could not create control socket.\"}" << std::endl;
-    return;
-  }
-  configureSocketForShutdownChecks(serverFd);
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socketPath.c_str());
-  if (bind(serverFd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 || listen(serverFd, 16) != 0) {
-    std::cout << "{\"type\":\"error\",\"code\":\"control_bind_failed\",\"message\":\"Could not bind control socket.\"}" << std::endl;
-    close(serverFd);
-    unlink(socketPath.c_str());
-    return;
-  }
-
-  if (onListening) {
-    onListening();
-  }
-
-  while (running.load()) {
-    const int client = accept(serverFd, nullptr, nullptr);
-    if (client < 0) {
-      continue;
-    }
-    char buffer[8192];
-    std::string pending;
-    ssize_t readBytes = 0;
-    while ((readBytes = read(client, buffer, sizeof(buffer))) > 0) {
-      pending.append(buffer, buffer + readBytes);
-      const size_t pos = pending.find('\n');
-      if (pos != std::string::npos) {
-        const std::string line = pending.substr(0, pos);
-      const std::string response = handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running);
-        if (write(client, response.c_str(), response.size()) < 0) {
-          // The bridge destroyed its socket first (RPC timeout). Before
-          // SIGPIPE was ignored this write ended the whole process silently;
-          // now it is a visible, non-fatal incident.
-          emitHelperEvent(
-              "{\"type\":\"control_write_failed\",\"errno\":" +
-              std::to_string(errno) + "}");
-        }
-        break;
-      }
-    }
-    close(client);
-  }
-  close(serverFd);
-  unlink(socketPath.c_str());
+                      VcamShmRingWin *vcamShm,
+                      ProgramStream *programStream) {
+  broadify::helper::RpcTransportCallbacks callbacks;
+  callbacks.handle = [&](const std::string &line) {
+    return handleRpc(line, state, camera, screen, previewFrames, recorder, vcamShm, options, running, programStream);
+  };
+  callbacks.emitEvent = [](const std::string &jsonLine) { emitHelperEvent(jsonLine); };
+  callbacks.onListening = onListening;
+  broadify::helper::runLineRpcServer(socketPath, running, callbacks);
 }
-#endif
 
 }  // namespace broadify::meeting

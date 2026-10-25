@@ -6,9 +6,17 @@ import { enforceLocalOrToken } from "./route-guards.js";
  */
 type VideoStatusT = "not-configured" | "configured" | "unavailable" | "error";
 
+/** Placeholder fields plus, when the live program is wired, its status and capability (see server-registration). */
+export type VideoStatusResponseT = {
+  status: VideoStatusT;
+  message: string;
+  live_program?: unknown;
+  capabilities?: Record<string, unknown>;
+};
+
 type VideoRouteDepsT = {
   enforceLocalOrToken: typeof enforceLocalOrToken;
-  getStatus: () => { status: VideoStatusT; message: string };
+  getStatus: () => VideoStatusResponseT;
 };
 
 type VideoRouteOptionsT = FastifyPluginOptions & Partial<VideoRouteDepsT>;

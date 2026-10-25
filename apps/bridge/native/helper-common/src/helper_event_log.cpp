@@ -1,10 +1,10 @@
-#include "util/helper_event_log.h"
+#include "helper_common/helper_event_log.h"
 
 #include <fstream>
 #include <iostream>
 #include <mutex>
 
-namespace broadify::meeting {
+namespace broadify::helper {
 namespace {
 
 std::mutex g_mutex;
@@ -51,4 +51,4 @@ std::string helperExitReason() {
   return g_exitReason;
 }
 
-}  // namespace broadify::meeting
+}  // namespace broadify::helper

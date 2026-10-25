@@ -1,10 +1,10 @@
-#include "util/json_utils.h"
+#include "helper_common/json_utils.h"
 
 #include <chrono>
 #include <cstdlib>
 #include <sstream>
 
-namespace broadify::meeting {
+namespace broadify::helper {
 namespace {
 
 size_t findValueStart(const std::string &body, const std::string &field) {
@@ -320,4 +320,4 @@ std::string errorResponse(const std::string &id, const std::string &code, const 
          jsonEscape(code) + "\",\"message\":\"" + jsonEscape(message) + "\"}}\n";
 }
 
-}  // namespace broadify::meeting
+}  // namespace broadify::helper

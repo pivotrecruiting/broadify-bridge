@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <condition_variable>
 #include <chrono>
 #include <mutex>
@@ -22,6 +23,13 @@ class PreviewFrameStore {
   void clear();
   bool copyLatest(PreviewFrame &frame) const;
   bool copyLatestIfNew(uint64_t lastSequence, PreviewFrame &frame) const;
+  /**
+   * Calls `visitor` with the latest frame while holding the store lock, if its
+   * sequence differs from `lastSequence`. For consumers that convert the frame
+   * in place (one pass) instead of copying it first; keep the visitor short,
+   * the pipeline's publish() waits on the same lock. Returns whether it ran.
+   */
+  bool visitLatestIfNew(uint64_t lastSequence, const std::function<void(const PreviewFrame &)> &visitor) const;
   bool waitForNewFrame(uint64_t lastSequence,
                        std::chrono::steady_clock::time_point deadline) const;
   uint64_t sequence() const;

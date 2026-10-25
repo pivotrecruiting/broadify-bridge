@@ -26,6 +26,7 @@ import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { graphicsUsageRecorder } from "./services/intelligence/usage-event-recorder.js";
 import { ciSessionCoordinator } from "./services/intelligence/ci-session-coordinator.js";
 import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
+import { pgmHelperManager } from "./services/pgm/pgm-helper-manager.js";
 import { quitRunningVcamHelperApp } from "./modules/vcam/vcam-helper.js";
 import {
   initCommandRouter,
@@ -230,6 +231,8 @@ export async function startServer(
 ): Promise<void> {
   try {
     await server.listen({ host: config.host, port: config.port });
+    // Live program: restore a persisted source (helper starts lazily, gate permitting).
+    void pgmHelperManager.restoreOnBoot();
     server.log.info(
       `Bridge server listening on http://${config.host}:${config.port}`
     );
@@ -310,6 +313,7 @@ export async function startServer(
     // as a crash and a restart would be armed mid-shutdown.
     engineAdapter.beginShutdown();
     meetingHelperManager.beginShutdown();
+    pgmHelperManager.beginShutdown();
     server.log.info(`Received ${signal}, shutting down gracefully...`);
     // Budget must cover MP4 finalization on quit-while-recording: the meeting
     // stop step below waits up to ~20s for recording.stop + control.shutdown.
@@ -355,6 +359,14 @@ export async function startServer(
         server.log.warn(
           `[Meeting] Shutdown encountered an error: ${message}`
         );
+      }
+
+      server.log.info("[PGM] Shutting down live program helper...");
+      try {
+        await withTimeout("pgm shutdown", pgmHelperManager.stop(), 5000);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(`[PGM] Shutdown encountered an error: ${message}`);
       }
 
       // The standalone virtual-camera app must not outlive the bridge.

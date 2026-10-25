@@ -13,6 +13,11 @@ import {
   type VcamHelperStatusT,
 } from "../../modules/vcam/vcam-helper.js";
 import { getBridgeContext } from "../bridge-context.js";
+import {
+  DEFAULT_HELPER_RESTART_POLICY,
+  decideHelperRestart,
+  noteHelperCrash,
+} from "../helpers/helper-restart-policy.js";
 import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
 import {
   HELPER_NOT_REACHABLE_CODE,
@@ -76,11 +81,10 @@ const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
 const STALE_HELPER_PORT_RELEASE_TIMEOUT_MS = 1000;
 // Bounded self-healing after a helper crash: without it, camera, keyer,
 // virtual camera and program output stay dead while the bridge looks healthy.
-const HELPER_RESTART_MAX_ATTEMPTS = 3;
-const HELPER_RESTART_BASE_DELAY_MS = 1000;
-// A helper that stayed up this long is considered healthy again; the attempt
-// counter resets so one crash per day never exhausts the limit.
-const HELPER_RESTART_HEALTHY_UPTIME_MS = 60_000;
+// Budget and backoff live in services/helpers/helper-restart-policy.ts
+// (shared with the PGM helper manager); the numbers are unchanged.
+const HELPER_RESTART_POLICY = DEFAULT_HELPER_RESTART_POLICY;
+const HELPER_RESTART_MAX_ATTEMPTS = HELPER_RESTART_POLICY.maxAttempts;
 const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_AUTO_DEGRADE",
   "BROADIFY_MEETING_CAMERA_MAX_HEIGHT",
@@ -1677,9 +1681,11 @@ export class MeetingHelperManager {
       // start counting from zero for this new, unrelated crash.
       const uptimeMs =
         this.lastRunningSince !== null ? Date.now() - this.lastRunningSince : 0;
-      if (uptimeMs >= HELPER_RESTART_HEALTHY_UPTIME_MS) {
-        this.restartAttempts = 0;
-      }
+      this.restartAttempts = noteHelperCrash(
+        { attempts: this.restartAttempts },
+        uptimeMs,
+        HELPER_RESTART_POLICY,
+      ).attempts;
       this.scheduleRestart();
     }
   }
@@ -1702,16 +1708,19 @@ export class MeetingHelperManager {
     if (this.restartTimer || this.shutdownRequested) {
       return;
     }
-    if (this.restartAttempts >= HELPER_RESTART_MAX_ATTEMPTS) {
+    const { decision, state: restartState } = decideHelperRestart(
+      { attempts: this.restartAttempts },
+      HELPER_RESTART_POLICY,
+    );
+    if (decision.action === "give_up") {
       const message = `Meeting helper crashed and did not recover after ${HELPER_RESTART_MAX_ATTEMPTS} restart attempts.`;
       this.lastError = message;
       getLogger().error(`[Meeting] ${message}`);
       publishMeetingErrorEvent("helper_restart_exhausted", message);
       return;
     }
-    this.restartAttempts += 1;
-    const delayMs =
-      HELPER_RESTART_BASE_DELAY_MS * 2 ** (this.restartAttempts - 1);
+    this.restartAttempts = restartState.attempts;
+    const delayMs = decision.delayMs;
     getLogger().warn(
       `[Meeting] Helper crashed; restart attempt ${this.restartAttempts}/${HELPER_RESTART_MAX_ATTEMPTS} in ${delayMs}ms`,
     );

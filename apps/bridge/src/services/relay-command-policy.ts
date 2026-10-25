@@ -173,6 +173,29 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   power_socket_delete: sideEffect("power_socket_delete", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"]),
   power_socket_set: sideEffect("power_socket_set", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"], "never"),
   power_socket_test: readOnly("power_socket_test", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["power.sockets"]),
+  // Live program preview. The offer answers synchronously after ICE gathering
+  // (bounded at 3 s on the bridge), so it stays inside the fast class; one
+  // "pgm" lane keeps offer/close ordered per bridge. Replaying an offer would
+  // build a second PeerConnection for a dead viewer: same request id only.
+  pgm_get_status: readOnly("pgm_get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.status"]),
+  pgm_inputs_list: readOnly("pgm_inputs_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.inputs"]),
+  pgm_source_select: sideEffect("pgm_source_select", "helper_start", 35_000, 30_000, "pgm", ["pgm.status", "pgm.inputs"], "after_state_check"),
+  pgm_source_clear: sideEffect("pgm_source_clear", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.status", "pgm.inputs"], "after_state_check"),
+  pgm_session_list: readOnly("pgm_session_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.sessions"]),
+  pgm_webrtc_offer: sideEffect("pgm_webrtc_offer", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
+  pgm_webrtc_close: sideEffect("pgm_webrtc_close", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
+  // Snapshot is a read (JPEG in the result, < 2 MB); recording start/stop
+  // touch the file system, the save panel can stay open for minutes.
+  pgm_snapshot: readOnly("pgm_snapshot", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.snapshot"]),
+  pgm_recording_pick_path: sideEffect("pgm_recording_pick_path", "helper_start", 130_000, 125_000, "pgm.recording.dialog", ["pgm.status"]),
+  pgm_recording_start: sideEffect("pgm_recording_start", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm.recording", ["pgm.status"], "after_state_check"),
+  pgm_recording_stop: sideEffect("pgm_recording_stop", "helper_start", 35_000, 30_000, "pgm.recording", ["pgm.status"], "after_state_check"),
+  // Meeting program stream: the composited camera picture over WebRTC, same
+  // bounded ICE answer as pgm_webrtc_offer, on its own lane.
+  meeting_program_status: readOnly("meeting_program_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.program"]),
+  meeting_program_sessions: readOnly("meeting_program_sessions", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.program.sessions"]),
+  meeting_program_offer: sideEffect("meeting_program_offer", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.program", ["meeting.program.sessions"]),
+  meeting_program_close: sideEffect("meeting_program_close", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.program", ["meeting.program.sessions"]),
 };
 
 /**
