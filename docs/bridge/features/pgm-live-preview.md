@@ -60,7 +60,7 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
 - Phase 2: Windows UVC. Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
 
 ## Betrieb
-- `BRIDGE_PGM_PREVIEW=1` schaltet frei, `BRIDGE_PGM_MAX_VIEWERS` (Standard 4, höchstens 16) begrenzt Zuschauer.
+- Standardmäßig an (der Helper startet erst bei Quelle oder Zuschauer); `BRIDGE_PGM_PREVIEW=0` ist der Notaus je Rechner, `BRIDGE_PGM_MAX_VIEWERS` (Standard 4, höchstens 16) begrenzt Zuschauer. Wer das Programm sehen darf, entscheidet die Web-App über `feature_live_program`; `capabilities.live_program.enabled` spiegelt den Notaus, `supported` die Bridge-Version.
 - `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60` startet den Helper mit Farbbalken und Bildzähler statt Gerät
   (Latenzmessung, Test ohne Mischer); `BRIDGE_LOG_PERF=1` liefert `pgm_perf` einmal je Sekunde.
 - `BRIDGE_PGM_HELPER_PATH` überschreibt den Helper-Pfad (Dev-Builds).

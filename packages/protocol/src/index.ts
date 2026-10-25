@@ -477,7 +477,10 @@ export type PgmStatusT = {
 
 /** Advertised in `get_status.capabilities.live_program`; the web app gates the tile on it. */
 export type LiveProgramCapabilitiesT = {
+  /** This bridge version/platform can stream the program (false: update the bridge). */
   supported: boolean;
+  /** Machine kill switch (BRIDGE_PGM_PREVIEW=0); absent on older bridges means enabled. */
+  enabled?: boolean;
   audio: boolean;
   max_viewers: number;
   decklink_input: boolean;

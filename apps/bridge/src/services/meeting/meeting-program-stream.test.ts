@@ -26,7 +26,7 @@ describe("MeetingProgramStream", () => {
 
   it("refuses everything while the preview gate is off", async () => {
     const client = fakeClient(() => []);
-    const stream = new MeetingProgramStream({ env: {} as NodeJS.ProcessEnv, client: () => client as never, engineRunning: () => true });
+    const stream = new MeetingProgramStream({ env: { BRIDGE_PGM_PREVIEW: "0" } as NodeJS.ProcessEnv, client: () => client as never, engineRunning: () => true });
     await expect(stream.offer(offer("a"))).rejects.toBeInstanceOf(MeetingProgramStreamError);
     await expect(stream.status()).resolves.toMatchObject({ enabled: false });
     stream.dispose();

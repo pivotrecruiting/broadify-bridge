@@ -1,7 +1,9 @@
 /**
- * Feature gate for the live program (PGM) preview. Everything behind it is
- * dark until an operator sets BRIDGE_PGM_PREVIEW=1 on the bridge machine;
- * the web app additionally gates on the `feature_live_program` entitlement.
+ * Kill switch for the live program (PGM) preview. On by default: the helper
+ * only starts on demand (source selected or viewer), so an idle bridge pays
+ * nothing. BRIDGE_PGM_PREVIEW=0 switches it off on one machine. Who may see
+ * the program is decided by the web app's `feature_live_program` entitlement,
+ * not here.
  */
 export const PGM_PREVIEW_ENV = "BRIDGE_PGM_PREVIEW";
 export const PGM_MAX_VIEWERS_ENV = "BRIDGE_PGM_MAX_VIEWERS";
@@ -14,7 +16,8 @@ export type PgmEnvT = {
 };
 
 export function parsePgmEnv(env: NodeJS.ProcessEnv = process.env): PgmEnvT {
-  const enabled = env[PGM_PREVIEW_ENV] === "1";
+  const raw = (env[PGM_PREVIEW_ENV] ?? "").trim().toLowerCase();
+  const enabled = !(raw === "0" || raw === "false" || raw === "off");
   const rawMax = Number(env[PGM_MAX_VIEWERS_ENV]);
   const maxViewers =
     Number.isInteger(rawMax) && rawMax >= 1

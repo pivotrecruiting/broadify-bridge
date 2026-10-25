@@ -39,14 +39,16 @@ const defaultDeps: PgmCommandDepsT = {
 };
 
 /**
- * Capability block for `get_status`. The gate decides `supported`; audio and
- * DeckLink flip as the phases ship (macOS UVC + audio in phase 1).
+ * Capability block for `get_status`. `supported` says what this bridge version
+ * and platform can do (macOS UVC + audio in phase 1, meeting program via the
+ * shared library); `enabled` mirrors the machine's kill switch. The web app
+ * shows "update the bridge" for the first and "disabled on the bridge" for the
+ * second, and gates the whole feature on the organization's entitlement.
  */
 export function getLiveProgramCapabilities(deps: Pick<PgmCommandDepsT, "env" | "platform"> = defaultDeps): LiveProgramCapabilitiesT {
   const env = parsePgmEnv(deps.env);
-  const supported = env.enabled && deps.platform === "darwin";
-  // The meeting helper streams its composited program with the same shared encoder/WebRTC library (macOS first).
-  return { supported, audio: supported, max_viewers: env.maxViewers, decklink_input: false, meeting_preview: supported };
+  const supported = deps.platform === "darwin";
+  return { supported, enabled: env.enabled, audio: supported, max_viewers: env.maxViewers, decklink_input: false, meeting_preview: supported };
 }
 
 export function idlePgmStatus(deps: Pick<PgmCommandDepsT, "env"> = defaultDeps): PgmStatusT {
