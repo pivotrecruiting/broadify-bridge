@@ -26,7 +26,7 @@ function fakeManager() {
 
 const deps = (enabled: boolean, platform: NodeJS.Platform = "darwin"): PgmCommandDepsT & { m: ReturnType<typeof fakeManager> } => {
   const m = fakeManager();
-  return { env: enabled ? { BRIDGE_PGM_PREVIEW: "1" } : {}, platform, manager: () => m, m, pickPath: async (name: string) => `/tmp/${name}`, defaultPath: () => "/tmp/default.mp4" };
+  return { env: enabled ? {} : { BRIDGE_PGM_PREVIEW: "0" }, platform, manager: () => m, m, pickPath: async (name: string) => `/tmp/${name}`, defaultPath: () => "/tmp/default.mp4" };
 };
 
 describe("pgm command handler", () => {
@@ -36,10 +36,10 @@ describe("pgm command handler", () => {
   });
 
   it("advertises the capability from the env gate and platform", () => {
-    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: false, audio: false, max_viewers: 4, decklink_input: false, meeting_preview: false });
-    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "darwin" }).meeting_preview).toBe(true);
-    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "darwin" }).supported).toBe(true);
-    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "1" }, platform: "win32" }).supported).toBe(false);
+    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: true, enabled: true, audio: true, max_viewers: 4, decklink_input: false, meeting_preview: true });
+    // The kill switch keeps `supported` (this is not an old bridge) but reports the feature as disabled.
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "0" }, platform: "darwin" })).toMatchObject({ supported: true, enabled: false });
+    expect(getLiveProgramCapabilities({ env: {}, platform: "win32" })).toMatchObject({ supported: false, meeting_preview: false });
   });
 
   it("answers status and sessions even while disabled", async () => {

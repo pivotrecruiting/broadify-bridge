@@ -1,10 +1,11 @@
 import { PGM_DEFAULT_MAX_VIEWERS, parsePgmEnv } from "./pgm-env.js";
 
 describe("parsePgmEnv", () => {
-  it("is disabled unless BRIDGE_PGM_PREVIEW=1", () => {
-    expect(parsePgmEnv({}).enabled).toBe(false);
-    expect(parsePgmEnv({ BRIDGE_PGM_PREVIEW: "true" }).enabled).toBe(false);
+  it("is on by default and off only with BRIDGE_PGM_PREVIEW=0", () => {
+    expect(parsePgmEnv({}).enabled).toBe(true);
     expect(parsePgmEnv({ BRIDGE_PGM_PREVIEW: "1" }).enabled).toBe(true);
+    expect(parsePgmEnv({ BRIDGE_PGM_PREVIEW: "0" }).enabled).toBe(false);
+    expect(parsePgmEnv({ BRIDGE_PGM_PREVIEW: "off" }).enabled).toBe(false);
   });
 
   it("clamps the viewer cap and falls back to the default", () => {
