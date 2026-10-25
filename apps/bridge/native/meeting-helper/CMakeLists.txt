@@ -572,8 +572,8 @@ if(MEETING_HELPER_BUILD_TESTS)
       target_compile_definitions(${helper_test} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
       if(helper_test STREQUAL "raw_frame_server_test")
         target_link_libraries(${helper_test} PRIVATE ws2_32 avrt winmm)
-      elseif(helper_test STREQUAL "control_server_test")
-        # Links control_server.cpp + vcam_controller.cpp: needs the same Win32
+      elseif(helper_test STREQUAL "control_server_test" OR helper_test STREQUAL "program_stream_rpc_test")
+        # Both link control_server.cpp + vcam_controller.cpp: needs the same Win32
         # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
         target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
       elseif(helper_test STREQUAL "d3d_adapter_select_test")
