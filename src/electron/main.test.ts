@@ -1,3 +1,4 @@
+import path from "path";
 /**
  * Tests for main process (main.ts).
  * Uses dynamic import and mocked argv so that the main app path runs.
@@ -1236,7 +1237,12 @@ describe("main", () => {
   describe("loadNetworkConfig from template", () => {
     // Only the cwd template exists; the userData copy must stay missing so the
     // template branch (not the user-config branch) is what gets exercised.
-    const CWD_NETWORK_CONFIG_TEMPLATE = `${process.cwd()}/config/network-config.json`;
+    // path.join: main.ts builds this path with the host separator (Windows runner).
+    const CWD_NETWORK_CONFIG_TEMPLATE = path.join(
+      process.cwd(),
+      "config",
+      "network-config.json",
+    );
 
     it("getNetworkConfig returns template when template exists and user file missing", async () => {
       mockIsDev.mockReturnValue(true);

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 
 const mockSpawn = jest.fn();
 jest.mock("node:child_process", () => ({
@@ -69,8 +70,9 @@ describe("ConferenceDisplayOutput", () => {
     const entryFlagIndex = args.indexOf("--renderer-entry");
     expect(entryFlagIndex).toBeGreaterThanOrEqual(0);
     expect(args[entryFlagIndex + 1]).toMatch(/display-output-entry\.js$/);
+    // path.join: the module joins with the host separator (Windows runner).
     expect(options.env.BRIDGE_GRAPHICS_USER_DATA_DIR).toBe(
-      "/tmp/bridge-user-data/conference-display-profile",
+      path.join("/tmp/bridge-user-data", "conference-display-profile"),
     );
     expect(options.env.BRIDGE_FRAMEBUS_NAME).toBe("bfy-meeting-test");
     expect(options.env.BRIDGE_DISPLAY_MATCH_NAME).toBe("HDMI");
