@@ -99,6 +99,13 @@ Zusätzlich prüft der Windows-Workflow:
 - MSI lässt sich silent in ein temporäres Verzeichnis installieren und enthält die nativen Runtime-Dateien
 - die beiden nativen Runtime-DLLs `SDL2.dll` und `onnxruntime.dll` besitzen eine
   gültige Authenticode-Signatur
+- die MSVC-Runtime-DLLs neben beiden Helfern (`Microsoft.VC143.CRT`-Satz, Liste in
+  `scripts/lib/windows-vc-runtime.cjs`) existieren, tragen eine gültige Authenticode-Signatur
+  und der Signer ist `CN=Microsoft Corporation`. Diese DLLs werden **nicht** mit dem
+  Broadify-Zertifikat nachsigniert (sie stehen bewusst nicht in
+  `scripts/sign-windows-native-resources.cjs`); `Get-AuthenticodeSignature` in
+  `scripts/verify-windows-release-signatures.ps1` schlägt fehl, falls doch jemand sie
+  umsigniert oder eine fehlt.
 
 ## 6. Release-Best-Practices (kurz)
 

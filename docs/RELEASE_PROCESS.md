@@ -327,6 +327,18 @@ Der Display Helper wird **nicht** separat gehostet wie der DeckLink Helper. Er w
 - **Signing:** Bei gesetztem `APPLE_SIGNING_IDENTITY` werden Runtime-Dylib und Binary automatisch mit `codesign` signiert (für Notarization).
 - **Kein separater Release nötig** – das Binary landet in der gepackten App.
 
+## MSVC-Runtime neben den Windows-Helfern (CI-Build)
+
+`display-helper.exe` und `meeting-helper.exe` (plus SDL2/ONNX-Runtime/OpenVINO-DLLs) sind `/MD`-Builds. Ohne installiertes VC++-Redistributable startet der Helfer auf dem Kunden-PC mit `0xC0000135` (`STATUS_DLL_NOT_FOUND`) nicht (Feldbefund 19.10.). Der Windows-Runner hat das Redistributable installiert und sieht das Problem in den Smoke-Tests nicht. Entscheidung (26.10.): den kompletten `Microsoft.VC143.CRT`-Satz als `extraResources` neben **beide** Helfer packen – nicht `/MT`, nicht `vc_redist` im NSIS (das MSI-Ziel bliebe kaputt).
+
+- **Single Source of Truth:** `scripts/lib/windows-vc-runtime.cjs` (DLL-Liste, Helfer-Ordner `native/display-helper` und `native/meeting-helper`, Staging-Ordner `build/windows-vc-runtime/`). PowerShell/Bash lesen die Liste über `node scripts/list-windows-vc-runtime-paths.cjs [--staged|--dlls]`.
+- **Staging:** `npm run prepare:vc-runtime:windows` (`scripts/prepare-windows-vc-runtime.ps1`) läuft in `dist:win` direkt nach `build:meeting-helper`; Quelle ist `$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT` (von `ilammy/msvc-dev-cmd` gesetzt, Fallback `vswhere`). Fehlt eine DLL, bricht der Build ab.
+- **Fail-Fast Check:** `scripts/verify-release-artifacts.sh --arch x64` verlangt die gestagten DLLs vor `electron-builder`.
+- **Packaging:** `electron-builder.config.cjs` kopiert den Satz nach `resources/native/display-helper/` und `resources/native/meeting-helper/` (Dopplung gewollt: Windows sucht zuerst im Exe-Ordner).
+- **Dependency-Gate:** Workflow-Step „Verify Windows native helper dependencies (dumpbin)" nach „Build Electron App" ruft `scripts/verify-windows-native-dependencies.cjs` auf: `dumpbin /DEPENDENTS` auf jede gepackte Helfer-Exe/-DLL; jeder Import muss eine Windows-System-DLL (Allowlist in `scripts/lib/windows-native-dependency-policy.cjs`) oder eine Datei im selben Ordner sein. So fällt eine fehlende CRT-DLL auch auf einem Runner **mit** Redistributable auf.
+- **Signaturen:** Die CRT-DLLs tragen Microsofts Authenticode-Signatur und werden **nicht** mit dem Broadify-Zertifikat nachsigniert (nicht in `scripts/sign-windows-native-resources.cjs`). `scripts/verify-windows-release-signatures.ps1` prüft Existenz, gültige Signatur und Signer `CN=Microsoft Corporation`; beide Smoke-Tests (MSI, NSIS) verlangen die installierten Dateien.
+- **Contract-Tests:** `npm run test:release-contracts` (`scripts/windows-vc-runtime.test.cjs`, `scripts/windows-native-dependencies.test.cjs`).
+
 ## Release-Prozess
 
 ### Schritt 1: Feature-Branch zu dev mergen

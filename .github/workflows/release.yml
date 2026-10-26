@@ -539,6 +539,18 @@ jobs:
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }}
 
+      - name: Verify Windows native helper dependencies (dumpbin)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          # The runner has the VC++ redistributable installed, so the helper
+          # smoke tests cannot notice a CRT DLL missing from the package.
+          # Every packaged helper exe/dll import must resolve to an inbox
+          # Windows DLL or a file packaged next to it
+          # (scripts/lib/windows-native-dependency-policy.cjs); dumpbin is on
+          # PATH via ilammy/msvc-dev-cmd.
+          node scripts/verify-windows-native-dependencies.cjs --resources dist\win-unpacked\resources
+
       - name: Assert Windows installer artifacts
         if: matrix.os == 'windows-2022'
         shell: pwsh

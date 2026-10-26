@@ -211,6 +211,17 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/tbbmalloc.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/modnet.onnx")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/windows/broadify-vcam.dll")
+  # Microsoft Visual C++ runtime staged by scripts/prepare-windows-vc-runtime.ps1
+  # (dist:win) and packaged next to display-helper.exe and meeting-helper.exe.
+  # A file missing here would surface as STATUS_DLL_NOT_FOUND on customer PCs.
+  if [[ "$EXPECTED_ARCH_NORMALIZED" == "x86-64" ]]; then
+    staged_vc_runtime_files="$(node "$ROOT_DIR/scripts/list-windows-vc-runtime-paths.cjs" --staged)"
+    while IFS= read -r staged_vc_runtime_file; do
+      if [[ -n "$staged_vc_runtime_file" ]]; then
+        REQUIRED_FILES+=("$staged_vc_runtime_file")
+      fi
+    done <<< "$staged_vc_runtime_files"
+  fi
   EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
 else
