@@ -55,6 +55,22 @@ Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.y
 1. Windows CI-Runner nutzen.
 2. Build starten: npm ci dann npm run dist:win.
 3. Ergebnis: signierte Artefakte in `dist/` (`.exe` für NSIS/Auto-Update, `.msi` für manuelle Kundeninstallation).
+   - **Fail-fast ohne Signing-Konfiguration:** `electron-builder.config.cjs` bricht einen
+     Windows-Build (`--win`, `-w`, `--windows`) sofort mit
+     `Windows signing is not configured (missing: …)` ab, wenn eine der vier
+     `AZURE_CODE_SIGNING_*`-Variablen fehlt oder leer ist
+     (`scripts/lib/resolve-windows-signing-policy.cjs`). Es entsteht kein stiller,
+     unsignierter Installer mehr, und `app-update.yml` kann nicht ohne `publisherName`
+     ausgeliefert werden.
+   - **Lokaler unsignierter Build (nur Entwicklung):** explizit per
+     `BROADIFY_ALLOW_UNSIGNED_WINDOWS_BUILD=1 npm run dist:win` freischalten. Der Build
+     meldet dann `[Signing] Windows signing policy: unsigned_opt_out (missing: …)` auf
+     stderr. Solche Artefakte dürfen nie an Kunden oder in den Updater-Pfad gelangen;
+     `electron-updater` prüft ohne `publisherName` keine Signatur.
+   - Ohne Windows-Target (macOS-/Linux-Build, Diagnose-Skripte) wird die Policy nur als
+     `not_applicable` protokolliert, der Build läuft normal weiter. Im CI greift zusätzlich
+     der Secret-Guard in `.github/workflows/release.yml`; die Opt-out-Variable wird dort
+     nicht gesetzt.
 4. Der Build muss vor `electron-builder` alle Windows-Runtime-Artefakte prüfen (`display-helper.exe`, `meeting-helper.exe`, `onnxruntime.dll`, MODNet-Modell, FrameBus-Addon).
 5. `scripts/sign-windows-native-resources.cjs` signiert nach dem Packen gezielt
    `display-helper.exe`, `SDL2.dll`, `atem-usb-helper.exe`, `meeting-helper.exe`

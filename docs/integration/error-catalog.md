@@ -21,6 +21,7 @@
 - **network_unreachable / ENETUNREACH / EHOSTUNREACH**: Kamera-Netz ist vom Mac nicht erreichbar → aktives Interface, VLAN/Subnetz und Routing prüfen
 - **connection_refused / ECONNREFUSED**: Host antwortet, aber Port/Protokoll passt nicht → Canon-Port und HTTP/HTTPS-Einstellung prüfen
 - **timeout / ETIMEDOUT**: Keine rechtzeitige Antwort → Adresse, Port, Kamera-Netzwerkmodus, Firewall und Local Network Permission prüfen
+- **canon_xc_failed**: Fallback-`errorCode` im Command-Ergebnis, wenn die Kamera-Antwort `ok:false` ist, aber keinen Diagnose-Code liefert (z. B. unerwartete HTTP-Antwort ohne Netzwerkfehler) → `error`/`data.message` und `data.result.response` prüfen; sonst trägt `errorCode` den Canon-Diagnose-Code aus dieser Liste (`timeout`, `connection_refused`, …)
 
 ## Desktop
 - **Port already in use**: Bridge kann Port nicht binden (Health‑Check Fehler)

@@ -1,7 +1,10 @@
+import { join } from "node:path";
 import {
   sanitizeUpdaterErrorMessage,
   parseIntervalMs,
   getUpdaterDisableReason,
+  resolveWindowsInstallKind,
+  WINDOWS_ELEVATE_HELPER_FILE_NAME,
 } from "./updater-utils.js";
 
 describe("updater-utils", () => {
@@ -13,6 +16,7 @@ describe("updater-utils", () => {
           platform: "darwin",
           isPackaged: true,
           appImage: undefined,
+          windowsInstallKind: null,
         })
       ).toBeNull();
     });
@@ -24,6 +28,7 @@ describe("updater-utils", () => {
           platform: "darwin",
           isPackaged: true,
           appImage: undefined,
+          windowsInstallKind: null,
         })
       ).toContain("BROADIFY_DISABLE_AUTO_UPDATE");
     });
@@ -35,6 +40,7 @@ describe("updater-utils", () => {
           platform: "darwin",
           isPackaged: false,
           appImage: undefined,
+          windowsInstallKind: null,
         })
       ).toContain("development builds");
     });
@@ -46,6 +52,7 @@ describe("updater-utils", () => {
           platform: "freebsd",
           isPackaged: true,
           appImage: undefined,
+          windowsInstallKind: null,
         })
       ).toContain("Unsupported platform");
     });
@@ -57,6 +64,7 @@ describe("updater-utils", () => {
           platform: "linux",
           isPackaged: true,
           appImage: undefined,
+          windowsInstallKind: null,
         })
       ).toContain("AppImage");
     });
@@ -68,8 +76,95 @@ describe("updater-utils", () => {
           platform: "linux",
           isPackaged: true,
           appImage: "/path/to/app",
+          windowsInstallKind: null,
         })
       ).toBeNull();
+    });
+
+    it("disables on win32 when the elevate helper is missing (MSI or portable install)", () => {
+      const reason = getUpdaterDisableReason({
+        disableEnv: undefined,
+        platform: "win32",
+        isPackaged: true,
+        appImage: undefined,
+        windowsInstallKind: "msi_or_portable",
+      });
+      expect(reason).toContain("MSI");
+      expect(reason).toContain(".exe");
+    });
+
+    it("stays enabled on win32 for NSIS installs", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: undefined,
+          platform: "win32",
+          isPackaged: true,
+          appImage: undefined,
+          windowsInstallKind: "nsis",
+        })
+      ).toBeNull();
+    });
+
+    it("ignores the install kind on darwin", () => {
+      expect(
+        getUpdaterDisableReason({
+          disableEnv: undefined,
+          platform: "darwin",
+          isPackaged: true,
+          appImage: undefined,
+          windowsInstallKind: "msi_or_portable",
+        })
+      ).toBeNull();
+    });
+  });
+
+  describe("resolveWindowsInstallKind", () => {
+    it("returns null on darwin without probing the file system", () => {
+      const existsSync = jest.fn().mockReturnValue(true);
+      expect(
+        resolveWindowsInstallKind({
+          platform: "darwin",
+          resourcesPath: "/Applications/Broadify Bridge.app/Contents/Resources",
+          existsSync,
+        })
+      ).toBeNull();
+      expect(existsSync).not.toHaveBeenCalled();
+    });
+
+    it("returns null on win32 without a resourcesPath", () => {
+      const existsSync = jest.fn().mockReturnValue(true);
+      expect(
+        resolveWindowsInstallKind({
+          platform: "win32",
+          resourcesPath: undefined,
+          existsSync,
+        })
+      ).toBeNull();
+      expect(existsSync).not.toHaveBeenCalled();
+    });
+
+    it("returns nsis when the elevate helper exists next to the resources", () => {
+      const resourcesPath = "C:\\Program Files\\Broadify Bridge\\resources";
+      const existsSync = jest.fn().mockReturnValue(true);
+      expect(
+        resolveWindowsInstallKind({ platform: "win32", resourcesPath, existsSync })
+      ).toBe("nsis");
+      expect(existsSync).toHaveBeenCalledTimes(1);
+      expect(existsSync).toHaveBeenCalledWith(
+        join(resourcesPath, WINDOWS_ELEVATE_HELPER_FILE_NAME),
+      );
+      expect(WINDOWS_ELEVATE_HELPER_FILE_NAME).toBe("elevate.exe");
+    });
+
+    it("returns msi_or_portable when the elevate helper is missing", () => {
+      const resourcesPath = "C:\\Program Files\\Broadify Bridge\\resources";
+      const existsSync = jest.fn().mockReturnValue(false);
+      expect(
+        resolveWindowsInstallKind({ platform: "win32", resourcesPath, existsSync })
+      ).toBe("msi_or_portable");
+      expect(existsSync).toHaveBeenCalledWith(
+        join(resourcesPath, WINDOWS_ELEVATE_HELPER_FILE_NAME),
+      );
     });
   });
 

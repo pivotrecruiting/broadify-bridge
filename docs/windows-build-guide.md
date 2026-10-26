@@ -348,7 +348,10 @@ In Prioritätsreihenfolge:
 5. **Call-Control:** Teams/Zoom-Shortcuts für Windows.
 6. **GPU-Compositing (D3D):** für echte Mac-Parität bei Latenz/CPU — optional.
 7. **Installer/Signing:** `npm run dist:win` (electron-builder, NSIS/MSI). Signing via
-   **Azure Trusted Signing** (env-gated). Seit dem VCam-Paketierungs-Fix baut `dist:win`
+   **Azure Trusted Signing** (env-gated). Fehlen die `AZURE_CODE_SIGNING_*`-Variablen,
+   bricht `dist:win` sofort ab — ein lokaler unsignierter Test-Build braucht explizit
+   `BROADIFY_ALLOW_UNSIGNED_WINDOWS_BUILD=1` (siehe `docs/signing/windows-signing.md`,
+   Abschnitt 4). Seit dem VCam-Paketierungs-Fix baut `dist:win`
    die **broadify-vcam.dll mit** (`build:vcam-dll:windows`), packt sie nach
    `resources/native/vcam-helper/`, signiert sie und der NSIS-Installer registriert sie
    per `regsvr32`. Der NSIS-Installer ist **per-machine** (`nsis.perMachine: true`,

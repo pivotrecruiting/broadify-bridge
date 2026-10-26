@@ -16,6 +16,7 @@ import {
 import { PairingDialog } from "./components/PairingDialog";
 import { useAppUpdater } from "./hooks/use-app-updater";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
+import { openWebAppAfterStart } from "./utils/open-web-app-after-start";
 import "./styles/App.css";
 
 function App() {
@@ -83,24 +84,6 @@ function App() {
   } | null>(null);
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("terms");
-  // One-shot flag: after a successful bridge start, open the web app in the
-  // default browser as soon as the status carries the web app URL. Never
-  // fires on failed starts and exactly once per started session.
-  const openWebAppAfterStartRef = useRef(false);
-  useEffect(() => {
-    if (!openWebAppAfterStartRef.current) {
-      return;
-    }
-    if (bridgeStatus.running && bridgeStatus.webAppUrl) {
-      openWebAppAfterStartRef.current = false;
-      void window.electron
-        .openExternal(bridgeStatus.webAppUrl)
-        .catch((error: unknown) => {
-          console.error("Failed to open web app URL after start:", error);
-        });
-    }
-  }, [bridgeStatus.running, bridgeStatus.webAppUrl]);
-
   const previousUpdaterStateRef = useRef(updaterStatus.state);
   const previousAvailableVersionRef = useRef<string | null>(updaterStatus.availableVersion);
 
@@ -206,7 +189,13 @@ function App() {
         console.error("Failed to start bridge:", result.error);
         alert(`Failed to start bridge: ${result.error || "Unknown error"}`);
       } else {
-        openWebAppAfterStartRef.current = true;
+        // Open the web app from the start result, not from a bridgeStatus
+        // effect: main pushes the first status (with webAppUrl) before the
+        // bridgeStart IPC call resolves, so an effect armed after the await
+        // would never see the status change and the open was timing-dependent.
+        void openWebAppAfterStart(result, (url) =>
+          window.electron.openExternal(url)
+        );
         // If port was changed automatically, update UI
         if (result.actualPort && result.actualPort !== portToUse) {
           const portConfig = getCurrentPortConfig();
