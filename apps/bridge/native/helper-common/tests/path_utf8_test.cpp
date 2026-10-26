@@ -145,8 +145,10 @@ int main() {
     CHECK(!broadify::helper::tryUtf8ToWide("\xFC", wide));
     CHECK(wide.empty());
     CHECK(broadify::helper::utf8ToWide("\xFC").empty());
-    CHECK(broadify::helper::utf8ToWide("\xC3\xBC") == L"ü");
-    CHECK(broadify::helper::wideToUtf8(L"ü") == "\xC3\xBC");
+    // Wide literals as escapes: without /utf-8 MSVC reads this file in the
+    // ANSI code page, so a literal u-umlaut would become two characters.
+    CHECK(broadify::helper::utf8ToWide("\xC3\xBC") == L"\u00FC");
+    CHECK(broadify::helper::wideToUtf8(L"\u00FC") == "\xC3\xBC");
     CHECK(broadify::helper::wideToUtf8(static_cast<const wchar_t *>(nullptr)).empty());
     int errorCode = 0;
     const std::vector<uint8_t> bytes = readFileBytesUtf8(dirUtf8 + "/\xFC.bin", errorCode);
