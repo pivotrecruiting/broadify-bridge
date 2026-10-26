@@ -4,6 +4,7 @@ import {
   getArgMap,
   resolveRendererEntry,
 } from "./main-argv.js";
+import { resolveAllowedRendererEntry } from "./renderer-entry-policy.js";
 import { ipcMainHandle, isDev, ipcWebContentsSend } from "./util.js";
 import { getPreloadPath, getUIPath, getIconPath } from "./pathResolver.js";
 import { getStaticData, pollResources } from "./test.js";
@@ -63,8 +64,9 @@ const APP_SHUTDOWN_TIMEOUT_MS = 30000;
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
-const isRendererProcess =
-  argMap.has("graphics-renderer") || Boolean(rendererEntry);
+// Aux mode is opted into by the explicit flag only; a renderer entry on its
+// own never switches the desktop binary into aux mode.
+const isRendererProcess = argMap.has("graphics-renderer");
 
 if (!isRendererProcess) {
   app.commandLine.appendSwitch(
@@ -78,15 +80,33 @@ if (isRendererProcess) {
     console.error("[GraphicsRenderer] Missing --renderer-entry argument");
     app.exit(1);
   } else {
-    console.log(
-      `[GraphicsRenderer] Aux mode enabled (entry: ${rendererEntry})`,
+    // Security: the entry comes from argv and is untrusted. Only files that
+    // ship with the app (under the resources dir or the app path) and carry
+    // an allowlisted basename may be imported into this signed process. The
+    // rejected path is deliberately not logged.
+    const allowedRoots = [process.resourcesPath, app.getAppPath()].filter(
+      Boolean,
     );
-    const entryUrl = pathToFileURL(rendererEntry).toString();
-    import(entryUrl).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
-      app.exit(1);
+    const resolution = resolveAllowedRendererEntry({
+      entry: rendererEntry,
+      allowedRoots,
     });
+    if (!resolution.ok) {
+      console.error(
+        `[GraphicsRenderer] Rejected renderer entry (${resolution.reason})`,
+      );
+      app.exit(1);
+    } else {
+      console.log(
+        `[GraphicsRenderer] Aux mode enabled (entry: ${resolution.path})`,
+      );
+      const entryUrl = pathToFileURL(resolution.path).toString();
+      import(entryUrl).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
+        app.exit(1);
+      });
+    }
   }
 }
 
@@ -356,7 +376,8 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
  *
  * Priority:
  * 1. User's saved config in Electron's userData directory
- * 2. Template config from config/network-config.json (copied to userData on first run)
+ * 2. Dev only: template config from config/network-config.json in the cwd
+ *    (copied to userData on first run)
  * 3. Hardcoded DEFAULT_NETWORK_CONFIG as final fallback
  */
 function loadNetworkConfig(): NetworkConfigT {
@@ -377,38 +398,42 @@ function loadNetworkConfig(): NetworkConfigT {
     console.error("[NetworkConfig] Error loading user config:", error);
   }
 
-  // On first run, try to use config/network-config.json as template
-  // This is the project's default config file
-  try {
-    const templateConfigPath = path.join(
-      process.cwd(),
-      "config",
-      "network-config.json",
-    );
+  // On first run in dev, try to use config/network-config.json as template
+  // (the project's default config file). Packaged builds never ship this
+  // template and their cwd is not meaningful ("/" on macOS, install dir or a
+  // shortcut's "Start in" folder on Windows), so the cwd is only consulted in dev.
+  if (isDev()) {
+    try {
+      const templateConfigPath = path.join(
+        process.cwd(),
+        "config",
+        "network-config.json",
+      );
 
-    if (fs.existsSync(templateConfigPath)) {
-      const templateData = fs.readFileSync(templateConfigPath, "utf-8");
-      const templateConfig = JSON.parse(templateData) as NetworkConfigT;
+      if (fs.existsSync(templateConfigPath)) {
+        const templateData = fs.readFileSync(templateConfigPath, "utf-8");
+        const templateConfig = JSON.parse(templateData) as NetworkConfigT;
 
-      // Copy template to Electron's userData directory for future use
-      // This allows users to customize their config without modifying the project file
-      try {
-        fs.writeFileSync(
-          userDataConfigPath,
-          JSON.stringify(templateConfig, null, 2),
-          "utf-8",
-        );
-      } catch (writeError) {
-        console.warn(
-          "[NetworkConfig] Could not write user config, using template in memory:",
-          writeError,
-        );
+        // Copy template to Electron's userData directory for future use
+        // This allows users to customize their config without modifying the project file
+        try {
+          fs.writeFileSync(
+            userDataConfigPath,
+            JSON.stringify(templateConfig, null, 2),
+            "utf-8",
+          );
+        } catch (writeError) {
+          console.warn(
+            "[NetworkConfig] Could not write user config, using template in memory:",
+            writeError,
+          );
+        }
+
+        return templateConfig;
       }
-
-      return templateConfig;
+    } catch (error) {
+      console.error("[NetworkConfig] Error loading template config:", error);
     }
-  } catch (error) {
-    console.error("[NetworkConfig] Error loading template config:", error);
   }
 
   // Final fallback to hardcoded default config
@@ -840,11 +865,16 @@ if (!isRendererProcess) {
             },
             () => bridgeProcessManager.isRunning(), // Pass function to check if process is running
           );
-        } else {
-          // console.log("[Bridge] Bridge start failed:", result.error);
-          bridgePairing.clear();
+
+          // Return the web app URL together with the start result. The renderer
+          // opens the web app based on this result, not on a later bridgeStatus
+          // event: the initial status is sent above before this handler
+          // resolves, so a status-driven open would race the IPC reply.
+          return webAppUrl ? { ...result, webAppUrl } : result;
         }
 
+        // console.log("[Bridge] Bridge start failed:", result.error);
+        bridgePairing.clear();
         return result;
       });
 
