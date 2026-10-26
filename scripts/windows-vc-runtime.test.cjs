@@ -17,8 +17,10 @@ const {
 } = require("./sign-windows-native-resources.cjs");
 
 const repoRoot = path.join(__dirname, "..");
+// Normalise CRLF: Windows runners check out with autocrlf, and the tests
+// below match literal "\n" sequences in workflow and script text.
 const read = (relativePath) =>
-  fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  fs.readFileSync(path.join(repoRoot, relativePath), "utf8").replace(/\r\n/g, "\n");
 
 // The Microsoft.VC143.CRT folder of the VS 2022 redistributable
 // (<VCToolsRedistDir>\x64\Microsoft.VC143.CRT). This is the complete,
