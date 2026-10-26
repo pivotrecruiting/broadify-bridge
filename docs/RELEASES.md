@@ -245,7 +245,7 @@ Hinweis:
 **Filter-Regeln für Web-App:**
 
 - ✅ Verwende: `.dmg`, `.exe`, `.msi`, `.AppImage` Dateien
-- ✅ Für Windows-Downloads bevorzugt `.msi` anzeigen; `.exe` bleibt für Auto-Update/NSIS und als Alternative erhalten. Hinweis: MSI-Installationen aktualisieren sich nicht selbst; neue Versionen werden dort manuell über die `.msi` oder per Wechsel auf die `.exe` eingespielt (die App zeigt dazu einen Hinweis im Update-Dialog).
+- ✅ Für Windows-Downloads bevorzugt die `.exe` (NSIS-Installer mit Auto-Update) anzeigen; die `.msi` nur als ausdrücklich beschrifteten Zusatz-Link „für IT-Verteilung (ohne Auto-Update)“. Hinweis: MSI-Installationen aktualisieren sich nicht selbst; neue Versionen werden dort manuell über die `.msi` eingespielt oder einmalig auf die `.exe` gewechselt (MSI deinstallieren, `.exe` installieren; die App zeigt dazu einen Hinweis im Update-Dialog).
 - ❌ Ignoriere: `.blockmap` Dateien (für Delta-Updates, nicht für Downloads)
 - ❌ Ignoriere: `.yml` / `.yaml` Dateien (Update-Metadaten, nicht für Downloads)
 
