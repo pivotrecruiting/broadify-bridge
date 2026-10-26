@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   DEFAULT_RECORDINGS_SUBDIR,
   buildDefaultRecordingPath,
@@ -9,11 +10,15 @@ describe("recording-paths", () => {
   const fixedNow = new Date(2026, 9, 26, 14, 5, 9); // local time: 2026-10-26 14:05:09
 
   describe("resolveDefaultRecordingsDir", () => {
+    // Expected values are built with path.join: the module uses the host
+    // separator, so the same test must pass on macOS and Windows runners.
     it.each([
-      ["darwin", "/Users/op", "/Users/op/Movies/Broadify"],
-      ["linux", "/home/op", "/home/op/Movies/Broadify"],
-    ] as const)("uses ~/Movies/Broadify on %s", (platform, home, expected) => {
-      expect(resolveDefaultRecordingsDir(platform, home)).toBe(expected);
+      ["darwin", "/Users/op"],
+      ["linux", "/home/op"],
+    ] as const)("uses ~/Movies/Broadify on %s", (platform, home) => {
+      expect(resolveDefaultRecordingsDir(platform, home)).toBe(
+        path.join(home, "Movies", "Broadify"),
+      );
     });
 
     it("uses ~/Videos/Broadify on win32", () => {
@@ -46,7 +51,12 @@ describe("recording-paths", () => {
         mkdir,
       });
       expect(result).toBe(
-        "/Users/op/Movies/Broadify/Broadify-Meeting-2026-10-26_14-05-09.mp4",
+        path.join(
+          "/Users/op",
+          "Movies",
+          "Broadify",
+          "Broadify-Meeting-2026-10-26_14-05-09.mp4",
+        ),
       );
     });
 
@@ -57,7 +67,12 @@ describe("recording-paths", () => {
         mkdir: () => undefined,
       });
       expect(result).toBe(
-        "/home/op/Movies/Broadify/Broadify-PGM-2026-10-26_14-05-09.mp4",
+        path.join(
+          "/home/op",
+          "Movies",
+          "Broadify",
+          "Broadify-PGM-2026-10-26_14-05-09.mp4",
+        ),
       );
     });
 
@@ -80,7 +95,9 @@ describe("recording-paths", () => {
         mkdir,
       });
       expect(mkdir).toHaveBeenCalledTimes(1);
-      expect(mkdir).toHaveBeenCalledWith("/Users/op/Movies/Broadify");
+      expect(mkdir).toHaveBeenCalledWith(
+        path.join("/Users/op", "Movies", "Broadify"),
+      );
     });
 
     it("swallows mkdir failures and still returns the path", () => {
@@ -93,7 +110,12 @@ describe("recording-paths", () => {
         mkdir,
       });
       expect(result).toBe(
-        "/Users/op/Movies/Broadify/Broadify-PGM-2026-10-26_14-05-09.mp4",
+        path.join(
+          "/Users/op",
+          "Movies",
+          "Broadify",
+          "Broadify-PGM-2026-10-26_14-05-09.mp4",
+        ),
       );
     });
 
@@ -103,7 +125,7 @@ describe("recording-paths", () => {
         home: "/Users/op",
         mkdir: () => undefined,
       });
-      expect(result.startsWith("/")).toBe(true);
+      expect(path.isAbsolute(result)).toBe(true);
       expect(result).toMatch(/\.mp4$/);
       expect(result).not.toContain("..");
     });

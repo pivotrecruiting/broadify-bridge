@@ -29,7 +29,9 @@ describe("renderer-entry-policy", () => {
       realpath: identityRealpath,
       isFile: () => true,
     });
-    expect(result).toEqual({ ok: true, path: entry });
+    // The policy returns the realpath'ed entry; identityRealpath resolves it
+    // (adds the drive on Windows), so compare against the same resolution.
+    expect(result).toEqual({ ok: true, path: identityRealpath(entry) });
   });
 
   it("accepts an allowlisted entry inside the second root", () => {
@@ -43,7 +45,9 @@ describe("renderer-entry-policy", () => {
       realpath: identityRealpath,
       isFile: () => true,
     });
-    expect(result).toEqual({ ok: true, path: entry });
+    // The policy returns the realpath'ed entry; identityRealpath resolves it
+    // (adds the drive on Windows), so compare against the same resolution.
+    expect(result).toEqual({ ok: true, path: identityRealpath(entry) });
   });
 
   it("rejects ../ traversal that leaves the allowed roots", () => {
