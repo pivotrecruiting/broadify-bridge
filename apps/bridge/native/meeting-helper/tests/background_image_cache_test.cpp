@@ -80,7 +80,10 @@ int main() {
   std::filesystem::create_directories(dir);
 
   const std::filesystem::path eventLog = dir / "events.jsonl";
-  setHelperEventLogPath(eventLog.string());
+  // The helper takes a UTF-8 path (argv/env are decoded as UTF-8 in
+  // production). path::string() would yield the ANSI code page on Windows,
+  // which the strict UTF-8 opener rejects by design.
+  setHelperEventLogPath(dirUtf8 + "/events.jsonl");
 
   BackgroundImageCache cache(decodeBytes);
 
