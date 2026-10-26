@@ -39,6 +39,9 @@ flowchart LR
 3. Main erstellt Pairing-Code und resolved Host/Port-Binding.
 4. Bridge Process wird gestartet, danach startet Health-Polling.
 5. `bridgeStatus` Events werden an die UI gepusht.
+6. Das `bridgeStart`-Ergebnis enthaelt bei Erfolg zusaetzlich `webAppUrl`; die UI oeffnet die WebApp (`openExternal`) direkt anhand dieses Ergebnisses.
+
+Hinweis zum Oeffnen der WebApp: Der erste `bridgeStatus` (mit `webAppUrl`) wird vom Main Process gesendet, bevor der `bridgeStart`-IPC-Aufruf aufgeloest ist. Ein Effekt in der UI, der erst nach dem `await` scharf geschaltet wird und auf eine Status-Aenderung wartet, feuert daher nicht zuverlaessig (Health-Polling haelt `running` konstant). Deshalb ist das Oeffnen an das Start-Ergebnis gebunden (`src/ui/utils/open-web-app-after-start.ts`): genau einmal pro erfolgreichem Start, nie bei Fehlern, nie ohne URL. Es wird bewusst nicht auf `relayConnected` gewartet (nur per Polling verfuegbar, ohne Internet nie).
 
 ### 2) Status & Logs
 1. UI subscribed auf `bridgeStatus`.

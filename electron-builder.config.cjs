@@ -1,4 +1,7 @@
 const baseConfig = require("./electron-builder.json");
+const {
+  resolveWindowsSigningPolicy,
+} = require("./scripts/lib/resolve-windows-signing-policy.cjs");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
 const updaterChannel =
@@ -196,6 +199,17 @@ if (config.win) {
     config.afterSign =
       require.resolve("./scripts/sign-windows-native-resources.cjs");
   }
+
+  // Prod and RC both rename the stock Electron launcher and therefore share its
+  // Mach-O LC_UUID. macOS Local Network privacy keys on that UUID (Apple
+  // TN3179), so the two apps collided in TCC. afterPack runs before signing in
+  // app-builder-lib 25, so the deterministic per-flavour UUID written here is
+  // covered by codesign + notarization.
+  if (process.platform === "darwin") {
+    config.afterPack = require.resolve(
+      "./scripts/patch-macos-main-executable-uuid.cjs",
+    );
+  }
 }
 
 if (config.win) {
@@ -212,17 +226,25 @@ if (config.win) {
   }
 }
 
-const azureVars = [
-  "AZURE_CODE_SIGNING_PUBLISHER_NAME",
-  "AZURE_CODE_SIGNING_ENDPOINT",
-  "AZURE_CODE_SIGNING_ACCOUNT_NAME",
-  "AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME",
-];
-
-const hasCompleteAzureTrustedSigningConfig = azureVars.every((name) => {
-  const value = process.env[name];
-  return typeof value === "string" && value.trim() !== "";
+// Fail fast when a Windows target is requested without complete Azure Trusted
+// Signing configuration, unless the local unsigned build is explicitly opted in
+// via BROADIFY_ALLOW_UNSIGNED_WINDOWS_BUILD=1. Non-Windows invocations (macOS
+// builds, scripts/resolve-windows-install-directory-name.cjs, the release
+// diagnose step) only report the policy.
+const windowsSigningPolicy = resolveWindowsSigningPolicy({
+  env: process.env,
+  argv: process.argv,
 });
+const hasCompleteAzureTrustedSigningConfig = windowsSigningPolicy.mode === "azure";
+// stderr on purpose: scripts/resolve-windows-install-directory-name.cjs loads this
+// config and prints the install directory name to stdout, which
+// smoke-test-windows-nsis.ps1 consumes verbatim.
+console.error(
+  `[Signing] Windows signing policy: ${windowsSigningPolicy.mode}` +
+    (windowsSigningPolicy.missing?.length
+      ? ` (missing: ${windowsSigningPolicy.missing.join(", ")})`
+      : ""),
+);
 
 if (config.win) {
   if (!hasCompleteAzureTrustedSigningConfig) {

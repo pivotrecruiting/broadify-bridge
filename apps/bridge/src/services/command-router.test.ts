@@ -1055,8 +1055,91 @@ describe("command-router", () => {
       );
 
       expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ok: true, presets: [] });
       expect(canonXCService.recallPreset).toHaveBeenCalledWith("canon-1", 3, {
         ptzspeed: 30,
+      });
+    });
+
+    describe("Canon XC failure mapping", () => {
+      const canonFailure = {
+        ok: false,
+        message: "Preset recall failed",
+        rawError: "ETIMEDOUT",
+        diagnostic: { code: "timeout", hint: "Check the network cable." },
+        device: null,
+        status: null,
+        presets: [],
+        result: {},
+      };
+
+      const cameraInput = {
+        name: "Stage Canon",
+        host: "192.168.0.100",
+        port: 80,
+        protocol: "http",
+        type: "camera",
+        enabled: true,
+      };
+
+      const expectMappedFailure = (result: {
+        success: boolean;
+        error?: string;
+        errorCode?: string;
+        data?: unknown;
+      }) => {
+        expect(result.success).toBe(false);
+        expect(result.error).toBe("ETIMEDOUT");
+        expect(result.errorCode).toBe("timeout");
+        expect((result.data as { ok?: unknown }).ok).toBe(false);
+      };
+
+      it("canon_xc_test_connection maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.testConnection.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_test_connection",
+          cameraInput,
+        );
+
+        expectMappedFailure(result);
+      });
+
+      it("canon_xc_test_device maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.testDevice.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_test_device",
+          { deviceId: "canon-1" },
+        );
+
+        expectMappedFailure(result);
+      });
+
+      it("canon_xc_list_presets maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.listPresets.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_list_presets",
+          { deviceId: "canon-1" },
+        );
+
+        expectMappedFailure(result);
+      });
+
+      it("canon_xc_recall_preset maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.recallPreset.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_recall_preset",
+          { deviceId: "canon-1", preset: 3 },
+        );
+
+        expectMappedFailure(result);
       });
     });
 

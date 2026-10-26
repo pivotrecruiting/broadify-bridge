@@ -67,6 +67,17 @@ try {
     }
   }
 
+  # The MSI is expected to ship WITHOUT the NSIS elevate helper: electron-builder
+  # copies resources\elevate.exe only for the nsis target. The desktop updater
+  # (src/electron/services/updater-utils.ts, resolveWindowsInstallKind) relies
+  # on exactly this to recognise MSI installs and disable auto-update there.
+  # If electron-builder ever starts shipping elevate.exe in the MSI, this must
+  # fail so the detection is re-evaluated instead of silently enabling updates.
+  $elevateHelperPath = Join-Path $installDir "resources\elevate.exe"
+  if (Test-Path -LiteralPath $elevateHelperPath -PathType Leaf) {
+    throw "MSI smoke install unexpectedly contains the NSIS elevate helper: $elevateHelperPath (updater MSI detection would break)"
+  }
+
   $displayHelperPath = Join-Path $installDir "resources\native\display-helper\display-helper.exe"
   & (Join-Path $PSScriptRoot "test-windows-display-helper.ps1") -HelperPath $displayHelperPath -Attempts 3
 
