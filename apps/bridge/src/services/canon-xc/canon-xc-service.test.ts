@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, rename } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
@@ -8,6 +8,7 @@ import {
   parseCanonInfo,
   presetsFromCanonInfo,
 } from "./canon-xc-service.js";
+import { atomicWriteJson } from "../graphics/file-utils.js";
 
 const mockLogger = {
   info: jest.fn(),
@@ -18,6 +19,14 @@ jest.mock("node:fs/promises", () => ({
   mkdir: jest.fn().mockResolvedValue(undefined),
   readFile: jest.fn(),
   writeFile: jest.fn().mockResolvedValue(undefined),
+  rename: jest.fn().mockResolvedValue(undefined),
+}));
+
+// atomicWriteJson writes through `node:fs` promises; mock the module boundary
+// so persistence assertions target the atomic writer instead of raw writeFile.
+jest.mock("../graphics/file-utils.js", () => ({
+  atomicWriteJson: jest.fn().mockResolvedValue(undefined),
+  ensureDir: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock("node:net", () => ({
@@ -35,8 +44,14 @@ jest.mock("../bridge-context.js", () => ({
 }));
 
 const mockReadFile = readFile as jest.MockedFunction<typeof readFile>;
-const mockWriteFile = writeFile as jest.MockedFunction<typeof writeFile>;
-const mockMkdir = mkdir as jest.MockedFunction<typeof mkdir>;
+const mockRename = rename as jest.MockedFunction<typeof rename>;
+const mockAtomicWriteJson = atomicWriteJson as jest.MockedFunction<typeof atomicWriteJson>;
+const DEVICES_FILE_PATH = path.join(
+  "/tmp/broadify-test",
+  "studio-adapters",
+  "canon-xc-devices.json",
+);
+const enoent = () => Object.assign(new Error("not found"), { code: "ENOENT" });
 const mockCreateConnection = net.createConnection as jest.MockedFunction<
   typeof net.createConnection
 >;
@@ -98,7 +113,7 @@ const responseWithText = (
 describe("canon-xc-service", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockReadFile.mockRejectedValue(new Error("not found"));
+    mockReadFile.mockRejectedValue(enoent());
     mockTcpConnectSuccess();
     global.fetch = jest.fn().mockResolvedValue(responseWithText("")) as jest.Mock;
   });
@@ -238,21 +253,125 @@ describe("canon-xc-service", () => {
         protocol: "http",
       });
       expect(device).not.toHaveProperty("password");
-      expect(mockMkdir).toHaveBeenCalledWith(
-        path.join("/tmp/broadify-test", "studio-adapters"),
-        {
-          recursive: true,
-        },
+      expect(mockAtomicWriteJson).toHaveBeenCalledTimes(1);
+      expect(mockAtomicWriteJson).toHaveBeenCalledWith(
+        DEVICES_FILE_PATH,
+        expect.objectContaining({
+          devices: [
+            expect.objectContaining({
+              deviceId: "canon-1",
+              name: "Updated Canon",
+              password: "secret",
+            }),
+          ],
+          updatedAt: expect.any(String),
+        }),
       );
-      expect(mockWriteFile).toHaveBeenCalledWith(
-        path.join(
-          "/tmp/broadify-test",
-          "studio-adapters",
-          "canon-xc-devices.json",
-        ),
-        expect.stringContaining('"password": "secret"'),
-        "utf8",
+      expect(mockRename).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("device store corruption", () => {
+    const storedDevice = {
+      deviceId: "canon-1",
+      name: "Canon 1",
+      host: "192.168.0.10",
+      port: 80,
+      protocol: "http",
+      type: "camera",
+      username: "operator",
+      password: "secret",
+      cameraNo: null,
+      enabled: true,
+    };
+
+    it("treats a missing store file as empty without warning", async () => {
+      mockReadFile.mockRejectedValue(enoent());
+      const service = new CanonXCService();
+
+      await expect(service.listDevices()).resolves.toEqual({ devices: [] });
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+    });
+
+    it("warns once and returns no devices when the store is not valid JSON", async () => {
+      mockReadFile.mockResolvedValueOnce("{not json");
+      const service = new CanonXCService();
+
+      await expect(service.listDevices()).resolves.toEqual({ devices: [] });
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Device store invalid"),
       );
+    });
+
+    it("warns and returns no devices when a stored device fails the schema", async () => {
+      mockReadFile.mockResolvedValueOnce(
+        JSON.stringify({ devices: [{ deviceId: "x", port: "abc" }] }),
+      );
+      const service = new CanonXCService();
+
+      await expect(service.listDevices()).resolves.toEqual({ devices: [] });
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Device store invalid"),
+      );
+    });
+
+    it("backs up a corrupt store before the next save rewrites it", async () => {
+      mockReadFile.mockResolvedValue("{not json");
+      const service = new CanonXCService();
+
+      await service.listDevices();
+      await service.saveDevice({ name: "Canon 2", host: "192.168.0.11" });
+
+      expect(mockRename).toHaveBeenCalledTimes(1);
+      const [from, to] = mockRename.mock.calls[0] as [string, string];
+      expect(from).toBe(DEVICES_FILE_PATH);
+      expect(to).toMatch(
+        new RegExp(`^${DEVICES_FILE_PATH.replace(/[.\\/]/g, "\\$&")}\\.corrupt-\\d+$`),
+      );
+      expect(mockAtomicWriteJson).toHaveBeenCalledTimes(1);
+      expect(mockRename.mock.invocationCallOrder[0]).toBeLessThan(
+        mockAtomicWriteJson.mock.invocationCallOrder[0],
+      );
+      expect(mockAtomicWriteJson).toHaveBeenCalledWith(
+        DEVICES_FILE_PATH,
+        expect.objectContaining({
+          devices: [expect.objectContaining({ name: "Canon 2", host: "192.168.0.11" })],
+        }),
+      );
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining(".corrupt-"));
+    });
+
+    it("does not back up a valid store on save", async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ devices: [storedDevice] }));
+      const service = new CanonXCService();
+
+      await service.saveDevice({ name: "Canon 2", host: "192.168.0.11" });
+
+      expect(mockRename).not.toHaveBeenCalled();
+      expect(mockAtomicWriteJson).toHaveBeenCalledWith(
+        DEVICES_FILE_PATH,
+        expect.objectContaining({
+          devices: [
+            expect.objectContaining({ deviceId: "canon-1", password: "secret" }),
+            expect.objectContaining({ deviceId: "canon-2", name: "Canon 2" }),
+          ],
+        }),
+      );
+    });
+
+    it("tolerates extra legacy fields in stored devices", async () => {
+      mockReadFile.mockResolvedValueOnce(
+        JSON.stringify({ devices: [{ ...storedDevice, legacyField: "x" }] }),
+      );
+      const service = new CanonXCService();
+
+      const { devices } = await service.listDevices();
+
+      expect(devices).toHaveLength(1);
+      expect(devices[0]).toMatchObject({ deviceId: "canon-1", name: "Canon 1" });
+      expect(mockLogger.warn).not.toHaveBeenCalled();
     });
   });
 
@@ -438,7 +557,7 @@ describe("canon-xc-service", () => {
       });
 
       expect(result.ok).toBe(true);
-      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(mockAtomicWriteJson).not.toHaveBeenCalled();
       const headers = (global.fetch as jest.Mock).mock.calls[0][1]
         .headers as Headers;
       expect(headers.get("Authorization")).toBe(

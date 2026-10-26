@@ -35,6 +35,7 @@ Die App (`.app`-Bundle in `/Applications`) und dieser Datenordner sind **voneina
 | `graphics-output.json` | Grafik-Ausgabe-Konfiguration (Zielbildschirm, Auflösung …). |
 | `graphics-assets/` + `assets.json` | Hochgeladene Grafik-Assets (Lower Thirds, Bilder …) und deren Manifest. |
 | `graphics/` | Arbeits-/Ablageverzeichnis der Grafik-Engine. |
+| `studio-adapters/canon-xc-devices.json` | Gespeicherte Canon-XC-Kameras (Host, Port, Zugangsdaten). Ist die Datei defekt (kein JSON / Schema verletzt), zeigt die Bridge keine Kameras an, loggt `[CanonXC] Device store invalid` und lässt die Datei unangetastet; beim nächsten Speichern wird sie als `canon-xc-devices.json.corrupt-<timestamp>` daneben gesichert und neu geschrieben. Die `.corrupt-*`-Sicherung kann manuell zurückbenannt werden. |
 | `graphics-renderer-profile/` | Isoliertes Electron-Profil des Offscreen-Graphics-Renderers. Enthält nur Renderer-Runtime-/Chromium-State. |
 | `.env` | Lokale Env-Overrides (z. B. `RELAY_URL`). Wird im Prod-Build ohnehin aus dem Paket nachgefüllt/überschrieben. |
 | `.updaterId` | Installations-ID des Updaters. |
@@ -66,8 +67,8 @@ löschen, nachdem der Renderer-Prozess vollständig beendet wurde.
 
 - **Normales Update/Reinstall:** Daten bleiben erhalten — nichts zu tun.
 - **Vor einer cleanen Neuinstallation sichern:** `network-config.json`, `bridge-id.json`,
-  `bridge-profile.json`, `security/relay-bridge-identity.json`, `graphics-output.json`
-  und `graphics-assets/`.
+  `bridge-profile.json`, `security/relay-bridge-identity.json`, `graphics-output.json`,
+  `studio-adapters/canon-xc-devices.json` und `graphics-assets/`.
 - **RC zum Testen:** RC und Produktion teilen sich **keine** Daten (eigener Ordner) —
   ideal, um produktive Konfiguration nicht zu beeinflussen.
 

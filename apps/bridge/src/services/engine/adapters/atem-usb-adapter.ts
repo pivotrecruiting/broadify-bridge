@@ -26,6 +26,10 @@ import {
 } from "../engine-errors.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { stopChildProcessWithEscalation } from "../../shared/child-process-exit.js";
+import {
+  attachChildStdinErrorHandler,
+  writeChildStdin,
+} from "../../shared/child-process-stdin.js";
 
 const HELPER_PATH_ENV = "ATEM_USB_HELPER_PATH";
 const CONNECT_TIMEOUT_MS = 10000;
@@ -223,6 +227,9 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
     });
     this.process = child;
     this.stdoutBuffer = "";
+    // A helper that already closed its pipe raises an asynchronous EPIPE on
+    // stdin; without a listener Node turns that into an uncaughtException.
+    attachChildStdinErrorHandler(child, "AtemUsb", getLogger());
 
     child.stdout?.on("data", (chunk: Buffer) => this.handleStdoutChunk(chunk));
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -398,10 +405,13 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
   }
 
   private sendCommand(command: Record<string, unknown>): void {
-    if (!this.process?.stdin?.writable) {
+    const child = this.process;
+    if (
+      !child ||
+      !writeChildStdin(child, `${JSON.stringify(command)}\n`, "AtemUsb", getLogger())
+    ) {
       throw new Error("ATEM USB helper is not running");
     }
-    this.process.stdin.write(`${JSON.stringify(command)}\n`);
   }
 
   private handleStdoutChunk(chunk: Buffer): void {
@@ -604,7 +614,7 @@ export class AtemUsbAdapter extends EventEmitter implements EngineAdapter {
     this.stopHeartbeat();
     const stopping = stopChildProcessWithEscalation(child, {
       requestShutdown: () => {
-        child.stdin?.write('{"command":"shutdown"}\n');
+        writeChildStdin(child, '{"command":"shutdown"}\n', "AtemUsb", getLogger());
       },
       gracefulMs: SHUTDOWN_SIGTERM_DELAY_MS,
       forceMs: SHUTDOWN_SIGKILL_DELAY_MS,
