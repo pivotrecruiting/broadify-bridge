@@ -80,6 +80,15 @@ try {
   }
   Write-Host "NSIS installer registered the VCam CLSID -> $registeredDllPath"
 
+  # The NSIS install must carry the elevate helper: electron-updater needs it
+  # to install per-machine updates, and the desktop updater
+  # (src/electron/services/updater-utils.ts, resolveWindowsInstallKind) treats
+  # its presence as "NSIS install, auto-update allowed".
+  $elevateHelperPath = Join-Path $installDir "resources\elevate.exe"
+  if (-not (Test-Path -LiteralPath $elevateHelperPath -PathType Leaf)) {
+    throw "NSIS smoke install is missing the elevate helper: $elevateHelperPath (auto-update would be disabled as an MSI/portable install)"
+  }
+
   $helperPath = Join-Path $installDir "resources\native\display-helper\display-helper.exe"
   $sdlPath = Join-Path $installDir "resources\native\display-helper\SDL2.dll"
   if (-not (Test-Path -LiteralPath $sdlPath)) {

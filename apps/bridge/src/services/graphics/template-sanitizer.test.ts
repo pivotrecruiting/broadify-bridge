@@ -85,6 +85,85 @@ describe("validateTemplate SVG and embedded images", () => {
   });
 });
 
+describe("validateTemplate protocol-relative and navigation vectors", () => {
+  // EXTERNAL_URL_PATTERN only knew explicit schemes, so protocol-relative
+  // URLs (//host/...), ws(s):, blob:, <base> and meta refresh slipped past
+  // the single sanitizer gate. The renderer loads templates as data:text/html
+  // (where //host likely does not resolve), but the sanitizer is defense in
+  // depth and must not rely on that.
+  it("rejects protocol-relative URLs in HTML attributes", () => {
+    expect(() =>
+      validateTemplate('<img src="//evil.example/x.png">', "")
+    ).toThrow("Template contains protocol-relative URLs");
+    expect(() =>
+      validateTemplate("<a href='//evil.example'>x</a>", "")
+    ).toThrow("Template contains protocol-relative URLs");
+    expect(() =>
+      validateTemplate('<img srcset="//evil.example/a.png 1x">', "")
+    ).toThrow("Template contains protocol-relative URLs");
+  });
+
+  it("rejects protocol-relative URLs in CSS url()", () => {
+    expect(() =>
+      validateTemplate("<div/>", ".root{background:url(//evil.example/x)}")
+    ).toThrow("Template contains protocol-relative URLs");
+    expect(() =>
+      validateTemplate("<div/>", ".root{background:url( '//evil' )}")
+    ).toThrow("Template contains protocol-relative URLs");
+  });
+
+  it("rejects ws(s): and blob: URLs as external", () => {
+    expect(() =>
+      validateTemplate('<a href="wss://evil.example">x</a>', "")
+    ).toThrow("Template contains external URLs");
+    expect(() =>
+      validateTemplate("<div/>", ".x{background:url(blob:abc)}")
+    ).toThrow("Template contains external URLs");
+  });
+
+  it("rejects <base> tags", () => {
+    expect(() =>
+      validateTemplate('<base href="/x"><div>x</div>', "")
+    ).toThrow("Template HTML contains <base> tags");
+  });
+
+  it("rejects meta refresh regardless of case", () => {
+    expect(() =>
+      validateTemplate(
+        '<meta http-equiv="refresh" content="0;url=//evil"><div>x</div>',
+        ""
+      )
+    ).toThrow("Template HTML contains meta refresh");
+    expect(() =>
+      validateTemplate(
+        '<META HTTP-EQUIV=refresh content="0;url=//evil"><div>x</div>',
+        ""
+      )
+    ).toThrow("Template HTML contains meta refresh");
+  });
+
+  it("still accepts benign double slashes and identifiers", () => {
+    expect(() => validateTemplate("<p>a // b</p>", "")).not.toThrow();
+    expect(() =>
+      validateTemplate('<div data-root="graphic">/* comment */</div>', "")
+    ).not.toThrow();
+    expect(() =>
+      validateTemplate(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>',
+        ""
+      )
+    ).not.toThrow();
+    expect(() =>
+      validateTemplate("<div/>", ".x{background:url(asset://abc123)}")
+    ).not.toThrow();
+    // Only url( and URL-bearing attributes are checked; a // inside a CSS
+    // string value is prose, not a reference.
+    expect(() =>
+      validateTemplate("<div/>", '.x::after{content: "//"}')
+    ).not.toThrow();
+  });
+});
+
 describe("validateTemplate", () => {
   const validHtml = "<div>Hello</div>";
   const validCss = ".foo { color: red; }";

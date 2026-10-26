@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
 import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
@@ -9,6 +9,8 @@ import {
   sanitizeUpdaterErrorMessage,
   parseIntervalMs,
   getUpdaterDisableReason,
+  resolveWindowsInstallKind,
+  UPDATER_DISABLE_REASON_MSI_OR_PORTABLE,
 } from "./updater-utils.js";
 
 type UpdaterStatusListenerT = (status: AppUpdaterStatusT) => void;
@@ -68,6 +70,10 @@ class AppUpdaterService {
       this.updateStatus({
         enabled: false,
         state: "disabled",
+        // Only the MSI/portable case gets a code: the UI can tell "cannot
+        // update here, reinstall from .exe" apart from a plain opt-out.
+        errorCode:
+          disableReason === UPDATER_DISABLE_REASON_MSI_OR_PORTABLE ? "msi_install" : null,
         message: disableReason,
       });
       logAppInfo(`[Updater] Disabled: ${disableReason}`);
@@ -241,6 +247,11 @@ class AppUpdaterService {
       platform: process.platform,
       isPackaged: app.isPackaged,
       appImage: process.env.APPIMAGE,
+      windowsInstallKind: resolveWindowsInstallKind({
+        platform: process.platform,
+        resourcesPath: process.resourcesPath,
+        existsSync,
+      }),
     });
   }
 
