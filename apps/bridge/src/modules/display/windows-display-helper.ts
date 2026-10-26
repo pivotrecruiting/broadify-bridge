@@ -11,7 +11,86 @@ import type { RawDisplayInfoT } from "./display-module-utils.js";
 
 const WINDOWS_DISPLAY_DISCOVERY_TIMEOUT_MS = 2_000;
 const MAX_HELPER_STDOUT_BYTES = 1_048_576;
+/** Upper bound for buffered helper stderr; anything beyond is dropped. */
+const MAX_HELPER_STDERR_BYTES = 8_192;
+/** Upper bound for the stderr excerpt carried in logs and errors. */
+const MAX_STDERR_EXCERPT_CHARS = 512;
 const WINDOWS_DISPLAY_DISCOVERY_ARGS = ["--list-displays"];
+
+export type WindowsDisplayHelperErrorKindT =
+  | "spawn_failed"
+  | "helper_missing"
+  | "missing_runtime"
+  | "helper_failed"
+  | "timeout"
+  | "invalid_response"
+  | "response_too_large";
+
+/**
+ * Error raised by the native Windows display helper path.
+ *
+ * `kind` lets callers distinguish a missing VC++ runtime (`missing_runtime`)
+ * or a missing binary (`helper_missing`) from generic failures; `exitCode` is
+ * the unsigned DWORD Node reports (e.g. 3221225781 = 0xC0000135).
+ */
+export class WindowsDisplayHelperError extends Error {
+  readonly kind: WindowsDisplayHelperErrorKindT;
+  readonly exitCode?: number;
+  readonly stderrExcerpt?: string;
+
+  constructor(
+    kind: WindowsDisplayHelperErrorKindT,
+    message: string,
+    details: { exitCode?: number; stderrExcerpt?: string } = {},
+  ) {
+    super(message);
+    this.name = "WindowsDisplayHelperError";
+    this.kind = kind;
+    if (details.exitCode !== undefined) {
+      this.exitCode = details.exitCode;
+    }
+    if (details.stderrExcerpt) {
+      this.stderrExcerpt = details.stderrExcerpt;
+    }
+  }
+}
+
+/**
+ * NTSTATUS codes the Windows loader returns when a process dies before
+ * reaching `main()`. Keys are the unsigned DWORD values Node reports.
+ */
+export const WINDOWS_LOADER_FAILURE_EXIT_CODES: Readonly<Record<number, string>> = {
+  0xc0000135: "STATUS_DLL_NOT_FOUND",
+  0xc0000139: "STATUS_ENTRYPOINT_NOT_FOUND",
+  0xc0000142: "STATUS_DLL_INIT_FAILED",
+};
+
+const toUnsignedExitCode = (code: number | null): number | null =>
+  code === null ? null : code >>> 0;
+
+const formatExitCodeHex = (code: number): string =>
+  `0x${code.toString(16).toUpperCase().padStart(8, "0")}`;
+
+/**
+ * Classify a helper exit code: loader failures (missing runtime DLLs) versus
+ * any other non-zero exit. Accepts signed or unsigned 32-bit representations.
+ */
+export function classifyWindowsHelperExitCode(
+  code: number | null,
+): "missing_runtime" | "helper_failed" {
+  const unsigned = toUnsignedExitCode(code);
+  if (unsigned === null) {
+    return "helper_failed";
+  }
+  return unsigned in WINDOWS_LOADER_FAILURE_EXIT_CODES
+    ? "missing_runtime"
+    : "helper_failed";
+}
+
+const toStderrExcerpt = (stderr: string): string | undefined => {
+  const trimmed = stderr.trim();
+  return trimmed ? trimmed.slice(0, MAX_STDERR_EXCERPT_CHARS) : undefined;
+};
 
 type WindowsDisplayHelperDepsT = {
   spawn: typeof spawn;
@@ -158,7 +237,7 @@ const logSpawnFailure = (
   error: unknown,
   helperPath: string,
   helperFileSize: number | null,
-): Error => {
+): WindowsDisplayHelperError => {
   const code = getErrorField(error, "code");
   const details = {
     event: "windows_display_helper_spawn_failed",
@@ -172,9 +251,50 @@ const logSpawnFailure = (
   getBridgeContext().logger.error(
     `[DisplayDetector] ${JSON.stringify(details)}`,
   );
-  return new Error(
+  if (code === "ENOENT") {
+    return new WindowsDisplayHelperError(
+      "helper_missing",
+      "Native Windows display helper spawn failed (code=ENOENT): helper binary not found. Reinstall the bridge.",
+    );
+  }
+  return new WindowsDisplayHelperError(
+    "spawn_failed",
     `Native Windows display helper spawn failed (code=${code ?? "unknown"})`,
   );
+};
+
+const logHelperExitFailure = (
+  code: number | null,
+  stderr: string,
+  helperPath: string,
+): WindowsDisplayHelperError => {
+  const kind = classifyWindowsHelperExitCode(code);
+  const unsignedCode = toUnsignedExitCode(code);
+  const ntstatus =
+    unsignedCode === null
+      ? null
+      : (WINDOWS_LOADER_FAILURE_EXIT_CODES[unsignedCode] ?? null);
+  const stderrExcerpt = toStderrExcerpt(stderr);
+  const details = {
+    event: "windows_display_helper_failed",
+    kind,
+    exit_code: unsignedCode,
+    exit_code_hex: unsignedCode === null ? null : formatExitCodeHex(unsignedCode),
+    ntstatus,
+    stderr_excerpt: stderrExcerpt ?? null,
+    helper_path: sanitizeHelperPath(helperPath),
+  };
+  getBridgeContext().logger.error(
+    `[DisplayDetector] ${JSON.stringify(details)}`,
+  );
+  const message =
+    kind === "missing_runtime"
+      ? `Native display helper could not start (${ntstatus}). The Microsoft Visual C++ runtime is missing; install vc_redist.x64 or reinstall the bridge.`
+      : `Native display helper exited with code ${unsignedCode ?? "unknown"}`;
+  return new WindowsDisplayHelperError(kind, message, {
+    ...(unsignedCode !== null ? { exitCode: unsignedCode } : {}),
+    stderrExcerpt,
+  });
 };
 
 export const listNativeWindowsDisplays = async (
@@ -196,6 +316,8 @@ export const listNativeWindowsDisplays = async (
       return;
     }
     let stdout = "";
+    let stderr = "";
+    let stderrBytes = 0;
     let settled = false;
 
     const finish = (
@@ -219,7 +341,8 @@ export const listNativeWindowsDisplays = async (
     const timeoutId = setTimeout(() => {
       child.kill("SIGKILL");
       finish({
-        error: new Error(
+        error: new WindowsDisplayHelperError(
+          "timeout",
           `Native Windows display discovery timed out after ${WINDOWS_DISPLAY_DISCOVERY_TIMEOUT_MS}ms`,
         ),
       });
@@ -230,11 +353,24 @@ export const listNativeWindowsDisplays = async (
       stdout += chunk.toString("utf8");
       if (Buffer.byteLength(stdout, "utf8") > MAX_HELPER_STDOUT_BYTES) {
         child.kill("SIGKILL");
-        finish({ error: new Error("Native display helper response too large") });
+        finish({
+          error: new WindowsDisplayHelperError(
+            "response_too_large",
+            "Native display helper response too large",
+          ),
+        });
       }
     });
 
-    child.stderr?.on("data", () => undefined);
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      if (stderrBytes >= MAX_HELPER_STDERR_BYTES) return;
+      const buffer = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(String(chunk), "utf8");
+      const slice = buffer.subarray(0, MAX_HELPER_STDERR_BYTES - stderrBytes);
+      stderr += slice.toString("utf8");
+      stderrBytes += slice.length;
+    });
 
     child.on("error", (error) =>
       finish({ error: logSpawnFailure(error, helperPath, helperFileSize) }),
@@ -242,18 +378,15 @@ export const listNativeWindowsDisplays = async (
     child.on("close", (code) => {
       if (settled) return;
       if (code !== 0) {
-        finish({
-          error: new Error(
-            `Native display helper exited with code ${code ?? "unknown"}`,
-          ),
-        });
+        finish({ error: logHelperExitFailure(code, stderr, helperPath) });
         return;
       }
       try {
         finish({ displays: parseNativeWindowsDisplayList(stdout.trim()) });
       } catch (error) {
         finish({
-          error: new Error(
+          error: new WindowsDisplayHelperError(
+            "invalid_response",
             `Invalid native display helper response: ${error instanceof Error ? error.message : String(error)}`,
           ),
         });
