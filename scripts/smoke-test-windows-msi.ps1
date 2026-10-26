@@ -11,6 +11,14 @@ $installLog = Join-Path $env:RUNNER_TEMP "broadify-bridge-msi-smoke-install.log"
 $uninstallLog = Join-Path $env:RUNNER_TEMP "broadify-bridge-msi-smoke-uninstall.log"
 $installed = $false
 
+# Microsoft Visual C++ runtime packaged next to both helpers; list from the
+# Node single source of truth (scripts/lib/windows-vc-runtime.cjs).
+$vcRuntimeListScript = Join-Path $PSScriptRoot "list-windows-vc-runtime-paths.cjs"
+$vcRuntimePaths = @(& node $vcRuntimeListScript)
+if ($LASTEXITCODE -ne 0 -or $vcRuntimePaths.Count -eq 0) {
+  throw "Unable to resolve the packaged MSVC runtime DLL list from $vcRuntimeListScript."
+}
+
 if (Test-Path -LiteralPath $installDir) {
   Remove-Item -Recurse -Force $installDir
 }
@@ -55,6 +63,11 @@ try {
     (Join-Path $installDir "resources\native\meeting-helper\models\modnet.onnx"),
     (Join-Path $installDir "resources\native\vcam-helper\broadify-vcam.dll"),
     (Join-Path $installDir "resources\bridge\native\framebus\build\Release\framebus.node")
+  )
+  $expectedPaths += @(
+    $vcRuntimePaths | ForEach-Object {
+      Join-Path (Join-Path $installDir "resources") ($_ -replace '/', '\')
+    }
   )
   $mainExe = Get-ChildItem -Path $installDir -File -Filter "BroadifyBridge*.exe" |
     Select-Object -First 1

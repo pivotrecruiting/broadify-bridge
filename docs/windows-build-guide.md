@@ -211,6 +211,38 @@ dir C:\dev\broadify-bridge\apps\bridge\native\meeting-helper\*.dll   # 3 DLLs
 > Wenn die Exe „gelockt" ist (Neubau schlägt fehl): läuft noch eine alte Instanz — Bridge
 > stoppen bzw. den Helfer per Named-Pipe `control.shutdown` beenden, dann neu bauen.
 
+### 7.1 MSVC-Runtime neben den Helfern (nur für `dist:win`)
+
+`display-helper.exe` und `meeting-helper.exe` sind `/MD`-Builds: sie laden
+`vcruntime140.dll`/`msvcp140.dll` zur Laufzeit. Auf einem PC **ohne** installiertes
+VC++-Redistributable startet der Helfer sonst mit `0xC0000135` (`STATUS_DLL_NOT_FOUND`) gar
+nicht erst — HDMI-Ausgänge bleiben unsichtbar. Deshalb packt das Release den kompletten
+`Microsoft.VC143.CRT`-Satz aus dem Visual-Studio-Redist-Ordner **neben beide Helfer**
+(Windows sucht DLLs zuerst im Ordner der Exe; die Dopplung pro Helfer-Ordner ist Absicht):
+
+`concrt140.dll`, `msvcp140.dll`, `msvcp140_1.dll`, `msvcp140_2.dll`,
+`msvcp140_atomic_wait.dll`, `msvcp140_codecvt_ids.dll`, `vccorlib140.dll`,
+`vcruntime140.dll`, `vcruntime140_1.dll`
+(Single Source of Truth: `scripts/lib/windows-vc-runtime.cjs`).
+
+- `npm run dist:win` ruft nach dem Meeting-Helper-Build `npm run prepare:vc-runtime:windows`
+  (`scripts/prepare-windows-vc-runtime.ps1`) auf. Das Skript liest den Redist-Ordner aus
+  `$env:VCToolsRedistDir` (gesetzt von der **Developer PowerShell for VS 2022** bzw.
+  `vcvars64`; alternativ `-RedistDir <…\VC\Redist\MSVC\14.xx.xxxxx>`), Fallback ist
+  `vswhere`. Es kopiert die DLLs nach `build\windows-vc-runtime\` (gitignored) und bricht ab,
+  sobald eine fehlt.
+- `scripts/verify-release-artifacts.sh --arch x64` verlangt die gestagten DLLs,
+  `electron-builder.config.cjs` packt sie nach `resources\native\display-helper\` und
+  `resources\native\meeting-helper\`.
+- Ein lokaler `dist:win` **außerhalb** einer Developer PowerShell schlägt mit einer
+  klaren Meldung fehl (`VCToolsRedistDir is not set …`). Nicht ersetzen durch
+  `/MT` oder `vc_redist.exe` im Installer: das MSI-Ziel bliebe kaputt und die Smoke-Tests
+  blind.
+- Gate auf dem CI-Runner (der das Redistributable installiert hat und das Problem sonst
+  nicht sieht): `node scripts/verify-windows-native-dependencies.cjs` prüft per
+  `dumpbin /DEPENDENTS`, dass jeder Import der gepackten Helfer-Exe/-DLLs entweder eine
+  Windows-System-DLL ist oder im selben Ordner liegt.
+
 ---
 
 ## 8. Virtuelle Kamera bauen + registrieren (nur Windows 11)
@@ -376,6 +408,8 @@ In Prioritätsreihenfolge:
 | Kamera „list blockiert" / kein Bild | Alte Bug-Klasse (macOS-Permission-Gate) ist gefixt; sonst Kamera-Datenschutz in den Windows-Einstellungen für Desktop-Apps erlauben. |
 | Keyer dauerhaft Passthrough | GPU zu schwach/gedrosselt → `performance`-Modus; Task-Manager-GPU-Last prüfen; nach Auflösungswechsel einpegeln lassen. |
 | Grafiken/Bauchbinden unsichtbar | `BRIDGE_GRAPHICS_RENDERER=stub` → by design; echter Renderer = Abschnitt 11.3. Hochgeladene Bilder/Logos gehen trotzdem. |
+| Helfer endet mit `0xC0000135` / HDMI unsichtbar auf fremdem PC | `STATUS_DLL_NOT_FOUND`: VC++-Runtime fehlt neben der Exe. Release-Build packt sie seit Abschnitt 7.1 mit; Dev-Rechner: `vc_redist.x64.exe` installieren oder `npm run prepare:vc-runtime:windows`. |
+| `prepare-windows-vc-runtime.ps1`: `VCToolsRedistDir is not set` | `dist:win` aus der **Developer PowerShell for VS 2022** starten oder `-RedistDir` setzen (Abschnitt 7.1). |
 
 ---
 

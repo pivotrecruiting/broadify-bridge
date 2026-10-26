@@ -2,6 +2,9 @@ const baseConfig = require("./electron-builder.json");
 const {
   resolveWindowsSigningPolicy,
 } = require("./scripts/lib/resolve-windows-signing-policy.cjs");
+const {
+  getWindowsVcRuntimeResourceEntries,
+} = require("./scripts/lib/windows-vc-runtime.cjs");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
 const updaterChannel =
@@ -191,6 +194,16 @@ if (config.win) {
     from: "apps/bridge/native/display-helper/SDL2.dll",
     to: "native/display-helper/SDL2.dll",
   });
+
+  // Microsoft Visual C++ runtime (Microsoft.VC143.CRT) next to BOTH helper
+  // executables: the helpers are /MD builds and Windows resolves imports from
+  // the executable's own directory first, so a PC without vc_redist still
+  // loads them (field-confirmed 0xC0000135 otherwise). Staged into
+  // build/windows-vc-runtime by scripts/prepare-windows-vc-runtime.ps1
+  // (dist:win), required by scripts/verify-release-artifacts.sh, verified by
+  // scripts/verify-windows-native-dependencies.cjs. The DLLs carry Microsoft's
+  // signature and are deliberately NOT in scripts/sign-windows-native-resources.cjs.
+  config.win.extraResources.push(...getWindowsVcRuntimeResourceEntries());
 
   // electron-builder 25 signs extension-matched DLLs concurrently and does not
   // apply that transformer to individually copied extraResources. Sign only the

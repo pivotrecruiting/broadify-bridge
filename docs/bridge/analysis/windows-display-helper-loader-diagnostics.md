@@ -73,6 +73,22 @@ Bei `missing_runtime` zuerst die Visual-C++-Runtime installieren
 Bridge neu starten; alternativ Bridge neu installieren, sobald der Installer die
 CRT-DLLs mitliefert. Danach `--self-test` wie oben beschrieben ausführen.
 
+### Fix: CRT-DLLs neben den Helfern (Paket A-8)
+
+Der Feldbefund vom 19.10. (Windows-Laptop ohne VC++-Redistributable:
+`display-helper.exe` → `0xC0000135`, HDMI unsichtbar; `meeting-helper.exe`/`onnxruntime.dll`
+gleiches Risiko) ist im Release-Build behoben: `dist:win` staged den vollständigen
+`Microsoft.VC143.CRT`-Satz (`scripts/prepare-windows-vc-runtime.ps1`,
+Liste in `scripts/lib/windows-vc-runtime.cjs`) und `electron-builder.config.cjs` packt
+ihn nach `resources/native/display-helper/` **und** `resources/native/meeting-helper/`.
+Damit ein CI-Runner mit installiertem Redistributable eine fehlende DLL trotzdem
+erkennt, prüft `scripts/verify-windows-native-dependencies.cjs` (`dumpbin /DEPENDENTS`)
+jede gepackte Helfer-Exe/-DLL gegen die System-DLL-Allowlist in
+`scripts/lib/windows-native-dependency-policy.cjs` und die Dateien im selben Ordner.
+Details: `docs/RELEASE_PROCESS.md` („MSVC-Runtime neben den Windows-Helfern"),
+`docs/windows-build-guide.md` (Abschnitt 7.1), `docs/signing/windows-signing.md`.
+Das Exit-Code-Mapping oben bleibt als Diagnose für ältere Installationen bestehen.
+
 ## Release-Gate
 
 Der RC bleibt blockiert, bis derselbe Installer auf dem Kunden-PC ohne `spawn UNKNOWN`

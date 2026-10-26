@@ -23,6 +23,13 @@ $vcamInprocServerKey = "HKLM:\SOFTWARE\Classes\CLSID\$vcamClsid\InprocServer32"
 $vcamClsidKey = "HKLM:\SOFTWARE\Classes\CLSID\$vcamClsid"
 $displayHelperTestScript = Join-Path $PSScriptRoot "test-windows-display-helper.ps1"
 $meetingHelperTestScript = Join-Path $PSScriptRoot "test-windows-meeting-helper.ps1"
+# Microsoft Visual C++ runtime packaged next to both helpers; list from the
+# Node single source of truth (scripts/lib/windows-vc-runtime.cjs).
+$vcRuntimeListScript = Join-Path $PSScriptRoot "list-windows-vc-runtime-paths.cjs"
+$vcRuntimePaths = @(& node $vcRuntimeListScript)
+if ($LASTEXITCODE -ne 0 -or $vcRuntimePaths.Count -eq 0) {
+  throw "Unable to resolve the packaged MSVC runtime DLL list from $vcRuntimeListScript."
+}
 
 if (Test-Path -LiteralPath $installDir) {
   throw "NSIS smoke target already exists and will not be overwritten: $installDir"
@@ -93,6 +100,16 @@ try {
   $sdlPath = Join-Path $installDir "resources\native\display-helper\SDL2.dll"
   if (-not (Test-Path -LiteralPath $sdlPath)) {
     throw "NSIS smoke install is missing SDL2.dll: $sdlPath"
+  }
+  $expectedPaths = @(
+    $vcRuntimePaths | ForEach-Object {
+      Join-Path (Join-Path $installDir "resources") ($_ -replace '/', '\')
+    }
+  )
+  foreach ($path in $expectedPaths) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "NSIS smoke install missing expected packaged file: $path"
+    }
   }
   & $displayHelperTestScript -HelperPath $helperPath -Attempts 3
 
