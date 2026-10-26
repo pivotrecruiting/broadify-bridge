@@ -7,12 +7,13 @@ Dieses Subsystem erkennt verfügbare Geräte (DeckLink, Display, USB Capture), c
 - Registrierung von Device‑Modulen
 - Parallelisierte Device‑Detection mit Timeout/Isolation
 - Cache + Rate‑Limit für Refresh
-- Watcher für Hotplug‑Events
+- Watcher für Hotplug‑Events (DeckLink nativ, Display per Polling)
 - Mapping von Device/Port‑Model zu UI‑Outputs
 
 ## Hauptkomponenten
 - `apps/bridge/src/modules/index.ts`
 - `apps/bridge/src/modules/module-registry.ts`
+- `apps/bridge/src/modules/polling-device-watch.ts`
 - `apps/bridge/src/services/device-cache.ts`
 - `apps/bridge/src/modules/decklink/*`
 - `apps/bridge/src/modules/display/*`
@@ -69,6 +70,45 @@ sequenceDiagram
 - Output-Abfragen erkennen nur `display` und `decklink`. USB-Capture kann dadurch
   weder `/outputs` noch Graphics-Konfiguration blockieren.
 
+## Display-Hotplug per Polling
+Weder macOS `system_profiler` noch `display-helper.exe --list-displays` liefern
+Push-Events. `DisplayModule.watch()` nutzt deshalb den generischen Poll-Watcher
+`apps/bridge/src/modules/polling-device-watch.ts` (`createPollingDeviceWatch`):
+
+- Der Watcher ruft periodisch den regulaeren `DisplayModule.detect()`-Pfad auf;
+  `getLastDiagnostics()` spiegelt damit auch den letzten Poll wider.
+- Aus dem Ergebnis wird ein stabiler, reihenfolgeunabhaengiger Fingerprint
+  gebildet (`fingerprintDisplayDevices`: Device-ID, Name, `present/ready/inUse`,
+  Port-ID, Port-Typ, Port-`available`, Modi `WxH@fps`; `lastSeen` ist bewusst
+  ausgenommen). Die Registry (`watchAll`) und damit der `DeviceCache` werden nur
+  bei geaendertem Fingerprint benachrichtigt.
+- Der erste Poll laeuft sofort beim Subscribe und setzt nur die Baseline, ohne
+  zu emittieren; ein beim Start bereits angeschlossenes Display loest also
+  keinen zusaetzlichen Refresh aus.
+- Ein Tick wird uebersprungen, solange ein vorheriger `detect()` noch laeuft.
+- Fehler eines Polls werden einmal pro Fehlerserie mit `warn` geloggt
+  (`[DisplayModule] Poll failed ...`), weitere Fehler nur mit `debug`; die
+  Erholung mit `info`. Der letzte bekannte Fingerprint bleibt erhalten, das
+  Polling laeuft weiter.
+- Der Timer ist `unref()`ed und haelt den Prozess nicht am Leben. Unsubscribe
+  stoppt den Timer; ein danach noch auslaufender `detect()` emittiert nicht.
+- Auf nicht unterstuetzten Plattformen (z. B. Linux) startet `watch()` keinen
+  Timer.
+
+| Parameter | Wert |
+| --- | ---: |
+| Standard-Intervall (`DEFAULT_DISPLAY_WATCH_INTERVAL_MS`) | 15s |
+| Minimum fuer Override (`MIN_DISPLAY_WATCH_INTERVAL_MS`) | 2000ms |
+| Env-Override | `BRIDGE_DISPLAY_WATCH_INTERVAL_MS` |
+| Gemessene `system_profiler SPDisplaysDataType -json`-Dauer (Apple Silicon, 2026-10, 5 Laeufe) | 0,40–0,52s |
+
+`BRIDGE_DISPLAY_WATCH_INTERVAL_MS` akzeptiert nur eine dezimale Ganzzahl in
+Millisekunden `>= 2000`; andere Werte (z. B. `500`, `abc`, `1e4`) werden mit
+einer `warn`-Zeile ignoriert und das Standard-Intervall gilt. Zusammen mit dem
+Watch-Debounce des Caches (250ms) und dem Rate-Limit (2s) erscheint ein neu
+eingestecktes HDMI-Display (RØDECaster, Projektor) damit im Normalfall nach
+hoechstens einem Poll-Intervall in `/outputs`.
+
 ## Detection-Budget & Diagnostics
 | Bereich | Budget |
 | --- | ---: |
@@ -113,6 +153,7 @@ Exit-Code-Klassifikation (`classifyWindowsHelperExitCode`) in
 ## Relevante Dateien
 - `apps/bridge/src/services/device-cache.ts`
 - `apps/bridge/src/modules/module-registry.ts`
+- `apps/bridge/src/modules/polling-device-watch.ts`
 - `apps/bridge/src/modules/decklink/decklink-detector.ts`
 - `apps/bridge/src/modules/decklink/decklink-helper.ts`
 - `apps/bridge/src/modules/display/display-module.ts`

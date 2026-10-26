@@ -40,9 +40,9 @@ describe("device-module", () => {
       expect(typeof m.createController).toBe("function");
     });
 
-    it("DisplayModule has no watch method", () => {
-      const m = new DisplayModule();
-      expect("watch" in m).toBe(false);
+    it("DisplayModule exposes watch", () => {
+      const m: DeviceModule = new DisplayModule();
+      expect(typeof m.watch).toBe("function");
     });
 
     it("DecklinkModule implements DeviceModule with optional watch", () => {

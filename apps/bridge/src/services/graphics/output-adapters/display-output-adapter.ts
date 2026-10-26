@@ -13,6 +13,7 @@ import { resolveDisplayHelperPath } from "../../../modules/display/display-helpe
 import { displayTargetRegistry } from "../../../modules/display/display-target-registry.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "../../output-device-modules.js";
 import { HelperProcessSession } from "./helper-process-session.js";
+import { DISPLAY_OUTPUT_HELPER_READY_TIMEOUT_MS } from "./output-helper-timeouts.js";
 
 type OutputPortMatchT = {
   device: DeviceDescriptorT;
@@ -127,7 +128,7 @@ export class DisplayVideoOutputAdapter implements GraphicsOutputAdapter {
       args,
       env,
       stdin: "ignore",
-      readyTimeoutMs: 8_000,
+      readyTimeoutMs: DISPLAY_OUTPUT_HELPER_READY_TIMEOUT_MS,
       stopStrategy: { gracefulMs: 2000, forceMs: 2000 },
       logger: this.getLogger(),
     });
