@@ -58,6 +58,9 @@ Alternativer Erstversuch (ohne Neustart): Haken **setzen**, App neu starten. Hil
 
 Abgrenzung: ATEM Software Control am gleichen Mac funktioniert, Broadify nicht → fast sicher Local-Network-Permission für Broadify. Beides schlägt fehl → Netzwerkproblem (Subnetz, VLAN, VPN, Firewall).
 
+**Root Cause RC↔Prod** (2026-10-26)
+Die getrennten Bundle-IDs waren nur die halbe Erklärung: macOS Local-Network-Privacy schlüsselt nach der **Mach-O `LC_UUID` des Hauptexecutables** (Apple TN3179), und electron-builder benennt den Stock-Electron-Launcher nur um – Prod und RC hatten beide die Electron-UUID `4C4C44E2-5555-3144-A1E4-96FF6D8E37B0`. Deshalb erbte die RC-App eine veraltete Deny-Entscheidung, zeigte nie den Dialog, und ATEM-over-IP lief ins Timeout, während Prod funktionierte (auf zwei Macs reproduziert). Fix: afterPack-Hook `scripts/patch-macos-main-executable-uuid.cjs` schreibt eine deterministische UUID pro Kanal (ohne Version → Updates behalten ihre Freigabe); `scripts/verify-macos-release-signing.sh` prüft sie. Details: `docs/signing/apple-signing.md`, Abschnitt "Main executable UUID". Upstream: electron-userland/electron-builder#10297.
+
 **Fix-Ziel** (offen)
 - In der UI/Onboarding einen Hinweis + Deep-Link zu „Systemeinstellungen → Datenschutz → Lokales Netzwerk" zeigen, wenn Engine-Connect mit Timeout fehlschlägt (analog Canon XC).
 - ATEM-Timeout-Fehlermeldung auf macOS um Local-Network-Hinweis erweitern.

@@ -196,6 +196,17 @@ if (config.win) {
     config.afterSign =
       require.resolve("./scripts/sign-windows-native-resources.cjs");
   }
+
+  // Prod and RC both rename the stock Electron launcher and therefore share its
+  // Mach-O LC_UUID. macOS Local Network privacy keys on that UUID (Apple
+  // TN3179), so the two apps collided in TCC. afterPack runs before signing in
+  // app-builder-lib 25, so the deterministic per-flavour UUID written here is
+  // covered by codesign + notarization.
+  if (process.platform === "darwin") {
+    config.afterPack = require.resolve(
+      "./scripts/patch-macos-main-executable-uuid.cjs",
+    );
+  }
 }
 
 if (config.win) {
