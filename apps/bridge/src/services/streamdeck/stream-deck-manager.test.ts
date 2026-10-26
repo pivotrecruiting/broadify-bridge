@@ -1,4 +1,5 @@
 import { setBridgeContext } from "../bridge-context.js";
+import { canonResponseToCommandResult } from "../canon-xc/canon-xc-command-result.js";
 import {
   extractCommandFailure,
   StreamDeckManager,
@@ -36,6 +37,39 @@ describe("extractCommandFailure", () => {
       "busy",
     );
     expect(extractCommandFailure({ success: false })).toBe("command_failed");
+  });
+
+  it("surfaces a mapped Canon XC failure and ignores a mapped Canon success", () => {
+    const canonBase = {
+      message: "Preset recall failed",
+      device: null,
+      status: null,
+      presets: [],
+      result: {},
+      rawError: null,
+      diagnostic: null,
+    };
+
+    expect(
+      extractCommandFailure(
+        canonResponseToCommandResult({
+          ...canonBase,
+          ok: false,
+          rawError: "ETIMEDOUT",
+          diagnostic: { code: "timeout", hint: "Check the network cable." },
+        }),
+      ),
+    ).toBe("ETIMEDOUT");
+
+    expect(
+      extractCommandFailure(
+        canonResponseToCommandResult({
+          ...canonBase,
+          ok: true,
+          message: "Preset recalled",
+        }),
+      ),
+    ).toBeNull();
   });
 });
 
