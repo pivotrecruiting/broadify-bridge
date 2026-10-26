@@ -2,6 +2,8 @@
  * Tests for AppUpdaterService (app-updater.ts).
  */
 
+import { INSTALL_CLEANUP_TIMEOUT_MS } from "./shutdown-budget.js";
+
 const mockListeners: Record<string, Array<(...args: unknown[]) => void>> = {};
 const mockOn = jest.fn((event: string, handler: (...args: unknown[]) => void) => {
   if (!mockListeners[event]) mockListeners[event] = [];
@@ -422,7 +424,7 @@ describe("AppUpdaterService", () => {
       expect(result.success).toBe(true);
       expect(result.status.state).toBe("downloaded");
       expect(listener).toHaveBeenLastCalledWith(
-        expect.objectContaining({ message: "Installing update and restarting app..." }),
+        expect.objectContaining({ message: "Stopping bridge and installing update…" }),
       );
     });
   });
@@ -459,8 +461,13 @@ describe("AppUpdaterService", () => {
       emit("update-downloaded", { version: "2.0.0" });
 
       appUpdaterService.quitAndInstall();
-      await jest.advanceTimersByTimeAsync(11_000);
+      // The cleanup budget must outlast the app shutdown timeout (which in
+      // turn covers the bridge stop incl. MP4 finalization): installing must
+      // not start while the bridge could still be finalizing a recording.
+      await jest.advanceTimersByTimeAsync(INSTALL_CLEANUP_TIMEOUT_MS - 1);
+      expect(mockQuitAndInstall).not.toHaveBeenCalled();
 
+      await jest.advanceTimersByTimeAsync(1);
       expect(mockQuitAndInstall).toHaveBeenCalledWith(false, true);
     });
 

@@ -1,5 +1,39 @@
 import * as path from "path";
-import type { BridgeConfig } from "../types.js";
+import type { BridgeConfig, BridgeStatus } from "../types.js";
+
+/**
+ * Upper bound for waiting on a previous instance of the SAME bridge to
+ * release its port before the start is rejected.
+ */
+export const SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS = 10_000;
+/** Poll interval while waiting for that port to free up. */
+export const SAME_BRIDGE_PORT_POLL_MS = 500;
+
+export type BusyPortOccupantT = "same_bridge" | "foreign";
+
+/**
+ * Classify who holds a busy bridge port.
+ *
+ * `occupant` is the health answer of the busy port (`checkBridgeHealth`): its
+ * `bridgeId` is read from the bridge's `/relay/status` route, which every
+ * bridge started by the desktop app serves (the id is passed as
+ * `--bridge-id`). A reachable bridge reporting OUR bridge id is a previous
+ * instance of this bridge that is still shutting down (it keeps the port
+ * until its HTTP server closes last). It must be waited for, never bypassed
+ * via port+1, or the relay/web app would see two bridges with one identity.
+ * Anything else (another bridge, a non-bridge service, no JSON answer, an
+ * unknown id on either side) is "foreign" and gets the existing fallback.
+ */
+export function classifyBusyPortOccupant(params: {
+  occupant: Pick<BridgeStatus, "reachable" | "bridgeId"> | null;
+  bridgeId: string | undefined;
+}): BusyPortOccupantT {
+  const { occupant, bridgeId } = params;
+  if (!occupant?.reachable || !bridgeId || !occupant.bridgeId) {
+    return "foreign";
+  }
+  return occupant.bridgeId === bridgeId ? "same_bridge" : "foreign";
+}
 
 export type BridgeStartConfigResultT =
   | {

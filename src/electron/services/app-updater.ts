@@ -12,14 +12,12 @@ import {
   resolveWindowsInstallKind,
   UPDATER_DISABLE_REASON_MSI_OR_PORTABLE,
 } from "./updater-utils.js";
+import { INSTALL_CLEANUP_TIMEOUT_MS } from "./shutdown-budget.js";
 
 type UpdaterStatusListenerT = (status: AppUpdaterStatusT) => void;
 
 const STARTUP_CHECK_DELAY_MS = 15_000;
 const DEFAULT_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-// Upper bound for pre-install cleanup: installing must never hang on a stuck
-// helper shutdown, so the installer is started even if cleanup times out.
-const INSTALL_CLEANUP_TIMEOUT_MS = 10_000;
 
 /**
  * Service that owns desktop app auto-update state and lifecycle.
@@ -192,7 +190,7 @@ class AppUpdaterService {
     this.installRequested = true;
 
     this.updateStatus({
-      message: "Installing update and restarting app...",
+      message: "Stopping bridge and installing update…",
     });
 
     setImmediate(() => {
@@ -200,7 +198,11 @@ class AppUpdaterService {
         try {
           const hook = this.installPreparationHook;
           if (hook) {
-            // Cleanup must never block the install indefinitely.
+            // Cleanup must never block the install indefinitely. The budget
+            // (shutdown-budget.ts) outlasts the app's own shutdown timeout,
+            // which in turn covers the bridge stop incl. MP4 finalization of
+            // a running recording: the installer must not start while the
+            // bridge could still be writing.
             await Promise.race([
               hook(),
               new Promise<void>((resolve) =>

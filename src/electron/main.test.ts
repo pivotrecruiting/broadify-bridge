@@ -6,7 +6,8 @@
 const readyHandlers: Array<() => void> = [];
 const secondInstanceHandlers: Array<() => void> = [];
 const openUrlHandlers: Array<(event: { preventDefault: () => void }, _url: string) => void> = [];
-const beforeQuitHandlers: Array<() => void | Promise<void>> = [];
+type QuitEventT = { preventDefault: () => void };
+const beforeQuitHandlers: Array<(event?: QuitEventT) => void | Promise<void>> = [];
 const powerMonitorHandlers: Record<string, Array<() => void>> = {
   resume: [],
   "unlock-screen": [],
@@ -133,6 +134,7 @@ const mockUpdaterCheckForUpdates = jest.fn().mockResolvedValue({});
 const mockUpdaterDownloadUpdate = jest.fn().mockResolvedValue({});
 const mockUpdaterQuitAndInstall = jest.fn();
 const mockUpdaterShutdown = jest.fn();
+const mockUpdaterSetInstallPreparationHook = jest.fn();
 
 jest.mock("./services/app-updater.js", () => ({
   appUpdaterService: {
@@ -142,6 +144,8 @@ jest.mock("./services/app-updater.js", () => ({
     downloadUpdate: () => mockUpdaterDownloadUpdate(),
     quitAndInstall: () => mockUpdaterQuitAndInstall(),
     shutdown: () => mockUpdaterShutdown(),
+    setInstallPreparationHook: (hook: () => Promise<void>) =>
+      mockUpdaterSetInstallPreparationHook(hook),
   },
 }));
 
@@ -280,11 +284,13 @@ describe("main", () => {
       termsAcceptedAt: "2020-01-01T00:00:00Z",
     });
     mockStart.mockResolvedValue({ success: true });
+    mockStop.mockResolvedValue(undefined);
     mockGetConfig.mockReturnValue({ host: "127.0.0.1", port: 8787 });
     mockIsRunning.mockReturnValue(true);
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     process.argv = originalArgv;
   });
 
@@ -368,6 +374,90 @@ describe("main", () => {
       expect(win.isMinimized).toHaveBeenCalled();
       expect(win.restore).toHaveBeenCalled();
       expect(win.focus).toHaveBeenCalled();
+    });
+
+    it("second-instance only logs while the app is shutting down", async () => {
+      await readyHandlers[0]();
+      const { BrowserWindow } = await import("electron");
+      const win = (BrowserWindow as jest.Mock).mock.results[0].value;
+      const closeCb = win.on.mock.calls.find((c: unknown[]) => c[0] === "close")?.[1];
+      // Shutdown in flight: the bridge stop has not returned yet.
+      mockStop.mockReturnValue(new Promise(() => {}));
+      closeCb({ preventDefault: jest.fn() });
+
+      secondInstanceHandlers[0]();
+
+      expect(win.isMinimized).not.toHaveBeenCalled();
+      expect(win.restore).not.toHaveBeenCalled();
+      expect(win.focus).not.toHaveBeenCalled();
+      expect(mockLogAppInfo).toHaveBeenCalledWith(
+        expect.stringContaining("second instance"),
+      );
+    });
+
+    it("registers the install hook once on ready before any updater status", async () => {
+      await readyHandlers[0]();
+
+      expect(mockUpdaterSetInstallPreparationHook).toHaveBeenCalledTimes(1);
+      expect(mockUpdaterInitialize).toHaveBeenCalledTimes(1);
+      expect(
+        mockUpdaterSetInstallPreparationHook.mock.invocationCallOrder[0],
+      ).toBeLessThan(mockUpdaterInitialize.mock.invocationCallOrder[0]);
+
+      // The status listener only forwards to the renderer; it never
+      // re-registers the hook.
+      const listener = mockUpdaterInitialize.mock.calls[0][0];
+      listener({ state: "idle" });
+      listener({ state: "downloaded" });
+      expect(mockUpdaterSetInstallPreparationHook).toHaveBeenCalledTimes(1);
+      expect(mockIpcWebContentsSend).toHaveBeenCalledWith(
+        "updaterStatus",
+        expect.anything(),
+        { state: "downloaded" },
+      );
+    });
+
+    it("install hook stops the bridge and releases the quit guard", async () => {
+      await readyHandlers[0]();
+      const hook = mockUpdaterSetInstallPreparationHook.mock.calls[0][0];
+      mockStop.mockClear();
+
+      await hook();
+
+      expect(mockUpdaterShutdown).toHaveBeenCalled();
+      expect(mockStop).toHaveBeenCalledTimes(1);
+      // The quit guard stands down: the installer's normal quit goes through.
+      const event = { preventDefault: jest.fn() };
+      beforeQuitHandlers[0](event);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      // The install path never force-exits; electron-updater drives the quit.
+      expect(mockAppExit).not.toHaveBeenCalled();
+    });
+
+    it("releases the quit guard when the bridge stop hangs", async () => {
+      jest.useFakeTimers();
+      await readyHandlers[0]();
+      const hook = mockUpdaterSetInstallPreparationHook.mock.calls[0][0];
+      mockStop.mockReturnValue(new Promise(() => {}));
+
+      let hookResolved = false;
+      const hookPromise = hook().then(() => {
+        hookResolved = true;
+      });
+      await jest.advanceTimersByTimeAsync(29_999);
+      expect(hookResolved).toBe(false);
+
+      await jest.advanceTimersByTimeAsync(1);
+      await hookPromise;
+
+      expect(hookResolved).toBe(true);
+      expect(mockLogAppWarn).toHaveBeenCalledWith(
+        expect.stringContaining("Cleanup timed out after 30000ms"),
+      );
+      const event = { preventDefault: jest.fn() };
+      beforeQuitHandlers[0](event);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(mockAppExit).not.toHaveBeenCalled();
     });
 
     it("open-url prevents default and focuses window", async () => {
@@ -1235,6 +1325,13 @@ describe("main", () => {
       await import("./main.js");
       expect(mockRequestSingleInstanceLock).toHaveBeenCalled();
       expect(mockAppQuit).toHaveBeenCalled();
+      // The reason for the silent exit must be in the app log.
+      expect(mockLogAppWarn).toHaveBeenCalledWith(
+        expect.stringContaining("already running"),
+      );
+      expect(mockLogAppWarn.mock.invocationCallOrder[0]).toBeLessThan(
+        mockAppQuit.mock.invocationCallOrder[0],
+      );
       singleInstanceLockReturns = true;
     });
   });

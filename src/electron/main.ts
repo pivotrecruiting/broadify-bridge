@@ -27,6 +27,7 @@ import {
   logAppWarn,
 } from "./services/app-logger.js";
 import { appUpdaterService } from "./services/app-updater.js";
+import { APP_SHUTDOWN_TIMEOUT_MS } from "./services/shutdown-budget.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
@@ -57,10 +58,6 @@ const DISABLED_CHROMIUM_FEATURES = [
   "WebGPU",
   "WebGPUDeveloperFeatures",
 ];
-// Must exceed the bridge's own graceful-shutdown budget (~22s meeting stop:
-// an in-flight recording is finalized before the helper is killed). Without a
-// recording the whole chain completes in about a second.
-const APP_SHUTDOWN_TIMEOUT_MS = 30000;
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
@@ -518,14 +515,17 @@ function runAppShutdownCleanup(): Promise<void> {
   return appShutdownPromise;
 }
 
-async function shutdownAndExit(): Promise<void> {
-  if (appShutdownStarted) {
-    return;
-  }
-  appShutdownStarted = true;
-
+/**
+ * Run the app cleanup (updater timers, health polling, bridge stop) raced
+ * against APP_SHUTDOWN_TIMEOUT_MS and release the quit guard afterwards.
+ * Never throws: whether the cleanup finished, failed or timed out, the
+ * close/before-quit handlers stand down so the app can actually quit. Shared
+ * by the regular quit path and the updater's pre-install hook.
+ */
+async function awaitAppShutdownCleanup(): Promise<void> {
+  let timeoutTimer: NodeJS.Timeout | null = null;
   const timeout = new Promise<void>((resolve) => {
-    setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
       logAppWarn(
         `[Shutdown] Cleanup timed out after ${APP_SHUTDOWN_TIMEOUT_MS}ms; forcing app exit`,
       );
@@ -539,7 +539,22 @@ async function shutdownAndExit(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     logAppError(`[Shutdown] Cleanup failed: ${message}`);
   } finally {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+    }
     appShutdownCompleted = true;
+  }
+}
+
+async function shutdownAndExit(): Promise<void> {
+  if (appShutdownStarted) {
+    return;
+  }
+  appShutdownStarted = true;
+
+  try {
+    await awaitAppShutdownCleanup();
+  } finally {
     app.exit(0);
   }
 }
@@ -573,11 +588,24 @@ if (!isRendererProcess) {
   const gotTheLock = app.requestSingleInstanceLock();
 
   if (!gotTheLock) {
-    // Another instance is already running, quit this one
+    // Another instance is already running, quit this one. Log it: without
+    // this line the second launch exits silently and support cannot tell a
+    // crash from a duplicate start.
+    logAppWarn(
+      "[Main] Another Broadify Bridge instance is already running; quitting this instance",
+    );
     app.quit();
   } else {
     // Handle second instance: focus existing window
     app.on("second-instance", () => {
+      if (appShutdownStarted) {
+        // The window is being torn down; focusing it would race the
+        // shutdown. The second launch has already quit itself (no lock).
+        logAppInfo(
+          "[Main] Ignoring second instance launch while the app is shutting down",
+        );
+        return;
+      }
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.focus();
@@ -621,16 +649,20 @@ if (!isRendererProcess) {
         pollResources(mainWindow);
       }
 
+      // Installing an update needs a NORMAL quit (Squirrel/NSIS drive it).
+      // Registered exactly once, before the updater starts: the hook tears
+      // the bridge down (within the shared shutdown budget) and releases the
+      // quit guard so the close/before-quit handlers stand down for the
+      // installer. Marking the shutdown as started keeps a window close
+      // during the install from force-exiting underneath the installer.
+      appUpdaterService.setInstallPreparationHook(async () => {
+        appShutdownStarted = true;
+        await awaitAppShutdownCleanup();
+      });
+
       appUpdaterService.initialize((status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           ipcWebContentsSend("updaterStatus", mainWindow.webContents, status);
-      // Installing an update needs a NORMAL quit (Squirrel/NSIS drive it).
-      // Tear children down first, then release the quit guard so the
-      // close/before-quit handlers stand down for the installer.
-      appUpdaterService.setInstallPreparationHook(async () => {
-        await runAppShutdownCleanup();
-        appShutdownCompleted = true;
-      });
         }
       });
 

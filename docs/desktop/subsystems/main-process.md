@@ -29,6 +29,7 @@ Der Main‑Process steuert App‑Lifecycle, Fenster, IPC‑Handlers sowie Start/
 - `src/electron/services/bridge-profile.ts`
 - `src/electron/services/bridge-pairing.ts`
 - `src/electron/services/app-updater.ts`
+- `src/electron/services/shutdown-budget.ts`
 
 ## Ablauf (Mermaid)
 ```mermaid
@@ -72,6 +73,25 @@ Vor dem `import()` des Entries prueft `renderer-entry-policy.ts` (`resolveAllowe
 - Basename in `ALLOWED_RENDERER_ENTRY_BASENAMES` (`electron-renderer-entry.js`, `display-output-entry.js`).
 
 Ablehnung → `console.error("[GraphicsRenderer] Rejected renderer entry (<reason>)")` ohne den untrusted Pfad und `app.exit(1)`. Fehlendes `--renderer-entry` → Exit 1 wie bisher. Details zum Contract: `docs/bridge/subsystems/renderer-ipc.md`.
+
+## Shutdown-Budget (`services/shutdown-budget.ts`)
+Alle Zeitbudgets fuer das Herunterfahren liegen in einem Modul; Invariante **Bridge-Stop < App-Shutdown < Install-Cleanup**:
+
+| Konstante | Wert | Verbraucher | Bedeutung |
+|---|---|---|---|
+| `BRIDGE_STOP_GRACE_MS` | 25 000 | `bridge-process-manager.ts` (`stop()`) | Zeit nach SIGTERM bis SIGKILL der Prozessgruppe. Wird **nicht** verkuerzt: der Bridge-Shutdown finalisiert eine laufende Aufnahme (Meeting-Stop bis ~22 s, `apps/bridge/src/server.ts`); frueheres SIGKILL zerstoert die MP4. |
+| `APP_SHUTDOWN_TIMEOUT_MS` | 30 000 | `main.ts` (`awaitAppShutdownCleanup`) | Race gegen die komplette Cleanup-Kette (Updater-Timer, Health-Polling, Bridge-Stop). Ohne Aufnahme ist die Kette in ~1 s fertig. |
+| `INSTALL_CLEANUP_TIMEOUT_MS` | 35 000 (= App-Shutdown + 5 s) | `app-updater.ts` (`quitAndInstall`) | Obergrenze des Updaters fuer den Pre-Install-Hook; liegt ueber dem App-Shutdown, damit immer zuerst der Hook-Timeout greift (der den Quit-Guard loest) und der Installer nie ueber eine halb geschriebene Aufnahme laeuft. |
+
+### Quit-Pfad und Install-Hook
+- `awaitAppShutdownCleanup()` (`main.ts`) fuehrt `runAppShutdownCleanup()` gegen `APP_SHUTDOWN_TIMEOUT_MS` aus, loggt `[Shutdown] Cleanup timed out after 30000ms; forcing app exit` bei Timeout, wirft nie und setzt in `finally` `appShutdownCompleted = true` (Quit-Guard frei).
+- `shutdownAndExit()` (Fenster-Close, `before-quit`, Fatal-Handler) = `awaitAppShutdownCleanup()` + `app.exit(0)`.
+- Install-Hook: `appUpdaterService.setInstallPreparationHook(...)` wird im `ready`-Handler **genau einmal und vor** `appUpdaterService.initialize(...)` registriert; der Status-Listener leitet nur noch Status an den Renderer weiter. Der Hook setzt `appShutdownStarted = true` (ein Fenster-Close waehrend des Installs loest keinen `app.exit` mehr aus) und ruft `awaitAppShutdownCleanup()`; danach uebernimmt `autoUpdater.quitAndInstall()` den normalen Quit. UI-Text waehrend des Hooks: „Stopping bridge and installing update…".
+
+### Single-Instance Lock
+- Lock nicht erhalten → `logAppWarn("[Main] Another Broadify Bridge instance is already running; quitting this instance")` vor `app.quit()`.
+- `second-instance` waehrend `appShutdownStarted` → nur Log, kein Fokus auf ein Fenster, das gerade abgebaut wird.
+- Port-Konflikt mit der eigenen Vorgaenger-Bridge: siehe „Same-Bridge Port Guard" in `bridge-integration.md`.
 
 ## Security‑Hinweise
 - IPC‑Handler sind die einzige Brücke vom Renderer.
