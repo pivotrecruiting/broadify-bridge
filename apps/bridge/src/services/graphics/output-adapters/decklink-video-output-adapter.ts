@@ -11,6 +11,7 @@ import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-he
 import { VIDEO_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
 import { parseDecklinkPortId } from "./decklink-port.js";
 import { HelperProcessSession } from "./helper-process-session.js";
+import { DECKLINK_OUTPUT_HELPER_READY_TIMEOUT_MS } from "./output-helper-timeouts.js";
 const FRAME_MAGIC = 0x42524746; // 'BRGF'
 const FRAME_VERSION = 1;
 const FRAME_TYPE_SHUTDOWN = 2;
@@ -114,7 +115,7 @@ export class DecklinkVideoOutputAdapter implements GraphicsOutputAdapter {
       args,
       env,
       stdin: "pipe",
-      readyTimeoutMs: 12_000,
+      readyTimeoutMs: DECKLINK_OUTPUT_HELPER_READY_TIMEOUT_MS,
       stderrLogLevel: "error",
       logUnknownMessages: false,
       stopStrategy: {
