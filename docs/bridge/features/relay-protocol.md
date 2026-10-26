@@ -85,6 +85,21 @@ Allowlist-Pruefung bestanden sind und der Command zur Ausfuehrung angenommen
 wurde. Unbekannte oder nicht signierte Commands erhalten kein Ack, sondern ein
 fachliches `command_result` mit Fehler.
 
+Pruefreihenfolge in `verifySignedRelayCommand`: Metadaten → `bridgeId` → Scope
+→ Zeitfenster (`iat`/`exp` ± 60 s Skew) → Signatur → Anti-Replay (`jti`). Der
+`jti`-Check laeuft damit nur auf authentifizierter Eingabe; ein beobachteter
+`jti` kann keinen legitimen Command blockieren.
+
+- Ein `jti` wird fuer das gesamte Akzeptanzfenster gemerkt (`exp` + 60 s),
+  nicht nur bis `exp`.
+- Liefert der Relay denselben signierten Command erneut zu (Ack verloren,
+  identische `requestId`/`jti`/Signatur), antwortet die Bridge aus dem
+  Ergebnis-Cache bzw. mit dem noch laufenden Ergebnis: erneut
+  `command_received`, dann das gecachte `command_result`. Der Command wird
+  nicht erneut ausgefuehrt. Voraussetzung ist eine gueltige Signatur und eine
+  der Bridge bekannte `requestId` mit gleichem Command/Payload-Hash; andernfalls
+  `command_result` mit `error: "Replay detected"`.
+
 ```json
 {
   "type": "command_received",
@@ -265,7 +280,9 @@ sequenceDiagram
 - Payloads sind untrusted → Zod-Validierung im `CommandRouter`
   (`relay-command-schemas.ts`) und im `GraphicsManager`
 - Commands sind signiert (Ed25519) und enthalten `meta` + `signature`
-- Bridge validiert Signatur, TTL und Replay‑Schutz (jti‑Cache)
+- Bridge validiert Signatur, TTL und Replay‑Schutz (jti‑Cache); Signatur vor
+  Anti-Replay, `jti` gemerkt fuer `exp` + 60 s, identische Redelivery wird aus
+  dem Ergebnis-Cache beantwortet (siehe `command_received`)
 - Bridge authentisiert sich gegen Relay per lokalem Ed25519-Keypair + Challenge‑Response (`bridge_hello`-Pfad)
 - Fuer ungepairte Bridges erlaubt das Relay einen `pairing-only` Bootstrap-Pfad (nur `bridge_pair_validate`)
 

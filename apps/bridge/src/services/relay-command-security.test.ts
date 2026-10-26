@@ -136,9 +136,10 @@ describe("verifySignedRelayCommand", () => {
         seenJti,
         nowSec: 1050,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ replayedJti: false });
 
-    expect(seenJti.get("jti-1")).toBe(1100);
+    // Remembered for the whole acceptance window (exp + default skew of 60 s).
+    expect(seenJti.get("jti-1")).toBe(1160);
   });
 
   it("rejects missing signature", async () => {
@@ -261,5 +262,177 @@ describe("verifySignedRelayCommand", () => {
         nowSec: 1050,
       }),
     ).rejects.toThrow("Invalid signature");
+  });
+
+  it("serves a redelivery when the jti was seen and the requestId is known", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const seenJti = new Map<string, number>();
+    const meta: RelayCommandMetaT = {
+      bridgeId: "bridge-1",
+      orgId: "org-1",
+      scope: ["command:engine_connect"],
+      iat: 1000,
+      exp: 1200,
+      jti: "jti-redelivery",
+      kid: "kid-1",
+    };
+    const message = buildSignedMessage({ privateKey, meta });
+
+    await expect(
+      verifySignedRelayCommand({
+        message,
+        bridgeId: "bridge-1",
+        getPublicKey: async () => publicKey,
+        seenJti,
+        nowSec: 1050,
+        isKnownRequestId: () => true,
+      }),
+    ).resolves.toEqual({ replayedJti: false });
+
+    await expect(
+      verifySignedRelayCommand({
+        message,
+        bridgeId: "bridge-1",
+        getPublicKey: async () => publicKey,
+        seenJti,
+        nowSec: 1060,
+        isKnownRequestId: () => true,
+      }),
+    ).resolves.toEqual({ replayedJti: true });
+  });
+
+  it("rejects a replayed jti when the requestId is unknown", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const seenJti = new Map<string, number>();
+    const meta: RelayCommandMetaT = {
+      bridgeId: "bridge-1",
+      orgId: "org-1",
+      scope: ["command:engine_connect"],
+      iat: 1000,
+      exp: 1200,
+      jti: "jti-replay-unknown",
+      kid: "kid-1",
+    };
+    const message = buildSignedMessage({ privateKey, meta });
+
+    await verifySignedRelayCommand({
+      message,
+      bridgeId: "bridge-1",
+      getPublicKey: async () => publicKey,
+      seenJti,
+      nowSec: 1050,
+      isKnownRequestId: () => false,
+    });
+
+    await expect(
+      verifySignedRelayCommand({
+        message,
+        bridgeId: "bridge-1",
+        getPublicKey: async () => publicKey,
+        seenJti,
+        nowSec: 1060,
+        isKnownRequestId: () => false,
+      }),
+    ).rejects.toThrow("Replay detected");
+  });
+
+  it("rejects a replay inside the skew window after exp", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const seenJti = new Map<string, number>();
+    const meta: RelayCommandMetaT = {
+      bridgeId: "bridge-1",
+      orgId: "org-1",
+      scope: ["command:engine_connect"],
+      iat: 1000,
+      exp: 1200,
+      jti: "jti-skew-replay",
+      kid: "kid-1",
+    };
+    const message = buildSignedMessage({ privateKey, meta });
+
+    await verifySignedRelayCommand({
+      message,
+      bridgeId: "bridge-1",
+      getPublicKey: async () => publicKey,
+      seenJti,
+      nowSec: meta.exp - 1,
+    });
+
+    // Still inside the acceptance window (exp + 60 s skew) -> must be a replay.
+    await expect(
+      verifySignedRelayCommand({
+        message,
+        bridgeId: "bridge-1",
+        getPublicKey: async () => publicKey,
+        seenJti,
+        nowSec: meta.exp + 30,
+        isKnownRequestId: () => false,
+      }),
+    ).rejects.toThrow("Replay detected");
+  });
+
+  it("checks the signature before the jti", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const seenJti = new Map<string, number>();
+    const meta: RelayCommandMetaT = {
+      bridgeId: "bridge-1",
+      orgId: "org-1",
+      scope: ["command:engine_connect"],
+      iat: 1000,
+      exp: 1200,
+      jti: "jti-sig-first",
+      kid: "kid-1",
+    };
+    const message = buildSignedMessage({ privateKey, meta });
+
+    await verifySignedRelayCommand({
+      message,
+      bridgeId: "bridge-1",
+      getPublicKey: async () => publicKey,
+      seenJti,
+      nowSec: 1050,
+    });
+
+    const tampered: SignedRelayCommandMessageT = {
+      ...message,
+      payload: { ip: "10.0.0.99", port: 9910 },
+    };
+
+    await expect(
+      verifySignedRelayCommand({
+        message: tampered,
+        bridgeId: "bridge-1",
+        getPublicKey: async () => publicKey,
+        seenJti,
+        nowSec: 1060,
+        isKnownRequestId: () => true,
+      }),
+    ).rejects.toThrow("Invalid signature");
+  });
+
+  it("remembers the jti until exp plus skew", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const seenJti = new Map<string, number>();
+    const meta: RelayCommandMetaT = {
+      bridgeId: "bridge-1",
+      orgId: "org-1",
+      scope: ["command:engine_connect"],
+      iat: 1000,
+      exp: 1200,
+      jti: "jti-window",
+      kid: "kid-1",
+    };
+    const message = buildSignedMessage({ privateKey, meta });
+
+    await verifySignedRelayCommand({
+      message,
+      bridgeId: "bridge-1",
+      getPublicKey: async () => publicKey,
+      seenJti,
+      nowSec: 1050,
+      relayCommandSkewSeconds: 45,
+    });
+
+    expect(seenJti.get("jti-window")).toBe(meta.exp + 45);
   });
 });
