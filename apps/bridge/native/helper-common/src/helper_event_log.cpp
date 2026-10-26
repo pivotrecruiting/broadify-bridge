@@ -1,4 +1,5 @@
 #include "helper_common/helper_event_log.h"
+#include "helper_common/path_utf8.h"
 
 #include <fstream>
 #include <iostream>
@@ -22,7 +23,10 @@ void setHelperEventLogPath(const std::string &path) {
   g_path = path;
   if (!g_path.empty()) {
     // Truncate: one file per helper run keeps the post-mortem unambiguous.
-    g_file.open(g_path, std::ios::out | std::ios::trunc);
+    // The path is UTF-8 (argv/env are decoded as UTF-8 by the helpers), so
+    // it is opened through the UTF-8 helper - plain std::ofstream would use
+    // the ANSI code page on Windows and miss user names with umlauts.
+    g_file = openOutputFileUtf8(g_path, std::ios::out | std::ios::trunc);
   }
 }
 
@@ -33,7 +37,7 @@ void emitHelperEvent(const std::string &jsonLine) {
     return;
   }
   if (!g_file.is_open()) {
-    g_file.open(g_path, std::ios::out | std::ios::app);
+    g_file = openOutputFileUtf8(g_path, std::ios::out | std::ios::app);
   }
   if (g_file) {
     g_file << jsonLine << '\n';

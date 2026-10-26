@@ -23,6 +23,7 @@ endif()
 add_library(helper_common STATIC
   src/helper_event_log.cpp
   src/json_utils.cpp
+  src/path_utf8.cpp
   src/rpc_transport.cpp
 )
 target_include_directories(helper_common PUBLIC include)
@@ -41,4 +42,12 @@ if(HELPER_COMMON_BUILD_TESTS)
     target_compile_definitions(rpc_transport_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   endif()
   add_test(NAME rpc_transport_test COMMAND rpc_transport_test)
+  # UTF-8 path helpers: round-trips a file through a directory with a
+  # non-ASCII name via every opener (stdlib + OS only).
+  add_executable(path_utf8_test tests/path_utf8_test.cpp)
+  target_link_libraries(path_utf8_test PRIVATE helper_common)
+  if(WIN32)
+    target_compile_definitions(path_utf8_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  endif()
+  add_test(NAME path_utf8_test COMMAND path_utf8_test)
 endif()

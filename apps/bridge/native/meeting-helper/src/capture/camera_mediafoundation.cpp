@@ -7,6 +7,7 @@
 #include "capture/camera_reopen_policy.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/path_utf8.h"
 #include "util/pixel_swizzle.h"
 
 #include <windows.h>
@@ -58,31 +59,9 @@ bool isBroadifyVirtualCamera(const std::string &label, const std::string &camera
          haystack.find("broadify virtual camera") != std::string::npos;
 }
 
-std::string wideToUtf8(const wchar_t *value) {
-  if (value == nullptr) {
-    return {};
-  }
-  const int size = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
-  if (size <= 1) {
-    return {};
-  }
-  std::string out(static_cast<size_t>(size - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, value, -1, out.data(), size, nullptr, nullptr);
-  return out;
-}
-
-std::wstring utf8ToWide(const std::string &value) {
-  if (value.empty()) {
-    return {};
-  }
-  const int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
-  if (size <= 1) {
-    return {};
-  }
-  std::wstring out(static_cast<size_t>(size - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, out.data(), size);
-  return out;
-}
+// UTF-8 <-> UTF-16 conversion comes from helper-common (util/path_utf8.h):
+// strict for UTF-8 input, so an invalid camera id fails to open instead of
+// being reinterpreted.
 
 uint64_t nowQpc() {
   LARGE_INTEGER value{};

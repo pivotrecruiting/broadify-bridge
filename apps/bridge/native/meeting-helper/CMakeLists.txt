@@ -85,6 +85,7 @@ set(MEETING_HELPER_SOURCES
   src/capture/liveness_watchdog.cpp
   src/capture/screen_capture_source.cpp
   src/capture/screen_capture_stub.cpp
+  src/compose/background_image_cache.cpp
   src/compose/compositor.cpp
   src/compose/d3d_adapter_select.cpp
   src/compose/media_page_cache.cpp
@@ -286,7 +287,8 @@ if(WIN32)
   # mfsensorgroup is intentionally NOT linked: MFCreateVirtualCamera is
   # resolved at runtime (Windows 11 only); a static import would prevent the
   # helper from loading at all on Windows 10 / Server.
-  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32 windowsapp dwmapi)
+  # shell32: CommandLineToArgvW (UTF-8 argv decoding in common/options.cpp).
+  target_link_libraries(meeting-helper PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi shell32 d3d11 dxgi d3d12 d3dcompiler avrt winmm dbghelp advapi32 windowsapp dwmapi)
 else()
   target_link_libraries(meeting-helper PRIVATE pthread)
   if(NOT APPLE)
@@ -422,6 +424,16 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/media_page_cache_test.cpp
     src/compose/media_page_cache.cpp
   )
+  # Background image slot: UTF-8 path, retry backoff, one failure event.
+  add_executable(background_image_cache_test
+    tests/background_image_cache_test.cpp
+    src/compose/background_image_cache.cpp
+  )
+  # argv/env decoding keeps UTF-8 path bytes intact (--models-dir, --event-log).
+  add_executable(options_test
+    tests/options_test.cpp
+    src/common/options.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -554,6 +566,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     json_utils_test
     compositor_input_selection_test
     media_page_cache_test
+    background_image_cache_test
+    options_test
     tier_handover_test
     matting_backend_test
     matting_common_test
@@ -578,6 +592,9 @@ if(MEETING_HELPER_BUILD_TESTS)
         target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
       elseif(helper_test STREQUAL "d3d_adapter_select_test")
         target_link_libraries(${helper_test} PRIVATE dxgi)
+      elseif(helper_test STREQUAL "options_test")
+        # CommandLineToArgvW lives in shell32.
+        target_link_libraries(${helper_test} PRIVATE shell32)
       endif()
     elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")

@@ -235,6 +235,50 @@ minutes). `BROADIFY_MEETING_OVERRUN_STEPDOWN=always` restores the previous
 governor completely; restart Broadify Bridge after setting it (the `.env` is
 read at app start).
 
+## Paths And Encoding
+
+Every path the meeting helper handles is UTF-8, end to end:
+
+- Control JSON paths (`background_image_path`, rendered media pages, model
+  paths derived from `--models-dir`) arrive as UTF-8 from the bridge.
+- `--models-dir`, `--event-log` and the `MEETING_*` environment defaults are
+  decoded as UTF-8 too. On Windows `main(argc, argv)` and `std::getenv` are
+  ANSI, so `common/options.cpp` reads the wide command line
+  (`GetCommandLineW` + `CommandLineToArgvW`) and `GetEnvironmentVariableW`
+  instead (`processArgumentsUtf8`, `getenvUtf8`). Other platforms copy argv.
+- Every file open goes through `helper_common/path_utf8.h`
+  (`openInputFileUtf8`, `openOutputFileUtf8`, `fopenUtf8`, `fileExistsUtf8`,
+  `readFileBytesUtf8`, `pathFromUtf8`). On Windows these build a wide
+  `std::filesystem::path` / use `_wfopen`; elsewhere the bytes pass through.
+  Plain `std::ifstream(path)` / `std::fopen` with a narrow path are not used
+  for user-controlled paths any more - on MSVC they would interpret UTF-8 in
+  the ANSI code page, which is why the uploaded background image stayed
+  black for user names with umlauts (`C:\Users\Jürgen\AppData\...`).
+- UTF-8 -> UTF-16 conversion is strict (`MB_ERR_INVALID_CHARS`). After the
+  argv/env decoding every input is UTF-8, so invalid bytes are a bug and fail
+  visibly (`model_path_invalid`, recorder `invalid_arguments`, `errno`
+  `EINVAL` in `readFileBytesUtf8`) instead of opening a wrong file.
+- The event log sidecar (`--event-log`, under the bridge's userData directory)
+  is opened through the same helper; argv decoding and the UTF-8 open landed
+  together because either one alone breaks the sidecar for those users.
+- `display-helper` is a separate `cl.exe` build without `helper_common` and
+  is not covered by this.
+
+Background image events (`meeting-helper-events.log`):
+
+- `background_image_load_failed`: `{"type":"background_image_load_failed",
+  "path":"<file name>","stage":"open"|"decode","errno":N}`. `path` carries
+  only the file name (basename), never the directory: the full path lies
+  under the bridge's userData directory and would put the Windows user name
+  into the log. Emitted ONCE per path while the load keeps failing; `stage` `open` with the C `errno` (2 =
+  missing file, 13 = permission, 22 = invalid UTF-8 on Windows), `decode`
+  with `errno` 0 when the bytes are not a PNG/JPEG. The helper retries with a
+  400 ms * 2^n backoff (max 2 s), so a file that appears later is picked up
+  without restarting the helper.
+- `background_image_loaded`: `{"type":"background_image_loaded",
+  "path":"<file name>"}` once per successful load (initial load or after a
+  failed period); same basename-only `path`.
+
 ## Teams Grey Triage
 
 Check in this order:

@@ -1,5 +1,7 @@
 #include "util/sha256.h"
 
+#include "util/path_utf8.h"
+
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -87,7 +89,7 @@ std::string digestToHex(const std::array<uint32_t, 8> &state) {
 }  // namespace
 
 std::string sha256FileHex(const std::string &path) {
-  FILE *file = std::fopen(path.c_str(), "rb");
+  FILE *file = fopenUtf8(path, "rb");
   if (file == nullptr) {
     return "";
   }

@@ -4,9 +4,11 @@
 
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
 
+#include "common/options.h"
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
 #include "util/helper_event_log.h"
+#include "util/path_utf8.h"
 #include "util/sha256.h"
 
 #include <algorithm>
@@ -36,11 +38,6 @@ double elapsedMs(std::chrono::steady_clock::time_point start,
   return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-bool fileExists(const std::string &path) {
-  std::ifstream file(path, std::ios::binary);
-  return file.good();
-}
-
 uint32_t dimensionOrFallback(size_t value, uint32_t fallback) {
   if (value > 0u && value <= 4096u) {
     return static_cast<uint32_t>(value);
@@ -53,22 +50,28 @@ uint32_t dimensionOrFallback(size_t value, uint32_t fallback) {
 // later helper starts reuse them instead of recompiling. Prefer a stable
 // per-user location (%LOCALAPPDATA%), fall back to %TEMP%; empty result
 // disables caching (OpenVINO then compiles in memory every start).
+// The directory is returned as UTF-8 (OpenVINO decodes std::string paths as
+// UTF-8 on Windows), so a user name with an umlaut keeps the cache working.
 std::string compiledModelCacheDir() {
-  const char *base = std::getenv("LOCALAPPDATA");
-  if (base == nullptr || base[0] == '\0') {
-    base = std::getenv("TEMP");
+  std::string base = getenvUtf8("LOCALAPPDATA");
+  if (base.empty()) {
+    base = getenvUtf8("TEMP");
   }
-  if (base == nullptr || base[0] == '\0') {
+  if (base.empty()) {
+    return "";
+  }
+  const std::filesystem::path basePath = pathFromUtf8(base);
+  if (basePath.empty()) {
     return "";
   }
   std::error_code errorCode;
   const std::filesystem::path dir =
-      std::filesystem::path(base) / "Broadify" / "meeting-helper" / "openvino-cache";
+      basePath / "Broadify" / "meeting-helper" / "openvino-cache";
   std::filesystem::create_directories(dir, errorCode);
   if (errorCode) {
     return "";
   }
-  return dir.string();
+  return wideToUtf8(dir.wstring());
 }
 
 // KeyerStatus.provider value from the device OpenVINO actually selected
@@ -257,7 +260,7 @@ class OpenVinoKeyer::Impl {
         findModelManifestEntry(options_.modelsDir, "modnet-ov-int8");
     if (!irEntry.file.empty()) {
       const std::string irPath = joinModelPath(options_.modelsDir, irEntry.file);
-      if (fileExists(irPath) && verifiedIrEntry(irEntry, irPath)) {
+      if (fileExistsUtf8(irPath) && verifiedIrEntry(irEntry, irPath)) {
         modelPath = irPath;
       }
     }
@@ -270,7 +273,7 @@ class OpenVinoKeyer::Impl {
       }
       const std::string onnxPath = joinModelPath(options_.modelsDir, entry.file);
       status_.modelPath = onnxPath;
-      if (!fileExists(onnxPath)) {
+      if (!fileExistsUtf8(onnxPath)) {
         setFallback("model_missing");
         return false;
       }
@@ -336,7 +339,7 @@ class OpenVinoKeyer::Impl {
     }
     if (!entry.binFile.empty()) {
       const std::string binPath = joinModelPath(options_.modelsDir, entry.binFile);
-      if (!fileExists(binPath) || entry.binSha256.empty() ||
+      if (!fileExistsUtf8(binPath) || entry.binSha256.empty() ||
           sha256FileHex(binPath) != entry.binSha256) {
         return false;
       }
