@@ -1049,9 +1049,14 @@ describe("main", () => {
   });
 
   describe("loadNetworkConfig from template", () => {
+    // Only the cwd template exists; the userData copy must stay missing so the
+    // template branch (not the user-config branch) is what gets exercised.
+    const CWD_NETWORK_CONFIG_TEMPLATE = `${process.cwd()}/config/network-config.json`;
+
     it("getNetworkConfig returns template when template exists and user file missing", async () => {
+      mockIsDev.mockReturnValue(true);
       mockExistsSync.mockImplementation((p: string) =>
-        p.includes("network-config.json") && p.includes("config"),
+        p === CWD_NETWORK_CONFIG_TEMPLATE,
       );
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
@@ -1071,8 +1076,9 @@ describe("main", () => {
     });
 
     it("getNetworkConfig uses template in memory when writeFileSync fails", async () => {
+      mockIsDev.mockReturnValue(true);
       mockExistsSync.mockImplementation((p: string) =>
-        p.includes("network-config.json") && p.includes("config"),
+        p === CWD_NETWORK_CONFIG_TEMPLATE,
       );
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
@@ -1092,6 +1098,35 @@ describe("main", () => {
       const handler = mockIpcMainHandle.mock.calls[idx][1];
       const result = await handler();
       expect(result.port.default).toBe(7777);
+    });
+
+    it("ignores the cwd template when not in dev", async () => {
+      mockIsDev.mockReturnValue(false);
+      mockExistsSync.mockImplementation((p: string) =>
+        p === CWD_NETWORK_CONFIG_TEMPLATE,
+      );
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          networkBinding: { default: {}, options: [] },
+          port: { default: 8888 },
+        }),
+      );
+      jest.resetModules();
+      await import("./main.js");
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "getNetworkConfig",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler();
+      // Packaged builds never ship the template; the hardcoded default must win.
+      expect(result.port.default).toBe(8787);
+      expect(result.networkBinding.default.id).toBe("localhost");
+      expect(mockWriteFileSync).not.toHaveBeenCalledWith(
+        expect.stringContaining("network-config.json"),
+        expect.anything(),
+        expect.anything(),
+      );
     });
   });
 

@@ -356,7 +356,8 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
  *
  * Priority:
  * 1. User's saved config in Electron's userData directory
- * 2. Template config from config/network-config.json (copied to userData on first run)
+ * 2. Dev only: template config from config/network-config.json in the cwd
+ *    (copied to userData on first run)
  * 3. Hardcoded DEFAULT_NETWORK_CONFIG as final fallback
  */
 function loadNetworkConfig(): NetworkConfigT {
@@ -377,38 +378,42 @@ function loadNetworkConfig(): NetworkConfigT {
     console.error("[NetworkConfig] Error loading user config:", error);
   }
 
-  // On first run, try to use config/network-config.json as template
-  // This is the project's default config file
-  try {
-    const templateConfigPath = path.join(
-      process.cwd(),
-      "config",
-      "network-config.json",
-    );
+  // On first run in dev, try to use config/network-config.json as template
+  // (the project's default config file). Packaged builds never ship this
+  // template and their cwd is not meaningful ("/" on macOS, install dir or a
+  // shortcut's "Start in" folder on Windows), so the cwd is only consulted in dev.
+  if (isDev()) {
+    try {
+      const templateConfigPath = path.join(
+        process.cwd(),
+        "config",
+        "network-config.json",
+      );
 
-    if (fs.existsSync(templateConfigPath)) {
-      const templateData = fs.readFileSync(templateConfigPath, "utf-8");
-      const templateConfig = JSON.parse(templateData) as NetworkConfigT;
+      if (fs.existsSync(templateConfigPath)) {
+        const templateData = fs.readFileSync(templateConfigPath, "utf-8");
+        const templateConfig = JSON.parse(templateData) as NetworkConfigT;
 
-      // Copy template to Electron's userData directory for future use
-      // This allows users to customize their config without modifying the project file
-      try {
-        fs.writeFileSync(
-          userDataConfigPath,
-          JSON.stringify(templateConfig, null, 2),
-          "utf-8",
-        );
-      } catch (writeError) {
-        console.warn(
-          "[NetworkConfig] Could not write user config, using template in memory:",
-          writeError,
-        );
+        // Copy template to Electron's userData directory for future use
+        // This allows users to customize their config without modifying the project file
+        try {
+          fs.writeFileSync(
+            userDataConfigPath,
+            JSON.stringify(templateConfig, null, 2),
+            "utf-8",
+          );
+        } catch (writeError) {
+          console.warn(
+            "[NetworkConfig] Could not write user config, using template in memory:",
+            writeError,
+          );
+        }
+
+        return templateConfig;
       }
-
-      return templateConfig;
+    } catch (error) {
+      console.error("[NetworkConfig] Error loading template config:", error);
     }
-  } catch (error) {
-    console.error("[NetworkConfig] Error loading template config:", error);
   }
 
   // Final fallback to hardcoded default config

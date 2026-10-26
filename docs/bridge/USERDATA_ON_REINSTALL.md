@@ -28,7 +28,7 @@ Die App (`.app`-Bundle in `/Applications`) und dieser Datenordner sind **voneina
 
 | Datei / Ordner | Inhalt |
 |---|---|
-| `network-config.json` | Netzwerk-/Mixer-Konfiguration (ATEM etc.). Wird beim ersten Start aus dem Template kopiert. |
+| `network-config.json` | Netzwerk-/Mixer-Konfiguration (ATEM etc.). Nur im Dev-Modus wird sie beim ersten Start aus `config/network-config.json` im Arbeitsverzeichnis kopiert; gepackte Builds starten mit dem eingebauten Default. |
 | `bridge-id.json` | Stabile Bridge-ID (UUID). Neu → die Bridge gilt für Backend/Relay als andere Instanz. |
 | `bridge-profile.json` | Vom Nutzer gesetzter Bridge-Name + Zeitpunkt der AGB-Zustimmung (`termsAcceptedAt`). Verlust → Name weg, AGB müssen erneut akzeptiert werden. |
 | `security/relay-bridge-identity.json` | Relay-Identität / Pairing (Datei-Rechte `0600`). Verlust → Bridge muss sich neu mit dem Relay verbinden/pairen. |
@@ -36,7 +36,7 @@ Die App (`.app`-Bundle in `/Applications`) und dieser Datenordner sind **voneina
 | `graphics-assets/` + `assets.json` | Hochgeladene Grafik-Assets (Lower Thirds, Bilder …) und deren Manifest. |
 | `graphics/` | Arbeits-/Ablageverzeichnis der Grafik-Engine. |
 | `graphics-renderer-profile/` | Isoliertes Electron-Profil des Offscreen-Graphics-Renderers. Enthält nur Renderer-Runtime-/Chromium-State. |
-| `.env` | Lokale Env-Overrides (z. B. `RELAY_URL`). Wird im Prod-Build ohnehin aus dem Paket nachgefüllt/überschrieben. |
+| `.env` | Lokale Env-Overrides für Support/Betrieb. Honorierte Schlüsselfamilien: Updater (`BROADIFY_DISABLE_AUTO_UPDATE`, `BROADIFY_UPDATER_CHECK_INTERVAL_MS`, `BROADIFY_UPDATER_GITHUB_TOKEN`), WebApp-URL (`PRODUCTION_STUDIO_CONTROL_WEBAPP_URL`), Logging (`BRIDGE_LOG_*`), Graphics (`BRIDGE_GRAPHICS_*`), TLS (`NODE_USE_SYSTEM_CA`), VCam (`BRIDGE_VCAM_AUTO_UPGRADE_ON_START`). Fehlt die Datei, wird sie beim ersten Start aus dem Paket geseedet; fehlende Schlüssel werden aus dem Paket nachgefüllt. Release-gemanagte Schlüssel (`BROADIFY_UPDATER_CHANNEL`, `RELAY_URL`, `BRIDGE_RELAY_JWKS_URL`) werden **immer** vom Paket überschrieben. Gepackte Builds lesen **keine** `.env` aus dem Arbeitsverzeichnis (nur Dev). Beim Start werden die **Namen** der gesetzten Schlüssel (nie Werte) in `app.log` protokolliert: `[Env] userData/.env keys: …`. |
 | `.updaterId` | Installations-ID des Updaters. |
 
 ### B) Web-/UI-Status — technisch Nutzdaten, regeneriert sich aber
