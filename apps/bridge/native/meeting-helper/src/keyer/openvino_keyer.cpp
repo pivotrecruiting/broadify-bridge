@@ -282,7 +282,7 @@ class OpenVinoKeyer::Impl {
         return false;
       }
       status_.modelHashOk = sha256FileHex(onnxPath) == entry.sha256;
-      if (!status_.modelHashOk) {
+      if (!*status_.modelHashOk) {
         setFallback("model_hash_mismatch");
         return false;
       }

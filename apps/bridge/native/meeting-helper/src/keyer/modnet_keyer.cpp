@@ -682,7 +682,7 @@ class ModnetKeyer::Impl {
     }
     const std::string actualHash = sha256FileHex(modelPath);
     status_.modelHashOk = actualHash == entry.sha256;
-    if (!status_.modelHashOk) {
+    if (!*status_.modelHashOk) {
       setFallback("model_hash_mismatch");
       return false;
     }

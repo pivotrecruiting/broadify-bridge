@@ -295,6 +295,13 @@ int main() {
   }
 
   auto stopServer = [&] {
+    // Wake the server first: its accept() loop only re-checks `running` on the
+    // next connection, so a failed assertion (which stops the server before
+    // exiting) would otherwise hang forever instead of failing fast.
+    if (socketMode && running.load()) {
+      (void)sendRpc(endpoint,
+                    "{\"id\":\"stop\",\"method\":\"control.shutdown\"}");
+    }
     running.store(false);
     if (server.joinable()) {
       server.join();
@@ -386,6 +393,39 @@ int main() {
       !contains(keyer, "\"no_subject\":true")) {
     stopServer();
     fail("keyer.get did not include vcam publish/no-subject fields");
+  }
+  // No backend has checked a model hash yet (CoreML/Vision on macOS never do):
+  // the flag must be null, not a misleading "false" (= hash mismatch).
+  if (!contains(keyer, "\"model_hash_ok\":null")) {
+    stopServer();
+    fail("keyer.get did not report model_hash_ok as null without a hash check");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.modelHashOk = true;
+  }
+  if (!contains(rpc("{\"id\":\"5h1\",\"method\":\"keyer.get\"}"),
+                "\"model_hash_ok\":true")) {
+    stopServer();
+    fail("keyer.get did not report model_hash_ok true after a matching hash");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.modelHashOk = false;
+  }
+  if (!contains(rpc("{\"id\":\"5h2\",\"method\":\"keyer.get\"}"),
+                "\"model_hash_ok\":false")) {
+    stopServer();
+    fail("keyer.get did not report model_hash_ok false after a hash mismatch");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.modelHashOk.reset();
+  }
+  if (!contains(rpc("{\"id\":\"5h3\",\"method\":\"keyer.get\"}"),
+                "\"model_hash_ok\":null")) {
+    stopServer();
+    fail("keyer.get did not return model_hash_ok to null after reset");
   }
 #if defined(_WIN32)
   if (!contains(keyer, "\"camera_upload_ms\":0.330000") ||

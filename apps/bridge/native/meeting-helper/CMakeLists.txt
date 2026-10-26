@@ -95,6 +95,7 @@ set(MEETING_HELPER_SOURCES
   src/keyer/dml_device_input.cpp
   src/keyer/keyer_chain.cpp
   src/keyer/keyer_governor.cpp
+  src/keyer/keyer_status_projection.cpp
   src/keyer/matting_backend.cpp
   src/keyer/matting_common.cpp
   src/keyer/model_manifest.cpp
@@ -413,6 +414,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(retained_mask_selection_test
     tests/retained_mask_selection_test.cpp
   )
+  add_executable(keyer_status_projection_test
+    tests/keyer_status_projection_test.cpp
+    src/keyer/keyer_status_projection.cpp
+  )
   add_executable(json_utils_test
     tests/json_utils_test.cpp
   )
@@ -564,6 +569,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     frame_pipeline_gating_test
     retained_mask_selection_test
     json_utils_test
+    keyer_status_projection_test
     compositor_input_selection_test
     media_page_cache_test
     background_image_cache_test

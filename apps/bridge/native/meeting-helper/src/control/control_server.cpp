@@ -22,6 +22,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <sstream>
 #include <vector>
 
@@ -58,6 +59,14 @@ std::string jsonNumber(double value) {
 
 std::string nullableJsonString(const std::string &value) {
   return value.empty() ? "null" : "\"" + jsonEscape(value) + "\"";
+}
+
+// Tri-state boolean: unset = null (e.g. "no check performed").
+std::string nullableJsonBool(const std::optional<bool> &value) {
+  if (!value.has_value()) {
+    return "null";
+  }
+  return *value ? "true" : "false";
 }
 
 // Compact projection of the active program state for the meeting_status push:
@@ -921,7 +930,7 @@ std::string handleRpc(const std::string &line,
            << "\",\"active_performance_mode\":" << (state.activePerformanceMode.empty() ? "null" : "\"" + jsonEscape(state.activePerformanceMode) + "\"")
            << ",\"provider\":" << (state.provider.empty() ? "null" : "\"" + jsonEscape(state.provider) + "\"")
            << ",\"inference_ms\":" << (state.inferenceMs >= 0.0 ? std::to_string(state.inferenceMs) : "null")
-           << ",\"model_hash_ok\":" << (state.modelHashOk ? "true" : "false")
+           << ",\"model_hash_ok\":" << nullableJsonBool(state.modelHashOk)
            << ",\"model_path\":" << (state.modelPath.empty() ? "null" : "\"" + jsonEscape(state.modelPath) + "\"")
            << ",\"pipeline_mode\":\"" << jsonEscape(state.pipelineMode)
            << "\",\"keyer_pipeline_mode\":" << (state.keyerPipelineMode.empty() ? "null" : "\"" + jsonEscape(state.keyerPipelineMode) + "\"")
