@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string>
 
+#include "keyer/keyer_status_projection.h"
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
 #include "util/helper_event_log.h"
@@ -263,8 +264,12 @@ KeyerStatus KeyerChain::status() const {
   return status_;
 }
 
-void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &status) {
+void updateMeetingKeyerStatus(MeetingState &state, const KeyerStatus &rawStatus) {
   std::lock_guard<std::mutex> lock(state.mutex);
+  // macOS: a Vision takeover after a fused CoreML failure must not read as
+  // "all good" (pure projection, no-op unless state.fusedDegradedReason is set).
+  const KeyerStatus status =
+      projectFusedDegradation(rawStatus, state.fusedDegradedReason);
   static std::string lastLoggedProvider;
   static std::string lastLoggedFallbackReason;
   // Signature includes adapter/queue/path and the (rounded) warmup probe, so

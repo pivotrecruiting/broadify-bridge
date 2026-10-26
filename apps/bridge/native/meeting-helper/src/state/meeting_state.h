@@ -3,6 +3,7 @@
 #include "keyer/keyer.h"
 
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace broadify::meeting {
@@ -164,7 +165,15 @@ struct MeetingState {
   bool fallbackActive = true;
   bool keyerDegraded = false;
   bool keyerReady = false;
-  bool modelHashOk = false;
+  // Mirrors KeyerStatus::modelHashOk (true/false/nullopt = no hash check).
+  std::optional<bool> modelHashOk;
+  // macOS fused path (guarded by `mutex`): the fallback reason of the last
+  // failed fused CoreML inference while g_fusedKeyerDegraded is set, empty
+  // once the fused keyer recovers. updateMeetingKeyerStatus() uses it to
+  // report the async Vision takeover as fallback_active + reason instead of
+  // "all good" (projectFusedDegradation). Windows governor degradations carry
+  // their own reasons and never write this.
+  std::string fusedDegradedReason;
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;

@@ -2697,6 +2697,11 @@ void runFramePipeline(const Options &options,
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
         if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
           g_fusedKeyerDegraded = false;
+          {
+            // Fused keyer healthy again: stop reporting the Vision takeover.
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.fusedDegradedReason.clear();
+          }
           fusedMask = std::move(fused.mask);
           // Dropout guard only (no EMA): keeps the tuned macOS look, but a
           // model dropout no longer blanks the presenter for a frame (KEY-03).
@@ -2720,6 +2725,14 @@ void runFramePipeline(const Options &options,
           // Vision fallback starts receiving frames (submit guard above).
           clearAppleFusedMask();
           g_fusedKeyerDegraded = true;
+          {
+            // Remember WHY the fused keyer is out so the async Vision takeover
+            // is reported as a fallback instead of "all good" (B-11).
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.fusedDegradedReason = fused.status.fallbackReason.empty()
+                                            ? "coreml_inference_failed"
+                                            : fused.status.fallbackReason;
+          }
           updateMeetingKeyerStatus(state, fused.status);
         }
       }
