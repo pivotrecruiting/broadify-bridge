@@ -31,7 +31,10 @@ Allowlisted in `relay-command-allowlist.ts`, policies in
 | `meeting_recording_status` | read only | none | `{ recording: {...} }` |
 
 `recording` status shape: `{ active, file_path, elapsed_seconds, video_frames,
-last_error }` (snake_case, as produced by the helper).
+audio_samples_written, audio_samples_dropped, last_error }` (snake_case, as
+produced by the helper). The two `audio_samples_*` counters are additive
+diagnostics (Oct 2026): numbers on Windows, `null` on macOS and the stub — see
+[Audio diagnostics](#audio-diagnostics-mute-recordings) below.
 
 `meeting_recording_pick_path` opens the native macOS save panel on the bridge
 machine via osascript (`meeting-recording-dialog.ts`); the file is written
@@ -97,7 +100,71 @@ sidecar tail into its process log whenever the helper dies unexpectedly.
 The Media Foundation recorder also writes to `<final>.mp4.part` first and only
 renames it after `Finalize()` succeeds. The Windows container remains
 fragmented MP4, so a hard kill can still leave playable fragments in the
-sidecar while the final path is reserved for completed recordings.
+sidecar while the final path is reserved for completed recordings. The same
+recorder events as on macOS (`finish_failed`, `finalize_timeout`,
+`rename_failed`, plus the Windows-only `audio_stats`, see below) go through the
+helper event log.
+
+## Finalize timeout (both platforms)
+
+`stop()` runs on the helper's sequential control thread, and the bridge gives
+the `recording.stop` RPC 20 s (`MEETING_HELPER_RPC_TIMEOUTS_MS` in
+`apps/bridge/src/services/meeting/meeting-helper-timeouts.ts`). A client timeout
+does not cancel helper-side work, so a finalize that never returns used to leave
+the helper stuck while the bridge already reported failure (stream deck stuck on
+"REC", every later RPC queued behind it). Both recorders therefore bound the
+finalize step with the shared `kRecorderFinalizeTimeoutMs` (15 000 ms,
+`src/recorder/recorder_encode_policy.h`), which must stay below the RPC timeout;
+`scripts/meeting-helper-release-contract.test.cjs` parses both values and fails
+when they drift.
+
+- macOS: `finishWritingWithCompletionHandler` signals a semaphore; the control
+  thread waits at most `kRecorderFinalizeTimeoutMs`.
+- Windows: `IMFSinkWriter::Finalize()` runs on a detached worker thread that
+  owns its own COM apartment and the last writer reference; the control thread
+  waits on a `std::future` for at most `kRecorderFinalizeTimeoutMs`. On timeout
+  the control thread never touches the writer again; the worker releases it
+  whenever `Finalize` eventually returns.
+
+On timeout both platforms emit `{"type":"meeting_recorder","event":
+"finalize_timeout","detail":"... exceeded 15000ms ..."}`, set
+`recording.last_error = "finalize_timeout"` and do NOT rename the `.part`
+sidecar (REC-03: only a fully finalized file gets the real name). The sidecar
+is still an fMP4 with every committed fragment, so the recording is recoverable
+by hand (`ffmpeg -i x.mp4.part -c copy x.mp4`), but it never masquerades as a
+finished file.
+
+## Audio diagnostics (mute recordings)
+
+The Windows recorder admits microphone samples through the shared
+`RecorderAudioRebase` policy (`recorder_encode_policy.h`, unit-tested in
+`recorder_encode_policy_test`): a sample whose MF timestamp lies before the
+writer session start (`sessionStartHns`, taken right after `BeginWriting`) is
+dropped, everything at/after it is written with the timestamp rebased to the
+session. That is the pre-existing behaviour; what is new is that both outcomes
+are counted and surfaced:
+
+- `{"type":"meeting_recorder","event":"audio_stats","detail":"written=<n>
+  dropped_before_start=<m>"}` is emitted once per `stop()` (helper stdout +
+  `meeting-helper-events.log` sidecar).
+- `recording.audio_samples_written` / `recording.audio_samples_dropped` carry
+  the same counters live in `recording.status` (and therefore in the bridge
+  status snapshot); they reset on `recording.start`.
+
+Reading them for the "Windows recording is mute" report:
+
+| `written` | `dropped_before_start` | Meaning |
+| --- | --- | --- |
+| 0 | 0 | The capture device never delivered a sample (idle virtual endpoint, wrong device, driver stall). Only the 10 ms silence primer is in the file. |
+| 0 | large | Every sample arrived with a timestamp before the session start: the capture clock runs ahead of/behind `MFGetSystemTime()`. Candidate for the rebase-instead-of-drop change (`RecorderAudioRebase::rebase` already computes the offset). |
+| small | large | The first seconds are missing, the rest is there. Same clock-offset cause, partial. |
+| about 100 per recorded second (10 ms capture buffers) | 0 or a handful | Audio reached the writer; a mute file points at the AAC encoder/sink, not at capture. |
+
+The behaviour change (clamping early samples to t=0 instead of dropping them)
+is deliberately not shipped until a Windows measurement of these counters
+shows which case occurs in the field. macOS does not fill the counters (its
+capture delegate does the same before-start drop; adding counters there is a
+separate change).
 
 ## Encoding
 

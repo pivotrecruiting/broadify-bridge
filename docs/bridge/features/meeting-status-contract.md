@@ -238,7 +238,9 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
     "file_path": "/Users/.../meeting.mp4.part", // string, required, lokal, seit Bestand
     "elapsed_seconds": 21, // number, required, volatil, seit Bestand
     "video_frames": 630, // number, required, volatil, seit Bestand
-    "last_error": "" // string, required, seit Bestand
+    "audio_samples_written": 2100, // number|null, additiv seit Okt 2026 (B-9), volatil; Windows-Helper Zahl, macOS/Stub null
+    "audio_samples_dropped": 3, // number|null, additiv seit Okt 2026 (B-9), volatil; Samples vor Session-Start verworfen (siehe meeting-recording.md)
+    "last_error": "" // string, required, seit Bestand; "finalize_timeout" wenn stop() den Finalize-Schritt nach kRecorderFinalizeTimeoutMs abbricht (.part bleibt)
   },
   "virtualCamera": { // object, optional, camelCase, seit Bestand
     "active": true, // boolean, required wenn Windows-helper Status, seit Bestand
@@ -393,9 +395,10 @@ Relay-Event wird:
 
 Volatile Keys auf beliebiger Tiefe sind `rendered_frames`, `reused_frames`,
 `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
-`elapsed_seconds`, `video_frames`, `updated_at`, `captured_frames`,
-`program_dirty` und `graphics_dirty`; zusaetzlich wird `keyer.status.metrics`
-aus der stabilen Projektion entfernt.
+`elapsed_seconds`, `video_frames`, `audio_samples_written`,
+`audio_samples_dropped`, `updated_at`, `captured_frames`, `program_dirty` und
+`graphics_dirty`; zusaetzlich wird `keyer.status.metrics` aus der stabilen
+Projektion entfernt.
 
 `requestStatusPublish(reason)` sammelt Forced-Reasons in einem festen
 `STATUS_PUBLISH_COALESCE_MS` = 120-ms-Fenster. Reasons werden per `+`

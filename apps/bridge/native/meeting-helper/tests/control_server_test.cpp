@@ -38,9 +38,11 @@ using broadify::meeting::MeetingRecorder;
 using broadify::meeting::MeetingState;
 using broadify::meeting::Options;
 using broadify::meeting::PreviewFrameStore;
+using broadify::meeting::RecordingStatus;
 using broadify::meeting::StubScreenCaptureSource;
 using broadify::meeting::VideoFrame;
 using broadify::meeting::handleRpc;
+using broadify::meeting::recordingStatusJson;
 using broadify::meeting::runControlServer;
 
 void fail(const char *message) {
@@ -251,6 +253,29 @@ std::string sendRpc(const std::string &endpoint, const std::string &request) {
 }  // namespace
 
 int main() {
+  {
+    // Recording status: the audio counters are additive and optional. A
+    // recorder that fills them (Windows) serializes numbers, one that does
+    // not (macOS, stub) serializes null so the keys are always present.
+    RecordingStatus withAudio;
+    withAudio.active = false;
+    withAudio.filePath = "C:\\rec\\a.mp4";
+    withAudio.videoFrames = 630;
+    withAudio.audioSamplesWritten = 12;
+    withAudio.audioSamplesDroppedBeforeStart = 3;
+    const std::string audioJson = recordingStatusJson(withAudio);
+    if (!contains(audioJson, "\"audio_samples_written\":12") ||
+        !contains(audioJson, "\"audio_samples_dropped\":3") ||
+        !contains(audioJson, "\"video_frames\":630")) {
+      fail("recording status did not serialize the audio counters");
+    }
+    const std::string noAudioJson = recordingStatusJson(RecordingStatus{});
+    if (!contains(noAudioJson, "\"audio_samples_written\":null") ||
+        !contains(noAudioJson, "\"audio_samples_dropped\":null")) {
+      fail("recording status without audio counters did not serialize null");
+    }
+  }
+
   StubCameraSource camera;
   StubScreenCaptureSource screen;
   MeetingState state;
