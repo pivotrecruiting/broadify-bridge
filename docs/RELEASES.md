@@ -143,6 +143,7 @@ Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 - **NSIS Installer (Updater-Pfad)**: `Broadify-Bridge-{version}-x64.exe`
 - **MSI (manuelle Kundeninstallation)**: `Broadify-Bridge-{version}-x64.msi`
 - **Update-Metadaten**: `latest.yml` (muss auf die NSIS-`.exe` zeigen)
+- **Kein Auto-Update aus MSI-Installationen**: Die MSI enthält den NSIS-Elevate-Helper (`resources\elevate.exe`) nicht; die App erkennt daran eine MSI-/Portable-Installation, deaktiviert den Updater (Status `disabled`, `errorCode: "msi_install"`) und zeigt im Update-Dialog den Hinweis, die aktuelle `.exe` zu installieren. Ein NSIS-Update über eine MSI-Installation würde sonst die App ohne Installation beenden bzw. ein zweites Produkt registrieren.
 
 ### Linux
 
@@ -244,7 +245,7 @@ Hinweis:
 **Filter-Regeln für Web-App:**
 
 - ✅ Verwende: `.dmg`, `.exe`, `.msi`, `.AppImage` Dateien
-- ✅ Für Windows-Downloads bevorzugt `.msi` anzeigen; `.exe` bleibt für Auto-Update/NSIS und als Alternative erhalten.
+- ✅ Für Windows-Downloads bevorzugt `.msi` anzeigen; `.exe` bleibt für Auto-Update/NSIS und als Alternative erhalten. Hinweis: MSI-Installationen aktualisieren sich nicht selbst; neue Versionen werden dort manuell über die `.msi` oder per Wechsel auf die `.exe` eingespielt (die App zeigt dazu einen Hinweis im Update-Dialog).
 - ❌ Ignoriere: `.blockmap` Dateien (für Delta-Updates, nicht für Downloads)
 - ❌ Ignoriere: `.yml` / `.yaml` Dateien (Update-Metadaten, nicht für Downloads)
 
