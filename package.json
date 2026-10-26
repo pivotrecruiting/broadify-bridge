@@ -63,7 +63,7 @@
     "release:live": "node scripts/push-release.mjs --live",
     "test": "npm run test:jest && npm run test:release-contracts",
     "test:jest": "jest --runInBand",
-    "test:release-contracts": "node --test scripts/windows-signing-hooks.test.cjs scripts/meeting-helper-release-contract.test.cjs",
+    "test:release-contracts": "node --test scripts/windows-signing-hooks.test.cjs scripts/windows-signing-policy.test.cjs scripts/meeting-helper-release-contract.test.cjs",
     "test:windows-signing-hooks": "node --test scripts/windows-signing-hooks.test.cjs",
     "test:coverage": "jest --runInBand --coverage",
     "test:workflow": "bash scripts/test-workflow.sh",

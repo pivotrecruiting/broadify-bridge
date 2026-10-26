@@ -1,4 +1,7 @@
 const baseConfig = require("./electron-builder.json");
+const {
+  resolveWindowsSigningPolicy,
+} = require("./scripts/lib/resolve-windows-signing-policy.cjs");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
 const updaterChannel =
@@ -212,17 +215,25 @@ if (config.win) {
   }
 }
 
-const azureVars = [
-  "AZURE_CODE_SIGNING_PUBLISHER_NAME",
-  "AZURE_CODE_SIGNING_ENDPOINT",
-  "AZURE_CODE_SIGNING_ACCOUNT_NAME",
-  "AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME",
-];
-
-const hasCompleteAzureTrustedSigningConfig = azureVars.every((name) => {
-  const value = process.env[name];
-  return typeof value === "string" && value.trim() !== "";
+// Fail fast when a Windows target is requested without complete Azure Trusted
+// Signing configuration, unless the local unsigned build is explicitly opted in
+// via BROADIFY_ALLOW_UNSIGNED_WINDOWS_BUILD=1. Non-Windows invocations (macOS
+// builds, scripts/resolve-windows-install-directory-name.cjs, the release
+// diagnose step) only report the policy.
+const windowsSigningPolicy = resolveWindowsSigningPolicy({
+  env: process.env,
+  argv: process.argv,
 });
+const hasCompleteAzureTrustedSigningConfig = windowsSigningPolicy.mode === "azure";
+// stderr on purpose: scripts/resolve-windows-install-directory-name.cjs loads this
+// config and prints the install directory name to stdout, which
+// smoke-test-windows-nsis.ps1 consumes verbatim.
+console.error(
+  `[Signing] Windows signing policy: ${windowsSigningPolicy.mode}` +
+    (windowsSigningPolicy.missing?.length
+      ? ` (missing: ${windowsSigningPolicy.missing.join(", ")})`
+      : ""),
+);
 
 if (config.win) {
   if (!hasCompleteAzureTrustedSigningConfig) {
