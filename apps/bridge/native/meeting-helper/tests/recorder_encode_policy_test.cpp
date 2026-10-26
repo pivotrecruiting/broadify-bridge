@@ -4,9 +4,19 @@
 #include <cstdint>
 #include <iostream>
 
+using broadify::meeting::kRecorderFinalizeTimeoutMs;
+using broadify::meeting::RecorderAudioRebase;
 using broadify::meeting::RecorderFrameClock;
 using broadify::meeting::recorderKeyframeInterval;
 using broadify::meeting::recorderVideoBitrateBps;
+
+// The bridge gives recording.stop 20 s (meeting-helper-timeouts.ts); the
+// helper-side finalize bound must leave headroom below it, otherwise the
+// bridge reports failure while the helper is still finalizing.
+static_assert(kRecorderFinalizeTimeoutMs > 0,
+              "finalize timeout must be positive");
+static_assert(kRecorderFinalizeTimeoutMs < 20'000,
+              "finalize timeout must stay below the recording.stop RPC timeout");
 
 namespace {
 
@@ -100,6 +110,42 @@ int main() {
     plan = clock.plan(nsForFrame(3, 30));
     ok &= expect(plan.firstIndex == 2 && plan.count == 2,
                  "uncommitted slots are planned again");
+  }
+
+  ok &= expect(kRecorderFinalizeTimeoutMs == 15'000,
+               "finalize timeout is 15 s on both platforms");
+
+  {
+    // Default policy: samples captured before the writer session start are
+    // dropped (and counted), everything at/after start is written rebased.
+    RecorderAudioRebase rebase;
+    const int64_t sessionStart = 1'000'000;
+    const RecorderAudioRebase::Decision early =
+        rebase.decide(sessionStart, sessionStart - 1);
+    ok &= expect(!early.write, "sample before session start is dropped");
+    ok &= expect(rebase.droppedBeforeStart() == 1 && rebase.written() == 0,
+                 "dropped sample is counted");
+
+    const RecorderAudioRebase::Decision atStart =
+        rebase.decide(sessionStart, sessionStart);
+    ok &= expect(atStart.write && atStart.timestamp == 0,
+                 "sample at session start is written at t=0");
+
+    const RecorderAudioRebase::Decision later =
+        rebase.decide(sessionStart, sessionStart + 250'000);
+    ok &= expect(later.write && later.timestamp == 250'000,
+                 "sample after session start is rebased to the session");
+    ok &= expect(rebase.written() == 2 && rebase.droppedBeforeStart() == 1,
+                 "written samples are counted separately from dropped ones");
+
+    ok &= expect(RecorderAudioRebase::rebase(sessionStart,
+                                             sessionStart - 40'000) ==
+                     -40'000,
+                 "rebase helper reports the negative offset before start");
+
+    rebase.reset();
+    ok &= expect(rebase.written() == 0 && rebase.droppedBeforeStart() == 0,
+                 "reset clears both counters");
   }
 
   if (!ok) {

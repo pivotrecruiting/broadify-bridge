@@ -349,16 +349,32 @@ void updateProgramSection(MeetingState &state, const std::string &section, const
   }
 }
 
-std::string recordingStatusJson(MeetingRecorder &recorder) {
-  const RecordingStatus s = recorder.status();
+std::string optionalCounterJson(const std::optional<uint64_t> &value) {
+  return value.has_value() ? std::to_string(*value) : std::string("null");
+}
+
+}  // namespace
+
+std::string recordingStatusJson(const RecordingStatus &s) {
   std::ostringstream out;
   out << "{\"ok\":true,\"recording\":{"
       << "\"active\":" << (s.active ? "true" : "false") << ","
       << "\"file_path\":\"" << jsonEscape(s.filePath) << "\","
       << "\"elapsed_seconds\":" << s.elapsedSeconds << ","
       << "\"video_frames\":" << s.videoFrames << ","
+      // Additive audio diagnostics (Windows fills them, macOS/stub: null).
+      << "\"audio_samples_written\":"
+      << optionalCounterJson(s.audioSamplesWritten) << ","
+      << "\"audio_samples_dropped\":"
+      << optionalCounterJson(s.audioSamplesDroppedBeforeStart) << ","
       << "\"last_error\":\"" << jsonEscape(s.lastError) << "\"}}";
   return out.str();
+}
+
+namespace {
+
+std::string recordingStatusResponse(MeetingRecorder &recorder) {
+  return recordingStatusJson(recorder.status());
 }
 
 }  // namespace
@@ -739,16 +755,16 @@ std::string handleRpc(const std::string &line,
       return errorResponse(id, "recording_start_failed",
                            recorder.status().lastError);
     }
-    return okResponse(id, recordingStatusJson(recorder));
+    return okResponse(id, recordingStatusResponse(recorder));
   }
 
   if (method == "recording.stop") {
     recorder.stop();
-    return okResponse(id, recordingStatusJson(recorder));
+    return okResponse(id, recordingStatusResponse(recorder));
   }
 
   if (method == "recording.status") {
-    return okResponse(id, recordingStatusJson(recorder));
+    return okResponse(id, recordingStatusResponse(recorder));
   }
 
   // Conference: open several cameras at once. Payload

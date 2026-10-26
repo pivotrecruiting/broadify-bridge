@@ -13,8 +13,14 @@ namespace broadify::meeting {
 
 class PreviewFrameStore;
 class MeetingRecorder;
+struct RecordingStatus;
 class VcamShmRingWin;
 class ProgramStream;
+
+// `{"ok":true,"recording":{...}}` response body for the recording.* RPCs.
+// Exposed so the status contract (field names, null for absent counters) is
+// unit-tested without a platform recorder.
+std::string recordingStatusJson(const RecordingStatus &status);
 
 std::string handleRpc(const std::string &line,
                       MeetingState &state,

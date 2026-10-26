@@ -79,6 +79,33 @@ describe("status-publish-policy", () => {
     expect(a).toContain("coreml");
   });
 
+  it("projection ignores the recorder audio sample counters", () => {
+    const a = projectStableStatus(
+      makeStatus({
+        recording: {
+          active: false,
+          elapsed_seconds: 0,
+          video_frames: 0,
+          audio_samples_written: 100,
+          audio_samples_dropped: 2,
+        },
+      }),
+    );
+    const b = projectStableStatus(
+      makeStatus({
+        recording: {
+          active: false,
+          elapsed_seconds: 0,
+          video_frames: 0,
+          audio_samples_written: 4000,
+          audio_samples_dropped: 7,
+        },
+      }),
+    );
+    expect(a).toBe(b);
+    expect(a).not.toContain("audio_samples_written");
+  });
+
   it("skips an identical projection inside the metrics interval", () => {
     const first = decideStatusPublish({
       status: makeStatus(),

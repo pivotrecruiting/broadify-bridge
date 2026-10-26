@@ -333,6 +333,53 @@ for (const [label, plistPath] of [
   });
 }
 
+test("recorder finalize timeout stays below the recording.stop RPC timeout", () => {
+  // stop() blocks in finishWriting (macOS) / Finalize (Windows) for at most
+  // kRecorderFinalizeTimeoutMs, then reports finalize_timeout. The bridge
+  // aborts the recording.stop RPC after MEETING_HELPER_RPC_TIMEOUTS_MS - if
+  // the helper bound were the larger one, the bridge would report failure
+  // while the helper still finalizes (invisible background recording).
+  const policy = read(
+    "apps/bridge/native/meeting-helper/src/recorder/recorder_encode_policy.h",
+  );
+  const policyMatch = policy.match(
+    /constexpr int kRecorderFinalizeTimeoutMs = ([0-9']+);/,
+  );
+  assert.ok(policyMatch, "kRecorderFinalizeTimeoutMs must be defined");
+  const finalizeTimeoutMs = Number(policyMatch[1].replace(/'/g, ""));
+
+  const timeouts = read(
+    "apps/bridge/src/services/meeting/meeting-helper-timeouts.ts",
+  );
+  const stopMatch = timeouts.match(/"recording\.stop": ([0-9_]+),/);
+  assert.ok(stopMatch, "recording.stop RPC timeout must be defined");
+  const stopTimeoutMs = Number(stopMatch[1].replace(/_/g, ""));
+
+  assert.ok(Number.isFinite(finalizeTimeoutMs) && finalizeTimeoutMs > 0);
+  assert.ok(Number.isFinite(stopTimeoutMs) && stopTimeoutMs > 0);
+  assert.ok(
+    finalizeTimeoutMs < stopTimeoutMs,
+    `finalize timeout ${finalizeTimeoutMs} ms must be below recording.stop ${stopTimeoutMs} ms`,
+  );
+
+  // Both platform recorders must use the shared constant (no literal
+  // drift) and report the same event name on timeout.
+  for (const source of [
+    "apps/bridge/native/meeting-helper/src/recorder/meeting_recorder.mm",
+    "apps/bridge/native/meeting-helper/src/recorder/meeting_recorder_mediafoundation.cpp",
+  ]) {
+    const recorder = read(source);
+    assert.ok(
+      recorder.includes("kRecorderFinalizeTimeoutMs"),
+      `${source} must wait on kRecorderFinalizeTimeoutMs`,
+    );
+    assert.ok(
+      recorder.includes('"finalize_timeout"'),
+      `${source} must report finalize_timeout`,
+    );
+  }
+});
+
 test("packaged macOS helper verifies the model hashes", () => {
   // The runtime self-test hooks retired with the previous helper lineage;
   // the packaged-model hash verification is the remaining hard gate here.
