@@ -49,6 +49,20 @@ sequenceDiagram
   Preload-->>UI: callback
 ```
 
+## Env‑Ladereihenfolge (`services/env-loader.ts`)
+`loadAppEnv()` lädt `.env`-Dateien mit `override: false` – frühere Dateien gewinnen, spätere füllen fehlende Schlüssel nach.
+
+| Modus | Reihenfolge |
+|---|---|
+| Dev (`app.isPackaged === false`) | `<cwd>/.env` → `userData/.env` → `resources/bridge/dist/.env`, `resources/bridge/.env` |
+| Gepackt (`app.isPackaged === true`) | `userData/.env` → `resources/bridge/dist/.env`, `resources/bridge/.env` |
+
+- Gepackte Builds lesen **nie** aus dem Arbeitsverzeichnis: `cwd` ist für eine installierte App nicht aussagekräftig (`/` auf macOS, Installationsordner bzw. „Ausführen in" einer Verknüpfung auf Windows) und darf keine Konfiguration in ein Release einschleusen.
+- Fehlt `userData/.env`, wird sie beim ersten Start aus dem Paket geseedet.
+- Release‑gemanagte Schlüssel (`BROADIFY_UPDATER_CHANNEL`, `RELAY_URL`, `BRIDGE_RELAY_JWKS_URL`) werden in beiden Modi abschließend aus dem Paket übernommen und gewinnen über `userData/.env`.
+- Nach dem Laden werden die **Schlüsselnamen** aus `userData/.env` (sortiert, nie Werte) nach `app.log` geschrieben: `[Env] userData/.env keys: KEY1, KEY2`.
+- `isDev()` (`util.ts`) ist nur wahr, wenn `NODE_ENV=development` **und** `!app.isPackaged`; ein gepackter Build gilt nie als Dev. Gleiches gilt für das `config/network-config.json`-Template in `loadNetworkConfig`: es wird nur im Dev-Modus aus dem `cwd` gelesen.
+
 ## Renderer-Aux-Mode (`--graphics-renderer`)
 Die Bridge startet fuer Graphics-Renderer und Conference-Display-Fenster dieselbe Desktop-Binary erneut mit `--graphics-renderer --renderer-entry <path>`. `main.ts` erkennt den Aux-Mode **nur** am Flag `--graphics-renderer` (`main-argv.ts`; positionale Pfade zaehlen nicht) und ueberspringt dann Single-Instance-Lock, Fenster und Bridge-Lifecycle.
 
