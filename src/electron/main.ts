@@ -840,11 +840,16 @@ if (!isRendererProcess) {
             },
             () => bridgeProcessManager.isRunning(), // Pass function to check if process is running
           );
-        } else {
-          // console.log("[Bridge] Bridge start failed:", result.error);
-          bridgePairing.clear();
+
+          // Return the web app URL together with the start result. The renderer
+          // opens the web app based on this result, not on a later bridgeStatus
+          // event: the initial status is sent above before this handler
+          // resolves, so a status-driven open would race the IPC reply.
+          return webAppUrl ? { ...result, webAppUrl } : result;
         }
 
+        // console.log("[Bridge] Bridge start failed:", result.error);
+        bridgePairing.clear();
         return result;
       });
 

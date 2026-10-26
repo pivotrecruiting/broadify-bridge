@@ -515,6 +515,101 @@ describe("main", () => {
       expect(mockStart).toHaveBeenCalled();
     });
 
+    it("bridgeStart returns the web app URL alongside the start result", async () => {
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(true);
+      // No env override in tests -> production default base URL.
+      expect(typeof result.webAppUrl).toBe("string");
+      expect(result.webAppUrl).toBe("https://app.broadify.de/");
+      // The same URL is pushed via the initial bridgeStatus event.
+      expect(mockIpcWebContentsSend).toHaveBeenCalledWith(
+        "bridgeStatus",
+        expect.anything(),
+        expect.objectContaining({ running: true, webAppUrl: result.webAppUrl }),
+      );
+    });
+
+    it("bridgeStart returns the configured web app URL when the env var is set", async () => {
+      const previous = process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+      process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL =
+        "https://studio.example.test/control";
+      try {
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        const result = await handler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        expect(result.success).toBe(true);
+        expect(result.webAppUrl).toBe("https://studio.example.test/control");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+        } else {
+          process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = previous;
+        }
+      }
+    });
+
+    it("bridgeStart omits webAppUrl when the configured base URL is invalid", async () => {
+      const previous = process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+      process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = "not a valid url";
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      try {
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        const result = await handler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        expect(result.success).toBe(true);
+        expect(result.webAppUrl).toBeUndefined();
+        expect("webAppUrl" in result).toBe(false);
+      } finally {
+        consoleErrorSpy.mockRestore();
+        if (previous === undefined) {
+          delete process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+        } else {
+          process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = previous;
+        }
+      }
+    });
+
+    it("bridgeStart failure does not carry a web app URL", async () => {
+      mockStart.mockResolvedValueOnce({ success: false, error: "boom" });
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(false);
+      expect(result.webAppUrl).toBeUndefined();
+    });
+
     it("prevents app suspension while the bridge runs", async () => {
       await readyHandlers[0]();
       const startIndex = mockIpcMainHandle.mock.calls.findIndex(
