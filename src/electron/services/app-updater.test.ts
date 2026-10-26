@@ -36,14 +36,22 @@ jest.mock("./electron-updater-loader.js", () => ({
 }));
 
 const mockGetUpdaterDisableReason = jest.fn().mockReturnValue(null);
+const mockResolveWindowsInstallKind = jest.fn().mockReturnValue(null);
 const mockParseIntervalMs = jest.fn((_v: string | undefined, fallback: number) => fallback);
 const mockSanitizeUpdaterErrorMessage = jest.fn((msg: string) => msg);
 
-jest.mock("./updater-utils.js", () => ({
-  getUpdaterDisableReason: (...args: unknown[]) => mockGetUpdaterDisableReason(...args),
-  parseIntervalMs: (...args: unknown[]) => mockParseIntervalMs(...args),
-  sanitizeUpdaterErrorMessage: (...args: unknown[]) => mockSanitizeUpdaterErrorMessage(...args),
-}));
+jest.mock("./updater-utils.js", () => {
+  const actual = jest.requireActual<typeof import("./updater-utils.js")>("./updater-utils.js");
+  return {
+    // The MSI/portable reason is matched by identity in app-updater.ts, so the
+    // mock must hand out the real constant.
+    UPDATER_DISABLE_REASON_MSI_OR_PORTABLE: actual.UPDATER_DISABLE_REASON_MSI_OR_PORTABLE,
+    getUpdaterDisableReason: (...args: unknown[]) => mockGetUpdaterDisableReason(...args),
+    resolveWindowsInstallKind: (...args: unknown[]) => mockResolveWindowsInstallKind(...args),
+    parseIntervalMs: (...args: unknown[]) => mockParseIntervalMs(...args),
+    sanitizeUpdaterErrorMessage: (...args: unknown[]) => mockSanitizeUpdaterErrorMessage(...args),
+  };
+});
 
 const mockLogAppError = jest.fn();
 const mockLogAppInfo = jest.fn();
@@ -69,6 +77,7 @@ describe("AppUpdaterService", () => {
     delete process.env.BROADIFY_UPDATER_CHANNEL;
     delete process.env.BROADIFY_UPDATER_GITHUB_TOKEN;
     mockGetUpdaterDisableReason.mockReturnValue(null);
+    mockResolveWindowsInstallKind.mockReturnValue(null);
     mockParseIntervalMs.mockImplementation((_v: string | undefined, fallback: number) => fallback);
     mockSanitizeUpdaterErrorMessage.mockImplementation((msg: string) => msg);
     mockCheckForUpdates.mockResolvedValue(undefined);
@@ -156,11 +165,58 @@ describe("AppUpdaterService", () => {
       const { appUpdaterService } = await import("./app-updater.js");
       appUpdaterService.initialize(jest.fn());
 
+      // resolveWindowsInstallKind is mocked to null (the real function also
+      // returns null on every non-win32 test host).
+      expect(mockResolveWindowsInstallKind).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: process.platform,
+          resourcesPath: process.resourcesPath,
+          existsSync: expect.any(Function),
+        }),
+      );
       expect(mockGetUpdaterDisableReason).toHaveBeenCalledWith(
         expect.objectContaining({
           platform: process.platform,
           isPackaged: app.isPackaged,
+          windowsInstallKind: null,
         }),
+      );
+    });
+
+    it("emits the MSI message with errorCode msi_install on a Windows install without the elevate helper", async () => {
+      const { UPDATER_DISABLE_REASON_MSI_OR_PORTABLE } = jest.requireActual<
+        typeof import("./updater-utils.js")
+      >("./updater-utils.js");
+      mockResolveWindowsInstallKind.mockReturnValue("msi_or_portable");
+      mockGetUpdaterDisableReason.mockReturnValue(UPDATER_DISABLE_REASON_MSI_OR_PORTABLE);
+      jest.resetModules();
+      const { appUpdaterService } = await import("./app-updater.js");
+      const listener = jest.fn();
+      appUpdaterService.initialize(listener);
+
+      expect(mockGetUpdaterDisableReason).toHaveBeenCalledWith(
+        expect.objectContaining({ windowsInstallKind: "msi_or_portable" }),
+      );
+      expect(listener).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          enabled: false,
+          state: "disabled",
+          errorCode: "msi_install",
+          message: expect.stringContaining("MSI"),
+        }),
+      );
+      expect(appUpdaterService.getStatus().message).toContain(".exe");
+      expect(mockOn).not.toHaveBeenCalled();
+    });
+
+    it("leaves errorCode null for other disable reasons", async () => {
+      mockGetUpdaterDisableReason.mockReturnValue("Disabled by BROADIFY_DISABLE_AUTO_UPDATE=1.");
+      jest.resetModules();
+      const { appUpdaterService } = await import("./app-updater.js");
+      appUpdaterService.initialize(jest.fn());
+
+      expect(appUpdaterService.getStatus()).toEqual(
+        expect.objectContaining({ state: "disabled", errorCode: null }),
       );
     });
 
