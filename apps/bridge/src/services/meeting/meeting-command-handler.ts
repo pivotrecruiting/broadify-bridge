@@ -1,6 +1,3 @@
-import { mkdir } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import {
   parseRelayPayload,
   EmptyPayloadSchema,
@@ -55,6 +52,7 @@ import {
   MeetingCallControlError,
 } from "./meeting-call-control.js";
 import { pickRecordingSavePath } from "./meeting-recording-dialog.js";
+import { buildDefaultRecordingPath } from "../shared/recording-paths.js";
 import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
@@ -676,8 +674,10 @@ export async function handleMeetingCommand(
 
     case "meeting_recording_toggle": {
       // One-key start/stop (Stream Deck). Unlike meeting_recording_start there
-      // is no save dialog: the file goes to a fixed recordings folder with a
-      // timestamped name.
+      // is no save dialog: the file goes to the shared default recordings
+      // folder (~/Movies/Broadify or ~/Videos/Broadify) with a timestamped
+      // Broadify-Meeting-<stamp>.mp4 name - the same place the save-panel
+      // fallback and PGM recordings use.
       const client = requireClient();
       const status = await runMeetingRpc(() => client.recordingStatus());
       const active = isRecordingActive(status.data);
@@ -688,17 +688,7 @@ export async function handleMeetingCommand(
         }
         return stopped;
       }
-      const recordingsDir = path.join(
-        os.homedir(),
-        "Videos",
-        "Broadify Recordings",
-      );
-      await mkdir(recordingsDir, { recursive: true });
-      const stamp = new Date()
-        .toISOString()
-        .replace(/[:.]/g, "-")
-        .slice(0, 19);
-      const filePath = path.join(recordingsDir, `meeting-${stamp}.mp4`);
+      const filePath = buildDefaultRecordingPath("meeting");
       const micDeviceId =
         typeof payload?.mic_device_id === "string" ? payload.mic_device_id : "";
       const started = await runMeetingRpc(() =>

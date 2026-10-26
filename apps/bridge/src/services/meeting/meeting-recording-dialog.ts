@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { homedir, platform as osPlatform } from "node:os";
-import { join } from "node:path";
+import { platform as osPlatform } from "node:os";
+
+import { buildDefaultRecordingPath as buildDefaultRecordingPathShared } from "../shared/recording-paths.js";
 
 /**
  * Shows the native macOS "save file" panel via osascript and returns the chosen
@@ -64,29 +64,12 @@ export async function pickRecordingSavePath(
 }
 
 /**
- * Builds a default absolute .mp4 recording path for headless triggers (e.g. the
- * Stream Deck REC key) that cannot open the native save panel. Writes into the
- * user's standard Movies (macOS/Linux) or Videos (Windows) folder with a
- * timestamped file name. The result is a well-formed absolute .mp4 path with no
- * parent traversal, so it passes the relay boundary's isSafeRecordingPath guard.
+ * Default absolute .mp4 recording path for headless triggers (Stream Deck REC
+ * key) and the non-macOS save-panel fallback. Delegates to the shared
+ * recording-paths helper so every trigger writes into the same folder
+ * (`~/Movies/Broadify` on macOS/Linux, `~/Videos/Broadify` on Windows) with a
+ * `Broadify-Meeting-<stamp>.mp4` name. Kept as a named export for callers/tests.
  */
 export function buildDefaultRecordingPath(now = new Date()): string {
-  const pad = (value: number): string => String(value).padStart(2, "0");
-  const stamp =
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-  const fileName = `Broadify-Meeting-${stamp}.mp4`;
-  const baseDir =
-    osPlatform() === "win32"
-      ? join(homedir(), "Videos")
-      : join(homedir(), "Movies");
-  try {
-    // The target folder may not exist (fresh Windows profile without a Videos
-    // dir): the recorder does not create directories, so recording.start
-    // would fail opaquely.
-    mkdirSync(baseDir, { recursive: true });
-  } catch {
-    // Best effort - the recorder reports the real error if writing fails.
-  }
-  return join(baseDir, fileName);
+  return buildDefaultRecordingPathShared("meeting", now);
 }

@@ -54,7 +54,11 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
 - Aufnahme (vorgezogen aus Phase 6): MP4 ohne Neukodierung (VideoToolbox-Samples im Passthrough, Ton als AAC),
   startet am ersten Keyframe, `<datei>.mp4.part` bis zum sauberen Stopp, läuft unabhängig von Zuschauern.
   Befehle `pgm_recording_pick_path` (Speicherdialog auf dem Bridge-Rechner), `pgm_recording_start {file_path?}`
-  (Standard `~/Movies/Broadify/Broadify-PGM-<zeit>.mp4`), `pgm_recording_stop`; Status in `pgm_status.recording`.
+  (Standard `~/Movies/Broadify/Broadify-PGM-<zeit>.mp4`, unter Windows `~/Videos/Broadify`; derselbe Ordner wie die
+  Meeting-Aufnahme, Quelle `apps/bridge/src/services/shared/recording-paths.ts`), `pgm_recording_stop`; Status in
+  `pgm_status.recording`. Die `macos/Info.plist` des Helpers deklariert die Ordner-/Laufwerks-Hinweistexte
+  (Dokumente, Schreibtisch, Downloads, externe und Netzlaufwerke), damit macOS beim Schreiben in geschützte
+  Zielordner einen Freigabedialog zeigt statt still mit einem Berechtigungsfehler abzubrechen.
 - Standbild: `pgm_snapshot {quality?}` liefert JPEG als Base64 (Relay-Grenze 2 MB beachtet), Download im Browser.
 - Noch offen in Phase 1: Browser-Test mit echtem ATEM/RØDECaster (Ton, TURN von außerhalb), Latenzmessung.
 - Phase 2: Windows UVC. Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.

@@ -291,6 +291,48 @@ test("Windows distribution builds, packages, signs and registers the vcam DLL", 
   );
 });
 
+// macOS folder/volume consent strings. Both helpers write MP4 recordings to
+// a folder the operator picks in the native save panel (Documents, Desktop,
+// Downloads, external or network volumes are all possible). Without these
+// strings macOS cannot show its consent prompt and the write fails with a bare
+// permission error (finding B-E9).
+const MACOS_RECORDING_FOLDER_USAGE_KEYS = [
+  "NSDocumentsFolderUsageDescription",
+  "NSDesktopFolderUsageDescription",
+  "NSDownloadsFolderUsageDescription",
+  "NSRemovableVolumesUsageDescription",
+  "NSNetworkVolumesUsageDescription",
+];
+
+const plistStringValue = (plist, key) => {
+  const match = plist.match(
+    new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`),
+  );
+  return match ? match[1].trim() : null;
+};
+
+for (const [label, plistPath] of [
+  ["meeting", "apps/bridge/native/meeting-helper/macos/Info.plist"],
+  ["PGM", "apps/bridge/native/pgm-helper/macos/Info.plist"],
+]) {
+  test(`macOS ${label} helper declares the recording folder usage strings`, () => {
+    const plist = read(plistPath);
+    for (const key of MACOS_RECORDING_FOLDER_USAGE_KEYS) {
+      const value = plistStringValue(plist, key);
+      assert.ok(value !== null, `${plistPath} must declare ${key}`);
+      assert.ok(value.length > 0, `${plistPath} ${key} must not be empty`);
+    }
+    // The signing verification must fail closed on the same keys.
+    const verification = read("scripts/verify-macos-release-signing.sh");
+    for (const key of MACOS_RECORDING_FOLDER_USAGE_KEYS) {
+      assert.ok(
+        verification.includes(key),
+        `verify-macos-release-signing.sh must check ${key}`,
+      );
+    }
+  });
+}
+
 test("packaged macOS helper verifies the model hashes", () => {
   // The runtime self-test hooks retired with the previous helper lineage;
   // the packaged-model hash verification is the remaining hard gate here.
