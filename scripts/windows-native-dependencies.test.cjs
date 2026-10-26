@@ -106,6 +106,13 @@ test("includes delay-load dependencies and ignores the summary section", () => {
   ]);
   assert.deepEqual(parseDumpbinDependents(""), []);
   assert.deepEqual(parseDumpbinDependents("Dump of file x.exe\n\n  Summary\n"), []);
+  // Real dumpbin output on Windows uses CRLF line endings.
+  assert.deepEqual(
+    parseDumpbinDependents(
+      "Dump of file x.exe\r\n\r\n  Image has the following dependencies:\r\n\r\n    KERNEL32.dll\r\n    msvcp140.dll\r\n\r\n  Summary\r\n",
+    ),
+    ["KERNEL32.dll", "msvcp140.dll"],
+  );
 });
 
 test("OS-only imports are satisfied without any sibling file", () => {
