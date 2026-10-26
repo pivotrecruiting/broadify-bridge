@@ -1113,6 +1113,11 @@ describe("main", () => {
 describe("main graphics-renderer path", () => {
   const originalArgv = process.argv;
 
+  beforeEach(() => {
+    mockAppExit.mockClear();
+    mockRequestSingleInstanceLock.mockClear();
+  });
+
   afterEach(() => {
     process.argv = originalArgv;
   });
@@ -1124,5 +1129,43 @@ describe("main graphics-renderer path", () => {
     await import("./main.js");
     expect(mockAppExit).toHaveBeenCalledWith(1);
     consoleSpy.mockRestore();
+  });
+
+  it("exits with code 1 when the renderer entry is outside the allowed roots", async () => {
+    // app.getAppPath() is mocked to "/app" and process.resourcesPath is unset
+    // under Jest, so /tmp/evil can never be inside an allowed root.
+    process.argv = [
+      "electron",
+      "/app",
+      "--graphics-renderer",
+      "--renderer-entry",
+      "/tmp/evil/electron-renderer-entry.js",
+    ];
+    jest.resetModules();
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const logSpy = jest.spyOn(console, "log").mockImplementation();
+    await import("./main.js");
+    expect(mockAppExit).toHaveBeenCalledWith(1);
+    const rejection = errorSpy.mock.calls.find((call) =>
+      String(call[0]).includes("Rejected renderer entry"),
+    );
+    expect(rejection).toBeDefined();
+    for (const call of [...errorSpy.mock.calls, ...logSpy.mock.calls]) {
+      expect(call.map(String).join(" ")).not.toContain("/tmp/evil");
+    }
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it("does not treat a positional entry path without --graphics-renderer as aux mode", async () => {
+    process.argv = ["electron", "/tmp/evil/electron-renderer-entry.js"];
+    jest.resetModules();
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const logSpy = jest.spyOn(console, "log").mockImplementation();
+    await import("./main.js");
+    expect(mockRequestSingleInstanceLock).toHaveBeenCalled();
+    expect(mockAppExit).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
   });
 });

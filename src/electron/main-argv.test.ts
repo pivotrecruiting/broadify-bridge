@@ -56,9 +56,17 @@ describe("main-argv", () => {
         resolveRendererEntry(["--renderer-entry", "/path/entry.js"]),
       ).toBe("/path/entry.js");
     });
-    it("returns path ending with electron-renderer-entry.js when no explicit flag", () => {
+    it("ignores positional paths without the flag", () => {
       const argv = ["node", "dist/electron-renderer-entry.js"];
-      expect(resolveRendererEntry(argv)).toBe("dist/electron-renderer-entry.js");
+      expect(resolveRendererEntry(argv)).toBeNull();
+    });
+    it("ignores positional paths with the entry basename even next to other flags", () => {
+      const argv = [
+        "electron",
+        "--graphics-renderer",
+        "/tmp/evil/electron-renderer-entry.js",
+      ];
+      expect(resolveRendererEntry(argv)).toBeNull();
     });
     it("returns null when no renderer entry in argv", () => {
       expect(resolveRendererEntry(["node", "main.js"])).toBeNull();
