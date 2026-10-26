@@ -2,6 +2,7 @@
 // character via every UTF-8 open helper. Stdlib + OS primitives only.
 #include "helper_common/path_utf8.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -126,7 +127,11 @@ int main() {
     int errorCode = -1;
     const std::vector<uint8_t> bytes = readFileBytesUtf8(writtenUtf8, errorCode);
     CHECK(errorCode == 0);
-    CHECK(std::string(bytes.begin(), bytes.end()) == "first\nsecond\n");
+    // Text-mode streams translate "\n" to "\r\n" on Windows; the helper does
+    // not change the caller's open mode, so compare without carriage returns.
+    std::string written(bytes.begin(), bytes.end());
+    written.erase(std::remove(written.begin(), written.end(), '\r'), written.end());
+    CHECK(written == "first\nsecond\n");
     CHECK(std::filesystem::exists(pathFromUtf8(writtenUtf8)));
     std::ofstream empty = openOutputFileUtf8("", std::ios::out);
     CHECK(!empty.good());
