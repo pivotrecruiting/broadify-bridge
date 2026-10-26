@@ -2,6 +2,7 @@ import { app } from "electron";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+import { logAppInfo } from "./app-logger.js";
 
 let envLoaded = false;
 const RELEASE_MANAGED_ENV_KEYS = [
@@ -37,11 +38,40 @@ const applyReleaseManagedEnvOverrides = (envPath: string): void => {
 };
 
 /**
+ * Log which keys userData/.env defines. Only key names are logged, never
+ * values, so support can see which overrides are active without leaking
+ * tokens or URLs into the app log.
+ */
+const logUserEnvKeyNames = (userEnvPath: string): void => {
+  if (!fs.existsSync(userEnvPath)) {
+    return;
+  }
+
+  try {
+    const parsed = dotenv.parse(fs.readFileSync(userEnvPath));
+    const keys = Object.keys(parsed).sort();
+    if (keys.length === 0) {
+      return;
+    }
+    logAppInfo(`[Env] userData/.env keys: ${keys.join(", ")}`);
+  } catch {
+    // Ignore malformed userData env files.
+  }
+};
+
+/**
  * Load environment variables from known runtime locations.
  *
- * Load order: dev project .env | userData | packaged resources.
- * With override: false, earlier files win; later files fill in missing vars.
- * Prod: userData (may be old) + packaged bridge/.env fills in BRIDGE_GRAPHICS_* etc.
+ * Load order (with override: false, earlier files win; later files fill in
+ * missing vars):
+ * - Dev (unpackaged): project .env (cwd) | userData/.env | packaged resources.
+ * - Packaged: userData/.env | packaged resources. The current working
+ *   directory is never consulted: it is not meaningful for an installed app
+ *   ("/" on macOS, install dir or a shortcut's "Start in" folder on Windows)
+ *   and must not be able to inject configuration into a release.
+ *
+ * In both modes the release-managed keys (RELEASE_MANAGED_ENV_KEYS) from the
+ * packaged resource .env win over persisted userData/.env values.
  */
 export const loadAppEnv = (): void => {
   if (envLoaded) {
@@ -52,8 +82,7 @@ export const loadAppEnv = (): void => {
   const candidates: string[] = [];
   let userEnvPath: string | null = null;
   const resourceEnvPaths: string[] = [];
-  const projectEnv = path.join(process.cwd(), ".env");
-  const isDev = process.env.NODE_ENV !== "production";
+  const isPackaged = app.isPackaged;
 
   try {
     const userDataDir = app.getPath("userData");
@@ -70,16 +99,14 @@ export const loadAppEnv = (): void => {
   }
 
   // Dev: project .env first so local overrides (e.g. BRIDGE_GRAPHICS_*) are used.
-  if (isDev) {
-    candidates.push(projectEnv);
+  // Packaged builds never read the cwd.
+  if (!isPackaged) {
+    candidates.push(path.join(process.cwd(), ".env"));
   }
   if (userEnvPath) {
     candidates.push(userEnvPath);
   }
   candidates.push(...resourceEnvPaths);
-  if (!candidates.includes(projectEnv)) {
-    candidates.push(projectEnv);
-  }
 
   if (userEnvPath && !fs.existsSync(userEnvPath)) {
     const seedSource = resourceEnvPaths.find((envPath) =>
@@ -94,7 +121,7 @@ export const loadAppEnv = (): void => {
     }
   }
 
-  // Prod: load userData first, then packaged resources. With override: false,
+  // Packaged: load userData first, then packaged resources. With override: false,
   // packaged vars (e.g. BRIDGE_GRAPHICS_*) fill in for keys userData doesn't have.
   // Dev: project first wins; others fill in. Never break – load all to merge.
   for (const candidate of candidates) {
@@ -105,5 +132,9 @@ export const loadAppEnv = (): void => {
   // This keeps RC/test builds pinned to their intended relay and update channel.
   for (const envPath of resourceEnvPaths) {
     applyReleaseManagedEnvOverrides(envPath);
+  }
+
+  if (userEnvPath) {
+    logUserEnvKeyNames(userEnvPath);
   }
 };

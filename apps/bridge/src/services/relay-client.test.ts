@@ -1,5 +1,11 @@
 import { WebSocket } from "ws";
+import { generateKeyPairSync, sign as signMessage } from "node:crypto";
 import { RelayClient } from "./relay-client.js";
+import {
+  base64UrlEncode,
+  stableStringify,
+  type RelayCommandMetaT,
+} from "./relay-command-security.js";
 
 class FakeWebSocket {
   public readyState = WebSocket.CONNECTING;
@@ -645,6 +651,121 @@ describe("RelayClient", () => {
       success: true,
       data: { executed: true },
     });
+  });
+
+  it("serves a redelivered identical signed command from the result cache", async () => {
+    // Real verifier path (no verifySignedCommand override): the relay signing
+    // key is injected via env, so the module has to be loaded fresh.
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const originalPem = process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY;
+    const originalKid = process.env.BRIDGE_RELAY_SIGNING_KID;
+    process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY = publicKey
+      .export({ type: "spki", format: "pem" })
+      .toString();
+    process.env.BRIDGE_RELAY_SIGNING_KID = "test-kid";
+    jest.resetModules();
+
+    try {
+      const { RelayClient: FreshRelayClient } = require("./relay-client.js") as {
+        RelayClient: typeof RelayClient;
+      };
+
+      const socket = new FakeWebSocket();
+      const logger = createLogger();
+      const handleCommand = jest.fn(async () => ({
+        success: true,
+        data: { executed: true },
+      }));
+      const client = new FreshRelayClient(
+        "bridge-1",
+        "ws://relay.test",
+        logger,
+        undefined,
+        {
+          createWebSocket: () => socket,
+          getEnrollmentPublicKey: async () => {
+            throw new Error("no identity");
+          },
+          handleCommand,
+        },
+      );
+
+      await client.connect();
+      socket.open();
+      await flushAsync();
+      socket.sent = [];
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const requestId = "req-redelivered";
+      const command = "engine_get_status";
+      const payload = {};
+      const meta: RelayCommandMetaT = {
+        bridgeId: "bridge-1",
+        orgId: "org-1",
+        scope: ["command:engine_get_status"],
+        iat: nowSec - 5,
+        exp: nowSec + 25,
+        jti: "jti-redelivered",
+        kid: "test-kid",
+      };
+      const signature = base64UrlEncode(
+        signMessage(
+          null,
+          Buffer.from(
+            stableStringify({ requestId, command, payload, meta }),
+          ),
+          privateKey,
+        ),
+      );
+      const signedCommand = {
+        type: "command",
+        requestId,
+        sequence: 21,
+        command,
+        payload,
+        meta,
+        signature,
+      };
+
+      socket.receiveJson(signedCommand);
+      await flushAsync();
+
+      // Relay redelivery of the identical signed message (ack lost).
+      socket.receiveJson(signedCommand);
+      await flushAsync();
+
+      expect(handleCommand).toHaveBeenCalledTimes(1);
+      const sentMessages = socket.sent.map((raw) => JSON.parse(raw));
+      expect(JSON.stringify(sentMessages)).not.toContain("Replay detected");
+      expect(sentMessages).toHaveLength(6);
+      expect(sentMessages[4]).toEqual({
+        type: "command_received",
+        requestId,
+        bridgeId: "bridge-1",
+        sequence: 21,
+      });
+      expect(sentMessages[5]).toEqual({
+        type: "command_result",
+        requestId,
+        success: true,
+        data: { executed: true },
+      });
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("Replay detected"),
+      );
+    } finally {
+      if (originalPem === undefined) {
+        delete process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY;
+      } else {
+        process.env.BRIDGE_RELAY_SIGNING_PUBLIC_KEY = originalPem;
+      }
+      if (originalKid === undefined) {
+        delete process.env.BRIDGE_RELAY_SIGNING_KID;
+      } else {
+        process.env.BRIDGE_RELAY_SIGNING_KID = originalKid;
+      }
+      jest.resetModules();
+    }
   });
 
   it("deduplicates duplicate requestIds while the first execution is still running", async () => {

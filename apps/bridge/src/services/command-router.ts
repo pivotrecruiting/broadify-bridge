@@ -36,6 +36,7 @@ import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { buildBridgeOutputsView } from "./outputs-view.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import { canonResponseToCommandResult } from "./canon-xc/canon-xc-command-result.js";
 import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm/pgm-command-handler.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 import { powerSocketService } from "./power/power-socket-service.js";
@@ -562,10 +563,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_test_connection",
           );
-          return {
-            success: true,
-            data: await canonXCService.testConnection(input),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.testConnection(input),
+          );
         }
 
         case "canon_xc_delete_device": {
@@ -586,10 +586,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_test_device",
           );
-          return {
-            success: true,
-            data: await canonXCService.testDevice(deviceId),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.testDevice(deviceId),
+          );
         }
 
         case "canon_xc_list_presets": {
@@ -598,10 +597,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_list_presets",
           );
-          return {
-            success: true,
-            data: await canonXCService.listPresets(deviceId),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.listPresets(deviceId),
+          );
         }
 
         case "canon_xc_recall_preset": {
@@ -610,14 +608,13 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_recall_preset",
           );
-          return {
-            success: true,
-            data: await canonXCService.recallPreset(
+          return canonResponseToCommandResult(
+            await canonXCService.recallPreset(
               input.deviceId,
               input.preset,
               input.options,
             ),
-          };
+          );
         }
 
         case "streamdeck_status": {
