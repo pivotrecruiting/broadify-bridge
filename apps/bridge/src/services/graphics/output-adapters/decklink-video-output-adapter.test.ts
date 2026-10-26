@@ -47,6 +47,8 @@ function createMockChild(opts?: { autoExitOnEnd?: boolean }): EventEmitter & {
     signalCode: NodeJS.Signals | null;
   };
   child.stdin = Object.assign(new EventEmitter(), {
+    // Real pipes report writable=true; writeChildStdin() drops writes otherwise.
+    writable: true,
     write: jest.fn().mockReturnValue(true),
     end: jest.fn(function (this: typeof child) {
       if (autoExit) {
