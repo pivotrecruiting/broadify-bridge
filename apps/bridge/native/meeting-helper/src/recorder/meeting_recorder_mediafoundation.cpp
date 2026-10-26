@@ -2,6 +2,7 @@
 
 #include "recorder/recorder_encode_policy.h"
 #include "util/helper_event_log.h"
+#include "util/path_utf8.h"
 #include "util/pixel_swizzle.h"
 
 // Windows Media Foundation recorder. Mirrors the macOS AVAssetWriter
@@ -71,34 +72,9 @@ struct ComApartment {
   ComApartment &operator=(const ComApartment &) = delete;
 };
 
-std::string wideToUtf8(const wchar_t *wide) {
-  if (wide == nullptr) {
-    return {};
-  }
-  const int needed =
-      WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-  if (needed <= 1) {
-    return {};
-  }
-  std::string out(static_cast<size_t>(needed - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr,
-                      nullptr);
-  return out;
-}
-
-std::wstring utf8ToWide(const std::string &utf8) {
-  if (utf8.empty()) {
-    return {};
-  }
-  const int needed =
-      MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  if (needed <= 1) {
-    return {};
-  }
-  std::wstring out(static_cast<size_t>(needed - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, out.data(), needed);
-  return out;
-}
+// UTF-8 <-> UTF-16 conversion comes from helper-common (util/path_utf8.h):
+// strict for UTF-8 input, so an invalid recording path or microphone id is
+// rejected (invalid_arguments) instead of being reinterpreted.
 
 std::string hresultError(const char *what, HRESULT hr) {
   char buffer[128];

@@ -6,6 +6,7 @@
 #include "keyer/model_manifest.h"
 #include "keyer/ort_session_options_policy.h"
 #include "util/helper_event_log.h"
+#include "util/path_utf8.h"
 #include "util/sha256.h"
 
 #include <algorithm>
@@ -52,11 +53,6 @@ constexpr uint32_t kMaxCpuInferenceThreads = 4;
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
   return std::chrono::duration<double, std::milli>(end - start).count();
-}
-
-bool fileExists(const std::string &path) {
-  std::ifstream file(path, std::ios::binary);
-  return file.good();
 }
 
 uint32_t dimensionOrFallback(int64_t value) {
@@ -197,30 +193,6 @@ bool keyerZeroCopyRequested() {
 using Microsoft::WRL::ComPtr;
 using DmlCreateDeviceFn = HRESULT(WINAPI *)(ID3D12Device *, DML_CREATE_DEVICE_FLAGS,
                                             REFIID, void **);
-
-std::wstring utf8ToWidePath(const std::string &path) {
-  if (path.empty()) {
-    return std::wstring();
-  }
-
-  const int requiredLength =
-      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, nullptr, 0);
-  if (requiredLength <= 0) {
-    return std::wstring();
-  }
-
-  std::wstring widePath(static_cast<size_t>(requiredLength), L'\0');
-  const int convertedLength =
-      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, widePath.data(), requiredLength);
-  if (convertedLength <= 0) {
-    return std::wstring();
-  }
-
-  if (!widePath.empty() && widePath.back() == L'\0') {
-    widePath.pop_back();
-  }
-  return widePath;
-}
 
 DmlCreateDeviceFn resolveDmlCreateDevice() {
   static DmlCreateDeviceFn fn = []() -> DmlCreateDeviceFn {
@@ -681,7 +653,7 @@ class ModnetKeyer::Impl {
       const bool fp16Usable =
           !fp16.file.empty() && !fp16.sha256.empty() &&
           fp16.sha256 != "release-artifact-required" &&
-          fileExists(joinModelPath(options_.modelsDir, fp16.file));
+          fileExistsUtf8(joinModelPath(options_.modelsDir, fp16.file));
       if (fp16Usable) {
         entry = fp16;
       } else {
@@ -700,7 +672,7 @@ class ModnetKeyer::Impl {
     }
     const std::string modelPath = joinModelPath(options_.modelsDir, entry.file);
     status_.modelPath = modelPath;
-    if (!fileExists(modelPath)) {
+    if (!fileExistsUtf8(modelPath)) {
       setFallback("model_missing");
       return false;
     }
@@ -1048,7 +1020,9 @@ class ModnetKeyer::Impl {
     status_.provider = "cpu";
 #endif
 #if defined(_WIN32)
-    const std::wstring ortModelPath = utf8ToWidePath(modelPath_);
+    // Strict UTF-8 -> UTF-16 (helper-common); an empty result means the
+    // path is not valid UTF-8 and the caller reports model_path_invalid.
+    const std::wstring ortModelPath = utf8ToWide(modelPath_);
     if (ortModelPath.empty()) {
       return nullptr;
     }

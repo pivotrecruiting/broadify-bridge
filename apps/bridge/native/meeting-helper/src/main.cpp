@@ -23,6 +23,7 @@
 #include "state/meeting_state.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/path_utf8.h"
 #include "util/win_qos.h"
 
 #if defined(__APPLE__)
@@ -362,13 +363,14 @@ bool benchmarkKeyerBackend(
     // A/B quality support (e.g. fp16 vs fp32): dump the last mask of each
     // mode as a binary PGM so an external diff can quantify the deviation.
     // Self-test only, off unless the directory env is set.
-    if (const char *dumpDir =
-            std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_MASK_DUMP_DIR");
-        dumpDir != nullptr && dumpDir[0] != '\0' && !lastMask.alpha.empty()) {
+    if (const std::string dumpDir =
+            getenvUtf8("BROADIFY_MEETING_KEYER_SELF_TEST_MASK_DUMP_DIR");
+        !dumpDir.empty() && !lastMask.alpha.empty()) {
       std::ostringstream dumpPath;
       dumpPath << dumpDir << "/mask_" << backendName << "_" << mode.inputSize
                << ".pgm";
-      std::ofstream dump(dumpPath.str(), std::ios::binary);
+      std::ofstream dump =
+          openOutputFileUtf8(dumpPath.str(), std::ios::out | std::ios::binary);
       if (dump) {
         dump << "P5\n" << lastMask.width << " " << lastMask.height << "\n255\n";
         dump.write(reinterpret_cast<const char *>(lastMask.alpha.data()),

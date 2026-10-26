@@ -425,6 +425,17 @@ loest keinen Keyer-Reset aus. `keyer.configure` behandelt
 `background_image_path`, `background_asset_id` und `background_template_id`
 presence-guarded: fehlt ein Feld, bleibt der aktuelle Wert erhalten.
 
+`background_image_path` ist UTF-8; der Helper oeffnet die Datei ueber die
+UTF-8-Pfadhelfer (auch bei Windows-Benutzernamen mit Umlaut) und meldet das
+Ergebnis als Helper-Event in `meeting-helper-events.log`, nicht im
+`meeting_status`: `background_image_loaded` einmal pro erfolgreichem Laden,
+`background_image_load_failed` (`stage` `open`|`decode`, `errno`) genau
+einmal pro Pfad, solange das Laden fehlschlaegt (Retry mit Backoff 400 ms *
+2^n, max. 2 s). Das Feld `path` enthaelt dabei nur den Dateinamen
+(Basename), nie das Verzeichnis - der volle Pfad liegt unter userData und
+enthaelt den Windows-Benutzernamen. Details: `meeting-keyer-windows.md`, Abschnitt "Paths And
+Encoding".
+
 ## Kompatibilitaet
 
 Aeltere WebApps ignorieren unbekannte Keys. Neuere WebApps muessen alle

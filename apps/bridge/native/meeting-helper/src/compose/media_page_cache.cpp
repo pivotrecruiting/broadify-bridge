@@ -2,27 +2,12 @@
 
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/path_utf8.h"
 
 #include <algorithm>
-#include <array>
-#include <cerrno>
 #include <chrono>
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <limits>
 #include <sstream>
-
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
 
 namespace broadify::meeting {
 namespace {
@@ -30,48 +15,6 @@ namespace {
 constexpr size_t kMaxDecodedPages = 4u;
 constexpr auto kInitialRetryDelay = std::chrono::milliseconds(400);
 constexpr auto kMaxRetryDelay = std::chrono::milliseconds(2000);
-
-std::vector<uint8_t> readFileBytes(const std::string &path, int &errorCode) {
-  errorCode = 0;
-#if defined(_WIN32)
-  const int wideSize = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1,
-                                           nullptr, 0);
-  if (wideSize <= 1) {
-    errorCode = ERROR_INVALID_NAME;
-    return {};
-  }
-  std::wstring widePath(static_cast<size_t>(wideSize - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, widePath.data(), wideSize);
-  FILE *file = _wfopen(widePath.c_str(), L"rb");
-  if (file == nullptr) {
-    errorCode = errno;
-    return {};
-  }
-  std::unique_ptr<FILE, decltype(&std::fclose)> owned(file, &std::fclose);
-  std::vector<uint8_t> bytes;
-  std::array<uint8_t, 64 * 1024> buffer{};
-  while (true) {
-    const size_t read = std::fread(buffer.data(), 1u, buffer.size(), file);
-    bytes.insert(bytes.end(), buffer.begin(), buffer.begin() + read);
-    if (read < buffer.size()) {
-      if (std::ferror(file)) {
-        errorCode = errno;
-        return {};
-      }
-      break;
-    }
-  }
-  return bytes;
-#else
-  std::ifstream file(std::filesystem::path(path), std::ios::binary);
-  if (!file) {
-    errorCode = errno;
-    return {};
-  }
-  return std::vector<uint8_t>((std::istreambuf_iterator<char>(file)),
-                              std::istreambuf_iterator<char>());
-#endif
-}
 
 bool isDigit(char ch) { return ch >= '0' && ch <= '9'; }
 
@@ -247,7 +190,7 @@ void MediaPageCache::workerMain() {
 
     int errorCode = 0;
     const auto started = std::chrono::steady_clock::now();
-    std::vector<uint8_t> bytes = readFileBytes(path, errorCode);
+    std::vector<uint8_t> bytes = readFileBytesUtf8(path, errorCode);
     std::shared_ptr<const MediaPageImage> image;
     std::string stage = "open";
     if (errorCode == 0 && !bytes.empty()) {
