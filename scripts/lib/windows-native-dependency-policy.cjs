@@ -105,6 +105,22 @@ const WINDOWS_OS_DLLS = Object.freeze(
   ]),
 );
 
+/**
+ * Imports that are provided by a GPU driver, not by Windows and not by us,
+ * keyed by the importing file. These files are optional plugins loaded at
+ * runtime only when that hardware is present (the driver then also installs
+ * the DLL into System32); on a machine without it the plugin simply does not
+ * load and the backend falls back. Listing them here keeps the gate strict
+ * for every other file: an unexpected OpenCL import in meeting-helper.exe
+ * would still fail.
+ */
+const DRIVER_PROVIDED_IMPORTS = Object.freeze({
+  // OpenVINO Intel GPU plugin -> OpenCL ICD loader from the Intel graphics
+  // driver. Rationale: the plugin is loaded by openvino.dll only when the
+  // Intel GPU device is selected (scripts/prepare-windows-openvino-deps.ps1).
+  "openvino_intel_gpu_plugin.dll": Object.freeze(["opencl.dll"]),
+});
+
 const DLL_NAME_PATTERN = /^[\w.+-]+\.dll$/i;
 const DEPENDENCY_SECTION_PATTERN = /following(?: delay load)? dependencies:/i;
 
@@ -169,14 +185,23 @@ function parseDumpbinDependents(text) {
  * Checks every import against the OS allowlist and the files packaged next to
  * the importing binary (case-insensitive, as the Windows loader matches).
  *
- * @param {{ imports: string[], siblingFiles: string[] }} input
+ * @param {{ imports: string[], siblingFiles: string[], file?: string }} input
+ *   `file` is the importing file's name; it unlocks DRIVER_PROVIDED_IMPORTS.
  * @returns {{ ok: boolean, missing: string[] }}
  */
-function evaluateDependencies({ imports, siblingFiles }) {
+function evaluateDependencies({ imports, siblingFiles, file }) {
   const siblings = new Set((siblingFiles ?? []).map(normalizeDllName));
+  const driverProvided = new Set(
+    (file ? DRIVER_PROVIDED_IMPORTS[normalizeDllName(file)] : undefined) ?? [],
+  );
   const missing = [];
   for (const name of imports ?? []) {
-    if (isWindowsOsDll(name) || siblings.has(normalizeDllName(name))) {
+    const normalized = normalizeDllName(name);
+    if (
+      isWindowsOsDll(name) ||
+      siblings.has(normalized) ||
+      driverProvided.has(normalized)
+    ) {
       continue;
     }
     missing.push(name);
@@ -185,6 +210,7 @@ function evaluateDependencies({ imports, siblingFiles }) {
 }
 
 module.exports = {
+  DRIVER_PROVIDED_IMPORTS,
   WINDOWS_OS_DLLS,
   WINDOWS_OS_DLL_PREFIXES,
   evaluateDependencies,
