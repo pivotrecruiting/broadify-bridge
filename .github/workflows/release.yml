@@ -363,6 +363,7 @@ jobs:
           echo "Azure tenant configured: ${AZURE_TENANT_ID:+yes}"
           echo "Azure client configured: ${AZURE_CLIENT_ID:+yes}"
           echo "Azure client secret configured: ${AZURE_CLIENT_SECRET:+yes}"
+          echo "Windows signing policy (for --win): $(node -e "console.log(require('./scripts/lib/resolve-windows-signing-policy.cjs').resolveWindowsSigningPolicy({env:process.env, argv:['--win']}).mode)")"
 
           node - <<'NODE'
           const config = require("./electron-builder.config.cjs");
