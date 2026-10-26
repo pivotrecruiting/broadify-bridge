@@ -263,6 +263,79 @@ if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
 fi
 verify_codesign "$APP_PATH" "deep"
 
+# Main executable LC_UUID: Prod and RC must not share the stock Electron UUID,
+# because macOS Local Network privacy keys its decision on that UUID (TN3179).
+# The afterPack hook scripts/patch-macos-main-executable-uuid.cjs writes a
+# deterministic per-flavour UUID; verify it survived packaging and signing.
+MAIN_EXEC="${APP_PATH}/Contents/MacOS/${APP_PRODUCT_NAME}"
+ELECTRON_STUB_EXEC="${ROOT_DIR}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+case "$NORMALIZED_ARCH" in
+  arm64)
+    DWARF_ARCH="arm64"
+    ;;
+  x64)
+    DWARF_ARCH="x86_64"
+    ;;
+  *)
+    echo "[MacSignVerify] Unsupported arch for LC_UUID check: ${NORMALIZED_ARCH}" >&2
+    exit 1
+    ;;
+esac
+if [[ "$APP_BUNDLE_ID" == "com.broadify.bridge.rc" ]]; then
+  OTHER_BUNDLE_ID="com.broadify.bridge"
+  OTHER_PRODUCT_NAME="Broadify Bridge"
+else
+  OTHER_BUNDLE_ID="com.broadify.bridge.rc"
+  OTHER_PRODUCT_NAME="Broadify Bridge RC"
+fi
+[[ -x "$MAIN_EXEC" ]] || {
+  echo "[MacSignVerify] Missing main executable at ${MAIN_EXEC}" >&2
+  exit 1
+}
+[[ -f "$ELECTRON_STUB_EXEC" ]] || {
+  echo "[MacSignVerify] Missing stock Electron launcher at ${ELECTRON_STUB_EXEC} (needed for the LC_UUID comparison)" >&2
+  exit 1
+}
+if ! command -v dwarfdump >/dev/null 2>&1; then
+  echo "[MacSignVerify] dwarfdump is required for the LC_UUID check (install Xcode command line tools)" >&2
+  exit 1
+fi
+
+# dwarfdump prints one "UUID: <uuid> (<arch>) <path>" line per slice. Consume
+# the whole stream (no early awk exit) to avoid SIGPIPE under pipefail.
+macho_uuid_for_arch() {
+  dwarfdump --uuid "$1" 2>/dev/null | awk -v arch="($2)" '$1 == "UUID:" && $3 == arch && !found { print $2; found = 1 }'
+}
+
+MAIN_UUID="$(macho_uuid_for_arch "$MAIN_EXEC" "$DWARF_ARCH")"
+STUB_UUID="$(macho_uuid_for_arch "$ELECTRON_STUB_EXEC" "$DWARF_ARCH")"
+EXPECTED_UUID="$(node "${ROOT_DIR}/scripts/patch-macos-main-executable-uuid.cjs" --print-expected \
+  --app-id "$APP_BUNDLE_ID" --product-filename "$APP_PRODUCT_NAME" --cputype "$DWARF_ARCH")"
+OTHER_UUID="$(node "${ROOT_DIR}/scripts/patch-macos-main-executable-uuid.cjs" --print-expected \
+  --app-id "$OTHER_BUNDLE_ID" --product-filename "$OTHER_PRODUCT_NAME" --cputype "$DWARF_ARCH")"
+
+if [[ -z "$MAIN_UUID" ]]; then
+  echo "[MacSignVerify] Could not read the ${DWARF_ARCH} LC_UUID of ${MAIN_EXEC}" >&2
+  exit 1
+fi
+if [[ -z "$EXPECTED_UUID" || -z "$OTHER_UUID" ]]; then
+  echo "[MacSignVerify] Could not derive the expected LC_UUID for ${APP_BUNDLE_ID}" >&2
+  exit 1
+fi
+if [[ "$MAIN_UUID" != "$EXPECTED_UUID" ]]; then
+  echo "[MacSignVerify] Main executable LC_UUID mismatch: expected ${EXPECTED_UUID}, got ${MAIN_UUID} (afterPack hook did not run?)" >&2
+  exit 1
+fi
+if [[ -n "$STUB_UUID" && "$MAIN_UUID" == "$STUB_UUID" ]]; then
+  echo "[MacSignVerify] Main executable still carries the stock Electron LC_UUID ${STUB_UUID}" >&2
+  exit 1
+fi
+if [[ "$MAIN_UUID" == "$OTHER_UUID" ]]; then
+  echo "[MacSignVerify] Main executable LC_UUID collides with ${OTHER_BUNDLE_ID} (${OTHER_UUID})" >&2
+  exit 1
+fi
+echo "[MacSignVerify] Main executable LC_UUID -> ${MAIN_UUID}"
+
 # BroadifyVCam.app ships inside the bundle but is signIgnore'd by
 # electron-builder — gate it explicitly: it must verify, carry the release
 # team, and must NOT be an Apple-Development build (get-task-allow), which
