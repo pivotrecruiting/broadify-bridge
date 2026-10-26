@@ -37,9 +37,40 @@ last_error }` (snake_case, as produced by the helper).
 machine via osascript (`meeting-recording-dialog.ts`); the file is written
 locally by the helper, so the location cannot be chosen in the browser. On
 non-macOS platforms (no native save panel wired up) it falls back to
-`buildDefaultRecordingPath()` — a timestamped file in the user's standard
-Videos/Movies folder — instead of returning `null`, which the webapp would
+`buildDefaultRecordingPath()` — a timestamped file in the shared default
+recordings folder — instead of returning `null`, which the webapp would
 treat as a user cancel and silently never start.
+
+### Default recording path (one folder for every trigger)
+
+`apps/bridge/src/services/shared/recording-paths.ts` is the single source of
+truth for default recording locations. Every trigger that has no save dialog
+(non-macOS save-panel fallback, Stream Deck REC toggle, PGM recording without
+an explicit `file_path`) writes into the same folder:
+
+| Platform | Folder | Meeting file | PGM file |
+| --- | --- | --- | --- |
+| macOS, Linux | `~/Movies/Broadify` | `Broadify-Meeting-<YYYY-MM-DD_HH-mm-ss>.mp4` | `Broadify-PGM-<stamp>.mp4` |
+| Windows | `~/Videos/Broadify` | same | same |
+
+The folder is created best effort (sync `mkdir -p`) before the path is handed
+to the helper; the recorders do not create directories themselves. The result
+is always an absolute `.mp4` path without parent traversal, so it passes the
+relay boundary's `isSafeRecordingPath` guard.
+
+### macOS folder consent (Info.plist)
+
+The helper writes wherever the operator points the save panel — `~/Documents`,
+`~/Desktop`, `~/Downloads`, external or network volumes included. macOS only
+shows its folder consent prompt when the helper bundle declares the matching
+usage strings, otherwise the write fails with a bare permission error. The
+meeting helper's `macos/Info.plist` therefore declares
+`NSDocumentsFolderUsageDescription`, `NSDesktopFolderUsageDescription`,
+`NSDownloadsFolderUsageDescription`, `NSRemovableVolumesUsageDescription` and
+`NSNetworkVolumesUsageDescription` next to the camera/microphone strings (the
+PGM helper declares the same set). `scripts/verify-macos-release-signing.sh`
+fails closed when any of them is missing from the packaged bundle, and
+`scripts/meeting-helper-release-contract.test.cjs` guards the source plists.
 
 ## File lifecycle (macOS)
 
@@ -109,4 +140,9 @@ dialog, start 40 s) and must stay above the bridge policy timeouts (130 s /
 
 `meeting_recording_toggle` (one-key start/stop with a default recording path,
 no save dialog) exists for the Stream Deck REC key and shares the same helper
-recorder.
+recorder. The file goes to the shared default recordings folder described
+above (`~/Movies/Broadify` on macOS, `~/Videos/Broadify` on Windows) as
+`Broadify-Meeting-<stamp>.mp4` — the same place and naming as the save-panel
+fallback. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
+meeting-<iso-stamp>.mp4` on every platform, i.e. a different folder than the
+other triggers and a Windows-style path on macOS.

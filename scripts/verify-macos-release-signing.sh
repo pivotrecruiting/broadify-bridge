@@ -226,6 +226,35 @@ if ! plist_value "$HELPER_INFO" "NSMicrophoneUsageDescription" >/dev/null; then
   exit 1
 fi
 echo "[MacSignVerify] NSMicrophoneUsageDescription present"
+# Recording folder/volume consent strings: the helper writes MP4 files to the
+# folder the operator picks in the save panel (Documents, Desktop, Downloads,
+# external or network volumes). Without them macOS cannot prompt and the write
+# fails with a bare permission error.
+if ! plist_value "$HELPER_INFO" "NSDocumentsFolderUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSDocumentsFolderUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSDocumentsFolderUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSDesktopFolderUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSDesktopFolderUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSDesktopFolderUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSDownloadsFolderUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSDownloadsFolderUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSDownloadsFolderUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSRemovableVolumesUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSRemovableVolumesUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSRemovableVolumesUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSNetworkVolumesUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSNetworkVolumesUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSNetworkVolumesUsageDescription present"
 
 verify_codesign "$HELPER_APP_PATH" "deep"
 verify_codesign "$HELPER_EXEC_PATH" "nodeep"
@@ -251,6 +280,27 @@ if [[ "${SKIP_PGM_HELPER_BUILD:-}" != "1" ]]; then
   fi
   if ! plist_value "$PGM_HELPER_INFO" "NSMicrophoneUsageDescription" >/dev/null; then
     echo "[MacSignVerify] PGM Helper is missing NSMicrophoneUsageDescription" >&2
+    exit 1
+  fi
+  # The PGM helper records MP4 files to operator-chosen folders as well.
+  if ! plist_value "$PGM_HELPER_INFO" "NSDocumentsFolderUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSDocumentsFolderUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSDesktopFolderUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSDesktopFolderUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSDownloadsFolderUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSDownloadsFolderUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSRemovableVolumesUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSRemovableVolumesUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSNetworkVolumesUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSNetworkVolumesUsageDescription" >&2
     exit 1
   fi
   verify_codesign "$PGM_HELPER_APP_PATH" "deep"

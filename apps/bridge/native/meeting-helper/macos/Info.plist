@@ -28,6 +28,16 @@
   <string>Broadify Bridge Meeting Helper benötigt Zugriff auf die Kamera, um dein Kamerabild im Meeting-Feature zu erfassen und lokal zu verarbeiten.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Broadify Bridge Meeting Helper benötigt Zugriff auf das Mikrofon, um den Ton für die Meeting-Aufnahme aufzuzeichnen.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Broadify Bridge Meeting Helper benötigt Zugriff auf den Ordner „Dokumente“, um Meeting-Aufnahmen dort zu speichern, wenn du diesen Ordner als Speicherort auswählst.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Broadify Bridge Meeting Helper benötigt Zugriff auf den Schreibtisch, um Meeting-Aufnahmen dort zu speichern, wenn du diesen Ordner als Speicherort auswählst.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Broadify Bridge Meeting Helper benötigt Zugriff auf den Ordner „Downloads“, um Meeting-Aufnahmen dort zu speichern, wenn du diesen Ordner als Speicherort auswählst.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Broadify Bridge Meeting Helper benötigt Zugriff auf externe Laufwerke, um Meeting-Aufnahmen dort zu speichern, wenn du ein externes Laufwerk als Speicherort auswählst.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Broadify Bridge Meeting Helper benötigt Zugriff auf Netzwerklaufwerke, um Meeting-Aufnahmen dort zu speichern, wenn du ein Netzwerklaufwerk als Speicherort auswählst.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key>
