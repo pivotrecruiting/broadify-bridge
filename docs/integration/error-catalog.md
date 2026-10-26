@@ -4,6 +4,9 @@
 - **Outputs not configured**: Output‑Config fehlt → erst `graphics_configure_outputs` senden
 - **Output format not supported**: Format passt nicht zu Display‑Modes
 - **DeckLink helper not executable**: Helper‑Binary fehlt oder keine Exec‑Rechte
+- **Native display helper could not start (STATUS_DLL_NOT_FOUND)** / `diagnostics.display.state = missing_runtime` (Windows, Exit-Code 3221225781 = 0xC0000135, auch 0xC0000139 / 0xC0000142): `display-helper.exe` stirbt vor `main()`, weil die Microsoft-Visual-C++-Runtime fehlt → `vc_redist.x64` installieren oder Bridge neu installieren, dann Bridge neu starten; HDMI-Ausgänge fehlen bis dahin in `/outputs`; Log-Event `windows_display_helper_failed`; Details `docs/bridge/analysis/windows-display-helper-loader-diagnostics.md`
+- **Native display helper exited with code N** / `diagnostics.display.state = helper_failed`: Display-Helper lief, aber Erkennung schlug fehl (Exit ≠ 0, Timeout 2 s, ungültige Antwort) → `stderr_excerpt` im Log-Event `windows_display_helper_failed` prüfen
+- **Native Windows display helper spawn failed (code=ENOENT)** / `diagnostics.display.state = helper_missing`: `display-helper.exe` fehlt in `resources/native/display-helper` → Installation unvollständig, Bridge neu installieren
 - **Port not available**: Port belegt oder nicht verfügbar
 
 ## Engine / ATEM (macOS)

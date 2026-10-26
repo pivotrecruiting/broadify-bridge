@@ -23,6 +23,9 @@ jest.mock("../services/output-diagnostics.js", () => ({
   getDecklinkDeviceCount: jest.fn((devices: Array<{ type?: string }>) =>
     devices.filter((device) => device.type === "decklink").length
   ),
+  getDisplayDeviceCount: jest.fn((devices: Array<{ type?: string }>) =>
+    devices.filter((device) => device.type === "display").length
+  ),
 }));
 
 const mockEnforceLocalOrToken = jest.fn().mockReturnValue(true);

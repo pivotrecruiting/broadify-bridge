@@ -31,6 +31,48 @@ Das Script erfasst:
 `display_list`-Payload der Version 1 liefern. Alle drei Binärartefakte müssen einen
 gültigen Broadify-Signer und die erwarteten Release-Hashes besitzen.
 
+## Exit-Code-Mapping in der Bridge
+
+Seit `feature/display-detection-diagnostics` wertet die Bridge den Exit-Code von
+`display-helper.exe --list-displays` selbst aus (`classifyWindowsHelperExitCode` in
+`apps/bridge/src/modules/display/windows-display-helper.ts`). Node liefert den
+Windows-Exit-Code als unsigned DWORD (z. B. `3221225781`); die Bridge normalisiert mit
+`code >>> 0`, sodass auch eine vorzeichenbehaftete Darstellung (`-1073741515`) erkannt
+wird.
+
+| Exit-Code (dez.) | Hex | NTSTATUS | `kind` / `diagnostics.display.state` | Ursache |
+| ---: | --- | --- | --- | --- |
+| 3221225781 | 0xC0000135 | `STATUS_DLL_NOT_FOUND` | `missing_runtime` | Eine abhängige DLL fehlt – typischerweise `VCRUNTIME140.dll`/`MSVCP140.dll`, d. h. die Microsoft-Visual-C++-Runtime ist nicht installiert |
+| 3221225785 | 0xC0000139 | `STATUS_ENTRYPOINT_NOT_FOUND` | `missing_runtime` | DLL vorhanden, aber zu alt (Export fehlt) – veraltete VC++-Runtime |
+| 3221225794 | 0xC0000142 | `STATUS_DLL_INIT_FAILED` | `missing_runtime` | `DllMain` einer abhängigen DLL schlägt fehl |
+| alle anderen ≠ 0 | – | – | `helper_failed` | Fehler nach Erreichen von `main()` (Enumeration, Ausgabe) |
+| `null` (Signal) | – | – | `helper_failed` | Prozess durch Signal beendet |
+
+Weitere Fehlerarten ohne Exit-Code: `spawn ENOENT` → `helper_missing` (Binary fehlt);
+anderer Spawn-Fehler → `spawn_failed`; Timeout (2 s) → `timeout`; ungültige oder zu große
+Antwort → `invalid_response` / `response_too_large`. Diese drei werden nach außen als
+`helper_failed` gemeldet.
+
+### Was die Bridge dann sichtbar macht
+
+- **Log** (`bridge.log`, Level error):
+  `[DisplayDetector] {"event":"windows_display_helper_failed","kind":"missing_runtime","exit_code":3221225781,"exit_code_hex":"0xC0000135","ntstatus":"STATUS_DLL_NOT_FOUND","stderr_excerpt":"…","helper_path":"<resources>/native/display-helper/display-helper.exe"}`.
+  stderr wird bis 8 KiB gepuffert, der Auszug im Log auf 512 Zeichen gekürzt; der
+  Helper-Pfad ist sanitisiert (kein Benutzername).
+- **`/outputs` / `list_outputs`**: `diagnostics.display = { state: "missing_runtime",
+  message: "Native display helper could not start (STATUS_DLL_NOT_FOUND). The Microsoft
+  Visual C++ runtime is missing; install vc_redist.x64 or reinstall the bridge.",
+  exitCode: 3221225781 }`.
+- Die Module-Registry meldet weiterhin `detection_failed`; der Device-Cache behält den
+  letzten gültigen Stand.
+
+### Support-Hinweis
+
+Bei `missing_runtime` zuerst die Visual-C++-Runtime installieren
+(`vc_redist.x64.exe`, Microsoft „Latest supported Visual C++ Redistributable") und die
+Bridge neu starten; alternativ Bridge neu installieren, sobald der Installer die
+CRT-DLLs mitliefert. Danach `--self-test` wie oben beschrieben ausführen.
+
 ## Release-Gate
 
 Der RC bleibt blockiert, bis derselbe Installer auf dem Kunden-PC ohne `spawn UNKNOWN`

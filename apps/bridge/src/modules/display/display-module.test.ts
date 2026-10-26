@@ -529,6 +529,125 @@ describe("DisplayModule", () => {
       ).toEqual({ deviceName: "\\\\.\\DISPLAY2" });
     });
 
+    it("exposes missing_runtime diagnostics after a loader failure (win32)", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true,
+      });
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const module = new DisplayModule();
+      expect(module.getLastDiagnostics()).toBeNull();
+      const detectPromise = module.detect();
+      setImmediate(() => {
+        child.stderr.emit("data", Buffer.from("VCRUNTIME140.dll was not found"));
+        child.emit("close", 3_221_225_781);
+      });
+
+      await expect(detectPromise).rejects.toThrow("STATUS_DLL_NOT_FOUND");
+      expect(module.getLastDiagnostics()).toEqual({
+        kind: "display",
+        state: "missing_runtime",
+        message: expect.stringContaining("vc_redist.x64"),
+        exitCode: 3_221_225_781,
+      });
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('"event":"windows_display_helper_failed"'),
+      );
+    });
+
+    it("exposes helper_failed diagnostics after an ordinary non-zero exit (win32)", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true,
+      });
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const module = new DisplayModule();
+      const detectPromise = module.detect();
+      setImmediate(() => {
+        child.emit("close", 7);
+      });
+
+      await expect(detectPromise).rejects.toThrow("exited with code 7");
+      expect(module.getLastDiagnostics()).toMatchObject({
+        kind: "display",
+        state: "helper_failed",
+        exitCode: 7,
+      });
+    });
+
+    it("exposes helper_failed diagnostics after a macOS system_profiler failure", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "darwin",
+        configurable: true,
+      });
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const module = new DisplayModule();
+      const detectPromise = module.detect();
+      child.emit("close", 2);
+
+      await expect(detectPromise).rejects.toThrow("system_profiler exited with code 2");
+      expect(module.getLastDiagnostics()).toEqual({
+        kind: "display",
+        state: "helper_failed",
+        message: "system_profiler exited with code 2",
+      });
+    });
+
+    it("exposes ok/no_devices after detection", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true,
+      });
+      const okChild = createMockChild();
+      mockSpawn.mockReturnValueOnce(okChild);
+      const module = new DisplayModule();
+
+      const okPromise = module.detect();
+      setImmediate(() => {
+        okChild.stdout.emit("data", Buffer.from(nativeWindowsDisplayJson()));
+        okChild.emit("close", 0);
+      });
+      await expect(okPromise).resolves.toHaveLength(1);
+      expect(module.getLastDiagnostics()).toEqual({ kind: "display", state: "ok" });
+
+      const emptyChild = createMockChild();
+      mockSpawn.mockReturnValueOnce(emptyChild);
+      const emptyPromise = module.detect();
+      setImmediate(() => {
+        emptyChild.stdout.emit(
+          "data",
+          Buffer.from(
+            JSON.stringify({ type: "display_list", version: 1, displays: [] }),
+          ),
+        );
+        emptyChild.emit("close", 0);
+      });
+      await expect(emptyPromise).resolves.toEqual([]);
+      expect(module.getLastDiagnostics()).toEqual({
+        kind: "display",
+        state: "no_devices",
+      });
+    });
+
+    it("exposes unsupported_platform diagnostics on linux", async () => {
+      Object.defineProperty(process, "platform", {
+        value: "linux",
+        configurable: true,
+      });
+      const module = new DisplayModule();
+      await expect(module.detect()).resolves.toEqual([]);
+      expect(module.getLastDiagnostics()).toEqual({
+        kind: "display",
+        state: "unsupported_platform",
+      });
+    });
+
     it("preserves the last valid macOS output across a parse failure and clears it after a valid disconnect", async () => {
       jest.spyOn(console, "error").mockImplementation(() => undefined);
       Object.defineProperty(process, "platform", {

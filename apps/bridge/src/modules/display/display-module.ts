@@ -1,7 +1,15 @@
 import { spawn } from "node:child_process";
 import type { DeviceDescriptorT } from "@broadify/protocol";
-import type { DeviceController, DeviceModule } from "../device-module.js";
+import type {
+  DeviceController,
+  DeviceModule,
+  DeviceModuleDiagnosticsT,
+} from "../device-module.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
+import {
+  displayDiagnosticsFromError,
+  type DisplayDiagnosticsT,
+} from "./display-diagnostics.js";
 import {
   normalizeConnectionType,
   parseResolution,
@@ -287,6 +295,30 @@ class DisplayController implements DeviceController {
   }
 }
 
+const detectMacOsDisplays = async (): Promise<DeviceDescriptorT[]> => {
+  const rawDisplays = await getSystemProfilerDisplays();
+  return mapRawDisplaysToDevices(rawDisplays, {
+    outputRuntimeSupported: true,
+  });
+};
+
+const detectWindowsDisplays = async (): Promise<DeviceDescriptorT[]> => {
+  const rawDisplays = await listNativeWindowsDisplays();
+  const devices = mapRawDisplaysToDevices(rawDisplays, {
+    outputRuntimeSupported: true,
+  });
+  displayTargetRegistry.replace(
+    devices.flatMap((device, index) => {
+      const nativeSelector = rawDisplays[index]?.nativeSelector;
+      const portId = device.ports[0]?.id;
+      return nativeSelector && portId
+        ? [[portId, { deviceName: nativeSelector }] as const]
+        : [];
+    }),
+  );
+  return devices;
+};
+
 /**
  * Display detector for external monitor outputs.
  *
@@ -295,33 +327,38 @@ class DisplayController implements DeviceController {
 export class DisplayModule implements DeviceModule {
   readonly name = "display";
   readonly detectionTimeoutMs = 6_000;
+  private lastDiagnostics: DisplayDiagnosticsT | null = null;
+
+  /**
+   * Last detection health, surfaced as `outputs.diagnostics.display`.
+   * Null until the first `detect()` call completes or fails.
+   */
+  getLastDiagnostics(): DeviceModuleDiagnosticsT | null {
+    return this.lastDiagnostics
+      ? { kind: "display", ...this.lastDiagnostics }
+      : null;
+  }
 
   async detect(): Promise<DeviceDescriptorT[]> {
-    if (process.platform === "darwin") {
-      const rawDisplays = await getSystemProfilerDisplays();
-      return mapRawDisplaysToDevices(rawDisplays, {
-        outputRuntimeSupported: true,
-      });
+    const platform = process.platform;
+    if (platform !== "darwin" && platform !== "win32") {
+      this.lastDiagnostics = { state: "unsupported_platform" };
+      return [];
     }
 
-    if (process.platform === "win32") {
-      const rawDisplays = await listNativeWindowsDisplays();
-      const devices = mapRawDisplaysToDevices(rawDisplays, {
-        outputRuntimeSupported: true,
-      });
-      displayTargetRegistry.replace(
-        devices.flatMap((device, index) => {
-          const nativeSelector = rawDisplays[index]?.nativeSelector;
-          const portId = device.ports[0]?.id;
-          return nativeSelector && portId
-            ? [[portId, { deviceName: nativeSelector }] as const]
-            : [];
-        }),
-      );
+    try {
+      const devices =
+        platform === "darwin"
+          ? await detectMacOsDisplays()
+          : await detectWindowsDisplays();
+      this.lastDiagnostics = {
+        state: devices.length > 0 ? "ok" : "no_devices",
+      };
       return devices;
+    } catch (error) {
+      this.lastDiagnostics = displayDiagnosticsFromError(error);
+      throw error;
     }
-
-    return [];
   }
 
   createController(deviceId: string): DeviceController {

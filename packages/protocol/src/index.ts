@@ -132,6 +132,30 @@ export type BridgeOutputsDiagnosticsDecklinkStateT =
   | "api_unavailable"
   | "no_devices";
 
+/**
+ * Health state of the external display (HDMI/DisplayPort) detection path.
+ *
+ * - `ok`: the display helper ran and reported at least one external display.
+ * - `unsupported_platform`: the bridge platform has no display detection.
+ * - `helper_missing`: the native display helper binary could not be found
+ *   (spawn failed with ENOENT, e.g. a broken or incomplete installation).
+ * - `missing_runtime`: the native display helper exited with a Windows loader
+ *   failure before reaching `main()`, e.g. STATUS_DLL_NOT_FOUND (0xC0000135)
+ *   because the Microsoft Visual C++ runtime DLLs are not installed. Installing
+ *   vc_redist.x64 or reinstalling the bridge resolves it.
+ * - `helper_failed`: the helper spawned but detection still failed for another
+ *   reason (non-zero exit, timeout, invalid or oversized response, spawn error
+ *   other than ENOENT, or a macOS `system_profiler` failure).
+ * - `no_devices`: detection succeeded but found no external display.
+ */
+export type BridgeOutputsDiagnosticsDisplayStateT =
+  | "ok"
+  | "unsupported_platform"
+  | "helper_missing"
+  | "missing_runtime"
+  | "helper_failed"
+  | "no_devices";
+
 export type BridgeOutputsDiagnosticsT = {
   platform: NodeJS.Platform;
   decklink: {
@@ -139,6 +163,17 @@ export type BridgeOutputsDiagnosticsT = {
     apiVersion?: string;
     helperVersion?: string;
     message?: string;
+  };
+  /**
+   * External display detection health. Absent when the bridge has no display
+   * module registered (older bridges omit the field entirely).
+   */
+  display?: {
+    state: BridgeOutputsDiagnosticsDisplayStateT;
+    /** Human-readable reason for the non-ok state, safe to show in the UI. */
+    message?: string;
+    /** Unsigned helper exit code (Windows DWORD, e.g. 3221225781 = 0xC0000135). */
+    exitCode?: number;
   };
 };
 

@@ -1,5 +1,14 @@
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import type { DecklinkDiagnosticsT } from "./decklink/decklink-helper.js";
+import type { DisplayDiagnosticsT } from "./display/display-diagnostics.js";
+
+/**
+ * Module diagnostics, discriminated by the owning module kind so consumers
+ * can narrow without knowing which module they are talking to.
+ */
+export type DeviceModuleDiagnosticsT =
+  | ({ kind: "decklink" } & DecklinkDiagnosticsT)
+  | ({ kind: "display" } & DisplayDiagnosticsT);
 
 /**
  * Unsubscribe function for device watch callbacks
@@ -60,7 +69,7 @@ export interface DeviceModule {
    * Modules without diagnostics support should omit this method. The bridge
    * uses this metadata for additive health fields on output discovery views.
    */
-  getLastDiagnostics?(): DecklinkDiagnosticsT | null;
+  getLastDiagnostics?(): DeviceModuleDiagnosticsT | null;
 
   /**
    * Optional: Watch for device hotplug events

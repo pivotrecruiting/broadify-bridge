@@ -1,9 +1,14 @@
 import { EventEmitter } from "node:events";
 import { setBridgeContext } from "../../services/bridge-context.js";
 import {
+  WINDOWS_LOADER_FAILURE_EXIT_CODES,
+  WindowsDisplayHelperError,
+  classifyWindowsHelperExitCode,
   listNativeWindowsDisplays,
   parseNativeWindowsDisplayList,
 } from "./windows-display-helper.js";
+
+const STATUS_DLL_NOT_FOUND = 3_221_225_781;
 
 const mockLogger = {
   info: jest.fn(),
@@ -216,6 +221,139 @@ describe("windows-display-helper", () => {
     child.emit("close", 7);
 
     await expect(resultPromise).rejects.toThrow("exited with code 7");
+  });
+
+  it("maps exit code 3221225781 to missing_runtime, logs a stderr excerpt and a readable message", async () => {
+    const child = createMockChild();
+    const resultPromise = listWithSpawn(() => child);
+
+    child.stderr.emit(
+      "data",
+      Buffer.from("The code execution cannot proceed because VCRUNTIME140.dll was not found."),
+    );
+    child.emit("close", STATUS_DLL_NOT_FOUND);
+
+    await expect(resultPromise).rejects.toBeInstanceOf(WindowsDisplayHelperError);
+    const error = (await resultPromise.catch((e: unknown) => e)) as WindowsDisplayHelperError;
+    expect(error.kind).toBe("missing_runtime");
+    expect(error.exitCode).toBe(STATUS_DLL_NOT_FOUND);
+    expect(error.stderrExcerpt).toContain("VCRUNTIME140.dll");
+    expect(error.message).toContain("STATUS_DLL_NOT_FOUND");
+    expect(error.message).toContain("Visual C++");
+    expect(error.message).toContain("vc_redist.x64");
+
+    const logEntry = mockLogger.error.mock.calls[0]?.[0] as string;
+    expect(logEntry).toContain('"event":"windows_display_helper_failed"');
+    expect(logEntry).toContain('"kind":"missing_runtime"');
+    expect(logEntry).toContain(`"exit_code":${STATUS_DLL_NOT_FOUND}`);
+    expect(logEntry).toContain('"exit_code_hex":"0xC0000135"');
+    expect(logEntry).toContain('"ntstatus":"STATUS_DLL_NOT_FOUND"');
+    expect(logEntry).toContain("VCRUNTIME140.dll");
+    expect(logEntry).toContain(
+      '"helper_path":"<resources>/native/display-helper/display-helper.exe"',
+    );
+    expect(logEntry).not.toContain("customer");
+  });
+
+  it("treats other non-zero exits as helper_failed", async () => {
+    const child = createMockChild();
+    const resultPromise = listWithSpawn(() => child);
+
+    child.stderr.emit("data", Buffer.from("display enumeration failed"));
+    child.emit("close", 7);
+
+    const error = (await resultPromise.catch((e: unknown) => e)) as WindowsDisplayHelperError;
+    expect(error).toBeInstanceOf(WindowsDisplayHelperError);
+    expect(error.kind).toBe("helper_failed");
+    expect(error.exitCode).toBe(7);
+    expect(error.stderrExcerpt).toBe("display enumeration failed");
+    expect(error.message).toContain("exited with code 7");
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining('"kind":"helper_failed"'),
+    );
+  });
+
+  it("caps buffered stderr at 8 KiB and truncates the logged excerpt", async () => {
+    const child = createMockChild();
+    const resultPromise = listWithSpawn(() => child);
+
+    child.stderr.emit("data", Buffer.alloc(10_000, "e"));
+    child.emit("close", 1);
+
+    const error = (await resultPromise.catch((e: unknown) => e)) as WindowsDisplayHelperError;
+    expect(error.stderrExcerpt).toHaveLength(512);
+    const logEntry = mockLogger.error.mock.calls[0]?.[0] as string;
+    expect(logEntry.length).toBeLessThan(2_000);
+  });
+
+  it("maps a missing helper binary (ENOENT) to helper_missing", async () => {
+    const child = createMockChild();
+    const resultPromise = listWithSpawn(() => child);
+
+    child.emit(
+      "error",
+      Object.assign(new Error(`spawn ${HELPER_PATH} ENOENT`), {
+        code: "ENOENT",
+        errno: -4058,
+        syscall: `spawn ${HELPER_PATH}`,
+      }),
+    );
+
+    const error = (await resultPromise.catch((e: unknown) => e)) as WindowsDisplayHelperError;
+    expect(error).toBeInstanceOf(WindowsDisplayHelperError);
+    expect(error.kind).toBe("helper_missing");
+  });
+
+  it("tags timeout, invalid response and oversized response errors with their kinds", async () => {
+    jest.useFakeTimers();
+    const timeoutChild = createMockChild();
+    const timeoutErrorPromise = listWithSpawn(() => timeoutChild).catch(
+      (e: unknown) => e,
+    );
+    await jest.advanceTimersByTimeAsync(2_000);
+    const timeoutError = (await timeoutErrorPromise) as WindowsDisplayHelperError;
+    expect(timeoutError.kind).toBe("timeout");
+    jest.useRealTimers();
+
+    const invalidChild = createMockChild();
+    const invalidPromise = listWithSpawn(() => invalidChild);
+    invalidChild.stdout.emit("data", Buffer.from("not-json"));
+    invalidChild.emit("close", 0);
+    const invalidError = (await invalidPromise.catch((e: unknown) => e)) as WindowsDisplayHelperError;
+    expect(invalidError.kind).toBe("invalid_response");
+
+    const largeChild = createMockChild();
+    const largePromise = listWithSpawn(() => largeChild);
+    largeChild.stdout.emit("data", Buffer.alloc(1_048_577, "x"));
+    const largeError = (await largePromise.catch((e: unknown) => e)) as WindowsDisplayHelperError;
+    expect(largeError.kind).toBe("response_too_large");
+  });
+
+  describe("classifyWindowsHelperExitCode", () => {
+    it("classifies the known loader NTSTATUS codes as missing_runtime", () => {
+      expect(classifyWindowsHelperExitCode(0xc0000135)).toBe("missing_runtime");
+      expect(classifyWindowsHelperExitCode(3_221_225_781)).toBe("missing_runtime");
+      expect(classifyWindowsHelperExitCode(0xc0000139)).toBe("missing_runtime");
+      expect(classifyWindowsHelperExitCode(0xc0000142)).toBe("missing_runtime");
+    });
+
+    it("normalises a signed 32-bit representation of the loader code", () => {
+      expect(classifyWindowsHelperExitCode(0xc0000135 | 0)).toBe("missing_runtime");
+      expect(classifyWindowsHelperExitCode(-1_073_741_515)).toBe("missing_runtime");
+    });
+
+    it("classifies ordinary exits and unknown codes as helper_failed", () => {
+      expect(classifyWindowsHelperExitCode(1)).toBe("helper_failed");
+      expect(classifyWindowsHelperExitCode(7)).toBe("helper_failed");
+      expect(classifyWindowsHelperExitCode(0xc0000005)).toBe("helper_failed");
+      expect(classifyWindowsHelperExitCode(null)).toBe("helper_failed");
+    });
+
+    it("names the three loader failures", () => {
+      expect(WINDOWS_LOADER_FAILURE_EXIT_CODES[0xc0000135]).toBe("STATUS_DLL_NOT_FOUND");
+      expect(WINDOWS_LOADER_FAILURE_EXIT_CODES[0xc0000139]).toBe("STATUS_ENTRYPOINT_NOT_FOUND");
+      expect(WINDOWS_LOADER_FAILURE_EXIT_CODES[0xc0000142]).toBe("STATUS_DLL_INIT_FAILED");
+    });
   });
 
   it("rejects invalid helper JSON", async () => {
