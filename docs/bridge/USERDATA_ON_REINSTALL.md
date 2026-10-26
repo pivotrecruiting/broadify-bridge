@@ -36,6 +36,7 @@ Die App (`.app`-Bundle in `/Applications`) und dieser Datenordner sind **voneina
 | `graphics-output.json` | Grafik-Ausgabe-Konfiguration (Zielbildschirm, Auflösung …). |
 | `graphics-assets/` + `assets.json` | Hochgeladene Grafik-Assets (Lower Thirds, Bilder …) und deren Manifest. |
 | `graphics/` | Arbeits-/Ablageverzeichnis der Grafik-Engine. |
+| `studio-adapters/canon-xc-devices.json` | Gespeicherte Canon-XC-Kameras (Host, Port, Zugangsdaten). Ist die Datei defekt (kein JSON / Schema verletzt), zeigt die Bridge keine Kameras an, loggt `[CanonXC] Device store invalid` und lässt die Datei unangetastet; beim nächsten Speichern wird sie als `canon-xc-devices.json.corrupt-<timestamp>` daneben gesichert und neu geschrieben. Die `.corrupt-*`-Sicherung kann manuell zurückbenannt werden. |
 | `graphics-renderer-profile/` | Isoliertes Electron-Profil des Offscreen-Graphics-Renderers. Enthält nur Renderer-Runtime-/Chromium-State. |
 | `.env` | Lokale Env-Overrides für Support/Betrieb. Honorierte Schlüsselfamilien: Updater (`BROADIFY_DISABLE_AUTO_UPDATE`, `BROADIFY_UPDATER_CHECK_INTERVAL_MS`, `BROADIFY_UPDATER_GITHUB_TOKEN`), WebApp-URL (`PRODUCTION_STUDIO_CONTROL_WEBAPP_URL`), Logging (`BRIDGE_LOG_*`), Graphics (`BRIDGE_GRAPHICS_*`), TLS (`NODE_USE_SYSTEM_CA`), VCam (`BRIDGE_VCAM_AUTO_UPGRADE_ON_START`). Fehlt die Datei, wird sie beim ersten Start aus dem Paket geseedet; fehlende Schlüssel werden aus dem Paket nachgefüllt. Release-gemanagte Schlüssel (`BROADIFY_UPDATER_CHANNEL`, `RELAY_URL`, `BRIDGE_RELAY_JWKS_URL`) werden **immer** vom Paket überschrieben. Gepackte Builds lesen **keine** `.env` aus dem Arbeitsverzeichnis (nur Dev). Beim Start werden die **Namen** der gesetzten Schlüssel (nie Werte) in `app.log` protokolliert: `[Env] userData/.env keys: …`. |
 | `.updaterId` | Installations-ID des Updaters. |
@@ -67,8 +68,8 @@ löschen, nachdem der Renderer-Prozess vollständig beendet wurde.
 
 - **Normales Update/Reinstall:** Daten bleiben erhalten — nichts zu tun.
 - **Vor einer cleanen Neuinstallation sichern:** `network-config.json`, `bridge-id.json`,
-  `bridge-profile.json`, `security/relay-bridge-identity.json`, `graphics-output.json`
-  und `graphics-assets/`.
+  `bridge-profile.json`, `security/relay-bridge-identity.json`, `graphics-output.json`,
+  `studio-adapters/canon-xc-devices.json` und `graphics-assets/`.
 - **RC zum Testen:** RC und Produktion teilen sich **keine** Daten (eigener Ordner) —
   ideal, um produktive Konfiguration nicht zu beeinflussen.
 

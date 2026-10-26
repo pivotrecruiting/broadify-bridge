@@ -1,9 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, rename } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import type { z } from "zod";
 
 import { getBridgeContext } from "../bridge-context.js";
+import { atomicWriteJson } from "../graphics/file-utils.js";
+import { CanonDevicesFileSchema } from "./canon-xc-device-store-schema.js";
 
 const CANON_XC_PATH_PREFIX = "/-wvhttp-01-/";
 const CANON_DEVICES_FILE = "canon-xc-devices.json";
@@ -108,11 +111,6 @@ export type CanonXCResponseT = {
   result: Record<string, unknown>;
   rawError: string | null;
   diagnostic: CanonXCDiagnosticT | null;
-};
-
-type CanonDevicesFileT = {
-  devices?: CanonXCDeviceT[];
-  updatedAt?: string;
 };
 
 type CanonHttpResponseT = {
@@ -315,6 +313,17 @@ const normalizeDevice = (
   };
 };
 
+const MAX_STORE_ISSUES_LOGGED = 3;
+
+const summarizeStoreIssues = (error: z.ZodError): string => {
+  const issues = error.issues.slice(0, MAX_STORE_ISSUES_LOGGED).map((issue) => {
+    const issuePath = issue.path.join(".") || "root";
+    return `${issuePath}: ${issue.message}`;
+  });
+  const hidden = error.issues.length - issues.length;
+  return hidden > 0 ? `${issues.join("; ")} (+${hidden} more)` : issues.join("; ");
+};
+
 const publicDevice = (device: CanonXCDeviceT): CanonXCPublicDeviceT => ({
   id: device.deviceId,
   deviceId: device.deviceId,
@@ -333,6 +342,11 @@ const publicDevice = (device: CanonXCDeviceT): CanonXCPublicDeviceT => ({
  */
 export class CanonXCService {
   private readonly timeoutMs: number;
+  /**
+   * Set when the store file exists but cannot be parsed or validated. The next
+   * save then moves the file aside instead of overwriting the operator's data.
+   */
+  private storeCorrupt = false;
 
   constructor(timeoutMs = 4_000) {
     this.timeoutMs = timeoutMs;
@@ -965,23 +979,66 @@ export class CanonXCService {
   }
 
   private async loadDevices(): Promise<CanonXCDeviceT[]> {
+    const filePath = this.filePath();
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath(), "utf8");
-      const parsed = JSON.parse(raw) as CanonDevicesFileT;
-      return Array.isArray(parsed.devices) ? parsed.devices.map((device) => normalizeDevice(device, device.deviceId)) : [];
-    } catch {
+      raw = await readFile(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+        // First run: nothing stored yet, nothing to protect.
+        this.storeCorrupt = false;
+        return [];
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      getBridgeContext().logger.warn(`[CanonXC] Device store unreadable: ${message}`);
       return [];
     }
+
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      // Do not echo the parser message: it quotes file content, which may
+      // include stored credentials.
+      this.markStoreCorrupt("not valid JSON");
+      return [];
+    }
+
+    const parsed = CanonDevicesFileSchema.safeParse(json);
+    if (!parsed.success) {
+      this.markStoreCorrupt(summarizeStoreIssues(parsed.error));
+      return [];
+    }
+
+    this.storeCorrupt = false;
+    return parsed.data.devices.map((device) => normalizeDevice(device, device.deviceId));
+  }
+
+  private markStoreCorrupt(summary: string): void {
+    this.storeCorrupt = true;
+    getBridgeContext().logger.warn(
+      `[CanonXC] Device store invalid; leaving the file untouched: ${summary}`,
+    );
   }
 
   private async saveDevices(devices: CanonXCDeviceT[]): Promise<void> {
     const filePath = this.filePath();
-    await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(
-      filePath,
-      JSON.stringify({ devices, updatedAt: new Date().toISOString() }, null, 2),
-      "utf8",
-    );
+    if (this.storeCorrupt) {
+      const backupPath = `${filePath}.corrupt-${Date.now()}`;
+      try {
+        await rename(filePath, backupPath);
+        getBridgeContext().logger.warn(
+          `[CanonXC] Device store was invalid; preserved it as ${backupPath} before rewriting`,
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+          throw error;
+        }
+        // The file vanished in the meantime; nothing left to preserve.
+      }
+    }
+    await atomicWriteJson(filePath, { devices, updatedAt: new Date().toISOString() });
+    this.storeCorrupt = false;
   }
 
   private filePath(): string {

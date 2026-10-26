@@ -19,6 +19,7 @@
 - **connection_refused / ECONNREFUSED**: Host antwortet, aber Port/Protokoll passt nicht → Canon-Port und HTTP/HTTPS-Einstellung prüfen
 - **timeout / ETIMEDOUT**: Keine rechtzeitige Antwort → Adresse, Port, Kamera-Netzwerkmodus, Firewall und Local Network Permission prüfen
 - **canon_xc_failed**: Fallback-`errorCode` im Command-Ergebnis, wenn die Kamera-Antwort `ok:false` ist, aber keinen Diagnose-Code liefert (z. B. unerwartete HTTP-Antwort ohne Netzwerkfehler) → `error`/`data.message` und `data.result.response` prüfen; sonst trägt `errorCode` den Canon-Diagnose-Code aus dieser Liste (`timeout`, `connection_refused`, …)
+- **[CanonXC] Device store invalid; leaving the file untouched**: `studio-adapters/canon-xc-devices.json` ist kein gültiges JSON oder verletzt das Schema → Kameraliste erscheint leer, Datei bleibt erhalten; beim nächsten Speichern wird sie als `canon-xc-devices.json.corrupt-<timestamp>` gesichert (Warnung mit Pfad) und neu angelegt
 
 ## Desktop
 - **Port already in use**: Bridge kann Port nicht binden (Health‑Check Fehler)

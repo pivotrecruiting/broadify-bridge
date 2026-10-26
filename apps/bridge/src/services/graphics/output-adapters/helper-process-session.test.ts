@@ -7,7 +7,7 @@ jest.mock("node:child_process", () => ({
 }));
 
 function createMockChild(): EventEmitter & {
-  stdin: EventEmitter & { write: jest.Mock; end: jest.Mock };
+  stdin: EventEmitter & { writable: boolean; write: jest.Mock; end: jest.Mock };
   stdout: EventEmitter;
   stderr: EventEmitter;
   kill: jest.Mock;
@@ -15,7 +15,7 @@ function createMockChild(): EventEmitter & {
   signalCode: NodeJS.Signals | null;
 } {
   const child = new EventEmitter() as EventEmitter & {
-    stdin: EventEmitter & { write: jest.Mock; end: jest.Mock };
+    stdin: EventEmitter & { writable: boolean; write: jest.Mock; end: jest.Mock };
     stdout: EventEmitter;
     stderr: EventEmitter;
     kill: jest.Mock;
@@ -23,6 +23,7 @@ function createMockChild(): EventEmitter & {
     signalCode: NodeJS.Signals | null;
   };
   child.stdin = Object.assign(new EventEmitter(), {
+    writable: true,
     write: jest.fn().mockReturnValue(true),
     end: jest.fn(),
   });
@@ -201,5 +202,45 @@ describe("HelperProcessSession", () => {
     expect(logger.debug).toHaveBeenCalledWith(
       expect.stringContaining("new_future_event"),
     );
+  });
+  it("tolerates an EPIPE error on stdin after start without throwing", async () => {
+    const child = createMockChild();
+    mockSpawn.mockReturnValue(child);
+    const logger = { debug: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const session = createSession({ logger });
+
+    const started = session.start();
+    child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+    await started;
+
+    expect(() =>
+      child.stdin.emit(
+        "error",
+        Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+      ),
+    ).not.toThrow();
+    expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining("EPIPE"));
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("EPIPE"));
+  });
+
+  it("stop resolves even when the shutdown write to stdin throws", async () => {
+    const child = createMockChild();
+    child.stdin.write.mockImplementation(() => {
+      throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    });
+    child.stdin.end.mockImplementation(() => {
+      throw Object.assign(new Error("write after end"), { code: "ERR_STREAM_WRITE_AFTER_END" });
+    });
+    mockSpawn.mockReturnValue(child);
+    const session = createSession({
+      stopStrategy: { shutdownHeader: Buffer.from("quit"), gracefulMs: 25, forceMs: 25 },
+    });
+
+    const started = session.start();
+    child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+    await started;
+
+    await expect(session.stop()).resolves.toBeUndefined();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 });

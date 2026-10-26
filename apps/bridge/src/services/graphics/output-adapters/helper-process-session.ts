@@ -1,6 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { LoggerLikeT } from "../../bridge-context.js";
 import { stopChildProcessWithEscalation } from "../../shared/child-process-exit.js";
+import {
+  attachChildStdinErrorHandler,
+  writeChildStdin,
+} from "../../shared/child-process-stdin.js";
 
 export type HelperLifecycleEventT =
   | { type: "playback_started" }
@@ -67,6 +71,9 @@ export class HelperProcessSession {
       env: this.options.env,
     });
     this.child = child;
+    // A helper that already closed its pipe raises an asynchronous EPIPE on
+    // stdin; without a listener Node turns that into an uncaughtException.
+    attachChildStdinErrorHandler(child, this.options.label, this.options.logger);
 
     child.stdout?.on("data", (data) => this.handleStdout(data));
     child.stderr?.on("data", (data) => this.handleStderr(data));
@@ -107,10 +114,17 @@ export class HelperProcessSession {
     this.rejectReady(new Error(`${this.options.label} helper stopped before ready`));
     await stopChildProcessWithEscalation(child, {
       requestShutdown: () => {
-        if (this.options.stopStrategy.shutdownHeader && child.stdin) {
-          child.stdin.write(this.options.stopStrategy.shutdownHeader);
-          child.stdin.end();
-          return;
+        const shutdownHeader = this.options.stopStrategy.shutdownHeader;
+        if (shutdownHeader && child.stdin) {
+          if (writeChildStdin(child, shutdownHeader, this.options.label, this.options.logger)) {
+            try {
+              child.stdin.end();
+            } catch {
+              // Stream already closed; the escalation below still bounds the stop.
+            }
+            return;
+          }
+          // stdin is gone: fall through and signal the process directly.
         }
         child.kill("SIGTERM");
       },
