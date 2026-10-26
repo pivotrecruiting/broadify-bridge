@@ -106,6 +106,7 @@ async function verifyNativeDependencies({
         const verdict = evaluateDependencies({
           imports,
           siblingFiles: group.siblingFiles,
+          file: peFile,
         });
         for (const missing of verdict.missing) {
           problems.push({ file: relativeFile, missing });

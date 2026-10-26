@@ -153,6 +153,30 @@ test("a missing CRT DLL is reported by name, OS DLLs are never reported", () => 
   });
 });
 
+test("a driver-provided import is tolerated only for the plugin that owns it", () => {
+  // rc.15 release job: openvino_intel_gpu_plugin.dll -> OpenCL.dll (Intel
+  // graphics driver ICD loader, present only where the plugin can load).
+  const plugin = evaluateDependencies({
+    imports: ["KERNEL32.dll", "OpenCL.dll", "openvino.dll"],
+    siblingFiles: ["openvino.dll", "openvino_intel_gpu_plugin.dll"],
+    file: "openvino_intel_gpu_plugin.dll",
+  });
+  assert.deepEqual(plugin, { ok: true, missing: [] });
+
+  const exe = evaluateDependencies({
+    imports: ["KERNEL32.dll", "OpenCL.dll"],
+    siblingFiles: ["meeting-helper.exe"],
+    file: "meeting-helper.exe",
+  });
+  assert.deepEqual(exe, { ok: false, missing: ["OpenCL.dll"] });
+
+  const noFile = evaluateDependencies({
+    imports: ["OpenCL.dll"],
+    siblingFiles: [],
+  });
+  assert.deepEqual(noFile, { ok: false, missing: ["OpenCL.dll"] });
+});
+
 test("sibling matching is case-insensitive", () => {
   const result = evaluateDependencies({
     imports: ["MSVCP140.dll", "VCRUNTIME140.dll", "OpenVINO.DLL"],
