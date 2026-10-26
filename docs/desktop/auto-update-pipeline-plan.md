@@ -16,7 +16,7 @@ Die Desktop-App soll Updates direkt in der App erkennen, herunterladen und insta
 - Rollout: stabiler Kanal (`latest`) plus produktiver Testkanal (`rc`).
 
 ## Kritische Entscheidungen (vor Umsetzung final bestätigen)
-- Windows-Target: Für sauberes In-App Auto-Update bleibt `nsis` der primäre Updater-Pfad; zusätzlich wird `msi` als manueller Kundeninstaller veröffentlicht.
+- Windows-Target: Für sauberes In-App Auto-Update bleibt `nsis` der primäre Updater-Pfad; zusätzlich wird `msi` als manueller Kundeninstaller veröffentlicht. MSI-/Portable-Installationen (erkennbar am fehlenden `resources\elevate.exe`) deaktivieren den In-App-Updater mit Hinweis auf die `.exe`, da der NSIS-Updater dort nicht installieren kann.
 - macOS-Architektur: zunächst arm64-only oder wieder arm64+x64 mit sauberer Metadaten-Strategie.
 - Private vs Public Releases: bei privaten Repositories Token-Strategie für Update-Checks definieren.
 

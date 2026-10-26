@@ -29,6 +29,7 @@ Die App (`.app`-Bundle in `/Applications`) und dieser Datenordner sind **voneina
 | Datei / Ordner | Inhalt |
 |---|---|
 | `network-config.json` | Netzwerk-/Mixer-Konfiguration (ATEM etc.). Nur im Dev-Modus wird sie beim ersten Start aus `config/network-config.json` im Arbeitsverzeichnis kopiert; gepackte Builds starten mit dem eingebauten Default. |
+| `engine/engine-connection.json` | Zuletzt gewählte Mixer-Verbindung, die die Bridge beim Start automatisch wiederherstellt. Form: `{ type, transport: "network", ip, port }` bzw. für USB `{ type, transport: "usb" }` ohne `ip`/`port` (ältere Dateien mit `ip: ""`/`port: 0` werden weiter gelesen). Verlust → Verbindung einmal manuell neu wählen. |
 | `bridge-id.json` | Stabile Bridge-ID (UUID). Neu → die Bridge gilt für Backend/Relay als andere Instanz. |
 | `bridge-profile.json` | Vom Nutzer gesetzter Bridge-Name + Zeitpunkt der AGB-Zustimmung (`termsAcceptedAt`). Verlust → Name weg, AGB müssen erneut akzeptiert werden. |
 | `security/relay-bridge-identity.json` | Relay-Identität / Pairing (Datei-Rechte `0600`). Verlust → Bridge muss sich neu mit dem Relay verbinden/pairen. |

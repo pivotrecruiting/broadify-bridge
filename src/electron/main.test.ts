@@ -515,6 +515,101 @@ describe("main", () => {
       expect(mockStart).toHaveBeenCalled();
     });
 
+    it("bridgeStart returns the web app URL alongside the start result", async () => {
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(true);
+      // No env override in tests -> production default base URL.
+      expect(typeof result.webAppUrl).toBe("string");
+      expect(result.webAppUrl).toBe("https://app.broadify.de/");
+      // The same URL is pushed via the initial bridgeStatus event.
+      expect(mockIpcWebContentsSend).toHaveBeenCalledWith(
+        "bridgeStatus",
+        expect.anything(),
+        expect.objectContaining({ running: true, webAppUrl: result.webAppUrl }),
+      );
+    });
+
+    it("bridgeStart returns the configured web app URL when the env var is set", async () => {
+      const previous = process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+      process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL =
+        "https://studio.example.test/control";
+      try {
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        const result = await handler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        expect(result.success).toBe(true);
+        expect(result.webAppUrl).toBe("https://studio.example.test/control");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+        } else {
+          process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = previous;
+        }
+      }
+    });
+
+    it("bridgeStart omits webAppUrl when the configured base URL is invalid", async () => {
+      const previous = process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+      process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = "not a valid url";
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      try {
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        const result = await handler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        expect(result.success).toBe(true);
+        expect(result.webAppUrl).toBeUndefined();
+        expect("webAppUrl" in result).toBe(false);
+      } finally {
+        consoleErrorSpy.mockRestore();
+        if (previous === undefined) {
+          delete process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+        } else {
+          process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = previous;
+        }
+      }
+    });
+
+    it("bridgeStart failure does not carry a web app URL", async () => {
+      mockStart.mockResolvedValueOnce({ success: false, error: "boom" });
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(false);
+      expect(result.webAppUrl).toBeUndefined();
+    });
+
     it("prevents app suspension while the bridge runs", async () => {
       await readyHandlers[0]();
       const startIndex = mockIpcMainHandle.mock.calls.findIndex(
@@ -1148,6 +1243,11 @@ describe("main", () => {
 describe("main graphics-renderer path", () => {
   const originalArgv = process.argv;
 
+  beforeEach(() => {
+    mockAppExit.mockClear();
+    mockRequestSingleInstanceLock.mockClear();
+  });
+
   afterEach(() => {
     process.argv = originalArgv;
   });
@@ -1159,5 +1259,43 @@ describe("main graphics-renderer path", () => {
     await import("./main.js");
     expect(mockAppExit).toHaveBeenCalledWith(1);
     consoleSpy.mockRestore();
+  });
+
+  it("exits with code 1 when the renderer entry is outside the allowed roots", async () => {
+    // app.getAppPath() is mocked to "/app" and process.resourcesPath is unset
+    // under Jest, so /tmp/evil can never be inside an allowed root.
+    process.argv = [
+      "electron",
+      "/app",
+      "--graphics-renderer",
+      "--renderer-entry",
+      "/tmp/evil/electron-renderer-entry.js",
+    ];
+    jest.resetModules();
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const logSpy = jest.spyOn(console, "log").mockImplementation();
+    await import("./main.js");
+    expect(mockAppExit).toHaveBeenCalledWith(1);
+    const rejection = errorSpy.mock.calls.find((call) =>
+      String(call[0]).includes("Rejected renderer entry"),
+    );
+    expect(rejection).toBeDefined();
+    for (const call of [...errorSpy.mock.calls, ...logSpy.mock.calls]) {
+      expect(call.map(String).join(" ")).not.toContain("/tmp/evil");
+    }
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it("does not treat a positional entry path without --graphics-renderer as aux mode", async () => {
+    process.argv = ["electron", "/tmp/evil/electron-renderer-entry.js"];
+    jest.resetModules();
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const logSpy = jest.spyOn(console, "log").mockImplementation();
+    await import("./main.js");
+    expect(mockRequestSingleInstanceLock).toHaveBeenCalled();
+    expect(mockAppExit).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
   });
 });

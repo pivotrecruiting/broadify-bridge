@@ -39,10 +39,13 @@ sequenceDiagram
   Main->>Bridge: start health polling (/status + /relay/status)
   Main-->>Preload: bridgeStatus event
   Preload-->>UI: subscribeBridgeStatus callback
+  Main-->>Preload: result {success, actualPort?, webAppUrl?}
+  Preload-->>UI: result -> openExternal(webAppUrl)
 ```
 
 Wesentliche Punkte:
 - Terms-Akzeptanz und Bridge-Name werden im Main Process erzwungen.
+- Die WebApp wird anhand des `bridgeStart`-Ergebnisses (`webAppUrl`) geoeffnet, nicht anhand eines `bridgeStatus`-Events (Details: `architecture-overview.md`, Abschnitt Bridge Start/Stop).
 - Pairing-Code wird pro Start erzeugt und als Status-Info an UI uebergeben.
 - Bei Host `0.0.0.0` werden lokale HTTP-Checks gegen `127.0.0.1` ausgefuehrt.
 

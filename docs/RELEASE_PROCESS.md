@@ -438,6 +438,10 @@ Für Windows zusätzlich prüfen:
 - Der Workflow-Schritt `Smoke test Windows MSI install` ist erfolgreich.
 - `latest.yml` verweist auf die NSIS-`.exe`; die `.msi` ist nur manueller Download.
 
+Für macOS zusätzlich prüfen:
+
+- Der Build-Schritt `verify-macos-release-signing.sh` ist erfolgreich und loggt `[MacSignVerify] Main executable LC_UUID -> <uuid>`. Die UUID muss sich zwischen Prod und RC unterscheiden (Local-Network-Privacy, siehe `docs/signing/apple-signing.md`, Abschnitt "Main executable UUID"). Manuell: `dwarfdump --uuid "<App>.app/Contents/MacOS/<Name>"` gegen `node scripts/patch-macos-main-executable-uuid.cjs --print-expected ...`.
+
 Für RC-Releases zusätzlich prüfen:
 
 - Release ist in GitHub als `Pre-release` markiert
