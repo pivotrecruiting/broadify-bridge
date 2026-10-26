@@ -4,6 +4,7 @@ import {
   getArgMap,
   resolveRendererEntry,
 } from "./main-argv.js";
+import { resolveAllowedRendererEntry } from "./renderer-entry-policy.js";
 import { ipcMainHandle, isDev, ipcWebContentsSend } from "./util.js";
 import { getPreloadPath, getUIPath, getIconPath } from "./pathResolver.js";
 import { getStaticData, pollResources } from "./test.js";
@@ -63,8 +64,9 @@ const APP_SHUTDOWN_TIMEOUT_MS = 30000;
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
-const isRendererProcess =
-  argMap.has("graphics-renderer") || Boolean(rendererEntry);
+// Aux mode is opted into by the explicit flag only; a renderer entry on its
+// own never switches the desktop binary into aux mode.
+const isRendererProcess = argMap.has("graphics-renderer");
 
 if (!isRendererProcess) {
   app.commandLine.appendSwitch(
@@ -78,15 +80,33 @@ if (isRendererProcess) {
     console.error("[GraphicsRenderer] Missing --renderer-entry argument");
     app.exit(1);
   } else {
-    console.log(
-      `[GraphicsRenderer] Aux mode enabled (entry: ${rendererEntry})`,
+    // Security: the entry comes from argv and is untrusted. Only files that
+    // ship with the app (under the resources dir or the app path) and carry
+    // an allowlisted basename may be imported into this signed process. The
+    // rejected path is deliberately not logged.
+    const allowedRoots = [process.resourcesPath, app.getAppPath()].filter(
+      Boolean,
     );
-    const entryUrl = pathToFileURL(rendererEntry).toString();
-    import(entryUrl).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
-      app.exit(1);
+    const resolution = resolveAllowedRendererEntry({
+      entry: rendererEntry,
+      allowedRoots,
     });
+    if (!resolution.ok) {
+      console.error(
+        `[GraphicsRenderer] Rejected renderer entry (${resolution.reason})`,
+      );
+      app.exit(1);
+    } else {
+      console.log(
+        `[GraphicsRenderer] Aux mode enabled (entry: ${resolution.path})`,
+      );
+      const entryUrl = pathToFileURL(resolution.path).toString();
+      import(entryUrl).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
+        app.exit(1);
+      });
+    }
   }
 }
 
