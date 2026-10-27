@@ -453,7 +453,31 @@ echo "[MacSignVerify] packaged CoreML model hashes verified"
 spctl -a -t exec -vv "$APP_PATH"
 echo "[MacSignVerify] spctl accepted app"
 
-xcrun stapler validate "$APP_PATH"
+# `stapler validate` asks Apple's CloudKit for the ticket; on hosted runners
+# that call intermittently fails with NSURLErrorDomain -1005 ("The network
+# connection was lost", stapler exit 68) although the app is notarized and
+# spctl accepted it above (seen twice on 2026-10-27). Retry a few times before
+# treating it as a real failure.
+STAPLER_VALIDATE_ATTEMPTS="${STAPLER_VALIDATE_ATTEMPTS:-4}"
+STAPLER_VALIDATE_BACKOFF_SECONDS="${STAPLER_VALIDATE_BACKOFF_SECONDS:-20}"
+stapler_validate_with_retry() {
+  local target="$1"
+  local attempt=1
+  while true; do
+    if xcrun stapler validate "$target"; then
+      return 0
+    fi
+    if (( attempt >= STAPLER_VALIDATE_ATTEMPTS )); then
+      echo "[MacSignVerify] stapler validate failed ${attempt}x for ${target}" >&2
+      return 1
+    fi
+    echo "[MacSignVerify] stapler validate attempt ${attempt}/${STAPLER_VALIDATE_ATTEMPTS} failed; retrying in ${STAPLER_VALIDATE_BACKOFF_SECONDS}s" >&2
+    sleep "$STAPLER_VALIDATE_BACKOFF_SECONDS"
+    attempt=$((attempt + 1))
+  done
+}
+
+stapler_validate_with_retry "$APP_PATH"
 echo "[MacSignVerify] stapler validate ok -> ${APP_PATH}"
 
 DMG_PATH="$(find "${ROOT_DIR}/dist" -maxdepth 1 -type f \( -name "Broadify-Bridge-*-${NORMALIZED_ARCH}.dmg" -o -name "Broadify-Bridge-RC-*-${NORMALIZED_ARCH}.dmg" \) -print -quit)"
