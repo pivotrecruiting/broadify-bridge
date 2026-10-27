@@ -70,8 +70,11 @@ foreach ($relativePath in $vcRuntimePaths) {
   if ($signature.Status -ne 'Valid') {
     throw "MSVC runtime DLL has no valid Authenticode signature ($($signature.Status)): $dllPath"
   }
+  # Microsoft signs the VC++ runtime with CN=Microsoft Windows (not
+  # CN=Microsoft Corporation); the organisation is the stable part of the
+  # subject: "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, ...".
   $signerSubject = $signature.SignerCertificate.Subject
-  if ($signerSubject -notmatch 'CN=Microsoft Corporation') {
+  if ($signerSubject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
     throw "MSVC runtime DLL is not signed by Microsoft (signer: $signerSubject): $dllPath. The CRT must keep Microsoft's signature and must not be re-signed."
   }
   Write-Host "Verified Microsoft signature: $dllPath"

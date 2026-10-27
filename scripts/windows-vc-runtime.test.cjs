@@ -208,7 +208,10 @@ test("PowerShell scripts take the CRT list from the Node single source of truth"
 
   const verify = read("scripts/verify-windows-release-signatures.ps1");
   assert.match(verify, /Get-AuthenticodeSignature/);
-  assert.match(verify, /Microsoft Corporation/);
+  // The CRT signer subject is "CN=Microsoft Windows, O=Microsoft Corporation, ..."
+  // (rc.16 release job); the check must key on the organisation, not the CN.
+  assert.match(verify, /O=Microsoft Corporation/);
+  assert.doesNotMatch(verify, /notmatch 'CN=Microsoft Corporation'/);
 });
 
 test("release workflows gate the Windows build on helper DLL dependencies", () => {
