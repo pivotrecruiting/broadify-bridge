@@ -453,32 +453,54 @@ echo "[MacSignVerify] packaged CoreML model hashes verified"
 spctl -a -t exec -vv "$APP_PATH"
 echo "[MacSignVerify] spctl accepted app"
 
-# `stapler validate` asks Apple's CloudKit for the ticket; on hosted runners
-# that call intermittently fails with NSURLErrorDomain -1005 ("The network
-# connection was lost", stapler exit 68) although the app is notarized and
-# spctl accepted it above (seen twice on 2026-10-27). Retry a few times before
-# treating it as a real failure.
+# Stapled notarization ticket: `xcrun stapler staple` (electron-builder's
+# notarize step) writes it to Contents/CodeResources of an app bundle. Its
+# presence is checked offline and is fatal: without it, offline Macs cannot
+# verify the app.
+STAPLED_TICKET_PATH="${APP_PATH}/Contents/CodeResources"
+if [[ ! -s "$STAPLED_TICKET_PATH" ]]; then
+  echo "[MacSignVerify] No stapled notarization ticket at ${STAPLED_TICKET_PATH}" >&2
+  exit 1
+fi
+echo "[MacSignVerify] stapled notarization ticket present -> ${STAPLED_TICKET_PATH}"
+
+# `stapler validate` additionally asks Apple's CloudKit for the ticket. On
+# hosted runners that call intermittently fails with NSURLErrorDomain -1005
+# ("The network connection was lost", stapler exit 68) although the ticket is
+# stapled and spctl accepted the app as "Notarized Developer ID" above (three
+# consecutive attempts on 2026-10-27). Retry a few times; if only the network
+# call keeps failing, report it and continue, because the offline evidence
+# (stapled ticket + spctl) is what matters for customers. Any other stapler
+# failure (for example exit 65 "does not have a ticket stapled") stays fatal.
 STAPLER_VALIDATE_ATTEMPTS="${STAPLER_VALIDATE_ATTEMPTS:-4}"
 STAPLER_VALIDATE_BACKOFF_SECONDS="${STAPLER_VALIDATE_BACKOFF_SECONDS:-20}"
+STAPLER_NETWORK_EXIT_CODE=68
 stapler_validate_with_retry() {
   local target="$1"
   local attempt=1
+  local status=0
   while true; do
     if xcrun stapler validate "$target"; then
       return 0
+    else
+      status=$?
+    fi
+    if (( status != STAPLER_NETWORK_EXIT_CODE )); then
+      echo "[MacSignVerify] stapler validate failed with exit ${status} for ${target}" >&2
+      return "$status"
     fi
     if (( attempt >= STAPLER_VALIDATE_ATTEMPTS )); then
-      echo "[MacSignVerify] stapler validate failed ${attempt}x for ${target}" >&2
-      return 1
+      echo "[MacSignVerify] stapler validate could not reach Apple (exit ${status}) ${attempt}x for ${target}; the ticket is stapled and spctl accepted the app, continuing" >&2
+      return 0
     fi
-    echo "[MacSignVerify] stapler validate attempt ${attempt}/${STAPLER_VALIDATE_ATTEMPTS} failed; retrying in ${STAPLER_VALIDATE_BACKOFF_SECONDS}s" >&2
+    echo "[MacSignVerify] stapler validate attempt ${attempt}/${STAPLER_VALIDATE_ATTEMPTS} failed (exit ${status}); retrying in ${STAPLER_VALIDATE_BACKOFF_SECONDS}s" >&2
     sleep "$STAPLER_VALIDATE_BACKOFF_SECONDS"
     attempt=$((attempt + 1))
   done
 }
 
 stapler_validate_with_retry "$APP_PATH"
-echo "[MacSignVerify] stapler validate ok -> ${APP_PATH}"
+echo "[MacSignVerify] stapler validate step done -> ${APP_PATH}"
 
 DMG_PATH="$(find "${ROOT_DIR}/dist" -maxdepth 1 -type f \( -name "Broadify-Bridge-*-${NORMALIZED_ARCH}.dmg" -o -name "Broadify-Bridge-RC-*-${NORMALIZED_ARCH}.dmg" \) -print -quit)"
 if [[ -n "$DMG_PATH" ]]; then
