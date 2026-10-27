@@ -110,6 +110,14 @@ int main() {
   RpcTransportCallbacks callbacks;
   callbacks.handle = [&](const std::string &line) {
     requests.push_back(line);
+    // Mirrors production exactly: control.shutdown flips `running` from
+    // inside the handler, so the loop exits after THIS connection closes.
+    // Flipping the flag from the test thread before the poke raced the
+    // loop's `while (running)` re-check between two connections (seen once
+    // on the macOS release runner: the poke was never served).
+    if (line == "{\"id\":\"3\"}") {
+      running.store(false);
+    }
     return std::string("{\"ok\":true,\"echo\":\"") + line + "\"}\n";
   };
   callbacks.emitEvent = [&](const std::string &jsonLine) { events.push_back(jsonLine); };
@@ -143,9 +151,8 @@ int main() {
 
   // Shutdown is request-driven in production (control.shutdown flips
   // `running` from inside the handler, then the loop exits after that
-  // connection closes): accept()/ConnectNamedPipe block without a client, so
-  // the test flips the flag and pokes the endpoint once, like the real helper.
-  running.store(false);
+  // connection closes): the third request is that shutdown request (see the
+  // handler above), so the poke is always served before the loop exits.
   roundTrip(endpoint, "{\"id\":\"3\"}\n");
   server.join();
   if (requests.size() != 3) {
