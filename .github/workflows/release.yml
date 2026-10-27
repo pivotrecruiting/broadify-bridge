@@ -473,12 +473,41 @@ jobs:
           # The module is not preinstalled on the Windows runner and
           # electron-builder's implicit install is unreliable (results in
           # "cmdlet not recognized"), so install and verify it explicitly.
-          if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          # The PowerShell Gallery registration and the module download are
+          # the two network-dependent steps here. Both failed on hosted runners
+          # on 2026-10-27 (rc.19, rc.20: "No repository with the name
+          # 'PSGallery'"), so they are retried with a backoff and the default
+          # repository is re-registered when it is missing.
+          function Invoke-WithRetry {
+            param([scriptblock]$Action, [string]$Label, [int]$Attempts = 4, [int]$DelaySeconds = 15)
+            for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+              try {
+                & $Action
+                return
+              } catch {
+                if ($attempt -ge $Attempts) {
+                  throw "$Label failed after $Attempts attempts: $($_.Exception.Message)"
+                }
+                Write-Warning "$Label failed (attempt $attempt/$Attempts): $($_.Exception.Message). Retrying in ${DelaySeconds}s..."
+                Start-Sleep -Seconds $DelaySeconds
+              }
+            }
           }
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+            Invoke-WithRetry -Label "Install NuGet package provider" -Action {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+            }
+          }
+          Invoke-WithRetry -Label "Trust PSGallery" -Action {
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+          }
           if (-not (Get-Module -ListAvailable -Name TrustedSigning)) {
-            Install-Module -Name TrustedSigning -Force -Scope CurrentUser -Repository PSGallery
+            Invoke-WithRetry -Label "Install TrustedSigning module" -Action {
+              Install-Module -Name TrustedSigning -Force -Scope CurrentUser -Repository PSGallery -ErrorAction Stop
+            }
           }
           Import-Module TrustedSigning
           Get-Command Invoke-TrustedSigning | Format-List Name, Version, Source
