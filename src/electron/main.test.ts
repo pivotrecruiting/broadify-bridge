@@ -792,6 +792,107 @@ describe("main", () => {
       expect(mockClearPairing).toHaveBeenCalled();
     });
 
+    it("bridgeStart opens the web app once, only after the bridge is reachable and relay-authenticated", async () => {
+      const { shell } = await import("electron");
+      await readyHandlers[0]();
+      const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+      const result = await startHandler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(true);
+      expect(result.webAppUrl).toBe("https://app.broadify.de/");
+
+      // The start result alone must not open the browser (the bridge server
+      // is not listening yet and the relay is not authenticated).
+      expect(shell.openExternal).not.toHaveBeenCalled();
+
+      const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+      statusCb({ running: true, reachable: false });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+      statusCb({ running: true, reachable: true, relayConnected: false });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      expect(shell.openExternal).toHaveBeenCalledTimes(1);
+      expect(shell.openExternal).toHaveBeenCalledWith(
+        "https://app.broadify.de/",
+        { activate: true },
+      );
+      // The status still reaches the renderer with the URL for the UI link.
+      expect(mockIpcWebContentsSend).toHaveBeenLastCalledWith(
+        "bridgeStatus",
+        expect.anything(),
+        expect.objectContaining({
+          relayConnected: true,
+          webAppUrl: "https://app.broadify.de/",
+        }),
+      );
+
+      // Later ready statuses never open a second tab.
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      expect(shell.openExternal).toHaveBeenCalledTimes(1);
+    });
+
+    it("bridgeStop disarms the web app open gate", async () => {
+      const { shell } = await import("electron");
+      await readyHandlers[0]();
+      const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const stopIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStop",
+      );
+      const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+      const stopHandler = mockIpcMainHandle.mock.calls[stopIdx][1];
+      await startHandler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+      statusCb({ running: true, reachable: true, relayConnected: false });
+
+      await stopHandler();
+
+      // A stale poll result arriving after the stop must not open anything.
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+    });
+
+    it("bridgeStart opens the web app after the relay timeout when the relay never connects", async () => {
+      jest.useFakeTimers();
+      const { shell } = await import("electron");
+      await readyHandlers[0]();
+      const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+      await startHandler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+      statusCb({ running: true, reachable: true, relayConnected: false });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(14_999);
+      expect(shell.openExternal).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+
+      expect(shell.openExternal).toHaveBeenCalledTimes(1);
+      expect(shell.openExternal).toHaveBeenCalledWith(
+        "https://app.broadify.de/",
+        { activate: true },
+      );
+    });
+
     it("bridgeGetStatus returns running false when process not running", async () => {
       mockIsRunning.mockReturnValue(false);
       mockGetConfig.mockReturnValue(null);
@@ -845,7 +946,10 @@ describe("main", () => {
       );
       const handler = mockIpcMainHandle.mock.calls[idx][1];
       await handler(undefined, "https://app.broadify.de");
-      expect(shell.openExternal).toHaveBeenCalledWith("https://app.broadify.de");
+      expect(shell.openExternal).toHaveBeenCalledWith(
+        "https://app.broadify.de",
+        { activate: true },
+      );
     });
 
     it("appGetVersion returns app version", async () => {

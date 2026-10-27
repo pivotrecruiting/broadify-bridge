@@ -39,9 +39,9 @@ flowchart LR
 3. Main erstellt Pairing-Code und resolved Host/Port-Binding.
 4. Bridge Process wird gestartet, danach startet Health-Polling.
 5. `bridgeStatus` Events werden an die UI gepusht.
-6. Das `bridgeStart`-Ergebnis enthaelt bei Erfolg zusaetzlich `webAppUrl`; die UI oeffnet die WebApp (`openExternal`) direkt anhand dieses Ergebnisses.
+6. Das `bridgeStart`-Ergebnis enthaelt bei Erfolg zusaetzlich `webAppUrl` (nur fuer den UI-Link); die WebApp oeffnet der **Main Process** ueber `web-app-open-gate.ts`, nicht die UI.
 
-Hinweis zum Oeffnen der WebApp: Der erste `bridgeStatus` (mit `webAppUrl`) wird vom Main Process gesendet, bevor der `bridgeStart`-IPC-Aufruf aufgeloest ist. Ein Effekt in der UI, der erst nach dem `await` scharf geschaltet wird und auf eine Status-Aenderung wartet, feuert daher nicht zuverlaessig (Health-Polling haelt `running` konstant). Deshalb ist das Oeffnen an das Start-Ergebnis gebunden (`src/ui/utils/open-web-app-after-start.ts`): genau einmal pro erfolgreichem Start, nie bei Fehlern, nie ohne URL. Es wird bewusst nicht auf `relayConnected` gewartet (nur per Polling verfuegbar, ohne Internet nie).
+Hinweis zum Oeffnen der WebApp: Das `bridgeStart`-Ergebnis liegt bereits vor, wenn der Bridge-Prozess nur gespawnt ist – der HTTP-Server lauscht noch nicht, die Relay-Authentifizierung fehlt. Ein Oeffnen zu diesem Zeitpunkt liess die Programm-Vorschau der WebApp beim ersten Versuch scheitern. Deshalb armt `bridgeStart` ein Gate mit der URL, und der Health-Polling-Callback oeffnet genau einmal beim ersten Status mit `running && reachable && relayConnected`; bleibt der Relay-Connect laenger als 15 s aus (kein Internet), oeffnet das Gate trotzdem. `bridgeStop`, Start-Fehler und App-Shutdown verwerfen ein ausstehendes Oeffnen. Details: `subsystems/main-process.md` („Web-App-Oeffnung").
 
 ### 2) Status & Logs
 1. UI subscribed auf `bridgeStatus`.

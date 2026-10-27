@@ -16,7 +16,6 @@ import {
 import { PairingDialog } from "./components/PairingDialog";
 import { useAppUpdater } from "./hooks/use-app-updater";
 import { calculatePortToUse, shouldUseCustomPort } from "./utils/port-utils";
-import { openWebAppAfterStart } from "./utils/open-web-app-after-start";
 import "./styles/App.css";
 
 function App() {
@@ -189,13 +188,9 @@ function App() {
         console.error("Failed to start bridge:", result.error);
         alert(`Failed to start bridge: ${result.error || "Unknown error"}`);
       } else {
-        // Open the web app from the start result, not from a bridgeStatus
-        // effect: main pushes the first status (with webAppUrl) before the
-        // bridgeStart IPC call resolves, so an effect armed after the await
-        // would never see the status change and the open was timing-dependent.
-        void openWebAppAfterStart(result, (url) =>
-          window.electron.openExternal(url)
-        );
+        // The web app is opened by the main process once the bridge is
+        // reachable and relay-authenticated (web-app-open-gate); the renderer
+        // only shows the link from the status.
         // If port was changed automatically, update UI
         if (result.actualPort && result.actualPort !== portToUse) {
           const portConfig = getCurrentPortConfig();

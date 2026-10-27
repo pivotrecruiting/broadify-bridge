@@ -8,6 +8,7 @@ Der Main‑Process steuert App‑Lifecycle, Fenster, IPC‑Handlers sowie Start/
 - Single-Instance Lock + Fokus-Handling bei Zweitstart
 - Bridge‑Prozess starten/stoppen
 - Health‑Check‑Polling und Status‑Broadcast
+- Web-App nach Bridge-Start oeffnen (Gate auf reachable + Relay, siehe unten)
 - IPC‑Handlers für UI‑Actions
 - Netzwerk‑Konfiguration laden
 - Bridge‑Profil (Name) und Pairing‑Code verwalten
@@ -20,6 +21,7 @@ Der Main‑Process steuert App‑Lifecycle, Fenster, IPC‑Handlers sowie Start/
 - `src/electron/renderer-entry-policy.ts`
 - `src/electron/services/bridge-process-manager.ts`
 - `src/electron/services/bridge-health-check.ts`
+- `src/electron/services/web-app-open-gate.ts`
 - `src/electron/services/bridge-outputs.ts`
 - `src/electron/services/bridge-logs.ts`
 - `src/electron/services/app-logs.ts`
@@ -45,10 +47,22 @@ sequenceDiagram
   Main->>BPM: start()
   BPM-->>Main: success/actualPort
   Main->>Bridge: health polling
-  Bridge-->>Main: /status
+  Bridge-->>Main: /status + /relay/status
   Main-->>Preload: bridgeStatus event
   Preload-->>UI: callback
+  Main->>Browser: shell.openExternal(webAppUrl, activate) – erst bei reachable + relayConnected
 ```
+
+## Web-App-Oeffnung (`services/web-app-open-gate.ts`)
+Die Web-App wird **vom Main Process** geoeffnet, nicht vom Renderer. Das `bridgeStart`-IPC-Ergebnis liegt schon vor, wenn der Bridge-Prozess nur gespawnt ist – der HTTP-Server lauscht noch nicht und die Relay-Authentifizierung fehlt (Feldbefund rc.18: Server listening +4 s, Relay-Auth +8 s). Ein Browser-Tab zu diesem Zeitpunkt liess die Programm-Vorschau der Web-App beim ersten Versuch ins Leere laufen (nur Reload half) und blieb hinter dem sich gerade aktivierenden Bridge-Fenster.
+
+Ablauf:
+- `bridgeStart` (Erfolg + `buildWebAppUrl()` liefert eine URL): `gate.arm(webAppUrl)` **vor** dem Start des Health-Pollings, damit kein Status am Gate vorbeigeht. Das IPC-Ergebnis traegt `webAppUrl` weiterhin fuer den UI-Link (Contract unveraendert).
+- Health-Polling-Callback: `gate.onStatus(status)` vor dem Senden an den Renderer. Der **erste** Status mit `running && reachable && relayConnected` (aus `/relay/status`) oeffnet die URL genau einmal; weitere Ready-Status oeffnen nie erneut.
+- Fallback: kommt innerhalb `WEB_APP_OPEN_RELAY_TIMEOUT_MS` (15 000 ms) kein Relay-Connect (kein Internet, Relay nicht erreichbar), oeffnet das Gate trotzdem und loggt `[WebApp] Relay not connected within 15000ms; opening web app anyway` – die Web-App zeigt dann selbst den Bridge-Zustand.
+- `bridgeStop`, Start-Fehler und App-Shutdown (`runAppShutdownCleanup`) rufen `gate.disarm()`: ein ausstehendes Oeffnen wird ohne Browser-Start verworfen, der Timer geloescht. Erneutes `arm()` ersetzt die ausstehende URL und startet den Timer neu.
+- Oeffnen laeuft ueber denselben Pfad wie der `openExternal`-IPC-Handler: `isAllowedExternalUrl` (nur http/https) und `shell.openExternal(url, { activate: true })`, damit der Browser in den Vordergrund kommt.
+- Das Modul ist rein (kein Electron-Import, Timer injizierbar) und in `web-app-open-gate.test.ts` isoliert getestet; die Verdrahtung in `main.test.ts`.
 
 ## Env‑Ladereihenfolge (`services/env-loader.ts`)
 `loadAppEnv()` lädt `.env`-Dateien mit `override: false` – frühere Dateien gewinnen, spätere füllen fehlende Schlüssel nach.
