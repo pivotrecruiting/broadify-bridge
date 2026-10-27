@@ -34,6 +34,7 @@ import {
 } from "./engine/engine-connection-supervisor.js";
 import { ReconnectScheduler } from "./shared/backoff.js";
 import { isSameEngineConnectConfig } from "./engine/engine-connect-schema.js";
+import { modeActivationState } from "./mode/mode-activation-state.js";
 
 type EngineBroadcastTopicT = Parameters<typeof websocketManager.broadcast>[0];
 type EngineBroadcastMessageT = Parameters<typeof websocketManager.broadcast>[1];
@@ -49,6 +50,12 @@ type EngineAdapterServiceDepsT = {
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
   random?: () => number;
+  /**
+   * Whether a Studio-restoring mode (studio/conference) is active. Failures
+   * of the persisted startup restore publish `engine_error` only then; without
+   * an active mode (e.g. an operator in a meeting) they are logged at info.
+   */
+  isStudioRestoreActive?: () => boolean;
 };
 
 const defaultDeps: EngineAdapterServiceDepsT = {
@@ -56,6 +63,7 @@ const defaultDeps: EngineAdapterServiceDepsT = {
   broadcast: (topic, message) => websocketManager.broadcast(topic, message),
   persistConnection: (config) => engineConnectionStore.save(config),
   loadPersistedConnection: () => engineConnectionStore.load(),
+  isStudioRestoreActive: () => modeActivationState.isStudioRestoreActive(),
 };
 
 type EngineConnectOriginT = "manual" | "startup";
@@ -102,6 +110,13 @@ export class EngineAdapterService {
   private connectOrigin: EngineConnectOriginT | null = null;
   private startupAutoConnectTimer: TimerT | null = null;
   private reconnectInfo: EngineStateT["reconnect"] = null;
+  /**
+   * True from the moment the persisted startup restore starts connecting until
+   * it succeeds, is superseded by a manual connect, or is cancelled. Unlike
+   * `connectOrigin` it spans the supervisor's background startup retries,
+   * whose error states arrive after the first connect promise settled.
+   */
+  private startupRestoreActive = false;
 
   constructor(deps: EngineAdapterServiceDepsT = defaultDeps) {
     this.deps = { ...defaultDeps, ...deps };
@@ -165,6 +180,12 @@ export class EngineAdapterService {
   ): Promise<void> {
     const currentState = this.stateStore.getState();
 
+    if (origin === "manual") {
+      // From here on the operator asked for it: failures are theirs to see,
+      // even when they join an in-flight startup restore.
+      this.startupRestoreActive = false;
+    }
+
     if (currentState.status === "connected") {
       throw createAlreadyConnectedError();
     }
@@ -194,16 +215,34 @@ export class EngineAdapterService {
     return this.connectPromise;
   }
 
+  /**
+   * Schedule the persisted engine restore (3 s delay, then a supervised
+   * startup connect). Triggered by `mode_activate` for studio/conference, not
+   * at bridge start. Idempotent: a no-op while a restore is already pending,
+   * a connect is in flight, or the engine is not disconnected.
+   */
   startPersistedAutoConnect(): void {
-    this.cancelStartupAutoConnectTimer();
+    if (this.startupAutoConnectTimer) {
+      getBridgeContext().logger.debug?.(
+        "[Engine] Startup auto-connect already pending"
+      );
+      return;
+    }
+    if (this.connectPromise || this.getStatus() !== "disconnected") {
+      getBridgeContext().logger.info(
+        `[Engine] Startup auto-connect skipped: engine ${this.getStatus()}`
+      );
+      return;
+    }
     const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
     this.startupAutoConnectTimer = setTimeoutFn(() => {
       this.startupAutoConnectTimer = null;
       void (async () => {
         const persisted = await this.deps.loadPersistedConnection?.();
-        if (!persisted || this.getStatus() !== "disconnected") {
+        if (!persisted || this.connectPromise || this.getStatus() !== "disconnected") {
           return;
         }
+        this.startupRestoreActive = true;
         await this.connect(persisted, "startup").catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
           getBridgeContext().logger.info(
@@ -218,6 +257,7 @@ export class EngineAdapterService {
   beginShutdown(): void {
     this.supervisor.beginShutdown();
     this.cancelStartupAutoConnectTimer();
+    this.startupRestoreActive = false;
   }
 
   private async openSession(
@@ -352,6 +392,7 @@ export class EngineAdapterService {
    */
   async disconnect(): Promise<void> {
     this.cancelStartupAutoConnectTimer();
+    this.startupRestoreActive = false;
     await this.supervisor.disconnect();
     this.connectPromise = null;
     this.connectConfig = null;
@@ -585,6 +626,10 @@ export class EngineAdapterService {
       publishEngineMacroExecutionEvent("execution_changed", state);
     }
 
+    if (state.status === "connected") {
+      this.startupRestoreActive = false;
+    }
+
     if (
       state.status === "error" &&
       state.error &&
@@ -592,7 +637,18 @@ export class EngineAdapterService {
         this.previousState.status !== "error" ||
         this.previousState.error !== state.error)
     ) {
-      publishEngineErrorEvent(state.errorCode ?? "engine_error", state.error);
+      const code = state.errorCode ?? "engine_error";
+      if (this.shouldPublishStartupRestoreError()) {
+        publishEngineErrorEvent(code, state.error);
+      } else {
+        // Field finding (rc.19): a persisted ATEM that is unreachable while
+        // the operator is in a meeting produced four CONNECTION_TIMEOUT toasts
+        // in the web app. The local state/broadcast stays; only the relay
+        // event is withheld until a Studio/Conference mode is active.
+        getBridgeContext().logger.info(
+          `[Engine] Startup restore failed, no Studio/Conference mode active; engine_error not published: ${code} ${state.error}`
+        );
+      }
     }
 
     this.previousState = { ...state };
@@ -611,6 +667,17 @@ export class EngineAdapterService {
       errorCode: info ? current.errorCode : current.errorCode,
     });
     this.broadcastStateChanges(this.stateStore.getState());
+  }
+
+  /**
+   * Errors of the persisted startup restore reach the relay only once a
+   * Studio-restoring mode is active; manual connects always publish.
+   */
+  private shouldPublishStartupRestoreError(): boolean {
+    if (!this.startupRestoreActive) {
+      return true;
+    }
+    return this.deps.isStudioRestoreActive?.() ?? true;
   }
 
   private cancelStartupAutoConnectTimer(): void {

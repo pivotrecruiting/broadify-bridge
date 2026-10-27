@@ -24,6 +24,16 @@ jest.mock("./engine-adapter.js", () => ({
   },
 }));
 
+const mockModeActivate = jest.fn(async (mode: string) => ({
+  mode,
+  restored: mode === "meeting" ? [] : ["engine_autoconnect", "graphics_output"],
+}));
+jest.mock("./mode/mode-activation-service.js", () => ({
+  modeActivationService: {
+    activate: (mode: string) => mockModeActivate(mode),
+  },
+}));
+
 jest.mock("./device-cache.js", () => ({
   deviceCache: {
     getDevices: jest.fn().mockResolvedValue([]),
@@ -212,6 +222,67 @@ describe("command-router", () => {
           decklink: process.platform === "darwin",
         },
       });
+    });
+
+    it("get_status advertises the mode_activation capability", async () => {
+      const result = await commandRouter.handleCommand("get_status", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        capabilities: expect.objectContaining({ mode_activation: true }),
+      });
+    });
+
+    it("mode_activate dispatches a valid mode to the mode activation service", async () => {
+      mockModeActivate.mockClear();
+      const result = await commandRouter.handleCommand("mode_activate", {
+        mode: "studio",
+      });
+
+      expect(mockModeActivate).toHaveBeenCalledWith("studio");
+      expect(result).toEqual({
+        success: true,
+        data: {
+          mode: "studio",
+          restored: ["engine_autoconnect", "graphics_output"],
+        },
+      });
+    });
+
+    it("mode_activate returns an empty restore list for meeting", async () => {
+      mockModeActivate.mockClear();
+      const result = await commandRouter.handleCommand("mode_activate", {
+        mode: "meeting",
+      });
+
+      expect(mockModeActivate).toHaveBeenCalledWith("meeting");
+      expect(result).toEqual({
+        success: true,
+        data: { mode: "meeting", restored: [] },
+      });
+    });
+
+    it("mode_activate rejects an unknown mode with a validation error", async () => {
+      mockModeActivate.mockClear();
+      const result = await commandRouter.handleCommand("mode_activate", {
+        mode: "broadcast",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid payload for mode_activate");
+      expect(mockModeActivate).not.toHaveBeenCalled();
+    });
+
+    it("mode_activate rejects a payload without mode or with unknown keys", async () => {
+      mockModeActivate.mockClear();
+      const missing = await commandRouter.handleCommand("mode_activate", {});
+      const extra = await commandRouter.handleCommand("mode_activate", {
+        mode: "studio",
+        force: true,
+      });
+
+      expect(missing.success).toBe(false);
+      expect(extra.success).toBe(false);
+      expect(mockModeActivate).not.toHaveBeenCalled();
     });
 
     it("list_outputs without refresh returns cached outputs without detection", async () => {

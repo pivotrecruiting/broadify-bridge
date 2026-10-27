@@ -1,4 +1,5 @@
 import { setBridgeContext } from "../bridge-context.js";
+import { GraphicsError } from "./graphics-errors.js";
 import { GraphicsRuntimeInitService } from "./graphics-runtime-init-service.js";
 
 const mockAssetRegistryInit = jest.fn().mockResolvedValue(undefined);
@@ -141,7 +142,7 @@ describe("GraphicsRuntimeInitService", () => {
     expect(stubRenderer.initialize).toHaveBeenCalled();
   });
 
-  it("applies persisted output config when present", async () => {
+  it("initialize loads the persisted output config and applyPersistedOutput applies it", async () => {
     const persistedConfig = {
       version: 1 as const,
       outputKey: "stub" as const,
@@ -188,6 +189,22 @@ describe("GraphicsRuntimeInitService", () => {
     });
 
     await service.initialize();
+
+    // initialize() only loads and validates the persisted state. The output
+    // is applied once the web app activates a Studio/Conference mode
+    // (mode_activate), never at bridge start.
+    expect(mockOutputStoreInit).toHaveBeenCalled();
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("Loaded persisted runtime state")
+    );
+    expect(setOutputConfig).not.toHaveBeenCalled();
+    expect(renderer.configureSession).not.toHaveBeenCalled();
+    expect(selectOutputAdapter).not.toHaveBeenCalled();
+
+    await expect(service.applyPersistedOutput()).resolves.toEqual({
+      persistedApplyFailed: false,
+      persistedConfig,
+    });
 
     expect(setOutputConfig).toHaveBeenCalledWith(persistedConfig);
     expect(applyFrameBusConfig).toHaveBeenCalledWith(persistedConfig);
@@ -282,6 +299,7 @@ describe("GraphicsRuntimeInitService", () => {
     });
 
     await service.initialize();
+    await service.applyPersistedOutput();
 
     expect(mockLogger.error).toHaveBeenCalledWith(
       expect.stringContaining("Failed to apply persisted output config")
@@ -333,10 +351,145 @@ describe("GraphicsRuntimeInitService", () => {
       publishGraphicsError: jest.fn(),
     });
 
-    await expect(service.initialize()).resolves.toEqual({
+    await service.initialize();
+    await expect(service.applyPersistedOutput()).resolves.toEqual({
       persistedApplyFailed: true,
       persistedConfig,
     });
+    expect(mockClear).not.toHaveBeenCalled();
+  });
+
+  it("applyPersistedOutput is a no-op without a persisted config", async () => {
+    const renderer = {
+      initialize: jest.fn().mockResolvedValue(undefined),
+      configureSession: jest.fn().mockResolvedValue(undefined),
+      setAssets: jest.fn().mockResolvedValue(undefined),
+      onError: jest.fn(),
+      renderLayer: jest.fn(),
+      updateValues: jest.fn(),
+      updateLayout: jest.fn(),
+      removeLayer: jest.fn(),
+      shutdown: jest.fn(),
+    };
+    const setOutputConfig = jest.fn();
+    const service = new GraphicsRuntimeInitService({
+      getRenderer: () => renderer as never,
+      setRenderer: jest.fn(),
+      setOutputAdapter: jest.fn(),
+      setOutputConfig,
+      createStubRenderer: jest.fn(),
+      createStubOutputAdapter: jest.fn(),
+      selectOutputAdapter: jest.fn(),
+      applyFrameBusConfig: jest.fn(),
+      buildRendererConfig: jest.fn().mockReturnValue({}),
+      publishGraphicsError: jest.fn(),
+    });
+
+    await service.initialize();
+    await expect(service.applyPersistedOutput()).resolves.toEqual({
+      persistedApplyFailed: false,
+      persistedConfig: null,
+    });
+    expect(renderer.configureSession).not.toHaveBeenCalled();
+    expect(setOutputConfig).not.toHaveBeenCalled();
+  });
+
+  it("applyPersistedOutput never touches the shared store when usePersistedOutputConfig is false", async () => {
+    mockGetConfig.mockReturnValue({
+      version: 1,
+      outputKey: "framebus",
+      targets: {},
+      format: { width: 1920, height: 1080, fps: 30 },
+      range: "full",
+      colorspace: "rec709",
+    });
+    const renderer = {
+      initialize: jest.fn().mockResolvedValue(undefined),
+      configureSession: jest.fn().mockResolvedValue(undefined),
+      setAssets: jest.fn().mockResolvedValue(undefined),
+      onError: jest.fn(),
+      renderLayer: jest.fn(),
+      updateValues: jest.fn(),
+      updateLayout: jest.fn(),
+      removeLayer: jest.fn(),
+      shutdown: jest.fn(),
+    };
+    const setOutputConfig = jest.fn();
+    const service = new GraphicsRuntimeInitService({
+      usePersistedOutputConfig: false,
+      getRenderer: () => renderer as never,
+      setRenderer: jest.fn(),
+      setOutputAdapter: jest.fn(),
+      setOutputConfig,
+      createStubRenderer: jest.fn(),
+      createStubOutputAdapter: jest.fn(),
+      selectOutputAdapter: jest.fn(),
+      applyFrameBusConfig: jest.fn(),
+      buildRendererConfig: jest.fn().mockReturnValue({}),
+      publishGraphicsError: jest.fn(),
+    });
+
+    await service.initialize();
+    await expect(service.applyPersistedOutput()).resolves.toEqual({
+      persistedApplyFailed: false,
+      persistedConfig: null,
+    });
+    expect(renderer.configureSession).not.toHaveBeenCalled();
+    expect(setOutputConfig).not.toHaveBeenCalled();
+  });
+
+  it("applyPersistedOutput reports the typed code of a GraphicsError from the adapter factory", async () => {
+    const persistedConfig = {
+      version: 1,
+      outputKey: "video_hdmi",
+      targets: { output1Id: "display-7" },
+      format: { width: 1920, height: 1080, fps: 50 },
+      range: "legal",
+      colorspace: "auto",
+    };
+    mockGetConfig.mockReturnValue(persistedConfig);
+    const publishGraphicsError = jest.fn();
+    const stubAdapter = { configure: jest.fn(), stop: jest.fn(), sendFrame: jest.fn() };
+    const renderer = {
+      initialize: jest.fn().mockResolvedValue(undefined),
+      configureSession: jest.fn().mockResolvedValue(undefined),
+      setAssets: jest.fn().mockResolvedValue(undefined),
+      onError: jest.fn(),
+      renderLayer: jest.fn(),
+      updateValues: jest.fn(),
+      updateLayout: jest.fn(),
+      removeLayer: jest.fn(),
+      shutdown: jest.fn(),
+    };
+    const service = new GraphicsRuntimeInitService({
+      getRenderer: () => renderer as never,
+      setRenderer: jest.fn(),
+      setOutputAdapter: jest.fn(),
+      setOutputConfig: jest.fn(),
+      createStubRenderer: jest.fn(),
+      createStubOutputAdapter: jest.fn().mockReturnValue(stubAdapter),
+      selectOutputAdapter: jest
+        .fn()
+        .mockRejectedValue(
+          new GraphicsError(
+            "output_device_not_found",
+            "Display output display-7 is not connected"
+          )
+        ),
+      applyFrameBusConfig: jest.fn(),
+      buildRendererConfig: jest.fn().mockReturnValue({}),
+      publishGraphicsError,
+    });
+
+    await service.initialize();
+    await expect(service.applyPersistedOutput()).resolves.toEqual({
+      persistedApplyFailed: true,
+      persistedConfig,
+    });
+    expect(publishGraphicsError).toHaveBeenCalledWith(
+      "output_device_not_found",
+      "Display output display-7 is not connected"
+    );
     expect(mockClear).not.toHaveBeenCalled();
   });
 });

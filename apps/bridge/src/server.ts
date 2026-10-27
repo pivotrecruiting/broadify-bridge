@@ -113,17 +113,18 @@ export async function createServer(config: BridgeConfigT) {
   setBridgeContext(baseContext);
   logRuntimeDiagnostics(baseContext.logger);
 
-  // Device modules FIRST: the persisted graphics output is restored inside
-  // graphicsManager.initialize(), and resolving its target port goes through
-  // the device cache. With an empty module registry that lookup returns no
-  // devices, so a display output was misread as DeckLink and the restore died
-  // on a helper that does not exist on Windows.
+  // Device modules FIRST: graphicsManager.initialize() loads the persisted
+  // graphics output, and the deferred apply (graphicsManager.applyPersistedOutput(),
+  // triggered by mode_activate) resolves its target port through the device
+  // cache. With an empty module registry that lookup returns no devices, so a
+  // display output was misread as DeckLink and the restore died on a helper
+  // that does not exist on Windows.
   initializeModules();
   server.log.info("[Server] Device modules initialized");
 
   // Usage recorder before graphicsManager.initialize(): a restored output
-  // config can render layers during init, and their on-air intervals belong
-  // in the log from the first frame on.
+  // config can render layers as soon as it is applied, and their on-air
+  // intervals belong in the log from the first frame on.
   await graphicsUsageRecorder.initialize();
 
   await graphicsManager.initialize();
@@ -212,8 +213,8 @@ export async function createServer(config: BridgeConfigT) {
   server.log.info("[Server] Command router initialized");
 
   // Engine startup reconnect is owned by EngineAdapterService so manual
-  // connects, persisted startup connects and shutdown cancellation share one
-  // supervisor.
+  // connects, persisted startup connects (triggered by mode_activate) and
+  // shutdown cancellation share one supervisor.
 
   // Store relay client in server instance for later use
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -245,7 +246,11 @@ export async function startServer(
       await relayClient.connect();
     }
 
-    engineAdapter.startPersistedAutoConnect();
+    // No Studio restore here: the persisted engine auto-connect and the
+    // persisted graphics output are applied by `mode_activate` once the web
+    // app reports a Studio/Conference mode (docs/bridge/features/mode-activation.md).
+    // Restoring at startup hit an unreachable ATEM and a missing display while
+    // the operator was in a meeting, and every failure became a toast.
   } catch (err: unknown) {
     // Check for port already in use
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

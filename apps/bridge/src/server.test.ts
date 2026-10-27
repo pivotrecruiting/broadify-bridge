@@ -545,14 +545,18 @@ describe("server", () => {
       );
     });
 
-    it("starts persisted engine auto-connect after startup", async () => {
+    it("does not start the persisted engine auto-connect at startup (mode_activate owns the Studio restore)", async () => {
+      // Field finding (rc.19, Meeting mode): the startup auto-connect hammered
+      // an unreachable persisted ATEM and every timeout surfaced as an
+      // engine_error toast in the web app although the operator was in a
+      // meeting. The web app now tells the bridge which mode it is in.
       const { createServer, startServer } = await import("./server.js");
       const config = createBaseConfig();
       const server = await createServer(config);
 
       await startServer(server, config);
 
-      expect(mockEngineStartPersistedAutoConnect).toHaveBeenCalledTimes(1);
+      expect(mockEngineStartPersistedAutoConnect).not.toHaveBeenCalled();
     });
 
     it("does not connect relay when relayClient not attached", async () => {

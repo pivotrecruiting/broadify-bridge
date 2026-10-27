@@ -10,6 +10,7 @@ import {
   EngineConnectSchema,
   ListOutputsSchema,
   MacroIdSchema,
+  ModeActivateSchema,
   PairingCodeSchema,
   StreamDeckActionClaimSchema,
   StreamDeckActionResultSchema,
@@ -38,6 +39,7 @@ import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
 import { canonResponseToCommandResult } from "./canon-xc/canon-xc-command-result.js";
 import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm/pgm-command-handler.js";
+import { modeActivationService } from "./mode/mode-activation-service.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 import { powerSocketService } from "./power/power-socket-service.js";
 import {
@@ -133,6 +135,9 @@ export class CommandRouter {
                   presetRecall: true,
                 },
                 live_program: getLiveProgramCapabilities(),
+                // The web app sends mode_activate only when this is present;
+                // older bridges restored Studio state at startup on their own.
+                mode_activation: true,
               },
             },
           };
@@ -202,6 +207,20 @@ export class CommandRouter {
           return {
             success: true,
             data: outputs,
+          };
+        }
+
+        case "mode_activate": {
+          const { mode } = parseRelayPayload(
+            ModeActivateSchema,
+            payload ?? {},
+            "Invalid payload for mode_activate",
+          );
+          const result = await modeActivationService.activate(mode);
+
+          return {
+            success: true,
+            data: result,
           };
         }
 

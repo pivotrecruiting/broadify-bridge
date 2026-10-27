@@ -1,5 +1,7 @@
 import { isDevelopmentMode } from "../dev-mode.js";
+import { GraphicsError } from "./graphics-errors.js";
 import { selectOutputAdapter } from "./graphics-output-adapter-factory.js";
+import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-output-adapter.js";
 
 jest.mock("../dev-mode.js", () => ({
   isDevelopmentMode: jest.fn().mockReturnValue(false),
@@ -120,8 +122,8 @@ describe("selectOutputAdapter", () => {
     expect(adapter).toBe(videoSdiInstance);
   });
 
-  it("returns DecklinkVideoOutputAdapter for video_hdmi when output1Id is missing", async () => {
-    const adapter = await selectOutputAdapter({
+  it("throws output_device_not_found for video_hdmi when output1Id is missing (no DeckLink fallback)", async () => {
+    const pending = selectOutputAdapter({
       version: 1,
       outputKey: "video_hdmi",
       targets: {},
@@ -130,23 +132,36 @@ describe("selectOutputAdapter", () => {
       colorspace: "auto",
     });
 
-    expect(adapter).toBe(videoSdiInstance);
+    await expect(pending).rejects.toBeInstanceOf(GraphicsError);
+    await expect(pending).rejects.toMatchObject({
+      code: "output_device_not_found",
+    });
     expect(mockFindCachedDevicePortById).not.toHaveBeenCalled();
+    expect(DecklinkVideoOutputAdapter).not.toHaveBeenCalled();
   });
 
-  it("returns DecklinkVideoOutputAdapter for video_hdmi when port lookup returns null", async () => {
+  it("throws output_device_not_found for video_hdmi when the port is not in the device cache (no DeckLink fallback)", async () => {
+    // Field case (Windows, rc.19): persisted video_hdmi with the display
+    // unplugged resolved to the DeckLink adapter, whose helper does not exist
+    // on Windows, and the supervisor burned its recovery attempts on it.
     mockFindCachedDevicePortById.mockResolvedValue(null);
 
-    const adapter = await selectOutputAdapter({
+    const pending = selectOutputAdapter({
       version: 1,
       outputKey: "video_hdmi",
-      targets: { output1Id: "unknown" },
+      targets: { output1Id: "display-7" },
       format: { width: 1920, height: 1080, fps: 50 },
       range: "legal",
       colorspace: "auto",
     });
 
-    expect(adapter).toBe(videoSdiInstance);
+    await expect(pending).rejects.toMatchObject({
+      name: "GraphicsError",
+      code: "output_device_not_found",
+      message: "Display output display-7 is not connected",
+    });
+    expect(mockFindCachedDevicePortById).toHaveBeenCalledWith("display-7");
+    expect(DecklinkVideoOutputAdapter).not.toHaveBeenCalled();
   });
 
   it("returns StubOutputAdapter for stub outputKey", async () => {

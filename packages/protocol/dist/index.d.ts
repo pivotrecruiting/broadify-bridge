@@ -424,3 +424,22 @@ export type LiveProgramCapabilitiesT = {
     /** The meeting helper streams its composited program over WebRTC (meeting_program_* commands). */
     meeting_preview?: boolean;
 };
+/**
+ * Mode-driven Studio restoration (`mode_activate`)
+ *
+ * The web app's root page is the mode selection; the bridge learns the mode
+ * only through this command and restores Studio connections (persisted engine,
+ * persisted graphics output) for `studio` and `conference` only.
+ */
+export type BridgeModeT = "studio" | "meeting" | "conference";
+/** What `mode_activate` triggered; outcomes arrive via `engine_status` / `graphics_status`. */
+export type ModeActivationRestoreTargetT = "engine_autoconnect" | "graphics_output";
+/**
+ * `command_result.data` of `mode_activate`. Support is advertised as
+ * `get_status.capabilities.mode_activation: true`; bridges without it restore
+ * Studio state at startup on their own.
+ */
+export type ModeActivateResultT = {
+    mode: BridgeModeT;
+    restored: ModeActivationRestoreTargetT[];
+};
