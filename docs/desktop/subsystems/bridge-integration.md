@@ -35,6 +35,7 @@ sequenceDiagram
 - Pairing-Informationen werden in `bridgeStatus` vom Main Process angereichert.
 - Relay wird beim Bridge‑Start (GUI) aktiviert und beim Stop deaktiviert.
 - Bei Health/Outputs Requests wird `0.0.0.0` intern auf `127.0.0.1` gemappt.
+- Die Web-App oeffnet der Main Process erst, wenn das Polling `reachable` **und** `relayConnected` meldet (Fallback nach 15 s), nie direkt aus dem `bridgeStart`-Ergebnis; Details in `main-process.md` („Web-App-Oeffnung").
 
 ## Same-Bridge Port Guard (`bridge-process-manager.ts`)
 Ist der Wunsch-Port beim Start belegt, fragt der Main Process zuerst `checkBridgeHealth({ host, port })` ab und klassifiziert den Belegenden mit `classifyBusyPortOccupant` (`bridge-process-contract.ts`):

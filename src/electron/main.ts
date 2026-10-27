@@ -34,6 +34,7 @@ import {
 } from "./services/port-checker.js";
 import { validateEngineConnectInput } from "./services/engine-connect-contract.js";
 import { isAllowedExternalUrl } from "./services/external-url.js";
+import { createWebAppOpenGate } from "./services/web-app-open-gate.js";
 import {
   detectNetworkInterfaces,
   resolveBindAddress,
@@ -118,6 +119,30 @@ const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 let healthCheckCleanup: (() => void) | null = null;
 let powerSaveBlockerId: number | null = null;
+
+/**
+ * Open an external URL in the default browser. Shared by the `openExternal`
+ * IPC handler and the web app open gate: only http(s) URLs pass, and the
+ * browser is asked to come to the front (`activate`), which matters when
+ * the desktop window is still activating itself after a bridge start.
+ */
+function openExternalUrl(url: unknown): Promise<void> | undefined {
+  if (!isAllowedExternalUrl(url)) {
+    return undefined;
+  }
+  return shell.openExternal(url, { activate: true });
+}
+
+/**
+ * Opens the web app once per bridge start, but only after the health check
+ * reports the bridge reachable and relay-authenticated (fallback after
+ * WEB_APP_OPEN_RELAY_TIMEOUT_MS). Armed in `bridgeStart`, fed from the health
+ * polling callback, disarmed in `bridgeStop` and on app shutdown.
+ */
+const webAppOpenGate = createWebAppOpenGate({
+  open: (url) => openExternalUrl(url),
+  logger: { info: logAppInfo, warn: logAppWarn },
+});
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -506,6 +531,7 @@ function runAppShutdownCleanup(): Promise<void> {
       healthCheckCleanup();
       healthCheckCleanup = null;
     }
+    webAppOpenGate.disarm();
     const result = await bridgeProcessManager.stop();
     if (!result.success) {
       logAppError(`Bridge shutdown failed during app quit: ${result.error ?? "unknown error"}`);
@@ -857,6 +883,15 @@ if (!isRendererProcess) {
             healthCheckCleanup();
           }
 
+          // Arm the web app open gate before polling starts so the first
+          // ready status cannot slip past it. The process has only been
+          // spawned at this point: the server is not listening and the relay
+          // is not authenticated yet, so opening the browser now would make
+          // the web app's first bridge lookup fail (#257 timing).
+          if (webAppUrl) {
+            webAppOpenGate.arm(webAppUrl);
+          }
+
           const bridgeConfig = bridgeProcessManager.getConfig();
           // console.log(
           //   "[Bridge] Starting health check polling with config:",
@@ -869,9 +904,8 @@ if (!isRendererProcess) {
             (status) => {
               // console.log("[Bridge] Health check status update:", status);
 
-              // Build web app URL for the UI link
-              // URL will be displayed as a link in the UI instead of auto-opening
-              // Must be done BEFORE sending status to UI
+              // Enrich the status (pairing, name, web app URL for the UI
+              // link) BEFORE sending it to the UI.
               const pairingInfo = bridgePairing.getPairingInfo();
               if (pairingInfo) {
                 status.pairingCode = pairingInfo.code;
@@ -887,6 +921,10 @@ if (!isRendererProcess) {
                 status.webAppUrl = webAppUrl;
               }
 
+              // Open the web app once the bridge is reachable and the relay
+              // is authenticated (main owns the open, not the renderer).
+              webAppOpenGate.onStatus(status);
+
               if (mainWindow) {
                 ipcWebContentsSend(
                   "bridgeStatus",
@@ -898,14 +936,13 @@ if (!isRendererProcess) {
             () => bridgeProcessManager.isRunning(), // Pass function to check if process is running
           );
 
-          // Return the web app URL together with the start result. The renderer
-          // opens the web app based on this result, not on a later bridgeStatus
-          // event: the initial status is sent above before this handler
-          // resolves, so a status-driven open would race the IPC reply.
+          // Return the web app URL together with the start result for the UI
+          // link. Opening the browser is handled by the gate above.
           return webAppUrl ? { ...result, webAppUrl } : result;
         }
 
         // console.log("[Bridge] Bridge start failed:", result.error);
+        webAppOpenGate.disarm();
         bridgePairing.clear();
         return result;
       });
@@ -923,6 +960,8 @@ if (!isRendererProcess) {
           healthCheckCleanup();
           healthCheckCleanup = null;
         }
+        // A pending web app open must not fire for a bridge that is stopping.
+        webAppOpenGate.disarm();
 
         const config = bridgeProcessManager.getConfig();
         if (config) {
@@ -1322,9 +1361,7 @@ if (!isRendererProcess) {
 
       // Open external URL handler
       ipcMainHandle("openExternal", async (event, url: string) => {
-        if (isAllowedExternalUrl(url)) {
-          shell.openExternal(url);
-        }
+        await openExternalUrl(url);
       });
 
       // Cleanup on window close
