@@ -69,6 +69,7 @@ const createValidConfig = () => ({
 
 describe("GraphicsManager", () => {
   beforeEach(() => {
+    mockOutputStoreGetConfig.mockReturnValue(null);
     delete process.env.BRIDGE_FRAMEBUS_NAME;
     delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
     delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
@@ -526,26 +527,64 @@ describe("GraphicsManager", () => {
     );
   });
 
-  it("keeps lastOutputError and outputStatus=error when the persisted apply fails during initialize", async () => {
+  it("initialize does not apply the persisted output; applyPersistedOutput does", async () => {
     const persistedConfig = createValidConfig();
-    const outputSupervisor = {
-      start: jest.fn(),
-      cancel: jest.fn(),
-      reset: jest.fn(),
-      getState: jest.fn(() => ({ active: true, reason: "init_failed", attempt: 0, nextRetryAt: null })),
-    };
+    const applyPersistedOutput = jest.fn(async () => ({
+      persistedApplyFailed: false,
+      persistedConfig,
+    }));
     const manager = new GraphicsManager({
       createRenderer,
       runtimeInitService: {
-        initialize: jest.fn(async () => ({
-          persistedApplyFailed: true,
-          persistedConfig,
-        })),
+        initialize: jest.fn(async () => undefined),
+        applyPersistedOutput,
+      },
+    });
+
+    await manager.initialize();
+
+    expect(applyPersistedOutput).not.toHaveBeenCalled();
+    expect(manager.getStatus()).toMatchObject({
+      outputsConfigured: false,
+      outputStatus: "unconfigured",
+    });
+
+    await manager.applyPersistedOutput();
+
+    expect(applyPersistedOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps lastOutputError and outputStatus=error when the persisted apply fails and does not re-apply while recovery is active", async () => {
+    const persistedConfig = createValidConfig();
+    let recoveryActive = false;
+    const outputSupervisor = {
+      start: jest.fn(() => {
+        recoveryActive = true;
+      }),
+      cancel: jest.fn(),
+      reset: jest.fn(),
+      getState: jest.fn(() => ({
+        active: recoveryActive,
+        reason: recoveryActive ? "init_failed" : null,
+        attempt: 0,
+        nextRetryAt: null,
+      })),
+    };
+    const applyPersistedOutput = jest.fn(async () => ({
+      persistedApplyFailed: true,
+      persistedConfig,
+    }));
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => undefined),
+        applyPersistedOutput,
       },
       outputSupervisor: outputSupervisor as never,
     });
 
     await manager.initialize();
+    await manager.applyPersistedOutput();
 
     expect(manager.getStatus()).toMatchObject({
       outputStatus: "error",
@@ -555,6 +594,58 @@ describe("GraphicsManager", () => {
       reason: "init_failed",
       config: persistedConfig,
     });
+
+    // A second activation (another client, a reload) must not start a second
+    // apply next to the supervisor's recovery loop.
+    await manager.applyPersistedOutput();
+    expect(applyPersistedOutput).toHaveBeenCalledTimes(1);
+    expect(outputSupervisor.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("applyPersistedOutput is idempotent once an output is configured and publishes the configured status", async () => {
+    // A non-stub key: the snapshot reports outputsConfigured=false for "stub".
+    const persistedConfig = { ...createValidConfig(), outputKey: "framebus" as const };
+    mockOutputStoreGetConfig.mockReturnValue(persistedConfig);
+    const adapter = {
+      configure: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      sendFrame: jest.fn(),
+    };
+    const selectOutputAdapter = jest.fn(async () => adapter as never);
+    const publishBridgeEvent = jest.fn();
+    setBridgeContext({
+      ...getBridgeContext(),
+      publishBridgeEvent,
+    });
+    const manager = new GraphicsManager({
+      createRenderer,
+      selectOutputAdapter,
+    });
+
+    await manager.initialize();
+    expect(selectOutputAdapter).not.toHaveBeenCalled();
+
+    const first = manager.applyPersistedOutput();
+    const second = manager.applyPersistedOutput();
+    await Promise.all([first, second]);
+    await manager.applyPersistedOutput();
+
+    expect(selectOutputAdapter).toHaveBeenCalledTimes(1);
+    expect(adapter.configure).toHaveBeenCalledWith(persistedConfig);
+    expect(manager.getStatus()).toMatchObject({
+      outputsConfigured: true,
+      outputStatus: "ready",
+      outputConfig: persistedConfig,
+    });
+    expect(publishBridgeEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "graphics_status",
+        data: expect.objectContaining({
+          reason: "outputs_configured",
+          outputsConfigured: true,
+        }),
+      }),
+    );
   });
 
   it("publishes pendingOutputConfig while recovery is active", async () => {

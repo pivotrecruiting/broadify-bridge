@@ -311,8 +311,191 @@ describe("EngineAdapterService", () => {
       service.startPersistedAutoConnect();
       await jest.advanceTimersByTimeAsync(3000);
 
-      expect(loadPersistedConnection).toHaveBeenCalled();
+      // Idempotent restore: with a connect in flight the restore is not even
+      // scheduled, so the persisted config is never loaded.
+      expect(loadPersistedConnection).not.toHaveBeenCalled();
       expect(adapter.connectCalls).toHaveLength(1);
+    });
+
+    it("startPersistedAutoConnect is a no-op while a startup attempt is already pending", async () => {
+      const adapter = new FakeAdapter();
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        transport: "usb",
+        ip: "",
+        port: 0,
+      });
+      const { service } = createServiceWithAdapters([adapter], {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+      });
+
+      service.startPersistedAutoConnect();
+      service.startPersistedAutoConnect();
+      service.startPersistedAutoConnect();
+      await jest.advanceTimersByTimeAsync(3000);
+
+      expect(loadPersistedConnection).toHaveBeenCalledTimes(1);
+      expect(adapter.connectCalls).toHaveLength(1);
+      expect(service.getStatus()).toBe("connected");
+    });
+
+    it("startPersistedAutoConnect is a no-op when the engine is already connected", async () => {
+      const adapter = new FakeAdapter();
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        transport: "usb",
+        ip: "",
+        port: 0,
+      });
+      const { service } = createServiceWithAdapters([adapter], {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+      });
+
+      await service.connect({ type: "atem", transport: "usb", ip: "", port: 0 });
+      expect(service.getStatus()).toBe("connected");
+
+      service.startPersistedAutoConnect();
+      await jest.advanceTimersByTimeAsync(3000);
+
+      expect(loadPersistedConnection).not.toHaveBeenCalled();
+      expect(adapter.connectCalls).toHaveLength(1);
+    });
+
+    const createFailingRestoreAdapters = (count: number) =>
+      Array.from({ length: count }, () => {
+        const adapter = new FakeAdapter();
+        adapter.connectImpl = async () => {
+          // Like the ATEM IP adapter on CONNECTION_TIMEOUT: the adapter
+          // reports the error state before the connect promise rejects.
+          adapter.emitState({
+            status: "error",
+            type: "atem",
+            ip: "192.168.178.70",
+            port: 9910,
+            error: "Connection timeout",
+            errorCode: EngineErrorCode.CONNECTION_TIMEOUT,
+            macros: [],
+          });
+          throw new EngineError(
+            EngineErrorCode.CONNECTION_TIMEOUT,
+            "Connection timeout",
+          );
+        };
+        return adapter;
+      });
+
+    it("does not publish engine_error for a failing startup restore when no Studio/Conference mode is active", async () => {
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        ip: "192.168.178.70",
+        port: 9910,
+      });
+      const { service, broadcasts } = createServiceWithAdapters(
+        createFailingRestoreAdapters(5),
+        {
+          loadPersistedConnection,
+          setTimeoutFn: setTimeout,
+          clearTimeoutFn: clearTimeout,
+          isStudioRestoreActive: () => false,
+        },
+      );
+
+      service.startPersistedAutoConnect();
+      await jest.advanceTimersByTimeAsync(3000 + 1000 + 2000 + 4000 + 8000 + 100);
+
+      expect(
+        mockPublishBridgeEvent.mock.calls.filter(
+          ([event]) => (event as { event: string }).event === "engine_error",
+        ),
+      ).toHaveLength(0);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.stringContaining("no Studio/Conference mode active"),
+      );
+      // The local UI still sees the state; only the relay bridge event is held back.
+      expect(
+        broadcasts.some((entry) => entry.message.type === "engine.error"),
+      ).toBe(true);
+      expect(service.getStatus()).toBe("disconnected");
+    });
+
+    it("publishes engine_error for a failing startup restore when a Studio/Conference mode is active", async () => {
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        ip: "192.168.178.70",
+        port: 9910,
+      });
+      const { service } = createServiceWithAdapters(createFailingRestoreAdapters(5), {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+        isStudioRestoreActive: () => true,
+      });
+
+      service.startPersistedAutoConnect();
+      await jest.advanceTimersByTimeAsync(3000 + 100);
+
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+        event: "engine_error",
+        data: {
+          code: EngineErrorCode.CONNECTION_TIMEOUT,
+          message: "Connection timeout",
+        },
+      });
+    });
+
+    it("publishes engine_error for a failing manual connect even without an active mode", async () => {
+      const { service } = createServiceWithAdapters(createFailingRestoreAdapters(1), {
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+        isStudioRestoreActive: () => false,
+      });
+
+      await expect(
+        service.connect({ type: "atem", ip: "192.168.178.70", port: 9910 }),
+      ).rejects.toMatchObject({ code: EngineErrorCode.CONNECTION_TIMEOUT });
+
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith({
+        event: "engine_error",
+        data: {
+          code: EngineErrorCode.CONNECTION_TIMEOUT,
+          message: "Connection timeout",
+        },
+      });
+    });
+
+    it("publishes engine_error again once a manual connect joins the startup restore", async () => {
+      const adapters = createFailingRestoreAdapters(5);
+      const loadPersistedConnection = jest.fn().mockResolvedValue({
+        type: "atem",
+        ip: "192.168.178.70",
+        port: 9910,
+      });
+      const { service } = createServiceWithAdapters(adapters, {
+        loadPersistedConnection,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+        isStudioRestoreActive: () => false,
+      });
+
+      service.startPersistedAutoConnect();
+      await jest.advanceTimersByTimeAsync(3000 + 100);
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "engine_error" }),
+      );
+
+      // The operator presses connect while the restore is still retrying:
+      // from now on the failures are theirs to see.
+      await service
+        .connect({ type: "atem", ip: "192.168.178.70", port: 9910 })
+        .catch(() => undefined);
+
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "engine_error" }),
+      );
     });
 
     it("joins an in-flight auto attempt with the same config instead of throwing ALREADY_CONNECTING", async () => {

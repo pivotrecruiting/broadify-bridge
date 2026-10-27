@@ -84,6 +84,12 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   get_status: readOnly("get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["bridge.status"]),
   bridge_pair_validate: readOnly("bridge_pair_validate", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["bridge.identity"]),
   list_outputs: readOnly("list_outputs", "list_outputs", 15_000, 11_000, ["outputs"]),
+  // Mode activation triggers the persisted engine auto-connect (scheduled, not
+  // awaited) and awaits the persisted graphics output apply (helper start), so
+  // it shares the engine_connect timeout class. Idempotent: a replay after a
+  // reconnect re-runs no-ops, hence after_state_check. Own lane so it never
+  // queues behind an operator's manual engine_connect.
+  mode_activate: sideEffect("mode_activate", "engine_connect", 18_000, 17_000, "mode", ["engine.status", "graphics", "outputs"], "after_state_check"),
   engine_connect: sideEffect("engine_connect", "engine_connect", 18_000, 17_000, "engine", ["engine.status"], "after_state_check"),
   engine_disconnect: sideEffect("engine_disconnect", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "engine", ["engine.status"], "after_state_check"),
   engine_get_status: readOnly("engine_get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["engine.status"]),

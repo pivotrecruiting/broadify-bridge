@@ -164,6 +164,41 @@ lokale Plattform und Output-Fähigkeiten:
 `outputCapabilities.decklink` ist nur auf macOS `true`; Windows/Linux können
 damit "keine DeckLink-Outputs" von "DeckLink nicht unterstützt" unterscheiden.
 
+`data.capabilities` ist additiv: `canonXC`, `live_program` und
+`mode_activation: true` (Bridge unterstützt `mode_activate`; fehlt auf älteren
+Bridges, die Studio-Zustand noch selbst beim Start wiederherstellen).
+
+#### mode_activate
+Die Web-App meldet den gewählten Modus; die Bridge stellt Studio-Verbindungen
+(persistierte Engine, persistierte Graphics-Output-Config) nur für `studio`
+und `conference` wieder her. Idempotent, von mehreren Clients sendbar.
+Details: `docs/bridge/features/mode-activation.md`.
+
+```json
+{
+  "type": "command",
+  "requestId": "<uuid>",
+  "command": "mode_activate",
+  "payload": { "mode": "studio" }
+}
+```
+
+Antwort (success):
+```json
+{
+  "type": "command_result",
+  "requestId": "<uuid>",
+  "success": true,
+  "data": { "mode": "studio", "restored": ["engine_autoconnect", "graphics_output"] }
+}
+```
+
+`mode` ∈ `studio | meeting | conference`; `meeting` liefert `restored: []`.
+`restored` nennt, was angestoßen wurde; Ergebnisse kommen über
+`engine_status`/`engine_error` und `graphics_status`/`graphics_error`.
+Ungültiger Modus oder zusätzliche Keys → `success: false`,
+`error: "Invalid payload for mode_activate: …"`.
+
 #### list_outputs
 Antwortdaten enthalten `output1`, `output2` und additive Diagnostics:
 
@@ -202,7 +237,7 @@ Timeout-Policy der Bridge-SSOT: `apps/bridge/src/services/relay-command-policy.t
 | Command-Klasse | Relay-Timeout | Bridge lokale SLA |
 | --- | ---: | ---: |
 | Fast commands | 12s | 8s |
-| `engine_connect` | 18s | 17s |
+| `engine_connect`, `mode_activate` | 18s | 17s |
 | `list_outputs` | 15s | 11s |
 | Graphics configure/send/update/remove | 20s | 16s |
 | Helper-start Commands | 35s | 30s |
@@ -246,7 +281,9 @@ Wichtige Bridge-Events:
 
 - `engine_status`: Engine-Snapshot inklusive Macro-Katalog und Runtime.
 - `engine_macro_execution`: Lifecycle-Update fuer `pending`, `running`, `waiting`, `completed`, `stopped`, `failed`.
-- `engine_error`: Engine-Fehler.
+- `engine_error`: Engine-Fehler. Fehler des persistierten Startup-Restores
+  werden nur gesendet, wenn ein Studio-/Conference-Modus per `mode_activate`
+  aktiviert wurde; manuelle Connects immer.
 - `engine_status_snapshot`: Snapshot beim Resync nach `bridge_auth_ok`.
 - `meeting_status`: autoritativer Meeting-Live-Zustand; Envelope und Status-Form siehe [Meeting Status Contract](./meeting-status-contract.md).
 - `meeting_error`: Meeting-/Helper-Fehler mit stabilem Fehlercode.

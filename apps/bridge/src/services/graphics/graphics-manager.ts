@@ -85,7 +85,7 @@ import { findCachedDevicePortById } from "./graphics-device-port-resolver.js";
 
 type GraphicsRuntimeInitServiceLikeT = Pick<
   GraphicsRuntimeInitService,
-  "initialize"
+  "initialize" | "applyPersistedOutput"
 >;
 type GraphicsOutputSupervisorLikeT = Pick<
   GraphicsOutputSupervisor,
@@ -193,6 +193,7 @@ export class GraphicsManager {
   private outputAdapter: GraphicsOutputAdapter;
   private initialized = false;
   private initializePromise: Promise<void> | null = null;
+  private applyPersistedOutputPromise: Promise<void> | null = null;
   private layers = new Map<string, GraphicsLayerStateT>();
   private categoryToLayer = new Map<GraphicsCategoryT, string>();
   private outputConfig: GraphicsOutputConfigT | null = null;
@@ -309,7 +310,10 @@ export class GraphicsManager {
   }
 
   /**
-   * Initialize renderer, assets, and persisted output config.
+   * Initialize renderer and assets, and load the persisted output config.
+   *
+   * The persisted output is NOT applied here; `applyPersistedOutput()` does
+   * that once the web app activates a Studio/Conference mode (`mode_activate`).
    *
    * @returns Promise resolved when initialization completes.
    */
@@ -324,28 +328,70 @@ export class GraphicsManager {
     }
     this.initializePromise = (async () => {
       try {
-        const initResult = await this.runtimeInitService.initialize();
-        if (initResult?.persistedApplyFailed && initResult.persistedConfig) {
-          this.outputStatus = "error";
-          this.lastOutputError ??= {
-            code: "output_helper_error",
-            message: "Persisted output config failed during startup",
-            at: Date.now(),
-          };
-          this.outputSupervisor.start({
-            reason: "init_failed",
-            config: initResult.persistedConfig,
-          });
-        } else {
-          this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
-          this.lastOutputError = null;
-        }
+        await this.runtimeInitService.initialize();
+        this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
+        this.lastOutputError = null;
         this.initialized = true;
       } finally {
         this.initializePromise = null;
       }
     })();
     return this.initializePromise;
+  }
+
+  /**
+   * Apply the persisted output config loaded by `initialize()`.
+   *
+   * Idempotent: a no-op once an output is configured, while the output
+   * supervisor is already recovering a failed apply, or while another apply is
+   * in flight (concurrent callers join it). On failure the persisted config is
+   * kept, the error is published, and the supervisor waits for the device.
+   *
+   * @returns Promise resolved when the apply attempt has settled.
+   */
+  async applyPersistedOutput(): Promise<void> {
+    await this.initialize();
+    if (this.applyPersistedOutputPromise) {
+      return this.applyPersistedOutputPromise;
+    }
+    if (this.outputConfig || this.outputSupervisor.getState().active) {
+      getBridgeContext().logger.debug?.(
+        "[Graphics] Persisted output apply skipped: output already configured or recovering",
+      );
+      return;
+    }
+    this.applyPersistedOutputPromise = (async () => {
+      try {
+        await this.waitForOutputTransition();
+        const result = await this.runtimeInitService.applyPersistedOutput();
+        if (result.persistedApplyFailed && result.persistedConfig) {
+          this.outputStatus = "error";
+          this.lastOutputError ??= {
+            code: "output_helper_error",
+            message: "Persisted output config failed to apply",
+            at: Date.now(),
+          };
+          this.outputSupervisor.start({
+            reason: "init_failed",
+            config: result.persistedConfig,
+          });
+          return;
+        }
+        this.outputStatus = this.outputConfig ? "ready" : "unconfigured";
+        this.lastOutputError = null;
+        if (this.outputConfig) {
+          // Unlike the old startup apply, clients are connected by now:
+          // announce the restored output like a configure would.
+          publishGraphicsStatusEvent(
+            "outputs_configured",
+            this.getStatusSnapshot(),
+          );
+        }
+      } finally {
+        this.applyPersistedOutputPromise = null;
+      }
+    })();
+    return this.applyPersistedOutputPromise;
   }
 
   /**
@@ -1022,11 +1068,12 @@ export class GraphicsManager {
     } catch (error) {
       if (error instanceof GraphicsOutputTransitionError) {
         const code =
-          error.stage === "renderer_configure"
+          error.code ??
+          (error.stage === "renderer_configure"
             ? "renderer_error"
             : error.stage === "persist"
               ? "output_config_error"
-              : "output_helper_error";
+              : "output_helper_error");
         this.failGraphics(code, error.message);
       }
       const message = error instanceof Error ? error.message : String(error);

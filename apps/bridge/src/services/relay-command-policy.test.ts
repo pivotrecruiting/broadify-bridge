@@ -74,6 +74,21 @@ describe("relay-command-policy", () => {
     );
   });
 
+  it("treats mode_activate as a replay-safe side effect in the engine_connect timeout class", () => {
+    expect(getRelayCommandPolicy("mode_activate")).toEqual(
+      expect.objectContaining({
+        executionMode: "side_effect",
+        timeoutClass: "engine_connect",
+        relayTimeoutMs: 18_000,
+        bridgeLocalSlaMs: 17_000,
+        concurrencyKey: "mode",
+        replayPolicy: "after_state_check",
+        responseMode: "sync",
+        invalidates: expect.arrayContaining(["engine.status", "graphics", "outputs"]),
+      }),
+    );
+  });
+
   it("uses strict policies for Canon XC configuration and preset recall", () => {
     expect(getRelayCommandPolicy("canon_xc_list_devices")).toEqual(
       expect.objectContaining({

@@ -16,6 +16,7 @@
 - Feature: Output-Konfiguration & Pixel-Policy: `docs/bridge/features/output-config.md`
 - Feature: Assets & Template-Security: `docs/bridge/features/assets-and-template-security.md`
 - Feature: Engine Connection Lifecycle: `docs/bridge/features/engine-connection-lifecycle.md`
+- Feature: Mode-Aktivierung (`mode_activate`, Studio-Restore nur nach Modusmeldung): `docs/bridge/features/mode-activation.md`
 - Feature: Preset Lifecycle (ohne Queue): `docs/bridge/features/preset-queue.md`
 - Feature: Renderer Bindings & Animations: `docs/bridge/features/renderer-bindings-animations.md`
 - Datei-Referenzen: `docs/bridge/reference/README.md`

@@ -4,6 +4,7 @@
 - **Outputs not configured**: Output‑Config fehlt → erst `graphics_configure_outputs` senden
 - **Output format not supported**: Format passt nicht zu Display‑Modes
 - **DeckLink helper not executable**: Helper‑Binary fehlt oder keine Exec‑Rechte
+- **output_device_not_found / Display output `<id>` is not connected**: Persistierte `video_hdmi`-Config, deren Ziel-Port nicht im Device-Cache ist (Display abgezogen oder noch nicht erkannt) → kein DeckLink-Fallback mehr; Config bleibt gespeichert, Output-Supervisor wartet mit Backoff auf den Device-Change → Display anschließen oder Output neu konfigurieren; Details `docs/bridge/features/mode-activation.md`
 - **Native display helper could not start (STATUS_DLL_NOT_FOUND)** / `diagnostics.display.state = missing_runtime` (Windows, Exit-Code 3221225781 = 0xC0000135, auch 0xC0000139 / 0xC0000142): `display-helper.exe` stirbt vor `main()`, weil die Microsoft-Visual-C++-Runtime fehlt → `vc_redist.x64` installieren oder Bridge neu installieren, dann Bridge neu starten; HDMI-Ausgänge fehlen bis dahin in `/outputs`; Log-Event `windows_display_helper_failed`; Details `docs/bridge/analysis/windows-display-helper-loader-diagnostics.md`
 - **Native display helper exited with code N** / `diagnostics.display.state = helper_failed`: Display-Helper lief, aber Erkennung schlug fehl (Exit ≠ 0, Timeout 2 s, ungültige Antwort) → `stderr_excerpt` im Log-Event `windows_display_helper_failed` prüfen
 - **Native Windows display helper spawn failed (code=ENOENT)** / `diagnostics.display.state = helper_missing`: `display-helper.exe` fehlt in `resources/native/display-helper` → Installation unvollständig, Bridge neu installieren
@@ -28,6 +29,7 @@
 - **Port already in use**: Bridge kann Port nicht binden (Health‑Check Fehler)
 - **Bridge not reachable**: Bridge läuft nicht oder falscher Host
 - **Engine not connected**: Engine‑Aktionen vor Connect
+- **Kein ATEM-Auto-Connect / kein Studio-Output nach Bridge-Neustart**: Seit `mode_activate` stellt die Bridge Studio-Zustand nur her, wenn die Web-App `studio`/`conference` meldet; alte Web-App ohne den Command → manuell verbinden bzw. Outputs konfigurieren (`docs/bridge/features/mode-activation.md`)
 
 ## Relay
 - **command_result success=false**: Fehler im CommandRouter oder Validation

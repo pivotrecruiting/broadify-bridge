@@ -5,6 +5,8 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "get_status",
   "bridge_pair_validate",
   "list_outputs",
+  // Mode-driven Studio restore – see docs/bridge/features/mode-activation.md
+  "mode_activate",
   "engine_connect",
   "engine_disconnect",
   "engine_get_status",
