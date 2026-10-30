@@ -173,14 +173,29 @@ export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
   }
 
   /**
-   * Stop a macro by ID. Scenes/media/cut/auto/transitions are momentary and
-   * resolve as a no-op; overlays toggle off again, record/stream stop. The
+   * Stop a macro by ID. Overlays toggle off again, record/stream stop. The
    * controls UI sends stop for a macro whose status is "running", so this
    * doubles as the toggle-off path.
+   *
+   * Scene/media slots are reported as "running" while they are on program. A
+   * controls page holding a stale macro snapshot keeps sending stop for the
+   * slot that was live when the page loaded, even after the program moved on.
+   * Stop for a slot that is NOT on program therefore selects it (what the
+   * operator clicked for); stop for the slot that IS on program stays a no-op,
+   * so the live program is never re-triggered. Cut/auto/transitions stay a
+   * no-op as well: re-sending them would fire again.
    */
   async stopMacro(id: number): Promise<void> {
     if (this.state.status !== "connected") {
       throw new Error("Engine is not connected");
+    }
+
+    if (isSceneOrMediaMacro(id)) {
+      if (id === this.liveSceneMacroId || id === this.liveMediaMacroId) {
+        return;
+      }
+      await this.runMacro(id);
+      return;
     }
 
     const commands = resolveStopCommands(id);
@@ -306,8 +321,14 @@ export class RodecasterAdapter extends EventEmitter implements EngineAdapter {
     address: string,
     args: Array<number | string | Buffer>
   ): void {
-    if (address === "/show" && Buffer.isBuffer(args[0])) {
-      this.applyShowDump(args[0].toString("utf8"));
+    if (address === "/show") {
+      // Firmware 1.3 sends the dump as an OSC blob, firmware 1.4 as a string.
+      const dump = args[0];
+      if (Buffer.isBuffer(dump)) {
+        this.applyShowDump(dump.toString("utf8"));
+      } else if (typeof dump === "string") {
+        this.applyShowDump(dump);
+      }
       return;
     }
 
@@ -674,7 +695,8 @@ function resolveRunCommands(id: number): OscCommandT[] | null {
 
 /**
  * OSC command sequence for stopMacro: [] = momentary macro, stop is a no-op;
- * undefined = unknown ID.
+ * undefined = unknown ID. Scene/media slots are handled in stopMacro itself
+ * because the decision depends on the live program state.
  */
 function resolveStopCommands(id: number): OscCommandT[] | undefined {
   const overlaySlot = slotFromRange(id, OVERLAY_MACRO_BASE);
@@ -688,6 +710,14 @@ function resolveStopCommands(id: number): OscCommandT[] | undefined {
     return [["/show/live", [0]]];
   }
   return resolveRunCommands(id) ? [] : undefined;
+}
+
+/** True for the scene (1-7) and media (21-27) slot macro ID ranges. */
+function isSceneOrMediaMacro(id: number): boolean {
+  return (
+    slotFromRange(id, SCENE_MACRO_BASE) !== null ||
+    slotFromRange(id, MEDIA_MACRO_BASE) !== null
+  );
 }
 
 /** Map a 1-based slot onto its macro ID; out-of-range slots become null. */
