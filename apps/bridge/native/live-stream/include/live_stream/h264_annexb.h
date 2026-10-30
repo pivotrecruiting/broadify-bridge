@@ -27,4 +27,7 @@ int firstNalType(const std::vector<uint8_t> &annexB);
 /** True if any NAL in the Annex B buffer is an IDR slice (type 5). */
 bool containsIdr(const std::vector<uint8_t> &annexB);
 
+/** profile_idc of the first SPS (type 7) in an Annex B buffer (66 Baseline, 77 Main, 100 High), or -1 without one. */
+int spsProfileIdc(const std::vector<uint8_t> &annexB);
+
 }  // namespace broadify::live

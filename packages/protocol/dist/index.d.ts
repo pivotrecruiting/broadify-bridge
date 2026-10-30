@@ -399,6 +399,19 @@ export type PgmRecordingT = {
     started_at_ms: number | null;
     bytes: number;
     error: string | null;
+    /**
+     * Archive encoder of the running recording (absent on older helpers that
+     * recorded the preview stream, and while no recording runs): H.264 High at
+     * 0.35 bit/px (2-40 Mbit/s), source geometry up to 1080p at the source rate.
+     */
+    profile?: "high";
+    bitrate_kbps?: number;
+    width?: number;
+    height?: number;
+    fps_num?: number;
+    fps_den?: number;
+    /** Encoded frames written to the file so far. */
+    frames?: number;
 };
 export type PgmStatusT = {
     enabled: boolean;
@@ -423,6 +436,8 @@ export type LiveProgramCapabilitiesT = {
     decklink_input: boolean;
     /** The meeting helper streams its composited program over WebRTC (meeting_program_* commands). */
     meeting_preview?: boolean;
+    /** Program recording uses its own H.264 High archive encoder (absent: the recording is the preview stream). */
+    recording_profile?: "high";
 };
 /**
  * Mode-driven Studio restoration (`mode_activate`)

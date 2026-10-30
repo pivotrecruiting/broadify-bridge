@@ -3,6 +3,8 @@
 
 #include "recorder/mp4_recorder.h"
 
+#include "helper_common/recording_encode_policy.h"
+
 #include <chrono>
 #include <sys/stat.h>
 
@@ -179,8 +181,11 @@ bool Mp4Recorder::stop(std::string &error) {
     [writer finishWritingWithCompletionHandler:^{
       dispatch_semaphore_signal(done);
     }];
-    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)) != 0) {
-      error = "finishWriting exceeded 15 s";
+    // Bounded like the meeting recorder: below the bridge's pgm.recording.stop
+    // RPC timeout (scripts/pgm-helper-release-contract.test.cjs guards it).
+    const int64_t finalizeNs = static_cast<int64_t>(broadify::helper::kRecorderFinalizeTimeoutMs) * static_cast<int64_t>(NSEC_PER_MSEC);
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, finalizeNs)) != 0) {
+      error = "finishWriting exceeded " + std::to_string(broadify::helper::kRecorderFinalizeTimeoutMs / 1000) + " s";
       return false;
     }
     if (writer.status != AVAssetWriterStatusCompleted) {

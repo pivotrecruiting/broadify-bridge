@@ -45,3 +45,6 @@ mit sauberer Aufnahme (kein Ruckeln) und ohne den Rechner zusätzlich zu belaste
   `FETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL`. Windows meldet `program_stream_unavailable` bis Phase 2.
 - ctest: `live-stream/tests` (Annex B, Leiter, VT-Smoke, WebRTC-Loopback) laufen in beiden Helper-Builds;
   `program_stream_rpc_test` prüft die RPC-Fläche mit dem Stub.
+- `EncodeTarget` trägt seit ADR-0006 Encoder-Optionen (`h264Profile`, `prioritizeSpeed`, `hardRateLimit`); die Vorschau-
+  Leiter `selectEncodeTarget` bleibt byte-identisch (Wächter in `bitrate_ladder_test`), `selectRecordingTarget` liefert
+  das Archiv-Ziel der PGM-Aufnahme. Die Archiv-Policy liegt in `helper-common` (`recording_encode_policy.h`).

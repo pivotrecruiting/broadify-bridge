@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
-import type { PgmStatusT, VideoInputDescriptorT } from "@broadify/protocol";
+import type { PgmRecordingT, PgmStatusT, VideoInputDescriptorT } from "@broadify/protocol";
 
 import { getBridgeContext } from "../bridge-context.js";
 import {
@@ -82,7 +82,42 @@ export function applyHelperEvent(current: PgmStatusT, line: string): { status: P
   if (type === "pgm_error" && typeof event.code === "string") {
     return { status: { ...current, state: "error", last_error: { code: event.code, message: String(event.message ?? "") } }, kind: type, event };
   }
+  if (type === "pgm_recording" && typeof event.active === "boolean") {
+    return { status: { ...current, recording: recordingFromEvent(current.recording ?? null, event) }, kind: type, event };
+  }
   return { status: current, kind: type, event };
+}
+
+const optionalNumber = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/**
+ * Projects a helper `pgm_recording` event (start: file + archive encoder
+ * parameters; stop: ok/error) onto `status.recording`, so a helper-side stop
+ * (source cleared, shutdown) reaches the web app without a status round trip.
+ * The next `pgm_status` snapshot replaces the projection anyway.
+ */
+function recordingFromEvent(current: PgmRecordingT | null, event: Record<string, unknown>): PgmRecordingT {
+  const error = typeof event.error === "string" ? event.error : null;
+  if (event.active !== true) {
+    return { active: false, file_path: null, started_at_ms: null, bytes: current?.bytes ?? 0, error };
+  }
+  const recording: PgmRecordingT = {
+    active: true,
+    file_path: typeof event.file_path === "string" ? event.file_path : (current?.file_path ?? null),
+    started_at_ms: current?.active ? (current.started_at_ms ?? null) : Date.now(),
+    bytes: current?.active ? current.bytes : 0,
+    error,
+  };
+  if (event.profile === "high") {
+    recording.profile = "high";
+  }
+  for (const key of ["bitrate_kbps", "width", "height", "fps_num", "fps_den", "frames"] as const) {
+    const value = optionalNumber(event[key]);
+    if (value !== undefined) {
+      recording[key] = value;
+    }
+  }
+  return recording;
 }
 
 export type PgmHelperManagerDepsT = {

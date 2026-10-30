@@ -113,10 +113,13 @@ the `recording.stop` RPC 20 s (`MEETING_HELPER_RPC_TIMEOUTS_MS` in
 does not cancel helper-side work, so a finalize that never returns used to leave
 the helper stuck while the bridge already reported failure (stream deck stuck on
 "REC", every later RPC queued behind it). Both recorders therefore bound the
-finalize step with the shared `kRecorderFinalizeTimeoutMs` (15 000 ms,
-`src/recorder/recorder_encode_policy.h`), which must stay below the RPC timeout;
-`scripts/meeting-helper-release-contract.test.cjs` parses both values and fails
-when they drift.
+finalize step with the shared `kRecorderFinalizeTimeoutMs` (15 000 ms, defined
+in `apps/bridge/native/helper-common/include/helper_common/recording_encode_policy.h`
+and re-exported by `src/recorder/recorder_encode_policy.h`; the PGM recorder
+waits on the same constant), which must stay below the RPC timeout;
+`scripts/meeting-helper-release-contract.test.cjs` and
+`scripts/pgm-helper-release-contract.test.cjs` parse the values and fail when
+they drift.
 
 - macOS: `finishWritingWithCompletionHandler` signals a semaphore; the control
   thread waits at most `kRecorderFinalizeTimeoutMs`.
@@ -137,8 +140,8 @@ finished file.
 ## Audio diagnostics (mute recordings)
 
 The Windows recorder admits microphone samples through the shared
-`RecorderAudioRebase` policy (`recorder_encode_policy.h`, unit-tested in
-`recorder_encode_policy_test`): a sample whose MF timestamp lies before the
+`RecorderAudioRebase` policy (meeting-internal in `recorder_encode_policy.h`,
+unit-tested in `recorder_encode_policy_test`): a sample whose MF timestamp lies before the
 writer session start (`sessionStartHns`, taken right after `BeginWriting`) is
 dropped, everything at/after it is written with the timestamp rebased to the
 session. That is the pre-existing behaviour; what is new is that both outcomes
@@ -169,7 +172,10 @@ separate change).
 ## Encoding
 
 Meeting recordings use H.264 High Profile plus AAC audio. Video bitrate is set
-from a shared native policy at 0.35 bit/px and clamped to 2-40 Mbit/s: 1080p30
+from a shared native policy at 0.35 bit/px and clamped to 2-40 Mbit/s
+(`recorderVideoBitrateBps` / `recorderKeyframeInterval` in
+`apps/bridge/native/helper-common/include/helper_common/recording_encode_policy.h`,
+shared with the PGM recording since ADR-0006): 1080p30
 lands at about 21.8 Mbit/s, which is roughly 10 GB/h including audio and
 container overhead. GOP/keyframes are targeted at two seconds (`fps * 2`),
 frame reordering is disabled, and macOS requests CABAC.

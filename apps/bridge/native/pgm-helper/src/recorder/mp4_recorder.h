@@ -19,11 +19,13 @@ struct RecordingStatus {
 };
 
 /**
- * Records the program as MP4 without re-encoding: the hardware encoder's
- * H.264 samples are written through (passthrough input with the encoder's
- * format description), audio goes in as AAC from the captured PCM sample
- * buffers. The session starts at the first keyframe; audio before that is
- * dropped. Writes <path>.part and renames on a clean stop.
+ * Records the program as MP4 from the engine's dedicated recording encoder
+ * (VideoToolbox H.264 High, ADR-0006): the encoder's samples are written
+ * through unchanged (passthrough input with the encoder's format description,
+ * no second encode in the container), audio goes in as AAC from the captured
+ * PCM sample buffers. The session starts at the first keyframe; audio before
+ * that is dropped. Writes <path>.part and renames on a clean stop; the
+ * finalize step is bounded by the shared kRecorderFinalizeTimeoutMs.
  */
 class Mp4Recorder {
  public:

@@ -76,8 +76,6 @@ void PgmEngine::stop() {
   if (housekeeping_.joinable()) {
     housekeeping_.join();
   }
-  std::string ignored;
-  recorder_.stop(ignored);
   clearSource();
   publisher_->closeAll();
 #if defined(__APPLE__)
@@ -147,7 +145,8 @@ std::string PgmEngine::perfJson() {
   std::lock_guard<std::mutex> lock(mutex_);
   std::ostringstream out;
   out << "{\"capture_fps\":" << captureFps_ << ",\"encode_fps\":" << encodeFps_ << ",\"bitrate_kbps\":" << bitrateKbps_
-      << ",\"dropped\":" << droppedFrames_.load() << ",\"viewers\":" << publisher_->viewerCount() << "}";
+      << ",\"dropped\":" << droppedFrames_.load() << ",\"viewers\":" << publisher_->viewerCount() << ",\"recording_fps\":"
+      << recordingFps_ << ",\"recording_kbps\":" << recordingKbps_ << ",\"recording_dropped\":" << recordingDropped_.load() << "}";
   return out.str();
 }
 
@@ -236,8 +235,12 @@ void PgmEngine::selectSource(const std::string &inputId, const std::string &prof
 }
 
 void PgmEngine::clearSource() {
-  std::string ignored;
-  recorder_.stop(ignored);
+  std::string recordingError;
+  bool recordingWasActive = false;
+  const bool recordingOk = finishRecording(recordingError, recordingWasActive);
+  if (recordingWasActive) {
+    emitRecordingStopped(recordingOk, recordingError);
+  }
   std::unique_ptr<VideoSource> source;
   std::unique_ptr<VideoEncoder> encoder;
   {
@@ -341,6 +344,11 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
   bool statusChanged = false;
   VideoEncoder *encoder = nullptr;
   bool forceKey = false;
+  std::shared_ptr<VideoEncoder> recordingEncoder;
+  RecordingGateDecision recording;
+  bool recordingFpsChanged = false;
+  std::string signalForEvent;
+  std::string recordingForEvent;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!hasInput_) {
@@ -374,15 +382,47 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
       }
     }
     keepLatestFrameLocked(frame);
-    if (encoderConfigured_ && (publisher_->viewerCount() > 0 || recorder_.isActive())) {
+    // Live preview: viewers only. The recording no longer keeps this encoder running (ADR-0006).
+    if (RecordingSignalGate::shouldEncodePreview(publisher_->viewerCount(), encoderConfigured_)) {
       encoder = encoder_.get();
       forceKey = keyframeWanted_.exchange(false);
+    }
+    if (recordingEncoder_) {
+      recording = recordingGate_.onFrame(frame.width, frame.height, frame.pixelFormat);
+      if (signalChanged) {
+        recordingFpsChanged = recordingGate_.fpsChanged(tracker_.signal().fpsNum, tracker_.signal().fpsDen);
+      }
+      if (recording.encode) {
+        recordingEncoder = recordingEncoder_;
+      }
+      if (recording.mismatchStarted || recording.mismatchEnded || recordingFpsChanged) {
+        signalForEvent = signalJson(tracker_.signal());
+        // The geometry the recording is bound to, including the pixel format the gate compares against.
+        recordingForEvent = recordingEncoderJsonLocked();
+        recordingForEvent.back() = ',';
+        recordingForEvent += "\"pixel_format\":\"" + jsonEscape(recordingSignal_.pixelFormat) + "\"}";
+      }
     }
   }
   if (encoder != nullptr) {
     if (!encoder->encode(frame, forceKey)) {
       droppedFrames_.fetch_add(1);
     }
+  }
+  if (recordingEncoder) {
+    if (!recordingEncoder->encode(frame, recording.forceKeyframe)) {
+      recordingDropped_.fetch_add(1);
+    }
+  }
+  if (recording.mismatchStarted || recording.mismatchEnded) {
+    // Signal change during a recording is a gap, the file stays valid: frames
+    // are skipped until the start geometry returns (then a forced keyframe).
+    emitHelperEvent(std::string("{\"type\":\"pgm_recording_signal_mismatch\",\"phase\":\"") +
+                    (recording.mismatchStarted ? "started" : "ended") + "\",\"signal\":" + signalForEvent +
+                    ",\"recording\":" + recordingForEvent + "}");
+  }
+  if (recordingFpsChanged) {
+    emitHelperEvent("{\"type\":\"pgm_recording_fps_changed\",\"signal\":" + signalForEvent + "}");
   }
   if (statusChanged) {
     emitStatus();
@@ -393,6 +433,17 @@ void PgmEngine::onAccessUnit(EncodedAccessUnit &&unit) {
   encodedFrames_.fetch_add(1);
   encodedBytes_.fetch_add(unit.annexB.size());
   publisher_->sendVideo(unit);
+#if defined(__APPLE__)
+  if (unit.sample != nullptr) {
+    CFRelease(unit.sample);
+    unit.sample = nullptr;
+  }
+#endif
+}
+
+void PgmEngine::onRecordingAccessUnit(EncodedAccessUnit &&unit) {
+  recordingFrames_.fetch_add(1);
+  recordingBytes_.fetch_add(unit.annexB.size());
 #if defined(__APPLE__)
   if (unit.sample != nullptr) {
     recorder_.appendVideo(unit.sample, unit.keyframe);
@@ -418,41 +469,120 @@ void PgmEngine::keepLatestFrameLocked(const CapturedFrame &frame) {
 #endif
 }
 
+std::string PgmEngine::recordingEncoderJsonLocked() const {
+  std::ostringstream out;
+  out << "{\"profile\":\"" << (recordingTarget_.h264Profile == H264Profile::High ? "high" : "main") << "\",\"bitrate_kbps\":"
+      << recordingTarget_.bitrateKbps << ",\"width\":" << recordingTarget_.width << ",\"height\":" << recordingTarget_.height
+      << ",\"fps_num\":" << recordingTarget_.fpsNum << ",\"fps_den\":" << recordingTarget_.fpsDen << "}";
+  return out.str();
+}
+
 std::string PgmEngine::recordingJsonLocked() const {
   const RecordingStatus rec = recorder_.status();
   std::ostringstream out;
   out << "{\"active\":" << (rec.active ? "true" : "false") << ",\"file_path\":"
       << (rec.filePath.empty() ? "null" : "\"" + jsonEscape(rec.filePath) + "\"") << ",\"started_at_ms\":"
       << (rec.active ? std::to_string(rec.startedAtMs) : "null") << ",\"bytes\":" << rec.bytes << ",\"error\":"
-      << (rec.error.empty() ? "null" : "\"" + jsonEscape(rec.error) + "\"") << "}";
+      << (rec.error.empty() ? "null" : "\"" + jsonEscape(rec.error) + "\"");
+  if (rec.active && recordingEncoder_) {
+    out << ",\"profile\":\"" << (recordingTarget_.h264Profile == H264Profile::High ? "high" : "main") << "\",\"bitrate_kbps\":"
+        << recordingTarget_.bitrateKbps << ",\"width\":" << recordingTarget_.width << ",\"height\":" << recordingTarget_.height
+        << ",\"fps_num\":" << recordingTarget_.fpsNum << ",\"fps_den\":" << recordingTarget_.fpsDen << ",\"frames\":"
+        << recordingFrames_.load();
+  }
+  out << "}";
   return out.str();
 }
 
 std::string PgmEngine::recordingStart(const std::string &filePath) {
   bool audio = false;
+  VideoSignal signal;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!hasInput_) {
       throw RpcFailure{"pgm_no_signal", "No program source is selected."};
     }
+    if (recordingEncoder_ || recorder_.isActive()) {
+      throw RpcFailure{"recording_failed", "A recording is already running."};
+    }
+    signal = tracker_.signal();
+    if (signal.noSignal || signal.width == 0 || signal.fpsNum == 0) {
+      throw RpcFailure{"pgm_no_signal", "The program signal is not measured yet."};
+    }
     audio = audioRunning_;
   }
+  // Own archive encoder (ADR-0006): H.264 High at the recorder policy bitrate,
+  // source geometry at the source rate, independent of the viewer profile.
+  // Created and configured outside mutex_ so the session setup never stalls
+  // the capture queue; hardware only, failure surfaces as encoder_unavailable.
+  const EncodeTarget target = selectRecordingTarget(signal.width, signal.height, signal.fpsNum, signal.fpsDen);
+  std::shared_ptr<VideoEncoder> encoder;
+#if defined(__APPLE__)
+  encoder = createVideoToolboxEncoder();
+#endif
+  if (!encoder) {
+    throw RpcFailure{"encoder_unavailable", "No hardware encoder on this platform."};
+  }
+  encoder->onAccessUnit = [this](EncodedAccessUnit &&unit) { onRecordingAccessUnit(std::move(unit)); };
+  std::string code;
   std::string error;
+  if (!encoder->configure(target, code, error)) {
+    throw RpcFailure{code.empty() ? "encoder_unavailable" : code, error};
+  }
   if (!recorder_.start(filePath, audio, error)) {
     throw RpcFailure{"recording_failed", error};
   }
-  keyframeWanted_.store(true);
-  emitHelperEvent("{\"type\":\"pgm_recording\",\"active\":true,\"file_path\":\"" + jsonEscape(filePath) + "\"}");
+  std::string recordingJson;
+  std::string encoderJson;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    recordingTarget_ = target;
+    recordingSignal_ = signal;
+    recordingGate_.arm(signal.width, signal.height, signal.pixelFormat, signal.fpsNum, signal.fpsDen);
+    recordingFrames_.store(0);
+    recordingBytes_.store(0);
+    recordingDropped_.store(0);
+    recordingFps_ = 0.0;
+    recordingKbps_ = 0.0;
+    encoder->requestKeyframe();  // the file opens on this IDR
+    recordingEncoder_ = std::move(encoder);
+    encoderJson = recordingEncoderJsonLocked();
+    recordingJson = recordingJsonLocked();
+  }
+  // Event fields mirror pgm_status.recording so the bridge can merge them without a status round trip.
+  emitHelperEvent("{\"type\":\"pgm_recording\",\"active\":true,\"file_path\":\"" + jsonEscape(filePath) + "\"," +
+                  encoderJson.substr(1));
   emitStatus();
-  std::lock_guard<std::mutex> lock(mutex_);
-  return recordingJsonLocked();
+  return recordingJson;
+}
+
+bool PgmEngine::finishRecording(std::string &error, bool &wasActive) {
+  std::shared_ptr<VideoEncoder> encoder;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    encoder = std::move(recordingEncoder_);
+    recordingGate_.reset();
+  }
+  wasActive = recorder_.isActive();
+  if (encoder) {
+    // Synchronous: every pending access unit reaches the recorder before it closes the file.
+    encoder->flush();
+  }
+  const bool ok = recorder_.stop(error);
+  encoder.reset();
+  return ok;
+}
+
+void PgmEngine::emitRecordingStopped(bool ok, const std::string &error) {
+  emitHelperEvent(std::string("{\"type\":\"pgm_recording\",\"active\":false,\"ok\":") + (ok ? "true" : "false") + ",\"error\":" +
+                  (error.empty() ? "null" : "\"" + jsonEscape(error) + "\"") + "}");
 }
 
 std::string PgmEngine::recordingStop() {
   std::string error;
-  const bool ok = recorder_.stop(error);
-  emitHelperEvent(std::string("{\"type\":\"pgm_recording\",\"active\":false,\"ok\":") + (ok ? "true" : "false") + ",\"error\":" +
-                  (error.empty() ? "null" : "\"" + jsonEscape(error) + "\"") + "}");
+  bool wasActive = false;
+  const bool ok = finishRecording(error, wasActive);
+  emitRecordingStopped(ok, error);
   emitStatus();
   if (!ok) {
     throw RpcFailure{"recording_failed", error};
@@ -500,6 +630,8 @@ void PgmEngine::housekeeping() {
   uint64_t lastCaptured = 0;
   uint64_t lastEncoded = 0;
   uint64_t lastBytes = 0;
+  uint64_t lastRecordingFrames = 0;
+  uint64_t lastRecordingBytes = 0;
   while (running_.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     bool changed = false;
@@ -519,15 +651,22 @@ void PgmEngine::housekeeping() {
       const uint64_t captured = capturedFrames_.load();
       const uint64_t encoded = encodedFrames_.load();
       const uint64_t bytes = encodedBytes_.load();
+      const uint64_t recordingFrames = recordingFrames_.load();
+      const uint64_t recordingBytes = recordingBytes_.load();
       {
         std::lock_guard<std::mutex> lock(mutex_);
         captureFps_ = static_cast<double>(captured - lastCaptured) / seconds;
         encodeFps_ = static_cast<double>(encoded - lastEncoded) / seconds;
         bitrateKbps_ = static_cast<double>(bytes - lastBytes) * 8.0 / 1000.0 / seconds;
+        // Counters restart at zero with every recording; a lower value means a new recording began.
+        recordingFps_ = recordingFrames >= lastRecordingFrames ? static_cast<double>(recordingFrames - lastRecordingFrames) / seconds : 0.0;
+        recordingKbps_ = recordingBytes >= lastRecordingBytes ? static_cast<double>(recordingBytes - lastRecordingBytes) * 8.0 / 1000.0 / seconds : 0.0;
       }
       lastCaptured = captured;
       lastEncoded = encoded;
       lastBytes = bytes;
+      lastRecordingFrames = recordingFrames;
+      lastRecordingBytes = recordingBytes;
       lastPerf = now;
       if (config_.logPerf) {
         emitHelperEvent("{\"type\":\"pgm_perf\",\"perf\":" + perfJson() + "}");

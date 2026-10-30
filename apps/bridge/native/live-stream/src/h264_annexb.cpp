@@ -89,4 +89,21 @@ bool containsIdr(const std::vector<uint8_t> &annexB) {
   return idr;
 }
 
+int spsProfileIdc(const std::vector<uint8_t> &annexB) {
+  // profile_idc is the first byte of the SPS payload, right after the NAL header.
+  const size_t n = annexB.size();
+  size_t i = 0;
+  while (i + 3 <= n) {
+    if (annexB[i] == 0 && annexB[i + 1] == 0 && annexB[i + 2] == 1) {
+      if (i + 3 < n && (annexB[i + 3] & 0x1f) == 7) {
+        return i + 4 < n ? static_cast<int>(annexB[i + 4]) : -1;
+      }
+      i += 3;
+    } else {
+      i += 1;
+    }
+  }
+  return -1;
+}
+
 }  // namespace broadify::live

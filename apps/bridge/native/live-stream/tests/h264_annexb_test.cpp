@@ -35,6 +35,23 @@ int main() {
   std::vector<uint8_t> nonIdr = {0, 0, 1, 0x41, 0x00};
   if (containsIdr(nonIdr)) fail("false idr");
   if (firstNalType(nonIdr) != 1) fail("3-byte start code not parsed");
+
+  // profile_idc is the byte after the SPS NAL header: 77 = Main, 100 = High.
+  if (spsProfileIdc(frame) != 66) fail("synthetic SPS 0x42 is Baseline (66)");
+  H264ParameterSets mainSets;
+  mainSets.sps = {0x67, 0x4d, 0x40, 0x1f};
+  std::vector<uint8_t> mainFrame = expected;
+  prependParameterSets(mainSets, mainFrame);
+  if (spsProfileIdc(mainFrame) != 77) fail("Main SPS profile_idc");
+  H264ParameterSets highSets;
+  highSets.sps = {0x67, 0x64, 0x00, 0x1f};
+  highSets.pps = {0x68, 0xee, 0x3c, 0x80};
+  std::vector<uint8_t> highFrame = expected;
+  prependParameterSets(highSets, highFrame);
+  if (spsProfileIdc(highFrame) != 100) fail("High SPS profile_idc");
+  if (spsProfileIdc(expected) != -1) fail("no SPS must give -1");
+  const std::vector<uint8_t> truncatedSps = {0, 0, 0, 1, 0x67};
+  if (spsProfileIdc(truncatedSps) != -1) fail("SPS without profile byte must give -1");
   std::cout << "h264_annexb_test passed" << std::endl;
   return 0;
 }

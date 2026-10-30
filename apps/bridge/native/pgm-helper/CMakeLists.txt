@@ -88,7 +88,7 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
 endif()
 
 if(PGM_HELPER_BUILD_TESTS)
-  foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test)
+  foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test)
     add_executable(${pgm_test} tests/${pgm_test}.cpp)
     target_link_libraries(${pgm_test} PRIVATE pgm_core)
     if(WIN32)

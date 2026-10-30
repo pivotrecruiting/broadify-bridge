@@ -35,3 +35,5 @@ Siehe Kontext 1 und 2. Beide verworfen wegen CPU-Last, Crash-Isolation und Vertr
 - Zwei Helper können dasselbe UVC-Gerät wollen; die Bridge arbitriert (`device_in_use`).
 - Zweite signierte Helper-App, zweite Kamera-Abfrage, zusätzliche Einträge in Packaging- und Signierlisten.
 - Der Phase-0-Refactor berührt den Meeting-Kritikpfad und wird als eigener, verhaltensgleicher PR geliefert.
+- Die PGM-Aufnahme (ADR-0006) fährt einen zweiten Hardware-Encoder (H.264 High) im selben Helper; „kein stiller
+  Software-Encoder“ gilt auch dort: fehlt der zweite Hardware-Slot, scheitert `pgm_recording_start` mit `encoder_unavailable`.
