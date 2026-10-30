@@ -50,4 +50,8 @@ if(HELPER_COMMON_BUILD_TESTS)
     target_compile_definitions(path_utf8_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   endif()
   add_test(NAME path_utf8_test COMMAND path_utf8_test)
+  # Archive-encode policy shared by the meeting and PGM recorders (header-only).
+  add_executable(recording_encode_policy_test tests/recording_encode_policy_test.cpp)
+  target_link_libraries(recording_encode_policy_test PRIVATE helper_common)
+  add_test(NAME recording_encode_policy_test COMMAND recording_encode_policy_test)
 endif()

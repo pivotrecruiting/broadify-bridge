@@ -11,9 +11,13 @@ namespace {
 
 /**
  * VideoToolbox H.264, hardware only, real-time: no frame reordering (no
- * B-frames), 2 s GOP, average + hard data-rate limit, keyframe on demand
- * (PLI / new viewer / format change). Output converts AVCC to Annex B with the
- * parameter sets prepended on keyframes so late joiners decode immediately.
+ * B-frames), 2 s GOP, keyframe on demand (PLI / new viewer / format change).
+ * The target selects the profile (Main for the live preview, High for the
+ * program recording), whether encoding speed is prioritized over quality and
+ * whether the average bitrate is backed by a hard 1 s data-rate limit
+ * (preview) or left to the rate controller (archive). Output converts AVCC to
+ * Annex B with the parameter sets prepended on keyframes so late joiners
+ * decode immediately.
  */
 class VideoToolboxEncoder final : public VideoEncoder {
  public:
@@ -43,13 +47,16 @@ class VideoToolboxEncoder final : public VideoEncoder {
     const double fps = target.fpsDen > 0 ? static_cast<double>(target.fpsNum) / target.fpsDen : 30.0;
     set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-    set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Main_AutoLevel);
+    set(kVTCompressionPropertyKey_ProfileLevel, target.h264Profile == H264Profile::High ? kVTProfileLevel_H264_High_AutoLevel
+                                                                                       : kVTProfileLevel_H264_Main_AutoLevel);
     set(kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CABAC);
     setNumber(kVTCompressionPropertyKey_ExpectedFrameRate, fps);
     setNumber(kVTCompressionPropertyKey_MaxKeyFrameInterval, static_cast<double>(std::max<uint32_t>(1, static_cast<uint32_t>(fps * target.gopSeconds))));
     setNumber(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, static_cast<double>(target.gopSeconds));
-    if (@available(macOS 14.0, *)) {
-      set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue);
+    if (target.prioritizeSpeed) {
+      if (@available(macOS 14.0, *)) {
+        set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue);
+      }
     }
     applyBitrateLocked(target.bitrateKbps, target.maxBitrateKbps);
     VTCompressionSessionPrepareToEncodeFrames(session_);
@@ -103,6 +110,11 @@ class VideoToolboxEncoder final : public VideoEncoder {
 
   void applyBitrateLocked(uint32_t bitrateKbps, uint32_t maxBitrateKbps) {
     setNumber(kVTCompressionPropertyKey_AverageBitRate, static_cast<double>(bitrateKbps) * 1000.0);
+    if (!target_.hardRateLimit) {
+      // Archive: the average bitrate alone (like the meeting writer's
+      // AVVideoAverageBitRateKey); a hard 1 s cap would starve complex scenes.
+      return;
+    }
     // Hard cap per second: max bytes over 1 s window.
     const double maxBytesPerSecond = static_cast<double>(std::max(maxBitrateKbps, bitrateKbps)) * 1000.0 / 8.0;
     NSArray *limits = @[ @(maxBytesPerSecond), @(1.0) ];

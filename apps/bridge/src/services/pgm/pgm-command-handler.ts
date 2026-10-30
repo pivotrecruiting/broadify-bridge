@@ -44,11 +44,22 @@ const defaultDeps: PgmCommandDepsT = {
  * shared library); `enabled` mirrors the machine's kill switch. The web app
  * shows "update the bridge" for the first and "disabled on the bridge" for the
  * second, and gates the whole feature on the organization's entitlement.
+ * `recording_profile` tells the web app that the program recording runs on its
+ * own H.264 High archive encoder (absent on older bridges, which recorded the
+ * preview stream).
  */
 export function getLiveProgramCapabilities(deps: Pick<PgmCommandDepsT, "env" | "platform"> = defaultDeps): LiveProgramCapabilitiesT {
   const env = parsePgmEnv(deps.env);
   const supported = deps.platform === "darwin";
-  return { supported, enabled: env.enabled, audio: supported, max_viewers: env.maxViewers, decklink_input: false, meeting_preview: supported };
+  return {
+    supported,
+    enabled: env.enabled,
+    audio: supported,
+    max_viewers: env.maxViewers,
+    decklink_input: false,
+    meeting_preview: supported,
+    ...(supported ? { recording_profile: "high" as const } : {}),
+  };
 }
 
 export function idlePgmStatus(deps: Pick<PgmCommandDepsT, "env"> = defaultDeps): PgmStatusT {

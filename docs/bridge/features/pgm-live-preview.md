@@ -51,14 +51,28 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   Konsumenten (Seitenwechsel, kurzes Schließen) und Berechtigungen einmal je Seitenladung gecacht. Die
   Signalcheck-Karte auf der Verbindungsseite wählt Eingang, Standbild und Aufnahme; natives Bild-im-Bild aus dem
   Fenster. Erster Durchlauf mit der eingebauten FaceTime-Kamera am 2026-10-24 erfolgreich.
-- Aufnahme (vorgezogen aus Phase 6): MP4 ohne Neukodierung (VideoToolbox-Samples im Passthrough, Ton als AAC),
-  startet am ersten Keyframe, `<datei>.mp4.part` bis zum sauberen Stopp, läuft unabhängig von Zuschauern.
+- Aufnahme (vorgezogen aus Phase 6, ADR-0006): eigener VideoToolbox-H.264-**High**-Hardware-Encoder nur für die Datei
+  (Policy aus `helper-common/include/helper_common/recording_encode_policy.h`: 0,35 Bit/px, Klammer 2–40 Mbit/s,
+  GOP 2 s, CABAC, keine Umsortierung; Quellauflösung bis 1080p bei Quell-fps, `selectRecordingTarget` in
+  `live-stream`), Samples im Passthrough in den MP4-Container (AVAssetWriter, Ton als AAC 48 kHz), Start am ersten
+  Keyframe, `<datei>.mp4.part` bis zum sauberen Stopp. Die Aufnahme ist unabhängig von Zuschauern, PLI und
+  Zuschauer-Profil (`remote` wirkt nur auf die Vorschau); ohne zweiten Hardware-Encoder-Slot scheitert der Start
+  sichtbar mit `encoder_unavailable`, ohne gemessenes Signal mit `pgm_no_signal`. Signalwechsel während der
+  Aufnahme: Frames mit anderer Geometrie (Breite/Höhe/Pixelformat) werden übersprungen, bis die Start-Geometrie
+  wieder anliegt (dann Keyframe und weiter; Ereignis `pgm_recording_signal_mismatch {phase: started|ended}` je
+  Episode); ein reiner fps-Wechsel wird toleriert und nur gemeldet (`pgm_recording_fps_changed`). Plattenbedarf ≈ 10 GB/h bei 1080p30, ≈ 18 GB/h bei 1080p60.
   Befehle `pgm_recording_pick_path` (Speicherdialog auf dem Bridge-Rechner), `pgm_recording_start {file_path?}`
   (Standard `~/Movies/Broadify/Broadify-PGM-<zeit>.mp4`, unter Windows `~/Videos/Broadify`; derselbe Ordner wie die
   Meeting-Aufnahme, Quelle `apps/bridge/src/services/shared/recording-paths.ts`), `pgm_recording_stop`; Status in
-  `pgm_status.recording`. Die `macos/Info.plist` des Helpers deklariert die Ordner-/Laufwerks-Hinweistexte
-  (Dokumente, Schreibtisch, Downloads, externe und Netzlaufwerke), damit macOS beim Schreiben in geschützte
-  Zielordner einen Freigabedialog zeigt statt still mit einem Berechtigungsfehler abzubrechen.
+  `pgm_status.recording` (bei laufender Aufnahme zusätzlich `profile: "high"`, `bitrate_kbps`, `width`, `height`,
+  `fps_num`, `fps_den`, `frames`), Capability `capabilities.live_program.recording_profile = "high"`. Das Ereignis
+  `pgm_recording` (`active:true` mit denselben Encoder-Feldern, `active:false` mit `ok`/`error`) wird in der Bridge in
+  `pgm_status.recording` gemergt, damit ein helperseitiger Stopp (Quelle entfernt) ohne Status-Roundtrip ankommt.
+  Mit `BRIDGE_LOG_PERF=1` enthält `pgm_perf` zusätzlich `recording_fps`, `recording_kbps`, `recording_dropped`.
+  Finalize beim Stopp ist auf `kRecorderFinalizeTimeoutMs` (15 s) begrenzt, unter `pgm.recording.stop` (20 s) und dem
+  Relay-SLA (`scripts/pgm-helper-release-contract.test.cjs`). Die `macos/Info.plist` des Helpers deklariert die
+  Ordner-/Laufwerks-Hinweistexte (Dokumente, Schreibtisch, Downloads, externe und Netzlaufwerke), damit macOS beim
+  Schreiben in geschützte Zielordner einen Freigabedialog zeigt statt still mit einem Berechtigungsfehler abzubrechen.
 - Standbild: `pgm_snapshot {quality?}` liefert JPEG als Base64 (Relay-Grenze 2 MB beachtet), Download im Browser.
 - Noch offen in Phase 1: Browser-Test mit echtem ATEM/RØDECaster (Ton, TURN von außerhalb), Latenzmessung.
 - Phase 2: Windows UVC. Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
@@ -74,13 +88,17 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
 `pgm.status`, `pgm.sessions.list`, `pgm.perf.get`, `pgm.viewer.offer {viewer_id, sdp, profile, ice_servers[{url,username,credential}]}`
 → `{sdp}`, `pgm.viewer.close {viewer_id}`, `pgm.recording.start {file_path}`, `pgm.recording.stop`, `pgm.recording.status`,
 `pgm.snapshot {quality}` → `{jpeg_base64,width,height,captured_at_ms}`. Ereignisse: `ready`, `pgm_status`, `pgm_signal`, `pgm_error`,
-`pgm_encoder_configured`, `pgm_recording`, `pgm_inputs_changed`, `pgm_viewer_state`, `pgm_audio_unavailable`, `pgm_perf`, `shutdown`.
+`pgm_encoder_configured`, `pgm_recording`, `pgm_recording_signal_mismatch`, `pgm_recording_fps_changed`, `pgm_inputs_changed`,
+`pgm_viewer_state`, `pgm_audio_unavailable`, `pgm_perf`, `shutdown`.
 
 ## Build
 - `npm run build:pgm-helper` (macOS): CMake, libdatachannel v0.22.6 und libopus 1.5.2 per FetchContent (fester Tag),
   TLS statisch über Homebrew `openssl@3` (`brew install openssl@3`), Bundle signiert wie der Meeting-Helper.
   Offline: `FETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL` / `FETCHCONTENT_SOURCE_DIR_OPUS` setzen.
 - `SKIP_PGM_HELPER_BUILD=1` lässt Build und Artefakt-Prüfung aus (Windows-Builds, CI ohne Netz).
-- Tests: `npm run test:pgm-helper-native` (ctest: Annex B, Bitratenleiter, Signalmessung, RPC-Dispatch, Transport,
-  VideoToolbox-Smoke (überspringt ohne Hardware-Encoder), WebRTC-Loopback mit zwei Peers im Prozess).
+- Tests: `npm run test:pgm-helper-native` (ctest: Annex B inkl. SPS-`profile_idc`, Bitratenleiter und Aufnahme-Ziel,
+  Archiv-Policy, Signalmessung, Aufnahme-Signal-Gate, RPC-Dispatch, Transport, VideoToolbox-Smoke mit zwei parallelen
+  Encodern Main/High (überspringt ohne Hardware-Encoder), WebRTC-Loopback mit zwei Peers im Prozess). Die Verdrahtung
+  des Aufnahme-Encoders in `PgmEngine` ist mit `pgm_core` allein nicht testbar (Capture/VideoToolbox) und wird im
+  Feldtest per ffprobe und `pgm_perf` geprüft.
 - Medien laufen nie über den Relay; Signalisierung über den signierten Befehlsweg.

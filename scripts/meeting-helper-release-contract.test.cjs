@@ -339,14 +339,20 @@ test("recorder finalize timeout stays below the recording.stop RPC timeout", () 
   // aborts the recording.stop RPC after MEETING_HELPER_RPC_TIMEOUTS_MS - if
   // the helper bound were the larger one, the bridge would report failure
   // while the helper still finalizes (invisible background recording).
+  // The constant lives in helper-common (shared with the PGM recorder since
+  // ADR-0006); the meeting header must re-export it under its old name.
   const policy = read(
-    "apps/bridge/native/meeting-helper/src/recorder/recorder_encode_policy.h",
+    "apps/bridge/native/helper-common/include/helper_common/recording_encode_policy.h",
   );
   const policyMatch = policy.match(
     /constexpr int kRecorderFinalizeTimeoutMs = ([0-9']+);/,
   );
-  assert.ok(policyMatch, "kRecorderFinalizeTimeoutMs must be defined");
+  assert.ok(policyMatch, "kRecorderFinalizeTimeoutMs must be defined in helper-common");
   const finalizeTimeoutMs = Number(policyMatch[1].replace(/'/g, ""));
+  const meetingPolicy = read(
+    "apps/bridge/native/meeting-helper/src/recorder/recorder_encode_policy.h",
+  );
+  assert.match(meetingPolicy, /using broadify::helper::kRecorderFinalizeTimeoutMs;/);
 
   const timeouts = read(
     "apps/bridge/src/services/meeting/meeting-helper-timeouts.ts",

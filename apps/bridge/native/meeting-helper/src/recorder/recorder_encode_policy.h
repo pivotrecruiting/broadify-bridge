@@ -1,44 +1,23 @@
 #pragma once
 
+#include "helper_common/recording_encode_policy.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 
 namespace broadify::meeting {
 
-constexpr double kRecorderBitsPerPixel = 0.35;
-constexpr uint64_t kRecorderMinBitrateBps = 2'000'000ull;
-constexpr uint64_t kRecorderMaxBitrateBps = 40'000'000ull;
-
-inline uint64_t recorderVideoBitrateBps(uint32_t width, uint32_t height,
-                                        uint32_t fps) {
-  const uint32_t safeFps = fps > 0 ? fps : 30;
-  const auto pixels = static_cast<double>(static_cast<uint64_t>(width) *
-                                          static_cast<uint64_t>(height));
-  const auto bitrate = static_cast<uint64_t>(
-      std::llround(pixels * static_cast<double>(safeFps) *
-                   kRecorderBitsPerPixel));
-  return std::clamp(bitrate, kRecorderMinBitrateBps,
-                    kRecorderMaxBitrateBps);
-}
-
-inline uint32_t recorderKeyframeInterval(uint32_t fps) {
-  const uint32_t safeFps = fps > 0 ? fps : 30;
-  return safeFps * 2u;
-}
-
-// Upper bound for the blocking finalize step in stop() on both platforms
-// (AVAssetWriter finishWriting on macOS, IMFSinkWriter::Finalize on Windows).
-// When it elapses the recorder reports "finalize_timeout" and keeps the
-// ".part" sidecar (REC-03) instead of blocking the sequential control thread
-// forever. It MUST stay below the bridge's recording.stop RPC timeout
-// (MEETING_HELPER_RPC_TIMEOUTS_MS["recording.stop"] = 20'000 ms in
-// apps/bridge/src/services/meeting/meeting-helper-timeouts.ts): a client
-// timeout does not cancel the helper-side work, so a larger helper bound
-// would make the bridge report failure while the helper still finalizes.
-// scripts/meeting-helper-release-contract.test.cjs guards the two values
-// against drifting apart.
-constexpr int kRecorderFinalizeTimeoutMs = 15'000;
+// The archive-encode policy (bitrate, keyframe interval, finalize bound) is
+// shared with the PGM recorder and lives in helper-common
+// (helper_common/recording_encode_policy.h, ADR-0006). Re-exported here so the
+// meeting recorders and their tests keep their names unchanged.
+using broadify::helper::kRecorderBitsPerPixel;
+using broadify::helper::kRecorderFinalizeTimeoutMs;
+using broadify::helper::kRecorderMaxBitrateBps;
+using broadify::helper::kRecorderMinBitrateBps;
+using broadify::helper::recorderKeyframeInterval;
+using broadify::helper::recorderVideoBitrateBps;
 
 // Audio sample admission relative to the writer session start, shared by the
 // platform recorders so the policy is unit-testable without a device.

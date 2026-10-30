@@ -19,6 +19,26 @@ describe("applyHelperEvent", () => {
     expect(applyHelperEvent(base, "not json")).toBeNull();
     expect(applyHelperEvent(base, JSON.stringify({ type: "ready" }))).toMatchObject({ kind: "ready", status: base });
   });
+
+  it("merges pgm_recording events into status.recording (helper-side start and stop without a status round trip)", () => {
+    const started = applyHelperEvent(
+      base,
+      JSON.stringify({ type: "pgm_recording", active: true, file_path: "/tmp/rec.mp4", profile: "high", bitrate_kbps: 21773, width: 1920, height: 1080, fps_num: 30, fps_den: 1 }),
+    );
+    expect(started).toMatchObject({
+      kind: "pgm_recording",
+      status: { recording: { active: true, file_path: "/tmp/rec.mp4", profile: "high", bitrate_kbps: 21773, width: 1920, height: 1080, fps_num: 30, fps_den: 1, error: null } },
+    });
+    // A clean helper-side stop (clearSource, shutdown) ends the recording in the projection.
+    const stopped = applyHelperEvent(started!.status, JSON.stringify({ type: "pgm_recording", active: false, ok: true, error: null }));
+    expect(stopped).toMatchObject({ kind: "pgm_recording", status: { recording: { active: false, file_path: null, started_at_ms: null, error: null } } });
+    expect(stopped!.status.recording).not.toHaveProperty("profile");
+    // A failed stop keeps the error so the UI can show it until the next status snapshot.
+    const failed = applyHelperEvent(started!.status, JSON.stringify({ type: "pgm_recording", active: false, ok: false, error: "finishWriting exceeded 15 s" }));
+    expect(failed).toMatchObject({ status: { recording: { active: false, error: "finishWriting exceeded 15 s" } } });
+    // Malformed recording events leave the projection alone.
+    expect(applyHelperEvent(base, JSON.stringify({ type: "pgm_recording", active: "yes" }))).toMatchObject({ kind: "pgm_recording", status: base });
+  });
 });
 
 describe("viewer session cleanup", () => {

@@ -1,8 +1,26 @@
+import type { PgmRecordingT } from "@broadify/protocol";
+
 import { PgmError } from "./pgm-errors.js";
 import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand, type PgmCommandDepsT } from "./pgm-command-handler.js";
 
 const OFFER = ["v=0", "o=- 1 1 IN IP4 127.0.0.1", "s=-", "t=0 0", "m=video 9 UDP/TLS/RTP/SAVPF 96", "a=recvonly"].join("\r\n");
 const offerPayload = { session_id: "6f1d2c1e-9c2a-4a8e-9a0e-1b2c3d4e5f60", sdp: OFFER, viewer_user_id: "0b5a7f6e-3c4d-4e5f-8a9b-0c1d2e3f4a5b", ice_servers: [] };
+
+/** What the helper reports once its own archive encoder runs (H.264 High, 0.35 bit/px). */
+const ACTIVE_RECORDING = (filePath: string): PgmRecordingT => ({
+  active: true,
+  file_path: filePath,
+  started_at_ms: 1,
+  bytes: 0,
+  error: null,
+  profile: "high",
+  bitrate_kbps: 21773,
+  width: 1920,
+  height: 1080,
+  fps_num: 30,
+  fps_den: 1,
+  frames: 0,
+});
 
 function fakeManager() {
   const status = { enabled: true, state: "idle" as const, input: null, signal: null, encoder: null, audio: true, viewers: 0, last_error: null };
@@ -19,7 +37,7 @@ function fakeManager() {
     offer: async () => ({ sdp: "v=0\r\nanswer", max_viewers: 4, active_viewers: 1 }),
     close: async () => undefined,
     snapshot: async (quality: number) => ({ jpeg_base64: "abc", width: 2, height: 2, captured_at_ms: 1, quality }),
-    recordingStart: async (filePath: string) => ({ ...status, recording: { active: true, file_path: filePath, started_at_ms: 1, bytes: 0, error: null } }),
+    recordingStart: async (filePath: string) => ({ ...status, recording: ACTIVE_RECORDING(filePath) }),
     recordingStop: async () => ({ ...status, recording: { active: false, file_path: null, started_at_ms: null, bytes: 0, error: null } }),
   };
 }
@@ -36,10 +54,12 @@ describe("pgm command handler", () => {
   });
 
   it("advertises the capability from the env gate and platform", () => {
-    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: true, enabled: true, audio: true, max_viewers: 4, decklink_input: false, meeting_preview: true });
+    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: true, enabled: true, audio: true, max_viewers: 4, decklink_input: false, meeting_preview: true, recording_profile: "high" });
     // The kill switch keeps `supported` (this is not an old bridge) but reports the feature as disabled.
     expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "0" }, platform: "darwin" })).toMatchObject({ supported: true, enabled: false });
     expect(getLiveProgramCapabilities({ env: {}, platform: "win32" })).toMatchObject({ supported: false, meeting_preview: false });
+    // The recording profile is only advertised where the helper (and its High-profile encoder) exists.
+    expect(getLiveProgramCapabilities({ env: {}, platform: "win32" })).not.toHaveProperty("recording_profile");
   });
 
   it("answers status and sessions even while disabled", async () => {
@@ -78,6 +98,11 @@ describe("pgm command handler", () => {
     expect(await handlePgmCommand("pgm_snapshot", { quality: 2 }, d)).toMatchObject({ success: false });
     expect(await handlePgmCommand("pgm_recording_pick_path", { default_name: "x.mp4" }, d)).toMatchObject({ success: true, data: { cancelled: false, file_path: "/tmp/x.mp4" } });
     expect(await handlePgmCommand("pgm_recording_start", {}, d)).toMatchObject({ success: true, data: { recording: { active: true, file_path: "/tmp/default.mp4" } } });
+    // The archive encoder's parameters pass through untouched (profile, bitrate, geometry, frame counter).
+    expect(await handlePgmCommand("pgm_recording_start", {}, d)).toMatchObject({
+      success: true,
+      data: { recording: { profile: "high", bitrate_kbps: 21773, width: 1920, height: 1080, fps_num: 30, fps_den: 1, frames: 0 } },
+    });
     expect(await handlePgmCommand("pgm_recording_start", { file_path: "/Users/me/rec.mp4" }, d)).toMatchObject({ success: true, data: { recording: { file_path: "/Users/me/rec.mp4" } } });
     expect(await handlePgmCommand("pgm_recording_start", { file_path: "../x.mp4" }, d)).toMatchObject({ success: false });
     expect(await handlePgmCommand("pgm_recording_stop", {}, d)).toMatchObject({ success: true, data: { recording: { active: false } } });
