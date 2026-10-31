@@ -51,6 +51,7 @@ sequenceDiagram
   Main-->>Preload: bridgeStatus event
   Preload-->>UI: callback
   Main->>Browser: shell.openExternal(webAppUrl, activate) – erst bei reachable + relayConnected
+  Main->>Main: app.hide() (nur macOS) – Browser bleibt vorne
 ```
 
 ## Web-App-Oeffnung (`services/web-app-open-gate.ts`)
@@ -61,7 +62,9 @@ Ablauf:
 - Health-Polling-Callback: `gate.onStatus(status)` vor dem Senden an den Renderer. Der **erste** Status mit `running && reachable && relayConnected` (aus `/relay/status`) oeffnet die URL genau einmal; weitere Ready-Status oeffnen nie erneut.
 - Fallback: kommt innerhalb `WEB_APP_OPEN_RELAY_TIMEOUT_MS` (15 000 ms) kein Relay-Connect (kein Internet, Relay nicht erreichbar), oeffnet das Gate trotzdem und loggt `[WebApp] Relay not connected within 15000ms; opening web app anyway` – die Web-App zeigt dann selbst den Bridge-Zustand.
 - `bridgeStop`, Start-Fehler und App-Shutdown (`runAppShutdownCleanup`) rufen `gate.disarm()`: ein ausstehendes Oeffnen wird ohne Browser-Start verworfen, der Timer geloescht. Erneutes `arm()` ersetzt die ausstehende URL und startet den Timer neu.
-- Oeffnen laeuft ueber denselben Pfad wie der `openExternal`-IPC-Handler: `isAllowedExternalUrl` (nur http/https) und `shell.openExternal(url, { activate: true })`, damit der Browser in den Vordergrund kommt.
+- Oeffnen laeuft ueber denselben Pfad wie der `openExternal`-IPC-Handler: `isAllowedExternalUrl` (nur http/https) und `shell.openExternal(url, { activate: true })`, damit der Browser in den Vordergrund kommt. Eine von der Policy abgelehnte URL zaehlt fuer das Gate als fehlgeschlagenes Oeffnen (Warn-Log, kein Hide).
+- **macOS: Bridge-Fenster tritt zurueck.** `activate: true` reicht mit Safari nicht – das Bridge-Fenster blieb nach dem Start vorne (Feldbefund rc.22). Das Gate ruft nach erfolgreichem Oeffnen (Promise von `shell.openExternal` aufgeloest, auch beim Relay-Timeout-Fallback) den Hook `afterOpen` auf; `main.ts` haengt dort `hideBridgeWindowBehindBrowser()` ein: nur auf `process.platform === "darwin"`, loggt `[WebApp] Hiding bridge window so the browser is in front` und ruft `app.hide()`. Das Fenster bleibt offen (Dock-Icon / Cmd-Tab holt es zurueck). Nicht beim manuellen `openExternal`-IPC (Klick in der UI), nicht auf Windows, nicht wenn das Oeffnen fehlschlaegt. Fehler im Hook werden geloggt und verschluckt.
+- **Welche Web-App:** `getWebAppBaseUrl()` liest gepackt `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL` (Default `https://app.broadify.de`), im Dev `DEVELOPMENT_STUDIO_CONTROL_WEBAPP_URL` (Default `http://localhost:3000`). Die Release-Workflows schreiben den Schluessel kanalabhaengig in die gepackte `.env`: `rc` → `https://studio-control-git-dev-broadify.vercel.app` (Dev-Web-App, passend zum Dev-Relay), `latest` → `https://app.broadify.de`. Der Schluessel ist release-gemanagt (siehe Env-Ladereihenfolge).
 - Das Modul ist rein (kein Electron-Import, Timer injizierbar) und in `web-app-open-gate.test.ts` isoliert getestet; die Verdrahtung in `main.test.ts`.
 
 ## Env‑Ladereihenfolge (`services/env-loader.ts`)
@@ -74,7 +77,7 @@ Ablauf:
 
 - Gepackte Builds lesen **nie** aus dem Arbeitsverzeichnis: `cwd` ist für eine installierte App nicht aussagekräftig (`/` auf macOS, Installationsordner bzw. „Ausführen in" einer Verknüpfung auf Windows) und darf keine Konfiguration in ein Release einschleusen.
 - Fehlt `userData/.env`, wird sie beim ersten Start aus dem Paket geseedet.
-- Release‑gemanagte Schlüssel (`BROADIFY_UPDATER_CHANNEL`, `RELAY_URL`, `BRIDGE_RELAY_JWKS_URL`) werden in beiden Modi abschließend aus dem Paket übernommen und gewinnen über `userData/.env`.
+- Release‑gemanagte Schlüssel (`BROADIFY_UPDATER_CHANNEL`, `RELAY_URL`, `BRIDGE_RELAY_JWKS_URL`, `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL`) werden in beiden Modi abschließend aus dem Paket übernommen und gewinnen über `userData/.env` – ein von einem Stable-Install geseedetes `userData/.env` kann einen RC-Build so weder auf das Production-Relay noch auf die Production-Web-App zurückziehen. Der Vertrag Workflow ↔ Env-Loader ist in `scripts/release-webapp-url-contract.test.cjs` gepinnt.
 - Nach dem Laden werden die **Schlüsselnamen** aus `userData/.env` (sortiert, nie Werte) nach `app.log` geschrieben: `[Env] userData/.env keys: KEY1, KEY2`.
 - `isDev()` (`util.ts`) ist nur wahr, wenn `NODE_ENV=development` **und** `!app.isPackaged`; ein gepackter Build gilt nie als Dev. Gleiches gilt für das `config/network-config.json`-Template in `loadNetworkConfig`: es wird nur im Dev-Modus aus dem `cwd` gelesen.
 

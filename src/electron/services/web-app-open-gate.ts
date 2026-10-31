@@ -35,6 +35,13 @@ export type WebAppOpenGateLoggerT = {
 export type WebAppOpenGateOptionsT = {
   /** Opens the URL (e.g. `shell.openExternal`). Rejections are logged, never thrown. */
   open: (url: string) => void | Promise<unknown>;
+  /**
+   * Runs once after `open` succeeded (after its promise resolved, or right
+   * after a synchronous open). Used by main to step the bridge window back
+   * behind the just-activated browser. Not called when `open` throws or
+   * rejects; its own errors are logged, never thrown.
+   */
+  afterOpen?: () => void;
   /** Fallback delay; defaults to `WEB_APP_OPEN_RELAY_TIMEOUT_MS`. */
   timeoutMs?: number;
   setTimeoutFn?: (callback: () => void, ms: number) => unknown;
@@ -86,6 +93,23 @@ export function createWebAppOpenGate(
     }
   };
 
+  const logOpenFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[WebApp] Failed to open web app: ${message}`);
+  };
+
+  const runAfterOpen = () => {
+    if (!options.afterOpen) {
+      return;
+    }
+    try {
+      options.afterOpen();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`[WebApp] afterOpen hook failed: ${message}`);
+    }
+  };
+
   const openNow = (reason: string) => {
     const url = pendingUrl;
     pendingUrl = null;
@@ -97,15 +121,14 @@ export function createWebAppOpenGate(
     try {
       const result = options.open(url);
       if (result && typeof (result as Promise<unknown>).then === "function") {
-        (result as Promise<unknown>).catch((error: unknown) => {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          logger.warn(`[WebApp] Failed to open web app: ${message}`);
-        });
+        // Two-argument `then`: a failing afterOpen must not be reported as a
+        // failed open (runAfterOpen handles its own errors).
+        (result as Promise<unknown>).then(runAfterOpen, logOpenFailure);
+      } else {
+        runAfterOpen();
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`[WebApp] Failed to open web app: ${message}`);
+      logOpenFailure(error);
     }
   };
 

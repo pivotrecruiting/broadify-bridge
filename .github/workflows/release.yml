@@ -82,15 +82,24 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Web app opened after a bridge start, per channel (public URLs, no
+          # secret): RC builds talk to the dev relay and must open the dev web
+          # app, stable builds open production. Packaged as
+          # PRODUCTION_STUDIO_CONTROL_WEBAPP_URL (release-managed in env-loader).
+          WEBAPP_URL_STABLE="https://app.broadify.de"
+          WEBAPP_URL_RC="https://studio-control-git-dev-broadify.vercel.app"
+
           TAG_NAME="${GITHUB_REF_NAME:-}"
           CHANNEL="latest"
           RESOLVED_RELAY_URL="${RELAY_URL:-}"
           RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL:-}"
+          RESOLVED_WEBAPP_URL="$WEBAPP_URL_STABLE"
 
           if [[ "$TAG_NAME" == *"-rc."* ]]; then
             CHANNEL="rc"
             RESOLVED_RELAY_URL="${RELAY_URL_RC:-}"
             RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL_RC:-}"
+            RESOLVED_WEBAPP_URL="$WEBAPP_URL_RC"
           fi
 
           if [[ -z "$RESOLVED_RELAY_URL" || -z "$RESOLVED_RELAY_JWKS_URL" ]]; then
@@ -105,10 +114,12 @@ jobs:
           echo "BROADIFY_UPDATER_CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
           echo "RESOLVED_RELAY_URL=$RESOLVED_RELAY_URL" >> "$GITHUB_ENV"
           echo "RESOLVED_BRIDGE_RELAY_JWKS_URL=$RESOLVED_RELAY_JWKS_URL" >> "$GITHUB_ENV"
+          echo "RESOLVED_WEBAPP_URL=$RESOLVED_WEBAPP_URL" >> "$GITHUB_ENV"
           echo "Resolved updater channel: $CHANNEL"
           if [[ -n "$RESOLVED_RELAY_URL" ]]; then
             echo "Resolved relay URL for channel $CHANNEL."
           fi
+          echo "Resolved web app URL for channel $CHANNEL: $RESOLVED_WEBAPP_URL"
 
       - name: Validate macOS release secrets
         if: matrix.os == 'macos-15'
@@ -273,6 +284,9 @@ jobs:
             fi
             if [ -n "${RESOLVED_BRIDGE_RELAY_JWKS_URL:-}" ]; then
               echo "BRIDGE_RELAY_JWKS_URL=${RESOLVED_BRIDGE_RELAY_JWKS_URL}"
+            fi
+            if [ -n "${RESOLVED_WEBAPP_URL:-}" ]; then
+              echo "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL=${RESOLVED_WEBAPP_URL}"
             fi
           } > apps/bridge/dist/.env
           if [ -n "${RESOLVED_BRIDGE_RELAY_JWKS_URL:-}" ]; then

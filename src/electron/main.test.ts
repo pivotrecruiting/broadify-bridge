@@ -203,6 +203,7 @@ const mockAppSetPath = jest.fn();
 const mockAppendSwitch = jest.fn();
 let singleInstanceLockReturns = true;
 const mockRequestSingleInstanceLock = jest.fn(() => singleInstanceLockReturns);
+const mockAppHide = jest.fn();
 const mockAppOn = jest.fn((event: string, handler: () => void) => {
   if (event === "ready") readyHandlers.push(handler);
   if (event === "second-instance") secondInstanceHandlers.push(handler);
@@ -238,6 +239,7 @@ jest.mock("electron", () => ({
     },
     exit: (code?: number) => mockAppExit(code),
     quit: () => mockAppQuit(),
+    hide: () => mockAppHide(),
     on: mockAppOn,
   },
   BrowserWindow: jest.fn().mockImplementation(function (
@@ -262,8 +264,32 @@ jest.mock("electron", () => ({
     this.focus = jest.fn();
     return this;
   }),
-  shell: { openExternal: jest.fn() },
+  shell: { openExternal: jest.fn().mockResolvedValue(undefined) },
 }));
+
+/**
+ * Override `process.platform` for one test; returns the restore function.
+ * The web app open gate hides the bridge window only on macOS.
+ */
+function overridePlatform(platform: NodeJS.Platform): () => void {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(process, "platform", original);
+    }
+  };
+}
+
+/** Let the open promise and the chained hide microtasks settle. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 4; i += 1) {
+    await Promise.resolve();
+  }
+}
 
 describe("main", () => {
   const originalArgv = process.argv;
@@ -891,6 +917,88 @@ describe("main", () => {
         "https://app.broadify.de/",
         { activate: true },
       );
+    });
+
+    it("gated open hides the bridge window on macOS once the browser opened", async () => {
+      const restorePlatform = overridePlatform("darwin");
+      try {
+        const { shell } = await import("electron");
+        await readyHandlers[0]();
+        const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+        await startHandler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+        statusCb({ running: true, reachable: true, relayConnected: false });
+        expect(mockAppHide).not.toHaveBeenCalled();
+
+        statusCb({ running: true, reachable: true, relayConnected: true });
+        expect(shell.openExternal).toHaveBeenCalledTimes(1);
+        // Hiding waits for shell.openExternal to resolve: Safari must have been
+        // activated before the bridge window steps back.
+        expect(mockAppHide).not.toHaveBeenCalled();
+        await flushMicrotasks();
+        expect(mockAppHide).toHaveBeenCalledTimes(1);
+        expect(mockLogAppInfo).toHaveBeenCalledWith(
+          "[WebApp] Hiding bridge window so the browser is in front",
+        );
+
+        // Later ready statuses neither open nor hide again.
+        statusCb({ running: true, reachable: true, relayConnected: true });
+        await flushMicrotasks();
+        expect(mockAppHide).toHaveBeenCalledTimes(1);
+      } finally {
+        restorePlatform();
+      }
+    });
+
+    it("gated open does not hide the bridge window on Windows", async () => {
+      const restorePlatform = overridePlatform("win32");
+      try {
+        const { shell } = await import("electron");
+        await readyHandlers[0]();
+        const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+        await startHandler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+        statusCb({ running: true, reachable: true, relayConnected: true });
+        await flushMicrotasks();
+
+        expect(shell.openExternal).toHaveBeenCalledTimes(1);
+        expect(mockAppHide).not.toHaveBeenCalled();
+      } finally {
+        restorePlatform();
+      }
+    });
+
+    it("manual openExternal IPC never hides the bridge window", async () => {
+      const restorePlatform = overridePlatform("darwin");
+      try {
+        const { shell } = await import("electron");
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "openExternal",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        await handler(undefined, "https://app.broadify.de");
+        await flushMicrotasks();
+
+        expect(shell.openExternal).toHaveBeenCalledTimes(1);
+        expect(mockAppHide).not.toHaveBeenCalled();
+      } finally {
+        restorePlatform();
+      }
     });
 
     it("bridgeGetStatus returns running false when process not running", async () => {
