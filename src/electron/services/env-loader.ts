@@ -5,10 +5,15 @@ import dotenv from "dotenv";
 import { logAppInfo } from "./app-logger.js";
 
 let envLoaded = false;
+// Keys the release workflow writes into the packaged .env per channel. They
+// always win over userData/.env so a channel switch (stable <-> RC) cannot be
+// undone by values a previous install persisted. The web app URL belongs here
+// because RC builds open the dev web app while stable builds open production.
 const RELEASE_MANAGED_ENV_KEYS = [
   "BROADIFY_UPDATER_CHANNEL",
   "RELAY_URL",
   "BRIDGE_RELAY_JWKS_URL",
+  "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL",
 ];
 
 const loadEnvFile = (envPath: string): boolean => {

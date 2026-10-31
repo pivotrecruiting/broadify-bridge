@@ -240,3 +240,115 @@ describe("createWebAppOpenGate", () => {
     );
   });
 });
+
+/** Let the open promise and the chained afterOpen microtasks settle. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 4; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+describe("createWebAppOpenGate afterOpen hook", () => {
+  const URL = "https://app.example.test/";
+
+  it("runs afterOpen exactly once after the open promise resolved", async () => {
+    const open = jest.fn().mockResolvedValue(undefined);
+    const afterOpen = jest.fn();
+    const gate = createWebAppOpenGate({ open, afterOpen, logger: createLogger() });
+
+    gate.arm(URL);
+    gate.onStatus(READY);
+
+    expect(open).toHaveBeenCalledTimes(1);
+    // The hook must wait for the browser to have actually opened.
+    expect(afterOpen).not.toHaveBeenCalled();
+    await flushMicrotasks();
+    expect(afterOpen).toHaveBeenCalledTimes(1);
+
+    // Repeated ready statuses neither open nor hide again.
+    gate.onStatus(READY);
+    await flushMicrotasks();
+    expect(afterOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs afterOpen after a synchronous open", () => {
+    const open = jest.fn();
+    const afterOpen = jest.fn();
+    const gate = createWebAppOpenGate({ open, afterOpen, logger: createLogger() });
+
+    gate.arm(URL);
+    gate.onStatus(READY);
+
+    expect(afterOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not run afterOpen when the open rejects", async () => {
+    const open = jest.fn().mockRejectedValue(new Error("no browser"));
+    const afterOpen = jest.fn();
+    const logger = createLogger();
+    const gate = createWebAppOpenGate({ open, afterOpen, logger });
+
+    gate.arm(URL);
+    gate.onStatus(READY);
+    await flushMicrotasks();
+
+    expect(afterOpen).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("no browser"),
+    );
+  });
+
+  it("does not run afterOpen when the open throws synchronously", () => {
+    const open = jest.fn(() => {
+      throw new Error("boom");
+    });
+    const afterOpen = jest.fn();
+    const gate = createWebAppOpenGate({ open, afterOpen, logger: createLogger() });
+
+    gate.arm(URL);
+    expect(() => gate.onStatus(READY)).not.toThrow();
+
+    expect(afterOpen).not.toHaveBeenCalled();
+  });
+
+  it("runs afterOpen on the relay-timeout fallback open as well", async () => {
+    const open = jest.fn().mockResolvedValue(undefined);
+    const afterOpen = jest.fn();
+    const harness = createTimerHarness();
+    const gate = createWebAppOpenGate({
+      open,
+      afterOpen,
+      timeoutMs: 50,
+      setTimeoutFn: harness.setTimeoutFn,
+      clearTimeoutFn: harness.clearTimeoutFn,
+      logger: createLogger(),
+    });
+
+    gate.arm(URL);
+    gate.onStatus(REACHABLE_NO_RELAY);
+    harness.fire(1);
+    await flushMicrotasks();
+
+    // The browser opened on the fallback too, so it should be in front too.
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(afterOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs and swallows an afterOpen error", async () => {
+    const open = jest.fn().mockResolvedValue(undefined);
+    const afterOpen = jest.fn(() => {
+      throw new Error("hide failed");
+    });
+    const logger = createLogger();
+    const gate = createWebAppOpenGate({ open, afterOpen, logger });
+
+    gate.arm(URL);
+    expect(() => gate.onStatus(READY)).not.toThrow();
+    await flushMicrotasks();
+
+    expect(afterOpen).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("hide failed"),
+    );
+  });
+});

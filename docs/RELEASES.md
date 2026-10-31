@@ -113,6 +113,7 @@ Ergebnis:
 
 - GitHub erstellt ein `prerelease`
 - die gepackte App verwendet den Update-Kanal `rc`
+- die gepackte App öffnet nach dem Bridge-Start die Dev-Web-App (`https://studio-control-git-dev-broadify.vercel.app`) statt `https://app.broadify.de`, passend zum RC/Test-Relay
 - aktive Nutzer auf `latest` erhalten dadurch kein Software-Update
 - nach bestandenem Live-Test veröffentlichst du separat `v0.1.0`
 

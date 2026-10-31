@@ -86,6 +86,9 @@ jobs:
           echo "BROADIFY_UPDATER_CHANNEL=rc" >> "$GITHUB_ENV"
           echo "RESOLVED_RELAY_URL=${RELAY_URL_RC}" >> "$GITHUB_ENV"
           echo "RESOLVED_BRIDGE_RELAY_JWKS_URL=${BRIDGE_RELAY_JWKS_URL_RC}" >> "$GITHUB_ENV"
+          # Test builds use the dev relay, so they open the dev web app (same
+          # constant as the rc channel in release.yml).
+          echo "RESOLVED_WEBAPP_URL=https://studio-control-git-dev-broadify.vercel.app" >> "$GITHUB_ENV"
 
       - name: Validate macOS release secrets
         if: matrix.os == 'macos-15'
@@ -241,6 +244,7 @@ jobs:
             echo "BROADIFY_UPDATER_CHANNEL=${BROADIFY_UPDATER_CHANNEL:-rc}"
             echo "RELAY_URL=${RESOLVED_RELAY_URL}"
             echo "BRIDGE_RELAY_JWKS_URL=${RESOLVED_BRIDGE_RELAY_JWKS_URL}"
+            echo "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL=${RESOLVED_WEBAPP_URL}"
           } > apps/bridge/dist/.env
 
           node -e "

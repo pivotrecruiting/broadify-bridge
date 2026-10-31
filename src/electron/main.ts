@@ -134,13 +134,37 @@ function openExternalUrl(url: unknown): Promise<void> | undefined {
 }
 
 /**
+ * Step the bridge window back once the gated web app open succeeded.
+ *
+ * On macOS `shell.openExternal(url, { activate: true })` activates the
+ * browser, but with Safari the bridge window still ends up in front after a
+ * bridge start (field finding rc.22). Hiding the app right after the open
+ * resolved leaves the just-activated browser front-most; the window stays
+ * open and the Dock icon / Cmd-Tab brings it back. Only for the automatic
+ * open after a bridge start: user-initiated `openExternal` IPC clicks keep
+ * the window where it is, and Windows is not affected.
+ */
+function hideBridgeWindowBehindBrowser(): void {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  logAppInfo("[WebApp] Hiding bridge window so the browser is in front");
+  app.hide();
+}
+
+/**
  * Opens the web app once per bridge start, but only after the health check
  * reports the bridge reachable and relay-authenticated (fallback after
  * WEB_APP_OPEN_RELAY_TIMEOUT_MS). Armed in `bridgeStart`, fed from the health
- * polling callback, disarmed in `bridgeStop` and on app shutdown.
+ * polling callback, disarmed in `bridgeStop` and on app shutdown. A URL the
+ * external URL policy rejects counts as a failed open (logged by the gate),
+ * so the window is never hidden without a browser having been opened.
  */
 const webAppOpenGate = createWebAppOpenGate({
-  open: (url) => openExternalUrl(url),
+  open: (url) =>
+    openExternalUrl(url) ??
+    Promise.reject(new Error("web app URL rejected by the external URL policy")),
+  afterOpen: hideBridgeWindowBehindBrowser,
   logger: { info: logAppInfo, warn: logAppWarn },
 });
 // Outputs are now configured in the web app, not stored here

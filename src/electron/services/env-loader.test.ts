@@ -155,4 +155,38 @@ describe("loadAppEnv", () => {
 
     expect(mockLogAppInfo).not.toHaveBeenCalled();
   });
+  it("lets the packaged PRODUCTION_STUDIO_CONTROL_WEBAPP_URL win over userData/.env", async () => {
+    const electron = await import("electron");
+    (electron.app as unknown as MockElectronAppT).isPackaged = true;
+    process.resourcesPath = "/res";
+    const packagedEnv = path.join("/res", "bridge", "dist", ".env");
+    mockExistsSync.mockImplementation(
+      (candidate: unknown) => candidate === USER_ENV || candidate === packagedEnv,
+    );
+    mockReadFileSync.mockImplementation((candidate: unknown) =>
+      candidate === packagedEnv
+        ? "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL=https://packaged.example.test\nBRIDGE_LOG_LEVEL=info\n"
+        : "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL=https://user.example.test\nBRIDGE_LOG_LEVEL=debug\n",
+    );
+    // dotenv.config is mocked, so emulate what it would have loaded from the
+    // (earlier, winning) userData/.env before the release-managed pass runs.
+    process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = "https://user.example.test";
+    process.env.BRIDGE_LOG_LEVEL = "debug";
+
+    try {
+      const { loadAppEnv } = await import("./env-loader.js");
+      loadAppEnv();
+
+      // Release-managed: the packaged value always wins, so a userData/.env
+      // written by a stable install cannot keep an RC build on the prod web app.
+      expect(process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL).toBe(
+        "https://packaged.example.test",
+      );
+      // Not release-managed: userData keeps winning (override: false).
+      expect(process.env.BRIDGE_LOG_LEVEL).toBe("debug");
+    } finally {
+      delete process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+      delete process.env.BRIDGE_LOG_LEVEL;
+    }
+  });
 });
