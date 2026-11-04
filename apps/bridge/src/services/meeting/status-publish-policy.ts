@@ -39,6 +39,12 @@ const VOLATILE_COUNTER_KEYS: ReadonlySet<string> = new Set([
   // as video_frames.
   "audio_samples_written",
   "audio_samples_dropped",
+  // Recorder backlog counters (macOS worker mailbox replacements / encoder
+  // drops, frames waiting for the worker): move on every poll while
+  // recording. Note: the program-stream section carries a dropped_frames
+  // counter of the same nature, which this also covers.
+  "dropped_frames",
+  "queued_frames",
   "updated_at",
   // Screen capture frame ticks are telemetry, not a state transition.
   "captured_frames",

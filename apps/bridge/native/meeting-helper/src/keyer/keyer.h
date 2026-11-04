@@ -32,6 +32,9 @@ struct KeyerMetrics {
   double keyerPublishToProgramMs = -1.0;
   double programFrameIntervalMs = -1.0;
   double programFrameMs = -1.0;
+  // Wall time of the recorder tap in the last program tick (both platforms;
+  // on macOS this is the mailbox copy only, the encoder runs on its thread).
+  double recorderMs = -1.0;
   double mjpegEncodeMs = -1.0;
   double vcamPublishMs = -1.0;
   double keyerFps = -1.0;
