@@ -12,6 +12,7 @@
 
 #include "recorder/recorder_writer_factory.h"
 #include "recorder/recorder_encode_policy.h"
+#include "recorder/recorder_video_worker.h"
 
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -22,10 +23,17 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <vector>
 #include <unistd.h>
 
+using broadify::meeting::finalizeRecorderWriter;
+using broadify::meeting::kRecorderFinalizeTimeoutMs;
 using broadify::meeting::makeRecorderWriter;
+using broadify::meeting::RecorderFinalizeOutcome;
+using broadify::meeting::RecorderFinalizeResult;
 using broadify::meeting::RecorderFrameClock;
+using broadify::meeting::RecorderVideoWorker;
 using broadify::meeting::recorderKeyframeInterval;
 using broadify::meeting::recorderSidecarPath;
 using broadify::meeting::recorderVideoBitrateBps;
@@ -99,6 +107,168 @@ uint64_t nsForFrame(uint64_t frame, uint32_t fps) {
   return static_cast<uint64_t>(
       std::llround((static_cast<long double>(frame) * 1'000'000'000.0L) /
                    static_cast<long double>(fps)));
+}
+
+bool fileExists(const std::string &path) {
+  return [[NSFileManager defaultManager]
+      fileExistsAtPath:[NSString stringWithUTF8String:path.c_str()]];
+}
+
+// Counts the video samples actually stored in a finished file (passthrough
+// AVAssetReader, no decode).
+int64_t countVideoSamples(const std::string &path) {
+  AVURLAsset *asset = [AVURLAsset
+      URLAssetWithURL:[NSURL fileURLWithPath:[NSString
+                                                 stringWithUTF8String:path.c_str()]]
+              options:nil];
+  NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+  if ([tracks count] != 1) {
+    return -1;
+  }
+  NSError *error = nil;
+  AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:asset error:&error];
+  if (reader == nil) {
+    return -1;
+  }
+  AVAssetReaderTrackOutput *output =
+      [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:tracks[0]
+                                                 outputSettings:nil];
+  [reader addOutput:output];
+  if (![reader startReading]) {
+    return -1;
+  }
+  int64_t count = 0;
+  while (CMSampleBufferRef sample = [output copyNextSampleBuffer]) {
+    // The passthrough reader also yields a few zero-byte sample buffers
+    // (encoder/muxer padding without media data); only real samples count.
+    if (CMSampleBufferGetNumSamples(sample) > 0 &&
+        CMSampleBufferGetTotalSampleSize(sample) > 0) {
+      ++count;
+    }
+    CFRelease(sample);
+  }
+
+  return reader.status == AVAssetReaderStatusCompleted ? count : -1;
+}
+
+// Field finding (Nov 2026): a recording stopped before any program frame was
+// committed left a 0-byte "<name>.mp4.part" behind and the recorder reported
+// the opaque AVFoundation finish failure. The finalize step must instead cancel
+// the writer, delete the sidecar and report the machine token "no_frames".
+bool runNoFramesCase(NSString *dir) {
+  bool ok = true;
+  const std::string finalPath =
+      std::string([dir UTF8String]) + "/no-frames.mp4";
+  const std::string sidecarPath = recorderSidecarPath(finalPath);
+  auto bundle = makeRecorderWriter(sidecarPath, kWidth, kHeight, kFps);
+  ok &= expect(bundle.writer != nil, "no-frames: writer builds");
+  if (bundle.writer == nil) {
+    return false;
+  }
+  ok &= expect([bundle.writer startWriting], "no-frames: startWriting succeeds");
+  [bundle.writer startSessionAtSourceTime:CMClockGetTime(CMClockGetHostTimeClock())];
+  const RecorderFinalizeResult result = finalizeRecorderWriter(
+      bundle.writer, bundle.videoInput, bundle.audioInput, 0u, sidecarPath,
+      finalPath, kRecorderFinalizeTimeoutMs);
+  ok &= expect(result.outcome == RecorderFinalizeOutcome::NoFrames,
+               ("no-frames: outcome is no_frames (got error=" + result.error + ")")
+                   .c_str());
+  ok &= expect(result.error == "no_frames",
+               "no-frames: error token is the machine-readable no_frames");
+  ok &= expect(!fileExists(sidecarPath), "no-frames: the .part sidecar is removed");
+  ok &= expect(!fileExists(finalPath), "no-frames: no final file is created");
+  ok &= expect(bundle.writer.status != AVAssetWriterStatusCompleted,
+               "no-frames: the writer was cancelled, not finished");
+  return ok;
+}
+
+// Frames appended from a producer thread faster than the worker can encode:
+// the mailbox replaces pending frames (reported as dropped), the worker keeps
+// the CFR timeline from the producer's capture times, and the finished file
+// holds exactly the frames the worker reports as written.
+bool runWorkerBurstCase(NSString *dir) {
+  bool ok = true;
+  const std::string finalPath =
+      std::string([dir UTF8String]) + "/worker-burst.mp4";
+  const std::string sidecarPath = recorderSidecarPath(finalPath);
+  auto bundle = makeRecorderWriter(sidecarPath, kWidth, kHeight, kFps);
+  ok &= expect(bundle.writer != nil, "worker: writer builds");
+  if (bundle.writer == nil) {
+    return false;
+  }
+  ok &= expect([bundle.writer startWriting], "worker: startWriting succeeds");
+  const CMTime sessionStart = CMClockGetTime(CMClockGetHostTimeClock());
+  [bundle.writer startSessionAtSourceTime:sessionStart];
+
+  RecorderVideoWorker::Config config;
+  config.writer = bundle.writer;
+  config.videoInput = bundle.videoInput;
+  config.videoAdaptor = bundle.videoAdaptor;
+  config.sessionStart = sessionStart;
+  config.width = kWidth;
+  config.height = kHeight;
+  config.fps = kFps;
+  config.cfrEnabled = true;
+  RecorderVideoWorker worker(config);
+  worker.start();
+
+  // 20 s of media offered as one burst (no pacing): far more than the
+  // encoder keeps up with in real time, so the 2-slot mailbox replaces.
+  constexpr uint32_t kBurstFrames = 20u * kFps;
+  const size_t frameBytes = static_cast<size_t>(kWidth) * kHeight * 4u;
+  std::thread producer([&] {
+    std::vector<uint8_t> rgba(frameBytes);
+    for (uint32_t frame = 0; frame < kBurstFrames; ++frame) {
+      std::memset(rgba.data(), static_cast<int>(frame % 251), frameBytes);
+      worker.offer(rgba.data(), kWidth, kHeight, nsForFrame(frame, kFps));
+    }
+  });
+  producer.join();
+  // A geometry mismatch is ignored, never queued.
+  std::vector<uint8_t> wrongGeometry(16u * 16u * 4u, 0u);
+  ok &= expect(!worker.offer(wrongGeometry.data(), 16u, 16u, nsForFrame(kBurstFrames, kFps)),
+               "worker: geometry mismatch is rejected");
+  worker.stop();
+  const RecorderVideoWorker::Counters counters = worker.counters();
+  ok &= expect(counters.offered == kBurstFrames,
+               "worker: every burst frame was offered");
+  ok &= expect(counters.videoFrames > 0u, "worker: frames were written");
+  ok &= expect(counters.mailboxReplaced > 0u,
+               ("worker: burst replaced pending frames (replaced=" +
+                std::to_string(counters.mailboxReplaced) + ")")
+                   .c_str());
+  ok &= expect(counters.droppedFrames >= counters.mailboxReplaced,
+               "worker: dropped_frames includes mailbox replacements");
+  ok &= expect(counters.queuedFrames == 0u, "worker: stop() drained the mailbox");
+  ok &= expect(worker.lastError().empty(),
+               ("worker: no writer error (" + worker.lastError() + ")").c_str());
+  std::vector<uint8_t> lateFrame(frameBytes, 0u);
+  ok &= expect(!worker.offer(lateFrame.data(), kWidth, kHeight,
+                             nsForFrame(kBurstFrames + 1u, kFps)),
+               "worker: offer after stop is rejected");
+
+  const RecorderFinalizeResult result = finalizeRecorderWriter(
+      bundle.writer, bundle.videoInput, bundle.audioInput, counters.videoFrames,
+      sidecarPath, finalPath, kRecorderFinalizeTimeoutMs);
+  ok &= expect(result.outcome == RecorderFinalizeOutcome::Completed,
+               ("worker: finalize completes (error=" + result.error + ")").c_str());
+  ok &= expect(!fileExists(sidecarPath) && fileExists(finalPath),
+               "worker: sidecar renamed to the final path");
+  const int64_t storedFrames = countVideoSamples(finalPath);
+  ok &= expect(storedFrames == static_cast<int64_t>(counters.videoFrames),
+               ("worker: file holds the reported frames (file=" +
+                std::to_string(storedFrames) + " reported=" +
+                std::to_string(counters.videoFrames) + " duplicated=" +
+                std::to_string(counters.duplicatedFrames) + " dropped=" +
+                std::to_string(counters.droppedFrames) + " replaced=" +
+                std::to_string(counters.mailboxReplaced) + " offered=" +
+                std::to_string(counters.offered) + ")")
+                   .c_str());
+  // The CFR grid follows the producer's capture times, so the last written
+  // index cannot exceed the last offered capture time's grid position.
+  ok &= expect(counters.videoFrames <= kBurstFrames,
+               "worker: CFR timeline never runs ahead of the capture times");
+  return ok;
 }
 
 }  // namespace
@@ -338,6 +508,9 @@ int main() {
       std::cerr << "meeting_recorder_writer_test: final size=" << size
                 << " path=" << finalPath << std::endl;
     }
+
+    ok &= runNoFramesCase(dir);
+    ok &= runWorkerBurstCase(dir);
 
     [[NSFileManager defaultManager] removeItemAtPath:dir error:nil];
   }

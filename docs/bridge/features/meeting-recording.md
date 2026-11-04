@@ -31,10 +31,18 @@ Allowlisted in `relay-command-allowlist.ts`, policies in
 | `meeting_recording_status` | read only | none | `{ recording: {...} }` |
 
 `recording` status shape: `{ active, file_path, elapsed_seconds, video_frames,
-audio_samples_written, audio_samples_dropped, last_error }` (snake_case, as
-produced by the helper). The two `audio_samples_*` counters are additive
-diagnostics (Oct 2026): numbers on Windows, `null` on macOS and the stub — see
+dropped_frames, queued_frames, audio_samples_written, audio_samples_dropped,
+last_error }` (snake_case, as produced by the helper). The two
+`audio_samples_*` counters are additive diagnostics (Oct 2026): numbers on
+Windows, `null` on macOS and the stub — see
 [Audio diagnostics](#audio-diagnostics-mute-recordings) below.
+`dropped_frames` / `queued_frames` (Nov 2026, always numbers) count program
+frames the recorder could not encode (encoder backpressure; on macOS also
+frames the recorder mailbox replaced because the worker thread fell behind)
+and frames waiting in that mailbox right now (Windows/stub: 0). All of
+`elapsed_seconds`, `video_frames`, `dropped_frames`, `queued_frames` and the
+audio counters are volatile for the bridge's status-publish policy
+(`status-publish-policy.ts`), i.e. they never trigger a publish on their own.
 
 `meeting_recording_pick_path` opens the native macOS save panel on the bridge
 machine via osascript (`meeting-recording-dialog.ts`); the file is written
@@ -87,13 +95,78 @@ configuration). Periodic movie fragments (`movieFragmentInterval`, added Jul
 than ~8 s died at a fragment commit while the same configuration survives
 isolated stress runs — the pre-fragment configuration has hours of successful
 field recordings. Recorder incidents (`writer_failed`, `finish_failed`,
-`finalize_timeout`, `rename_failed`, `completed`) are emitted as
+`finalize_timeout`, `rename_failed`, `no_frames`, `mailbox_replaced`,
+`cfr_drop`, `cfr_discontinuity`, `completed`) are emitted as
 `{"type":"meeting_recorder",...}` events through the helper event log
 (`util/helper_event_log`): stdout plus the `--event-log` sidecar file
 (`meeting-helper-events.log` in the bridge user-data dir). The sidecar matters
 on macOS, where the `open`-based launch swallows helper stdio; the bridge
 forwards stdout lines when it can (`meeting-helper-manager.ts`) and dumps the
 sidecar tail into its process log whenever the helper dies unexpectedly.
+
+### Encode worker thread and frame mailbox (Nov 2026)
+
+Field measurement (Bridge rc.23, M1 Pro, Cam Link 4K): while recording, the
+program tick's `program_frame_ms` median rose from 2–6 ms to 27.5 ms (max
+68 ms) because `appendVideoFrame` did the RGBA→BGRA swizzle, the CFR planning
+and `appendPixelBuffer` synchronously on the program thread. The macOS
+recorder now splits the work:
+
+- `MeetingRecorder::appendVideoFrame` (pipeline thread) only takes the
+  capture time (`host clock − session start`) and copies the RGBA frame into
+  a `RecorderFrameMailbox` (`src/recorder/recorder_frame_mailbox.{h,cpp}`,
+  stdlib, unit-tested): single-producer/single-consumer, capacity 2, latest
+  wins (a full mailbox replaces its oldest pending frame), buffers recycled
+  by swapping so steady state allocates nothing. The copy of one 8.3 MB
+  1080p frame measured 0.18 ms median / 0.23 ms p95 (memcpy) versus
+  0.19 ms median but a 5.6 ms tail for the alternative of swizzling into a
+  pooled CVPixelBuffer on the tick thread, which is why the mailbox copies
+  RGBA and the swizzle moved off the tick.
+- `RecorderVideoWorker` (`src/recorder/recorder_video_worker.{h,mm}`), one
+  `std::thread` per recording started in `start()`: takes frames from the
+  mailbox, swizzles into the adaptor's pixel-buffer pool, plans the CFR grid
+  with the frame's CAPTURE time (never the worker's own clock, so a slow
+  encoder shifts nothing on the timeline), waits up to one frame interval
+  for `isReadyForMoreMediaData` (the inline path dropped immediately) and
+  appends. Writer failures surface through `recording.last_error` as before
+  (REC-02).
+- `stop()` order: detach the microphone, stop the worker (`mailbox.stop()`,
+  drain, join), mark the inputs finished, then finalize with the unchanged
+  `kRecorderFinalizeTimeoutMs` bound (`finalizeRecorderWriter` in
+  `recorder_writer_factory.mm`, ctest-covered).
+- Counters: `recording.video_frames` (appended), `dropped_frames` (mailbox
+  replacements + CFR drops), `queued_frames` (pending in the mailbox); a
+  rate-limited (5 s) `{"type":"meeting_recorder","event":"mailbox_replaced",
+  "detail":"replaced=<n> total=<m> written=<k>"}` event flags an encoder that
+  cannot keep up. `keyer.get.metrics.recorder_ms` reports the tick-side cost
+  of the recorder tap on both platforms (macOS: the mailbox copy only;
+  Windows additionally in the `keyer_budget_overrun` event as `recorder_ms`).
+
+### Empty or failed recordings (`no_frames`, Nov 2026)
+
+`finalizeRecorderWriter` handles two cases before the regular
+`finishWriting`:
+
+- The writer is already `Failed` when stop arrives (disk full, I/O error,
+  encoder death — the worker reported it live via `recording.last_error`):
+  `finishWriting` would only re-report it, and without movie fragments the
+  sidecar has no `moov` atom and is unplayable, so the `.part` is removed and
+  a `writer_failed` event with the full NSError (domain, code, underlying
+  error) is logged.
+- No video sample was ever committed (stop right after start, or the camera
+  never delivered a program frame): the writer is cancelled, the `.part`
+  removed, a `no_frames` event logged and `recording.last_error = "no_frames"`
+  reported through the `recording.stop` result and the following status
+  snapshots (the webapp renders `last_error` verbatim in the recording
+  control). Measured with the production writer configuration: an empty
+  writer otherwise *completes* with a 0-byte file, which the old code renamed
+  to the final `.mp4` — the field finding was a 0-byte
+  `broadify-….mp4.part` next to `finish_failed` events
+  (`AVFoundationErrorDomain -11800`, underlying `-12737`). That failure code
+  could NOT be reproduced in ctest with zero or few samples (video-only,
+  audio-only, both, 1 frame): all finish with status Completed. A `.part` is
+  still kept for `finish_failed` after frames were written and for
+  `finalize_timeout`.
 
 ## File lifecycle (Windows)
 
