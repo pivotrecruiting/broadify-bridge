@@ -27,6 +27,12 @@ const WINDOWS_NATIVE_RESOURCES = Object.freeze([
   "resources/native/meeting-helper/tbbbind_2_5.dll",
   "resources/native/meeting-helper/tbbmalloc.dll",
   "resources/native/vcam-helper/broadify-vcam.dll",
+  // FrameBus Node addon (apps/bridge/native/framebus). A .node file is a PE
+  // DLL that the bridge loads with process.dlopen; Windows Smart App Control
+  // and WDAC block unsigned DLLs, so an unsigned addon surfaces as
+  // "FrameBus writer not ready" on customer PCs. Packaged by the base
+  // extraResources entry in electron-builder.json.
+  "resources/bridge/native/framebus/build/Release/framebus.node",
 ]);
 
 function getWindowsNativeResourcePaths(appOutDir) {

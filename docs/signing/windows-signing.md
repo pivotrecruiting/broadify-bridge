@@ -73,10 +73,16 @@ Als GitHub-Secrets setzen und im Windows-Build-Job (`.github/workflows/release.y
      nicht gesetzt.
 4. Der Build muss vor `electron-builder` alle Windows-Runtime-Artefakte prüfen (`display-helper.exe`, `meeting-helper.exe`, `onnxruntime.dll`, MODNet-Modell, FrameBus-Addon).
 5. `scripts/sign-windows-native-resources.cjs` signiert nach dem Packen gezielt
-   `display-helper.exe`, `SDL2.dll`, `atem-usb-helper.exe`, `meeting-helper.exe`
-   und `onnxruntime.dll` (vollständige Liste: `WINDOWS_NATIVE_RESOURCES` im Skript).
+   `display-helper.exe`, `SDL2.dll`, `atem-usb-helper.exe`, `meeting-helper.exe`,
+   `onnxruntime.dll` und das FrameBus-Addon `framebus.node`
+   (vollständige Liste: `WINDOWS_NATIVE_RESOURCES` im Skript).
    `verify-windows-release-signatures.ps1` prüft danach **jede** gepackte `.exe` —
    ein neuer Helper muss also immer in diese Liste aufgenommen werden.
+   Auch Node-Addons (`.node`) sind PE-DLLs: Windows Smart App Control und WDAC
+   blockieren sie unsigniert, die Bridge meldet dann nur
+   `FrameBus writer not ready`. `scripts/windows-signing-hooks.test.cjs` prüft,
+   dass jeder Eintrag der Liste auch per `extraResources` gepackt wird und
+   `framebus.node` enthalten ist.
    `scripts/register-windows-azure-signing-serialization.cjs` serialisiert dabei
    alle Azure-Signing-Aufrufe. Das verhindert die bekannten Dateisperren und
    NuGet-Installationskollisionen von electron-builder 25 bei parallelem Signing.
@@ -97,8 +103,9 @@ Zusätzlich prüft der Windows-Workflow:
 - `latest.yml` verweist auf die NSIS-`.exe` und nicht auf die `.msi`
 - Wenn `electron-builder` bei `--publish=never` kein `latest.yml` schreibt, erzeugt `scripts/ensure-windows-updater-metadata.mjs` die Metadaten deterministisch aus der NSIS-`.exe`.
 - MSI lässt sich silent in ein temporäres Verzeichnis installieren und enthält die nativen Runtime-Dateien
-- die beiden nativen Runtime-DLLs `SDL2.dll` und `onnxruntime.dll` besitzen eine
-  gültige Authenticode-Signatur
+- die nativen Runtime-DLLs `SDL2.dll`, `onnxruntime.dll` (plus
+  `onnxruntime_providers_shared.dll`, `DirectML.dll`) und das FrameBus-Addon
+  `framebus.node` besitzen eine gültige Authenticode-Signatur
 - die MSVC-Runtime-DLLs neben beiden Helfern (`Microsoft.VC143.CRT`-Satz, Liste in
   `scripts/lib/windows-vc-runtime.cjs`) existieren, tragen eine gültige Authenticode-Signatur
   und der Signer ist `CN=Microsoft Corporation`. Diese DLLs werden **nicht** mit dem
