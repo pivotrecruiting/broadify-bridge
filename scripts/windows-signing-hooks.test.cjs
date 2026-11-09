@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const { mkdtemp, mkdir, rm, writeFile } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -104,6 +105,76 @@ test("signs exactly the packaged native Windows executables and DLLs", async () 
     assert.deepEqual(signedFiles, expectedFiles);
   } finally {
     await rm(appOutDir, { force: true, recursive: true });
+  }
+});
+
+const repoRoot = path.join(__dirname, "..");
+// Normalise CRLF: Windows runners check out with autocrlf.
+const read = (relativePath) =>
+  fs.readFileSync(path.join(repoRoot, relativePath), "utf8").replace(/\r\n/g, "\n");
+
+const FRAMEBUS_ADDON_RESOURCE =
+  "resources/bridge/native/framebus/build/Release/framebus.node";
+
+/**
+ * Loads electron-builder.config.cjs in a child process with process.platform
+ * forced to win32 (the release runner) and returns every packaged
+ * extraResources destination (base config plus the Windows-only entries).
+ */
+function loadWindowsPackagedResourceDestinations() {
+  const script = `
+    Object.defineProperty(process, "platform", { value: "win32" });
+    const config = require(${JSON.stringify(
+      path.join(repoRoot, "electron-builder.config.cjs"),
+    )});
+    process.stdout.write(
+      JSON.stringify([
+        ...(config.extraResources || []),
+        ...((config.win && config.win.extraResources) || []),
+      ]),
+    );
+  `;
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, BROADIFY_ALLOW_UNSIGNED_WINDOWS_BUILD: "1" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout).map((entry) =>
+    typeof entry === "string" ? entry : entry.to,
+  );
+}
+
+test("signs the FrameBus Node addon (Smart App Control / WDAC block unsigned DLLs)", () => {
+  assert.ok(
+    signWindowsNativeResources.WINDOWS_NATIVE_RESOURCES.includes(
+      FRAMEBUS_ADDON_RESOURCE,
+    ),
+    "framebus.node must be in WINDOWS_NATIVE_RESOURCES",
+  );
+  // The afterSign hook resolves entries relative to appOutDir; the addon must
+  // live where the smoke test and the runtime diagnostics expect it.
+  assert.match(
+    read("scripts/smoke-test-windows-msi.ps1"),
+    /resources\\bridge\\native\\framebus\\build\\Release\\framebus\.node/,
+  );
+  // verify-windows-release-signatures.ps1 only enumerates .exe/.msi files on
+  // its own; DLL-like artifacts must be listed explicitly to be verified.
+  assert.match(
+    read("scripts/verify-windows-release-signatures.ps1"),
+    /win-unpacked\\resources\\bridge\\native\\framebus\\build\\Release\\framebus\.node/,
+  );
+});
+
+test("every signed Windows native resource is packaged by electron-builder", () => {
+  const packaged = new Set(
+    loadWindowsPackagedResourceDestinations().map((to) => `resources/${to}`),
+  );
+  for (const resource of signWindowsNativeResources.WINDOWS_NATIVE_RESOURCES) {
+    assert.ok(
+      packaged.has(resource),
+      `${resource} is in the signing list but no extraResources entry packages it`,
+    );
   }
 });
 

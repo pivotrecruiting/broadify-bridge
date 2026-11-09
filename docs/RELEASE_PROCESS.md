@@ -319,6 +319,7 @@ Das native FrameBus Node-Addon wird automatisch beim `dist:*` Build erstellt:
 
 - **Build:** `npm run build:framebus` (via `scripts/build-framebus.sh`) – baut für die eingesetzte Electron-Version
 - **Paketierung:** `framebus.node` landet via `extraResources` in `bridge/native/framebus/build/Release/`
+- **Windows-Signatur:** `framebus.node` ist eine PE-DLL und steht in `WINDOWS_NATIVE_RESOURCES` (`scripts/sign-windows-native-resources.cjs`); `scripts/verify-windows-release-signatures.ps1` prüft die Signatur. Unsigniert blockieren Smart App Control / WDAC das Addon und die Bridge meldet `FrameBus writer not ready` (Feldbefund).
 - **Kein separater Schritt nötig** – das Addon wird vor jedem Release-Build gebaut
 
 ## Display Helper (ohne SDK) - CI-Build
