@@ -18,6 +18,8 @@ export type HelperLifecycleEventT =
       fatal?: { code: string; message: string };
     };
 
+export type HelperStderrLogLevelT = "debug" | "info" | "warn" | "error";
+
 export type HelperProcessSessionOptionsT = {
   label: string;
   helperPath: string;
@@ -26,7 +28,13 @@ export type HelperProcessSessionOptionsT = {
   stdin: "pipe" | "ignore";
   readyTimeoutMs: number;
   stderrRingSize?: number;
+  /** Fixed level for every stderr line; ignored when `stderrLineLevel` is set. Defaults to warn. */
   stderrLogLevel?: "warn" | "error";
+  /**
+   * Per-line log level for helper stderr output. Lines are delivered complete
+   * (newline-buffered) and trimmed, without the `[label]` prefix.
+   */
+  stderrLineLevel?: (line: string) => HelperStderrLogLevelT;
   logUnknownMessages?: boolean;
   stopStrategy: {
     shutdownHeader?: Buffer;
@@ -39,6 +47,7 @@ export type HelperProcessSessionOptionsT = {
 export class HelperProcessSession {
   private child: ChildProcess | null = null;
   private stdoutBuffer = "";
+  private stderrBuffer = "";
   private stderrRing: string[] = [];
   private lifecycleListeners = new Set<(event: HelperLifecycleEventT) => void>();
   private readyResolver: (() => void) | null = null;
@@ -62,6 +71,7 @@ export class HelperProcessSession {
     this.requestedStop = false;
     this.readySettled = false;
     this.stdoutBuffer = "";
+    this.stderrBuffer = "";
     this.stderrRing = [];
     this.lastFatal = undefined;
     this.version = null;
@@ -77,6 +87,8 @@ export class HelperProcessSession {
 
     child.stdout?.on("data", (data) => this.handleStdout(data));
     child.stderr?.on("data", (data) => this.handleStderr(data));
+    // The pipe can end after `exit`; flush a trailing partial line either way.
+    child.stderr?.on("end", () => this.flushStderrRemainder());
     child.on("error", (error) => {
       this.rejectReady(error);
     });
@@ -133,6 +145,7 @@ export class HelperProcessSession {
     });
     this.child = null;
     this.stdoutBuffer = "";
+    this.flushStderrRemainder();
   }
 
   onLifecycle(cb: (event: HelperLifecycleEventT) => void): () => void {
@@ -196,26 +209,65 @@ export class HelperProcessSession {
     }
   }
 
+  /**
+   * Buffer stderr by newline so a line split across pipe chunks is logged as
+   * one entry; the remainder waits for the next chunk or the flush on exit.
+   */
   private handleStderr(data: Buffer): void {
-    const lines = data
-      .toString()
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    for (const line of lines) {
-      this.stderrRing.push(line);
-      while (this.stderrRing.length > (this.options.stderrRingSize ?? 20)) {
-        this.stderrRing.shift();
-      }
-      if (this.options.stderrLogLevel === "error") {
-        this.options.logger.error(`[${this.options.label}] ${line}`);
-      } else {
-        this.options.logger.warn(`[${this.options.label}] ${line}`);
-      }
+    this.stderrBuffer += data.toString("utf-8");
+    let newlineIndex = this.stderrBuffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = this.stderrBuffer.slice(0, newlineIndex);
+      this.stderrBuffer = this.stderrBuffer.slice(newlineIndex + 1);
+      newlineIndex = this.stderrBuffer.indexOf("\n");
+      this.handleStderrLine(line);
     }
   }
 
+  private flushStderrRemainder(): void {
+    if (this.stderrBuffer.length === 0) {
+      return;
+    }
+    const line = this.stderrBuffer;
+    this.stderrBuffer = "";
+    this.handleStderrLine(line);
+  }
+
+  private handleStderrLine(rawLine: string): void {
+    const line = rawLine.trim();
+    if (line.length === 0) {
+      return;
+    }
+    this.stderrRing.push(line);
+    while (this.stderrRing.length > (this.options.stderrRingSize ?? 20)) {
+      this.stderrRing.shift();
+    }
+    const message = `[${this.options.label}] ${line}`;
+    switch (this.resolveStderrLevel(line)) {
+      case "debug":
+        this.options.logger.debug?.(message);
+        return;
+      case "info":
+        this.options.logger.info(message);
+        return;
+      case "error":
+        this.options.logger.error(message);
+        return;
+      default:
+        this.options.logger.warn(message);
+    }
+  }
+
+  private resolveStderrLevel(line: string): HelperStderrLogLevelT {
+    if (this.options.stderrLineLevel) {
+      return this.options.stderrLineLevel(line);
+    }
+    return this.options.stderrLogLevel === "error" ? "error" : "warn";
+  }
+
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+    // Log a trailing partial line and include it in the exited event context.
+    this.flushStderrRemainder();
     const requested = this.requestedStop;
     const wasReady = this.readySettled;
     if (!this.readySettled) {

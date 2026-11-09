@@ -9,6 +9,7 @@ import type { GraphicsOutputConfigT } from "../graphics-schemas.js";
 import { getBridgeContext } from "../../bridge-context.js";
 import { resolveDecklinkHelperPath } from "../../../modules/decklink/decklink-helper.js";
 import { KEY_FILL_PIXEL_FORMAT_PRIORITY } from "../output-format-policy.js";
+import { classifyDeckLinkHelperStderrLine } from "./decklink-helper-stderr.js";
 import { parseDecklinkPortId } from "./decklink-port.js";
 import { HelperProcessSession } from "./helper-process-session.js";
 import { DECKLINK_OUTPUT_HELPER_READY_TIMEOUT_MS } from "./output-helper-timeouts.js";
@@ -120,7 +121,7 @@ export class DecklinkKeyFillOutputAdapter implements GraphicsOutputAdapter {
       env,
       stdin: "pipe",
       readyTimeoutMs: DECKLINK_OUTPUT_HELPER_READY_TIMEOUT_MS,
-      stderrLogLevel: "error",
+      stderrLineLevel: classifyDeckLinkHelperStderrLine,
       logUnknownMessages: false,
       stopStrategy: {
         shutdownHeader: this.createShutdownHeader(),
