@@ -803,7 +803,7 @@ describe("DecklinkVideoOutputAdapter", () => {
   });
 
   describe("stderr", () => {
-    it("logs error when stderr has content", async () => {
+    it("logs helper failures at warn instead of error", async () => {
       mockSpawn.mockImplementation(() => {
         const child = createMockChild();
         setImmediate(() => {
@@ -816,10 +816,87 @@ describe("DecklinkVideoOutputAdapter", () => {
         targets: { output1Id: "decklink-1-sdi" },
       });
       const mockChild = mockSpawn.mock.results[0]?.value;
-      const logger = mockGetBridgeContext().logger as { error: jest.Mock };
+      const logger = mockGetBridgeContext().logger as {
+        error: jest.Mock;
+        warn: jest.Mock;
+      };
       (mockChild?.stderr as EventEmitter).emit("data", Buffer.from("helper error\n"));
       await new Promise((r) => setImmediate(r));
-      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("helper error"));
+      expect(logger.warn).toHaveBeenCalledWith("[DeckLinkOutput] helper error");
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it("logs routine playback telemetry at debug and diagnostics at info", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      const logger = mockGetBridgeContext().logger as {
+        debug: jest.Mock;
+        info: jest.Mock;
+        warn: jest.Mock;
+        error: jest.Mock;
+      };
+      (mockChild?.stderr as EventEmitter).emit(
+        "data",
+        Buffer.from(
+          "Playback stats: completed=27 late=0 dropped=0\n" +
+            "Buffered video frame count: 4\n" +
+            "[DeckLinkHelper] CreateVideoFrame (output) ok: rowBytes=7680\n" +
+            "FrameBus size mismatch (tolerated). expected=24883328 got=24887296\n",
+        ),
+      );
+      await new Promise((r) => setImmediate(r));
+      expect(logger.debug).toHaveBeenCalledWith(
+        "[DeckLinkOutput] Playback stats: completed=27 late=0 dropped=0",
+      );
+      expect(logger.debug).toHaveBeenCalledWith(
+        "[DeckLinkOutput] Buffered video frame count: 4",
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        "[DeckLinkOutput] [DeckLinkHelper] CreateVideoFrame (output) ok: rowBytes=7680",
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        "[DeckLinkOutput] FrameBus size mismatch (tolerated). expected=24883328 got=24887296",
+      );
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it("joins stderr lines split across chunks", async () => {
+      mockSpawn.mockImplementation(() => {
+        const child = createMockChild();
+        setImmediate(() => {
+          (child.stdout as EventEmitter).emit("data", Buffer.from('{"type":"ready"}\n'));
+        });
+        return child;
+      });
+      await adapter.configure({
+        ...baseConfig,
+        targets: { output1Id: "decklink-1-sdi" },
+      });
+      const mockChild = mockSpawn.mock.results[0]?.value;
+      const logger = mockGetBridgeContext().logger as { debug: jest.Mock };
+      (mockChild?.stderr as EventEmitter).emit(
+        "data",
+        Buffer.from("Playback stats: completed=815 late=0 dropped="),
+      );
+      (mockChild?.stderr as EventEmitter).emit("data", Buffer.from("0\n"));
+      await new Promise((r) => setImmediate(r));
+      expect(logger.debug).toHaveBeenCalledWith(
+        "[DeckLinkOutput] Playback stats: completed=815 late=0 dropped=0",
+      );
+      expect(logger.debug).not.toHaveBeenCalledWith(
+        "[DeckLinkOutput] Playback stats: completed=815 late=0 dropped=",
+      );
     });
 
     it("does not log when stderr is empty/whitespace", async () => {
@@ -880,10 +957,13 @@ describe("DecklinkVideoOutputAdapter", () => {
         targets: { output1Id: "decklink-1-sdi" },
       });
       const mockChild = mockSpawn.mock.results[0]?.value;
-      (mockChild?.stderr as EventEmitter).emit("data", Buffer.from("stderr line"));
+      const consoleInfo = jest.spyOn(console, "info").mockImplementation(() => {});
+      (mockChild?.stderr as EventEmitter).emit("data", Buffer.from("stderr line\n"));
       await new Promise((r) => setImmediate(r));
-      expect(consoleError).toHaveBeenCalled();
+      expect(consoleInfo).toHaveBeenCalledWith("[DeckLinkOutput] stderr line");
+      expect(consoleError).not.toHaveBeenCalled();
       consoleError.mockRestore();
+      consoleInfo.mockRestore();
     });
   });
 });
